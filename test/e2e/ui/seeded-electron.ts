@@ -45,11 +45,48 @@ function safeProcessEnv(): LaunchEnv {
   return env;
 }
 
-export function buildIsolatedElectronEnv(overrides: LaunchEnv): LaunchEnv {
-  return {
-    ...safeProcessEnv(),
-    ...overrides,
-  };
+/**
+ * Chromium switches every e2e Electron launch gets. On macOS, safeStorage
+ * otherwise opens the login Keychain item "Ave Safe Storage", whose ACL does
+ * not match a test Electron, and macOS prompts the machine's owner mid-run.
+ * The mock keychain keeps e2e off the owner's Keychain entirely.
+ */
+export const E2E_CHROMIUM_SWITCHES: readonly string[] = process.platform === "darwin" ? ["--use-mock-keychain"] : [];
+
+/**
+ * The E2E runtime signal every e2e launch carries (`isE2eTestRuntime` in
+ * src/boot/dev-flags.ts). Among other things it keeps the app from claiming the
+ * OS `ave://` handler (src/main/ave-protocol-registration.ts), so a spec never
+ * depends on the launch being unpackaged to leave the installed app's deep
+ * links alone.
+ */
+export const E2E_RUNTIME_ENV = Object.freeze({ AVE_E2E: "1", NODE_ENV: "test" });
+
+/**
+ * The only way an e2e spec launches Electron (test/scripts/e2e-electron-launch.test.mjs
+ * keeps it that way): Playwright's launch with {@link E2E_CHROMIUM_SWITCHES} in front
+ * and {@link E2E_RUNTIME_ENV} over the spec's env (Playwright's default env is
+ * `process.env`, so a spec that passes none keeps it).
+ */
+export function launchElectron(options: Parameters<typeof electron.launch>[0]): ReturnType<typeof electron.launch> {
+  const baseEnv: Record<string, string> = {};
+  for (const [key, value] of Object.entries(options?.env ?? process.env)) {
+    if (value !== undefined) baseEnv[key] = value;
+  }
+  return electron.launch({
+    ...options,
+    args: [...E2E_CHROMIUM_SWITCHES, ...(options?.args ?? [])],
+    env: { ...baseEnv, ...E2E_RUNTIME_ENV },
+  });
+}
+
+/** The allow-listed parent env plus `overrides`; an `undefined` override removes the key. */
+export function buildIsolatedElectronEnv(overrides: LaunchEnv): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries({ ...safeProcessEnv(), ...overrides })) {
+    if (value !== undefined) env[key] = value;
+  }
+  return env;
 }
 
 export function buildE2eBaseSettings(onboardingCompleted = true, locale: "ko" | "en" = "ko",
@@ -198,6 +235,7 @@ export async function launchSeededElectron(opts: {
   userDataPrefix?: string;
   homePrefix?: string;
   launchEnv?: LaunchEnv;
+  launchArgs?: readonly string[];
 }): Promise<SeededElectronContext> {
   const sessionId = opts.sessionId ?? "e2000000-bb11-4cc2-8dd3-eeeeeeeeeeee";
   const userDataDir = mkdtempSync(
@@ -242,8 +280,8 @@ export async function launchSeededElectron(opts: {
       "utf-8",
     );
 
-    app = await electron.launch({
-      args: [MAIN_ENTRY, `--user-data-dir=${userDataDir}`, "--no-sandbox"],
+    app = await launchElectron({
+      args: [MAIN_ENTRY, `--user-data-dir=${userDataDir}`, "--no-sandbox", ...(opts.launchArgs ?? [])],
       env: buildIsolatedElectronEnv({
         HOME: tempHome,
         USERPROFILE: tempHome,

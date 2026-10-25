@@ -76,7 +76,7 @@ describe("web_fetch SSRF guard", () => {
       url: "https://example.com/page",
     })).toBe("network");
     expect(tool.categoryForInput?.({
-      url: "http://10.185.177.209:8080/status",
+      url: "http://10.10.1.209:8080/status",
       allowPrivateNetwork: true,
     })).toBe("network");
   });
@@ -103,14 +103,14 @@ describe("web_fetch SSRF guard", () => {
     const tool = makeWebFetchTool();
 
     const privateKey = tool.approvalCacheKey?.({
-      url: "http://10.185.177.209:8080/status",
+      url: "http://10.10.1.209:8080/status",
       allowPrivateNetwork: true,
     });
     const publicKey = tool.approvalCacheKey?.({
-      url: "http://10.185.177.209:8080/status",
+      url: "http://10.10.1.209:8080/status",
     });
-    expect(privateKey).toBe("web_fetch:host:private-network:10.185.177.209");
-    expect(publicKey).toBe("web_fetch:host:10.185.177.209");
+    expect(privateKey).toBe("web_fetch:host:private-network:10.10.1.209");
+    expect(publicKey).toBe("web_fetch:host:10.10.1.209");
     expect(privateKey).not.toBe(publicKey);
   });
 
@@ -127,7 +127,7 @@ describe("web_fetch SSRF guard", () => {
       "builtin",
       "network",
       null,
-      { approvalCacheKey: "web_fetch:host:private-network:10.185.177.209" },
+      { approvalCacheKey: "web_fetch:host:private-network:10.10.1.209" },
     );
     expect(privateDecision.decision).toBe("ask");
   });
@@ -156,7 +156,7 @@ describe("web_fetch SSRF guard", () => {
     });
 
     const result = await tool.execute(
-      { url: "http://10.185.177.209/page", allowPrivateNetwork: true },
+      { url: "http://10.10.1.209/page", allowPrivateNetwork: true },
       {} as never,
     );
 

@@ -243,8 +243,8 @@ describe("PluginConfigTab", () => {
 
   it("runs Doctor for a failed plugin and refreshes the plugin card", async () => {
     const broken = {
-      id: "agent-hub",
-      name: "Agent Hub",
+      id: "samplehub",
+      name: "Sample Hub",
       description: "Agent orchestration",
       sampleTools: [],
       capabilities: [],
@@ -259,7 +259,7 @@ describe("PluginConfigTab", () => {
     const cards = vi.fn()
       .mockResolvedValueOnce([broken])
       .mockResolvedValueOnce([repaired]);
-    bind("agent-hub");
+    bind("samplehub");
     Object.defineProperty(window, "ave", {
       value: {
         plugins: { cards },
@@ -281,15 +281,15 @@ describe("PluginConfigTab", () => {
     render(<PluginConfigTab />);
 
     await waitFor(() => {
-      expect(screen.getByTestId("plugin-config:doctor-panel:agent-hub")).toBeInTheDocument();
+      expect(screen.getByTestId("plugin-config:doctor-panel:samplehub")).toBeInTheDocument();
     });
 
-    fireEvent.click(screen.getByTestId("plugin-config:doctor:agent-hub"));
+    fireEvent.click(screen.getByTestId("plugin-config:doctor:samplehub"));
 
     await waitFor(() => {
-      expectRepairPlanned("agent-hub");
+      expectRepairPlanned("samplehub");
       expect(cards).toHaveBeenCalledTimes(2);
-      expect(screen.getByText("Agent Hub 복구 완료")).toBeInTheDocument();
+      expect(screen.getByText("Sample Hub 복구 완료")).toBeInTheDocument();
     });
   });
 
@@ -297,8 +297,8 @@ describe("PluginConfigTab", () => {
     "does not report repair success when the refreshed card is %s",
     async (refreshedState) => {
       const broken = {
-        id: "agent-hub",
-        name: "Agent Hub",
+        id: "samplehub",
+        name: "Sample Hub",
         description: "Agent orchestration",
         sampleTools: [],
         capabilities: [],
@@ -309,7 +309,7 @@ describe("PluginConfigTab", () => {
       const cards = vi.fn()
         .mockResolvedValueOnce([broken])
         .mockResolvedValueOnce(refreshedState === "failed" ? [broken] : []);
-      bind("agent-hub");
+      bind("samplehub");
       Object.defineProperty(window, "ave", {
         value: {
           plugins: { cards },
@@ -322,26 +322,26 @@ describe("PluginConfigTab", () => {
       render(<PluginConfigTab />);
 
       await waitFor(() => {
-        expect(screen.getByTestId("plugin-config:doctor-panel:agent-hub")).toBeInTheDocument();
+        expect(screen.getByTestId("plugin-config:doctor-panel:samplehub")).toBeInTheDocument();
       });
-      fireEvent.click(screen.getByTestId("plugin-config:doctor:agent-hub"));
+      fireEvent.click(screen.getByTestId("plugin-config:doctor:samplehub"));
 
       await waitFor(() => {
-        expectRepairPlanned("agent-hub");
+        expectRepairPlanned("samplehub");
         expect(cards).toHaveBeenCalledTimes(2);
         expect(
-          screen.getByText("Agent Hub: 진단 완료 — 익스텐션을 아직 실행할 수 없습니다."),
+          screen.getByText("Sample Hub: 진단 완료 — 익스텐션을 아직 실행할 수 없습니다."),
         ).toBeInTheDocument();
       });
-      expect(screen.queryByText("Agent Hub 복구 완료")).toBeNull();
+      expect(screen.queryByText("Sample Hub 복구 완료")).toBeNull();
       expect(screen.getByTestId("plugin-config:banner")).toHaveClass("text-warning");
     },
   );
 
   it("warns without planning an install when no source binds the failed plugin", async () => {
     const broken = {
-      id: "agent-hub",
-      name: "Agent Hub",
+      id: "samplehub",
+      name: "Sample Hub",
       description: "Agent orchestration",
       sampleTools: [],
       capabilities: [],
@@ -361,14 +361,14 @@ describe("PluginConfigTab", () => {
     render(<PluginConfigTab />);
 
     await waitFor(() => {
-      expect(screen.getByTestId("plugin-config:doctor-panel:agent-hub")).toBeInTheDocument();
+      expect(screen.getByTestId("plugin-config:doctor-panel:samplehub")).toBeInTheDocument();
     });
-    fireEvent.click(screen.getByTestId("plugin-config:doctor:agent-hub"));
+    fireEvent.click(screen.getByTestId("plugin-config:doctor:samplehub"));
 
     await waitFor(() => {
       expect(
         screen.getByText(
-          "Agent Hub: 이 익스텐션에 연결된 마켓플레이스 소스가 없어 재설치할 수 없습니다. 제거하거나 설정 → 마켓플레이스에서 다시 설치하세요.",
+          "Sample Hub: 이 익스텐션에 연결된 마켓플레이스 소스가 없어 재설치할 수 없습니다. 제거하거나 설정 → 마켓플레이스에서 다시 설치하세요.",
         ),
       ).toBeInTheDocument();
     });
@@ -380,8 +380,8 @@ describe("PluginConfigTab", () => {
 
   it("keeps a card refresh failure instead of overwriting it with repair success", async () => {
     const broken = {
-      id: "agent-hub",
-      name: "Agent Hub",
+      id: "samplehub",
+      name: "Sample Hub",
       description: "Agent orchestration",
       sampleTools: [],
       capabilities: [],
@@ -392,7 +392,7 @@ describe("PluginConfigTab", () => {
     const cards = vi.fn()
       .mockResolvedValueOnce([broken])
       .mockRejectedValueOnce(new Error("card refresh failed"));
-    bind("agent-hub");
+    bind("samplehub");
     Object.defineProperty(window, "ave", {
       value: {
         plugins: { cards },
@@ -405,18 +405,18 @@ describe("PluginConfigTab", () => {
     render(<PluginConfigTab />);
 
     await waitFor(() => {
-      expect(screen.getByTestId("plugin-config:doctor-panel:agent-hub")).toBeInTheDocument();
+      expect(screen.getByTestId("plugin-config:doctor-panel:samplehub")).toBeInTheDocument();
     });
-    fireEvent.click(screen.getByTestId("plugin-config:doctor:agent-hub"));
+    fireEvent.click(screen.getByTestId("plugin-config:doctor:samplehub"));
 
     await waitFor(() => {
-      expectRepairPlanned("agent-hub");
+      expectRepairPlanned("samplehub");
       expect(cards).toHaveBeenCalledTimes(2);
       expect(screen.getByText("card refresh failed")).toBeInTheDocument();
     });
-    expect(screen.queryByText("Agent Hub 복구 완료")).toBeNull();
+    expect(screen.queryByText("Sample Hub 복구 완료")).toBeNull();
     expect(
-      screen.queryByText("Agent Hub: 진단 완료 — 익스텐션을 아직 실행할 수 없습니다."),
+      screen.queryByText("Sample Hub: 진단 완료 — 익스텐션을 아직 실행할 수 없습니다."),
     ).toBeNull();
     expect(screen.getByTestId("plugin-config:banner")).toHaveClass("text-destructive");
   });
@@ -785,8 +785,8 @@ describe("PluginConfigTab", () => {
 
   it("opens uninstall from the Doctor panel even for a managed failed plugin", async () => {
     const broken = {
-      id: "agent-hub",
-      name: "Agent Hub",
+      id: "samplehub",
+      name: "Sample Hub",
       description: "Agent orchestration",
       sampleTools: [],
       capabilities: [],
@@ -809,16 +809,16 @@ describe("PluginConfigTab", () => {
     render(<PluginConfigTab />);
 
     await waitFor(() => {
-      expect(screen.getByTestId("plugin-config:doctor-panel:agent-hub")).toBeInTheDocument();
+      expect(screen.getByTestId("plugin-config:doctor-panel:samplehub")).toBeInTheDocument();
     });
 
-    fireEvent.click(screen.getByTestId("plugin-config:doctor-remove:agent-hub"));
+    fireEvent.click(screen.getByTestId("plugin-config:doctor-remove:samplehub"));
     const dialog = await screen.findByRole("dialog");
     fireEvent.click(within(dialog).getByRole("button", { name: "제거" }));
 
     await waitFor(() => {
-      expect(mockUninstall).toHaveBeenCalledWith("agent-hub");
-      expect(screen.getByText("Agent Hub 제거 완료")).toBeInTheDocument();
+      expect(mockUninstall).toHaveBeenCalledWith("samplehub");
+      expect(screen.getByText("Sample Hub 제거 완료")).toBeInTheDocument();
     });
   });
 
@@ -832,9 +832,9 @@ describe("PluginConfigTab", () => {
       tools: [],
       loadStatus: "loaded" as const,
     };
-    const agentHub = {
-      id: "agent-hub",
-      name: "Agent Hub",
+    const sampleHub = {
+      id: "samplehub",
+      name: "Sample Hub",
       description: "Agent orchestration",
       sampleTools: [],
       capabilities: [],
@@ -843,7 +843,7 @@ describe("PluginConfigTab", () => {
     };
     const cards = vi.fn()
       .mockResolvedValueOnce([meeting])
-      .mockResolvedValueOnce([meeting, agentHub]);
+      .mockResolvedValueOnce([meeting, sampleHub]);
     let installResultHandler: ((payload: { slug: string; success: boolean; error?: string }) => void) | null = null;
     Object.defineProperty(window, "ave", {
       value: {
@@ -871,15 +871,15 @@ describe("PluginConfigTab", () => {
       expect(cards).toHaveBeenCalledTimes(1);
       expect(screen.getAllByText("Meeting").length).toBeGreaterThan(0);
     });
-    expect(screen.queryByText("Agent Hub")).toBeNull();
+    expect(screen.queryByText("Sample Hub")).toBeNull();
 
     await act(async () => {
-      installResultHandler?.({ slug: "agent-hub", success: true });
+      installResultHandler?.({ slug: "samplehub", success: true });
     });
 
     await waitFor(() => {
       expect(cards).toHaveBeenCalledTimes(2);
-      expect(screen.getAllByText("Agent Hub").length).toBeGreaterThan(0);
+      expect(screen.getAllByText("Sample Hub").length).toBeGreaterThan(0);
     });
   });
 
@@ -954,8 +954,8 @@ describe("PluginConfigTab", () => {
   it("renders preparation progress details for a selected preparing plugin", async () => {
     const cards = vi.fn(async () => [
       {
-        id: "agent-hub",
-        name: "Agent Hub",
+        id: "samplehub",
+        name: "Sample Hub",
         description: "Agent orchestration",
         sampleTools: [],
         capabilities: [],
@@ -1499,7 +1499,7 @@ it("opens a requested plugin under the existing anchor and updates its unseen ba
   let changed = () => {};
   setRendererApi({
     gitMarketplace: market,
-    getSettings: async () => ({ alerts: { osNotificationsEnabled: false } }),
+    getSettings: async () => ({ alerts: { osNotificationsEnabled: false }, system: { turnCompletionSoundEnabled: true } }),
     alerts: { listKinds: async () => [{ ...row, choice: { ...row.choice } }], onKindsChanged: (callback: () => void) => { changed = callback; return () => {}; } },
   });
   render(<PluginConfigTab initialPluginId="meeting" />);

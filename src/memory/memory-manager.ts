@@ -8,6 +8,7 @@ export { isValidSessionId } from "../shared/session-id.js";
 
 import { closeSync, constants, existsSync, fchmodSync, fstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, utimesSync, writeFileSync, unlinkSync, rmSync, renameSync, watch, type FSWatcher } from "node:fs";
 import { randomUUID } from "node:crypto";
+import { stat } from "node:fs/promises";
 import { join, resolve, basename } from "node:path";
 import { withFileLock } from "../lib/with-file-lock.js";
 import { writeUtf8FileAtomicSync, replaceUtf8FileAtomicSyncIf, isMissingPathError } from "../lib/atomic-file.js";
@@ -45,11 +46,39 @@ import {
 import { SessionSearchIndex, type IndexedSessionInput } from "./session-search-index.js";
 import { isRecord } from "../shared/is-record.js";
 import { escapeRegExp } from "../shared/escape-reg-exp.js";
-import { dlpSafeCandidate } from "../shared/dlp-safe-id.js";
+import { dlpSafeCandidate, isSafeStructuralId } from "../shared/dlp-safe-id.js";
 import { UUID_PATTERN } from "../shared/uuid.js";
 import { SHA256_HEX, sha256Hex } from "../lib/hex-digest-equal.js";
 import { parseJsonlLines } from "../audit/jsonl-reader.js";
+import {
+  appendJsonlRecords,
+  orderToolResultRows,
+  parseTurnInflightRecord,
+  recoverInterruptedTurn,
+  removeTurnInflightRecord,
+  rowIdsOf,
+  sessionProgressRows,
+  turnInflightPath,
+  writeTurnInflightRecord,
+  type TurnInflightPartial,
+} from "./session-turn-journal.js";
 const log = createLogger("memory");
+/**
+ * What this process last wrote to each session transcript: logical history row
+ * ids plus the file's size and mtime right after the write. Parallel results
+ * reach disk in completion order while these ids stay in call order. An append
+ * is only taken when these ids extend history or its open result group AND the file is
+ * still exactly what was written — any other writer (another manager on the
+ * same directory, a hand edit) changes size or mtime and forces a rewrite.
+ * Keyed by transcript path because auxiliary managers share session dirs.
+ */
+const transcriptWriteStates = new Map<string, { ids: string[]; size: number; mtimeMs: number }>();
+/**
+ * Sessions whose turn journal is open in THIS process, keyed by sidecar path.
+ * A sidecar for one of these is the running turn's, not an orphan, so a read
+ * of the session must not fold it in as an interrupted turn.
+ */
+const liveTurnJournals = new Map<string, number>();
 // Auxiliary managers can share the same host-owned session directory.
 const unpublishedCapturesByDirectory = new Map<string, Map<string, Set<string>>>();
 
@@ -522,6 +551,12 @@ export interface SessionMetadata {
    */
   unreadSince?: string;
   /**
+   * The workspace tab (a terminal or page) whose pane chat this side chat is.
+   * Host-written on the pane's first turn, cleared when the user starts the
+   * pane's chat afresh; a restored pane reopens on the newest unarchived match.
+   */
+  paneTabId?: string;
+  /**
    * Compact number of the checkpoint this session was branched from.
    * Set when a session is created via branchFromCheckpoint().
    * Absent for normal (non-branched) sessions.
@@ -749,7 +784,7 @@ function isValidA2AWireHandlerId(id: unknown): id is string {
 function isValidA2AWireMetadataId(id: unknown): id is string {
   return isValidSessionId(id)
     && id.length <= MAX_A2A_WIRE_ID_CHARS
-    && maskSensitiveData(id).detections.length === 0;
+    && isSafeStructuralId(id);
 }
 
 /**
@@ -775,10 +810,8 @@ const LEGACY_ROW_ID_MAX_COLLISION_ATTEMPTS = 64;
  * ids in a file, and must be derived: see `stampLegacyRowIds` for why.
  *
  * Hashed rather than concatenated because the id is persisted on the next save
- * and read back: the digest is hex, so it cannot carry anything a redaction
- * pass would rewrite, and the DLP check still proves it for the same reason
- * `createDlpSafeUuid` proves its own output — literally the same retry
- * primitive, `dlpSafeCandidate`, with a hashed draw instead of a random one.
+ * and read back. These opaque digests still pass content DLP through
+ * `dlpSafeCandidate`; only complete UUID forms have structural admission.
  * The attempt counter keeps the retry deterministic, so a second read of the
  * same file lands on the same id as the first, and it is also what lets
  * `taken` be honoured without reaching for randomness.
@@ -801,6 +834,20 @@ function legacyRowId(sessionId: string, index: number, taken: ReadonlySet<string
     if (!taken.has(candidate)) return candidate;
   }
   throw new Error("[legacy-row-id] could not derive a redaction-safe row identity");
+}
+
+/**
+ * Deterministic id for a row that turn recovery synthesizes on read. Same
+ * reasoning as {@link legacyRowId}: the row is derived from files, two readers
+ * must name it identically, and the next save persists it under that name.
+ */
+function derivedRowId(sessionId: string, seed: string): string {
+  const candidate = dlpSafeCandidate(
+    (attempt) => `row-${sha256Hex(`${sessionId}:${seed}:${attempt}`).slice(0, 32)}`,
+    LEGACY_ROW_ID_MAX_DLP_ATTEMPTS,
+  );
+  if (candidate === null) throw new Error("[derived-row-id] could not derive a redaction-safe row identity");
+  return candidate;
 }
 
 /**
@@ -1316,6 +1363,7 @@ function normalizeSessionMetadata(raw: Record<string, unknown>): SessionMetadata
     goal,
     archivedAt: typeof raw.archivedAt === "string" ? raw.archivedAt : undefined,
     unreadSince: typeof raw.unreadSince === "string" ? raw.unreadSince : undefined,
+    paneTabId: typeof raw.paneTabId === "string" && raw.paneTabId.length > 0 ? raw.paneTabId : undefined,
   };
 }
 
@@ -1377,6 +1425,8 @@ export class MemoryManager implements PromptMemorySource {
    * swap handlers, or downgrade the task into an ordinary resumable sub-agent.
    */
   private readonly detachedWireTerminalTombstones = new Map<string, DetachedWireTerminalTombstone>();
+  /** Pane tab → its unarchived sessions; null until `findPaneSession` first asks. */
+  private paneSessions: Map<string, Set<string>> | null = null;
   private persistentContextWatchers: FSWatcher[] = [];
   private persistentContextReloadTimer: ReturnType<typeof setTimeout> | undefined;
   private persistentContextPollTimer: ReturnType<typeof setInterval> | undefined;
@@ -1414,8 +1464,8 @@ export class MemoryManager implements PromptMemorySource {
   /**
    * Stable coordination target for metadata save/detach/delete.
    *
-   * Locking the metadata file itself is unsafe because withFileLock must touch
-   * a missing target before acquisition. A delete between detach's directory
+   * Locking the metadata file itself is unsafe because withFileLock touches
+   * a missing target inside the lock. A delete between detach's directory
    * snapshot and lock acquisition could therefore recreate the deleted path.
    * This sidecar survives session deletion and gives all three operations one
    * inode-independent serialization point.
@@ -2182,13 +2232,168 @@ export class MemoryManager implements PromptMemorySource {
     }
     const targetPath = join(this.sessionsDir, `${sessionId}.jsonl`);
     await withFileLock(targetPath, async () => {
-      const prepared = this.prepareSessionMessagesForDisk(sessionId, messages);
-      const lines = prepared.messages.map((m) => JSON.stringify(m)).join("\n") + "\n";
-      writeFileSync(targetPath, lines, "utf-8");
-      this.cleanupToolResultArtifacts(sessionId, prepared.keepArtifactKeys);
-      this.cleanupToolOutputArtifacts(sessionId, prepared.keepCaptureIds);
+      this.writeSessionTranscriptLocked(sessionId, targetPath, messages);
     });
+    // A whole-history save is authoritative for everything a crashed turn left
+    // behind: the recovered rows are in `messages` now, so the orphaned
+    // sidecar has nothing more to say. A running turn's sidecar stays.
+    if (!this.isTurnJournalLive(sessionId)) {
+      removeTurnInflightRecord(turnInflightPath(this.sessionsDir, sessionId));
+    }
     this.indexSessionForSearch(sessionId, messages);
+  }
+
+  /**
+   * Rewrite the transcript from `messages`. Temp + fsync + rename, so a process
+   * killed mid-rewrite leaves the previous complete file rather than a
+   * truncated one — the rewrite is what every append is eventually compacted
+   * into, so it must be at least as crash-safe as the appends. Caller holds the
+   * transcript's file lock.
+   */
+  private writeSessionTranscriptLocked(sessionId: string, targetPath: string, messages: unknown[]): void {
+    const prepared = this.prepareSessionMessagesForDisk(sessionId, messages);
+    const lines = prepared.messages.map((m) => JSON.stringify(m)).join("\n") + "\n";
+    writeUtf8FileAtomicSync(targetPath, lines);
+    this.cleanupToolResultArtifacts(sessionId, prepared.keepArtifactKeys);
+    this.cleanupToolOutputArtifacts(sessionId, prepared.keepCaptureIds);
+    const ids = rowIdsOf(messages);
+    const stat = statPathIfPresent(targetPath);
+    if (ids && stat) {
+      transcriptWriteStates.set(targetPath, { ids, size: stat.size, mtimeMs: stat.mtimeMs });
+    } else {
+      transcriptWriteStates.delete(targetPath);
+    }
+  }
+
+  /**
+   * Make a running turn's progress durable without the cost of a save.
+   *
+   * `readMessages` yields the whole in-memory history (pass the reader, not a
+   * snapshot, from a live turn). When it extends what this
+   * process last wrote (same row ids, file untouched since), only the new rows
+   * are appended. The open result group may grow in call order while its new
+   * rows reach disk in completion order; load and the final save normalize it.
+   * Appends use the same disk transform a save uses,
+   * so an oversized or image-bearing tool_result is stored exactly as a save
+   * would store it. Otherwise (compaction rewrote the prefix, a host
+   * injection was rolled back, another writer touched the file) the transcript
+   * is rewritten from history. Either way the file contains the history, and
+   * the turn's final `saveSession` rewrites it with the same row ids, so a
+   * completed turn never carries a duplicate.
+   *
+   * No search reindex here: that is a full-text rebuild of the session row and
+   * stays with `saveSession` at the turn's end.
+   */
+  async appendSessionProgress(
+    sessionId: string,
+    readMessages: unknown[] | (() => unknown[]),
+  ): Promise<"appended" | "rewritten" | "unchanged"> {
+    if (!isValidSessionId(sessionId)) {
+      throw new Error(`appendSessionProgress: invalid sessionId "${sessionId}"`);
+    }
+    const targetPath = join(this.sessionsDir, `${sessionId}.jsonl`);
+    return withFileLock(targetPath, async () => {
+      const onDisk = await stat(targetPath).catch((err: unknown) => {
+        if (isMissingPathError(err)) return null;
+        throw err;
+      });
+      // Read history only once the lock is held. A snapshot taken before
+      // waiting could be older than a save that won the lock first, and
+      // writing it would undo that save (a rolled-back host injection
+      // reappearing on disk). Read after stat as well: a supplied array may
+      // grow during that await, so ids and appended rows must share one view.
+      const messages = typeof readMessages === "function" ? readMessages() : readMessages;
+      const ids = rowIdsOf(messages);
+      const known = transcriptWriteStates.get(targetPath);
+      const rows = ids && known ? sessionProgressRows(known.ids, ids, messages) : null;
+      if (
+        ids
+        && known
+        && onDisk
+        && onDisk.size === known.size
+        && onDisk.mtimeMs === known.mtimeMs
+        && rows !== null
+      ) {
+        if (rows.length === 0) return "unchanged";
+        const prepared = this.prepareSessionMessagesForDisk(sessionId, rows);
+        const after = await appendJsonlRecords(targetPath, prepared.messages);
+        transcriptWriteStates.set(targetPath, { ids, ...after });
+        return "appended";
+      }
+      this.writeSessionTranscriptLocked(sessionId, targetPath, messages);
+      return "rewritten";
+    });
+  }
+
+  /**
+   * Open the turn journal for a session: from here until
+   * {@link endTurnJournal}, the sidecar is the running turn's in-flight
+   * marker. Written before the first provider call, so a process that dies
+   * at any later point leaves evidence that the turn did not finish.
+   */
+  async beginTurnJournal(sessionId: string, startedAt: number): Promise<void> {
+    if (!isValidSessionId(sessionId)) {
+      throw new Error(`beginTurnJournal: invalid sessionId "${sessionId}"`);
+    }
+    const path = turnInflightPath(this.sessionsDir, sessionId);
+    liveTurnJournals.set(path, (liveTurnJournals.get(path) ?? 0) + 1);
+    await writeTurnInflightRecord(path, { v: 1, startedAt });
+  }
+
+  /** Replace the running turn's partial-round snapshot; `undefined` keeps only the in-flight marker. */
+  async writeTurnPartial(sessionId: string, startedAt: number, partial: TurnInflightPartial | undefined): Promise<void> {
+    if (!isValidSessionId(sessionId)) {
+      throw new Error(`writeTurnPartial: invalid sessionId "${sessionId}"`);
+    }
+    await writeTurnInflightRecord(
+      turnInflightPath(this.sessionsDir, sessionId),
+      partial ? { v: 1, startedAt, partial } : { v: 1, startedAt },
+    );
+  }
+
+  /** Deregister the turn, leaving its recovery sidecar until persistence is confirmed. */
+  endTurnJournal(sessionId: string): void {
+    if (!isValidSessionId(sessionId)) return;
+    const path = turnInflightPath(this.sessionsDir, sessionId);
+    const remaining = (liveTurnJournals.get(path) ?? 1) - 1;
+    if (remaining > 0) {
+      liveTurnJournals.set(path, remaining);
+      return;
+    }
+    liveTurnJournals.delete(path);
+  }
+
+  /** Remove a sidecar only after its owner confirms the transcript contains the turn. */
+  clearTurnJournal(sessionId: string): void {
+    if (!isValidSessionId(sessionId) || this.isTurnJournalLive(sessionId)) return;
+    removeTurnInflightRecord(turnInflightPath(this.sessionsDir, sessionId));
+  }
+
+  private isTurnJournalLive(sessionId: string): boolean {
+    return liveTurnJournals.has(turnInflightPath(this.sessionsDir, sessionId));
+  }
+
+  /**
+   * The transcript as the user should see it after the process that ran its
+   * last turn died: an orphaned sidecar is folded in by
+   * {@link recoverInterruptedTurn}. A sidecar whose turn is running in this
+   * process is left alone.
+   */
+  private withRecoveredInterruptedTurn(sessionId: string, messages: unknown[]): unknown[] {
+    if (this.isTurnJournalLive(sessionId)) return messages;
+    const raw = readUtf8FileIfPresent(turnInflightPath(this.sessionsDir, sessionId));
+    if (raw === null) return messages;
+    const record = parseTurnInflightRecord(raw);
+    if (!record) {
+      log.warn({ sessionId }, "ignoring unreadable turn in-flight record");
+      return messages;
+    }
+    return recoverInterruptedTurn(
+      messages,
+      record,
+      (seed) => derivedRowId(sessionId, seed),
+      { toolResultUnknown: t("be_conversationLoop.hostExitToolResultUnknown") },
+    );
   }
 
   /**
@@ -2437,10 +2642,12 @@ export class MemoryManager implements PromptMemorySource {
         log.warn({ sessionId }, "skipping malformed session line");
       }
     }
-    return stampLegacyRowIds(
+    const recovered = this.recoverLatestCheckpointUserIfMissing(
       sessionId,
-      this.recoverLatestCheckpointUserIfMissing(sessionId, messages).map((message) => this.normalizeStoredOutputCapture(sessionId, message)),
+      this.withRecoveredInterruptedTurn(sessionId, messages),
     );
+    return stampLegacyRowIds(sessionId, orderToolResultRows(recovered)
+      .map((message) => this.normalizeStoredOutputCapture(sessionId, message)));
   }
 
   private recoverLatestCheckpointUserIfMissing(sessionId: string, messages: unknown[]): unknown[] {
@@ -2725,6 +2932,7 @@ export class MemoryManager implements PromptMemorySource {
         this.rememberDetachedWireTerminal(sessionId, safe);
       }
       writeUtf8FileAtomicSync(targetPath, JSON.stringify(safe, null, 2));
+      this.notePaneSession(sessionId, safe);
     });
     // Metadata (sessionKind/routineId/projectRoot/title) is denormalized into
     // the FTS row (#1500 / E3) — re-index whenever it changes, not just on
@@ -3005,6 +3213,49 @@ export class MemoryManager implements PromptMemorySource {
   }
 
   /**
+   * The conversation of the pane chat for workspace tab `paneTabId`: the newest
+   * unarchived session whose metadata names that tab, or undefined. Answered
+   * from an index of pane tabs built by one metadata scan on first use and
+   * kept by every metadata write and session delete; only the candidates'
+   * transcript files are stat'ed, never read.
+   */
+  findPaneSession(paneTabId: string): string | undefined {
+    let newest: { id: string; mtimeMs: number } | undefined;
+    for (const id of this.paneSessionIndex().get(paneTabId) ?? []) {
+      const stat = statPathIfPresent(join(this.sessionsDir, `${id}.jsonl`));
+      if (!stat) continue;
+      if (!newest || stat.mtimeMs > newest.mtimeMs) newest = { id, mtimeMs: stat.mtimeMs };
+    }
+    return newest?.id;
+  }
+
+  private paneSessionIndex(): Map<string, Set<string>> {
+    if (this.paneSessions) return this.paneSessions;
+    const index = new Map<string, Set<string>>();
+    this.paneSessions = index;
+    for (const file of readdirIfPresent(this.sessionsDir)) {
+      if (!file.endsWith(".meta.json")) continue;
+      const id = file.slice(0, -".meta.json".length);
+      if (isValidSessionId(id)) this.notePaneSession(id, this.loadSessionMetadata(id));
+    }
+    return index;
+  }
+
+  /** Keep the pane index on `sessionId`'s metadata as just written (null: removed). */
+  private notePaneSession(sessionId: string, metadata: SessionMetadata | null): void {
+    const index = this.paneSessions;
+    if (!index) return;
+    for (const [tabId, ids] of index) {
+      if (ids.delete(sessionId) && ids.size === 0) index.delete(tabId);
+    }
+    const tabId = metadata?.paneTabId;
+    if (!tabId || metadata.archivedAt !== undefined) return;
+    const ids = index.get(tabId) ?? new Set<string>();
+    ids.add(sessionId);
+    index.set(tabId, ids);
+  }
+
+  /**
    * Sub-agents spawned by one parent session, newest first.
    *
    * The renderer's sub-agent panel is fed entirely by the live `agent_spawn`
@@ -3018,6 +3269,7 @@ export class MemoryManager implements PromptMemorySource {
    * children, and reading every child's `.jsonl` to render a list would make
    * session load pay for transcripts the user may never open.
    */
+
   listSubAgentSessionsForOrigin(originSessionId: string): RestoredSubAgentSession[] {
     if (!originSessionId) return [];
     return readdirIfPresent(this.sessionsDir)
@@ -3242,8 +3494,10 @@ export class MemoryManager implements PromptMemorySource {
       this.detachedWireTerminalTombstones.delete(sessionId);
       const jsonlPath = join(this.sessionsDir, `${sessionId}.jsonl`);
       unlinkIfPresent(jsonlPath);
+      transcriptWriteStates.delete(jsonlPath);
       const metaPath = join(this.sessionsDir, `${sessionId}.meta.json`);
       unlinkIfPresent(metaPath);
+      this.notePaneSession(sessionId, null);
       const sessionDir = join(this.sessionsDir, sessionId);
       try {
         rmSync(sessionDir, { recursive: true, force: true });
@@ -4343,6 +4597,11 @@ export class MemoryManager implements PromptMemorySource {
       const role = (message as Record<string, unknown>)?.role;
       const content = (message as Record<string, unknown>)?.content;
       if (typeof content !== "string" || content.trim().length === 0) continue;
+      // Continue after an interrupted turn stores the host's resume
+      // instruction as the user row; the session is still about what the user
+      // asked before it, so that row names neither the title nor the preview.
+      const meta = (message as Record<string, unknown>)?.meta;
+      if (isRecord(meta) && meta.resumesInterruptedTurn === true) continue;
       const normalized = content.replace(/\s+/g, " ").trim();
       lastContent = normalized;
       if (role === "user") lastUser = normalized;

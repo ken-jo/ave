@@ -9,7 +9,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { EventEmitter } from "node:events";
 
 import {
@@ -345,8 +345,8 @@ describe("parseExecFlags", () => {
       "--exec-cwd=/app",
       "--exec-workload-broker=/run/ave/workload.sock",
       "--exec-workload-capability=/run/ave/capability.json",
-    ], LAUNCH_CWD));
-    expect(request.turn?.cwd).toBe("/app");
+    ], LAUNCH_CWD, "linux"));
+    expect(request.turn?.cwd).toBe(resolve(LAUNCH_CWD, "/app"));
     expect(request.workloadBroker).toEqual({
       socketPath: "/run/ave/workload.sock",
       capabilityPath: "/run/ave/capability.json",
@@ -436,7 +436,32 @@ describe("parseExecFlags", () => {
     [["--set-secret="], "empty key"],
     [["--exec", "--set-secret=k"], "consumes stdin"],
   ])("rejects %j", (argv, fragment) => {
-    expect(parseExecFlags(argv, LAUNCH_CWD)).toEqual({ error: expect.stringContaining(fragment) });
+    expect(parseExecFlags(argv, LAUNCH_CWD, "linux"))
+      .toEqual({ error: expect.stringContaining(fragment) });
+  });
+
+  it.each([
+    ["--exec-workload-broker", "--exec-workload-broker=/run/ave/workload.sock"],
+    ["--exec-workload-broker", "--exec-workload-broker"],
+    ["--exec-workload-capability", "--exec-workload-capability=/run/ave/capability.json"],
+    ["--exec-workload-capability", "--exec-workload-capability"],
+  ])("refuses %s on native Windows (%s)", (flag, arg) => {
+    expect(parseExecFlags(["--exec=hi", arg], LAUNCH_CWD, "win32")).toEqual({
+      error: `exec: ${flag} selects the workload broker, which is the Linux route and is not supported on native Windows`,
+    });
+  });
+
+  it.each(["linux", "darwin"] as const)("still parses the workload broker pair on %s", (platform) => {
+    const request = expectRequest(parseExecFlags([
+      "--exec=hi",
+      "--exec-cwd=/app",
+      "--exec-workload-broker=/run/ave/workload.sock",
+      "--exec-workload-capability=/run/ave/capability.json",
+    ], LAUNCH_CWD, platform));
+    expect(request.workloadBroker).toEqual({
+      socketPath: "/run/ave/workload.sock",
+      capabilityPath: "/run/ave/capability.json",
+    });
   });
 
   it("allows a secret beside an inline prompt", () => {

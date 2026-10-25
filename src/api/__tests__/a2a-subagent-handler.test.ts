@@ -16,7 +16,7 @@ import type {
   SubAgentSpawnResult,
 } from "../../engine/subagent-runner.js";
 import { GUIDE_MAX_CHARS } from "../../engine/turn/guidance-limits.js";
-import { maskSensitiveData } from "../../shared/dlp.js";
+import { isSafeStructuralId } from "../../shared/dlp-safe-id.js";
 import { createInMemoryFeatureNamespace } from "../../__tests__/test-helpers.js";
 import {
   A2A_INPUT_REQUIRED_EXPIRY_RETRY_MS,
@@ -237,12 +237,12 @@ async function seedInputRequiredTask(
 }
 
 describe("A2ASubAgentHandler", () => {
-  it("generates unique DLP-safe UUID-compatible default context and status ids", async () => {
+  it("generates unique structural UUID default context and status ids", async () => {
     const ids = Array.from({ length: 64 }, () => createA2AContextId());
     expect(new Set(ids).size).toBe(ids.length);
     for (const id of ids) {
       expect(id).toMatch(UUID_PATTERN);
-      expect(maskSensitiveData(id).detections).toEqual([]);
+      expect(isSafeStructuralId(id)).toBe(true);
     }
 
     const { store, runner, audit, authorizeOperation } = makeHarness();
@@ -259,7 +259,7 @@ describe("A2ASubAgentHandler", () => {
       message: userMessage("default-generated-status"),
     }));
     expect(task.status.message?.messageId).toMatch(UUID_PATTERN);
-    expect(maskSensitiveData(task.status.message?.messageId ?? "").detections).toEqual([]);
+    expect(isSafeStructuralId(task.status.message?.messageId ?? "")).toBe(true);
   });
 
   it("fails closed before the initial runner/store mutation when consent is denied", async () => {

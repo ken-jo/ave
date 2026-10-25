@@ -34,7 +34,7 @@
  *                                              contextPct = 0.80 (warning)
  */
 
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 import type { LLMVendor } from "../../../src/shared/llm-vendor-defaults.js";
 import {
   buildLlmSettings,
@@ -65,6 +65,13 @@ const TPM_LABEL = t("chatView.tpmUsagePercent").split("{pct}")[0].trim();
 const CONTEXT_LABEL = t("chatView.contextUsagePercent").split("{pct}")[0].trim();
 const escapeRegExp = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const TPM_LABEL_RE = escapeRegExp(TPM_LABEL);
+
+/** Resolve once the browser has painted the current DOM (two animation frames). */
+function nextPaint(page: Page): Promise<void> {
+  return page.evaluate(() => new Promise<void>((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+  }));
+}
 
 function makeHistoryRows(tokensIn: number): Array<Record<string, unknown>> {
   const now = Date.now();
@@ -122,13 +129,9 @@ test.describe("TPM warning / destructive banner", () => {
     const { page } = ctx;
     try {
       const composer = page.locator(testIdSelector(TEST_IDS.composer)).first();
-      const booted = await composer
-        .waitFor({ state: "visible", timeout: 20_000 })
-        .then(() => true)
-        .catch(() => false);
-      test.skip(!booted, "Composer not visible — chat surface not booted.");
+      await expect(composer).toBeVisible({ timeout: 20_000 });
 
-      // tpmPct = 160_000 / 200_000 = 0.80 → warning banner (bg-warning/15)
+      // tpmPct = 160_000 / 200_000 = 0.80 → warning banner (warning tone)
       // Span text: "분당 한도(TPM) 80% — 160,000 / 200,000"
       const tpmText = page.locator("span.font-semibold").filter({ hasText: TPM_LABEL });
       await expect(tpmText).toBeVisible({ timeout: 10_000 });
@@ -137,12 +140,12 @@ test.describe("TPM warning / destructive banner", () => {
       const textContent = await tpmText.first().textContent();
       expect(textContent).toMatch(new RegExp(`${TPM_LABEL_RE} 80%`));
 
-      // Warning banner parent must use bg-warning/15 class, not destructive
-      const warningDiv = page.locator("div.bg-warning\\/15").filter({ hasText: TPM_LABEL });
+      // The banner row carries the warning tone, not the destructive one.
+      const warningDiv = page.locator("div.text-warning").filter({ hasText: TPM_LABEL });
       await expect(warningDiv).toBeVisible({ timeout: 5_000 });
 
       // Destructive-styled TPM div must NOT be present
-      const destructiveDiv = page.locator("div.bg-destructive\\/10").filter({ hasText: TPM_LABEL });
+      const destructiveDiv = page.locator("div.text-destructive").filter({ hasText: TPM_LABEL });
       await expect(destructiveDiv).toHaveCount(0);
     } finally {
       await teardownSeededElectron(ctx);
@@ -157,11 +160,7 @@ test.describe("TPM warning / destructive banner", () => {
     const { page } = ctx;
     try {
       const composer = page.locator(testIdSelector(TEST_IDS.composer)).first();
-      const booted = await composer
-        .waitFor({ state: "visible", timeout: 20_000 })
-        .then(() => true)
-        .catch(() => false);
-      test.skip(!booted, "Composer not visible — chat surface not booted.");
+      await expect(composer).toBeVisible({ timeout: 20_000 });
 
       // tpmPct = 200_000 / 200_000 = 1.00 ≥ 0.95 → destructive banner
       // Text: "분당 한도(TPM) 100% — …"
@@ -174,21 +173,10 @@ test.describe("TPM warning / destructive banner", () => {
         new RegExp(`${TPM_LABEL_RE}\\s+1\\d\\d%|${TPM_LABEL_RE}\\s+9[5-9]%`),
       );
 
-      // Banner parent div must have bg-destructive/10 class (not bg-warning)
-      // We verify via the DOM class presence
-      const bannerDiv = page.locator("div.bg-destructive\\/10").filter({ hasText: TPM_LABEL });
+      // The banner row carries the destructive tone, not the warning one.
+      const bannerDiv = page.locator("div.text-destructive").filter({ hasText: TPM_LABEL });
       await expect(bannerDiv).toBeVisible({ timeout: 5_000 });
-
-      // Send button: no API key configured → disabled (hasApiKey===false)
-      const sendBtn = page.locator('[data-testid="composer-send-button"]').first();
-      await expect(sendBtn).toBeVisible();
-      // The button is aria-disabled or has disabled attribute when no key configured
-      const isDisabled = await sendBtn.evaluate(
-        (el: Element) => el.getAttribute("aria-disabled") === "true" || (el as HTMLButtonElement).disabled,
-      );
-      // Note: send button is disabled when hasApiKey===false, not by TPM itself.
-      // In this no-key test environment it must be in a non-enabled state.
-      expect(typeof isDisabled).toBe("boolean");
+      await expect(page.locator("div.text-warning").filter({ hasText: TPM_LABEL })).toHaveCount(0);
     } finally {
       await teardownSeededElectron(ctx);
     }
@@ -203,14 +191,11 @@ test.describe("TPM warning / destructive banner", () => {
     const { page } = ctx;
     try {
       const composer = page.locator(testIdSelector(TEST_IDS.composer)).first();
-      const booted = await composer
-        .waitFor({ state: "visible", timeout: 20_000 })
-        .then(() => true)
-        .catch(() => false);
-      test.skip(!booted, "Composer not visible — chat surface not booted.");
+      await expect(composer).toBeVisible({ timeout: 20_000 });
 
-      // Wait long enough for any banner to appear if it would
-      await page.waitForTimeout(2_000);
+      // The seeded turn, whose summary carries the token usage the banners
+      // read, is on screen: a banner that was going to render has rendered.
+      await expect(page.getByText("테스트 응답")).toBeVisible({ timeout: 10_000 });
 
       const tpmBanners = page.locator("span.font-semibold").filter({ hasText: TPM_LABEL });
       await expect(tpmBanners).toHaveCount(0);
@@ -228,11 +213,7 @@ test.describe("TPM warning / destructive banner", () => {
     const { page } = ctx;
     try {
       const composer = page.locator(testIdSelector(TEST_IDS.composer)).first();
-      const booted = await composer
-        .waitFor({ state: "visible", timeout: 20_000 })
-        .then(() => true)
-        .catch(() => false);
-      test.skip(!booted, "Composer not visible — chat surface not booted.");
+      await expect(composer).toBeVisible({ timeout: 20_000 });
 
       // Wait for the banner to appear
       const tpmText = page.locator("span.font-semibold").filter({ hasText: TPM_LABEL });
@@ -242,13 +223,13 @@ test.describe("TPM warning / destructive banner", () => {
       await page.evaluate(() => {
         document.documentElement.setAttribute("data-theme-bundle", "gallery");
       });
-      await page.waitForTimeout(200);
+      await nextPaint(page);
       await page.screenshot({ path: "test-results/tpm-banner-gallery.png", fullPage: false });
 
       await page.evaluate(() => {
         document.documentElement.setAttribute("data-theme-bundle", "moonstone");
       });
-      await page.waitForTimeout(200);
+      await nextPaint(page);
       await page.screenshot({ path: "test-results/tpm-banner-moonstone.png", fullPage: false });
 
       // Both screenshots taken without error — visual regression anchor established.
@@ -272,11 +253,7 @@ test.describe("TPM warning / destructive banner", () => {
     const { page } = ctx;
     try {
       const composer = page.locator(testIdSelector(TEST_IDS.composer)).first();
-      const booted = await composer
-        .waitFor({ state: "visible", timeout: 20_000 })
-        .then(() => true)
-        .catch(() => false);
-      test.skip(!booted, "Composer not visible — chat surface not booted.");
+      await expect(composer).toBeVisible({ timeout: 20_000 });
 
       // Both banners must be present
       const tpmBanner = page.locator("span.font-semibold").filter({ hasText: TPM_LABEL });

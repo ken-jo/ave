@@ -131,19 +131,19 @@ afterEach(async () => {
   }
 });
 
-describe("worker-spawn UDS smoke (macOS, real ASRT)", () => {
-  it("host drives the wrapped worker over the UDS; egress allow/deny enforced; perms correct", async () => {
-    if (process.platform !== "darwin") {
-      console.log("[uds-smoke] skipped: not darwin");
-      return;
-    }
+// The UDS control channel and the Seatbelt write-jail are the macOS worker
+// path; other platforms confine workers differently and are covered elsewhere.
+describe.runIf(process.platform === "darwin")("worker-spawn UDS smoke (macOS, real ASRT)", () => {
+  it("host drives the wrapped worker over the UDS; egress allow/deny enforced; perms correct", async (test) => {
     if (!(await asrtCanInitialize())) {
-      console.log("[uds-smoke] skipped: ASRT cannot initialize (deps/offline)");
-      return;
+      // A confinement job asks for real sandbox cases; there a missing
+      // sandbox is a failure, not a skip.
+      if (process.env.AVE_REQUIRE_SANDBOX_CASES === "1") throw new Error("ASRT cannot initialize on this machine");
+      return test.skip("ASRT cannot initialize (sandbox dependencies missing)");
     }
 
-    // Keep the complete plugin socket path within macOS's Unix socket limit.
-    const temporaryBase = process.platform === "darwin" ? "/private/tmp" : tmpdir();
+    // Keep the complete plugin socket path within the Unix socket limit.
+    const temporaryBase = process.platform === "darwin" ? "/private/tmp" : process.platform === "win32" ? tmpdir() : "/tmp";
     tmpRoot = mkdtempSync(join(temporaryBase, "ave-uds-"));
     vi.stubEnv("AVE_HOME", tmpRoot);
     const workerFile = join(tmpRoot, "worker.cjs");

@@ -20,7 +20,7 @@
  *   - The window is parented to the main window so OS-level focus/Z-order
  *     follows expectation.
  *
- * Microsoft 365 SSO compatibility:
+ * Microsoft Entra ID (AAD) sign-in compatibility:
  *   - The default Electron user-agent ends in `Electron/<ver>`. Microsoft's
  *     AAD endpoint detects this token and skips the "Stay signed in?" (KMSI)
  *     prompt, so it never issues `ESTSAUTHPERSISTENT` and only `ESTSAUTH`

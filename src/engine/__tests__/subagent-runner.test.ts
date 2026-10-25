@@ -42,7 +42,7 @@ import {
   type SubAgentToolScope,
 } from "../subagent-runner.js";
 import { MODEL_COMPLEXITY_MAP } from "../../shared/model-complexity-map.js";
-import { LLM_VENDOR_MODEL_OPTIONS } from "../../shared/llm-vendor-defaults.js";
+import { llmVendorModelOptions } from "../../shared/llm-vendor-defaults.js";
 import { AGENT_MODE_MAP } from "../../shared/agent-mode-map.js";
 import type { LLMProvider, StreamEvent, StreamTurnParams,
 } from "../llm/types.js";
@@ -1934,23 +1934,43 @@ describe("SubAgentRunner — agent_spawn always stripped", () => {
 });
 
 describe("resolveSubAgentModel — #1112 complexity resolution", () => {
+  const NO_LIVE_MODELS: readonly string[] = [];
+
   it("resolves a complexity tier to the active vendor's model", () => {
-    expect(resolveSubAgentModel("mid", "claude")).toBe(
+    expect(resolveSubAgentModel("mid", "claude", undefined, NO_LIVE_MODELS)).toBe(
       MODEL_COMPLEXITY_MAP.claude.mid,
     );
-    expect(resolveSubAgentModel("high", "openai")).toBe(
+    expect(resolveSubAgentModel("high", "openai", undefined, NO_LIVE_MODELS)).toBe(
       MODEL_COMPLEXITY_MAP.openai.high,
     );
-    expect(resolveSubAgentModel("low", "gemini")).toBe(
+    expect(resolveSubAgentModel("low", "gemini", undefined, NO_LIVE_MODELS)).toBe(
       MODEL_COMPLEXITY_MAP.gemini.low,
     );
   });
 
   it("passes an explicit model ID through only when the active vendor offers it", () => {
-    const claudeOpt = LLM_VENDOR_MODEL_OPTIONS.claude[0];
-    expect(resolveSubAgentModel(claudeOpt, "claude")).toBe(claudeOpt);
-    const openaiOpt = LLM_VENDOR_MODEL_OPTIONS.openai[0];
-    expect(resolveSubAgentModel(openaiOpt, "openai")).toBe(openaiOpt);
+    const claudeOpt = llmVendorModelOptions("claude")[0]!;
+    expect(resolveSubAgentModel(claudeOpt, "claude", undefined, NO_LIVE_MODELS)).toBe(claudeOpt);
+    const openaiOpt = llmVendorModelOptions("openai")[0]!;
+    expect(resolveSubAgentModel(openaiOpt, "openai", undefined, NO_LIVE_MODELS)).toBe(openaiOpt);
+  });
+
+  it("accepts a model the catalog lists for the vendor even when no hand-written seed named it", () => {
+    // gpt-6.1-sol and claude-opus-5-5 are in the bundled catalog; the old
+    // static seeds stopped at gpt-5.4 / claude-opus-4-6 and refused them.
+    expect(resolveSubAgentModel("gpt-6.1-sol", "openai", undefined, NO_LIVE_MODELS)).toBe("gpt-6.1-sol");
+    expect(resolveSubAgentModel("claude-opus-5-5", "claude", undefined, NO_LIVE_MODELS)).toBe("claude-opus-5-5");
+  });
+
+  it("accepts a model only the vendor's live /models answer named", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      expect(resolveSubAgentModel("ft:gpt-6-luna:acme::abc123", "openai", undefined, NO_LIVE_MODELS)).toBeNull();
+      expect(resolveSubAgentModel("ft:gpt-6-luna:acme::abc123", "openai", undefined, ["ft:gpt-6-luna:acme::abc123"]))
+        .toBe("ft:gpt-6-luna:acme::abc123");
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it("falls back to the parent model (null) + warns when an explicit ID is not selectable for the active vendor", () => {
@@ -1960,7 +1980,7 @@ describe("resolveSubAgentModel — #1112 complexity resolution", () => {
     try {
       // An openai model ID under the claude vendor: claude cannot serve it,
       // so it must NOT reach the provider as a non-retryable model-not-found.
-      expect(resolveSubAgentModel("gpt-5.4", "claude")).toBeNull();
+      expect(resolveSubAgentModel("gpt-5.4", "claude", undefined, NO_LIVE_MODELS)).toBeNull();
       const logged = warnSpy.mock.calls.map((c) => c.join(" ")).join("\n");
       expect(logged).toMatch(/parent-model fallback used/i);
     } finally {
@@ -1969,21 +1989,21 @@ describe("resolveSubAgentModel — #1112 complexity resolution", () => {
   });
 
   it("returns null for undefined / empty — caller keeps the parent model", () => {
-    expect(resolveSubAgentModel(undefined, "claude")).toBeNull();
-    expect(resolveSubAgentModel("", "claude")).toBeNull();
-    expect(resolveSubAgentModel("   ", "claude")).toBeNull();
+    expect(resolveSubAgentModel(undefined, "claude", undefined, NO_LIVE_MODELS)).toBeNull();
+    expect(resolveSubAgentModel("", "claude", undefined, NO_LIVE_MODELS)).toBeNull();
+    expect(resolveSubAgentModel("   ", "claude", undefined, NO_LIVE_MODELS)).toBeNull();
   });
 
   it("uses the active Codex subscription catalog instead of the stale API-key vendor catalog", () => {
     const codex = { kind: "subscription", provider: "codex" } as const;
 
-    expect(resolveSubAgentModel("  codex-live-only-model  ", "claude", codex))
+    expect(resolveSubAgentModel("  codex-live-only-model  ", "claude", codex, NO_LIVE_MODELS))
       .toBe("codex-live-only-model");
     // Complexity names are not model IDs and Codex has no static engine map;
     // the persisted subscription selection remains in effect.
-    expect(resolveSubAgentModel("high", "openai", codex)).toBeNull();
-    expect(resolveSubAgentModel("bad\u0000model", "openai", codex)).toBeNull();
-    expect(resolveSubAgentModel("x".repeat(MAX_SUBSCRIPTION_RUNTIME_MODEL_ID_LENGTH + 1), "openai", codex)).toBeNull();
+    expect(resolveSubAgentModel("high", "openai", codex, NO_LIVE_MODELS)).toBeNull();
+    expect(resolveSubAgentModel("bad\u0000model", "openai", codex, NO_LIVE_MODELS)).toBeNull();
+    expect(resolveSubAgentModel("x".repeat(MAX_SUBSCRIPTION_RUNTIME_MODEL_ID_LENGTH + 1), "openai", codex, NO_LIVE_MODELS)).toBeNull();
   });
 
   it("keeps an ACP subscription's persisted default model", () => {
@@ -1991,6 +2011,7 @@ describe("resolveSubAgentModel — #1112 complexity resolution", () => {
       "codex-live-only-model",
       "openai",
       { kind: "subscription", provider: "kimi-code" },
+      NO_LIVE_MODELS,
     )).toBeNull();
   });
 
@@ -1998,11 +2019,11 @@ describe("resolveSubAgentModel — #1112 complexity resolution", () => {
     // A complexity tier needs a known vendor to map against. An unknown
     // vendor string (corrupt settings, etc.) yields the parent-model
     // fallback rather than a wrong model.
-    expect(resolveSubAgentModel("mid", "totally-fake-vendor")).toBeNull();
+    expect(resolveSubAgentModel("mid", "totally-fake-vendor", undefined, NO_LIVE_MODELS)).toBeNull();
   });
 
   it("trims surrounding whitespace before classifying", () => {
-    expect(resolveSubAgentModel("  mid  ", "claude")).toBe(
+    expect(resolveSubAgentModel("  mid  ", "claude", undefined, NO_LIVE_MODELS)).toBe(
       MODEL_COMPLEXITY_MAP.claude.mid,
     );
   });
@@ -3020,6 +3041,20 @@ describe("SubAgentRunner terminal completion step", () => {
       subAgentMemoryManager: fakeSubAgentMemoryManager(),
     });
   }
+
+  // The fake settings build a real OpenAI provider with a fake key, so without
+  // this the child sent a request to api.openai.com and the test passed only
+  // when that request came back 401 in time; a stalled network timed it out.
+  // These cases are about the completion step, so take the no-provider branch.
+  let hasProviderSpy: { mockRestore: () => void };
+  beforeEach(() => {
+    hasProviderSpy = vi
+      .spyOn(ConversationLoop.prototype as unknown as { hasProvider: () => boolean }, "hasProvider")
+      .mockReturnValue(false);
+  });
+  afterEach(() => {
+    hasProviderSpy.mockRestore();
+  });
 
   it("publishes the terminal state and the renderer frame in one uninterruptible step", async () => {
     const runner = completionRunner();

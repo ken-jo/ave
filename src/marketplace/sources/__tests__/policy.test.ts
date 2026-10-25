@@ -3,6 +3,7 @@ import { lstat, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { requireSymlinkCapability } from "../../../__tests__/support/symlink-capability.js";
 import { normalizeSourceUrl } from "../../net/source-url.js";
 import {
   EMPTY_MARKETPLACE_POLICY,
@@ -71,7 +72,8 @@ describe("loadMarketplacePolicy", () => {
     expect(await loadMarketplacePolicy(join(parent, "policy.json"))).toMatchObject({ ok: false });
   });
 
-  it("treats a dangling policy symlink as unreadable rather than unrestricted", async () => {
+  it("treats a dangling policy symlink as unreadable rather than unrestricted", async ({ skip }) => {
+    requireSymlinkCapability(dir, "file", skip);
     symlinkSync(join(dir, "missing-target.json"), path, "file");
     expect(await loadMarketplacePolicy(path)).toMatchObject({ ok: false });
   });
@@ -245,6 +247,25 @@ describe("FilePolicySource (§18.6)", () => {
   // Other content of the same length.
   const SECOND = JSON.stringify({ version: 1, marketplaces: { requireHttps: true } }).padEnd(FIRST.length, " ");
 
+  it.each(["ino", "dev"] as const)("rejects a cached policy after an exact %s replacement", async (field) => {
+    writeFileSync(path, FIRST);
+    const initial = await stat(path, { bigint: true });
+    let identity = { dev: 7n, ino: 2n ** 60n, [field]: 2n ** 60n };
+    const access: PolicyFileAccess = {
+      lstat: (file) => lstat(file),
+      stat: async () => ({ ...initial, ...identity, mtimeMs: 1_000n, ctimeMs: 1_000n, mtimeNs: 1_000_000_000n, ctimeNs: 1_000_000_000n }),
+      readFile: (file) => readFile(file, "utf8"),
+      now: () => 10_000,
+    };
+    const source = await FilePolicySource.open(path, access);
+    expect(await source.check()).toBeNull();
+    const previous = identity[field];
+    identity = { ...identity, [field]: previous + 1n };
+    expect(Number(identity[field])).toBe(Number(previous));
+    writeFileSync(path, SECOND);
+    expect((await source.check())?.load).toMatchObject({ ok: true, policy: { requireHttps: true } });
+  });
+
   it("notices a rewrite that keeps the size and the modification time", async () => {
     const fixed = new Date(Date.UTC(2026, 0, 1));
     writeFileSync(path, FIRST);
@@ -269,8 +290,9 @@ describe("FilePolicySource (§18.6)", () => {
     const access: PolicyFileAccess = {
       lstat: (file) => lstat(file),
       stat: async (file) => {
-        const info = await stat(file);
-        return { size: info.size, ino: info.ino, dev: info.dev, mtimeMs: clock.stamp, ctimeMs: clock.stamp };
+        const info = await stat(file, { bigint: true });
+        const stamp = BigInt(clock.stamp);
+        return { ...info, mtimeMs: stamp, ctimeMs: stamp, mtimeNs: stamp * 1_000_000n, ctimeNs: stamp * 1_000_000n };
       },
       readFile: async (file) => {
         counts.reads += 1;
@@ -408,12 +430,14 @@ describe("FilePolicySource (§18.6)", () => {
     const update = await source.check();
 
     expect(update?.load).toMatchObject({ ok: false });
-    expect(update?.digest).toBe("unreadable:ENOTDIR");
+    // The digest carries the OS code: Windows reports a path through a file as ENOENT.
+    expect(update?.digest).toBe(process.platform === "win32" ? "unreadable:ENOENT" : "unreadable:ENOTDIR");
     source.apply(update!);
     expect(source.load.ok).toBe(false);
   });
 
-  it("refreshes an absent policy to unreadable when a dangling symlink appears", async () => {
+  it("refreshes an absent policy to unreadable when a dangling symlink appears", async ({ skip }) => {
+    requireSymlinkCapability(dir, "file", skip);
     const source = await FilePolicySource.open(path);
     expect(source.digest).toBe("absent");
     symlinkSync(join(dir, "missing-target.json"), path, "file");

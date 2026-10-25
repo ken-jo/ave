@@ -108,7 +108,7 @@ const ko: HomeCopy = {
     ways: [
       { tag: "API 키", title: "제공자 키로", body: "OpenAI, Claude, Gemini, OpenRouter를 키로 연결합니다. 다른 제공자는 마켓플레이스 패키지로 추가합니다." },
       { tag: "직접 띄운 서버", title: "OpenAI 호환 엔드포인트", body: "로컬이나 사내에서 띄운 OpenAI 호환 서버를 주소만으로 붙입니다. 모델 목록은 서버에서 받아 옵니다." },
-      { tag: "구독", title: "이미 쓰는 요금제로", body: "ChatGPT 요금제는 격리된 로컬 Codex 런타임으로, Claude 구독은 Ave가 자동으로 찾은 공식 claude CLI로 로그인합니다. 구독 자격 증명은 API 키가 되지 않습니다." },
+      { tag: "구독", title: "이미 쓰는 요금제로", body: "ChatGPT 요금제는 내가 설치한 codex CLI를 격리해 실행하는 방식으로, Claude 구독은 Ave가 자동으로 찾은 공식 claude CLI로 로그인합니다. 구독 자격 증명은 API 키가 되지 않습니다." },
     ],
     pic: { k: "model-chooser", alt: "입력창의 모델 선택 팝오버. local-model이 선택돼 있고 아래에 추론 수준 None, Low, Medium, High 슬라이더가 있는 화면" },
   },
@@ -261,7 +261,7 @@ const en: HomeCopy = {
     ways: [
       { tag: "API key", title: "With a provider key", body: "Connect OpenAI, Claude, Gemini or OpenRouter with a key. Other providers are added as marketplace packages." },
       { tag: "Your own server", title: "An OpenAI-compatible endpoint", body: "Point Ave at an OpenAI-compatible server you run, locally or in your company. The model list comes from the server." },
-      { tag: "Subscription", title: "A plan you already have", body: "Sign in to a ChatGPT plan through an isolated local Codex runtime, or to a Claude subscription through the official claude CLI Ave discovers automatically. Subscription credentials never become API keys." },
+      { tag: "Subscription", title: "A plan you already have", body: "Sign in to a ChatGPT plan through the codex CLI you installed, run in isolation, or to a Claude subscription through the official claude CLI Ave discovers automatically. Subscription credentials never become API keys." },
     ],
     pic: { k: "model-chooser", alt: "The composer’s model chooser with local-model selected and a reasoning slider set from None to High" },
   },

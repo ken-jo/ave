@@ -64,9 +64,10 @@ describe("content file rules (design §5.4)", () => {
     }
   });
 
-  it("names the renamed agent-plugin package folder instead of treating it as an unknown directory", () => {
-    expect(contentFileProblem("agent-plugin", "xyz.retiredname-namespace/prompts/draft.md"))
-      .toBe("xyz.retiredname-namespace/ was renamed to ai.agent-connector.ave/; move xyz.retiredname-namespace/prompts/draft.md there");
+  it("refuses an agent-plugin folder named for an extension namespace Ave does not own", () => {
+    expect(contentFileProblem("agent-plugin", "ai.agent-connector.ave/prompts/draft.md")).toBeNull();
+    expect(contentFileProblem("agent-plugin", "xyz.example/prompts/draft.md"))
+      .toBe("a agent-plugin package holds plugin.json, mcp.json, skills/, server/, ai.agent-connector.ave/, and package notes only: xyz.example/prompts/draft.md");
   });
 
   it("allows each kind's layout and nothing else", () => {

@@ -6,7 +6,7 @@
 > §9, §14 and the implementation design in
 > `docs/development/tool-level-deferral-design.md`.
 >
-> Keyword routing was **retired** in SDK v12 (2026-07-24, ave-plugin-sdk#229).
+> Keyword routing was **retired** in SDK v12 (2026-07-24).
 > `manifest.keywords` is hard-rejected at manifest load
 > (`src/plugins/runtime/manifest-validation.ts`); no keyword path promotes a
 > Tool, and the only callable surface is manifest `Tool` objects. Bundled
@@ -101,7 +101,7 @@ why a high ceiling is still needed for future large surfaces:
 
 | Plugin | Tools |
 | --- | ---: |
-| `agent-hub` | 43 |
+| `hub` | 43 |
 | `mail` | 30 |
 | `meeting` | 29 |
 | `portal` | 29 |
@@ -249,9 +249,9 @@ The long-term model should add manifest-level grouping, for example:
 {
   "toolGroups": [
     {
-      "id": "agent-hub.work-items",
-      "description": "Create, list, update, and inspect Agent Hub work items.",
-      "tools": ["agent_hub_create_work_item", "agent_hub_list_work_items"]
+      "id": "hub.work-items",
+      "description": "Create, list, update, and inspect hub work items.",
+      "tools": ["hub_create_work_item", "hub_list_work_items"]
     }
   ]
 }

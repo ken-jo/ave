@@ -47,6 +47,8 @@ export interface PluginUninstallLifecycleDeps {
   drainPluginInstallLockOperationsService: (pluginId: string) => Promise<void>;
   refreshPluginEventBridge?: () => void;
   emitHostEvent?: (type: "plugin.uninstalled", payload: { pluginId: string }) => void;
+  /** The registry no longer names the plugin: called once, right after its removal commits. */
+  onRegistryRemovalCommitted?: (pluginId: string) => void;
   log?: WarnLogger;
 }
 
@@ -457,6 +459,7 @@ export async function uninstallPluginWithLifecycle(
           journal.markRegistryRemovalCommitted(canonicalPluginId, {
             cleanupCache: marketplaceRemoved,
           });
+          deps.onRegistryRemovalCommitted?.(canonicalPluginId);
           return result;
         },
       );

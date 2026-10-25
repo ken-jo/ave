@@ -114,8 +114,10 @@ whether or not a candidate is open.
 
 Once a release is tagged, its protocol schema copy is frozen, and
 `check:plugin-host-protocol-mirror` refuses any change to the canonical schema
-that would alter it. The first change after the tag therefore bumps
-`package.json` to the next minor version. It regenerates the schema with
+that would alter it: a recorded copy whose version has a `v<version>` tag in the
+checkout must be the bytes that tag carries, published or not. The first
+change after the tag therefore bumps `package.json` to the next version (patch
+or minor, per the release plan). It regenerates the schema with
 `bun run generate:plugin-host-protocol-schema` and runs
 `node scripts/sync-plugin-host-protocol-mirror.mjs`, which records a new
 candidate copy with `publishedTag: null`. Later protocol changes refresh only

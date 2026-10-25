@@ -13,8 +13,20 @@ export type CodexSubscriptionConnectionState =
 
 export type CodexSubscriptionLoginMethod = "browser" | "device-code";
 
+/**
+ * The oldest `codex` CLI whose app-server accepts Ave's hardened launch
+ * arguments and exposes every request, field and notification Ave uses.
+ * Chosen by generating each published version's protocol schema and
+ * starting it with Ave's argv; see `src/main/codex-user-runtime.ts`.
+ */
+export const CODEX_CLI_MINIMUM_VERSION = "0.152.0";
+
 export interface CodexSubscriptionStatus {
-  runtime: "ready" | "unavailable";
+  /**
+   * `not-configured`: no `codex` CLI was found and none was chosen.
+   * `unavailable`: one was found but it cannot run Ave's integration.
+   */
+  runtime: "ready" | "unavailable" | "not-configured";
   connection: CodexSubscriptionConnectionState;
   /** Present only for Codex-managed ChatGPT authentication. */
   planType: string | null;
@@ -25,11 +37,18 @@ export interface CodexSubscriptionStatus {
    * settings view can recover after a tab change. It is never an auth token.
    */
   pendingDeviceCode: string | null;
+  /** The resolved CLI's reported version, once it has been read. */
+  version: string | null;
 }
 
 export type CodexSubscriptionErrorCode =
   | "codex-runtime-unavailable"
   | "codex-runtime-start-failed"
+  | "codex-runtime-not-configured"
+  | "codex-runtime-invalid-executable"
+  | "codex-runtime-unsafe-location"
+  | "codex-runtime-version-unsupported"
+  | "codex-runtime-incompatible"
   | "codex-login-in-progress"
   | "codex-login-failed"
   | "codex-operation-failed";
@@ -80,4 +99,5 @@ export const CODEX_SUBSCRIPTION_SIGNED_OUT_STATUS: CodexSubscriptionStatus = {
   planType: null,
   pendingLogin: null,
   pendingDeviceCode: null,
+  version: null,
 };

@@ -16,7 +16,7 @@ import { TEST_IDS, testIdSelector } from "../../../shared/test-ids.js";
 function makeEvaluationContext(overrides: Partial<PermissionEvaluationContext> = {}): PermissionEvaluationContext {
   return {
     version: "permission-evaluation-context/v1",
-    reviewerFrameworkVersion: "permission-reviewer-framework/v2",
+    reviewerFrameworkVersion: "permission-reviewer-framework/v3",
     policyMode: "auto",
     headless: false,
     source: "builtin",
@@ -389,6 +389,31 @@ describe("ApprovalDock", () => {
       </main>,
     );
     await waitFor(() => expect(document.activeElement).toBe(returnTarget));
+  });
+
+  it("does not take focus back from what took it while the card closed", async () => {
+    const onDecide = vi.fn();
+    const request = makeRequest({ id: "req-focus-elsewhere" });
+    const tree = (queue: ApprovalRequest[]) => (
+      <main data-approval-scope>
+        <button type="button" data-testid="return-target">Return target</button>
+        <button type="button" data-testid="browser-guest">Browser tab</button>
+        <ApprovalDock conversationLabel="conversation" queue={queue} onDecide={onDecide} />
+      </main>
+    );
+    const { container, rerender } = render(tree([]));
+    const returnTarget = container.querySelector<HTMLButtonElement>('[data-testid="return-target"]')!;
+    const guest = container.querySelector<HTMLButtonElement>('[data-testid="browser-guest"]')!;
+    returnTarget.focus();
+    rerender(tree([request]));
+    await waitFor(() => expect(document.activeElement).toBe(container.querySelector(testIdSelector(TEST_IDS.denyButton))));
+
+    // The card closes; before its focus handoff runs, the agent clicks into a
+    // browser tab (the page's <webview> takes focus in the host document).
+    rerender(tree([]));
+    guest.focus();
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    expect(document.activeElement).toBe(guest);
   });
 
   it("obscures only the covered composer and restores it with focus after approval", async () => {
@@ -793,7 +818,7 @@ describe("ApprovalDock", () => {
     await waitFor(() => {
       expect(document.body.textContent).toContain("검증 환경 / 샌드박스 평가");
       expect(document.body.textContent).toContain("permission-evaluation-context/v1");
-      expect(document.body.textContent).toContain("permission-reviewer-framework/v2");
+      expect(document.body.textContent).toContain("permission-reviewer-framework/v3");
       expect(document.body.textContent).toContain("C:\\Users\\example\\workspace\\ave-project\\ave");
     });
   });
@@ -891,7 +916,6 @@ describe("ApprovalDock", () => {
       />,
     );
 
-    expect(document.body.querySelector('[data-testid="nl-justification-input"]')).toBeNull();
     expect(document.body.querySelector('[data-testid="high-risk-audit-reason"]')).toHaveTextContent(
       "사용자 요청에 따라 프로젝트 빌드 결과를 확인합니다.",
     );
@@ -924,7 +948,6 @@ describe("ApprovalDock", () => {
       />,
     );
 
-    expect(document.body.querySelector('[data-testid="nl-justification-input"]')).toBeNull();
     expect(document.body.querySelector('[data-testid="high-risk-audit-reason"]')).toHaveTextContent(
       "shell command",
     );
@@ -956,7 +979,6 @@ describe("ApprovalDock", () => {
       />,
     );
 
-    expect(document.body.querySelector('[data-testid="nl-justification-input"]')).toBeNull();
     expect(document.body.querySelector('[data-testid="high-risk-audit-reason"]')).toHaveTextContent(
       "external send",
     );

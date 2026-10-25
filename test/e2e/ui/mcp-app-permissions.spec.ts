@@ -47,11 +47,11 @@
  *              frame (measured) — is what enforces the split.
  */
 import { test, expect } from "@playwright/test";
-import { _electron as electron } from "playwright";
 import { build } from "esbuild";
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
+import { launchElectron } from "./seeded-electron.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, "../../..");
@@ -98,7 +98,7 @@ test.beforeAll(async () => {
 test.setTimeout(180_000);
 
 test("MCP-App permissions: what the host can actually deliver, measured in a real <webview>", async () => {
-  const app = await electron.launch({ args: [MAIN_OUT, "--no-sandbox"], timeout: 30_000 });
+  const app = await launchElectron({ args: [MAIN_OUT, "--no-sandbox"], timeout: 30_000 });
 
   const lines: string[] = [];
   app.process().stdout?.on("data", (d: Buffer) => {

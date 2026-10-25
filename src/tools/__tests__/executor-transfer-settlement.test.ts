@@ -178,7 +178,8 @@ describe.each(INTERRUPTIONS)("builtin cancellation settlement after %s", (reason
     expect(end[3].cancelled).toBe(reason === "user-abort" ? true : undefined);
     const [audit] = invocation.terminalAudits();
     expect(audit.output).toContain('"cleanup":"incomplete"');
-    expect(audit.output).toContain(cleanupReport.residualPaths[0]);
+    // The audit carries the report as JSON, which escapes win32 separators.
+    expect(audit.output).toContain(JSON.stringify(cleanupReport.residualPaths[0]));
     expect(audit.toolCalls?.[0]).toMatchObject({ terminationReason: reason, isError: true });
   });
 

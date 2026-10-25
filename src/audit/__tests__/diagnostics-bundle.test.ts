@@ -57,7 +57,7 @@ function makeSettings(): AppSettings {
     diagnostics: { includeCrashDumps: false, logRetentionDays: 7 },
     appearance: { schemaVersion: 2, bundleId: "violet-dark", language: "en" },
     webView: { preferredFlow: "in-app" },
-    system: { closeBehavior: "hide-to-tray", appMode: "work", pinnedProjectRoots: ["/Users/secretuser/private"] } as unknown as AppSettings["system"],
+    system: { closeBehavior: "hide-to-tray", appMode: "work", turnCompletionSoundEnabled: false, pinnedProjectRoots: ["/Users/secretuser/private"] } as unknown as AppSettings["system"],
     shortcuts: { toggleWindow: null, enabled: false } as unknown as AppSettings["shortcuts"],
     plugins: {},
     pluginConfigs: {},
@@ -121,6 +121,11 @@ describe("pickRedactedSettings — deny-by-default whitelist", () => {
     expect(json).not.toContain("crash.example.com"); // crashReportEndpoint
     expect(json).not.toContain("secret-internal-host"); // legacy/unknown llm key
     expect(json).not.toContain("secretuser"); // pinnedProjectRoots path
+  });
+
+  it("keeps the turn completion sound preference for support triage", () => {
+    const out = pickRedactedSettings(makeSettings()) as { system: { turnCompletionSoundEnabled: boolean } };
+    expect(out.system.turnCompletionSoundEnabled).toBe(false);
   });
 
   it("keeps safe provider/model shape", () => {

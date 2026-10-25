@@ -46,7 +46,7 @@ const PART_CONTENT_KEYS = ["text", "raw", "url", "data"] as const;
 export function isSafeA2AMessageId(value: unknown): value is string {
   return typeof value === "string"
     && MESSAGE_ID_PATTERN.test(value)
-    && maskSensitiveData(value).detections.length === 0;
+    && isSafeStructuralId(value);
 }
 
 function normalizeTitle(value: string): { title: string; detections: number } {
@@ -233,6 +233,7 @@ export function maskA2AMessage(message: A2AMessage): MaskedA2AMessageResult {
     return masked.masked;
   });
   const referenceTaskIds = message.referenceTaskIds?.map((taskId) => {
+    if (isSafeStructuralId(taskId)) return taskId;
     const masked = maskSensitiveData(taskId);
     detectionCount += masked.detections.length;
     return masked.masked;

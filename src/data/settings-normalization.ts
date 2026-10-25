@@ -81,6 +81,7 @@ import { isSemver, isTwoMinorReleasesBehind } from "../shared/semver-compare.js"
 import { SOURCE_ID_RE } from "../marketplace/sources/official.js";
 import { normalizeSkippedPluginUpdateKey } from "../shared/skipped-plugin-updates.js";
 import { createLogger } from "../lib/logger.js";
+import { parseMainLayout, type MainLayoutSnapshot } from "../shared/main-layout.js";
 import {
   STORED_FIELD,
   acceptField,
@@ -1202,6 +1203,20 @@ export function normalizeWebView(input: unknown): WebViewSettings {
 
 const VALID_CLOSE_BEHAVIORS: readonly SystemCloseBehavior[] = ["hide-to-tray", "quit"];
 
+/**
+ * The saved main-window layout, asked by both settings paths. A refused layout
+ * is logged with the rule it broke — a structured value's "invalid" alone
+ * would not say which part of it — and the window starts in the default one.
+ */
+export function normalizeMainLayout(value: unknown): MainLayoutSnapshot | undefined {
+  if (value === undefined) return undefined;
+  const parsed = parseMainLayout(value);
+  if (parsed.ok) return parsed.layout;
+  // The reason only, never the value: page addresses may carry tokens.
+  log.warn(`system.mainLayout refused: ${parsed.reason}; the window starts in the default layout`);
+  return undefined;
+}
+
 /** The active-view shape test, asked by both settings paths. */
 export function isActiveViewKey(value: unknown): boolean {
   return typeof value === "string" && isInlineViewKey(value);
@@ -1284,7 +1299,6 @@ export const SIDE_PANEL_SPLIT_KEYS = [
   "sidePanelSplitFilePercent",
   "sidePanelSplitPreviewPercent",
   "sidePanelSplitSubagentPercent",
-  "sidePanelSplitBrowserPercent",
 ] as const satisfies readonly (keyof SystemSettings)[];
 
 export function normalizeSystem(input: unknown): SystemSettings {
@@ -1292,6 +1306,7 @@ export function normalizeSystem(input: unknown): SystemSettings {
     return { ...DEFAULT_SETTINGS.system };
   }
   const obj = input as {
+    turnCompletionSoundEnabled?: unknown;
     closeBehavior?: unknown;
     appMode?: unknown;
     localApiServer?: unknown;
@@ -1306,6 +1321,7 @@ export function normalizeSystem(input: unknown): SystemSettings {
     sidebarWidth?: unknown;
     sidebarActiveTab?: unknown;
     activeView?: unknown;
+    mainLayout?: unknown;
     settingsTab?: unknown;
     pinnedProjectRoots?: unknown;
     archivedProjectRoots?: unknown;
@@ -1315,6 +1331,7 @@ export function normalizeSystem(input: unknown): SystemSettings {
   // back to its default while a valid sibling is preserved (mirrors the
   // per-field patch path in `update`).
   const result: SystemSettings = { ...DEFAULT_SETTINGS.system };
+  acceptField(result, "turnCompletionSoundEnabled", obj.turnCompletionSoundEnabled, isBooleanValue, "system", STORED_FIELD);
   acceptField(result, "closeBehavior", obj.closeBehavior, isCloseBehavior, "system", STORED_FIELD);
   const rawAppMode = obj.appMode;
   const normalizedAppMode = normalizeAppMode(rawAppMode);
@@ -1373,6 +1390,11 @@ export function normalizeSystem(input: unknown): SystemSettings {
   }
   acceptField(result, "sidebarActiveTab", obj.sidebarActiveTab, isSidebarTab, "system", STORED_FIELD);
   acceptField(result, "activeView", obj.activeView, isActiveViewKey, "system", STORED_FIELD);
+  // Not `acceptNormalizedField`: its warning prints the rejected value, and a
+  // saved layout holds page addresses that may carry tokens. The reason alone
+  // is logged (`normalizeMainLayout`).
+  const storedLayout = normalizeMainLayout(obj.mainLayout);
+  if (storedLayout) result.mainLayout = storedLayout;
   const rawSettingsTab = obj.settingsTab;
   if (rawSettingsTab !== undefined) {
     // `normalizeSettingsTab` already folds retired ids and anything

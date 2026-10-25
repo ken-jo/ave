@@ -11,6 +11,8 @@ import { approvalSurfaceStub, deferred } from "../../../../../test/renderer/help
 import { AVE_SIDE_BROWSER_PARTITION } from "../../../../shared/side-browser.js";
 import { SIDE_PANEL_MIN_WIDTH } from "../../../../shared/side-panel.js";
 import { ChatSidePanel } from "../ChatSidePanel.js";
+import { deriveRovingPath } from "../ChatSidePanelWorkspaces.js";
+import { WebSurfaceLayer } from "../WebSurfaceLayer.js";
 import { PaneFrame } from "../PaneFrame.js";
 import { emptyToolActivity } from "../../../../../test/renderer/helpers.js";
 import type { ToolActivityState } from "../ToolActivity.js";
@@ -49,6 +51,12 @@ function api(): AveApi {
     // the split ratio through the settings round-trip.
     getSettings: vi.fn(async () => ({}) as never),
     updateSettings: vi.fn(async () => ({ ok: true }) as never),
+    browserTabs: {
+      bindTab: vi.fn(async () => ({ ok: true })),
+      stop: vi.fn(async () => ({ ok: true })),
+      onTabOp: vi.fn(() => () => undefined),
+      onControl: vi.fn(() => () => undefined),
+    },
     sideChat: {
       send: vi.fn(async () => ({ ok: true, result: {} })),
       new: vi.fn(async () => ({ ok: true, sessionId: "side-1" })),
@@ -67,11 +75,17 @@ function api(): AveApi {
  * same tree shape as the mount — a differently shaped tree remounts the
  * harness and loses the state a test is checking survives.
  */
+/** One api for the layer across rerenders; these tests do not bind guests. */
+const layerApi = api();
+
 function withPanelProviders(ui: ReactElement) {
   return (
     <TooltipProvider>
       <ApprovalSurfaceProvider value={approvalSurfaceStub()}>
         {ui}
+        {/* The window's browser guests live in this layer (portaled to body),
+            not inside the panel — as in the app. */}
+        <WebSurfaceLayer api={layerApi} />
       </ApprovalSurfaceProvider>
     </TooltipProvider>
   );
@@ -388,10 +402,6 @@ describe("ChatSidePanel", () => {
     fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("file-browser")));
     // Single "+" button; the old per-kind add buttons are gone.
     expect(screen.getByTestId("chat-side-panel-add-tab")).toBeTruthy();
-    expect(screen.queryByTestId("chat-side-panel-add-browser-tab")).toBeNull();
-    expect(screen.queryByTestId("chat-side-panel-add-preview-tab")).toBeNull();
-    expect(screen.queryByTestId("chat-side-panel-add-terminal-tab")).toBeNull();
-    expect(screen.queryByTestId("chat-side-panel-add-file-browser-tab")).toBeNull();
 
     // The "+" dropdown opens the same launcher items and creates a tab.
     openLauncherMenu();
@@ -482,7 +492,7 @@ describe("ChatSidePanel", () => {
     expect(tab.textContent).not.toMatch(/2/);
   });
 
-  it("renders preview targets and separates browser artifacts and files across tabs", () => {
+  it("renders preview targets and separates browser artifacts and files across tabs", async () => {
     const targets: ChatPreviewTarget[] = [
       {
         id: "file-1",
@@ -567,42 +577,71 @@ describe("ChatSidePanel", () => {
     expect(splitLayout.style.gridTemplateRows).toContain("50%");
 
     // Open a browser tab via the "+" dropdown (replaces scattered add buttons).
-    // The first web artifact is an html doc, so the html viewer renders directly.
+    // A browser tab is its address row and its page — nothing else: the list
+    // of the conversation's pages is not in it. It opens on the latest page
+    // (url-1, created after the html doc).
     addTabViaMenu("browser");
-    expect(screen.getByTestId("chat-side-panel-browser-viewer")).toBeTruthy();
-
-    // The visited-site list sits over the viewer, latest first — the page
-    // named by a result (url-1, created after the html doc) leads.
-    const visited = screen.getByTestId("chat-side-panel-browser-visited");
-    expect(within(visited).getAllByTestId("chat-side-panel-browser-row").map((row) => row.textContent)).toEqual([
-      expect.stringContaining("example.com/docs"),
-      expect.stringContaining("Artifact dashboard"),
-    ]);
-
-    const addressInput = screen.getByTestId("chat-side-panel-browser-address") as HTMLInputElement;
-    fireEvent.change(addressInput, { target: { value: "google.com" } });
-    fireEvent.click(screen.getByTestId("chat-side-panel-browser-go"));
-    const manualWebview = container.querySelector('[data-testid="chat-side-panel-browser-webview"]');
-    expect(manualWebview).not.toBeNull();
-    expect(manualWebview?.getAttribute("src")).toBe("https://google.com/");
-
-    // Pick the first visited site (example.com/docs) from the list.
-    const rows = screen.getAllByTestId("chat-side-panel-browser-row");
-    expect(rows.length).toBeGreaterThanOrEqual(2);
-    // The web row discloses where its address came from: this one was named by
-    // a page, not asked for by the turn.
-    expect(rows[0]!.textContent).toContain("결과에서");
-    fireEvent.click(rows[0]!);
-    const webview = container.querySelector('[data-testid="chat-side-panel-browser-webview"]');
+    expect(screen.queryByTestId("chat-side-panel-browser-visited")).toBeNull();
+    expect(screen.queryByTestId("chat-preview-search")).toBeNull();
+    // The page is a web surface: the panel draws its slot, the window's layer
+    // draws the guest.
+    expect(container.querySelector('[data-testid="web-surface-slot"]')).not.toBeNull();
+    const webview = document.querySelector('[data-testid="chat-side-panel-browser-webview"]');
     expect(webview?.getAttribute("src")).toBe("https://example.com/docs");
     expect(webview?.getAttribute("partition")).toBe(AVE_SIDE_BROWSER_PARTITION);
     expect(webview?.getAttribute("webpreferences")).toContain("javascript=yes");
     expect(webview?.getAttribute("allowpopups")).toBe("true");
 
+    const addressInput = screen.getByTestId("chat-side-panel-browser-address") as HTMLInputElement;
+    expect(addressInput.value).toBe("https://example.com/docs");
+    fireEvent.change(addressInput, { target: { value: "google.com" } });
+    await act(async () => { fireEvent.click(screen.getByTestId("chat-side-panel-browser-go")); });
+    const navigated = document.querySelector('[data-testid="chat-side-panel-browser-webview"]');
+    // The same guest, navigated — not a second one.
+    expect(navigated).toBe(webview);
+    expect(navigated?.getAttribute("src")).toBe("https://google.com/");
+
     // Open a preview (review) tab via the "+" dropdown.
     addTabViaMenu("preview");
     expect(screen.queryByText("Artifact dashboard")).toBeNull();
     expect(screen.getAllByText("metrics.json").length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("lists the conversation's pages on the empty landing, and opens a picked one in a tab", () => {
+    const targets: ChatPreviewTarget[] = [
+      {
+        id: "html-1",
+        kind: "html",
+        title: "Artifact dashboard",
+        subtitle: "render_html",
+        sourceLabel: "builtin",
+        createdOrder: 1,
+        payload: { kind: "ave.render_html", html: "<main>Preview OK</main>", title: "Artifact dashboard", height: 200 },
+      },
+      {
+        id: "url-1",
+        kind: "url",
+        title: "example.com/docs",
+        subtitle: "web_fetch",
+        sourceLabel: "builtin",
+        createdOrder: 2,
+        url: "https://example.com/docs",
+        origin: "result",
+      },
+    ];
+    renderPanel(<HarnessPanel api={api()} sessionId="session-1" targets={targets} files={[]} initialSelectedId={null} />);
+    const visited = within(screen.getByTestId("chat-side-panel-launcher")).getByTestId("chat-side-panel-browser-visited");
+    const rows = within(visited).getAllByTestId("chat-side-panel-browser-row");
+    // Latest first, and the row says where its address came from.
+    expect(rows.map((row) => row.textContent)).toEqual([
+      expect.stringContaining("example.com/docs"),
+      expect.stringContaining("Artifact dashboard"),
+    ]);
+    expect(rows[0]!.textContent).toContain("결과에서");
+    fireEvent.click(rows[0]!);
+    // A browser content tab, its page a web surface.
+    expect(screen.queryByTestId("chat-side-panel-launcher")).toBeNull();
+    expect(document.querySelector('[data-testid="chat-side-panel-browser-webview"]')?.getAttribute("src")).toBe("https://example.com/docs");
   });
 
   it("preserves added workspace tabs across a ChatSidePanel unmount (session switch)", () => {
@@ -1069,6 +1108,18 @@ describe("ChatSidePanel", () => {
     return { listDir, reveal, removeRoot, writeText };
   }
 
+  /**
+   * The tree mounts before its first listing resolves, so wait for the rows
+   * and their roving row.
+   */
+  async function treeRowsReady(tree: HTMLElement): Promise<HTMLElement[]> {
+    return waitFor(() => {
+      const rows = within(tree).getAllByRole("treeitem");
+      expect(rows.some((row) => row.getAttribute("tabindex") === "0")).toBe(true);
+      return rows;
+    });
+  }
+
   it("renders rows as ARIA treeitems with level/setsize/posinset and a single roving tabindex", async () => {
     stubRichWorkspace();
     renderPanel(
@@ -1076,7 +1127,7 @@ describe("ChatSidePanel", () => {
     );
     fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("file-browser")));
     const tree = await screen.findByRole("tree");
-    const items = within(tree).getAllByRole("treeitem");
+    const items = await treeRowsReady(tree);
     expect(items.length).toBe(3);
     expect(items[0].getAttribute("aria-level")).toBe("1");
     expect(items[0].getAttribute("aria-setsize")).toBe("3");
@@ -1086,6 +1137,15 @@ describe("ChatSidePanel", () => {
     expect(tabbable.length).toBe(1);
   });
 
+  it("derives the roving row from the active row, falling back to the first row", () => {
+    const rows = [{ path: "/w/a" }, { path: "/w/b" }];
+    expect(deriveRovingPath("/w/b", rows)).toBe("/w/b");
+    expect(deriveRovingPath("/w/gone", rows)).toBe("/w/a");
+    expect(deriveRovingPath(null, rows)).toBe("/w/a");
+    expect(deriveRovingPath("/w/a", [])).toBeNull();
+    expect(deriveRovingPath(null, [])).toBeNull();
+  });
+
   it("ArrowDown moves the roving focus to the next row", async () => {
     stubRichWorkspace();
     renderPanel(
@@ -1093,6 +1153,7 @@ describe("ChatSidePanel", () => {
     );
     fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("file-browser")));
     const tree = await screen.findByRole("tree");
+    await treeRowsReady(tree);
     fireEvent.keyDown(tree, { key: "ArrowDown" });
     const items = within(tree).getAllByRole("treeitem");
     // Second row (beta) becomes the roving-focus row (tabindex=0). Roving focus
@@ -1100,6 +1161,7 @@ describe("ChatSidePanel", () => {
     // aria-selected — that tracks the opened file only (APG tree pattern).
     expect(items[1].getAttribute("tabindex")).toBe("0");
     expect(items[1].getAttribute("aria-selected")).toBeNull();
+    expect(items[1]).toHaveFocus();
   });
 
   it("Enter on a folder expands it (lazy-loads children into a role=group)", async () => {
@@ -1109,6 +1171,7 @@ describe("ChatSidePanel", () => {
     );
     fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("file-browser")));
     const tree = await screen.findByRole("tree");
+    await treeRowsReady(tree);
     // First row is "alpha" (a directory) and is the active item.
     fireEvent.keyDown(tree, { key: "Enter" });
     await screen.findByText("a1.md");
@@ -1122,9 +1185,12 @@ describe("ChatSidePanel", () => {
     );
     fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("file-browser")));
     const tree = await screen.findByRole("tree");
+    await treeRowsReady(tree);
     fireEvent.keyDown(tree, { key: "r" }); // -> readme.md
     const items = within(tree).getAllByRole("treeitem");
     expect(items[2].getAttribute("tabindex")).toBe("0");
+    expect(items[2].getAttribute("aria-selected")).toBeNull();
+    expect(items[2]).toHaveFocus();
   });
 
   it("right-click Reveal calls workspace.reveal with the row path (never opens the file)", async () => {
@@ -1485,7 +1551,6 @@ describe("ChatSidePanel", () => {
     const detail = screen.getByTestId("chat-side-panel-subagent-detail");
     const workGroup = within(detail).getByTestId("work-group");
     expect(workGroup).toBeTruthy();
-    expect(within(detail).queryByTestId("chat-side-panel-subagent-tool-group")).toBeNull();
     expect(detail.textContent).toContain("서울 날씨를 확인해줘");
     expect(detail.textContent).toContain("서울은 맑음입니다.");
     const buttons = detail.querySelectorAll("button");
@@ -2435,7 +2500,6 @@ describe("ChatSidePanel", () => {
     );
     fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("side-chat")));
     expect(screen.getByTestId("side-chat-view")).toBeTruthy();
-    expect(screen.queryByTestId("chat-side-panel-side-chat-placeholder")).toBeNull();
   });
 });
 

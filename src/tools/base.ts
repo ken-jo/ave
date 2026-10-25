@@ -50,12 +50,25 @@ export type {
  * approval-gate §S4 read-only short-circuit, and {@link execute}
  * validates + runs the tool against the shared execution context.
  */
+/**
+ * What a builtin's per-input policy hooks (`categoryForInput`,
+ * `approvalMemoryScope`, `requiresPerActionApproval`) may know besides the
+ * input: the working directory, and the conversation the call belongs to
+ * (absent for an unattributed call). Host-supplied, never from tool input.
+ */
+export interface ToolPolicyContext {
+  readonly cwd?: string;
+  readonly sessionId?: string;
+  /** Sealed invocation target, available to the later per-action policy check. */
+  readonly approvalMemoryScope?: ApprovalMemoryScope;
+}
+
 export interface Tool {
   readonly name: string;
   readonly description: string;
   readonly source: ToolSource;
   readonly category: ToolCategory;
-  readonly categoryForInput?: (input: unknown) => ToolCategory;
+  readonly categoryForInput?: (input: unknown, ctx?: ToolPolicyContext) => ToolCategory;
   /**
    * Permission policy — declared only on `category === "meta"` tools. Tells the executor
    * to take the explicit short-circuit path rather than the standard Layer 3
@@ -187,8 +200,21 @@ export interface Tool {
    * exact-argument identity. Return a scope only when nothing outside it
    * changes what the user consented to; arguments that differ inside the
    * scope are still re-reviewed before a remembered allow is reused.
+   * May await target observation before sealing the invocation's identity.
    */
-  approvalMemoryScope?(input: unknown, ctx?: Pick<ToolExecutionContext, "cwd">): ApprovalMemoryScope | undefined;
+  approvalMemoryScope?(input: unknown, ctx?: Pick<ToolExecutionContext, "cwd"> & ToolPolicyContext): ApprovalMemoryScope | undefined | Promise<ApprovalMemoryScope | undefined>;
+  /**
+   * BUILTIN-only: this input must be decided by a person, once, every time it
+   * is asked. When it returns true and the policy outcome is an ask, the
+   * executor drops the foreground reviewer and the remembered-approval lanes,
+   * and the prompt is an explicit allow-once / deny-once that records
+   * nothing. A deny or a standing allow (allow mode, an allow rule) is left
+   * as the policy decided it: this only tightens an ask.
+   *
+   * Used where the target belongs to the user rather than to the agent's own
+   * work — a browser tab the user opened.
+   */
+  requiresPerActionApproval?(input: unknown, ctx?: ToolPolicyContext): boolean;
 
   /** JSON Schema describing the input shape — sent to LLM providers. */
   toJsonSchema(): unknown;
@@ -284,7 +310,7 @@ export interface DynamicToolSpec {
   description: string;
   source: ToolSource;
   category: ToolCategory;
-  categoryForInput?: (input: unknown) => ToolCategory;
+  categoryForInput?: (input: unknown, ctx?: ToolPolicyContext) => ToolCategory;
   decisionOverride?: ToolDecisionOverride;
   parallelSafe?: boolean;
   pluginId?: string;
@@ -308,7 +334,9 @@ export interface DynamicToolSpec {
   /** Permission policy #634 — per-tool approval cache identity. */
   approvalCacheKey?: (input: unknown, ctx?: Pick<ToolExecutionContext, "cwd">) => string | undefined;
   /** See {@link Tool.approvalMemoryScope}. */
-  approvalMemoryScope?: (input: unknown, ctx?: Pick<ToolExecutionContext, "cwd">) => ApprovalMemoryScope | undefined;
+  approvalMemoryScope?: Tool["approvalMemoryScope"];
+  /** See {@link Tool.requiresPerActionApproval}. */
+  requiresPerActionApproval?: (input: unknown, ctx?: ToolPolicyContext) => boolean;
   /** Raw JSON Schema — used when no Zod schema is available (plugin/MCP). */
   jsonSchema: object;
   execute: (
@@ -351,6 +379,9 @@ export function createDynamicTool(spec: DynamicToolSpec): Tool {
     ...(spec.approvalMemoryScope === undefined
       ? {}
       : { approvalMemoryScope: spec.approvalMemoryScope }),
+    ...(spec.requiresPerActionApproval === undefined
+      ? {}
+      : { requiresPerActionApproval: spec.requiresPerActionApproval }),
     toJsonSchema: () => spec.jsonSchema,
     isReadOnly: spec.isReadOnly ?? ((): boolean => false),
     execute: spec.execute,

@@ -7,7 +7,7 @@ loads the following third-party work.
 
 | Package | Version | Licence | Used for |
 | --- | --- | --- | --- |
-| next | 15.5.24 | MIT | Framework and static export |
+| next | 15.5.28 | MIT | Framework and static export |
 | react, react-dom | 18.3.1 | MIT | Rendering |
 | motion, framer-motion, motion-dom | 14.3.0 | MIT | Home page scroll-linked and entrance animation |
 | motion-utils | 14.1.1 | MIT | Shipped inside motion |

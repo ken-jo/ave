@@ -29,6 +29,7 @@
  * why the five plugins that are not the pilot keep loading as they did.
  */
 import { mkdirSync, statSync } from "node:fs";
+import { sameFileIdentity, type FileIdentity } from "../../lib/file-identity.js";
 import type { Socket } from "node:net";
 import type { Readable, Writable } from "node:stream";
 import { ENV_NAME_RE } from "../../mcp/safe-names.js";
@@ -502,10 +503,10 @@ function resolveUserChosenDirectory(
 export function capturePluginSandboxGrant(path: string): {
   path: string;
   canonicalPath: string;
-  identity?: { dev: number; ino: number };
+  identity?: FileIdentity;
 } {
   const canonicalPath = caseFoldForMatch(canonicalizePathForMatch(path));
-  const entry = statSync(path, { throwIfNoEntry: false });
+  const entry = statSync(path, { bigint: true, throwIfNoEntry: false });
   return {
     path,
     canonicalPath,
@@ -521,8 +522,8 @@ export function isPluginSandboxGrantCovered(
 ): boolean {
   try {
     if (caseFoldForMatch(canonicalizePathForMatch(grant.path)) !== grant.canonicalPath) return false;
-    const entry = statSync(grant.path, { throwIfNoEntry: false });
-    if (grant.identity && (!entry || entry.dev !== grant.identity.dev || entry.ino !== grant.identity.ino)) return false;
+    const entry = statSync(grant.path, { bigint: true, throwIfNoEntry: false });
+    if (grant.identity && (!entry || !sameFileIdentity(entry, grant.identity))) return false;
     if (!grant.identity && entry) grant.identity = { dev: entry.dev, ino: entry.ino };
     return resolveUserChosenDirectory({
       pluginId: "sandbox-grant",
@@ -831,21 +832,10 @@ function windowsLoopbackLaunchLine(
  *
  *  - WRITE is a real jail, and what THIS SPAWN puts into it is `envelope.write`
  *    plus the throwaway sandbox HOME — no other path is added on this path.
- *    THE CHILD'S ALLOW SET IS LARGER THAN THAT, and not by this spawn's
- *    choice: ASRT composes the write allow-list as
- *    `[...getDefaultWritePaths(), ...userAllowWrite]`, so its own defaults —
- *    the `/dev` entries, `/tmp/claude`, `/private/tmp/claude`,
- *    `<real home>/.npm/_logs`, `<real home>/.claude/debug` — are merged into
- *    every wrap and no argument here removes them. Measured on macOS/arm64
- *    with the sandbox active: a child spawned by this function wrote into all
- *    four of the non-`/dev` paths and the host read the bytes back. Those
- *    paths are per-machine rather than per-plugin, so two confined children
- *    share them. Axis 6 of the admission record (the history of
- *    `out-of-process-plugins.ts` before §9.8 A1 retired its census) carries
- *    the full record, including what closing it would take and why that is
- *    not done here.
- *    Everything below is about the host's decision — which paths THIS SPAWN
- *    grants — rather than about the kernel's final set.
+ *    The runtime adds only device write defaults. All other write roots come
+ *    from host policy, including the principal temp directory added by the
+ *    confinement primitive. Shared temporary and cache paths get no implicit
+ *    grant. The same scope is measured by `confined-plugin-child.test.ts`.
  *    What the host does NOT put in it is `pluginRoot`. A value under this
  *    plugin's bundle root, a value under a SIBLING's bundle under the same
  *    install root, and a value under a bundle root that is itself a symlink out

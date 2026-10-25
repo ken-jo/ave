@@ -8,13 +8,13 @@
  */
 
 import { analyzeShell, staticShellWord, type ShellAnalysis, type ShellCommand, type ShellWord } from "../../shared/shell-analysis.js";
+import { POWERSHELL_FILE_TYPES } from "./powershell-file-provenance.js";
 
 /** Programs that run arbitrary code given any argument (prefix of 1 token is refused). */
 const SHELLS = ["sh", "bash", "zsh", "dash", "ksh", "mksh", "yash", "fish", "csh", "tcsh", "pwsh", "powershell", "cmd", "busybox"];
 /**
- * Interpreters: every invocation runs code the matcher cannot read (a script
- * file, a module, stdin, a here-document or an inline string), so they are
- * refused at every length except `bun`/`deno` task verbs (`bun run build`).
+ * Interpreters run code the matcher cannot read. Runners retain their own
+ * complete prefixes so an explicit rule can name the intended invocation.
  */
 const INTERPRETERS = [
   "python", "python2", "python3", "pypy", "pypy3", "ipython", "node", "nodejs", "deno", "bun", "tsx", "ts-node",
@@ -30,7 +30,7 @@ const WRAPPERS = [
   "env", "xargs", "sudo", "doas", "su", "eval", "exec", "source", ".", "command", "builtin", "nohup",
   "timeout", "nice", "ionice", "time", "stdbuf", "chroot", "unshare", "nsenter", "setsid", "watch",
   "parallel", "script", "runuser", "pkexec", "caffeinate", "taskpolicy", "flock", "chrt", "strace", "ltrace",
-  "unbuffer", "firejail", "systemd-run", "torsocks", "proxychains", "proxychains4", "fakeroot", "faketime",
+  "unbuffer", "firejail", "systemd-run", "proot", "wsl", "torsocks", "proxychains", "proxychains4", "fakeroot", "faketime",
   "taskset", "numactl", "cpulimit", "prlimit", "rlwrap", "sg", "ssh-agent", "dbus-launch", "xvfb-run",
   "catchsegv", "valgrind", "run0", "genv", "gtimeout", "gnice", "gstdbuf", "gnohup", "gxargs", "gchroot",
   // A multi-call binary runs whichever applet its first argument names.
@@ -41,9 +41,18 @@ const WRAPPERS = [
  * (`watch 'rm x'`, `parallel 'rm {}' ::: a`, `flock f -c 'rm x'`).
  */
 const STRING_JOINING_WRAPPERS = new Set(["watch", "parallel", "sg"]);
-const DASH_C_WRAPPERS = new Set(["su", "script", "flock", "runuser"]);
-/** Package runners that fetch and execute arbitrary packages: a 1-token prefix is refused. */
-const PACKAGE_RUNNERS = ["npx", "bunx", "pnpx", "uvx", "pipx"];
+/** Runner identities and literal prefixes that can introduce another command. */
+type RunnerCommandPrefix = string | readonly [verb: string, interpreter: string];
+const RUNNER_COMMAND_PREFIXES: Readonly<Record<string, true | readonly RunnerCommandPrefix[]>> = {
+  npx: true, bunx: true, pnpx: true, uvx: true, corepack: true,
+  pipx: ["run"], yarn: ["dlx", "exec", ["node", "node"]], yarnpkg: ["dlx", "exec", ["node", "node"]],
+  pnpm: ["dlx", "exec", "x"], npm: ["exec", "x"], bun: ["x", "exec"], deno: [["run", "deno"], ["eval", "deno"]],
+};
+const PACKAGE_RUNNERS = Object.keys(RUNNER_COMMAND_PREFIXES);
+
+function runnerHasPrefix(prefixes: readonly RunnerCommandPrefix[], token: string | undefined): boolean {
+  return token !== undefined && prefixes.some((prefix) => (typeof prefix === "string" ? prefix : prefix[0]) === token);
+}
 
 /**
  * Arity table (opencode-style): how many leading tokens a suggestion keeps.
@@ -67,6 +76,15 @@ function programName(token: string): string {
   return base.replace(/\.exe$/i, "").replace(/^(python[23]?)\.\d+$/, "$1");
 }
 
+/** Runner shims share the executable/script suffixes and retain versioned identity. */
+function runnerName(token: string): string {
+  const base = (token.split(/[\\/]/).pop() ?? token).toLowerCase().replace(/[ .]+$/, "");
+  const extension = /\.[^.]+$/.exec(base)?.[0] ?? "";
+  const type = POWERSHELL_FILE_TYPES[extension];
+  const name = type === "opaque" || type === "script" ? base.slice(0, -extension.length) : base;
+  return name.replace(/@[^@]+$/, "");
+}
+
 export type RefusedPrefixReason =
   | "empty"
   | "config-writer"
@@ -75,6 +93,16 @@ export type RefusedPrefixReason =
   | "wrapper"
   | "package-runner"
   | "multi-verb-tool";
+
+/** An option leaves the command boundary unknown until a literal delimiter. */
+function literalCommandAfterPrefix(tokens: readonly (string | undefined)[], start: number): number | undefined {
+  const token = tokens[start];
+  if (token === undefined || token.length === 0) return undefined;
+  if (!token.startsWith("-")) return start;
+  const delimiter = tokens.indexOf("--", start);
+  const command = delimiter < 0 ? undefined : tokens[delimiter + 1];
+  return command !== undefined && command.length > 0 && !command.startsWith("-") ? delimiter + 1 : undefined;
+}
 
 /**
  * The single refused-prefix check. `tokens` is the static prefix of a
@@ -86,89 +114,224 @@ export function refusedShellPrefix(tokens: readonly string[]): RefusedPrefixReas
   const program = programName(tokens[0]!);
   if (WRAPPER_SET.has(program)) return "wrapper";
   if (SHELL_SET.has(program)) return "shell";
+  const runner = runnerName(tokens[0]!);
+  if (RUNNER_SET.has(runner)) {
+    const commandPrefix = RUNNER_COMMAND_PREFIXES[runner]!;
+    const commandIndex = literalCommandAfterPrefix(tokens, 1);
+    if (commandIndex === undefined) return "package-runner";
+    const command = tokens[commandIndex]!;
+    // A delegate specifier does not prove its delegated command boundary.
+    if (runner === "corepack" && command.includes("@")) return "package-runner";
+    if (runner === "corepack" && RUNNER_SET.has(runnerName(command))) return refusedShellPrefix(tokens.slice(commandIndex));
+    if (commandPrefix !== true && runnerHasPrefix(commandPrefix, command)
+      && literalCommandAfterPrefix(tokens, commandIndex + 1) === undefined) return "package-runner";
+    return null;
+  }
   if (INTERPRETER_SET.has(program)) {
-    // `bun` is both an interpreter and a multi-verb tool: `bun run <script>`
-    // and `bun test` are ordinary; `bun x`/`bun -e`/`bun file.ts` are not.
-    if (program === "bun" && tokens[1] === "x") return "package-runner";
     // Any other interpreter prefix runs code the rules cannot read
     // (`node scripts/build.mjs`, `python -m x`), so it never persists.
-    if (!isTaskRunnerVerb(program, tokens.slice(1))) return "interpreter";
+    return "interpreter";
   }
-  if (RUNNER_SET.has(program) && tokens.length === 1) return "package-runner";
   if (MULTI_VERB_TOOLS.has(program) && tokens.length === 1) return "multi-verb-tool";
   // `git -c …`, `docker --host …`: an option before the verb re-targets the tool.
   if (MULTI_VERB_TOOLS.has(program) && tokens[1]!.startsWith("-")) return "multi-verb-tool";
-  if ((program === "npm" || program === "pnpm" || program === "yarn") && (tokens[1] === "exec" || tokens[1] === "dlx" || tokens[1] === "x")) {
-    return "package-runner";
-  }
   // `git config` writes settings that run code later (`core.fsmonitor`,
-  // `core.pager`, aliases); `npm config` / `yarn config` likewise.
-  if ((program === "git" || program === "npm" || program === "pnpm" || program === "yarn") && tokens[1] === "config") {
+  // `core.pager`, aliases).
+  if (program === "git" && tokens[1] === "config") {
     return "config-writer";
   }
   return null;
 }
 
 /**
- * Value-taking options of wrapper programs, so the wrapped command can be
- * found (`xargs -I {} sh -c …`, `sudo -u root rm`, `nice -n 5 rm`).
+ * Setup operands, value options and shell-command options share one grammar.
+ * A command view widens inspection and restrictions, never allow coverage.
  */
-const WRAPPER_VALUE_OPTIONS: Readonly<Record<string, ReadonlySet<string>>> = {
-  xargs: new Set(["-I", "-L", "-n", "-P", "-s", "-d", "-E", "-a", "--arg-file", "--delimiter", "--max-args", "--max-procs", "--replace"]),
-  sudo: new Set(["-u", "-g", "-C", "-h", "-p", "-r", "-t", "-U", "-D", "--user", "--group"]),
-  doas: new Set(["-u", "-C"]),
-  su: new Set(["-c", "-s", "-g", "-G", "--command", "--shell"]),
-  env: new Set(["-u", "-C", "--unset", "--chdir"]),
-  timeout: new Set(["-s", "-k", "--signal", "--kill-after"]),
-  nice: new Set(["-n", "--adjustment"]),
-  ionice: new Set(["-c", "-n", "-p", "--class", "--classdata"]),
-  chrt: new Set(["-p"]),
-  flock: new Set(["-w", "-E", "--timeout", "--conflict-exit-code"]),
-  watch: new Set(["-n", "-d", "--interval"]),
-  stdbuf: new Set(["-i", "-o", "-e"]),
-  runuser: new Set(["-u", "-g", "-G", "--user", "--group"]),
-  setsid: new Set(),
-  nohup: new Set(),
+interface WrapperGrammar {
+  flags?: readonly string[];
+  flagPattern?: RegExp;
+  values?: readonly string[];
+  alternateFlags?: readonly string[];
+  code?: readonly string[];
+  operand?: true | RegExp;
+  separator?: ",";
+  optionsAfterOperand?: boolean;
+  direct?: readonly string[];
+  boundary?: readonly string[];
+  noCommand?: readonly string[];
+  assignments?: true;
+  shell?: true;
+}
+const WRAPPER_GRAMMAR: Readonly<Record<string, WrapperGrammar>> = {
+  xargs: { flags: ["-0", "-r", "-t", "-x", "-p", "--null", "--no-run-if-empty", "--verbose", "--exit", "--interactive"], values: ["-I", "-L", "-n", "-P", "-s", "-d", "-E", "-a", "--arg-file", "--delimiter", "--max-args", "--max-procs", "--replace"] },
+  sudo: { flags: ["-A", "-b", "-B", "-E", "-H", "-i", "-k", "-K", "-n", "-P", "-S", "-s", "-v", "-e", "-l", "--askpass", "--background", "--bell", "--preserve-env", "--set-home", "--login", "--reset-timestamp", "--remove-timestamp", "--non-interactive", "--preserve-groups", "--stdin", "--shell", "--validate", "--edit", "--list"], values: ["-u", "-g", "-C", "-h", "-p", "-r", "-t", "-U", "-D", "--user", "--group"], assignments: true },
+  doas: { flags: ["-L", "-n", "-s"], values: ["-u", "-C"] },
+  env: { flags: ["-i", "-0", "-v", "--ignore-environment", "--null", "--debug"], values: ["-u", "-C", "--unset", "--chdir"], assignments: true },
+  timeout: { flags: ["-v", "--verbose", "--foreground", "--preserve-status"], values: ["-s", "-k", "--signal", "--kill-after"], operand: /^\d+(?:\.\d+)?[smhd]?$/ },
+  // https://www.gnu.org/software/coreutils/manual/html_node/nice-invocation.html: -N adjustment.
+  nice: { flagPattern: /^-[+-]?\d+$/, values: ["-n", "--adjustment"] },
+  ionice: { flags: ["-t", "--ignore"], values: ["-c", "-n", "-p", "--class", "--classdata"] },
+  watch: { flags: ["-b", "-c", "-d", "-e", "-g", "-p", "-t", "-w", "-x", "--beep", "--color", "--differences", "--errexit", "--chgexit", "--precise", "--no-title", "--watch", "--exec"], values: ["-n", "--interval"] },
+  stdbuf: { values: ["-i", "-o", "-e"] },
+  // https://man7.org/linux/man-pages/man1/chrt.1.html: optional numeric priority; -p targets a PID.
+  chrt: { flags: ["-a", "-b", "-d", "-e", "-f", "-i", "-o", "-r", "-R", "-v", "--all-tasks", "--batch", "--deadline", "--ext", "--fifo", "--idle", "--other", "--rr", "--reset-on-fork", "--verbose"], values: ["-T", "-P", "-D", "-U", "-X", "--sched-runtime", "--sched-period", "--sched-deadline", "--clamp-min", "--clamp-max"], operand: /^\d+$/, noCommand: ["-p", "--pid", "-m", "--max"] },
+  // https://man7.org/linux/man-pages/man1/flock.1.html: lockfile then argv or -c command.
+  flock: { flags: ["-e", "-x", "-n", "-o", "-s", "-u", "-F", "--exclusive", "--nonblock", "--close", "--shared", "--unlock", "--no-fork", "--fcntl", "--verbose"], values: ["-w", "-E", "--wait", "--timeout", "--conflict-exit-code", "--start", "--length"], code: ["-c", "--command"], operand: true, optionsAfterOperand: true },
+  // https://man7.org/linux/man-pages/man1/taskset.1.html: mask/CPU list then argv; -p never launches.
+  taskset: { flags: ["-a", "-c", "--all-tasks", "--cpu-list"], operand: /^(?:0x)?[\da-f,:\-]+$/i, separator: ",", noCommand: ["-p", "--pid"] },
+  // https://man7.org/linux/man-pages/man1/setsid.1.html: boolean options then argv.
+  setsid: { flags: ["-c", "-f", "-w", "--ctty", "--fork", "--wait"] },
+  // https://manpages.debian.org/trixie/expect/unbuffer.1.en.html: optional -p then argv.
+  unbuffer: { flags: ["-p"] },
+  // https://man7.org/linux/man-pages/man1/script.1.html: optional log file, -c text or -- argv.
+  // https://raw.githubusercontent.com/freebsd/freebsd-src/main/usr.bin/script/script.1: recording setup operands, file then argv.
+  // https://raw.githubusercontent.com/apple-oss-distributions/shell_cmds/main/script/script.1: alternate -F flush arity stays visible to floor scans.
+  script: { flags: ["-a", "-d", "-e", "-f", "-k", "-q", "-r", "-w", "--append", "--return", "--flush", "--force", "--quiet"], values: ["-t", "-F", "-E", "-B", "-I", "-O", "-T", "-m", "-o", "--echo", "--log-io", "--log-in", "--log-out", "--log-timing", "--logging-format", "--output-limit"], alternateFlags: ["-F"], code: ["-c", "--command"], operand: true, optionsAfterOperand: true, boundary: ["--"] },
+  // https://man7.org/linux/man-pages/man1/su.1.html: optional user and -c text (in either order).
+  su: { flags: ["-", "-l", "-m", "-p", "-f", "-P", "-T", "--login", "--preserve-environment", "--fast", "--pty", "--no-pty"], values: ["-s", "-g", "-G", "-w", "--shell", "--group", "--supp-group", "--whitelist-environment"], code: ["-c", "--command", "--session-command"], operand: true, optionsAfterOperand: true },
+  // https://man7.org/linux/man-pages/man1/runuser.1.html: -u user -- argv, or su-compatible -c.
+  runuser: { flags: ["-", "-l", "-m", "-p", "-P", "-T", "--login", "--preserve-environment", "--pty", "--no-pty"], values: ["-u", "-g", "-G", "-s", "-w", "--user", "--group", "--supp-group", "--shell", "--whitelist-environment"], code: ["-c", "--command", "--session-command"], operand: true, optionsAfterOperand: true, direct: ["-u", "--user"] },
+  // https://man7.org/linux/man-pages/man1/systemd-run.1.html: service options then argv.
+  "systemd-run": { flags: ["--scope", "--user", "--system", "--no-block", "--wait", "--pipe", "--pty", "--collect", "--quiet", "-q", "-P", "-t", "-G", "-d", "--same-dir", "--send-sighup", "--slice-inherit", "--remain-after-exit", "-S", "--shell", "-v", "--verbose", "--on-clock-change", "--on-timezone-change", "--no-ask-password", "--no-pager"], values: ["-C", "--capsule", "-u", "-p", "-E", "-H", "-M", "--unit", "--property", "--description", "--slice", "--service-type", "--uid", "--gid", "--nice", "--working-directory", "--root-directory", "--setenv", "--host", "--machine", "--on-active", "--on-boot", "--on-startup", "--on-unit-active", "--on-unit-inactive", "--on-calendar", "--path-property", "--socket-property", "--timer-property"] },
+  // https://manpages.debian.org/trixie/firejail/firejail.1.en.html: --option=value then argv.
+  firejail: { flagPattern: /^--[\w-]+$/, values: ["--profile", "--name"] },
+  // https://github.com/proot-me/proot/blob/master/doc/proot/manual.rst: setup options then argv.
+  proot: { flags: ["-0", "--root-id", "-n", "--netcoop"], values: ["-r", "-R", "-S", "-b", "-m", "-q", "-w", "-v", "-k", "-i", "-p", "--rootfs", "--bind", "--mount", "--qemu", "--pwd", "--cwd", "--verbose", "--kernel-release", "--change-id", "--port"] },
+  // https://man7.org/linux/man-pages/man1/chroot.1.html: new root then argv.
+  chroot: { flags: ["--skip-chdir"], values: ["--userspec", "--groups"], operand: true },
+  // https://github.com/microsoft/WSL/blob/master/localization/strings/en-US/Resources.resw (MessageWslUsage).
+  wsl: { flags: ["--system"], values: ["-d", "-u", "--distribution", "--distribution-id", "--user", "--cd", "--shell-type"], boundary: ["-e", "--exec"], noCommand: ["-l", "--list", "--status", "--shutdown"], shell: true },
 };
 
 /**
- * Number of leading argv words that are wrapper programs and their options
- * (`env A=1`, `timeout 5`, `xargs -I {}`, `busybox`). `undefined` entries are
- * dynamic words and stop the scan. Used by deny/ask matching, the inline-code
- * detector and the exfiltration floor so all three see the same command.
+ * The inner argv boundary or a wrapper's explicit shell-command payload.
+ * Uncertain positions retain floor-only candidates, never an allow-rule boundary.
+ * Setup values retain proven arity.
+ * At most sixteen wrappers are followed.
  */
-export function wrapperPrefixLength(argv: readonly (string | undefined)[]): number {
+export function wrapperCommand(argv: readonly (string | undefined)[]): { index: number; code?: { text: string | undefined }; ordinaryAsk?: string; candidates?: number[] } {
   let index = 0;
+  let ordinaryAsk: string | undefined;
+  let candidateFrom: number | undefined;
+  const finish = (at: number, code?: { text: string | undefined }) => ({
+    index: at,
+    ...(code ? { code } : {}),
+    ...(ordinaryAsk ? { ordinaryAsk } : {}),
+    ...(candidateFrom === undefined ? {} : { candidates: Array.from({ length: argv.length - candidateFrom }, (_, offset) => candidateFrom! + offset) }),
+  });
+  const inspectTail = (from: number) => {
+    candidateFrom = Math.min(candidateFrom ?? from, from);
+  };
+  const uncertain = (from: number) => {
+    inspectTail(from);
+    return finish(argv.length);
+  };
   for (let guard = 0; guard < 16 && index < argv.length; guard += 1) {
     const head = argv[index];
-    if (head === undefined) return index;
+    if (head === undefined) {
+      ordinaryAsk ??= "opaque wrapper command binding";
+      return uncertain(index + 1);
+    }
     const program = programName(head);
     // `eval` / `source` / `.` run a string or file: they are code carriers,
     // not transparent wrappers.
-    if (!WRAPPER_SET.has(program) || program === "eval" || program === "source" || program === ".") return index;
+    if (!WRAPPER_SET.has(program) || program === "eval" || program === "source" || program === ".") return finish(index);
     index += 1;
-    const valueOptions = WRAPPER_VALUE_OPTIONS[program] ?? new Set<string>();
-    if (program === "timeout") {
-      // `timeout [opts] DURATION cmd`
-      while (index < argv.length && argv[index]?.startsWith("-")) {
-        index += valueOptions.has(argv[index]!) ? 2 : 1;
-      }
-      if (index < argv.length && argv[index] !== undefined && /^\d+(?:\.\d+)?[smhd]?$/.test(argv[index]!)) index += 1;
-      continue;
-    }
+    const declared = WRAPPER_GRAMMAR[program];
+    const grammar = declared ?? {};
+    let operand = grammar.operand;
+    let options = true;
+    let shell = grammar.shell;
+    let payload: { index: number; text: string | undefined } | undefined;
+    let operandIndex: number | undefined;
     while (index < argv.length) {
       const token = argv[index];
-      if (token === undefined) return index;
-      if (token === "--") { index += 1; break; }
-      if (token.startsWith("-")) {
-        index += valueOptions.has(token) ? 2 : 1;
+      if (token === undefined) {
+        ordinaryAsk ??= payload ? "opaque wrapper argument binding" : "opaque wrapper command binding";
+        if (payload) { index += 1; operand = undefined; continue; }
+        return uncertain(index + 1);
+      }
+      if (options && token === "--") {
+        index += 1;
+        options = false;
+        if (grammar.boundary?.includes(token)) operand = undefined;
         continue;
       }
-      if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(token)) { index += 1; continue; }
+      if (options && token === "-" && grammar.flags?.includes(token)) { index += 1; continue; }
+      if (options && token.startsWith("-") && token !== "-") {
+        if (grammar.flagPattern?.test(token) && !grammar.values?.includes(token) && !grammar.code?.includes(token)) { index += 1; continue; }
+        const long = token.startsWith("--");
+        const flags = long ? [token.split("=")[0]!] : [...token.slice(1)].map((letter) => `-${letter}`);
+        let width = 1;
+        for (const [at, flag] of flags.entries()) {
+          if (declared && long && token.includes("=") && !grammar.values?.includes(flag) && !grammar.code?.includes(flag)) {
+            break;
+          }
+          if ((token === flag && (flag === "--help" || flag === "--version")) || grammar.noCommand?.includes(flag)) return finish(argv.length);
+          if (grammar.boundary?.includes(flag)) { options = false; shell = undefined; break; }
+          if (grammar.direct?.includes(flag)) operand = undefined;
+          const code = grammar.code?.includes(flag);
+          if (!code && !grammar.values?.includes(flag)) {
+            if (declared && !grammar.flags?.includes(flag)) {
+              ordinaryAsk ??= "unsupported wrapper option";
+              // A setup operand is provisional when the remaining grammar is
+              // unknown. Keep it and every later word visible to floor scans.
+              return uncertain(Math.min(operandIndex ?? index + 1, payload?.index ?? index + 1));
+            }
+            continue;
+          }
+          const attached = long ? (token.includes("=") ? token.slice(token.indexOf("=") + 1) : undefined)
+            : (at + 2 < token.length ? token.slice(at + 2) : undefined);
+          const valueIndex = attached === undefined ? index + 1 : index;
+          if (attached === undefined && grammar.alternateFlags?.includes(flag)) inspectTail(Math.min(valueIndex + 1, argv.length));
+          const text = attached ?? argv[valueIndex];
+          if (text === undefined) ordinaryAsk ??= code ? "opaque wrapper code binding" : "opaque wrapper option binding";
+          if (code) {
+            if (payload) {
+              ordinaryAsk ??= "ambiguous wrapper code binding";
+              return uncertain(payload.index);
+            }
+            payload = { index: valueIndex, text };
+          }
+          width = attached === undefined ? 2 : 1;
+          break;
+        }
+        index = Math.min(index + width, argv.length);
+        continue;
+      }
+      if (operand && (operand === true || operand.test(token))) {
+        operandIndex = index;
+        index += 1;
+        // A native list operand can occupy several structural-parser tokens.
+        while (grammar.separator && argv[index] === grammar.separator && argv[index + 1] !== undefined
+          && (operand === true || operand.test(argv[index + 1]!))) index += 2;
+        operand = undefined;
+        if (grammar.optionsAfterOperand || payload) continue;
+        break;
+      }
+      if (grammar.assignments && /^[A-Za-z_][A-Za-z0-9_]*=/.test(token)) { index += 1; continue; }
+      if (payload) { index += 1; continue; }
       break;
     }
+    if (payload) return finish(payload.index, { text: payload.text });
+    const tail = shell ? argv.slice(index) : [];
+    if (shell && tail.some((token) => token === undefined || /[\s;&|<>$`\\(){}\[\]*?!~'"]/.test(token))) {
+      const text = tail.every((token) => token !== undefined) ? tail.join(" ") : undefined;
+      if (text === undefined) ordinaryAsk ??= "opaque wrapper code binding";
+      return finish(index, { text });
+    }
   }
-  return index;
+  const next = argv[index];
+  if (index < argv.length && (next === undefined || WRAPPER_SET.has(programName(next)))) {
+    ordinaryAsk ??= "wrapper analysis limit exceeded";
+    return uncertain(index);
+  }
+  return finish(index);
+}
+
+/** Shared boundary for deny/ask matching, inline-code and sink inspection. */
+export function wrapperPrefixLength(argv: readonly (string | undefined)[]): number {
+  return wrapperCommand(argv).index;
 }
 
 /** Value-taking global options of multi-verb tools (before the verb). */
@@ -176,10 +339,6 @@ const GLOBAL_VALUE_OPTIONS: Readonly<Record<string, ReadonlySet<string>>> = {
   git: new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix", "--config-env", "--exec-path"]),
   docker: new Set(["-H", "--host", "--context", "-c", "--config", "-l", "--log-level", "--tlscacert", "--tlscert", "--tlskey"]),
   kubectl: new Set(["-n", "--namespace", "--context", "--cluster", "--user", "-s", "--server", "--kubeconfig", "--token"]),
-  npm: new Set(["--prefix", "-w", "--workspace", "-C"]),
-  pnpm: new Set(["-C", "--dir", "-w", "--filter", "-F"]),
-  yarn: new Set(["--cwd"]),
-  bun: new Set(["--cwd", "--config", "-c"]),
 };
 
 /**
@@ -258,24 +417,6 @@ export function isShellWrapperProgram(token: string): boolean {
 
 /** Arguments that make a shell or interpreter print and exit without running code. */
 const INFO_ONLY_ARGS = new Set(["--version", "--help"]);
-/** `bun <verb>` / `deno <verb>` that run project tasks, not a code argument. */
-const BUN_TASK_VERBS = new Set([
-  "run", "test", "install", "i", "add", "a", "remove", "rm", "update", "outdated", "build", "pm", "link",
-  "unlink", "init", "upgrade", "audit", "info", "publish", "patch", "why",
-]);
-const DENO_TASK_VERBS = new Set(["task", "test", "fmt", "lint", "check", "info", "doc", "bench", "cache", "types", "completions", "upgrade", "compile"]);
-const SCRIPT_FILE_ARG = /[\\/]|\.(?:[cm]?[jt]sx?|sh|py|rb|pl|php|lua)$/i;
-
-function isTaskRunnerVerb(program: string, rest: readonly (string | undefined)[]): boolean {
-  const verb = rest[0];
-  if (verb === undefined) return false;
-  if (program === "deno") return DENO_TASK_VERBS.has(verb);
-  if (program !== "bun" || !BUN_TASK_VERBS.has(verb)) return false;
-  if (verb !== "run" || rest.length < 2) return true;
-  // `bun run build` runs a package.json script; `bun run ./x.ts` runs a file.
-  const target = rest[1];
-  return target !== undefined && !target.startsWith("-") && !SCRIPT_FILE_ARG.test(target);
-}
 
 /**
  * Variables whose value is a command, a code path or a config that runs one
@@ -522,8 +663,9 @@ function sshFamilyEffect(program: string, args: readonly (string | undefined)[])
 export function shellOptionEffect(argv: readonly (string | undefined)[]): ShellOptionEffect | null {
   const head = argv[0];
   if (head === undefined) return null;
+  if (RUNNER_SET.has(runnerName(head))) return null;
   const program = programName(head);
-  const args = argv.slice(1);
+  const args = argv.slice(1, opaqueRunnerReason(argv) ? wrapperPrefixLength(argv) : argv.length);
   let effect: ShellOptionEffect | null = null;
   switch (program) {
     case "sed": case "gsed": effect = sedEffect(args); break;
@@ -665,16 +807,84 @@ function subscriptedNameReason(program: string, args: readonly (string | undefin
   return null;
 }
 
+/**
+ * A runner always needs ordinary approval unless a rule or grant covers its
+ * raw argv. Its option spellings and sources do not establish execution facts.
+ */
+export function opaqueRunnerReason(argv: readonly (string | undefined)[]): string | null {
+  const head = argv[wrapperPrefixLength(argv)];
+  return head !== undefined && RUNNER_SET.has(runnerName(head)) ? "opaque runner prefix" : null;
+}
+
+/**
+ * Downstream command views for sink inspection only. Literal boundaries keep
+ * delegated runner identities; opaque options retain conservative candidates.
+ * Rules must retain the complete runner prefix and must not use this list.
+ */
+export function runnerCommandIndexes(argv: readonly (string | undefined)[]): readonly number[] {
+  let start = wrapperPrefixLength(argv);
+  const head = argv[start];
+  if (head === undefined || !RUNNER_SET.has(runnerName(head))) return [];
+  const prefixes = RUNNER_COMMAND_PREFIXES[runnerName(head)]!;
+  const prefixEnd = prefixes === true ? start : argv.findIndex((token, index) =>
+    index > start && runnerHasPrefix(prefixes, token));
+  if (prefixEnd < 0) return [];
+  const candidates = argv.flatMap((token, index) =>
+    index > prefixEnd && token !== undefined && !token.startsWith("-") ? [index] : []);
+  while (start < argv.length) {
+    const head = argv[start];
+    if (head === undefined || !RUNNER_SET.has(runnerName(head))) break;
+    const prefixes = RUNNER_COMMAND_PREFIXES[runnerName(head)]!;
+    const literal = literalCommandAfterPrefix(argv, start + 1);
+    const command = prefixes === true ? literal
+      : literal !== undefined && runnerHasPrefix(prefixes, argv[literal]) ? literalCommandAfterPrefix(argv, literal + 1) : undefined;
+    if (command === undefined) break;
+    start = command;
+    if (WRAPPER_SET.has(programName(argv[start]!))) {
+      const wrapped = wrapperPrefixLength(argv.slice(start));
+      if (wrapped > 0) start += wrapped;
+    }
+    const target = argv[start];
+    if (target === undefined) break;
+    const program = programName(target);
+    // A proved non-runner interpreter owns its code arguments. Those words
+    // cannot also acquire another language's command catalogue meanings.
+    if (!RUNNER_SET.has(runnerName(target)) && (INTERPRETER_SET.has(program)
+      || (SHELL_SET.has(program) && !["pwsh", "powershell", "cmd"].includes(program)))) return candidates.filter((index) => index <= start);
+  }
+  return candidates;
+}
+
+/** Script/code prefixes declare a language without interpreting runner options. */
+export function runnerCodeContext(argv: readonly (string | undefined)[]): { interpreter: string; operandIndex: number } | undefined {
+  let start = wrapperPrefixLength(argv);
+  while (start < argv.length) {
+    const head = argv[start];
+    if (head === undefined) break;
+    const prefixes = RUNNER_COMMAND_PREFIXES[runnerName(head)];
+    if (prefixes === undefined) break;
+    const index = literalCommandAfterPrefix(argv, start + 1);
+    if (index === undefined) break;
+    const prefix = prefixes === true ? undefined : prefixes.find((value) => (typeof value === "string" ? value : value[0]) === argv[index]);
+    if (prefix !== undefined && typeof prefix !== "string") return { interpreter: prefix[1], operandIndex: index + 1 };
+    const command = prefixes === true ? index : prefix !== undefined ? literalCommandAfterPrefix(argv, index + 1) : undefined;
+    if (command === undefined) break;
+    start = command + wrapperPrefixLength(argv.slice(command));
+  }
+  return undefined;
+}
+
 function hiddenCodeAt(argv: readonly (string | undefined)[], start: number): string | null {
   const head = argv[start];
   if (head === undefined) return null;
   const program = programName(head);
   const args = argv.slice(start + 1);
+  if (RUNNER_SET.has(runnerName(head))) return null;
   if (WRAPPER_SET.has(program)) {
     if (program === "eval") return args.length > 0 ? "code passed to eval" : null;
     if (program === "source" || program === ".") return args.length > 0 ? `script passed to ${program}` : null;
     if (program === "env" && args.some((arg) => arg !== undefined && /^(?:-[A-Za-z]*S|--split-string)/.test(arg))) return "code passed to env -S";
-    if (DASH_C_WRAPPERS.has(program) && args.some((arg) => arg !== undefined && /^(?:-[A-Za-z]*c[A-Za-z]*|--command)(?:=|$)/.test(arg))) {
+    if (wrapperCommand(argv.slice(start)).code) {
       return `code passed to ${program}`;
     }
     if (STRING_JOINING_WRAPPERS.has(program) && args.some((arg) => arg === undefined || /[\s;&|$`<>()]/.test(arg))) {
@@ -684,7 +894,6 @@ function hiddenCodeAt(argv: readonly (string | undefined)[], start: number): str
   }
   if (SHELL_SET.has(program) || INTERPRETER_SET.has(program)) {
     if (args.length > 0 && args.every((arg) => arg !== undefined && INFO_ONLY_ARGS.has(arg))) return null;
-    if (isTaskRunnerVerb(program, args)) return null;
     if (args.length === 0) return `${program} reads code from stdin`;
     return `code passed to ${program}`;
   }
@@ -785,11 +994,15 @@ export function arithmeticEvaluationReason(cmd: ShellCommand): string | null {
  * because wrapper option grammars differ too much to skip exactly.
  */
 export function hiddenCodeReason(argv: readonly (string | undefined)[]): string | null {
-  const inner = wrapperPrefixLength(argv);
-  if (inner > 0 && inner < argv.length && argv[inner] === undefined) return "dynamic program name behind a wrapper";
-  const starts = argv[0] !== undefined && WRAPPER_SET.has(programName(argv[0])) ? argv.map((_, index) => index) : [0];
+  const wrapper = wrapperCommand(argv);
+  const inner = wrapper.index;
+  if (!wrapper.code && inner > 0 && inner < argv.length && argv[inner] === undefined) return "dynamic program name behind a wrapper";
+  const wrapperStarts = argv[0] !== undefined && WRAPPER_SET.has(programName(argv[0])) ? argv.map((_, index) => index) : [0];
+  const runner = opaqueRunnerReason(argv) !== null;
+  const visibleArgv = runner ? argv.slice(0, inner + 1) : argv;
+  const starts = runner ? wrapperStarts.filter((start) => start <= inner) : wrapperStarts;
   for (const start of starts) {
-    const reason = hiddenCodeAt(argv, start);
+    const reason = hiddenCodeAt(visibleArgv, start);
     if (reason) return reason;
   }
   return null;

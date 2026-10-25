@@ -143,6 +143,11 @@ export interface McpOAuthConfig {
   authorizationServers?: string[];
   scopes?: string[];
   clientRegistration?: "client-id-metadata-document" | "dynamic" | "preregistration" | "manual";
+  /**
+   * Public client ID the authorization server pre-registered for Ave. When set it is
+   * used before any metadata document or dynamic registration. No secret is stored.
+   */
+  clientId?: string;
 }
 
 export interface McpStdioServerConfig extends McpServerConfigBase {
@@ -352,9 +357,41 @@ export interface McpResourceTemplateSummary {
   variables: string[];
 }
 
+/**
+ * Host-owned authorization state. `insufficient_scope` means the current grant
+ * still works but the server asked for more scope (403 step-up); only the
+ * explicit Authenticate action requests it.
+ */
+export type McpAuthStatus = "required" | "authenticating" | "authenticated" | "insufficient_scope" | "error";
+
+/** Stable, renderer-safe authorization failure codes. */
+export type McpAuthErrorCode =
+  | "mcp-auth-required"
+  | "mcp-auth-failed"
+  | "mcp-auth-storage-unavailable"
+  | "mcp-auth-storage-unreadable"
+  | "mcp-auth-registration-unsupported"
+  /** Protected-resource metadata describes a different resource than this endpoint. */
+  | "mcp-auth-resource-mismatch"
+  /** The credential index is unreadable; stored sign-ins are not cleaned up until it is rebuilt. */
+  | "mcp-auth-index-unreadable";
+
+export interface McpAuthenticationResult {
+  connected: boolean;
+  errorCode?: McpAuthErrorCode;
+}
+
+export interface McpConfigMutationResult extends McpAuthenticationResult {
+  warning?: string;
+}
+
 export interface McpServerState {
   id: string;
   status: "disconnected" | "connecting" | "connected" | "error";
+  /** Host-owned authorization state. Credentials never cross this boundary. */
+  authStatus?: McpAuthStatus;
+  /** A renderer-safe authorization problem to show on the server row. */
+  authError?: McpAuthErrorCode;
   connectedAt?: string;
   lastError?: string;
   registeredTools: string[];
@@ -494,7 +531,7 @@ export interface PluginUiResourceDecl {
 /**
  * The MCP Apps TOOL-RESULT `_meta.ui` extension (spec §3.2) — how a server says
  * "render this card with my result". These are the STANDARD `_meta.ui.*` keys, not
- * an `xyz.ave/*` vendor extension, so both arms declare a card identically: an
+ * a legacy reverse-DNS vendor extension, so both arms declare a card identically: an
  * external MCP server puts it on its `CallToolResult`, and a first-party plugin
  * puts it on its handler's return value (the loopback delegate lifts it onto the
  * wire, see `plugin-runtime-delegate.ts`).

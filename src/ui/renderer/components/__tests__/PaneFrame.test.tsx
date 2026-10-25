@@ -7,6 +7,7 @@ import { MAX_CHAT_GROUPS, MAX_PANES } from "../../../../contract/app-contract.js
 import { CHAT_SESSION_DRAG_TYPE } from "../pane-drop.js";
 import { SIDE_PANEL_MIN_WIDTH } from "../../../../shared/side-panel.js";
 import type { AveApi } from "../../types.js";
+import { getWebSurfaceOccluders } from "../../preview/web-surfaces.js";
 
 const t = ((key: string) => key) as never;
 
@@ -168,6 +169,23 @@ describe("PaneFrame", () => {
     expect(frame().className).toContain("border-primary");
     expect(frame().className).not.toMatch(/\bborder-border\b/);
     expect(frame().getAttribute("data-focused")).toBe("true");
+  });
+
+  it("rings a pane whose content asks for attention, over focus, and names the request in the header", () => {
+    const view = render(pane({ focused: true, attention: "build done", meta: { text: "app", title: "/repo/app" } }));
+    const frame = view.container.querySelector('[data-testid="pane"]')!;
+    expect(frame.getAttribute("data-attention")).toBe("true");
+    expect(frame.className).toContain("ring-2");
+    expect(frame.className).not.toContain("border-primary/(--opacity-half)");
+    expect(view.container.querySelector("h2")!.getAttribute("title")).toBe("build done");
+    const meta = screen.getByTestId("pane-header-meta");
+    expect(meta.textContent).toBe("app");
+    expect(meta.getAttribute("title")).toBe("/repo/app");
+
+    view.rerender(pane({ focused: true }));
+    expect(frame.getAttribute("data-attention")).toBeNull();
+    expect(frame.className).not.toContain("ring-2");
+    expect(screen.queryByTestId("pane-header-meta")).toBeNull();
   });
 
   it("drops a two-way split choice — beside or under — instead of guessing from the tile's shape", () => {
@@ -364,6 +382,15 @@ describe("PaneFrame drop gesture", () => {
     expect(screen.queryByTestId("pane-drop-indicator")).toBeNull();
   });
 
+  it("cuts the drop indicator out of any web page over the pane while it shows", () => {
+    const tile = tileWithRect({ onSessionDrop: vi.fn(), canSplit: true });
+    drag("dragOver", tile, carriedSession, { x: 795, y: 300 });
+    const indicator = screen.getByTestId("pane-drop-indicator");
+    expect(getWebSurfaceOccluders().has(indicator)).toBe(true);
+    drag("drop", tile, carriedSession, { x: 795, y: 300 });
+    expect(getWebSurfaceOccluders().has(indicator)).toBe(false);
+  });
+
   it("takes no drop when it has no receiver", () => {
     const tile = tileWithRect({});
     drag("dragOver", tile, carriedSession, { x: 795, y: 300 });
@@ -465,6 +492,7 @@ describe("useChatGroups", () => {
     expect(result.current.groups.map((group) => group.id))
       .toEqual(["main", "group-2", "group-3", "group-4"]);
 
+    act(() => result.current.setThumbnailOpen("group-4", true));
     // Every group idle, so only the exclusions can decide which one goes.
     act(() => result.current.focus("group-3"));
     let adopted: { chatGroupId: string; released: string | null } | null = null;
@@ -474,6 +502,7 @@ describe("useChatGroups", () => {
     // beside, the focused group, the primary. Each of those three exclusions
     // would name a different leaf here if it were dropped.
     expect(adopted).toMatchObject({ released: "group-4" });
+    expect(result.current.thumbnailOpenIds).toEqual([]);
     expect(result.current.groups.map((group) => group.id))
       .toEqual(["main", "group-2", "group-5", "group-3"]);
   });
@@ -533,6 +562,46 @@ describe("useChatGroups", () => {
     expect(result.current.maximizedId).toBeNull();
     expect(result.current.groups.filter((group) => !group.hidden).map((group) => group.id))
       .toEqual(["main", "group-2"]);
+  });
+
+  it("tracks session thumbnails independently of work panels and clears closed panes", () => {
+    const { result } = renderHook(() => useChatGroups());
+    act(() => result.current.split("main", "row"));
+    expect(result.current.groups.map((group) => group.thumbnailOpen)).toEqual([false, false]);
+
+    act(() => result.current.setThumbnailOpen("main", true));
+    act(() => result.current.setPanelOpen("group-2", true));
+    expect(result.current.groups.map(({ id, panelOpen, thumbnailOpen }) => ({ id, panelOpen, thumbnailOpen })))
+      .toEqual([
+        { id: "main", panelOpen: false, thumbnailOpen: true },
+        { id: "group-2", panelOpen: true, thumbnailOpen: false },
+      ]);
+
+    act(() => result.current.setThumbnailOpen("main", true));
+    expect(result.current.thumbnailOpenIds).toEqual(["main"]);
+    act(() => result.current.setThumbnailOpen("group-2", true));
+    act(() => result.current.close("group-2"));
+    expect(result.current.thumbnailOpenIds).toEqual(["main"]);
+    act(() => result.current.setThumbnailOpen("main", false));
+    expect(result.current.thumbnailOpenIds).toEqual([]);
+  });
+
+  it("restores independent thumbnail and work panel choices", () => {
+    const { result } = renderHook(() => useChatGroups());
+    act(() => result.current.split("main", "row"));
+    const tree = result.current.tree;
+    act(() => result.current.restore({
+      tree,
+      focusedId: "group-2",
+      panelOpenIds: ["main"],
+      thumbnailOpenIds: ["group-2"],
+      content: {},
+    }));
+    expect(result.current.groups.map(({ id, panelOpen, thumbnailOpen }) => ({ id, panelOpen, thumbnailOpen })))
+      .toEqual([
+        { id: "main", panelOpen: true, thumbnailOpen: false },
+        { id: "group-2", panelOpen: false, thumbnailOpen: true },
+      ]);
   });
 
   it("tracks the work panel per group rather than per window", () => {
@@ -608,6 +677,47 @@ describe("useChatGroups pane content", () => {
     act(() => result.current.focus("group-2"));
     act(() => result.current.setPaneContent("group-2", { view: "home" }));
     expect(result.current.focusedId).toBe("group-2");
+  });
+
+  it("holds each terminal or web surface in one pane, while two panes may each show one", () => {
+    const { result } = renderHook(() => useChatGroups("work"));
+    act(() => result.current.split("main", "row"));
+    act(() => result.current.setPaneContent("main", { view: "terminal", surface: "terminal:1" }));
+    act(() => result.current.focus("group-2"));
+    // Another terminal is another place: both panes show one.
+    act(() => result.current.setPaneContent("group-2", { view: "terminal", surface: "terminal:2" }));
+    expect(result.current.contentById["group-2"]).toEqual({ view: "terminal", surface: "terminal:2" });
+    expect(result.current.focusedId).toBe("group-2");
+    // The SAME terminal is not opened twice: its pane is focused instead.
+    act(() => result.current.setPaneContent("group-2", { view: "terminal", surface: "terminal:1" }));
+    expect(result.current.focusedId).toBe("main");
+    expect(result.current.contentById["group-2"]).toEqual({ view: "terminal", surface: "terminal:2" });
+  });
+
+  it("moves a surface between panes as a swap, opens one on an edge, and finds a pane's neighbours", () => {
+    const { result } = renderHook(() => useChatGroups("work"));
+    act(() => result.current.split("main", "row"));
+    act(() => result.current.setPaneContent("main", { view: "terminal", surface: "terminal:1" }));
+    act(() => result.current.setPaneContent("group-2", { view: "web", surface: "browser:2" }));
+    expect(result.current.paneNeighbor("main", "right")).toBe("group-2");
+    expect(result.current.paneNeighbor("group-2", "left")).toBe("main");
+    expect(result.current.paneNeighbor("main", "left")).toBeUndefined();
+    expect(result.current.paneNeighbor("main", "down")).toBeUndefined();
+
+    // A swap — both surfaces stay on screen — even though each location is
+    // already "open elsewhere", which `setPaneContent` alone would refuse.
+    act(() => result.current.movePaneContent("main", "group-2"));
+    expect(result.current.contentById.main).toEqual({ view: "web", surface: "browser:2" });
+    expect(result.current.contentById["group-2"]).toEqual({ view: "terminal", surface: "terminal:1" });
+    expect(result.current.focusedId).toBe("group-2");
+
+    // Onto an edge: a new pane under group-2 holds it, and the pane it left goes home.
+    let placed: string | null = null;
+    act(() => { placed = result.current.placeOnEdge("group-2", "bottom", { view: "web", surface: "browser:2" }, "main"); });
+    expect(placed).toBe("group-3");
+    expect(result.current.contentById["group-3"]).toEqual({ view: "web", surface: "browser:2" });
+    expect(result.current.contentById.main).toEqual({ view: "home" });
+    expect(result.current.paneNeighbor("group-2", "down")).toBe("group-3");
   });
 
   it("focuses the pane a plugin is already open in rather than opening a second guest", () => {

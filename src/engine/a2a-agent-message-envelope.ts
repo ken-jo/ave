@@ -3,7 +3,7 @@ import type {
   A2APart,
   A2AProjectedTaskState,
 } from "../shared/a2a.js";
-import { maskSensitiveData } from "../shared/dlp.js";
+import { isSafeStructuralId } from "../shared/dlp-safe-id.js";
 
 export const A2A_PARENT_RECIPIENT = "parent" as const;
 export const A2A_AGENT_ENVELOPE_VERSION = 1 as const;
@@ -115,11 +115,7 @@ export interface A2AAgentSendAuditInput {
 }
 
 export function isSafeA2AStructuralId(value: unknown): value is string {
-  return typeof value === "string"
-    && value.length > 0
-    && value.length <= 256
-    && !/[\u0000-\u001f\u007f]/.test(value)
-    && maskSensitiveData(value).detections.length === 0;
+  return isSafeStructuralId(value);
 }
 
 export function isA2AAgentCausalContext(value: unknown): value is A2AAgentCausalContext {

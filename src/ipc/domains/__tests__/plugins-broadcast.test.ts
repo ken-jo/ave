@@ -122,6 +122,7 @@ async function setup(options: { appWindows?: ReturnType<typeof makeWindow>[] } =
     forgetPluginAuthPartitionsService: vi.fn(),
     getMainWindow: vi.fn(() => appWindows[0]),
     getAppWindows: vi.fn(() => appWindows),
+    mcpManager: { reconcileBundledCredentials: vi.fn(async () => undefined) },
   };
   const runActivation = async (args: unknown[], pluginId: string): Promise<void> => {
     const options = args.find((arg): arg is {
@@ -236,22 +237,26 @@ describe("plugins IPC lifecycle broadcast", () => {
   it("broadcasts uninstall result to every app window", async () => {
     const { deps, appWindows } = await setup();
 
-    await invoke("ave:plugins:uninstall", "agent-hub");
+    await invoke("ave:plugins:uninstall", "samplehub");
 
-    expect(deps.pluginMarketplace.uninstall).toHaveBeenCalledWith("agent-hub");
+    expect(deps.pluginMarketplace.uninstall).toHaveBeenCalledWith("samplehub");
     expect(deps.pluginRuntime.removePluginWithCommit).toHaveBeenCalledWith(
-      "agent-hub",
+      "samplehub",
       expect.any(Function),
     );
-    expect(deps.settingsService.deletePluginConfig).toHaveBeenCalledWith("agent-hub");
-    expect(deps.settingsService.deletePluginSecrets).toHaveBeenCalledWith("agent-hub", new Set(["apiKey", "sttApiKey"]));
-    expect(deps.clearAuthPartitionService).toHaveBeenCalledWith("persist:plugin-auth:agent-hub");
-    expect(deps.clearAuthPartitionService).toHaveBeenCalledWith("persist:plugin-auth:agent-hub:tenant");
-    expect(deps.forgetPluginAuthPartitionsService).toHaveBeenCalledWith("agent-hub");
+    expect(deps.settingsService.deletePluginConfig).toHaveBeenCalledWith("samplehub");
+    expect(deps.settingsService.deletePluginSecrets).toHaveBeenCalledWith("samplehub", new Set(["apiKey", "sttApiKey"]));
+    expect(deps.clearAuthPartitionService).toHaveBeenCalledWith("persist:plugin-auth:samplehub");
+    expect(deps.clearAuthPartitionService).toHaveBeenCalledWith("persist:plugin-auth:samplehub:tenant");
+    expect(deps.forgetPluginAuthPartitionsService).toHaveBeenCalledWith("samplehub");
+    // Its MCP sign-ins are retired now that the registry no longer names it, not at the next start.
+    expect(deps.mcpManager.reconcileBundledCredentials).toHaveBeenCalledWith("plugin", { removed: "samplehub" });
+    expect(deps.mcpManager.reconcileBundledCredentials.mock.invocationCallOrder[0])
+      .toBeGreaterThan(deps.pluginMarketplace.uninstall.mock.invocationCallOrder[0]!);
     for (const win of appWindows) {
       expect(win.webContents.send).toHaveBeenCalledWith(
         "ave:plugins:uninstall-result",
-        { slug: "agent-hub", success: true },
+        { slug: "samplehub", success: true },
       );
     }
   });
@@ -281,7 +286,7 @@ describe("plugins IPC lifecycle broadcast", () => {
     // open SQLite WAL files when rm fires → EBUSY → half-deleted dir.
     const { deps } = await setup();
 
-    await invoke("ave:plugins:uninstall", "agent-hub");
+    await invoke("ave:plugins:uninstall", "samplehub");
 
     const removePluginOrder = deps.pluginRuntime.removePluginWithCommit.mock.invocationCallOrder[0];
     const uninstallOrder = deps.pluginMarketplace.uninstall.mock.invocationCallOrder[0];
@@ -299,13 +304,15 @@ describe("plugins IPC lifecycle broadcast", () => {
     const { deps, appWindows } = await setup();
     deps.pluginRuntime.removePluginWithCommit.mockRejectedValueOnce(new Error("dispose chain failed"));
 
-    await expect(invoke("ave:plugins:uninstall", "agent-hub")).rejects.toThrow("dispose chain failed");
+    await expect(invoke("ave:plugins:uninstall", "samplehub")).rejects.toThrow("dispose chain failed");
 
     expect(deps.pluginMarketplace.uninstall).not.toHaveBeenCalled();
+    // Nothing was removed, so no sign-in is revoked.
+    expect(deps.mcpManager.reconcileBundledCredentials).not.toHaveBeenCalled();
     for (const win of appWindows) {
       expect(win.webContents.send).toHaveBeenCalledWith(
         "ave:plugins:uninstall-result",
-        { slug: "agent-hub", success: false, error: "dispose chain failed" },
+        { slug: "samplehub", success: false, error: "dispose chain failed" },
       );
     }
   });
@@ -319,37 +326,37 @@ describe("plugins IPC lifecycle broadcast", () => {
     const { deps, appWindows } = await setup();
     deps.pluginMarketplace.uninstall.mockRejectedValueOnce(new Error("EACCES: permission denied"));
 
-    await expect(invoke("ave:plugins:uninstall", "agent-hub")).rejects.toThrow("EACCES");
+    await expect(invoke("ave:plugins:uninstall", "samplehub")).rejects.toThrow("EACCES");
 
     expect(deps.pluginRuntime.removePluginWithCommit).toHaveBeenCalledWith(
-      "agent-hub",
+      "samplehub",
       expect.any(Function),
     );
     for (const win of appWindows) {
       expect(win.webContents.send).toHaveBeenCalledWith(
         "ave:plugins:uninstall-result",
-        { slug: "agent-hub", success: false, error: "EACCES: permission denied" },
+        { slug: "samplehub", success: false, error: "EACCES: permission denied" },
       );
     }
   });
 
   it("broadcasts idempotent uninstall success when marketplace entry is already gone", async () => {
     const { deps, appWindows } = await setup();
-    deps.pluginMarketplace.uninstall.mockRejectedValueOnce(new Error("Plugin not installed: agent-hub"));
+    deps.pluginMarketplace.uninstall.mockRejectedValueOnce(new Error("Plugin not installed: samplehub"));
 
-    await expect(invoke("ave:plugins:uninstall", "agent-hub")).resolves.toEqual({
-      pluginId: "agent-hub",
+    await expect(invoke("ave:plugins:uninstall", "samplehub")).resolves.toEqual({
+      pluginId: "samplehub",
       uninstalled: true,
     });
 
     expect(deps.pluginRuntime.removePluginWithCommit).toHaveBeenCalledWith(
-      "agent-hub",
+      "samplehub",
       expect.any(Function),
     );
     for (const win of appWindows) {
       expect(win.webContents.send).toHaveBeenCalledWith(
         "ave:plugins:uninstall-result",
-        { slug: "agent-hub", success: true },
+        { slug: "samplehub", success: true },
       );
     }
   });
@@ -443,11 +450,11 @@ describe("plugins IPC lifecycle broadcast", () => {
     const destroyedWindow = makeWindow({ destroyed: true });
     await setup({ appWindows: [liveWindow, destroyedWindow] });
 
-    await invoke("ave:plugins:uninstall", "agent-hub");
+    await invoke("ave:plugins:uninstall", "samplehub");
 
     expect(liveWindow.webContents.send).toHaveBeenCalledWith(
       "ave:plugins:uninstall-result",
-      { slug: "agent-hub", success: true },
+      { slug: "samplehub", success: true },
     );
     expect(destroyedWindow.webContents.send).not.toHaveBeenCalled();
   });

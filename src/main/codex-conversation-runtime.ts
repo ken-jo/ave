@@ -1,5 +1,7 @@
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { verifyCodexExecutableArtifact, type CodexExecutableArtifact } from "./codex-executable-artifact.js";
+import { spawnCodexNative } from "./codex-native-spawn.js";
 import { lstatSync, promises as fs } from "node:fs";
 import { isAbsolute, join, resolve, win32 } from "node:path";
 import { getAveAppVersion } from "../shared/app-version.js";
@@ -9,8 +11,7 @@ import {
   subscriptionTransportFailure,
   type SubscriptionTransportDiagnosticError,
 } from "./subscription-transport-error-diagnostics.js";
-import { forceKillManagedChildProcess, spawnManaged } from "./managed-child-processes.js";
-import { resolveCodexVendorExecutable } from "./codex-vendor-path.js";
+import { forceKillManagedChildProcess } from "./managed-child-processes.js";
 import {
   assertSubscriptionPromptAttachments,
   SubscriptionAttachmentTransportError,
@@ -22,6 +23,9 @@ import { isNonNegativeSafeInteger, isPositiveSafeInteger } from "../shared/safe-
 import { JsonLineReader } from "../lib/json-line-reader.js";
 import { JsonRpcPendingRequests } from "../lib/json-rpc-pending-request.js";
 import type { ProviderRpcOperation } from "../engine/llm/provider-error-diagnostics.js";
+import { createLogger } from "../lib/logger.js";
+
+const log = createLogger("codex-conversation-runtime");
 
 export const CODEX_RPC_REQUEST_TIMEOUT_MS = 15_000;
 export const CODEX_MAX_RPC_LINE_BYTES = 1_000_000;
@@ -72,6 +76,21 @@ export type CodexSpawnAppServer = (
 export type CodexAppServerRequestId = string | number;
 
 /**
+ * Native features every app-server Ave spawns runs with disabled. Under
+ * `--strict-config` an unknown name stops the server from starting, so the
+ * user's CLI must know each one; `codex-user-runtime.ts` checks its
+ * `features list` before Ave relies on it.
+ */
+export const CODEX_DISABLED_FEATURES: readonly string[] = Object.freeze([
+  "plugins", "remote_control", "remote_plugin", "hooks",
+  "apps", "browser_use", "browser_use_external", "browser_use_full_cdp_access",
+  "code_mode", "computer_use", "goals", "image_generation", "multi_agent",
+  "shell_snapshot", "shell_tool", "shell_zsh_fork", "unified_exec",
+  "skill_mcp_dependency_install", "skill_search", "sleep_tool", "tool_suggest",
+  "view_image", "workspace_dependencies",
+]);
+
+/**
  * argv for every `codex app-server` Ave spawns. The subscription client
  * (`codex-app-server-client.ts`) and the conversation runtime below start the
  * same binary behind the same hardening boundary. Native execution and
@@ -90,15 +109,12 @@ export const CODEX_APP_SERVER_ARGV: readonly string[] = Object.freeze([
   'cli_auth_credentials_store="file"',
   "-c",
   'web_search="disabled"',
+  // Unelevated mode needs no UAC or sandbox accounts. Ave never requests
+  // elevated mode or windowsSandbox/setupStart; turns run read-only with
+  // no native environments.
+  ...(process.platform === "win32" ? ["-c", 'windows.sandbox="unelevated"'] : []),
   "--strict-config",
-  ...[
-    "plugins", "remote_control", "remote_plugin", "hooks",
-    "apps", "browser_use", "browser_use_external", "browser_use_full_cdp_access",
-    "code_mode", "computer_use", "goals", "image_generation", "multi_agent",
-    "shell_snapshot", "shell_tool", "shell_zsh_fork", "unified_exec",
-    "skill_mcp_dependency_install", "skill_search", "sleep_tool", "tool_suggest",
-    "view_image", "workspace_dependencies",
-  ].flatMap((feature) => ["--disable", feature]),
+  ...CODEX_DISABLED_FEATURES.flatMap((feature) => ["--disable", feature]),
   "--listen",
   "stdio://",
 ]);
@@ -174,6 +190,8 @@ export class CodexConversationRuntimeError extends Error {
   constructor(
     readonly code: CodexConversationRuntimeErrorCode,
     readonly providerError?: SubscriptionTransportDiagnosticError["providerError"],
+    /** Main-process startup detail; never included in renderer error payloads. */
+    readonly detail?: string,
   ) {
     super(code);
     this.name = "CodexConversationRuntimeError";
@@ -245,8 +263,11 @@ export interface CodexConversationRuntimeOptions {
   workspaceDir: string;
   /** Optional existing isolated temporary directory; defaults to runtimeHome. */
   runtimeTempDir?: string;
-  /** Test seam for the packaged Codex executable resolver. */
-  resolveExecutable?: () => string;
+  /**
+   * Resolves the user's verified `codex` executable (see
+   * `CodexUserRuntimeLocator`). There is no default: Ave ships no runtime.
+   */
+  resolveRuntime: () => Promise<CodexExecutableArtifact>;
   /** Test seam; production uses managed-child-processes. */
   spawn?: CodexSpawnAppServer;
   clientVersion?: string;
@@ -377,25 +398,13 @@ const PASSIVE_NATIVE_STREAM_ITEM_TYPES = new Set([
   "contextCompaction",
 ]);
 
-/**
- * Resolve the official package's native binary directly. We deliberately do
- * not execute a PATH-resolved `codex` shim or a shell command: the runtime is
- * pinned in package.json and every argv value below is host-owned.
- *
- * `unavailable` builds the caller's domain error so each Codex transport keeps
- * its own error union while sharing one resolution path.
- */
-export function resolveBundledCodexExecutable(unavailable: () => Error): string {
-  return resolveCodexVendorExecutable("codex", unavailable);
-}
-
-export function spawnPackagedCodex(
+export function spawnCodexAppServer(
   command: string,
   args: ReadonlyArray<string>,
   options: SpawnOptions,
   label: string,
 ): ChildProcess {
-  return spawnManaged(command, args, options, { label });
+  return spawnCodexNative(command, args, options, label);
 }
 
 function blocksInheritedEnvironment(key: string): boolean {
@@ -735,7 +744,7 @@ function projectTurnTokenUsage(
  * App Server methods.
  */
 export class CodexConversationRuntime {
-  private readonly resolveExecutable: () => string;
+  private readonly resolveRuntime: () => Promise<CodexExecutableArtifact>;
   private readonly spawn: CodexSpawnAppServer;
   private readonly clientVersion: string;
   private readonly runtimeHome: string;
@@ -746,6 +755,7 @@ export class CodexConversationRuntime {
   private threadDynamicTools: NormalizedDynamicTools | null = null;
   private pendingThreadDynamicTools: NormalizedDynamicTools | null = null;
   private child: ChildProcess | null = null;
+  private termination: void | Promise<void> = undefined;
   private startPromise: Promise<void> | null = null;
   private threadStartPromise: Promise<string> | null = null;
   private threadId: string | null = null;
@@ -754,12 +764,9 @@ export class CodexConversationRuntime {
   private transportReader: JsonLineReader | null = null;
 
   constructor(options: CodexConversationRuntimeOptions) {
-    this.resolveExecutable = options.resolveExecutable
-      ?? (() => resolveBundledCodexExecutable(
-        () => new CodexConversationRuntimeError("codex-runtime-unavailable"),
-      ));
+    this.resolveRuntime = options.resolveRuntime;
     this.spawn = options.spawn
-      ?? ((command, args, options_) => spawnPackagedCodex(command, args, options_, "codex-conversation-runtime"));
+      ?? ((command, args, options_) => spawnCodexAppServer(command, args, options_, "codex-conversation-runtime"));
     this.clientVersion = options.clientVersion ?? getAveAppVersion();
     this.runtimeHome = options.runtimeHome;
     this.sqliteHome = options.sqliteHome;
@@ -870,12 +877,12 @@ export class CodexConversationRuntime {
   }
 
   /** Safely closes the isolated transport and force-kills its managed child if needed. */
-  stop(): void {
-    this.abortTransport(new CodexConversationRuntimeError("codex-operation-failed"));
+  stop(): void | Promise<void> {
+    return this.abortTransport(new CodexConversationRuntimeError("codex-operation-failed"));
   }
 
   async shutdown(): Promise<void> {
-    this.stop();
+    await this.stop();
   }
 
   private createActiveTurn(threadId: string, callbacks: CodexConversationCallbacks): ActiveTurn {
@@ -1038,9 +1045,9 @@ export class CodexConversationRuntime {
   }
 
   private async start(): Promise<void> {
-    let executable: string;
+    let runtime: CodexExecutableArtifact;
     try {
-      executable = this.resolveExecutable();
+      runtime = await this.resolveRuntime();
     } catch (error) {
       if (error instanceof CodexConversationRuntimeError) throw error;
       throw new CodexConversationRuntimeError("codex-runtime-unavailable");
@@ -1054,8 +1061,13 @@ export class CodexConversationRuntime {
       : runtimeHome;
     let child: ChildProcess;
     try {
+      await verifyCodexExecutableArtifact(runtime);
+    } catch {
+      throw new CodexConversationRuntimeError("codex-runtime-unavailable");
+    }
+    try {
       child = this.spawn(
-        executable,
+        runtime.executable,
         CODEX_APP_SERVER_ARGV,
         {
           cwd: workspaceDir,
@@ -1069,7 +1081,7 @@ export class CodexConversationRuntime {
       throw new CodexConversationRuntimeError("codex-runtime-start-failed", subscriptionTransportFailure({ phase: "process-start", kind: "process" }));
     }
     if (!hasCodexStdioStreams(child)) {
-      forceKillManagedChildProcess(child, "codex conversation missing transport streams");
+      await forceKillManagedChildProcess(child, "codex conversation missing transport streams");
       throw new CodexConversationRuntimeError("codex-runtime-start-failed");
     }
 
@@ -1097,13 +1109,19 @@ export class CodexConversationRuntime {
       await initialized;
       if (process.platform === "win32") {
         const readiness = await this.request("windowsSandbox/readiness");
-        if (!isCodexJsonRecord(readiness) || readiness.status !== "ready") {
-          throw new CodexConversationRuntimeError("codex-runtime-start-failed");
+        const status = isCodexJsonRecord(readiness) ? readiness.status : undefined;
+        const boundedStatus = status === "notConfigured" || status === "updateRequired" || status === "ready"
+          ? status : "unknown";
+        if (boundedStatus !== "ready") {
+          log.warn({ readiness: boundedStatus }, "Windows sandbox readiness failed");
+          throw new CodexConversationRuntimeError("codex-runtime-start-failed", undefined,
+            `Windows sandbox readiness: ${boundedStatus}`);
         }
       }
     } catch (cause) {
       const error = new CodexConversationRuntimeError("codex-runtime-start-failed",
-        cause instanceof CodexConversationRuntimeError ? cause.providerError : undefined);
+        cause instanceof CodexConversationRuntimeError ? cause.providerError : undefined,
+        cause instanceof CodexConversationRuntimeError ? cause.detail : undefined);
       this.abortTransport(error, child);
       throw error;
     }
@@ -1684,11 +1702,12 @@ export class CodexConversationRuntime {
     }
   }
 
-  private abortTransport(error: CodexConversationRuntimeError, expectedChild?: ChildProcess): void {
+  private abortTransport(error: CodexConversationRuntimeError, expectedChild?: ChildProcess): void | Promise<void> {
     const child = this.child;
     if (expectedChild && child !== expectedChild) return;
     this.closeTransport(error, child);
-    if (child) forceKillManagedChildProcess(child, "codex conversation transport closed");
+    if (child) this.termination = forceKillManagedChildProcess(child, "codex conversation transport closed");
+    return this.termination;
   }
 
   private closeTransport(error: CodexConversationRuntimeError, expectedChild?: ChildProcess | null): void {

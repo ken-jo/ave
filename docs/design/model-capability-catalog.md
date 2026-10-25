@@ -12,7 +12,7 @@ Anchors: `src/shared/model-catalog/` (types, provider map, normalizer),
 `scripts/lib/model-catalog.ts` and `scripts/generate-model-catalog.ts` (the generator),
 `scripts/model-catalog/` (the committed input), `src/shared/model-pricing.ts` (price
 resolution, §6), `src/shared/model-host-policy.ts` (host-owned defaults and the
-request-shape table, §8).
+request-control projection, §8).
 
 ## 1. Problem
 
@@ -245,9 +245,8 @@ installing one would fail there.
 Windows the snapshot of 2026-10-12 changed against the table (the rest agreed): GPT-5.4
 Pro 1.1M → 1,050,000; GPT-4.1, 4.1 mini and nano 1M → 1,047,576; Gemini 2.5 Pro and Flash
 1M → 1,048,576, Gemini 2.5 Flash-Lite 128K → 1,048,576. Claude Sonnet and Opus 4.6 stay at
-1M: the catalog lists the window the adapter's beta header delivers, and the decision to
-send that header is the host's request-shape table's (§8). The models the table described
-and the catalog does not, which now take the fallback, are listed in §8.
+1M. The advertised 1M window is the default, so no context-window beta header is
+sent. Models absent from the catalog take the fallback described in §8.
 
 ## 5. Output and reasoning (slice 3)
 
@@ -305,33 +304,31 @@ Implemented.
   when thinking is on, naming `llm.vendors.<vendor>.catalogModel`. A level guessed
   from a name is a 400 on a model that does not take it; naming the entry with
   `catalogModel` supplies the levels. Until slice 7 name rules (`isOpenAIReasoningModel`,
-  `supportsReasoningEffortNone`) guessed one. Request shape stays a host rule, in the
-  request-shape table (§8): adaptive vs numeric Claude thinking, interleaved numeric
-  thinking, and the Responses-vs-Chat routing. A Claude model whose reasoning the catalog
-  does not state still gets the thinking its request shape takes (`source:
-  "request-shape"`). The catalog lists
-  effort levels for models that take numeric thinking and carries no interleaving flag
-  for Anthropic. Numeric budgets keep the adapter's existing rule: below `max_tokens`,
-  except with interleaved thinking, where the provider allows the budget to span the
+  `supportsReasoningEffortNone`) guessed one. Request controls now read catalog
+  metadata too: a declared `budgetTokens` selects numeric thinking, including
+  entries that also declare effort; qualitative-only reasoning selects adaptive
+  thinking. An unknown entry gets no inferred thinking control. Numeric
+  interleaving requires an explicit `interleaved: true` declaration; otherwise
+  no beta opt-in is sent. Numeric budgets remain below `max_tokens`, except
+  with declared interleaving, where the budget can span the
   turn. Behavior changes against the bundled snapshot: GPT-5 sends `minimal` (was `low`)
   and GPT-5.1 sends `none` (was `low`) for a budget at or below 500; a model the catalog
   marks as not reasoning gets no reasoning control, including numeric or adaptive
   thinking. A reasoning model whose levels the catalog does not list sends no effort:
   absent levels are unknown, not none, and unknown is not guessed.
-  Chat Completions answers 400 to `reasoning_effort` on a GPT-5 turn that carries tools
-  on the chat-only route. A custom `baseUrl` does not change the adapter's selected
-  protocol; the responses route still carries effort with tools. That rule lives in `planReasoning`
-  too (`chatCompletionsRejectsToolTurnEffort`): the plan comes back as `kind: "none"`
-  with the requested effort and `suppressed: "chat-completions-tool-turn"`. The adapter
-  and the turn record both take this one answer, so the record never shows an effort
-  the request dropped.
+  Reported controls select the request protocol. Native reasoning models use
+  the response protocol, which accepts effort with tools. A custom endpoint
+  retains the chat protocol unless its report explicitly names the response
+  control; a catalog identity alone does not establish protocol support.
+  Explicitly reported effort is preserved on tool turns rather than suppressed
+  by an inferred model-family restriction.
 - **Run records.** The turn summary and the audit `turn` row carry `modelSettings`
   (`src/shared/run-model-settings.ts`): the catalog `sha256`, the window and its source
   and entry, the prompt cap that bounded the budget when one did (§4), the output block
   above, and the reasoning plan for the last primary request started. A retry
   that drops tools recomputes that plan at the dispatch boundary, after runtime and
   cancellation guards pass. A named catalog identity also identifies the model
-  family for chat tool-turn suppression, even when the route uses a deployment alias.
+  family for capability resolution, even when the route uses a deployment alias.
   It is omitted for subscription runtimes and when the last request used a fallback,
   even if its provider and model match the primary: that attempt resolves generation
   limits again. A later primary request records its own resolution at dispatch.
@@ -560,7 +557,7 @@ unknown since (§8).
 ### 6.1 Retired models (slice 7 follow-up, owner direction 2026-10-13)
 
 A model that is going away is in one of two tiers (owner decision 2026-10-13,
-two-tier); nothing else puts it there, and the host keeps no list of retired names
+two-tier); nothing else puts it there, and the host keeps no list of retired model ids
 (`RETIRED_LLM_MODEL_IDS`, which retired `gpt-4o` by name, is gone):
 
 - **Retired (`"unlisted"`) — the vendor's own listing.** The route's last successful
@@ -741,13 +738,12 @@ report after answering each kind of row:
   `Nemotron-3-Nano-30B-A3B-FP8` 131,072): these windows come from the endpoint's report or
   the user's `contextWindow`, else the fallback, which the engine logs once per route.
 - **Fields with no catalog counterpart:**
-  - `contextWindow1MBeta` (Claude Sonnet 4.6 and Opus 4.6) — a request-shape fact, now a
-    row of the host's request-shape table (`CLAUDE_REQUEST_SHAPES` in
-    `src/shared/model-host-policy.ts`), beside the interleaved-thinking generations, the
-    adaptive-thinking rule and the Responses-vs-Chat wire choice. The rows match exactly
-    the ids the table and the adapter's regex matched (any id beginning with
-    `claude-sonnet-4-6` or `claude-opus-4-6`; Opus 4, 4.0, 4.1, 4.5 and Sonnet 4, 4.0, 4.5
-    with an optional date or `-latest`). The window itself is the catalog's 1M.
+  - `contextWindow1MBeta` is removed: no context-window beta header is sent.
+    Request controls use catalog metadata through `claudeRequestShape` in
+    `src/shared/model-host-policy.ts`. Protocol selection uses reported controls
+    or catalog reasoning through `usesOpenAIResponsesWire` in
+    `src/engine/llm/reasoning-plan.ts`; neither parses model versions.
+
   - `surchargeInputThreshold` / multipliers (GPT-5.4 and 5.4 Pro) — the catalog states the
     same prices as a tier at 272,000 (2× input, 1.5× output). Recorded snapshots that carry
     the old form are read as that tier (§6).
@@ -757,7 +753,7 @@ report after answering each kind of row:
 
 Host-owned values live in that module: the 32,000 default output
 (`DEFAULT_LLM_OUTPUT_TOKEN_LIMIT`), the 128K fallback window (`FALLBACK_CONTEXT_WINDOW`),
-`MAX_CREDIBLE_CONTEXT_WINDOW`, the TPM defaults and the request-shape table. None of it
+`MAX_CREDIBLE_CONTEXT_WINDOW`, the TPM defaults and request-control projection. None of it
 describes a model's capacity, price, modalities or reasoning levels.
 
 The output and tool capabilities never had name rules: an unknown output ceiling clamps

@@ -839,7 +839,7 @@ function luhnValid(num: string): boolean {
   return sum % 10 === 0;
 }
 
-type PiiKind = "SSN_KR" | "EMAIL" | "PHONE_KR" | "PHONE_US" | "CREDIT_CARD";
+type PiiKind = "SSN_KR" | "EMAIL" | "PHONE_KR" | "PHONE_US" | "PHONE_INTL" | "CREDIT_CARD";
 
 /**
  * One shared PII detector. DETECTION (the pattern plus an optional validity
@@ -867,6 +867,39 @@ export interface PiiPattern {
   redactToken: string;
 }
 
+function internationalPhonePattern(): RegExp {
+  const separator = String.raw`[ \t().-]{0,3}`;
+  const nationalNumber = (leadingDigits: readonly string[], remainingDigits: string): string =>
+    `${leadingDigits.join(separator)}(?:${separator}\\d){${remainingDigits}}`;
+  // Common national forms also admit compact numbers. Country-specific
+  // lengths keep a following whitespace-separated numeric field out of a match.
+  const nationalForms: readonly (readonly [string, string])[] = [
+    ["1", nationalNumber(["[2-9]", "\\d", "\\d", "[2-9]"], "6")],
+    ["44", nationalNumber(["[1-9]"], "9")],
+    ["82", `(?:${[
+      nationalNumber(["1", "0"], "8"),
+      // Variable-length subscribers retain their exchange/line grouping so a
+      // one-digit numeric field cannot extend an already complete short form.
+      `(?:1${separator}[16789]|2|[3-6]${separator}\\d)${separator}\\d{3,4}${separator}\\d{4}`,
+    ].join("|")})`],
+    ["81", `(?:${[
+      nationalNumber(["[789]", "0"], "8"),
+      nationalNumber(["5", "0"], "8"),
+      nationalNumber([`(?!5${separator}0)[1-6]`], "8"),
+    ].join("|")})`],
+    ...["33", "420", "351"].map((countryCode): readonly [string, string] =>
+      [countryCode, nationalNumber(["[1-9]"], "8")]),
+  ];
+  const forms = nationalForms.map(([countryCode, national]) =>
+    `${countryCode}${separator}${national}`).join("|");
+  // A digit guard accepts particles and other letters immediately after a
+  // complete number, while refusing a prefix of an uninterrupted longer run.
+  return new RegExp(
+    String.raw`(?<![\p{L}\p{N}_+.-])\+(?:${forms})(?!\p{N}|[_+]|[.-][\p{L}\p{N}_]|[().-]{0,3}\d)`,
+    "gu",
+  );
+}
+
 /**
  * The single converged detection set — the union of what each former copy
  * caught correctly, not a whole-file pick:
@@ -874,7 +907,8 @@ export interface PiiPattern {
  *    inside a longer digit string is not misread as a resident-registration
  *    number;
  *  - both the dashed and the dashless mobile form are matched, across the wider
- *    carrier-prefix range, plus the US phone shape;
+ *    carrier-prefix range, plus the US phone shape and plus-prefixed
+ *    international tokens with visual separators;
  *  - card candidates span the wider digit-length range and are gated by Luhn, so
  *    a non-card digit run of card length is left intact.
  *
@@ -896,6 +930,15 @@ export const PII_PATTERNS: PiiPattern[] = [
     pattern: /[a-zA-Z0-9._%+-]+@([\w.-]+\.\w+)/g,
     maskShape: (_m, domain) => `***@${domain}`,
     redactToken: "[REDACTED:EMAIL]",
+  },
+  {
+    kind: "PHONE_INTL",
+    nameKey: "be_dlp.patternPhoneNumber",
+    pattern: internationalPhonePattern(),
+    valid: (m) => !(/^\+(?:\d{1,3}\.){3}\d{1,3}$/.test(m)
+        && m.slice(1).split(".").every((octet) => Number(octet) <= 255)),
+    maskShape: (m) => m.replace(/\d/g, "*"),
+    redactToken: "[REDACTED:PHONE]",
   },
   {
     kind: "PHONE_KR",

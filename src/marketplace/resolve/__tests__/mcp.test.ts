@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { DEFAULT_MARKETPLACE_ARTIFACT_LIMITS } from "../../../plugins/marketplace-artifact-limits.js";
 import {
+  copyFixtureRepo,
   createFixtureRepo,
   type FixtureRepo,
   type GitHttpServer,
@@ -12,6 +13,7 @@ import {
   startGitHttpServer,
 } from "../../__tests__/fixtures/git-http-server.js";
 import { createTestGitRunner, type TestGitRunner } from "../../__tests__/fixtures/git-runner.js";
+import { cachedFixtureGit } from "../../__tests__/fixtures/cached-git.js";
 import { policySource } from "../../__tests__/fixtures/policy.js";
 import { aggregateCatalog } from "../../catalog/aggregate.js";
 import { NetworkGate } from "../../net/network-gate.js";
@@ -22,6 +24,7 @@ import { assertMcpRuntimePinned, mcpServerConfigFor, planMcpInstall, resolveMcpP
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { nodeFolders } from "../../__tests__/fixtures/folder-fs.js";
 import { gitAccess } from "../../sources/source-tree.js";
+import { UNREACHABLE_OFFICIAL } from "../../__tests__/fixtures/official.js";
 
 const AT = "2026-09-23T00:00:00.000Z";
 
@@ -183,19 +186,24 @@ describe("resolveMcpPackage", () => {
   let serverRoot: string;
   let server: GitHttpServer;
   let git: TestGitRunner;
+  let fixtureGit: ReturnType<typeof cachedFixtureGit>;
+  let emptyRepo: FixtureRepo;
   let root: string;
   let repos: FixtureRepo[] = [];
   let counter = 0;
 
   beforeAll(async () => {
     serverRoot = mkdtempSync(join(tmpdir(), "ave-mcp-served-"));
+    emptyRepo = createFixtureRepo(serverRoot, "empty-seed");
     server = await startGitHttpServer({ root: serverRoot });
     git = await createTestGitRunner();
+    fixtureGit = cachedFixtureGit(git.runner, serverRoot, server.origin, join(serverRoot, "command-cache"));
   });
 
   afterAll(async () => {
     await server.close();
     await git.cleanup();
+    await removeFixtureRepo(emptyRepo);
     await cleanupTmpDir(serverRoot);
   });
 
@@ -209,10 +217,10 @@ describe("resolveMcpPackage", () => {
     await cleanupTmpDir(root);
   });
 
-  async function resolveFrom(files: Record<string, string>, executable: string[] = []) {
+  async function resolveFrom(files: Record<string, string>, executable: string[] = [], runner = fixtureGit) {
     counter += 1;
     const name = `mcp-${counter}`;
-    const repo = createFixtureRepo(serverRoot, name);
+    const repo = copyFixtureRepo(serverRoot, name, emptyRepo, { publishByCopy: true });
     repos.push(repo);
     repo.commit(
       {
@@ -232,9 +240,9 @@ describe("resolveMcpPackage", () => {
     const policy = policySource({});
     const gate = new NetworkGate({ policy, allowLoopback: true, transport: createPinnedFetch() });
     const marketplaces = mkdtempSync(join(root, "m-"));
-    const registry = await SourceRegistry.open({ root: marketplaces, policy });
+    const registry = await SourceRegistry.open({ root: marketplaces, policy, official: UNREACHABLE_OFFICIAL });
     await registry.add({ id: "acme", origin: "custom", url: server.url(name), auth: { kind: "none" } });
-    const syncer = new SourceSyncer({ registry, gate, runner: git.runner, root: marketplaces, now: () => new Date(AT), retainedCommits: async () => new Set(), folders: nodeFolders() });
+    const syncer = new SourceSyncer({ registry, gate, runner, root: marketplaces, now: () => new Date(AT), retainedCommits: async () => new Set(), folders: nodeFolders() });
     expect(await syncer.sync("acme")).toMatchObject({ status: "ok" });
     const snapshot = (await syncer.readSnapshot("acme"))!;
     expect(snapshot.diagnostics).toEqual([]);
@@ -259,6 +267,7 @@ describe("resolveMcpPackage", () => {
       "mcp/notes/ave-package.json": descriptor({ server: { transport: "stdio", command: "npx", args: ["-y", "@acme/notes@1.2.3"], env: { NOTES_MODE: "ro" }, auth: "api-key", apiKeyEnv: "NOTES_TOKEN" } }),
     });
     expect(resolved).toMatchObject({ from: "descriptor", packageFiles: null, runtime: { command: "npx", args: ["-y", "@acme/notes@1.2.3"] } });
+    expect(server.seen.some((request) => request.path.startsWith(`/mcp-${counter}/`))).toBe(false);
     expect(mcpServerConfigFor(resolved, { installDir: "/ave/mcp/notes", dataDir: "/ave/mcp-data/notes", nodePath: "/app/node" })).toEqual({
       id: "notes",
       transport: "stdio",
@@ -300,6 +309,7 @@ describe("resolveMcpPackage", () => {
   });
 
   it("runs a package-local command from the exported server/ files", async () => {
+    // Real transport and archive export prove the executable mode in the zip.
     const resolved = await resolveFrom(
       {
         "mcp/notes/ave-package.json": descriptor({ server: { transport: "stdio", command: "server/run.sh", args: ["$PLUGIN_DIR/server/config.json"] } }),
@@ -308,6 +318,7 @@ describe("resolveMcpPackage", () => {
         "mcp/notes/server/config.json": "{}\n",
       },
       ["mcp/notes/server/run.sh"],
+      git.runner,
     );
     expect(resolved.runtime).toEqual({ transport: "stdio", command: "$PLUGIN_DIR/server/run.sh", args: ["$PLUGIN_DIR/server/config.json"] });
     const zip = new AdmZip(resolved.packageFiles!.zipBuffer);

@@ -74,6 +74,7 @@ import {
   type ShortcutSettingsPatch,
 } from "../shared/shortcuts.js";
 import { createLogger } from "../lib/logger.js";
+import type { MainLayoutSnapshot } from "../shared/main-layout.js";
 import { SecretDocumentStore, type SecretDocumentIdentity, type SecretEncryption, type SecretPolicy } from "./secret-document-store.js";
 import { DEFAULT_SETTINGS } from "./settings-defaults.js";
 import {
@@ -102,6 +103,7 @@ import {
   normalizeAlertSettings,
   normalizeRetiredPluginConfigs,
   isActiveViewKey,
+  normalizeMainLayout,
   isCloseBehavior,
   normalizeTelemetry,
   normalizeHomeDocs,
@@ -147,6 +149,55 @@ const LLM_VENDOR_ID_PACKAGE_NAMES_MIGRATION = "llm-vendor-id-package-names";
  * {@link SettingsService.deleteRetiredMarketplaceApiKey}.
  */
 const MARKETPLACE_SERVER_SETTINGS_REMOVED_MIGRATION = "marketplace-server-settings-removed";
+const BUILT_IN_DEFAULT_MODELS_CLEARED_MIGRATION = "built-in-default-models-cleared";
+const MARKETPLACE_DEFAULT_MODEL_CLEARED_MIGRATION_PREFIX = "marketplace-default-model-cleared:";
+/**
+ * Frozen source: 26ab8c776^:src/shared/llm-vendor-defaults.ts, whose
+ * CORE_DEFAULT_MODEL and DEFAULT_MODEL preset expansion 26ab8c776 removed.
+ * Only the removed non-empty defaults belong here; live defaults must never
+ * change which saved selections this one-time migration clears.
+ */
+const REMOVED_BUILT_IN_DEFAULT_MODELS: Readonly<Partial<Record<LLMVendor, string>>> = Object.freeze({
+  claude: "claude-sonnet-4-6",
+  openai: "gpt-5.4-mini",
+  gemini: "gemini-3.8-flash",
+  "azure-foundry": "gpt-5.4-mini",
+  "vertex-ai": "gemini-3.5-flash",
+  openrouter: "anthropic/claude-sonnet-4.6",
+  deepseek: "deepseek-flash",
+  xai: "grok-4.20-0309-non-reasoning",
+  together: "Qwen/Qwen3.6-Plus",
+  fireworks: "accounts/fireworks/models/glm-5p3-flash",
+  groq: "openai/gpt-oss-120b",
+  poolside: "poolside/laguna-m.1",
+  cerebras: "gpt-oss-120b",
+  sambanova: "Meta-Llama-3.3-70B-Instruct",
+  nebius: "nvidia/nemotron-3-super-120b-a12b",
+  baseten: "deepseek-ai/DeepSeek-V4.1-Flash",
+  requesty: "openai/gpt-6-luna",
+  litellm: "gpt-5.4",
+  huggingface: "MiniMaxAI/MiniMax-M2.5",
+  "vercel-ai-gateway": "alibaba/qwen3.6-plus",
+  "vercel-v0": "v0-1.5-md",
+  aihubmix: "gpt-5.4-mini",
+  hicap: "hicap-pro",
+  "nous-research": "DeepHermes-3-Llama-3-3-70B-Preview",
+  "huawei-cloud-maas": "DeepSeek-R1",
+  wandb: "deepseek-ai/DeepSeek-V4.1-Flash",
+  xiaomi: "mimo-v2.6-flash",
+  kilo: "openai/gpt-5.4",
+  zai: "glm-5v-turbo",
+  "zai-coding-plan": "glm-5.2",
+  qwen: "qwen3.7-plus",
+  "qwen-code": "qwen3-coder-plus",
+  doubao: "doubao-1-5-pro-256k-250115",
+  mistral: "mistral-medium-latest",
+  moonshot: "kimi-k3",
+  asksage: "gpt-5.4-mini",
+  ollama: "llama3.3",
+  lmstudio: "local-model",
+  oca: "anthropic/claude-3-7-sonnet-20250219",
+});
 /**
  * The value every saved vendor block carried before the default stopped
  * being written. A stored `outputTokenLimit` of exactly this, without the
@@ -203,11 +254,12 @@ function retiredLlmModelOf(llm: LLMSettings): RetiredLlmModel | undefined {
 }
 
 /**
- * Every one-time migration this build knows. Fresh-install and
+ * Every global one-time migration this build knows. Fresh-install and
  * corrupt-recovery settings start with ALL of them marked applied: a state
  * built from current defaults is by definition post-migration, and seeding
  * the markers closes the window where a user's first-session opt-out would
  * be silently reverted by a migration re-run on the next boot.
+ * Market model migrations instead acquire a marker per id once it resolves.
  */
 const KNOWN_MIGRATIONS: readonly string[] = [
   SUBAGENT_WAKE_DEFAULT_FLIP_MIGRATION,
@@ -215,7 +267,62 @@ const KNOWN_MIGRATIONS: readonly string[] = [
   PROVIDER_PRESET_MODEL_SLOT_MIGRATION,
   LLM_VENDOR_ID_PACKAGE_NAMES_MIGRATION,
   MARKETPLACE_SERVER_SETTINGS_REMOVED_MIGRATION,
+  BUILT_IN_DEFAULT_MODELS_CLEARED_MIGRATION,
 ];
+
+function withoutBuiltInDefaultModels(llm: LLMSettings): LLMSettings {
+  const vendors = { ...llm.vendors };
+  for (const vendor of LLM_VENDORS) {
+    const block = vendors[vendor];
+    const removedDefault = REMOVED_BUILT_IN_DEFAULT_MODELS[vendor];
+    if (block && removedDefault !== undefined && block.model === removedDefault) {
+      vendors[vendor] = { ...block, model: "" };
+    }
+  }
+  // The same removed defaults used to seed new fallback rows.
+  const fallbackChain = llm.fallbackChain.map((entry) => {
+    const removedDefault = REMOVED_BUILT_IN_DEFAULT_MODELS[entry.provider];
+    return removedDefault !== undefined && entry.model === removedDefault
+      ? { ...entry, model: "" }
+      : entry;
+  });
+  return { ...llm, vendors, fallbackChain };
+}
+
+/**
+ * A market default used to be saved on preset selection. Resolve each preset
+ * independently: an unavailable entry must remain pending until registration.
+ * Mark even a different or absent model, so a later explicit pick survives.
+ * On load, compare the original slot before model-id normalization trims it.
+ */
+function withoutMarketplaceDefaultModels(
+  llm: LLMSettings,
+  presets: readonly MarketplaceInstalledProviderPreset[],
+  appliedMigrations: string[],
+  modelsBeforeNormalization: unknown = llm.vendors["openai-compatible"]?.presetModels,
+): LLMSettings {
+  const storedModels = modelsBeforeNormalization !== null
+    && typeof modelsBeforeNormalization === "object" && !Array.isArray(modelsBeforeNormalization)
+    ? modelsBeforeNormalization as Record<string, unknown>
+    : undefined;
+  let next = llm;
+  for (const preset of presets) {
+    if (typeof preset.defaultModel !== "string" || !preset.defaultModel.trim()) continue;
+    const marker = `${MARKETPLACE_DEFAULT_MODEL_CLEARED_MIGRATION_PREFIX}${preset.providerId}`;
+    if (appliedMigrations.includes(marker)) continue;
+    const block = next.vendors["openai-compatible"];
+    const model = storedModels && Object.hasOwn(storedModels, preset.providerId)
+      ? storedModels[preset.providerId]
+      : block?.presetModels?.[preset.providerId];
+    if (block && model === preset.defaultModel) {
+      next = { ...next, vendors: { ...next.vendors, "openai-compatible": {
+        ...block, presetModels: { ...block.presetModels, [preset.providerId]: "" },
+      } } };
+    }
+    appliedMigrations.push(marker);
+  }
+  return next;
+}
 
 /** The stored `llm` object with every unstamped fossil default output limit removed, and whether one was. */
 function withoutFossilOutputTokenLimits(stored: Record<string, any>): { stored: Record<string, any>; changed: boolean } {
@@ -670,7 +777,7 @@ export interface AppSettings {
   features?: FeatureFlags;
   /**
    * Host-owned ids of one-time settings migrations already applied to this
-   * file. Never patched from the renderer; only `loadSettings` appends.
+   * file. Never patched from the renderer; load and market registration append.
    */
   appliedMigrations?: string[];
 }
@@ -792,6 +899,8 @@ export type SystemCloseBehavior = "hide-to-tray" | "quit";
 export type SystemAppMode = InitialAppMode;
 
 export interface SystemSettings {
+  /** Use the default OS sound for background turn-completion notifications. Default true. */
+  turnCompletionSoundEnabled?: boolean;
   closeBehavior: SystemCloseBehavior;
   /** Persisted workspace mode (chat vs work). Default "work". */
   appMode: SystemAppMode;
@@ -880,14 +989,14 @@ export interface SystemSettings {
   /**
    * Persisted TOP-pane percent of the workspace-rail vertical (list↕viewer)
    * split, one field per tab kind whose body is a list-over-viewer layout
-   * (file-browser / preview / subagent / browser). Clamped to the
+   * (file-browser / preview / subagent). A browser tab is its address row and
+   * page only, so it has no split. Clamped to the
    * [SIDE_PANEL_SPLIT_MIN_PERCENT, SIDE_PANEL_SPLIT_MAX_PERCENT] pane range at
    * drag time in the renderer. Default 45.
    */
   sidePanelSplitFilePercent?: number;
   sidePanelSplitPreviewPercent?: number;
   sidePanelSplitSubagentPercent?: number;
-  sidePanelSplitBrowserPercent?: number;
   /**
    * Persisted active sidebar tab ("chats" = the plain ungrouped conversation
    * list, "projects" = named-project groups). Durable UI preference, same
@@ -907,6 +1016,14 @@ export interface SystemSettings {
    * key against the views it actually loaded before navigating there.
    */
   activeView?: InlineViewKey;
+  /**
+   * The main window's pane layout when it last changed — panes, which show a
+   * terminal or web page, open side panels, and terminal/browser side tabs
+   * with their last directory or address — restored at launch. Absent until
+   * the layout first changes. SoT for the shape and its rules:
+   * `../shared/main-layout.js`; a value that breaks any rule is refused whole.
+   */
+  mainLayout?: MainLayoutSnapshot;
   /**
    * Which settings tab the panel was on, so restoring into `activeView:
    * "settings"` lands on the page the user left rather than the default one.
@@ -1436,6 +1553,11 @@ export class SettingsService {
         { inferInstalledFromCustom: false },
       );
       this.settings.llm = prunedLlm.llm;
+      this.settings.llm = withoutMarketplaceDefaultModels(
+        this.settings.llm,
+        nextMarketplace.installedProviderPresets,
+        this.settings.appliedMigrations ??= [],
+      );
       this.providerConfigChanged();
     }
     if (partial.routine) {
@@ -1631,6 +1753,7 @@ export class SettingsService {
           log.warn("system.corpCaCommonName patch ignored (not a usable certificate name)");
         }
       }
+      acceptField(next, "turnCompletionSoundEnabled", partial.system.turnCompletionSoundEnabled, isBooleanValue, "system", PATCHED_FIELD);
       // Launch-at-startup + launch-minimized booleans (same validate-at-
       // boundary pattern as localApiServer: invalid → keep prior value).
       const rawLaunchAtStartup = partial.system.launchAtStartup;
@@ -1664,6 +1787,11 @@ export class SettingsService {
       }
       acceptField(next, "sidebarActiveTab", partial.system.sidebarActiveTab, isSidebarTab, "system", PATCHED_FIELD);
       acceptField(next, "activeView", partial.system.activeView, isActiveViewKey, "system", PATCHED_FIELD);
+      // The reason only is logged on refusal (`normalizeMainLayout`): the value
+      // holds page addresses that may carry tokens. A refused patch keeps the
+      // saved layout.
+      const patchedLayout = normalizeMainLayout(partial.system.mainLayout);
+      if (patchedLayout) next.mainLayout = patchedLayout;
       const rawSettingsTab = partial.system.settingsTab;
       if (rawSettingsTab !== undefined) {
         // `normalizeSettingsTab` folds retired ids onto their replacements and
@@ -1779,6 +1907,11 @@ export class SettingsService {
       { inferInstalledFromCustom: false },
     );
     this.settings.llm = prunedLlm.llm;
+    this.settings.llm = withoutMarketplaceDefaultModels(
+      this.settings.llm,
+      nextMarketplace.installedProviderPresets,
+      this.settings.appliedMigrations ??= [],
+    );
     this.providerConfigChanged();
     await this.commitPresetKeyInvalidation(previousSettings, providerPresetSecretInvalidationIds);
     return this.getAll();
@@ -2139,6 +2272,13 @@ export class SettingsService {
         LLM_VENDORS.filter(isMarketplaceEligibleLLMVendor),
         undefined,
       );
+      // Clear before retirement detection and custom-block pruning: the old
+      // built-in model alone must not keep an otherwise unconfigured route.
+      if (!appliedMigrations.includes(BUILT_IN_DEFAULT_MODELS_CLEARED_MIGRATION)) {
+        llm = withoutBuiltInDefaultModels(llm);
+        appliedMigrations.push(BUILT_IN_DEFAULT_MODELS_CLEARED_MIGRATION);
+        migrationWriteBack = true;
+      }
       // A profile still naming a removed vendor (RETIRED_LLM_VENDOR_IDS): the
       // merge above has already moved `provider` to the default, because the
       // id is no longer a vendor. Record the move so it is not silent, and
@@ -2227,6 +2367,15 @@ export class SettingsService {
         appliedMigrations.push(PROVIDER_PRESET_MODEL_SLOT_MIGRATION);
         migrationWriteBack = true;
       }
+
+      const migrationsBeforeMarketDefaults = appliedMigrations.length;
+      llm = withoutMarketplaceDefaultModels(
+        llm,
+        marketplace.installedProviderPresets,
+        appliedMigrations,
+        rawLlm?.vendors?.["openai-compatible"]?.presetModels,
+      );
+      if (appliedMigrations.length !== migrationsBeforeMarketDefaults) migrationWriteBack = true;
 
       const result: AppSettings = {
         llm,

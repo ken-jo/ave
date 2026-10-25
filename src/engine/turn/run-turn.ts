@@ -50,6 +50,8 @@ import { providerMatchesActiveChatRuntime } from "./provider.js";
 import { BUILTIN_SLASH_COMMANDS } from "./commands.js";
 import { expandCustomCommand, loadCustomCommand } from "../../core/custom-commands.js";
 import { aggregateSubscriptionUsage } from "./subscription-usage-telemetry.js";
+import { TurnJournal, isHostExitAbort, registerRunningTurn } from "./turn-journal.js";
+import { HOST_EXIT_INTERRUPTION } from "../../memory/session-turn-journal.js";
 import type { MemoryCaptureTaintReason } from "../../memory/memory-capture-service.js";
 
 const log = createLogger("ave");
@@ -255,6 +257,11 @@ async function runTurnInSpan(
     let userTurnAppended = false;
     /** True once the post-turn persistence path ran (hook chain or fallback). */
     let transcriptPersistedAfterLoop = false;
+    /** Appends each row as it lands in history; open from the accepted user message to the turn's end. */
+    let journal: TurnJournal | null = null;
+    // The quit path aborts every running turn as `host-exit` and waits for it
+    // to settle; settled in the finally below, after the last write.
+    const runningTurn = registerRunningTurn((reason) => ac.abort(reason));
 
     // Cleanup covers every path after the controller becomes observable:
     // lifecycle hooks, prompt refusal, preflight, queryLoop, and post-turn
@@ -551,6 +558,7 @@ async function runTurnInSpan(
       ...(options.userMessageId !== undefined ? { messageId: options.userMessageId } : {}),
       ...(agentMessageInputId ? { hostInjectionId: agentMessageInputId } : {}),
       ...(personaPromptMeta ? { activePersonaPrompt: personaPromptMeta } : {}),
+      ...(options.resumesInterruptedTurn ? { resumesInterruptedTurn: true as const } : {}),
       ...(options.displayText !== undefined
         ? { displayText: options.displayText }
         : customCommandDisplayText !== undefined
@@ -609,6 +617,14 @@ async function runTurnInSpan(
     // the turn reaches its post-turn persistence, so a crash or a mid-turn
     // failure erases the question along with the answer.
     await flushTranscript(self, "turn-accepted");
+    // From here every row the turn adds is appended as it lands, and the text
+    // still streaming is snapshotted, so a process that dies mid-turn keeps
+    // all of it. The flush above is the baseline the first append extends.
+    if (!self.deps.disableSessionPersistence) {
+      journal = new TurnJournal(self.deps.memoryManager, self.sessionId, self.history);
+      await journal.begin();
+      self.activeTurnJournal = journal;
+    }
 
     // Lazy Tool Scoping — 이 턴에서 노출할 plugin 집합 결정.
     // SystemPromptBuilder Tool Schemas 섹션도 동일 scope로 필터링되도록
@@ -1113,6 +1129,7 @@ async function runTurnInSpan(
     retainHostInjectedMessages = commitsHostInjectedMessages(result.stopReason);
     return { ...result, route: routeResult.route };
   } finally {
+    try {
     let removedHostInjectionRows = 0;
     if (!retainHostInjectedMessages && initialGuidanceId) {
       removedHostInjectionRows +=
@@ -1131,14 +1148,25 @@ async function runTurnInSpan(
     // empty assistant message on the replay path, so the row would be invisible
     // on reload while still riding the wire on the next turn. An unpaired
     // tool_use tail is repaired by `normalizeToolPairInvariant` at load.
+    // A turn the app's quit stopped records where it stopped, so the session
+    // reopens with Continue on offer. The rounds' own interrupted rows carry
+    // the cause already; this covers a stop that landed between rounds.
+    const hostExitMarked = userTurnAppended && isHostExitAbort(turnSignal.reason)
+      && markHostExitInterruption(self);
     if (
       userTurnAppended
-      && (!transcriptPersistedAfterLoop || removedHostInjectionRows > 0)
+      && (!transcriptPersistedAfterLoop || removedHostInjectionRows > 0 || hostExitMarked)
     ) {
       await flushTranscript(
         self,
-        transcriptPersistedAfterLoop ? "host-injection-rollback" : "mid-turn-failure",
+        hostExitMarked
+          ? "host-exit"
+          : transcriptPersistedAfterLoop ? "host-injection-rollback" : "mid-turn-failure",
       );
+    }
+    if (journal) {
+      if (self.activeTurnJournal === journal) self.activeTurnJournal = null;
+      await journal.end();
     }
     await finalizeTurnState();
     // Last statement of the turn, after `dropPendingGuidance` has settled every
@@ -1146,5 +1174,32 @@ async function runTurnInSpan(
     // starts work here — the A2A bus drains pending child deliveries — must not
     // interleave with this turn's own tail.
     self.emitTurnSettled(effectiveSessionId);
+    } finally {
+      runningTurn.settle();
+    }
   }
+}
+
+/**
+ * Make sure a turn stopped by the app exiting ends in a row saying so. The
+ * round that was streaming already appended its interrupted row (stamped with
+ * the cause by the query loop); a stop between rounds, during tools, or before
+ * the first round left none. Nothing is added after the user's own message —
+ * nothing was produced, and Continue re-asks it.
+ */
+function markHostExitInterruption(self: LoopContext): boolean {
+  const messages = self.history.getMessages();
+  const tail = messages[messages.length - 1];
+  if (!tail || tail.role === "user") return false;
+  if (tail.role === "assistant" && tail.meta?.interrupted === true) {
+    if (tail.meta.interruptedBy === HOST_EXIT_INTERRUPTION) return false;
+    tail.meta = { ...tail.meta, interruptedBy: HOST_EXIT_INTERRUPTION };
+    return true;
+  }
+  self.history.append({
+    role: "assistant",
+    content: "",
+    meta: { interrupted: true, interruptedBy: HOST_EXIT_INTERRUPTION },
+  });
+  return true;
 }

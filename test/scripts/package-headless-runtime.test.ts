@@ -159,7 +159,13 @@ function readInventory(root: string) {
 }
 
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) {
+    // The packaged marker is 0o444, which Windows records as the read-only
+    // attribute, and a recursive removal there does not clear it.
+    const marker = headlessPackagedMarkerPath(join(root, "app"));
+    if (existsSync(marker)) chmodSync(marker, 0o644);
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 describe("native packaged payload extraction", () => {

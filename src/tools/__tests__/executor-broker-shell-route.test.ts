@@ -110,7 +110,10 @@ afterEach(async () => {
 });
 
 describe("executor broker shell route", () => {
-  it("authorizes and audits the guest request without host preparation, path inspection, or spawn", async () => {
+  // The executor resolves the guest cwd "/git" with host path rules, so only a
+  // POSIX host forwards it unchanged; native Windows refuses the broker flags
+  // at parse time and never reaches this Linux route.
+  it.skipIf(process.platform === "win32")("authorizes and audits the guest request without host preparation, path inspection, or spawn", async () => {
     const registry = new ToolRegistry();
     registry.register(new BashTool());
     const permissionManager = new PermissionManager(join(root, "permissions.json"));

@@ -1,183 +1,87 @@
-/**
- * Terminal domain IPC handlers (#1444) — interactive PTY terminal in the
- * workspace rail.
- *
- * Channels (ALL INTERNAL — never in PUBLIC_CHANNELS / EXTERNAL_MUTATION_CHANNELS):
- *   `ave:terminal:spawn`  invoke  renderer→main  → { ok, tabId, replayed } | { ok:false, reason, message }
- *   `ave:terminal:input`  invoke  keystrokes → pty stdin
- *   `ave:terminal:resize` invoke  cols/rows
- *   `ave:terminal:kill`   invoke  tab close / teardown
- *   `ave:terminal:data`   event   main→renderer  pty output chunk
- *   `ave:terminal:exit`   event   main→renderer  pty exited
- *   `ave:terminal:blocks` invoke  command-block summaries of one tab
- *   `ave:terminal:block`  invoke  one command block with its output
- *
- * TRUST BOUNDARY: a terminal spawns arbitrary user commands, so every invoke
- * gates on {@link validateHostRendererSender} — the HOST renderer frame only.
- * A plugin-ui-shell frame (also file://) is rejected there, and an external
- * origin (local-api / cli) can never reach these channels because they are
- * absent from PUBLIC_CHANNELS (fail-closed `isPublicChannel`). The confinement
- * itself (deny-by-default egress + filesystem jail) is enforced in the main
- * process by pty-manager via the ASRT sandbox; see pty-manager.ts.
- *
- * Error contract (project CLAUDE.md): kebab-case English `reason` / `error`.
- */
-import { BrowserWindow, ipcMain } from "electron";
+/** Host-renderer-only terminal IPC. Logical close owns both execution lanes. */
+import { BrowserWindow, ipcMain, type IpcMainInvokeEvent } from "electron";
 import { CHANNELS } from "../../contract/app-contract.js";
 import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized } from "../gated.js";
 import { fanOutToAllWindows } from "../window-fanout.js";
 import { createLogger } from "../../lib/logger.js";
 import {
-  setTerminalEmitter,
-  spawnTerminal,
-  writeTerminal,
-  resizeTerminal,
-  killTerminal,
-  type SpawnTerminalResult,
+  setTerminalEmitter, spawnTerminal, writeTerminal, resizeTerminal, killTerminal,
+  terminalOwnedBy,
 } from "../../main/terminal/pty-manager.js";
-import { getTerminalBlockTracker } from "../../main/terminal/terminal-blocks.js";
-import type { TerminalBlock, TerminalBlockSummary } from "../../shared/terminal-blocks.js";
+import { getWindowTerminalBlockTracker, getWindowTerminalBlockSession } from "../../main/terminal/terminal-blocks.js";
+import { isTerminalLane, isTerminalSessionRef } from "../../shared/terminal-session.js";
 import type { IpcDeps } from "../types.js";
 
 const log = createLogger("terminal-ipc");
 
-function asString(value: unknown): string {
-  return typeof value === "string" ? value : "";
-}
-
-function asNumber(value: unknown): number {
-  return typeof value === "number" && Number.isFinite(value) ? value : NaN;
-}
-
 export function registerTerminalHandlers(deps: IpcDeps): void {
   const { auditLogger } = deps;
-
-  // Wire the main→renderer output sink ONCE. pty-manager stays electron-free;
-  // this fans each data/exit event out to every app window via safe-send.
-  setTerminalEmitter((event, payload) => {
+  setTerminalEmitter((event, payload, ownerWindowId) => {
     const channel = event === "data" ? CHANNELS.terminal.data : CHANNELS.terminal.exit;
-    const targets = deps.getAppWindows?.() ?? [deps.getMainWindow()];
+    const windows = deps.getAppWindows?.() ?? [deps.getMainWindow()];
+    const targets = ownerWindowId === null ? windows : windows.filter((win) => win && !win.isDestroyed() && win.id === ownerWindowId);
     fanOutToAllWindows(targets, channel, payload, { logger: log });
   });
+  const senderWindowId = (event: IpcMainInvokeEvent): number | null => {
+    const window = BrowserWindow.fromWebContents(event.sender);
+    return window && !window.isDestroyed() ? window.id : null;
+  };
+  const authorized = (event: IpcMainInvokeEvent, channel: string): boolean => {
+    if (validateHostRendererSender(event)) return true;
+    auditUnauthorized(auditLogger, channel, event);
+    return false;
+  };
 
-  ipcMain.handle(
-    CHANNELS.terminal.spawn,
-    async (
-      e,
-      payload: { tabId?: unknown; cwd?: unknown; cols?: unknown; rows?: unknown },
-    ): Promise<SpawnTerminalResult | { ok: false; reason: "unauthorized-frame"; message: string }> => {
-      if (!validateHostRendererSender(e)) {
-        auditUnauthorized(auditLogger, CHANNELS.terminal.spawn, e);
-        return { ok: false, reason: "unauthorized-frame", message: "sender frame is not authorized" };
-      }
-      const tabId = asString(payload?.tabId);
-      if (!tabId) {
-        return { ok: false, reason: "bad-request", message: "tabId must be a non-empty string" };
-      }
-      const owner = BrowserWindow.fromWebContents(e.sender);
-      return spawnTerminal({
-        tabId,
-        ownerWindowId: owner && !owner.isDestroyed() ? owner.id : null,
-        ...(typeof payload?.cwd === "string" ? { cwd: payload.cwd } : {}),
-        ...(typeof payload?.cols === "number" ? { cols: payload.cols } : {}),
-        ...(typeof payload?.rows === "number" ? { rows: payload.rows } : {}),
-      });
-    },
-  );
+  ipcMain.handle(CHANNELS.terminal.spawn, async (event, payload) => {
+    if (!authorized(event, CHANNELS.terminal.spawn)) return { ok: false, reason: "unauthorized-frame", message: "sender frame is not authorized" };
+    if (!payload || typeof payload.tabId !== "string" || !isTerminalLane(payload.lane)
+      || (payload.cwd !== undefined && typeof payload.cwd !== "string")
+      || (payload.cols !== undefined && (typeof payload.cols !== "number" || !Number.isFinite(payload.cols)))
+      || (payload.rows !== undefined && (typeof payload.rows !== "number" || !Number.isFinite(payload.rows)))) {
+      return { ok: false, reason: "bad-request", message: "invalid terminal spawn request" };
+    }
+    const ownerWindowId = senderWindowId(event);
+    if (ownerWindowId === null) return { ok: false, reason: "unauthorized-frame", message: "sender has no app window" };
+    return spawnTerminal({ tabId: payload.tabId, lane: payload.lane, ownerWindowId,
+      ...(payload.cwd !== undefined ? { cwd: payload.cwd } : {}),
+      ...(payload.cols !== undefined ? { cols: payload.cols } : {}),
+      ...(payload.rows !== undefined ? { rows: payload.rows } : {}),
+    });
+  });
 
-  ipcMain.handle(
-    CHANNELS.terminal.input,
-    async (
-      e,
-      payload: { tabId?: unknown; data?: unknown },
-    ): Promise<{ ok: true } | { ok: false; error: string }> => {
-      if (!validateHostRendererSender(e)) {
-        auditUnauthorized(auditLogger, CHANNELS.terminal.input, e);
-        return { ok: false, error: UNAUTHORIZED_FRAME.error };
+  for (const operation of ["input", "resize"] as const) {
+    ipcMain.handle(CHANNELS.terminal[operation], async (event, payload) => {
+      if (!authorized(event, CHANNELS.terminal[operation])) return { ok: false, error: UNAUTHORIZED_FRAME.error };
+      if (!isTerminalSessionRef(payload)) return { ok: false, error: "invalid-params" };
+      if (!terminalOwnedBy(payload.tabId, senderWindowId(event))) return { ok: false, error: "not-owner" };
+      if (operation === "input") {
+        if (!("data" in payload) || typeof payload.data !== "string") return { ok: false, error: "invalid-params" };
+        return writeTerminal(payload, payload.data);
       }
-      const tabId = asString(payload?.tabId);
-      const data = asString(payload?.data);
-      if (!tabId) return { ok: false, error: "invalid-params" };
-      writeTerminal(tabId, data);
-      return { ok: true };
-    },
-  );
-
-  ipcMain.handle(
-    CHANNELS.terminal.resize,
-    async (
-      e,
-      payload: { tabId?: unknown; cols?: unknown; rows?: unknown },
-    ): Promise<{ ok: true } | { ok: false; error: string }> => {
-      if (!validateHostRendererSender(e)) {
-        auditUnauthorized(auditLogger, CHANNELS.terminal.resize, e);
-        return { ok: false, error: UNAUTHORIZED_FRAME.error };
-      }
-      const tabId = asString(payload?.tabId);
-      if (!tabId) return { ok: false, error: "invalid-params" };
-      resizeTerminal(tabId, asNumber(payload?.cols), asNumber(payload?.rows));
-      return { ok: true };
-    },
-  );
-
-  ipcMain.handle(
-    CHANNELS.terminal.kill,
-    async (
-      e,
-      payload: { tabId?: unknown },
-    ): Promise<{ ok: true } | { ok: false; error: string }> => {
-      if (!validateHostRendererSender(e)) {
-        auditUnauthorized(auditLogger, CHANNELS.terminal.kill, e);
-        return { ok: false, error: UNAUTHORIZED_FRAME.error };
-      }
-      const tabId = asString(payload?.tabId);
-      if (!tabId) return { ok: false, error: "invalid-params" };
-      killTerminal(tabId);
-      return { ok: true };
-    },
-  );
-
-  // Command blocks (terminal-blocks.ts). Reads only: the renderer lists a tab's
-  // blocks and fetches one block's output to copy it or attach it to chat. A
-  // tab with no live shell record answers an empty list, not an error — the
-  // tab may simply not have spawned yet.
-  ipcMain.handle(
-    CHANNELS.terminal.blocks,
-    async (
-      e,
-      payload: { tabId?: unknown },
-    ): Promise<
-      | { ok: true; integrated: boolean; blocks: TerminalBlockSummary[] }
-      | { ok: false; error: string }
-    > => {
-      if (!validateHostRendererSender(e)) {
-        auditUnauthorized(auditLogger, CHANNELS.terminal.blocks, e);
-        return { ok: false, error: UNAUTHORIZED_FRAME.error };
-      }
-      const tabId = asString(payload?.tabId);
-      if (!tabId) return { ok: false, error: "invalid-params" };
-      const tracker = getTerminalBlockTracker(tabId);
-      if (!tracker) return { ok: true, integrated: false, blocks: [] };
-      return { ok: true, integrated: tracker.isIntegrated(), blocks: tracker.list() };
-    },
-  );
-
-  ipcMain.handle(
-    CHANNELS.terminal.block,
-    async (
-      e,
-      payload: { tabId?: unknown; blockId?: unknown },
-    ): Promise<{ ok: true; block: TerminalBlock } | { ok: false; error: string }> => {
-      if (!validateHostRendererSender(e)) {
-        auditUnauthorized(auditLogger, CHANNELS.terminal.block, e);
-        return { ok: false, error: UNAUTHORIZED_FRAME.error };
-      }
-      const tabId = asString(payload?.tabId);
-      const blockId = asNumber(payload?.blockId);
-      if (!tabId || !Number.isInteger(blockId)) return { ok: false, error: "invalid-params" };
-      const block = getTerminalBlockTracker(tabId)?.get(blockId) ?? null;
-      if (!block) return { ok: false, error: "block-not-found" };
-      return { ok: true, block };
-    },
-  );
+      if (!("cols" in payload) || !("rows" in payload) || typeof payload.cols !== "number" || !Number.isFinite(payload.cols) || typeof payload.rows !== "number" || !Number.isFinite(payload.rows)) return { ok: false, error: "invalid-params" };
+      return resizeTerminal(payload, payload.cols, payload.rows);
+    });
+  }
+  ipcMain.handle(CHANNELS.terminal.kill, async (event, payload) => {
+    if (!authorized(event, CHANNELS.terminal.kill)) return { ok: false, error: UNAUTHORIZED_FRAME.error };
+    if (!payload || typeof payload.tabId !== "string" || !payload.tabId) return { ok: false, error: "invalid-params" };
+    if (!terminalOwnedBy(payload.tabId, senderWindowId(event))) return { ok: false, error: "not-owner" };
+    killTerminal(payload.tabId);
+    return { ok: true };
+  });
+  for (const operation of ["blocks", "block"] as const) {
+    ipcMain.handle(CHANNELS.terminal[operation], async (event, payload) => {
+      if (!authorized(event, CHANNELS.terminal[operation])) return { ok: false, error: UNAUTHORIZED_FRAME.error };
+      if (!isTerminalSessionRef(payload)) return { ok: false, error: "invalid-params" };
+      const ownerWindowId = senderWindowId(event);
+      if (ownerWindowId === null || !terminalOwnedBy(payload.tabId, ownerWindowId)) return { ok: false, error: "not-owner" };
+      const tracker = getWindowTerminalBlockTracker(payload, ownerWindowId);
+      const session = getWindowTerminalBlockSession(payload, ownerWindowId);
+      if (!tracker || !session) return { ok: false, error: "stale-terminal-session" };
+      if (operation === "blocks") return { ok: true, session, integrated: session.shellIntegration, blocks: tracker.list() };
+      if (!("blockId" in payload) || typeof payload.blockId !== "number" || !Number.isInteger(payload.blockId) || payload.blockId < 1) return { ok: false, error: "invalid-params" };
+      const block = tracker.get(payload.blockId);
+      return block ? { ok: true, session, block } : { ok: false, error: "block-not-found" };
+    });
+  }
 }

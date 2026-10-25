@@ -5,10 +5,13 @@ import {
 } from "../../shared/subscription-runtime.js";
 import type { AcpSubscriptionStatus } from "../../shared/acp-subscription.js";
 import type { CodexSubscriptionStatus } from "../../shared/codex-subscription.js";
-import type { CodexAppServerClient, CodexAppServerClientOptions } from "../codex-app-server-client.js";
-import type {
-  CodexConversationRuntime,
-  CodexConversationRuntimeOptions,
+import { CodexAppServerError, type CodexAppServerClient, type CodexAppServerClientOptions } from "../codex-app-server-client.js";
+import { CodexUserRuntimeError } from "../codex-user-runtime.js";
+import { ClaudeCodeSubscriptionError } from "../claude-code-subscription-client.js";
+import {
+  CodexConversationRuntimeError,
+  type CodexConversationRuntime,
+  type CodexConversationRuntimeOptions,
 } from "../codex-conversation-runtime.js";
 import type { AcpSubscriptionRuntimeRegistry } from "../subscription-runtime-service.js";
 import { AcpSubscriptionSessionError } from "../acp-subscription-session-client.js";
@@ -16,6 +19,7 @@ import { MAX_ACP_SUBSCRIPTION_IMAGE_BYTES } from "../acp-subscription-session-cl
 import { DEFAULT_SUBSCRIPTION_IMAGE_ATTACHMENT_LIMITS } from "../subscription-attachment-input.js";
 import {
   SubscriptionRuntimeService,
+  subscriptionRuntimeErrorCode,
 } from "../subscription-runtime-service.js";
 import {
   SubscriptionToolBridgeClient,
@@ -30,6 +34,7 @@ const CODEX_CONNECTED: CodexSubscriptionStatus = {
   planType: "plus",
   pendingLogin: null,
   pendingDeviceCode: null,
+  version: "0.153.4",
 };
 
 const KIMI_CONNECTED: AcpSubscriptionStatus = {
@@ -79,6 +84,28 @@ function fakeCodexClient(): CodexAppServerClient {
 }
 
 describe("SubscriptionRuntimeService", () => {
+  it.each(["kimi-code", "grok-build"] as const)("does not enable signed-out chat after verification (%s)", async (provider) => {
+    const status: AcpSubscriptionStatus = { ...KIMI_CONNECTED, provider, connection: "signed-out" };
+    const openTextSession = vi.fn();
+    const registry = {
+      getStatus: vi.fn(async () => status),
+      verify: vi.fn(async () => status),
+      openTextSession,
+      stopAll: vi.fn(async () => undefined),
+    } as unknown as AcpSubscriptionRuntimeRegistry;
+    const service = await SubscriptionRuntimeService.create(async () => undefined, {
+      namespace: namespace(), codexClient: fakeCodexClient(), acpRegistry: registry,
+    });
+    try {
+      expect((await service.verify(provider)).capabilities.chat).toBe(false);
+      await expect(service.openTextSession({ kind: "subscription", provider }))
+        .rejects.toMatchObject({ code: "subscription-chat-unavailable" });
+      expect(openTextSession).not.toHaveBeenCalled();
+    } finally {
+      await service.stop();
+    }
+  });
+
   it("requires isolation verification and shares the fresh v3 Codex auth home with text chat", async () => {
     const clientOptions: CodexAppServerClientOptions[] = [];
     const runtimeOptions: CodexConversationRuntimeOptions[] = [];
@@ -1084,5 +1111,94 @@ describe("SubscriptionRuntimeService", () => {
       await service.stop();
       setHandler.mockRestore();
     }
+  });
+
+  it.each(["codex", "claude-code"] as const)(
+    "refuses to choose or forget a %s path: Ave finds that CLI itself",
+    async (runtimeId) => {
+      const locator = {
+        resolve: vi.fn(),
+        lastKnownVersion: vi.fn(() => "0.153.4"),
+        dispose: vi.fn(async () => undefined),
+      };
+      const codexClient = fakeCodexClient();
+      const service = await SubscriptionRuntimeService.create(async () => undefined, {
+        namespace: namespace(),
+        codexClient,
+        codexRuntimeLocator: locator,
+        acpRegistry: { stopAll: vi.fn(async () => undefined) } as unknown as AcpSubscriptionRuntimeRegistry,
+      });
+      try {
+        await expect(service.chooseExecutable(runtimeId, "/opt/tools/cli"))
+          .rejects.toMatchObject({ code: "subscription-provider-not-supported" });
+        await expect(service.forgetExecutable(runtimeId))
+          .rejects.toMatchObject({ code: "subscription-provider-not-supported" });
+        expect(codexClient.stop).not.toHaveBeenCalled();
+      } finally {
+        await service.stop();
+      }
+    },
+  );
+
+  it("keeps sandbox readiness detail out of renderer-facing verification errors", async () => {
+    const runtime = {
+      verifyIsolation: vi.fn(async () => {
+        throw new CodexConversationRuntimeError("codex-runtime-start-failed", undefined,
+          "Windows sandbox readiness: notConfigured");
+      }),
+      stop: vi.fn(),
+    } as unknown as CodexConversationRuntime;
+    const service = await SubscriptionRuntimeService.create(async () => undefined, {
+      namespace: namespace(),
+      codexClient: fakeCodexClient(),
+      acpRegistry: { stopAll: vi.fn(async () => undefined) } as unknown as AcpSubscriptionRuntimeRegistry,
+      createCodexConversationRuntime: () => runtime,
+    });
+    try {
+      const error = await service.verify("codex").catch((failure: unknown) => failure);
+      expect(error).toMatchObject({ code: "subscription-runtime-unavailable", message: "subscription-runtime-unavailable" });
+      expect(JSON.stringify(error)).not.toContain("notConfigured");
+      expect(error).not.toHaveProperty("detail");
+      expect(error).not.toHaveProperty("providerError", expect.anything());
+      expect(runtime.stop).toHaveBeenCalledOnce();
+    } finally {
+      await service.stop();
+    }
+  });
+
+  it("gives each user-CLI failure its own renderer-safe code", () => {
+    expect(subscriptionRuntimeErrorCode(new CodexUserRuntimeError("codex-runtime-unsafe-location")))
+      .toBe("subscription-runtime-unsafe-location");
+    expect(subscriptionRuntimeErrorCode(new CodexAppServerError("codex-runtime-unsafe-location")))
+      .toBe("subscription-runtime-unsafe-location");
+    expect(subscriptionRuntimeErrorCode(new ClaudeCodeSubscriptionError("claude-code-runtime-unsafe-location")))
+      .toBe("subscription-runtime-unsafe-location");
+    expect(subscriptionRuntimeErrorCode(new ClaudeCodeSubscriptionError("claude-code-runtime-unsafe-npm-location")))
+      .toBe("subscription-runtime-unsafe-npm-location");
+    expect(subscriptionRuntimeErrorCode(new CodexUserRuntimeError("codex-runtime-not-installed")))
+      .toBe("subscription-runtime-not-configured");
+    expect(subscriptionRuntimeErrorCode(new CodexUserRuntimeError("codex-runtime-version-unsupported", "0.151.0")))
+      .toBe("subscription-runtime-version-unsupported");
+    expect(subscriptionRuntimeErrorCode(new CodexUserRuntimeError("codex-runtime-incompatible", "0.153.4", ["request turn/interrupt"])))
+      .toBe("subscription-runtime-incompatible");
+    expect(subscriptionRuntimeErrorCode(new CodexUserRuntimeError("codex-runtime-start-failed")))
+      .toBe("subscription-runtime-unavailable");
+    expect(subscriptionRuntimeErrorCode(new CodexAppServerError("codex-runtime-not-configured")))
+      .toBe("subscription-runtime-not-configured");
+    expect(subscriptionRuntimeErrorCode(new CodexAppServerError("codex-runtime-version-unsupported")))
+      .toBe("subscription-runtime-version-unsupported");
+    expect(subscriptionRuntimeErrorCode(new CodexAppServerError("codex-runtime-incompatible")))
+      .toBe("subscription-runtime-incompatible");
+    expect(subscriptionRuntimeErrorCode(new CodexAppServerError("codex-runtime-invalid-executable")))
+      .toBe("subscription-runtime-unavailable");
+    // A found `claude` that is not Claude Code, or lacks what Ave passes, is the
+    // same "update it" state as a too-old `codex`.
+    expect(subscriptionRuntimeErrorCode(new ClaudeCodeSubscriptionError("claude-code-runtime-incompatible")))
+      .toBe("subscription-runtime-incompatible");
+    expect(subscriptionRuntimeErrorCode(new ClaudeCodeSubscriptionError("claude-code-runtime-not-configured")))
+      .toBe("subscription-runtime-not-configured");
+    // The CLI changed since it was verified: chat is not ready until it is verified again.
+    expect(subscriptionRuntimeErrorCode(new ClaudeCodeSubscriptionError("claude-code-runtime-unverified")))
+      .toBe("subscription-chat-unavailable");
   });
 });

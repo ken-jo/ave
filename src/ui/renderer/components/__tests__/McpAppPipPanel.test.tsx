@@ -3,6 +3,7 @@ import "../../../../../test/renderer/setup.js";
 import { render, waitFor, act, fireEvent } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { McpAppPipPanel } from "../McpAppPipPanel.js";
+import { getWebSurfaceOccluders } from "../../preview/web-surfaces.js";
 import { McpAppView } from "../McpAppView.js";
 import { stubMcpAve, ThemeWrapper } from "./mcp-app-test-helpers.js";
 import {
@@ -49,6 +50,15 @@ describe("McpAppPipPanel — renders nothing without an occupant", () => {
 });
 
 describe("McpAppPipPanel — renders the current pip occupant", () => {
+  it("is cut out of any web page it floats over", async () => {
+    moveCard("card-1", { kind: "pip" }, { payload: payload("github"), originSessionId: "sess-1" });
+    const { container, unmount } = render(<McpAppPipPanel />, { wrapper: ThemeWrapper });
+    const panel = container.querySelector<HTMLElement>('[data-testid="mcp-app-pip-panel"]')!;
+    await waitFor(() => expect(getWebSurfaceOccluders().has(panel)).toBe(true));
+    unmount();
+    expect(getWebSurfaceOccluders().has(panel)).toBe(false);
+  });
+
   it("mounts a live McpAppView for the card the store says is in pip", async () => {
     moveCard("card-1", { kind: "pip" }, { payload: payload("github"), originSessionId: "sess-1" });
 

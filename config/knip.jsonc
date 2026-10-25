@@ -83,7 +83,10 @@
         // through the seam's imports, which Knip reads as the seam.
         "src/__tests__/support/ave-home-isolation-guard.ts",
         // Executed by the cache contention test as a separate process.
-        "src/core/model-catalog/__tests__/fixtures/refresh-process.ts"
+        "src/core/model-catalog/__tests__/fixtures/refresh-process.ts",
+        // The conversation turn the SIGKILL durability test runs in its own
+        // process and kills mid-stream; spawned BY PATH.
+        "src/engine/__tests__/fixtures/mid-stream-writer.ts"
       ]
     },
     "web": {
@@ -113,9 +116,9 @@
     // It is the only Electron-ABI repair path left now that `postinstall` no
     // longer rebuilds native modules.
     "@electron/rebuild",
-    "@openai/codex",
     "@sentry/electron",
     "@types/better-sqlite3",
+    "@vscode/ripgrep",
     "better-sqlite3",
     "electron-builder",
     "electron-updater",
@@ -123,8 +126,13 @@
     "shadcn"
   ],
   "ignoreBinaries": [
+    // System namespace launcher used by the Linux confinement regressions.
+    "bwrap",
     // The system C compiler that builds the confined-child preload library.
     "cc",
+    // Sigstore cosign: the contract bundle uploader verifies a published
+    // signature with the pinned build .github/scripts/install-cosign.sh installs.
+    "cosign",
     // file(1): the Linux release arch audit cross-checks every ELF with it.
     "file",
     // External Go toolchain for the explicit parser rebuild, pinned by go.mod.
@@ -137,6 +145,9 @@
     "pgrep",
     "plutil",
     "powershell.exe",
+    // PowerShell 7: the PSModulePath regression spawns it to prove the
+    // Windows PowerShell 5.1 env helper survives an inherited 7.x module path.
+    "pwsh.exe",
     "python3",
     "subst",
     "taskkill",

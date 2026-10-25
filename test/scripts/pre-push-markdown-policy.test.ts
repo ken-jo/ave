@@ -2,6 +2,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
+import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -10,7 +11,11 @@ import {
 } from "../../scripts/hooks/pre-push-markdown-policy.mjs";
 import { checkPushedDocumentation } from "../../scripts/hooks/pre-push-document-safety.mjs";
 import { packagedDocumentInputs } from "../../scripts/lib/document-consumer-guard.mjs";
+import { COMMAND_LINE_BUDGET_CHARS, splitArgumentsWithinBudget } from "../../scripts/hooks/spawn-command.mjs";
 import { gitFixtureEnv } from "../../src/__tests__/support/git-fixture-env.mjs";
+// Git writes loose objects read-only, and Electron's synchronous recursive removal
+// refuses read-only files on Windows; the async removal clears the attribute.
+import { cleanupTmpDir } from "../../src/__tests__/support/tmp-dir-teardown.js";
 
 const root = resolve(import.meta.dirname, "../..");
 const inventory = JSON.parse(readFileSync(resolve(root, "scripts/hooks/documentation-references.json"), "utf8")) as {
@@ -129,7 +134,8 @@ describe("documentation impact policy", () => {
     const packaged = new Set(packagedDocumentInputs(JSON.parse(readFileSync(resolve(root, "package.json"), "utf8")), root));
     // The hook's own policy suites name documents as fixtures, not reads.
     const codeFiles = tracked.filter((file) => /^(?:src|test|scripts|config)\//.test(file) && /\.(?:[cm]?[jt]sx?|json)$/.test(file) &&
-      file !== "scripts/hooks/documentation-references.json" && !/^test\/scripts\/pre-push-[^/]+\.test\.ts$/.test(file));
+      file !== "scripts/hooks/documentation-references.json" &&
+      !/^test\/scripts\/pre-push-[^/]+\.test\.ts$/.test(file));
     const identitySuite = "test/scripts/repository-identity.test.ts";
     const identitySource = readFileSync(resolve(root, identitySuite), "utf8");
     const notCheckedBlock = identitySource.slice(identitySource.indexOf("const NOT_CHECKED"), identitySource.indexOf("function matchesEntry"));
@@ -152,7 +158,7 @@ describe("documentation impact policy", () => {
     }
   });
 
-  it("uses the same policy for the Git diff command", () => {
+  it("uses the same policy for the Git diff command", async () => {
     const repo = mkdtempSync(join(tmpdir(), "docs-impact-"));
     const cli = resolve(root, "scripts/hooks/classify-docs-diff.mjs");
     const runGit = (...args: string[]) => fixtureGit(repo, args);
@@ -196,11 +202,11 @@ describe("documentation impact policy", () => {
         expect(fixtureCli(repo, cli, executableBase)).toBe("docs_only=false\n");
       }
     } finally {
-      rmSync(repo, { recursive: true, force: true });
+      await cleanupTmpDir(repo);
     }
   });
 
-  it("checks committed documentation even with an empty index", () => {
+  it("checks committed documentation even with an empty index", async () => {
     const repo = mkdtempSync(join(tmpdir(), "pushed-doc-safety-"));
     const runGit = (...args: string[]) => fixtureGit(repo, args);
     try {
@@ -224,11 +230,11 @@ describe("documentation impact policy", () => {
       expect(() => checkPushedDocumentation(repo, [{ baseSha: whitespaceSha, localSha: markerSha, path: "docs/guide.md" }]))
         .toThrow(/merge marker|pushed diff failed/);
     } finally {
-      rmSync(repo, { recursive: true, force: true });
+      await cleanupTmpDir(repo);
     }
   });
 
-  it("keeps hook Git overrides away from fixture refs, index, and config", () => {
+  it("keeps hook Git overrides away from fixture refs, index, and config", async () => {
     const directory = mkdtempSync(join(tmpdir(), "git-fixture-isolation-"));
     const sentinel = join(directory, "sentinel");
     const fixture = join(directory, "fixture");
@@ -286,25 +292,26 @@ describe("documentation impact policy", () => {
         expect(metadata()).toEqual(before);
       }
     } finally {
-      rmSync(directory, { recursive: true, force: true });
+      await cleanupTmpDir(directory);
     }
   });
 
   it("keeps required CI checks green only after successful documentation classification", () => {
     const workflow = readFileSync(resolve(root, ".github/workflows/ci.yml"), "utf8");
-    for (const jobName of ["build-and-test", "windows-permission-tests", "macos-permission-tests", "linux-confinement-tests"]) {
+    // `build` classifies for the required build-and-test check: the Vitest
+    // shards and build-and-test read its docs_only output.
+    for (const jobName of ["build", "windows-permission-tests", "macos-permission-tests", "linux-confinement-tests"]) {
       const job = workflow.split(`  ${jobName}:\n`)[1]?.split(/\n  [a-z][a-z0-9-]+:\n/)[0];
       expect(job).toBeDefined();
       const steps = job!.split(/^      - /m).slice(1);
       expect(steps[0]).toContain("fetch-depth: 0");
       const classify = steps.findIndex((step) => step.includes("id: docs-impact"));
       expect(classify).toBeGreaterThan(0);
-      // Before the classifier only runner preflight may run: the Node it runs
-      // on (self-hosted runners have no toolcache) and the runner-variable
-      // check. Neither can turn a required check green on its own.
+      // Before the classifier only runner preflight may run: the pinned Node
+      // it runs on. That cannot turn a required check green on its own.
       for (const step of steps.slice(1, classify)) {
         expect(
-          step.startsWith("uses: actions/setup-node@") || step.startsWith("name: Require the runner variable"),
+          step.startsWith("uses: actions/setup-node@"),
           step.split("\n")[0],
         ).toBe(true);
       }
@@ -324,7 +331,7 @@ describe("documentation impact policy", () => {
     }
   });
 
-  it("runs the full CI suite for pushes and fails closed on missing PR bases", () => {
+  it("runs the full CI suite for pushes and fails closed on missing PR bases", async () => {
     const repo = mkdtempSync(join(tmpdir(), "docs-ci-event-"));
     const cli = resolve(root, "scripts/hooks/classify-docs-diff.mjs");
     try {
@@ -360,14 +367,31 @@ describe("documentation impact policy", () => {
       expect(classify("push", base)).toBe("docs_only=false\n");
       expect(classify("pull_request", base)).toBe("docs_only=true\n");
       const workflow = readFileSync(resolve(root, ".github/workflows/ci.yml"), "utf8");
-      // Every job classifies the same way.
-      const jobs = workflow.match(/^ {4}runs-on: /gm)?.length ?? 0;
+      // Every classifying job classifies the same way: build (for the
+      // Vitest shards and build-and-test, which read its output) and the
+      // three platform jobs.
+      const jobs = workflow.match(/^ {8}id: docs-impact$/gm)?.length ?? 0;
       expect(jobs).toBe(4);
+      expect(workflow).toContain("      docs_only: ${{ steps.docs-impact.outputs.docs_only }}\n");
+      expect(workflow).toContain("    if: needs.build.outputs.docs_only != 'true'\n");
       expect(workflow.match(/EVENT_NAME: \$\{\{ github\.event_name \}\}/g)).toHaveLength(jobs);
       expect(workflow.match(/classify-docs-diff\.mjs "\$BASE_SHA" HEAD "\$EVENT_NAME"/g)).toHaveLength(jobs);
     } finally {
-      rmSync(repo, { recursive: true, force: true });
+      await cleanupTmpDir(repo);
     }
+  });
+
+  it("runs the retired-name gate in every pre-push tier and in gate-core", () => {
+    const hook = readFileSync(resolve(root, "scripts/hooks/run-local-checks.mjs"), "utf8");
+    const dispatch = hook.slice(hook.indexOf("if (classification.alreadyOnRemote)"));
+    for (const tier of ["classification.docsOnly", "classification.commentOnly", "classification.testOnly", "classification.fastSource"]) {
+      const start = dispatch.indexOf(`} else if (${tier}) {`);
+      expect(start, tier).toBeGreaterThan(0);
+      const branch = dispatch.slice(start + 1, dispatch.indexOf("} else", start + 1));
+      expect(branch, tier).toContain("runRetiredNameGate(repoRoot);");
+    }
+    const manifest = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8")) as { scripts: Record<string, string> };
+    expect(manifest.scripts["check:gate-core"]).toContain("check:retired-name");
   });
 
   it("keeps push safety checks ahead of the shared documentation policy", () => {
@@ -377,16 +401,54 @@ describe("documentation impact policy", () => {
     expect(hook).toContain('run(commands.node, ["scripts/check-asrt-version-claims.mjs"], repoRoot)');
     const dispatch = hook.slice(hook.indexOf('if (stage === "pre-commit")'));
     expect(dispatch.indexOf("runStagedSafetyChecks(repoRoot)")).toBeLessThan(
-      dispatch.indexOf("classifyPrePushChanges(repoRoot, prePushUpdates, remoteLocation)"),
+      dispatch.indexOf("classifyPrePushChanges(repoRoot, withPushedCommits(prePushUpdates, pushCheckout.commitByLocalSha), remoteLocation)"),
     );
     expect(hook).toContain('run(commands.git, ["diff", "--cached", "--check"], repoRoot)');
     expect(hook).toContain("mergeMarkers.test(stagedContent)");
   });
 
+  it("flags real conflict markers but not a Markdown heading underline", () => {
+    const hook = readFileSync(resolve(root, "scripts/hooks/run-local-checks.mjs"), "utf8");
+    const literal = /const mergeMarkers = \/(.+)\/m;/.exec(hook)?.[1];
+    expect(literal).toBeDefined();
+    const mergeMarkers = new RegExp(literal!, "m");
+    expect(mergeMarkers.test("a\n<<<<<<< HEAD\nb\n")).toBe(true);
+    expect(mergeMarkers.test("a\n=======\nb\n")).toBe(true);
+    expect(mergeMarkers.test("a\r\n=======\r\nb\r\n")).toBe(true);
+    expect(mergeMarkers.test("a\n>>>>>>> branch\n")).toBe(true);
+    expect(mergeMarkers.test("PCRE2 License\n=============\n")).toBe(false);
+    expect(mergeMarkers.test("text with ======= inside\n")).toBe(false);
+  });
+
   it("removes hook Git context before full and targeted test runners", () => {
     const hook = readFileSync(resolve(root, "scripts/hooks/run-local-checks.mjs"), "utf8");
     expect(hook).toContain('scriptName === "test" ? withoutGitContext() : process.env');
-    expect(hook).toContain('"run", ...vitestArgs], dir, withoutGitContext()');
+    // Every targeted and related Vitest run goes through runVitestChunks; no
+    // `run(` call spawns test:vitest itself, so no path can bypass the
+    // stripped environment the chunk helper passes.
+    expect(hook).not.toMatch(/\brun\([^\n]*"test:vitest"/u);
+    const stripped = Object.freeze({ STRIPPED: "1" });
+    const runs: { args: string[]; env: unknown }[] = [];
+    const targeted = runInNewContext(
+      `${hook.slice(hook.indexOf("function runAppTargetedVitestChecks("), hook.indexOf("// lockSuites:"))}; ({ runAppTargetedVitestChecks, runVitestWithReport })`,
+      {
+        commands: { bun: "bun" }, available: () => "bun", hasPackageScript: () => true, hasFile: () => true,
+        runAppTypecheckGate: () => {}, ensureAppTestRuntimeAbi: () => {}, ensureWindowsJobLauncher: () => {},
+        join, tmpdir, mkdtempSync, rmSync, console: { log: () => {} }, splitArgumentsWithinBudget,
+        readJsonFile: () => ({ numTotalTests: 1, numPassedTests: 1 }),
+        withoutGitContext: () => stripped,
+        run: (_command: string, args: string[], _dir: string, env: unknown = process.env) => { runs.push({ args, env }); },
+      },
+    );
+    // Over the budget, so every check below spans several chunks.
+    const files = Array.from({ length: 800 }, (_, index) => `src/feature/__tests__/generated-${String(index).padStart(4, "0")}.test.ts`);
+    expect(files.reduce((total, file) => total + file.length + 5, 0)).toBeGreaterThan(COMMAND_LINE_BUDGET_CHARS * 2);
+    targeted.runAppTargetedVitestChecks("/fixture", files);
+    targeted.runVitestWithReport("bun", "/fixture", ["related", "--run", ...files.map((file) => `./${file}`)], "zero tests");
+    const vitestRuns = runs.filter(({ args }) => args.includes("test:vitest"));
+    expect(vitestRuns.filter(({ args }) => args.includes("related")).length).toBeGreaterThan(1);
+    expect(vitestRuns.filter(({ args }) => !args.includes("related")).length).toBeGreaterThan(1);
+    for (const { env } of vitestRuns) expect(env).toBe(stripped);
     const source = {
       PATH: process.env.PATH,
       GIT_DIR: "/sentinel/.git",

@@ -1,3 +1,5 @@
+import { spawnTerminal as spawnLane, writeTerminal as writeLane, resizeTerminal as resizeLane, ensureAgentTerminal, typeAgentTerminalCommand, terminalTabOwnerWindow } from "../pty-manager.js";
+import { spawnTerminal, writeTerminal, resizeTerminal, typeTerminalCommand, verifyTerminalShell, getTerminalBlockTracker } from "../../../__tests__/support/terminal-agent-fixture.js";
 /**
  * pty-manager unit tests (#1444). Stub ASRT (gate + wrap + cleanup) + the
  * sandbox-capability shell-containment gate + node-pty, and assert the
@@ -17,15 +19,21 @@
  *   - kill / killAll tear down + decrement ASRT state.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import type { TerminalTtyHandoff } from "../terminal-tty-handoff.js";
 
 // ─── ASRT mock — gate + wrap controllable per test ──────────
 let gateActive = true;
+const nativePlatform = process.platform;
+let additionalProjectDirectories: string[] = [];
 const wrapWorkerCommandMock = vi.fn<
   (command: string, options?: unknown) => Promise<{ argv: string[]; env: NodeJS.ProcessEnv }>
 >(() => Promise.resolve({ argv: ["sandbox-exec", "-p", "prof", "/bin/bash", "-c", "exec /bin/zsh -l -i"], env: {} }));
+const wrapTerminalCommandMock = vi.fn<
+  (command: string, options?: unknown) => Promise<{ argv: string[]; env: NodeJS.ProcessEnv }>
+>(() => Promise.resolve({ argv: ["/bin/bash", "-c", "sandbox-exec -p prof /bin/zsh -l -i"], env: { HTTP_PROXY: "http://p" } }));
 const cleanupMock = vi.fn(() => Promise.resolve());
 vi.mock("../../../permissions/asrt-sandbox.js", async () => ({
   sandboxTempEnvLaunch: (await vi.importActual<typeof import("../../../permissions/asrt-sandbox.js")>(
@@ -33,6 +41,7 @@ vi.mock("../../../permissions/asrt-sandbox.js", async () => ({
   )).sandboxTempEnvLaunch,
   isAsrtSandboxActive: () => gateActive,
   wrapWorkerCommand: (command: string, options?: unknown) => wrapWorkerCommandMock(command, options),
+  wrapTerminalCommand: (command: string, options?: unknown) => wrapTerminalCommandMock(command, options),
   cleanupAsrtSandboxAfterCommand: () => cleanupMock(),
   getDefaultSensitiveReadDenyPaths: () => ["/home/u/.ave/secrets", "/home/u/.ssh"],
   getDefaultSensitiveWriteDenyPaths: () => [
@@ -44,10 +53,50 @@ vi.mock("../../../permissions/asrt-sandbox.js", async () => ({
   ],
 }));
 
+// The real project resolver consumes this host-owned permission-store fixture.
+vi.mock("../../../permissions/permission-settings-store.js", async () => ({
+  ...await vi.importActual<typeof import("../../../permissions/permission-settings-store.js")>("../../../permissions/permission-settings-store.js"),
+  readPermissionSettings: () => ({ permissions: { additionalDirectories: additionalProjectDirectories } }),
+}));
+vi.mock("../../../workload/runtime.js", () => ({
+  isWorkloadBrokerActive: () => false,
+  getActiveWorkloadBrokerProjection: () => undefined,
+  isActiveWorkloadBrokerCwd: () => false,
+}));
+
+// ─── macOS own-tty handoff — platform + fifo controllable per test ──
+let needsOwnTtyGrant = false;
+const deliverMock = vi.fn<(script: string, options?: { signal?: AbortSignal }) => Promise<void>>(() =>
+  Promise.resolve(),
+);
+const handoffDisposeMock = vi.fn();
+function terminalHandoff(): TerminalTtyHandoff {
+  return {
+    trampoline: { file: "/bin/sh", args: ["/handoff/t-1/exec"] },
+    deliver: (script, options) => deliverMock(script, options),
+    dispose: () => handoffDisposeMock(),
+  };
+}
+const createHandoffMock = vi.fn<() => Promise<TerminalTtyHandoff>>(() => Promise.resolve(terminalHandoff()));
+let needsInnerPty = false;
+vi.mock("../terminal-tty-platform.js", () => ({
+  terminalNeedsOwnTtyGrant: () => needsOwnTtyGrant,
+  terminalNeedsInnerPty: () => needsInnerPty,
+}));
+vi.mock("../terminal-tty-handoff.js", async () => {
+  const actual = await vi.importActual<typeof import("../terminal-tty-handoff.js")>("../terminal-tty-handoff.js");
+  return {
+    ...actual,
+    createTerminalTtyHandoff: () => createHandoffMock(),
+  };
+});
+
 // ─── shell-containment gate ─────────────────────────────────
 let shellContained = true;
+let sandboxGeneration = "0";
 vi.mock("../../../permissions/sandbox-capability.js", () => ({
   isActiveSandboxShellContained: () => shellContained,
+  getSandboxGeneration: () => sandboxGeneration,
 }));
 
 // ─── write-jail derivation (deterministic) ──────────────────
@@ -57,6 +106,7 @@ vi.mock("../../../permissions/sandbox-write-jail.js", () => ({
 
 // ─── env sanitizer (identity-ish) ───────────────────────────
 vi.mock("../../../tools/safe-env.js", () => ({
+  buildHostShellChildEnv: () => ({ HOME: process.env.HOME ?? "", PATH: "/usr/bin" }),
   buildSandboxedChildEnv: (env: NodeJS.ProcessEnv, extra: Record<string, string> = {}) => ({
     ...env,
     PATH: "/usr/bin",
@@ -90,21 +140,27 @@ type DataCb = (chunk: string) => void;
 type ExitCb = (e: { exitCode: number; signal?: number }) => void;
 class FakePty {
   pid = 9999;
+  /** What a test's fake shell does with each write (e.g. redraw its prompt on Ctrl-C). */
+  respond: ((data: string) => void) | null = null;
+  ptsName: unknown = "/dev/ttys012";
   written: string[] = [];
   resized: Array<[number, number]> = [];
   killed = false;
   killSignals: Array<string | undefined> = [];
   private dataCb: DataCb | null = null;
-  private exitCb: ExitCb | null = null;
+  private exitCbs = new Set<ExitCb>();
   onData(cb: DataCb) {
     this.dataCb = cb;
     return { dispose: () => { this.dataCb = null; } };
   }
   onExit(cb: ExitCb) {
-    this.exitCb = cb;
-    return { dispose: () => { this.exitCb = null; } };
+    this.exitCbs.add(cb);
+    return { dispose: () => { this.exitCbs.delete(cb); } };
   }
-  write(d: string) { this.written.push(d); }
+  write(d: string) {
+    this.written.push(d);
+    this.respond?.(d);
+  }
   resize(c: number, r: number) { this.resized.push([c, r]); }
   kill(signal?: string) {
     this.killed = true;
@@ -112,7 +168,7 @@ class FakePty {
   }
   // test helpers
   emitData(chunk: string) { this.dataCb?.(chunk); }
-  emitExit(exitCode: number) { this.exitCb?.({ exitCode }); }
+  emitExit(exitCode: number) { for (const cb of [...this.exitCbs]) cb({ exitCode }); }
 }
 let lastPty: FakePty | null = null;
 let spawnedPtys: FakePty[] = [];
@@ -121,19 +177,42 @@ const ptySpawnMock = vi.fn<(cmd: string, args: string[], opts: unknown) => FakeP
   spawnedPtys.push(lastPty);
   return lastPty;
 });
+/** What the operating system reports as the terminal's foreground process. */
+let foregroundReading: import("../shell-process.js").TerminalForegroundReading = {
+  ok: true,
+  foreground: { pid: 9999, command: "zsh", cwd: "/w" },
+};
+const readForegroundMock = vi.fn(async (_ptyPid: number) => foregroundReading);
+/** Linux: what the operating system reports about the sandboxed shell. */
+let sandboxedShellReading: import("../shell-process.js").SandboxedShellReading = { ok: false, reason: "not set" };
+const readSandboxedShellMock = vi.fn(async (_ptyPid: number, _shellName: string, _reportedCwd: string) => sandboxedShellReading);
+const forwardResizeMock = vi.fn(async (_ptyPid: number, _shellName: string) => true);
+vi.mock("../shell-process.js", () => ({
+  readTerminalForeground: (ptyPid: number) => readForegroundMock(ptyPid),
+  readSandboxedShell: (ptyPid: number, shellName: string, reportedCwd: string) => readSandboxedShellMock(ptyPid, shellName, reportedCwd),
+  forwardResizeToSandboxedPtyRelay: (ptyPid: number, shellName: string) => forwardResizeMock(ptyPid, shellName),
+}));
+
+// ─── Linux inner pty — the relay check controllable per test ──
+const assertRelayMock = vi.fn(() => Promise.resolve());
+vi.mock("../terminal-inner-pty.js", async () => {
+  const actual = await vi.importActual<typeof import("../terminal-inner-pty.js")>("../terminal-inner-pty.js");
+  return { ...actual, assertInnerPtyRelay: () => assertRelayMock() };
+});
+
 vi.mock("node-pty", () => ({
   spawn: (cmd: string, args: string[], opts: unknown) => ptySpawnMock(cmd, args, opts),
 }));
 
 // Module under test — imported AFTER mocks.
 import {
-  spawnTerminal,
-  writeTerminal,
-  resizeTerminal,
+  terminalOwnedBy,
   killTerminal,
   killAllTerminals,
+  killTerminalsOwnedBy,
   forceKillAllTerminalsForShutdown,
   setTerminalEmitter,
+  sandboxedShellVerdict,
   __resetTerminalsForTest,
   __terminalSessionCountForTest,
   type TerminalEmit,
@@ -142,21 +221,74 @@ import {
 // to `canonicalizePathForMatch(process.cwd())` (the workspace-root anchor) and
 // validates a renderer-supplied cwd against it, so the test computes the same.
 import { canonicalizePathForMatch } from "../../../permissions/sensitive-paths.js";
-import { getTerminalBlockTracker, listTerminalBlockTabs } from "../terminal-blocks.js";
+import { USER_INPUT_QUIET_MS, getWindowTerminalBlockTracker, listTerminalBlockTabs } from "../terminal-blocks.js";
+import { SHELL_INTEGRATION_NONCE_FILE } from "../shell-integration.js";
 
-/** The workspace root the module anchors the write-jail to by default. */
-const ROOT = canonicalizePathForMatch(process.cwd());
+/**
+ * The marker nonce a spawned terminal's startup file would read: the file in
+ * its sandbox HOME (no shell runs here, so nothing deleted it). It is never
+ * in the shell's environment.
+ */
+function spawnedNonce(env: Record<string, string>): string {
+  expect(Object.keys(env).some((key) => /NONCE/u.test(key))).toBe(false);
+  return readFileSync(join(env.ZDOTDIR ?? env.HOME!, SHELL_INTEGRATION_NONCE_FILE), "utf-8");
+}
+
+/**
+ * The workspace root the module anchors the write-jail to by default, in the
+ * canonical form of the platform the cases run as. On a Windows host that is
+ * the simulated Linux, which does not fold the drive letter.
+ */
+const ROOT = (() => {
+  if (nativePlatform !== "win32") return canonicalizePathForMatch(process.cwd());
+  Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+  try {
+    return canonicalizePathForMatch(process.cwd());
+  } finally {
+    Object.defineProperty(process, "platform", { value: nativePlatform, configurable: true });
+  }
+})();
+
+/**
+ * The bits a 0o700 mkdir leaves. Windows keeps no POSIX mode, so Node reports
+ * 0o666 for the directory there; the real Windows agent lane refuses before it
+ * makes a HOME (see the native Windows case below).
+ */
+const OWNER_ONLY_DIR_MODE = nativePlatform === "win32" ? 0o666 : 0o700;
 
 let emitted: Array<{ event: string; payload: unknown }> = [];
-const emit: TerminalEmit = (event, payload) => emitted.push({ event, payload });
+/** The window each emitted event was addressed to, index for index with `emitted`. */
+let emittedOwners: Array<number | null> = [];
+const emit: TerminalEmit = (event, payload, ownerWindowId) => {
+  emitted.push({ event, payload });
+  emittedOwners.push(ownerWindowId);
+};
 
 beforeEach(() => {
+  // Fake wrapped PTYs exercise the supported backend on every CI host.
+  if (nativePlatform === "win32") Object.defineProperty(process, "platform", { value: "linux", configurable: true });
   gateActive = true;
+  additionalProjectDirectories = [];
   shellContained = true;
+  sandboxGeneration = "0";
   emitted = [];
+  emittedOwners = [];
   lastPty = null;
   spawnedPtys = [];
   wrapWorkerCommandMock.mockClear();
+  wrapTerminalCommandMock.mockClear();
+  needsOwnTtyGrant = false;
+  needsInnerPty = false;
+  assertRelayMock.mockReset();
+  assertRelayMock.mockImplementation(() => Promise.resolve());
+  readSandboxedShellMock.mockClear();
+  forwardResizeMock.mockReset();
+  forwardResizeMock.mockImplementation(async () => true);
+  deliverMock.mockReset();
+  deliverMock.mockImplementation(() => Promise.resolve());
+  handoffDisposeMock.mockClear();
+  createHandoffMock.mockReset();
+  createHandoffMock.mockImplementation(() => Promise.resolve(terminalHandoff()));
   cleanupMock.mockClear();
   sandboxHomeCleanupMock.mockClear();
   ptySpawnMock.mockClear();
@@ -168,12 +300,13 @@ beforeEach(() => {
 afterEach(() => {
   __resetTerminalsForTest();
   rmSync(homeParent, { recursive: true, force: true });
+  if (nativePlatform === "win32") Object.defineProperty(process, "platform", { value: nativePlatform, configurable: true });
 });
 
 describe("pty-manager fail-closed", () => {
   it("refuses to spawn when the gate is inactive", async () => {
     gateActive = false;
-    const res = await spawnTerminal({ tabId: "terminal:1" });
+    const res = await spawnTerminal({ tabId: "terminal:0000000a-1" });
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.reason).toBe("not-shell-contained");
     expect(ptySpawnMock).not.toHaveBeenCalled();
@@ -182,9 +315,17 @@ describe("pty-manager fail-closed", () => {
 
   it("refuses to spawn when the sandbox is not shell-contained (e.g. Windows fs+network partial)", async () => {
     shellContained = false;
-    const res = await spawnTerminal({ tabId: "terminal:1" });
+    const res = await spawnTerminal({ tabId: "terminal:0000000a-1" });
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.reason).toBe("not-shell-contained");
+    expect(ptySpawnMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses an id that is not a terminal tab id, before anything reaches a shell", async () => {
+    for (const tabId of ["terminal:1", "browser:0000000a-1", "terminal:0000000a-1; rm -rf /", "terminal:ZZZZZZZZ-1"]) {
+      const res = await spawnTerminal({ tabId });
+      expect(res).toEqual({ ok: false, reason: "bad-request", message: "tabId is not a terminal tab id" });
+    }
     expect(ptySpawnMock).not.toHaveBeenCalled();
   });
 
@@ -198,7 +339,7 @@ describe("pty-manager fail-closed", () => {
 describe("pty-manager happy path (fs-contained)", () => {
   it("wraps with the restated read+write sensitive floors + a workspace-anchored cwd jail and spawns the wrapped argv", async () => {
     // No cwd supplied (the production renderer path) → default = workspace root.
-    const res = await spawnTerminal({ tabId: "terminal:1", cols: 120, rows: 40 });
+    const res = await spawnTerminal({ tabId: "terminal:0000000a-1", cols: 120, rows: 40 });
     expect(res.ok).toBe(true);
     if (res.ok) expect(res.replayed).toBe(false);
 
@@ -232,6 +373,8 @@ describe("pty-manager happy path (fs-contained)", () => {
     expect(opts.cols).toBe(120);
     expect(opts.rows).toBe(40);
     expect(opts.env.TERM).toBe("xterm-256color");
+    // The stable terminal id reaches the shell, whatever view the tab is shown in.
+    expect(opts.env.AVE_TERMINAL_ID).toBe("terminal:0000000a-1");
     expect(opts.env.HOME).toBe(sandboxHome);
   });
 
@@ -239,7 +382,7 @@ describe("pty-manager happy path (fs-contained)", () => {
     vi.stubEnv("SHELL", "/bin/sh");
     let res: Awaited<ReturnType<typeof spawnTerminal>>;
     try {
-      res = await spawnTerminal({ tabId: "terminal:1" });
+      res = await spawnTerminal({ tabId: "terminal:0000000a-1" });
     } finally {
       vi.unstubAllEnvs();
     }
@@ -251,7 +394,7 @@ describe("pty-manager happy path (fs-contained)", () => {
     // command, so only an assignment inside the wrap reaches the shell.
     expect(command).toBe(`exec /usr/bin/env TMPDIR=${temp} TMP=${temp} TEMP=${temp} /bin/sh -l -i`);
     expect(statSync(temp).isDirectory()).toBe(true);
-    expect(statSync(temp).mode & 0o777).toBe(0o700);
+    expect(statSync(temp).mode & 0o777).toBe(OWNER_ONLY_DIR_MODE);
     // Written under the HOME the wrap already grants.
     expect(options.filesystem.allowWrite).toContain(sandboxHome);
   });
@@ -264,7 +407,7 @@ describe("pty-manager happy path (fs-contained)", () => {
       writeFileSync(join(path, "tmp"), "");
       return { path, env: { HOME: path }, cleanup: sandboxHomeCleanupMock };
     });
-    const res = await spawnTerminal({ tabId: "terminal:1" });
+    const res = await spawnTerminal({ tabId: "terminal:0000000a-1" });
     create.mockRestore();
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.reason).toBe("spawn-failed");
@@ -274,7 +417,7 @@ describe("pty-manager happy path (fs-contained)", () => {
 
   it("honors a renderer-supplied cwd that is WITHIN the workspace root", async () => {
     const inside = `${ROOT}/proj`;
-    const res = await spawnTerminal({ tabId: "terminal:1", cwd: inside });
+    const res = await spawnTerminal({ tabId: "terminal:0000000a-1", cwd: inside });
     expect(res.ok).toBe(true);
     const spawnArgs = ptySpawnMock.mock.calls[0] as [string, string[], { cwd: string }];
     expect(spawnArgs[2].cwd).toBe(inside);
@@ -283,21 +426,21 @@ describe("pty-manager happy path (fs-contained)", () => {
   });
 
   it("streams pty output to the emitter and buffers it for replay", async () => {
-    await spawnTerminal({ tabId: "terminal:1" });
+    await spawnTerminal({ tabId: "terminal:0000000a-1" });
     lastPty?.emitData("hello");
-    expect(emitted).toContainEqual({ event: "data", payload: { tabId: "terminal:1", chunk: "hello" } });
+    expect(emitted).toContainEqual(expect.objectContaining({ event: "data", payload: expect.objectContaining({ tabId: "terminal:0000000a-1", lane: "agent", terminalSessionId: expect.any(String), chunk: "hello" }) }));
   });
 
   it("forwards input + resize to the pty", async () => {
-    await spawnTerminal({ tabId: "terminal:1" });
-    writeTerminal("terminal:1", "ls\n");
-    resizeTerminal("terminal:1", 100, 30);
+    await spawnTerminal({ tabId: "terminal:0000000a-1" });
+    writeTerminal("terminal:0000000a-1", "ls\n");
+    resizeTerminal("terminal:0000000a-1", 100, 30);
     expect(lastPty?.written).toContain("ls\n");
     expect(lastPty?.resized).toContainEqual([100, 30]);
   });
 
   it("emits exit + decrements ASRT state when the pty exits", async () => {
-    await spawnTerminal({ tabId: "terminal:1" });
+    await spawnTerminal({ tabId: "terminal:0000000a-1" });
     lastPty?.emitExit(0);
     expect(emitted.some((e) => e.event === "exit")).toBe(true);
     expect(cleanupMock).toHaveBeenCalled();
@@ -307,16 +450,16 @@ describe("pty-manager happy path (fs-contained)", () => {
   });
 
   it("is idempotent per tab: a second spawn replays the ring and does not start a second shell", async () => {
-    await spawnTerminal({ tabId: "terminal:1" });
+    await spawnTerminal({ tabId: "terminal:0000000a-1" });
     lastPty?.emitData("scrollback");
     emitted = [];
-    const res = await spawnTerminal({ tabId: "terminal:1" });
+    const res = await spawnTerminal({ tabId: "terminal:0000000a-1" });
     expect(res.ok).toBe(true);
     if (res.ok) expect(res.replayed).toBe(true);
     // no second pty spawn.
     expect(ptySpawnMock).toHaveBeenCalledTimes(1);
     // ring replayed.
-    expect(emitted).toContainEqual({ event: "data", payload: { tabId: "terminal:1", chunk: "scrollback" } });
+    expect(emitted).toContainEqual(expect.objectContaining({ event: "data", payload: expect.objectContaining({ tabId: "terminal:0000000a-1", lane: "agent", terminalSessionId: expect.any(String), chunk: "scrollback" }) }));
   });
 
   it("shares an in-flight same-tab spawn instead of creating two PTYs", async () => {
@@ -325,8 +468,8 @@ describe("pty-manager happy path (fs-contained)", () => {
       releaseWrap = resolve;
     }));
 
-    const first = spawnTerminal({ tabId: "terminal:1" });
-    const overlapping = spawnTerminal({ tabId: "terminal:1" });
+    const first = spawnTerminal({ tabId: "terminal:0000000a-1" });
+    const overlapping = spawnTerminal({ tabId: "terminal:0000000a-1" });
     expect(wrapWorkerCommandMock).toHaveBeenCalledTimes(1);
     releaseWrap?.({ argv: ["sandbox-exec", "/bin/bash"], env: {} });
 
@@ -343,8 +486,8 @@ describe("pty-manager happy path (fs-contained)", () => {
       releaseWrap = resolve;
     }));
 
-    const spawn = spawnTerminal({ tabId: "terminal:closing" });
-    killTerminal("terminal:closing");
+    const spawn = spawnTerminal({ tabId: "terminal:0000000a-11" });
+    killTerminal("terminal:0000000a-11");
     releaseWrap?.({ argv: ["sandbox-exec", "/bin/bash"], env: {} });
 
     await expect(spawn).resolves.toMatchObject({ ok: false, reason: "spawn-failed" });
@@ -357,32 +500,38 @@ describe("pty-manager happy path (fs-contained)", () => {
 
 describe("pty-manager lifecycle", () => {
   it("kill tears down the pty + decrements ASRT state", async () => {
-    await spawnTerminal({ tabId: "terminal:1" });
-    killTerminal("terminal:1");
+    await spawnTerminal({ tabId: "terminal:0000000a-1" });
+    killTerminal("terminal:0000000a-1");
     expect(lastPty?.killed).toBe(true);
     expect(cleanupMock).not.toHaveBeenCalled();
     expect(sandboxHomeCleanupMock).not.toHaveBeenCalled();
     expect(__terminalSessionCountForTest()).toBe(1);
-    writeTerminal("terminal:1", "stale input\n");
-    resizeTerminal("terminal:1", 140, 50);
+    writeTerminal("terminal:0000000a-1", "stale input\n");
+    resizeTerminal("terminal:0000000a-1", 140, 50);
     expect(lastPty?.written).toEqual([]);
     expect(lastPty?.resized).toEqual([]);
-    const replay = await spawnTerminal({ tabId: "terminal:1" });
-    expect(replay.ok).toBe(true);
-    if (replay.ok) expect(replay.replayed).toBe(true);
+    // A spawn under the closing id does not attach to the dying shell, and no
+    // second PTY starts while it is alive: it waits for the exit.
+    const closing = lastPty!;
+    const next = spawnTerminal({ tabId: "terminal:0000000a-1" });
+    await Promise.resolve();
     expect(ptySpawnMock).toHaveBeenCalledTimes(1);
-    lastPty?.emitExit(0);
+    closing.emitExit(0);
     expect(cleanupMock).toHaveBeenCalledTimes(1);
     expect(sandboxHomeCleanupMock).toHaveBeenCalledTimes(1);
+    expect(await next).toMatchObject({ ok: true, tabId: "terminal:0000000a-1", replayed: false });
+    expect(ptySpawnMock).toHaveBeenCalledTimes(2);
+    killTerminal("terminal:0000000a-1");
+    lastPty?.emitExit(0);
     expect(__terminalSessionCountForTest()).toBe(0);
   });
 
   it("retains a closing session and force-kills a PTY that ignores SIGHUP", async () => {
     vi.useFakeTimers();
     try {
-      await spawnTerminal({ tabId: "terminal:1" });
+      await spawnTerminal({ tabId: "terminal:0000000a-1" });
       const pty = lastPty;
-      killTerminal("terminal:1");
+      killTerminal("terminal:0000000a-1");
       expect(pty?.killSignals).toEqual([undefined]);
       expect(__terminalSessionCountForTest()).toBe(1);
 
@@ -399,8 +548,8 @@ describe("pty-manager lifecycle", () => {
   });
 
   it("killAllTerminals kills every live session", async () => {
-    await spawnTerminal({ tabId: "terminal:1" });
-    await spawnTerminal({ tabId: "terminal:2" });
+    await spawnTerminal({ tabId: "terminal:0000000a-1" });
+    await spawnTerminal({ tabId: "terminal:0000000a-2" });
     expect(__terminalSessionCountForTest()).toBe(2);
     const killed = killAllTerminals();
     expect(killed).toBe(2);
@@ -410,7 +559,7 @@ describe("pty-manager lifecycle", () => {
   });
 
   it("app shutdown sends SIGKILL immediately and awaits definitive exits", async () => {
-    await spawnTerminal({ tabId: "terminal:1" });
+    await spawnTerminal({ tabId: "terminal:0000000a-1" });
     const pty = lastPty;
     const shutdown = forceKillAllTerminalsForShutdown();
     expect(pty?.killSignals).toEqual(["SIGKILL"]);
@@ -427,7 +576,7 @@ describe("pty-manager lifecycle", () => {
       releaseWrap = resolve;
     }));
 
-    const spawn = spawnTerminal({ tabId: "terminal:starting" });
+    const spawn = spawnTerminal({ tabId: "terminal:0000000a-14" });
     const shutdown = forceKillAllTerminalsForShutdown();
     releaseWrap?.({ argv: ["sandbox-exec", "/bin/bash"], env: {} });
 
@@ -437,32 +586,257 @@ describe("pty-manager lifecycle", () => {
     expect(cleanupMock).toHaveBeenCalledTimes(1);
     expect(sandboxHomeCleanupMock).toHaveBeenCalledTimes(1);
     expect(__terminalSessionCountForTest()).toBe(0);
-    await expect(spawnTerminal({ tabId: "terminal:late" }))
+    await expect(spawnTerminal({ tabId: "terminal:0000000a-12" }))
       .resolves.toMatchObject({ ok: false, reason: "spawn-failed" });
   });
 });
 
 describe("pty-manager cwd validation (write-jail anchor)", () => {
   it("defaults the cwd to the workspace root when none is supplied (never $HOME)", async () => {
-    const res = await spawnTerminal({ tabId: "terminal:1" });
+    const res = await spawnTerminal({ tabId: "terminal:0000000a-1" });
     expect(res.ok).toBe(true);
     const spawnArgs = ptySpawnMock.mock.calls[0] as [string, string[], { cwd: string }];
     expect(spawnArgs[2].cwd).toBe(ROOT);
   });
 
   it("rejects a renderer-supplied cwd OUTSIDE the workspace root (no $HOME write-jail)", async () => {
-    const res = await spawnTerminal({ tabId: "terminal:1", cwd: "/etc" });
+    const res = await spawnTerminal({ tabId: "terminal:0000000a-1", cwd: "/etc" });
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.reason).toBe("bad-request");
     // No PTY spawned for a rejected cwd.
     expect(ptySpawnMock).not.toHaveBeenCalled();
   });
 
+  it("admits a user-approved additional project subtree and anchors only that validated cwd", async () => {
+    const project = join(homeParent, "approved-project");
+    const cwd = join(project, "packages", "app");
+    mkdirSync(cwd, { recursive: true });
+    additionalProjectDirectories = [project];
+    const canonical = canonicalizePathForMatch(cwd);
+    const result = await spawnTerminal({ tabId: "terminal:0000000a-1", cwd });
+    expect(result).toMatchObject({ ok: true, session: { initialCwd: canonical } });
+    expect(ptySpawnMock.mock.calls[0]?.[2]).toMatchObject({ cwd: canonical });
+    const options = wrapWorkerCommandMock.mock.calls[0]?.[1] as { filesystem: { allowWrite: string[] } };
+    expect(options.filesystem.allowWrite).toEqual([canonical, createdHomes[0]]);
+    expect(options.filesystem.allowWrite).not.toContain(project);
+    expect(options.filesystem.allowWrite).not.toContain(homedir());
+  });
+
+  it("rejects an unapproved outside directory and a sibling with the approved root's prefix", async () => {
+    const project = join(homeParent, "approved-project");
+    const outside = join(homeParent, "outside-project");
+    const sibling = project + "-sibling";
+    for (const directory of [project, outside, sibling]) mkdirSync(directory);
+    additionalProjectDirectories = [project];
+    for (const [index, cwd] of [outside, sibling].entries()) {
+      expect(await spawnTerminal({ tabId: `terminal:0000000a-${index + 1}`, cwd })).toMatchObject({ ok: false, reason: "bad-request" });
+    }
+    expect(ptySpawnMock).not.toHaveBeenCalled();
+    expect(wrapWorkerCommandMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects a symlink escape from an approved project", async () => {
+    const project = join(homeParent, "approved-project");
+    const outside = join(homeParent, "outside-project");
+    mkdirSync(project);
+    mkdirSync(outside);
+    const link = join(project, "escape");
+    symlinkSync(outside, link, nativePlatform === "win32" ? "junction" : "dir");
+    additionalProjectDirectories = [project];
+    expect(await spawnTerminal({ tabId: "terminal:0000000a-1", cwd: link })).toMatchObject({ ok: false, reason: "bad-request" });
+    expect(ptySpawnMock).not.toHaveBeenCalled();
+  });
+
+  it("canonicalizes a user-approved project alias before matching its real subtree", async () => {
+    const project = join(homeParent, "approved-project");
+    const cwd = join(project, "app");
+    mkdirSync(cwd, { recursive: true });
+    const alias = join(homeParent, "project-alias");
+    symlinkSync(project, alias, nativePlatform === "win32" ? "junction" : "dir");
+    additionalProjectDirectories = [alias];
+    expect(await spawnTerminal({ tabId: "terminal:0000000a-1", cwd })).toMatchObject({ ok: true, session: { initialCwd: canonicalizePathForMatch(cwd) } });
+  });
+
+  it("never anchors an Agent jail at the whole user HOME", async () => {
+    additionalProjectDirectories = [homedir()];
+    expect(await spawnTerminal({ tabId: "terminal:0000000a-1", cwd: homedir() })).toMatchObject({ ok: false, reason: "bad-request" });
+    expect(ptySpawnMock).not.toHaveBeenCalled();
+  });
+
   it("rejects a relative (non-absolute) cwd", async () => {
-    const res = await spawnTerminal({ tabId: "terminal:1", cwd: "relative/path" });
+    const res = await spawnTerminal({ tabId: "terminal:0000000a-1", cwd: "relative/path" });
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.reason).toBe("bad-request");
     expect(ptySpawnMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("pty-manager window ownership (two windows)", () => {
+  it("keeps a terminal to the window that spawned it: another window cannot attach, type into, or claim it", async () => {
+    expect((await spawnTerminal({ tabId: "terminal:0000000a-1", ownerWindowId: 1 })).ok).toBe(true);
+    expect(terminalOwnedBy("terminal:0000000a-1", 1)).toBe(true);
+    expect(terminalOwnedBy("terminal:0000000a-1", 2)).toBe(false);
+    // The second window's spawn of the same id is refused, and no second shell starts.
+    expect(await spawnTerminal({ tabId: "terminal:0000000a-1", ownerWindowId: 2 })).toEqual({
+      ok: false,
+      reason: "bad-request",
+      message: "terminal tab belongs to another window",
+    });
+    expect(ptySpawnMock).toHaveBeenCalledTimes(1);
+    // Its own id in the same window form is its own terminal.
+    expect((await spawnTerminal({ tabId: "terminal:0000000b-1", ownerWindowId: 2 })).ok).toBe(true);
+    expect(ptySpawnMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("addresses every output and exit to the owning window only", async () => {
+    const original = await spawnTerminal({ tabId: "terminal:0000000a-1", ownerWindowId: 1 });
+    if (!original.ok) throw new Error("expected terminal");
+    const first = lastPty!;
+    await spawnTerminal({ tabId: "terminal:0000000b-1", ownerWindowId: 2 });
+    const second = lastPty!;
+    emitted.length = 0;
+    emittedOwners.length = 0;
+    first.emitData("from one");
+    second.emitData("from two");
+    first.emitExit(0);
+    expect(emitted.map((entry, index) => [entry.event, (entry.payload as { tabId: string }).tabId, emittedOwners[index]])).toEqual([
+      ["data", "terminal:0000000a-1", 1],
+      ["data", "terminal:0000000b-1", 2],
+      ["exit", "terminal:0000000a-1", 1],
+    ]);
+    // Logical ownership survives shell exit until the trusted tab closes.
+    expect(terminalOwnedBy("terminal:0000000a-1", 2)).toBe(false);
+    expect(getWindowTerminalBlockTracker(original.session, 1)?.hasExited()).toBe(true);
+    expect(getWindowTerminalBlockTracker(original.session, 2)).toBeUndefined();
+    expect(await spawnTerminal({ tabId: "terminal:0000000a-1", ownerWindowId: 2 })).toMatchObject({ ok: false, reason: "bad-request" });
+    const replacement = await spawnTerminal({ tabId: "terminal:0000000a-1", ownerWindowId: 1 });
+    if (!replacement.ok) throw new Error("expected replacement terminal");
+    expect(replacement.session.terminalSessionId).not.toBe(original.session.terminalSessionId);
+    expect(getWindowTerminalBlockTracker(original.session, 1)).toBeUndefined();
+    expect(getWindowTerminalBlockTracker(replacement.session, 1)).toBeDefined();
+    killTerminal("terminal:0000000a-1");
+    expect(terminalOwnedBy("terminal:0000000a-1", 2)).toBe(true);
+  });
+});
+
+describe("pty-manager window close (close, then reopen and restore)", () => {
+  it("closes a closed window's shells, and the next window's restore of the same id gets a new shell once the old one exits", async () => {
+    expect((await spawnTerminal({ tabId: "terminal:0000000a-1", ownerWindowId: 1 })).ok).toBe(true);
+    const old = lastPty!;
+    expect((await spawnTerminal({ tabId: "terminal:0000000b-1", ownerWindowId: 2 })).ok).toBe(true);
+    const otherWindow = lastPty!;
+
+    expect(killTerminalsOwnedBy(1)).toBe(1);
+    expect(old.killed).toBe(true);
+    expect(otherWindow.killed).toBe(false);
+    // The closed window no longer owns the id.
+    expect(terminalOwnedBy("terminal:0000000a-1", 3)).toBe(true);
+
+    // The reopened window restores the saved layout under the same id.
+    let settled = false;
+    const restored = spawnTerminal({ tabId: "terminal:0000000a-1", ownerWindowId: 3 }).then((result) => {
+      settled = true;
+      return result;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    // Not attached to the dying shell: it waits for it.
+    expect(settled).toBe(false);
+    old.emitExit(129);
+    expect(await restored).toMatchObject({ ok: true, tabId: "terminal:0000000a-1", replayed: false });
+    expect(ptySpawnMock).toHaveBeenCalledTimes(3);
+    expect(terminalOwnedBy("terminal:0000000a-1", 3)).toBe(true);
+    expect(terminalOwnedBy("terminal:0000000a-1", 1)).toBe(false);
+  });
+
+  it("cancels a closed window's spawn still starting, and the restore after it starts fresh", async () => {
+    const starting = spawnTerminal({ tabId: "terminal:0000000a-2", ownerWindowId: 1 });
+    expect(killTerminalsOwnedBy(1)).toBe(1);
+    const restored = await spawnTerminal({ tabId: "terminal:0000000a-2", ownerWindowId: 3 });
+    expect((await starting).ok).toBe(false);
+    expect(restored).toMatchObject({ ok: true, tabId: "terminal:0000000a-2", replayed: false });
+    expect(terminalOwnedBy("terminal:0000000a-2", 3)).toBe(true);
+  });
+
+  it("drops a waiting restore when its window closes too: no shell starts for a window that is gone", async () => {
+    expect((await spawnTerminal({ tabId: "terminal:0000000a-4", ownerWindowId: 1 })).ok).toBe(true);
+    const old = lastPty!;
+    killTerminalsOwnedBy(1);
+    const waiting = spawnTerminal({ tabId: "terminal:0000000a-4", ownerWindowId: 3 });
+    // The waiting window holds the id: a third window cannot take it meanwhile.
+    expect(terminalOwnedBy("terminal:0000000a-4", 3)).toBe(true);
+    expect(terminalOwnedBy("terminal:0000000a-4", 5)).toBe(false);
+    expect(killTerminalsOwnedBy(3)).toBe(1);
+    expect(await waiting).toEqual({ ok: false, reason: "spawn-failed", message: "terminal spawn cancelled" });
+    old.emitExit(129);
+    await Promise.resolve();
+    expect(ptySpawnMock).toHaveBeenCalledTimes(1);
+    expect(__terminalSessionCountForTest()).toBe(0);
+    expect(terminalOwnedBy("terminal:0000000a-4", 5)).toBe(true);
+  });
+
+  it("clears the wait's deadline timer when the wait is cancelled", async () => {
+    vi.useFakeTimers();
+    try {
+      expect((await spawnTerminal({ tabId: "terminal:0000000a-6", ownerWindowId: 1 })).ok).toBe(true);
+      killTerminalsOwnedBy(1);
+      // The old shell's SIGKILL escalation timer.
+      const before = vi.getTimerCount();
+      const waiting = spawnTerminal({ tabId: "terminal:0000000a-6", ownerWindowId: 3 });
+      expect(vi.getTimerCount()).toBe(before + 1);
+      killTerminalsOwnedBy(3);
+      expect(await waiting).toEqual({ ok: false, reason: "spawn-failed", message: "terminal spawn cancelled" });
+      expect(vi.getTimerCount()).toBe(before);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds the whole wait by one deadline, also behind a cancelled spawn that is slow to settle", async () => {
+    vi.useFakeTimers();
+    try {
+      let releaseWrap!: () => void;
+      wrapWorkerCommandMock.mockImplementationOnce(() => new Promise((resolve) => {
+        releaseWrap = () => resolve({ argv: ["/bin/zsh"], env: {} });
+      }));
+      const starting = spawnTerminal({ tabId: "terminal:0000000a-5", ownerWindowId: 1 });
+      await vi.advanceTimersByTimeAsync(0);
+      killTerminalsOwnedBy(1);
+      const restored = spawnTerminal({ tabId: "terminal:0000000a-5", ownerWindowId: 3 });
+      await vi.advanceTimersByTimeAsync(4_999);
+      let settled = false;
+      void restored.then(() => { settled = true; });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await restored).toEqual({
+        ok: false,
+        reason: "still-closing",
+        message: "the previous shell for this tab is still closing",
+      });
+      releaseWrap();
+      expect((await starting).ok).toBe(false);
+      expect(ptySpawnMock).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("refuses clearly, rather than hanging, when the old shell will not exit", async () => {
+    vi.useFakeTimers();
+    try {
+      expect((await spawnTerminal({ tabId: "terminal:0000000a-3", ownerWindowId: 1 })).ok).toBe(true);
+      killTerminalsOwnedBy(1);
+      const restored = spawnTerminal({ tabId: "terminal:0000000a-3", ownerWindowId: 3 });
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(await restored).toEqual({
+        ok: false,
+        reason: "still-closing",
+        message: "the previous shell for this tab is still closing",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -470,11 +844,11 @@ describe("pty-manager anti-DoS caps", () => {
   it("refuses to spawn past the concurrent-session cap", async () => {
     const MAX = 16;
     for (let i = 0; i < MAX; i++) {
-      const res = await spawnTerminal({ tabId: `terminal:${i}` });
+      const res = await spawnTerminal({ tabId: `terminal:0000000a-${i + 100}` });
       expect(res.ok).toBe(true);
     }
     expect(__terminalSessionCountForTest()).toBe(MAX);
-    const over = await spawnTerminal({ tabId: "terminal:overflow" });
+    const over = await spawnTerminal({ tabId: "terminal:0000000a-13" });
     expect(over.ok).toBe(false);
     if (!over.ok) expect(over.reason).toBe("too-many-terminals");
     // No extra PTY spawned past the cap.
@@ -483,21 +857,21 @@ describe("pty-manager anti-DoS caps", () => {
 
   it("replaying an EXISTING tab at the cap is still allowed (does not count as new)", async () => {
     const MAX = 16;
-    for (let i = 0; i < MAX; i++) await spawnTerminal({ tabId: `terminal:${i}` });
+    for (let i = 0; i < MAX; i++) await spawnTerminal({ tabId: `terminal:0000000a-${i + 100}` });
     // Remount of an existing tab replays — must NOT be rejected by the cap.
-    const replay = await spawnTerminal({ tabId: "terminal:0" });
+    const replay = await spawnTerminal({ tabId: "terminal:0000000a-100" });
     expect(replay.ok).toBe(true);
     if (replay.ok) expect(replay.replayed).toBe(true);
   });
 
   it("drops an oversized single input write instead of streaming it to the PTY", async () => {
-    await spawnTerminal({ tabId: "terminal:1" });
+    await spawnTerminal({ tabId: "terminal:0000000a-1" });
     const huge = "x".repeat(1024 * 1024 + 1); // 1 byte over the cap
-    writeTerminal("terminal:1", huge);
+    writeTerminal("terminal:0000000a-1", huge);
     expect(lastPty?.written).not.toContain(huge);
     expect(lastPty?.written.length ?? 0).toBe(0);
     // A normal write still passes.
-    writeTerminal("terminal:1", "ls\n");
+    writeTerminal("terminal:0000000a-1", "ls\n");
     expect(lastPty?.written).toContain("ls\n");
   });
 });
@@ -506,7 +880,7 @@ describe("pty-manager command blocks", () => {
   it("writes the zsh integration into the terminal's own HOME and pins ZDOTDIR there", async () => {
     vi.stubEnv("SHELL", "/bin/zsh");
     try {
-      expect((await spawnTerminal({ tabId: "terminal:1" })).ok).toBe(true);
+      expect((await spawnTerminal({ tabId: "terminal:0000000a-1" })).ok).toBe(true);
     } finally {
       vi.unstubAllEnvs();
     }
@@ -519,17 +893,17 @@ describe("pty-manager command blocks", () => {
   it("records blocks from PTY output and typed input, keeps them past exit, drops them on tab close", async () => {
     vi.stubEnv("SHELL", "/bin/zsh");
     try {
-      expect((await spawnTerminal({ tabId: "terminal:1", ownerWindowId: 3 })).ok).toBe(true);
+      expect((await spawnTerminal({ tabId: "terminal:0000000a-1", ownerWindowId: 3 })).ok).toBe(true);
     } finally {
       vi.unstubAllEnvs();
     }
     const [, , opts] = ptySpawnMock.mock.calls[0] as [string, string[], { env: Record<string, string> }];
-    const nonce = opts.env.AVE_TERMINAL_NONCE;
+    const nonce = spawnedNonce(opts.env);
     expect(nonce).toMatch(/^[0-9a-f]{32}$/u);
-    const tracker = getTerminalBlockTracker("terminal:1");
+    const tracker = getTerminalBlockTracker("terminal:0000000a-1");
     expect(tracker).toBeDefined();
     // Registered under the window that asked for it, and only that window.
-    expect(listTerminalBlockTabs(3).map((entry) => entry.tabId)).toEqual(["terminal:1"]);
+    expect(listTerminalBlockTabs(3).map((entry) => entry.tabId)).toEqual(["terminal:0000000a-1"]);
     expect(listTerminalBlockTabs(4)).toEqual([]);
 
     // A program printing markers without the nonce forges nothing.
@@ -546,25 +920,25 @@ describe("pty-manager command blocks", () => {
     expect(shown).not.toContain(nonce);
     // ...and so does the scrollback a remounting view replays.
     emitted.length = 0;
-    expect(await spawnTerminal({ tabId: "terminal:1" })).toMatchObject({ ok: true, replayed: true });
+    expect(await spawnTerminal({ tabId: "terminal:0000000a-1", ownerWindowId: 3 })).toMatchObject({ ok: true, replayed: true });
     const replay = emitted.map((entry) => (entry.payload as { chunk?: string }).chunk ?? "").join("");
     expect(replay).toContain("built");
     expect(replay).not.toContain(nonce);
 
     lastPty!.emitExit(0);
-    expect(getTerminalBlockTracker("terminal:1")).toBe(tracker);
+    expect(getTerminalBlockTracker("terminal:0000000a-1")).toBe(tracker);
     expect(tracker!.hasExited()).toBe(true);
 
-    killTerminal("terminal:1");
-    expect(getTerminalBlockTracker("terminal:1")).toBeUndefined();
+    killTerminal("terminal:0000000a-1");
+    expect(getTerminalBlockTracker("terminal:0000000a-1")).toBeUndefined();
   });
 
   it("feeds typed input to the fallback splitter", async () => {
-    expect((await spawnTerminal({ tabId: "terminal:1" })).ok).toBe(true);
+    expect((await spawnTerminal({ tabId: "terminal:0000000a-1" })).ok).toBe(true);
     lastPty!.emitData("$ ls");
-    writeTerminal("terminal:1", "\r");
+    writeTerminal("terminal:0000000a-1", "\r");
     expect(lastPty!.written).toEqual(["\r"]);
-    expect(getTerminalBlockTracker("terminal:1")!.recent(1)[0]).toMatchObject({ command: "$ ls", source: "heuristic" });
+    expect(getTerminalBlockTracker("terminal:0000000a-1")!.recent(1)[0]).toMatchObject({ command: "$ ls", source: "heuristic" });
   });
 
   it("refuses the spawn and releases the HOME when the integration cannot be written", async () => {
@@ -579,7 +953,7 @@ describe("pty-manager command blocks", () => {
     vi.stubEnv("SHELL", "/bin/zsh");
     let res: Awaited<ReturnType<typeof spawnTerminal>>;
     try {
-      res = await spawnTerminal({ tabId: "terminal:1" });
+      res = await spawnTerminal({ tabId: "terminal:0000000a-1" });
     } finally {
       vi.unstubAllEnvs();
       create.mockRestore();
@@ -587,6 +961,873 @@ describe("pty-manager command blocks", () => {
     expect(res).toMatchObject({ ok: false, reason: "spawn-failed" });
     expect(sandboxHomeCleanupMock).toHaveBeenCalledTimes(1);
     expect(wrapWorkerCommandMock).not.toHaveBeenCalled();
-    expect(getTerminalBlockTracker("terminal:1")).toBeUndefined();
+    expect(getTerminalBlockTracker("terminal:0000000a-1")).toBeUndefined();
+  });
+});
+
+describe("pty-manager typing an approved agent command", () => {
+  const TAB = "terminal:0000000a-1";
+  /** The line in bracketed-paste markers; Enter follows separately once it shows. */
+  const PASTE = (line: string): string => `\u001b[200~${line}\u001b[201~`;
+
+  beforeEach(() => {
+    foregroundReading = { ok: true, foreground: { pid: 9999, command: "zsh", cwd: "/w" } };
+    readForegroundMock.mockClear();
+  });
+
+  async function zshTerminal(ownerWindowId: number): Promise<{
+    pty: FakePty;
+    mark: (fields: string) => string;
+    prompt: (fields?: string) => string;
+    /** How the fake shell shows a pasted line in its edit line. */
+    shell: { shows: (line: string) => string };
+  }> {
+    vi.stubEnv("SHELL", "/bin/zsh");
+    try {
+      expect((await spawnTerminal({ tabId: TAB, ownerWindowId })).ok).toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    const [, , opts] = ptySpawnMock.mock.calls[0] as [string, string[], { env: Record<string, string> }];
+    const nonce = spawnedNonce(opts.env);
+    const mark = (fields: string): string => `\u001b]133;${fields};${nonce}\u0007`;
+    // Each prompt announces a fresh B token in P; B carries it, not the nonce.
+    let prompts = 0;
+    const prompt = (fields = ";Keys=emacs;Paste=1;NotFound=0"): string => {
+      const token = `${(++prompts).toString(16).padStart(2, "0")}`.repeat(16);
+      return `${mark("D;0")}${mark(`P;Cwd=/w${fields};B=${token}`)}${mark("A")}% \u001b]133;B;${token}\u0007`;
+    };
+    const pty = lastPty!;
+    // The shell: Ctrl-C at its prompt drops the line and draws a fresh prompt;
+    // a paste shows in the edit line (as `shows` renders it).
+    const shell = { shows: (line: string): string => line };
+    pty.respond = (data) => {
+      if (data === "\u0003") queueMicrotask(() => pty.emitData(`\r\n${prompt()}`));
+      const paste = /^\u001b\[200~([\s\S]*)\u001b\[201~$/u.exec(data);
+      if (paste) queueMicrotask(() => pty.emitData(shell.shows(paste[1]!)));
+    };
+    return { pty, mark, prompt, shell };
+  }
+
+  it("aborts between paste and Enter without sending cancellation input to another command", async () => {
+    const { pty, prompt } = await zshTerminal(3);
+    pty.emitData(prompt());
+    const abort = new AbortController();
+    const respond = pty.respond;
+    pty.respond = (data) => {
+      respond?.(data);
+      if (data.startsWith("\u001b[200~")) abort.abort();
+    };
+    await expect(typeTerminalCommand(TAB, 3, "echo approved", "/w", abort.signal)).resolves.toMatchObject({ ok: false, reason: "aborted" });
+    expect(pty.written).toEqual(["\u0003", PASTE("echo approved")]);
+    writeTerminal(TAB, "echo human\r");
+    await Promise.resolve();
+    expect(pty.written.at(-1)).toBe("echo human\r");
+  });
+
+  it("refuses a changed containment generation before any agent byte", async () => {
+    const { pty, prompt } = await zshTerminal(3);
+    pty.emitData(prompt());
+    sandboxGeneration = "1";
+    await expect(typeTerminalCommand(TAB, 3, "echo approved", "/w")).resolves.toMatchObject({ ok: false, reason: "no-terminal" });
+    expect(pty.written).toEqual([]);
+  });
+
+  it("rechecks containment after an awaited OS reading", async () => {
+    const { pty, prompt } = await zshTerminal(3);
+    pty.emitData(prompt());
+    readForegroundMock.mockImplementationOnce(async () => { shellContained = false; return foregroundReading; });
+    await expect(typeTerminalCommand(TAB, 3, "echo approved", "/w")).resolves.toMatchObject({ ok: false, reason: "no-terminal" });
+    expect(pty.written).toEqual([]);
+  });
+
+  it("resets the line editor, checks the shell with the operating system, then pastes the line, and presses Enter once it shows", async () => {
+    const { pty, mark, prompt } = await zshTerminal(3);
+    // Before the shell's first prompt nothing can be told: refused.
+    await expect(typeTerminalCommand(TAB, 3, "ls", "/w")).resolves.toMatchObject({ ok: false, reason: "no-shell-integration" });
+    pty.emitData(prompt());
+    // Another window's terminal answers like a missing one.
+    await expect(typeTerminalCommand(TAB, 4, "ls", "/w")).resolves.toMatchObject({ ok: false, reason: "no-terminal" });
+    await expect(typeTerminalCommand(TAB, 3, "ls -la", "/w")).resolves.toEqual({ ok: true, firstBlockId: 1 });
+    expect(pty.written).toEqual(["\u0003", PASTE("ls -la"), "\r"]);
+    expect(readForegroundMock).toHaveBeenCalledWith(9999);
+    // Until the shell starts it, the pasted line sits at the prompt: a second command is refused.
+    await expect(typeTerminalCommand(TAB, 3, "pwd", "/w")).resolves.toMatchObject({ ok: false, reason: "pending-input" });
+    pty.emitData(`\r\n${mark("C;cmdline_url=ls%20-la")}total 0\r\n`);
+    await expect(typeTerminalCommand(TAB, 3, "pwd", "/w")).resolves.toMatchObject({ ok: false, reason: "command-running" });
+    expect(pty.written).toEqual(["\u0003", PASTE("ls -la"), "\r"]);
+    pty.emitExit(0);
+    await expect(typeTerminalCommand(TAB, 3, "pwd", "/w")).resolves.toMatchObject({ ok: false, reason: "no-terminal" });
+  });
+
+  it("presses Enter only when the edit line shows exactly the pasted line, and clears it otherwise", async () => {
+    const { pty, prompt, shell } = await zshTerminal(3);
+    pty.emitData(prompt());
+    // A widget that rewrites pasted text (url-quote-magic quoting a URL).
+    shell.shows = (line) => line.replace("?", "\\?");
+    await expect(typeTerminalCommand(TAB, 3, "curl https://x/?a", "/w")).resolves.toMatchObject({ ok: false, reason: "edit-line-mismatch" });
+    expect(pty.written).toEqual(["\u0003", PASTE("curl https://x/?a"), "\u0003"]);
+    // A key the user presses before Enter.
+    shell.shows = (line) => line;
+    pty.written.length = 0;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    pty.respond = ((respond) => (data: string) => {
+      respond?.(data);
+      if (data.startsWith("\u001b[200~")) writeTerminal(TAB, "x");
+    })(pty.respond);
+    await expect(typeTerminalCommand(TAB, 3, "ls", "/w")).resolves.toMatchObject({ ok: false, reason: "edit-line-mismatch" });
+    expect(pty.written.at(-1)).toBe("x");
+    expect(pty.written).not.toContain("\r");
+  });
+
+  it("types nothing when the operating system says a program, not the shell, holds the terminal, or another directory", async () => {
+    const { pty, prompt } = await zshTerminal(3);
+    pty.emitData(prompt());
+    foregroundReading = { ok: true, foreground: { pid: 4242, command: "python3", cwd: "/w" } };
+    await expect(typeTerminalCommand(TAB, 3, "ls", "/w")).resolves.toMatchObject({ ok: false, reason: "foreground-not-shell" });
+    // A nested zsh the user started holds the terminal: same name, not the terminal's shell.
+    foregroundReading = { ok: true, foreground: { pid: 4243, command: "zsh", cwd: "/w" } };
+    await expect(typeTerminalCommand(TAB, 3, "ls", "/w")).resolves.toMatchObject({ ok: false, reason: "foreground-not-shell" });
+    foregroundReading = { ok: true, foreground: { pid: 9999, command: "zsh", cwd: "/etc" } };
+    await expect(typeTerminalCommand(TAB, 3, "ls", "/w")).resolves.toMatchObject({ ok: false, reason: "cwd-mismatch" });
+    foregroundReading = { ok: false, reason: "the terminal has no foreground process" };
+    await expect(typeTerminalCommand(TAB, 3, "ls", "/w")).resolves.toMatchObject({ ok: false, reason: "cwd-unverified" });
+    // The markers alone said the prompt was ready every time: nothing reached it.
+    expect(pty.written).toEqual([]);
+  });
+
+  it("types nothing when the shell draws no fresh prompt after the reset", async () => {
+    vi.useFakeTimers();
+    try {
+      const { pty, prompt } = await zshTerminal(3);
+      pty.emitData(prompt());
+      pty.respond = null;
+      const typing = typeTerminalCommand(TAB, 3, "ls", "/w");
+      await vi.advanceTimersByTimeAsync(3_000);
+      await expect(typing).resolves.toMatchObject({ ok: false, reason: "no-fresh-prompt" });
+      // A Ctrl-C every half second for the three seconds, and nothing else.
+      expect(pty.written).toEqual(Array.from({ length: 6 }, () => "\u0003"));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops immediately when the user types during a reset, even across prompt redraws", async () => {
+    vi.useFakeTimers();
+    try {
+      const { pty, prompt } = await zshTerminal(3);
+      pty.emitData(prompt());
+      pty.respond = null;
+      const typing = typeTerminalCommand(TAB, 3, "ls", "/w");
+      await vi.advanceTimersByTimeAsync(100);
+      expect(pty.written).toEqual(["\u0003"]);
+      writeTerminal(TAB, "x");
+      pty.emitData(prompt());
+      await expect(typing).resolves.toMatchObject({ ok: false, reason: "pending-input" });
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(pty.written).toEqual(["\u0003", "x"]);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it.each(["foreground", "children", "cwd"])("stops resending when the OS reports a change in %s", async (change) => {
+    vi.useFakeTimers();
+    try {
+      const { pty, prompt } = await zshTerminal(3);
+      pty.emitData(prompt());
+      pty.respond = null;
+      const typing = typeTerminalCommand(TAB, 3, "ls", "/w");
+      await vi.advanceTimersByTimeAsync(100);
+      foregroundReading = change === "children"
+        ? { ok: false, reason: "the terminal shell has child processes" }
+        : { ok: true, foreground: { pid: change === "foreground" ? 4242 : 9999, command: change === "foreground" ? "sleep" : "zsh", cwd: change === "cwd" ? "/etc" : "/w" } };
+      await vi.advanceTimersByTimeAsync(3_000);
+      await expect(typing).resolves.toMatchObject({ ok: false, reason: change === "children" ? "cwd-unverified" : change === "cwd" ? "cwd-mismatch" : "foreground-not-shell" });
+      expect(pty.written).toEqual(["\u0003"]);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("rechecks the OS immediately before pasting after a fresh prompt", async () => {
+    const { pty, prompt } = await zshTerminal(3);
+    pty.emitData(prompt());
+    pty.respond = () => {
+      foregroundReading = { ok: true, foreground: { pid: 4242, command: "sleep", cwd: "/w" } };
+      queueMicrotask(() => pty.emitData(prompt()));
+    };
+    await expect(typeTerminalCommand(TAB, 3, "ls", "/w")).resolves.toMatchObject({ ok: false, reason: "foreground-not-shell" });
+    expect(pty.written).toEqual(["\u0003"]);
+  });
+
+  it.each([2_499, 2_500, 2_501, 2_990])("requires the full quiet window inside the budget after a prompt at %i ms", async (at) => {
+    vi.useFakeTimers();
+    try {
+      const { pty, prompt } = await zshTerminal(3);
+      pty.emitData(prompt());
+      pty.respond = (data) => {
+        const paste = /^\u001b\[200~(.*)\u001b\[201~$/u.exec(data);
+        if (paste) queueMicrotask(() => pty.emitData(paste[1]!));
+      };
+      setTimeout(() => pty.emitData(prompt()), at);
+      const typing = typeTerminalCommand(TAB, 3, "ls", "/w");
+      await vi.advanceTimersByTimeAsync(3_100);
+      await expect(typing).resolves.toMatchObject(at <= 2_500 ? { ok: true } : { ok: false, reason: "no-fresh-prompt" });
+      expect(pty.written.some((data) => data.startsWith("\u001b[200~"))).toBe(at <= 2_500);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("sends Ctrl-C again when bash cleared its line but waits for a key to draw the fresh prompt", async () => {
+    vi.useFakeTimers();
+    try {
+      const { pty, prompt } = await zshTerminal(3);
+      pty.emitData(prompt());
+      // bash 5.2 when the Ctrl-C arrives before readline waits for a key: the
+      // line is cleared and `^C` echoed after the prompt, and the fresh prompt
+      // comes with the next key.
+      const respond = pty.respond;
+      let interruptPending = false;
+      pty.respond = (data) => {
+        if (data === "\u0003" && !interruptPending) {
+          interruptPending = true;
+          queueMicrotask(() => pty.emitData("^C\u001b[?2004l\r\u001b[?2004h"));
+          return;
+        }
+        respond?.(data);
+      };
+      const typing = typeTerminalCommand(TAB, 3, "ls", "/w");
+      await vi.advanceTimersByTimeAsync(2_000);
+      await expect(typing).resolves.toEqual({ ok: true, firstBlockId: 1 });
+      expect(pty.written).toEqual(["\u0003", "\u0003", PASTE("ls"), "\r"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("refuses a prompt without bracketed paste, with vi keys, or with a command-not-found handler, before any key is sent", async () => {
+    const { pty, prompt } = await zshTerminal(3);
+    pty.emitData(prompt(";Keys=emacs;Paste=0"));
+    await expect(typeTerminalCommand(TAB, 3, "ls", "/w")).resolves.toMatchObject({ ok: false, reason: "no-bracketed-paste" });
+    pty.emitData(`\r\n${prompt(";Keys=vi;Paste=1")}`);
+    await expect(typeTerminalCommand(TAB, 3, "ls", "/w")).resolves.toMatchObject({ ok: false, reason: "vi-editing-mode" });
+    pty.emitData(`\r\n${prompt(";Keys=emacs;Paste=1;NotFound=1")}`);
+    await expect(typeTerminalCommand(TAB, 3, "ls", "/w")).resolves.toMatchObject({ ok: false, reason: "not-found-handler" });
+    expect(pty.written).toEqual([]);
+  });
+
+  it("refuses a prompt the user pressed any key at, however long ago, and a fresh prompt until keys go quiet", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const { pty, prompt } = await zshTerminal(3);
+      pty.emitData(prompt());
+      // ESC: a pending prefix that echoes nothing.
+      writeTerminal(TAB, "\u001b");
+      vi.setSystemTime(Date.now() + USER_INPUT_QUIET_MS * 10);
+      await expect(typeTerminalCommand(TAB, 3, "ls", "/w")).resolves.toMatchObject({ ok: false, reason: "pending-input" });
+      // Enter draws a fresh prompt; a key just before it still counts until quiet.
+      writeTerminal(TAB, "\r");
+      pty.emitData(`\r\n${prompt()}`);
+      await expect(typeTerminalCommand(TAB, 3, "ls", "/w")).resolves.toMatchObject({ ok: false, reason: "pending-input" });
+      vi.setSystemTime(Date.now() + USER_INPUT_QUIET_MS);
+      await expect(typeTerminalCommand(TAB, 3, "ls", "/w")).resolves.toEqual({ ok: true, firstBlockId: 1 });
+      expect(pty.written).toEqual(["\u001b", "\r", "\u0003", PASTE("ls"), "\r"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("knows from the shell it spawned whether a prompt without an end marker is fish or a shell still starting", async () => {
+    const { pty, mark } = await zshTerminal(3);
+    pty.emitData(`${mark("P;Cwd=/w;Keys=emacs;Paste=1")}${mark("A")}% `);
+    await expect(typeTerminalCommand(TAB, 3, "ls", "/w")).resolves.toMatchObject({ ok: false, reason: "shell-starting", message: expect.stringMatching(/retry in a moment/) });
+    killTerminal(TAB);
+    pty.emitExit(0);
+    vi.stubEnv("SHELL", "/usr/bin/fish");
+    try {
+      expect((await spawnTerminal({ tabId: "terminal:0000000b-1", ownerWindowId: 3 })).ok).toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    const [, , opts] = ptySpawnMock.mock.calls.at(-1) as [string, string[], { env: Record<string, string> }];
+    const fishMark = (fields: string) => `\u001b]133;${fields};${spawnedNonce(opts.env)}\u0007`;
+    lastPty!.emitData(`${fishMark("P;Cwd=/w;Keys=emacs;Paste=1")}${fishMark("A")}/w> `);
+    await expect(typeTerminalCommand("terminal:0000000b-1", 3, "ls", "/w")).resolves.toMatchObject({ ok: false, reason: "no-prompt-end-marker" });
+    expect(lastPty!.written).toEqual([]);
+  });
+
+  it("rejects a line holding characters that would act as keys (a caller bug, never typed)", async () => {
+    const { pty, prompt } = await zshTerminal(3);
+    pty.emitData(prompt());
+    for (const line of ["ls\nrm -rf ~", "ls\t", "echo \u001b[201~", "rm​ -rf x"]) {
+      await expect(typeTerminalCommand(TAB, 3, line, "/w")).rejects.toThrow(/cannot be typed as one command/);
+    }
+    expect(pty.written).toEqual([]);
+  });
+
+  it("verifies the reported directory against the shell's real one, through symlinks", async () => {
+    const { pty, prompt } = await zshTerminal(3);
+    pty.emitData(prompt());
+    const real = mkdtempSync(join(tmpdir(), "ave-pty-cwd-"));
+    const link = `${real}-link`;
+    symlinkSync(real, link);
+    try {
+      foregroundReading = { ok: true, foreground: { pid: 9999, command: "zsh", cwd: realpathSync.native(real) } };
+      await expect(verifyTerminalShell(TAB, 3, link)).resolves.toEqual({ ok: true, cwd: canonicalizePathForMatch(real) });
+      await expect(verifyTerminalShell(TAB, 3, tmpdir())).resolves.toMatchObject({ ok: false, reason: "cwd-mismatch" });
+      await expect(verifyTerminalShell(TAB, 4, link)).resolves.toMatchObject({ ok: false, reason: "no-terminal" });
+    } finally {
+      rmSync(link, { force: true });
+      rmSync(real, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("pty-manager cancellation during terminal acquisition", () => {
+  const TAB_ID = "terminal:0000000d-1";
+  const CANCEL_PATHS = ["killTerminal", "window close", "shutdown"] as const;
+
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((yes) => { resolve = yes; });
+    return { promise, resolve };
+  }
+
+  function cancelSpawn(path: typeof CANCEL_PATHS[number]): Promise<unknown> {
+    if (path === "killTerminal") killTerminal(TAB_ID);
+    else if (path === "window close") killTerminalsOwnedBy(1);
+    else return forceKillAllTerminalsForShutdown(0);
+    return Promise.resolve();
+  }
+
+  function resourceState() {
+    return {
+      kills: [...(lastPty?.killSignals ?? [])],
+      handoffs: handoffDisposeMock.mock.calls.length,
+      wraps: cleanupMock.mock.calls.length,
+      homes: sandboxHomeCleanupMock.mock.calls.length,
+    };
+  }
+
+  function expectNoSession() {
+    lastPty?.emitExit(137);
+    lastPty?.emitData("late output");
+    expect(__terminalSessionCountForTest()).toBe(0);
+    expect(getTerminalBlockTracker(TAB_ID)).toBeUndefined();
+    expect(emitted).toMatchObject([]);
+  }
+
+  beforeEach(() => { needsOwnTtyGrant = true; });
+
+  it.each(CANCEL_PATHS)("%s during handoff creation disposes the late FIFO without spawning", async (path) => {
+    const entered = deferred<void>();
+    const handoff = deferred<TerminalTtyHandoff>();
+    createHandoffMock.mockImplementationOnce(() => {
+      entered.resolve();
+      return handoff.promise;
+    });
+    const starting = spawnTerminal({ tabId: TAB_ID, ownerWindowId: 1 });
+    await entered.promise;
+    const cancelled = cancelSpawn(path);
+    const immediate = resourceState();
+    handoff.resolve(terminalHandoff());
+    expect(await starting).toMatchObject({ ok: false, reason: "spawn-failed" });
+    await cancelled;
+    await cancelSpawn(path);
+    expectNoSession();
+    expect(immediate).toEqual({ kills: [], handoffs: 0, wraps: 0, homes: 1 });
+    expect(ptySpawnMock).not.toHaveBeenCalled();
+    expect(wrapTerminalCommandMock).not.toHaveBeenCalled();
+    expect(deliverMock).not.toHaveBeenCalled();
+    expect(resourceState()).toEqual({ kills: [], handoffs: 1, wraps: 0, homes: 1 });
+  });
+
+  it.each(CANCEL_PATHS)("%s during wrap immediately kills the trampoline and disposes the FIFO", async (path) => {
+    const entered = deferred<void>();
+    const wrap = deferred<{ argv: string[]; env: NodeJS.ProcessEnv }>();
+    let signal: AbortSignal | undefined;
+    wrapTerminalCommandMock.mockImplementationOnce((_command, options) => {
+      signal = (options as { abortSignal?: AbortSignal }).abortSignal;
+      entered.resolve();
+      // Deliberately ignore abort: even a late successful wrap needs cleanup.
+      return wrap.promise;
+    });
+    const starting = spawnTerminal({ tabId: TAB_ID, ownerWindowId: 1 });
+    await entered.promise;
+    const cancelled = cancelSpawn(path);
+    const immediate = resourceState();
+    wrap.resolve({ argv: ["/bin/zsh"], env: {} });
+    expect(await starting).toMatchObject({ ok: false, reason: "spawn-failed" });
+    await cancelled;
+    await cancelSpawn(path);
+    expectNoSession();
+    expect(immediate).toEqual({ kills: ["SIGKILL"], handoffs: 1, wraps: 0, homes: 1 });
+    expect(signal?.aborted).toBe(true);
+    expect(deliverMock).not.toHaveBeenCalled();
+    expect(resourceState()).toEqual({ kills: ["SIGKILL"], handoffs: 1, wraps: 1, homes: 1 });
+  });
+
+  it.each(CANCEL_PATHS)("%s during deliver releases everything before the late delivery settles", async (path) => {
+    const entered = deferred<void>();
+    const delivery = deferred<void>();
+    let signal: AbortSignal | undefined;
+    deliverMock.mockImplementationOnce((_script, options) => {
+      signal = options?.signal;
+      entered.resolve();
+      return delivery.promise;
+    });
+    const starting = spawnTerminal({ tabId: TAB_ID, ownerWindowId: 1 });
+    await entered.promise;
+    const cancelled = cancelSpawn(path);
+    const immediate = resourceState();
+    delivery.resolve();
+    expect(await starting).toMatchObject({ ok: false, reason: "spawn-failed" });
+    await cancelled;
+    await cancelSpawn(path);
+    expectNoSession();
+    expect(signal?.aborted).toBe(true);
+    expect(immediate).toEqual({ kills: ["SIGKILL"], handoffs: 1, wraps: 1, homes: 1 });
+    expect(resourceState()).toEqual(immediate);
+  });
+
+  it.each(CANCEL_PATHS)("%s after deliver resolves prevents registration and releases each resource once", async (path) => {
+    let cancelled: Promise<unknown> | undefined;
+    let immediate: ReturnType<typeof resourceState> | undefined;
+    deliverMock.mockImplementationOnce(() => new Promise<void>((resolve) => {
+      resolve();
+      queueMicrotask(() => {
+        cancelled = cancelSpawn(path);
+        immediate = resourceState();
+      });
+    }));
+    expect(await spawnTerminal({ tabId: TAB_ID, ownerWindowId: 1 }))
+      .toMatchObject({ ok: false, reason: "spawn-failed" });
+    await cancelled;
+    await cancelSpawn(path);
+    expectNoSession();
+    expect(immediate).toEqual({ kills: ["SIGKILL"], handoffs: 1, wraps: 1, homes: 1 });
+    expect(resourceState()).toEqual(immediate);
+  });
+});
+
+describe("pty-manager on macOS: the shell gets its own terminal and no other", () => {
+  const MAC_TAB = "terminal:0000000c-1";
+
+  beforeEach(() => {
+    needsOwnTtyGrant = true;
+  });
+
+  it("publishes initialization once for an in-flight remount and cancellation closes no tab-owned shell", async () => {
+    let entered!: () => void;
+    const deliveryEntered = new Promise<void>((resolve) => { entered = resolve; });
+    let deliver!: () => void;
+    deliverMock.mockImplementationOnce(() => {
+      lastPty!.emitData("prefix");
+      entered();
+      return new Promise<void>((resolve) => { deliver = resolve; });
+    });
+    const starting = spawnTerminal({ tabId: MAC_TAB, ownerWindowId: 1 });
+    await deliveryEntered;
+    expect(emitted).toEqual([]);
+    const remount = spawnTerminal({ tabId: MAC_TAB, ownerWindowId: 1 });
+    const abort = new AbortController();
+    const cancelledWait = ensureAgentTerminal(MAC_TAB, 1, abort.signal);
+    abort.abort(new Error("cancelled caller"));
+    await expect(cancelledWait).rejects.toThrow("cancelled caller");
+    expect(lastPty!.killed).toBe(false);
+    lastPty!.emitData("suffix");
+    expect(emitted).toEqual([]);
+    deliver();
+    const [first, second] = await Promise.all([starting, remount]);
+    if (!first.ok || !second.ok) throw new Error("expected terminal");
+    expect(second.session.terminalSessionId).toBe(first.session.terminalSessionId);
+    expect(second.replayed).toBe(true);
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0]).toMatchObject({ event: "data", payload: { lane: "agent", terminalSessionId: first.session.terminalSessionId, chunk: "prefixsuffix" } });
+    expect(lastPty!.written).toEqual([]);
+  });
+
+  it("spawns the trampoline first, wraps with that pty's own slave path, then hands it the wrapped shell", async () => {
+    const res = await spawnTerminal({ tabId: MAC_TAB, ownerWindowId: 1 });
+    expect(res.ok).toBe(true);
+    expect(ptySpawnMock).toHaveBeenCalledTimes(1);
+    const [file, args, opts] = ptySpawnMock.mock.calls[0];
+    expect(file).toBe("/bin/sh");
+    expect(args).toEqual(["/handoff/t-1/exec"]);
+    // The trampoline runs nothing but sh: no session env, no secrets.
+    expect((opts as { env: Record<string, string> }).env).toEqual({ PATH: "/usr/bin:/bin" });
+
+    expect(wrapWorkerCommandMock).not.toHaveBeenCalled();
+    expect(wrapTerminalCommandMock).toHaveBeenCalledTimes(1);
+    const wrapOpts = wrapTerminalCommandMock.mock.calls[0][1] as { ownTty: string; filesystem: { denyRead: string[] } };
+    expect(wrapOpts.ownTty).toBe("/dev/ttys012");
+    expect(wrapOpts.filesystem.denyRead).toContain("/home/u/.ssh");
+
+    expect(deliverMock).toHaveBeenCalledTimes(1);
+    const script = deliverMock.mock.calls[0][0];
+    expect(script.startsWith("exec /usr/bin/env -i ")).toBe(true);
+    expect(script).toContain("sandbox-exec -p prof /bin/zsh -l -i");
+    expect(script).toContain("TERM=xterm-256color");
+    expect(script).toContain("HTTP_PROXY=http://p");
+    expect(handoffDisposeMock).toHaveBeenCalled();
+    expect(__terminalSessionCountForTest()).toBe(1);
+
+    // Output reaches the view through the same session wiring, addressed to
+    // the window that spawned it, which alone owns the handed-off shell.
+    lastPty!.emitData("hello");
+    expect(emitted.some((e) => e.event === "data")).toBe(true);
+    expect(emittedOwners).toEqual([1]);
+    expect(terminalOwnedBy(MAC_TAB, 1)).toBe(true);
+    expect(terminalOwnedBy(MAC_TAB, 2)).toBe(false);
+  });
+
+  it("ends a stalled handoff when its window closes, so the restore of that id starts a new shell", async () => {
+    // The trampoline never takes its command: only an abort ends the wait
+    // (the real deliver would otherwise hold it for 10 s, past a restore's 5 s).
+    let signalSeen: AbortSignal | undefined;
+    deliverMock.mockImplementationOnce((_script, options) => {
+      signalSeen = options?.signal;
+      return new Promise<void>((_, reject) => {
+        options?.signal?.addEventListener("abort", () => reject(new Error("handoff aborted")), { once: true });
+      });
+    });
+    const starting = spawnTerminal({ tabId: MAC_TAB, ownerWindowId: 1 });
+    await vi.waitFor(() => expect(deliverMock).toHaveBeenCalledTimes(1));
+    const trampoline = lastPty!;
+
+    expect(killTerminalsOwnedBy(1)).toBe(1);
+    const restored = spawnTerminal({ tabId: MAC_TAB, ownerWindowId: 3 });
+    const first = await Promise.race([
+      starting,
+      new Promise<"stalled">((resolve) => setTimeout(() => resolve("stalled"), 200)),
+    ]);
+    expect(first).toMatchObject({ ok: false, reason: "spawn-failed" });
+    expect(signalSeen?.aborted).toBe(true);
+    expect(trampoline.killSignals).toEqual(["SIGKILL"]);
+    trampoline.emitExit(137);
+    // The cancelled spawn released its wrap and HOME once; its trampoline's
+    // exit reported nothing to any window.
+    expect(cleanupMock).toHaveBeenCalledTimes(1);
+    expect(sandboxHomeCleanupMock).toHaveBeenCalledTimes(1);
+    expect(emitted.some((e) => e.event === "exit")).toBe(false);
+
+    // Not "still-closing": the restore got a fresh shell for its own window.
+    expect(await restored).toMatchObject({ ok: true, tabId: MAC_TAB, replayed: false });
+    expect(ptySpawnMock).toHaveBeenCalledTimes(2);
+    expect(__terminalSessionCountForTest()).toBe(1);
+    expect(terminalOwnedBy(MAC_TAB, 3)).toBe(true);
+    expect(terminalOwnedBy(MAC_TAB, 1)).toBe(false);
+  });
+
+  it("ends a stalled handoff at shutdown, inside the shutdown deadline", async () => {
+    deliverMock.mockImplementationOnce((_script, options) =>
+      new Promise<void>((_, reject) => {
+        options?.signal?.addEventListener("abort", () => reject(new Error("handoff aborted")), { once: true });
+      }),
+    );
+    const starting = spawnTerminal({ tabId: MAC_TAB, ownerWindowId: 1 });
+    await vi.waitFor(() => expect(deliverMock).toHaveBeenCalledTimes(1));
+    const trampoline = lastPty!;
+    await forceKillAllTerminalsForShutdown(200);
+    // Settled by the time shutdown returns, not left behind it.
+    const settled = await Promise.race([starting, Promise.resolve("stalled" as const)]);
+    expect(settled).toMatchObject({ ok: false, reason: "spawn-failed" });
+    expect(trampoline.killSignals).toEqual(["SIGKILL"]);
+    expect(cleanupMock).toHaveBeenCalledTimes(1);
+    expect(__terminalSessionCountForTest()).toBe(0);
+  });
+
+  it("fails the spawn without wrapping when node-pty reports no slave path", async () => {
+    ptySpawnMock.mockImplementationOnce(() => {
+      lastPty = new FakePty();
+      lastPty.ptsName = undefined;
+      spawnedPtys.push(lastPty);
+      return lastPty;
+    });
+    const res = await spawnTerminal({ tabId: MAC_TAB });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.message).toMatch(/no pty slave device/);
+    expect(wrapTerminalCommandMock).not.toHaveBeenCalled();
+    expect(lastPty!.killSignals).toEqual(["SIGKILL"]);
+    expect(handoffDisposeMock).toHaveBeenCalled();
+    expect(cleanupMock).not.toHaveBeenCalled();
+    expect(__terminalSessionCountForTest()).toBe(0);
+  });
+
+  it("refuses a malformed slave path the wrap rejects, and kills the trampoline", async () => {
+    wrapTerminalCommandMock.mockImplementationOnce(() => Promise.reject(new Error("ttys: \"/dev/ttys*\" is not a pty slave device")));
+    const res = await spawnTerminal({ tabId: MAC_TAB });
+    expect(res.ok).toBe(false);
+    expect(lastPty!.killSignals).toEqual(["SIGKILL"]);
+    expect(cleanupMock).not.toHaveBeenCalled();
+    expect(__terminalSessionCountForTest()).toBe(0);
+  });
+
+  it("kills the trampoline and releases the wrap ONCE when the handoff fails", async () => {
+    deliverMock.mockImplementationOnce(() => Promise.reject(new Error("trampoline did not take its command")));
+    const res = await spawnTerminal({ tabId: MAC_TAB });
+    expect(res.ok).toBe(false);
+    const pty = lastPty!;
+    expect(pty.killSignals).toEqual(["SIGKILL"]);
+    // Its exit after the kill must not run the session cleanup again.
+    pty.emitExit(137);
+    await Promise.resolve();
+    expect(cleanupMock).toHaveBeenCalledTimes(1);
+    expect(emitted.some((e) => e.event === "exit")).toBe(false);
+    expect(handoffDisposeMock).toHaveBeenCalled();
+    expect(__terminalSessionCountForTest()).toBe(0);
+  });
+
+  it("kills the shell instead of registering it when the tab closes during the handoff", async () => {
+    deliverMock.mockImplementationOnce(() => {
+      killTerminal(MAC_TAB);
+      return Promise.resolve();
+    });
+    const res = await spawnTerminal({ tabId: MAC_TAB });
+    expect(res.ok).toBe(false);
+    const pty = lastPty!;
+    expect(pty.killSignals).toContain("SIGKILL");
+    pty.emitExit(137);
+    await Promise.resolve();
+    expect(cleanupMock).toHaveBeenCalledTimes(1);
+    expect(sandboxHomeCleanupMock).toHaveBeenCalled();
+    expect(emitted.some((e) => e.event === "exit")).toBe(false);
+    expect(__terminalSessionCountForTest()).toBe(0);
+  });
+
+  it("kills the shell instead of registering it when shutdown starts during the handoff", async () => {
+    let shutdown: Promise<number> | undefined;
+    deliverMock.mockImplementationOnce(() => {
+      shutdown = forceKillAllTerminalsForShutdown(50);
+      return Promise.resolve();
+    });
+    const res = await spawnTerminal({ tabId: MAC_TAB });
+    expect(res.ok).toBe(false);
+    expect(lastPty!.killSignals).toContain("SIGKILL");
+    await shutdown;
+    expect(cleanupMock).toHaveBeenCalledTimes(1);
+    expect(__terminalSessionCountForTest()).toBe(0);
+  });
+
+  it("stops waiting when the trampoline exits before reading the fifo, and cleans up once", async () => {
+    let signalSeen: AbortSignal | undefined;
+    deliverMock.mockImplementationOnce((_script, options) => {
+      signalSeen = options?.signal;
+      return new Promise<void>((_, reject) => {
+        options?.signal?.addEventListener("abort", () => reject(new Error("trampoline exited")), { once: true });
+        lastPty!.emitExit(127);
+      });
+    });
+    const res = await spawnTerminal({ tabId: MAC_TAB });
+    expect(res.ok).toBe(false);
+    expect(signalSeen?.aborted).toBe(true);
+    expect(cleanupMock).toHaveBeenCalledTimes(1);
+    expect(sandboxHomeCleanupMock).toHaveBeenCalledTimes(1);
+    expect(emitted.some((e) => e.event === "exit")).toBe(false);
+    expect(__terminalSessionCountForTest()).toBe(0);
+  });
+
+  it("never passes a tty off macOS", async () => {
+    needsOwnTtyGrant = false;
+    const res = await spawnTerminal({ tabId: MAC_TAB });
+    expect(res.ok).toBe(true);
+    expect(wrapTerminalCommandMock).not.toHaveBeenCalled();
+    expect(wrapWorkerCommandMock).toHaveBeenCalledTimes(1);
+    expect(deliverMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("pty-manager on Linux: the shell gets a pty of its own inside the sandbox", () => {
+  const LINUX_TAB = "terminal:0000000f-1";
+  const SHELL_PID = 4321;
+  type SandboxedShellReading = import("../shell-process.js").SandboxedShellReading;
+  const shellReading = (overrides: Partial<Extract<SandboxedShellReading, { ok: true }>["shell"]> = {}): SandboxedShellReading => ({
+    ok: true,
+    shell: {
+      pid: SHELL_PID,
+      nsPid: 3,
+      command: "zsh",
+      foreground: { pgid: SHELL_PID, command: "zsh" },
+      children: [],
+      cwd: "/w",
+      cwdIsReported: true,
+      ...overrides,
+    },
+  });
+
+  beforeEach(() => {
+    needsInnerPty = true;
+    sandboxedShellReading = shellReading();
+    readForegroundMock.mockClear();
+  });
+
+  async function linuxZsh(): Promise<{ pty: FakePty; prompt: (pid?: string) => string }> {
+    vi.stubEnv("SHELL", "/bin/zsh");
+    try {
+      expect((await spawnTerminal({ tabId: LINUX_TAB, ownerWindowId: 3 })).ok).toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    const [, , opts] = ptySpawnMock.mock.calls.at(-1) as [string, string[], { env: Record<string, string> }];
+    const nonce = spawnedNonce(opts.env);
+    const mark = (fields: string): string => `\u001b]133;${fields};${nonce}\u0007`;
+    const pty = lastPty!;
+    return {
+      pty,
+      prompt: (pid = "3") => `${mark("D;0")}${mark(`P;Cwd=/w;Keys=emacs;Paste=1;NotFound=0;B=${"ab".repeat(16)};Pid=${pid}`)}${mark("A")}% \u001b]133;B;${"ab".repeat(16)}\u0007`,
+    };
+  }
+
+  it("runs the login shell under util-linux script, inside the same worker wrap", async () => {
+    vi.stubEnv("SHELL", "/bin/zsh");
+    try {
+      expect((await spawnTerminal({ tabId: LINUX_TAB })).ok).toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    expect(assertRelayMock).toHaveBeenCalledTimes(1);
+    expect(wrapTerminalCommandMock).not.toHaveBeenCalled();
+    const [cmdline] = wrapWorkerCommandMock.mock.calls[0] as [string, unknown];
+    // shellQuote is the identity in this file, so the words read as they are.
+    expect(cmdline).toMatch(/^exec \/usr\/bin\/env SHELL=\/bin\/sh \/usr\/bin\/script -q -e -c exec \/usr\/bin\/env SHELL=\/bin\/zsh TMPDIR=\S+ TMP=\S+ TEMP=\S+ \/bin\/zsh -l -i \/dev\/null$/u);
+  });
+
+  it("refuses to start a terminal when the pty relay is missing, before anything is wrapped or spawned", async () => {
+    assertRelayMock.mockImplementation(() => Promise.reject(new Error("The terminal needs util-linux script(1) at /usr/bin/script")));
+    const res = await spawnTerminal({ tabId: LINUX_TAB });
+    expect(res).toMatchObject({ ok: false, reason: "spawn-failed", message: expect.stringMatching(/util-linux script/) });
+    expect(wrapWorkerCommandMock).not.toHaveBeenCalled();
+    expect(ptySpawnMock).not.toHaveBeenCalled();
+    expect(sandboxHomeCleanupMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("forwards a resize to the relay, one forward at a time, the last size included", async () => {
+    const { pty } = await linuxZsh();
+    let release!: () => void;
+    forwardResizeMock.mockImplementationOnce(() => new Promise((resolve) => { release = () => resolve(true); }));
+    resizeTerminal(LINUX_TAB, 100, 30);
+    resizeTerminal(LINUX_TAB, 110, 31);
+    resizeTerminal(LINUX_TAB, 120, 32);
+    expect(pty.resized).toEqual([[100, 30], [110, 31], [120, 32]]);
+    expect(forwardResizeMock).toHaveBeenCalledTimes(1);
+    release();
+    await vi.waitFor(() => expect(forwardResizeMock).toHaveBeenCalledTimes(2));
+    expect(forwardResizeMock).toHaveBeenLastCalledWith(9999, "zsh");
+  });
+
+  it("does not forward a resize off Linux", async () => {
+    needsInnerPty = false;
+    expect((await spawnTerminal({ tabId: LINUX_TAB })).ok).toBe(true);
+    resizeTerminal(LINUX_TAB, 100, 30);
+    expect(forwardResizeMock).not.toHaveBeenCalled();
+  });
+
+  it("checks the shell through the sandbox's process tree, with the pid the shell reported", async () => {
+    const { pty, prompt } = await linuxZsh();
+    pty.emitData(prompt());
+    await expect(verifyTerminalShell(LINUX_TAB, 3, "/w")).resolves.toEqual({ ok: true, cwd: canonicalizePathForMatch("/w") });
+    expect(readSandboxedShellMock).toHaveBeenCalledWith(9999, "zsh", "/w");
+    expect(readForegroundMock).not.toHaveBeenCalled();
+    // A prompt that reported another pid is not this shell's.
+    pty.emitData(`\r\n${prompt("7")}`);
+    await expect(verifyTerminalShell(LINUX_TAB, 3, "/w")).resolves.toMatchObject({ ok: false, reason: "foreground-not-shell" });
+  });
+
+  it("types an approved command after Ctrl-C reaches the shell through its own pty", async () => {
+    const { pty, prompt } = await linuxZsh();
+    pty.respond = (data) => {
+      if (data === "\u0003") queueMicrotask(() => pty.emitData(`\r\n${prompt()}`));
+      const paste = /^\u001b\[200~([\s\S]*)\u001b\[201~$/u.exec(data);
+      if (paste) queueMicrotask(() => pty.emitData(paste[1]!));
+    };
+    pty.emitData(prompt());
+    await expect(typeTerminalCommand(LINUX_TAB, 3, "ls -la", "/w")).resolves.toEqual({ ok: true, firstBlockId: 1 });
+    expect(pty.written).toEqual(["\u0003", "\u001b[200~ls -la\u001b[201~", "\r"]);
+  });
+
+  it("judges a reading: the reporting shell, in the foreground, idle, in the very directory", () => {
+    expect(sandboxedShellVerdict(shellReading(), "/w", 3)).toEqual({ ok: true, cwd: canonicalizePathForMatch("/w") });
+    // The pid the prompt reported is not the shell found in the process tree, or none was reported.
+    expect(sandboxedShellVerdict(shellReading(), "/w", 2)).toMatchObject({ ok: false, reason: "foreground-not-shell" });
+    expect(sandboxedShellVerdict(shellReading(), "/w", null)).toMatchObject({ ok: false, reason: "foreground-not-shell" });
+    // A program (or a nested shell) holds the shell's terminal.
+    expect(sandboxedShellVerdict(shellReading({ foreground: { pgid: 5000, command: "zsh" } }), "/w", 3)).toMatchObject({
+      ok: false,
+      reason: "foreground-not-shell",
+    });
+    // A background job, or a command still finishing.
+    expect(sandboxedShellVerdict(shellReading({ children: [{ pid: 5001, command: "sleep" }] }), "/w", 3)).toMatchObject({
+      ok: false,
+      reason: "shell-busy",
+      message: expect.stringContaining('"sleep"'),
+    });
+    // A directory only the sandbox has, at a path the host also has.
+    expect(sandboxedShellVerdict(shellReading({ cwdIsReported: false }), "/w", 3)).toMatchObject({ ok: false, reason: "cwd-mismatch" });
+    expect(sandboxedShellVerdict({ ok: false, reason: "the terminal's sandbox is not running" }, "/w", 3)).toMatchObject({
+      ok: false,
+      reason: "cwd-unverified",
+    });
+  });
+});
+
+
+describe("manual host and isolated agent lanes", () => {
+  const tabId = "terminal:ab12cd34-1";
+  it("reports the native Windows Agent backend unavailable even with an attested sandbox", async () => {
+    const previous = process.platform;
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    try {
+      expect(await spawnTerminal({ tabId, ownerWindowId: 8 })).toMatchObject({ ok: false, reason: "not-shell-contained" });
+      expect(ptySpawnMock).not.toHaveBeenCalled();
+    } finally { Object.defineProperty(process, "platform", { value: previous, configurable: true }); }
+  });
+
+  it("opens Manual with real HOME while sandbox is disabled, without installing integration", async () => {
+    gateActive = false;
+    shellContained = false;
+    vi.stubEnv("SHELL", process.execPath);
+    try {
+      const result = await spawnLane({ tabId, lane: "manual", ownerWindowId: 8, cwd: tmpdir() });
+      expect(result).toMatchObject({ ok: true, session: { lane: "manual", substrate: "host", initialCwd: realpathSync(tmpdir()), currentCwd: null, shellIntegration: false } });
+      expect(createdHomes).toEqual([]);
+      expect(wrapWorkerCommandMock).not.toHaveBeenCalled();
+      expect(ptySpawnMock.mock.calls[0]?.[0]).toBe(process.execPath);
+      expect(ptySpawnMock.mock.calls[0]?.[2]).toMatchObject({ env: { HOME: process.env.HOME ?? "" } });
+      expect(await spawnLane({ tabId, lane: "agent", ownerWindowId: 8 })).toMatchObject({ ok: false, reason: "not-shell-contained" });
+      if (!result.ok) throw new Error("expected manual terminal");
+      expect(await typeAgentTerminalCommand(result.session, 8, "echo no", "/workspace")).toMatchObject({ ok: false, reason: "no-terminal" });
+      expect(lastPty!.written).toEqual([]);
+      expect(writeLane(result.session, "echo user\r")).toEqual({ ok: true });
+      expect(lastPty!.written).toEqual(["echo user\r"]);
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it("reserves ownership despite manual interpreter failure and permits its contained companion", async () => {
+    vi.stubEnv("SHELL", "/missing/interactive-shell");
+    const failed = await spawnLane({ tabId, lane: "manual", ownerWindowId: 8 });
+    expect(failed.ok).toBe(false);
+    expect(terminalTabOwnerWindow(tabId)).toBe(8);
+    expect(await spawnLane({ tabId, lane: "manual", ownerWindowId: 9 })).toMatchObject({ ok: false, reason: "bad-request" });
+    vi.stubEnv("SHELL", "/bin/bash");
+    try {
+      const agent = await spawnLane({ tabId, lane: "agent", ownerWindowId: 8 });
+      expect(agent).toMatchObject({ ok: true, session: { lane: "agent", substrate: "asrt", sandboxGeneration: "0" } });
+      const abort = new AbortController(); abort.abort();
+      await expect(ensureAgentTerminal("terminal:abcdabcd-2", 8, abort.signal)).rejects.toThrow();
+      await expect(ensureAgentTerminal("terminal:abcdabcd-2", 8)).rejects.toThrow("no terminal tab");
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it("gives both lanes different identities, rejects stale input and closes both PTYs", async () => {
+    vi.stubEnv("SHELL", process.execPath);
+    try {
+      const manual = await spawnLane({ tabId, lane: "manual", ownerWindowId: 8 });
+      const agent = await spawnLane({ tabId, lane: "agent", ownerWindowId: 8 });
+      if (!manual.ok || !agent.ok) throw new Error("expected both lanes");
+      expect(agent.session.terminalSessionId).not.toBe(manual.session.terminalSessionId);
+      expect(writeLane({ ...manual.session, terminalSessionId: "retired" }, "bad")).toEqual({ ok: false, error: "stale-terminal-session" });
+      expect(resizeLane(agent.session, 100, 30)).toEqual({ ok: true });
+      expect(spawnedPtys[0]!.resized).toEqual([]);
+      expect(spawnedPtys[1]!.resized).toEqual([[100, 30]]);
+      killTerminal(tabId);
+      expect(spawnedPtys.every((pty) => pty.killed)).toBe(true);
+      expect(terminalTabOwnerWindow(tabId)).toBeUndefined();
+    } finally { vi.unstubAllEnvs(); }
   });
 });

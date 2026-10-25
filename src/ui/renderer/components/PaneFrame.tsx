@@ -30,6 +30,9 @@ import {
   type DropTarget,
 } from "./pane-drop.js";
 import { FloatingRightLane } from "./FloatingRightLane.js";
+import { registerWebSurfaceOccluder } from "../preview/web-surfaces.js";
+import { useWebSurfaceOccluder } from "../preview/use-web-surface-occluder.js";
+import { SURFACE_DRAG_TYPE, decodeSurfaceDrag, encodeSurfaceDrag, type SurfaceDragPayload } from "../preview/surface-moves.js";
 import { PendingAnswerDot } from "./PendingAnswerDot.js";
 import { AXIS_OF,
   closeLeaf,
@@ -158,6 +161,14 @@ interface PaneFrameProps {
   trailing?: ReactNode;
   /** Whether this pane currently has focus — drives the border, see above. */
   focused?: boolean;
+  /**
+   * What the pane's content asked the user to look at and they have not yet
+   * seen (a terminal's notification). Drawn as a ring around the tile, and as
+   * the header's tooltip, until the pane is seen.
+   */
+  attention?: string | null;
+  /** A short fact about the content after the title — a terminal's directory. */
+  meta?: { text: string; title: string } | null;
   /** Raised when anything inside the pane is interacted with, so the frame
    *  can take focus. */
   onFocus?: () => void;
@@ -175,6 +186,18 @@ interface PaneFrameProps {
   splitFits?: (axis: PaneSplitAxis) => boolean;
   /** Take a conversation dropped on this tile — any pane can receive one. */
   onSessionDrop?: (sessionId: string, target: DropTarget) => void;
+  /**
+   * Take a terminal or web page dropped on this tile — a side-panel tab, or
+   * another pane's surface dragged by its header. Centre shows it here; an
+   * edge opens it in a new pane on that side.
+   */
+  onSurfaceDrop?: (payload: SurfaceDragPayload, target: DropTarget) => void;
+  /**
+   * The surface this pane shows, when it shows one: the header becomes its
+   * drag handle, so the pane can be dropped on another pane or on a side
+   * panel's tabs.
+   */
+  dragSurface?: SurfaceDragPayload;
   /** Close this tile. Absent on the last one. */
   onClose?: () => void;
   /**
@@ -301,6 +324,19 @@ export function usePaneActions(actions: PaneAction[]): void {
   }, [publish, actions]);
 }
 
+/**
+ * Content that must stay visible over a web page in this pane. A page is drawn
+ * above the pane by the surface layer, so the settle cards (the conversation's
+ * pending approvals and questions) are cut out of it rather than covered.
+ * `display: contents` keeps the wrapper out of layout: the cards still position
+ * themselves against the body.
+ */
+function WebSurfaceOccluder({ children }: { children: ReactNode }) {
+  const [element, setElement] = useState<HTMLDivElement | null>(null);
+  useEffect(() => (element ? registerWebSurfaceOccluder(element) : undefined), [element]);
+  return <div ref={setElement} className="contents" data-web-surface-occluder="settle">{children}</div>;
+}
+
 /** The frame every pane is drawn in. The chrome lives here and only here. */
 export function PaneFrame({
   title,
@@ -309,11 +345,15 @@ export function PaneFrame({
   actions = [],
   trailing,
   focused,
+  attention = null,
+  meta = null,
   onFocus,
   canSplit,
   onSplit,
   splitFits,
   onSessionDrop,
+  onSurfaceDrop,
+  dragSurface,
   onClose,
   closeLabel,
   maximized = false,
@@ -349,8 +389,14 @@ export function PaneFrame({
   };
 
   const [dropTarget, setDropTarget] = useState<DropTarget | null>(null);
+  // A web page in this pane is drawn above it; the indicator is cut out of
+  // the page so the user sees where the drop lands.
+  const dropIndicatorRef = useWebSurfaceOccluder(dropTarget);
   const carriesSession = (event: React.DragEvent) =>
-    event.dataTransfer.types.includes(CHAT_SESSION_DRAG_TYPE);
+    onSessionDrop !== undefined && event.dataTransfer.types.includes(CHAT_SESSION_DRAG_TYPE);
+  const carriesSurface = (event: React.DragEvent) =>
+    onSurfaceDrop !== undefined && event.dataTransfer.types.includes(SURFACE_DRAG_TYPE);
+  const acceptsDrops = onSessionDrop !== undefined || onSurfaceDrop !== undefined;
 
   const readTarget = (event: React.DragEvent<HTMLElement>): DropTarget => {
     const rect = event.currentTarget.getBoundingClientRect();
@@ -365,16 +411,18 @@ export function PaneFrame({
     <section
       data-testid="pane"
       data-focused={focused ? "true" : undefined}
+      data-attention={attention !== null ? "true" : undefined}
       data-drop-target={dropTarget ?? undefined}
-      onDragOver={onSessionDrop ? (event) => {
-        if (!carriesSession(event)) return;
+      onDragOver={acceptsDrops ? (event) => {
+        const surface = carriesSurface(event);
+        if (!carriesSession(event) && !surface) return;
         // Without this the browser refuses the drop and the whole gesture ends
         // in the default "no" cursor.
         event.preventDefault();
-        event.dataTransfer.dropEffect = "copy";
+        event.dataTransfer.dropEffect = surface ? "move" : "copy";
         setDropTarget(readTarget(event));
       } : undefined}
-      onDragLeave={onSessionDrop ? (event) => {
+      onDragLeave={acceptsDrops ? (event) => {
         // A drag crossing a child fires leave on the section too. Only a
         // pointer that actually left the tile's box should clear the hint.
         const rect = event.currentTarget.getBoundingClientRect();
@@ -382,12 +430,19 @@ export function PaneFrame({
           && event.clientY >= rect.top && event.clientY <= rect.bottom;
         if (!inside) setDropTarget(null);
       } : undefined}
-      onDrop={onSessionDrop ? (event) => {
+      onDrop={acceptsDrops ? (event) => {
+        if (carriesSurface(event)) {
+          event.preventDefault();
+          setDropTarget(null);
+          const payload = decodeSurfaceDrag(event.dataTransfer.getData(SURFACE_DRAG_TYPE));
+          if (payload) onSurfaceDrop!(payload, readTarget(event));
+          return;
+        }
         if (!carriesSession(event)) return;
         event.preventDefault();
         const sessionId = event.dataTransfer.getData(CHAT_SESSION_DRAG_TYPE);
         setDropTarget(null);
-        if (sessionId) onSessionDrop(sessionId, readTarget(event));
+        if (sessionId) onSessionDrop!(sessionId, readTarget(event));
       } : undefined}
       // Focus follows interaction rather than a click on the frame itself:
       // clicking into the composer IS choosing the group, and requiring a
@@ -403,7 +458,11 @@ export function PaneFrame({
         // Focus lives on the frame. `border-border` is the resting hairline;
         // the focused group swaps the whole border rather than adding a ring,
         // so a group never changes size when focus moves to it.
-        focused ? "border-primary/(--opacity-half)" : "border-border",
+        // Attention rings OUTSIDE the border (a box shadow), so the tile keeps
+        // its size; it outranks focus because it is what is not yet seen.
+        attention !== null
+          ? "border-primary ring-2 ring-primary/(--opacity-half)"
+          : focused ? "border-primary/(--opacity-half)" : "border-border",
       ].join(" ")}
     >
       {/* One approval scope per pane: the column that holds this pane's
@@ -415,14 +474,35 @@ export function PaneFrame({
       <div className="flex min-h-0 min-w-0 flex-1 flex-col" data-approval-scope>
       <header
         data-testid="pane-header"
-        className="flex h-(--chrome-band-height) shrink-0 items-center gap-(--chrome-gap-tight) border-b border-border/(--opacity-half) px-(--chrome-gap)"
+        className={[
+          "flex h-(--chrome-band-height) shrink-0 items-center gap-(--chrome-gap-tight) border-b border-border/(--opacity-half) px-(--chrome-gap)",
+          dragSurface ? "cursor-grab active:cursor-grabbing" : "",
+        ].join(" ")}
+        {...(dragSurface ? {
+          draggable: true,
+          "data-drag-surface": dragSurface.tabId,
+          onDragStart: (event: React.DragEvent<HTMLElement>) => {
+            // The header's own controls are buttons; only the band itself drags.
+            if ((event.target as HTMLElement).closest("button")) {
+              event.preventDefault();
+              return;
+            }
+            event.dataTransfer.setData(SURFACE_DRAG_TYPE, encodeSurfaceDrag(dragSurface));
+            event.dataTransfer.effectAllowed = "move";
+          },
+        } : {})}
       >
         {icon ? <span className="flex shrink-0 items-center text-muted-foreground">{icon}</span> : null}
         <h2
           className="min-w-0 flex-1 truncate text-caption font-medium text-foreground"
-          title={description}
+          title={attention ?? description}
         >
           {title}
+          {meta ? (
+            <span className="ml-(--chrome-gap-tight) font-mono font-normal text-muted-foreground" title={meta.title} data-testid="pane-header-meta">
+              {meta.text}
+            </span>
+          ) : null}
         </h2>
         {headerActions.map((action) =>
           action.items ? (
@@ -603,7 +683,7 @@ export function PaneFrame({
             {/* The settle slot is the body's own bottom edge: its occupants
                 position themselves against this `relative` body exactly as
                 they do against the conversation column. */}
-            {settle}
+            {settle !== undefined ? <WebSurfaceOccluder>{settle}</WebSurfaceOccluder> : null}
           </div>
         </PaneBodyActionsContext.Provider>
       </PanePanelSlotContext.Provider>
@@ -616,6 +696,7 @@ export function PaneFrame({
       ) : null}
       {dropTarget ? (
         <div
+          ref={dropIndicatorRef}
           aria-hidden={true}
           className="pointer-events-none absolute rounded-md border-2 border-primary bg-primary/(--opacity-subtle)"
           style={dropIndicatorStyle(dropTarget)}
@@ -667,6 +748,8 @@ export interface ChatGroupState {
   id: string;
   /** The work panel, per pane — its own right-hand rail. */
   panelOpen: boolean;
+  /** Session routine and browser thumbnails, independent of the work panel. */
+  thumbnailOpen: boolean;
   /** Where this tile sits, in percentages of the main area. */
   box: PaneBox;
   /**
@@ -686,6 +769,17 @@ export interface ChatGroupState {
  * mutates a location in place.
  */
 export const PANE_HOME: ViewLocation = { view: "home" };
+
+/**
+ * What the canvas draws. Chat mode collapses to the focused tile rather than
+ * closing the others: switching modes is a view change, and losing a
+ * conversation to it would make the toggle destructive. Maximizing is the same
+ * kind of choice, made in work mode; chat mode's own rule wins there.
+ */
+function visibleTreeFor(tree: PaneNode, appMode: "chat" | "work" | undefined, focusedId: string, maximizedId: string | null): PaneNode {
+  const shownAlone = appMode === "chat" ? focusedId : maximizedId;
+  return shownAlone === null ? tree : leaf(shownAlone);
+}
 
 /**
  * The open chat groups, tiled.
@@ -715,6 +809,7 @@ export const PANE_HOME: ViewLocation = { view: "home" };
 export function useChatGroups(appMode?: "chat" | "work") {
   const [tree, setTree] = useState<PaneNode>(() => leaf(MAIN_CHAT_GROUP_ID));
   const [panelOpenIds, setPanelOpenIds] = useState<readonly string[]>([]);
+  const [thumbnailOpenIds, setThumbnailOpenIds] = useState<readonly string[]>([]);
   const [focusedId, setFocusedId] = useState(MAIN_CHAT_GROUP_ID);
   // The one tile shown alone, if any. A view choice, like chat mode's: the
   // others keep their conversations and their places until restored.
@@ -760,6 +855,14 @@ export function useChatGroups(appMode?: "chat" | "work") {
 
   const setPanelOpen = useCallback((id: string, open: boolean) => {
     setPanelOpenIds((current) => {
+      const has = current.includes(id);
+      if (has === open) return current;
+      return open ? [...current, id] : current.filter((each) => each !== id);
+    });
+  }, []);
+
+  const setThumbnailOpen = useCallback((id: string, open: boolean) => {
+    setThumbnailOpenIds((current) => {
       const has = current.includes(id);
       if (has === open) return current;
       return open ? [...current, id] : current.filter((each) => each !== id);
@@ -868,6 +971,7 @@ export function useChatGroups(appMode?: "chat" | "work") {
       id,
     ));
     setPanelOpenIds((current) => (spare === null ? current : current.filter((each) => each !== spare)));
+    setThumbnailOpenIds((current) => (spare === null ? current : current.filter((each) => each !== spare)));
     setContentById((current) => {
       const next = { ...current, [id]: PANE_HOME };
       if (spare !== null) delete next[spare];
@@ -909,6 +1013,7 @@ export function useChatGroups(appMode?: "chat" | "work") {
     setFocusedId((focused) => (survivors.includes(focused) ? focused : survivors[0]!));
     setMaximizedId((current) => (current === id ? null : current));
     setPanelOpenIds((current) => current.filter((each) => each !== id));
+    setThumbnailOpenIds((current) => current.filter((each) => each !== id));
     setContentById((current) => {
       if (!(id in current)) return current;
       const next = { ...current };
@@ -988,6 +1093,73 @@ export function useChatGroups(appMode?: "chat" | "work") {
   }, [paneShowing, focus]);
 
   /**
+   * Move what pane `from` shows into pane `to`, in ONE update, and focus `to`.
+   *
+   * What `to` showed goes back to `from` — a swap — so two panes trading a
+   * terminal and a web page keep both. A pane on home gives `from` its own home
+   * back. Built on the content map directly rather than on `setPaneContent`:
+   * that setter refuses a location another pane already shows, which is
+   * exactly the state a move starts in.
+   */
+  const movePaneContent = useCallback((from: string, to: string) => {
+    if (from === to) return;
+    setContentById((current) => ({
+      ...current,
+      [to]: current[from] ?? PANE_HOME,
+      [from]: current[to] ?? PANE_HOME,
+    }));
+    focus(to);
+  }, [focus]);
+
+  /**
+   * Open `location` in a NEW pane on `targetId`'s `edge` — the drop of a
+   * surface on a pane's edge — and put `vacate` (the pane it came from, if
+   * any) back on home, in one update. Null when either ceiling is reached; the
+   * caller's drop affordance already degrades to the centre there.
+   */
+  const placeOnEdge = useCallback((
+    targetId: string,
+    edge: DropEdge,
+    location: ViewLocation,
+    vacate?: string,
+  ): string | null => {
+    const id = dropOnEdge(targetId, edge);
+    if (id === null) return null;
+    setContentById((current) => {
+      const next = { ...current, [id]: location };
+      if (vacate !== undefined && vacate !== id) next[vacate] = PANE_HOME;
+      return next;
+    });
+    return id;
+  }, [dropOnEdge]);
+
+  /**
+   * The drawn pane beside `id` in `direction`: the one sharing the most of
+   * `id`'s edge on that side. Undefined at the canvas edge.
+   */
+  const paneNeighbor = useCallback((id: string, direction: "left" | "right" | "up" | "down"): string | undefined => {
+    const boxes = layoutBoxes(visibleTreeFor(tree, appMode, focusedId, maximizedId));
+    const from = boxes.find((box) => box.chatGroupId === id);
+    if (!from) return undefined;
+    const EPS = 0.01;
+    let best: { id: string; overlap: number } | undefined;
+    for (const box of boxes) {
+      if (box.chatGroupId === id) continue;
+      const touches =
+        direction === "left" ? Math.abs(box.left + box.width - from.left) < EPS
+        : direction === "right" ? Math.abs(from.left + from.width - box.left) < EPS
+        : direction === "up" ? Math.abs(box.top + box.height - from.top) < EPS
+        : Math.abs(from.top + from.height - box.top) < EPS;
+      if (!touches) continue;
+      const overlap = direction === "left" || direction === "right"
+        ? Math.min(from.top + from.height, box.top + box.height) - Math.max(from.top, box.top)
+        : Math.min(from.left + from.width, box.left + box.width) - Math.max(from.left, box.left);
+      if (overlap > EPS && (!best || overlap > best.overlap)) best = { id: box.chatGroupId, overlap };
+    }
+    return best?.id;
+  }, [tree, appMode, focusedId, maximizedId]);
+
+  /**
    * The pane whose CONVERSATION the window's conversation-scoped surfaces mean.
    *
    * The focused pane when it holds one; otherwise the conversation pane focus
@@ -1019,8 +1191,7 @@ export function useChatGroups(appMode?: "chat" | "work") {
   // focuses the tile the two agree on which one that is. `maximizedId` is
   // always a tile the tree holds — closing that tile and adding another both
   // clear it — so it is shown without a second check.
-  const shownAlone = appMode === "chat" ? focusedId : maximizedId;
-  const visibleTree: PaneNode = shownAlone === null ? tree : leaf(shownAlone);
+  const visibleTree: PaneNode = visibleTreeFor(tree, appMode, focusedId, maximizedId);
   const groups = useMemo<ChatGroupState[]>(
     () => {
       const drawn = new Map(layoutBoxes(visibleTree).map((box) => [box.chatGroupId, box]));
@@ -1032,6 +1203,7 @@ export function useChatGroups(appMode?: "chat" | "work") {
         return {
           id,
           panelOpen: panelOpenIds.includes(id),
+          thumbnailOpen: thumbnailOpenIds.includes(id),
           // A hidden tile keeps the whole canvas as its box: it is not laid out
           // against its neighbours, and a zero-size one would have its own
           // layout effects measure nonsense on the way back into view.
@@ -1043,7 +1215,7 @@ export function useChatGroups(appMode?: "chat" | "work") {
     // `visibleTree` is rebuilt each render in chat mode, so the tree and the
     // mode are the honest dependencies here, not the derived node.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [tree, appMode, focusedId, maximizedId, panelOpenIds],
+    [tree, appMode, focusedId, maximizedId, panelOpenIds, thumbnailOpenIds],
   );
 
   // Once split, every tile can be closed and any one can be shown alone —
@@ -1091,6 +1263,35 @@ export function useChatGroups(appMode?: "chat" | "work") {
     return dropOnEdge(besideGroupId, SPLIT_EDGE.row);
   }, [canSplit, splitFits, dropOnEdge]);
 
+  /**
+   * Put back a saved layout at launch: its tree, its focus, which panes had
+   * their side panel open, and what the listed panes show. Every pane holds a
+   * conversation (a fresh one — conversations are not part of a layout).
+   * A pane whose content something already set (the restored `activeView`
+   * may land first) keeps it unless the layout names a surface for it. Group
+   * numbering moves past the restored ids, so a later split cannot reuse one.
+   */
+  const restore = useCallback((layout: {
+    tree: PaneNode;
+    focusedId: string;
+    panelOpenIds: readonly string[];
+    thumbnailOpenIds: readonly string[];
+    content: Readonly<Record<string, ViewLocation>>;
+  }) => {
+    const ids = leafIds(layout.tree);
+    for (const id of ids) {
+      const n = /^group-(\d+)$/.exec(id);
+      if (n && Number(n[1]) >= nextGroupIndex.current) nextGroupIndex.current = Number(n[1]) + 1;
+    }
+    setTree(layout.tree);
+    setFocusedId(layout.focusedId);
+    setMaximizedId(null);
+    setPanelOpenIds([...layout.panelOpenIds]);
+    setThumbnailOpenIds([...layout.thumbnailOpenIds]);
+    setConversationIds(new Set(ids));
+    setContentById((current) => Object.fromEntries(ids.map((id) => [id, layout.content[id] ?? current[id] ?? PANE_HOME])));
+  }, []);
+
   // Boundaries between tiles. Chat mode shows one leaf, so there are none.
   const gutters = useMemo(
     () => layoutGutters(visibleTree),
@@ -1124,10 +1325,14 @@ export function useChatGroups(appMode?: "chat" | "work") {
     focus,
     contentById,
     setPaneContent,
+    movePaneContent,
+    placeOnEdge,
+    paneNeighbor,
     paneShowing,
     conversationIds,
     focusedConversationId,
     setPanelOpen,
+    setThumbnailOpen,
     canSplit,
     split,
     splitFits,
@@ -1141,6 +1346,9 @@ export function useChatGroups(appMode?: "chat" | "work") {
     canMaximize,
     maximizedId,
     toggleMaximize,
+    panelOpenIds,
+    thumbnailOpenIds,
+    restore,
   };
 }
 

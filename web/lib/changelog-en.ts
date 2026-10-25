@@ -19,11 +19,8 @@ interface EnItem {
 const EN: Record<string, EnItem[]> = {
   "v0.14.0": [
     {
-      title: "Ave is a new app",
-      points: [
-        "It starts empty: it does not update an installed predecessor app, or read that app’s settings and data.",
-        "The website is `ave.agent-connector.ai`; downloads and updates come from `downloads.agent-connector.ai`.",
-      ],
+      title: "Ave’s website and distribution addresses",
+      points: ["The website is `ave.agent-connector.ai`; downloads and updates come from `downloads.agent-connector.ai`."],
     },
     {
       title: "Ave’s identifiers and paths",
@@ -39,11 +36,19 @@ const EN: Record<string, EnItem[]> = {
       ],
     },
     {
+      title: "A signed contract bundle to download and verify",
+      points: [
+        "Each release publishes, at `https://downloads.agent-connector.ai/contract/v0.14.0/`, the plugin contract source, the manifest schema, the protocol 3 schema, the marketplace checker and the agent-plugin component extractor, with `bundle.json`, `SHA256SUMS` and its Sigstore signature.",
+        "The release workflow makes the signature, so extension authors and marketplaces can check manifests and the protocol with this bundle, without Ave’s source.",
+        "A tag’s files never change once published. (#113)",
+      ],
+    },
+    {
       title: "Plugin contract identifiers moved to the Ave domain",
       points: [
         "Ave-specific `plugin.json` fields live under `extensions[\"ai.agent-connector.ave\"]`; a package’s prompt, agent, hook and routine files go in an `ai.agent-connector.ave/` folder.",
         "A skill package’s `$schema` is `https://ave.agent-connector.ai/schemas/skill/1/skill.schema.json`; the manifest and marketplace schemas are published under `https://ave.agent-connector.ai/schemas/plugin/3/` and `https://ave.agent-connector.ai/schemas/marketplace/2/`.",
-        "Earlier identifiers are not recognised.",
+        "The earlier address (`sdk.former-site.invalid`) is not recognised.",
       ],
     },
     {
@@ -131,7 +136,8 @@ const EN: Record<string, EnItem[]> = {
       title: "The workspace terminal shows command blocks",
       points: [
         "Each command’s location, exit code, duration and output form one block, which can be attached to the chat.",
-        "The agent reads terminal output in the same window with `terminal_read`, as untrusted data. (#59)",
+        "The agent reads terminal output in the same window with `terminal_read`, as untrusted data.",
+        "On macOS a sandboxed terminal shell controls only its own terminal device, so commands are not echoed twice, job control such as Ctrl-Z and `fg` works, and other terminal windows are out of reach. (#59, #106)",
       ],
     },
     {
@@ -139,6 +145,26 @@ const EN: Record<string, EnItem[]> = {
       points: [
         "Downloads in the side-panel browser go through the system save dialog and are never saved or opened automatically; full screen is not allowed.",
         "Several main windows can be open; approvals and questions appear in the window that asked, and answering in one closes the copies in the others. (#60)",
+      ],
+    },
+    {
+      title: "Terminal and web panels in the main area",
+      points: [
+        "Open terminal and web panels in the main area beside the chat, and move them between the side panel and the main area without reloading.",
+        "Split the main area into up to four panels; move panels by dragging the header or with keyboard commands, maximise them, or reopen a closed one.",
+        "The first window’s panel layout comes back on the next launch: terminals reopen in their last folder with a new shell, pages at their last address.",
+        "The side chat works on the terminal or page last brought into view.",
+        "A shell’s notification sequence (OSC 9, OSC 777) marks that terminal as asking for attention, and Cmd/Ctrl+Shift+U goes to it; inside a terminal, `AVE_TERMINAL_ID` names its own tab. (#104)",
+      ],
+    },
+    {
+      title: "The agent works browser pages directly",
+      points: [
+        "In the conversation’s window, the agent reads side-panel and main-area web pages (`browser_snapshot`, `browser_screenshot`) and clicks, types, presses keys, navigates, and opens and closes tabs.",
+        "Page content reaches it as untrusted data, and it never types into password, payment card or verification code fields.",
+        "Actions that change a page ask on an approval card, and a tab you opened asks per site even to read it; approvals last until Ave restarts, per site or within the tabs the agent opened, and page-changing actions in a tab you opened ask every time.",
+        "Tabs and panels the agent opened carry a marker and a stop button; clicking or typing in the page yourself stops pending actions, and navigating with the address bar, back, forward or reload ends the agent’s control.",
+        "Routines and headless runs do not use the browser tools. (#102, #114)",
       ],
     },
     {
@@ -157,6 +183,13 @@ const EN: Record<string, EnItem[]> = {
         "A damaged permission rules file blocks instead of being ignored.",
         "Approvals are remembered per scope rather than per exact call: `web_fetch` per `scheme://host:port` for public addresses, and only the exact URL for private-network addresses.",
         "When the arguments change within the same scope, the call is reviewed again and goes through without asking only when its risk is not higher. (#88)",
+      ],
+    },
+    {
+      title: "Cost chip and audit statistics fixed",
+      points: [
+        "The cost chip of a model without price information says “pricing unknown” instead of “TBD”.",
+        "The Audit tab in Settings counts permission records by decision, such as allowed or denied, and its top types no longer show `undefined`. (#106)",
       ],
     },
   ],

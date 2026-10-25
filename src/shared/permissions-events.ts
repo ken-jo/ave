@@ -49,7 +49,55 @@ export type ApprovalMemoryScope =
     }
   // A digest, not the command text: this scope reaches the renderer, where
   // command text is only ever shown DLP-masked.
-  | { readonly kind: "command"; readonly commandSha256: string; readonly cwd: string | null };
+  | { readonly kind: "command"; readonly commandSha256: string; readonly cwd: string | null }
+  // Browser actions on one page origin (`scheme://host:port`) in a tab the
+  // agent opened or a tab the user opened. The opener is part of the scope:
+  // an approval for agent tabs never answers for the user's own tabs.
+  | {
+      readonly kind: "browser-origin";
+      readonly origin: string;
+      readonly tabOpener: BrowserTabOpener;
+      /** The concrete target of this invocation, independent of origin memory. */
+      readonly tabId?: string;
+      readonly documentId?: number;
+      readonly controlGeneration?: number;
+    }
+  // Closing tabs the agent opened. A user-opened tab is never covered.
+  | { readonly kind: "browser-agent-tabs"; readonly tabId?: string; readonly documentId?: number; readonly controlGeneration?: number }
+  // One exact command typed into one of the user's terminals, in the
+  // directory its shell reported. `tabId` is the concrete target of this
+  // invocation (resolved before the card is shown, so switching terminals
+  // while it is open cannot retarget it); a remembered decision covers the
+  // command in that directory, for this app session only. `cwdForMatch` is
+  // that directory as the allowed-directory check compares it (realpath,
+  // case-folded where the file system folds case), for the card's
+  // "outside the allowed folders" note; it is derived from `cwd`.
+  | {
+      readonly kind: "terminal-command";
+      readonly commandSha256: string;
+      readonly tabId: string;
+      readonly lane: "agent";
+      readonly terminalSessionId: string;
+      readonly sandboxGeneration: string;
+      readonly cwd: string;
+      readonly cwdForMatch: string;
+    };
+
+/** Who opened a browser tab: the agent (`browser_tab_new`) or the user. */
+export type BrowserTabOpener = "agent" | "user";
+
+/**
+ * Whether a remembered decision for `scope` may only live for this app
+ * session. Browser scopes are session-only: a page on an approved origin can
+ * steer the model into any action there, so no browser approval outlives the
+ * process (no "always allow" for browser actions in v1). A terminal command
+ * is session-only too: it names one terminal's directory, and terminals do
+ * not outlive the app session. The approval card and the record handler
+ * both read this one predicate.
+ */
+export function isSessionOnlyApprovalMemoryScope(scope: ApprovalMemoryScope): boolean {
+  return scope.kind === "browser-origin" || scope.kind === "browser-agent-tabs" || scope.kind === "terminal-command";
+}
 
 /**
  * What a remembered user decision is keyed on, besides tool name, source,

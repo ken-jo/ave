@@ -16,7 +16,7 @@
  *   - the marketplace, which opens an external URL and is not an in-app
  *     place at all.
  */
-import { Brain, CalendarDays, KanbanSquare, KeyRound, Repeat2, type LucideIcon } from "lucide-react";
+import { Brain, CalendarDays, Globe, KanbanSquare, KeyRound, Repeat2, Terminal, type LucideIcon } from "lucide-react";
 import {
   SETTINGS_TAB_LABEL_KEYS,
   normalizeSettingsTab,
@@ -30,6 +30,12 @@ export interface ViewLocation {
   view: InlineViewKey;
   /** Only meaningful when `view === "settings"`; absent everywhere else. */
   settingsTab?: SettingsTab;
+  /**
+   * Only meaningful for an instance view (`terminal`, `web`): the surface (tab)
+   * id it shows. Two panes may each show a terminal, but never the same one —
+   * the one-pane-per-location rule compares this too.
+   */
+  surface?: string;
 }
 
 /**
@@ -45,7 +51,7 @@ export function toViewLocation(view: InlineViewKey, settingsTab: string): ViewLo
 }
 
 export function sameViewLocation(a: ViewLocation, b: ViewLocation): boolean {
-  return a.view === b.view && a.settingsTab === b.settingsTab;
+  return a.view === b.view && a.settingsTab === b.settingsTab && a.surface === b.surface;
 }
 
 /** One crumb. `target` is absent on the last one — you cannot navigate to
@@ -143,6 +149,8 @@ export const BUILTIN_LABEL_KEYS: Record<PaneViewKey, string> = {
   insights: "mainToolbar.insights",
   starred: "mainToolbar.insights",
   memory: "mainToolbar.memory",
+  terminal: "chatPreviewRail.tab.terminal",
+  web: "chatPreviewRail.tab.browser",
 };
 
 /**
@@ -162,4 +170,6 @@ export const BUILTIN_VIEW_ICONS: Record<PaneViewKey, LucideIcon> = {
   insights: CalendarDays,
   starred: CalendarDays,
   memory: Brain,
+  terminal: Terminal,
+  web: Globe,
 };

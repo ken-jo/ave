@@ -8,10 +8,11 @@
  * conversation from its folder as a side effect of renaming it.
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MemoryManager } from "../memory-manager.js";
+import { sessionStorePath } from "../../shared/session-store-path.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
 const SESSION = "aaaaaaaa-1111-2222-3333-444444444444";
@@ -119,5 +120,52 @@ describe("saveSessionTasks", () => {
       ],
     });
     expect(mm.loadSessionMetadata(SESSION)?.tasks).toEqual([{ id: "ok", content: "fine", status: "pending" }]);
+  });
+});
+
+describe("findPaneSession", () => {
+  const OLDER = "bbbbbbbb-1111-2222-3333-444444444444";
+  const NEWER = "cccccccc-1111-2222-3333-444444444444";
+  const at = (id: string, seconds: number) =>
+    utimesSync(join(sessionStorePath(dir), `${id}.jsonl`), seconds, seconds);
+
+  it("finds the newest unarchived conversation of a pane, and none for another pane", async () => {
+    for (const id of [OLDER, NEWER]) {
+      await mm.saveSession(id, [{ role: "user", content: id }]);
+      await mm.saveSessionMetadata(id, { sessionKind: "main", paneTabId: "browser:w-1" });
+    }
+    at(OLDER, 1_000);
+    at(NEWER, 2_000);
+    expect(mm.findPaneSession("browser:w-1")).toBe(NEWER);
+    expect(mm.findPaneSession("terminal:w-1")).toBeUndefined();
+    await mm.updateSessionRowFields(NEWER, { archivedAt: "2026-10-19T00:00:00.000Z" });
+    expect(mm.findPaneSession("browser:w-1")).toBe(OLDER);
+  });
+
+  it("answers from its index after one scan, kept by writes and deletes made through it", async () => {
+    await mm.saveSession(OLDER, [{ role: "user", content: "older" }]);
+    await mm.saveSessionMetadata(OLDER, { sessionKind: "main", paneTabId: "browser:w-1" });
+    expect(mm.findPaneSession("browser:w-1")).toBe(OLDER);
+    // A file written behind its back is not rescanned for...
+    await mm.saveSession(NEWER, [{ role: "user", content: "newer" }]);
+    writeFileSync(join(sessionStorePath(dir), `${NEWER}.meta.json`), JSON.stringify({ sessionKind: "main", paneTabId: "browser:w-9" }));
+    expect(mm.findPaneSession("browser:w-9")).toBeUndefined();
+    // ...while its own writes and deletes are reflected at once.
+    await mm.saveSessionMetadata(NEWER, { sessionKind: "main", paneTabId: "browser:w-1" });
+    at(OLDER, 1_000);
+    at(NEWER, 2_000);
+    expect(mm.findPaneSession("browser:w-1")).toBe(NEWER);
+    await mm.deleteSession(NEWER);
+    expect(mm.findPaneSession("browser:w-1")).toBe(OLDER);
+    await mm.updateSessionRowFields(OLDER, { archivedAt: "2026-10-19T00:00:00.000Z" });
+    expect(mm.findPaneSession("browser:w-1")).toBeUndefined();
+  });
+
+  it("reads the pane back from the metadata it was saved in", async () => {
+    await mm.saveSessionMetadata(SESSION, { sessionKind: "main", paneTabId: "terminal:w-2" });
+    expect(mm.loadSessionMetadata(SESSION)?.paneTabId).toBe("terminal:w-2");
+    await mm.saveSessionMetadata(SESSION, { sessionKind: "main", paneTabId: "" });
+    expect(mm.loadSessionMetadata(SESSION)?.paneTabId).toBeUndefined();
+    expect(mm.findPaneSession("terminal:w-2")).toBeUndefined();
   });
 });

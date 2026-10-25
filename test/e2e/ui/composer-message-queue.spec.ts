@@ -11,10 +11,10 @@
  * - BottomActionRow 가 TokenRing slot + ⇧⏎ kbd + Send 노출
  * - InputActionBar trailing 순서: 📎 → 권한 → (승인) → 페르소나 → Thinking
  * - MessageQueuePanel sentinel: 큐 비면 panel 자체 미렌더
- * - 승인 대기열 floating chip 제거 (DOM 부재)
  */
 import { test, expect } from './fixtures';
 import { TEST_IDS, testIdSelector } from "../../../src/shared/test-ids.js";
+import { MAIN_CHAT_GROUP_ID } from "../../../src/contract/app-contract.js";
 
 /**
  * The side chat renders the SAME composer, queue panel, and turn control as the
@@ -39,26 +39,21 @@ test('idle: composer input-bar contains textarea only (no Send/Stop/Guide button
   await expect(buttonsInsideInputBar).toHaveCount(0);
 });
 
-test('idle: unified InputActionBar 가 TokenRing + Send 를 표시하고 가이드 버튼은 미노출', async ({ mainWindow }) => {
-  const row = mainWindow.locator('[data-testid="input-action-bar"]');
+test('idle: unified InputActionBar 가 TokenRing + Send 를 표시', async ({ mainWindow }) => {
+  const row = mainWindow.locator(MAIN + '[data-testid="input-action-bar"]');
   await expect(row).toBeVisible();
-  await expect(row.locator('[data-testid="iab-status-ring"]')).toBeVisible();
-
-  const guideBtn = mainWindow.locator('[data-testid="composer-guide-ghost"]');
-  await expect(guideBtn).toHaveCount(0);
+  // The token ring sits in the composer's status row, below the action bar.
+  await expect(mainWindow.locator(MAIN + '[data-testid="iab-status-row"] [data-testid="iab-status-ring"]')).toBeVisible();
 
   // 통합 turn control — idle 이면 send 아이콘 (라벨은 aria-label/title 로만)
   const sendBtn = mainWindow.locator(MAIN + '[data-testid="composer-send-button"]');
   await expect(sendBtn).toBeVisible();
 });
 
-test('idle: cancel button + immediate-inject hint 모두 미노출 (busy 일 때만)', async ({ mainWindow }) => {
+test('idle: cancel button 미노출 (busy 일 때만)', async ({ mainWindow }) => {
   // 정지는 별도 버튼이 아니라 같은 turn control 이 busy + 빈 draft 일 때 갖는 상태.
   const cancelBtn = mainWindow.locator(MAIN + '[data-testid="composer-cancel-button"]');
   await expect(cancelBtn).toHaveCount(0);
-  // ⌘⏎ 즉시 주입 hint 도 busy 시만
-  const immediateHint = mainWindow.locator(MAIN + '[data-testid="composer-hint-immediate"]');
-  await expect(immediateHint).toHaveCount(0);
 });
 
 test('idle: MessageQueuePanel 미렌더 (큐 비어 있음 sentinel)', async ({ mainWindow }) => {
@@ -112,17 +107,18 @@ test('InputActionBar: command → attach leading controls and reasoning status a
 test('큐 항목 수정 (더블클릭) — input 진입 + Enter commit', async ({ mainWindow }) => {
   // 큐 적재 후 더블클릭 → input 등장 → Enter 로 텍스트 갱신.
   // store 직접 manipulation 으로 testid="message-queue-row" 강제 등장.
+  // The harness launches with AVE_DEV=1 + AVE_E2E=1, which is exactly when the
+  // renderer exposes the queue store; wait for it rather than skipping.
+  await mainWindow.waitForFunction(
+    () => typeof (window as unknown as { __ave_message_queue_store__?: { add?: unknown } })
+      .__ave_message_queue_store__?.add === "function",
+  );
   await mainWindow.evaluate(() => {
-    // @ts-expect-error renderer test hook
-    const store = window.__ave_message_queue_store__;
-    if (store) {
-      store.add("original text");
-    }
+    (window as unknown as { __ave_message_queue_store__: { add: (text: string) => void } })
+      .__ave_message_queue_store__.add("original text");
   });
-  // 큐 row 가 안 뜨면 (test hook 미설치) skip — production 빌드 호환.
   const row = mainWindow.locator(MAIN + '[data-testid="message-queue-row-text"]').first();
-  const visible = await row.isVisible().catch(() => false);
-  if (!visible) test.skip();
+  await expect(row).toBeVisible();
   await row.dblclick();
   const input = mainWindow.locator(MAIN + '[data-testid="message-queue-row-edit"]');
   await expect(input).toBeVisible();
@@ -159,31 +155,24 @@ test('queue-auto 자동 인입 — done event 시 큐 항목이 user bubble + "�
   expect(hasSeededKey).toBe(true);
   // 큐에 항목 적재 후 done event 시뮬 (preload 의 stream IPC) → user bubble
   // 등장 + injectHint="queue" 배지. queue-auto inputOrigin path 의 통합 검증.
+  await mainWindow.waitForFunction(
+    () => typeof (window as unknown as { __ave_message_queue_store__?: { add?: unknown } })
+      .__ave_message_queue_store__?.add === "function",
+  );
   await mainWindow.evaluate(() => {
-    // @ts-expect-error renderer test hook
-    const store = window.__ave_message_queue_store__;
-    if (store) {
-      store.add("끝나면 요약");
-    }
+    (window as unknown as { __ave_message_queue_store__: { add: (text: string) => void } })
+      .__ave_message_queue_store__.add("끝나면 요약");
   });
   const row = mainWindow.locator(MAIN + '[data-testid="message-queue-row-text"]').first();
   await expect(row).toBeVisible();
-  // done event 발화 — main 프로세스에서 broadcast.
-  await app.evaluate(({ BrowserWindow }) => {
+  // done event 발화 — main 프로세스에서 broadcast. The preload delivers a
+  // stream frame only to the chat group it names, so it addresses the main dock.
+  await app.evaluate(({ BrowserWindow }, chatGroupId) => {
     const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed());
-    if (!win) return false;
-    win.webContents.send("ave:chat:stream", { type: "done", streamId: 1 });
-    return true;
-  });
+    if (!win) throw new Error("no live window to deliver the done frame to");
+    win.webContents.send("ave:chat:stream", { type: "done", streamId: 1, chatGroupId });
+  }, MAIN_CHAT_GROUP_ID);
   // user bubble 에 "↪ 큐에서" 배지 확인.
   await expect(mainWindow.locator(`text=${t('chatView.queueInjectLabel')}`).first()).toBeVisible({ timeout: 5_000 });
   await expect(mainWindow.locator('text=끝나면 요약').first()).toBeVisible();
-});
-
-test('승인 대기열 floating chip 제거 (v6 spec)', async ({ mainWindow }) => {
-  // 대기열 깊이를 알리던 chip 은 fixed bottom-right 로 떠 있었다.
-  // v6: 대화 흐름 안쪽 서피스로 통합 → floating 부재. 컴포넌트 자체가 삭제되어
-  // 문구 대신 그 컴포넌트가 달고 있던 testid 와 위치 클래스로 부재를 잠근다.
-  await expect(mainWindow.getByTestId('approval-queue-status')).toHaveCount(0);
-  await expect(mainWindow.locator('div.fixed.bottom-4.right-4.z-40')).toHaveCount(0);
 });

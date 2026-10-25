@@ -2,8 +2,7 @@
  * Permission policy Layer 5 Reviewer Agent: RiskClassifier interface + impls.
  *
  * Spec ref: docs/architecture/permission-policy-design.md §3 Layer 5,
- * §11 v2.1 binding decisions (default `provider="openai"`,
- * `model="gpt-4o-mini"`; `fallbackOnError ∈ {deny, rule}`; default fail-closed;
+ * §11 v2.1 binding decisions (`fallbackOnError ∈ {deny, rule}`; default fail-closed;
  * verdict
  * composition `final = max(rule, llm)`; DLP filter on classifier input).
  *
@@ -66,6 +65,8 @@ import { resolveToolPathForPermission } from "../../shared/tool-path-resolution.
 import type { RiskLevel } from "../../shared/permission-review-status.js";
 import { resolve as resolvePath } from "node:path";
 import { SHELL_EXFIL_VERDICT_REASON, shellExfiltrationSignal } from "../rules/shell-exfiltration.js";
+import { powerShellExfiltrationSignal } from "../rules/powershell-exfiltration.js";
+import { isBrowserToolName, isBrowserUrlToolName } from "../../shared/browser-tools.js";
 
 /** Verdict shape returned by every classifier. */
 export interface RiskVerdict {
@@ -1799,8 +1800,13 @@ const RULES: Array<(ctx: ToolInvocationContext) => RiskVerdict | null> = [
   (ctx) => {
     if (ctx.category !== "shell") return null;
     const cwd = shellInvocationCwd(ctx);
+    // The builtin PowerShell tool's text is read as PowerShell (the reading
+    // the permission floor uses); every other shell-category tool as bash.
+    const signalOf = ctx.source === "builtin" && ctx.toolName === "powershell"
+      ? powerShellExfiltrationSignal
+      : shellExfiltrationSignal;
     for (const cmd of extractShellCommands(ctx.finalInput)) {
-      const signal = shellExfiltrationSignal(cmd, cwd);
+      const signal = signalOf(cmd, cwd);
       if (signal) return { level: "high", reason: `${SHELL_EXFIL_VERDICT_REASON} (${signal})` };
     }
     return null;
@@ -1879,6 +1885,37 @@ const RULES: Array<(ctx: ToolInvocationContext) => RiskVerdict | null> = [
   (ctx) => {
     if (ctx.category !== "shell") return null;
     return { level: "medium", reason: "shell unclassified" };
+  },
+
+  // ── agent browser tools ────────────────────────────────
+  //
+  // Ahead of the generic network/write rules, which grade a builtin with no
+  // URL or path HIGH ("network untrusted host", "write path not declared").
+  // HIGH is once-only at the gate, so those rules would make the browser's
+  // session-scoped origin memory unreachable and turn every click into a
+  // dialog — answered on reflex, which is the outcome the memory exists to
+  // avoid. What the browser tools touch is a page origin the card names:
+  //   · navigate / tab_new carry a model-chosen URL, so they take web_fetch's
+  //     request screen — a URL carrying a credential, an opaque blob, an
+  //     oversized tail or userinfo still escalates to HIGH.
+  //   · every other browser action is MEDIUM: an action on a page, rememberable
+  //     for the session per origin, never persistently.
+  (ctx) => {
+    if (ctx.source !== "builtin" || !isBrowserToolName(ctx.toolName)) return null;
+    if (!isBrowserUrlToolName(ctx.toolName)) {
+      return { level: "medium", reason: "browser page action" };
+    }
+    const screen = screenEgressRequest(ctx.finalInput);
+    switch (screen.outcome) {
+      case "screened":
+        return { level: "high", reason: `${EXFIL_VERDICT_REASON_PREFIX} (${screen.signal})` };
+      case "public-raw-ip":
+        return { level: "medium", reason: PUBLIC_RAW_IP_FETCH_REASON };
+      case "public-benign":
+        return { level: "low", reason: "browser navigation to a public page" };
+      case "not-public":
+        return { level: "medium", reason: "browser navigation to a local or private address" };
+    }
   },
 
   // ── network rules ──────────────────────────────────────
@@ -2604,7 +2641,7 @@ export interface ReviewerSettings {
   mode: ReviewerMode;
   /** Required when mode === "llm". */
   provider?: LlmReviewerProvider;
-  /** Required when mode === "llm". Defaults to "gpt-4o-mini" per v2.1. */
+  /** Required when mode === "llm"; an unset model is not configured. */
   model?: string;
   /** Defaults to "deny" so reviewer provider failures fail closed. */
   fallbackOnError?: FallbackOnError;
@@ -2631,6 +2668,8 @@ export function createRiskClassifier(settings: ReviewerSettings): RiskClassifier
           `(Permission policy P3 atomic cutover — no silent fallback to rule-based.)`,
         );
       }
+      const model = settings.model?.trim();
+      if (!model) throw new Error("Permission reviewer model not configured.");
       const fb = settings.fallbackOnError ?? "deny";
       if (fb !== "deny" && fb !== "rule") {
         throw new Error(
@@ -2640,7 +2679,7 @@ export function createRiskClassifier(settings: ReviewerSettings): RiskClassifier
       }
       return new LlmRiskClassifier(
         settings.provider,
-        settings.model ?? "gpt-4o-mini",
+        model,
         fb,
         settings.telemetry,
       );

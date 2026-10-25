@@ -153,7 +153,7 @@ describe("PluginRuntime config overrides", () => {
       },
     });
     // No override for schema-default-plugin — handler must see the
-    // schema-declared default, not undefined. Reproduces the agent-hub
+    // schema-declared default, not undefined. Reproduces the samplehub
     // 404 regression where `${cfg.hubServerUrl}${path}` produced
     // `undefined/api/v1/me` because configSchema defaults weren't
     // applied at sandbox-context build time.

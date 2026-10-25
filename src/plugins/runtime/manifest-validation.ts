@@ -20,9 +20,7 @@ import {
   AVE_EXTENSION_NAMESPACE,
   MAX_PLUGIN_ONBOARDING_HIGHLIGHTS,
   flattenAgentPluginsManifest,
-  RENAMED_EXTENSION_NAMESPACE,
   foreignManifestTopLevelFields,
-  renamedExtensionNamespaceProblem,
 } from "../public-contract.js";
 import { parseSettingsPath } from "../../shared/settings-tabs.js";
 import type {
@@ -793,14 +791,6 @@ export async function parsePluginJson(
 
   if (!validator) {
     throw new Error("Host plugin manifest validator is required");
-  }
-
-  const renamed = renamedExtensionNamespaceProblem(doc);
-  if (renamed) {
-    throw new Error(
-      `Invalid plugin manifest '${pid}' at 'extensions["${RENAMED_EXTENSION_NAMESPACE}"]' (${path}): ${renamed}. ` +
-        `Example: "extensions": { "${AVE_EXTENSION_NAMESPACE}": { ... } }`,
-    );
   }
 
   // Agent Plugins 1.0.0 is explicit that a client reports and ignores unknown

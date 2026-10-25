@@ -89,6 +89,12 @@ function main() {
     if (el) el.style.height = `${height}px`;
   });
 
+  dock.onRetitle(({ panelId, title }) => {
+    const el = document.getElementById(slotElementId(panelId))?.querySelector(".slot-title");
+    // TEXT, as at mount: a title is a label, not markup.
+    if (el && typeof title === "string") el.textContent = title;
+  });
+
   dock.onUnmount(({ panelId }) => {
     document.getElementById(slotElementId(panelId))?.remove();
   });

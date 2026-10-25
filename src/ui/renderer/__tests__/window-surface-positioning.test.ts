@@ -22,7 +22,7 @@
  */
 import { describe, it, expect } from "vitest";
 import { readdirSync, readFileSync } from "node:fs";
-import { join, relative, resolve } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const RENDERER_DIR = resolve(fileURLToPath(import.meta.url), "../..");
@@ -43,6 +43,8 @@ const FIXED_POSITIONING_ALLOWED: Record<string, string> = {
     "developer chrome behind AVE_DEV that inspects the window; not a product surface",
   "components/DevComponentLabels.tsx":
     "developer overlay behind AVE_DEV that measures the window; it never participates in layout",
+  "components/WebSurfaceLayer.tsx":
+    "the window-level web-surface layer: each browser tab's <webview> is mounted once for the window (re-parenting it would reload the page), so its frame is placed in viewport coordinates over the slot in whichever pane or side panel shows it, clipped to that slot",
 };
 
 /** Files that may step off the z ladder with an arbitrary value, and why. */
@@ -72,7 +74,7 @@ function offenders(pattern: RegExp[]): string[] {
   for (const file of listSourceFiles(RENDERER_DIR)) {
     const source = readFileSync(file, "utf8");
     for (const line of source.split("\n")) {
-      if (pattern.some((re) => re.test(line))) hits.add(relative(RENDERER_DIR, file));
+      if (pattern.some((re) => re.test(line))) hits.add(relative(RENDERER_DIR, file).split(sep).join("/"));
     }
   }
   return [...hits].sort();

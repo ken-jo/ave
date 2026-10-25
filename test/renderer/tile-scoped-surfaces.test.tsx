@@ -8,8 +8,8 @@
  * subscribed per tile or once, and which tile gets to show it.
  */
 import "./setup.js";
-import { describe, it, expect, vi } from "vitest";
-import { act, createEvent, fireEvent, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
+import { act, cleanup, createEvent, fireEvent, waitFor } from "@testing-library/react";
 import { renderApp, startInChatMode } from "./render-app.js";
 import {
   approvalRequest,
@@ -33,6 +33,24 @@ import { CHAT_SESSION_DRAG_TYPE } from "../../src/ui/renderer/components/pane-dr
 import type { AveApi } from "../../src/ui/renderer/types.js";
 import { A2ATaskState } from "../../src/shared/a2a.js";
 import { SUGGESTIONS_SESSION_ID } from "../../src/shared/suggestions-session.js";
+
+// Surface ownership needs committed DOM, while guest placement repeatedly
+// measures layout over animation frames. Advance frames where focus is proved.
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["requestAnimationFrame", "cancelAnimationFrame"] });
+});
+
+afterEach(() => {
+  try {
+    cleanup();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+async function advanceAnimationFrame(): Promise<void> {
+  await act(async () => { vi.advanceTimersToNextFrame(); });
+}
 
 /** The permission namespace's subscriptions, as the mock records them. */
 function permissionSubscription(api: MockAveApi, name: string): ReturnType<typeof vi.fn> {
@@ -879,6 +897,7 @@ describe("a turn parked on an approval, with two tiles", () => {
       await act(async () => {
         input.focus();
       });
+      await advanceAnimationFrame();
       expect(document.activeElement).toBe(input);
     }
   });
@@ -1023,7 +1042,7 @@ describe("a turn parked on an approval, with two tiles", () => {
     }
   });
 
-  it.each(["question", "approval", "child", "closed-child"] as const)("transfers a retained side session's %s ownership on sequential sends and back", async (surface) => {
+  it.each(["question", "approval", "child", "closed-child", "combined", "closed-combined"] as const)("transfers a retained side session's %s ownership on sequential sends and back", async (surface) => {
     const { container, api, emitAskUserQuestion, emitApproval, emitApprovalSettled, emitAgentSpawnEvent } = await renderApp({ hasApiKey: true, sideChat: true });
     const [first, second] = await splitIntoTwoTiles(container);
     const side = api.sideChat as unknown as NonNullable<AveApi["sideChat"]>;
@@ -1032,38 +1051,62 @@ describe("a turn parked on an approval, with two tiles", () => {
       streams.add(handler);
       return () => { streams.delete(handler); };
     });
+    const questionTimeouts = new Set<Parameters<NonNullable<typeof api.onAskUserQuestionTimeout>>[0]>();
+    vi.mocked(api.onAskUserQuestionTimeout!).mockImplementation((handler) => {
+      questionTimeouts.add(handler);
+      return () => { questionTimeouts.delete(handler); };
+    });
     const turns = Array.from({ length: 3 }, () => deferred<{ ok: true; result: {} }>());
     for (const turn of turns) vi.mocked(side.send).mockReturnValueOnce(turn.promise);
     for (const tile of [first!, second!]) {
       await act(async () => { fireEvent.click(tile.element.querySelector(testIdSelector(TEST_IDS.panePanelToggle))!); });
       await act(async () => { fireEvent.click(tile.element.querySelector(`[data-testid="${chatSidePanelLauncherTestId("side-chat")}"]`)!); });
     }
-    const children = surface === "child" || surface === "closed-child";
+    const hasCombinedSurfaces = surface === "combined" || surface === "closed-combined";
+    const hasQuestion = surface === "question" || hasCombinedSurfaces;
+    const hasApproval = surface === "approval" || hasCombinedSurfaces;
+    const hasChildren = surface === "child" || surface === "closed-child" || hasCombinedSurfaces;
+    const isClosed = surface === "closed-child" || surface === "closed-combined";
     const showTab = async (tile: NonNullable<typeof first>, kind: "subagent" | "side-chat") => {
       await act(async () => {
         const add = tile.element.querySelector('[data-testid="chat-side-panel-add-tab"]')!;
         fireEvent.pointerDown(add, { button: 0 });
         fireEvent.click(add);
       });
-      await act(async () => {
-        fireEvent.click(document.querySelector(`[data-testid="${chatSidePanelLauncherTestId(`menu-${kind}`)}"]`)!);
+      const item = await waitFor(() => {
+        const menu = document.querySelector('[role="menu"][data-state="open"]');
+        const target = menu?.querySelector(`[data-testid="${chatSidePanelLauncherTestId(`menu-${kind}`)}"]`) ?? null;
+        expect(target).not.toBeNull();
+        return target!;
       });
+      await act(async () => { fireEvent.click(item); });
+      await waitFor(() => expect(tile.element.querySelector(`[data-testid="chat-side-panel-tab-${kind}"][aria-selected="true"]`))
+        .not.toBeNull());
     };
     const childTitles = (tile: NonNullable<typeof first>) => Array.from(tile.element.querySelectorAll('[data-testid="chat-side-panel-subagent-row"]'), (row) => row.textContent);
     const finish = async (number: number) => {
+      const refreshes = vi.mocked(api.chatSessions).mock.calls.length;
       await act(async () => {
-        emitApprovalSettled(`approval-transfer-${number}`);
-        for (const [handler] of vi.mocked(api.onAskUserQuestionTimeout!).mock.calls) handler({ requestId: `ask-transfer-${number}` });
+        if (hasApproval) emitApprovalSettled(`approval-transfer-${number}`);
+        if (hasQuestion) for (const handler of questionTimeouts) handler({ requestId: `ask-transfer-${number}` });
+      });
+      await waitFor(() => {
+        expect(container.querySelectorAll('[data-testid="question-overlay"]')).toHaveLength(0);
+        expect(container.querySelectorAll('[data-testid="approval-dock"]')).toHaveLength(0);
+      });
+      await act(async () => {
         for (const stream of streams) stream({ type: "done", streamId: number });
         turns[number - 1]!.resolve({ ok: true, result: {} });
         await turns[number - 1]!.promise;
       });
+      await waitFor(() => expect(api.chatSessions).toHaveBeenCalledTimes(refreshes + 1));
+      await act(async () => { await vi.mocked(api.chatSessions).mock.results[refreshes]!.value; });
     };
     try {
       for (const number of [1, 2, 3]) {
         const senderIndex = number === 2 ? 1 : 0;
-        if (number === 3 && children) {
-          if (surface === "closed-child") await showTab(first!, "side-chat");
+        if (number === 3 && hasChildren) {
+          if (isClosed) await showTab(first!, "side-chat");
           else await act(async () => { fireEvent.click(first!.element.querySelector('[data-testid="chat-side-panel-tab-side-chat"]')!); });
         }
         const tiles = [first!, second!];
@@ -1076,17 +1119,24 @@ describe("a turn parked on an approval, with two tiles", () => {
         expect(side.send).toHaveBeenCalledTimes(number);
         await act(async () => {
           for (const stream of streams) stream({ type: "user_message", sessionId: MOCK_SIDE_CHAT_SESSION_ID, streamId: number, sendRequestId: vi.mocked(side.send).mock.calls[number - 1]![3] });
-          emitAskUserQuestion({ id: `ask-transfer-${number}`, sessionId: MOCK_SIDE_CHAT_SESSION_ID, createdAt: Date.now(), questions: [{ question: `Question for turn ${number}`, choices: ["Continue", "Stop"] }] });
-          emitApproval(approvalRequest({ id: `approval-transfer-${number}`, sessionId: MOCK_SIDE_CHAT_SESSION_ID }));
-          emitAgentSpawnEvent({ type: "start", spawnId: `child-transfer-${number}`, parentSessionId: MOCK_SIDE_CHAT_SESSION_ID, taskState: A2ATaskState.SUBMITTED, title: `Child from turn ${number}` });
-          emitAgentSpawnEvent({ type: "done", spawnId: `child-transfer-${number}`, parentSessionId: MOCK_SIDE_CHAT_SESSION_ID, taskState: A2ATaskState.COMPLETED, title: `Child from turn ${number}`, entries: [], toolCallCount: 0 });
+          if (hasQuestion) {
+            emitAskUserQuestion({ id: `ask-transfer-${number}`, sessionId: MOCK_SIDE_CHAT_SESSION_ID, createdAt: Date.now(), questions: [{ question: `Question for turn ${number}`, choices: ["Continue", "Stop"] }] });
+          }
+          if (hasApproval) {
+            emitApproval(approvalRequest({ id: `approval-transfer-${number}`, sessionId: MOCK_SIDE_CHAT_SESSION_ID }));
+          }
+          if (hasChildren) {
+            emitAgentSpawnEvent({ type: "start", spawnId: `child-transfer-${number}`, parentSessionId: MOCK_SIDE_CHAT_SESSION_ID, taskState: A2ATaskState.SUBMITTED, title: `Child from turn ${number}` });
+            emitAgentSpawnEvent({ type: "done", spawnId: `child-transfer-${number}`, parentSessionId: MOCK_SIDE_CHAT_SESSION_ID, taskState: A2ATaskState.COMPLETED, title: `Child from turn ${number}`, entries: [], toolCallCount: 0 });
+          }
         });
-        if (!children) {
-          const selector = `[data-testid="${surface === "question" ? "question-overlay" : "approval-dock"}"]`;
+        for (const testId of [...(hasQuestion ? ["question-overlay"] : []), ...(hasApproval ? ["approval-dock"] : [])]) {
+          const selector = `[data-testid="${testId}"]`;
           await waitFor(() => expect(sender.querySelectorAll(selector)).toHaveLength(1));
-          expect(peer!.querySelectorAll(selector)).toHaveLength(0);
+          expect(peer?.querySelectorAll(selector) ?? []).toHaveLength(0);
           expect(container.querySelectorAll(selector)).toHaveLength(1);
-        } else if (number >= 2) {
+        }
+        if (hasChildren && number >= 2) {
           await finish(number);
           await showTab(first!, "subagent");
           if (number === 2) await showTab(second!, "subagent");
@@ -1097,11 +1147,12 @@ describe("a turn parked on an approval, with two tiles", () => {
           continue;
         }
         await finish(number);
-        if (number === 1 && surface === "closed-child") {
+        if (number === 1 && isClosed) {
           await showTab(first!, "subagent");
           const tab = first!.element.querySelector('[data-testid="chat-side-panel-tab-side-chat"]')!;
           await act(async () => { fireEvent.click(Array.from(tab.parentElement!.querySelectorAll("button")).at(-1)!); });
           expect(first!.element.querySelector('[data-testid="side-chat-view"]')).toBeNull();
+          expect(childTitles(first!)).toEqual([expect.stringContaining("Child from turn 1")]);
         }
       }
       expect(side.new).not.toHaveBeenCalled();
@@ -1115,6 +1166,8 @@ describe("a turn parked on an approval, with two tiles", () => {
   });
 
   it("draws a side chat's approval over the side composer, and marks the panel toggle and the tab while it is out of sight", async () => {
+    // This case owns its timeout clock for the settled panel-close assertion.
+    vi.useRealTimers();
     const { container, api, emitApproval } = await renderApp({ hasApiKey: true, sideChat: true });
     const toggle = () => container.querySelector<HTMLButtonElement>(testIdSelector(TEST_IDS.panePanelToggle))!;
     await act(async () => { fireEvent.click(toggle()); });
@@ -1159,12 +1212,14 @@ describe("a turn parked on an approval, with two tiles", () => {
     // The panel closed: the toggle is the way back, and it says so too. Past
     // the close transition as well — the settled-closed panel used to unmount,
     // taking the side chat's claim and its parked question with it.
-    await act(async () => { fireEvent.click(toggle()); });
-    // Longer than the panel's close transition (ChatView's
-    // SIDE_PANEL_LAYOUT_TRANSITION_MS), after which the panel settles closed.
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 400));
-    });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      await act(async () => { fireEvent.click(toggle()); });
+      // Advance beyond the panel's close transition before checking its settled state.
+      await act(async () => { await vi.advanceTimersByTimeAsync(400); });
+    } finally {
+      vi.useRealTimers();
+    }
     expect(container.querySelector('[data-testid="side-chat-view"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="chat-side-panel-motion"]')).toHaveStyle({ display: "none" });
     await waitFor(() => {
@@ -1292,6 +1347,7 @@ describe("cards raised by one of three tiles", () => {
       await act(async () => {
         input.focus();
       });
+      await advanceAnimationFrame();
       expect(document.activeElement).toBe(input);
       fireEvent.change(input, { target: { value: "옆 타일은 계속 입력" } });
       expect(input.value).toBe("옆 타일은 계속 입력");
@@ -1307,6 +1363,7 @@ describe("cards raised by one of three tiles", () => {
     await act(async () => {
       textarea(first!)!.focus();
     });
+    await advanceAnimationFrame();
     expect(document.activeElement).toBe(textarea(first!));
 
     await act(async () => {
@@ -1319,6 +1376,7 @@ describe("cards raised by one of three tiles", () => {
     expect(dock(container)).toHaveLength(1);
 
     // No focus steal: the caret stays where the user was typing.
+    await advanceAnimationFrame();
     expect(document.activeElement).toBe(textarea(first!));
     // The card's nearest tile ancestor is the tile that asked.
     expect(tileCell(dock(container)[0]!)).toBe(middle!.element);
@@ -1353,6 +1411,7 @@ describe("cards raised by one of three tiles", () => {
     await act(async () => {
       textarea(first!)!.focus();
     });
+    await advanceAnimationFrame();
     expect(document.activeElement).toBe(textarea(first!));
 
     await act(async () => {
@@ -1371,9 +1430,7 @@ describe("cards raised by one of three tiles", () => {
     expect(container.querySelectorAll('[data-testid="question-overlay"]')).toHaveLength(1);
     // The card seats its first answer a frame after mounting; let that frame
     // pass, then the caret must still be where the user was typing.
-    await act(async () => {
-      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-    });
+    await advanceAnimationFrame();
     expect(document.activeElement).toBe(textarea(first!));
     await expectUntouched(first!, third!);
 
@@ -1415,6 +1472,7 @@ describe("cards raised by one of three tiles", () => {
     expect(band(first!)).toBeNull();
     expect(band(third!)).toBeNull();
 
+    await advanceAnimationFrame();
     expect(document.activeElement).toBe(textarea(first!));
     expect(composer(middle!)).toHaveAttribute("inert");
     await expectUntouched(first!, third!);

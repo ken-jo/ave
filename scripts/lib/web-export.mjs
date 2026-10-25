@@ -25,7 +25,7 @@ export function finishNotFound(outDir) {
   for (const prefix of LOCALES) {
     const dir = join(outDir, prefix, NOT_FOUND_ROUTE);
     const page = join(dir, "index.html");
-    if (!existsSync(page)) throw new Error(`the export has no ${relative(outDir, page)}`);
+    if (!existsSync(page)) throw new Error(`the export has no ${relative(outDir, page).split(sep).join("/")}`);
     renameSync(page, join(outDir, prefix, "404.html"));
     rmSync(dir, { recursive: true, force: true });
     rmSync(join(outDir, prefix, `${NOT_FOUND_ROUTE}.txt`), { force: true });

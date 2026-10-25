@@ -20,32 +20,33 @@ const PREFIX_BOUNDARY_UUID = "20000004-ab12-4abc-8def-abcdefabcdef";
 const BOUNDARY_PREFIX = "sub-10000000";
 
 describe("createDlpSafeUuid", () => {
-  it("creates unique UUID values whose complete bare and prefixed forms pass DLP", () => {
+  it("creates unique UUID values admitted as complete bare and host prefixed identifiers", () => {
     const bare = Array.from({ length: 64 }, () => createDlpSafeUuid());
     const prefixed = Array.from({ length: 64 }, () => createDlpSafeUuid("sub-abcd1234"));
 
     expect(new Set([...bare, ...prefixed]).size).toBe(128);
     for (const id of bare) {
       expect(id).toMatch(UUID_PATTERN);
-      expect(maskSensitiveData(id).detections).toEqual([]);
+      expect(isSafeStructuralId(id)).toBe(true);
     }
     for (const id of prefixed) {
       expect(id).toMatch(/^sub-abcd1234-/);
       expect(id.slice("sub-abcd1234-".length)).toMatch(UUID_PATTERN);
-      expect(maskSensitiveData(id).detections).toEqual([]);
+      expect(isSafeStructuralId(id)).toBe(true);
     }
   });
 
-  it("retries a credit-card-shaped UUID instead of returning a masked identifier", () => {
+  it.each([UNSAFE_UUID, "aaaaaaaa-aaaa-4aaa-8aaa-010123456789"])("admits a content-pattern UUID without redrawing a structural identifier: %s", (uuid) => {
     const makeUuid = vi.fn()
-      .mockReturnValueOnce(UNSAFE_UUID)
+      .mockReturnValueOnce(uuid)
       .mockReturnValueOnce(SAFE_UUID);
 
-    expect(createDlpSafeUuid("", makeUuid)).toBe(SAFE_UUID);
-    expect(makeUuid).toHaveBeenCalledTimes(2);
+    expect(maskSensitiveData(uuid).detections.length).toBeGreaterThan(0);
+    expect(createDlpSafeUuid("", makeUuid)).toBe(uuid);
+    expect(makeUuid).toHaveBeenCalledTimes(1);
   });
 
-  it("retries when only the final prefix boundary creates a DLP match", () => {
+  it("admits a complete host UUID even when its prefix boundary resembles content", () => {
     expect(maskSensitiveData(PREFIX_BOUNDARY_UUID).detections).toEqual([]);
     expect(maskSensitiveData(BOUNDARY_PREFIX).detections).toEqual([]);
     expect(maskSensitiveData(`${BOUNDARY_PREFIX}-${PREFIX_BOUNDARY_UUID}`).detections)
@@ -55,12 +56,23 @@ describe("createDlpSafeUuid", () => {
       .mockReturnValueOnce(SAFE_UUID);
 
     expect(createDlpSafeUuid(BOUNDARY_PREFIX, makeUuid))
-      .toBe(`${BOUNDARY_PREFIX}-${SAFE_UUID}`);
+      .toBe(`${BOUNDARY_PREFIX}-${PREFIX_BOUNDARY_UUID}`);
+    expect(makeUuid).toHaveBeenCalledTimes(1);
+  });
+
+  it("still scans the full boundary of an arbitrary prefix", () => {
+    const prefix = "custom-10000000";
+    expect(maskSensitiveData(`${prefix}-${PREFIX_BOUNDARY_UUID}`).detections.length)
+      .toBeGreaterThan(0);
+    const makeUuid = vi.fn()
+      .mockReturnValueOnce(PREFIX_BOUNDARY_UUID)
+      .mockReturnValueOnce(SAFE_UUID);
+    expect(createDlpSafeUuid(prefix, makeUuid)).toBe(`${prefix}-${SAFE_UUID}`);
     expect(makeUuid).toHaveBeenCalledTimes(2);
   });
 
   it("fails closed after the bounded retry ceiling", () => {
-    const makeUuid = vi.fn(() => UNSAFE_UUID);
+    const makeUuid = vi.fn(() => "not-a-uuid");
     expect(() => createDlpSafeUuid("", makeUuid))
       .toThrow("[dlp-safe-uuid-exhausted]");
     expect(makeUuid).toHaveBeenCalledTimes(8);
@@ -162,9 +174,13 @@ describe("isSafeStructuralId", () => {
     expect(isSafeStructuralId("abc\u2029def")).toBe(false);
   });
 
-  it("rejects an id the DLP scanner would mask", () => {
+  it("admits complete UUIDs while retaining content DLP for arbitrary identifiers", () => {
     expect(maskSensitiveData(UNSAFE_UUID).detections.length).toBeGreaterThan(0);
-    expect(isSafeStructuralId(UNSAFE_UUID)).toBe(false);
+    expect(isSafeStructuralId(UNSAFE_UUID)).toBe(true);
+    expect(isSafeStructuralId(`sub-abcdefab-${UNSAFE_UUID}`)).toBe(true);
+    expect(isSafeStructuralId("010-1234-5678")).toBe(false);
+    expect(isSafeStructuralId(`custom-${UNSAFE_UUID}`)).toBe(false);
+    expect(isSafeStructuralId(`${UNSAFE_UUID}-suffix`)).toBe(false);
   });
 });
 

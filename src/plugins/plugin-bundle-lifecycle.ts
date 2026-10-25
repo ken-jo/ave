@@ -9,7 +9,7 @@ import type { SkillOverlay } from "../main/skill-overlay.js";
 import type { PersonaPromptStore } from "../main/persona-prompt-store.js";
 import { parseAgentPluginRoutineTemplates } from "../marketplace/content/agent-plugin-components.js";
 import type { AgentPluginRoutineTemplate } from "../shared/agent-plugin-routine-template.js";
-import type { McpManager, PreparedBundledMcpGeneration } from "../mcp/mcp-manager.js";
+import type { BundledCredentialSource, McpManager, PreparedBundledMcpGeneration } from "../mcp/mcp-manager.js";
 import type { PluginLoopbackManager, PreparedPluginLoopbackGeneration } from "../mcp/plugin-loopback-manager.js";
 import { PluginMcpTrustStore, preparePluginMcpGeneration, type PreparedPluginMcpProjection } from "../mcp/plugin-mcp-projection.js";
 import { pluginArtifactGenerationId } from "./plugin-artifact-identity.js";
@@ -490,39 +490,81 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
       const wasApproved = this.mcpTrust.isApproved(projection);
       if (approve) this.mcpTrust.approve(projection);
       else this.mcpTrust.revoke(projection);
-      let prepared: PreparedBundledMcpGeneration | undefined;
-      try {
-        const candidate = await this.deps.mcpManager.prepareBundledGeneration(
-          { pluginId, generationId: generation.generationId },
-          generation.state.mcpServers,
-          this.mcpTrust,
-        );
-        prepared = candidate;
-        await this.coordinator.quiesce(
-          pluginId,
-          generation.generationId,
-          async () => undefined,
-          () => this.deps.mcpManager.publishBundledGeneration(candidate),
-        );
-      } catch (error) {
-        if (prepared?.published) {
-          this.recordPostCommitFault(
-            pluginId,
-            generation.generationId,
-            "mcp-publication",
-            error,
-          );
-          this.trackPublishedMcpRetirement(pluginId, generation.generationId, prepared);
-          return;
-        }
+      await this.republishMcpLocked(pluginId, generation, () => {
         if (wasApproved) this.mcpTrust.approve(projection);
         else this.mcpTrust.revoke(projection);
-        if (prepared) await this.deps.mcpManager.discardBundledGeneration(prepared);
-        throw error;
-      }
-      if (!prepared) throw new Error("bundled MCP preparation completed without a candidate");
-      this.trackPublishedMcpRetirement(pluginId, generation.generationId, prepared);
+      });
     });
+  }
+
+  /**
+   * Prepare and publish the active generation's MCP servers again, under the
+   * plugin's serialization. `rollback` undoes the caller's change when
+   * preparation fails before anything is published.
+   */
+  private async republishMcpLocked(
+    pluginId: string,
+    generation: ActivePluginGeneration<HostPluginGenerationState>,
+    rollback?: () => void,
+  ): Promise<void> {
+    let prepared: PreparedBundledMcpGeneration | undefined;
+    try {
+      const candidate = await this.deps.mcpManager.prepareBundledGeneration(
+        { pluginId, generationId: generation.generationId },
+        generation.state.mcpServers,
+        this.mcpTrust,
+      );
+      prepared = candidate;
+      await this.coordinator.quiesce(
+        pluginId,
+        generation.generationId,
+        async () => undefined,
+        () => this.deps.mcpManager.publishBundledGeneration(candidate),
+      );
+    } catch (error) {
+      if (prepared?.published) {
+        this.recordPostCommitFault(
+          pluginId,
+          generation.generationId,
+          "mcp-publication",
+          error,
+        );
+        this.trackPublishedMcpRetirement(pluginId, generation.generationId, prepared);
+        return;
+      }
+      rollback?.();
+      if (prepared) await this.deps.mcpManager.discardBundledGeneration(prepared);
+      throw error;
+    }
+    if (!prepared) throw new Error("bundled MCP preparation completed without a candidate");
+    this.trackPublishedMcpRetirement(pluginId, generation.generationId, prepared);
+  }
+
+  /**
+   * The bundled-credential source for app-plugin MCP servers: the OAuth
+   * servers of active generations, reconnected by preparing the generation's
+   * MCP servers again (as a trust change does) once the user authenticated.
+   * `installedPluginIds` answers every installed plugin, enabled or not, or
+   * undefined when the install record cannot vouch for that.
+   */
+  bundledMcpCredentialSource(installedPluginIds: () => Promise<ReadonlySet<string> | undefined>): BundledCredentialSource {
+    return {
+      list: () => [...this.coordinator.listActive()].flatMap((generation) =>
+        generation.state.mcpServers.flatMap((projection) => {
+          const config = projection.config;
+          if (config.transport !== "http" || config.auth !== "oauth") return [];
+          return [{ packageName: generation.pluginId, serverName: projection.owner.localId, transport: "http" as const,
+            url: config.url, auth: "oauth" as const, ...(config.oauth ? { oauth: config.oauth } : {}) }];
+        })),
+      reconnect: (packageName, serverName) => this.serialize(packageName, async () => {
+        const generation = this.requireActive(packageName);
+        if (!generation.state.mcpServers.some((projection) => projection.owner.localId === serverName)) {
+          throw new Error(`plugin MCP '${packageName}:${serverName}' is not active`);
+        }
+        await this.republishMcpLocked(packageName, generation);
+      }),
+      installedPackages: installedPluginIds,
+    };
   }
 
   /**

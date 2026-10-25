@@ -99,7 +99,7 @@ type SourceWarning = "unencrypted" | "token-unencrypted" | "internal-network" | 
   come from the system policy file (§12). Neither is stored in `sources.json`;
   both keep their state in `state.json`.
 - The official repository is `https://github.com/ken-jo/agent-marketplace`
-  (decided 2026-09-23, renamed from `ave-marketplace-index` on 2026-09-24
+  (decided 2026-09-23, renamed from its earlier index-only name on 2026-09-24
   when it became the monorepo that also holds the official plugins' source,
   §3.1). It must be publicly readable: the constant carries
   `auth: { kind: "none" }`: a fresh profile with no stored token syncs the
@@ -655,7 +655,7 @@ A code plugin compiles against two ave files:
 - `schemas/plugin-manifest.schema.json`.
 
 Neither file imports anything. There is no separate SDK package. The
-`ave-plugin-sdk` repository mirrored these two files under a version number
+archived plugin SDK repository mirrored these two files under a version number
 of its own. Mapping an SDK tag to the app releases that implement it was a
 second numbering of the same contract, and nothing checked it. The repository
 is retired with the server, after the first public release.
@@ -3429,7 +3429,7 @@ blocks may not.
   and certificate checks (`servername`, `:131`). Its trust store is
   `tls.getCACertificates("default")` plus `tls.getCACertificates("system")`,
   so a company root installed in the OS store keeps working (§9.2). Electron
-  44 ships Node 24.20.0, which has both. Each redirect hop is a new
+  44.9.3 ships Node 24.22.0, which has both. Each redirect hop is a new
   connection with its own lookup and checks.
 - **Proxies on the transports Ave owns are trusted beyond their socket.**
   When PAC routes a download or a git http(s) connection through an http(s)

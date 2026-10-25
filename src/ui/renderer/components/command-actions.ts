@@ -3,6 +3,7 @@ import { getPluginViewLabel, toViewKey } from "../api-client.js";
 import { t } from "../../../i18n/runtime.js";
 import type { WorkspaceTabKind } from "../preview/workspace-tabs.js";
 import type { PluginUiExtension } from "../types.js";
+import type { InstanceViewKey } from "../../../shared/view-key.js";
 
 export interface QuickAction {
   id: string;
@@ -131,12 +132,18 @@ export function buildQuickActions({
   setActiveView,
   openSettings,
   handleNewChat,
+  openNewSurface,
   pluginViews,
+  locale,
 }: {
   setActiveView: (key: string) => void;
   openSettings: () => void;
   handleNewChat: () => void | Promise<void>;
+  /** Open a NEW terminal or web page in the focused pane. */
+  openNewSurface: (view: InstanceViewKey) => void;
   pluginViews: PluginUiExtension[];
+  /** The UI language plugin labels resolve against. */
+  locale: string;
 }): QuickAction[] {
   return [
     { id: "home",       label: t("commandActions.goHome"),        run: () => setActiveView("home") },
@@ -144,9 +151,11 @@ export function buildQuickActions({
     { id: "routines",   label: t("commandActions.viewRoutines"),  run: () => setActiveView("routines") },
     { id: "settings",  label: t("commandActions.openSettings"), run: openSettings },
     { id: "new-chat",  label: t("commandActions.newChat"),      run: handleNewChat },
+    { id: "new-terminal-panel", label: t("mainPanels.newTerminalPanel"), run: () => openNewSurface("terminal") },
+    { id: "new-web-panel",      label: t("mainPanels.newWebPanel"),      run: () => openNewSurface("web") },
     ...pluginViews.map((i) => {
       const viewKey = toViewKey(i);
-      const pluginLabel = getPluginViewLabel(i);
+      const pluginLabel = getPluginViewLabel(i, locale);
       return {
         id: `v:${viewKey}`,
         label: t("commandActions.openPlugin", { pluginLabel }),

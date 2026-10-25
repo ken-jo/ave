@@ -7,7 +7,6 @@ import type { LLMProvider, StreamEvent, StreamTurnParams,
 } from "../llm/types.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
-import { LLM_VENDOR_DEFAULTS } from "../../shared/llm-vendor-defaults.js";
 import { MAX_BACKGROUND_OUTPUT_TOKEN_LIMIT } from "../llm/output-token-limit.js";
 import { estimateTokens } from "../../shared/token-estimate.js";
 
@@ -69,7 +68,7 @@ function buildLoop(
   const toolRegistry = new ToolRegistry();
   const inputClassifier = new InputClassifier();
   const routeEngine = new RouteEngine();
-  const llm = { ...fakeLlmSettings(), activeChatRuntime };
+  const llm = { ...fakeLlmSettings({ model: "gpt-5.4-mini" }), activeChatRuntime };
   const loop = new ConversationLoop({
     settingsService: {
       get: () => llm,
@@ -248,7 +247,7 @@ describe("ConversationLoop.pingProvider", () => {
       configured: false,
       online: false,
       vendor: "openai",
-      model: LLM_VENDOR_DEFAULTS.openai.model,
+      model: "gpt-5.4-mini",
       error: "not-configured",
     });
   });
@@ -264,7 +263,7 @@ describe("ConversationLoop.pingProvider", () => {
       configured: true,
       online: true,
       vendor: "openai",
-      model: LLM_VENDOR_DEFAULTS.openai.model,
+      model: "gpt-5.4-mini",
     });
     expect(result.latencyMs).toBeGreaterThanOrEqual(0);
     expect(provider.lastParams?.messages).toEqual([{ role: "user", content: "ping" },
@@ -280,7 +279,7 @@ describe("ConversationLoop.pingProvider", () => {
       configured: true,
       online: false,
       vendor: "openai",
-      model: LLM_VENDOR_DEFAULTS.openai.model,
+      model: "gpt-5.4-mini",
       error: "rate_limit",
     });
   });

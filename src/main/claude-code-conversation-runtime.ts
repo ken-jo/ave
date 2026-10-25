@@ -6,11 +6,12 @@ import { join } from "node:path";
 import { TextDecoder } from "node:util";
 import type { StreamEvent, ToolSchema } from "../engine/llm/types.js";
 import { JsonLineReader } from "../lib/json-line-reader.js";
+import { isRecord } from "../shared/is-record.js";
 import { CLAUDE_CODE_SUBSCRIPTION_PROVIDER_ID } from "../shared/claude-code-subscription.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import {
   ClaudeCodeSubscriptionError,
-  resolveClaudeCodeSubscriptionExecutable,
+  claudeCodeLocationError,
   sanitizedClaudeCodeEnvironment,
   validateClaudeCodeRuntimeDirectories,
 } from "./claude-code-subscription-client.js";
@@ -24,20 +25,25 @@ import {
 import { forceKillManagedChildProcess, spawnManaged } from "./managed-child-processes.js";
 import { writeFileAtomicAtPath } from "./storage/feature-namespace.js";
 import { SubscriptionAttachmentTransportError } from "./subscription-attachment-input.js";
+import { CodexExecutableLocationError } from "./codex-executable-location.js";
 import type { SubscriptionToolBridge } from "./subscription-tool-bridge.js";
+
+import type { ClaudeCodeExecutable } from "./claude-code-executable.js";
 
 const MAX_QUEUED_EVENTS = 256;
 const HOST_TOOL_ACCEPTED = "Ave accepted the host tool request and will provide its result in the next model round.";
+const ARGUMENT_ERROR_MARKERS = ["error: unknown option ", "error: unknown argument ", "error: too many arguments"] as const;
 
 export interface ClaudeCodeConversationRuntimeOptions {
-  readonly executablePath: string;
+  readonly resolveRuntime: () => Promise<ClaudeCodeExecutable>;
   readonly runtimeHome: string;
   readonly workspaceDir: string;
   readonly runtimeTempDir: string;
   readonly bridge: SubscriptionToolBridge;
+  /** A model the service validated against `listModels`; absent: the CLI's default. */
+  readonly model?: string;
   readonly spawn?: (command: string, args: readonly string[], options: SpawnOptions) => ChildProcess;
   readonly platform?: NodeJS.Platform;
-  readonly resolveExecutable?: (candidate: string) => Promise<string>;
 }
 
 function operationFailed(): ClaudeCodeSubscriptionError {
@@ -56,6 +62,7 @@ export class ClaudeCodeConversationRuntime {
   private activeCancel: (() => void) | null = null;
   private running = false;
   private stopped = false;
+  private termination: void | Promise<void> = undefined;
 
   constructor(private readonly options: ClaudeCodeConversationRuntimeOptions) {
     this.spawn = options.spawn ?? ((command, args, spawnOptions) =>
@@ -71,18 +78,24 @@ export class ClaudeCodeConversationRuntime {
     const { bridge, runtimeHome, workspaceDir, runtimeTempDir } = this.options;
     let configPath: string | null = null;
     let child: ChildProcess | null = null;
+    let termination: void | Promise<void>;
     let timer: NodeJS.Timeout | undefined;
     let boundaryTask: NodeJS.Immediate | undefined;
     let ended = false;
     let toolBoundary = false;
     let failure: Error | null = null;
+    let routeKind: ClaudeCodeExecutable["routeKind"];
     let wake: (() => void) | null = null;
     const queue: StreamEvent[] = [];
     const notify = () => { const next = wake; wake = null; next?.(); };
     const kill = () => {
       const active = child;
       child = null;
-      if (active) forceKillManagedChildProcess(active, "claude-code-turn-cancel");
+      if (active) {
+        termination = forceKillManagedChildProcess(active, "claude-code-turn-cancel");
+        this.termination = termination;
+      }
+      return termination;
     };
     const fail = (error: Error) => {
       if (failure || ended) return;
@@ -112,12 +125,9 @@ export class ClaudeCodeConversationRuntime {
     };
 
     try {
-      await validateClaudeCodeRuntimeDirectories([runtimeHome, workspaceDir, runtimeTempDir]);
-      const executable = await (this.options.resolveExecutable
-        ?? ((path) => resolveClaudeCodeSubscriptionExecutable(path, this.options.platform)))(this.options.executablePath);
-      if (executable !== this.options.executablePath) {
-        throw new ClaudeCodeSubscriptionError("claude-code-runtime-invalid-executable");
-      }
+      const runtime = await this.options.resolveRuntime();
+      routeKind = runtime.routeKind;
+      await validateClaudeCodeRuntimeDirectories([runtimeHome, workspaceDir, runtimeTempDir], runtime.routeKind);
       assertActive();
       const mcpServers = bridge.tools.length ? {
         [CLAUDE_CODE_MCP_SERVER_NAME]: await bridge.startMcpServer().then((mcp) => ({
@@ -145,7 +155,10 @@ export class ClaudeCodeConversationRuntime {
         });
         return HOST_TOOL_ACCEPTED;
       });
-      const spawned = this.spawn(executable, claudeCodePrintArgs(configPath, toolNames), {
+      await validateClaudeCodeRuntimeDirectories([runtimeHome, workspaceDir, runtimeTempDir], runtime.routeKind);
+      await runtime.verify();
+      assertActive();
+      const spawned = this.spawn(runtime.executable, [...runtime.args, ...claudeCodePrintArgs(configPath, toolNames, this.options.model)], {
         cwd: workspaceDir,
         env: sanitizedClaudeCodeEnvironment(runtimeHome, process.env, this.options.platform, runtimeTempDir),
         stdio: ["pipe", "pipe", "pipe"], shell: false, windowsHide: true,
@@ -155,6 +168,8 @@ export class ClaudeCodeConversationRuntime {
       timer = setTimeout(() => fail(operationFailed()), TOOL_TIMEOUT_POLICY.subAgentCeilingFloorMs);
       timer.unref();
       let outputBytes = 0;
+      const argumentErrorOffsets = ARGUMENT_ERROR_MARKERS.map(() => 0);
+      let rejectedArguments = false;
       const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
       const reader = new JsonLineReader({
         maxLineBytes: CLAUDE_CODE_MAX_OUTPUT_BYTES,
@@ -164,7 +179,10 @@ export class ClaudeCodeConversationRuntime {
             for (const value of stream.accept(message)) {
               if (!toolBoundary && value) push({ type: "text_delta", text: value });
             }
-          } catch { fail(operationFailed()); }
+          } catch {
+            fail(isRecord(message) && message.type === "system" && message.subtype === "init" && !stream.initialized
+              ? new ClaudeCodeSubscriptionError("claude-code-runtime-incompatible") : operationFailed());
+          }
         },
         onError: () => fail(operationFailed()),
       });
@@ -185,7 +203,20 @@ export class ClaudeCodeConversationRuntime {
       spawned.stderr?.on("data", (chunk: Buffer | string) => {
         if (failure || ended) return;
         outputBytes += Buffer.byteLength(chunk);
-        if (outputBytes > CLAUDE_CODE_MAX_OUTPUT_BYTES) fail(operationFailed());
+        if (outputBytes > CLAUDE_CODE_MAX_OUTPUT_BYTES) { fail(operationFailed()); return; }
+        // Match fixed parser diagnostics across chunks without retaining stderr.
+        if (!rejectedArguments) {
+          for (const value of typeof chunk === "string" ? Buffer.from(chunk) : chunk) {
+            const byte = value >= 65 && value <= 90 ? value + 32 : value;
+            for (let index = 0; index < ARGUMENT_ERROR_MARKERS.length; index++) {
+              const marker = ARGUMENT_ERROR_MARKERS[index]!;
+              const offset = argumentErrorOffsets[index]!;
+              argumentErrorOffsets[index] = byte === marker.charCodeAt(offset) ? offset + 1 : byte === marker.charCodeAt(0) ? 1 : 0;
+              if (argumentErrorOffsets[index] === marker.length) rejectedArguments = true;
+            }
+            if (rejectedArguments) break;
+          }
+        }
       });
       spawned.once("close", (code, exitSignal) => {
         // Keep the exact handle through finally: a settled root can still
@@ -197,13 +228,17 @@ export class ClaudeCodeConversationRuntime {
           reader.write("\n");
           reader.close();
           if (failure) return;
-          if (code !== 0 || exitSignal) throw operationFailed();
+          if (exitSignal) throw operationFailed();
+          if (code !== 0) {
+            throw !stream.initialized && code !== null && rejectedArguments
+              ? new ClaudeCodeSubscriptionError("claude-code-runtime-incompatible") : operationFailed();
+          }
           if (toolBoundary) return;
           stream.assertComplete();
           push({ type: "message_complete", stopReason: stream.stopReason });
           ended = true;
           notify();
-        } catch { fail(operationFailed()); }
+        } catch (error) { fail(error instanceof ClaudeCodeSubscriptionError ? error : operationFailed()); }
       });
       if (!spawned.stdin || !spawned.stdout || !spawned.stderr) fail(operationFailed());
       assertActive();
@@ -216,6 +251,7 @@ export class ClaudeCodeConversationRuntime {
         await new Promise<void>((resolveNext) => { wake = resolveNext; });
       }
     } catch (error) {
+      if (error instanceof CodexExecutableLocationError) throw claudeCodeLocationError(error, routeKind);
       if (error instanceof ClaudeCodeSubscriptionError || (error instanceof Error && error.name === "AbortError")) throw error;
       throw operationFailed();
     } finally {
@@ -225,18 +261,22 @@ export class ClaudeCodeConversationRuntime {
       signal?.removeEventListener("abort", onAbort);
       clearTimeout(timer);
       if (boundaryTask) clearImmediate(boundaryTask);
-      try { kill(); } finally {
+      try { await kill(); } finally {
         try { if (configPath) await fs.rm(configPath, { force: true }); }
         finally { this.running = false; }
       }
     }
   }
 
-  async cancelActiveTurn(): Promise<void> { this.activeCancel?.(); }
+  async cancelActiveTurn(): Promise<void> {
+    this.activeCancel?.();
+    await this.termination;
+  }
 
   async stop(): Promise<void> {
     this.stopped = true;
     this.activeCancel?.();
+    await this.termination;
     await this.options.bridge.stop();
   }
 }

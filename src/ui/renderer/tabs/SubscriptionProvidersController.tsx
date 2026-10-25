@@ -94,7 +94,13 @@ function projectStatus(
   state: ProviderState,
 ): SubscriptionProviderStatus | undefined {
   const status = state.status;
-  if (!status) return undefined;
+  if (!status) {
+    // Failed actions and reads may have no status payload. Keep their safe
+    // error visible without retaining stale connection or chat capabilities.
+    return state.errorCode
+      ? { runtime: "unavailable", connection: "unknown", errorCode: state.errorCode }
+      : undefined;
+  }
   return {
     runtime: status.runtime,
     connection: status.connection,
@@ -103,6 +109,7 @@ function projectStatus(
     canOpenLoginBrowser: status.canOpenVerificationUrl,
     models: state.models,
     capabilities: status.capabilities,
+    version: status.version,
     errorCode: state.errorCode,
   };
 }
@@ -375,10 +382,14 @@ export function useSubscriptionProviders(api: AveApi) {
       descriptor: {
         id: descriptor.id,
         label: descriptor.label,
+        planName: descriptor.planName,
+        cliName: descriptor.cliName,
         description: "",
         loginMethods: descriptor.loginMethods,
-        supportsRuntimeSelection: descriptor.requiresExecutable,
+        executable: descriptor.executable,
         supportsLogout: descriptor.supportsManagedLogout,
+        ...(descriptor.minimumVersion ? { minimumVersion: descriptor.minimumVersion } : {}),
+        ...(descriptor.installGuidance ? { installGuidance: descriptor.installGuidance } : {}),
       },
       status: projectStatus(states[descriptor.id]),
       busyAction: states[descriptor.id].busyAction,

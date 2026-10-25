@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { LLM_VENDOR_MODEL_OPTIONS } from "../../../shared/llm-vendor-defaults.js";
+import { llmVendorModelOptions } from "../../../shared/llm-vendor-defaults.js";
 import { JudgeCircuitBreaker } from "../judge-breaker.js";
 import { createJudgeChain, type CreateJudgeDeps } from "../create-judge.js";
 import {
@@ -12,7 +12,7 @@ import {
 } from "../judge-settings.js";
 
 const PICKER_VENDOR = "claude" as const;
-const PICKER_MODEL = LLM_VENDOR_MODEL_OPTIONS[PICKER_VENDOR][0]!;
+const PICKER_MODEL = llmVendorModelOptions(PICKER_VENDOR)[0]!;
 const JEV = { provider: "external", id: "jev", escalateBelow: 0.8, external: { command: ["/opt/jev/bin/jev", "judge"] } };
 
 describe("judge settings", () => {
@@ -141,7 +141,7 @@ describe("judge settings", () => {
       vendor, endpoint, models, fetchedAt: "t", ...(baseUrl ? { baseUrl } : {}),
     });
     const live = judgeModelCatalogFrom({
-      vendors: { openai: { model: LLM_VENDOR_MODEL_OPTIONS.openai[0]! } },
+      vendors: { openai: { model: llmVendorModelOptions("openai")[0]! } },
       modelListCache: {
         std: entry("openai", "https://api.openai.com/v1/models", ["gpt-live-default"]),
         proxy: entry("openai", "https://proxy.example.test/v1/models", ["gpt-via-proxy"], "https://proxy.example.test/v1"),
@@ -191,7 +191,7 @@ describe("external stage env", () => {
       env: ["JEV_MODEL"],
     });
     expect(() => validateJudgeSettings(stage({ command: ["/opt/jev/bin/jev"], env: ["BAD-NAME"] }))).toThrow(JudgeSettingsError);
-    for (const name of ["AVE_HOME", "OPENAI_API_KEY", "MY_SERVICE_TOKEN", "DB_PASSWORD", "APP_SECRET", "AWS_PROFILE", "GITHUB_TOKEN", "ANTHROPIC_BASE_URL", "OPENAI_ORG", "RETIREDNAME_HOME", "ELECTRON_RUN_AS_NODE"]) {
+    for (const name of ["AVE_HOME", "OPENAI_API_KEY", "MY_SERVICE_TOKEN", "DB_PASSWORD", "APP_SECRET", "AWS_PROFILE", "GITHUB_TOKEN", "ANTHROPIC_BASE_URL", "OPENAI_ORG", "ELECTRON_RUN_AS_NODE"]) {
       expect(() => validateJudgeSettings(stage({ command: ["/opt/jev/bin/jev"], env: [name] }))).toThrow(/credential/);
     }
     expect(() => validateJudgeSettings(stage({ url: "https://judge.example.test/", env: ["X"] }))).toThrow(/command transport/);

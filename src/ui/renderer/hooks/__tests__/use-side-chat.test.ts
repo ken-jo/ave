@@ -19,7 +19,7 @@ function makeApi() {
   // Typed as the real invoke is — either shape — so a test can hand back the
   // host's refusal without casting past the contract.
   const send = vi.fn(
-    async (_input: string, _attachments?: unknown[], _originSessionId?: string, _sendRequestId?: string): Promise<{ ok: true; result: unknown } | { ok: false; error: string }> => ({
+    async (_input: string, _attachments?: unknown[], _originSessionId?: string, _sendRequestId?: string, _surface?: unknown, _sessionId?: string): Promise<{ ok: true; result: unknown } | { ok: false; error: string }> => ({
       ok: true,
       result: {},
     }),
@@ -1421,5 +1421,37 @@ describe("useSideChat unified-transcript rendering (tool / thinking / permission
       text: "render frame disposed",
       systemNotice: "stream-error",
     });
+  });
+});
+
+describe("useSideChat — the session a view shows", () => {
+  it("names the session it shows on every turn, so main runs the turn there and nowhere else", async () => {
+    const { api, spies, acceptTurn } = makeApi();
+    const { result } = renderHook(() => useSideChat(api));
+    await act(async () => { void result.current.send("first"); });
+    expect(spies.send.mock.calls.at(-1)![5]).toBeUndefined();
+    await acceptTurn(1);
+    await act(async () => { void result.current.send("second"); });
+    expect(spies.send.mock.calls.at(-1)![5]).toBe("side-1");
+  });
+
+  it("restores a stored conversation without asking main to move its loop, and clears to none", async () => {
+    const { api, spies } = makeApi();
+    const onSessionBound = vi.fn();
+    const { result } = renderHook(() => useSideChat(api, { onSessionBound }));
+    act(() => {
+      result.current.restore("pane-session", [{ index: 0, role: "user", content: "what is on this page?" }]);
+    });
+    expect(result.current.sessionId).toBe("pane-session");
+    expect(result.current.entries).toMatchObject([{ kind: "user", text: "what is on this page?" }]);
+    expect(onSessionBound).toHaveBeenCalledWith("pane-session");
+    expect(spies.load).not.toHaveBeenCalled();
+    expect(spies.newSession).not.toHaveBeenCalled();
+
+    act(() => result.current.clear());
+    expect(result.current.sessionId).toBeNull();
+    expect(result.current.entries).toEqual([]);
+    await act(async () => { void result.current.send("afresh"); });
+    expect(spies.send.mock.calls.at(-1)![5]).toBeUndefined();
   });
 });

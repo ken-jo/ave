@@ -14,6 +14,7 @@
  */
 import { stat } from "node:fs/promises";
 import { isMissingPathError } from "../../../lib/atomic-file.js";
+import { fileIdentityKey } from "../../../lib/file-identity.js";
 import { readPluginRegistry } from "../../../plugins/registry.js";
 import type { PluginRegistryTrust } from "../../../plugins/types.js";
 
@@ -47,8 +48,8 @@ export function createRegistryEntryCache(deps: {
   let readStamp: string | null = null;
   const stamp = async (): Promise<string> => {
     try {
-      const info = await stat(registryPath);
-      return `${info.ino}:${info.size}:${info.mtimeMs}`;
+      const info = await stat(registryPath, { bigint: true });
+      return `${fileIdentityKey(info)}:${info.size}:${info.mtimeNs}`;
     } catch (err) {
       if (isMissingPathError(err)) return "missing";
       throw err;
