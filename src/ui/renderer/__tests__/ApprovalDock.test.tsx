@@ -205,7 +205,7 @@ describe("ApprovalDock", () => {
     });
 
     const denyBtn = Array.from(document.body.querySelectorAll("button")).find(
-      (button) => button.textContent === "거절",
+      (button) => button.textContent === "거부",
     );
     expect(denyBtn).toBeTruthy();
     denyBtn!.focus();
@@ -230,7 +230,7 @@ describe("ApprovalDock", () => {
     });
 
     const denyBtn = Array.from(document.body.querySelectorAll("button")).find(
-      (button) => button.textContent === "거절",
+      (button) => button.textContent === "거부",
     );
     expect(denyBtn).toBeTruthy();
     denyBtn!.focus();
@@ -1121,7 +1121,7 @@ describe("ApprovalDock", () => {
     );
 
     expect(document.body.querySelector('[data-testid="approval-decision-locked"]'))
-      .toHaveTextContent("설정에서 이 정확한 거절을 저장하거나 취소");
+      .toHaveTextContent("설정에서 이 정확한 거부를 저장하거나 취소");
     expect(document.body.querySelector<HTMLButtonElement>(testIdSelector(TEST_IDS.denyButton))).toBeDisabled();
     expect(document.body.querySelector<HTMLButtonElement>(testIdSelector(TEST_IDS.allowSessionButton))).toBeDisabled();
     expect(document.body.querySelector<HTMLButtonElement>(testIdSelector(TEST_IDS.approveButton))).toBeDisabled();
@@ -1223,7 +1223,7 @@ describe("ApprovalDock", () => {
     );
     await waitFor(() => expect(document.body.textContent).toContain("read_file"));
     const denyBtn = Array.from(document.body.querySelectorAll("button")).find(
-      (b) => b.textContent === "거절",
+      (b) => b.textContent === "거부",
     );
     expect(denyBtn).toBeTruthy();
     fireEvent.click(denyBtn!);

@@ -122,7 +122,7 @@ describe("ToolApprovalContent terminal_run card", () => {
     expect(remember).toHaveTextContent("이번 세션 동안 허용");
     expect(screen.getByTestId("allow-always-exact-scope")).toHaveTextContent("/workspace/project/app");
     fireEvent.click(remember);
-    await waitFor(() => expect(onDecide).toHaveBeenCalledWith("allow-always", undefined));
+    await waitFor(() => expect(onDecide).toHaveBeenCalledWith("allow-session", undefined));
     expect(record).toHaveBeenCalledWith(expect.objectContaining({ scope: "session" }));
   });
 });

@@ -98,7 +98,7 @@ export function NetworkDecisionRow({
   const disabled = decisionSlotsDisabled(model, state, { locked: locked || recording });
   return (
     <div className="min-w-0 space-y-1">
-      <ApprovalDecisionBar model={model} state={state} disabled={disabled} onCommit={answer} compact={compact} />
+      <ApprovalDecisionBar model={model} state={state} disabled={disabled} onCommit={answer} compact={compact} stackWhenNarrow={compact} />
       {error ? (
         <p className="text-[11px] text-destructive" role="alert" data-testid="egress-approval-save-error">{error}</p>
       ) : null}

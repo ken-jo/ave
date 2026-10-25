@@ -98,7 +98,7 @@ describe("ToolApprovalContent rationale card", () => {
     expect(panel).not.toHaveAttribute("data-approval-tool-name");
     expect(panel).not.toHaveAttribute("data-approval-args");
 
-    expect(screen.getByTestId(TEST_IDS.denyButton)).toHaveTextContent("거절");
+    expect(screen.getByTestId(TEST_IDS.denyButton)).toHaveTextContent("거부");
     expect(screen.getByTestId(TEST_IDS.allowSessionButton)).toHaveTextContent("이번 세션 동안 허용");
     expect(screen.getByTestId(TEST_IDS.allowSessionButton)).toBeDisabled();
     const approve = screen.getByTestId(TEST_IDS.approveButton);
@@ -166,7 +166,7 @@ describe("ToolApprovalContent rationale card", () => {
     expect(screen.queryByTestId(TEST_IDS.approveButton)).toBeNull();
     expect(screen.queryByTestId(TEST_IDS.allowSessionButton)).toBeNull();
 
-    fireEvent.click(screen.getByText("거절"));
+    fireEvent.click(screen.getByText("거부"));
     expect(onDecide).toHaveBeenCalledWith("deny-once");
   });
 });

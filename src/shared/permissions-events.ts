@@ -3,9 +3,11 @@
 import type { RiskLevel } from "./permission-review-status.js";
 
 
-/** Approval-scope literal. Hoisted from inline `"session" | "persistent"` unions so renderer types
+/** Approval-scope literal. `session`: the root conversation, in memory. `persistent`: this project folder (the request's working directory),
+ * on disk. `global`: every project, on disk (owner decision 2026-10-25, "Always allow everywhere" for exact tool approvals).
+ * Approval-scope literal. Hoisted from inline `"session" | "persistent"` unions so renderer types
  * (`ui/renderer/types.ts`) can share the same SOT as the IPC payload. Cross-cutting follow-up of #802. */
-export type UserApprovalScope = "session" | "persistent";
+export type UserApprovalScope = "session" | "persistent" | "global";
 
 export interface ScopedPermissionRuleError {
   filePath: string;
@@ -59,6 +61,9 @@ export interface ShellRuleApproval {
   projectCwd: string;
   /** Directory a project rule applies to (the repository root when one is found); display only. */
   projectRoot: string;
+  /** The scripts the command hands to PowerShell as `-EncodedCommand`, decoded, for the card to show; absent when there are none. A command with
+   * one never has an exact allow rule (its code is hidden in the command line). */
+  decodedCommands?: readonly string[];
   /** "Allow for session" is offered: a saveable rule and a conversation to hold it. */
   sessionAllowed: boolean;
   /** "Always allow in this project" and "Always allow everywhere" are offered. */

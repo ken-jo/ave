@@ -389,7 +389,8 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     pm.setReviewer({ classifier: {} as never, cache: {} as never, deferredQueue: {} as never });
     pm.dispatchReviewer = vi.fn() as never;
     const requestAndWait = vi.fn();
-    const result = await new ToolExecutor(registry, undefined, pm, undefined, { requestAndWait } as never).executeAll(
+    const audit = recordingAuditLogger();
+    const result = await new ToolExecutor(registry, undefined, pm, undefined, { requestAndWait } as never, undefined, audit.auditLogger).executeAll(
       [{ id: "partial-shell-headless", name: "bash", input: { command: "echo no-run" } }],
       { sessionId: "partial-shell", permissionContext: { ...permissionContext(), headless: true } },
     );
@@ -400,10 +401,30 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
       expect(execute).toHaveBeenCalledOnce();
       expect(observedPermit).toBeDefined();
       expect(result[0]?.is_error).toBeUndefined();
+      // The run is audited as the rule lane (layer 3 on the permission chain), and the tool-call row names the exact rule that let it through.
+      expect(audit.permissionEntries.find((entry) => entry.decision === "allow")).toMatchObject({ layer: 3 });
+      const call = audit.telemetryEntries.find((entry) => entry.type === "tool_call");
+      expect(call?.toolCalls?.[0]).toMatchObject({ permissionDecision: "allow" });
+      expect(call?.toolCalls?.[0]?.permissionReason).toContain("Bash(echo no-run)");
     } else {
       expect(execute).not.toHaveBeenCalled();
       expect(result[0]?.is_error).toBe(true);
     }
+  });
+
+  // A structural `{ allow, layer 3 }` lookalike is not the host-issued exact-rule proof: headless, it runs nothing.
+  it("does not run a headless Plan B shell on an allow that only looks like the exact-rule lane", async () => {
+    partialWindowsAsrt();
+    const execute = vi.fn();
+    const registry = new ToolRegistry();
+    registry.register(shellProbe(execute));
+    const requestAndWait = vi.fn();
+    const result = await new ToolExecutor(registry, undefined, pmReturning({ decision: "allow", reason: "allow rules Bash(echo no-run)", layer: 3 }), undefined, { requestAndWait } as never).executeAll(
+      [{ id: "partial-shell-lookalike", name: "bash", input: { command: "echo no-run" } }],
+      { sessionId: "partial-shell", permissionContext: { ...permissionContext(), headless: true } },
+    );
+    expect(execute).not.toHaveBeenCalled();
+    expect(result[0]?.is_error).toBe(true);
   });
 
   it("passes the same sealed none-plan to an allow-once shell invocation", async () => {

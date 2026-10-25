@@ -98,6 +98,7 @@ export function ApprovalDecisionBar({
   /** Draw Deny only: a sealed display that cannot be read offers no allow at all. */
   hideAllows?: boolean;
   compact?: boolean;
+  /** Stack the three buttons when the bar itself is narrow (it is its own size container, so this holds wherever the bar is drawn). */
   stackWhenNarrow?: boolean;
 }): ReactElement {
   const { t } = useTranslation();
@@ -119,7 +120,8 @@ export function ApprovalDecisionBar({
     onCommit(choice, edited);
   };
   const lockAll = disabled[0] && disabled[1] && disabled[2];
-  const buttonSize = compact ? "h-7 px-2 text-xs" : "";
+  // Compact (a terminal banner) keeps the row short but never fixes the height: a label that wraps grows its button instead of overflowing it.
+  const buttonSize = compact ? "min-h-7 px-2 py-1 text-xs" : "";
   const slot = (index: 0 | 1 | 2): SlotProps => slotProps?.(index) ?? {};
   const menuItem = (choice: RememberingChoice | "deny-once") => {
     const option = choice === "deny-once" ? null : model.options[choice];
@@ -154,7 +156,7 @@ export function ApprovalDecisionBar({
   );
   const mainClass = `h-auto min-w-0 flex-1 whitespace-normal [overflow-wrap:anywhere] leading-tight ${compact ? buttonSize : "px-1 py-2 text-[11px]"}`;
   return (
-    <div className="min-w-0 space-y-1.5" data-testid="approval-decision-bar" data-approval-variant={model.variant} data-selected-choice={state.selected ?? undefined}>
+    <div className={`min-w-0 space-y-1.5 ${stackWhenNarrow ? "@container" : ""}`} data-testid="approval-decision-bar" data-approval-variant={model.variant} data-selected-choice={state.selected ?? undefined}>
       {showEdit ? (
         <div className="min-w-0 space-y-1" data-testid="approval-rule-row">
           <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-2 gap-y-1">

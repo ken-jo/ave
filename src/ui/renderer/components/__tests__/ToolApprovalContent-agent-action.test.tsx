@@ -34,7 +34,7 @@ describe("ToolApprovalContent external agent-action affordances", () => {
     const onDecide = vi.fn();
     const { container } = renderApproval(makeAgentActionRequest("local-api"), onDecide);
 
-    expect(screen.getByTestId(TEST_IDS.denyButton)).toHaveTextContent("거절");
+    expect(screen.getByTestId(TEST_IDS.denyButton)).toHaveTextContent("거부");
     expect(screen.getByTestId(TEST_IDS.allowSessionButton)).toHaveTextContent("이번 세션 동안 허용");
     expect(screen.getByTestId(TEST_IDS.allowSessionButton)).toBeDisabled();
     expect(container.querySelector('input, textarea, [contenteditable="true"], [role="textbox"]'))
@@ -50,7 +50,7 @@ describe("ToolApprovalContent external agent-action affordances", () => {
   it("keeps persistence visible but disabled for user-keyboard agent actions", () => {
     renderApproval(makeAgentActionRequest("user-keyboard"), vi.fn());
 
-    expect(screen.getByTestId(TEST_IDS.denyButton)).toHaveTextContent("거절");
+    expect(screen.getByTestId(TEST_IDS.denyButton)).toHaveTextContent("거부");
     expect(screen.getByTestId(TEST_IDS.allowSessionButton)).toHaveTextContent("이번 세션 동안 허용");
     expect(screen.getByTestId(TEST_IDS.allowSessionButton)).toBeDisabled();
     expect(screen.getByTestId(TEST_IDS.approveButton)).toHaveTextContent("한 번만 허용");

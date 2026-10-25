@@ -18,7 +18,7 @@ export const ko: Record<keyof typeof en, string> = {
   "be_deferredApproval.questionWithGrant":
     "'{toolName}' 이 이 대화가 끝날 때까지 {path} 하위 파일에 접근하도록 허용할까요?",
   "be_deferredApproval.choiceApprove": "허용",
-  "be_deferredApproval.choiceReject": "거절",
+  "be_deferredApproval.choiceReject": "거부",
   "be_deferredApproval.choiceKeepDeferred": "나중에 결정",
   "be_deferredApproval.summaryHint": "권한",
 };

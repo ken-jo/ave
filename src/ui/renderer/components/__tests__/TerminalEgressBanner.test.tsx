@@ -28,7 +28,8 @@ function terminalAsk(id: string, overrides: Partial<NonNullable<ApprovalRequest[
     reason: `A command in workspace terminal ${tabId} wants to connect to github.com:443.`,
     createdAt: 0,
     allowedChoices: ["allow-once", "deny-once"],
-    egressHost: { host: "github.com", port: 443, rule: "Network(github.com:443)", network: "public", scopes: ["once", "tab", "always"], terminalTabId: tabId, ...overrides },
+    // Host rules are shell-origin: the host sends a terminal tab's ask with no rule to save.
+    egressHost: { host: "github.com", port: 443, rule: null, network: "public", scopes: ["once", "tab", "always"], terminalTabId: tabId, ...overrides },
   } as unknown as ApprovalRequest;
 }
 
@@ -80,7 +81,7 @@ describe("TerminalEgressBanner", () => {
     ]);
   });
 
-  it("offers Always but not This project in the allow dropdown, and a tab allow saves no rule", () => {
+  it("offers Always but not This project in the allow dropdown, and no allow saves a rule", () => {
     const value = surface([terminalAsk("ask-1")]);
     withSurface(value, <TerminalEgressBanner tabId={TAB} />);
     const row = screen.getByTestId("terminal-egress-row");
@@ -90,23 +91,37 @@ describe("TerminalEgressBanner", () => {
     fireEvent.keyDown(screen.getByTestId("approval-choice-allow-session"), { key: "Enter" });
     expect(within(row).queryByTestId("approval-edit-rule")).toBeNull();
     selectDecision("allow-everywhere", row);
-    expect(within(row).getByTestId("approval-edit-rule")).toBeTruthy();
+    expect(within(row).queryByTestId("approval-edit-rule")).toBeNull();
     fireEvent.click(within(row).getByTestId(TEST_IDS.allowSessionButton));
     expect(vi.mocked(value.decide).mock.calls).toEqual([["ask-1", "allow-once", undefined, { egressScope: "always" }]]);
   });
 
-  it("Always deny saves the host deny rule, then denies once", async () => {
+  it("offers no Always deny: host rules decide the agent's commands, not a terminal tab", () => {
     const record = vi.fn().mockResolvedValue({ ok: true });
     vi.stubGlobal("ave", { userApproval: { record } });
     const value = surface([terminalAsk("ask-1")]);
     withSurface(value, <TerminalEgressBanner tabId={TAB} />);
     const row = screen.getByTestId("terminal-egress-row");
-    selectDecision("deny-always", row);
-    expect(within(row).getByTestId("approval-rule-pattern")).toHaveTextContent("Network(github.com:443)");
-    fireEvent.click(within(row).getByTestId(TEST_IDS.denyButton));
-    expect(record).toHaveBeenCalledWith(expect.objectContaining({ requestId: "ask-1", decision: "deny", scope: "persistent", rule: { action: "deny", scope: "always" } }));
-    await vi.waitFor(() => expect(vi.mocked(value.decide).mock.calls).toEqual([["ask-1", "deny-once"]]));
+    expect(openDecisionMenu("deny-always", row)).toHaveAttribute("data-disabled");
+    expect(screen.getByTestId("approval-choice-deny-always-reason")).toHaveTextContent("Host rules apply to the agent's commands, not to a terminal tab.");
+    expect(record).not.toHaveBeenCalled();
     vi.unstubAllGlobals();
+  });
+
+  // The banner's row is compact but never a fixed height: a wrapped label grows its button, and a narrow row stacks the buttons.
+  it("lets compact buttons grow and stacks them when the row is narrow", () => {
+    withSurface(surface([terminalAsk("ask-1")]), <TerminalEgressBanner tabId={TAB} />);
+    const row = screen.getByTestId("terminal-egress-row");
+    const bar = within(row).getByTestId("approval-decision-bar");
+    expect(bar.className.split(/\s+/u)).toContain("@container");
+    expect(within(row).getByTestId("approval-decision-actions").className).toContain("@max-[14rem]:grid-cols-1");
+    for (const id of [TEST_IDS.denyButton, TEST_IDS.allowSessionButton, TEST_IDS.approveButton]) {
+      const classes = within(row).getByTestId(id).className.split(/\s+/u);
+      expect(classes).toContain("h-auto");
+      expect(classes).toContain("min-h-7");
+      expect(classes).toContain("whitespace-normal");
+      expect(classes.filter((name) => /^h-\d/u.test(name))).toEqual([]);
+    }
   });
 
   it("offers a local destination only Allow once and This tab, with the private-network warning", () => {

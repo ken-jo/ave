@@ -10,6 +10,7 @@ import { shellExfiltrationSignal, shellSensitivePathSignal } from "./shell-exfil
 import { validatePermissionRule } from "./rule-files.js";
 import { isDestructiveShellArgv, noReusableRuleReason } from "./shell-prefix-values.js";
 import { projectRuleRoot } from "./project-rule-files.js";
+import { encodedPowerShellPayloads } from "./powershell-encoded-command.js";
 
 // Derive the one exact rule a shell card may save from the host's original shell input: the complete argv of a single simple command, never a prefix or wildcard (owner 2026-10-25). `Bash(...)` for bash and `PowerShell(...)` for PowerShell, each in the canonical form its matcher compares.
 export function buildShellRuleApproval(
@@ -19,7 +20,9 @@ export function buildShellRuleApproval(
   saves: { allow: boolean; deny: boolean },
   sessionId?: string,
 ): ShellRuleApproval {
-  const candidate = saves.allow
+  // An `-EncodedCommand` hides the code that runs, so no allow rule may cover it; the card shows the decoded script instead.
+  const decodedCommands = encodedPowerShellPayloads(command);
+  const candidate = saves.allow && decodedCommands.length === 0
     ? dialect === "bash" ? exactBashRule(command, projectCwd) : exactPowerShellRule(command, projectCwd)
     : null;
   // The rule must cover this whole invocation and disclose no secret.
@@ -35,6 +38,7 @@ export function buildShellRuleApproval(
     denyAllowed: saves.deny,
     projectCwd,
     projectRoot: projectRuleRoot(projectCwd),
+    ...(decodedCommands.length === 0 ? {} : { decodedCommands }),
     sessionAllowed: exactRule !== null && Boolean(sessionId),
     persistentAllowed: exactRule !== null,
   };

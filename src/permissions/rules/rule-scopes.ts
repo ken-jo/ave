@@ -5,7 +5,8 @@ import { canonicalStringify } from "../../shared/canonical-json.js";
 import { sha256Hex } from "../../lib/hex-digest-equal.js";
 import { isMissingPathError } from "../../lib/atomic-file.js";
 import type { PermissionRule } from "../permission-manager.js";
-import { isRuleSpecifier, parseRuleSpecifier, type RuleSpecifier } from "./rule-specifier.js";
+import { canonicalPowerShellRuleTokens, isRuleSpecifier, parseRuleSpecifier, type RuleSpecifier } from "./rule-specifier.js";
+import { canonicalPowerShellName } from "./powershell-command-policy.js";
 import { powerShellRuleShape } from "./powershell-exfiltration.js";
 import { PermissionRulesFileCorruptError, storedRuleInvalidReason, validatePermissionRule } from "./rule-files.js";
 import { projectRulesLocation, storedFileRulesLocation, readProjectRulesFile, updateProjectRulesFile } from "./project-rule-files.js";
@@ -182,7 +183,14 @@ export function evaluatePowerShellSubject(
   if (!hasRestrictions && rules.allow.length === 0) return { decision: null, reason: "no powershell rules" };
   const shape = powerShellRuleShape(subject.command);
   if (hasRestrictions) {
-    const visible = shape.ok ? shape.commands : shape.visible;
+    // A restriction also meets the command under every alias spelling it has in any edition: over-matching a deny or ask only narrows, so the
+    // alias union that rule identity refuses (an allow compares the literal name) is safe here and keeps `ri x` under `PowerShell(remove-item *)`.
+    const visible = (shape.ok ? shape.commands : shape.visible).flatMap((argv) => {
+      const head = argv[0];
+      if (typeof head !== "string") return [argv];
+      const resolved = canonicalPowerShellRuleTokens([canonicalPowerShellName(head), ...argv.slice(1)]);
+      return resolved[0] === head ? [argv] : [argv, resolved];
+    });
     const matching = (list: readonly PowerShellRuleInput[]) => list.find((rule) => visible.some((argv) => matchesPowerShellRule(rule.spec, argv)));
     const deny = matching(rules.deny);
     if (deny) return { decision: "deny", pattern: deny.pattern, reason: `deny rule ${deny.pattern}` };

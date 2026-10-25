@@ -79,6 +79,14 @@ function decidesRequest(target: Target, pattern: string, action: "allow" | "deny
   return spec.kind === "network" && matchesWebFetchHost(spec, target.context.host, target.context.port);
 }
 
+// A wildcard allow: a shell rule ending in ` *`, or a host rule for every subdomain (`Network(*.example.com)`). Either reaches only sandboxed runs —
+// a host rule decides only a sandboxed command's connections — so the card warns on both.
+function isWildcardAllow(target: Target, pattern: string): boolean {
+  if (target.kind === "shell") return isWildcardShellRule(pattern);
+  const spec = parseRuleSpecifier(pattern);
+  return spec.kind === "network" && spec.subdomains;
+}
+
 export async function saveApprovalCardRule(
   snapshot: RequestSnapshot,
   rule: Record<string, unknown>,
@@ -101,6 +109,10 @@ export async function saveApprovalCardRule(
   const target = targetOf(snapshot);
   if (target === undefined) return fail("invalid-rule", "This request has no rule a card can save");
   if (target.kind === "shell" && action === "deny" && !target.context.denyAllowed) return fail("one-shot-not-recordable", "This request cannot create a deny rule");
+  // Host rules are shell-origin, like shell grants: a terminal tab's card saves none (its connections are decided by its grants).
+  if (target.kind === "network" && target.context.terminalTabId !== undefined) {
+    return fail("scope-not-offered", "A terminal tab's connections are decided by its grants; host rules apply to shell calls");
+  }
   if (action === "allow") {
     const refusal = allowRefusal(target, scope);
     if (refusal !== undefined) return fail(refusal, "This request cannot create an allow rule at that scope");
@@ -139,6 +151,6 @@ export async function saveApprovalCardRule(
     // A rule that validated but could not be stored (a refused allow prefix, a corrupt file, a lock or I/O) is reported as a failed save.
     return fail("rule-save-failed", errorMessage(error));
   }
-  const warning = action === "allow" && target.kind === "shell" && isWildcardShellRule(pattern) ? WILDCARD_ALLOW_SANDBOXED_ONLY : undefined;
+  const warning = action === "allow" && isWildcardAllow(target, pattern) ? WILDCARD_ALLOW_SANDBOXED_ONLY : undefined;
   return { ok: true, action, scope, pattern, edited: edited !== undefined, ...(warning === undefined ? {} : { warning }) };
 }

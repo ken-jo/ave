@@ -16,7 +16,7 @@ import {
   type PowerShellPathBinding,
 } from "./powershell-command-policy.js";
 import { PowerShellFileProvenance } from "./powershell-file-provenance.js";
-import { canonicalPowerShellRuleToken } from "./rule-specifier.js";
+import { canonicalPowerShellRuleTokens } from "./rule-specifier.js";
 import { INTERPRETER_SET, RUNNER_SET, SHELL_SET, WRAPPER_SET, programName, runnerName } from "./shell-prefix-values.js";
 import { hiddenCodeReason, isNetworkProgram, opaqueRunnerReason, runnerCodeContext, runnerCommandIndexes, wrapperCommand, type ShellCommandInput } from "./shell-prefix-policy.js";
 import {
@@ -1930,7 +1930,7 @@ function lex(command: string, budget: PowerShellAnalysisBudget): { pipelines: Ps
 
 // Rule shape
 
-// The argv of each simple command a `PowerShell(...)` rule is matched against. A literal token (plain text with no expansion, group, quote-delimited space, splat or wildcard) takes its canonical spelling (`canonicalPowerShellRuleToken`), the form a stored rule is in; any other token is `null`, which no rule token equals, so a deny or ask prefix still matches the literal words before it. A command whose name is not literal (an expression, a call operator) has no argv. `opaque` names the first construct that is not a fully literal command (an assignment, a non-literal command or token): an allow rule never covers input with one, and a deny or ask rule that matched nothing then asks, because it could not inspect everything.
+// The argv of each simple command a `PowerShell(...)` rule is matched against. A literal token (plain text with no expansion, group, quote-delimited space, splat or wildcard) takes its canonical spelling (`canonicalPowerShellRuleTokens`), the form a stored rule is in; any other token is `null`, which no rule token equals, so a deny or ask prefix still matches the literal words before it. A command whose name is not literal (an expression, a call operator) has no argv. `opaque` names the first construct that is not a fully literal command (an assignment, a non-literal command or token): an allow rule never covers input with one, and a deny or ask rule that matched nothing then asks, because it could not inspect everything.
 export type PowerShellRuleShape =
   | { ok: true; commands: readonly (readonly (string | null)[])[]; opaque: string | null }
   | { ok: false; reason: string; visible: readonly (readonly (string | null)[])[] };
@@ -1941,7 +1941,7 @@ function ruleArgv(cmd: PsCommand): (string | null)[] | null {
   const argv = cmd.tokens.map((token) =>
     token.kind === "word" && token.nested.length === 0 && POWERSHELL_RULE_LITERAL.test(token.text) ? token.text : null);
   if (argv.length === 0 || argv[0] === null || argv[0] === ".") return null;
-  return argv.map((token, index) => token === null ? null : canonicalPowerShellRuleToken(token, index));
+  return canonicalPowerShellRuleTokens(argv);
 }
 
 export function powerShellRuleShape(input: ShellCommandInput): PowerShellRuleShape {

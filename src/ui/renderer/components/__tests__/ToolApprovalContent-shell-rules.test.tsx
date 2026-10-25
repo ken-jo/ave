@@ -55,6 +55,21 @@ describe("shell approval card: the shared decision row", () => {
     expect(screen.getByTestId("approval-shell-rule-scope-target")).toHaveTextContent(t("toolApprovalDialog.shellScopeProjectTarget", { root: "/workspace/project" }));
   });
 
+  // An -EncodedCommand payload is shown as the script it runs; no allow rule covers it, so the host sends no exact rule.
+  it("shows each decoded -EncodedCommand script, and offers no lasting allow for it", () => {
+    renderApproval(shellRequest({}, { exactRule: null, decodedCommands: ["Remove-Item -Recurse C:\\data"] }), vi.fn());
+    const decoded = screen.getAllByTestId("approval-shell-decoded-command");
+    expect(decoded).toHaveLength(1);
+    expect(decoded[0]).toHaveTextContent("Remove-Item -Recurse C:\\data");
+    expect(decoded[0]).toHaveTextContent(t("toolApprovalDialog.shellDecodedCommand"));
+    expect(screen.getByTestId(TEST_IDS.allowSessionButton)).toBeDisabled();
+  });
+
+  it("draws no decoded script for a plain command", () => {
+    renderApproval(shellRequest(), vi.fn());
+    expect(screen.queryByTestId("approval-shell-decoded-command")).toBeNull();
+  });
+
   it("lists Deny and Always deny in one dropdown, and the three lasting allows in the other", () => {
     vi.stubGlobal("ave", { userApproval: { record: vi.fn() } });
     renderApproval(shellRequest(), vi.fn());
