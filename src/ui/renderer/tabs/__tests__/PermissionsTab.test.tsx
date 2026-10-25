@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "../../../../../test/renderer/setup.js";
-import { MOCK_REVIEWER_PARENT_ADJUDICATION, installMockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
+import { MOCK_REVIEWER_PARENT_ADJUDICATION, installMockAveApi, mockJudgeGet } from "../../../../../test/renderer/mock-ave-api.js";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useState, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -25,7 +25,7 @@ vi.mock("../../../../components/ui/scroll-area.js", () => ({
 
 import { PermissionsTab } from "../PermissionsTab.js";
 import { makeHookTrustRow as hook } from "./test-helpers.js";
-import type { HookTrustRow } from "../../types.js";
+import type { HookTrustRow, ScopedPermissionRuleError } from "../../types.js";
 import { isPolicyUserEditable, type PolicySource } from "../../../../shared/policy-editability.js";
 import { getLocale, setLocale, t } from "../../../../i18n/runtime.js";
 import { TEST_IDS, execModeTestId } from "../../../../shared/test-ids.js";
@@ -49,7 +49,6 @@ function policyGetPayload(loaded: {
   return { version: 1 as const, updatedAt: "2026-01-01T00:00:00.000Z", ...loaded, editable: isPolicyUserEditable(loaded) };
 }
 
-
 function installApi(
   disabledBatches: HookTrustRow[][],
   envForcedSettings: readonly string[] = [],
@@ -60,11 +59,16 @@ function installApi(
   });
   const ave = {
     permission: {
+      egressGrantsList: vi.fn(async () => ({ ok: true as const, grants: [] })),
+      egressGrantRevoke: vi.fn(async () => ({ ok: true as const })),
       getMode: vi.fn(async () => ({ mode: "default" })),
       setMode: vi.fn(async (mode: string) => ({ ok: true, mode })),
       onModeChanged: vi.fn(() => () => undefined),
       onConfigChanged: vi.fn(() => () => undefined),
+      judgeGet: mockJudgeGet(),
       listRules: vi.fn(async () => []),
+      listScopedRules: vi.fn(async () => ({ rules: [], errors: [] })),
+      removeScopedRule: vi.fn(async () => ({ ok: true })),
       addRule: vi.fn(async () => ({ ok: true, rule: { pattern: "x", action: "allow" } })),
       removeRule: vi.fn(async () => ({ ok: true })),
       deferredList: vi.fn(async () => ({ ok: true, pending: [], total: 0 })),
@@ -87,8 +91,6 @@ function installApi(
             verb: "show" as const,
             settings: {
               mode: "disabled" as const,
-              provider: "openai" as const,
-              model: "gpt-4o-mini",
               fallbackOnError: "deny" as const,
               parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
               interactive: { autoApprove: "off" as const },
@@ -101,8 +103,6 @@ function installApi(
             verb: "mode" as const,
             settings: {
               mode: "llm" as const,
-              provider: "openai" as const,
-              model: "gpt-4o-mini",
               fallbackOnError: "deny" as const,
               parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
               interactive: { autoApprove: "off" as const },
@@ -115,8 +115,6 @@ function installApi(
             verb: "mode" as const,
             settings: {
               mode: "disabled" as const,
-              provider: "openai" as const,
-              model: "gpt-4o-mini",
               fallbackOnError: "deny" as const,
               parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
               interactive: { autoApprove: "off" as const },
@@ -129,8 +127,6 @@ function installApi(
             verb: "fallback" as const,
             settings: {
               mode: "llm" as const,
-              provider: "openai" as const,
-              model: "gpt-4o-mini",
               fallbackOnError: "rule" as const,
               parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
               interactive: { autoApprove: "off" as const },
@@ -143,8 +139,6 @@ function installApi(
             verb: "interactive" as const,
             settings: {
               mode: "llm" as const,
-              provider: "openai" as const,
-              model: "gpt-4o-mini",
               fallbackOnError: "deny" as const,
               parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
               interactive: { autoApprove: rawArgs === "interactive medium" ? "medium" as const : "low" as const },
@@ -157,22 +151,6 @@ function installApi(
             verb: "interactive" as const,
             settings: {
               mode: "disabled" as const,
-              provider: "openai" as const,
-              model: "gpt-4o-mini",
-              fallbackOnError: "deny" as const,
-              parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
-              interactive: { autoApprove: "off" as const },
-            },
-          };
-        }
-        if (rawArgs === "model gpt-5.5-mini") {
-          return {
-            ok: true as const,
-            verb: "model" as const,
-            settings: {
-              mode: "llm" as const,
-              provider: "openai" as const,
-              model: "gpt-5.5-mini",
               fallbackOnError: "deny" as const,
               parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
               interactive: { autoApprove: "off" as const },
@@ -181,8 +159,6 @@ function installApi(
         }
         throw new Error(`unexpected reviewerDispatch: ${rawArgs}`);
       }),
-      /** C3 — key-driven dynamic activation: return true for openai by default. */
-      reviewerProviderHasKey: vi.fn(async (provider: string) => provider === "openai"),
       sandboxCapability: vi.fn(async () => ({
         platform: "linux" as NodeJS.Platform,
         enabled: false,
@@ -213,6 +189,7 @@ function installApi(
     },
     userApproval: {
       list: vi.fn(async () => []),
+      listSession: vi.fn(async () => []),
       record: vi.fn(async () => ({ ok: true })),
       revokeByKey: vi.fn(async () => ({ ok: true })),
     },
@@ -510,8 +487,6 @@ describe("PermissionsTab hook quarantine notice", () => {
           verb: "show" as const,
           settings: {
             mode: "llm" as const,
-            provider: "openai" as const,
-            model: "gpt-4o-mini",
             fallbackOnError: "deny" as const,
             parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
             interactive: { autoApprove: "off" as const },
@@ -524,8 +499,6 @@ describe("PermissionsTab hook quarantine notice", () => {
           verb: "mode" as const,
           settings: {
             mode: "disabled" as const,
-            provider: "openai" as const,
-            model: "gpt-4o-mini",
             fallbackOnError: "deny" as const,
             parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
             interactive: { autoApprove: "off" as const },
@@ -685,8 +658,12 @@ describe("PermissionsTab hook quarantine notice", () => {
     );
   });
 
-  it("does not expose legacy reviewer provider/model controls", async () => {
+  it("offers the reviewer model through the chat model chooser, not legacy provider/model controls", async () => {
     const api = installApi([[]]);
+    (api.permission as Record<string, unknown>).judgeGet = mockJudgeGet({
+      chatModel: "openai/chat-model",
+      modelOptions: [{ vendor: "claude", model: "claude-reviewer" }],
+    });
 
     await act(async () => {
       render(<PermissionsTab />);
@@ -695,14 +672,75 @@ describe("PermissionsTab hook quarantine notice", () => {
       fireEvent.click(screen.getByTestId(execModeTestId("auto")));
     });
 
+    const picker = await screen.findByTestId("permission-reviewer-model");
+    // Unset is a stored choice that names what it follows: the chat model.
+    expect(picker).toHaveTextContent(t("permissionJudge.followChatModelNamed", { model: "openai/chat-model" }));
     expect(screen.queryByTestId("reviewer-provider-select")).toBeNull();
     expect(screen.queryByTestId("reviewer-model-input")).toBeNull();
     expect(screen.queryByTestId("reviewer-active-llm-source")).toBeNull();
-    expect(screen.getByTestId(TEST_IDS.reviewerPromptPanel)).toBeTruthy();
     expect(screen.getByTestId(execModeTestId("auto"))).toContainElement(screen.getByTestId(TEST_IDS.reviewerPromptPanel));
     expect(api.permission.reviewerDispatch).not.toHaveBeenCalledWith(
       expect.stringMatching(/^(provider|model)\b/),
     );
+  });
+
+  it("saves a picked reviewer model, and unset again, through the judge settings", async () => {
+    const api = installApi([[]]);
+    const judgeGet = mockJudgeGet({
+      chatModel: "openai/chat-model",
+      modelOptions: [{ vendor: "claude", model: "claude-reviewer" }],
+    });
+    const judgeSet = vi.fn(async (settings: { model: unknown }) => ({
+      ...(await judgeGet()), settings: { ...(await judgeGet()).settings, model: settings.model },
+    }));
+    Object.assign(api.permission, { judgeGet, judgeSet });
+
+    await act(async () => {
+      render(<PermissionsTab />);
+    });
+    const picker = await screen.findByTestId("permission-reviewer-model");
+    const pick = async (label: RegExp) => {
+      fireEvent.keyDown(picker, { key: "ArrowDown" });
+      const option = await waitFor(() => {
+        const found = [...document.querySelectorAll<HTMLElement>("[role='option']")]
+          .find((row) => label.test(row.textContent ?? ""));
+        if (!found) throw new Error("chooser not open yet");
+        return found;
+      });
+      option.focus();
+      fireEvent.keyDown(option, { key: "Enter" });
+    };
+    const save = async () => {
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: t("permissionJudge.save") }));
+      });
+    };
+
+    await pick(/claude-reviewer/);
+    await save();
+    expect(judgeSet).toHaveBeenLastCalledWith(expect.objectContaining({
+      model: { vendor: "claude", model: "claude-reviewer" },
+    }));
+
+    await pick(new RegExp(t("permissionJudge.followChatModel")));
+    await save();
+    expect(judgeSet).toHaveBeenLastCalledWith(expect.objectContaining({ model: null }));
+  });
+
+  it("says so when the selected reviewer model is unavailable", async () => {
+    const api = installApi([[]]);
+    (api.permission as Record<string, unknown>).judgeGet = mockJudgeGet({
+      model: { vendor: "claude", model: "retired-reviewer" },
+      reviewerModelUnavailable: true,
+    });
+
+    await act(async () => {
+      render(<PermissionsTab />);
+    });
+
+    expect(await screen.findByTestId("permission-reviewer-model-unavailable"))
+      .toHaveTextContent(t("permissionJudge.reviewerModelUnavailable"));
+    expect(screen.getByTestId("permission-reviewer-model")).toHaveTextContent("retired-reviewer");
   });
 
   it("renders the off/low/medium threshold control when the stored mode is auto", async () => {
@@ -715,8 +753,6 @@ describe("PermissionsTab hook quarantine notice", () => {
           verb: "show" as const,
           settings: {
             mode: "llm" as const,
-            provider: "openai" as const,
-            model: "gpt-4o-mini",
             fallbackOnError: "deny" as const,
             parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
             interactive: { autoApprove: "off" as const },
@@ -744,8 +780,6 @@ describe("PermissionsTab hook quarantine notice", () => {
           verb: "show" as const,
           settings: {
             mode: "disabled" as const,
-            provider: "openai" as const,
-            model: "gpt-4o-mini",
             fallbackOnError: "deny" as const,
             parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
             interactive: { autoApprove: "off" as const },
@@ -1265,6 +1299,8 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
         setMode: vi.fn(async (mode: string) => ({ ok: true, mode })),
         onModeChanged: vi.fn(() => () => undefined),
         listRules: vi.fn(async () => []),
+      listScopedRules: vi.fn(async () => ({ rules: [], errors: [] })),
+      removeScopedRule: vi.fn(async () => ({ ok: true })),
         addRule: vi.fn(async () => ({ ok: true, rule: { pattern: "x", action: "allow" } })),
         removeRule: vi.fn(async () => ({ ok: true })),
         deferredList: vi.fn(async () => ({ ok: true, pending: [], total: 0 })),
@@ -1283,14 +1319,11 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
           verb: "show" as const,
           settings: {
             mode: "disabled" as const,
-            provider: "openai" as const,
-            model: "gpt-4o-mini",
             fallbackOnError: "deny" as const,
             parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
             interactive: { autoApprove: "off" as const },
           },
         })),
-        reviewerProviderHasKey: vi.fn(async () => false),
         sandboxCapability: vi.fn(async () => ({
           platform: "win32" as NodeJS.Platform,
           enabled: true,
@@ -2148,8 +2181,6 @@ describe("PermissionsTab — failures never put raw text on screen", () => {
           verb: "show",
           settings: {
             mode: "disabled",
-            provider: "openai",
-            model: "gpt-4o-mini",
             fallbackOnError: "deny",
             parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
             interactive: { autoApprove: "off" },
@@ -2209,9 +2240,9 @@ describe("PermissionsTab background refresh", () => {
     const notify = onConfigChanged.mock.calls[0]?.[0] as (() => void) | undefined;
     expect(notify).toBeTypeOf("function");
 
-    let resolveRules: ((rows: never[]) => void) | undefined;
-    (api.permission.listRules as unknown as ReturnType<typeof vi.fn>).mockImplementationOnce(
-      () => new Promise((resolve) => { resolveRules = resolve as (rows: never[]) => void; }),
+    let resolveRules: ((rows: { rules: never[]; errors: ScopedPermissionRuleError[] }) => void) | undefined;
+    (api.permission.listScopedRules as unknown as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      () => new Promise((resolve) => { resolveRules = resolve as (rows: { rules: never[]; errors: ScopedPermissionRuleError[] }) => void; }),
     );
 
     await act(async () => {
@@ -2223,16 +2254,16 @@ describe("PermissionsTab background refresh", () => {
     expect(screen.getByTestId("permissions-rule-pattern-input")).toBeTruthy();
 
     await act(async () => {
-      resolveRules?.([]);
+      resolveRules?.({ rules: [], errors: [] });
     });
     expect(screen.queryByTestId("permissions-loading")).toBeNull();
   });
 
   it("still shows the loading surface on the FIRST load, where there is nothing to keep", async () => {
     const api = installApi([[]]);
-    let resolveRules: ((rows: never[]) => void) | undefined;
-    (api.permission.listRules as unknown as ReturnType<typeof vi.fn>).mockImplementationOnce(
-      () => new Promise((resolve) => { resolveRules = resolve as (rows: never[]) => void; }),
+    let resolveRules: ((rows: { rules: never[]; errors: ScopedPermissionRuleError[] }) => void) | undefined;
+    (api.permission.listScopedRules as unknown as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      () => new Promise((resolve) => { resolveRules = resolve as (rows: { rules: never[]; errors: ScopedPermissionRuleError[] }) => void; }),
     );
 
     await act(async () => {
@@ -2241,7 +2272,7 @@ describe("PermissionsTab background refresh", () => {
     expect(screen.getByTestId("permissions-loading")).toBeTruthy();
 
     await act(async () => {
-      resolveRules?.([]);
+      resolveRules?.({ rules: [], errors: [] });
     });
     await waitFor(() => expect(screen.queryByTestId("permissions-loading")).toBeNull());
   });
@@ -2272,7 +2303,7 @@ describe("PermissionsTab — revoking a stored approval", () => {
       await act(async () => {
         render(<PermissionsTab />);
       });
-      await waitFor(() => expect(screen.getByTestId("permissions-approvals-table")).toBeTruthy());
+      await waitFor(() => expect(screen.getByTestId("permissions-rules-table")).toBeTruthy());
 
       await act(async () => {
         fireEvent.click(screen.getByText(t("permissionsTab.revokeButton")));
@@ -2283,5 +2314,103 @@ describe("PermissionsTab — revoking a stored approval", () => {
     } finally {
       confirm.mockRestore();
     }
+  });
+});
+
+describe("PermissionsTab unified permission rules", () => {
+  it("lists user/project rules and persistent/session exact approvals together and revokes each at its owner", async () => {
+    const api = installApi([[]]);
+    const userRule = { pattern: "Bash(git status *)", action: "allow", scope: "user" };
+    const projectRule = { pattern: "Bash(git push *)", action: "deny", scope: "project", projectCwd: "/workspace/project" };
+    const listRules = api.permission.listScopedRules as unknown as ReturnType<typeof vi.fn>;
+    listRules.mockResolvedValue({ rules: [userRule, projectRule], errors: [] });
+    (api.userApproval.list as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { key: "exact-persistent", decision: "allow", approvedAt: "2026-01-01T00:00:00.000Z", scope: "persistent", verdictAtApproval: "medium", nlJustification: null, revokedAt: null, toolName: "read_file", projectCwd: "/workspace/project" },
+      { key: "exact-session", decision: "allow", approvedAt: "2026-01-01T00:00:00.000Z", scope: "session", verdictAtApproval: "medium", nlJustification: null, revokedAt: null, toolName: "bash", sessionId: "conversation-session" },
+    ]);
+    await act(async () => { render(<PermissionsTab />); });
+    const table = await screen.findByTestId("permissions-rules-table");
+    expect(table.querySelectorAll("tbody tr")).toHaveLength(4);
+    expect(table).toHaveTextContent("Bash(git status *)");
+    expect(table).toHaveTextContent("Bash(git push *)");
+    expect(table).toHaveTextContent("conversation-session");
+    expect(screen.queryByTestId("permissions-approvals-table")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: t("permissionsTab.revokeNamedRule", { pattern: projectRule.pattern }) }));
+    await waitFor(() => expect(api.permission.removeScopedRule).toHaveBeenCalledWith(projectRule));
+    const exactRow = Array.from(table.querySelectorAll('tr[data-rule-store="exact"]')).find((row) => row.textContent?.includes("conversation-session"));
+    fireEvent.click(exactRow!.querySelector("button")!);
+    await waitFor(() => expect(api.userApproval.revokeByKey).toHaveBeenCalledWith("exact-session"));
+  });
+
+  it.each(["en", "ko"] as const)("shows an inert wildcard reason and one-click removal in %s", async (locale) => {
+    setLocale(locale);
+    const api = installApi([[]]);
+    const inert = { pattern: "Bash(npm run *)", action: "allow", scope: "user", invalidReason: "wildcard-not-allowlisted" };
+    const healthy = { pattern: "Bash(git status *)", action: "allow", scope: "user" };
+    const list = api.permission.listScopedRules as unknown as ReturnType<typeof vi.fn>;
+    list.mockResolvedValueOnce({ rules: [inert, healthy], errors: [] }).mockResolvedValue({ rules: [healthy], errors: [] });
+    await act(async () => { render(<PermissionsTab />); });
+    const table = await screen.findByTestId("permissions-rules-table");
+    const reasons = screen.getAllByTestId("permissions-rule-invalid");
+    expect(reasons).toHaveLength(1);
+    expect(reasons[0]).toHaveTextContent(t("permissionsTab.ruleInvalidWildcardNotAllowlisted"));
+    expect(reasons[0].closest("tr")).toHaveTextContent(inert.pattern);
+    fireEvent.click(screen.getByRole("button", { name: t("permissionsTab.revokeNamedRule", { pattern: inert.pattern }) }));
+    await waitFor(() => expect(api.permission.removeScopedRule).toHaveBeenCalledWith(inert));
+    await waitFor(() => expect(screen.queryByTestId("permissions-rule-invalid")).toBeNull());
+    expect(table).toHaveTextContent(healthy.pattern);
+  });
+
+  it("refreshes the scoped list after adding or revoking a rule", async () => {
+    const api = installApi([[]]);
+    const rule = { pattern: "Bash(git status *)", action: "allow", scope: "user" };
+    const list = api.permission.listScopedRules as unknown as ReturnType<typeof vi.fn>;
+    list.mockResolvedValueOnce({ rules: [], errors: [] }).mockResolvedValueOnce({ rules: [rule], errors: [] }).mockResolvedValueOnce({ rules: [], errors: [] });
+    await act(async () => { render(<PermissionsTab />); });
+    await waitFor(() => expect(screen.getByTestId("permissions-rule-pattern-input")).toBeVisible());
+    fireEvent.change(screen.getByTestId("permissions-rule-pattern-input"), { target: { value: rule.pattern } });
+    fireEvent.click(screen.getByTestId("permissions-rule-add"));
+    await waitFor(() => expect(screen.getByTestId("permissions-rules-table")).toHaveTextContent(rule.pattern));
+    fireEvent.click(screen.getByRole("button", { name: t("permissionsTab.revokeNamedRule", { pattern: rule.pattern }) }));
+    await waitFor(() => expect(screen.queryByTestId("permissions-rules-table")).toBeNull());
+    expect(api.permission.listRules).not.toHaveBeenCalled();
+    expect(list).toHaveBeenCalledTimes(3);
+  });
+
+  it("keeps live session approvals visible and revocable when the persistent store is corrupt", async () => {
+    const api = installApi([[]]);
+    const session = { key: "live-session", decision: "allow", approvedAt: "2026-01-01T00:00:00.000Z", scope: "session", verdictAtApproval: "medium", nlJustification: null, revokedAt: null, toolName: "bash", sessionId: "live-conversation" };
+    (api.userApproval.list as unknown as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("unreadable store"));
+    const sessionList = api.userApproval.listSession as unknown as ReturnType<typeof vi.fn>;
+    sessionList.mockResolvedValueOnce([session]).mockResolvedValueOnce([]);
+    await act(async () => { render(<PermissionsTab />); });
+    const table = await screen.findByTestId("permissions-rules-table");
+    expect(table).toHaveTextContent("live-conversation");
+    expect(screen.getByTestId("permissions-rule-load-error")).toHaveTextContent(t("permissionsTab.savedApprovalsFile"));
+    fireEvent.click(table.querySelector('tr[data-rule-store="exact"] button')!);
+    await waitFor(() => expect(api.userApproval.revokeByKey).toHaveBeenCalledWith(session.key));
+    await waitFor(() => expect(screen.queryByTestId("permissions-rules-table")).toBeNull());
+    expect(sessionList).toHaveBeenCalledTimes(2);
+    expect(screen.getByTestId("permissions-rule-load-error")).toBeVisible();
+  });
+
+  it("preserves the visible store error if session listing also fails", async () => {
+    const api = installApi([[]]);
+    (api.userApproval.list as unknown as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("unreadable store"));
+    (api.userApproval.listSession as unknown as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("session unavailable"));
+    await act(async () => { render(<PermissionsTab />); });
+    await waitFor(() => expect(api.userApproval.listSession).toHaveBeenCalled());
+    expect(screen.getByTestId("permissions-rule-load-error")).toHaveTextContent(t("permissionsTab.savedApprovalsFile"));
+  });
+
+  it("shows scoped corruption and exact-store load failures visibly", async () => {
+    const api = installApi([[]]);
+    (api.permission.listScopedRules as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ rules: [], errors: [{ filePath: "/ave-home/permissions/projects/project.json", errorCode: "rules-file-unavailable" }] });
+    (api.userApproval.list as unknown as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("unreadable store"));
+    await act(async () => { render(<PermissionsTab />); });
+    await waitFor(() => expect(screen.getByTestId("permissions-rule-load-error")).toBeVisible());
+    expect(screen.getByTestId("permissions-rule-load-error")).toHaveTextContent(t("permissionsTab.unifiedRulesLoadError"));
+    expect(screen.getByTestId("permissions-rule-load-error")).toHaveTextContent("/ave-home/permissions/projects/project.json");
+    expect(screen.getByTestId("permissions-rule-load-error")).toHaveTextContent(t("permissionsTab.savedApprovalsFile"));
   });
 });

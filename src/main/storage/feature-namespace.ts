@@ -52,6 +52,28 @@ async function ensureDir(dir: string): Promise<void> {
   }
 }
 
+/** Exclusive slots never chmod a path that another process can replace. */
+async function createExclusiveChild(parent: string, name: string): Promise<void> {
+  await fs.mkdir(parent, { recursive: true, mode: PRIVATE_DIR_MODE });
+  if (platform === "win32") {
+    await fs.mkdir(join(parent, name), { mode: PRIVATE_DIR_MODE });
+    return;
+  }
+  const flags = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
+  const parentHandle = await fs.open(parent, flags);
+  try {
+    await parentHandle.chmod(PRIVATE_DIR_MODE);
+    const child = platform === "linux" ? `/proc/self/fd/${parentHandle.fd}/${name}` : join(parent, name);
+    await fs.mkdir(child, { mode: PRIVATE_DIR_MODE });
+    // mkdir already grants at most 0700. Opening without following a link
+    // verifies the slot without a path-based chmod after its creation.
+    const childHandle = await fs.open(child, flags);
+    await childHandle.close();
+  } finally {
+    await parentHandle.close();
+  }
+}
+
 /**
  * Read + JSON-parse `filePath`. Any failure (missing file, permission
  * denied, corrupt JSON) returns `fallback` — this mirrors the pre-existing
@@ -254,8 +276,8 @@ export interface FeatureNamespaceHandle {
   readJson<T>(name: string, fallback: T): Promise<T>;
   /** Atomically write `<dir>/<name>` (0o700 dir, 0o600 file). */
   writeJson<T>(name: string, value: T): Promise<void>;
-  /** Create + return `<dir>/<name>` as a 0o700 subdirectory. */
-  childDir(name: string): Promise<string>;
+  /** Create a 0o700 subdirectory; exclusive creation rejects an existing entry. */
+  childDir(name: string, options?: { exclusive?: boolean }): Promise<string>;
 }
 
 /**
@@ -279,9 +301,10 @@ export function openFeatureNamespace(featureId: string): FeatureNamespaceHandle 
     },
     readJson: <T>(name: string, fallback: T) => readJsonFile(join(resolveDir(), name), fallback),
     writeJson: <T>(name: string, value: T) => writeJsonAtomic(resolveDir(), name, value),
-    childDir: async (name: string) => {
+    childDir: async (name: string, options) => {
       const child = join(resolveDir(), name);
-      await ensureDir(child);
+      if (options?.exclusive) await createExclusiveChild(resolveDir(), name);
+      else await ensureDir(child);
       return child;
     },
   };

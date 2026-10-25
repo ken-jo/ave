@@ -73,6 +73,26 @@ afterEach(() => {
 });
 
 describe("patched @anthropic-ai/sandbox-runtime", () => {
+  it("keeps non-device writes caller-owned and denies shell Unix sockets despite worker grants", () => {
+    const runtime = readInstalled("dist/sandbox/sandbox-utils.js");
+    const writes = functionBody(runtime, /\nexport function getDefaultWritePaths\(/u);
+    expect(writes).toContain("'/dev/null'");
+    expect(writes).not.toContain(".npm");
+    expect(writes).not.toContain(".claude");
+    const manager = readInstalled("dist/sandbox/sandbox-manager.js");
+    expect(manager).toContain("allowUnixSockets: options?.denyUnixSockets ? [] : getAllowUnixSockets(),");
+    expect(manager.match(/allowAllUnixSockets: options\?\.denyUnixSockets \? false : getAllowAllUnixSockets\(\),/gu)).toHaveLength(2);
+    expect(readInstalled("dist/sandbox/sandbox-manager.d.ts")).toContain("denyUnixSockets?: boolean;");
+  });
+
+  it("mounts Linux mandatory Git controls only when they exist", () => {
+    const linux = readInstalled("dist/sandbox/linux-sandbox-utils.js");
+    expect(functionBody(linux, /\nfunction gitControlExists\(/u)).toMatch(/error\?\.code === 'ENOENT' \|\| error\?\.code === 'ENOTDIR'/u);
+    expect(linux).toContain("if (gitControlExists(hooksPath))");
+    expect(linux).toContain("if (gitControlExists(configPath))");
+    expect(linux).toContain("if (lower[at] !== '.git' || gitControlExists(denyPath))");
+  });
+
   it("records exclusive mount creations and deletes only a quarantined matching identity", () => {
     const linux = readInstalled("dist/sandbox/linux-sandbox-utils.js");
     expect(linux).toContain("const bwrapMountPoints = new Map();");

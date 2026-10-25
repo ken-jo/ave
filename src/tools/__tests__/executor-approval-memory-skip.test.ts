@@ -174,6 +174,7 @@ describe("ToolExecutor — explicit-approval memory skips the foreground modal (
       "user-keyboard",
       undefined,
       process.cwd(),
+      "sess-exact-deny",
     );
     expect(lookupApprovalMock).not.toHaveBeenCalled();
   });

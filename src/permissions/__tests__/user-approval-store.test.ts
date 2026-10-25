@@ -29,6 +29,9 @@ import {
   __resetSessionStoreForTest,
 } from "../user-approval-store.js";
 
+/** Every session approval belongs to a conversation (owner decision 2026-10-23). */
+const SESSION = "11111111-1111-4111-8111-111111111111";
+
 /** An args-identity key: narrows the exact-input identity, never replaces it. */
 const argsKey = (key: string) => approvalCacheKeyIdentity(key, { kind: "args" })!;
 
@@ -46,11 +49,12 @@ describe("recordApproval + lookupApproval (session scope)", () => {
   it("returns the entry on lookup after recording (session)", async () => {
     await recordApproval("bash_run", '{"command":"ls"}', "user-keyboard", {
       scope: "session",
+      sessionId: SESSION,
       verdictAtApproval: "medium",
       nlJustification: null,
     });
 
-    const hit = await lookupApproval("bash_run", '{"command":"ls"}', "user-keyboard");
+    const hit = await lookupApproval("bash_run", '{"command":"ls"}', "user-keyboard", undefined, undefined, undefined, SESSION);
     expect(hit).not.toBeNull();
     expect(hit!.scope).toBe("session");
     expect(hit!.verdictAtApproval).toBe("medium");
@@ -58,13 +62,14 @@ describe("recordApproval + lookupApproval (session scope)", () => {
   });
 
   it("returns null for unknown triple", async () => {
-    const miss = await lookupApproval("bash_run", '{"command":"rm"}', "user-keyboard");
+    const miss = await lookupApproval("bash_run", '{"command":"rm"}', "user-keyboard", undefined, undefined, undefined, SESSION);
     expect(miss).toBeNull();
   });
 
   it("does NOT write to disk for session scope", async () => {
     await recordApproval("bash_run", '{"command":"ls"}', "user-keyboard", {
       scope: "session",
+      sessionId: SESSION,
       verdictAtApproval: "low",
       nlJustification: null,
     });
@@ -86,7 +91,7 @@ describe("recordApproval + lookupApproval (persistent scope)", () => {
     const file = await readApprovals();
     expect(Object.keys(file.approvals)).toHaveLength(1);
 
-    const hit = await lookupApproval("memory_write", '{"content":"x"}', "builtin");
+    const hit = await lookupApproval("memory_write", '{"content":"x"}', "builtin", undefined, undefined, undefined, SESSION);
     expect(hit).not.toBeNull();
     expect(hit!.scope).toBe("persistent");
   });
@@ -105,6 +110,9 @@ describe("recordApproval + lookupApproval (persistent scope)", () => {
       '{"command":"rm build.tmp"}',
       "user-keyboard",
       "user-keyboard",
+      undefined,
+      undefined,
+      SESSION,
     );
     expect(decision?.decision).toBe("deny");
     await expect(lookupApproval(
@@ -112,6 +120,9 @@ describe("recordApproval + lookupApproval (persistent scope)", () => {
       '{"command":"rm build.tmp"}',
       "user-keyboard",
       "user-keyboard",
+      undefined,
+      undefined,
+      SESSION,
     )).resolves.toBeNull();
   });
 
@@ -141,6 +152,8 @@ describe("recordApproval + lookupApproval (persistent scope)", () => {
       "builtin",
       "plugin-local-indexer",
       argsKey("/tmp/report.txt"),
+      undefined,
+      SESSION,
     );
     expect(hit?.decision).toBe("deny");
   });
@@ -148,11 +161,12 @@ describe("recordApproval + lookupApproval (persistent scope)", () => {
   it("HIGH verdict with nlJustification persists the justification", async () => {
     await recordApproval("bash_run", '{"command":"rm -rf /tmp/foo"}', "user-keyboard", {
       scope: "session",
+      sessionId: SESSION,
       verdictAtApproval: "high",
       nlJustification: "사용자 요청에 따른 임시 파일 삭제",
     });
 
-    const hit = await lookupApproval("bash_run", '{"command":"rm -rf /tmp/foo"}', "user-keyboard");
+    const hit = await lookupApproval("bash_run", '{"command":"rm -rf /tmp/foo"}', "user-keyboard", undefined, undefined, undefined, SESSION);
     expect(hit?.nlJustification).toBe("사용자 요청에 따른 임시 파일 삭제");
     expect(hit?.verdictAtApproval).toBe("high");
   });
@@ -161,14 +175,14 @@ describe("recordApproval + lookupApproval (persistent scope)", () => {
 describe("revokeApproval", () => {
   it("makes lookupApproval return null after revocation", async () => {
     await recordApproval("bash_run", '{"command":"ls"}', "user-keyboard", {
-      scope: "session",
+      scope: "persistent",
       verdictAtApproval: "medium",
       nlJustification: null,
     });
 
     await revokeApproval("bash_run", '{"command":"ls"}', "user-keyboard");
 
-    const result = await lookupApproval("bash_run", '{"command":"ls"}', "user-keyboard");
+    const result = await lookupApproval("bash_run", '{"command":"ls"}', "user-keyboard", undefined, undefined, undefined, SESSION);
     expect(result).toBeNull();
   });
 
@@ -218,6 +232,7 @@ describe("listApprovals", () => {
   it("includes session-only entries in the listing", async () => {
     await recordApproval("mcp_tool", '{}', "mcp", {
       scope: "session",
+      sessionId: SESSION,
       verdictAtApproval: "low",
       nlJustification: null,
     });
@@ -243,7 +258,7 @@ describe("listApprovals", () => {
     expect(revoked!.revokedAt).not.toBeNull();
 
     // But lookupApproval skips revoked entries
-    const lookup = await lookupApproval("file_read", '{"path":"/tmp/b"}', "builtin");
+    const lookup = await lookupApproval("file_read", '{"path":"/tmp/b"}', "builtin", undefined, undefined, undefined, SESSION);
     expect(lookup).toBeNull();
   });
 });
@@ -271,6 +286,7 @@ describe("CRITICAL-4: different trustOrigin values produce distinct cache keys",
   it("approval recorded with trustOrigin A is not visible under trustOrigin B", async () => {
     await recordApproval("bash_run", '{"command":"ls"}', "user-keyboard", {
       scope: "session",
+      sessionId: SESSION,
       verdictAtApproval: "high",
       nlJustification: "user approved",
       trustOrigin: "user-keyboard",
@@ -282,6 +298,9 @@ describe("CRITICAL-4: different trustOrigin values produce distinct cache keys",
       '{"command":"ls"}',
       "user-keyboard",
       "plugin-untrusted",
+      undefined,
+      undefined,
+      SESSION,
     );
     expect(miss).toBeNull();
   });
@@ -289,6 +308,7 @@ describe("CRITICAL-4: different trustOrigin values produce distinct cache keys",
   it("approval recorded with trustOrigin is found under same trustOrigin", async () => {
     await recordApproval("bash_run", '{"command":"ls"}', "user-keyboard", {
       scope: "session",
+      sessionId: SESSION,
       verdictAtApproval: "medium",
       nlJustification: null,
       trustOrigin: "mcp-server-abc",
@@ -299,6 +319,9 @@ describe("CRITICAL-4: different trustOrigin values produce distinct cache keys",
       '{"command":"ls"}',
       "user-keyboard",
       "mcp-server-abc",
+      undefined,
+      undefined,
+      SESSION,
     );
     expect(hit).not.toBeNull();
     expect(hit!.verdictAtApproval).toBe("medium");
@@ -307,6 +330,7 @@ describe("CRITICAL-4: different trustOrigin values produce distinct cache keys",
   it("approval recorded without trustOrigin is not found when trustOrigin is supplied", async () => {
     await recordApproval("bash_run", '{"command":"ls"}', "user-keyboard", {
       scope: "session",
+      sessionId: SESSION,
       verdictAtApproval: "low",
       nlJustification: null,
     });
@@ -316,6 +340,9 @@ describe("CRITICAL-4: different trustOrigin values produce distinct cache keys",
       '{"command":"ls"}',
       "user-keyboard",
       "plugin-abc",
+      undefined,
+      undefined,
+      SESSION,
     );
     expect(miss).toBeNull();
   });
@@ -323,6 +350,7 @@ describe("CRITICAL-4: different trustOrigin values produce distinct cache keys",
   it("different approvalCacheKey values produce distinct cache entries", async () => {
     await recordApproval("bash_run", '{"command":"ls"}', "user-keyboard", {
       scope: "session",
+      sessionId: SESSION,
       verdictAtApproval: "low",
       nlJustification: null,
       approvalCacheKey: argsKey("key-alpha"),
@@ -334,6 +362,8 @@ describe("CRITICAL-4: different trustOrigin values produce distinct cache keys",
       "user-keyboard",
       undefined,
       argsKey("key-beta"),
+      undefined,
+      SESSION,
     );
     expect(miss).toBeNull();
 
@@ -343,6 +373,8 @@ describe("CRITICAL-4: different trustOrigin values produce distinct cache keys",
       "user-keyboard",
       undefined,
       argsKey("key-alpha"),
+      undefined,
+      SESSION,
     );
     expect(hit).not.toBeNull();
   });
@@ -386,12 +418,13 @@ describe("HIGH-2: canonicalStringify produces key-order-invariant output", () =>
     // Record using canonical form of argsObj1
     await recordApproval("file_read", canonical1, "builtin", {
       scope: "session",
+      sessionId: SESSION,
       verdictAtApproval: "low",
       nlJustification: null,
     });
 
     // Lookup using canonical form of argsObj2 — must hit
-    const hit = await lookupApproval("file_read", canonical2, "builtin");
+    const hit = await lookupApproval("file_read", canonical2, "builtin", undefined, undefined, undefined, SESSION);
     expect(hit).not.toBeNull();
   });
 });
@@ -413,12 +446,12 @@ describe("target-wide memory key as the remembered identity", () => {
   it("replaces the args, and records an args hash to tell exact hits from target-wide ones", async () => {
     await recordApproval("web_fetch", urlArgs("https://a.example/x"), "builtin", { ...allow, approvalCacheKey: atOrigin(A) });
     __resetSessionStoreForTest();
-    const same = await lookupApproval("web_fetch", urlArgs("https://a.example/x"), "builtin", "user-keyboard", atOrigin(A));
-    const other = await lookupApproval("web_fetch", urlArgs("https://a.example/y"), "builtin", "user-keyboard", atOrigin(A));
+    const same = await lookupApproval("web_fetch", urlArgs("https://a.example/x"), "builtin", "user-keyboard", atOrigin(A), undefined, SESSION);
+    const other = await lookupApproval("web_fetch", urlArgs("https://a.example/y"), "builtin", "user-keyboard", atOrigin(A), undefined, SESSION);
     expect(same && isExactArgsDecision(same, urlArgs("https://a.example/x"))).toBe(true);
     expect(other && isExactArgsDecision(other, urlArgs("https://a.example/y"))).toBe(false);
-    expect(await lookupApproval("web_fetch", urlArgs("http://a.example/x"), "builtin", "user-keyboard", atOrigin("http://a.example:80"))).toBeNull();
-    expect(await lookupApproval("web_fetch", urlArgs("https://a.example:8443/x"), "builtin", "user-keyboard", atOrigin("https://a.example:8443"))).toBeNull();
+    expect(await lookupApproval("web_fetch", urlArgs("http://a.example/x"), "builtin", "user-keyboard", atOrigin("http://a.example:80"), undefined, SESSION)).toBeNull();
+    expect(await lookupApproval("web_fetch", urlArgs("https://a.example:8443/x"), "builtin", "user-keyboard", atOrigin("https://a.example:8443"), undefined, SESSION)).toBeNull();
     const rows = Object.values((await readApprovals()).approvals);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ rememberBy: "key", argsIdentity: expect.stringMatching(/^[a-f0-9]{64}$/) });
@@ -434,24 +467,24 @@ describe("target-wide memory key as the remembered identity", () => {
     });
     __resetSessionStoreForTest();
     const args = urlArgs("https://a.example/y");
-    expect(await lookupApproval("web_fetch", args, "builtin", "user-keyboard", atOrigin(A), first)).not.toBeNull();
-    expect(await lookupApproval("web_fetch", args, "builtin", "user-keyboard", atOrigin(A), second)).toBeNull();
-    expect(await lookupApproval("web_fetch", args, "builtin", "llm-tool-arg", atOrigin(A), first)).toBeNull();
-    expect(await lookupApproval("web_fetch", args, "plugin", "user-keyboard", atOrigin(A), first)).toBeNull();
+    expect(await lookupApproval("web_fetch", args, "builtin", "user-keyboard", atOrigin(A), first, SESSION)).not.toBeNull();
+    expect(await lookupApproval("web_fetch", args, "builtin", "user-keyboard", atOrigin(A), second, SESSION)).toBeNull();
+    expect(await lookupApproval("web_fetch", args, "builtin", "llm-tool-arg", atOrigin(A), first, SESSION)).toBeNull();
+    expect(await lookupApproval("web_fetch", args, "plugin", "user-keyboard", atOrigin(A), first, SESSION)).toBeNull();
   });
 
   it("a policy key without opted-in memory still requires identical input", async () => {
     const argsOnly = approvalCacheKeyIdentity("routine_schedule:scope:deny-all", { kind: "args" })!;
     await recordApproval("routine_schedule", '{"prompt":"a"}', "builtin", { ...allow, approvalCacheKey: argsOnly });
-    expect(await lookupApproval("routine_schedule", '{"prompt":"a"}', "builtin", "user-keyboard", argsOnly)).not.toBeNull();
-    expect(await lookupApproval("routine_schedule", '{"prompt":"b"}', "builtin", "user-keyboard", argsOnly)).toBeNull();
+    expect(await lookupApproval("routine_schedule", '{"prompt":"a"}', "builtin", "user-keyboard", argsOnly, undefined, SESSION)).not.toBeNull();
+    expect(await lookupApproval("routine_schedule", '{"prompt":"b"}', "builtin", "user-keyboard", argsOnly, undefined, SESSION)).toBeNull();
   });
 
   it("does not honour an allow written under the pre-v2 args+key formula", async () => {
     const legacy = approvalCacheKeyIdentity(policyKey, { kind: "args" })!;
     await recordApproval("web_fetch", urlArgs("https://a.example/x"), "builtin", { ...allow, approvalCacheKey: legacy });
     __resetSessionStoreForTest();
-    expect(await lookupApproval("web_fetch", urlArgs("https://a.example/x"), "builtin", "user-keyboard", atOrigin(A))).toBeNull();
+    expect(await lookupApproval("web_fetch", urlArgs("https://a.example/x"), "builtin", "user-keyboard", atOrigin(A), undefined, SESSION)).toBeNull();
   });
 
   it("keeps honouring an exact deny written under the pre-v2 args+key formula", async () => {
@@ -459,9 +492,9 @@ describe("target-wide memory key as the remembered identity", () => {
     await recordApproval("web_fetch", urlArgs("https://a.example/x"), "builtin", { ...allow, decision: "deny", approvalCacheKey: legacy });
     await recordApproval("web_fetch", urlArgs("https://a.example/other"), "builtin", { ...allow, approvalCacheKey: atOrigin(A) });
     __resetSessionStoreForTest();
-    expect(await lookupUserDecision("web_fetch", urlArgs("https://a.example/x"), "builtin", "user-keyboard", atOrigin(A)))
+    expect(await lookupUserDecision("web_fetch", urlArgs("https://a.example/x"), "builtin", "user-keyboard", atOrigin(A), undefined, SESSION))
       .toMatchObject({ decision: "deny" });
-    expect(await lookupUserDecision("web_fetch", urlArgs("https://a.example/y"), "builtin", "user-keyboard", atOrigin(A)))
+    expect(await lookupUserDecision("web_fetch", urlArgs("https://a.example/y"), "builtin", "user-keyboard", atOrigin(A), undefined, SESSION))
       .toMatchObject({ decision: "allow" });
   });
 

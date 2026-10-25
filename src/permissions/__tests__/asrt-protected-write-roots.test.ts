@@ -1,3 +1,4 @@
+import { TEST_COMMAND_ID, TEST_WORKER_EGRESS_OWNER } from "../../__tests__/support/egress-fixture.js";
 /**
  * No wrap is granted a write root, or a read grant, under the protected
  * read-deny floor.
@@ -44,7 +45,6 @@ import { createSandboxProcessHome } from "../sandbox-process-home.js";
 import { bundledWrappedEnv, wrapBundledCommand } from "../../sandbox/wrap-bundled-command.js";
 import { getConfiguredSessionReadPolicy } from "../sensitive-paths.js";
 import { asrtCanInitialize } from "./test-helpers.js";
-import { TEST_COMMAND_ID, TEST_WORKER_EGRESS_OWNER } from "../../__tests__/support/egress-fixture.js";
 
 vi.mock("node:os", async (importOriginal) => {
   const original = await importOriginal<typeof import("node:os")>();
@@ -240,10 +240,10 @@ describe("the shared layer withholds grants under the protected floor", () => {
     expect(sites.sort()).toEqual([
       "permissions/asrt-sandbox.ts: updateConfig(buildSandboxConfig(withWorkerUnixSockets(_baseTrustedSettings)));",
       "permissions/asrt-sandbox.ts: updateConfig(buildSandboxConfig(withWorkerUnixSockets(_baseTrustedSettings,socketDir)));",
-      "permissions/asrt-sandbox.ts: wrapWithSandboxArgv(ASRT_LINUX_RUNTIME_PROBE_COMMAND,undefined,undefined,abortController.signal,process.cwd());",
-      "permissions/asrt-sandbox.ts: wrapWithSandboxArgv(command,options.binShell,buildPerCommandSandboxCustomConfig(options.filesystem),options.abortSignal,undefined,{commandId:options.commandId,...(wrapOptions??{})});",
-      "permissions/asrt-sandbox.ts: wrapWithSandboxArgv(command,options.binShell,buildPerCommandSandboxCustomConfig(options.filesystem),options.abortSignal,undefined,{commandId:options.commandId});",
-    ]);
+      "permissions/asrt-sandbox.ts: wrapWithSandboxArgv(ASRT_LINUX_RUNTIME_PROBE_COMMAND,undefined,undefined,abortController.signal,process.cwd(),{commandId:invocation.token,denyUnixSockets:true});",
+      "permissions/asrt-sandbox.ts: wrapWithSandboxArgv(command,options.binShell,customConfig,options.abortSignal,undefined,{commandId:options.commandId,denyUnixSockets:options.denyUnixSockets});",
+      "permissions/asrt-sandbox.ts: wrapWithSandboxArgv(command,options.binShell,customConfig,options.abortSignal,undefined,{...wrapOptions,commandId:options.commandId,denyUnixSockets:options.denyUnixSockets});",
+    ].sort());
   });
 });
 
@@ -477,7 +477,8 @@ describe.skipIf(hostPlatform === "win32")("a confined child cannot reach user da
     writeFileSync(join(sessions, "s.jsonl"), SECRET);
     const home = createSandboxProcessHome();
     try {
-      const { argv, env } = await wrapBundledCommand({ egressOwner: TEST_WORKER_EGRESS_OWNER,
+      const { argv, env } = await wrapBundledCommand({
+        egressOwner: TEST_WORKER_EGRESS_OWNER,
         command: "/bin/sh",
         args: ["-c", `cat ${join(sessions, "s.jsonl")}; echo probe-finished`],
         sandboxHome: home,
@@ -602,7 +603,8 @@ describe.skipIf(hostPlatform === "win32")("a confined child cannot reach user da
     const layout = pluginsLayout();
     const home = createSandboxProcessHome();
     try {
-      const { argv, env } = await wrapBundledCommand({ egressOwner: TEST_WORKER_EGRESS_OWNER,
+      const { argv, env } = await wrapBundledCommand({
+        egressOwner: TEST_WORKER_EGRESS_OWNER,
         command: "/bin/sh",
         args: ["-c", pluginsProbe(layout, [join(layout.generation, "hook.txt")])],
         sandboxHome: home,
@@ -629,7 +631,8 @@ describe.skipIf(hostPlatform === "win32")("a confined child cannot reach user da
     try {
       // The roots `agent-plugin-hook-runtime.ts` and `agent-plugin-mcp.ts`
       // hand the wrap: the installed version it runs from, the data it writes.
-      const { argv, env } = await wrapBundledCommand({ egressOwner: TEST_WORKER_EGRESS_OWNER,
+      const { argv, env } = await wrapBundledCommand({
+        egressOwner: TEST_WORKER_EGRESS_OWNER,
         command: "/bin/sh",
         args: ["-c", pluginsProbe(layout, [join(layout.ownAgentGeneration, "hook.txt")], layout.ownAgentData)],
         sandboxHome: home,

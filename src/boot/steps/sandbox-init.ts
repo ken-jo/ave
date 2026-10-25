@@ -62,6 +62,7 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
       useAppOwnedSandboxTempRoot,
       checkAsrtDependencies,
       isAsrtLinuxRuntimeProbeError,
+      isAsrtMacRuntimeProbeError,
       closeAllEgressConnections,
     } = await import("../../permissions/asrt-sandbox.js");
     const {
@@ -87,7 +88,8 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
     // children, plugin hooks and MCP stdio servers. Neither scope's signals
     // decide the other. ASRT itself is one runtime, initialized when either
     // scope asks for it. `explicitEnv` is the deliberate "I really mean it"
-    // override; `settingOn` is a Settings toggle (off by default). The
+    // override; `settingOn` is a Settings toggle (the shell toggle is on by
+    // default on macOS/Linux, the worker toggle off by default). The
     // DISTINCTION drives degrade-vs-abort: see decideSandboxGate.
     const features = settingsService.get("features");
     const shellExplicitEnv = process.env["AVE_SANDBOX_ENABLED"] === "1";
@@ -322,14 +324,15 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
           setWorkerEgressAllowlists(workerAllowlists);
           const egressAskCallback = createEgressAskRuntimeCallback({
             approvalGate: ctx.approvalGate,
+            permissionManager: ctx.permissionManager,
             // Shipped on: settings-defaults sets it, and the service merges
             // stored flags over the defaults.
             shellAskEnabled: () => settingsService.get("features")?.shellEgressAsk === true,
           });
           // Trust boundary: WEAKENING flags are NOT set here (deny-by-default,
           // no Apple events / weaker isolation / unix-socket opening). Only the
-          // enforced allow-list + strict flag. Per-command filesystem scoping
-          // (write-jail + HOME read-deny) is applied at the call site via the
+          // empty allowlist and host approval callback. Filesystem scoping
+          // is applied at the call site via the
           // narrow `filesystem` option, never here as a weakening channel.
           // Before the first wrap, because ASRT reads the variable this sets
           // from THIS process's environment at wrap time — a value published
@@ -507,9 +510,12 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
             platform: process.platform,
             depsOk: false,
           });
+          const macRuntimeProbeFailed = process.platform === "darwin" && isAsrtMacRuntimeProbeError(initErr);
           const runtimeProbeFailed =
             process.platform === "linux" && isAsrtLinuxRuntimeProbeError(initErr);
-          const failureReason: SandboxGateReason = runtimeProbeFailed
+          const failureReason: SandboxGateReason = macRuntimeProbeFailed
+            ? failDecision.action === "abort" ? "abort-macos-runtime-probe-failed" : "degrade-macos-runtime-probe-failed"
+            : runtimeProbeFailed
             ? failDecision.action === "abort"
               ? "abort-linux-runtime-probe-failed"
               : "degrade-linux-runtime-probe-failed"
@@ -541,15 +547,12 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
           );
           recordWindows(windowsStart ?? "none", true);
           recordGate("degrade", failureReason, [cause], failureCauses);
-          // sandboxActive stays false: a Linux runtime-probe failure never
+          // sandboxActive stays false: a runtime-probe failure never
           // publishes a verified capability, so UI/reviewer remain kind="none".
         }
       }
     } else {
-      // Gate OFF (neither on-signal set) → skip. On the staged rollout this is
-      // the Linux/Windows default-off path. Log the enable hint on darwin (where
-      // off is now a deliberate opt-out); emit the skip telemetry on EVERY
-      // platform so the off-rate is monitorable alongside activate/degrade/abort.
+      // A deliberate opt-out, or a platform whose default remains gated off.
       if (process.platform === "darwin") {
         log.info(
     "boot: OS tool sandbox gated off (enable via Settings → Permissions, or AVE_SANDBOX_ENABLED=1 for shells / " +

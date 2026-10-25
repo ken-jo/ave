@@ -1,3 +1,4 @@
+import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
 /**
  * The per-principal sandbox temp directories: how a principal's id names its
  * directory, how the host creates it, and how boot empties the root.
@@ -46,7 +47,6 @@ import { sweepSandboxPrivateRoot } from "../../boot/steps/sandbox-init.js";
 import { makeTestTreeWritable } from "../../plugins/__tests__/test-helpers.js";
 import { createSandboxProcessHome } from "../sandbox-process-home.js";
 import { asrtCanInitialize } from "./test-helpers.js";
-import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
 
 let home: string;
 let previousAveHome: string | undefined;
@@ -207,7 +207,10 @@ describe("the private roots in a sandbox read deny", () => {
     () => {
       for (const root of appOwnedSandboxPrivateRoots()) ensureSandboxPrivateRoot(root);
       const floor = getDefaultSensitiveReadDenyPaths();
-      const denyRead = buildPerCommandSandboxCustomConfig({ denyRead: floor })!.filesystem!.denyRead;
+      const denyRead = buildPerCommandSandboxCustomConfig({ denyRead: floor })!.filesystem!.denyRead.map((entry) => {
+        if (typeof entry !== "string") throw new Error("Expected plain host path entries");
+        return entry;
+      });
       const tempRoot = realpathSync(appOwnedSandboxTempRoot());
       const homeRoot = realpathSync(appOwnedSandboxHomeRoot());
       const handoffRoot = realpathSync(appOwnedTerminalHandoffRoot());

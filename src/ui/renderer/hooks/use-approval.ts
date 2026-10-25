@@ -261,6 +261,7 @@ export function useApproval(): ApprovalQueueApi {
           // and are forcibly downgraded to deny-once.
           nonce: current.nonce,
           hmac: current.hmac,
+          ...(extras?.egressScope === undefined ? {} : { egressScope: extras.egressScope }),
           ...(extras && "elicitationContent" in extras
             ? { elicitationContent: extras.elicitationContent }
             : {}),

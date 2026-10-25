@@ -1,5 +1,6 @@
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
+import { egressInvocationOwner } from "../../permissions/egress-invocations.js";
 import { join } from "node:path";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
@@ -35,11 +36,15 @@ interface WindowsSpawnCall {
 const windowsSpawns: WindowsSpawnCall[] = [];
 const releaseHoldMock = vi.fn();
 let failWindowsSpawn: Error | undefined;
+let failWrappedEnv: Error | undefined;
 vi.mock("../../sandbox/wrap-bundled-command.js", async (original) => {
   const real = await original<typeof import("../../sandbox/wrap-bundled-command.js")>();
   const { spawn } = await import("node:child_process");
   const { PassThrough } = await import("node:stream");
-  return { ...real, spawnWindowsBundledProcess: async (call: WindowsSpawnCall) => {
+  return { ...real, bundledWrappedEnv: (...args: Parameters<typeof real.bundledWrappedEnv>) => {
+    if (failWrappedEnv !== undefined) throw failWrappedEnv;
+    return real.bundledWrappedEnv(...args);
+  }, spawnWindowsBundledProcess: async (call: WindowsSpawnCall) => {
     windowsSpawns.push(call);
     if (failWindowsSpawn !== undefined) throw failWindowsSpawn;
     const command = call.command === "node" ? process.execPath : call.command;
@@ -55,7 +60,7 @@ vi.mock("../../sandbox/wrap-bundled-command.js", async (original) => {
 });
 
 import { runOneHookScript } from "../script-hook-runner.js";
-import { appOwnedSandboxPrivateRoots, type SandboxTempPrincipal } from "../../permissions/asrt-sandbox.js";
+import { appOwnedSandboxPrivateRoots, cleanupAsrtSandboxAfterCommand, type SandboxTempPrincipal } from "../../permissions/asrt-sandbox.js";
 import {
   __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, setActiveSandboxCapability, setShellSandboxRequestedAtBoot,
 } from "../../permissions/sandbox-capability.js";
@@ -82,7 +87,7 @@ function activateShellSandbox(): void {
     confines: { filesystem: true, process: true, network: true } });
 }
 
-afterEach(() => { __resetSandboxRequestedAtBootForTest(); __resetActiveSandboxCapabilityForTest(); sandboxActive = false; admissionOpen = true; wrap.mockReset(); vi.restoreAllMocks(); windowsSpawns.length = 0; releaseHoldMock.mockReset(); failWindowsSpawn = undefined; });
+afterEach(() => { __resetSandboxRequestedAtBootForTest(); __resetActiveSandboxCapabilityForTest(); sandboxActive = false; admissionOpen = true; wrap.mockReset(); vi.restoreAllMocks(); windowsSpawns.length = 0; releaseHoldMock.mockReset(); failWindowsSpawn = undefined; failWrappedEnv = undefined; });
 afterAll(async () => { await cleanupTmpDir(root); });
 
 describe("bundled hook runner", () => {
@@ -172,6 +177,19 @@ process.stdin.on('end', () => process.stdout.write(JSON.stringify({action:'allow
     expect(result.reason).toContain("wrap failed");
   });
 
+  it("releases the egress invocation and the wrap when composing its environment fails", async () => {
+    sandboxActive = true;
+    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    wrap.mockResolvedValueOnce({ argv: ["node", script], env: {} });
+    failWrappedEnv = new Error("env failed");
+    vi.mocked(cleanupAsrtSandboxAfterCommand).mockClear();
+    const result = await runOneHookScript(runnable(), payload);
+    expect(result).toMatchObject({ decision: "deny", reason: expect.stringContaining("env failed") });
+    const token = (wrap.mock.calls[0]![1] as { commandId: string }).commandId;
+    expect(egressInvocationOwner(token)).toBeUndefined();
+    expect(cleanupAsrtSandboxAfterCommand).toHaveBeenCalledOnce();
+  });
+
   it("checks process admission before allocating a sandbox wrap", async () => {
     sandboxActive = true;
     admissionOpen = false;
@@ -187,6 +205,9 @@ process.stdin.on('end', () => process.stdout.write(JSON.stringify({action:'allow
     const result = await runOneHookScript(runnable(), payload);
     expect(result.decision).toBe("allow");
     const [cmdline, raw] = wrap.mock.calls[0]!;
+    const token = (raw as { commandId: string }).commandId;
+    expect(token).toMatch(/^[a-f0-9]{32}$/);
+    expect(egressInvocationOwner(token)).toBeUndefined();
     const options = raw as { filesystem: { allowWrite: string[]; denyRead: string[]; denyWrite: string[] } };
     expect(options.filesystem.allowWrite).toContain(dataDir);
     expect(options.filesystem.allowWrite).not.toContain(generationRoot);

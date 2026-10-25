@@ -324,9 +324,10 @@ export async function spawnConfinedChild(spec: ConfinedChildSpec): Promise<Confi
     // The token outlives neither the process nor a spawn that never started.
     const running = child;
     running.once("exit", () => egress.release());
+    running.once("close", () => egress.release());
     running.once("error", () => { if (running.pid === undefined) egress.release(); });
   }
-  trackManagedChildProcess(child, { label: spec.label });
+  trackManagedChildProcess(child, { label: spec.label, killProcessGroup: egress !== undefined && process.platform !== "win32" });
   if (relayRequest === undefined) {
     return { child, confinement, stdin: child.stdin, stdout: child.stdout };
   }
@@ -474,7 +475,12 @@ async function resolveSpawnLine(
     egress.release();
     throw error;
   }
-  spec.onWrapped?.();
+  try {
+    spec.onWrapped?.();
+  } catch (error) {
+    egress.release();
+    throw error;
+  }
   const [executable, ...args] = argv;
   if (executable === undefined) {
     egress.release();

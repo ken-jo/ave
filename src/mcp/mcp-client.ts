@@ -2157,9 +2157,9 @@ class StdioTransport implements McpTransport {
         : {}),
     };
 
-    // ASRT stdio worker wrap — gate DEFAULT-OFF. When the OS-tool sandbox is active,
+    // When the OS-tool sandbox is active,
     // route this long-lived stdio worker through ASRT's wrapWorkerCommand so its
-    // egress is enforced by the SAME global strict-union allow-list as host tools
+    // egress is enforced by the attributed worker proxy policy
     // and its writes are confined to the per-server filesystem jail. ASRT is
     // stdio-transparent on mac/linux: it wraps as `[shell, -c, <wrapped>]`;
     // a child spawned with inherited stdio:["pipe","pipe","pipe"] passes
@@ -2211,8 +2211,7 @@ class StdioTransport implements McpTransport {
    * This is a deny-list of known-sensitive subpaths, NOT a read-allow jail:
    * ASRT's read model is deny-only, so a path not on the list stays
    * readable (the worker still needs cwd / its sandbox root / tmp). Network
-   * egress is governed by the SHARED boot config (strict union allow-list), not
-   * per command. Only invoked when {@link isPluginWorkerConfinementActive}.
+   * egress is governed by the invocation-attributed worker callback. Only invoked when {@link isPluginWorkerConfinementActive}.
    */
   private async openWrapped(
     spawnCommand: { command: string; args: string[] },
@@ -2275,7 +2274,7 @@ class StdioTransport implements McpTransport {
         ...(this.config.cwd ? { cwd: this.config.cwd } : {}),
       });
 
-      trackManagedChildProcess(this.process, { label: `mcp:${this.config.id}:asrt` });
+      trackManagedChildProcess(this.process, { label: `mcp:${this.config.id}:asrt`, killProcessGroup: true });
       // It leads its own process group: the sandbox keeps the ended
       // invocation's listener port while anything in that group lives.
       if (this.process.pid !== undefined) egress.noteProcessGroup(this.process.pid);

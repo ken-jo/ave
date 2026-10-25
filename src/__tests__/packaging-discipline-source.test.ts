@@ -1508,6 +1508,23 @@ describe("installer smoke and packaging discipline", () => {
     expect(jobsCarryingGates).toBeGreaterThanOrEqual(1);
   });
 
+  it("runs the native control boundaries in both platform regression jobs", () => {
+    const jobs = workflowJobs(readRepoFile(".github/workflows/ci.yml"));
+    for (const job of ["macos-permission-tests", "linux-confinement-tests"]) {
+      const commands = jobRunCommands(jobs.get(job) as string);
+      const tests = commands.find((command) => command.includes("bun run test --"));
+      expect(tests, `${job} has no native regression invocation`).toBeDefined();
+      for (const suite of [
+        "sandbox-control-writes.integration.test.ts",
+        "sandbox-shell-sockets.integration.test.ts",
+        "sandbox-git-controls.integration.test.ts",
+        "egress-terminal-background.integration.test.ts",
+      ]) {
+        expect(tests, `${job} omits ${suite}`).toContain(`src/permissions/__tests__/${suite}`);
+      }
+    }
+  });
+
   it("keeps ci.yml's hygiene gates inside the required build-and-test check", () => {
     const jobs = workflowJobs(readRepoFile(".github/workflows/ci.yml"));
     const verification = jobs.get("build-and-test");
@@ -1606,7 +1623,14 @@ describe("installer smoke and packaging discipline", () => {
     expect(runtime[1].run).toContain("bwrap --unshare-all --ro-bind / / --dev /dev --proc /proc /bin/true");
     const job = workflowJobs(source).get(jobId) as string;
     expect(jobRunCommands(job).join("\n")).not.toMatch(/apt-get\s+install/u);
-    if (jobId === "vitest") expect(job).not.toContain("AVE_REQUIRE_SANDBOX_CASES");
+    // Native confinement cases run in both lanes, so a lane whose backend
+    // cannot start fails instead of skipping them.
+    const tests = steps.findIndex((step: { run?: string }) =>
+      step.run?.includes(jobId === "vitest" ? "bun run test:ci" : "bun run test --"));
+    expect(tests).toBeGreaterThan(steps.indexOf(runtime[1]));
+    expect(steps[tests].env?.AVE_REQUIRE_SANDBOX_CASES).toBe("1");
+    const mustRun = JSON.parse(readRepoFile("config/ci-must-run-tests.json")) as { groups: Record<string, string[]> };
+    expect(mustRun.groups.permissions).toContain("src/permissions/");
   });
 
   it("gates the Vitest shards on the build job's documentation classification", () => {
@@ -2130,9 +2154,9 @@ describe("installer smoke and packaging discipline", () => {
     expect(agents).toContain("AbortController");
     expect(agents).toContain("plus `Tool Governance` and `Security And Audit`");
     expect(agents).not.toContain("architecture section 6.3");
-    expect(agents).toContain("OS tool sandbox is opt-in on every platform");
-    expect(agents).toContain("per the decision comment beside");
-    expect(agents).toContain("src/data/settings-defaults.ts#L216-L262");
+    expect(agents).toContain("OS tool sandbox defaults on for macOS/Linux and remains default-off on Windows");
+    expect(agents).toContain("per `osToolSandbox`");
+    expect(agents).toContain("src/data/settings-defaults.ts");
     expect(agents).toContain("On `darwin`/`linux`, explicit `AVE_SANDBOX_ENABLED=1` or\n  `AVE_PLUGIN_WORKER_CONFINEMENT=1` activation failure");
     // The two sandbox scopes stay separate in the contract: neither setting or
     // variable decides the other.

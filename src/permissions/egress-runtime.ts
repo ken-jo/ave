@@ -7,6 +7,7 @@ import type { SandboxAskCallback } from "@anthropic-ai/sandbox-runtime";
 import { createLogger } from "../lib/logger.js";
 import { errorMessage } from "../shared/error-message.js";
 import { emitSandboxAudit } from "../audit/sandbox-audit-sink.js";
+import type { PermissionManager } from "./permission-manager.js";
 import type { ApprovalGate } from "./approval-gate.js";
 import { closeEgressConnections, normalizeUnionForAsrt } from "./asrt-sandbox.js";
 import type { ListedEgressGrant, RevocableEgressGrant } from "../shared/egress-grant-scopes.js";
@@ -93,12 +94,17 @@ export interface EgressAskRuntimeDeps {
   readonly approvalGate: Pick<ApprovalGate, "requestAndWait">;
   /** `features.shellEgressAsk`. */
   readonly shellAskEnabled: () => boolean;
+  readonly permissionManager?: PermissionManager;
 }
 
 /** The callback ASRT is initialised with. */
 export function createEgressAskRuntimeCallback(deps: EgressAskRuntimeDeps): SandboxAskCallback {
-  const requester = createApprovalGateEgressRequester(deps.approvalGate);
+  const requester = createApprovalGateEgressRequester(deps.approvalGate, deps.permissionManager);
   return createEgressAskCallback({
+    // OWNER ITEM: ip2 caps shell egress grants at once/always; owner 2026-10-16 offers
+    // once/conversation/workspace/always (Windows shared frontend capped at
+    // once/conversation, 2026-10-19). This follows ip2 until the owner picks.
+    shellGrantScopes: ["once", "always"],
     identityStrength: egressIdentityStrength,
     ownerOf: egressInvocationOwner,
     abortSignalOf: egressInvocationAbortSignal,

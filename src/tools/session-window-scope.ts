@@ -17,19 +17,35 @@ export interface SessionWindowScopeDeps {
   liveOriginSessionId: (sessionId: string) => string | undefined;
 }
 
+/**
+ * Walks a session up through its live sub-agent origins, nearest first,
+ * starting with the session itself. Stops at a cycle or past
+ * {@link MAX_SCOPE_DEPTH}; `complete` says whether the walk reached a session
+ * with no live origin.
+ */
+function walkLiveOrigins(
+  sessionId: string,
+  liveOriginSessionId: SessionWindowScopeDeps["liveOriginSessionId"],
+): { chain: string[]; complete: boolean } {
+  const chain: string[] = [];
+  let current: string | undefined = sessionId;
+  for (let depth = 0; current !== undefined && depth <= MAX_SCOPE_DEPTH; depth++) {
+    if (chain.includes(current)) return { chain, complete: false };
+    chain.push(current);
+    current = liveOriginSessionId(current);
+  }
+  return { chain, complete: current === undefined };
+}
+
 /** The hosting window of `sessionId` (or of its nearest hosted ancestor), and that ancestor. */
 export function resolveSessionWindow(
   sessionId: string | undefined,
   deps: SessionWindowScopeDeps,
 ): { windowId: number; hostSessionId: string } | null {
-  const seen = new Set<string>();
-  let current = sessionId;
-  for (let depth = 0; current !== undefined && depth <= MAX_SCOPE_DEPTH; depth++) {
-    if (seen.has(current)) return null;
-    seen.add(current);
-    const windowId = deps.windowIdForHostedSession(current);
-    if (windowId !== null) return { windowId, hostSessionId: current };
-    current = deps.liveOriginSessionId(current);
+  if (sessionId === undefined) return null;
+  for (const candidate of walkLiveOrigins(sessionId, deps.liveOriginSessionId).chain) {
+    const windowId = deps.windowIdForHostedSession(candidate);
+    if (windowId !== null) return { windowId, hostSessionId: candidate };
   }
   return null;
 }

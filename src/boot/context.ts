@@ -167,6 +167,8 @@ export class BootContext {
   declare skillApprovalsStore: SkillApprovalsStore;
   declare askUserQuestionGate: AskUserQuestionGate;
   declare subAgentRunnerRef: { fn: SubAgentRunner | undefined };
+  /** Root conversation of a session (sub-agent ancestry); shared by session approvals and the judge. */
+  declare resolveRootSessionId: (sessionId: string) => string;
   declare idleScheduler: IdleSchedulerService | undefined;
 
   // ── Marketplace (setupMarketplace) ─────────────────────────────────────────
@@ -316,6 +318,7 @@ const BOOT_CONTEXT_FIELDS = [
   "skillApprovalsStore",
   "askUserQuestionGate",
   "subAgentRunnerRef",
+  "resolveRootSessionId",
   "idleScheduler",
   "pluginMarketplace",
   "refreshActiveLlmWildcard",

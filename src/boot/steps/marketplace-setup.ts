@@ -5,7 +5,7 @@
  * Constructs the PluginMarketplaceService — the plugin install/uninstall
  * transactions the git marketplace drives (design §16.2) — and wires the
  * live-refresh closures the settings IPC handlers invoke: the active-LLM
- * wildcard config push and the ASRT sandbox network allow-list rebuild.
+ * wildcard config push and the sandbox network-policy refresh.
  */
 import { rm } from "node:fs/promises";
 import { join } from "node:path";

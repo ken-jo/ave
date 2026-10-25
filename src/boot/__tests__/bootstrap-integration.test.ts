@@ -157,6 +157,9 @@ vi.mock("../conversation.js", () => ({
       // Boot pushes the Layer 1 read fence in from the settings file on every
       // reviewer re-wire, so a stub that omits it fails the whole bootstrap.
       setBlockReadsOutsideWorkingDirectories: vi.fn(),
+      // Each re-wire attaches the configured judge chain and its shared breaker.
+      getJudgeBreaker: vi.fn(() => ({})),
+      setJudge: vi.fn(),
     };
   }),
   createPostTurnHookChain: vi.fn(() => ({ postTurnHookChain: {} })),
@@ -559,6 +562,13 @@ vi.mock("../../plugins/plugin-paths.js", () => ({
 
 // ── permissions/* (incl. dynamically imported sandbox modules) ───────────────
 vi.mock("../../permissions/sandbox-capability.js", () => ({
+  detectSandboxCapability: vi.fn(() => ({
+    kind: "none",
+    confidence: "verified",
+    platform: process.platform,
+    reason: "sandbox disabled by bootstrap integration fixture",
+    confines: { filesystem: false, process: false, network: false },
+  })),
   isActiveSandboxFilesystemContained: vi.fn(() => false),
   isActiveSandboxShellContained: vi.fn(() => false),
   isActiveSandboxFilesystemContainedForPluginEffects: vi.fn(() => false),
@@ -568,7 +578,6 @@ vi.mock("../../permissions/sandbox-capability.js", () => ({
   setSandboxBootOutcome: vi.fn(),
   setWindowsSandboxSubstrate: vi.fn(),
   getWindowsSandboxSubstrate: vi.fn(() => null),
-  detectSandboxCapability: vi.fn(() => ({ kind: "none", confidence: "verified" })),
 }));
 vi.mock("../../permissions/asrt-sandbox.js", async () => {
   // The boot step sweeps both private roots and creates the HOME root, so they
@@ -579,6 +588,7 @@ vi.mock("../../permissions/asrt-sandbox.js", async () => {
   const { mkdirSync } = await import("node:fs");
   const roots = join(tmpdir(), "ave-bootstrap-integration-sandbox");
   return {
+    subscribeAsrtViolations: vi.fn(async () => () => {}),
     appOwnedSandboxTempRoot: vi.fn(() => join(roots, "tmp")),
     appOwnedSandboxHomeRoot: vi.fn(() => join(roots, "home")),
     sandboxTempPrincipalDirsInUse: () => new Set<string>(),
@@ -587,23 +597,29 @@ vi.mock("../../permissions/asrt-sandbox.js", async () => {
       return root;
     },
     initializeAsrtSandbox: vi.fn(async () => {}),
-    subscribeAsrtViolations: vi.fn(async () => () => {}),
     useAppOwnedSandboxTempRoot: vi.fn(() => "/tmp/ave-test-sandbox-tmp"),
     checkAsrtDependencies: vi.fn(async () => ({ errors: [], warnings: [] })),
     isAsrtLinuxRuntimeProbeError: vi.fn(() => false),
+    isAsrtMacRuntimeProbeError: vi.fn(() => false),
     closeAllEgressConnections: vi.fn(() => 0),
     isAsrtSandboxActive: vi.fn(() => false),
     normalizeUnionForAsrt: vi.fn(() => []),
     computeDynamicEndpointHosts: vi.fn(() => []),
   };
 });
-vi.mock("../../permissions/permission-settings-store.js", () => ({
-  readPermissionSettings: vi.fn(() => ({
-    permissions: { additionalDirectories: [] },
-  })),
-}));
+vi.mock("../../permissions/permission-settings-store.js", async () => {
+  // No judge block on disk: the store's own absent-file result (judge off).
+  const { normalizeJudgeSettings } = await import("../../permissions/judge/judge-settings.js");
+  return {
+    readPermissionSettings: vi.fn(() => ({
+      permissions: { additionalDirectories: [] },
+    })),
+    readJudgeSettings: vi.fn(() => normalizeJudgeSettings(undefined)),
+  };
+});
 vi.mock("../../permissions/user-approval-store.js", () => ({
   migrateCanonicalization: vi.fn(async () => {}),
+  setApprovalConversationRootResolver: vi.fn(),
 }));
 vi.mock("../../permissions/manifest-integrity.js", () => ({
   bindManifestIntegrityAudit: vi.fn(),

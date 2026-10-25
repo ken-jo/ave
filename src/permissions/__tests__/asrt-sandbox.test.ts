@@ -1,3 +1,4 @@
+import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
 /**
  * ASRT (Anthropic sandbox-runtime) host adapter — wiring tests.
  *
@@ -29,11 +30,17 @@ import {
 import { execFileSync, spawn } from "node:child_process";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
+import { lookup as lookupAll } from "node:dns/promises";
+// Ave patch test seam, reached by file path (not on the package entry).
+import { setDestinationResolverForTesting } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-manager.js";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, parse, sep } from "node:path";
 import { shellQuote } from "../../lib/shell-resolver.js";
 import { gitFixtureEnv } from "../../__tests__/support/git-fixture-env.mjs";
+import { initializeRequiredSandbox, shouldSkipNativeSandboxTests } from "../../__tests__/support/native-sandbox.js";
+import { getLocale, setLocale } from "../../i18n/index.js";
+import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 
 vi.mock("node:os", async (importOriginal) => {
   const original = await importOriginal<typeof import("node:os")>();
@@ -65,6 +72,7 @@ import {
   buildSandboxConfig,
   getDefaultSensitiveReadDenyPaths,
   getDefaultSensitiveWriteDenyPaths,
+  getBuiltinShellReadPolicy,
   appOwnedSandboxPrivateRoots,
   registerWorkerUnixSocketDir,
   unregisterWorkerUnixSocketDir,
@@ -88,7 +96,6 @@ import { preparedShellExecutableReadPaths } from "../../tools/prepared-shell-inv
 import { matchesDomainPattern } from "@anthropic-ai/sandbox-runtime/dist/sandbox/domain-pattern.js";
 import { resolveParentProxy } from "@anthropic-ai/sandbox-runtime/dist/sandbox/parent-proxy.js";
 import { rankWindowsFsAccess } from "@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js";
-import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
 import * as sensitivePaths from "../sensitive-paths.js";
 import { getDefaultWritePaths } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
 
@@ -263,7 +270,7 @@ describe("asrt-sandbox — gate ON wraps a real command under the OS sandbox", (
   });
 
   it.runIf(process.platform === "darwin" || process.platform === "linux")(
-    "finds an admitted executable beneath the denied home without exposing its siblings",
+    "finds an admitted executable while allowing broad sibling reads",
     async (context) => {
       if (!(await asrtCanInitialize())) return context.skip();
       const root = realpathSync(mkdtempSync(join(tmpdir(), "asrt-executable-")));
@@ -285,7 +292,7 @@ describe("asrt-sandbox — gate ON wraps a real command under the OS sandbox", (
         const result = await spawnWithSandbox(command, cwd, [cwd], 15, prepared);
         expect(result.output).toContain(executable);
         expect(result.output).toContain("executable-visible");
-        expect(result.output).not.toContain("sibling-must-stay-private");
+        expect(result.output).toContain("sibling-must-stay-private");
         expect(result.isError).toBe(true);
         expect(result.metadata.sandboxed).toBe(true);
         expect(readFileSync(executable, "utf8")).toBe("#!/bin/sh\nprintf 'executable-visible\\n'\n");
@@ -296,8 +303,53 @@ describe("asrt-sandbox — gate ON wraps a real command under the OS sandbox", (
     },
   );
 
+  // A read the credential floor denies fails visibly: the command's own
+  // permission error reaches the output, the result is an error, and no store
+  // content leaks. There is no silent fallback or empty success.
   it.runIf(process.platform === "darwin" || process.platform === "linux")(
-    "runs git with a disposable HOME instead of probing the denied real .gitconfig",
+    "surfaces the native permission error for a floored browser or keychain read",
+    async (context) => {
+      if (!(await asrtCanInitialize())) {
+        if (process.env.AVE_REQUIRE_SANDBOX_CASES === "1") throw new Error("ASRT cannot initialize on this machine");
+        return context.skip();
+      }
+      const root = realpathSync(mkdtempSync(join(tmpdir(), "asrt-credential-floor-")));
+      const cwd = join(root, "workspace");
+      mkdirSync(cwd);
+      const stores = [
+        join(root, ".mozilla", "firefox", "abc.default-release", "logins.json"),
+        join(root, "Library", "Keychains", "login.keychain-db"),
+        join(root, ".local", "share", "keyrings", "login.keyring"),
+      ];
+      for (const store of stores) {
+        mkdirSync(dirname(store), { recursive: true });
+        writeFileSync(store, "credential-store-secret");
+      }
+      writeFileSync(join(root, "notes.txt"), "ordinary-home-file");
+      try {
+        vi.stubEnv("HOME", root);
+        await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
+        for (const store of stores) {
+          const command = `/bin/cat ${shellQuote(store)}`;
+          const result = await spawnWithSandbox(command, cwd, [cwd], 15, prepareSandboxFixture(command, cwd));
+          expect(result.metadata.sandboxed).toBe(true);
+          expect(result.isError, result.output).toBe(true);
+          expect(result.output).toMatch(/Operation not permitted|Permission denied|No such file or directory/);
+          expect(result.output).not.toContain("credential-store-secret");
+        }
+        const control = `/bin/cat ${shellQuote(join(root, "notes.txt"))}`;
+        const ordinary = await spawnWithSandbox(control, cwd, [cwd], 15, prepareSandboxFixture(control, cwd));
+        expect(ordinary.isError, ordinary.output).toBe(false);
+        expect(ordinary.output).toContain("ordinary-home-file");
+      } finally {
+        vi.unstubAllEnvs();
+        await cleanupTmpDir(root);
+      }
+    },
+  );
+
+  it.runIf(process.platform === "darwin" || process.platform === "linux")(
+    "reads a pre-created git repository with a disposable HOME and isolated fixture config",
     async () => {
       if (!(await asrtCanInitialize())) return;
 
@@ -306,6 +358,8 @@ describe("asrt-sandbox — gate ON wraps a real command under the OS sandbox", (
       // disposable home without depending on the enclosing checkout layout.
       const cwd = mkdtempSync(join(tmpdir(), "asrt-git-"));
       const gitEnv = gitFixtureEnv(cwd);
+      const fixtureGitConfig = gitEnv.GIT_CONFIG_GLOBAL;
+      if (typeof fixtureGitConfig !== "string") throw new Error("Git fixture config path is missing");
       try {
         execFileSync("git", ["init", "--quiet"], { cwd, env: gitEnv });
         execFileSync("git", [
@@ -313,7 +367,9 @@ describe("asrt-sandbox — gate ON wraps a real command under the OS sandbox", (
           "-c", "commit.gpgsign=false", "commit", "--allow-empty", "--quiet", "-m", "fixture",
         ], { cwd, env: gitEnv });
         await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
-        const command = `printf '%s\\n' "$HOME"; git -C '${cwd.replace(/'/g, `'\\''`)}' log --oneline -n 1`;
+        // Keep fixture identity and signing configuration independent of the
+        // sandbox HOME and the user's global configuration.
+        const command = `printf '%s\\n' "$HOME"; GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=${shellQuote(fixtureGitConfig)} git -C ${shellQuote(cwd)} log --oneline -n 1`;
         const result = await spawnWithSandbox(
           command,
           cwd,
@@ -330,6 +386,37 @@ describe("asrt-sandbox — gate ON wraps a real command under the OS sandbox", (
         expect(existsSync(sandboxHome ?? "")).toBe(false);
       } finally {
         await cleanupTmpDir(cwd);
+      }
+    },
+  );
+
+  it.skipIf(process.platform !== "linux" || shouldSkipNativeSandboxTests())(
+    "returns a quarantine restore notice after a normal Git commit creates a control",
+    async () => {
+      const root = realpathSync(mkdtempSync(join(tmpdir(), "asrt-git-control-result-")));
+      const env = gitFixtureEnv(root);
+      const config = env.GIT_CONFIG_GLOBAL;
+      if (typeof config !== "string") throw new Error("Git fixture config path is missing");
+      const locale = getLocale();
+      setLocale("en");
+      try {
+        execFileSync("git", ["init", "--quiet"], { cwd: root, env });
+        await initializeRequiredSandbox({ allowedDomains: [] });
+        const commondir = join(root, ".git", "commondir");
+        expect(() => readFileSync(commondir)).toThrow(/ENOENT/);
+        const command = `export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=${shellQuote(config)}; test ! -e .git/commondir && git status --porcelain && printf committed > tracked.txt && git add tracked.txt && git -c user.name=Fixture -c user.email=fixture@example.invalid -c commit.gpgsign=false commit --quiet -m sandbox-commit && git branch sandbox-branch && printf untrusted-target > .git/commondir`;
+        const result = await spawnWithSandbox(command, root, [root], TOOL_TIMEOUT_POLICY.shellDefaultMs / 1000,
+          prepareSandboxFixture(command, root));
+        expect(result.isError, result.output).toBe(false);
+        expect(result.metadata.sandboxed).toBe(true);
+        expect(result.output).toContain("moved to quarantine (not deleted)");
+        expect(result.output).toContain(JSON.stringify(commondir));
+        expect(result.output).toContain("Restore each entry");
+        expect(() => readFileSync(commondir)).toThrow(/ENOENT/);
+        expect(execFileSync("git", ["log", "-1", "--format=%s"], { cwd: root, env, encoding: "utf8" }).trim()).toBe("sandbox-commit");
+      } finally {
+        setLocale(locale);
+        await cleanupTmpDir(root);
       }
     },
   );
@@ -540,10 +627,15 @@ describe("asrt-sandbox — REAL enforcement via the SHARED config (strict union 
    * is HARD-DENIED at the proxy with NO askCb fallthrough (strictAllowlist).
    *
    * Probe hosts: two names under the reserved `.localhost` domain, served by
-   * a loopback HTTP server this suite starts. ASRT's proxy resolves an
-   * allow-listed `.localhost` name to loopback itself (RFC 6761; see its
-   * resolved-address guard), so the ONLY variable is whether the name is on
-   * the shared allow-list, and no probe leaves the machine. These cases used
+   * a loopback HTTP server this suite starts. ASRT's proxy resolves a name
+   * through the host's resolver, and hosts disagree on `.localhost` names:
+   * local macOS answers ::1 and 127.0.0.1, while the hosted macOS runner's
+   * getaddrinfo answers ENOTFOUND, so the proxy refused the allow-listed name
+   * with 403 there (2026-10-25, #184). The suite therefore pins the two probe
+   * names to the server's 127.0.0.1 through ASRT's destination-resolver test
+   * seam; the allow-list decision, the resolved-address guard and the pinned
+   * dial stay ASRT's own, so the ONLY variable is whether the name is on the
+   * shared allow-list, and no probe leaves the machine. These cases used
    * to probe example.com/example.org over the internet: a slow or failed
    * lookup on a loaded CI runner read as a denial (2026-10-19, PR #10) or
    * silently skipped the case. curl is told to proxy every name
@@ -562,9 +654,15 @@ describe("asrt-sandbox — REAL enforcement via the SHARED config (strict union 
     });
     await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", resolve));
     port = (server.address() as AddressInfo).port;
+    const probeHosts = new Set([ALLOWED_HOST, OTHER_HOST]);
+    setDestinationResolverForTesting(async (name) => {
+      if (probeHosts.has(name)) return [{ address: "127.0.0.1", family: 4 }];
+      return lookupAll(name, { all: true, verbatim: true });
+    });
   });
 
   afterAll(async () => {
+    setDestinationResolverForTesting(undefined);
     await new Promise<void>((resolve) => (server ? server.close(() => resolve()) : resolve()));
   });
 
@@ -1058,6 +1156,105 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     expect(paths).not.toContain(join(home, ".cargo"));
     // ~/.config wholesale must never be denied — only specific subdirs.
     expect(paths).not.toContain(join(home, ".config"));
+  });
+
+  // Credential floor review: browser profiles, keychains, keyrings and
+  // password managers are on the OS read floor of every platform's builtin
+  // shell, beside `.ssh`. Spelled out here, not derived from the table, so a
+  // dropped row fails.
+  describe.each([
+    ["darwin", [
+      ["Library", "Keychains"],
+      ["Library", "Cookies"],
+      ["Library", "Containers", "com.apple.Safari"],
+      // The vendor parent covers every Chrome channel (Beta, Dev, Canary).
+      ["Library", "Application Support", "Google"],
+      ["Library", "Application Support", "Microsoft Edge"],
+      ["Library", "Application Support", "Microsoft Edge Beta"],
+      ["Library", "Application Support", "Microsoft Edge Dev"],
+      ["Library", "Application Support", "Microsoft Edge Canary"],
+      ["Library", "Application Support", "BraveSoftware"],
+      ["Library", "Application Support", "Chromium"],
+      ["Library", "Application Support", "Arc"],
+      ["Library", "Application Support", "Vivaldi"],
+      ["Library", "Application Support", "com.operasoftware.Opera"],
+      ["Library", "Application Support", "com.operasoftware.OperaGX"],
+      ["Library", "Application Support", "Firefox"],
+      ["Library", "Thunderbird"],
+      ["Library", "Group Containers", "2BUA8C4S2C.com.1password"],
+      ["Library", "Group Containers", "2BUA8C4S2C.com.agilebits"],
+      [".password-store"],
+      [".config", "op"],
+    ]],
+    ["linux", [
+      [".mozilla"],
+      [".config", "google-chrome"],
+      [".config", "chromium"],
+      [".config", "BraveSoftware"],
+      [".config", "microsoft-edge"],
+      [".config", "vivaldi"],
+      [".config", "opera"],
+      [".config", "google-chrome-beta"],
+      [".config", "google-chrome-unstable"],
+      [".config", "microsoft-edge-beta"],
+      [".config", "microsoft-edge-dev"],
+      ["snap", "firefox"],
+      ["snap", "chromium"],
+      ["snap", "brave"],
+      ["snap", "thunderbird"],
+      [".var", "app", "org.mozilla.firefox"],
+      [".var", "app", "org.chromium.Chromium"],
+      [".var", "app", "com.google.Chrome"],
+      [".var", "app", "com.brave.Browser"],
+      [".var", "app", "com.microsoft.Edge"],
+      [".var", "app", "org.mozilla.Thunderbird"],
+      [".thunderbird"],
+      [".local", "share", "keyrings"],
+      [".local", "share", "kwalletd"],
+      [".password-store"],
+      [".config", "op"],
+    ]],
+    ["win32", [
+      ["AppData", "Local", "Google", "Chrome", "User Data"],
+      ["AppData", "Local", "Microsoft", "Edge", "User Data"],
+      ["AppData", "Local", "BraveSoftware", "Brave-Browser", "User Data"],
+      ["AppData", "Local", "Chromium", "User Data"],
+      ["AppData", "Local", "Vivaldi", "User Data"],
+      ["AppData", "Roaming", "Opera Software"],
+      ["AppData", "Local", "Google", "Chrome SxS", "User Data"],
+      ["AppData", "Local", "Google", "Chrome Beta", "User Data"],
+      ["AppData", "Local", "Google", "Chrome Dev", "User Data"],
+      ["AppData", "Local", "Microsoft", "Edge Beta", "User Data"],
+      ["AppData", "Local", "Microsoft", "Edge Dev", "User Data"],
+      ["AppData", "Local", "Microsoft", "Edge SxS", "User Data"],
+      ["AppData", "Roaming", "Thunderbird"],
+      ["AppData", "Roaming", "Mozilla", "Firefox", "Profiles"],
+      ["AppData", "Roaming", "Microsoft", "Credentials"],
+      ["AppData", "Local", "Microsoft", "Credentials"],
+      ["AppData", "Roaming", "Microsoft", "Protect"],
+    ]],
+  ] as const)("credential floor on %s", (platform, stores) => {
+    const hostPlatform = process.platform;
+    beforeEach(() => setProcessPlatform(platform));
+    afterEach(() => setProcessPlatform(hostPlatform));
+
+    it.each(stores.map((segments) => [segments.join("/"), segments] as const))("denies reads of ~/%s", (_name, segments) => {
+      // A Windows directory row keeps its separator so ASRT denies a directory.
+      const store = join(homedir(), ...segments) + (platform === "win32" ? sep : "");
+      const cwd = join(tmpdir(), "ave-credential-floor-cwd");
+      expect(getBuiltinShellReadPolicy([cwd], homedir()).denyRead).toContain(store);
+      expect(getDefaultSensitiveReadDenyPaths()).toContain(store);
+      expect(getDefaultSensitiveWriteDenyPaths()).toContain(store);
+    });
+
+    it("keeps ordinary home reads and the home itself off the floor", () => {
+      const read = getBuiltinShellReadPolicy([join(homedir(), "projects", "x")], homedir());
+      expect(read.denyRead).not.toContain(homedir());
+      expect(read.allowRead).toContain(join(homedir(), "projects", "x"));
+      for (const ordinary of [["projects"], [".config"], [".local", "share"], ["Library", "Application Support"], ["AppData", "Local"]]) {
+        expect(read.denyRead).not.toContain(join(homedir(), ...ordinary));
+      }
+    });
   });
 
   it("projects subscription runtime state into both OS deny floors for a custom profile", () => {
@@ -1600,14 +1797,14 @@ describe("runtime write defaults", () => {
 });
 
 describe.runIf(process.platform === "linux")("ordinary temporary write policy", () => {
-  it("shares explicitly granted temp writes with the host and later commands", async (context) => {
+  it("retains an explicitly granted temp directory for the host and later commands", async (context) => {
     if (!(await asrtCanInitialize())) {
       if (process.env.AVE_REQUIRE_SANDBOX_CASES === "1") throw new Error("ASRT cannot initialize on this machine");
       return context.skip();
     }
     const root = mkdtempSync("/tmp/ave-ordinary-temp-");
     try {
-      await initializeAsrtSandbox({ allowedDomains: [], allowWrite: ["/tmp"] });
+      await initializeAsrtSandbox({ allowedDomains: [], allowWrite: ["/tmp", root] });
       const target = join(root, "shared.txt");
       const first = await wrapToolCommand(`printf shared > ${shellQuote(target)}`, { commandId: TEST_COMMAND_ID });
       expect(first.argv[1]).toBe("-c");

@@ -43,6 +43,7 @@ import { t } from "../../../i18n/runtime.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { isSubscriptionRuntimeId, subscriptionRuntimeDescriptor } from "../../../shared/subscription-runtime.js";
 import type { PluginEntry } from "../types.js";
+import { SandboxStatusBadge } from "./SandboxStatusBadge.js";
 import { SlashPicker } from "./SlashPicker.js";
 import { ReasoningLevelControl, useReasoningLevel } from "./ReasoningSlider.js";
 import type { ReasoningLevel } from "./ReasoningSlider.js";
@@ -406,6 +407,7 @@ export function ComposerStatusRow({
       </span>
       {tasksSlot}
       {goalSlot}
+      <SandboxStatusBadge capability={statusRow.sandboxCapability} statusQueryFailed={statusRow.sandboxStatusQueryFailed} onRetry={statusRow.refreshSandboxStatus} />
 
       <div className="ml-auto flex min-w-0 flex-nowrap items-center gap-1.5">
         {/* Pending approvals — its OWN button, BEFORE the permission cell. */}

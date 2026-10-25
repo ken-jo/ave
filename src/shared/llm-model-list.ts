@@ -1,4 +1,6 @@
-import type { MarketplaceProviderModelDiscoveryPolicy } from "./marketplace-package-assets.js";
+import { modelDiscoveryPolicyUsesSeededOptions, type MarketplaceProviderModelDiscoveryPolicy } from "./marketplace-package-assets.js";
+import { isLLMVendor, isOpenAICompatibleVendor } from "./llm-vendor-defaults.js";
+import { vendorHasCatalogProvider } from "./model-catalog/vendor-models.js";
 
 export type LlmModelListRequest = {
   vendor: string;
@@ -153,3 +155,73 @@ export type LlmModelListResult =
       endpoint?: string;
       status?: number;
     };
+
+/**
+ * Vendors whose model-list endpoint is fixed and known, so their catalogue is
+ * always fetchable without the user supplying a base URL.
+ */
+export const STANDARD_CATALOGUE_ENDPOINT_VENDORS: ReadonlySet<string> = new Set([
+  "openai",
+  "claude",
+  "gemini",
+]);
+
+/**
+ * Of those, the vendors whose list is the endpoint's word alone: until their
+ * `/models` answers, no catalog list stands in. Other native routes offer
+ * catalog models until their listing arrives, then the listing.
+ */
+const ENDPOINT_ONLY_CATALOGUE_VENDORS: ReadonlySet<string> = new Set([
+  "openai",
+]);
+
+/**
+ * Whether this vendor's catalogue is the endpoint's word rather than ours.
+ *
+ * Two kinds qualify: the openai-compatible family, whose catalogue is defined
+ * by whatever endpoint it points at, and {@link ENDPOINT_ONLY_CATALOGUE_VENDORS}.
+ * For both, a bundled list of model ids is a guess about someone else's
+ * inventory, so it must never stand in for the answer — a failed handshake has
+ * to READ as a failed handshake, not as a short catalogue.
+ */
+export function usesEndpointModelCatalogue(vendorId: string): boolean {
+  return (isLLMVendor(vendorId) && isOpenAICompatibleVendor(vendorId))
+    || ENDPOINT_ONLY_CATALOGUE_VENDORS.has(vendorId);
+}
+
+/**
+ * The model ids a chat route offers: THE derivation behind both the chat model
+ * chooser (Settings > LLM) and the permission reviewer's model catalog, so the
+ * two can never disagree about what a provider offers.
+ *
+ * A synced `/models` listing wins. Without one, a catalog supplies choices; a
+ * vendor whose catalogue is the endpoint's word and has no catalog offers
+ * nothing until the handshake answers (unless its discovery policy is seeded);
+ * any other vendor offers its bundled seed. The saved selection is always kept so a configured route never
+ * shows blank, and retired models — the saved one included — are dropped.
+ */
+export function chatRouteModelOptions(params: {
+  vendorId: string;
+  selectedModel: string;
+  syncedOptions?: readonly string[];
+  seed: { modelOptions: readonly string[] };
+  modelDiscoveryPolicy?: MarketplaceProviderModelDiscoveryPolicy;
+  isRetired?: (model: string) => boolean;
+}): string[] {
+  const { vendorId, selectedModel, syncedOptions, seed, modelDiscoveryPolicy } = params;
+  const hasSynced = syncedOptions !== undefined;
+  const handshakeOnly =
+    !hasSynced &&
+    !(isLLMVendor(vendorId) && vendorHasCatalogProvider(vendorId)) &&
+    usesEndpointModelCatalogue(vendorId) &&
+    !modelDiscoveryPolicyUsesSeededOptions(modelDiscoveryPolicy);
+  const options = hasSynced
+    ? [...(syncedOptions ?? [])]
+    : handshakeOnly
+      ? []
+      : [...seed.modelOptions];
+  const currentModel = selectedModel.trim();
+  if (currentModel && !options.includes(currentModel)) options.unshift(currentModel);
+  const isRetired = params.isRetired ?? (() => false);
+  return [...new Set(options)].filter((option) => option.trim() && !isRetired(option));
+}

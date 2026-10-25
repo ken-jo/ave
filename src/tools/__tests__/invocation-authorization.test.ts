@@ -26,7 +26,8 @@ afterEach(() => cleanupTmpDir(directory));
 describe("host shell invocation authorization", () => {
   it.each(["remove allow", "add deny"])("requires normal authorization again after %s invalidates a decision", async (change) => {
     const manager = new PermissionManager(join(directory, "permissions.json"));
-    manager.setRules([{ pattern: "Bash(printf *)", action: "allow" }]);
+    // No sandbox here, so only an exact allow rule can authorize the host run.
+    manager.setRules([{ pattern: "Bash(printf authorized)", action: "allow" }]);
     const check = vi.spyOn(manager, "checkDetailed");
     const tool = new BashTool();
     const execute = vi.spyOn(tool, "execute");
@@ -53,8 +54,8 @@ describe("host shell invocation authorization", () => {
       sessionId: "host-authorization", permissionContext: userPermissionContext(),
       callbacks: {
         onToolStart: () => manager.setRules(change === "remove allow" ? [] : [
-          { pattern: "Bash(printf *)", action: "allow" },
-          { pattern: "Bash(printf *)", action: "deny" },
+          { pattern: "Bash(printf authorized)", action: "allow" },
+          { pattern: "Bash(printf authorized)", action: "deny" },
         ]),
       },
     }));
@@ -71,7 +72,9 @@ describe("host shell invocation authorization", () => {
     expect(execute).not.toHaveBeenCalled();
     if (change === "remove allow") {
       expect(cards).toHaveLength(1);
-      expect(cards[0]).toMatchObject({ allowedChoices: ["allow-once", "deny-once"], requireExplicit: true });
+      // OWNER ITEM: main locked the explicit-host card to allow-once/deny-once; #77/#90 let the bash card offer rules. No dated decision picks one; this follows #90.
+      expect(cards[0]?.allowedChoices).toBeUndefined();
+      expect(cards[0]).toMatchObject({ requireExplicit: true });
     } else {
       expect(check.mock.results[1]?.value).toMatchObject({ decision: "deny", layer: 1 });
       expect(cards).toHaveLength(0);

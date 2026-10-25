@@ -196,13 +196,35 @@ describe("sensitive paths — one table, two projections", () => {
     }
   });
 
-  it("keeps the recorded Keychain/Cookies sandbox exclusion", () => {
-    for (const target of [
-      join(HOME, "Library", "Keychains", "login.keychain-db"),
-      join(HOME, "Library", "Cookies", "Cookies.binarycookies"),
+  // Parity with main: main's builtin shell denies the whole real HOME, which
+  // kept these unreadable; without it each store is a floor row on both surfaces.
+  it.each([
+    ["Library", "Keychains", "login.keychain-db"],
+    ["Library", "Cookies", "Cookies.binarycookies"],
+    ["Library", "Application Support", "Google", "Chrome", "Default", "Cookies"],
+    ["Library", "Application Support", "Firefox", "Profiles", "abc.default", "key4.db"],
+    [".mozilla", "firefox", "abc.default-release", "logins.json"],
+    [".config", "google-chrome", "Default", "Login Data"],
+    [".local", "share", "keyrings", "login.keyring"],
+    [".password-store", "email.gpg"],
+    [".config", "op", "config"],
+    ["AppData", "Local", "Google", "Chrome", "User Data", "Default", "Network", "Cookies"],
+    ["AppData", "Roaming", "Mozilla", "Firefox", "Profiles", "abc.default", "logins.json"],
+  ])("denies the credential store ~/%s/... on both surfaces", (...segments) => {
+    const target = join(HOME, ...segments);
+    expect(hostDeniesAsSensitive(target, HOME)).toBe(true);
+    expect(sandboxDenies(target)).toBe(true);
+  });
+
+  it("keeps ordinary home files readable on both surfaces", () => {
+    for (const benign of [
+      join(HOME, "projects", "x", "README.md"),
+      join(HOME, ".config", "nvim", "init.lua"),
+      join(HOME, ".local", "share", "fonts", "a.ttf"),
+      join(HOME, "Library", "Application Support", "Code", "User", "settings.json"),
     ]) {
-      expect(hostDeniesAsSensitive(target, HOME)).toBe(true);
-      expect(sandboxDenies(target)).toBe(false);
+      expect(hostDeniesAsSensitive(benign, HOME)).toBe(false);
+      expect(sandboxDenies(benign)).toBe(false);
     }
   });
 

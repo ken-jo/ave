@@ -1,4 +1,6 @@
+import { useSandboxCapability } from "./use-sandbox-capability.js";
 import { useEffect, useState } from "react";
+import type { SandboxCapabilityInfo } from "../../../shared/sandbox-capability-info.js";
 import type { AveApi } from "../types.js";
 import { shortVendorLabel } from "./status-bar/vendor-label.js";
 import { t } from "../../../i18n/runtime.js";
@@ -43,6 +45,10 @@ export interface InputStatusRow {
   permissionMode: ExecutionModeDisplay;
   /** Pending deferred-approval count (appended to the permission cell). */
   pendingApprovals: number;
+  /** Host-issued shell execution status, independent of the desired setting. */
+  sandboxCapability?: SandboxCapabilityInfo | null;
+  sandboxStatusQueryFailed?: boolean;
+  refreshSandboxStatus?: () => void;
 }
 
 export function useInputStatusRow(api: AveApi): InputStatusRow {
@@ -50,6 +56,8 @@ export function useInputStatusRow(api: AveApi): InputStatusRow {
   const [activeChatModel, setActiveChatModel] = useState<ActiveChatModel | null>(null);
   const [permissionMode, setPermissionMode] = useState<ExecutionModeDisplay>("unknown");
   const [pendingApprovals, setPendingApprovals] = useState(0);
+  const { capability: sandboxCapability, statusQueryFailed: sandboxStatusQueryFailed, refresh: refreshSandboxStatus } =
+    useSandboxCapability(api.permission, api.onSettingsUpdated);
 
   // Vendor + model — mirrors use-status-bar-vendor.
   useEffect(() => {
@@ -134,5 +142,5 @@ export function useInputStatusRow(api: AveApi): InputStatusRow {
     };
   }, [api]);
 
-  return { vendorModel, activeChatModel, permissionMode, pendingApprovals };
+  return { vendorModel, activeChatModel, permissionMode, pendingApprovals, sandboxCapability, sandboxStatusQueryFailed, refreshSandboxStatus };
 }

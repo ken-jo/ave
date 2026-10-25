@@ -1827,10 +1827,10 @@ auto-resolve. 검증 실패 시 일반 write 규칙으로 폴백 (sound-by-const
 
 **선택 surface:** `/permission reviewer mode disabled|rule|llm|strict`,
 `/permission reviewer fallback deny|rule`,
-`/permission reviewer interactive off|low`. Reviewer provider/model 은
-별도 slash surface 가 아니며 지능 설정의 active LLM provider/model 을 따른다.
-`permissions.reviewer.provider/model` 은 이전 버전 호환용 persisted field 이고
-사용자-facing SOT 가 아니다. 변경은 settings.json 에 persist + selective
+`/permission reviewer interactive off|low`. Reviewer 모델은 별도 slash surface 가
+아니며 권한 설정의 `permissions.judge.model` 을 따르고, 비워 두면 지능 설정의 active
+LLM provider/model 을 따른다. 이전 `permissions.reviewer.provider/model` 키는 로드 시
+버려진다. 변경은 settings.json 에 persist + selective
 verdict-cache invalidation.
 
 **Cost optimization:** `~/.ave/permissions/reviewer-cache.jsonl` —

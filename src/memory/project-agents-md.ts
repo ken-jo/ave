@@ -48,6 +48,7 @@ import { closeSync, fstatSync, openSync, readFileSync, realpathSync, statSync } 
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { canonicalizePathForMatch, caseFoldForMatch, isSensitivePath } from "../permissions/sensitive-paths.js";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
+import { buildHostGitArgs, isHostGitWorkspaceAvailable } from "../shared/host-git.js";
 
 interface ProjectAgentsMdLayer {
   /** Path of the instruction file relative to the repository root. */
@@ -293,6 +294,8 @@ export type GitIgnoreVerdicts = Map<string, boolean>;
  * of an ignored directory from spawning git each time.
  */
 function gitIgnores(repoRoot: string, path: string, verdicts: GitIgnoreVerdicts | undefined): boolean {
+  // An unsettled sandbox write is temporary, so do not cache its conservative answer.
+  if (!isHostGitWorkspaceAvailable(repoRoot)) return false;
   const key = `${repoRoot}\0${path}`;
   const known = verdicts?.get(key);
   if (known !== undefined) return known;
@@ -308,12 +311,13 @@ function gitIgnores(repoRoot: string, path: string, verdicts: GitIgnoreVerdicts 
  * `node_modules` stops still hold without git.
  */
 function askGitIgnores(repoRoot: string, path: string): boolean {
+  if (!isHostGitWorkspaceAvailable(repoRoot)) return false;
   if (!hasGitEntry(repoRoot)) return false;
   const env = { ...process.env };
   // A git hook's GIT_DIR / GIT_WORK_TREE would point the query at another repository.
   for (const key of Object.keys(env)) if (key.startsWith("GIT_")) delete env[key];
   try {
-    execFileSync("git", ["-C", repoRoot, "check-ignore", "-q", "--", relative(repoRoot, path)], {
+    execFileSync("git", buildHostGitArgs(["-C", repoRoot, "check-ignore", "-q", "--", relative(repoRoot, path)]), {
       windowsHide: true,
       stdio: "ignore",
       timeout: 2_000,

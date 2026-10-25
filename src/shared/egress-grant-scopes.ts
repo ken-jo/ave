@@ -1,6 +1,6 @@
 /**
  * How long a person's allow for a sandboxed process's network destination
- * lasts (design B and F, owner 2026-10-16). Shared by main (the grant store
+ * lasts. Shared by main (the grant store
  * and the approval gate) and the renderer (the ask card, the terminal tab's
  * banner and Settings).
  *

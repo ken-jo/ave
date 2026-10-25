@@ -4,9 +4,12 @@
  */
 import { ipcMain, session } from "electron";
 import { randomUUID } from "node:crypto";
+import { isRuleSpecifier, normalizeRuleSpecifierInput } from "../../permissions/rules/rule-specifier.js";
+import { validatePermissionRule } from "../../permissions/rules/rule-files.js";
+import { shellRuleCoversCommand } from "../../permissions/rules/shell-rule-approval.js";
 import { loadPolicy, savePolicy } from "../../permissions/policy-store.js";
 import { isPolicyUserEditable } from "../../shared/policy-editability.js";
-import type { ApprovalDecision } from "../../permissions/approval-gate.js";
+import { UNATTRIBUTED_APPROVAL_SESSION_ID, type ApprovalDecision } from "../../permissions/approval-gate.js";
 import { PERMISSIONS } from "../../shared/ipc-channels.js";
 import {
   UPSTREAM_PROXY_CREDENTIALS_SECRET,
@@ -55,17 +58,15 @@ import type {
   PermissionRulesCommand,
 } from "../../permissions/permission-slash.js";
 import {
-  REVIEWER_PROVIDERS_SET,
-  type ReviewerProvider,
 } from "../../permissions/permission-settings-store.js";
 import {
   recordApproval,
   approvalCacheKeyIdentity,
   revokeApprovalByKey,
   listApprovals,
+  listSessionApprovals,
   canonicalStringify,
 } from "../../permissions/user-approval-store.js";
-import { getLlmVendorSettings } from "../../shared/llm-vendor-defaults.js";
 import { isEgressGrantNetwork } from "../../shared/egress-grant-scopes.js";
 import { isTerminalTabId } from "../../shared/tab-id.js";
 import type {
@@ -92,6 +93,8 @@ import {
   handleSetPermissionMode,
 } from "../handlers/permissions.js";
 
+import { getHostShellExecutionPlanAuditProjection } from "../../permissions/host-shell-execution-plan.js";
+
 const log = createLogger("ave");
 
 function validateRulePatternInput(pattern: unknown): { ok: true; pattern: string } | { ok: false; error: string; message: string } {
@@ -101,6 +104,12 @@ function validateRulePatternInput(pattern: unknown): { ok: true; pattern: string
   const normalized = pattern.trim();
   if (normalized.length === 0) {
     return { ok: false, error: "invalid-pattern", message: "pattern must be non-empty" };
+  }
+  if (isRuleSpecifier(normalized)) {
+    try { validatePermissionRule({ pattern: normalized, action: "deny" }); } catch {
+      return { ok: false, error: "invalid-pattern", message: "Invalid command rule" };
+    }
+    return { ok: true, pattern: normalized };
   }
   if (normalized.length > 128) {
     return { ok: false, error: "invalid-pattern", message: "pattern must not exceed 128 characters" };
@@ -260,7 +269,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
   // current platform. `available`/`kind` report the PLATFORM's potential
   // (macOS/Linux can fully confine, Windows can partially confine filesystem +
   // network, others cannot), NOT whether a runner is currently registered —
-  // registration is boot-time + opt-in, so reporting the platform potential
+  // registration is verified at boot, so reporting the platform potential
   // lets the toggle show "not available on this platform" rather than reading
   // as unavailable merely because it's off.
   // `enabled` separately reflects the current setting.
@@ -287,7 +296,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     //
     // The gate (enabled) only controls whether the ASRT sandbox initializes at
     // boot, not what the platform is capable of, so report the platform's
-    // potential even when off — the toggle text stays honest before opt-in.
+    // potential even when off — the toggle text stays honest before activation.
     const kind: "full" | "partial" | "none" =
       platform === "linux" || platform === "darwin"
         ? "full"
@@ -297,7 +306,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     const available = kind !== "none";
     // Meaningful, platform-honest reason surfaced to the UI alongside the
     // capability. This describes PLATFORM POTENTIAL only. Runtime registration
-    // is boot-time + opt-in, so it is reported separately below. On Windows the
+    // is boot-time, so it is reported separately below. On Windows the
     // filesystem confinement is against the host only: every confined process
     // runs as the one `srt-sandbox` account, so plugins are not isolated from
     // each other there (owner decision 2026-10-10, plugin-hostapi-protocol.md
@@ -374,6 +383,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       // Windows: which substrate carries shells and extensions this boot and
       // how strongly their egress is attributed (proxy-egress PR 9).
       windowsSubstrate: platform === "win32" ? getWindowsSandboxSubstrate() : null,
+      shellExecutionPlan: getHostShellExecutionPlanAuditProjection(shellPlan),
       confines: sandboxConfinementForPlatform(platform, kind),
     };
   });
@@ -635,6 +645,35 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     return pm.listPersistedRules();
   });
 
+  ipcMain.handle(PERMISSIONS.listScopedRules, async (e) => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.listScopedRules, e); return UNAUTHORIZED_FRAME; }
+    const pm = conversationLoop.permissionManager;
+    return pm ? pm.listScopedRules() : { rules: [], errors: [] };
+  });
+
+  ipcMain.handle(PERMISSIONS.removeScopedRule, async (e, payload: unknown) => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.removeScopedRule, e); return UNAUTHORIZED_FRAME; }
+    const body = payloadRecord(payload);
+    const intent = requireUserKeyboardIntent(body.intent);
+    if (!intent.ok) return intent;
+    const pm = conversationLoop.permissionManager;
+    if (!pm) return { ok: false, error: "no-permission-manager" };
+    try {
+      // Only a row enumerated by this host can name a stored project identity.
+      const listed = await pm.listScopedRules();
+      const row = listed.rules.find((rule) => rule.pattern === body.pattern && rule.action === body.action &&
+        rule.scope === body.scope && rule.projectCwd === body.projectCwd && rule.source === body.source &&
+        rule.storedFile === body.storedFile);
+      if (!row) return { ok: false, error: "invalid-rule" };
+      await pm.removeRulePersist(row, row.scope === "project"
+        ? { kind: "project", projectCwd: row.projectCwd!, storedFile: row.storedFile! } : { kind: "user" });
+      deps.toolRegistry.setDenyRules(pm.getVisibilityDenyRules());
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, error: "remove-failed", message: errorMessage(error) };
+    }
+  });
+
   ipcMain.handle(PERMISSIONS.addRule, async (e, payload: unknown) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.addRule, e); return UNAUTHORIZED_FRAME; }
     const body = payloadRecord(payload);
@@ -647,13 +686,24 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     const validated = validateRulePatternInput(body.pattern);
     if (!validated.ok) return validated;
     const { parsePermissionRulesCommand } = await import("../../permissions/permission-slash.js");
-    const parsed = parsePermissionRulesCommand(`add ${action} ${validated.pattern}`);
+    const ruleAction = action === "allow" ? "allow" : "deny";
+    const parsed: PermissionRulesCommand | { ok: false; error: string } = isRuleSpecifier(validated.pattern)
+      ? { verb: "rules", sub: "add", action: ruleAction, pattern: validated.pattern }
+      : parsePermissionRulesCommand(`add ${ruleAction} ${validated.pattern}`);
     if (isParseError<PermissionRulesCommand>(parsed)) return { ok: false, error: "parse-error", message: parsed.error };
     if (parsed.sub !== "add") return { ok: false, error: "parse-error", message: "add rule command did not parse as add" };
     const pm = conversationLoop.permissionManager;
     if (!pm) return { ok: false, error: "no-permission-manager", message: "permission manager not initialized" };
+    if (isRuleSpecifier(parsed.pattern)) {
+      // The store's own check: refused prefixes, irreversible argv and wildcards outside the allowlist.
+      try { validatePermissionRule({ pattern: parsed.pattern, action: parsed.action }); } catch (error) {
+        return { ok: false, error: "invalid-rule", message: errorMessage(error) };
+      }
+    }
     try {
-      if (parsed.action === "allow") {
+      if (isRuleSpecifier(parsed.pattern)) {
+        await pm.addRulePersist({ pattern: parsed.pattern, action: parsed.action }, { kind: "user" });
+      } else if (parsed.action === "allow") {
         await pm.addAlwaysAllowedPersist(parsed.pattern);
       } else {
         await pm.addAlwaysDeniedPersist(parsed.pattern);
@@ -679,7 +729,10 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     const validated = validateRulePatternInput(body.pattern);
     if (!validated.ok) return validated;
     const { parsePermissionRulesCommand } = await import("../../permissions/permission-slash.js");
-    const parsed = parsePermissionRulesCommand(`remove ${action} ${validated.pattern}`);
+    const ruleAction = action === "allow" ? "allow" : "deny";
+    const parsed: PermissionRulesCommand | { ok: false; error: string } = isRuleSpecifier(validated.pattern)
+      ? { verb: "rules", sub: "remove", action: ruleAction, pattern: validated.pattern }
+      : parsePermissionRulesCommand(`remove ${ruleAction} ${validated.pattern}`);
     if (isParseError<PermissionRulesCommand>(parsed)) return { ok: false, error: "parse-error", message: parsed.error };
     if (parsed.sub !== "remove") return { ok: false, error: "parse-error", message: "remove rule command did not parse as remove" };
     const pm = conversationLoop.permissionManager;
@@ -914,51 +967,15 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     },
   );
 
-  // ── Reviewer provider key-presence check ─────────────────────────────────
-  // Used by the renderer settings UI to determine which reviewer providers
-  // are activatable (key-driven dynamic activation). Read-only, but gated
-  // to prevent a foreign frame from probing which LLM API keys are present.
-  //
-  // Returns UNAUTHORIZED_FRAME (sibling handler parity) instead of
-  // bare `false` on validateSender failure. Bare `false` is indistinguishable
-  // from "key not present", masking the security rejection from the caller.
-  //
-  // MEDIUM: input allowlist — only the five known reviewer provider strings
-  // are accepted; anything else short-circuits before touching the secret store.
-  // Minor: REVIEWER_PROVIDERS_SET imported from permission-settings-store (single SOT).
-  ipcMain.handle(PERMISSIONS.reviewerProviderHasKey, async (e, provider: unknown) => {
-    if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, PERMISSIONS.reviewerProviderHasKey, e);
-      return UNAUTHORIZED_FRAME;
-    }
-    // MEDIUM: reject unknown provider names before touching the secret store.
-    if (typeof provider !== "string" || !REVIEWER_PROVIDERS_SET.has(provider as ReviewerProvider)) {
-      return false;
-    }
-    const { reviewerProviderKeyPresent } = await import(
-      "../../permissions/reviewer/provider-adapters.js"
-    );
-    return reviewerProviderKeyPresent(
-      provider,
-      (key) => deps.settingsService.getSecret(key),
-      // Foundry endpoint lives in the plain settings (not encrypted).
-      () =>
-        getLlmVendorSettings(
-          deps.settingsService.get("llm").vendors,
-          "azure-foundry",
-        ).baseUrl ?? null,
-    );
-  });
-
   // ── Permission policy — deferred queue surface ────────────────────────────
   // Returns DLP-redacted tool inputs + verdicts.
   //
-  // Host-renderer only. This and the five channels around it are READ-ONLY but
+  // Host-renderer only. This and the four channels around it are READ-ONLY but
   // not low-risk, and read-only is what previously earned them the base
   // validator — which admits plugin UI shells by design. Reading the approval
   // queue tells a plugin what the user is about to be asked to approve, which
   // is reconnaissance for timing a request against it, not a read. Same for
-  // the audit log, the hook trust state, and which providers hold a key.
+  // the audit log and the hook trust state.
   //
   // This comment used to say the channel was "gated to prevent a compromised
   // foreign frame from harvesting them" while using the validator that does
@@ -1385,6 +1402,49 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     if (!snapshot) {
       return { ok: false, error: "no-such-request", message: "user-approval record: no in-flight ApprovalRequest for requestId" };
     }
+    if (body.rule !== undefined) {
+      const rule = payloadRecord(body.rule);
+      const context = snapshot.shellRule;
+      if (!context || typeof rule.pattern !== "string" || (rule.scope !== "project" && rule.scope !== "user") || scope !== "persistent") {
+        return { ok: false, error: "invalid-rule", message: "A command rule requires a live shell request" };
+      }
+      const command = snapshot.args && typeof snapshot.args === "object" ? (snapshot.args as Record<string, unknown>).command : undefined;
+      // Same normalization as the dock preview; the store itself stays strict.
+      const pattern = normalizeRuleSpecifierInput(rule.pattern);
+      // A rule the store refuses or that cannot cover the live command is
+      // invalid whatever the request allows, so it is checked first.
+      try {
+        if (typeof command !== "string" || !shellRuleCoversCommand(pattern, decision, command, context.projectCwd)) {
+          return { ok: false, error: "invalid-rule", message: "The rule does not cover this command" };
+        }
+      } catch (error) {
+        return { ok: false, error: "invalid-rule", message: errorMessage(error) };
+      }
+      if (decision === "allow" && !context.persistentAllowed) {
+        return { ok: false, error: "one-shot-not-recordable", message: "This request cannot create an allow rule" };
+      }
+      if (displayedVerdictAtApproval !== snapshot.verdictAtApproval) return { ok: false, error: "verdict-mismatch" };
+      const pm = conversationLoop.permissionManager;
+      if (!pm) return { ok: false, error: "no-permission-manager" };
+      try {
+        await pm.addRulePersist({ pattern, action: decision }, rule.scope === "project"
+          ? { kind: "project", projectCwd: context.projectCwd } : { kind: "user" });
+      } catch (error) {
+        // A rule that validated but could not be stored: corrupt file, lock or I/O.
+        return { ok: false, error: "rule-save-failed", message: errorMessage(error) };
+      }
+      auditLogger.log({
+        timestamp: new Date().toISOString(),
+        sessionId: snapshot.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
+        type: "approval",
+        output: `[approval:remembered] store=rules decision=${decision} scope=${rule.scope} toolName=${JSON.stringify(snapshot.toolName)} source=${JSON.stringify(snapshot.source)}`,
+      });
+      broadcastPermissionConfigChanged(deps);
+      return { ok: true };
+    }
+    if (decision === "allow" && scope === "persistent" && snapshot.shellRule) {
+      return { ok: false, error: "command-rule-required", message: "A persistent shell allow must record the offered command rule" };
+    }
     if (!snapshot.durableApprovalRecordAllowed) {
       return { ok: false, error: "one-shot-not-recordable", message: "user-approval record: one-shot approvals cannot be recorded" };
     }
@@ -1406,6 +1466,15 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     const verdictAtApproval = snapshot.verdictAtApproval;
     // Conservative risk display during a failed assessment does not decide
     // persistence. Only the gate's live eligibility snapshot can authorize it.
+    if (decision === "allow" && scope === "session" && snapshot.shellRule && !snapshot.shellRule.sessionAllowed) {
+      return { ok: false, error: "one-shot-not-recordable", message: "This request cannot create a session approval" };
+    }
+    // Every session approval (shell, browser, terminal, any exact tool
+    // approval) belongs to the root conversation of the request, so one
+    // without a conversation has nothing to be scoped to.
+    if (scope === "session" && !snapshot.sessionId) {
+      return { ok: false, error: "missing-session", message: "This request has no conversation session" };
+    }
     if (decision === "allow" && (!snapshot.persistentAllowAllowed || !snapshot.workingDirectoryIdentity)) {
       return { ok: false, error: verdictAtApproval === "high" ? "high-is-one-shot" : "one-shot-not-recordable", message: "This request requires a one-shot approval and cannot be recorded" };
     }
@@ -1428,6 +1497,8 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       await recordApproval(snapshot.toolName, canonicalArgs, snapshot.source, {
         decision,
         scope,
+        ...(scope === "session" ? { sessionId: snapshot.sessionId } : {}),
+        ...(snapshot.projectCwd === undefined ? {} : { projectCwd: snapshot.projectCwd }),
         verdictAtApproval,
         nlJustification: typeof nlJustification === "string" ? nlJustification : null,
         trustOrigin: snapshot.trustOrigin,
@@ -1438,6 +1509,12 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
           workingDirectoryIdentity: snapshot.workingDirectoryIdentity,
           riskCeilingAtApproval: snapshot.riskCeilingAtApproval,
         } : {}),
+      });
+      auditLogger.log({
+        timestamp: new Date().toISOString(),
+        sessionId: snapshot.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
+        type: "approval",
+        output: `[approval:remembered] store=exact decision=${decision} scope=${scope} toolName=${JSON.stringify(snapshot.toolName)} source=${JSON.stringify(snapshot.source)}`,
       });
       // User-approval store mutation — outside PermissionManager, so
       // emit the broadcast explicitly to keep the Active Approvals view
@@ -1475,12 +1552,9 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     }
   });
 
-  ipcMain.handle(PERMISSIONS.userApprovalList, async (e) => {
+  ipcMain.handle(PERMISSIONS.userApprovalList, async (e, payload?: unknown) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.userApprovalList, e); return UNAUTHORIZED_FRAME; }
-    try {
-      return await listApprovals();
-    } catch {
-      return [];
-    }
+    if (payloadRecord(payload).scope === "session") return listSessionApprovals();
+    return listApprovals();
   });
 }

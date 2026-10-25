@@ -26,6 +26,7 @@ function terminalRunRequest(overrides: Partial<ApprovalRequest> = {}): ApprovalR
     createdAt: Date.now(),
     requireExplicit: false,
     trustOrigin: "llm-tool-arg",
+    sessionId: "11111111-1111-4111-8111-111111111111",
     reviewerVerdict: { level: "medium", reason: "runs the test suite" },
     persistentAllowAllowed: true,
     persistentApprovalCwd: "/workspace/project",

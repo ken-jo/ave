@@ -44,7 +44,8 @@ import {
   buildPermissionEvaluationContext,
   type PermissionEvaluationContext,
 } from "../permissions/evaluation-context.js";
-import { canonicalizePathForMatch, caseFoldForMatch } from "../permissions/sensitive-paths.js";
+import { canonicalizePathForMatch, caseFoldForMatch, foldCanonicalPathSeparators } from "../permissions/sensitive-paths.js";
+import { resolveShellFilesystemPath } from "../shared/shell-filesystem-path.js";
 import {
   buildAllowedScope,
   buildRuntimeAllowedDirectories,
@@ -92,6 +93,7 @@ import { issueAuthorizationRequiredControl } from "../shared/authorization-requi
 // LOW/MEDIUM-risk helpers. Authorization and execution/finalization are
 // delegated to their named stages below.
 import { extractTargetFilePaths, shellPathPolicyViolation } from "./pipeline/path-extraction.js";
+import { scopedRuleSubjectFor } from "./pipeline/scoped-rule-subject.js";
 import { hasShellCommandArgument } from "../shared/shell-command-fields.js";
 import { buildApprovalPurposeSuggestion } from "./pipeline/approval-purpose.js";
 import { pluginTurnScopeTarget } from "./pipeline/plugin-turn-scope.js";
@@ -1132,8 +1134,8 @@ export async function runToolInvocation(
     // Refuse unavailable host approval before even a prerequisite directory ask.
     if (hostShellRequiresExplicitApproval &&
       hostShellExecutionPlan?.executionRequest === "host" &&
-      (permissionContext.headless === true || permissionContext.remoteControllerAuthority !== undefined)) {
-      const reason = "Explicit host execution requires a local desktop approval and is unavailable to headless or remote-controller requests";
+      permissionContext.remoteControllerAuthority !== undefined) {
+      const reason = "Explicit host execution is unavailable to remote-controller requests";
       const msg = t("be_executor.permBlockDeny", { name: toolUse.name, source, trust, reason });
       const durationMs = Date.now() - startTime;
       emitToolStart(callbacks, toolUse.name, finalInput, meta);
@@ -1164,6 +1166,7 @@ export async function runToolInvocation(
           permissionContext.trustOrigin,
           approvalCacheKeyIdentity(approvalCacheKey, approvalMemory),
           executionCwd,
+          sessionId,
         );
         if ((storedDecision?.decision ?? "allow") === "deny") {
           exactDecisionBlockReason = "tool decision for this input or target denied in permission settings";
@@ -1984,10 +1987,31 @@ export async function runToolInvocation(
     // Frozen-canonical contract: canonicalize once here and reuse the same
     // string for Layer 0 (sensitive-path) + Layer 1
     // (allowed-directories) checks below. No layer re-resolves the path.
-    const canonicalTargets = targetFilePaths.map((filePath) => ({
-      filePath,
-      canonicalPath: caseFoldForMatch(canonicalizePathForMatch(filePath)),
-    }));
+    const unsealedRuleSubject = scopedRuleSubjectFor(tool, finalInput, executionCwd);
+    const canonicalTargets: Array<{ filePath: string; canonicalPath: string; runtimePath: string }> = [];
+    for (const filePath of targetFilePaths) {
+      let runtimePath: string;
+      try {
+        // Native edits must distinguish a new suffix from a dangling or
+        // unreadable ancestor before sealing the one shared path snapshot.
+        if (unsealedRuleSubject?.kind === "edit") {
+          const resolved = resolveShellFilesystemPath(filePath, executionCwd);
+          if (process.platform !== "win32" && resolved.includes("\\")) throw new Error("Ambiguous write path");
+          runtimePath = foldCanonicalPathSeparators(resolved);
+        } else {
+          runtimePath = canonicalizePathForMatch(filePath);
+        }
+      } catch {
+        const reason = "Cannot resolve write target";
+        const blocked: PermissionCheckResult = { decision: "deny", reason, layer: 0 };
+        const durationMs = Date.now() - startTime;
+        emitToolStart(callbacks, toolUse.name, finalInput, meta);
+        callbacks?.onToolEnd?.(toolUse.name, reason, true, meta, undefined, durationMs);
+        await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, reason, true, startTime, blocked, Infinity, invocationPermissionContext, invocationCategory, executionCwd);
+        return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: reason, is_error: true, durationMs });
+      }
+      canonicalTargets.push({ filePath, canonicalPath: caseFoldForMatch(runtimePath), runtimePath });
+    }
     // Layer 0/1 path-scope predicate lives in PermissionManager (SOT V2).
     // The executor keeps canonicalization (above) + the layer-0 deny and
     // layer-1 modal wiring below; PM only answers "which target is sensitive
@@ -2065,6 +2089,20 @@ export async function runToolInvocation(
       callbacks?.onToolEnd?.(toolUse.name, msg, true, meta, undefined, durationMs);
       await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, msg, true, startTime, blockedPermission, Infinity, invocationPermissionContext, invocationCategory, executionCwd);
       return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, durationMs });
+    }
+
+    // A saved Edit scope grants only the sealed file targets of this call.
+    // It never becomes a session directory grant or widens a plugin's scope.
+    const editSubject = unsealedRuleSubject?.kind === "edit" ? { ...unsealedRuleSubject, targets: canonicalTargets } : undefined;
+    if (!brokeredFileRouteSelected && editSubject?.kind === "edit" && services.permissionManager) {
+      await services.permissionManager.ensureProjectRulesLoaded(executionCwd);
+      const editDecision = services.permissionManager.checkDetailed(toolUse.name, source, invocationCategory, overlayTriggerOrigin, {
+        ...invocationPermissionContext, ruleSubject: editSubject, projectRulesCwd: executionCwd,
+      });
+      if (editDecision.decision === "allow" && services.permissionManager.checkScopedRules(editSubject, executionCwd).decision === "allow") {
+        invocationAllowedScope = { directories: [...invocationAllowedScope.directories, ...canonicalTargets.map((target) => target.canonicalPath)] };
+        invocationRuntimeAllowedDirectories = [...invocationRuntimeAllowedDirectories, ...canonicalTargets.map((target) => target.runtimePath)];
+      }
     }
 
     // ── Step 2.6: Layer 1 — Allowed Directories ─────

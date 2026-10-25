@@ -5,8 +5,8 @@
  *
  *   Bash(<prefix> *)          every command whose static argv starts with <prefix>
  *   Bash(<exact command>)     exactly that static argv
- *   Edit(<abs path>)          one path; Edit(<abs dir>/**) — everything under it
- *   WebFetch(domain:<host>)   exact host; only a leading `*.` wildcard
+ *   Edit(<path-glob>)         absolute or project-relative, using *, ** and ?
+ *   WebFetch(domain:<host>)   exact host, optional port; only a leading `*.` wildcard
  *   Mcp(<server>)             every tool of one MCP server
  *   Mcp(<server>:<tool>)      one MCP tool
  *
@@ -30,7 +30,7 @@ export type RuleSpecifier =
     }
   | {
       kind: "edit";
-      /** Absolute, normalized path without trailing separator. */
+      /** Normalized absolute path or project-relative glob, without trailing separator. */
       path: string;
       /** True for `Edit(<dir>/**)`: the path itself and everything under it. */
       recursive: boolean;
@@ -41,6 +41,8 @@ export type RuleSpecifier =
       host: string;
       /** True for `WebFetch(domain:*.<host>)`: strict subdomains of host only. */
       subdomains: boolean;
+      /** Omitted means every port on this host. */
+      port?: number;
     }
   | { kind: "mcp"; server: string; tool?: string };
 
@@ -102,7 +104,10 @@ function parseBash(text: string, body: string): RuleSpecifier {
 }
 
 function parseEdit(text: string, body: string): RuleSpecifier {
-  let path = body;
+  let path = body.replace(/\\/g, "/").normalize("NFC");
+  if (path.split("/").some((segment) => segment.includes("**") && segment !== "**")) {
+    throw new RuleSpecifierError(text, "** must be a whole path segment");
+  }
   let recursive = false;
   if (path.endsWith("/**")) {
     recursive = true;
@@ -110,8 +115,9 @@ function parseEdit(text: string, body: string): RuleSpecifier {
     if (path === "") path = "/";
   }
   const windowsDrive = /^[A-Za-z]:[\\/]/.test(path);
-  if (!path.startsWith("/") && !windowsDrive) throw new RuleSpecifierError(text, "path must be absolute");
-  if (/[*?[\]{}]/.test(path)) throw new RuleSpecifierError(text, "only a trailing /** is supported");
+  if (!path || path.startsWith("~") || (!windowsDrive && path.includes(":"))) throw new RuleSpecifierError(text, "invalid path");
+  if (/[\[\]{}\r\n\0]/.test(path)) throw new RuleSpecifierError(text, "unsupported path syntax");
+  if (path.includes("//")) throw new RuleSpecifierError(text, "path must be normalized");
   const segments = path.split(/[\\/]/);
   if (segments.some((segment) => segment === "." || segment === "..")) {
     throw new RuleSpecifierError(text, "path must be normalized (no . or .. segments)");
@@ -124,6 +130,14 @@ function parseEdit(text: string, body: string): RuleSpecifier {
 function parseWebFetch(text: string, body: string): RuleSpecifier {
   if (!body.startsWith("domain:")) throw new RuleSpecifierError(text, "expected WebFetch(domain:<host>)");
   let host = body.slice("domain:".length);
+  let port: number | undefined;
+  const separator = host.indexOf(":");
+  if (separator !== -1) {
+    const value = host.slice(separator + 1);
+    if (!/^[1-9]\d{0,4}$/.test(value) || Number(value) > 65535) throw new RuleSpecifierError(text, "invalid port");
+    port = Number(value);
+    host = host.slice(0, separator);
+  }
   const subdomains = host.startsWith("*.");
   if (subdomains) host = host.slice(2);
   if (host !== host.toLowerCase()) throw new RuleSpecifierError(text, "host must be lower case");
@@ -132,9 +146,9 @@ function parseWebFetch(text: string, body: string): RuleSpecifier {
     throw new RuleSpecifierError(text, "invalid host (only a leading *. wildcard is supported)");
   }
   if (subdomains && labels.length < 2) {
-    throw new RuleSpecifierError(text, "a *. wildcard needs at least a registrable domain (e.g. *.example.com)");
+    throw new RuleSpecifierError(text, "a *. wildcard needs at least two labels after *. (e.g. *.example.com)");
   }
-  return { kind: "webfetch", host, subdomains };
+  return { kind: "webfetch", host, subdomains, ...(port === undefined ? {} : { port }) };
 }
 
 function parseMcp(text: string, body: string): RuleSpecifier {
@@ -150,7 +164,7 @@ export function formatRuleSpecifier(spec: RuleSpecifier): string {
   switch (spec.kind) {
     case "bash": return `Bash(${[...spec.tokens, ...(spec.wildcard ? ["*"] : [])].join(" ")})`;
     case "edit": return `Edit(${spec.recursive ? `${spec.path === "/" ? "" : spec.path}/**` : spec.path})`;
-    case "webfetch": return `WebFetch(domain:${spec.subdomains ? "*." : ""}${spec.host})`;
+    case "webfetch": return `WebFetch(domain:${spec.subdomains ? "*." : ""}${spec.host}${spec.port === undefined ? "" : `:${spec.port}`})`;
     case "mcp": return `Mcp(${spec.server}${spec.tool === undefined ? "" : `:${spec.tool}`})`;
   }
 }
@@ -161,20 +175,32 @@ export function canonicalRuleSpecifier(text: string): string {
 }
 
 /**
- * Rule kinds the decision path enforces today. P1a wires only `bash`; the other
- * kinds parse (so the language is stable) but are rejected on write and on
- * load until their matchers are wired (P1c), so a stored rule can never be a
- * silent no-op that the user believes is in force.
+ * Tidies hand-edited rule text before it is parsed: trims the outside and, in
+ * a `Bash(...)` body, trims the inside and collapses runs of spaces and tabs
+ * to one space. The approval dock preview and the host save path both call
+ * this, so what the user sees is what is saved. It never makes invalid input
+ * valid in any other way, and {@link parseRuleSpecifier} stays strict, so the
+ * rule store still rejects non-canonical text written by any other path.
  */
-export const ENFORCED_RULE_KINDS: ReadonlySet<RuleSpecifierKind> = new Set(["bash"]);
+export function normalizeRuleSpecifierInput(text: string): string {
+  const trimmed = text.trim();
+  const bash = /^Bash\((.*)\)$/s.exec(trimmed);
+  if (!bash) return trimmed;
+  return `Bash(${bash[1]!.replace(/[ \t]+/g, " ").replace(/^ | $/g, "")})`;
+}
 
-/** Pure matcher for `WebFetch(domain:...)` — wired into decisions in P1c. */
-export function matchesWebFetchHost(spec: Extract<RuleSpecifier, { kind: "webfetch" }>, host: string): boolean {
+/** Storage admits only rule kinds wired into the host decision path. */
+export const ENFORCED_RULE_KINDS: ReadonlySet<RuleSpecifierKind> = new Set(["bash", "edit", "webfetch", "mcp"]);
+
+/** Match a destination hostname and its effective transport port. */
+export function matchesWebFetchHost(spec: Extract<RuleSpecifier, { kind: "webfetch" }>, host: string, port?: number): boolean {
   const normalized = host.toLowerCase().replace(/\.$/, "");
+  if (spec.port !== undefined && spec.port !== port) return false;
+  if (!normalized.split(".").every((label) => HOST_LABEL_RE.test(label))) return false;
   return spec.subdomains ? normalized.endsWith(`.${spec.host}`) : normalized === spec.host;
 }
 
-/** Pure matcher for `Mcp(...)` — wired into decisions in P1c. */
+/** Match the original server/tool pair, without decoding a namespaced tool name. */
 export function matchesMcpTool(spec: Extract<RuleSpecifier, { kind: "mcp" }>, server: string, tool: string): boolean {
   return spec.server === server && (spec.tool === undefined || spec.tool === tool);
 }

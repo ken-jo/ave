@@ -18,7 +18,8 @@ import type {
 
 export interface SandboxGateInputs {
   /** `features.osToolSandbox` OR `features.pluginWorkerConfinement` — a Settings
-   *  toggle of either scope; both off by default everywhere. */
+   *  toggle of either scope; the shell scope is on by default on macOS/Linux and
+   *  gated off on Windows, the worker scope off by default everywhere. */
   settingOn: boolean;
   /** `AVE_SANDBOX_ENABLED=1` OR `AVE_PLUGIN_WORKER_CONFINEMENT=1` — the
    *  deliberate, fail-closed env override of either scope. */

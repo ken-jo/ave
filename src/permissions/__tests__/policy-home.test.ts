@@ -135,9 +135,13 @@ describe.skipIf(process.platform !== "win32")("home policy with an absent HOME",
     expect(buildSafeChildEnv()).not.toHaveProperty("HOME");
   });
 
-  it("retains the host-home read jail without changing child HOME", () => {
+  // Confined shells read the host home; its sensitive entries stay denied
+  // from the USERPROFILE anchor when HOME is absent.
+  it("keeps home-anchored sensitive reads denied without changing child HOME", () => {
     const policy = getBuiltinShellReadPolicy([], getPolicyHome());
-    expect(policy.denyRead).toContain(home);
+    expect(policy.denyRead).not.toContain(home);
+    expect(policy.denyRead.map((path) => canonicalizePathForMatch(path)))
+      .toContain(canonicalizePathForMatch(join(home, ".ssh")));
     expect(buildSafeChildEnv()).not.toHaveProperty("HOME");
   });
 

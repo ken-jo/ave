@@ -36,7 +36,9 @@ import {
   recordApproval,
   __resetSessionStoreForTest,
   captureApprovalWorkingDirectory,
+  setApprovalConversationRootResolver,
 } from "../../permissions/user-approval-store.js";
+import { createRootSessionResolver } from "../../permissions/root-session-resolver.js";
 import { canonicalStringify } from "../../shared/canonical-json.js";
 import { makeWriteProbeTool } from "./approval-memory-test-fixtures.js";
 import { approvalCacheKeyFor } from "../pipeline/display-mask.js";
@@ -110,7 +112,7 @@ describe("ToolExecutor — Store B memory skip end-to-end (real PermissionManage
       "write_probe",
       canonicalStringify({ path: join(dir, "file.txt") }),
       "builtin",
-      { scope: "session", verdictAtApproval: "low", nlJustification: null, trustOrigin: "user-keyboard", workingDirectoryIdentity: captureApprovalWorkingDirectory(dir).identity },
+      { scope: "session", sessionId: "sess-deny", verdictAtApproval: "low", nlJustification: null, trustOrigin: "user-keyboard", workingDirectoryIdentity: captureApprovalWorkingDirectory(dir).identity },
     );
 
     const requestAndWait = vi.fn();
@@ -152,7 +154,7 @@ describe("ToolExecutor — Store B memory skip end-to-end (real PermissionManage
       "write_probe",
       canonicalStringify({ path: join(dir, "file.txt") }),
       "builtin",
-      { scope: "session", verdictAtApproval: "low", nlJustification: null, trustOrigin: "user-keyboard", workingDirectoryIdentity: captureApprovalWorkingDirectory(dir).identity },
+      { scope: "session", sessionId: "sess-overlay", verdictAtApproval: "low", nlJustification: null, trustOrigin: "user-keyboard", workingDirectoryIdentity: captureApprovalWorkingDirectory(dir).identity },
     );
 
     const requestAndWait = vi.fn(async (req: { id: string }) => ({
@@ -201,7 +203,7 @@ describe("ToolExecutor — Store B memory skip end-to-end (real PermissionManage
       "write_probe",
       canonicalStringify({ path: join(dir, "file.txt") }),
       "builtin",
-      { scope: "session", verdictAtApproval: "low", nlJustification: null, trustOrigin: "user-keyboard", workingDirectoryIdentity: captureApprovalWorkingDirectory(dir).identity },
+      { scope: "session", sessionId: "sess-strict", verdictAtApproval: "low", nlJustification: null, trustOrigin: "user-keyboard", workingDirectoryIdentity: captureApprovalWorkingDirectory(dir).identity },
     );
 
     const requestAndWait = vi.fn(async (req: { id: string }) => ({
@@ -277,6 +279,102 @@ describe("ToolExecutor — Store B memory skip end-to-end (real PermissionManage
     expect(requestAndWait).not.toHaveBeenCalled();
     expect(executeSpy).toHaveBeenCalledTimes(1);
     expect(result[0].is_error).toBeUndefined();
+  });
+
+  it.each([
+    { sessionId: "approved-conversation", permitted: true },
+    { sessionId: "another-conversation", permitted: false },
+    { sessionId: undefined, permitted: false },
+  ])("conversation approval permits only its owning session: $sessionId", async ({ sessionId, permitted }) => {
+    const execute = vi.fn(async () => "wrote");
+    const registry = new ToolRegistry();
+    registry.register(makeWriteProbeTool(execute));
+    const manager = new PermissionManager(join(dir, "permissions.json"));
+    const input = { path: join(dir, "conversation.txt") };
+    await recordApproval("write_probe", canonicalStringify(input), "builtin", {
+      scope: "session",
+      sessionId: "approved-conversation",
+      verdictAtApproval: "low",
+      nlJustification: null,
+      trustOrigin: "user-keyboard",
+      workingDirectoryIdentity: captureApprovalWorkingDirectory(dir).identity,
+    });
+    const requestAndWait = vi.fn(async (request: { id: string }) => ({
+      requestId: request.id,
+      choice: "deny-once" as const,
+    }));
+    const executor = new ToolExecutor(
+      registry, undefined, manager, undefined,
+      { requestAndWait } as never, undefined, auditLogger,
+    );
+    const result = await executor.executeAll(
+      [{ id: "conversation-write", name: "write_probe", input }],
+      {
+        ...(sessionId === undefined ? {} : { sessionId }),
+        executionCwd: dir,
+        permissionContext: userPermissionContext({ additionalDirectories: [dir] }),
+      },
+    );
+    expect(execute).toHaveBeenCalledTimes(permitted ? 1 : 0);
+    expect(requestAndWait).toHaveBeenCalledTimes(permitted ? 0 : 1);
+    expect(Boolean(result[0].is_error)).toBe(!permitted);
+  });
+
+  // Rule: a session allow belongs to the root conversation. Every agent in
+  // that tree (the conversation and the sub-agents spawned from it, at any
+  // depth) shares it; separate root conversations never do.
+  const ROOT_A = "11111111-1111-4111-8111-111111111111";
+  const ROOT_B = "22222222-2222-4222-8222-222222222222";
+  const CHILD_A1 = "sub-aa-33333333-3333-4333-8333-333333333333";
+  const CHILD_A2 = "sub-ab-44444444-4444-4444-8444-444444444444";
+  const GRANDCHILD_A1 = "sub-ac-55555555-5555-4555-8555-555555555555";
+  const CHILD_B1 = "sub-ba-66666666-6666-4666-8666-666666666666";
+  const SUBAGENT_ORIGINS: Record<string, string> = {
+    [CHILD_A1]: ROOT_A, [CHILD_A2]: ROOT_A, [GRANDCHILD_A1]: CHILD_A1, [CHILD_B1]: ROOT_B,
+  };
+  it.each([
+    { name: "a parent allow covers its sub-agent", recordedBy: ROOT_A, calledBy: CHILD_A1, permitted: true },
+    { name: "a nested sub-agent allow covers the root conversation", recordedBy: GRANDCHILD_A1, calledBy: ROOT_A, permitted: true },
+    { name: "a sub-agent allow covers its sibling within the same root", recordedBy: CHILD_A1, calledBy: CHILD_A2, permitted: true },
+    { name: "a sub-agent allow never reaches another root conversation", recordedBy: CHILD_A1, calledBy: CHILD_B1, permitted: false },
+    { name: "another root's allow never reaches this conversation", recordedBy: ROOT_B, calledBy: ROOT_A, permitted: false },
+  ])("session approvals are keyed by root conversation: $name", async ({ recordedBy, calledBy, permitted }) => {
+    setApprovalConversationRootResolver(createRootSessionResolver((id) => SUBAGENT_ORIGINS[id]));
+    const execute = vi.fn(async () => "wrote");
+    const registry = new ToolRegistry();
+    registry.register(makeWriteProbeTool(execute));
+    const manager = new PermissionManager(join(dir, "permissions.json"));
+    const input = { path: join(dir, "subagent.txt") };
+    await recordApproval("write_probe", canonicalStringify(input), "builtin", {
+      scope: "session",
+      sessionId: recordedBy,
+      verdictAtApproval: "low",
+      nlJustification: null,
+      trustOrigin: "user-keyboard",
+      workingDirectoryIdentity: captureApprovalWorkingDirectory(dir).identity,
+    });
+    const requestAndWait = vi.fn(async (request: { id: string }) => ({ requestId: request.id, choice: "deny-once" as const }));
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, auditLogger);
+    const result = await executor.executeAll(
+      [{ id: "subagent-write", name: "write_probe", input }],
+      { sessionId: calledBy, executionCwd: dir, permissionContext: userPermissionContext({ additionalDirectories: [dir] }) },
+    );
+    expect(execute).toHaveBeenCalledTimes(permitted ? 1 : 0);
+    expect(requestAndWait).toHaveBeenCalledTimes(permitted ? 0 : 1);
+    expect(Boolean(result[0].is_error)).toBe(!permitted);
+  });
+
+  it("refuses to key a session approval through a cyclic sub-agent origin chain", async () => {
+    const loop: Record<string, string> = { [CHILD_A1]: CHILD_A2, [CHILD_A2]: CHILD_A1 };
+    setApprovalConversationRootResolver(createRootSessionResolver((id) => loop[id]));
+    await expect(recordApproval("write_probe", canonicalStringify({ path: join(dir, "x.txt") }), "builtin", {
+      scope: "session",
+      sessionId: CHILD_A1,
+      verdictAtApproval: "low",
+      nlJustification: null,
+      trustOrigin: "user-keyboard",
+      workingDirectoryIdentity: captureApprovalWorkingDirectory(dir).identity,
+    })).rejects.toThrow(/cycle/);
   });
 
   it("(d) approval under a different (trustOrigin, approvalCacheKey) does NOT match — modal shown", async () => {

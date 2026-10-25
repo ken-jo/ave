@@ -35,7 +35,7 @@ const DISPATCH = [
   "Get-ChildItem | % { $_.$member }",
   "Get-ChildItem | % { $_['Payload'] }",
   "Get-ChildItem | % { Get-Date | % { $_.Name } }",
-  "git difftool notes.txt", "npm exec helper", "python -c $code", "bash script.sh",
+  "npm exec helper", "python -c $code", "bash script.sh",
 ];
 
 const REMOTE_WRITES = [

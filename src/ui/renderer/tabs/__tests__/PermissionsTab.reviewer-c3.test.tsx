@@ -22,32 +22,20 @@ import type { HookTrustRow } from "../../types.js";
 import { TEST_IDS, execModeTestId } from "../../../../shared/test-ids.js";
 
 
-/**
- * Build a minimal window.ave mock with controllable providerKeyMap.
- *
- * `providerKeys` maps provider id → whether the key is present.
- * Defaults: openai=true, others=false.
- */
-function installApi(providerKeys: Partial<Record<string, boolean>> = {}) {
-  const defaults: Record<string, boolean> = {
-    openai: true,
-    anthropic: false,
-    google: false,
-    foundry: false,
-    "gcp-playground": false,
-    ...providerKeys,
-  };
-
-  const reviewerProviderHasKey = vi.fn(async (provider: string) => defaults[provider] ?? false);
-
+/** Build a minimal window.ave mock for the reviewer section. */
+function installApi() {
   const ave = {
     permission: {
+      egressGrantsList: vi.fn(async () => ({ ok: true as const, grants: [] })),
+      egressGrantRevoke: vi.fn(async () => ({ ok: true as const })),
       // The reviewer config only renders under the auto-verification mode now
       // that the permission UI exposes a single axis.
       getMode: vi.fn(async () => ({ mode: "auto" })),
       setMode: vi.fn(async (mode: string) => ({ ok: true, mode })),
       onModeChanged: vi.fn(() => () => undefined),
       listRules: vi.fn(async () => []),
+      listScopedRules: vi.fn(async () => ({ rules: [], errors: [] })),
+      removeScopedRule: vi.fn(async () => ({ ok: true })),
       addRule: vi.fn(async () => ({ ok: true, rule: { pattern: "x", action: "allow" } })),
       removeRule: vi.fn(async () => ({ ok: true })),
       deferredList: vi.fn(async () => ({ ok: true as const, pending: [], total: 0 })),
@@ -73,8 +61,6 @@ function installApi(providerKeys: Partial<Record<string, boolean>> = {}) {
             verb: "show" as const,
             settings: {
               mode: "disabled" as const,
-              provider: "openai" as const,
-              model: "gpt-4o-mini",
               fallbackOnError: "deny" as const,
               parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
               interactive: { autoApprove: "off" as const },
@@ -87,15 +73,12 @@ function installApi(providerKeys: Partial<Record<string, boolean>> = {}) {
           verb: "provider" as const,
           settings: {
             mode: "disabled" as const,
-            provider: "openai" as const,
-            model: "gpt-4o-mini",
             fallbackOnError: "deny" as const,
             parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
             interactive: { autoApprove: "off" as const },
           },
         };
       }),
-      reviewerProviderHasKey,
       sandboxCapability: vi.fn(async () => ({
         platform: "linux" as NodeJS.Platform,
         enabled: false,
@@ -148,17 +131,6 @@ describe("PermissionsTab C3 — active LLM following", () => {
     delete (window as unknown as { ave?: unknown }).ave;
   });
 
-  it("does not query legacy reviewer provider keys on mount", async () => {
-    const api = installApi();
-    await act(async () => {
-      render(<PermissionsTab />);
-    });
-    await waitFor(() =>
-      expect(screen.getByTestId(TEST_IDS.reviewerPromptPanel)).toBeInTheDocument(),
-    );
-    expect(api.permission.reviewerProviderHasKey).not.toHaveBeenCalled();
-  });
-
   it("renders the prompt collapse inside Auto-verify instead of reviewer provider/model controls", async () => {
     installApi();
     await act(async () => {
@@ -186,8 +158,8 @@ describe("PermissionsTab C3 — active LLM following", () => {
     expect(screen.getByTestId("reviewer-system-prompt")).toHaveTextContent("UNTRUSTED_INPUT");
   });
 
-  it("does not refresh legacy provider keys after a successful reviewerDispatch", async () => {
-    const api = installApi({ openai: true });
+  it("re-selecting auto-verify wires the llm reviewer", async () => {
+    const api = installApi();
     await act(async () => {
       render(<PermissionsTab />);
     });
@@ -204,45 +176,5 @@ describe("PermissionsTab C3 — active LLM following", () => {
     });
 
     expect(api.permission.reviewerDispatch).toHaveBeenCalledWith("mode llm");
-    expect(api.permission.reviewerProviderHasKey).not.toHaveBeenCalled();
-  });
-
-  it("does not call reviewerProviderHasKey for a failed dispatch", async () => {
-    const api = installApi();
-    // Override reviewerDispatch to return an error for 'mode llm'
-    api.permission.reviewerDispatch.mockImplementation(async (rawArgs: string) => {
-      if (rawArgs === "show") {
-        return {
-          ok: true as const,
-          verb: "show" as const,
-          settings: {
-            mode: "disabled" as const,
-            provider: "openai" as const,
-            model: "gpt-4o-mini",
-            fallbackOnError: "deny" as const,
-            parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
-            interactive: { autoApprove: "off" as const },
-          },
-        };
-      }
-      return { ok: false as const, error: "reviewer-rewire-failed: test error" };
-    });
-
-    await act(async () => {
-      render(<PermissionsTab />);
-    });
-    await waitFor(() =>
-      expect(screen.getByTestId(TEST_IDS.reviewerPromptPanel)).toBeInTheDocument(),
-    );
-
-    // Toggle away and back to re-trigger the auto-wired `mode llm` (which fails).
-    await act(async () => {
-      fireEvent.click(screen.getByTestId(execModeTestId("default")));
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByTestId(execModeTestId("auto")));
-    });
-
-    expect(api.permission.reviewerProviderHasKey).not.toHaveBeenCalled();
   });
 });

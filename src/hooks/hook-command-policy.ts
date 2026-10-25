@@ -31,7 +31,12 @@ export function createHookCommandAuthorizer(deps: {
       projectRulesCwd: cwd,
       headless: turnExtensionPolicyContext.getStore()?.headless === true,
     } as const;
-    const check = () => deps.permissionManager.checkDetailed("bash", "builtin", "shell", undefined, context);
+    // Matched as a plain host shell: wildcard allows apply only on a
+    // sandbox-capable host, as for the bash tool.
+    const check = () => deps.permissionManager.checkDetailed("bash", "builtin", "shell", undefined, {
+      ...context,
+      shellExecution: { runsSandboxed: false, sandboxAvailable: getHostShellExecutionPlan().sandboxed },
+    });
     const assertAllowed = (approved: boolean) => (): void => {
       const current = check();
       if (current.decision === "deny" || (!approved && current.decision !== "allow")) {

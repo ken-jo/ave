@@ -22,12 +22,16 @@ import { TEST_IDS, execModeTestId } from "../../../../shared/test-ids.js";
 function installApi(opts: { mode: "llm" | "rule"; degraded: boolean }) {
   const ave = {
     permission: {
+      egressGrantsList: vi.fn(async () => ({ ok: true as const, grants: [] })),
+      egressGrantRevoke: vi.fn(async () => ({ ok: true as const })),
       // The reviewer config (and its degrade banner) only renders under the
       // auto-verification mode now that the permission UI has a single axis.
       getMode: vi.fn(async () => ({ mode: "auto" })),
       setMode: vi.fn(async (mode: string) => ({ ok: true, mode })),
       onModeChanged: vi.fn(() => () => undefined),
       listRules: vi.fn(async () => []),
+      listScopedRules: vi.fn(async () => ({ rules: [], errors: [] })),
+      removeScopedRule: vi.fn(async () => ({ ok: true })),
       addRule: vi.fn(async () => ({ ok: true, rule: { pattern: "x", action: "allow" } })),
       removeRule: vi.fn(async () => ({ ok: true })),
       deferredList: vi.fn(async () => ({ ok: true as const, pending: [], total: 0 })),
@@ -53,8 +57,6 @@ function installApi(opts: { mode: "llm" | "rule"; degraded: boolean }) {
             verb: "show" as const,
             settings: {
               mode: opts.mode,
-              provider: "openai" as const,
-              model: "gpt-4o-mini",
               fallbackOnError: "deny" as const,
               parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
               interactive: { autoApprove: "low" as const },
@@ -64,7 +66,6 @@ function installApi(opts: { mode: "llm" | "rule"; degraded: boolean }) {
         }
         throw new Error(`unexpected reviewerDispatch: ${rawArgs}`);
       }),
-      reviewerProviderHasKey: vi.fn(async (provider: string) => provider === "openai"),
       sandboxCapability: vi.fn(async () => ({
         platform: "linux" as NodeJS.Platform,
         enabled: false,

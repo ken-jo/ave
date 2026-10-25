@@ -11,9 +11,8 @@
 import { useCallback, useEffect, useState, type ReactElement } from "react";
 import { Button } from "../../../../components/ui/button.js";
 import { useTranslation } from "../../../../i18n/react.js";
-import type { ListedEgressGrant } from "../../../../shared/egress-grant-scopes.js";
+import type { ListedEgressGrant, RevocableEgressGrant } from "../../../../shared/egress-grant-scopes.js";
 import { formatDateTime } from "../../../../shared/format-time.js";
-import { errorMessage } from "../../../../shared/error-message.js";
 import { formatIpcError } from "../../format-ipc-error.js";
 import { isIpcErrorResult } from "../../types.js";
 import { terminalTabLabel } from "../../preview/terminal-tab-labels.js";
@@ -56,6 +55,23 @@ function failureMessage(result: unknown): string | undefined {
   return undefined;
 }
 
+
+function revokeTarget(grant: ListedEgressGrant): RevocableEgressGrant {
+  const destination = {
+    host: grant.host,
+    port: grant.port,
+    ...(grant.network === undefined ? {} : { network: grant.network }),
+  };
+  if (grant.scope === "conversation") return { ...destination, scope: "conversation", sessionId: grant.sessionId };
+  if (grant.scope === "tab") return { ...destination, scope: "tab", tabId: grant.tabId };
+  return {
+    ...destination,
+    scope: grant.scope,
+    origin: grant.origin,
+    ...(grant.workspaceRoot === undefined ? {} : { workspaceRoot: grant.workspaceRoot }),
+  };
+}
+
 export function EgressGrantsList({ fetcher, revoker }: EgressGrantsListProps): ReactElement {
   const { t: translate } = useTranslation();
   const [grants, setGrants] = useState<ListedEgressGrant[] | null>(null);
@@ -73,10 +89,11 @@ export function EgressGrantsList({ fetcher, revoker }: EgressGrantsListProps): R
       } else if (result !== null && typeof result === "object" && Array.isArray((result as { grants?: unknown }).grants)) {
         setGrants((result as { grants: ListedEgressGrant[] }).grants);
       } else {
-        setError(translate("permissionsTab.networkDenialsLoadFailed"));
+        setError(translate("permissionsTab.networkGrantsLoadFailed"));
       }
-    } catch (err) {
-      setError(errorMessage(err));
+    } catch {
+      // A thrown fetch carries no user-facing message; its text stays out of the UI.
+      setError(translate("permissionsTab.networkGrantsLoadFailed"));
     } finally {
       setBusy(false);
     }
@@ -86,38 +103,35 @@ export function EgressGrantsList({ fetcher, revoker }: EgressGrantsListProps): R
     setBusy(true);
     setError(null);
     try {
-      const result = await (revoker ?? ((g: ListedEgressGrant) => window.ave!.permission!.egressGrantRevoke({
-        scope: g.scope,
-        host: g.host,
-        port: g.port,
-        ...(g.network === undefined ? {} : { network: g.network }),
-        ...(g.scope === "conversation" ? { sessionId: g.sessionId } : {}),
-        ...(g.scope === "tab" ? { tabId: g.tabId } : {}),
-        ...(g.scope === "workspace" || g.scope === "always" ? { origin: g.origin } : {}),
-        ...((g.scope === "workspace" || g.scope === "always") && g.workspaceRoot !== undefined ? { workspaceRoot: g.workspaceRoot } : {}),
-      })))(grant);
+      const result = await (revoker ?? ((g: ListedEgressGrant) => window.ave!.permission!.egressGrantRevoke(revokeTarget(g))))(grant);
       const failed = failureMessage(result);
-      if (failed !== undefined) setError(failed);
-    } catch (err) {
-      setError(errorMessage(err));
+      // A refused revoke stays on screen with the grant still listed.
+      if (failed !== undefined) { setError(failed); return; }
+      await refresh();
+    } catch {
+      setError(translate("permissionsTab.networkGrantRevokeFailed"));
     } finally {
       setBusy(false);
     }
-    await refresh();
-  }, [revoker, refresh]);
+  }, [revoker, refresh, translate]);
 
   useEffect(() => { void refresh(); }, [refresh]);
 
   return (
     <div className="space-y-2" data-testid="egress-grants">
-      <p className="text-[12px] font-medium">{translate("permissionsTab.networkGrantsHeading")}</p>
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-[12px] font-medium">{translate("permissionsTab.networkGrantsHeading")}</p>
+        <Button size="sm" variant="outline" disabled={busy} onClick={() => void refresh()} data-testid="egress-grants-refresh">
+          {translate("permissionsTab.networkGrantsRefresh")}
+        </Button>
+      </div>
       {error !== null ? (
         <p role="alert" className="text-[11px] text-destructive" data-testid="egress-grants-error">
           {translate("permissionsTab.networkGrantsError", { message: error })}
         </p>
       ) : null}
       {grants === null ? (
-        error === null ? <p className="text-[11px] text-muted-foreground">{translate("permissionsTab.networkDenialsLoading")}</p> : null
+        error === null ? <p className="text-[11px] text-muted-foreground">{translate("permissionsTab.networkGrantsLoading")}</p> : null
       ) : grants.length === 0 ? (
         <p className="text-[11px] text-muted-foreground" data-testid="egress-grants-empty">
           {translate("permissionsTab.networkGrantsEmpty")}

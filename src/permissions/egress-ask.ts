@@ -76,6 +76,7 @@ export interface EgressShellApprovalRequest extends EgressApprovalRequestCommon 
   readonly sessionId: string | undefined;
   readonly toolName: ShellEgressOwner["toolName"];
   readonly toolUseId: string | undefined;
+  readonly workspaceRoot?: string;
 }
 
 /** A workspace terminal tab's ask, in the banner of that tab. */
@@ -117,6 +118,7 @@ export interface EgressAskDeps {
    * model endpoints the host configured, as ASRT-style patterns (`d`, `*.d`,
    * optionally `:port`). `undefined` pluginId is a worker no extension owns.
    */
+  readonly shellGrantScopes?: readonly EgressGrantScope[];
   readonly workerAllowedDomains: (pluginId: string | undefined) => readonly string[];
   readonly grants: EgressGrantStore;
   /** `features.shellEgressAsk`. Off: shells get granted hosts only and are never asked. */
@@ -276,6 +278,7 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
     const subject = grantSubject(token, owner);
     const origin: EgressAskOrigin = owner.kind;
     const scopes = egressScopesForNetwork(egressGrantScopesFor(strength, origin), network).filter((scope) =>
+      owner.kind === "shell" && deps.shellGrantScopes && !deps.shellGrantScopes.includes(scope) ? false :
       scope === "conversation" ? subject.sessionId !== undefined
       : scope === "tab" ? subject.tabId !== undefined
       : scope === "workspace" ? subject.workspaceRoot !== undefined
@@ -284,6 +287,7 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
     if (owner.kind === "shell") {
       answer = await requester({
         origin: "shell",
+        workspaceRoot: owner.context.workspaceRoot,
         sessionId: owner.context.sessionId,
         toolName: owner.toolName,
         toolUseId: owner.toolUseId,
@@ -404,7 +408,8 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
         // Matched by origin: a shell grant never covers a terminal, nor the reverse.
         const subject = grantSubject(token, owner);
         const grantDestination = { ...destination, network };
-        const eligibleScopes = egressScopesForNetwork(egressGrantScopesFor(strength, owner.kind), network);
+        const eligibleScopes = egressScopesForNetwork(egressGrantScopesFor(strength, owner.kind), network)
+          .filter((scope) => owner.kind !== "shell" || !deps.shellGrantScopes || deps.shellGrantScopes.includes(scope));
         const key = holdKey(token, destination, strength);
         if (resolvedPhase) {
           // An answer given by name becomes a grant only for the class it was given for.

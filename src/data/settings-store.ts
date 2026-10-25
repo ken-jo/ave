@@ -631,7 +631,7 @@ export type MemoryCaptureMode = "off" | "review" | "auto";
 
 /**
  * Experimental feature flags — UI-toggleable, persisted to settings.json.
- * All fields default to false (opt-in). Safe to add new fields without
+ * Defaults are defined per flag in settings-defaults.ts. Safe to add fields without
  * migration — missing keys are treated as false at load time.
  */
 export interface FeatureFlags {
@@ -710,14 +710,16 @@ export interface FeatureFlags {
    * confined by the Anthropic Sandbox Runtime (ASRT; macOS Seatbelt / Linux
    * bwrap backends). It governs host shells ONLY: plugin workers, plugin
    * children, plugin hooks and MCP stdio servers follow
-   * {@link pluginWorkerConfinement}. Off by default on every platform; see
-   * DEFAULT_SETTINGS for the decision.
+   * {@link pluginWorkerConfinement}. Enabled by default on macOS/Linux, gated
+   * off on Windows; explicit persisted values are retained. Availability
+   * requires a successful runtime launch probe; the invocation plan records the
+   * actual shell route.
    *
    * The boot gate distinguishes how the ON-signal
    * arrived (see boot.ts + boot/steps/sandbox-gate.ts): the DEFAULT/settings-on
    * path degrades GRACEFULLY (loud warning, unsandboxed, non-bricking) when the
    * sandbox cannot activate, whereas the EXPLICIT `AVE_SANDBOX_ENABLED=1` env
-   * opt-in stays fail-closed (boot aborts rather than run unsandboxed).
+   * opt-in stays fail-closed on macOS/Linux (boot aborts rather than run unsandboxed).
    *
    * Orthogonal to {@link hostClassifiesRisk}: sandbox-enforcement (is the
    * action kernel-confined when it runs) and risk-classification (does the
@@ -727,9 +729,9 @@ export interface FeatureFlags {
    * Capability is platform-dependent and honestly reported, not overclaimed:
    *   - macOS (Seatbelt via ASRT): filesystem + process + network egress
    *     confinement. Network egress is deny-by-default, confined to the
-   *     shared strict-union allow-list (loopback proxy floor).
+   *     local proxy with per-domain shell approval.
    *   - Linux (bwrap via ASRT): filesystem + process + network egress
-   *     confinement (same strict-union floor).
+   *     confinement (same proxy policy).
    *   - Windows: srt-win confines filesystem + network once installed; process
    *     isolation is unavailable. It degrades non-bricking (unsandboxed, loud
    *     warning) until the one-time administrator install completes.

@@ -76,6 +76,36 @@ export const MOCK_REVIEWER_PARENT_ADJUDICATION = {
   model: "reviewer",
 } as const;
 
+/**
+ * `PERMISSIONS.judgeGet` for a home with no `permissions.judge` block (judge
+ * off, reviewer model unset) unless overridden. The Permissions tab renders the judge section unconditionally, so a
+ * tab mock without it shows a read-failure status the real host never does.
+ */
+export function mockJudgeGet(overrides: {
+  model?: { vendor: string; model: string } | null;
+  modelOptions?: Array<{ vendor: string; model: string }>;
+  chatModel?: string | null;
+  reviewerModelUnavailable?: boolean;
+} = {}) {
+  return vi.fn(async () => ({
+    ok: true as const,
+    settings: {
+      model: overrides.model ?? null,
+      chain: [],
+      mode: "shadow" as const,
+      categories: { shell: true, write: true, network: false },
+      timeoutMs: 15_000,
+      chainDeadlineMs: 60_000,
+      breaker: { consecutive: 3, total: 20 },
+    },
+    issues: [],
+    modelOptions: overrides.modelOptions ?? [],
+    chatModel: overrides.chatModel ?? null,
+    reviewerModelUnavailable: overrides.reviewerModelUnavailable ?? false,
+    storedChainRejected: false,
+  }));
+}
+
 type HistoryMock = {
   sessionId?: string;
   sessionTitle?: string;
@@ -527,6 +557,8 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
       setMode: vi.fn(async (mode: string) => ({ ok: true, mode })),
       onModeChanged: vi.fn(() => () => undefined),
       listRules: vi.fn(async () => []),
+      listScopedRules: vi.fn(async () => ({ rules: [], errors: [] })),
+      removeScopedRule: vi.fn(async () => ({ ok: true })),
       addRule: vi.fn(async () => ({ ok: true })),
       removeRule: vi.fn(async () => ({ ok: true })),
       deferredList: vi.fn(async () => ({ ok: true, pending: [], total: 0 })),
@@ -534,13 +566,12 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
       onDeferredPending: vi.fn(() => () => undefined),
       hookTrustList: vi.fn(async () => ({ ok: true, active: [], disabled: [], totalDisabled: 0 })),
       dirDispatch: vi.fn(async () => ({ ok: true, verb: "list", defaults: [], userAdditions: [], effective: [] })),
+      judgeGet: mockJudgeGet(),
       reviewerDispatch: vi.fn(async () => ({
         ok: true,
         verb: "show",
         settings: {
           mode: "disabled",
-          provider: "openai",
-          model: "gpt-4o-mini",
           fallbackOnError: "deny",
           parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
         },
@@ -1099,6 +1130,8 @@ export function makeMockAveNamespace(overrides: AveNamespaceOverrides = {}) {
         setMode: vi.fn(async (mode: string) => ({ ok: true, mode })),
         onModeChanged: vi.fn(() => () => undefined),
         listRules: vi.fn(async () => []),
+        listScopedRules: vi.fn(async () => ({ rules: [], errors: [] })),
+        removeScopedRule: vi.fn(async () => ({ ok: true })),
         addRule: vi.fn(async () => ({ ok: true })),
         removeRule: vi.fn(async () => ({ ok: true })),
         onReviewSuggestion: vi.fn(() => () => undefined),
@@ -1123,6 +1156,12 @@ export function makeMockAveNamespace(overrides: AveNamespaceOverrides = {}) {
           ok: false as const,
           error: "allow-selector-unavailable",
         })),
+      },
+      userApproval: {
+        record: vi.fn(async () => ({ ok: true })),
+        revokeByKey: vi.fn(async () => ({ ok: true })),
+        list: vi.fn(async () => []),
+        listSession: vi.fn(async () => []),
       },
       policy: {
         get: vi.fn(async () => ({

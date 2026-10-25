@@ -142,6 +142,8 @@ export function ApprovalDock({
     if (!root) return;
     // One decision row for every request kind — fail-closed Reject first.
     const selectors = [
+      '[data-testid="egress-approval-deny"]:not(:disabled)',
+      '[data-testid="egress-approval-allow-once"]:not(:disabled)',
       `${testIdSelector(TEST_IDS.denyButton)}:not(:disabled)`,
       `${testIdSelector(TEST_IDS.approveButton)}:not(:disabled)`,
       `${testIdSelector(TEST_IDS.allowAlwaysButton)}:not(:disabled)`,
@@ -274,11 +276,11 @@ export function ApprovalDock({
   if (!request) return null;
 
   const isRationale = request.kind === "rationale";
-  const title = request.kind === "agent-action"
+  const title = request.kind === "egress-host"
+    ? t("egressApprovalCard.dockTitle")
+    : request.kind === "agent-action"
     ? t("toolApprovalDialog.agentActionTitle")
-    : request.kind === "egress-host"
-      ? t("egressApprovalCard.dockTitle")
-      : t("toolApprovalDialog.toolApprovalTitle");
+    : t("toolApprovalDialog.toolApprovalTitle");
   const liveRequestLabel = isRationale ? title : `${title}. ${request.toolName}`;
   const remaining = Math.max(0, queue.length - 1);
 
@@ -390,11 +392,11 @@ export function ApprovalLaneCard({
   const request = queue[0];
   if (!request) return null;
   const isRationale = request.kind === "rationale";
-  const title = request.kind === "agent-action"
+  const title = request.kind === "egress-host"
+    ? t("egressApprovalCard.dockTitle")
+    : request.kind === "agent-action"
     ? t("toolApprovalDialog.agentActionTitle")
-    : request.kind === "egress-host"
-      ? t("egressApprovalCard.dockTitle")
-      : t("toolApprovalDialog.toolApprovalTitle");
+    : t("toolApprovalDialog.toolApprovalTitle");
   const remaining = Math.max(0, queue.length - 1);
   return (
     <section

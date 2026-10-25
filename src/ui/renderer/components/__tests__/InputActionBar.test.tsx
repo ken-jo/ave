@@ -3,6 +3,7 @@ import "../../../../../test/renderer/setup.js";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { act, render, fireEvent, waitFor } from "@testing-library/react";
 import { TooltipProvider } from "../../../../components/ui/tooltip.js";
+import { buildHostShellExecutionPlan, getHostShellExecutionPlanAuditProjection } from "../../../../permissions/host-shell-execution-plan.js";
 import { ComposerStatusRow, InputActionBar } from "../InputActionBar.js";
 import type { RolePreset } from "../../../../data/role-presets.js";
 import type {
@@ -391,6 +392,26 @@ describe("InputActionBar (unified bar)", () => {
     // Hover and screen reader still get the whole route.
     expect(model.getAttribute("title")).toBe("OpenAI · gpt-5.4");
     expect(model.getAttribute("aria-label")).toBe("OpenAI · gpt-5.4");
+  });
+
+  it("keeps the sandbox-off warning in the persistent chat status row", () => {
+    const { getByTestId } = renderBar({
+      statusRow: {
+        ...defaultStatusRow,
+        sandboxCapability: {
+          platform: "darwin", enabled: false, available: true, kind: "full", reason: "",
+          shellExecutionPlan: getHostShellExecutionPlanAuditProjection(buildHostShellExecutionPlan({
+            platform: "darwin", requestedSandbox: false,
+            activeCapability: { kind: "none", confidence: "verified", platform: "darwin", reason: "fixture" },
+          })),
+          runtime: { available: false, kind: "none", reason: "" },
+          confines: { filesystem: false, process: false, network: false },
+          shell: { state: "off", setting: false, envForced: false, causes: [] },
+        },
+      },
+    });
+    expect(getByTestId("iab-status-row")).toContainElement(getByTestId("sandbox-off-status"));
+    expect(getByTestId("sandbox-off-status")).toHaveTextContent("샌드박스 꺼짐");
   });
 
   it("colors the permission text per mode (no pill/outline)", () => {

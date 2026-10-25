@@ -24,6 +24,7 @@ const h = vi.hoisted(() => ({
   subscribe: vi.fn(),
   checkDeps: vi.fn(),
   isProbeError: vi.fn(),
+  isMacProbeError: vi.fn(),
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
@@ -62,6 +63,7 @@ vi.mock("../../permissions/asrt-sandbox.js", async () => {
     useAppOwnedSandboxTempRoot: () => "/tmp/ave-test-sandbox-tmp",
     checkAsrtDependencies: h.checkDeps,
     isAsrtLinuxRuntimeProbeError: h.isProbeError,
+    isAsrtMacRuntimeProbeError: h.isMacProbeError,
     closeAllEgressConnections: () => 0,
   };
 });
@@ -91,6 +93,8 @@ beforeEach(() => {
   h.subscribe.mockResolvedValue(() => {});
   h.checkDeps.mockReset();
   h.isProbeError.mockReset();
+  h.isMacProbeError.mockReset();
+  h.isMacProbeError.mockReturnValue(false);
   h.checkDeps.mockResolvedValue({ errors: [], warnings: [] });
   h.isProbeError.mockReturnValue(false);
   vi.stubEnv("AVE_SANDBOX_ENABLED", "");

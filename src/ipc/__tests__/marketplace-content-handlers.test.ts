@@ -30,7 +30,7 @@ vi.mock("../gated.js", () => ({
 import { CHANNELS } from "../../contract/app-contract.js";
 import type { IpcDeps } from "../types.js";
 import { getLocale, isInstalledLocale, registerInstalledLocales, setInstalledCatalogLoader, setLocale, translate } from "../../i18n/index.js";
-import { loadLocaleMessages, messages as catalogs } from "../../i18n/messages/index.js";
+import { loadLocaleMessages } from "../../i18n/messages/index.js";
 import type { ParsedContent } from "../../marketplace/content/kinds.js";
 import { deriveAgentPluginComponents } from "../../marketplace/content/agent-plugin-components.js";
 import { ContentStore, type StagedContent } from "../../marketplace/content/store.js";
@@ -152,8 +152,8 @@ describe("loadInstalledContent", () => {
   it("applies what the store holds to this process: locales, their catalogs, theme ids and the selected language", async () => {
     const language = { locale: "fr", nativeName: "Français", englishName: "French" };
     // A real interface key: the loader checks the package against the compiled English catalog.
-    const key = Object.keys(catalogs.en).find((candidate) => !candidate.startsWith("be_") && !catalogs.en[candidate]!.includes("{"))!;
-    const messages = { [key]: "Envoyer" };
+    const key = "common.cancel";
+    const messages = { [key]: "Annuler" };
     await install("language", "french", { "language.json": language, "messages.json": messages }, { kind: "language", ...language, messages, missingKeys: [] });
     const settingsService = { get: () => ({ language: "fr" }) };
 
@@ -162,7 +162,7 @@ describe("loadInstalledContent", () => {
     expect(isInstalledLocale("fr")).toBe(true);
     expect(await loadLocaleMessages("fr")).toMatchObject(messages);
     expect(getLocale()).toBe("fr");
-    expect(translate("fr", key)).toBe("Envoyer");
+    expect(translate("fr", key)).toBe("Annuler");
   });
 
   it("lists nothing and applies nothing for an empty store", async () => {

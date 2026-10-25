@@ -10,6 +10,9 @@
  * the gate refuses any answer whose scope the card did not offer. Nothing is
  * written to the user-approval store: the grant store owns egress grants.
  */
+import type { PermissionManager } from "./permission-manager.js";
+import { isReviewerAutoDecisionOutcome } from "./permission-manager.js";
+import { buildPermissionEvaluationContext } from "./evaluation-context.js";
 import { randomUUID } from "node:crypto";
 import {
   isHostApprovalRejectedDecision,
@@ -29,6 +32,7 @@ export const EGRESS_APPROVAL_DENY_REASONS = {
 
 export function createApprovalGateEgressRequester(
   gate: Pick<ApprovalGate, "requestAndWait">,
+  permissionManager?: PermissionManager,
 ): EgressApprovalRequester {
   return async (request): Promise<EgressApprovalAnswer> => {
     const { host, port } = request.destination;
@@ -36,11 +40,45 @@ export function createApprovalGateEgressRequester(
     // A terminal's ask names its tab: the gate draws it in the window that
     // owns that tab, and the renderer in the tab's banner.
     const toolName = terminal ? TERMINAL_EGRESS_TOOL_NAME : request.toolName;
+    // Only a foreground shell call reaches here: a background one was denied
+    // before asking (I5, owner 2026-10-16), so the reviewer runs in the
+    // foreground lane only.
+    const mode = permissionManager?.getMode();
+    let reviewerVerdict;
+    if (request.origin === "shell" && permissionManager && mode !== "strict" &&
+      (mode === "auto" || permissionManager.hasJudge("network"))) {
+      const cwd = request.workspaceRoot ?? process.cwd();
+      const review = await permissionManager.dispatchReviewer("sandbox_network", {
+        source: "builtin", category: "network", pathFields: [],
+        finalInput: { url: `https://${host.includes(":") ? `[${host}]` : host}:${port}/` },
+        executionCwd: cwd, allowedDirectories: [cwd], sensitivePathsAdjacent: [],
+        trustOrigin: "llm-tool-arg",
+        ...(request.sessionId === undefined ? {} : { sessionId: request.sessionId }),
+        evaluationContext: buildPermissionEvaluationContext({
+          policyMode: mode ?? "default", headless: false, source: "builtin", category: "network",
+          trustOrigin: "llm-tool-arg", executionCwd: cwd, allowedDirectories: [cwd], pathFields: [],
+          targetFilePaths: [], sensitivePathsAdjacent: [],
+        }),
+      }, undefined, { defer: "none", ...(request.abortSignal ? { abortSignal: request.abortSignal } : {}) });
+      reviewerVerdict = review.verdict;
+      const judge = review.judge;
+      const reviewed = judge && !review.judgeBaselineAllowed
+        ? judge.judged && judge.applied ? judge.decision : "ask"
+        : isReviewerAutoDecisionOutcome(review.outcome)
+          ? permissionManager.resolveReviewerDecision(review.verdict, "foreground-auto", review.builtinDecision).decision
+          : "ask";
+      if (reviewed === "allow" && request.scopes.includes("once")) return { allow: true, scope: "once" };
+      if (reviewed === "deny" && judge?.judged && judge.applied && judge.decision === "deny") {
+        return { allow: false, reason: "network connection denied by the approval reviewer" };
+      }
+    }
     const decision = await gate.requestAndWait({
       id: randomUUID(),
       category: "tool",
       kind: "egress-host",
       toolName,
+      toolCategory: "network",
+      ...(reviewerVerdict === undefined ? {} : { reviewerVerdict }),
       args: terminal ? { host, port, tabId: request.tabId } : { host, port },
       reason: terminal
         ? `A command in workspace terminal ${request.tabId} wants to connect to ${host}:${port}.`

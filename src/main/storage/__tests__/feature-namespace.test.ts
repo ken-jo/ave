@@ -13,8 +13,8 @@ import { canCreateSymlinks } from "../../../__tests__/support/symlink-capability
  *   - childDir materializes a 0o700 subdirectory.
  *   - openFeatureNamespace rejects path-traversal feature ids.
  */
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, statSync, writeFileSync, readdirSync, existsSync, symlinkSync, readFileSync, lstatSync, mkdirSync } from "node:fs";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { mkdtempSync, statSync, writeFileSync, readdirSync, existsSync, symlinkSync, readFileSync, lstatSync, mkdirSync, promises as fs, renameSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -39,6 +39,7 @@ describe("feature-namespace", () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     if (prevAveHome === undefined) {
       delete process.env.AVE_HOME;
     } else {
@@ -167,6 +168,40 @@ describe("feature-namespace", () => {
     if (POSIX) {
       expect(statSync(child).mode & 0o777).toBe(0o700);
     }
+  });
+
+  it("exclusive childDir refuses an existing slot while ordinary childDir reuses it", async () => {
+    const ns = openFeatureNamespace("widgets");
+    const child = await ns.childDir("invocation", { exclusive: true });
+    expect(statSync(child).isDirectory()).toBe(true);
+    if (POSIX) expect(statSync(child).mode & 0o777).toBe(0o700);
+    writeFileSync(join(child, "original"), "retained");
+    await expect(ns.childDir("invocation", { exclusive: true })).rejects.toMatchObject({ code: "EEXIST" });
+    expect(await ns.childDir("invocation")).toBe(child);
+    expect(readFileSync(join(child, "original"), "utf8")).toBe("retained");
+  });
+
+  it.skipIf(!POSIX)("exclusive childDir never chmods a symbolic replacement after mkdir", async () => {
+    const ns = openFeatureNamespace("widgets");
+    const outside = join(tempDir, "outside");
+    mkdirSync(outside, { mode: 0o755 });
+    const originalMode = statSync(outside).mode & 0o777;
+    const child = join(ns.dir, "invocation");
+    const mkdir = fs.mkdir.bind(fs);
+    vi.spyOn(fs, "mkdir").mockImplementation((async (
+      path: Parameters<typeof fs.mkdir>[0], options?: Parameters<typeof fs.mkdir>[1],
+    ) => {
+      const result = await mkdir(path, options);
+      if (String(path).endsWith("/invocation")) {
+        renameSync(child, `${child}-previous`);
+        symlinkSync(outside, child, "dir");
+      }
+      return result;
+    }) as typeof fs.mkdir);
+    await expect(ns.childDir("invocation", { exclusive: true })).rejects.toThrow();
+    expect(statSync(outside).mode & 0o777).toBe(originalMode);
+    expect(lstatSync(child).isSymbolicLink()).toBe(true);
+    expect(readdirSync(outside)).toEqual([]);
   });
 
   it("rejects path-traversal feature ids", () => {

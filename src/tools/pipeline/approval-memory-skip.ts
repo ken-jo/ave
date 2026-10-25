@@ -138,6 +138,7 @@ export async function tryUserApprovalMemorySkip(
   pluginId?: string,
   hostShellExecutionPlan?: HostShellExecutionPlan,
   auditInput?: Record<string, unknown>,
+  sessionId?: string,
   /**
    * Disclosure sink — `PermissionManager.discloseUserApprovalHit`, bound by
    * `ToolExecutor` from the PermissionManager it already holds. Optional
@@ -159,6 +160,7 @@ export async function tryUserApprovalMemorySkip(
   // an internal contract violation, not a storage failure.
   const canonicalArgs = canonicalStringify(finalInput);
   const identity = approvalCacheKeyIdentity(approvalCacheKey, context.approvalMemory);
+  if (hostShellExecutionPlan?.mode === "plain") return null;
   const approval = await lookupApproval(
     toolName,
     canonicalArgs,
@@ -166,6 +168,7 @@ export async function tryUserApprovalMemorySkip(
     context.trustOrigin,
     identity,
     executionCwd,
+    sessionId,
   ).catch(() => null); // storage failure must never block tool execution
 
   // No active (non-revoked) approval → fall through to the approval dock.
@@ -217,6 +220,7 @@ export async function tryUserApprovalMemorySkip(
     const reviewed = await dispatchFreshReview(
       toolName,
       {
+        ...(sessionId === undefined ? {} : { sessionId }),
         source,
         category,
         pathFields,
@@ -242,7 +246,9 @@ export async function tryUserApprovalMemorySkip(
         allowedPluginIds: context.allowedPluginIds ? [...context.allowedPluginIds] : undefined,
         additionalDirectories: context.additionalDirectories ?? [],
       },
-      { defer: "none" },
+      // This assesses whether the saved user grant covers these arguments.
+      // The configured judge runs only after applicable grants are resolved.
+      { defer: "none", judgeBypass: true },
     ).catch(() => null);
     const assessed = reviewed !== null &&
       (reviewed.outcome === "fresh" || reviewed.outcome === "cache" || reviewed.outcome === "host-determined") &&

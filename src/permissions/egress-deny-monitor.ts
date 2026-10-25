@@ -23,7 +23,7 @@
  * itself retains only the last 100 violations; the audit channel keeps every
  * row, so a process looping on a refused host writes one row per attempt for
  * as long as it runs. Rows are not dropped or sampled here, because every
- * deny is to be audited (design I6); the bound is the process's own connection
+ * deny is to be audited; the bound is the process's own connection
  * rate and its lifetime (a tool call's timeout, a tab's shell).
  *
  * This is observation only. Which hosts are allowed is still the strict

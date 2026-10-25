@@ -647,6 +647,7 @@ describe("egress ask callback — shell calls", () => {
       .toEqual({ allow: false, reason: "denied by the user" });
     expect(asked).toEqual([{
       origin: "shell",
+      workspaceRoot: "/work/project",
       sessionId: "session-1",
       toolName: "bash",
       toolUseId: "toolu_1",

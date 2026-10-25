@@ -65,6 +65,7 @@ import { registerPluginStudioHandlers } from "./domains/plugin-studio.js";
 import { registerAuditHandlers } from "./domains/audit.js";
 import { registerDiagnosticsHandlers } from "./domains/diagnostics.js";
 import { registerPermissionsHandlers } from "./domains/permissions.js";
+import { registerPermissionJudgeHandlers } from "./domains/permission-judge.js";
 import { registerWindowHandlers } from "./domains/window.js";
 import { registerRoutineHandlers } from "./domains/routines.js";
 import { registerSessionTasksHandlers } from "./domains/session-tasks.js";
@@ -155,6 +156,7 @@ export function registerIpcHandlers(
   registerAuditHandlers(deps);
   registerDiagnosticsHandlers(deps);
   registerPermissionsHandlers(deps);
+  registerPermissionJudgeHandlers(deps);
   registerWindowHandlers(deps);
   registerRoutineHandlers(deps);
   registerSessionTasksHandlers(deps);

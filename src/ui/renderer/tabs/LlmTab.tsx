@@ -38,7 +38,6 @@ import {
   type LLMVendor,
   type LlmModelRetirementReason,
   isOpenAICompatiblePresetVendor,
-  isOpenAICompatibleVendor,
   isSelfHostedTrustedNetworkVendor,
   llmRouteModel,
   llmImageInputKey,
@@ -49,7 +48,10 @@ import {
 } from "../../../shared/llm-vendor-defaults.js";
 import {
   cachedModelListEntry,
+  chatRouteModelOptions,
   llmModelListCacheKey,
+  STANDARD_CATALOGUE_ENDPOINT_VENDORS,
+  usesEndpointModelCatalogue,
   type LlmModelListCache,
   type LlmModelListCacheEntry,
   type LlmModelListEntry,
@@ -89,7 +91,6 @@ import { TEST_IDS } from "../../../shared/test-ids.js";
 import { formatTokensExact } from "../../../lib/cost-format.js";
 import { errorMessage } from "../../../shared/error-message.js";
 import { supportsVision } from "../../../engine/llm/vendor-capabilities.js";
-import { vendorHasCatalogProvider } from "../../../shared/model-catalog/vendor-models.js";
 import {
   resolveInputModalities,
   resolveModelRetirement,
@@ -306,7 +307,7 @@ const CHAT_BLOCKER_MESSAGE_KEYS = {
 
 type ChatBlocker = keyof typeof CHAT_BLOCKER_MESSAGE_KEYS;
 
-const SELECT_POPUP_LAYOUT =
+export const SELECT_POPUP_LAYOUT =
   "min-w-64 max-h-[min(386px,var(--radix-select-content-available-height))]";
 
 type ModelListState =
@@ -617,28 +618,6 @@ function providerOptionsForPresets(
   return presets.map(providerOptionFromPreset);
 }
 
-/**
- * Vendors whose model-list endpoint is fixed and known, so their catalogue is
- * always fetchable without the user supplying a base URL.
- *
- * This is the renderer's half of `STANDARD_MODEL_LIST_BASE_URLS` in
- * `engine/llm/model-list.ts`: main resolves the URL, this decides that asking
- * is worthwhile.
- */
-const STANDARD_CATALOGUE_ENDPOINT_VENDORS: ReadonlySet<string> = new Set([
-  "openai",
-  "claude",
-  "gemini",
-]);
-
-/**
- * Of those, the vendors whose list is the endpoint's word alone: until their
- * `/models` answers, no catalog list stands in. Other native routes offer
- * catalog models until their listing arrives, then the listing.
- */
-const ENDPOINT_ONLY_CATALOGUE_VENDORS: ReadonlySet<string> = new Set([
-  "openai",
-]);
 
 /**
  * Whether this provider has a model list worth asking its endpoint for.
@@ -662,30 +641,6 @@ function shouldSyncModelList(
   if (STANDARD_CATALOGUE_ENDPOINT_VENDORS.has(vendorId)) return true;
   if (!usesEndpointModelCatalogue(vendorId)) return false;
   return Boolean(baseUrl?.trim());
-}
-
-/**
- * The openai-compatible provider family (built-in vendor + marketplace
- * presets). For these, the model catalog is endpoint-defined, so the dropdown
- * must be populated ONLY by a live /models handshake — never a hardcoded
- * seed — unless the provider's discovery policy opts into a static/seeded list.
- */
-function isOpenAICompatibleFamilyVendor(vendorId: string): boolean {
-  return isLLMVendor(vendorId) && isOpenAICompatibleVendor(vendorId);
-}
-
-/**
- * Whether this vendor's catalogue is the endpoint's word rather than ours.
- *
- * Two kinds qualify: the openai-compatible family, whose catalogue is defined
- * by whatever endpoint it points at, and {@link ENDPOINT_ONLY_CATALOGUE_VENDORS}.
- * For both, a bundled list of model ids is a guess about someone else's
- * inventory, so it must never stand in for the answer — a failed handshake has
- * to READ as a failed handshake, not as a short catalogue.
- */
-function usesEndpointModelCatalogue(vendorId: string): boolean {
-  return isOpenAICompatibleFamilyVendor(vendorId)
-    || ENDPOINT_ONLY_CATALOGUE_VENDORS.has(vendorId);
 }
 
 /**
@@ -722,31 +677,16 @@ function modelOptionsFor(
   modelDiscoveryPolicy?: MarketplaceProviderModelDiscoveryPolicy,
   isRetired: (model: string) => boolean = () => false,
 ): string[] {
-  const hasSynced = syncedOptions !== undefined;
-  // A catalog supplies choices until a live listing arrives. Without a catalog,
-  // an endpoint-defined route offers only its saved selection until it answers,
-  // unless the endpoint preset explicitly declares seeded options.
-  const handshakeOnly =
-    !hasSynced &&
-    !(isLLMVendor(vendorId) && vendorHasCatalogProvider(vendorId)) &&
-    usesEndpointModelCatalogue(vendorId) &&
-    !modelDiscoveryPolicyUsesSeededOptions(modelDiscoveryPolicy);
-
-  const options = hasSynced
-    ? [...(syncedOptions ?? [])]
-    : handshakeOnly
-      ? []
-      : [...info.modelOptions];
-
-  const currentModel = selectedModel.trim();
-  if (currentModel && !options.includes(currentModel)) {
-    options.unshift(currentModel);
-  }
-
-  // A retired model is not a choice, the saved one included: a saved
-  // selection pointing at one shows as unresolved instead (design
-  // `model-capability-catalog.md` §6.1).
-  return options.filter((option) => option.trim() && !isRetired(option));
+  // The one derivation the chat chooser and the permission reviewer's model
+  // catalog share (`chatRouteModelOptions`).
+  return chatRouteModelOptions({
+    vendorId,
+    selectedModel,
+    ...(syncedOptions ? { syncedOptions } : {}),
+    seed: info,
+    ...(modelDiscoveryPolicy ? { modelDiscoveryPolicy } : {}),
+    isRetired,
+  });
 }
 
 /**
@@ -1013,7 +953,7 @@ function ModelSelectItemContent({
  * same kind of choice — "who answers, with what" — and the user makes exactly
  * one of them. Keeping them in two lists made the screen say otherwise.
  */
-interface UnifiedModelOption {
+export interface UnifiedModelOption {
   /** `providerId::modelId`. The Select's value, so a model id repeated by two
    *  providers still resolves to the right one. */
   value: string;
@@ -1108,15 +1048,15 @@ function apiRouteRowId(route: ConfiguredApiRoute): string {
 
 const API_PROVIDER_PREFIX = "api:";
 
-function apiProviderId(vendorId: string): string {
+export function apiProviderId(vendorId: string): string {
   return `${API_PROVIDER_PREFIX}${vendorId}`;
 }
 
-function unifiedValue(providerId: string, modelId: string): string {
+export function unifiedValue(providerId: string, modelId: string): string {
   return `${providerId}::${modelId}`;
 }
 
-function parseUnifiedValue(value: string): { providerId: string; modelId: string } | null {
+export function parseUnifiedValue(value: string): { providerId: string; modelId: string } | null {
   const at = value.indexOf("::");
   if (at <= 0) return null;
   return { providerId: value.slice(0, at), modelId: value.slice(at + 2) };
@@ -1157,26 +1097,38 @@ function upstreamModelProvider(
  * offered right now, so a model that left the catalogue, or one whose provider
  * is disconnected, simply does not appear. The stored id survives that, and the
  * pin comes back with the provider.
+ *
+ * Also the permission reviewer's model picker (Settings > Permissions): that
+ * caller passes no pin handler, so its rows carry no pin control, and adds a
+ * leading "unset" row that follows the chat model.
  */
-function UnifiedModelSelect({
+export function UnifiedModelSelect({
   options,
   value,
   onValueChange,
-  pinned,
+  pinned = [],
   onTogglePin,
   placeholder,
   popupClassName,
   disabled = false,
+  triggerId = "model-select",
+  testId = TEST_IDS.llmModelSelect,
+  leadingOption,
 }: {
   options: readonly UnifiedModelOption[];
   value: string;
   onValueChange: (value: string) => void;
-  pinned: readonly string[];
-  onTogglePin: (modelId: string) => void;
+  pinned?: readonly string[];
+  /** Absent: the chooser offers no pinning (pins belong to the chat picker). */
+  onTogglePin?: (modelId: string) => void;
   placeholder: string;
   popupClassName: string;
   /** A chat-runtime switch is already in flight; a second pick would race it. */
   disabled?: boolean;
+  triggerId?: string;
+  testId?: string;
+  /** A first row that is not a model, e.g. "follow the chat model". */
+  leadingOption?: { value: string; label: string };
 }) {
   const { t } = useTranslation();
   const [query, setQuery] = useState("");
@@ -1267,6 +1219,7 @@ function UnifiedModelSelect({
   );
   const selectedOption = options.find((option) => option.value === value);
 
+  const togglePin = onTogglePin;
   const row = (option: UnifiedModelOption) => {
     const isPinned = pinnedSet.has(option.modelId);
     return (
@@ -1277,7 +1230,7 @@ function UnifiedModelSelect({
         onPointerMove={(event) => {
           if (document.activeElement === searchInputRef.current) event.preventDefault();
         }}
-        leading={
+        leading={togglePin === undefined ? undefined : (
           /* Outside ItemText so the pin stays in the row and never mirrors
              into the collapsed trigger. Radix commits a row on POINTERUP, so
              both pointer events stop here — pinning is not choosing. */
@@ -1297,12 +1250,12 @@ function UnifiedModelSelect({
             onClick={(event) => {
               event.preventDefault();
               event.stopPropagation();
-              onTogglePin(option.modelId);
+              togglePin(option.modelId);
             }}
           >
             <Pin className={`h-3 w-3 ${isPinned ? "fill-current" : ""}`} aria-hidden={true} />
           </span>
-        }
+        )}
       >
         {content(option)}
       </SelectItem>
@@ -1322,7 +1275,7 @@ function UnifiedModelSelect({
       }}
       disabled={disabled}
     >
-      <SelectTrigger id="model-select" className="w-full" data-testid={TEST_IDS.llmModelSelect}>
+      <SelectTrigger id={triggerId} className="w-full" data-testid={testId}>
         <SelectValue placeholder={placeholder}>
           {selectedOption ? content(selectedOption) : undefined}
         </SelectValue>
@@ -1370,6 +1323,9 @@ function UnifiedModelSelect({
             className="h-8 text-xs"
           />
         </div>
+        {leadingOption && (
+          <SelectItem value={leadingOption.value}>{leadingOption.label}</SelectItem>
+        )}
         {visibleGroups.pins.length > 0 && (
           <SelectGroup>
             <SelectLabel className="text-[10px] uppercase tracking-normal text-muted-foreground">

@@ -16,6 +16,7 @@ import {
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { resolveTurnExtensionPolicy, turnExtensionPolicyContext } from "../../shared/turn-extension-policy.js";
 
+const sandboxedHost = vi.hoisted(() => ({ active: false }));
 vi.mock("../../permissions/asrt-sandbox.js", async (original) => ({
   ...await original<typeof import("../../permissions/asrt-sandbox.js")>(),
   isAsrtSandboxActive: () => false,
@@ -26,12 +27,17 @@ vi.mock("../../permissions/asrt-sandbox.js", async (original) => ({
 // through the Windows partial-ASRT plan, which does. The live provider issues
 // it as on a Windows host: only its platform read is Windows, and only while
 // the plan is built, so the hook itself still runs on this host.
+// The authorizer otherwise reads only the plan's route, so a sandbox-capable
+// host here needs no live substrate.
 const plans = vi.hoisted(() => ({ windowsPartial: false }));
 vi.mock("../../permissions/sandbox-capability.js", async (original) => {
   const actual = await original<typeof import("../../permissions/sandbox-capability.js")>();
   return {
     ...actual,
     getHostShellExecutionPlan: (mode?: Parameters<typeof actual.getHostShellExecutionPlan>[0]) => {
+      if (sandboxedHost.active) {
+        return { ...actual.getHostShellExecutionPlan(mode), mode: "asrt", sandboxed: true, requiresExplicitUserApproval: false };
+      }
       if (!plans.windowsPartial) return actual.getHostShellExecutionPlan(mode);
       const platform = process.platform;
       setProcessPlatform("win32");
@@ -66,6 +72,7 @@ const payload: ScriptHookStdin = { hookType: "pre", toolName: "read_file", sourc
   input: {}, sessionId: "hook-policy-session", trustOrigin: "user-keyboard" };
 const roots: string[] = [];
 afterEach(async () => {
+  sandboxedHost.active = false;
   plans.windowsPartial = false;
   __resetActiveSandboxCapabilityForTest();
   permits.minted = 0;
@@ -135,12 +142,28 @@ describe("hook command permission admission", () => {
       .toMatchObject({ decision: "deny", rawStdout: "", reason: expect.stringContaining("hook command denied") });
   });
 
+  it("admits a hook through a wildcard allow on a sandbox-capable host", async () => {
+    sandboxedHost.active = true;
+    const p = policy();
+    // An interpreter prefix is never an allowable wildcard; a plain command's is.
+    p.permissionManager.setRules([{ pattern: "Bash(printf *)", action: "allow" }]);
+    const command = { ...hook, command: ["printf", "ready"] };
+    const admitted = await p.authorizeCommand(command, payload, process.cwd());
+    expect(admitted.decision, admitted.reason).toBe("allow");
+    expect(p.requestAndWait).not.toHaveBeenCalled();
+    // The same rule does not admit it where no sandbox is available.
+    sandboxedHost.active = false;
+    expect((await p.authorizeCommand(command, payload, process.cwd())).decision).toBe("deny");
+    expect(p.requestAndWait).toHaveBeenCalledOnce();
+  });
+
   it("invalidates an automatic admission when an ask rule replaces its allow", async () => {
     const p = policy();
-    p.permissionManager.setRules([{ pattern: "Bash(node *)", action: "allow" }]);
+    // Exact: without a sandbox-capable host a wildcard allow does not admit a plain shell.
+    p.permissionManager.setRules([{ pattern: "Bash(node --version)", action: "allow" }]);
     const admitted = await p.authorizeCommand({ ...hook, command: ["node", "--version"] }, payload, process.cwd());
     expect(admitted.decision).toBe("allow");
-    p.permissionManager.setRules([{ pattern: "Bash(node *)", action: "ask" }]);
+    p.permissionManager.setRules([{ pattern: "Bash(node --version)", action: "ask" }]);
     expect(admitted.assertAllowed).toBeTypeOf("function");
     expect(() => admitted.assertAllowed!()).toThrow("Hook command permission changed");
   });

@@ -27,7 +27,7 @@ import {
 
 const ORIGINAL_PLATFORM = process.platform;
 const CONFIGURED_LINUX_BWRAP_COMMAND =
-  "/configured/asrt/bwrap --new-session --die-with-parent --unshare-user --cap-drop ALL --ro-bind / / --proc /proc -- /bin/bash -c true";
+  "/configured/asrt/bwrap --new-session --die-with-parent --unshare-pid --unshare-user --cap-drop ALL --ro-bind / / --proc /proc -- /bin/bash -c true";
 const probeMocks = vi.hoisted(() => ({
   wrapWithSandboxArgv: vi.fn(),
   spawn: vi.fn(),
@@ -38,6 +38,9 @@ vi.mock("@anthropic-ai/sandbox-runtime", () => ({ SandboxManager: {
   setParentProxyRouter: () => undefined,
   initialize: async () => undefined,
   wrapWithSandboxArgv: probeMocks.wrapWithSandboxArgv,
+  // The runtime probe runs through an attributed egress listener, as shells do.
+  openInvocationListener: async () => undefined,
+  closeInvocationListener: () => undefined,
   updateConfig: () => undefined,
   reset: async () => undefined,
   cleanupAfterCommand: () => undefined,
@@ -85,6 +88,7 @@ describe("scoped sandbox gates", () => {
     expect(isPluginWorkerConfinementActive()).toBe(workers);
     expect(probeMocks.wrapWithSandboxArgv).toHaveBeenCalledExactlyOnceWith(
       "true", undefined, undefined, expect.any(AbortSignal), process.cwd(),
+      { commandId: expect.any(String), denyUnixSockets: true },
     );
     expect(probeMocks.spawn).toHaveBeenCalledExactlyOnceWith(
       "/bin/bash", ["-c", CONFIGURED_LINUX_BWRAP_COMMAND], expect.objectContaining({ shell: false }),

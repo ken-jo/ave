@@ -16,10 +16,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   __resetActiveSandboxCapabilityForTest,
   __resetSandboxRequestedAtBootForTest,
-  setShellSandboxRequestedAtBoot,
   isWeakSandbox,
   resolveReviewerSandboxCapability,
   setActiveSandboxCapability,
+  setShellSandboxRequestedAtBoot,
   type SandboxCapability,
 } from "../sandbox-capability.js";
 import {
@@ -38,11 +38,13 @@ describe("resolveReviewerSandboxCapability — execution-substrate awareness", (
   });
 
   it("returns the genuine asrt capability for the ASRT-wrapped host-shell tools when the gate is ON", () => {
+    setShellSandboxRequestedAtBoot(true);
     setActiveSandboxCapability({
       kind: "asrt",
       confidence: "verified",
       platform: "darwin",
       reason: "ASRT (Seatbelt) active — fs+process+network contained",
+      confines: { filesystem: true, process: true, network: true },
     });
 
     for (const toolName of ["bash", "powershell"]) {
@@ -56,11 +58,13 @@ describe("resolveReviewerSandboxCapability — execution-substrate awareness", (
 
   it("forces kind=none (weak) for plugin/MCP tools EVEN WHEN the global capability is asrt", () => {
     // Gate ON: the process-global capability is asrt…
+    setShellSandboxRequestedAtBoot(true);
     setActiveSandboxCapability({
       kind: "asrt",
       confidence: "verified",
       platform: "linux",
       reason: "ASRT (bwrap) active — fs+process+network contained",
+      confines: { filesystem: true, process: true, network: true },
     });
 
     // …but plugin/MCP effects run in the unwrapped long-lived worker.
@@ -77,11 +81,13 @@ describe("resolveReviewerSandboxCapability — execution-substrate awareness", (
   });
 
   it("forces kind=none (weak) for in-process builtin tools (not bash/powershell) even when gate is ON", () => {
+    setShellSandboxRequestedAtBoot(true);
     setActiveSandboxCapability({
       kind: "asrt",
       confidence: "verified",
       platform: "darwin",
       reason: "ASRT (Seatbelt) active",
+      confines: { filesystem: true, process: true, network: true },
     });
 
     // A non-shell builtin (e.g. write_file/read_file) runs in-process — no OS jail.
@@ -94,6 +100,7 @@ describe("resolveReviewerSandboxCapability — execution-substrate awareness", (
   it("reports the active asrt capability for terminal_run only while the sandbox contains shells", () => {
     // A workspace terminal exists only under a shell-containing sandbox and
     // keeps its wrap for life, so a command typed into it lands confined.
+    setShellSandboxRequestedAtBoot(true);
     setActiveSandboxCapability({
       kind: "asrt",
       confidence: "verified",
@@ -110,6 +117,7 @@ describe("resolveReviewerSandboxCapability — execution-substrate awareness", (
     expect(resolveReviewerSandboxCapability("mcp", "terminal_run").kind).toBe("none");
 
     // A sandbox that no longer confines processes proves nothing about the terminal now.
+    setShellSandboxRequestedAtBoot(true);
     setActiveSandboxCapability({
       kind: "asrt",
       confidence: "verified",
@@ -119,6 +127,7 @@ describe("resolveReviewerSandboxCapability — execution-substrate awareness", (
     });
     expect(resolveReviewerSandboxCapability("builtin", "terminal_run").kind).toBe("none");
     __resetActiveSandboxCapabilityForTest();
+    setShellSandboxRequestedAtBoot(false);
     expect(resolveReviewerSandboxCapability("builtin", "terminal_run").kind).toBe("none");
   });
 
@@ -152,11 +161,13 @@ describe("substrate-aware capability — end-to-end reviewer prompt + downgrade 
   };
 
   it("a plugin-sourced tool presents executionSandbox=none to the reviewer EVEN WHEN the global cap is asrt", async () => {
+    setShellSandboxRequestedAtBoot(true);
     setActiveSandboxCapability({
       kind: "asrt",
       confidence: "verified",
       platform: "linux",
       reason: "ASRT (bwrap) active",
+      confines: { filesystem: true, process: true, network: true },
     });
 
     const { provider, complete } = capturingProvider();
@@ -181,11 +192,13 @@ describe("substrate-aware capability — end-to-end reviewer prompt + downgrade 
   });
 
   it("an ASRT-wrapped host bash tool presents executionSandbox=asrt to the reviewer when the gate is ON", async () => {
+    setShellSandboxRequestedAtBoot(true);
     setActiveSandboxCapability({
       kind: "asrt",
       confidence: "verified",
       platform: "linux",
       reason: "ASRT (bwrap) active",
+      confines: { filesystem: true, process: true, network: true },
     });
 
     const { provider, complete } = capturingProvider();
@@ -206,11 +219,13 @@ describe("substrate-aware capability — end-to-end reviewer prompt + downgrade 
   });
 
   it("the weak-sandbox no-downgrade guard fires for the plugin substrate (rule MEDIUM not downgraded to LOW)", async () => {
+    setShellSandboxRequestedAtBoot(true);
     setActiveSandboxCapability({
       kind: "asrt",
       confidence: "verified",
       platform: "linux",
       reason: "ASRT (bwrap) active",
+      confines: { filesystem: true, process: true, network: true },
     });
 
     const { provider } = capturingProvider(); // always returns LLM LOW

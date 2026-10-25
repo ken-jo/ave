@@ -48,6 +48,7 @@ export function scriptedStage(id = "scripted", escalateBelow?: number): JudgeSta
 
 export function judgeSettings(overrides: Partial<JudgeSettings> = {}): JudgeSettings {
   return {
+    model: null,
     chain: [scriptedStage()],
     mode: "active",
     categories: { ...DEFAULT_JUDGE_SETTINGS.categories },

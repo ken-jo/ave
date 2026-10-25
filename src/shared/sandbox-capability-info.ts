@@ -1,3 +1,5 @@
+import type { HostShellExecutionPlanAuditProjection } from "../permissions/host-shell-execution-plan.js";
+
 /**
  * Honest, platform-aware description of what the OS tool sandbox actually
  * enforces. Shared between main (IPC handler) and any caller that needs to
@@ -6,9 +8,8 @@
  * Platform reality (now backed by the Anthropic Sandbox Runtime — see
  * src/permissions/asrt-sandbox.ts):
  *   - macOS (Seatbelt via ASRT): filesystem + process confinement, AND network
- *     — ASRT routes egress through a loopback proxy enforcing the global
- *     strict-union allow-list, so egress IS contained (no longer the old
- *     sandbox-exec fake floor that left loopback/IPv6/DNS open).
+ *     — the runtime confines connections to the invocation proxy, which
+ *     applies shell grants or the owning plugin allowlist.
  *   - Linux (bwrap via ASRT): filesystem + process + network.
  *   - Windows (srt-win via ASRT): filesystem ACL + network egress confinement.
  *     ASRT provisions a dedicated `srt-sandbox` user, applies filesystem rules
@@ -134,7 +135,9 @@ export type SandboxGateReason =
   | "degrade-default-cannot-activate"
   | "abort-explicit-cannot-activate"
   | "degrade-linux-runtime-probe-failed"
-  | "abort-linux-runtime-probe-failed";
+  | "abort-linux-runtime-probe-failed"
+  | "degrade-macos-runtime-probe-failed"
+  | "abort-macos-runtime-probe-failed";
 
 /**
  * Why a requested sandbox did not start, as a stable code the renderer can
@@ -233,6 +236,8 @@ export interface ShellSandboxStatusInput {
   /** That plan's fallback reason. */
   readonly shellPlanFallback:
     | "none"
+    | "disabled-by-setting"
+    | "platform-unsupported"
     | "windows-partial-shell-acl-unsafe"
     | "requested-sandbox-unavailable"
     | "active-sandbox-not-shell-contained";
@@ -419,6 +424,8 @@ export interface SandboxRuntimeCapabilityInfo {
 
 /** Capability snapshot returned to the renderer for the settings toggle. */
 export interface SandboxCapabilityInfo {
+  /** Host-issued default shell route, distinct from the platform potential. */
+  shellExecutionPlan?: HostShellExecutionPlanAuditProjection;
   homePrivacyError?: SandboxWindowsStatusInfo["homePrivacyError"];
   platform: NodeJS.Platform;
   /** Whether the shell sandbox setting (`features.osToolSandbox`, or its env

@@ -23,6 +23,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { basename, join } from "node:path";
 import { homedir } from "node:os";
+import { egressInvocationOwner } from "../../permissions/egress-invocations.js";
 
 // ─── child_process mock ─────────────────────────────────────
 const spawnMock = vi.fn<
@@ -264,6 +265,8 @@ describe("StdioTransport ASRT wrap — gate ON", () => {
 
     await client.connect();
 
+    const commandId = (wrapWorkerCommandMock.mock.calls[0]![1] as { commandId: string }).commandId;
+    expect(egressInvocationOwner(commandId)).toEqual({ kind: "worker", role: "mcp-server", pluginId: undefined, instanceId: "fs" });
     // wrapWorkerCommand received the quoted command line + the FS jail.
     expect(wrapWorkerCommandMock).toHaveBeenCalledTimes(1);
     const [cmdline, options] = wrapWorkerCommandMock.mock.calls[0] as [
@@ -337,6 +340,7 @@ describe("StdioTransport ASRT wrap — gate ON", () => {
     // Close releases per-command ASRT state and clears the wrapped marker.
     expect(cleanupMock).toHaveBeenCalled();
     expect(isMcpServerWrapped("fs")).toBe(false);
+    expect(egressInvocationOwner(commandId)).toBeUndefined();
   });
 
   it("absent sandboxRoot grants only the fresh process HOME and the server's temp directory (never real HOME/cwd)", async () => {

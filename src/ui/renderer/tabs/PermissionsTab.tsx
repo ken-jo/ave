@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "../../../i18n/react.js";
 import { t } from "../../../i18n/runtime.js";
+import { useSandboxCapability } from "../hooks/use-sandbox-capability.js";
+import { SandboxStatusBadge } from "../components/SandboxStatusBadge.js";
 import { Badge } from "../../../components/ui/badge.js";
 import { Button } from "../../../components/ui/button.js";
 import { Checkbox } from "../../../components/ui/checkbox.js";
@@ -31,7 +33,8 @@ import type {
   PermissionReviewerMode,
   PermissionReviewerInteractiveAutoApprove,
   PermissionReviewerSettings,
-  PermissionRule,
+  ScopedPermissionRule,
+  ScopedPermissionRuleError,
 } from "../types.js";
 import type {
   SandboxCapabilityInfo,
@@ -48,6 +51,7 @@ import {
 } from "../../../shared/parent-adjudication-bounds.js";
 import { PERMISSION_REVIEWER_FRAMEWORK } from "../../../shared/permission-reviewer-framework.js";
 import { AuditPanel } from "../components/permissions/AuditPanel.js";
+import { PermissionJudgeContent } from "../components/permissions/PermissionJudgeContent.js";
 import { EgressDenialsList } from "../components/permissions/EgressDenialsList.js";
 import { EgressGrantsList } from "../components/permissions/EgressGrantsList.js";
 import { UpstreamProxySettings } from "../components/permissions/UpstreamProxySettings.js";
@@ -58,13 +62,10 @@ import { isIpcErrorResult } from "../types.js";
 import { canonicalStringify } from "../../../shared/canonical-json.js";
 import type { ExactDenyDraft } from "../exact-permission-decision.js";
 import { TEST_IDS, execModeTestId, testIdSelector } from "../../../shared/test-ids.js";
-import { formatDateTime } from "../../../shared/format-time.js";
 import { errorMessage } from "../../../shared/error-message.js";
 
 const DEFAULT_REVIEWER_SETTINGS: PermissionReviewerSettings = {
   mode: "disabled",
-  provider: "openai",
-  model: "gpt-4o-mini",
   fallbackOnError: "deny",
   interactive: { autoApprove: "off" },
   // Placeholder for the pre-load render only — the persisted block arrives with
@@ -373,9 +374,11 @@ export function PermissionsTab({
   const [policyAdminPath, setPolicyAdminPath] = useState<string | undefined>(undefined);
 
   // ── Rule Editor ───────────────────────────────────
-  const [rules, setRules] = useState<PermissionRule[]>([]);
+  const [rules, setRules] = useState<ScopedPermissionRule[]>([]);
   const [newPattern, setNewPattern] = useState("");
   const [newAction, setNewAction] = useState<"allow" | "deny">("allow");
+  const [ruleLoadErrors, setRuleLoadErrors] = useState<ScopedPermissionRuleError[]>([]);
+  const [approvalLoadError, setApprovalLoadError] = useState(false);
   const [rulesBusy, setRulesBusy] = useState(false);
   const [directories, setDirectories] = useState<string[]>([]);
   const [newDirectory, setNewDirectory] = useState("");
@@ -397,6 +400,8 @@ export function PermissionsTab({
     toolName?: string;
     source?: string;
     args?: string;
+    projectCwd?: string;
+    sessionId?: string;
   }>>([]);
   const [approvalsBusy, setApprovalsBusy] = useState(false);
   const [exactDenyBusy, setExactDenyBusy] = useState(false);
@@ -404,7 +409,8 @@ export function PermissionsTab({
   const [reviewer, setReviewer] = useState<PermissionReviewerSettings>(DEFAULT_REVIEWER_SETTINGS);
 
   // ── OS Tool Sandbox ───────────────────────────────
-  const [sandboxCapability, setSandboxCapability] = useState<SandboxCapabilityInfo | null>(null);
+  const { capability: sandboxCapability, statusQueryFailed: sandboxStatusQueryFailed, refresh: refreshSandboxCapability } =
+    useSandboxCapability(window.ave?.permission, getApi().onSettingsUpdated);
   const [sandboxEnabled, setSandboxEnabled] = useState(false);
   // `AVE_SANDBOX_ENABLED=1` is OR-ed with this setting at boot, so with the
   // variable set the toggle cannot turn the sandbox off for this run. The
@@ -456,15 +462,14 @@ export function PermissionsTab({
       setError(null);
     }
     try {
-      const [modeRes, policyRes, rulesRes, hookTrustRes, dirRes, reviewerRes, sandboxRes, settingsRes] =
+      const [modeRes, policyRes, rulesRes, hookTrustRes, dirRes, reviewerRes, settingsRes] =
         await Promise.all([
           window.ave.permission.getMode(),
           window.ave.policy.get(),
-          window.ave.permission.listRules(),
+          window.ave.permission.listScopedRules(),
           window.ave.permission.hookTrustList(),
           window.ave.permission.dirDispatch("list"),
           window.ave.permission.reviewerDispatch("show"),
-          window.ave.permission.sandboxCapability(),
           getApi().getSettings(),
         ]);
       if (!reviewerRes.ok) {
@@ -477,14 +482,11 @@ export function PermissionsTab({
       setPolicyManaged(!policyRes.editable);
       setPolicySource((policyRes.source as "defaults" | "user" | "admin" | "merged") ?? "defaults");
       setPolicyAdminPath(policyRes.adminPath as string | undefined);
-      setRules(rulesRes);
+      setRules(rulesRes.rules);
+      setRuleLoadErrors(rulesRes.errors);
       setQuarantinedHooks(hookTrustRes.ok ? hookTrustRes.disabled : []);
       setDirectories(dirRes.ok && dirRes.verb === "list" ? dirRes.userAdditions : []);
       setReviewer(reviewerRes.settings);
-      setSandboxCapability(sandboxRes);
-      console.warn("[ave] permissions: sandbox diagnostics:",
-        sandboxRes.potentialReason ?? sandboxRes.reason, sandboxRes.runtime?.reason,
-        sandboxRes.boot?.causes, sandboxRes.shell?.state);
       const osSandboxOn = settingsRes.features?.osToolSandbox ?? false;
       setSandboxEnabled(osSandboxOn);
       const workerConfinementOn = settingsRes.features?.pluginWorkerConfinement ?? false;
@@ -492,18 +494,6 @@ export function PermissionsTab({
       // Mirrors the store default (ON) for a settings file written before the
       // flag existed — normalization stamps it on the next write.
       setAdjudicationEnabled(settingsRes.features?.subAgentParentAdjudication ?? true);
-      // On win32 with either setting already ON, surface the consent/setup
-      // state on tab entry so the panel persists across navigations until
-      // ready. Extension provisioning is separate from MXC shell readiness.
-      if (sandboxRes.platform === "win32" &&
-        (osSandboxOn || workerConfinementOn || sandboxRes.homePrivacyError ||
-          bootReportsWindowsHelperFailure(sandboxRes.boot))) {
-        const status = await window.ave.permission.sandboxWindowsStatus();
-        if (status.instructions) console.warn("[ave] permissions: Windows setup diagnostics:", status.instructions);
-        setWindowsStatus(status);
-      } else {
-        setWindowsStatus(null);
-      }
     } catch (e) {
       console.warn("[ave] permissions: load failed:", errorMessage(e));
       const message = t("permissionsTab.errorLoadFailed");
@@ -520,13 +510,40 @@ export function PermissionsTab({
 
   useEffect(() => { void fetchAll(); }, [fetchAll]);
 
+  useEffect(() => {
+    // On win32 with either setting ON (or a reported home-privacy / helper
+    // failure), surface the consent/setup state so the panel persists across
+    // navigations until ready. Extension provisioning is separate from MXC
+    // shell readiness.
+    const windowsSetupRelevant = sandboxEnabled || workerConfinementEnabled ||
+      sandboxCapability?.homePrivacyError !== undefined || bootReportsWindowsHelperFailure(sandboxCapability?.boot);
+    if (sandboxCapability?.platform !== "win32" || !windowsSetupRelevant) {
+      setWindowsStatus(null);
+      return;
+    }
+    let cancelled = false;
+    void window.ave.permission.sandboxWindowsStatus().then((status) => {
+      if (status.instructions) console.warn("[ave] permissions: Windows setup diagnostics:", status.instructions);
+      if (!cancelled) setWindowsStatus(status);
+    }).catch(() => { /* The explicit setup action reports repair errors. */ });
+    return () => { cancelled = true; };
+  }, [sandboxCapability?.platform, sandboxCapability?.homePrivacyError, sandboxCapability?.boot, sandboxEnabled, workerConfinementEnabled]);
+
   const fetchApprovals = useCallback(async () => {
     if (!window.ave?.userApproval) return;
     try {
       const list = await window.ave.userApproval.list();
       setUserApprovals(list.filter((a) => !a.revokedAt));
+      setApprovalLoadError(false);
     } catch {
-      // non-fatal
+      setApprovalLoadError(true);
+      try {
+        const sessionEntries = await window.ave.userApproval.listSession();
+        setUserApprovals(sessionEntries.filter((entry) => !entry.revokedAt));
+      } catch {
+        // Keep the corruption notice and the last known session rows.
+        setUserApprovals((entries) => entries.filter((entry) => entry.scope === "session"));
+      }
     }
   }, []);
 
@@ -815,7 +832,6 @@ export function PermissionsTab({
     const setEnabled = isShell ? setSandboxEnabled : setWorkerConfinementEnabled;
     const setBusy = isShell ? setSandboxBusy : setWorkerConfinementBusy;
     const next = !(isShell ? sandboxEnabled : workerConfinementEnabled);
-    const otherScopeOn = isShell ? workerConfinementEnabled : sandboxEnabled;
     const label = isShell ? "OS sandbox toggle" : "plugin-worker confinement toggle";
     setBusy(true);
     setEnabled(next);
@@ -833,21 +849,7 @@ export function PermissionsTab({
         return;
       }
       // Re-read capability so the activation note reflects the new state.
-      const capability = await window.ave.permission.sandboxCapability();
-      setSandboxCapability(capability);
-      // Windows: enabling a setting alone does NOT confine anything — srt-win
-      // must be provisioned (normally at app-install time via NSIS customInstall).
-      // While either scope is ON on win32, fetch the readiness snapshot; if
-      // provisioning did not complete, the panel guides the (explicit,
-      // non-auto) re-provision/repair. Turning the last one OFF clears it.
-      if (capability.platform === "win32") {
-        if (next || otherScopeOn) {
-          const status = await window.ave.permission.sandboxWindowsStatus();
-          setWindowsStatus(status);
-        } else {
-          setWindowsStatus(null);
-        }
-      }
+      await refreshSandboxCapability();
     } catch (e) {
       setEnabled(!next);
       showBanner("error", t(isShell
@@ -920,8 +922,9 @@ export function PermissionsTab({
   };
 
   const refreshRules = async () => {
-    const r = await window.ave.permission.listRules();
-    setRules(r);
+    const r = await window.ave.permission.listScopedRules();
+    setRules(r.rules);
+    setRuleLoadErrors(r.errors);
   };
 
   const handleAddRule = async () => {
@@ -943,10 +946,10 @@ export function PermissionsTab({
     }
   };
 
-  const handleRemoveRule = async (pattern: string, action: "allow" | "deny" | "ask") => {
+  const handleRemoveRule = async (rule: ScopedPermissionRule) => {
     setRulesBusy(true);
     try {
-      const res = await window.ave.permission.removeRule(pattern, action);
+      const res = await window.ave.permission.removeScopedRule(rule);
       if (res.ok) {
         await refreshRules();
       } else {
@@ -1211,6 +1214,8 @@ export function PermissionsTab({
           </div>
         </SettingsSection>
 
+        <PermissionJudgeContent />
+
         {/* ── Section A: Permission Policy Preset ── */}
         <SettingsSection
           data-settings-section="permissions-policy"
@@ -1341,6 +1346,7 @@ export function PermissionsTab({
           title={t("permissionsTab.osSandboxTitle")}
           description={t("permissionsTab.osSandboxDescription")}
         >
+          <SandboxStatusBadge capability={sandboxCapability} statusQueryFailed={sandboxStatusQueryFailed} onRetry={() => { void refreshSandboxCapability(); }} />
           <div className="flex items-start gap-3">
             <Checkbox
               checked={sandboxEnabled}
@@ -1863,56 +1869,73 @@ export function PermissionsTab({
         {/* ── Section C: Rule Editor ── */}
         <SettingsSection
           data-settings-section="permissions-rules"
-          title={t("permissionsTab.rulesTitle")}
-          description={<>{t("permissionsTab.rulesDescriptionBefore")}<code className="text-[10px]">mcp_*</code>{t("permissionsTab.rulesDescriptionAfter")}</>}
+          title={t("permissionsTab.unifiedRulesTitle")}
+          description={t("permissionsTab.unifiedRulesDescription")}
         >
-          {rules.length === 0 ? (
+          {ruleLoadErrors.length > 0 || approvalLoadError ? (
+            <div role="alert" data-testid="permissions-rule-load-error" className="text-xs text-destructive">
+              {t("permissionsTab.unifiedRulesLoadError")}
+              {ruleLoadErrors.map((failure, index) => <p key={`${failure.filePath}:${index}`} className="break-all">{failure.filePath}</p>)}
+              {approvalLoadError ? <p>{t("permissionsTab.savedApprovalsFile")}</p> : null}
+            </div>
+          ) : null}
+          {rules.length === 0 && userApprovals.length === 0 ? (
             <p className="text-[11px] text-muted-foreground italic">{t("permissionsTab.rulesEmpty")}</p>
           ) : (
             <div className="min-w-0 overflow-x-auto rounded-md border">
-              <table data-testid="permissions-rules-table" className="min-w-[560px] w-full table-fixed text-xs">
-                <colgroup>
-                  <col className="w-[44%]" />
-                  <col className="w-[20%]" />
-                  <col className="w-[26%]" />
-                  <col className="w-[10%]" />
-                </colgroup>
-                <thead>
-                  <tr className="border-b bg-muted/(--opacity-medium)">
-                    <th className="px-3 py-2 text-left whitespace-nowrap font-medium">{t("permissionsTab.rulesColPattern")}</th>
-                    <th className="px-3 py-2 text-left whitespace-nowrap font-medium">{t("permissionsTab.rulesColAction")}</th>
-                    <th className="px-3 py-2 text-left whitespace-nowrap font-medium">{t("permissionsTab.rulesColSource")}</th>
-                    <th className="px-3 py-2" />
-                  </tr>
-                </thead>
+              <table data-testid="permissions-rules-table" className="min-w-[560px] w-full text-xs">
+                <thead><tr className="border-b bg-muted/(--opacity-medium)">
+                  <th className="px-3 py-2 text-left">{t("permissionsTab.rulesColPattern")}</th>
+                  <th className="px-3 py-2 text-left">{t("permissionsTab.rulesColAction")}</th>
+                  <th className="px-3 py-2 text-left">{t("permissionsTab.approvalsColScope")}</th>
+                  <th className="px-3 py-2 text-left">{t("permissionsTab.rulesColSource")}</th>
+                  <th className="px-3 py-2" />
+                </tr></thead>
                 <tbody>
-                  {rules.map((r, i) => (
-                    <tr key={`${r.pattern}:${r.action}:${i}`} className="border-b last:border-0 hover:bg-muted/(--opacity-light)">
-                      <td className="px-3 py-1.5 font-mono">
-                        <span className="block truncate" title={r.pattern}>{r.pattern}</span>
+                  {rules.map((rule, index) => (
+                    <tr key={`rule:${rule.scope}:${rule.projectCwd ?? ""}:${rule.pattern}:${rule.action}:${index}`} className="border-b last:border-0" data-rule-store="scoped">
+                      <td className="max-w-[220px] break-all px-3 py-2 font-mono">
+                        {rule.pattern}
+                        {rule.invalidReason === "wildcard-not-allowlisted" ? (
+                          <p data-testid="permissions-rule-invalid" className="break-normal whitespace-normal font-sans text-[10px] text-destructive">
+                            {t("permissionsTab.ruleInvalidWildcardNotAllowlisted")}
+                          </p>
+                        ) : rule.action === "allow" && rule.pattern.startsWith("Bash(") ? (
+                          <p data-testid="permissions-shell-outside-sandbox" className="break-normal whitespace-normal font-sans text-[10px] text-muted-foreground">{t("permissionsTab.shellOutsideSandbox")}</p>
+                        ) : null}
                       </td>
-                      <td className="px-3 py-1.5">
-                        <Badge variant={r.action === "allow" ? "default" : "secondary"} className={`shrink-0 whitespace-nowrap text-[10px] ${r.action === "deny" ? "text-destructive" : ""}`}>
-                          {r.action === "allow" ? t("permissionsTab.actionAllow") : t("permissionsTab.actionDeny")}
-                        </Badge>
+                      <td className="px-3 py-2"><Badge variant={rule.action === "allow" ? "default" : "secondary"}>
+                        {rule.action === "allow" ? t("permissionsTab.actionAllow") : rule.action === "deny" ? t("permissionsTab.actionDeny") : t("permissionsTab.actionAsk")}
+                      </Badge></td>
+                      <td className="max-w-[180px] break-all px-3 py-2">
+                        {rule.scope === "project" ? t("permissionsTab.scopeProject") : t("permissionsTab.scopeUser")}
+                        {rule.projectCwd ? <p className="text-[10px] text-muted-foreground">{rule.projectCwd}</p> : null}
                       </td>
-                      <td className="px-3 py-1.5 text-muted-foreground">
-                        <span className="block truncate" title={r.source ?? t("permissionsTab.sourceAll")}>
-                          {r.source ?? t("permissionsTab.sourceAll")}
-                        </span>
+                      <td className="px-3 py-2 text-muted-foreground">{rule.source ?? t("permissionsTab.sourceAll")}</td>
+                      <td className="px-3 py-2"><Button type="button" variant="ghost" size="sm" disabled={rulesBusy}
+                        onClick={() => void handleRemoveRule(rule)} aria-label={t("permissionsTab.revokeNamedRule", { pattern: rule.pattern })}>
+                        {t("permissionsTab.revokeButton")}
+                      </Button></td>
+                    </tr>
+                  ))}
+                  {userApprovals.map((approval) => (
+                    <tr key={`exact:${approval.key}`} className="border-b last:border-0" data-rule-store="exact">
+                      <td className="max-w-[220px] break-all px-3 py-2 font-mono">
+                        {approval.toolName ?? approval.key.slice(0, 12)}
+                        <p className="text-[10px] text-muted-foreground">{t("permissionsTab.exactApprovalLabel")}</p>
                       </td>
-                      <td className="px-3 py-1.5 text-right">
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          className="h-6 px-2 text-[10px] text-muted-foreground hover:text-destructive"
-                          disabled={rulesBusy}
-                          onClick={() => void handleRemoveRule(r.pattern, r.action)}
-                        >
-                          ✕
-                        </Button>
+                      <td className="px-3 py-2"><Badge variant={approval.decision === "deny" ? "secondary" : "default"}>
+                        {approval.decision === "deny" ? t("permissionsTab.actionDeny") : t("permissionsTab.actionAllow")}
+                      </Badge></td>
+                      <td className="max-w-[180px] break-all px-3 py-2">
+                        {approval.scope === "session" ? t("permissionsTab.scopeSession") : t("permissionsTab.scopePersistent")}
+                        <p className="text-[10px] text-muted-foreground">{approval.scope === "session" ? approval.sessionId : approval.projectCwd}</p>
                       </td>
+                      <td className="px-3 py-2 text-muted-foreground">{approval.source ?? t("permissionsTab.sourceAll")}</td>
+                      <td className="px-3 py-2"><Button type="button" variant="ghost" size="sm" disabled={approvalsBusy}
+                        onClick={() => void handleRevokeApproval(approval.key, approval.toolName ?? approval.key.slice(0, 12))}>
+                        {t("permissionsTab.revokeButton")}
+                      </Button></td>
                     </tr>
                   ))}
                 </tbody>
@@ -2039,85 +2062,6 @@ export function PermissionsTab({
                   {t("permissionsTab.cancelButton")}
                 </Button>
               </div>
-            </div>
-          )}
-        </SettingsSection>
-
-        {/* ── 사용자 승인 기록 ── */}
-        <SettingsSection
-          data-settings-section="permissions-approvals"
-          title={t("permissionsTab.approvalsTitle", { count: userApprovals.length })}
-          description={t("permissionsTab.approvalsDescription")}
-          actions={
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-8 px-3 text-[12px]"
-              onClick={() => void fetchApprovals()}
-              disabled={approvalsBusy}
-            >
-              {t("permissionsTab.refreshButton")}
-            </Button>
-          }
-        >
-          {userApprovals.length === 0 ? (
-            <p className="text-[11px] text-muted-foreground">{t("permissionsTab.approvalsEmpty")}</p>
-          ) : (
-            <div className="min-w-0 overflow-x-auto rounded-md border">
-              <table data-testid="permissions-approvals-table" className="min-w-[780px] w-full text-xs">
-                <thead className="border-b bg-muted/(--opacity-medium)">
-                  <tr>
-                    <th className="px-3 py-2 text-left whitespace-nowrap font-medium">{t("permissionsTab.approvalsColTool")}</th>
-                    <th className="px-3 py-2 text-left whitespace-nowrap font-medium">{t("permissionsTab.approvalsColDecision")}</th>
-                    <th className="px-3 py-2 text-left whitespace-nowrap font-medium">{t("permissionsTab.approvalsColScope")}</th>
-                    <th className="px-3 py-2 text-left whitespace-nowrap font-medium">{t("permissionsTab.approvalsColRisk")}</th>
-                    <th className="px-3 py-2 text-left whitespace-nowrap font-medium">{t("permissionsTab.approvalsColApprovedAt")}</th>
-                    <th className="px-3 py-2 text-left whitespace-nowrap font-medium">{t("permissionsTab.approvalsColReason")}</th>
-                    <th className="px-3 py-2 text-left whitespace-nowrap font-medium">{t("permissionsTab.approvalsColAction")}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {userApprovals.map((a) => (
-                    <tr key={a.key} className="border-b last:border-0">
-                      <td className="max-w-[120px] truncate px-3 py-2 font-mono">
-                        {a.toolName ?? a.key.slice(0, 12)}
-                      </td>
-                      <td className="px-3 py-2">
-                        <Badge
-                          variant={(a.decision ?? "allow") === "deny" ? "secondary" : "default"}
-                          className={`text-[10px] ${(a.decision ?? "allow") === "deny" ? "text-destructive" : ""}`}
-                        >
-                          {(a.decision ?? "allow") === "deny" ? t("permissionsTab.actionDeny") : t("permissionsTab.actionAllow")}
-                        </Badge>
-                      </td>
-                      <td className="px-3 py-2">
-                        <span className={`inline-flex h-5 items-center whitespace-nowrap rounded px-1.5 text-[10px] font-medium ${a.scope === "persistent" ? "bg-warning/(--opacity-soft) text-warning" : "bg-muted text-muted-foreground"}`}>
-                          {a.scope === "persistent" ? t("permissionsTab.scopePersistent") : t("permissionsTab.scopeSession")}
-                        </span>
-                      </td>
-                      <td className="whitespace-nowrap px-3 py-2">{a.verdictAtApproval.toUpperCase()}{a.verdictAtApproval === "high" ? t("permissionsTab.verdictHighFixed") : ""}</td>
-                      <td className="whitespace-nowrap px-3 py-2 text-muted-foreground">
-                        {formatDateTime(a.approvedAt)}
-                      </td>
-                      <td className="max-w-[180px] truncate px-3 py-2 text-muted-foreground"
-                          title={a.nlJustification ?? undefined}>
-                        {a.nlJustification ?? "—"}
-                      </td>
-                      <td className="px-3 py-2">
-                        <Button
-                          variant="destructive"
-                          size="sm"
-                          className="h-6 px-2 text-[11px]"
-                          disabled={approvalsBusy}
-                          onClick={() => void handleRevokeApproval(a.key, a.toolName ?? a.key.slice(0, 12))}
-                        >
-                          {t("permissionsTab.revokeButton")}
-                        </Button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
             </div>
           )}
         </SettingsSection>

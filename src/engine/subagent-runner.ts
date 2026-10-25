@@ -1762,6 +1762,15 @@ export class SubAgentRunner {
     return this.activeChildren.get(childSessionId)?.originSessionId;
   }
 
+  /** Host-recorded spawn ownership, including children restored after restart. */
+  resolveOriginSessionId(childSessionId: string): string | undefined {
+    if (!isValidSessionId(childSessionId)) return undefined;
+    const liveOrigin = this.liveOriginSessionId(childSessionId);
+    if (liveOrigin !== undefined) return liveOrigin;
+    const metadata = this.deps.subAgentMemoryManager.loadSessionMetadata(childSessionId);
+    return metadata?.sessionKind === "subagent" ? metadata.originSessionId : undefined;
+  }
+
   isSubAgentOriginActive(originSessionId: string): boolean {
     if (!originSessionId) return false;
     if ([...this.activeChildren.values()].some((child) =>

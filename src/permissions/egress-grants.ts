@@ -2,7 +2,7 @@
  * Shell egress grants: the hosts a person allowed a sandboxed shell (a Bash or
  * PowerShell tool call, or a workspace terminal tab) to reach.
  *
- * The scopes are the ones the ask offers (design B and F, owner 2026-10-16):
+ * The scopes are the ones the ask offers:
  *
  *   | Scope          | Held                                   | Lifetime                         |
  *   |----------------|----------------------------------------|----------------------------------|
@@ -24,7 +24,7 @@
  * brackets), so neither its spelling nor a changed class widens a grant.
  *
  * Grants apply to shells only. They are never written into ASRT's
- * `allowedDomains` and never consulted for a plugin worker (invariant I4).
+ * `allowedDomains` and never consulted for a plugin worker.
  *
  * The persistent half lives in `<AVE_HOME>/permissions/shell-egress-hosts.json`.
  * The file is validated strictly: anything that is not exactly the shape this
@@ -43,10 +43,9 @@ import {
   LOOPBACK_RANGES,
 } from "@anthropic-ai/sandbox-runtime/dist/sandbox/address.js";
 import { BlockList, isIP } from "node:net";
-import { writeFileAtomicAtPath } from "../main/storage/feature-namespace.js";
+import { openFeatureNamespace, writeFileAtomicAtPath } from "../main/storage/feature-namespace.js";
 import { isMissingPathError } from "../lib/atomic-file.js";
 import { createSerialQueue } from "../lib/with-file-lock.js";
-import { aveHome } from "../shared/ave-home.js";
 import { canonicalizePathForMatch, foldCanonicalPathSeparators } from "./sensitive-paths.js";
 import { maxEgressGrantScope, type EgressIdentityStrength } from "../shared/sandbox-capability-info.js";
 import {
@@ -291,8 +290,8 @@ function parseGrant(path: string, entry: unknown, index: number): PersistentEgre
     : { scope, origin, host, port, network, grantedAt };
 }
 
-function defaultEgressGrantFilePath(): string {
-  return join(aveHome(), "permissions", "shell-egress-hosts.json");
+export function egressGrantFilePath(): string {
+  return join(openFeatureNamespace("permissions").dir, "shell-egress-hosts.json");
 }
 
 
@@ -321,7 +320,7 @@ export class EgressGrantStore {
   private persistent: PersistentEgressGrant[] | undefined;
   private readonly writes = createSerialQueue();
 
-  constructor(private readonly filePath: string = defaultEgressGrantFilePath()) {}
+  constructor(private readonly filePath: string = egressGrantFilePath()) {}
 
   /**
    * The narrowest eligible grant covering this destination for this subject,
@@ -532,7 +531,8 @@ export class EgressGrantStore {
       this.persistent = undefined;
       const next = [...mutate(await this.loadPersistent())];
       const file: GrantFile = { version: FILE_VERSION, grants: next };
-      await writeFileAtomicAtPath(this.filePath, `${JSON.stringify(file, null, 2)}\n`);
+      if (this.filePath === egressGrantFilePath()) await openFeatureNamespace("permissions").writeJson("shell-egress-hosts.json", file);
+      else await writeFileAtomicAtPath(this.filePath, `${JSON.stringify(file, null, 2)}\n`);
       this.persistent = next;
     });
   }

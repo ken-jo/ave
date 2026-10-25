@@ -43,13 +43,16 @@ afterEach(() => {
   cleanupTmpDir(directory);
 });
 
-function authorizedContext(cwd: string, command = "touch marker", rulePattern = "Bash(touch *)") {
+function authorizedContext(cwd: string, command = "touch marker", rulePatterns: readonly string[] = ["Bash(touch *)"]) {
   const plan = getHostShellExecutionPlan("host");
   const input = { command, cwd, executionMode: "host" as const, justification: "Run in the approved directory", timeoutSeconds: 10 };
   const manager = new PermissionManager(join(directory, "permissions.json"));
-  manager.setRules([{ pattern: rulePattern, action: "allow" }]);
+  manager.setRules(rulePatterns.map((pattern) => ({ pattern, action: "allow" as const })));
   const decision = manager.checkDetailed("bash", "builtin", "shell", null, {
     hostShellExecutionPlan: plan, ruleSubject: { kind: "shell", dialect: "bash", command: input.command, cwd: join(directory, cwd) },
+    // An explicit host retry on a sandbox-capable host, where a wildcard
+    // allow may issue the rule proof (without a sandbox only an exact one can).
+    shellExecution: { runsSandboxed: false, sandboxAvailable: true },
   });
   const binding = buildHostShellExecutionPermitBinding({
     plan, toolName: "bash", toolUseId: "cwd-spawn", rawInput: input, executionCwd: directory, extraAllowedDirectories: [],
@@ -59,10 +62,13 @@ function authorizedContext(cwd: string, command = "touch marker", rulePattern = 
   return { input, context: { cwd: directory, extraAllowedDirectories: [], metadata: { toolUseId: "cwd-spawn" }, hostShellExecutionPlan: plan, hostShellExecutionPermit: permit } };
 }
 
+// A bare tool rule does not admit a shell; Bash(...) rules cover each command.
+const COMPOUND_RULES = ["Bash(printf *)", "Bash(exit *)"];
+
 describe("host cwd races after permit consumption", () => {
   it("preserves an ordinary exit 197 and the command's output", async () => {
     mkdirSync(join(directory, "current"));
-    const { input, context } = authorizedContext("current", "printf command-ran; exit 197", "bash");
+    const { input, context } = authorizedContext("current", "printf command-ran; exit 197", COMPOUND_RULES);
     const result = await new BashTool().execute(input, context);
     expect(result.isError).toBe(true);
     expect(result.metadata?.returncode).toBe(197);
@@ -72,7 +78,7 @@ describe("host cwd races after permit consumption", () => {
 
   it("closes the guard channel before the command can write to it", async () => {
     mkdirSync(join(directory, "current"));
-    const { input, context } = authorizedContext("current", "printf command-ran; if { printf C >&3; } 2>/dev/null; then exit 0; else exit 197; fi", "bash");
+    const { input, context } = authorizedContext("current", "printf command-ran; if { printf C >&3; } 2>/dev/null; then exit 0; else exit 197; fi", COMPOUND_RULES);
     const result = await new BashTool().execute(input, context);
     expect(result.output).toContain("command-ran");
     expect(result.metadata?.returncode).toBe(197);

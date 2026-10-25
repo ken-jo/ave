@@ -1650,20 +1650,12 @@ describe("SettingsService role presets", () => {
     expect(reloaded.get("features")?.a2aLoopbackServer).toBe(true);
   });
 
-  it("ships hostClassifiesRisk ON and osToolSandbox OFF, on every platform", () => {
-    // hostClassifiesRisk ships ON on EVERY platform (shadow-mode reconciliation
-    // completed). It is safe to ship on non-sandbox / network-only platforms
-    // because the foreground read-relaxation is coupled to the active sandbox
-    // FILESYSTEM-CONTAINING the host — where it is not filesystem-contained it
-    // falls back to the pre-exec ask.
-    //
-    // osToolSandbox (host shells) and pluginWorkerConfinement (workers,
-    // plugin children, plugin hooks, MCP servers) both ship OFF everywhere.
-    // They are separate settings so a later shell default cannot confine
-    // workers on its own.
+  it("keeps host risk classification enabled and plugin-worker confinement opt-in", () => {
+    // pluginWorkerConfinement (workers, plugin children, plugin hooks, MCP
+    // servers) ships OFF everywhere. It is separate from osToolSandbox so the
+    // shell default cannot confine workers on its own.
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     expect(service.get("features")?.hostClassifiesRisk ?? false).toBe(true);
-    expect(service.get("features")?.osToolSandbox).toBe(false);
     expect(service.get("features")?.pluginWorkerConfinement).toBe(false);
   });
 
@@ -1677,18 +1669,14 @@ describe("SettingsService role presets", () => {
       .toBe(false);
   });
 
-  // Per-platform TRUTH-TABLE — asserts the default EXPLICITLY on each platform
-  // rather than by mirroring the impl expression, so a platform branch creeping
-  // back into settings-defaults fails here by name. The default is evaluated at
-  // module-load, so each case stubs `process.platform` and re-imports the store
-  // with `vi.resetModules()`, then reads the default through a fresh
-  // SettingsService (empty userDataPath → defaults).
+  // Re-import after replacing the host platform: defaults are evaluated once.
   it.each([
-    ["darwin", false],
-    ["linux", false],
+    ["darwin", true],
+    ["linux", true],
     ["win32", false],
+    ["freebsd", false],
   ] as const)(
-    "osToolSandbox default on %s = %s (one policy, no platform branch)",
+    "osToolSandbox default on %s = %s",
     async (platform, expected) => {
       const original = process.platform;
       const dir = mkdtempSync(join(tmpdir(), "settings-store-truthtable-"));
@@ -1707,6 +1695,13 @@ describe("SettingsService role presets", () => {
       }
     },
   );
+
+  it.each([true, false])("preserves an explicit sandbox setting of %s across reload", async (enabled) => {
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    await service.patch({ features: { osToolSandbox: enabled } });
+    const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(reloaded.get("features")?.osToolSandbox).toBe(enabled);
+  });
 });
 
 describe("SettingsService LLM per-vendor patching", () => {
@@ -3771,13 +3766,15 @@ describe("plugin-worker confinement split migration", () => {
   });
 
   it.each([
-    ["an explicit false", { osToolSandbox: false }],
-    ["no stored value", {}],
-  ])("keeps a default install (%s) off for both", async (_label, features) => {
+    ["an explicit false", { osToolSandbox: false }, false],
+    // A file without the shell value takes the platform shell default; that
+    // default is not the user's opt-in, so workers stay unconfined.
+    ["no stored value", {}, DEFAULT_SETTINGS.features!.osToolSandbox],
+  ])("keeps workers off for a default install (%s)", async (_label, features, shell) => {
     writeFileSync(path, JSON.stringify({ features }), "utf-8");
 
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(service.get("features")?.osToolSandbox).toBe(false);
+    expect(service.get("features")?.osToolSandbox).toBe(shell);
     expect(service.get("features")?.pluginWorkerConfinement).toBe(false);
 
     await service.patch({} as never);
@@ -3806,7 +3803,7 @@ describe("plugin-worker confinement split migration", () => {
   it("each setting changes only itself", async () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     await service.patch({ features: { pluginWorkerConfinement: true } });
-    expect(service.get("features")?.osToolSandbox).toBe(false);
+    expect(service.get("features")?.osToolSandbox).toBe(DEFAULT_SETTINGS.features!.osToolSandbox);
     expect(service.get("features")?.pluginWorkerConfinement).toBe(true);
 
     await service.patch({ features: { osToolSandbox: true, pluginWorkerConfinement: false } });

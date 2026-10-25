@@ -1,3 +1,4 @@
+import type { RevocableEgressGrant } from "../shared/egress-grant-scopes.js";
 // The internal renderer API is intentionally assembled in one typed surface.
 import { ipcRenderer } from "electron";
 import { buildBrowserTabsApiSurface } from "./browser-api-surface.js";
@@ -21,9 +22,9 @@ import type {
   OnboardingProposalDisposition,
   PendingOnboardingProposal,
 } from "../main/onboarding-proposal-store.js";
-import type { EgressGrantNetwork } from "../shared/egress-grant-scopes.js";
 import { parseEnvForcedSettingsPaths } from "../shared/env-backed-settings.js";
 import { ipcUserKeyboardIntent } from "./gesture-intent.js";
+import { serializePermissionJudgeSettingsPatch, type PermissionJudgeSettings } from "../shared/permission-judge-settings.js";
 import { mcpApiSurface } from "./mcp-api-surface.js";
 import { buildTelegramConnectionApiSurface } from "./telegram-connection-api-surface.js";
 import { buildTailnetObserverApiSurface } from "./tailnet-observer-api-surface.js";
@@ -847,16 +848,7 @@ export function buildInternalApiSurface() {
     /** Read-only: the shell egress grants for a conversation, a terminal tab, a workspace or always. */
     egressGrantsList: async () => ipcRenderer.invoke(PERMISSIONS.egressGrantsList),
     /** MUTATING: revoke one shell egress grant (user-keyboard intent attached). */
-    egressGrantRevoke: async (grant: {
-      network?: EgressGrantNetwork;
-      scope: "conversation" | "tab" | "workspace" | "always";
-      host: string;
-      port: number;
-      origin?: "shell" | "terminal";
-      workspaceRoot?: string;
-      sessionId?: string;
-      tabId?: string;
-    }) => ipcRenderer.invoke(PERMISSIONS.egressGrantRevoke, { ...grant, intent: ipcUserKeyboardIntent() }),
+    egressGrantRevoke: async (grant: RevocableEgressGrant) => ipcRenderer.invoke(PERMISSIONS.egressGrantRevoke, { ...grant, intent: ipcUserKeyboardIntent() }),
     /** Read-only: the upstream proxy setting, whether credentials are stored, and the effective upstream. */
     upstreamProxyGet: async () => ipcRenderer.invoke(PERMISSIONS.upstreamProxyGet),
     /** MUTATING: change the upstream proxy setting (user-gesture intent attached). */
@@ -878,6 +870,9 @@ export function buildInternalApiSurface() {
     approveExtensionsWithoutIsolation: async () =>
       ipcRenderer.invoke(PERMISSIONS.approveExtensionsWithoutIsolation, { intent: ipcUserKeyboardIntent() }),
     listRules: async () => ipcRenderer.invoke(PERMISSIONS.listRules),
+    listScopedRules: async () => ipcRenderer.invoke(PERMISSIONS.listScopedRules),
+    removeScopedRule: async (rule: import("../shared/permissions-events.js").ScopedPermissionRule) =>
+      ipcRenderer.invoke(PERMISSIONS.removeScopedRule, { ...rule, intent: ipcUserKeyboardIntent() }),
     addRule: async (pattern: string, action: string) =>
       ipcRenderer.invoke(PERMISSIONS.addRule, { pattern, action, intent: ipcUserKeyboardIntent() }),
     removeRule: async (pattern: string, action: string) =>
@@ -937,9 +932,13 @@ export function buildInternalApiSurface() {
     /** Permission policy — `/permission reviewer ...` slash dispatch via IPC. */
     reviewerDispatch: async (rawArgs: string) =>
       ipcRenderer.invoke(PERMISSIONS.reviewerDispatch, { rawArgs, intent: ipcUserKeyboardIntent() }),
-    /** Check whether a reviewer provider has its required API key stored. */
-    reviewerProviderHasKey: async (provider: string) =>
-      ipcRenderer.invoke(PERMISSIONS.reviewerProviderHasKey, provider),
+    judgeGet: async () => ipcRenderer.invoke(PERMISSIONS.judgeGet),
+    /** Sends only the fields present in `patch`; unchanged stored values stay as stored. */
+    judgeSet: async (patch: Partial<PermissionJudgeSettings>) =>
+      ipcRenderer.invoke(PERMISSIONS.judgeSet, {
+        settings: serializePermissionJudgeSettingsPatch(patch),
+        intent: ipcUserKeyboardIntent(),
+      }),
     /** Permission policy — `/permission audit show` — fetch recent permission audit entries. */
     auditShow: async (last: number) =>
       ipcRenderer.invoke(PERMISSIONS.auditShow, { last }),
@@ -1020,6 +1019,7 @@ export function buildInternalApiSurface() {
     record: async (entry: {
       /** Server-side ApprovalRequest binding — required for IPC handler validation. */
       requestId: string;
+      rule?: { pattern: string; scope: "project" | "user" };
       toolName: string;
       args: string;
       source: string;
@@ -1037,6 +1037,7 @@ export function buildInternalApiSurface() {
       ipcRenderer.invoke(PERMISSIONS.userApprovalRevoke, { key, intent: ipcUserKeyboardIntent() }),
     /** List all approval entries (for PermissionsTab display). */
     list: async () => ipcRenderer.invoke(PERMISSIONS.userApprovalList),
+    listSession: async () => ipcRenderer.invoke(PERMISSIONS.userApprovalList, { scope: "session" }),
   },
 
   // ─── DLP Hit Statistics (Observability) ─────────

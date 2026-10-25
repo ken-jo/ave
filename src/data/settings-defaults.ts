@@ -218,50 +218,17 @@ export const DEFAULT_SETTINGS: AppSettings = {
     // category. Shadow mode reconciliation completed before this flip; users
     // can still opt out in Settings.
     hostClassifiesRisk: true,
-    // Shell sandbox is opt-in on every platform. It decides whether host shells
-    // (bash, powershell, the terminal) run confined; workers: see below it.
-    //
-    // Windows install-time provisioning (NSIS customInstall, issue #1608) makes
-    // opt-in work out of the box, BUT default-on win32 is DEFERRED: Windows
-    // srt-win is only PARTIALLY confined (filesystem + network, no PROCESS
-    // isolation), and the shell-containment gate (`isActiveSandboxShellContained`,
-    // used by bash.ts / powershell.ts) requires full fs+process confinement.
-    //
-    // The shell tools DO handle that partial case now: `buildHostShellExecutionPlan`
-    // routes win32+ASRT to an honest plain host child (`fallbackReason:
-    // "windows-partial-shell-acl-unsafe"`) authorized per invocation by a one-shot
-    // host permit, rather than erroring. So default-on would run; it is withheld
-    // for what it would COST, not what it would break — every bash/powershell call
-    // would take an allow-once approval while gaining no shell isolation, and the
-    // win32 substrate has no live QA evidence (the Windows CI job exercises the
-    // logic, not a provisioned srt-win machine). All platforms remain opt-in;
-    // live QA alone does not change the default activation policy below.
-    //
-    // The default is the same on every platform.
-    //
-    // OFF on every platform, and one policy follows from it: host shells run
-    // exactly as confined as this setting says — unconfined while it is off,
-    // under ASRT once it is on. Turning it (or the worker setting below) on is
-    // where the platform work happens (Windows needs its one-time
-    // provisioning from Settings > Permissions); until then nothing is spawned
-    // as if a sandbox existed. The former darwin-only default made macOS the
-    // one platform where plugin isolation was exercised and left Windows and
-    // Linux with a plugin path that required a sandbox the host had never
-    // asked for.
-    //
-    // Independent of `hostClassifiesRisk` (ON everywhere): with no sandbox the
-    // foreground read-relaxation, which is coupled to the sandbox FILESYSTEM-
-    // CONTAINING the host (ToolExecutor.sandboxFsContainedProvider), falls back
-    // to the pre-exec ask. When ON, boot activates ASRT if the platform sandbox
-    // can run, else the default/settings path DEGRADES (loud warning,
-    // non-bricking); the explicit `AVE_SANDBOX_ENABLED=1` env opt-in stays
-    // fail-closed. See boot.ts + boot/steps/sandbox-gate.ts.
-    osToolSandbox: false,
+    // Request OS confinement by default where the host shell has a supported
+    // isolation backend. Windows remains explicitly gated off until its shell
+    // isolation is ready. Stored user values override this default.
+    // Settings activation degrades visibly when unavailable; explicit
+    // AVE_SANDBOX_ENABLED=1 activation stays fail-closed on macOS/Linux.
+    osToolSandbox: process.platform === "darwin" || process.platform === "linux",
     // Plugin-worker confinement: plugin workers, out-of-process plugin
     // children, plugin script hooks and external MCP stdio servers run under
     // ASRT exactly when this is on, whatever the shell sandbox above says.
-    // Its own setting (owner 2026-10-16) so that a shell sandbox default can
-    // change without confining workers whose manifests under-declare the
+    // Its own setting (owner 2026-10-16) so that the shell sandbox default can
+    // be on without confining workers whose manifests under-declare the
     // domains they reach. OFF everywhere; `loadSettings` derives it from a
     // stored `osToolSandbox: true` when a file predates the split.
     pluginWorkerConfinement: false,

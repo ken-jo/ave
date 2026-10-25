@@ -127,6 +127,12 @@ export const BROWSER_PRESSABLE_KEYS = [
 ] as const;
 
 const MAX_WAIT_MS = 30_000;
+const canonicalBrowserNavigationTools = new WeakSet<object>();
+
+export function isCanonicalBrowserNavigationTool(tool: unknown): boolean {
+  return typeof tool === "object" && tool !== null && canonicalBrowserNavigationTools.has(tool);
+}
+
 /** A tab handle from browser_tabs (minted by the main-side registry). */
 export const BROWSER_TAB_ID_PATTERN = /^tab-\d+$/;
 
@@ -394,5 +400,8 @@ export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps
       jsonSchema: object({ tabId: tabIdProperty }, ["tabId"]),
       execute: execute(BROWSER_TOOL.tabClose),
     }),
-  ];
+  ].map((tool) => {
+    if (tool.name === BROWSER_TOOL.navigate || tool.name === BROWSER_TOOL.tabNew) canonicalBrowserNavigationTools.add(tool);
+    return tool;
+  });
 }

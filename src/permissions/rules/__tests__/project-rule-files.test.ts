@@ -3,7 +3,8 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
-import { projectRulesLocation, readProjectRulesFile, updateProjectRulesFile } from "../project-rule-files.js";
+import { projectRuleRoot, projectRulesLocation, readProjectRulesFile, updateProjectRulesFile } from "../project-rule-files.js";
+import { buildShellRuleApproval } from "../shell-rule-approval.js";
 import { captureApprovalWorkingDirectory } from "../../user-approval-store.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 
@@ -31,6 +32,17 @@ afterEach(async () => {
 });
 
 describe("project rule root boundaries", () => {
+  it("shows the dock the repository root a project rule is stored under, not the cwd", () => {
+    const repo = join(home, "repo");
+    const cwd = join(repo, "packages", "app");
+    repository(repo);
+    mkdirSync(cwd, { recursive: true });
+    const approval = buildShellRuleApproval("git status", cwd, true, "conversation-a");
+    expect(approval.projectCwd).toBe(cwd);
+    expect(approval.projectRoot).toBe(captureApprovalWorkingDirectory(repo).path);
+    expect(projectRuleRoot(cwd)).toBe(projectRulesLocation(root, cwd).projectRoot);
+  });
+
   it.each([
     { name: "unset", value: undefined, inherits: true },
     { name: "empty", value: "", inherits: false },
@@ -162,7 +174,7 @@ describe("project rule root boundaries", () => {
     repository(legacyRoot);
     const legacy = projectRulesLocation(root, legacyRoot);
     await updateProjectRulesFile(legacy, (file) => {
-      file.rules.push({ pattern: "Bash(npm test *)", action: "allow" });
+      file.rules.push({ pattern: "Bash(npm test)", action: "allow" });
     });
     const original = readFileSync(legacy.filePath, "utf8");
     for (const name of ["a", "b"]) {

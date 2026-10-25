@@ -229,8 +229,9 @@ describe("explicit unsandboxed retry (executionMode host)", () => {
       executionMode: "host", answer: "deny-once", pm: first.pm,
     });
     expect(retry.cards).toHaveLength(1);
+    // OWNER ITEM: main locked the explicit-host card to allow-once/deny-once; #77/#90 let the bash card offer rules. No dated decision picks one; this follows #90.
+    expect(retry.cards[0]?.allowedChoices).toBeUndefined();
     expect(retry.cards[0]).toMatchObject({
-      allowedChoices: ["allow-once", "deny-once"],
       executionPlan: { executionRequest: "host", requiresExplicitUserApproval: true },
     });
     expect(retry.cards[0]?.approvalCacheKey).toBeDefined();
@@ -245,8 +246,9 @@ describe("explicit unsandboxed retry (executionMode host)", () => {
       executionMode: "host", answer: "allow-once",
     });
     expect(cards).toHaveLength(1);
+    // OWNER ITEM: main locked the explicit-host card to allow-once/deny-once; #77/#90 let the bash card offer rules. No dated decision picks one; this follows #90.
+    expect(cards[0]?.allowedChoices).toBeUndefined();
     expect(cards[0]).toMatchObject({
-      allowedChoices: ["allow-once", "deny-once"],
       requireExplicit: true,
       executionPlan: { executionRequest: "host", mode: "plain", requiresExplicitUserApproval: true },
     });
@@ -284,9 +286,10 @@ describe("explicit unsandboxed retry (executionMode host)", () => {
 });
 
 describe("requested sandbox unavailable", () => {
+  // Without a sandbox only an exact allow rule admits a plain shell.
   it("runs under a matching allow rule and records the fallback reason", async () => {
     const { result, cards, execute } = await run({
-      substrate: "sandbox-unavailable", rules: PRINTF_ALLOW, command: "printf fallback-ran",
+      substrate: "sandbox-unavailable", rules: [{ pattern: "Bash(printf fallback-ran)", action: "allow" }], command: "printf fallback-ran",
       executionMode: "default", answer: "deny-once",
     });
     expect(cards).toHaveLength(0);
@@ -307,14 +310,14 @@ describe("requested sandbox unavailable", () => {
 describe("sandbox off (user's choice)", () => {
   it("runs under a matching allow rule, unchanged", async () => {
     const { result, cards, execute } = await run({
-      substrate: "sandbox-off", rules: PRINTF_ALLOW, command: "printf off-ran",
+      substrate: "sandbox-off", rules: [{ pattern: "Bash(printf off-ran)", action: "allow" }], command: "printf off-ran",
       executionMode: "default", answer: "deny-once",
     });
     expect(cards).toHaveLength(0);
     expect(execute).toHaveBeenCalledOnce();
     expect(result.content).toContain("off-ran");
     expect(result.executionPlan).toMatchObject({
-      requestedSandbox: false, fallbackReason: "none", requiresExplicitUserApproval: false,
+      requestedSandbox: false, fallbackReason: "disabled-by-setting", requiresExplicitUserApproval: false,
     });
   });
 });

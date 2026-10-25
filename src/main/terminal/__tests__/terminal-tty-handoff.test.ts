@@ -11,6 +11,7 @@ import { closeSync, constants, mkdtempSync, openSync, readSync, rmSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { IPty } from "node-pty";
+import { TEST_COMMAND_ID } from "../../../__tests__/support/egress-fixture.js";
 import { waitForTerminal } from "../../../__tests__/support/terminal-markers.js";
 
 import {
@@ -29,7 +30,6 @@ import {
   renderHandoffScript,
 } from "../terminal-tty-handoff.js";
 import { terminalNeedsOwnTtyGrant } from "../terminal-tty-platform.js";
-import { TEST_COMMAND_ID } from "../../../__tests__/support/egress-fixture.js";
 
 describe("ownPtySlavePath", () => {
   it("returns node-pty's slave path", () => {

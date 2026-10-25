@@ -10,7 +10,7 @@
  * invocation that owns them.
  *
  * In the proxy username the id is a label, not a credential
- * (anthropics/sandbox-runtime#591): a confined process that learns another
+ * because the label is client-controlled: a confined process that learns another
  * live id can present it. So on macOS and Linux each id also gets its own
  * proxy listener (the carried ASRT patch's `openInvocationListener`, opened by
  * the wrap): the sandbox profile lets only that invocation reach it, and the
@@ -53,7 +53,7 @@ export interface ShellEgressContext {
 /**
  * One workspace terminal tab, for the life of the shell it runs. A terminal is
  * always in the foreground: the person who typed the command is at the tab, so
- * an egress ask for it is drawn in the tab (design F).
+ * an egress ask for it is drawn in the tab.
  */
 export interface TerminalEgressOwner {
   readonly kind: "terminal";

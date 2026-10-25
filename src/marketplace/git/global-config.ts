@@ -17,6 +17,7 @@
 import { execFile } from "node:child_process";
 import { writeFileAtomicAtPath } from "../../main/storage/feature-namespace.js";
 import { buildSafeChildEnv } from "../../tools/safe-env.js";
+import { buildHostGitArgs } from "../../shared/host-git.js";
 
 export interface GitConfigEntry {
   key: string;
@@ -68,7 +69,7 @@ export function parseNullConfigList(output: string): GitConfigEntry[] {
 
 function runConfig(gitPath: string, args: string[], env: Record<string, string>): Promise<{ ok: boolean; stdout: string }> {
   return new Promise((resolve) => {
-    execFile(gitPath, args, { env, windowsHide: true, timeout: 10_000, maxBuffer: 1024 * 1024 }, (error, stdout) =>
+    execFile(gitPath, buildHostGitArgs(args), { env, windowsHide: true, timeout: 10_000, maxBuffer: 1024 * 1024 }, (error, stdout) =>
       resolve({ ok: !error, stdout: String(stdout) }),
     );
   });

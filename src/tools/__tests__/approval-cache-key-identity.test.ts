@@ -115,6 +115,8 @@ describe("remembered decisions keyed on the tool's opted-in memory scope", () =>
           if (remember) await recordApproval(snapshot.toolName, canonicalStringify(snapshot.args), snapshot.source, {
             decision: choice === "deny-exact" ? "deny" : "allow",
             scope: choice === "deny-exact" ? "persistent" : "session",
+            // As the record handler does: a session allow is the root conversation's.
+            ...(choice === "deny-exact" ? {} : { sessionId: snapshot.sessionId }),
             verdictAtApproval: snapshot.verdictAtApproval,
             nlJustification: null,
             trustOrigin: snapshot.trustOrigin,
@@ -261,6 +263,7 @@ describe("remembered decisions keyed on the tool's opted-in memory scope", () =>
       // A reviewer-assessed row: a verdict, no rules-only ceiling.
       await recordApproval("web_fetch", canonicalStringify(approved), "builtin", {
         scope: "session",
+        sessionId: "memory-scope",
         verdictAtApproval: "low",
         nlJustification: null,
         trustOrigin: "user-keyboard",
@@ -338,7 +341,7 @@ describe("remembered decisions keyed on the tool's opted-in memory scope", () =>
     const read = new ReadFileTool();
     expect((await approvalIdentityFor(read, { path: target }, dir)).approvalMemory).toEqual({ kind: "args" });
     await recordApproval("read_file", canonicalStringify({ path: target }), "builtin", {
-      scope: "session", verdictAtApproval: "low", nlJustification: null, trustOrigin: "user-keyboard",
+      scope: "session", sessionId: "memory-scope", verdictAtApproval: "low", nlJustification: null, trustOrigin: "user-keyboard",
     });
     const { cards, run } = harness([read, new WriteFileTool()]);
     await run("write_file", { path: target, content: "changed" });

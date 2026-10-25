@@ -13,13 +13,14 @@ import { spawnTerminal, writeTerminal, resizeTerminal, typeTerminalCommand, veri
  * Linux only, and only where the sandbox can start (bubblewrap, socat,
  * ripgrep; AVE_REQUIRE_SANDBOX_CASES=1 turns a skip into a failure).
  */
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
-import { initializeAsrtSandbox, isAsrtSandboxActive, resetAsrtSandbox, useAppOwnedSandboxTempRoot } from "../../../permissions/asrt-sandbox.js";
+import { isAsrtSandboxActive, resetAsrtSandbox, useAppOwnedSandboxTempRoot } from "../../../permissions/asrt-sandbox.js";
+import { initializeRequiredSandbox, shouldSkipNativeSandboxTests } from "../../../__tests__/support/native-sandbox.js";
 import { __resetActiveSandboxCapabilityForTest, setActiveSandboxCapability, setShellSandboxRequestedAtBoot } from "../../../permissions/sandbox-capability.js";
 import { requireSandboxCases } from "../../../plugins/isolation/__tests__/sandbox-cases.js";
 import { waitForTerminal } from "../../../__tests__/support/terminal-markers.js";
@@ -32,6 +33,7 @@ import {
 } from "../pty-manager.js";
 import { parseProcStat, readSandboxedShell } from "../shell-process.js";
 import { USER_INPUT_QUIET_MS, type TerminalBlockTracker } from "../terminal-blocks.js";
+import { t } from "../../../i18n/index.js";
 
 const OWNER = 1;
 let root: string;
@@ -83,7 +85,7 @@ afterEach(async () => {
 async function startSandboxedShell(shellPath: string, tabId: string): Promise<TerminalBlockTracker> {
   useAppOwnedSandboxTempRoot();
   setShellSandboxRequestedAtBoot(true);
-  await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
+  await initializeRequiredSandbox({ allowedDomains: [], strictAllowlist: true });
   setActiveSandboxCapability({
     kind: "asrt",
     confidence: "verified",
@@ -198,6 +200,66 @@ describe.runIf(process.platform === "linux")("workspace terminal under the Linux
       await sleep(500);
       await settle(tracker);
       expect(await typeAndWait(tabId, tracker, "stty size")).toBe("41 132\n");
+    }, 90_000);
+
+    it.skipIf(shouldSkipNativeSandboxTests())(`${name}: new repository controls refuse agent typing; raw input keeps the documented window until reopen`, async () => {
+      const tracker = await startSandboxedShell(shellPath, tabId);
+      const marker = join(process.cwd(), "later", ".git");
+      mkdirSync(join(marker, "hooks"), { recursive: true });
+      writeFileSync(join(marker, "HEAD"), "ref: refs/heads/main\n");
+      writeFileSync(join(marker, "config"), "original\n");
+      await expect(typeTerminalCommand(tabId, OWNER, "git status", tracker.currentCwd()!)).resolves.toMatchObject({
+        ok: false, reason: "cwd-unverified", message: t("sandboxPolicy.terminalChanged"),
+      });
+      expect(shown.get(tabId)).toContain(t("sandboxPolicy.terminalWindow"));
+
+      // Raw input reaches the original namespace. The write happens while a
+      // foreground process still withholds the next command-end marker.
+      await userRuns(tabId, tracker, "printf changed > later/.git/config && printf hook > later/.git/hooks/pre-commit && sleep 100");
+      await until(() => readFileSync(join(marker, "config"), "utf8") === "changed");
+      expect(readFileSync(join(marker, "hooks", "pre-commit"), "utf8")).toBe("hook");
+      expect(tracker.get(tracker.nextBlockId() - 1)?.status).toBe("running");
+      killTerminal(tabId);
+      await until(() => exits.includes(tabId));
+      expect(existsSync(marker)).toBe(false);
+      expect(shown.get(tabId)).toContain(JSON.stringify(marker));
+      await resetAsrtSandbox();
+      exits = [];
+
+      mkdirSync(join(marker, "hooks"), { recursive: true });
+      writeFileSync(join(marker, "HEAD"), "ref: refs/heads/main\n");
+      writeFileSync(join(marker, "config"), "changed");
+      const reopened = await startSandboxedShell(shellPath, tabId);
+      const id = reopened.nextBlockId();
+      await typeAndWait(tabId, reopened, "printf blocked > later/.git/config");
+      expect(reopened.get(id)?.exitCode).not.toBe(0);
+      expect(readFileSync(join(marker, "config"), "utf8")).toBe("changed");
+    }, 90_000);
+
+    it.skipIf(shouldSkipNativeSandboxTests())(`${name}: a newly created control requires reopen and is quarantined when the shell exits`, async () => {
+      const marker = join(process.cwd(), ".git");
+      mkdirSync(join(marker, "objects"), { recursive: true });
+      mkdirSync(join(marker, "refs"));
+      writeFileSync(join(marker, "HEAD"), "ref: refs/heads/main\n");
+      writeFileSync(join(marker, "config"), "[core]\n\tbare = false\n");
+      const control = join(marker, "commondir");
+      const tracker = await startSandboxedShell(shellPath, tabId);
+      expect(existsSync(control)).toBe(false);
+      await typeAndWait(tabId, tracker, "printf . > .git/commondir");
+      expect(readFileSync(control, "utf8")).toBe(".");
+      await settle(tracker);
+      await expect(typeTerminalCommand(tabId, OWNER, "git status", tracker.currentCwd()!)).resolves.toMatchObject({
+        ok: false, reason: "cwd-unverified", message: t("sandboxPolicy.terminalChanged"),
+      });
+      expect(existsSync(control)).toBe(true);
+      killTerminal(tabId);
+      await until(() => exits.includes(tabId));
+      expect(existsSync(control)).toBe(false);
+      expect(existsSync(join(marker, "HEAD"))).toBe(true);
+      expect(shown.get(tabId)).toContain(JSON.stringify(control));
+      const notice = t("sandboxPolicy.quarantined", { moves: "" });
+      expect(shown.get(tabId)).toContain(notice.split("\n")[0]);
+      expect(shown.get(tabId)).toContain(notice.split("\n").at(-1));
     }, 90_000);
 
     it(`${name}: terminal_run types at the shell's prompt, and refuses a busy, nested or moved shell`, async (test) => {
