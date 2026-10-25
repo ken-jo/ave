@@ -283,17 +283,26 @@ describe("shared runner decisions", () => {
   it.each([
     { name: "unclosed shell quote", dialect: "bash" as const, command: "echo 'unterminated" },
     { name: "unclosed command quote", dialect: "powershell" as const, command: "Write-Output 'unterminated" },
-    { name: "shell source budget", dialect: "bash" as const, command: `echo ${"x".repeat(SHELL_ANALYSIS_LIMITS.sourceBytes + 1)}` },
-    { name: "expression work budget", dialect: "powershell" as const, command: `Get-Content (${"'a' + ".repeat(3000)}'b')` },
     { name: "opaque program binding", dialect: "powershell" as const, command: "$runner @options" },
     { name: "opaque script provenance", dialect: "powershell" as const, command: "Set-Content launch.ps1 x; ./launch.ps1" },
-  ])("makes $name ordinary, and not remembered as an action key without a sandbox", async ({ name, dialect, command }) => {
+  ])("makes $name ordinary, and not remembered as an action key without a sandbox", async ({ dialect, command }) => {
     const manager = runnerManager();
     const result = checkCommand(manager, dialect, command);
     expectBucket(result, "ordinary");
-    if (name.includes("budget")) expect(result.reason).toMatch(/budget|limit/i);
     await manager.addAlwaysAllowedPersist(actionKey(dialect, command));
     expectBucket(checkCommand(manager, dialect, command), "ordinary");
+  });
+
+  // Owner re-review round 9 (2026-10-26): a command over the encoded-scan input cap, or one whose lexer runs out of budget, cannot be read for
+  // hidden code, so it fails closed to the human-only floor (never a sandboxed allow or a remembered action grant), not the ordinary ask.
+  it.each([
+    { name: "input over the hard length cap", dialect: "bash" as const, command: `echo ${"x".repeat(SHELL_ANALYSIS_LIMITS.sourceBytes + 1)}` },
+    { name: "expression lexer out of budget", dialect: "powershell" as const, command: `Get-Content (${"'a' + ".repeat(3000)}'b')` },
+  ])("hides $name as unreadable code, not remembered as an action key", async ({ dialect, command }) => {
+    const manager = runnerManager();
+    expectBucket(checkCommand(manager, dialect, command), "floor");
+    await manager.addAlwaysAllowedPersist(actionKey(dialect, command));
+    expectBucket(checkCommand(manager, dialect, command), "floor");
   });
 
   it.each([
