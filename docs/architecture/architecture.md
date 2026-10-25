@@ -2090,7 +2090,9 @@ group rather than by the user. Admission (`assertCodexLocations` in
    - an object the user already owns is kept, without asking for
      `WRITE_OWNER`;
    - an object owned by `S-1-5-32-544` is given to the user, on a handle that
-     re-reads the owner before it sets it;
+     re-reads the owner before it sets it. For a non-reparse directory, that
+     same write sets a protected owner-only DACL with inheritable full control;
+     files and reparse points use an ownership-only write;
    - an object with any other owner refuses its request, and nothing in that
      request changes. A claim is sent in requests of at most 128 paths and
      24,576 characters of JSON-encoded paths. When it spans several requests,

@@ -284,9 +284,9 @@ describe("ensureAveHomePrivate", () => {
     expect(guard).toBeGreaterThan(command.indexOf("[System.IO.FileAttributes]::ReparsePoint"));
     expect(claim).toBeGreaterThan(guard);
     expect(claim).toBeLessThan(command.indexOf("& $icacls"));
-    expect(command).toContain("CreateFile(path, 0x00080000 | 0x00020000, 7, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero)");
+    expect(command).toContain("CreateFile(path, requireNonReparseDirectory ? 0x000E0000u : 0x020A0000u, 7, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero)");
     expect(command).toContain('OwnerOf(handle) != "S-1-5-32-544"');
-    expect(command.indexOf("GetSecurityInfo(handle, 1, 1")).toBeLessThan(command.indexOf("SetSecurityInfo(handle, 1, 1"));
+    expect(command.indexOf('OwnerOf(handle) != "S-1-5-32-544"')).toBeLessThan(command.indexOf("SetSecurityInfo(handle, 1, directory ? 0x80000005u : 1u"));
     expect(command).toContain("$refused = 'owner-claim-failed'");
   });
   it("reports the first refused path and touches none inside it", () => {
@@ -360,24 +360,26 @@ describe("ensureAveHomePrivate", () => {
     expect(error).toBe("Owner changed during the claim");
     expect(sddl(dir)).toBe(before);
   });
-  it.runIf(process.platform === "win32")("claims an Administrators-owned directory on an elevated token without changing its DACL", (context) => {
-    requireRestorePrivilege(context);
+  it.runIf(process.platform === "win32")("claims an Administrators-owned runtime root with a protected owner-only DACL on an elevated token", (context) => {
     const dir = home();
+    execFileSync(win32SystemBinary("icacls"), [dirname(dir), "/grant", "*S-1-5-32-545:(OI)(CI)RX", "/q"], { encoding: "utf-8", windowsHide: true });
     mkdirSync(dir);
     const [token] = readWindowsDirectoryDacls([dir]);
-    if (!token.elevated) context.skip("An elevated token is required to exercise the ownership claim directly");
-    try {
-      execFileSync(win32SystemBinary("icacls"), [dir, "/setowner", "*S-1-5-32-544", "/q"], { encoding: "utf-8", windowsHide: true });
-    } catch (error) {
-      context.skip(`Cannot set the fixture owner to Administrators: ${String(error)}`);
-    }
+    expect(token.rules).toContainEqual(expect.objectContaining({ sid: "S-1-5-32-545", isInherited: true }));
+    if (!token.elevated) context.skip("An elevated token is required to set the fixture owner and exercise the claim directly");
+    execFileSync(win32SystemBinary("icacls"), [dir, "/setowner", "*S-1-5-32-544", "/q"], { encoding: "utf-8", windowsHide: true });
     expect(readWindowsDirectoryDacls([dir])[0].ownerSid).toBe("S-1-5-32-544");
-    const before = sddl(dir, "Access");
     execFileSync(win32SystemBinary("WindowsPowerShell/v1.0/powershell"), ["-NoProfile", "-NonInteractive", "-Command",
       `Add-Type -TypeDefinition @'\n${WINDOWS_OWNER_CLAIM_SOURCE}\n'@\n[WindowsOwnerClaim]::ClaimFromAdministrators($env:AVE_TEST_TARGET, [System.Security.Principal.WindowsIdentity]::GetCurrent().User, $true)`,
     ], { env: { ...process.env, AVE_TEST_TARGET: dir }, encoding: "utf-8", windowsHide: true });
-    expect(readWindowsDirectoryDacls([dir])[0].ownerSid).toBe(token.currentUserSid);
-    expect(sddl(dir, "Access")).toBe(before);
+    const [after] = readWindowsDirectoryDacls([dir]);
+    expect(after.ownerSid).toBe(token.currentUserSid);
+    expect(after.protected).toBe(true);
+    expect(after.rules).toEqual([expect.objectContaining({ ...OWNER_RULE, sid: token.currentUserSid })]);
+    expect(after.rules?.some(({ sid }) => sid === "S-1-5-32-545")).toBe(false);
+    expect(sddl(dir, "Access")).toBe(`D:P(A;OICI;FA;;;${token.currentUserSid})`);
+    expect(ensureAveHomePrivate(dir)).toMatchObject({ enforcement: "win32-dacl" });
+    expect(sddl(dir, "Access")).toBe(`D:P(A;OICI;FA;;;${token.currentUserSid})`);
   });
   it.runIf(process.platform === "win32")("changes a link itself, not its target, when the permission command runs with /L", () => {
     // The race the refusal above cannot close: a link swapped in after the check.
