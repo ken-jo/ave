@@ -641,8 +641,7 @@ describe("native access-rule admission", () => {
   ])("resolves package principals read-only using command mocks: $label", async (testCase) => {
     const fixture = windowsFixture();
     await assertCodexExecutableLocation(fixture.candidate);
-    const [, { command, args }] = aclRequest.mock.calls[0]!;
-    const script = Buffer.from(args[4]!, "base64").toString("utf16le");
+    const [, { command, script }] = aclRequest.mock.calls[0]!;
     const fullResolver = script.slice(script.indexOf("$desktopPackageIdentity ="), script.lastIndexOf("$result = [PSCustomObject]@{ currentSid ="));
     // An absent Appx module must reach the same deterministic outcome as a failed query.
     const resolver = testCase.appxModule === "absent"
@@ -785,7 +784,7 @@ describe("native access-rule admission", () => {
     process.env.COMPUTERNAME = "untrusted-host";
     await assertCodexExecutableLocation(fixture.candidate);
     const [, launch] = aclRequest.mock.calls[0]!;
-    const script = Buffer.from(launch.args[4]!, "base64").toString("utf16le");
+    const script = launch.script;
     expect(launch.options.env).not.toHaveProperty("COMPUTERNAME");
     expect(script).not.toContain("$env:COMPUTERNAME");
     expect(script).toContain("WinNT://./CodexSandboxUsers,group");
@@ -804,8 +803,7 @@ describe("native access-rule admission", () => {
   it.runIf(HOST === "win32").each(["empty", "single", "multiple"])("probes account translation for %s cap candidates", async (kind) => {
     const fixture = windowsFixture();
     await assertCodexExecutableLocation(fixture.candidate);
-    const [, { command, args }] = aclRequest.mock.calls[0]!;
-    const script = Buffer.from(args[4]!, "base64").toString("utf16le");
+    const [, { command, script }] = aclRequest.mock.calls[0]!;
     const resolver = script.slice(script.indexOf("$capCandidates ="), script.indexOf("$desktopPackageIdentity ="));
     const query = [
       hostModulePreamble(script),
@@ -888,8 +886,7 @@ describe("native access-rule admission", () => {
   it("passes decoded paths separately to the access-query command", async () => {
     const fixture = windowsFixture(String.raw`C:\Tools\odd'; \uD55C\uAE00 $(Write-Output injected).exe`);
     await assertCodexExecutableLocation(fixture.candidate);
-    const [request, { args }] = aclRequest.mock.calls[0]!;
-    const script = Buffer.from(args[4]!, "base64").toString("utf16le");
+    const [request, { script }] = aclRequest.mock.calls[0]!;
     expect(request.paths).toContain(fixture.candidate);
     expect(script).toContain("ConvertFrom-Json");
     expect(script).toContain("[ExecutablePathSecurity]::Read($target)");
@@ -904,16 +901,25 @@ describe("native access-rule admission", () => {
     await expect(assertCodexExecutableLocation(fixture.candidate)).resolves.toBeUndefined();
   });
 
+  it("keeps the persistent ACL script off the command line", async () => {
+    const fixture = windowsFixture();
+    await assertCodexExecutableLocation(fixture.candidate);
+    const [, launch] = aclRequest.mock.calls[0]!;
+    expect(launch).toHaveProperty("script", expect.stringContaining("public static class ExecutablePathSecurity"));
+    expect(Buffer.from(launch.args[4]!, "base64").toString("utf16le")).toContain("[Console]::In.ReadLine()");
+  });
+
   it("uses one absolute system command with bounded execution and path data outside its code", async () => {
     const fixture = windowsFixture(String.raw`C:\Tools\odd'; $(Write-Output injected).exe`);
     await assertCodexExecutableLocation(fixture.candidate);
     expect(aclRequest).toHaveBeenCalledTimes(1);
-    const [request, { command, args, options }, limits] = aclRequest.mock.calls[0]!;
+    const [request, { command, args, script, options }, limits] = aclRequest.mock.calls[0]!;
     expect(command).toBe(String.raw`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`);
     expect(args.slice(0, 4)).toEqual(["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand"]);
     expect(args).toHaveLength(5);
     expect([command, ...args].join(" ").length + 1).toBeLessThan(32767);
-    const script = Buffer.from(args[4]!, "base64").toString("utf16le");
+    expect(args.join(" ")).not.toContain(script);
+    expect(args.join(" ")).not.toContain(Buffer.from(script, "utf16le").toString("base64"));
     expect(script).toContain("CreateFile(path, 0x00020000, 7, IntPtr.Zero, 3, 0x02200000");
     expect(script).toContain("GetSecurityInfo");
     expect(script).toContain("HKCU:\\Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\CurrentVersion\\AppContainer\\Mappings");
@@ -1230,6 +1236,7 @@ interface FakeAclHost {
   };
   readonly lines: string[];
   readonly requests: WindowsAclRequest[];
+  script?: string;
   answer: (request: WindowsAclRequest) => void;
 }
 
@@ -1260,6 +1267,10 @@ function aclHostFixture(fixture: ReturnType<typeof windowsFixture>, configureFir
       for (let newline = buffered.indexOf("\n"); newline !== -1; newline = buffered.indexOf("\n")) {
         const line = buffered.slice(0, newline);
         buffered = buffered.slice(newline + 1);
+        if (host.script === undefined) {
+          host.script = Buffer.from(line, "base64").toString("utf16le");
+          continue;
+        }
         const request = JSON.parse(line) as WindowsAclRequest;
         host.lines.push(line);
         host.requests.push(request);
@@ -1297,7 +1308,7 @@ describe("Windows ACL host", () => {
       env: { SystemRoot: String.raw`C:\Windows`, WINDIR: String.raw`C:\Windows`, PATH: String.raw`C:\Windows\System32;C:\Windows` },
     });
     expect(Object.keys(options!.env!)).not.toContain("PSModulePath");
-    const script = Buffer.from((args as string[])[4]!, "base64").toString("utf16le");
+    const script = hosts[0]!.script!;
     expect(script).toContain("[Console]::In.ReadLine()");
     for (const stream of ["Progress", "Warning", "Verbose", "Information"]) {
       expect(script).toContain(`$${stream}Preference = 'SilentlyContinue'`);

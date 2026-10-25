@@ -130,7 +130,7 @@ it.runIf(process.platform === "win32")("fails closed on a real native exception 
     child.once("error", (error) => { clearTimeout(timer); reject(error); });
     child.once("close", (code) => { clearTimeout(timer); resolve(code); });
   });
-  child.stdin.end([
+  child.stdin.end(Buffer.from(fixture.launch.script, "utf16le").toString("base64") + "\n" + [
     { id: 200, paths: [join(tmpdir(), "absent-acl-exception", "missing.exe")], capSids: [], skipPackage: true },
     { id: 201, paths: [], capSids: [], skipPackage: true },
   ].map((value) => JSON.stringify(value)).join("\n") + "\n");
@@ -352,14 +352,14 @@ it.runIf(process.platform === "win32")("falls back to the directory service when
   // The launch is captured by the first request, so read it only after prime.
   const { request, launch } = fixture;
   const expected = (JSON.parse(await request(400, [])) as RawReply).result.machineDomainSid;
-  const script = Buffer.from(launch.args[4]!, "base64").toString("utf16le");
+  const script = launch.script;
   const absent = script.replaceAll(String.raw`Microsoft.PowerShell.LocalAccounts\Microsoft.PowerShell.LocalAccounts.psd1`,
     String.raw`Microsoft.PowerShell.LocalAccounts\Absent.psd1`);
   expect(absent).not.toBe(script);
   const host = new WindowsAclHost((command, args, options) => spawn(command, args, options));
   realHosts.push(host);
   const reply = JSON.parse(await host.request({ id: 401, paths: [], capSids: [], skipPackage: true, setOwner: false },
-    { ...launch, args: [...launch.args.slice(0, 4), Buffer.from(absent, "utf16le").toString("base64")] },
+    { ...launch, script: absent },
     { timeoutMs: TOOL_TIMEOUT_POLICY.windowsAclRequestMs, maxBytes: 256 * 1024 })) as RawReply;
   expect(expected).toMatch(/^S-1-5-21-\d+-\d+-\d+$/);
   expect(reply.result.machineDomainSid).toBe(expected);

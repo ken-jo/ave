@@ -23,7 +23,7 @@ describe.skipIf(process.platform !== "win32")("Fixture account identity cache", 
     let id = 0;
     const probe = async () => (JSON.parse(await transport.request(
       { id: ++id, paths: [root], capSids: [], skipPackage: false, setOwner: false },
-      { command: "fixture-probe", args: [], options: { windowsHide: true, env: {} } },
+      { command: "fixture-probe", args: [], script: "", options: { windowsHide: true, env: {} } },
       { timeoutMs: 1_000, maxBytes: 1024 },
     )) as { id: number; result: { currentSid: string } });
     try {

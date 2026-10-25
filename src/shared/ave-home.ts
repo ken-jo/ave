@@ -96,9 +96,7 @@ export function readWindowsDirectoryDacls(paths: readonly string[], protect = fa
   if (!(process.env.SystemRoot ?? process.env.windir)?.trim()) {
     return paths.map((path) => ({ path, category: "system-root-missing", error: "Windows system root is missing" }));
   }
-  const output = execFileSync(win32SystemBinary("WindowsPowerShell/v1.0/powershell"), [
-    "-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
-    `$ErrorActionPreference = 'Stop'; [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false);
+  const script = `$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue'; [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false);
     $request = ConvertFrom-Json $env:AVE_DACL_REQUEST;
     $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent();
     $sid = $identity.User.Value;
@@ -107,6 +105,13 @@ export function readWindowsDirectoryDacls(paths: readonly string[], protect = fa
       Add-Type -TypeDefinition @'
 ${WINDOWS_OWNER_CLAIM_SOURCE}
 public static class HomeDirectoryDacl {
+  private const int MAX_CHILD_ENTRIES = 4096;
+  private const int MAX_CHILD_WALK_MS = 5000;
+  private static readonly System.Diagnostics.Stopwatch childWalk = new System.Diagnostics.Stopwatch();
+  public static void CheckWalkBudget() {
+    if (!childWalk.IsRunning) childWalk.Start();
+    if (childWalk.ElapsedMilliseconds >= MAX_CHILD_WALK_MS) throw new InvalidOperationException("Child walk time limit exceeded");
+  }
   [StructLayout(LayoutKind.Sequential)]
   private struct UnicodeString { public ushort Length, MaximumLength; public IntPtr Buffer; }
   [StructLayout(LayoutKind.Sequential)]
@@ -127,13 +132,18 @@ public static class HomeDirectoryDacl {
     try {
       bool restart = true;
       while (true) {
+        CheckWalkBudget();
         IoStatus io;
         int status = NtQueryDirectoryFile(handle, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, out io, buffer, 65536, 12, true, IntPtr.Zero, restart);
+        CheckWalkBudget();
         if (status == unchecked((int)0x80000006)) break;
         if (status < 0) throw new Win32Exception((int)WindowsOwnerClaim.RtlNtStatusToDosError(status), "Directory enumeration failed");
         restart = false;
         string name = Marshal.PtrToStringUni(IntPtr.Add(buffer, 12), Marshal.ReadInt32(buffer, 8) / 2);
-        if (name != "." && name != "..") names.Add(name);
+        if (name != "." && name != "..") {
+          if (names.Count >= MAX_CHILD_ENTRIES) throw new InvalidOperationException("Child entry limit exceeded");
+          names.Add(name);
+        }
       }
       return names.ToArray();
     } finally { Marshal.FreeHGlobal(buffer); }
@@ -184,16 +194,17 @@ public static class HomeDirectoryDacl {
     security.SetSecurityDescriptorBinaryForm(WindowsOwnerClaim.ReadDescriptor(handle));
     return security;
   }
-  public static FileSystemSecurity ReadChild(SafeFileHandle handle) {
+  public static FileSystemSecurity ReadChild(SafeFileHandle handle, byte[] descriptor = null) {
     long attributes;
     if (!WindowsOwnerClaim.GetFileInformationByHandleEx(handle, 9, out attributes, 8)) throw new Win32Exception(Marshal.GetLastWin32Error());
     if ((attributes & 0x400) != 0) throw new InvalidOperationException("Directory is a link or junction");
     FileSystemSecurity security = (attributes & 0x10) != 0 ? (FileSystemSecurity)new DirectorySecurity() : new FileSecurity();
-    security.SetSecurityDescriptorBinaryForm(WindowsOwnerClaim.ReadDescriptor(handle));
+    security.SetSecurityDescriptorBinaryForm(descriptor ?? WindowsOwnerClaim.ReadDescriptor(handle));
     return security;
   }
   public static string[] ReapplyChild(SafeFileHandle handle, SecurityIdentifier user) {
-    var previous = ReadChild(handle);
+    byte[] previousDescriptor = WindowsOwnerClaim.ReadDescriptor(handle);
+    var previous = ReadChild(handle, previousDescriptor);
     if (previous.GetOwner(typeof(SecurityIdentifier)).Value != user.Value) throw new InvalidOperationException("Directory is owned by another account");
     bool directory = previous is DirectorySecurity;
     FileStandardInfo info;
@@ -205,6 +216,15 @@ public static class HomeDirectoryDacl {
     var removed = new System.Collections.Generic.SortedSet<string>(StringComparer.Ordinal);
     foreach (FileSystemAccessRule entry in rules) if (entry.IdentityReference.Value != user.Value) removed.Add(entry.IdentityReference.Value);
     WindowsOwnerClaim.Write(handle, user, directory, false);
+    if (!directory) {
+      try {
+        if (!GetFileInformationByHandleEx(handle, 1, out info, (uint)Marshal.SizeOf(typeof(FileStandardInfo)))) throw new Win32Exception(Marshal.GetLastWin32Error());
+        if (info.NumberOfLinks > 1) throw new InvalidOperationException("File has multiple links after permission write");
+      } catch {
+        WindowsOwnerClaim.Restore(handle, previousDescriptor);
+        throw;
+      }
+    }
     var principals = new string[removed.Count];
     removed.CopyTo(principals);
     return principals;
@@ -288,13 +308,20 @@ public static class HomeDirectoryDacl {
           $resultsForPath;
           if ($path -ne $request.paths[0]) {
             $scanHandle = [HomeDirectoryDacl]::OpenRelative($homeHandle, [System.IO.Path]::GetFileName($path), $identity.User, $false, $true, $true);
-            foreach ($leaf in [HomeDirectoryDacl]::Children($scanHandle)) {
+            $children = @([HomeDirectoryDacl]::Children($scanHandle));
+            foreach ($leaf in $children) {
+              [HomeDirectoryDacl]::CheckWalkBudget();
               $childPath = [System.IO.Path]::Combine($path, $leaf);
               $childHandle = $null;
               try {
                 $childHandle = [HomeDirectoryDacl]::OpenRelative($scanHandle, $leaf, $identity.User, $false, $false);
                 $removed = [HomeDirectoryDacl]::ReapplyChild($childHandle, $identity.User);
                 $childReadBack = Read-Dacl $childPath $true $childHandle;
+                $childRule = $childReadBack.rules | Select-Object -First 1;
+                if ($childReadBack.error -or $childReadBack.ownerSid -ne $sid -or -not $childReadBack.protected -or
+                    $childReadBack.rules.Count -ne 1 -or $childRule.sid -ne $sid -or $childRule.accessControlType -ne 0 -or
+                    $childRule.fileSystemRights -ne 2032127 -or $childRule.inheritanceFlags -notin @(0, 3) -or
+                    $childRule.propagationFlags -ne 0 -or $childRule.isInherited -ne $false) { throw 'Child DACL is not protected owner-only FullControl' }
                 if ($null -ne $removed) { $childReadBack.removedPrincipals = @($removed) }
                 $childReadBack;
               } catch {
@@ -302,11 +329,15 @@ public static class HomeDirectoryDacl {
                 $category = switch ($message) {
                   'Directory is a link or junction' { 'reparse-point' }
                   'Directory is owned by another account' { 'invalid-owner-grant' }
+                  'Child DACL is not protected owner-only FullControl' { 'read-back-failed' }
                   default { 'icacls-failed' }
                 };
                 @{ path = $childPath; child = $true; category = $category; error = $message };
               } finally { if ($null -ne $childHandle) { $childHandle.Dispose() } }
+              [HomeDirectoryDacl]::CheckWalkBudget();
             }
+            $verifiedNames = [System.Collections.Generic.HashSet[string]]::new([string[]]$children, [System.StringComparer]::Ordinal);
+            if (-not $verifiedNames.SetEquals([string[]][HomeDirectoryDacl]::Children($scanHandle))) { throw 'Child names changed during permission verification' }
           }
         } catch {
           $message = $_.Exception.GetBaseException().Message;
@@ -314,17 +345,23 @@ public static class HomeDirectoryDacl {
             'Directory is a link or junction' { 'reparse-point' }
             'Path is not a directory' { 'directory-failed' }
             'Directory is owned by another account' { 'invalid-owner-grant' }
+            'Child entry limit exceeded' { 'directory-failed' }
+            'Child walk time limit exceeded' { 'directory-failed' }
+            'Child names changed during permission verification' { 'directory-failed' }
             default { 'icacls-failed' }
           };
-          @{ path = $path; category = $refused; error = $message };
+          @{ path = $path; category = $refused; error = ($message + ': ' + $path) };
         } finally {
           if ($null -ne $scanHandle) { $scanHandle.Dispose() }
           if ($null -ne $handle -and $handle -ne $homeHandle) { $handle.Dispose() }
         }
       });
       ConvertTo-Json -InputObject @($results) -Depth 5 -Compress
-    } finally { if ($null -ne $homeHandle) { $homeHandle.Dispose() } }`,
-  ], { encoding: "utf-8", windowsHide: true, env: windowsPowerShellEnv({ ...process.env,
+    } finally { if ($null -ne $homeHandle) { $homeHandle.Dispose() } }`;
+  const bootstrap = "$s=[Console]::In.ReadToEnd(); & ([ScriptBlock]::Create($s))";
+  const output = execFileSync(win32SystemBinary("WindowsPowerShell/v1.0/powershell"), [
+    "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(bootstrap, "utf16le").toString("base64"),
+  ], { input: script, encoding: "utf-8", windowsHide: true, env: windowsPowerShellEnv({ ...process.env,
     AVE_DACL_REQUEST: JSON.stringify({ paths, protect, claimableRuntimeRoot }) }) });
   const results: unknown = JSON.parse(output);
   if (!Array.isArray(results) || results.length < paths.length) {
@@ -335,11 +372,12 @@ public static class HomeDirectoryDacl {
 function isOwnerOnlyDacl(descriptor: WindowsDirectoryDacl, sid: string): boolean {
   // Allow an existing elevated administrator owner, but never group Allow entries; new homes belong to the token user.
   const ownerValid = descriptor.ownerSid === sid ||
-    (descriptor.elevated === true && descriptor.ownerSid === "S-1-5-32-544");
+    (!descriptor.child && descriptor.elevated === true && descriptor.ownerSid === "S-1-5-32-544");
   const rule = descriptor.rules?.[0];
   return ownerValid && descriptor.rules?.length === 1 && rule?.sid === sid &&
     rule.accessControlType === 0 && rule.fileSystemRights === 2032127 &&
-    rule.inheritanceFlags === 3 && rule.propagationFlags === 0 && rule.isInherited === false;
+    (rule.inheritanceFlags === 3 || (descriptor.child === true && rule.inheritanceFlags === 0)) &&
+    rule.propagationFlags === 0 && rule.isInherited === false;
 }
 
 let bootHomePrivacy: AveHomePrivacy | undefined;
@@ -447,14 +485,12 @@ export function ensureAveHomePrivate(
         throw new Error("Directory DACL rules read-back is invalid");
       }
       const extraPrincipals = [...new Map(descriptor.rules
-        .filter((rule) => rule.sid !== sid && (!descriptor.child || (rule.accessControlType === 0 &&
-          (!rule.isInherited || !["S-1-5-18", "S-1-5-32-544"].includes(rule.sid)))))
+        .filter((rule) => rule.sid !== sid)
         .map(({ sid, account }) => [sid, { sid, ...(account ? { account } : {}) }])).values()];
       if (extraPrincipals.length > 0) {
         return { enforcement: "none", home, failedPath: path, category: "extra-principals", extraPrincipals,
           reason: "Remove the extra principal entries or move AVE_HOME" };
       }
-      if (descriptor.child) continue;
       if (descriptor.protected !== true) {
         return { enforcement: "none", home, failedPath: path, category: "not-protected", reason: "Directory DACL is not protected against inheritance" };
       }

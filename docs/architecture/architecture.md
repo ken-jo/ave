@@ -2158,12 +2158,17 @@ with its own owner rule:
   and opened relative to those handles without following reparse points.
   Only current-user-owned regular files and directories are repaired; a reparse
   point, foreign owner, or regular file with multiple hard links refuses privacy
-  with its path before changing that child. A differing DACL is replaced with a
+  with its path before changing that child. The link count is checked again on
+  the same handle after a write; a newly linked file has its saved owner, group
+  and DACL restored through that handle before refusal. A differing DACL is replaced with a
   protected owner-only full-control entry, with OI|CI only for directories, using
   the same object-only write. Already protected owner-only children skip the
   write, repaired children are reported, and grandchildren are not traversed.
-  The subsequent read-only verification still refuses surviving foreign explicit
-  and inherited allow entries, except inherited system and administrator grants.
+  Every child read-back requires current-user ownership, protection and a single
+  owner-only full-control allow entry. A second pinned enumeration must have the
+  same names. Each directory is limited to 4096 immediate entries; enumeration,
+  repair and verification share a five-second elapsed-time budget across both
+  private directories. Exceeding either limit refuses privacy with the directory.
   An existing `AVE_HOME` the app did not create may be
   owned by `S-1-5-32-544` only when the current token's default owner is
   `S-1-5-32-544`. Its DACL must then be protected and hold exactly one entry,

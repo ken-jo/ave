@@ -9,7 +9,7 @@ import {
   type WindowsAclHostLaunch,
 } from "../windows-acl-host.js";
 
-const LAUNCH: WindowsAclHostLaunch = { command: "fixture", args: [], options: { windowsHide: true, env: {} } };
+const LAUNCH: WindowsAclHostLaunch = { command: "fixture", args: [], script: "fixture script", options: { windowsHide: true, env: {} } };
 const LIMITS = { timeoutMs: 1_000, maxBytes: 1_024 };
 const hosts: WindowsAclHost[] = [];
 
@@ -37,6 +37,32 @@ function childFixture() {
     unref: vi.fn(), kill: vi.fn(() => true),
   });
 }
+
+it("sends the script once before request lines on each new host", async () => {
+  const { host, children } = fixture();
+  const launch = { ...LAUNCH, script: "fixture script" };
+  const request = (id: number) => host.request({ id, paths: [], capSids: [], skipPackage: false, setOwner: false }, launch, LIMITS);
+  const first = request(1);
+  void first.catch(() => {});
+  const firstLines = children[0]!.stdin.read().toString().trim().split("\n");
+  expect(firstLines[0]).toBe(Buffer.from(launch.script, "utf16le").toString("base64"));
+  expect(JSON.parse(firstLines[1]!).id).toBe(1);
+  children[0]!.stdout.write("{}\nEND 1\n");
+  await first;
+  const second = request(2);
+  void second.catch(() => {});
+  expect(JSON.parse(children[0]!.stdin.read().toString()).id).toBe(2);
+  children[0]!.stdout.write("{}\nEND 2\n");
+  await second;
+  host.discard();
+  const third = request(3);
+  void third.catch(() => {});
+  const nextLines = children[1]!.stdin.read().toString().trim().split("\n");
+  expect(nextLines[0]).toBe(firstLines[0]);
+  expect(JSON.parse(nextLines[1]!).id).toBe(3);
+  children[1]!.stdout.write("{}\nEND 3\n");
+  await third;
+});
 
 it("buffers a split UTF-8 reply and split end marker before resolving", async () => {
   const { children, request } = fixture();

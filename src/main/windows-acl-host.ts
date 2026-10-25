@@ -15,10 +15,11 @@ export interface WindowsAclRequest {
   readonly setOwner: boolean;
 }
 
-// The fixed process a host runs: the script travels in `args`, never in a request.
+// The fixed process receives its script once on stdin before request lines.
 export interface WindowsAclHostLaunch {
   readonly command: string;
   readonly args: readonly string[];
+  readonly script: string;
   readonly options: { readonly windowsHide: true; readonly env: Readonly<Record<string, string>> };
 }
 
@@ -106,6 +107,7 @@ export class WindowsAclHost implements WindowsAclTransport {
       this.clearIdleTimer();
       const key = JSON.stringify(launch);
       if (this.child && this.launchKey !== key) this.discard();
+      const needsScript = this.child === undefined;
       let started: ChildProcess;
       try {
         started = this.child ?? this.start(launch, key);
@@ -123,7 +125,8 @@ export class WindowsAclHost implements WindowsAclTransport {
         bytes: 0,
         timer: setTimeout(() => this.fail(child, new WindowsAclHostError("Windows ACL host timed out")), limits.timeoutMs),
       };
-      const line = `${asciiJson({ id: request.id, paths: request.paths, capSids: request.capSids, skipPackage: request.skipPackage, setOwner: request.setOwner })}\n`;
+      const bootstrapInput = needsScript ? `${Buffer.from(launch.script, "utf16le").toString("base64")}\n` : "";
+      const line = `${bootstrapInput}${asciiJson({ id: request.id, paths: request.paths, capSids: request.capSids, skipPackage: request.skipPackage, setOwner: request.setOwner })}\n`;
       try {
         child.stdin!.write(line, (error) => {
           if (error) this.fail(child, error);

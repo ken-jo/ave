@@ -22,7 +22,7 @@ public static class WindowsOwnerClaim {
   internal static extern IntPtr LocalFree(IntPtr memory);
   internal static byte[] ReadDescriptor(SafeFileHandle handle) {
     IntPtr owner, group, dacl, sacl, descriptor;
-    uint result = GetSecurityInfo(handle, 1, 5, out owner, out group, out dacl, out sacl, out descriptor);
+    uint result = GetSecurityInfo(handle, 1, 7, out owner, out group, out dacl, out sacl, out descriptor);
     if (result != 0) throw new Win32Exception((int)result);
     try {
       byte[] bytes = new byte[GetSecurityDescriptorLength(descriptor)];
@@ -41,6 +41,14 @@ public static class WindowsOwnerClaim {
   internal static void Write(SafeFileHandle handle, SecurityIdentifier user, bool directory, bool claimOwner) {
     int status = NtSetSecurityObject(handle, (claimOwner ? 1u : 0u) | (directory || !claimOwner ? 0x80000004u : 0u), Descriptor(user, directory, claimOwner));
     if (status < 0) throw new Win32Exception((int)RtlNtStatusToDosError(status));
+  }
+  internal static void Restore(SafeFileHandle handle, byte[] descriptor) {
+    bool protectedDacl = (new RawSecurityDescriptor(descriptor, 0).ControlFlags & ControlFlags.DiscretionaryAclProtected) != 0;
+    byte[] restore = (byte[])descriptor.Clone();
+    // The request bit preserves the saved auto-inherited control flag during a native write.
+    if ((restore[3] & 4) != 0) restore[3] |= 1;
+    int status = NtSetSecurityObject(handle, 7u | (protectedDacl ? 0x80000000u : 0x20000000u), restore);
+    if (status < 0) throw new Win32Exception((int)RtlNtStatusToDosError(status), "Previous security descriptor could not be restored");
   }
   public static string Owner(string path) {
     using (SafeFileHandle handle = CreateFile(path, 0x00020000, 7, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero)) {

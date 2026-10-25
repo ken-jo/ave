@@ -281,7 +281,10 @@ const WINDOWS_ACL_SCRIPT = [
   "[Console]::Out.Flush()",
   "}",
 ].join("\n");
-const WINDOWS_ACL_ENCODED_SCRIPT = Buffer.from(WINDOWS_ACL_SCRIPT, "utf16le").toString("base64");
+const WINDOWS_ACL_ENCODED_BOOTSTRAP = Buffer.from(
+  "$s=[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String([Console]::In.ReadLine())); & ([ScriptBlock]::Create($s))",
+  "utf16le",
+).toString("base64");
 
 function assertAbsolutePath(candidate: string): void {
   if (/[\u0000-\u001f\u007f]/.test(candidate)) {
@@ -554,7 +557,8 @@ function windowsAclLaunch(): WindowsAclHostLaunch {
   // The host process stays as fixed as the per-probe process was. Inputs that travelled in its environment travel in each request line instead.
   return {
     command,
-    args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", WINDOWS_ACL_ENCODED_SCRIPT],
+    args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", WINDOWS_ACL_ENCODED_BOOTSTRAP],
+    script: WINDOWS_ACL_SCRIPT,
     options: { windowsHide: true, env: windowsPowerShellEnv({ SystemRoot: systemRoot, WINDIR: systemRoot, PATH: `${system32};${systemRoot}` }) },
   };
 }
