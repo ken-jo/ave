@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
@@ -28,7 +28,7 @@ import { uninstallPluginWithLifecycle } from "../uninstall-lifecycle.js";
 import { mkdtempSync } from "node:fs";
 import {
   makeTestPluginEntrySource,
-  makeTestPluginRuntime,
+  makeTestPluginRuntime as constructTestPluginRuntime,
   makeTestPluginRuntimeFixture,
   makeTestTreeWritable,
   bindTestPluginRuntimeGeneration,
@@ -37,12 +37,57 @@ import {
   writeTestPluginRegistry,
 } from "./test-helpers.js";
 import { agentPluginsDocument, childProcessGate, patchAveFields, pluginDataDirIn } from "./test-helpers.js";
-import { manifestDocumentSha256 } from "../runtime/manifest-validation.js";
+import { buildManifestValidator, manifestDocumentSha256 } from "../runtime/manifest-validation.js";
 import type { PluginManifest } from "../types.js";
 import { canonicalJSON } from "../secret-access/canonical-json.js";
 import { sha256Hex } from "../../lib/hex-digest-equal.js";
 import { unavailableSecretEncryption } from "../../__tests__/support/host-runtime.js";
 import { pluginChildEntryPath } from "../../__tests__/support/plugin-child-entry.js";
+import { deferred } from "../../__tests__/support/deferred.js";
+import { raceWithTimeout } from "../../shared/abortable-deadline.js";
+
+let manifestValidator: Awaited<ReturnType<typeof buildManifestValidator>>;
+const testRuntimes = new Set<PluginRuntime>();
+const retainedRuntimes = new Set<PluginRuntime>();
+
+beforeAll(async () => {
+  manifestValidator = await buildManifestValidator();
+});
+
+function prepareTestRuntime(runtime: PluginRuntime): PluginRuntime {
+  // All cases validate against the same schema. Validation and error reads are
+  // synchronous, so only its compiled code is shared, never a cached verdict.
+  (runtime as unknown as { manifestValidator: typeof manifestValidator }).manifestValidator = manifestValidator;
+  testRuntimes.add(runtime);
+  return runtime;
+}
+
+function makeTestPluginRuntime(...args: Parameters<typeof constructTestPluginRuntime>): PluginRuntime {
+  return prepareTestRuntime(constructTestPluginRuntime(...args));
+}
+
+async function stopTestRuntimes(): Promise<boolean> {
+  const runtimes = [...testRuntimes];
+  const results = await Promise.allSettled(runtimes.map((runtime) => runtime.stopAll()));
+  let stopped = true;
+  for (const [index, result] of results.entries()) {
+    const runtime = runtimes[index]!;
+    testRuntimes.delete(runtime);
+    if (result.status === "rejected" || result.value.unfinished.length > 0) {
+      retainedRuntimes.add(runtime);
+      stopped = false;
+    }
+  }
+  return stopped;
+}
+
+async function removeStoppedTestRoot(root: string): Promise<void> {
+  if (await stopTestRuntimes()) {
+    await rm(root, { recursive: true, force: true });
+  } else {
+    console.warn("Plugin runtime shutdown is incomplete; retained temporary directory: %s", root);
+  }
+}
 
 function servedPluginDocument(manifest: Record<string, unknown>): Record<string, unknown> {
   const requires = manifest.requires as Record<string, unknown> | undefined;
@@ -53,11 +98,11 @@ function makeGenerationBoundRuntime(
   options: Omit<ConstructorParameters<typeof PluginRuntime>[0], "createHostApi" | "encryption" | "childEntryPath">
     & Partial<Pick<ConstructorParameters<typeof PluginRuntime>[0], "createHostApi" | "encryption" | "childEntryPath">>,
 ): PluginRuntime {
-  return bindTestPluginRuntimeGeneration(new PluginRuntime({ encryption: unavailableSecretEncryption,
+  return prepareTestRuntime(bindTestPluginRuntimeGeneration(new PluginRuntime({ encryption: unavailableSecretEncryption,
     childEntryPath: pluginChildEntryPath(),
     ...options,
     createHostApi: createTestHostApiFactory(options.createHostApi),
-  }));
+  })));
 }
 
 /**
@@ -83,6 +128,70 @@ describe("PluginRuntime.setPluginEnabled(id, false)", () => {
     artifactSha256: "d".repeat(64),
     installedAt: "2026-09-24T00:00:00.000Z",
   };
+  let requiredPlugin: {
+    runtime: PluginRuntime;
+    guard: PluginDeploymentGuard;
+    registryPath: string;
+    registry: string;
+  };
+  const sharedDisposers: Array<() => Promise<unknown>> = [];
+
+  beforeAll(async () => {
+    const fixture = await makeTestPluginRuntimeFixture({ prefix: "ave-required-policy-" });
+    sharedDisposers.push(() => rm(fixture.rootDir, { recursive: true, force: true }));
+    const { manifestPath } = await writeTestPlugin(fixture, {
+      id: "p-required",
+      entrySource: makeTestPluginEntrySource({ p_required_hello: JSON.stringify("hi-p-required") }),
+      manifest: {
+        tools: [{
+          name: "p_required_hello",
+          description: "p_required_hello tool",
+          inputSchema: { type: "object", properties: {} },
+          _meta: { ui: { visibility: ["model", "app"] } },
+        }],
+      },
+    });
+    await writeTestPluginRegistry(fixture, [
+      { id: "p-required", manifestPath, enabled: true, origin: corpOrigin },
+    ]);
+    const guard = new PluginDeploymentGuard({
+      registryPath: fixture.registryPath,
+      pluginsRoot: fixture.pluginsRoot,
+      requiredInstalls: async () => required,
+    });
+    const runtime = makeTestPluginRuntime(fixture, { deploymentGuard: guard });
+    // These three policy checks neither stop the stateless child nor change
+    // its manifest. Its separate root lives until every consumer has finished.
+    testRuntimes.delete(runtime);
+    sharedDisposers.unshift(async () => {
+      const report = await runtime.stopAll();
+      if (report.unfinished.length > 0) {
+        retainedRuntimes.add(runtime);
+        throw new Error("Required-plugin fixture shutdown is incomplete; its temporary directory was retained");
+      }
+    });
+    required = [REQUIRED];
+    await runtime.startAll();
+    requiredPlugin = {
+      runtime, guard, registryPath: fixture.registryPath,
+      registry: await readFile(fixture.registryPath, "utf8"),
+    };
+  });
+
+  afterAll(async () => {
+    for (const dispose of sharedDisposers) await dispose();
+  });
+
+  async function resetRequiredPlugin() {
+    required = [REQUIRED];
+    vi.restoreAllMocks();
+    // Refused disables and an idempotent enable must leave this baseline
+    // intact. Detect a changed fixture instead of repairing it for the next case.
+    expect(await readFile(requiredPlugin.registryPath, "utf8")).toBe(requiredPlugin.registry);
+    expect(requiredPlugin.runtime.listPluginIds()).toEqual(["p-required"]);
+    expect(requiredPlugin.runtime.listToolNames()).toEqual(["p_required_hello"]);
+    return requiredPlugin;
+  }
 
   beforeEach(async () => {
     testDir = mkdtempSync(join(tmpdir(), "ave-runtime-"));
@@ -95,7 +204,7 @@ describe("PluginRuntime.setPluginEnabled(id, false)", () => {
   });
 
   afterEach(async () => {
-    await rm(testDir, { recursive: true, force: true });
+    await removeStoppedTestRoot(testDir);
     vi.restoreAllMocks();
   });
 
@@ -243,13 +352,8 @@ describe("PluginRuntime.setPluginEnabled(id, false)", () => {
   });
 
   it("disable rejects a plugin the policy requires and leaves state unchanged", async () => {
-    const manifestPath = await writeFakePlugin("p-required");
-    await writeTestPluginRegistry({ registryPath }, [
-      { id: "p-required", manifestPath, enabled: true, origin: corpOrigin },
-    ]);
-    required = [REQUIRED];
-    const runtime = makeRuntime();
-    await runtime.startAll();
+    // The refusal is a nonmutating policy check over the same live child.
+    const { runtime, registryPath } = await resetRequiredPlugin();
 
     await expect(runtime.setPluginEnabled("p-required", false)).rejects.toThrow(
       /required by policy \(source corp\); it cannot be disabled/,
@@ -321,13 +425,8 @@ describe("PluginRuntime.setPluginEnabled(id, false)", () => {
   }
 
   it("setPluginEnabled(false) rejects a plugin the policy requires and leaves it enabled", async () => {
-    const manifestPath = await writeFakePlugin("p-required");
-    await writeTestPluginRegistry({ registryPath }, [
-      { id: "p-required", manifestPath, enabled: true, origin: corpOrigin },
-    ]);
-    required = [REQUIRED];
-    const { runtime } = makeRuntimeWithGuard();
-    await runtime.startAll();
+    // This second refusal observes the same unchanged manifest and policy.
+    const { runtime, registryPath } = await resetRequiredPlugin();
 
     await expect(runtime.setPluginEnabled("p-required", false)).rejects.toThrow(
       /required by policy/,
@@ -375,13 +474,8 @@ describe("PluginRuntime.setPluginEnabled(id, false)", () => {
   });
 
   it("setPluginEnabled does not consult the disable guard on the enable direction", async () => {
-    const manifestPath = await writeFakePlugin("p-required");
-    await writeTestPluginRegistry({ registryPath }, [
-      { id: "p-required", manifestPath, enabled: true, origin: corpOrigin },
-    ]);
-    required = [REQUIRED];
-    const { runtime, guard } = makeRuntimeWithGuard();
-    await runtime.startAll();
+    // Enabling an already-enabled child does not replace its live generation.
+    const { runtime, guard } = await resetRequiredPlugin();
     const canDisable = vi.spyOn(guard, "canDisable");
 
     await runtime.setPluginEnabled("p-required", true);
@@ -1585,7 +1679,7 @@ describe("PluginRuntime registry trusted-path", () => {
   });
 
   afterEach(async () => {
-    await rm(testDir, { recursive: true, force: true });
+    await removeStoppedTestRoot(testDir);
     vi.restoreAllMocks();
   });
 
@@ -1722,7 +1816,7 @@ describe("PluginRuntime addPlugin/removePlugin (US-A3)", () => {
   });
 
   afterEach(async () => {
-    await rm(testDir, { recursive: true, force: true });
+    await removeStoppedTestRoot(testDir);
     vi.restoreAllMocks();
   });
 
@@ -3679,7 +3773,7 @@ describe("PluginRuntime lifecycle log emission", () => {
   });
 
   afterEach(async () => {
-    await rm(testDir, { recursive: true, force: true });
+    await removeStoppedTestRoot(testDir);
     vi.restoreAllMocks();
   });
 
@@ -3882,6 +3976,8 @@ describe("PluginRuntime attempt diagnostics belong to their attempt", () => {
     const written = await writeTestPlugin(fixture, { id: ID, entrySource });
     await writeTestPluginRegistry(fixture, [{ id: ID, manifestPath: written.manifestPath }]);
     const runtime = makeTestPluginRuntime(fixture);
+    // This fixture's disposer owns its runtime and root together.
+    testRuntimes.delete(runtime);
     const internals = runtime as unknown as {
       ensureDataDir(...args: unknown[]): string;
       buildHostApiIncarnation(...args: unknown[]): unknown;
@@ -3903,18 +3999,26 @@ describe("PluginRuntime attempt diagnostics belong to their attempt", () => {
   /** Hold the first `count` constructed plugins until released, in order. */
   function parkAfterConstruct(internals: Awaited<ReturnType<typeof setup>>["internals"], count: number) {
     const releases: Array<() => void> = [];
+    const entries = Array.from({ length: count }, () => deferred<void>());
     let entered = 0;
     const original = internals.runPluginLifecycleHook.bind(internals);
     internals.runPluginLifecycleHook = async (scope, hook) => {
       const result = await original(scope, hook);
       if (result && typeof result === "object" && "handlers" in result && entered < count) {
         entered += 1;
-        await new Promise<void>((resolve) => { releases.push(resolve); });
+        await new Promise<void>((resolve) => {
+          releases.push(resolve);
+          entries[entered - 1]!.resolve();
+        });
       }
       return result;
     };
     return {
-      entered: (n: number) => vi.waitFor(() => expect(entered).toBe(n), { timeout: 10_000 }),
+      entered: async (n: number) => {
+        await raceWithTimeout(entries[n - 1]!.promise, 10_000,
+          () => new Error(`Plugin construction ${n} did not enter within 10000 ms`));
+        expect(entered).toBe(n);
+      },
       release: (index: number) => releases[index]?.(),
       releaseAll: () => { for (const release of releases) release(); },
     };
@@ -3997,6 +4101,8 @@ describe("PluginRuntime attempt diagnostics belong to their attempt", () => {
     const bootHeld = new Promise<void>((resolve) => { releaseBoot = resolve; });
     let releaseAdd!: () => void;
     const addHeld = new Promise<void>((resolve) => { releaseAdd = resolve; });
+    const bootEntered = deferred<void>();
+    const addEntered = deferred<void>();
     let hooks = 0;
     let addConstructed = false;
     const original = internals.runPluginLifecycleHook.bind(internals);
@@ -4004,12 +4110,14 @@ describe("PluginRuntime attempt diagnostics belong to their attempt", () => {
       hooks += 1;
       const call = hooks;
       if (call === 1) {
+        bootEntered.resolve();
         await bootHeld;
         throw new Error("boot construct failed before invoking the factory");
       }
       const result = await original(scope, hook);
       if (call === 2) {
         addConstructed = true;
+        addEntered.resolve();
         await addHeld;
       }
       return result;
@@ -4017,10 +4125,14 @@ describe("PluginRuntime attempt diagnostics belong to their attempt", () => {
     const boot = settle(runtime.load());
     let add: Promise<unknown> | undefined;
     try {
-      await vi.waitFor(() => expect(hooks).toBe(1), { timeout: 10_000 });
+      await raceWithTimeout(bootEntered.promise, 10_000,
+        () => new Error("Plugin boot did not enter within 10000 ms"));
+      expect(hooks).toBe(1);
       add = settle(runtime.addPlugin(ID));
       // The add's factory has spawned its child before the boot attempt fails.
-      await vi.waitFor(() => expect(addConstructed).toBe(true), { timeout: 10_000 });
+      await raceWithTimeout(addEntered.promise, 10_000,
+        () => new Error("Plugin add did not construct within 10000 ms"));
+      expect(addConstructed).toBe(true);
       releaseBoot();
       await boot;
       expect(card()).toMatchObject({ loadStatus: "failed", arm: "child", confinement: "not-spawned" });
@@ -4100,12 +4212,15 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
     const removals: string[] = [];
     const incarnations: Array<{ isActive(): boolean }> = [];
     const constructed: Constructed[] = [];
+    const toolGate = mode === "hanging-tool"
+      ? await childProcessGate(join(fixture.rootDir, "tool-call-gate"))
+      : undefined;
     const entrySource = mode === "factory-crash"
       ? 'throw new Error("entry construction failed");\n'
       : mode === "start-crash"
         ? WORKING.replace("start: async () => {}", 'start: async () => { throw new Error("child start failed"); }')
         : mode === "hanging-tool"
-          ? WORKING.replace(`${PING}: async () => "pong"`, `${PING}: () => new Promise(() => {})`)
+          ? `${toolGate!.moduleSource}\n${WORKING.replace(`${PING}: async () => "pong"`, `${PING}: () => { gate.signal("entered"); return new Promise(() => {}); }`)}`
           : WORKING;
     const written = await writeTestPlugin(fixture, { id: ID, tools: [PING], entrySource });
     const cacheRoot = join(fixture.rootDir, "receipts");
@@ -4136,6 +4251,8 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
         return createNoopHostApiForTests(args[0], args[1], args[2]);
       },
     });
+    // Its receipt-backed disposer also joins coordinator retirement before removal.
+    testRuntimes.delete(runtime);
     const internals = runtime as unknown as Internals;
     // The shared fixture substitutes the root materializer; these cases need
     // the real receipt-backed generation root, so the class methods return.
@@ -4230,7 +4347,7 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
       registryEntry: { installSource: "user" as const },
       durableCommit: async () => "committed",
     });
-    return { fixture, runtime, internals, originalError, cleanupError, counts, timeline, audits, roots, removals, incarnations, constructed, exists, stops, card, preparedInput };
+    return { fixture, runtime, internals, originalError, cleanupError, counts, timeline, audits, roots, removals, incarnations, constructed, exists, stops, card, preparedInput, toolGate };
   }
 
   /**
@@ -4644,7 +4761,7 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
     bindNativeBundleLifecycle(f);
     await f.runtime.addPlugin(ID);
     const call = f.runtime.call(PING, {}).then(() => "resolved", (error: unknown) => error);
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await f.toolGate!.waitFor("entered");
     await f.runtime.stopAll();
     expect(await call).toMatchObject({ code: "plugin-runtime-shutdown" });
     expect({ ...f.counts, stops: f.stops() }).toEqual({ disposed: 1, drained: 1, stops: 1 });
@@ -4747,11 +4864,12 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
     const stop = instance.stop!;
     let releaseStop!: () => void;
     const stopHeld = new Promise<void>((resolve) => { releaseStop = resolve; });
-    instance.stop = async () => { await stopHeld; await stop(); };
+    const stopEntered = deferred<void>();
+    instance.stop = async () => { stopEntered.resolve(); await stopHeld; await stop(); };
     const deadline = new AbortController();
     const audits = f.audits;
     const stopping = f.runtime.stopAll({ signal: deadline.signal });
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await stopEntered.promise;
     deadline.abort();
     try {
       expect(await stopping).toEqual({ unfinished: [ID] });
@@ -4963,7 +5081,8 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
     await inFactory;
     const deadline = new AbortController();
     const stopping = f.runtime.stopAll({ signal: deadline.signal });
-    setTimeout(release, 50);
+    expect(f.runtime.isShuttingDown()).toBe(true);
+    release();
     const report = await stopping;
     await loading;
     expect(f.runtime.listPluginIds()).not.toContain(ID);
@@ -5143,7 +5262,8 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
     // Releasing the candidate's unpublished root fails.
     f.internals.removeUnpublishedRuntimeRoot = async () => { throw f.cleanupError; };
     const stopping = f.runtime.stopAll({ signal: new AbortController().signal });
-    setTimeout(release, 50);
+    expect(f.runtime.isShuttingDown()).toBe(true);
+    release();
     const report = await stopping;
     await building;
     expect(f.constructed.map((record) => record.stops)).toEqual([1]);

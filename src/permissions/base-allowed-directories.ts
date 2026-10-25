@@ -33,7 +33,7 @@ import { tmpdir } from "node:os";
  * to a runner-specific directory. Covering only `os.tmpdir()` would leave the
  * path people actually type still denied.
  */
-const POSIX_SHARED_TMP = "/tmp";
+export const POSIX_SHARED_TMP = "/tmp";
 
 /**
  * Raw temp-directory candidates for the per-turn allow-list.

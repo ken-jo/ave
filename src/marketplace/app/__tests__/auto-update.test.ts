@@ -11,7 +11,7 @@
 import { mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { getAveAppVersion } from "../../../shared/app-version.js";
 import { FakeVolume, nodeFolders, writeFolderFiles } from "../../__tests__/fixtures/folder-fs.js";
 import { folderService, type FolderServiceHarness } from "../../__tests__/fixtures/folder-service.js";
@@ -207,6 +207,33 @@ describe("required and superseded updates (§18.7.2, §18.7.4)", () => {
     await expect(update).resolves.toEqual({ state: "superseded" });
     expect(harness.installed.has("alpha")).toBe(false);
     expect(harness.plugins.length).toBe(installs);
+  });
+
+  it("reports package transactions idle only once the last package lock is released", async () => {
+    const idle: boolean[] = [];
+    // The same source storage the outer fixture wrote the folder into (a volume unless a suite selects disk).
+    const observedRoot = mkdtempSync(join(tmpdir(), "ave-auto-update-idle-"));
+    const observed = await folderService({ root: observedRoot, folders: sourceFolders,
+      onPackageTransactionsIdle: () => idle.push(observed.service.packageTransactionsIdle) });
+    onTestFinished(() => {
+      observed.service.close();
+      rmSync(observedRoot, { recursive: true, force: true });
+    });
+    const preview = await observed.service.previewSource({ input: folder, auth: "none" });
+    if (preview.type !== "marketplace") throw new Error(`expected a marketplace preview, got ${preview.type}`);
+    await observed.service.addSource({ previewId: preview.previewId, id: "team" });
+    await observed.service.executeInstall((await observed.service.planInstall(KEY)).planId, [], true);
+    idle.length = 0;
+    let resume!: () => void;
+    observed.onUninstall.current = () => new Promise<void>((resolve) => { resume = resolve; });
+    const uninstall = observed.service.uninstall({ sourceId: "team", kind: "plugin", name: "alpha" });
+    await vi.waitFor(() => expect(resume).toBeTypeOf("function"));
+    // Held: the uninstall's own lock is not idle, and nobody is told it is.
+    expect(observed.service.packageTransactionsIdle).toBe(false);
+    expect(idle).toEqual([]);
+    resume();
+    await uninstall;
+    expect(idle).toEqual([true]);
   });
 
   it("refuses to approve components through another package's key", async () => {

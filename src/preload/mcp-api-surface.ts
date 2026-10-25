@@ -19,6 +19,7 @@ import type { AveMcpApi } from "../ui/renderer/types.js";
 export const mcpApiSurface = {
   servers: async () => ipcRenderer.invoke(CHANNELS.mcp.servers),
   kill: async (id: string) => ipcRenderer.invoke(CHANNELS.mcp.kill, id),
+  authenticate: async (id: string) => ipcRenderer.invoke(CHANNELS.mcp.authenticate, id),
   getConfigs: async () => ipcRenderer.invoke(CHANNELS.mcp.configGet),
   getConfigPath: async () => ipcRenderer.invoke(CHANNELS.mcp.configPath),
   addConfig: async (config: McpServerConfig) => ipcRenderer.invoke(CHANNELS.mcp.configAdd, config),

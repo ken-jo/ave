@@ -1140,14 +1140,14 @@ describe("VercelUnifiedProvider openai-compatible", () => {
 
     const { createGuardedModelProviderFetch } = await import("../../marketplace-provider-fetch.js");
     const trustedFetch = createGuardedModelProviderFetch(
-      "http://10.232.178.100:30000/v1",
+      "http://10.10.2.100:30000/v1",
       unusedNetworkFetch,
     );
     const { VercelUnifiedProvider } = await import("../adapter.js");
     const provider = new VercelUnifiedProvider(
       "openai-compatible",
       "internal-key",
-      "http://10.232.178.100:30000/v1",
+      "http://10.10.2.100:30000/v1",
       trustedFetch,
     );
 
@@ -1161,7 +1161,7 @@ describe("VercelUnifiedProvider openai-compatible", () => {
 
     expect(createCompatSpy).toHaveBeenCalledWith(expect.objectContaining({
       apiKey: "internal-key",
-      baseURL: "http://10.232.178.100:30000/v1",
+      baseURL: "http://10.10.2.100:30000/v1",
     }));
 
     vi.doUnmock("@ai-sdk/openai-compatible");
