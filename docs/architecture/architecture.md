@@ -1966,8 +1966,10 @@ group rather than by the user. Ownership on Windows follows two rules:
    are created.** The private copy of the Windows sandbox helper is made by
    `prepareSrtWinExecutable` in `src/permissions/srt-win-integrity.ts`: one
    PowerShell step protects the directory, creates the empty image and the
-   owner marker inside it, sets the token user as the owner of all three and
-   reads each owner back. The image's bytes are written only after that step.
+   owner marker inside it, and makes the token user the owner of all three:
+   an owner that is already the token user is kept, `S-1-5-32-544` is
+   replaced, and any other owner refuses without a change. Each owner is then
+   read back. The image's bytes are written only after that step.
    If it fails, creation is refused and the directory is removed. When
    `AVE_HOME` or its `secrets` directory does not exist yet,
    `ensureAveHomePrivate` in `src/shared/ave-home.ts` has its protecting step

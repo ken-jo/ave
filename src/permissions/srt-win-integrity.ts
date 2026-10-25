@@ -36,8 +36,10 @@ const POWERSHELL_PROLOGUE = [
 // created (docs/architecture/architecture.md, "Windows object ownership"). An
 // elevated token's default owner is usually BUILTIN\Administrators. This one
 // PowerShell step protects the directory, then creates the empty image and the
-// owner marker inside it, makes the token user the owner of all three, and
-// reads each owner back. The image's bytes are written only after this step.
+// owner marker inside it, and makes the token user the owner of all three. An
+// owner that is already the token user is kept, BUILTIN\Administrators is
+// replaced, and any other owner throws without a change. Each owner is then
+// read back. The image's bytes are written only after this step.
 // This path is synchronous, so it cannot use the resident ACL host. Any
 // failure throws, and the caller removes the directory.
 const PRIVATE_DIRECTORY_SCRIPT = [
@@ -45,7 +47,8 @@ const PRIVATE_DIRECTORY_SCRIPT = [
   "if (([System.IO.File]::GetAttributes($env:AVE_SRT_PRIVATE_DIRECTORY) -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Private directory is a link' }",
   "$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User",
   "$acl = [System.IO.Directory]::GetAccessControl($env:AVE_SRT_PRIVATE_DIRECTORY)",
-  "$acl.SetOwner($sid)",
+  "$current = $acl.GetOwner([System.Security.Principal.SecurityIdentifier])",
+  "if ($current -ne $sid) { if ($current.Value -ne 'S-1-5-32-544') { throw 'Private directory has another owner' }; $acl.SetOwner($sid) }",
   "$acl.SetAccessRuleProtection($true, $false)",
   "foreach ($existing in @($acl.Access)) { $acl.RemoveAccessRuleSpecific($existing) }",
   "$rule = New-Object System.Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')",
@@ -65,7 +68,7 @@ const PRIVATE_DIRECTORY_SCRIPT = [
   "$owner = [System.Diagnostics.Process]::GetProcessById([int]$env:AVE_SRT_OWNER_PID)",
   "$marker = @{ pid = [int]$env:AVE_SRT_OWNER_PID; started = $owner.StartTime.ToUniversalTime().Ticks.ToString() } | ConvertTo-Json -Compress",
   "[System.IO.File]::WriteAllText([System.IO.Path]::Combine($env:AVE_SRT_PRIVATE_DIRECTORY, 'owner.json'), $marker)",
-  "foreach ($name in @('srt-win.exe', 'owner.json')) { $file = [System.IO.Path]::Combine($env:AVE_SRT_PRIVATE_DIRECTORY, $name); $fileAcl = [System.IO.File]::GetAccessControl($file); $fileAcl.SetOwner($sid); [System.IO.File]::SetAccessControl($file, $fileAcl); if ([System.IO.File]::GetAccessControl($file).GetOwner([System.Security.Principal.SecurityIdentifier]) -ne $sid) { throw 'Private file owner mismatch' } }",
+  "foreach ($name in @('srt-win.exe', 'owner.json')) { $file = [System.IO.Path]::Combine($env:AVE_SRT_PRIVATE_DIRECTORY, $name); $fileAcl = [System.IO.File]::GetAccessControl($file); $current = $fileAcl.GetOwner([System.Security.Principal.SecurityIdentifier]); if ($current -ne $sid) { if ($current.Value -ne 'S-1-5-32-544') { throw 'Private file has another owner' }; $fileAcl.SetOwner($sid); [System.IO.File]::SetAccessControl($file, $fileAcl) }; if ([System.IO.File]::GetAccessControl($file).GetOwner([System.Security.Principal.SecurityIdentifier]) -ne $sid) { throw 'Private file owner mismatch' } }",
 ].join("; ");
 const PRIVATE_DIRECTORY_COMMAND = Buffer.from(PRIVATE_DIRECTORY_SCRIPT, "utf16le").toString("base64");
 
