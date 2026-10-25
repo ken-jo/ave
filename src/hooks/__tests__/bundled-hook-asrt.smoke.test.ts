@@ -6,9 +6,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { initializeAsrtSandbox, isAsrtSandboxActive, resetAsrtSandbox, getDefaultSensitiveReadDenyPaths } from "../../permissions/asrt-sandbox.js";
 import {
+  __resetActiveSandboxCapabilityForTest,
   __resetSandboxRequestedAtBootForTest,
+  setActiveSandboxCapability,
   setPluginWorkerConfinementRequestedAtBoot,
+  setShellSandboxRequestedAtBoot,
 } from "../../permissions/sandbox-capability.js";
+import { sandboxConfinementForPlatform } from "../../shared/sandbox-capability-info.js";
 import { sandboxCasesRun } from "../../plugins/isolation/__tests__/sandbox-cases.js";
 import { runOneHookScript } from "../script-hook-runner.js";
 import type { ScriptHookStdin } from "../script-hook-types.js";
@@ -30,6 +34,7 @@ beforeEach(() => setPluginWorkerConfinementRequestedAtBoot(true));
 afterEach(async () => {
   if (isAsrtSandboxActive()) await resetAsrtSandbox();
   __resetSandboxRequestedAtBootForTest();
+  __resetActiveSandboxCapabilityForTest();
   testHome.path = undefined;
   vi.unstubAllEnvs();
 });
@@ -125,6 +130,12 @@ connection.on('close', () => process.stdout.write(JSON.stringify({ action: 'allo
         writeFileSync(userScript, readFileSync(script));
         writeFileSync(siblingScript, NEIGHBOUR);
         symlinkSync(secret, escapedScript);
+        // A user hook takes the host-shell plan, so it is confined only when
+        // the shell sandbox is requested too, not by worker confinement alone:
+        // publish both as the boot step does for a full mac/linux ASRT.
+        setShellSandboxRequestedAtBoot(true);
+        setActiveSandboxCapability({ kind: "asrt", confidence: "verified", platform: process.platform,
+          reason: "ASRT active for shells", confines: sandboxConfinementForPlatform(process.platform, "full") });
         const userResult = await runOneHookScript({ id: "user-probe", hookType: "pre", source: "config",
           hookPath: userScript,
           command: ["node", userScript, secret, outside, join(workspace, "state.json"), String(address.port),
