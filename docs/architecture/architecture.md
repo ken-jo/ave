@@ -1572,30 +1572,43 @@ or ask rule compares a normalized name on both sides, since matching more only
 narrows: the directory path, a `Module\` qualifier, trailing dots and an
 executable extension are dropped, case is folded and an alias resolves to its cmdlet, so
 `PowerShell(git push *)` refuses `git.exe push` and `C:\Git\bin\git.exe push`,
-and `PowerShell(gci *)` refuses `Get-ChildItem`. A `-EncodedCommand` payload
-(`-e`, `-ec`, `-enc…`, behind a hyphen, en dash, em dash, horizontal bar or
-`/`) is decoded (UTF-16LE base64, whitespace ignored as .NET does): the
-destructive, exfiltration and secret floors run on the decoded script, a
-destructive one gets the same forced modal as the plain text, no allow rule
-covers an encoded command, and the card shows the decoded script. The
-payload is read from the argv each shell's own lexer produced (the same view
-the rule matcher uses), nested `-Command`, `cmd /c` and `bash -c` scripts
-included. Every launcher is followed to the command it runs: each PowerShell
-vocabulary entry with a `launcher` effect and the bash side's shells, wrappers
-and runners, with their own option grammar where modeled (`cmd /c /r /k`, glued
-too; `wsl -e`, `--exec`, `--`; a quoted command-line argument such as
-`-ArgumentList`), and a coverage test drives every launcher entry to an
-encoded `pwsh`. An unknown launcher option, an argument before cmd's `/c`, or a
-command wrapper's non-literal command (`sudo $cmd`) is hidden code too, and so
-is a command line the reader would have to rebuild from several words when one
-of them held quoting, spacing or shell syntax (`wsl bash -c "…"`): a single
-word is read as it is, never re-joined. `wsl ~` is a start directory, and
-`runas` is followed through its quoted command argument. A launched shell (`pwsh`, `powershell`, `cmd`, `bash`, `sh`, …) whose
-argv is not fully literal (a variable, splat, subexpression, backtick or caret
-escape, a cmd `%`/`!` expansion), input the lexer cannot read, a payload the
-host cannot fully decode, or an encoded-looking word after `-Command`/`-File`
-is hidden code: it gets the forced modal on both lanes, before any sandboxed
-allow, no allow rule covers it and the card offers no exact rule. The host builds the card's rule from
+and `PowerShell(gci *)` refuses `Get-ChildItem`. Encoded code is found without any launcher list or
+option grammar, by three rules over the words each shell's own lexer produced
+(at every depth, and the raw input itself):
+
+1. **A UTF-16LE payload anywhere.** Any base64 run, whitespace inside it
+   allowed (as .NET ignores it), that decodes to UTF-16LE text is encoded code,
+   wherever it sits: after `-EncodedCommand`, behind any launcher, or in a data
+   position such as `printf %s <payload>`. Text means at least 8 code units and
+   at least 90% of them tab, LF, CR or printable ASCII (U+0020–U+007E). ASCII in
+   UTF-16LE has a zero high byte, which hashes, JWTs, UTF-8 data and ordinary
+   commit messages never produce, so they do not trip it. The decoded text is
+   scanned again, recursively, and the destructive, exfiltration and secret
+   floors run on it.
+2. **An unreadable `-EncodedCommand` operand.** An `-e*`-family flag (`-e`,
+   `-ec`, `-enc…`, behind any number of hyphens, en dashes, em dashes or
+   horizontal bars, or `/`) after a PowerShell name (a basename starting with
+   `pwsh` or `powershell`: `pwsh-preview`, `powershell_ise`, full paths) or a
+   dynamic program name, before `-Command`/`-File`, whose operand is missing,
+   non-literal (a concatenation, variable, subexpression or splat) or not
+   UTF-16LE text. The operand is not resolved. `node -e`, `grep -e` and
+   `printf %s -enc x` stay ordinary.
+3. **Code read from stdin.** A pipeline stage that runs what it reads as code:
+   a shell or interpreter after `|` with no inline-code or script option
+   (`| sh`, `| bash -s -- -c x`, `| pwsh -`, `| python3 -`, `base64 -d | sh`),
+   `| iex`, `xargs` into a shell, or `/dev/stdin` as a script.
+
+A code string a shell will run (`bash -c`, `sh -c`, `pwsh -Command`, `cmd /c`)
+is lexed in its own dialect and goes through the same rules within the same
+bounds. Every bound fails closed: past the scan budget, the recursion depth or
+the decoded-byte bound the input is encoded code too. Encoded code gets the
+forced modal on both lanes, before any sandboxed allow; no allow rule covers it,
+the card offers no exact rule, and the card shows each decoded script. Literal
+script-file execution (`pwsh ./x.ps1`, `pwsh -f`) is outside these rules and
+decides as any opaque code does. A here-string, `--%` stop-parsing or a cmd
+`%VAR%` expansion makes a word non-literal, so its command has no exact rule; a
+non-literal code argument such as `pwsh -c $code` is the ordinary opaque-code
+ask. The host builds the card's rule from
 the parsed command and matches it again before saving; a command that is not
 one literal simple command has no exact rule.
 

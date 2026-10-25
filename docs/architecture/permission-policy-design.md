@@ -326,9 +326,11 @@ and `-Parameter` names; native programs, unknown commands and every value
 verbatim; aliases never merge identities and are resolved only for floor
 classification and for deny/ask matching, where a path, `Module\` qualifier and
 executable extension are also dropped) and authorizes an unsandboxed call
-only as an exact rule, with the same strictness as Bash. A `-EncodedCommand`
-payload is decoded before the floors run, no allow rule covers it, and one
-that cannot be fully decoded gets the forced modal.
+only as an exact rule, with the same strictness as Bash. Encoded code (a
+UTF-16LE base64 payload anywhere in the input, an `-EncodedCommand` operand
+that cannot be read, or code a pipeline feeds a shell on stdin) gets the
+forced modal and no allow rule covers it; decoded scripts are floored and shown
+on the card, and every scan bound fails closed.
 
 The sink catalogue remains a host policy floor, including for unsandboxed
 commands. The [shell sandbox policy](#os-shell-sandbox-policy) owns the OS
