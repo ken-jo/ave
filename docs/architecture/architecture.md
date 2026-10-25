@@ -1586,7 +1586,11 @@ and runners, with their own option grammar where modeled (`cmd /c /r /k`, glued
 too; `wsl -e`, `--exec`, `--`; a quoted command-line argument such as
 `-ArgumentList`), and a coverage test drives every launcher entry to an
 encoded `pwsh`. An unknown launcher option, an argument before cmd's `/c`, or a
-command wrapper's non-literal command (`sudo $cmd`) is hidden code too. A launched shell (`pwsh`, `powershell`, `cmd`, `bash`, `sh`, …) whose
+command wrapper's non-literal command (`sudo $cmd`) is hidden code too, and so
+is a command line the reader would have to rebuild from several words when one
+of them held quoting, spacing or shell syntax (`wsl bash -c "…"`): a single
+word is read as it is, never re-joined. `wsl ~` is a start directory, and
+`runas` is followed through its quoted command argument. A launched shell (`pwsh`, `powershell`, `cmd`, `bash`, `sh`, …) whose
 argv is not fully literal (a variable, splat, subexpression, backtick or caret
 escape, a cmd `%`/`!` expansion), input the lexer cannot read, a payload the
 host cannot fully decode, or an encoded-looking word after `-Command`/`-File`
