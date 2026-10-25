@@ -1620,8 +1620,11 @@ group rather than by the user. Admission (`assertCodexLocations` in
      `WRITE_OWNER`;
    - an object owned by `S-1-5-32-544` is given to the user, on a handle that
      re-reads the owner before it sets it;
-   - an object with any other owner refuses the whole claim, and nothing in
-     it changes.
+   - an object with any other owner refuses its request, and nothing in that
+     request changes. A claim is sent in requests of at most 128 paths and
+     24,576 characters of JSON-encoded paths. When it spans several requests,
+     the ones already answered keep the owners they set. A refusal still fails
+     the whole claim.
    The reply must then show the user as every object's owner. When a claim
    fails, a creating helper removes what it made. The ephemeral `executable-`,
    `artifact-` and `probe-` directories are created and claimed per run. The
