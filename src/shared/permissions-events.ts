@@ -28,13 +28,24 @@ export interface ScopedPermissionRule {
   invalidReason?: StoredRuleInvalidReason;
 }
 
+/** Where a bash approval card saves its exact `Bash(<command>)` allow rule (owner 2026-10-25, D3): this conversation (in memory, ends with it), this project's rule file, or the user-global rules. */
+export type ShellRuleSaveScope = "session" | "project" | "always";
+
+export function isShellRuleSaveScope(value: unknown): value is ShellRuleSaveScope {
+  return value === "session" || value === "project" || value === "always";
+}
+
+/** A bash card's five choices are Deny, Allow once and the three save scopes; each save stores exactly `exactRule`, which the host derives from the live command and never takes from the renderer. */
 export interface ShellRuleApproval {
-  suggestedPattern: string | null;
+  /** The exact `Bash(<command>)` rule the save scopes store, or null when this command cannot be saved as one (compound, irreversible, a floor, or it would disclose a secret). */
+  exactRule: string | null;
   /** Execution directory the host matches and saves against. */
   projectCwd: string;
   /** Directory a project rule applies to (the repository root when one is found); display only. */
   projectRoot: string;
+  /** "This session" is offered: a saveable rule and a conversation to hold it. */
   sessionAllowed: boolean;
+  /** "This project" and "Always" are offered. */
   persistentAllowed: boolean;
 }
 

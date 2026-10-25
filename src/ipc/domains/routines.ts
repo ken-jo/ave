@@ -37,8 +37,10 @@ export function registerRoutineHandlers(deps: IpcDeps): void {
     if (!routinesStore) return { ok: false, error: "no-store" };
     const ok = await routinesStore.remove(id);
     if (ok) {
+      const { endSessionScopedPermissions } = await import("../../permissions/session-scope-end.js");
       for (const session of memoryManager.listSessionsByRoutine(id)) {
         await memoryManager.deleteSession(session.id);
+        endSessionScopedPermissions(session.id, deps.conversationLoop.permissionManager);
       }
     }
     return { ok };

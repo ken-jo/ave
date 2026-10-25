@@ -5,6 +5,7 @@ import type { UserApprovalVerdict } from "../shared/permissions-events.js";
 import type { ToolTrustOrigin } from "../tools/types.js";
 import type { RiskLevel } from "../shared/permission-review-status.js";
 import type { EgressDenial, EgressDenialSource } from "../shared/egress-denials.js";
+import type { EgressGrantScope } from "../shared/sandbox-capability-info.js";
 
 /** Events observed by sandbox backends while intercepting filesystem or network operations. */
 export type SandboxEvent =
@@ -139,7 +140,7 @@ export interface SandboxEgressDecisionAuditEntry {
   decision: "allow" | "deny";
   basis: EgressDecisionBasis;
   /** Null when no grant matched or was selected. */
-  scope: "once" | "conversation" | "tab" | "workspace" | "always" | null;
+  scope: EgressGrantScope | null;
   /** Null for allowed requests. */
   reason: string | null;
 }

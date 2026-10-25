@@ -1478,6 +1478,9 @@ export function registerChatHandlers(deps: IpcDeps): void {
     // Guard deletion only against the loop holding that conversation; unrelated sessions need no turn lease.
     const deleteConversation = async (): Promise<void> => {
       await memoryManager.deleteSession(sessionId);
+      // Its "This session" rules, approvals and network hosts end with it.
+      const { endSessionScopedPermissions } = await import("../../permissions/session-scope-end.js");
+      endSessionScopedPermissions(sessionId, conversationLoop.permissionManager);
       if (isSuggestionsSession(sessionId)) ensureSuggestionsSession(memoryManager);
     };
     const holder = groupHolding(sessionId);

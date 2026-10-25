@@ -34,10 +34,16 @@ function egressGrantStore(): EgressGrantStore {
   return grantStore;
 }
 
-// Every grant Settings lists: this run's conversation and tab grants, then the persistent ones.
+// Every grant Settings lists: this run's session and tab grants, then the persistent ones.
 export async function listEgressGrants(): Promise<readonly ListedEgressGrant[]> {
   const store = egressGrantStore();
-  return [...store.listConversation(), ...store.listTab(), ...(await store.listPersistent())];
+  return [...store.listSession(), ...store.listTab(), ...(await store.listPersistent())];
+}
+
+// Drop a deleted conversation's "This session" hosts (owner 2026-10-25: session scope dies with the session).
+export function releaseEgressSession(sessionId: string): void {
+  if (grantStore === undefined) return;
+  grantStore.releaseSession(sessionId);
 }
 
 // Revoke one grant and close the connections it had let through that are still open. Resolves whether it existed and how many connections closed.
@@ -80,10 +86,7 @@ export interface EgressAskRuntimeDeps {
 export function createEgressAskRuntimeCallback(deps: EgressAskRuntimeDeps): SandboxAskCallback {
   const requester = createApprovalGateEgressRequester(deps.approvalGate, deps.permissionManager);
   return createEgressAskCallback({
-    // OWNER ITEM: ip2 caps shell egress grants at once/always; owner 2026-10-16 offers
-    // once/conversation/workspace/always (Windows shared frontend capped at
-    // once/conversation, 2026-10-19). This follows ip2 until the owner picks.
-    shellGrantScopes: ["once", "always"],
+    // Shell cards offer Deny plus once/session/project/always (owner 2026-10-25, D1); a shared identity or a local/unverified destination keeps only the in-memory rungs.
     identityStrength: egressIdentityStrength,
     ownerOf: egressInvocationOwner,
     abortSignalOf: egressInvocationAbortSignal,

@@ -40,7 +40,7 @@ export interface HostShellExecutionPlan {
   // Honest capability of the child selected by this plan.
   readonly capability: SandboxCapability;
   readonly fallbackReason: HostShellFallbackReason;
-  // True whenever this plain shell needs a per-invocation host authorization before spawn: an explicit unsandboxed request (a matching allow rule or a fresh allow-once approval) or the Windows partial-ASRT Plan B (allow-once only). A requested-but-unavailable sandbox is not one of them: it follows the normal rules and only records its `fallbackReason`.
+  // True whenever this plain shell needs a per-invocation host authorization before spawn: an explicit unsandboxed request or the Windows partial-ASRT Plan B (an exact `Bash(<command>)` allow rule or a fresh approval). A requested-but-unavailable sandbox is not one of them: it follows the same exact-rule policy and only records its `fallbackReason`.
   readonly requiresExplicitUserApproval: boolean;
   // Stable identity for audit/cache consumers; contains no command or raw path.
   readonly identity: string;
@@ -235,7 +235,7 @@ export function buildHostShellExecutionPlan(input: {
     });
   }
 
-  // A requested sandbox that is unavailable (missing bwrap/socat, start failure) yields an honest plain child on every platform. Like the reference hosts (Claude Code, Codex), it warns and continues under the normal permission rules — the same policy path as explicit sandbox-off, floor and deny rules included — so it needs no one-shot permit. The fallback reason stays on the plan so the approval card, the tool result and audit can say the sandbox was unavailable (design I3, owner 2026-10-16).
+  // A requested sandbox that is unavailable (missing bwrap/socat, start failure) yields an honest plain child on every platform. It takes the same policy path as explicit sandbox-off, floor and deny rules included, so it needs no one-shot permit: without a sandbox only an exact `Bash(<command>)` allow rule runs it unasked, and everything else asks (owner 2026-10-25, D2, superseding I3's normal-rule auto-allow). The fallback reason stays on the plan so the approval card, the tool result and audit can say the sandbox was unavailable.
   if (requestedSandbox && input.activeCapability.kind === "none") {
     const fallbackReason: HostShellFallbackReason = "requested-sandbox-unavailable";
     const capability = noneCapability(
