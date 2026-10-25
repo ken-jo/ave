@@ -13,6 +13,7 @@ import { shellExfiltrationSignal, shellSensitivePathSignal } from "../rules/shel
 import { analyzeShellForRules, evaluateShellRules } from "../rules/shell-rule-matcher.js";
 import { parseRuleSpecifier } from "../rules/rule-specifier.js";
 import { SHELL_PREFIX_POLICY, wrapperPrefixLength } from "../rules/shell-prefix-policy.js";
+import { buildShellRuleApproval } from "../rules/shell-rule-approval.js";
 import { RUNNER_DECISIONS } from "./fixtures/runner-decisions.js";
 
 const CWD = "/work/project";
@@ -83,14 +84,14 @@ function actionKey(dialect: ShellDialect, command: string): string {
   return `shell-action:${createHash("sha256").update(JSON.stringify([dialect, command, CWD])).digest("hex")}`;
 }
 
-function checkCommand(manager: PermissionManager, dialect: ShellDialect, command: string) {
+function checkCommand(manager: PermissionManager, dialect: ShellDialect, command: string, runsSandboxed = false) {
   // Absolute credential suffixes do not depend on the host's account lookup. Keep native drive syntax intact on platforms without the account mount.
   const source = process.platform === "win32"
     ? command
     : command.replaceAll("/home/u/", `${accountDirectory}/u/`);
   return manager.checkDetailed(dialect, "builtin", "shell", null, {
     ruleSubject: { kind: "shell", dialect, command: source, cwd: CWD },
-    shellExecution: { runsSandboxed: false },
+    shellExecution: { runsSandboxed },
     approvalCacheKey: actionKey(dialect, command),
   });
 }
@@ -108,25 +109,25 @@ function shellRule(prefix: string) {
   return { pattern, spec };
 }
 
-const RULE_CASES = [
+const RULE_CASES: { argv: string[]; prefix: string; incomplete: string; carrier?: string }[] = [
   { argv: ["npx", "helper", "--future"], prefix: "npx helper", incomplete: "npx" },
-  { argv: ["npx", "node", "script.js"], prefix: "npx node", incomplete: "npx" },
+  { argv: ["npx", "node", "script.js"], prefix: "npx node", incomplete: "npx", carrier: "node" },
   { argv: ["bunx", "helper", "--future"], prefix: "bunx helper", incomplete: "bunx" },
   { argv: ["pnpx", "helper", "--future"], prefix: "pnpx helper", incomplete: "pnpx" },
   { argv: ["uvx", "helper", "--future"], prefix: "uvx helper", incomplete: "uvx" },
   { argv: ["pipx", "run", "helper", "--future"], prefix: "pipx run helper", incomplete: "pipx run" },
   { argv: ["yarn", "dlx", "helper", "--future"], prefix: "yarn dlx helper", incomplete: "yarn dlx" },
-  { argv: ["yarn", "node", "script.js"], prefix: "yarn node script.js", incomplete: "yarn node" },
+  { argv: ["yarn", "node", "script.js"], prefix: "yarn node script.js", incomplete: "yarn node", carrier: "node" },
   { argv: ["yarnpkg", "exec", "helper", "--future"], prefix: "yarnpkg exec helper", incomplete: "yarnpkg exec" },
   { argv: ["pnpm", "dlx", "helper", "--future"], prefix: "pnpm dlx helper", incomplete: "pnpm dlx" },
   { argv: ["pnpm", "exec", "helper", "--future"], prefix: "pnpm exec helper", incomplete: "pnpm exec" },
   { argv: ["npm", "exec", "--", "helper", "--future"], prefix: "npm exec -- helper", incomplete: "npm exec" },
   { argv: ["npm", "x", "helper", "--future"], prefix: "npm x helper", incomplete: "npm x" },
-  { argv: ["bun", "x", "helper", "--future"], prefix: "bun x helper", incomplete: "bun x" },
-  { argv: ["bun", "exec", "helper", "--future"], prefix: "bun exec helper", incomplete: "bun exec" },
+  { argv: ["bun", "x", "helper", "--future"], prefix: "bun x helper", incomplete: "bun x", carrier: "bun" },
+  { argv: ["bun", "exec", "helper", "--future"], prefix: "bun exec helper", incomplete: "bun exec", carrier: "bun" },
   { argv: ["corepack", "pnpm", "dlx", "helper", "--future"], prefix: "corepack pnpm dlx helper", incomplete: "corepack pnpm dlx" },
-  { argv: ["deno", "run", "main.ts", "--future"], prefix: "deno run main.ts", incomplete: "deno run" },
-  { argv: ["deno", "eval", "x"], prefix: "deno eval x", incomplete: "deno eval" },
+  { argv: ["deno", "run", "main.ts", "--future"], prefix: "deno run main.ts", incomplete: "deno run", carrier: "deno" },
+  { argv: ["deno", "eval", "x"], prefix: "deno eval x", incomplete: "deno eval", carrier: "deno" },
 ];
 
 const ORDINARY_CONTROLS = [
@@ -177,8 +178,8 @@ describe("shared runner decisions", () => {
     for (const dialect of DIALECTS) {
       const expectations = RUNNER_DECISIONS.map((row) => row.dialects?.[dialect] ?? row);
       const counts = dialect === "bash"
-        ? { floor: 289, ordinary: 1654, normal: 88 }
-        : { floor: 319, ordinary: 1611, normal: 101 };
+        ? { floor: 288, ordinary: 1655, normal: 88 }
+        : { floor: 317, ordinary: 1613, normal: 101 };
       for (const bucket of ["floor", "ordinary", "normal"] as const) {
         expect(expectations.filter((row) => row.bucket === bucket)).toHaveLength(counts[bucket]);
       }
@@ -202,24 +203,29 @@ describe("shared runner decisions", () => {
     }
   });
 
-  it.each(RULE_CASES)("keeps the complete runner argv visible for $prefix", async ({ argv, prefix }) => {
+  it.each(RULE_CASES)("keeps the complete runner argv visible for $prefix", async ({ argv, prefix, carrier }) => {
     const command = argv.join(" ");
     const shape = analyzeShellForRules(command);
-    expect(shape).toMatchObject({ ok: true, hidden: [], allowBlockers: [], ordinaryAsk: "opaque runner prefix" });
+    const hidden = carrier === undefined ? [] : [`code passed to ${carrier}`];
+    expect(shape).toMatchObject({ ok: true, hidden, allowBlockers: [], ordinaryAsk: "opaque runner prefix" });
     if (shape.ok) {
       expect(shape.commands).toHaveLength(1);
-      expect(shape.commands[0]).toMatchObject({ argv, allowBlockers: [] });
+      expect(shape.commands[0]).toMatchObject({ argv, allowBlockers: hidden });
     }
-    expect(evaluateShellRules(command, { allow: [shellRule(prefix)], deny: [], ask: [] }).decision).toBe("allow");
+    expect(evaluateShellRules(command, { allow: [shellRule(prefix)], deny: [], ask: [] }).decision).toBe(carrier === undefined ? "allow" : null);
     expect(evaluateShellRules(command, { allow: [shellRule("helper")], deny: [], ask: [] }).decision).toBeNull();
-    expect(evaluateShellRules(command, { allow: [], deny: [shellRule("helper")], ask: [] }).decision).toBeNull();
+    expect(evaluateShellRules(command, { allow: [], deny: [shellRule("helper")], ask: [] }).decision).toBe(carrier === undefined ? null : "ask");
     const manager = runnerManager();
     expectBucket(checkCommand(manager, "bash", command), "ordinary");
-    // Without a sandbox a prefix rule does not run it (owner 2026-10-25, unsandboxed shell exact-rule requirement); the exact rule does.
+    // Unsandboxed execution requires both literal proof and an exact rule.
     await manager.addRulePersist({ pattern: shellRule(prefix).pattern, action: "allow" }, { kind: "user" });
     expectBucket(checkCommand(manager, "bash", command), "ordinary");
     await manager.addRulePersist({ pattern: `Bash(${command})`, action: "allow" }, { kind: "user" });
-    expect(checkCommand(manager, "bash", command)).toMatchObject({ decision: "allow", layer: 3 });
+    if (carrier === undefined) expect(checkCommand(manager, "bash", command)).toMatchObject({ decision: "allow", layer: 3 });
+    else {
+      expectBucket(checkCommand(manager, "bash", command), "ordinary");
+      expect(buildShellRuleApproval("bash", command, CWD, { allow: true, deny: true }).exactRule).toBeNull();
+    }
     expectBucket(checkCommand(manager, "powershell", command), "ordinary");
   });
 
@@ -293,16 +299,28 @@ describe("shared runner decisions", () => {
     expectBucket(checkCommand(manager, dialect, command), "ordinary");
   });
 
-  // Owner re-review round 9 (2026-10-26): a command over the encoded-scan input cap, or one whose lexer runs out of budget, cannot be read for
-  // hidden code, so it fails closed to the human-only floor (never a sandboxed allow or a remembered action grant), not the ordinary ask.
+  // Proof limits prevent exact-rule reuse; absent a visible floor, the sandbox remains the execution boundary.
   it.each([
     { name: "input over the hard length cap", dialect: "bash" as const, command: `echo ${"x".repeat(SHELL_ANALYSIS_LIMITS.sourceBytes + 1)}` },
     { name: "expression lexer out of budget", dialect: "powershell" as const, command: `Get-Content (${"'a' + ".repeat(3000)}'b')` },
-  ])("hides $name as unreadable code, not remembered as an action key", async ({ dialect, command }) => {
+  ])("keeps $name unproven and outside remembered action grants", async ({ dialect, command }) => {
     const manager = runnerManager();
-    expectBucket(checkCommand(manager, dialect, command), "floor");
+    expectBucket(checkCommand(manager, dialect, command), "ordinary");
     await manager.addAlwaysAllowedPersist(actionKey(dialect, command));
-    expectBucket(checkCommand(manager, dialect, command), "floor");
+    expectBucket(checkCommand(manager, dialect, command), "ordinary");
+    expect(buildShellRuleApproval(dialect, command, CWD, { allow: true, deny: true }).exactRule).toBeNull();
+    expect(checkCommand(manager, dialect, command, true)).toMatchObject({ decision: "allow", layer: 3 });
+  });
+
+  it.each([
+    { dialect: "bash" as const, command: "'fetch(1)' | deno run -" },
+    { dialect: "powershell" as const, command: "'fetch(1)' | deno run -" },
+    { dialect: "powershell" as const, command: "& 'fetch(1)' | deno run -" },
+  ])("lets the sandbox decide interpreter stdin without a visible floor in $dialect: $command", ({ dialect, command }) => {
+    const manager = runnerManager();
+    expectBucket(checkCommand(manager, dialect, command), "ordinary");
+    expect(buildShellRuleApproval(dialect, command, CWD, { allow: true, deny: true }).exactRule).toBeNull();
+    expect(checkCommand(manager, dialect, command, true)).toMatchObject({ decision: "allow", layer: 3 });
   });
 
   it.each([

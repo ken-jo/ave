@@ -61,7 +61,7 @@ function exactBashRule(command: string, projectCwd: string): string | null {
 
 function exactPowerShellRule(command: string, projectCwd: string): string | null {
   const signals = inspectPowerShellCommand(command, projectCwd);
-  if (signals.exfiltration !== null || signals.sensitive !== null || isDestructiveShellText(command)) return null;
+  if (signals.exfiltration !== null || signals.sensitive !== null || signals.analysisLimited || isDestructiveShellText(command)) return null;
   const proof = proveLiteralPowerShell(command);
   if (!proof.proven || proof.commands.length !== 1) return null;
   const tokens = literalTokens(proof.commands[0]!);
@@ -129,7 +129,7 @@ export function shellRuleCoversCommand(dialect: ShellRuleDialect, pattern: strin
   const result = evaluatePowerShellSubject({
     command,
     exactAllowOnly: false,
-    floorSignal: signals.exfiltration ?? signals.sensitive ?? null,
+    floorSignal: signals.exfiltration ?? signals.sensitive ?? (signals.analysisLimited ? "PowerShell analysis budget exceeded" : null),
   }, [rule]);
   return result.decision === action;
 }
