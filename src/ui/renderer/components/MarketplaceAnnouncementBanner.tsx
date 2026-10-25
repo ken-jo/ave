@@ -1,5 +1,3 @@
-// Non-blocking, dismissible banner showing marketplace announcements.
-
 import { Button } from "../../../components/ui/button.js";
 import {
   announcementActionLabel,
@@ -9,9 +7,6 @@ import {
 import { MarqueeText } from "./MarqueeText.js";
 import { useTranslation } from "../../../i18n/react.js";
 
-
-
-
 export function MarketplaceAnnouncementBanner({
   announcements,
   onDismiss,
@@ -19,8 +14,8 @@ export function MarketplaceAnnouncementBanner({
 }: {
   announcements: MarketplaceAnnouncement[];
   onDismiss: (id: number) => void;
-  /** Take the reader to the action's destination. Navigation only — the banner
-   *  has no way to change a setting, and neither does the announcement. */
+  /** Take the reader to the action's destination. Navigation only — the banner has no way to change a setting, and neither
+   * does the announcement. */
   onAction: (target: MarketplaceAnnouncementActionTarget) => void;
 }) {
   const { t, locale } = useTranslation();

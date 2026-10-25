@@ -1,21 +1,5 @@
-/**
- * Cross-surface display consistency — durations and costs.
- *
- * These are the *consumers*, on purpose. Both quantities used to have one
- * formatter per screen, and every one of those formatters had a green unit
- * test of its own; what nobody tested was that two screens showing the same
- * number showed the same string. So each case below renders the real
- * components and compares the rendered text across surfaces, and pins the
- * exact strings for the inputs where the old copies disagreed.
- *
- * Duration surfaces: the per-tool badge on `ToolGroupCard` and the turn
- * completion summary on `WorkGroup`. The completion label is localized, but
- * it must retain the same rounding boundaries as the tool badges above it.
- *
- * Cost surfaces: the per-turn `TokenCostBadge`, the starred-day usage panel,
- * and the pre-flight estimate badge (`formatCostBadge`, rendered by
- * `TokenProgressRing`).
- */
+/** Compare rendered durations and costs across consumers; isolated formatter tests cannot detect cross-surface
+ * disagreement. */
 // @vitest-environment jsdom
 import "../../../../../test/renderer/setup.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -109,8 +93,8 @@ describe("cost renders identically across the badge, the usage panel and the est
         <TokenCostBadge {...halfDollar} />
       </TooltipProvider>,
     );
-    // The badge opens in "tokens" mode; `fireEvent` wraps the click in `act()`
-    // so the cost render flushes before the assertion.
+    // The badge opens in "tokens" mode; `fireEvent` wraps the click in `act()` so the cost render flushes before the
+    // assertion.
     fireEvent.click(screen.getByTestId(TEST_IDS.tokenCostBadge));
     expect(screen.getByText(/\$0\.500/)).toBeTruthy();
   });

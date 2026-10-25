@@ -40,8 +40,8 @@ export interface UsePluginViewRoutingDeps {
   statusPushToast: PushToast;
 }
 
-/** What a pane holding `viewKey` needs in order to draw a plugin surface.
- *  Named only here: callers reach it through `pluginPaneFor`'s return type. */
+/** What a pane holding `viewKey` needs in order to draw a plugin surface. Named only here: callers reach it through
+ * `pluginPaneFor`'s return type. */
 interface PluginPane {
   view: PluginView | undefined;
   /** The named plugin's runtime is still starting — see `isPluginPreparing`. */
@@ -73,25 +73,7 @@ function isPluginPreparing(cards: PluginCards, pluginId: string): boolean {
   return cards.some((card) => card.id === pluginId && card.loadStatus === "preparing");
 }
 
-/**
- * Plugin/built-in view routing + the host-managed plugin auth lifecycle,
- * extracted verbatim from App.tsx as ONE unit (guarded by AppPluginAuth.test).
- *
- * Owns the plugin-auth gate refs (the inline pending-open map, the loginTool
- * in-flight guard, the failed-open set) PLUS the action in-flight guard and the
- * `pluginAuthErrors` map. `handleViewSelect` is the sole mutator; the two drain
- * effects (auth-transition → open deferred panel; authed → clear stale error)
- * plus the uninstalled-plugin fallback effect consume that state. Moving the
- * refs and the drain effects together preserves the login-first / open-on-authed
- * contract (architecture.md §9.4a).
- *
- * Selecting a view ALWAYS opens it in a PANE, for plugin views and the app's
- * own built-in tabs alike, in every appMode. Nothing here opens a window:
- * a mode is a layout, not a destination, and having one mode answer a
- * navigation click with a second window left the main window unable to say
- * where it was. The plugin's surface is that pane's body — the frame around it
- * is the same one a conversation gets.
- */
+/** Keep auth gate refs and drain effects together to preserve login-first/open-on-authed routing in every app mode. */
 export function usePluginViewRouting({
   api,
   t,
@@ -131,8 +113,8 @@ export function usePluginViewRouting({
     return { view: undefined, preparing, authError: null };
   }, [pluginViews, pluginCards, pluginAuthErrors]);
 
-  // The focused pane's own resolution, which the fallback effect below acts on:
-  // it is `activeView` that it would send back home.
+  // The focused pane's own resolution, which the fallback effect below acts on: it is `activeView` that it would send back
+  // home.
   const activePane = useMemo(() => pluginPaneFor(activeView), [pluginPaneFor, activeView]);
 
   const clearPluginAuthError = useCallback((pluginId: string) => {
@@ -158,21 +140,8 @@ export function usePluginViewRouting({
     [t],
   );
 
-  // Every view opens in a pane: selecting one moves `activeView`, which is the
-  // FOCUSED pane's location, in every appMode. This is the default and only
-  // behavior, for plugin views and built-in tabs alike, and there is no
-  // per-view detach declaration to opt out of it.
-  //
-  // Auth is a HOST-managed lifecycle (architecture.md §9.4a): the agent never
-  // calls login/logout, and auth plugin view selection is login-first and
-  // host-generic off `manifest.auth`. Selecting an auth plugin view:
-  //   • authed   → open the plugin panel/page.
-  //   • not authed → call loginTool via callPluginMethod (opens the SSO
-  //     window), record a pending open, and open the panel/page when the
-  //     plugin's status transitions to authed.
-  //   • login failure → still open the plugin panel/page and surface a
-  //     sanitized error code so the failure is not silent.
-  // Plugins WITHOUT `manifest.auth.loginTool` open directly.
+  // Host-managed auth opens authed views immediately, defers unauthenticated ones through loginTool, and opens failures with
+  // sanitized errors; plugins without loginTool open directly.
   const handleViewSelect = useCallback(
     (key: string) => {
       // The runtime boundary. Sidebar rows, the command palette, and
@@ -188,14 +157,8 @@ export function usePluginViewRouting({
       if (parsed.kind === "plugin") {
         const view = pluginViews.find((v) => toViewKey(v) === key);
         const card = pluginCards.find((c) => c.id === parsed.pluginId);
-        // A plugin that is still preparing has a row in the picker — App builds
-        // those from `card.uiExtensions` precisely so a user can reach a plugin
-        // whose runtime has not finished starting — but no entry in
-        // `pluginViews` yet, because the view is registered by the runtime.
-        // Refusing the selection here dropped that click on the floor: the
-        // picker closed, nothing opened, and nothing brought the user back when
-        // the view landed a few seconds later. Open the destination instead and
-        // let the host paint its loading state until the view registers.
+        // Navigate preparing-plugin rows to their loading destination even before runtime registration, rather than dropping the
+        // selection.
         if (!view && !isPluginPreparing(pluginCards, parsed.pluginId)) return;
         const pluginId = view?.pluginId ?? parsed.pluginId;
         const loginTool = card?.auth?.loginTool;
@@ -229,8 +192,8 @@ export function usePluginViewRouting({
             await api.callPluginMethod(loginTool, undefined, { userAction: true });
             refreshPluginAuthStatus(pluginId);
           } catch (err) {
-            // Raw err.message may carry OAuth/Bearer fragments — keep raw in
-            // console only, and surface a sanitized code-oriented message.
+            // Raw err.message may carry OAuth/Bearer fragments — keep raw in console only, and surface a sanitized code-oriented
+            // message.
             console.warn(
               `[plugin-auth] ${pluginId} loginTool '${loginTool}' failed`,
               err,

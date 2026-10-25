@@ -7,16 +7,7 @@ import {
 
 export type { MarketplaceAnnouncement } from "../../../shared/marketplace-announcements.js";
 
-/**
- * Subscribes to `MARKETPLACE.announcements` IPC events and exposes the active
- * announcement set plus a `dismiss(id)` callback.
- *
- * Dismissal removes the banner from local state immediately and persists the id
- * to `settings.marketplace.dismissedAnnouncementIds`. The host filters dismissed
- * ids out of every subsequent push (and across restarts), so a dismissed banner
- * never returns. Because `updateSettings` replaces the marketplace block's array
- * wholesale, the current ids are read first and merged.
- */
+/** Dismiss locally immediately, then merge persisted ids because settings updates replace the whole array. */
 export function useMarketplaceAnnouncements(api: AveApi) {
   const [announcements, setAnnouncements] = useState<MarketplaceAnnouncement[]>(
     [],

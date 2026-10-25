@@ -63,9 +63,8 @@ describe("detectMentionQuery", () => {
   });
 
   it("never opens inside an email address", () => {
-    // The reason the rule is shared with the slash detector rather than re-written: the
-    // "must start a token" clause is what keeps `foo@example.com` from opening a picker,
-    // exactly as it keeps `https://` from opening the command menu.
+    // The reason the rule is shared with the slash detector rather than re-written: the "must start a token" clause is what
+    // keeps `foo@example.com` from opening a picker, exactly as it keeps `https://` from opening the command menu.
     expect(detectMentionQuery("mail user@example.com", 21)).toBeNull();
     expect(detectMentionQuery("user@ex", 7)).toBeNull();
   });

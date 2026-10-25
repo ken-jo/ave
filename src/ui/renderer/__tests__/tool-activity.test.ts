@@ -198,9 +198,8 @@ describe("computeToolActivity", () => {
     expect(activity.readFiles[0]?.label).toBe("/b.ts");
     expect(activity.fetchedPages[0]?.label).toBe("https://x.com");
     expect(activity.fetchedPages[0]?.target).toBe("https://x.com/page");
-    // Read/written rows carry their path as `target` so the activity rows can route
-    // them to an in-app preview (§6.10.5). No opener is triggered — the target
-    // is only a routing key.
+    // Read/written rows carry their path as `target` so the activity rows can route them to an in-app preview (§6.10.5). No
+    // opener is triggered — the target is only a routing key.
     expect(activity.changedFiles[0]?.target).toBe("/a.ts");
     expect(activity.readFiles[0]?.target).toBe("/b.ts");
   });
@@ -227,8 +226,8 @@ describe("computeToolActivity", () => {
     const activity = computeToolActivity(entries);
     // Three URL mentions, two distinct pages.
     expect(activity.fetchedPageCount).toBe(2);
-    // The fetched page is credited to the fetch that asked for it, not the
-    // search that listed it, and leads as the most recent call's page.
+    // The fetched page is credited to the fetch that asked for it, not the search that listed it, and leads as the most recent
+    // call's page.
     expect(resolveTranscriptUrls(entries).map((page) => [page.url, page.toolUseId, page.origin])).toEqual([
       ["https://a.example/one", "u2", "argument"],
       ["https://b.example/two", "s1", "result"],

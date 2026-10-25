@@ -1,15 +1,4 @@
-/**
- * Geometry for a composer dropdown that hangs off the textarea and grows UPWARD.
- *
- * Extracted from InlineSlashMenu when the `@` mention menu needed the same box. It is
- * the part of those two components that genuinely is the same thing — anchor to the
- * textarea's box (not the caret glyph, which would need pixel measurement), pin the
- * menu's bottom just above it, and keep the active row scrolled into view. What a row
- * looks like stays with each menu, because that is where they actually differ.
- *
- * Portaled callers need `position: fixed` values: the composer has two
- * `overflow-hidden` ancestors, so a menu positioned inside the tree gets clipped.
- */
+/** Anchor portal menus to the textarea box with fixed coordinates to escape composer overflow clipping. */
 import { useLayoutEffect, useState } from "react";
 import type { RefObject } from "react";
 
@@ -45,8 +34,8 @@ export function useCaretAnchoredBox({
       width: rect.width,
       bottom: window.innerHeight - rect.top + 4,
     });
-    // `itemCount` and `activeIndex` are dependencies because the textarea grows as the
-    // user types: re-measuring only on open would leave the menu overlapping it.
+    // `itemCount` and `activeIndex` are dependencies because the textarea grows as the user types: re-measuring only on open
+    // would leave the menu overlapping it.
   }, [open, anchorRef, itemCount, activeIndex]);
 
   useLayoutEffect(() => {

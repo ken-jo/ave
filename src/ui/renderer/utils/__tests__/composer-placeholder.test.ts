@@ -2,11 +2,8 @@ import { describe, it, expect, afterEach } from "vitest";
 import { computeComposerPlaceholder } from "../composer-placeholder.js";
 import type { SuggestedRepliesSnapshot } from "../../hooks/use-suggested-replies.js";
 
-/**
- * The preload platform bridge the renderer reads. Absent in jsdom by default,
- * which is the same answer a non-macOS host gives, so the darwin case has to
- * plant it rather than assume it.
- */
+/** The preload platform bridge the renderer reads. Absent in jsdom by default, which is the same answer a non-macOS host
+ * gives, so the darwin case has to plant it rather than assume it. */
 function setPlatform(isDarwin: boolean | undefined): void {
   if (isDarwin === undefined) {
     delete window.avePlatform;
@@ -87,8 +84,7 @@ describe("computeComposerPlaceholder", () => {
   });
 
   it("macOS 가 아닌 호스트에서는 붙여넣기 키가 Ctrl", () => {
-    // Windows/Linux 에는 Command 키가 없다. 두 문장을 따로 두지 않고 수식어만
-    // 치환하므로, 번역 카탈로그에는 문장 하나만 남는다.
+    // Windows/Linux 에는 Command 키가 없다. 두 문장을 따로 두지 않고 수식어만 치환하므로, 번역 카탈로그에는 문장 하나만 남는다.
     setPlatform(false);
     expect(
       computeComposerPlaceholder({
@@ -111,8 +107,7 @@ describe("computeComposerPlaceholder", () => {
   });
 
   it("streaming + 활성 chip 이 동시에 있으면 추천 UI 가 placeholder 를 숨김", () => {
-    // `suggested_replies` 이벤트가 `done`보다 먼저 도착하므로, streaming
-    // placeholder 를 유지하면 ghost/chip 과 같은 textarea 줄에서 겹쳐 보인다.
+    // `suggested_replies` 이벤트가 `done`보다 먼저 도착하므로, streaming placeholder 를 유지하면 ghost/chip 과 같은 textarea 줄에서 겹쳐 보인다.
     expect(
       computeComposerPlaceholder({
         hasApiKey: true,

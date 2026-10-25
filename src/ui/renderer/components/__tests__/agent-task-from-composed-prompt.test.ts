@@ -25,9 +25,8 @@ describe("agentTaskFromComposedPrompt", () => {
       hostileTask,
     );
     const extracted = agentTaskFromComposedPrompt(composed);
-    // The composer neutralizes fence look-alikes inside content, so extraction
-    // must terminate at the REAL closing fence and return the whole task (in
-    // its neutralized spelling), not a truncated prefix of it.
+    // The composer neutralizes fence look-alikes inside content, so extraction must terminate at the REAL closing fence and
+    // return the whole task (in its neutralized spelling), not a truncated prefix of it.
     expect(extracted).not.toBeNull();
     expect(extracted).toContain("Explain what");
     expect(extracted?.endsWith("do.")).toBe(true);

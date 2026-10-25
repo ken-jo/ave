@@ -30,10 +30,7 @@ export function useChatStatusIndicators({
   statusUpsertPersistent,
   statusRemovePersistent,
 }: UseChatStatusIndicatorsDeps): void {
-  // Show a persistent StatusBar indicator while a pre-turn auto-compact runs.
-  // `compact_started` sets isCompacting → this effect upserts the item.
-  // `compact_notice` clears isCompacting → this effect removes the item.
-  // Issue #916: force-recover (autoCompact OFF-override) shows a distinct label.
+  // Keep pre-turn compaction visible and distinguish force-recover from ordinary automatic compaction.
   useEffect(() => {
     const COMPACT_ITEM_ID = "auto-compact-in-progress";
     if (isCompacting) {
@@ -54,8 +51,7 @@ export function useChatStatusIndicators({
     }
   }, [isCompacting, compactTriggerSource, statusUpsertPersistent, statusRemovePersistent]);
 
-  // Issue #917: show a persistent warning banner when force-recover budget is exhausted.
-  // Cleared when the user starts a new chat (clearForNewChat resets isRecoveryExhausted).
+  // Warn when recovery budget is exhausted; clear on new chat.
   useEffect(() => {
     const EXHAUSTED_ITEM_ID = "recovery-exhausted";
     if (isRecoveryExhausted) {

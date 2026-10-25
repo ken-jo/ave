@@ -1,20 +1,4 @@
-/**
- * Single source of truth for "which file paths did this tool call touch".
- *
- * Two renderer derivations read a `ToolEntryItem`'s input and emit path
- * strings — the chat preview target list (`preview/preview-targets.ts`) and the
- * tool activity's file-change/read rows (`utils/tool-activity.ts`).
- * They are NOT independent summaries: `ChatView.routeActivity` resolves an
- * tool-activity row back against the preview model by exact string equality
- * (`previewModel.targets.find(c => "path" in c && c.path === target)`), so any
- * string one side emits and the other does not is by construction a lookup miss
- * that falls to the file-browser dead-end branch.
- *
- * The tables and the two shape rules therefore live here, once. The remaining
- * traversal/predicate differences between the two modules are deliberate (they
- * have different depth budgets and different bare-filename policies); what must
- * not diverge is the classification vocabulary below.
- */
+/** Activity rows and preview targets share path extraction because their join uses exact string equality. */
 
 /** Object keys whose value is understood to name a file, not merely contain one. */
 export const TOOL_PATH_KEYS: ReadonlySet<string> = new Set([
@@ -39,10 +23,8 @@ export const TOOL_PATH_KEYS: ReadonlySet<string> = new Set([
  */
 export type FileChangeOperation = "create" | "modify" | "delete" | "move" | "write";
 
-/**
- * Tool names whose invocation is a file change regardless of declared
- * category, and the change each one is contractually known to make.
- */
+/** Tool names whose invocation is a file change regardless of declared category, and the change each one is contractually
+ * known to make. */
 const FILE_CHANGE_TOOL_CONTRACTS: ReadonlyMap<string, {
   operation: FileChangeOperation;
   inputPathFields?: readonly string[];
@@ -88,11 +70,8 @@ export function declaredFileChangePaths(name: string, input: unknown): string[] 
 /** Tool-name shape that reads/searches files. */
 export const READ_TOOL_PATTERN = /(^|[._:-])(read|open|cat|grep|rg|search|find|list|glob)([._:-]|$)/i;
 
-/**
- * http(s) URLs embedded in free text. Global — only ever used with
- * `String.prototype.matchAll`, which does not mutate `lastIndex`; do not call
- * `.test()` on it.
- */
+/** http(s) URLs embedded in free text. Global — only ever used with `String.prototype.matchAll`, which does not mutate
+ * `lastIndex`; do not call `.test()` on it. */
 export const TOOL_URL_PATTERN = /\bhttps?:\/\/[^\s"'<>]+/gi;
 
 /**
@@ -105,11 +84,8 @@ export function isGlobPattern(value: string): boolean {
   return /[*?[\]{}]/.test(value) || value.includes("**");
 }
 
-/**
- * File paths named by an `apply_patch` body. The patch text is the only place
- * those paths appear — the call's own arguments do not list them — so without
- * this the files an `apply_patch` actually wrote are invisible.
- */
+/** File paths named by an `apply_patch` body. The patch text is the only place those paths appear — the call's own
+ * arguments do not list them — so without this the files an `apply_patch` actually wrote are invisible. */
 export function extractPatchPaths(patch: string): string[] {
   return extractPatchFileChanges(patch).map((change) => change.path);
 }
@@ -120,10 +96,8 @@ const PATCH_HEADER_OPERATIONS: Readonly<Record<string, FileChangeOperation>> = {
   Delete: "delete",
 };
 
-/**
- * The same headers with what each one did: a patch body is the one place a
- * file change states create / update / delete in so many words.
- */
+/** The same headers with what each one did: a patch body is the one place a file change states create / update / delete in
+ * so many words. */
 export function extractPatchFileChanges(patch: string): Array<{ path: string; operation: FileChangeOperation }> {
   const changes: Array<{ path: string; operation: FileChangeOperation }> = [];
   const pattern = /^\*\*\* (Add|Update|Delete) File: (.+)$/gm;

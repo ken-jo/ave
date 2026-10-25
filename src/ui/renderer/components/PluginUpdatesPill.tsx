@@ -20,9 +20,8 @@ export interface PluginUpdatesPillProps {
  */
 export function PluginUpdatesPill({ updates: offered, onReview, onSkip }: PluginUpdatesPillProps) {
   const { t } = useTranslation();
-  // Only what waits for the user is counted (design §18.7.5): an update
-  // applying or already applied needs nothing from them, and one waiting for
-  // idle only once it has waited 30 minutes, for *Apply now* (§18.7.4).
+  // Only what waits for the user is counted (design §18.7.5): an update applying or already applied needs nothing from them,
+  // and one waiting for idle only once it has waited 30 minutes, for *Apply now* (§18.7.4).
   const updates = offered.filter(updateViewNeedsUser);
   if (updates.length === 0) return null;
 

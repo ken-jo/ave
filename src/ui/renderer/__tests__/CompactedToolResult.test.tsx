@@ -1,11 +1,3 @@
-/**
- * CompactedToolResult component tests.
- *
- * Covers state transitions:
- *   collapsed (default) → loading → expanded   (IPC success)
- *   collapsed           → loading → missing    (IPC returns null)
- *   collapsed           → loading → missing    (IPC throws — Major #1 fix)
- */
 import "../../../../test/renderer/setup.js";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, fireEvent, act, waitFor } from "@testing-library/react";
@@ -196,7 +188,6 @@ describe("CompactedToolResult", () => {
     fireEvent.click(container.querySelector("button") as HTMLButtonElement);
     await waitFor(() => expect(container.textContent).toContain("▼"));
 
-    // click 접기 button
     const collapseBtn = Array.from(container.querySelectorAll("button")).find((b) =>
       b.textContent?.includes("접기"),
     );

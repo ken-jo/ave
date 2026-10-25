@@ -1,8 +1,4 @@
-/**
- * Install without a marketplace (design §8.1): a git folder holding one
- * package, today's MCP server form, a pasted server.json, or an `mcpServers`
- * block from another client. Nothing is added before its review.
- */
+/** Nothing is installed before review, including pasted MCP configuration and direct package folders. */
 import { useState } from "react";
 import { Button } from "../../../../components/ui/button.js";
 import { Textarea } from "../../../../components/ui/textarea.js";

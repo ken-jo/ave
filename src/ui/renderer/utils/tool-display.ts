@@ -14,11 +14,9 @@ const TOOL_DISPLAY_KEYS: Record<string, string> = {
 
   agent_spawn: "toolDisplay.agentSpawn",
 
-  // Web / Search
   web_search: "toolDisplay.webSearch",
   web_fetch: "toolDisplay.webFetch",
 
-  // System
   bash: "toolDisplay.bash",
   powershell: "toolDisplay.powershell",
   read_file: "toolDisplay.readFile",
@@ -75,8 +73,8 @@ export function getToolCallLabel(toolName: string, input: unknown): string {
  * `bash` are excluded to avoid false positives in normal prose.
  */
 export function replaceToolNamesInText(text: string): string {
-  // Split into alternating [prose, code-block, prose, …] segments.
-  // Regex captures both fenced blocks (``` … ```) and inline backtick spans.
+  // Split into alternating [prose, code-block, prose, …] segments. Regex captures both fenced blocks (``` … ```) and inline
+  // backtick spans.
   const segments = text.split(/(```[\s\S]*?```|`[^`\n]*`)/);
   return segments
     .map((seg, idx) => {

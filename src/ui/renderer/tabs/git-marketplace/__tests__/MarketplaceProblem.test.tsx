@@ -1,7 +1,4 @@
-/**
- * The three tones of a marketplace problem (design §18.8): policy names the
- * organization and offers no way on, a warning asks, an error says what to do.
- */
+/** Policy blocks, warnings ask for confirmation, and errors state the recovery action. */
 // @vitest-environment jsdom
 import "../../../../../../test/renderer/setup.js";
 import { Component, type ReactNode } from "react";

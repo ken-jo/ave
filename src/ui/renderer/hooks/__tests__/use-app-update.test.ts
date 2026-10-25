@@ -1,11 +1,4 @@
-/**
- * App update hook regression tests.
- *
- * The initial `getAppUpdateState()` snapshot is a catch-up path for late
- * mounts, not an authority over live pushes. If an app-update event lands
- * while another renderer event burst is being processed, a stale initial
- * snapshot must not erase the update badge.
- */
+/** Live app-update events outrank the initial snapshot so late reads cannot erase the badge. */
 import "../../../../../test/renderer/setup.js";
 import { afterEach, describe, it, expect, vi } from "vitest";
 import { act, renderHook, waitFor } from "@testing-library/react";

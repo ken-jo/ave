@@ -1,8 +1,4 @@
-/**
- * Issue #911 — systemNotice marker flows from persisted history through
- * historyToEntries onto the ChatEntry assistant kind so AssistantCard
- * can render destructive styling on session reload.
- */
+/** Preserve systemNotice through history reconstruction so reload retains destructive styling. */
 import { describe, expect, it } from "vitest";
 import { historyToEntries, type PersistedHistoryMessage } from "../history.js";
 
@@ -60,9 +56,8 @@ describe("historyToEntries — systemNotice marker (Issue #911)", () => {
       Extract<ReturnType<typeof historyToEntries>[number], { kind: "assistant" }>
     >;
     expect(assistants).toHaveLength(2);
-    // historyToEntries is the single stamping point — replayed entries carry
-    // restored so AssistantCard can soften an old systemNotice banner
-    // instead of re-presenting it as a fresh error on session reload.
+    // historyToEntries is the single stamping point — replayed entries carry restored so AssistantCard can soften an old
+    // systemNotice banner instead of re-presenting it as a fresh error on session reload.
     expect(assistants.every((a) => a.restored === true)).toBe(true);
     expect(assistants[1]!.systemNotice).toBe("stream-error");
   });
@@ -95,8 +90,8 @@ describe("historyToEntries — systemNotice marker (Issue #911)", () => {
       ReturnType<typeof historyToEntries>[number],
       { kind: "assistant" }
     >;
-    // historyToEntries strips "interrupted" before passing — it's not a
-    // host error and should render with normal assistant styling.
+    // historyToEntries strips "interrupted" before passing — it's not a host error and should render with normal assistant
+    // styling.
     expect(assistant.systemNotice).toBeUndefined();
   });
 });

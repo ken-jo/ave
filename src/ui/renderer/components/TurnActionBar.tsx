@@ -10,9 +10,6 @@ import { formatHhMm } from "../../../shared/format-time.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { useCopyFlash } from "../hooks/use-copy-flash.js";
 
-
-
-
 export type TurnSummaryForBadge = Pick<
   TokenCostBadgeProps,
   "tokensIn" | "freshInputTokens" | "tokensOut" | "cacheReadTokens" | "cacheWriteTokens" | "usageByModel" | "subscriptionUsage"
@@ -42,11 +39,8 @@ export function TurnActionBar({
   /** Active vendor — selects cache-cost branching in TokenCostBadge. */
   vendor?: LLMVendor;
   isStarred?: boolean;
-  /**
-   * Plain text of this turn's assistant message (the same cleaned text the
-   * user sees rendered). When provided, a leading Copy button writes it to
-   * the clipboard. Omitted in view-mode / when there is nothing to copy.
-   */
+  /** Plain text of this turn's assistant message (the same cleaned text the user sees rendered). When provided, a leading
+   * Copy button writes it to the clipboard. Omitted in view-mode / when there is nothing to copy. */
   copyText?: string;
   actions?: { onRetry?: () => void; onFork?: () => void; onToggleStar?: () => void };
   onFeedback?: (rating: "up" | "down", reason?: string) => void | Promise<void>;
@@ -58,8 +52,7 @@ export function TurnActionBar({
   const { copied, copy } = useCopyFlash();
   const handleCopy = () => copy(copyText ?? "");
 
-  // The shared formatter, so this label reads the same clock as every other
-  // time in the transcript.
+  // The shared formatter, so this label reads the same clock as every other time in the transcript.
   const timestampLabel = useMemo(() => formatHhMm(timestamp), [timestamp]);
 
   return (

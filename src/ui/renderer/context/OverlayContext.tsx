@@ -1,19 +1,4 @@
-/**
- * OverlayContext — routine fire overlay queue.
- *
- * Policy:
- *   - ONE queue for the window; each tile renders its own slice of it and
- *     navigates that slice (see `OverlayCardRegion`). A window-wide "1/3" would
- *     count cards the tile does not show and step onto cards it cannot render.
- *   - dismiss (permanent removal)
- *   - snooze removed (production smoke test: UX risk)
- *   - stale fire replace: new fire for same routineId replaces all prior entries
- *   - priority bands: an alert card sits in its priority's band (low, then
- *     normal, then high, oldest first within a band); every other card counts
- *     as normal, so without alerts the queue is plain arrival order
- *
- * Isolation: only summary plus the exact routine session id flows here.
- */
+/** One window queue, navigated per tile; replace stale routine fires and order alert priority bands oldest-first. */
 import {
   createContext,
   useCallback,
@@ -38,13 +23,11 @@ export type OverlayItemSource =
   // as `plugin` (a `pendingPrompt` that becomes an `imported_trigger` on confirm), with
   // its own provenance: the prompt is wrapped in `<app-message source="app:<serverId>">`.
   | { kind: "app"; serverId: string; eventId: string }
-  // A declared plugin alert the host rendered from the kind's templates. An
-  // insertion card like `plugin`; `alertId` is the host's keyed identity for
-  // (plugin, kind, key), so a re-raise refreshes the card instead of adding one.
+  // A declared plugin alert the host rendered from the kind's templates. An insertion card like `plugin`; `alertId` is the
+  // host's keyed identity for (plugin, kind, key), so a re-raise refreshes the card instead of adding one.
   | { kind: "alert"; pluginId: string; kindId: string; alertId: string }
-  // A plugin's onboarding proposal, staged by main once the tour gate opens.
-  // It ASKS rather than stages: it carries no `pendingPrompt` and starts no
-  // turn, and `action` is what accepting it does — performed by the host.
+  // A plugin's onboarding proposal, staged by main once the tour gate opens. It ASKS rather than stages: it carries no
+  // `pendingPrompt` and starts no turn, and `action` is what accepting it does — performed by the host.
   | {
       kind: "proposal";
       pluginId: string;
@@ -52,26 +35,8 @@ export type OverlayItemSource =
       action: PluginOnboardingAction;
     };
 
-/**
- * Address a card the user did not ask for to the dedicated Suggestions
- * conversation.
- *
- * A card with no origin used to be drawn in the FOCUSED pane, and its confirm
- * started a turn in whatever conversation that pane held — a plugin's
- * suggestion, an alert or a routine's result landing inside the user's own
- * work. Every such card now names the Suggestions conversation, so
- * `overlayCardTile` draws it only where that conversation is open, and the
- * sidebar marks its row otherwise.
- *
- * Two kinds keep their place. An `app` card was raised inside a conversation
- * the user is in, and keeps that origin. An onboarding `proposal` stays inline
- * where the user is: it runs no turn, a first-run user has no work for it to
- * intrude on, and a sidebar count alone would hide onboarding.
- *
- * Applied at the one renderer ingress for cards, so cards staged by an older
- * build (a stored alert, an unacknowledged routine result) are routed the same
- * way without rewriting anything on disk.
- */
+/** Unrequested cards go to Suggestions; app cards retain origin sessions and onboarding proposals remain inline without
+ * starting turns. */
 export function routeToSuggestionsSession(item: OverlayItem): OverlayItem {
   switch (item.source.kind) {
     case "app":
@@ -97,11 +62,8 @@ function priorityRank(item: OverlayItem): number {
     : PRIORITY_RANK.normal;
 }
 
-/**
- * Put `item` at the end of its priority band. The queue is kept band-sorted,
- * so this is the arrival-order position among cards of the same rank, and a
- * refreshed alert moves to the top of its band.
- */
+/** Put `item` at the end of its priority band. The queue is kept band-sorted, so this is the arrival-order position among
+ * cards of the same rank, and a refreshed alert moves to the top of its band. */
 function insertByPriority(queue: readonly OverlayItem[], item: OverlayItem): OverlayItem[] {
   const rank = priorityRank(item);
   const at = queue.findIndex((it) => priorityRank(it) > rank);
@@ -122,40 +84,15 @@ export interface OverlayItem {
   primaryActionLabel?: string;
   /** routine-specific — unified conversation session id */
   routineSessionId?: string;
-  /**
-   * Plugin insertion overlay — prompt inserted into the card's origin
-   * conversation (the Suggestions conversation for every unrequested card)
-   * when the user confirms (primary action). Absent for routine-source items.
-   */
+  /** Plugin insertion overlay — prompt inserted into the card's origin conversation (the Suggestions conversation for every
+   * unrequested card) when the user confirms (primary action). Absent for routine-source items. */
   pendingPrompt?: string;
-  /**
-   * Where an `alert` card sits in the queue: `high` above `normal` above
-   * `low`. Read for alert cards only; every other card counts as `normal`.
-   */
+  /** Where an `alert` card sits in the queue: `high` above `normal` above `low`. Read for alert cards only; every other card
+   * counts as `normal`. */
   priority?: OverlayPriority;
-  /**
-   * When the card came into being, as an ISO timestamp.
-   *
-   * Required, and never minted at render: an insertion card shows this as its
-   * relative time, and a card that re-derived "now" whenever it was re-rendered
-   * — a routine's spinner being replaced by its result, or its tile coming
-   * back into the tree with the card still parked in it — would reset its own
-   * age in front of the user. Main stamps it on the two emit paths; a routine item takes the
-   * instant it fired.
-   */
+  /** Stamp card time at creation, never render, so rerenders and restored tiles cannot reset displayed age. */
   createdAt: string;
-  /**
-   * The conversation this card CAME FROM, when main knew one.
-   *
-   * An MCP app card is raised by a card mounted in a specific conversation, so
-   * it belongs to whichever tile is holding that conversation. A routine fires
-   * on a schedule and a plugin trigger fires on an event — neither has a
-   * conversation behind it, so they (with alerts) are addressed
-   * to the dedicated Suggestions conversation by
-   * {@link routeToSuggestionsSession} rather than to the focused tile.
-   *
-   * NOT `source.eventId`: that identifies the plugin EVENT, not a session.
-   */
+  /** Card origin is a session id, never a plugin event id; unrequested cards are routed to Suggestions. */
   originSessionId?: string;
 }
 
@@ -163,11 +100,8 @@ export interface OverlayContextValue {
   /** Visible preview columns, in mount order; one column owns each routine card. */
   thumbnailSessions: readonly { token: symbol; sessionId: string }[];
   registerThumbnailSession: (token: symbol, sessionId: string) => () => void;
-  /**
-   * Every live card, in priority bands and oldest first within a band. The WINDOW's queue: which of these a given
-   * tile shows, and which one of those is active there, is that tile's own
-   * question — see `OverlayCardRegion`.
-   */
+  /** Every live card, in priority bands and oldest first within a band. The WINDOW's queue: which of these a given tile
+   * shows, and which one of those is active there, is that tile's own question — see `OverlayCardRegion`. */
   queue: readonly OverlayItem[];
   /** Permanently remove from queue */
   dismiss: (id: string) => void;
@@ -199,21 +133,12 @@ export function OverlayContextProvider({
 }: {
   children: ReactNode;
   onOpenSession: (sessionId: string) => boolean | Promise<boolean>;
-  /**
-   * Optional ref that App.tsx populates so it can call addFire() from
-   * outside the React tree (e.g. from an IPC subscription useEffect).
-   * The ref is set synchronously during render, before any effects fire.
-   */
+  /** Optional ref that App.tsx populates so it can call addFire() from outside the React tree (e.g. from an IPC subscription
+   * useEffect). The ref is set synchronously during render, before any effects fire. */
   addFireRef?: RefObject<((item: OverlayItem) => void) | null>;
-  /**
-   * The same, for dismiss(): main withdraws a card it staged (an alert the
-   * plugin withdrew, or one that expired) by id, from outside the React tree.
-   */
+  /** The same, for dismiss(): main withdraws a card it staged (an alert the plugin withdrew, or one that expired) by id, from
+   * outside the React tree. */
   dismissRef?: RefObject<((id: string) => void) | null>;
-  /**
-   * C1: Set of currently-running routine IDs from App.tsx runningRoutines state.
-   * Provider syncs queue items' running flag when this set changes.
-   */
   runningRoutines?: Set<string>;
   /**
    * The queue, handed back up to the window that renders this provider. The
@@ -234,7 +159,6 @@ export function OverlayContextProvider({
     onQueueChange?.(queue);
   }, [queue, onQueueChange]);
 
-  // C1: sync running flag from runningRoutines set whenever it changes
   useEffect(() => {
     if (!runningRoutines) return;
     setQueue((prev) => {
@@ -254,13 +178,8 @@ export function OverlayContextProvider({
 
   const addFire = useCallback((item: OverlayItem) => {
     setQueue((prev) => {
-      // Stale fire replace: source.kind === "routine" + same routineId → replace;
-      // source.kind === "plugin" + same (pluginId, eventId) → replace;
-      // source.kind === "proposal" + same (pluginId, proposalId) → replace;
-      // source.kind === "alert" + same alertId → replace (a refresh).
-      // Stale guard: for routine items, only replace if incoming firedAt >= existing firedAt.
-      // Date.parse() defensive comparison — handles any ISO string normalisation differences.
-      // Invalid timestamp on incoming item → drop (stale-by-default); invalid existing → accept incoming.
+      // Replace matching source identities; routine replacement requires a non-stale firedAt. Reject invalid incoming timestamps
+      // and accept over invalid stored ones.
       let dominated = false;
       const filtered = prev.filter((it) => {
         if (item.source.kind === "routine" && it.source.kind === "routine") {
@@ -312,8 +231,8 @@ export function OverlayContextProvider({
 
   const dismiss = useCallback((id: string) => {
     setQueue((prev) => prev.filter((it) => it.id !== id));
-    // A dismissed card's expansion has nothing left to describe; keeping it
-    // would silently pre-expand a later card that reused the id.
+    // A dismissed card's expansion has nothing left to describe; keeping it would silently pre-expand a later card that reused
+    // the id.
     setExpandedCardIds((prev) => {
       if (!prev.has(id)) return prev;
       const next = new Set(prev);

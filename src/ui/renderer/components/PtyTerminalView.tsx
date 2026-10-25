@@ -24,16 +24,8 @@ function diagnostic(text: string): string {
   return `\r\n\x1b[33m${text}\x1b[0m\r\n`;
 }
 
-/**
- * xterm's canvas renderer cannot resolve CSS custom properties, so the ACTIVE
- * theme tokens are read off the DOM and handed to xterm as concrete colors —
- * no source-level color literal (color-token-gate compliant).
- *
- * The tokens are only ever set on :root (`styles.css` bundle blocks, and
- * `resolve-theme.ts` inline for installed themes), so they are read there,
- * once: resolving them on the host instead walks every ancestor's style for an
- * inherited custom property, which costs seconds per read in a large tree.
- */
+/** Resolve concrete terminal colors from root tokens; canvas cannot resolve CSS variables and inherited lookups on deep
+ * hosts are expensive. */
 function terminalTheme(host: HTMLElement): ITheme {
   const style = getComputedStyle(host.ownerDocument.documentElement);
   const readToken = (name: string, fallbackTriple: string): string => {
@@ -53,16 +45,11 @@ interface PtyTerminalViewProps {
   tabLabel: string;
   /** Hand a block's text to the chat composer; false when it is full. */
   onAttachText?: (text: string) => AttachTextResult;
-  /**
-   * Where a NEW shell starts. Only the first spawn of a tab reads it — a
-   * remount replays the running shell, which is wherever it already is.
-   */
+  /** Where a NEW shell starts. Only the first spawn of a tab reads it — a remount replays the running shell, which is
+   * wherever it already is. */
   initialCwd?: string | null;
-  /**
-   * Whether the user is looking at this terminal when it is on screen: a
-   * side panel's front tab is (default); a main pane is while it has focus,
-   * so a terminal in the other half of a split still rings.
-   */
+  /** Whether the user is looking at this terminal when it is on screen: a side panel's front tab is (default); a main pane is
+   * while it has focus, so a terminal in the other half of a split still rings. */
   attended?: boolean;
 }
 
@@ -112,22 +99,21 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
   const hostRef = useRef<HTMLDivElement | null>(null);
   // Read once, at the spawn: a later report must not respawn anything.
   const initialCwdRef = useRef(initialCwd ?? null);
-  // Attention is "seen" only while the terminal is both attended and on
-  // screen; the box is measured by the resize observer below.
+  // Attention is "seen" only while the terminal is both attended and on screen; the box is measured by the resize observer
+  // below.
   const attendedRef = useRef(attended);
   attendedRef.current = attended;
   const hasBoxRef = useRef(false);
   const [blockRevision, setBlockRevision] = useState(0);
   const termRef = useRef<Terminal | null>(null);
-  // Changes after the applied theme's values were written to :root — another
-  // theme or the same one updated in place.
+  // Changes after the applied theme's values were written to :root — another theme or the same one updated in place.
   const appliedRevision = useOptionalTheme()?.appliedRevision ?? 0;
 
   useEffect(() => {
     const host = hostRef.current;
     const terminalApi = api.terminal;
-    // `terminal` is only ever undefined in test fixtures that cast a partial
-    // object to AveApi — production preload always defines it.
+    // `terminal` is only ever undefined in test fixtures that cast a partial object to AveApi — production preload always
+    // defines it.
     if (!host || !terminalApi) return;
 
     let disposed = false;
@@ -161,8 +147,8 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
     const bumpBlocks = (): void => {
       if (!disposed) setBlockRevision((value) => value + 1);
     };
-    // OSC 133 A (prompt) and D (command finished) end a block; C starts one.
-    // Returning false leaves the sequence to xterm's default handling.
+    // OSC 133 A (prompt) and D (command finished) end a block; C starts one. Returning false leaves the sequence to xterm's
+    // default handling.
     const markerSub = term.parser.registerOscHandler(133, (data) => {
       const marker = data.charAt(0);
       if (marker === "A" || marker === "C" || marker === "D") bumpBlocks();
@@ -241,8 +227,8 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
       if (!disposed) term.write(diagnostic(t("ptyTerminal.startFailed")));
     }).finally(() => { if (!disposed) setTerminalReplaying(tabId, false); });
 
-    // The user is looking at this terminal while its host has a box: a hidden
-    // pane or a side panel set aside lays it out at zero size.
+    // The user is looking at this terminal while its host has a box: a hidden pane or a side panel set aside lays it out at
+    // zero size.
     const reportAttended = () => {
       hasBoxRef.current = host.offsetWidth > 0 && host.offsetHeight > 0;
       setTerminalAttended(tabId, attendedRef.current && hasBoxRef.current);
@@ -268,8 +254,8 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
       offExit();
       termRef.current = null;
       term.dispose();
-      // NOTE: PTY is intentionally NOT killed here — it survives unmount and is
-      // torn down on tab close (closeWorkspaceTab → terminal.kill).
+      // NOTE: PTY is intentionally NOT killed here — it survives unmount and is torn down on tab close (closeWorkspaceTab →
+      // terminal.kill).
     };
   }, [api, tabId, lane]);
 
@@ -278,8 +264,8 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
     if (termRef.current) setTerminalAttended(tabId, attended && hasBoxRef.current);
   }, [tabId, attended]);
 
-  // Re-tint the live terminal when the applied theme changes: its options take
-  // a new theme in place, so the shell, scrollback and cursor are kept.
+  // Re-tint the live terminal when the applied theme changes: its options take a new theme in place, so the shell,
+  // scrollback and cursor are kept.
   useEffect(() => {
     const term = termRef.current;
     const host = hostRef.current;

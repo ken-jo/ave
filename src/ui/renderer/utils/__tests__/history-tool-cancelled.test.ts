@@ -1,18 +1,4 @@
-/**
- * A user stop must not render as a tool failure — live or after a reload.
- *
- * Stopping a turn mid-tool-call recorded the in-flight call with
- * `is_error: true`. The engine knew better (`interruptionReason === "user-abort"`)
- * but had no carrier to say so, so the deliberate halt reached the renderer as
- * an ordinary failure: a destructive "Failed" badge, and — because the group
- * rolls up with `some(t => t.status === "error")` — the whole multi-tool group
- * flipped to error styling too.
- *
- * The assistant-text path already draws this distinction (`interrupted` vs
- * `systemNotice`, see history-interrupted.test.ts). These tests pin the same
- * distinction for tool rows, on BOTH entry points: the live stream event and
- * the persisted `toolDisplay` replay, which is the only witness on reload.
- */
+/** User-aborted tools remain cancelled after reload and must not mark their group as failed. */
 import { describe, expect, it } from "vitest";
 import { historyToEntries, type PersistedHistoryMessage } from "../history.js";
 import { applyToolStart, applyToolEnd, type ChatEntry, type ToolEntryItem } from "../../../../lib/chat-stream-state.js";
@@ -35,8 +21,7 @@ describe("cancelled tool calls", () => {
       groupId: GROUP,
       toolUseId: "t1",
       result: "도구 실행이 취소되었습니다.",
-      // The wire flag stays true — the model must know no usable result came
-      // back, and tool-result schemas have no third state.
+      // The wire flag stays true — the model must know no usable result came back, and tool-result schemas have no third state.
       isError: true,
       cancelled: true,
     });
@@ -56,9 +41,8 @@ describe("cancelled tool calls", () => {
   });
 
   it("keeps a cancelled call out of the group's error roll-up", () => {
-    // This is the visible symptom: one stopped call turned the entire group
-    // destructive. `hasError` filters on status === "error", so a distinct
-    // status excludes it without that call site needing to change.
+    // This is the visible symptom: one stopped call turned the entire group destructive. `hasError` filters on status ===
+    // "error", so a distinct status excludes it without that call site needing to change.
     let entries = applyToolStart([], { groupId: GROUP, toolUseId: "t1", name: "bash", displayOrder: 0 });
     entries = applyToolStart(entries, { groupId: GROUP, toolUseId: "t2", name: "read_file", displayOrder: 1 });
     entries = applyToolEnd(entries, { groupId: GROUP, toolUseId: "t1", result: "ok", isError: false });
@@ -74,8 +58,7 @@ describe("cancelled tool calls", () => {
   });
 
   it("carries the persisted flag onto the replayed tool row", () => {
-    // On reload there is no stream event; `toolDisplay.cancelled` is the only
-    // witness that the halt was deliberate.
+    // On reload there is no stream event; `toolDisplay.cancelled` is the only witness that the halt was deliberate.
     const messages: PersistedHistoryMessage[] = [
       { index: 0, role: "user", content: "긴 작업 시작" },
       {

@@ -8,24 +8,16 @@ interface WorkGroupProps {
   stepCount: number;
   streaming: boolean;
   children: React.ReactNode;
-  /**
-   * Optional total wall-clock duration of the turn (ms). When provided and
-   * the group is not streaming, the completion header names it using the
-   * shared turn-summary rounding rules.
-   */
+  /** Optional total wall-clock duration of the turn (ms). When provided and the group is not streaming, the completion header
+   * names it using the shared turn-summary rounding rules. */
   turnDurationMs?: number;
   /** True only after a clean final response or an end_turn-confirmed summary. */
   completed?: boolean;
-  /**
-   * A provider-status detail owned by this active group. It replaces the
-   * generic thinking label instead of becoming a second nested status row.
-   */
+  /** A provider-status detail owned by this active group. It replaces the generic thinking label instead of becoming a second
+   * nested status row. */
   progressLabel?: string;
-  /**
-   * Stable content signature for memoization. ChatView can rebuild element
-   * children while an active turn streams; unchanged historical groups should
-   * not rerender just because the active group changed.
-   */
+  /** Stable content signature for memoization. ChatView can rebuild element children while an active turn streams; unchanged
+   * historical groups should not rerender just because the active group changed. */
   revision: string;
   /**
    * Hold the group open regardless of its own collapse state. Two callers set
@@ -38,14 +30,13 @@ interface WorkGroupProps {
   forceOpen?: boolean;
 }
 
-// Monotonic per-instance id so multiple WorkGroups in one turn can be
-// distinguished in the debug logs without relying on React internals.
+// Monotonic per-instance id so multiple WorkGroups in one turn can be distinguished in the debug logs without relying on
+// React internals.
 let __wgInstanceCounter = 0;
 
 function WorkGroupImpl({ stepCount, streaming, children, turnDurationMs, completed = false, progressLabel, forceOpen = false }: WorkGroupProps) {
-  // Past-turn WorkGroups always receive streaming=false from first render,
-  // so they must start closed. Active-turn WorkGroups start open and
-  // auto-close when the true→false transition fires in the effect below.
+  // Past-turn WorkGroups always receive streaming=false from first render, so they must start closed. Active-turn WorkGroups
+  // start open and auto-close when the true→false transition fires in the effect below.
   const { locale, t } = useTranslation();
   const debugStreamEnabled = isDebugStreamEnabled();
   const [open, setOpen] = useState(streaming);
@@ -107,8 +98,7 @@ function WorkGroupImpl({ stepCount, streaming, children, turnDurationMs, complet
     prevStreaming.current = streaming;
   }, [displayOpen, forceOpen, streaming]);
 
-  // Diagnostic: only active streaming groups log render churn. Historical
-  // groups used to spam the console on every active-turn delta in dev mode.
+  // Log render churn only for active streaming groups so historical groups do not spam diagnostics.
   if (debugStreamEnabled && streaming) {
     debugLog("WG", "render", { wgId, streaming, open: displayOpen, forceOpen, stepCount });
   }

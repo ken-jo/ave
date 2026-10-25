@@ -1,23 +1,5 @@
-/**
- * Production host-side wiring for one MCP App card: `AppBridge` + transport.
- *
- * Extracted from `McpAppView.tsx` on purpose. This is the code that actually decides
- * whether an MCP App works — the constructor argument order, the sandbox handshake,
- * the `resources/read` proxy, the `connect()` call — and the real-<webview> e2e gate
- * (`test/e2e/ui/mcp-app-handshake/`) imports THIS module so it exercises the shipping
- * wiring rather than a look-alike reimplementation.
- *
- * That distinction is not academic. The gate previously stood up its own AppBridge, so
- * it proved the architecture end-to-end while proving nothing about how the renderer
- * wired it: drop the `onsandboxready` assignment or swap two constructor args and the
- * product would be dead with the gate still green. Keeping this in a React-free module
- * (no react / lucide / i18n imports) is what lets the e2e page bundle import the real
- * thing.
- *
- * The individual handler BODIES live in `mcp-app-bridge/handlers.ts`; this module is
- * the single wiring surface that computes host capabilities from the active handler set
- * and registers every handler before `connect()`.
- */
+/** UI handshake tests import this shipping bridge wiring so transport and connection regressions cannot hide behind a
+ * reimplementation. */
 import { AppBridge } from "@modelcontextprotocol/ext-apps/app-bridge";
 // `McpUiHostContext` comes from the local standard-type twin, not the package —
 // a drift-safety/hygiene choice for types, not a strict compile necessity (see
@@ -43,18 +25,12 @@ import type { McpUiDownloadOutcome } from "../../../mcp/mcp-app-download.js";
 import type { McpUiModelContextOutcome } from "../../../mcp/mcp-app-model-context.js";
 import type { McpUiDisplayMode } from "../../../shared/mcp-app-display-mode.js";
 
-/**
- * The exact `McpUiHostCapabilities` shape the `AppBridge` ctor's 3rd arg expects,
- * derived off the resolvable class value. (A direct named import of
- * `McpUiHostCapabilities` collapses under NodeNext — see the handler modules.)
- */
+/** The exact `McpUiHostCapabilities` shape the `AppBridge` ctor's 3rd arg expects, derived off the resolvable class value.
+ * (A direct named import of `McpUiHostCapabilities` collapses under NodeNext — see the handler modules.) */
 type McpAppHostCapabilities = ConstructorParameters<typeof AppBridge>[2];
 
-/**
- * React-owned adapters injected by McpAppView. This module stays React-free (the e2e
- * gate imports it), so any handler that needs renderer state or a preload surface
- * receives it here rather than reaching for React/globals.
- */
+/** React-owned adapters injected by McpAppView. This module stays React-free (the e2e gate imports it), so any handler that
+ * needs renderer state or a preload surface receives it here rather than reaching for React/globals. */
 export interface McpAppBridgeDeps {
   /**
    * `onsizechange` sink — the app reported a content-driven size. McpAppView owns the
@@ -64,48 +40,19 @@ export interface McpAppBridgeDeps {
    * containing block has an indefinite height, so a percentage max-height caps nothing).
    */
   onResize(next: { width?: number; height?: number }): void;
-  /**
-   * `onopenlink` opener — routes an external URL through the host's existing
-   * effect-gated egress path (`window.aveApi.openExternalUrl`). Resolves
-   * `{ ok: true }` when opened, `{ ok: false }` when the host declined.
-   */
+  /** `onopenlink` opener — routes an external URL through the host's existing effect-gated egress path
+   * (`window.aveApi.openExternalUrl`). Resolves `{ ok: true }` when opened, `{ ok: false }` when the host declined. */
   openLink(url: string): Promise<{ ok: boolean }>;
-  /**
-   * `oncalltool` invoker — runs a tool on the card's OWN server through the host's
-   * gated `CHANNELS.mcp.callTool` IPC (risk classification → reviewer/approval →
-   * audit). McpAppView binds it to `payload.serverId`: the SERVER BINDING is
-   * structural, so the app supplies only a tool name + arguments and can never
-   * address another server. Resolves to an outcome — `{ ok: false }` is a host
-   * denial or a tool error, which the handler renders as an MCP error result.
-   */
+  /** Bind tool calls to the card's server through gated host IPC; return denials as tool error outcomes. */
   callTool(name: string, args: Record<string, unknown>): Promise<McpUiToolCallOutcome>;
-  /**
-   * `onmessage` sink — the app asked for its `ui/message` to reach the user. Routed
-   * through the host's gated `CHANNELS.mcp.uiMessage` IPC. McpAppView binds it to the
-   * card's `serverId` AND the card's origin session id: BOTH bindings are structural,
-   * so the app can address neither another server nor another conversation. Main owns
-   * the turn policy (notification / round-boundary guidance / user-gated card) and
-   * answers with an outcome only — never conversation content.
-   */
+  /** Bind messages to the card's server and origin session; main chooses delivery policy and never returns conversation
+   * content. */
   postMessage(params: unknown): Promise<McpUiMessageOutcome>;
-  /**
-   * `onrequestdisplaymode` reader — the card's CURRENT mode. McpAppView owns the
-   * state; the handler answers with this whenever it did not (or could not) move the
-   * card, which is the spec's contract for an unavailable mode.
-   */
+  /** `onrequestdisplaymode` reader — the card's CURRENT mode. McpAppView owns the state; the handler answers with this
+   * whenever it did not (or could not) move the card, which is the spec's contract for an unavailable mode. */
   getDisplayMode(): McpUiDisplayMode;
-  /**
-   * `onrequestdisplaymode` applier — move the card to a SUPPORTED mode (the handler
-   * never calls this for one the host does not advertise) and resolve to the mode
-   * actually applied. McpAppView maps it onto the host's surfaces, all of which live
-   * in this renderer: `inline` is the in-transcript <webview>, `fullscreen` and `pip`
-   * are sibling panels fed by the shared card-location store. No window stack at all.
-   *
-   * A mode change REPLACES the card's live instance, it does not clone it: the mount
-   * that loses the card tears down its bridge + <webview> and the mount that gains it
-   * builds a fresh one. Exactly one bridge per card is connected at any moment, and no
-   * mount ever reports a mode it is not in.
-   */
+  /** Move the card through the shared location store, retiring the losing bridge before the gaining mount connects; report
+   * only the mode actually applied. */
   applyDisplayMode(mode: McpUiDisplayMode): Promise<McpUiDisplayMode>;
   /**
    * `ondownloadfile` sink — the app asked the host to save inline bytes it already
@@ -126,27 +73,9 @@ export interface McpAppBridgeDeps {
   updateModelContext(params: unknown): Promise<McpUiModelContextOutcome>;
 }
 
-/**
- * Wire an `AppBridge` to a freshly mounted <webview> for one card.
- *
- * `_client` is `null` and is the FIRST ctor arg: we do not hand ext-apps an MCP
- * `Client` — the real client lives in the main process — so handlers are registered
- * manually and proxied over our existing IPC. `Client` is deliberately never imported
- * as a value; that would drag `sdk/client/index.js` (and with it eventsource/express/
- * hono) into the renderer bundle.
- *
- * Upstream hosts assign these callbacks via `addEventListener("<event>", …)`, but
- * that member is inherited from `ProtocolWithEvents`, whose ext-apps 1.7.4 `.d.ts`
- * uses EXTENSIONLESS relative imports (`from "./events"`) that do not resolve under
- * `moduleResolution: NodeNext` — so the base class, and every member it brings, is
- * invisible to TypeScript here (`skipLibCheck` merely hides the .d.ts error). Members
- * declared directly on `AppBridge` resolve fine, so every handler below uses the
- * singular setter: upstream marks it deprecated, but it is a supported API with
- * identical single-listener semantics and the runtime JS is unaffected. (Spelling
- * that tag out here would make TS parse it as this function's own JSDoc tag and
- * mark every call site deprecated.) Reverts to `addEventListener` once
- * modelcontextprotocol/ext-apps#705 lands. NOT worth forking.
- */
+/** Pass null as the first bridge constructor argument; the real client stays in main and must not enter the renderer
+ * bundle. Use singular handler setters while extensionless declaration imports hide inherited event methods under
+ * NodeNext. */
 export function createMcpAppBridge(
   payload: Pick<McpUiPayload, "serverId">,
   html: string,
@@ -156,17 +85,7 @@ export function createMcpAppBridge(
 ): { bridge: AppBridge; transport: WebviewIpcTransport; connected: Promise<void> } {
   const transport = new WebviewIpcTransport(el);
 
-  // ── The active app→host handler set: the single source of truth ─────────────
-  // Each entry BOTH (a) contributes the host capability its handler needs advertised
-  // and (b) registers that handler on the constructed bridge. The ctor's
-  // `McpUiHostCapabilities` is derived from the SAME list that drives registration,
-  // by design: advertising a capability whose handler isn't wired (or wiring a
-  // handler we never advertised) is a latent, silent bug. Add a handler here and both
-  // the capabilities and the wiring move in lockstep — as `oncalltool` did: ONE entry
-  // (`{ capability: { serverTools: {} }, register: … }`) and nothing else in here.
-  //
-  // `register` takes the constructed `bridge` because `onsandboxready` must answer on
-  // it; registration therefore runs AFTER construction, still before `connect()`.
+  // Derive advertised capabilities and handler registration from one table; register after construction and before connect.
   const handlers: Array<{
     capability?: McpAppHostCapabilities;
     register(bridge: AppBridge): void;
@@ -232,13 +151,7 @@ export function createMcpAppBridge(
         bridge.onopenlink = createOnOpenLink({ openLink: deps.openLink });
       },
     },
-    // `ui/request-display-mode` → NO `McpUiHostCapabilities` key exists for display
-    // mode (checked against ext-apps `spec.types.d.ts`: the interface carries
-    // openLinks / downloadFile / serverTools / serverResources / logging / sandbox /
-    // updateModelContext / message / sampling — and nothing else). The advertisement
-    // for this one is the HOST CONTEXT's `availableDisplayModes`, published by
-    // `buildMcpAppHostContext` from the same SoT the handler enforces. So: a
-    // capability-less entry, exactly like the two notification handlers.
+    // Display modes advertise through host-context availableDisplayModes; the capability interface has no display-mode key.
     {
       register: (bridge) => {
         bridge.onrequestdisplaymode = createOnRequestDisplayMode({
@@ -264,15 +177,13 @@ export function createMcpAppBridge(
     null,
     MCP_APP_HOST_INFO,
     capabilities,
-    // Standard ext-apps 4th-arg options: seed the initial host context (theme /
-    // styles / locale / timeZone / platform). Live updates go through
-    // `bridge.setHostContext(...)` on the McpAppView side.
+    // Standard ext-apps 4th-arg options: seed the initial host context (theme / styles / locale / timeZone / platform). Live
+    // updates go through `bridge.setHostContext(...)` on the McpAppView side.
     { hostContext },
   );
 
-  // Register EVERY handler before `connect()` — a late assignment would race the
-  // guest's first frames (the relay preload announces sandbox-proxy-ready the moment
-  // the proxy document loads, which can beat `connect()`).
+  // Register EVERY handler before `connect()` — a late assignment would race the guest's first frames (the relay preload
+  // announces sandbox-proxy-ready the moment the proxy document loads, which can beat `connect()`).
   for (const handler of handlers) handler.register(bridge);
 
   return { bridge, transport, connected: bridge.connect(transport) };

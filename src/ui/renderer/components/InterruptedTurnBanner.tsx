@@ -1,11 +1,8 @@
 import { useTranslation } from "../../../i18n/react.js";
 import { Button } from "../../../components/ui/button.js";
 
-/**
- * Offer to pick up a turn the previous app run never finished (see
- * `interruptedTurnOffer`). Shown above the composer; the turn only continues
- * when the user presses Continue — reopening a session never runs anything.
- */
+/** Offer to pick up a turn the previous app run never finished (see `interruptedTurnOffer`). Shown above the composer; the
+ * turn only continues when the user presses Continue — reopening a session never runs anything. */
 export function InterruptedTurnBanner({
   offer,
   onContinue,

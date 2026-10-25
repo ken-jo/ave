@@ -1,14 +1,5 @@
-/**
- * Theme contrast audit — every compiled-in bundle passes the same runtime
- * rules the theme package installer applies (`shared/theme-tokens.ts`):
- * WCAG AA (4.5:1) for body text, AA Large (3:1) for chips and badges and the
- * visible UI line, and 4.5:1 for diff hunk text over its translucent wash.
- *
- * Used to catch foreground tokens that don't match their bg lightness
- * (the canonical regression: `message-user-fg: white` against a 76% L
- * lilac `message-user-bg`, contrast ~1.5 → user text effectively
- * invisible).
- */
+/** Use installer contrast rules for compiled themes too: 4.5:1 body/diff text and 3:1 large text, chips and visible UI
+ * lines. */
 import { describe, it, expect } from "vitest";
 import { THEME_CONTRAST_RULES, themeTokenProblems } from "../../../../../shared/theme-tokens.js";
 import { BUNDLE_IDS, findBundle } from "../index.js";

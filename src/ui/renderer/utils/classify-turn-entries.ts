@@ -18,28 +18,14 @@ export interface TurnEntryClassification {
   entryTurnStartMap: Map<number, number>;
 }
 
-/**
- * Three-way entry classification eliminates retroactive-reclassification flicker.
- *
- * "intermediate" — non-final work inside a user turn. This includes
- *                  reasoning, tools, and mid-turn assistant text.
- *                  Once the final assistant answer lands, all prior
- *                  work collapses into one WorkGroup.
- * "live"         — standalone non-final edge entry.
- * "final"        — last assistant entry outside the active streaming turn
- *                  → shown with TurnActionBar (turn truly complete)
- *
- * TurnActionBar therefore appears ONLY when the whole turn is done, never during it.
- *
- * Pure — extracted from ChatView.tsx (C14) so the classification pass can be
- * unit-tested independently of rendering. Byte-identical to the original.
- */
+/** Only completed final entries get TurnActionBar; intermediate reasoning/tools/text collapse as one work group after
+ * completion. */
 export function classifyTurnEntries(
   activeEntries: ChatEntry[],
   streaming: boolean,
 ): TurnEntryClassification {
-  // Last turn-start index: user messages and imported overlay prompts both
-  // own the assistant/tool/summary output that follows them.
+  // Last turn-start index: user messages and imported overlay prompts both own the assistant/tool/summary output that
+  // follows them.
   let lastTurnStartIdx = -1;
   for (let k = activeEntries.length - 1; k >= 0; k--) {
     if (isTurnStartEntry(activeEntries[k])) { lastTurnStartIdx = k; break; }

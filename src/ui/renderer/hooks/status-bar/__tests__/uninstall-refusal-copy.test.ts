@@ -1,17 +1,4 @@
-/**
- * The three `ave://` uninstall refusals must reach the user as localized copy.
- *
- * Renderer tests run with the i18n runtime pinned to Korean (see
- * `src/i18n/testing/vitest-ambient-intl.ts`), which is exactly the condition the
- * bug was reported under: `formatIpcError` had no entry for these codes and no
- * `message` half to fall back on, so the toast printed the producer's English
- * sentence verbatim next to Korean chrome.
- *
- * The codes come from the shared constants the producer broadcasts (see
- * `main/__tests__/ave-deep-link-uninstall-result.test.ts` for the payload
- * side); the copy comes out of the REAL mounted hook over the REAL uninstall
- * subscription.
- */
+/** Exercise localized uninstall-refusal copy with real shared error codes and the mounted renderer. */
 import "../../../../../../test/renderer/setup.js";
 import { describe, expect, it } from "vitest";
 import { act, renderHook } from "@testing-library/react";
@@ -30,7 +17,6 @@ type UninstallSubscription =
   | "onAgentUninstallResult"
   | "onSkillUninstallResult";
 
-/** Mount the real hook and return the uninstall toast the user would see. */
 function uninstallToastFor(
   payload: PluginInstallResultPayload,
   subscription: UninstallSubscription,
@@ -78,8 +64,8 @@ describe("uninstall refusal toast copy", () => {
       );
 
       expect(copy).toContain(t("formatIpcError.packageNotInstalled"));
-      // The three shapes of the regression: the raw code, the English
-      // predicate, and the half-localized welding of a Korean noun onto it.
+      // The three shapes of the regression: the raw code, the English predicate, and the half-localized welding of a Korean noun
+      // onto it.
       expect(copy).not.toContain(PACKAGE_NOT_INSTALLED_CODE);
       expect(copy).not.toContain("not installed");
       expect(copy).not.toContain(`${t("useStatusBarInstall.labelAgent")} not`);
@@ -95,18 +81,17 @@ describe("uninstall refusal toast copy", () => {
     expect(copy).toContain(t("formatIpcError.adminPluginUninstallDenied"));
     expect(copy).not.toContain(ADMIN_PLUGIN_UNINSTALL_DENIED_CODE);
     expect(copy).not.toContain("cannot be uninstalled by user");
-    // The two refusals must not read alike: a user who cannot remove an
-    // administrator's plugin needs different guidance from one whose package
-    // simply is not installed.
+    // The two refusals must not read alike: a user who cannot remove an administrator's plugin needs different guidance from
+    // one whose package simply is not installed.
     expect(copy).not.toContain(t("formatIpcError.packageNotInstalled"));
-    // Nor may it be folded into the generic `managed` copy, which hedges
-    // ("...or an error occurred while saving") and so reads as retryable.
+    // Nor may it be folded into the generic `managed` copy, which hedges ("...or an error occurred while saving") and so reads
+    // as retryable.
     expect(copy).not.toBe(t("formatIpcError.managed"));
   });
 
   it("still surfaces an unmapped failure's own text, so mapping is not a swallow", () => {
-    // Non-vacuity: proves the assertions above discriminate. An arbitrary
-    // uninstall error with no stable code must still reach the user verbatim.
+    // Non-vacuity: proves the assertions above discriminate. An arbitrary uninstall error with no stable code must still reach
+    // the user verbatim.
     const copy = uninstallToastFor(
       { slug: "sample", success: false, error: "disk full" },
       "onPluginUninstallResult",

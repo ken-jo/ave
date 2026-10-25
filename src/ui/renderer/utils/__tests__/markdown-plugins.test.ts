@@ -4,13 +4,7 @@ import { join } from "node:path";
 import remarkGfm from "remark-gfm";
 import { MARKDOWN_REMARK_PLUGINS, remarkKoreanAdjacentStrong } from "../markdown-plugins.js";
 
-// Single source of truth check. Every chat-side ReactMarkdown surface imports
-// MARKDOWN_REMARK_PLUGINS, so verifying the constant here verifies every
-// consumer transitively. The `walkSrcForRemarkGfm`
-// suite below adds the grep-style guard requested in issue #507 — it
-// scans every renderer source file and fails if `remark-gfm` (or
-// `MARKDOWN_REMARK_PLUGINS`-bypassing options like `remarkPlugins={[...]}`)
-// is referenced anywhere outside the SoT module + this test.
+// All markdown consumers must import the shared remark configuration; source scans reject private option copies.
 
 describe("MARKDOWN_REMARK_PLUGINS shared config", () => {
   it("exposes the shared plugin entries", () => {
@@ -31,13 +25,7 @@ describe("MARKDOWN_REMARK_PLUGINS shared config", () => {
   });
 });
 
-/*
- * Issue #507 — drift guard for the MARKDOWN_REMARK_PLUGINS single source of
- * truth. The constant is `expect`-checked above, but nothing prevents a future
- * consumer from inlining `remarkPlugins={[remarkGfm]}` and bypassing the
- * shared config. Walk every `.ts`/`.tsx` under `src/` and assert that no file
- * other than the SoT module + this test references `remark-gfm` directly.
- */
+/** Scan consumers for private remark-gfm imports or inline options so shared markdown configuration cannot be bypassed. */
 function listSourceFiles(root: string): string[] {
   const out: string[] = [];
   const stack: string[] = [root];
@@ -79,8 +67,8 @@ describe("MARKDOWN_REMARK_PLUGINS — SoT drift guard (issue #507)", () => {
     for (const file of files) {
       if (ALLOWLIST.has(file)) continue;
       const text = readFileSync(file, "utf-8");
-      // Match either ESM import or require(). Bare `remark-gfm` mentions in
-      // comments still count as a smell — strip line/block comments first.
+      // Match either ESM import or require(). Bare `remark-gfm` mentions in comments still count as a smell — strip line/block
+      // comments first.
       const stripped = text
         .replace(/\/\*[\s\S]*?\*\//g, "")
         .replace(/(^|[^:])\/\/[^\n]*/g, "$1");

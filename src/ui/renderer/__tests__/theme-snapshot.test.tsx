@@ -1,10 +1,4 @@
-/**
- * Theme system v2 — visual snapshot for migrated shared components.
- *
- * Asserts that components emit the SAME markup regardless of active bundle —
- * they consume semantic tokens (bg-background, text-foreground) and the actual
- * color comes from CSS variable swap on <html data-theme-bundle>.
- */
+/** Theme changes swap tokens; component markup must remain identical across bundles. */
 import "../../../../test/renderer/setup.js";
 import { describe, it, expect } from "vitest";
 import { render, waitFor } from "@testing-library/react";
@@ -119,8 +113,7 @@ describe("Renderer source has no hardcoded color escapes", async () => {
     return out;
   }
 
-  /* vitest is invoked from the project root via package.json scripts —
-     `process.cwd()` is the contract. */
+  /** vitest is invoked from the project root via package.json scripts — `process.cwd()` is the contract. */
   const RENDERER_ROOT = resolve(process.cwd(), "src/ui/renderer");
   const FORBIDDEN_TAILWIND_PALETTE =
     /\b(?:text|bg|fill|border|ring|stroke|hover:bg|hover:text|hover:border|dark:text|dark:bg)-(?:red|green|yellow|blue|purple|pink|amber|emerald|rose|orange|indigo|violet|fuchsia|cyan|teal|sky|lime|stone|gray|slate|zinc|neutral)-(?:50|100|200|300|400|500|600|700|800|900|950)\b/;
@@ -134,11 +127,8 @@ describe("Renderer source has no hardcoded color escapes", async () => {
       const normalizedFile = file.replace(/\\/g, "/");
       if (ALLOW.some((a) => normalizedFile.includes(a))) continue;
       const content = await readFile(file, "utf8");
-      // Strip line/block comments before scanning so issue refs like
-      // "#260" inside `// Issue #260` don't false-positive. We strip /* … */
-      // first, then // comments, conservatively (string literals
-      // containing "//" are rare in this codebase and excluded by the file
-      // walker for now).
+      // Strip block comments before line comments so issue references cannot look like color literals; the walker excludes
+      // literal-URL cases.
       const stripped = content
         .replace(/\/\*[\s\S]*?\*\//g, "")
         .replace(/\/\/[^\n]*/g, "");

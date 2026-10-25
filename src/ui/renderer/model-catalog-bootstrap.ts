@@ -1,13 +1,4 @@
-/**
- * Install the model catalog in the renderer before anything resolves a model.
- *
- * The renderer resolves context windows synchronously from each settings
- * snapshot (`use-settings.ts`), against the catalog `src/shared/model-catalog/active.ts`
- * holds. Main resolves against the copy it installed at boot; asking main for
- * that copy and installing it before the app mounts means the first snapshot
- * the renderer applies is already resolved against the same catalog as the
- * engine — never against a missing one, and never against a different one.
- */
+/** Install main's model catalog before mount so the first settings snapshot resolves against the engine's catalog. */
 import { installModelCatalog } from "../../shared/model-catalog/active.js";
 import { DEFAULT_LOCALE, normalizeLocale, tryLoadLocaleMessages } from "../../i18n/index.js";
 import { setLocale, t } from "../../i18n/runtime.js";
@@ -56,8 +47,8 @@ export async function renderModelCatalogUnavailable(
   panel.append(message, detail, reload);
   root.replaceChildren(panel);
 
-  // The settings-backed locale provider has not mounted on this failure path.
-  // Show the fallback immediately, then apply the saved language when readable.
+  // The settings-backed locale provider has not mounted on this failure path. Show the fallback immediately, then apply the
+  // saved language when readable.
   if (api === undefined) return;
   try {
     const settings = await api.getSettings();

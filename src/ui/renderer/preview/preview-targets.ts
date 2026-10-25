@@ -110,17 +110,7 @@ export interface ToolResultPreviewTarget extends ChatPreviewTargetBase {
 export interface UrlPreviewTarget extends ChatPreviewTargetBase {
   kind: "url";
   url: string;
-  /**
-   * Where the address came from.
-   *
-   * `argument` means the turn asked for this page by name — the URL was in the
-   * call's own input. `result` means a page named it: third-party text that
-   * became a one-click webview navigation the moment it was listed here. The
-   * row says which, because those are not the same claim, and the viewer is
-   * entitled to know before following one. (Both remain gated by
-   * `normalizeBrowserNavigationUrl` at the open; this is disclosure, not a
-   * second permission.)
-   */
+  /** Disclose whether a URL came from tool input or third-party results; both still pass the same navigation gate. */
   origin: UrlTargetOrigin;
 }
 
@@ -193,16 +183,8 @@ function isLikelyPath(value: string): boolean {
   return /[\\/]/.test(value) && /\.[A-Za-z0-9]{1,12}$/.test(value);
 }
 
-/**
- * A bare filename-with-extension carrying NO directory separator
- * (`2026-07-03.md`) — the shape `write_file`/`read_file` produce when the model
- * writes into the working directory by name. `isLikelyPath` rejects it (its
- * generic clause demands a separator so free-text tokens like "index.ts" inside
- * a `content` blob don't leak in), so it is only accepted for values whose KEY
- * is a path key (see {@link collectPathStrings}). Whitespace disqualifies it —
- * a bare name is a single token, never a sentence. The glob guard runs first,
- * so `*.md` never reaches here.
- */
+/** Accept separatorless filenames only under path keys; whitespace and globs disqualify them so source prose cannot become
+ * file targets. */
 function isBareFilename(value: string): boolean {
   if (/\s/.test(value)) return false;
   return !/[\\/]/.test(value) && /\.[A-Za-z0-9]{1,12}$/.test(value);
@@ -233,8 +215,8 @@ function collectPathStrings(value: unknown): string[] {
     // Glob patterns are tool arguments, never files — never a file target.
     if (isGlobPattern(item)) return;
     if (key != null && TOOL_PATH_KEYS.has(key.toLowerCase())) {
-      // A path-keyed value may be a bare working-dir filename (no separator);
-      // accept it here where the key vouches for its role as a path.
+      // A path-keyed value may be a bare working-dir filename (no separator); accept it here where the key vouches for its role
+      // as a path.
       if (isLikelyPath(item) || isBareFilename(item)) paths.add(item);
       return;
     }
@@ -402,8 +384,8 @@ function addOrMergeFile(items: WorkspaceFileItem[], item: WorkspaceFileItem, see
     previewTargetId: item.previewTargetId ?? existing.previewTargetId,
     canOpenExternal: existing.canOpenExternal || item.canOpenExternal,
   };
-  // A change is what the list is ordered by: a file changed again moves to
-  // the end, so "most recent first" reads the list backwards and is right.
+  // A change is what the list is ordered by: a file changed again moves to the end, so "most recent first" reads the list
+  // backwards and is right.
   if (CHANGE_OPERATIONS.has(item.operation)) {
     items.splice(existingIndex, 1);
     items.push(merged);
@@ -481,14 +463,12 @@ export function collectChatPreviewModel({
         canOpenExternal: true,
       }, fileIds);
     } else if (attachment.kind === "resource") {
-      // Preview shows the renderer-held fence VERBATIM, framing included. Main may
-      // redact the provider-bound copy when the privacy setting is enabled, but
-      // stripping framing here would preview a message the host never sends.
+      // Preview shows the renderer-held fence VERBATIM, framing included. Main may redact the provider-bound copy when the
+      // privacy setting is enabled, but stripping framing here would preview a message the host never sends.
       addUnique(targets, {
         id: `attachment:resource:${attachment.id}`,
-        // `kind` selects the preview renderer (plain text), it is NOT a provenance
-        // label — this content is a server's, not the user's clipboard. The subtitle
-        // carries the real provenance.
+        // `kind` selects the preview renderer (plain text), it is NOT a provenance label — this content is a server's, not the
+        // user's clipboard. The subtitle carries the real provenance.
         kind: "paste",
         title: `Resource #${attachment.n}`,
         subtitle: `${attachment.serverId} · ${displaySafeLabel(attachment.uri, MCP_RESOURCE_URI_MAX_CHARS)}`,
@@ -567,9 +547,8 @@ export function collectChatPreviewModel({
         }, fileIds);
       }
 
-      // A file change names its paths through the shared classifier so the file
-      // tab and the activity lists agree on which paths changed and how (a move
-      // lists both ends; a patch body says create / update / delete per file).
+      // A file change names its paths through the shared classifier so the file tab and the activity lists agree on which paths
+      // changed and how (a move lists both ends; a patch body says create / update / delete per file).
       const pathOperations: Array<[string, WorkspaceFileItem["operation"]]> = CHANGE_OPERATIONS.has(operation)
         ? collectFileChanges(tool).map((change) => [change.path, change.operation])
         : collectPathStrings(tool.input).map((path) => [path, operation]);
@@ -608,14 +587,7 @@ export function collectChatPreviewModel({
         }
       }
 
-      // A web tool's RESULT is where most fetched pages actually live — a
-      // `web_search` names its hits nowhere else — so the result is read on the
-      // same footing as the arguments. Restricted to web tools for the same
-      // reason the activity list restricts it: a URL quoted inside a source file
-      // a read tool returned is text, not a page this turn fetched. Accepted
-      // consequence: a non-web tool carrying a url-shaped argument no longer
-      // contributes a target. Nothing opened those addresses, and a row that
-      // offers to navigate to one is a claim the transcript does not support.
+      // Read result URLs only for web tools; a URL quoted by a file read is not evidence that the turn visited that page.
       if (isBrowserTool(tool)) {
         for (const url of new Set([...collectUrls(tool.input), ...collectUrls(tool.result)])) {
           const attribution = urlAttributions.get(url);
@@ -655,9 +627,8 @@ export function collectChatPreviewModel({
         }, targetIds);
       }
 
-      // Search-result hits (§6.10.8 부가-B): promote path-bearing hits to
-      // file-preview targets carrying their inline snippet, so a hit opens the
-      // source document in-preview instead of collapsing into one JSON card.
+      // Search-result hits (§6.10.8 부가-B): promote path-bearing hits to file-preview targets carrying their inline snippet, so a
+      // hit opens the source document in-preview instead of collapsing into one JSON card.
       const searchHits = extractSearchResultHits(tool.result);
       for (const hit of searchHits) {
         const targetId = `search-hit:${tool.toolUseId}:${hit.path}:${hit.page ?? ""}`;

@@ -209,9 +209,8 @@ describe("Away authority arm dialog — arming write deliberately", () => {
   });
 
   it("names the focused tile, so the grant binds to the conversation on screen", async () => {
-    // Main reads what THAT tile is holding. Sending nothing would leave main
-    // arming whatever the primary loop happened to hold — a conversation the
-    // owner may not even be looking at.
+    // Main reads what THAT tile is holding. Sending nothing would leave main arming whatever the primary loop happened to hold
+    // — a conversation the owner may not even be looking at.
     const harness = await openDialog([PROJECT], "group-3");
     fireEvent.click(screen.getByTestId(`away-authority-folder-${PROJECT}`));
 

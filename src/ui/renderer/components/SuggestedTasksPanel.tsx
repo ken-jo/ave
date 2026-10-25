@@ -1,13 +1,4 @@
-/**
- * Suggested tasks on an empty conversation: a short grid of cards above the
- * composer. Choosing a card FILLS the composer (and focuses it) rather than
- * sending — the same contract as suggested replies (Tab fills, the user sends),
- * and several prompts carry a placeholder such as `[URL]` the user has to
- * replace before the turn makes sense.
- *
- * Renders every state an async provider can be in: loading (skeleton cards),
- * error (a quiet line with a retry), and empty (nothing at all).
- */
+/** Task cards fill and focus the composer without sending; prompts may contain placeholders the user must replace. */
 import { useId } from "react";
 import { useStatusLiveRegion } from "./transcript-log-context.js";
 import { File, Globe, Search, Sparkles, Terminal, type LucideIcon } from "lucide-react";

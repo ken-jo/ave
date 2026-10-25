@@ -1,27 +1,5 @@
-/**
- * McpPromptArgsDialog — collect a server-declared prompt's arguments.
- *
- * MCP prompts are the USER-controlled primitive: the user picks one from the
- * slash picker, the host fetches it, and the server's text enters the turn as
- * untrusted, server-authored content. Anything a prompt needs from the user must
- * therefore be collected by the HOST chrome, in a surface the user recognizes as
- * the app asking — which is also why this is a real dialog and not `window.prompt`
- * (unavailable in the renderer) or a composer draft (a draft the user submits
- * would enter as `user-keyboard` and launder the provenance).
- *
- * Every label on this form — argument names, descriptions — is a string the MCP
- * SERVER wrote. Three rules follow, and all three are load-bearing:
- *   - names are VALIDATED, not just displayed: `prompts/list` output is a cast,
- *     not a check, so a non-string name would throw when React renders it;
- *   - collected values live in a `Map`, never a plain object, so a name like
- *     `toString` cannot read off `Object.prototype` (`(…).trim is not a function`
- *     during render — and this dialog mounts outside the error boundary);
- *   - the bounds here MATCH main's — they come from the one shared module
- *     (`shared/mcp-prompt-bounds.ts`), because a field the user can fill that main
- *     then drops is worse than no field at all.
- * Text is rendered as text (React escapes it) and truncated, under a notice
- * saying whose words these are, so a prompt cannot dress itself up as host UI.
- */
+/** Collect prompt arguments in host chrome, preserving server-authored provenance. Validate labels, store values in a Map
+ * against prototype collisions, and share bounds with main; render server text as escaped, truncated text. */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "../../../components/ui/button.js";
 import {
@@ -115,8 +93,8 @@ export function McpPromptArgsDialog({ prompt, onCancel, onSubmit }: McpPromptArg
     [prompt],
   );
 
-  // A fresh prompt starts from an empty form — never inherit the previous
-  // prompt's answers, which could send one server's input to another's.
+  // A fresh prompt starts from an empty form — never inherit the previous prompt's answers, which could send one server's
+  // input to another's.
   useEffect(() => {
     setValues(new Map());
   }, [prompt]);
@@ -128,14 +106,13 @@ export function McpPromptArgsDialog({ prompt, onCancel, onSubmit }: McpPromptArg
 
   const submit = useCallback(() => {
     if (!prompt || !runnable) return;
-    // `Object.fromEntries` DEFINES own properties; plain assignment would hand
-    // `__proto__` to the prototype setter and silently swallow that one field —
-    // a name the form happily renders and the user can fill.
+    // `Object.fromEntries` DEFINES own properties; plain assignment would hand `__proto__` to the prototype setter and
+    // silently swallow that one field — a name the form happily renders and the user can fill.
     const args = Object.fromEntries(
       fields
         .map((field) => [field.name, values.get(field.name) ?? ""] as const)
-        // Optional arguments left blank are omitted rather than sent as "" — an
-        // empty string is a value, and servers may treat the two differently.
+        // Optional arguments left blank are omitted rather than sent as "" — an empty string is a value, and servers may treat the
+        // two differently.
         .filter(([, value]) => value.length > 0),
     );
     onSubmit(prompt, args);

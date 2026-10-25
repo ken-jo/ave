@@ -24,11 +24,8 @@ interface MessageQueueGuide {
   onError: (message: string) => void;
 }
 
-/**
- * Where the dev/e2e seam publishes each surface's live store. One key per
- * surface: the side chat mounting must not shadow the main store a Playwright
- * spec is asserting against.
- */
+/** Where the dev/e2e seam publishes each surface's live store. One key per surface: the side chat mounting must not shadow
+ * the main store a Playwright spec is asserting against. */
 const DEV_STORE_KEY: Record<ComposerSurface, "__ave_message_queue_store__" | "__ave_side_chat_message_queue_store__"> = {
   main: "__ave_message_queue_store__",
   side: "__ave_side_chat_message_queue_store__",
@@ -44,20 +41,8 @@ export interface UseMessageQueueParams {
    * other surface's `done`.
    */
   subscribeStream: (handler: (event: ChatStreamEvent) => void) => () => void;
-  /**
-   * Does this frame belong to the turn currently on screen? A surface whose
-   * stream carries a turn id (side chat's monotonic `streamId`) supplies its
-   * OWN verdict here so this queue and that surface's transcript agree.
-   *
-   * Without it, an aborted turn's trailing `done` — `runStreamedTurn` emits
-   * `turn.completed` on every return, abort included — drains a queued row
-   * into a `queue-auto` send. That send skips the interrupt (a drain must not
-   * stop the turn that follows it), so it lands on top of the turn the user's
-   * interrupt just started: two turns on one ConversationLoop.
-   *
-   * Omitted by a surface whose host serializes turns for itself and whose
-   * frames carry no turn id to judge by; every frame then counts as current.
-   */
+  /** Use the surface's stale-frame verdict before draining; a late aborted-turn done must not send queue-auto over its
+   * replacement turn. */
   isCurrentTurnEvent?: (event: ChatStreamEvent) => boolean;
   /**
    * The composer whose textarea the window-level shortcuts (⌘⏎, Esc) act on.
@@ -96,15 +81,7 @@ export interface UseMessageQueueResult {
   flushQueueAsUserMessage: () => void;
 }
 
-/**
- * Owns the mid-turn message queue: the per-view store (+ dev/e2e window hook +
- * session-change clear), the stream brake-point drains (tool_end → guide,
- * done → queue-auto onAsk with re-entrancy guard), and the composer/streaming
- * keyboard flows (Enter morph, ESC inject-or-abort, ⌘⏎ immediate inject, ⌘K
- * guide). One hook serves every composer surface — a main tile and the side
- * chat differ only in the stream they drain against and whether the loop
- * behind them exposes a guide channel.
- */
+/** Share queue behavior across composer surfaces; only stream ownership and guide-channel availability differ. */
 export function useMessageQueue({
   surface,
   subscribeStream,
@@ -123,7 +100,6 @@ export function useMessageQueue({
 }: UseMessageQueueParams): UseMessageQueueResult {
   const { t } = useTranslation();
 
-
   const messageQueueStore = useMemo(() => new MessageQueueStore(), []);
 
   const queueAutoInflightRef = useRef(false);
@@ -132,8 +108,8 @@ export function useMessageQueue({
   /** The engine refused this turn's hand-off — stop retrying until the turn ends. */
   const guideFlushBlockedRef = useRef(false);
 
-  // dev/e2e runtime test hook — Playwright launches production-built renderer
-  // assets, so this must use preload runtime env instead of build-time NODE_ENV.
+  // dev/e2e runtime test hook — Playwright launches production-built renderer assets, so this must use preload runtime env
+  // instead of build-time NODE_ENV.
   useEffect(() => {
     const key = DEV_STORE_KEY[surface];
     const w = window as unknown as Partial<Record<typeof key, MessageQueueStore>> & {
@@ -167,31 +143,12 @@ export function useMessageQueue({
     guideFlushBlockedRef.current = false;
   }, [currentSessionId, messageQueueStore]);
 
-
+  //
 
   //
 
-
-  //
-
-
-  /**
-   * Hand the queue to the engine at a mid-turn brake point.
-   *
-   * The removal is CONFIRMED, not optimistic: the items stay in the store —
-   * and therefore on screen — until `onGuide` says the engine accepted them.
-   * The previous shape took them synchronously and fired `onGuide` off
-   * unawaited, so the panel emptied on the first `tool_end` of the turn and a
-   * refusal (`no-active-turn` when the brake point lands in the turn's
-   * `finally` window) destroyed text the user had typed.
-   *
-   * Two guards make "keep on failure" safe:
-   *   - `guideFlushInflightRef` — a burst of `tool_end` events cannot send the
-   *     same items twice now that they survive the first attempt.
-   *   - `guideFlushBlockedRef` — after a refusal, stop retrying for the rest
-   *     of the turn (one toast, not one per tool). The items stay queued and
-   *     the `done` handler injects them as a fresh turn, so nothing is lost.
-   */
+  /** Keep rows until guide acceptance; serialize flushes and stop retrying refusals until turn end, when queued text can
+   * drain as a fresh turn. */
   const flushQueueViaGuide = useCallback(() => {
     if (!guide) return;
     if (guideFlushInflightRef.current || guideFlushBlockedRef.current) return;
@@ -205,15 +162,8 @@ export function useMessageQueue({
       try {
         const result = await guide.inject(formatted);
         if (result?.ok === true) {
-          // Match by id AND text. Rows stay editable while the call is in
-          // flight, so an id alone would mark a row the user rewrote after the
-          // engine had already seen the old wording. A rewritten row stays
-          // pending and goes out at the next brake point, as does anything
-          // queued during the call.
-          //
-          // MARK, not remove: the engine has accepted this text but will not
-          // deliver it until its next round boundary. The row stays on screen
-          // as handed-off until `guidance_injected` reports it delivered.
+          // Match accepted rows by id and text so edits made in flight remain pending; remove only when guidance_injected confirms
+          // delivery.
           const current = new Map(
             messageQueueStore.getItems().map((item) => [item.id, item.text]),
           );
@@ -240,9 +190,8 @@ export function useMessageQueue({
 
   useEffect(() => {
     const unsub = subscribeStream((ev) => {
-      // A frame from a superseded turn drives nothing here: not the
-      // brake-point hand-off, not the delivery bookkeeping, and above all not
-      // the end-of-turn drain.
+      // A frame from a superseded turn drives nothing here: not the brake-point hand-off, not the delivery bookkeeping, and
+      // above all not the end-of-turn drain.
       if (isCurrentTurnEvent && !isCurrentTurnEvent(ev)) return;
       if (ev.type === "tool_end") {
         // mid-turn brake-point — 엔진 round boundary 에 합류 (onGuide).
@@ -250,30 +199,26 @@ export function useMessageQueue({
         return;
       }
       if (ev.type === "guidance_injected") {
-        // Delivered. The text is a user bubble in the transcript now, so the
-        // row has somewhere to have gone — this is the only place it is
-        // cleared after a hand-off.
+        // Delivered. The text is a user bubble in the transcript now, so the row has somewhere to have gone — this is the only
+        // place it is cleared after a hand-off.
         const text = typeof ev.text === "string" ? ev.text : "";
         if (text.length > 0) messageQueueStore.clearDelivered(text);
         return;
       }
       if (ev.type === "guidance_dropped") {
-        // The engine took it but could not deliver it. The rows are the
-        // user's again so the end-of-turn drain below picks them up — the
-        // `done` that follows this event does exactly that.
+        // The engine took it but could not deliver it. The rows are the user's again so the end-of-turn drain below picks them up
+        // — the `done` that follows this event does exactly that.
         messageQueueStore.releaseHandedOff();
         return;
       }
       if (ev.type === "error") {
-        // A turn that ends in an error has still ended, and `done` does not
-        // always follow. Release the block here too, or one refused hand-off
-        // would keep suppressing brake points for every turn after it.
+        // A turn that ends in an error has still ended, and `done` does not always follow. Release the block here too, or one
+        // refused hand-off would keep suppressing brake points for every turn after it.
         guideFlushBlockedRef.current = false;
         return;
       }
       if (ev.type === "done") {
-        // A refusal only blocks the rest of THAT turn; the next one starts
-        // clean and may use its brake points again.
+        // A refusal only blocks the rest of THAT turn; the next one starts clean and may use its brake points again.
         guideFlushBlockedRef.current = false;
         // turn 종료 시 큐 잔존 항목 → 새 user message 로 자동 inject.
         // inputOrigin "queue-auto" 사용 — chat.ts validator 가 userActivation
@@ -281,26 +226,15 @@ export function useMessageQueue({
         // re-entrancy guard (critic Round 2 M4): inflight inject 중 재 done
         // event 무시 — rapid done sequence 시 cascade race 방지.
         if (queueAutoInflightRef.current) return;
-        // Handed-off rows are already with the engine — re-sending them here
-        // would duplicate the message. A hand-off the engine could not deliver
-        // has been released by `guidance_dropped` above, so it is pending again
-        // and included.
+        // Handed-off rows are already with the engine — re-sending them here would duplicate the message. A hand-off the engine
+        // could not deliver has been released by `guidance_dropped` above, so it is pending again and included.
         const taken = [...messageQueueStore.getPending()];
         if (taken.length === 0) return;
         for (const item of taken) messageQueueStore.remove(item.id);
         queueAutoInflightRef.current = true;
         const formatted = formatQueueInject(taken);
-        // Deferred OUT of this dispatch. The send that follows re-arms the
-        // surface's stale-frame guard synchronously, and a subscriber that has
-        // not judged this frame yet would then read it as belonging to a
-        // superseded turn — the transcript would drop its own `done` and leave
-        // the answer stuck mid-stream. A microtask runs after every subscriber
-        // on the channel has been called and long before the user can act, so
-        // the drain no longer depends on this hook subscribing last.
-        //
-        // The rows are removed and the re-entrancy flag is set ABOVE, still
-        // inside the dispatch: a second `done` arriving before the microtask
-        // runs must find the queue already taken.
+        // Defer the send to a microtask so every subscriber judges done before the next turn re-arms guards; take rows and set
+        // reentrancy protection synchronously.
         queueMicrotask(() => {
           void (async () => {
             try {
@@ -315,14 +249,8 @@ export function useMessageQueue({
     return unsub;
   }, [subscribeStream, flushQueueViaGuide, messageQueueStore, onAsk, isCurrentTurnEvent]);
 
-  // streaming false 전이 fallback 폐기 (2026-05-15 사용자 피드백):
-  // AskUserQuestion 카드 깜박임 등으로 streaming 이 일시 false → true 로
-  // 되돌아갈 때 의도치 않게 큐가 자동 인입되어 사라지는 문제. 자동 인입은
-  // tool_end (진정한 brake-point) 에서만. turn 종료 시 큐 잔존 = OK,
-  // 사용자가 ESC 또는 esc 취소 로 명시적 inject 트리거.
-
-  // ESC / esc 취소 시 호출 — 큐를 새 user message 로 inject + handleAsk 가
-  // 자체 abort 처리 (Issue #622). 큐 비어 있으면 단순 abort 만.
+  // Do not drain on transient streaming=false; use real brake points or explicit user injection. An empty queue leaves
+  // Escape as abort only.
   const flushQueueAsUserMessage = useCallback(() => {
     if (messageQueueStore.size() === 0) {
       void onAbort();
@@ -334,8 +262,7 @@ export function useMessageQueue({
     void onAsk(formatted, { inputOrigin: "user-keyboard", token: "" }, { injectHint: "interrupt" });
   }, [messageQueueStore, onAbort, onAsk]);
 
-  // composer Enter morph — busy = queue.add, idle = onAsk 직행.
-  // ⌘⏎ = 즉시 주입 (LLM abort + 큐 selected + 현재 입력).
+  // composer Enter morph — busy = queue.add, idle = onAsk 직행. ⌘⏎ = 즉시 주입 (LLM abort + 큐 selected + 현재 입력).
   const handleComposerSend = useCallback(
     (intent: UserKeyboardIntentSnapshot) => {
       const text = question;
@@ -354,9 +281,8 @@ export function useMessageQueue({
             return;
           }
         }
-        // 첨부도 같이 비움 — busy 분기에서 첨부 잔존하면 다음 idle 입력 시
-        // 의도치 않게 따라감 (mental model 위배). 큐 schema 가 첨부 비포함이라
-        // busy 시 첨부는 명시적으로 사용자가 재선택하는 것이 명확.
+        // 첨부도 같이 비움 — busy 분기에서 첨부 잔존하면 다음 idle 입력 시 의도치 않게 따라감 (mental model 위배). 큐 schema 가 첨부 비포함이라 busy 시 첨부는 명시적으로 사용자가 재선택하는
+        // 것이 명확.
         setQuestion("");
         if (attachments.length > 0) setAttachments([]);
       } else {
@@ -383,8 +309,7 @@ export function useMessageQueue({
     if (parts.length === 0) return;
     const combined = parts.join("\n");
     setQuestion("");
-    // ⌘⏎ = 사용자 명시 인터럽트 → "⚡ 중단후 새메세지" hint.
-    // handleAsk 가 streaming 시 자체 abort 처리.
+    // ⌘⏎ = 사용자 명시 인터럽트 → "⚡ 중단후 새메세지" hint. handleAsk 가 streaming 시 자체 abort 처리.
     void onAsk(combined, { inputOrigin: "user-keyboard", token: "" }, { injectHint: "interrupt" });
   }, [question, messageQueueStore, onAsk, setQuestion, interceptSubmit]);
 
@@ -410,8 +335,8 @@ export function useMessageQueue({
       }
       if (!ownsTarget(e.target)) return;
       e.preventDefault();
-      // ESC = LLM abort + the queue injected as a new user message — not a
-      // bare stop. An empty queue is a plain abort; onAsk aborts for itself.
+      // ESC = LLM abort + the queue injected as a new user message — not a bare stop. An empty queue is a plain abort; onAsk
+      // aborts for itself.
       flushQueueAsUserMessage();
     };
     window.addEventListener("keydown", handler);
@@ -426,9 +351,8 @@ export function useMessageQueue({
     const handler = (e: KeyboardEvent) => {
       if (e.key !== "Enter") return;
       if (!(e.metaKey || e.ctrlKey)) return;
-      // 한국어 IME composing 가드 제거 — composing 시 첫 ⌘⏎ 가 IME commit 으로
-      // 소비되고 두 번째 ⌘⏎ 가 동작하는 회귀 (사용자 보고 2026-05-15).
-      // 미확정 음절 손실은 마이너 — 사용자 의도 (인터럽트) 가 명확.
+      // 한국어 IME composing 가드 제거 — composing 시 첫 ⌘⏎ 가 IME commit 으로 소비되고 두 번째 ⌘⏎ 가 동작하는 회귀 (사용자 보고 2026-05-15). 미확정 음절 손실은 마이너 —
+      // 사용자 의도 (인터럽트) 가 명확.
       if (blockingSurfaceCovers(e.target)) return;
       if (!ownsTarget(e.target)) return;
       e.preventDefault();

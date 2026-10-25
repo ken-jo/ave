@@ -3,13 +3,8 @@ import { clearActiveSurface, useActiveSurface, type ActiveSurface } from "../pre
 import { BoundSurfaceChip } from "./BoundSurfaceChip.js";
 import { directoryName, hostOf, webPanelTitle } from "./MainSurfacePanels.js";
 
-/**
- * The rail side chat's target chip: the terminal or page its tools act on
- * when a call names no tab — the window's active surface, which follows what
- * the user last brought into view (`preview/active-surface.ts`). × drops the
- * target until another terminal or page is shown. Nothing is drawn while there
- * is no target.
- */
+/** Unbound side-chat tools target the last shown terminal/page; clearing the chip holds it empty until another surface is
+ * shown. */
 export function ActiveSurfaceChip() {
   const surface = useActiveSurface();
   if (!surface) return null;

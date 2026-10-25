@@ -3,16 +3,11 @@ import type { PaneNode } from "../components/pane-tree.js";
 import { leafIds } from "../components/pane-tree.js";
 import type { ViewLocation } from "../utils/view-location.js";
 
-/**
- * Build the saved layout from what the window holds now — the pure half of
- * saving, so what gets written is testable without rendering a window.
- */
+/** Build the saved layout from what the window holds now — the pure half of saving, so what gets written is testable
+ * without rendering a window. */
 
-/**
- * One terminal or page as saved. Only what the restore can use: an absolute
- * directory, and an http(s) address (a blank page or a data: url has nowhere
- * to go back to).
- */
+/** One terminal or page as saved. Only what the restore can use: an absolute directory, and an http(s) address (a blank
+ * page or a data: url has nowhere to go back to). */
 export function savedSurfaceOf(
   surface: { tabId: string; kind: SavedSurfaceKind; ordinal: number },
   cwd: string | null,

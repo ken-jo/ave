@@ -1,5 +1,3 @@
-// Persisted-history → renderer-entries rebuild.
-
 import {
   applyToolEnd,
   applyToolStart,
@@ -19,15 +17,8 @@ import {
 
 export type PersistedHistoryMessage = SerializedHistoryMessage;
 
-// Rebuild chat entries from persisted session history. Persisted assistant
-// messages are the durable turn contract: content is visible answer text,
-// thought is work, and toolCalls/tool_result pairs form work units. Empty
-// assistant content is therefore structural only when thought/toolCalls exist;
-// it must preserve work boundaries without creating a blank answer bubble.
-//
-// `createdAt`, `turnSummary`, and `checkpointMeta` on the persisted message
-// flow through so the renderer shows real per-turn timestamps + token totals +
-// checkpoint dividers on session reload instead of mount-time fakes / zeros.
+// Preserve structural work without empty answer bubbles; carry persisted timestamps, summaries and checkpoint metadata
+// through reload.
 export function historyToEntries(
   messages: PersistedHistoryMessage[],
 ): ChatEntry[] {
@@ -80,9 +71,8 @@ export function historyToEntries(
     }
     fallbackGroupId = null;
     if (m.role === "user") {
-      // Compact-boundary marker — rebuild a CheckpointDivider rather than a
-      // normal user bubble so the visual matches what a live structured-compact
-      // turn would have rendered.
+      // Compact-boundary marker — rebuild a CheckpointDivider rather than a normal user bubble so the visual matches what a live
+      // structured-compact turn would have rendered.
       if (m.checkpointMeta) {
         latestCheckpointCreatedAt =
           typeof m.createdAt === "number" && Number.isFinite(m.createdAt)
@@ -129,9 +119,8 @@ export function historyToEntries(
       out.push({
         kind: "user",
         text: visibleUserText(m),
-        // Reload parity with the live `guidance_injected` frame: a persisted
-        // child delivery rebuilds as the sub-agent report box, never as a plain
-        // user bubble that reads as if the user pasted the envelope.
+        // Reload parity with the live `guidance_injected` frame: a persisted child delivery rebuilds as the sub-agent report box,
+        // never as a plain user bubble that reads as if the user pasted the envelope.
         ...(m.subAgentReport
           ? {
               injectHint: "sub-agent" as const,
@@ -161,10 +150,7 @@ export function historyToEntries(
       // back to Date.now() — UI then renders the load time, but that's
       // acceptable for legacy data since the timestamp wasn't recorded.
       out = finalizeStreamingAssistant(out, visibleText, {
-        // Issue #2113 — every assistant entry rebuilt here is a restored
-        // one. This is the single stamping point: AssistantCard reads the
-        // flag to soften a replayed systemNotice banner so an old error
-        // does not re-present as a fresh one on session reload.
+        // Stamp restored assistant entries here so replayed system notices are not presented as fresh errors.
         restored: true,
         ...(m.createdAt !== undefined ? { createdAt: m.createdAt } : {}),
         ...(m.messageId !== undefined ? { messageId: m.messageId } : {}),
@@ -197,10 +183,8 @@ export function historyToEntries(
         });
       }
 
-      // Turn-final assistant — emit a turn_summary ChatEntry so the renderer
-      // shows real token / duration totals on reload. Only the turn-final
-      // assistant carries `turnSummary` (attached by ConversationLoop right
-      // after onTurnSummary fires).
+      // Turn-final assistant — emit a turn_summary ChatEntry so the renderer shows real token / duration totals on reload. Only
+      // the turn-final assistant carries `turnSummary` (attached by ConversationLoop right after onTurnSummary fires).
       if (
         m.turnSummary &&
         !isPreservedPreCompactTurn(m, latestCheckpointCreatedAt)
@@ -327,19 +311,8 @@ function isReplayableSystemNotice(
   return value === "context-error" || value === "stream-error";
 }
 
-/**
- * What the composer should offer for a session whose last turn never finished
- * in the app run that started it:
- *
- * - `resume`: the turn was cut short by the app exiting (crash, kill, quit) and
- *   its rows are on disk ending in a host-exit interrupted row — Continue picks
- *   up from everything already persisted.
- * - `rerun`: the user's question was persisted and nothing after it — the app
- *   went away before the first token — so Continue asks it again.
- *
- * Only state rebuilt from disk qualifies (`restored` user bubbles, host-exit
- * rows), so a turn that simply failed in front of the user never shows it.
- */
+/** Offer Continue only for restored interrupted history: resume saved host-exit work, or rerun a saved question with no
+ * answer; live failures do not qualify. */
 export function interruptedTurnOffer(entries: readonly ChatEntry[]): "resume" | "rerun" | null {
   for (let i = entries.length - 1; i >= 0; i -= 1) {
     const entry = entries[i];

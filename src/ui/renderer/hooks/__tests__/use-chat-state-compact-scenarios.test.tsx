@@ -1,24 +1,3 @@
-/**
- * useChatState — compact pipeline scenario suite.
- *
- * Verifies user-visible behaviour around the pre-turn / manual compact
- * lifecycle (not function-level unit tests). Each scenario captures the
- * `onChatStream` handler the hook registers, then dispatches a sequence
- * of simulated stream events and asserts on the resulting public state.
- *
- * Coverage:
- *   S1: compact_started flips isCompacting on (StatusBar hint appears)
- *   S2: compact_notice with estimatedAfter → checkpoint + accurate
- *       synthetic context_usage drives ring refresh
- *   S3: compact_notice without estimatedAfter → checkpoint only
- *   S4 (M2 fix): compact_notice without estimatedAfter AND freed === 0
- *       → checkpoint only, no misleading synthetic context_usage
- *   S5 (M4 fix): applyLoadedSession during mid-compact clears the stale
- *       isCompacting indicator
- *   S6 (M4 fix): clearForNewChat during mid-compact clears it as well
- *   S7: done event clears isCompacting (defensive)
- *   S8: error event clears isCompacting (defensive)
- */
 import "../../../../../test/renderer/setup.js";
 import { describe, it, expect, vi } from "vitest";
 import { act, renderHook } from "@testing-library/react";
@@ -26,8 +5,6 @@ import { useChatState } from "../use-chat-state.js";
 import type { AveApi } from "../../types.js";
 import type { ChatStreamEvent } from "../../../../lib/chat-stream-state.js";
 import type { ChatEntry } from "../../../../lib/chat-stream-state.js";
-
-// ─── Test harness ─────────────────────────────────────────────────────────────
 
 type StreamHandler = (ev: ChatStreamEvent) => void;
 
@@ -62,8 +39,6 @@ function dispatchEvent(streamHandler: { current: StreamHandler | null }, ev: Cha
     streamHandler.current?.(ev);
   });
 }
-
-// ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe("useChatState — compact lifecycle scenarios", () => {
   it("S1: compact_started flips isCompacting on (StatusBar hint visible)", () => {
@@ -117,8 +92,7 @@ describe("useChatState — compact lifecycle scenarios", () => {
     const { api, streamHandler } = makeCapturedApi();
     const { result } = renderHook(() => useChatState(api, () => {}));
 
-    // Seed a prior turn_summary; without estimatedAfter, compact_notice must
-    // not synthesize a replacement usage estimate.
+    // Seed a prior turn_summary; without estimatedAfter, compact_notice must not synthesize a replacement usage estimate.
     act(() => {
       result.current.applyLoadedSession([
         { kind: "user", text: "hi" },
@@ -167,8 +141,8 @@ describe("useChatState — compact lifecycle scenarios", () => {
       freedTokens: 0,
     } as ChatStreamEvent);
 
-    // Exactly one new entry — the checkpoint. No synthetic context_usage
-    // that would overwrite the existing turn_summary signal.
+    // Exactly one new entry — the checkpoint. No synthetic context_usage that would overwrite the existing turn_summary
+    // signal.
     expect(result.current.entries.length).toBe(before + 1);
     expect(result.current.entries[result.current.entries.length - 1]).toMatchObject({
       kind: "checkpoint",
@@ -198,10 +172,8 @@ describe("useChatState — compact lifecycle scenarios", () => {
   });
 
   it("S5b (M4-ext): truncateToEntry during mid-compact clears stale isCompacting", () => {
-    // Edit/retry rewind drops history forward of the cut point. If a
-    // pre-turn compact is mid-flight, its compact_notice will land in
-    // a different streaming context — same stale-indicator race as
-    // session switch.
+    // Edit/retry rewind drops history forward of the cut point. If a pre-turn compact is mid-flight, its compact_notice will
+    // land in a different streaming context — same stale-indicator race as session switch.
     const { api, streamHandler } = makeCapturedApi();
     const { result } = renderHook(() => useChatState(api, () => {}));
 
@@ -414,8 +386,6 @@ describe("useChatState — compact lifecycle scenarios", () => {
     expect(api.chatCompact).not.toHaveBeenCalled();
   });
 
-  // ─── #916: force-recover OFF-override banner ──────────────────────────────
-
   it("S12 (#916): compact_started with triggerSource=force-recover exposes compactTriggerSource", () => {
     const { api, streamHandler } = makeCapturedApi();
     const { result } = renderHook(() => useChatState(api, () => {}));
@@ -505,8 +475,6 @@ describe("useChatState — compact lifecycle scenarios", () => {
     expect(result.current.isCompacting).toBe(false);
     expect(result.current.compactTriggerSource).toBeNull();
   });
-
-  // ─── #917: recovery_exhausted banner ─────────────────────────────────────
 
   it("S15 (#917): recovery_exhausted event sets isRecoveryExhausted", () => {
     const { api, streamHandler } = makeCapturedApi();

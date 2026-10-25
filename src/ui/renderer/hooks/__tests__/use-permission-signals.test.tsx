@@ -51,14 +51,13 @@ describe("usePermissionSignals — reviewer suggestion", () => {
   });
 
   it("holds the suggestion for as long as it takes a card to appear", async () => {
-    // No display timer: the band's only surface is an approval card, and the
-    // host can raise the suggestion while none is up. Expiring it in that gap
-    // would spend the whole tracker cooldown on a band nobody ever saw.
+    // No display timer: the band's only surface is an approval card, and the host can raise the suggestion while none is up.
+    // Expiring it in that gap would spend the whole tracker cooldown on a band nobody ever saw.
     vi.useFakeTimers();
     const { permission, fire } = permissionApi();
     const { result } = renderHook(() => usePermissionSignals());
-    // Subscription happens in the mount effect, which `renderHook` already
-    // flushed — a `waitFor` here would spin against the faked clock.
+    // Subscription happens in the mount effect, which `renderHook` already flushed — a `waitFor` here would spin against the
+    // faked clock.
     expect(permission.onReviewSuggestion).toHaveBeenCalled();
 
     act(() => fire());
@@ -85,8 +84,8 @@ describe("usePermissionSignals — reviewer suggestion", () => {
   });
 
   it("enables the reviewer before switching the mode that relies on it", async () => {
-    // Order is the whole safety of the gesture: `auto` mode with no reviewer
-    // configured would auto-approve through nothing at all.
+    // Order is the whole safety of the gesture: `auto` mode with no reviewer configured would auto-approve through nothing at
+    // all.
     const { permission, fire } = permissionApi();
     const { result } = renderHook(() => usePermissionSignals());
     await waitFor(() => expect(permission.onReviewSuggestion).toHaveBeenCalled());
@@ -106,8 +105,7 @@ describe("usePermissionSignals — reviewer suggestion", () => {
   });
 
   it("keeps the band up with the failure on it when enabling does not take", async () => {
-    // A silent failure would leave the user believing the reviewer is on while
-    // every later ask still lands on them by hand.
+    // A silent failure would leave the user believing the reviewer is on while every later ask still lands on them by hand.
     const reviewerDispatch = vi.fn(async () => ({ ok: false, error: "reviewer key missing" }));
     const { permission, fire } = permissionApi({ reviewerDispatch });
     const { result } = renderHook(() => usePermissionSignals());

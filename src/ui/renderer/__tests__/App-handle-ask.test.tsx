@@ -1,24 +1,3 @@
-/**
- * Behavior-lock tests for App.handleAsk slash-command + vision branches.
- *
- * C13 pre-decomposition lock (C16 will move handleAsk into a hook). These
- * capture the CURRENT observable routing of typed composer input through
- * <App />:
- *   - "/compact"  → runs the compact IPC + banner, never chatSend.
- *   - "/load …"   → resolves a session by id-prefix and loads it, never chatSend
- *                   (empty arg / no-match surface an error and also skip send).
- *   - image on a text-only model → send-time vision confirm gate; cancel aborts
- *     the send, proceed sends with the image parts stripped.
- *
- * The trigger-import branch of handleAsk is ALREADY covered by ChatView.test.tsx
- * ("keeps overlay-import tool and final assistant output in the normal chat
- * flow" / "treats overlay imports after an existing chat as a separate turn
- * boundary") which drive handlePluginPrimaryAction → handleAsk(_, "trigger-import")
- * and assert chatSend(_, _, "plugin-emitted"). The queue-auto branch is locked
- * by ChatView-message-queue.test.tsx (drain asserts chatSend(_, _, "queue-auto")).
- *
- * Harness conventions copied from ChatView.test.tsx / AppPluginAuth.test.tsx.
- */
 import "../../../../test/renderer/setup.js";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { act, fireEvent, waitFor } from "@testing-library/react";
@@ -63,8 +42,7 @@ describe("App.handleAsk — /compact command routing", () => {
     await submitSlashCommand(container, "/compact");
 
     await waitFor(() => expect(api.chatCompact).toHaveBeenCalledTimes(1));
-    // Default chatCompact mock reports nothing to compact → banner shows its
-    // summary text ("불필요").
+    // Default chatCompact mock reports nothing to compact → banner shows its summary text ("불필요").
     await waitFor(() => expect(container.textContent).toContain("불필요"));
     expect(api.chatSend).not.toHaveBeenCalled();
   });
@@ -111,8 +89,7 @@ describe("App.handleAsk — /load command routing", () => {
 
     await act(async () => {
       emitAgentSpawnEvent({
-        // Production always names the spawning conversation; the renderer
-        // drops a frame it cannot attribute.
+        // Production always names the spawning conversation; the renderer drops a frame it cannot attribute.
         parentSessionId: "sess-current",
         spawnId: "live-old-spawn",
         type: "start",
@@ -146,20 +123,12 @@ describe("App.handleAsk — /load command routing", () => {
     await submitSlashCommand(container, "/load");
 
     await waitFor(() => expect(container.textContent).toContain(t("app.loadCommandUsage")));
-    // NOTE: chatSessions is called on mount for the session list, so its
-    // absence cannot be asserted here; the usage-error banner + no-send are the
-    // load-branch locks (the bare-/load path returns before resolving/sending).
+    // NOTE: chatSessions is called on mount for the session list, so its absence cannot be asserted here; the usage-error
+    // banner + no-send are the load-branch locks (the bare-/load path returns before resolving/sending).
     expect(api.chatSend).not.toHaveBeenCalled();
   });
 
-  // The renderer's `/load` is the only implementation that runs for typed
-  // composer input (it intercepts before chatSend), so it — not the engine
-  // dispatcher at src/engine/turn/commands.ts — decides what a user can reach.
-  // It used to call `api.chatSessions()` with no options and silently inherit
-  // the `ave:chat:sessions` defaults (20 rows, kind "main"), while the engine
-  // searched every session of every kind. These two lock the widened query and
-  // the rows it unlocks; the handler half is pinned in
-  // src/ipc/handlers/__tests__/chat-session-prefix-lookup.test.ts.
+  // Typed /load intercepts before chatSend and must query every session kind without the default row limit.
   it("sends the shared widest lookup query rather than inheriting the IPC defaults", async () => {
     const now = new Date().toISOString();
     const { container, api } = await renderApp({
@@ -184,8 +153,7 @@ describe("App.handleAsk — /load command routing", () => {
 
   it("resolves a session past the default page size and a routine-kind session", async () => {
     const base = Date.parse("2026-01-01T00:00:00.000Z");
-    // 24 filler main sessions ahead of the target, so the target sits outside
-    // the handler's default 20-row page.
+    // 24 filler main sessions ahead of the target, so the target sits outside the handler's default 20-row page.
     const filler = Array.from({ length: 24 }, (_, index) => ({
       id: `sess-filler-${String(index).padStart(2, "0")}`,
       modifiedAt: new Date(base - index * 1_000).toISOString(),

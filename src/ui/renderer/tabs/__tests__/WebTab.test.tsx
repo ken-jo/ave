@@ -1,9 +1,4 @@
-/**
- * WebTab — the webView preferredFlow (외부 URL 표시 정책) radio group was
- * relocated here from AppearanceTab because it is browsing behavior and
- * belongs on the Web / Browsing tab. Testid + data-value contract is kept
- * stable so the e2e toggle spec keeps working after the move.
- */
+/** Keep testid and data-value stable for the browser toggle contract. */
 import "../../../../../test/renderer/setup.js";
 import { describe, it, expect } from "vitest";
 import { render } from "@testing-library/react";

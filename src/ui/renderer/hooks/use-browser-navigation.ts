@@ -26,11 +26,8 @@ export function useWebSurfaceGuest(tabId: string): GuestElement | null {
   return useSyncExternalStore(subscribeWebSurfaces, () => getWebSurfaceElement(tabId)) as GuestElement | null;
 }
 
-/**
- * Where the tab's page actually is — its live url and title, which a page
- * changes on its own (links, redirects, SPA routes) — read from the guest's
- * navigation events. Before the guest has attached there is nothing to read.
- */
+/** Where the tab's page actually is — its live url and title, which a page changes on its own (links, redirects, SPA
+ * routes) — read from the guest's navigation events. Before the guest has attached there is nothing to read. */
 export function useGuestNavigation(guest: GuestElement | null): GuestNavigation {
   const [state, setState] = useState<GuestNavigation>(NO_NAVIGATION);
   useEffect(() => {

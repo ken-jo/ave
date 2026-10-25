@@ -1,25 +1,13 @@
-// React-free constants extracted from src/renderer.tsx.
-
-// ── Toast / Banner TTL ────────────────────────────────────────────────────────
-/**
- * Short auto-dismiss duration for simple one-line toasts (ms).
- * Use when the message is a brief status (e.g. drag-drop result, copy
- * confirmation) that does not require extended reading time.
- */
+/** Short auto-dismiss duration for simple one-line toasts (ms). Use when the message is a brief status (e.g. drag-drop
+ * result, copy confirmation) that does not require extended reading time. */
 export const SHORT_TOAST_TTL_MS = 3000;
 
-/**
- * Default auto-dismiss duration for inline toasts and banners (ms).
- * Most callsites use this value; those that need a longer read window
- * (complex permission banners, MCP status) override explicitly with a comment.
- */
+/** Default auto-dismiss duration for inline toasts and banners (ms). Most callsites use this value; those that need a
+ * longer read window (complex permission banners, MCP status) override explicitly with a comment. */
 export const DEFAULT_TOAST_TTL_MS = 4000;
 
-/**
- * Long auto-dismiss duration for toasts that require extended reading (ms).
- * Use for multi-line banners, error details, or Korean prose longer than
- * ~8 words that needs comfortable reading time.
- */
+/** Long auto-dismiss duration for toasts that require extended reading (ms). Use for multi-line banners, error details, or
+ * Korean prose longer than ~8 words that needs comfortable reading time. */
 export const LONG_TOAST_TTL_MS = 5000;
 
 import type { AppSettings, ExecutionMode } from "./types.js";
@@ -56,11 +44,8 @@ export interface VendorUiMeta {
 
 export interface VendorOption extends VendorUiMeta {
   id: LLMVendor;
-  /**
-   * Read from the installed model catalog each time it is asked
-   * (`llmVendorModelOptions`). The renderer installs that catalog before it
-   * mounts, after this module has loaded, so the value cannot be taken here.
-   */
+  /** Read from the installed model catalog each time it is asked (`llmVendorModelOptions`). The renderer installs that
+   * catalog before it mounts, after this module has loaded, so the value cannot be taken here. */
   readonly modelOptions: readonly string[];
 }
 
@@ -182,11 +167,8 @@ export function budgetToDepthIndex(budget: number, depths: readonly { budget: nu
   return closest;
 }
 
-// Ordered most-restrictive → least-restrictive so the policy picker reads as a
-
-
-// auto-wired from this mode (handleModeChange), so this is the only permission
-// axis the user sets.
+// Ordered most-restrictive → least-restrictive so the policy picker reads as a auto-wired from this mode
+// (handleModeChange), so this is the only permission axis the user sets.
 export const EXEC_MODE_OPTIONS: { value: ExecutionMode; readonly label: string; readonly description: string }[] = [
   {
     value: "strict",
@@ -210,9 +192,8 @@ export const EXEC_MODE_OPTIONS: { value: ExecutionMode; readonly label: string; 
   },
 ];
 
-// Keep in sync with src/tools/render-html.ts — the server already clamps,
-// but reloaded history could deliver forged/NaN values and we must not
-// trust them at render time.
+// Keep in sync with src/tools/render-html.ts — the server already clamps, but reloaded history could deliver forged/NaN
+// values and we must not trust them at render time.
 export const RENDER_HTML_MIN_HEIGHT = 80;
 export const RENDER_HTML_MAX_HEIGHT = 1200;
 export const RENDER_HTML_DEFAULT_HEIGHT = 400;

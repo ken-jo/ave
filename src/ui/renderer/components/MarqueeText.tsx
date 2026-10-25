@@ -1,20 +1,8 @@
-// Horizontal auto-scroll for text that would otherwise be truncated.
-
 import { useEffect, useRef, useState } from "react";
 import { usePrefersReducedMotion } from "../hooks/use-prefers-reduced-motion.js";
 
-/**
- * Renders `text` on a single line. When the text fits its container it is shown
- * statically. When it overflows — and the user has not requested reduced motion
- * — the text scrolls horizontally in a seamless loop (the track is duplicated
- * and translated by -50%), pausing on hover or keyboard focus via CSS. Under
- * reduced motion (or before measurement) it falls back to a truncated label
- * with a `title` so the full text is still reachable on hover.
- *
- * Speed is proportional to the overflow distance (a fixed px/sec rate) so a
- * very long string does not whip past faster than a slightly-too-long one.
- * Measurement re-runs on container/content resize via ResizeObserver.
- */
+/** Use static truncation before measurement or under reduced motion; otherwise scroll at constant pixels per second and
+ * pause on hover/focus. */
 export function MarqueeText({
   text,
   className,
@@ -45,8 +33,8 @@ export function MarqueeText({
       const overflow = contentWidth - viewportWidth;
       if (overflow > 1) {
         setOverflowing(true);
-        // ~40px/sec while moving. The keyframe reserves 16% of the cycle for
-        // edge pauses, so include that idle time instead of shortening travel.
+        // ~40px/sec while moving. The keyframe reserves 16% of the cycle for edge pauses, so include that idle time instead of
+        // shortening travel.
         const PX_PER_SEC = 40;
         const MOVING_KEYFRAME_RATIO = 0.84;
         const travel = contentWidth + 24; // content + gap between the two copies
@@ -86,8 +74,7 @@ export function MarqueeText({
     >
       {measurer}
       {overflowing ? (
-        // Overflowing — scroll a duplicated track. aria-hidden on the second
-        // copy so screen readers announce the text once.
+        // Overflowing — scroll a duplicated track. aria-hidden on the second copy so screen readers announce the text once.
         <span
           className="ave-marquee-track"
           style={{ ["--ave-marquee-duration" as string]: `${durationSec}s` }}

@@ -9,11 +9,8 @@ import type { AveApi } from "../types.js";
 
 export interface AwayAuthorityContentProps {
   api: AveApi;
-  /**
-   * The tile the away-authority grant would bind to — the focused conversation.
-   * Threaded from the window because settings has no conversation of its own,
-   * and main refuses a grant that names no tile.
-   */
+  /** The tile the away-authority grant would bind to — the focused conversation. Threaded from the window because settings
+   * has no conversation of its own, and main refuses a grant that names no tile. */
   chatGroupId: string;
   /**
    * Whether the paired Telegram share can actually raise an approval in the
@@ -24,17 +21,7 @@ export interface AwayAuthorityContentProps {
   shareIsLive: boolean;
 }
 
-/**
- * Desk controls for the away answerer, shown beside the Telegram share it
- * answers for.
- *
- * The renderer holds no authority of its own: `status` is main's answer to
- * "what can be answered right now", refetched after every mutation. Main treats
- * an expired grant as nothing armed, so this component never has to decide
- * whether a stale `expiresAt` still counts — but it does schedule one refetch
- * for the moment the grant expires, because otherwise a desk left open would go
- * on displaying "armed" for a grant that can no longer answer anything.
- */
+/** Main owns grant validity; refetch on expiry so an open settings view cannot continue displaying a dead grant as armed. */
 export function AwayAuthorityContent({ api, chatGroupId, shareIsLive }: AwayAuthorityContentProps) {
   const { t } = useTranslation();
   const [status, setStatus] = useState<AwayAuthorityStatus | null>(null);
@@ -64,8 +51,8 @@ export function AwayAuthorityContent({ api, chatGroupId, shareIsLive }: AwayAuth
 
   useEffect(() => {
     if (status === null) return;
-    // One timer for the expiry instant, not a poll. `setTimeout` clamps at
-    // ~24.8 days and the longest grant is hours, so the delay is always exact.
+    // One timer for the expiry instant, not a poll. `setTimeout` clamps at ~24.8 days and the longest grant is hours, so the
+    // delay is always exact.
     const delay = Math.max(0, status.expiresAt - Date.now());
     const timer = setTimeout(() => { void refresh(); }, delay);
     return () => clearTimeout(timer);

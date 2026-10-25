@@ -166,8 +166,8 @@ describe("useWorkflowTools", () => {
       onSkillLoaded: vi.fn(() => () => undefined),
       onAskUserQuestionTimeout: vi.fn(() => () => undefined),
     } as unknown as AveApi;
-    // A tile owns its own conversation AND the child sessions of the agents it
-    // spawned — a question a sub-agent asks belongs to the tile that started it.
+    // A tile owns its own conversation AND the child sessions of the agents it spawned — a question a sub-agent asks belongs
+    // to the tile that started it.
     const ownsSession = (sessionId: string) =>
       sessionId === "session-mine" || sessionId === "child-of-mine";
     const { result } = renderHook(() => useWorkflowTools(api, { ownsSession }));
@@ -229,8 +229,8 @@ describe("useWorkflowTools", () => {
       }),
       onAskUserQuestionTimeout: vi.fn(() => () => undefined),
     } as unknown as AveApi;
-    // What a focused tile passes: it owns one conversation, and adopts cards
-    // from any session no tile is showing (a routine here).
+    // What a focused tile passes: it owns one conversation, and adopts cards from any session no tile is showing (a routine
+    // here).
     const ownsSession = (sessionId: string) => sessionId === "session-mine";
     const drawsSession = (sessionId: string) =>
       ownsSession(sessionId) || sessionId === "session-routine";
@@ -244,8 +244,8 @@ describe("useWorkflowTools", () => {
         createdAt: 0,
       });
       onSkill?.({ name: "routine-skill", description: "loaded headless", sessionId: "session-routine" });
-      // Frames keep the narrower rule: an adopted card is a prompt this tile
-      // must answer, but another session's agent list is not this tile's panel.
+      // Frames keep the narrower rule: an adopted card is a prompt this tile must answer, but another session's agent list is
+      // not this tile's panel.
       onSpawn?.({ spawnId: "routine-spawn", type: "start", taskState: "TASK_STATE_SUBMITTED", title: "Routine", parentSessionId: "session-routine" });
     });
 

@@ -18,9 +18,6 @@ import { formatDateTime } from "../../../shared/format-time.js";
 import { errorMessage } from "../../../shared/error-message.js";
 import { isValidOAuthClientId, MAX_OAUTH_CLIENT_ID_LEN } from "../../../mcp/safe-names.js";
 
-// ─── Helper types re-exported from renderer/types.ts ─
-
-
 type Transport = "stdio" | "http";
 
 const AUTH_STATUS_POLL_MS = 3_000;
@@ -237,12 +234,9 @@ export function McpTab() {
     };
   }, []);
 
-  // ── Section A: 연결 상태 목록 ─────────────────────
   const [states, setStates] = useState<McpServerState[]>([]);
-  // ── Section B: 설정 파일 목록 ─────────────────────
   const [configs, setConfigs] = useState<McpServerConfigDto[]>([]);
   const [configPath, setConfigPath] = useState("");
-  // ── Section C: 서버 추가 폼 ───────────────────────
   const [form, setForm] = useState(EMPTY_FORM);
   const [formBusy, setFormBusy] = useState(false);
   const [showForm, setShowForm] = useState(false);

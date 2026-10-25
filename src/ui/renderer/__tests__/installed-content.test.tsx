@@ -1,9 +1,3 @@
-/**
- * Installed content in the renderer: installed themes,
- * languages and fonts load from `aveApi.installedContent`, apply, and show
- * in the appearance pickers; a selected package that is gone falls back to
- * the default.
- */
 import "../../../../test/renderer/setup.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, configure, render, waitFor } from "@testing-library/react";

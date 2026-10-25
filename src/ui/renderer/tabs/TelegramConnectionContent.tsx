@@ -22,22 +22,11 @@ import { useCopyFlash } from "../hooks/use-copy-flash.js";
 
 export interface TelegramConnectionContentProps {
   api: AveApi;
-  /**
-   * The tile the away-authority grant would bind to — the focused conversation.
-   * Threaded from the window because settings has no conversation of its own,
-   * and main refuses a grant that names no tile.
-   */
+  /** The tile the away-authority grant would bind to — the focused conversation. Threaded from the window because settings
+   * has no conversation of its own, and main refuses a grant that names no tile. */
   chatGroupId: string;
-  /**
-   * The owner finished acting on this connection and it worked.
-   *
-   * Every mutation here is terminal in the same way — the press either did the
-   * thing or reported why it could not — so the embedding surface is told after
-   * a success and never after a refusal, which is what lets a settings row fold
-   * away on completion while leaving a failed attempt on screen with its error.
-   * Minting a pairing code deliberately does NOT report: the code is something
-   * the owner still has to go and use.
-   */
+  /** Report only completed successful mutations so embedding rows can collapse; pairing-code creation stays open until the
+   * owner uses it. */
   onCompleted?: () => void;
 }
 
@@ -155,8 +144,7 @@ export function TelegramConnectionContent({ api, chatGroupId, onCompleted }: Tel
   }, [onCompleted, refresh, t]);
 
   const connect = useCallback(async () => {
-    // The token never re-enters component state after this call, and there is
-    // no channel that could read it back.
+    // The token never re-enters component state after this call, and there is no channel that could read it back.
     const token = botToken;
     setBotToken("");
     const ok = await run(() => api.telegramConnection.connect(token));
@@ -173,8 +161,7 @@ export function TelegramConnectionContent({ api, chatGroupId, onCompleted }: Tel
         setFeedback({ tone: "error", text: formatIpcError(result.error, undefined) });
         return;
       }
-      // Sole renderer home of the raw code. No snapshot or change event can
-      // recreate it after this component unmounts.
+      // Sole renderer home of the raw code. No snapshot or change event can recreate it after this component unmounts.
       setIssuedCode(result.pairingCode);
       await refresh();
     } catch {
@@ -190,9 +177,8 @@ export function TelegramConnectionContent({ api, chatGroupId, onCompleted }: Tel
 
   const state = snapshot?.state ?? null;
   const readOnly = state === "unsupported";
-  // A pairing this machine can no longer recognise is repaired the same way a
-  // missing one is: mint a code and send it. Same affordance, different reason,
-  // which the body text below supplies.
+  // A pairing this machine can no longer recognise is repaired the same way a missing one is: mint a code and send it. Same
+  // affordance, different reason, which the body text below supplies.
   const canPair = state === "connected-unpaired"
     || state === "pairing-unrecognized"
     || state === "pairing-pending";

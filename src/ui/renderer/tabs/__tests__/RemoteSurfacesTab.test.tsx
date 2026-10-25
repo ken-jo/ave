@@ -1,14 +1,4 @@
-/**
- * The 원격 연결 tab, as one list of connection rows.
- *
- * Three readings are asserted, because they are the three ways the
- * re-composition could quietly lose something a reader depends on: every
- * vendor is on the page exactly once (a duplicate row means a surface got
- * rendered by two owners), a row opens onto the controls that vendor already
- * had (a collapsed row that opens onto nothing is a capability deleted), and a
- * deep link into a section that now lives inside a collapsed row still lands on
- * it (arrival looks the anchor up in the DOM, and a folded row has no anchor).
- */
+/** Every connection has one row; deep links must expand collapsed rows before locating their anchors. */
 // @vitest-environment jsdom
 import "../../../../../test/renderer/setup.js";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -17,8 +7,8 @@ import type { MarketplaceInstalledMessagingConnection } from "../../../../shared
 import type { AveApi } from "../../types.js";
 import { RemoteSurfacesTab } from "../RemoteSurfacesTab.js";
 
-// The local-API gates read the window-scoped client rather than the `api` this
-// tab threads down, so the row that opens onto them needs it stood up too.
+// The local-API gates read the window-scoped client rather than the `api` this tab threads down, so the row that opens
+// onto them needs it stood up too.
 vi.mock("../../api-client.js", () => ({
   getApi: () => ({
     getSettings: async () => ({ system: {}, features: {} }),
@@ -87,8 +77,7 @@ function observerSnapshot() {
 function makeApi(options: {
   telegramState?: string;
   resumeFails?: boolean;
-  /** What `marketplace.installedMessagingConnections` holds. Null is what a
-   *  desktop that never installed one actually stores. */
+  /** What `marketplace.installedMessagingConnections` holds. Null is what a desktop that never installed one actually stores. */
   installed?: readonly MarketplaceInstalledMessagingConnection[] | null;
 } = {}) {
   const resume = vi.fn(async () => (options.resumeFails === true
@@ -171,8 +160,8 @@ describe("RemoteSurfacesTab", () => {
   });
 
   it("keeps Telegram a row on a desktop that installed no messaging connection", async () => {
-    // What a desktop that never installed one actually stores. Telegram is
-    // built into this build, so its row cannot depend on that list.
+    // What a desktop that never installed one actually stores. Telegram is built into this build, so its row cannot depend on
+    // that list.
     const { api } = makeApi({ installed: null });
     const { container } = render(<RemoteSurfacesTab api={api} chatGroupId="main" />);
 
@@ -203,8 +192,8 @@ describe("RemoteSurfacesTab", () => {
     expect(await screen.findByTestId("local-api-surfaces-local-api")).toBeTruthy();
     expect(screen.getByTestId("local-api-surfaces-a2a-remote-receiver")).toBeTruthy();
 
-    // Rows open independently — setting two connections up side by side is a
-    // real thing to want, so opening the next one must not close the last.
+    // Rows open independently — setting two connections up side by side is a real thing to want, so opening the next one must
+    // not close the last.
     fireEvent.click(screen.getByTestId("connection:tailnet:toggle"));
     expect(await screen.findByTestId("tailnet-access-content")).toBeTruthy();
     expect(screen.getByTestId("local-api-surfaces-local-api")).toBeTruthy();
@@ -239,8 +228,8 @@ describe("RemoteSurfacesTab", () => {
 
   it("opens the row that holds the section a deep link named", async () => {
     const { api } = makeApi();
-    // The observer anchor lives inside the Tailnet card, which is inside the
-    // Tailnet row — folded, it is not in the DOM for arrival to find.
+    // The observer anchor lives inside the Tailnet card, which is inside the Tailnet row — folded, it is not in the DOM for
+    // arrival to find.
     const { container } = render(
       <RemoteSurfacesTab api={api} chatGroupId="main" sectionTarget="remote-tailnet-observer" />,
     );
