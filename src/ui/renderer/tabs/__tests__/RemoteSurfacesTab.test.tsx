@@ -226,31 +226,23 @@ describe("RemoteSurfacesTab", () => {
     expect(screen.getByTestId("connection:telegram:detail")).toBeTruthy();
   });
 
-  it("opens the row that holds the section a deep link named", async () => {
-    const { api } = makeApi();
-    // The observer anchor lives inside the Tailnet card, which is inside the Tailnet row — folded, it is not in the DOM for
-    // arrival to find.
-    const { container } = render(
-      <RemoteSurfacesTab api={api} chatGroupId="main" sectionTarget="remote-tailnet-observer" />,
-    );
+  // Folded rows keep their anchors out of the DOM, so arrival must expand the owning row first.
+  function sectionArrivalCase(sectionTarget: string) {
+    return async () => {
+      const { api } = makeApi();
+      const { container } = render(
+        <RemoteSurfacesTab api={api} chatGroupId="main" sectionTarget={sectionTarget} />,
+      );
 
-    await waitFor(() => {
-      expect(container.querySelector("[data-settings-section='remote-tailnet-observer']"))
-        .not.toBeNull();
-    });
-  });
+      await waitFor(() => {
+        expect(container.querySelector(`[data-settings-section='${sectionTarget}']`))
+          .not.toBeNull();
+      });
+    };
+  }
 
-  it("opens the messaging row a deep link into that connection named", async () => {
-    const { api } = makeApi();
-    const { container } = render(
-      <RemoteSurfacesTab api={api} chatGroupId="main" sectionTarget="remote-telegram" />,
-    );
-
-    await waitFor(() => {
-      expect(container.querySelector("[data-settings-section='remote-telegram']"))
-        .not.toBeNull();
-    });
-  });
+  it("opens the row that holds the section a deep link named", sectionArrivalCase("remote-tailnet-observer"));
+  it("opens the messaging row a deep link into that connection named", sectionArrivalCase("remote-telegram"));
 
   it("keeps the messaging group anchor reachable with every row folded", async () => {
     const { api } = makeApi();

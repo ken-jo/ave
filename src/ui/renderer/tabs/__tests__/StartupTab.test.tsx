@@ -31,27 +31,21 @@ describe("StartupTab", () => {
     expect(enabled.getAttribute("aria-checked")).toBe("true");
   });
 
-  it("toggling 'enable global shortcut' persists through updateSettings", async () => {
-    const api = installApi();
-    const { findByTestId } = render(<StartupTab />);
-    const enabled = await findByTestId("startup-shortcut-enabled");
-    await waitFor(() => expect(enabled.getAttribute("aria-checked")).toBe("false"));
-    fireEvent.click(enabled);
-    await waitFor(() => {
-      expect(api.updateSettings).toHaveBeenCalledWith({ shortcuts: { enabled: true } });
-    });
-  });
+  function persistedToggleCase(testId: string, patch: Record<string, unknown>) {
+    return async () => {
+      const api = installApi();
+      const { findByTestId } = render(<StartupTab />);
+      const toggle = await findByTestId(testId);
+      await waitFor(() => expect(toggle.getAttribute("aria-checked")).toBe("false"));
+      fireEvent.click(toggle);
+      await waitFor(() => {
+        expect(api.updateSettings).toHaveBeenCalledWith(patch);
+      });
+    };
+  }
 
-  it("toggling launch-at-startup persists through updateSettings", async () => {
-    const api = installApi();
-    const { findByTestId } = render(<StartupTab />);
-    const launch = await findByTestId("startup-launch-at-startup");
-    await waitFor(() => expect(launch.getAttribute("aria-checked")).toBe("false"));
-    fireEvent.click(launch);
-    await waitFor(() => {
-      expect(api.updateSettings).toHaveBeenCalledWith({ system: { launchAtStartup: true } });
-    });
-  });
+  it("toggling 'enable global shortcut' persists through updateSettings", persistedToggleCase("startup-shortcut-enabled", { shortcuts: { enabled: true } }));
+  it("toggling launch-at-startup persists through updateSettings", persistedToggleCase("startup-launch-at-startup", { system: { launchAtStartup: true } }));
 
   it("records an accelerator via keydown capture and persists it", async () => {
     const api = installApi();
