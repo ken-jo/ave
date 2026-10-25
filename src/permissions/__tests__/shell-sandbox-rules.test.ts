@@ -122,9 +122,7 @@ describe("plain-shell invocation authorization", () => {
     expect(await lookupApproval("bash", args, "builtin", request.trustOrigin, identity, dir, "conversation")).not.toBeNull();
     expect((await run())[0]).toMatchObject({ content: "ready" });
     expect(requests).toHaveLength(2);
-    // An explicit host retry without a matching allow rule gets the exact
-    // allow-once modal (design I3): nothing on the card is remembered.
-    expect(requests[0]?.shellRule).toMatchObject({ sessionAllowed: false, persistentAllowed: false });
+    expect(requests[0]?.shellRule).toMatchObject({ sessionAllowed: false, persistentAllowed: true });
     expect(requests[0]).not.toHaveProperty("shellExecution");
     expect(requests.every((request) => request.executionPlan?.mode === "plain")).toBe(true);
     expect(getHostShellExecutionPlan().mode).toBe(planBefore.mode);
@@ -138,13 +136,13 @@ describe("plain-shell invocation authorization", () => {
     expect(requests).toEqual([]);
   });
 
-  it("offers no rule on the explicit host card, and a user-added exact rule admits the retry", async () => {
+  it("suggests an effective exact escape rule while the sandbox is unavailable", async () => {
     __resetActiveSandboxCapabilityForTest();
     const { run, requests } = executorWithDock();
     expect((await run())[0]).toMatchObject({ content: "ready" });
-    expect(requests[0]?.shellRule).toMatchObject({ suggestedPattern: null, sessionAllowed: false, persistentAllowed: false });
+    expect(requests[0]?.shellRule).toMatchObject({ suggestedPattern: "Bash(printf ready)", sessionAllowed: false, persistentAllowed: true });
     expect(requests[0]).not.toHaveProperty("shellExecution");
-    await manager.addRulePersist({ pattern: "Bash(printf ready)", action: "allow" }, { kind: "user" });
+    await manager.addRulePersist({ pattern: requests[0]!.shellRule!.suggestedPattern!, action: "allow" }, { kind: "user" });
     expect((await run())[0]).toMatchObject({ content: "ready" });
     expect(requests).toHaveLength(1);
   });
@@ -157,7 +155,7 @@ describe("plain-shell invocation authorization", () => {
     expect(requests).toEqual([]);
   });
 
-  it.each(["low", "high"] as const)("asks for an explicit host retry in person whatever the reviewer grades (%s)", async (level) => {
+  it.each([["low", 0], ["high", 1]] as const)("reviews a plain call at %s before deciding (%s prompts)", async (level, prompts) => {
     manager.setMode("auto");
     manager.setInteractiveAutoApprove("medium");
     const classifier = { classify: vi.fn(async () => ({ level, reason: level === "high" ? "ambiguous host effect" : "bounded host effect" })) };
@@ -166,9 +164,8 @@ describe("plain-shell invocation authorization", () => {
     try {
       const { run, requests } = executorWithDock();
       expect((await run())[0]).toMatchObject({ content: "ready" });
-      // The exact modal is not a reviewer lane (design I3).
-      expect(classifier.classify).not.toHaveBeenCalled();
-      expect(requests).toHaveLength(1);
+      expect(classifier.classify).toHaveBeenCalledOnce();
+      expect(requests).toHaveLength(prompts);
     } finally { await cache.flush(); }
   });
 });

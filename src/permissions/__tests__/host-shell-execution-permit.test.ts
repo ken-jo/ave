@@ -14,6 +14,7 @@ import {
   consumeHostShellExecutionPermit,
   consumeHostShellExecutionPermitForSpawn,
   mintHostShellExecutionPermit,
+  recordHostShellPolicyAuthorization,
   withHostShellExecutionHandoff,
   type HostShellExecutionPermitBinding,
 } from "../host-shell-execution-permit.js";
@@ -126,7 +127,18 @@ function permitInput(
 }
 
 describe("Windows partial-shell execution permit", () => {
-  it("mints nothing for a Windows Plan B binding without a Gate receipt, whatever the policy decided", () => {
+  it("binds host policy authorization to one action and consumes it once", () => {
+    const binding = makeBinding();
+    recordHostShellPolicyAuthorization(binding);
+    const mint = (candidate = binding) => mintHostShellExecutionPermit({ plan: candidate.plan, binding: candidate, approvalDecision: undefined });
+    expect(mint({ ...binding, command: "echo changed" })).toBeUndefined();
+    const permit = mint();
+    expect(permit).toBeDefined();
+    expect(mint()).toBeUndefined();
+    expect(consumeHostShellExecutionPermit({ ...permitInput(binding, permit), command: "echo changed" })).toBe(false);
+    expect(consumeHostShellExecutionPermit(permitInput(binding, permit))).toBe(false);
+  });
+  it("mints nothing for a Windows Plan B binding without a Gate receipt or a host policy authorization", () => {
     const binding = makeBinding();
     expect(mintHostShellExecutionPermit({ plan: binding.plan, binding, approvalDecision: undefined })).toBeUndefined();
     expect(mintHostShellExecutionPermit({

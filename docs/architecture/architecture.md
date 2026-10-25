@@ -1869,10 +1869,7 @@ or macOS with `allowAllUnixSockets`), both new approvals and reused grants stop
 at This conversation (a terminal: This tab). Persistent grants remain stored
 when the channel becomes shared, but cannot authorize it; they apply again
 when the channel is strong. Grant lookup filters eligible scopes before
-selecting the narrowest match. Builtin shell calls are narrower still: their
-cards offer only Allow once and Always, and only those grants apply to them, so
-a local or shared-channel destination is offered to a shell call once at a time
-([shell network policy](permission-policy-design.md)).
+selecting the narrowest match.
 
 `spawnWorker` is the only host primitive that can establish that worker-backed
 plugin substrate. macOS and Linux workers use an ASRT-wrapped Unix-domain-socket

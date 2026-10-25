@@ -72,7 +72,9 @@ describe("host shell invocation authorization", () => {
     expect(execute).not.toHaveBeenCalled();
     if (change === "remove allow") {
       expect(cards).toHaveLength(1);
-      expect(cards[0]).toMatchObject({ allowedChoices: ["allow-once", "deny-once"], requireExplicit: true });
+      // OWNER ITEM: main locked the explicit-host card to allow-once/deny-once; #77/#90 let the bash card offer rules. No dated decision picks one; this follows #90.
+      expect(cards[0]?.allowedChoices).toBeUndefined();
+      expect(cards[0]).toMatchObject({ requireExplicit: true });
     } else {
       expect(check.mock.results[1]?.value).toMatchObject({ decision: "deny", layer: 1 });
       expect(cards).toHaveLength(0);

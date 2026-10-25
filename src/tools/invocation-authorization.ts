@@ -18,7 +18,7 @@ import type {
   HostShellExecutionPlanAuditProjection,
 } from "../permissions/host-shell-execution-plan.js";
 import type { HostShellExecutionPermitBinding } from "../permissions/host-shell-execution-permit.js";
-import { resolveHostShellWorkingDirectory } from "../permissions/host-shell-execution-permit.js";
+import { recordHostShellPolicyAuthorization, resolveHostShellWorkingDirectory } from "../permissions/host-shell-execution-permit.js";
 import {
   disposableContainerCapability,
   getHostShellExecutionPlan,
@@ -488,48 +488,20 @@ export async function authorizeToolInvocation(
     if (!permissionResult) {
       throw new Error("Permission evaluation returned no result");
     }
-    // Explicit host requests and the Windows Plan B are a host-owned hard gate.
-    // It runs before reviewer and approval-memory paths: a plain child has no
-    // OS isolation, so neither an auto reviewer, a durable approval, nor the
-    // allow-all mode may silently authorize it. Existing deny decisions still
-    // win unchanged. The one exception is the reference behaviour for an
-    // explicit unsandboxed request (design I3, owner 2026-10-16): a matching
-    // allow rule approves it, as in Claude Code and Codex. Only a host-issued
-    // layer-3 rule decision qualifies — the floor (credential paths, sink
-    // catalogue) and ask rules return a forced-modal ask before any allow
-    // lane, so they still reach the modal below.
+    // A plain shell (explicit host request, unavailable or excluded sandbox,
+    // the Windows Plan B) follows the normal rules, reviewer/judge and dock
+    // (design I3, owner 2026-10-16; #90). The floor and ask rules already
+    // returned a forced-modal ask. A matching allow rule on an explicit host
+    // request keeps its host-issued, epoch-bound rule proof for the permit;
+    // every other policy allow is recorded for this exact action below.
     const explicitHostAllowRule =
       hostShellExecutionPlan?.executionRequest === "host" &&
       remoteControllerOrigin === undefined &&
       invocationPermissionContext.headless !== true &&
       isIssuedShellAllowRuleDecision(permissionResult, services.permissionManager);
     if (explicitHostAllowRule) hostShellAllowRuleDecision = permissionResult;
-    if (
-      hostShellRequiresExplicitApproval &&
-      permissionResult.decision !== "deny" &&
-      !explicitHostAllowRule
-    ) {
-      const executionReason = hostShellExecutionPlan?.executionRequest === "host"
-        ? "explicit host execution"
-        : hostShellExecutionPlan!.fallbackReason;
-      permissionResult = remoteControllerOrigin !== undefined && hostShellExecutionPlan?.executionRequest === "host"
-        ? {
-            decision: "deny",
-            reason: "Explicit host execution is unavailable to remote-controller requests",
-            layer: permissionResult.layer,
-          }
-        : invocationPermissionContext.headless === true
-        ? {
-            decision: "deny",
-            reason: `${executionReason}: headless invocation blocked because interactive approval is unavailable`,
-              layer: permissionResult.layer,
-            }
-          : {
-              decision: "ask",
-              reason: `${executionReason}: this shell will run without OS isolation and requires an exact allow-once approval`,
-              layer: permissionResult.layer,
-              forceModal: true,
-            };
+    if (remoteControllerOrigin !== undefined && hostShellExecutionPlan?.executionRequest === "host") {
+      permissionResult = { decision: "deny", reason: "Explicit host execution is unavailable to remote-controller requests", layer: 2 };
     }
 
     // Defense in depth for test-only/no-PermissionManager wiring: the policy
@@ -1534,11 +1506,10 @@ export async function authorizeToolInvocation(
         // the exact invocation shown to the user.
         const approvalRequest = {
           id: randomUUID(),
-          ...(hostShellRequiresExplicitApproval || requiresRemoteLocalOneShot || requiresPerActionApproval
+          ...((hostShellRequiresExplicitApproval && !isCanonicalBashTool(tool)) || requiresRemoteLocalOneShot || requiresPerActionApproval
             ? {
-                // Plain host-shell, remote-controller and per-action approvals
-                // are exact, local one-shot decisions: none can mint a cache
-                // or a rule (design I3).
+                // Non-rule shell, remote-controller and per-action requests
+                // retain exact one-shot consent.
                 allowedChoices: ["allow-once", "deny-once"] as const,
                 durableApprovalRecordAllowed: false as const,
                 forceExplicit: true as const,
@@ -2049,6 +2020,13 @@ export async function authorizeToolInvocation(
       finalInput,
       permissionResult,
     );
+  }
+
+  const ruleProofStands = hostShellAllowRuleDecision !== undefined && permissionResult === hostShellAllowRuleDecision;
+  if (hostShellExecutionPermitBinding !== undefined &&
+      hostShellApprovalDecision === undefined && !ruleProofStands && services.permissionManager !== undefined &&
+      permissionResult?.decision === "allow" && !requiresRemoteLocalOneShot) {
+    recordHostShellPolicyAuthorization(hostShellExecutionPermitBinding);
   }
 
   return {

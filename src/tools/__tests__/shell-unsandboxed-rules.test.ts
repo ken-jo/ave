@@ -229,8 +229,9 @@ describe("explicit unsandboxed retry (executionMode host)", () => {
       executionMode: "host", answer: "deny-once", pm: first.pm,
     });
     expect(retry.cards).toHaveLength(1);
+    // OWNER ITEM: main locked the explicit-host card to allow-once/deny-once; #77/#90 let the bash card offer rules. No dated decision picks one; this follows #90.
+    expect(retry.cards[0]?.allowedChoices).toBeUndefined();
     expect(retry.cards[0]).toMatchObject({
-      allowedChoices: ["allow-once", "deny-once"],
       executionPlan: { executionRequest: "host", requiresExplicitUserApproval: true },
     });
     expect(retry.cards[0]?.approvalCacheKey).toBeDefined();
@@ -245,8 +246,9 @@ describe("explicit unsandboxed retry (executionMode host)", () => {
       executionMode: "host", answer: "allow-once",
     });
     expect(cards).toHaveLength(1);
+    // OWNER ITEM: main locked the explicit-host card to allow-once/deny-once; #77/#90 let the bash card offer rules. No dated decision picks one; this follows #90.
+    expect(cards[0]?.allowedChoices).toBeUndefined();
     expect(cards[0]).toMatchObject({
-      allowedChoices: ["allow-once", "deny-once"],
       requireExplicit: true,
       executionPlan: { executionRequest: "host", mode: "plain", requiresExplicitUserApproval: true },
     });
