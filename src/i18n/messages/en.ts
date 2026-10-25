@@ -1,6 +1,8 @@
 /** English message catalog; the canonical key set for the whole app. Every other locale (see {@link ./ko}) must provide a translation for each key here; missing keys fall back to this English text at runtime and are a type error at build time.
  * Keys are dot-namespaced by surface/component (`settings.appearance.*`, `chatView.*`, …). Placeholders use single braces: `"Hello {name}"`. This file is the seed; surface-specific keys are appended as each module is migrated off hardcoded strings. */
 export const en = {
+  "homePrivacy.boundaryRepairedTitle": "Private storage repaired",
+  "homePrivacy.boundaryRepaired": "Credentials may have been readable. Sign out and sign in again.",
   "sandboxPolicy.quarantined": "Sandbox protected Git entries were moved to quarantine (not deleted):\n{moves}\nRestore each entry from the shown quarantine path to its original path after inspecting it.",
   "sandboxPolicy.quarantineFailed": "Sandbox quarantine failed for {path}: {reason}. No deletion was attempted. Already moved entries remain at:\n{moves}",
   "sandboxPolicy.scanNarrowed": "{reason}; write access narrowed to {roots}. Unscanned or withheld roots: {removed}.",

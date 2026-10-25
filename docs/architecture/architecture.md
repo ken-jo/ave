@@ -2130,28 +2130,41 @@ with its own owner rule:
   step changes the owner or DACL of an object that already exists. The image's
   bytes are written only after that step. If it fails, the step removes what it
   made; a later failure removes the copy without following a link.
-- **`AVE_HOME` is created by the user, or admitted only on a strict DACL.**
-  When `AVE_HOME`, its `secrets` directory, or its `subscription-runtimes`
-  directory does not exist yet,
-  `ensureAveHomePrivate` in `src/shared/ave-home.ts` has its protecting step
-  create it with the user as owner and an owner-only protected DACL, so no
-  grant for the token's default owner is left behind. Before it changes an
-  existing directory's DACL, the step refuses a link or junction and an owner
-  this rule does not accept, and nothing inside a refused directory is
-  touched; the permission command then acts on a link itself (`icacls /L`),
-  never on its target. An existing `AVE_HOME` the app did not create may be
-  owned by `S-1-5-32-544` only when the current token's default owner is
-  `S-1-5-32-544`. Its DACL must then be protected and hold exactly one entry,
-  the user's own full-control grant, inherited by files and folders and not
-  itself inherited; no system principal is granted. The app protects such a
-  root, but it does not take ownership of it. `isOwnerOnlyDacl` in
-  `src/shared/ave-home.ts` applies this rule. It takes an elevated
-  Administrators token as its sign that the default owner is `S-1-5-32-544`.
-  On a non-elevated boot, only an existing non-reparse `subscription-runtimes`
-  root owned by `S-1-5-32-544` is claimed for the token user before DACL protection,
-  with the owner rechecked on the same non-following handle; other foreign owners
-  remain refused. A failed claim refuses privacy as `owner-claim-failed`, naming
-  the path and advising one elevated run or an owner repair.
+- **Private storage boundaries are protected at creation.**
+  On Windows, boot creates `AVE_HOME` and the `secrets`,
+  `subscription-runtimes`, `keys` and `certs` boundaries with
+  `O:<user>D:P(A;OICI;FA;;;<user>)`, using `NtCreateFile` with
+  `OBJ_DONT_REPARSE` relative to a pinned directory handle.
+  The boundary list is checked against the sensitive-path table. A future
+  boundary for root-level sensitive files is reserved; those files remain
+  at their current paths. Feature storage asserts that boundaries already
+  exist and never creates them on Windows.
+  Boot reads each boundary's own descriptor on a pinned no-reparse handle.
+  The owner must be the user, or `S-1-5-32-544` under an elevated token;
+  its protected DACL must hold exactly one explicit user FullControl ACE
+  with object and container inheritance. A conforming boundary is never
+  rewritten, and its children are never inspected. Traverse bypass does
+  not grant access through a child's own protected DACL, so a foreign
+  read grant on the root cannot open a boundary.
+  The root retains its protected user FullControl rule. Foreign root
+  grants contained in `FILE_GENERIC_READ | FILE_GENERIC_EXECUTE`
+  (`0x1200a9`, including SYNCHRONIZE) emit diagnostics without disabling
+  confinement. Any write, delete, WRITE_DAC, WRITE_OWNER or other wider
+  right refuses confinement before boundary repair.
+  A nonconforming boundary is renamed to `<name>.unprotected-recovery`,
+  replaced with a freshly protected directory, and copied without carrying
+  its ACLs or read-only attributes. Links and junctions are skipped and logged. The copy is retried
+  after an interrupted boot while the pending aside remains authoritative.
+  Once copying and verification finish, the aside is renamed to
+  `<name>.unprotected-complete` before deletion. A completed aside beside a
+  protected live directory needs deletion only; an aside without a live
+  directory is renamed back and repaired again. The deleter opens entries
+  relative to pinned handles and removes reparse entries themselves, including
+  read-only entries. Older systems clear read-only on the same handle before deletion.
+  Any failed step refuses confinement and names the boundary and step.
+  Each successful repair emits one localized system notification recommending
+  sign-out and sign-in because credentials may have been readable. Headless
+  hosts log the notice without desktop delivery.
 
 Any other owner is refused. A change to any of these rules changes the security
 contract for all of them.

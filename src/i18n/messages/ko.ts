@@ -3,6 +3,8 @@
 import type { SeedMessageKey } from "./en.js";
 
 export const ko: Record<SeedMessageKey, string> = {
+  "homePrivacy.boundaryRepairedTitle": "비공개 저장소 복구 완료",
+  "homePrivacy.boundaryRepaired": "인증 정보를 다른 계정이 읽을 수 있었으므로 로그아웃한 뒤 다시 로그인하세요.",
   "sandboxPolicy.quarantined": "샌드박스가 보호하는 Git 항목을 삭제하지 않고 격리 위치로 옮겼습니다:\n{moves}\n내용을 확인한 뒤 표시된 격리 경로에서 원래 경로로 각 항목을 복원하세요.",
   "sandboxPolicy.quarantineFailed": "{path} 항목 격리 실패: {reason}. 삭제를 시도하지 않았습니다. 이미 옮긴 항목은 다음 위치에 보존됩니다:\n{moves}",
   "sandboxPolicy.scanNarrowed": "{reason}. 쓰기 허용 범위를 {roots}(으)로 축소했습니다. 스캔하지 못했거나 허용하지 않은 루트: {removed}.",
