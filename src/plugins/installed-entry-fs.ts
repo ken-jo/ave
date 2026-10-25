@@ -27,6 +27,7 @@ import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { confinedProcessesMayBeRunning } from "../lib/confined-process-phase.js";
+import { sameFileIdentity } from "../lib/file-identity.js";
 import { retryOnTransientFsLock } from "../lib/transient-fs-lock-retry.js";
 
 /**
@@ -266,9 +267,9 @@ export async function removeOwnedPluginTree(path: string): Promise<void> {
  * child had, or swept at boot before any confined child runs.
  */
 export async function restoreOwnerAccess(path: string): Promise<void> {
-  const entry = await lstat(path);
+  const entry = await lstat(path, { bigint: true });
   if (!entry.isDirectory()) return;
-  const mode = (entry.mode & 0o7777) | 0o700;
+  const mode = Number((entry.mode & 0o7777n) | 0o700n);
   if (process.platform === "win32") {
     // No descriptor can be opened on a Windows directory, and no confined
     // child there writes inside a pinned root; the mode only toggles read-only.
@@ -280,7 +281,7 @@ export async function restoreOwnerAccess(path: string): Promise<void> {
       return openDirectoryNoFollow(path);
     });
     try {
-      if ((await handle.stat()).ino !== entry.ino) {
+      if (!sameFileIdentity(await handle.stat({ bigint: true }), entry)) {
         throw new Error(`plugin removal: ${path} changed while its access was being restored`);
       }
       try {

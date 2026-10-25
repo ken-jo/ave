@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { moonstoneBundle } from "../../../ui/renderer/theme/bundles/moonstone.js";
 import {
+  copyFixtureRepo,
   createFixtureRepo,
   type FixtureRepo,
   type GitHttpServer,
@@ -12,6 +13,7 @@ import {
   startGitHttpServer,
 } from "../../__tests__/fixtures/git-http-server.js";
 import { createTestGitRunner, type TestGitRunner } from "../../__tests__/fixtures/git-runner.js";
+import { cachedFixtureGit } from "../../__tests__/fixtures/cached-git.js";
 import { descriptorText as descriptor, jsonText as text } from "../../__tests__/fixtures/package-files.js";
 import { policySource } from "../../__tests__/fixtures/policy.js";
 import { aggregateCatalog, type CatalogRow } from "../../catalog/aggregate.js";
@@ -47,9 +49,13 @@ describe("content package store", () => {
   let serverRoot: string;
   let server: GitHttpServer;
   let git: TestGitRunner;
+  let fixtureGit: ReturnType<typeof cachedFixtureGit>;
+  let emptyRepo: FixtureRepo;
   let root: string;
   let repos: FixtureRepo[] = [];
   let counter = 0;
+  const marketSeeds = new Map<string, { repo: FixtureRepo; first: string }>();
+  const seedRepos: FixtureRepo[] = [];
   let activated: Array<{ op: "activate" | "deactivate" | "approve"; key: string; content: ParsedContent | null; previous?: string | null; adopt?: boolean }>;
   let failActivation: boolean;
   /** What the activations report as their predecessor's retirement. */
@@ -71,13 +77,17 @@ describe("content package store", () => {
 
   beforeAll(async () => {
     serverRoot = mkdtempSync(join(tmpdir(), "ave-content-served-"));
+    emptyRepo = createFixtureRepo(serverRoot, "empty-seed");
     server = await startGitHttpServer({ root: serverRoot });
     git = await createTestGitRunner();
+    fixtureGit = cachedFixtureGit(git.runner, serverRoot, server.origin, join(serverRoot, "command-cache"));
   });
 
   afterAll(async () => {
     await server.close();
     await git.cleanup();
+    for (const seed of seedRepos) await removeFixtureRepo(seed);
+    await removeFixtureRepo(emptyRepo);
     await cleanupTmpDir(serverRoot);
   });
 
@@ -96,22 +106,31 @@ describe("content package store", () => {
 
   /** A marketplace repository serving `packages` (kind, name, path) with the given files. */
   function market(packages: Array<{ kind: string; name: string; path: string }>, files: Record<string, string | Buffer>) {
-    counter += 1;
-    const name = `content-${counter}`;
-    const repo = createFixtureRepo(serverRoot, name);
+    const listing = { "marketplace.json": text({ schemaVersion: 2, name: "acme", displayName: "Acme", packages }) };
+    const key = JSON.stringify([packages, files]);
+    let seed = marketSeeds.get(key);
+    if (!seed) {
+      const repo = copyFixtureRepo(serverRoot, `seed-${++counter}`, emptyRepo, { publishByCopy: true });
+      seedRepos.push(repo);
+      seed = { repo, first: repo.commit({ ...listing, ...files }, "publish") };
+      marketSeeds.set(key, seed);
+    }
+    const name = `content-${++counter}`;
+    // Only the per-case copy is published again; seeds live through afterAll.
+    const repo = copyFixtureRepo(serverRoot, name, seed.repo, { publishByCopy: true });
     repos.push(repo);
     const commit = (patch: Record<string, string | Buffer>) =>
-      repo.commit({ "marketplace.json": text({ schemaVersion: 2, name: "acme", displayName: "Acme", packages }), ...patch }, "publish");
-    return { repo, name, commit, first: commit(files) };
+      repo.commit({ ...listing, ...patch }, "publish");
+    return { repo, name, commit, first: seed.first };
   }
 
-  async function open(repoName: string, sourceId = "acme") {
+  async function open(repoName: string, sourceId = "acme", runner = fixtureGit) {
     const policy = policySource({});
     const gate = new NetworkGate({ policy, allowLoopback: true, transport: createPinnedFetch() });
     const marketplaces = mkdtempSync(join(root, "marketplaces-"));
     const registry = await SourceRegistry.open({ root: marketplaces, policy, official: UNREACHABLE_OFFICIAL });
     await registry.add({ id: sourceId, origin: "custom", url: server.url(repoName), auth: { kind: "none" } });
-    const syncer = new SourceSyncer({ registry, gate, runner: git.runner, root: marketplaces, now: () => new Date(AT), retainedCommits: async () => new Set(), folders: nodeFolders() });
+    const syncer = new SourceSyncer({ registry, gate, runner, root: marketplaces, now: () => new Date(AT), retainedCommits: async () => new Set(), folders: nodeFolders() });
     return syncer;
   }
 
@@ -157,6 +176,7 @@ describe("content package store", () => {
     expect(installed.entry).toMatchObject({ kind: "agent-plugin", name: "draft-plugin", origin: { contentSha256: staged.contentSha256 } });
     expect((await store.load()).loaded[0]?.content).toMatchObject({ kind: "agent-plugin", components });
     expect(existsSync(join(store.packageDir(installed.entry), "skills", "draft", "SKILL.md"))).toBe(true);
+    expect(server.seen.some((request) => request.path.startsWith(`/${name}/`))).toBe(false);
   });
 
   it.runIf(process.platform !== "win32")("retains an executable package hook through staging and reload", async () => {
@@ -170,7 +190,7 @@ describe("content package store", () => {
       { path: "server/hook.sh", data: Buffer.from(program), executable: true },
     ]);
     const name = `content-${++counter}`;
-    const repo = createFixtureRepo(serverRoot, name);
+    const repo = copyFixtureRepo(serverRoot, name, emptyRepo);
     repos.push(repo);
     repo.commit({}, "seed");
     repo.commitEntries([
@@ -180,7 +200,8 @@ describe("content package store", () => {
       { path: `${packagePath}/ai.agent-connector.ave/hooks.json`, mode: "100644", content: hooksJson },
       { path: `${packagePath}/server/hook.sh`, mode: "100755", content: program },
     ], "publish");
-    const syncer = await open(name);
+    // The real transport/export and shell prove executable-bit preservation.
+    const syncer = await open(name, "acme", git.runner);
     const [row] = await rows(syncer);
     const staged = await stage(syncer, row!);
     expect(staged.files.find((file) => file.path === "server/hook.sh")?.executable).toBe(true);
@@ -197,7 +218,8 @@ describe("content package store", () => {
       "themes/harbor/ave-package.json": descriptor("theme", "harbor", "1.0.0", { entry: "theme.json" }),
       "themes/harbor/theme.json": theme("Harbor"),
     });
-    const syncer = await open(name);
+    // Keep one complete source-to-install/reload boundary over real transport.
+    const syncer = await open(name, "acme", git.runner);
     const [row] = await rows(syncer);
     const staged = await stage(syncer, row!);
     const store = await openStore();
@@ -557,15 +579,10 @@ describe("content package store", () => {
         { path: "skills/helper/SKILL.md", data: Buffer.from("---\nname: helper\ndescription: Helper\n---\nHelp.\n") },
       ];
       const components = deriveAgentPluginComponents(files);
-      const name = `content-${++counter}`;
-      const repo = createFixtureRepo(serverRoot, name);
-      repos.push(repo);
-      repo.commit({}, "seed");
-      repo.commitEntries([
-        { path: "marketplace.json", mode: "100644", content: text({ schemaVersion: 2, name: "acme", displayName: "Acme", packages: [{ kind: "agent-plugin", name: "review-plugin", path: packagePath }] }) },
-        { path: `${packagePath}/ave-package.json`, mode: "100644", content: descriptor("agent-plugin", "review-plugin", version, { manifest: "plugin.json", components }) },
-        ...files.map((file) => ({ path: `${packagePath}/${file.path}`, mode: "100644", content: file.data.toString("utf8") })),
-      ], "publish");
+      const { name } = market([{ kind: "agent-plugin", name: "review-plugin", path: packagePath }], {
+        [`${packagePath}/ave-package.json`]: descriptor("agent-plugin", "review-plugin", version, { manifest: "plugin.json", components }),
+        ...Object.fromEntries(files.map((file) => [`${packagePath}/${file.path}`, file.data])),
+      });
       const syncer = await open(name);
       const staged = await stage(syncer, (await rows(syncer))[0]!);
       const { entry } = await store.install(staged);

@@ -46,6 +46,14 @@ that omits `managed` or sets it to `false`.
 An invalid user file contributes no permission fields and does not create an
 administrative edit lock when the admin file is absent.
 
+### Project Rule Scope
+
+[project-rule-files.ts](../../src/permissions/rules/project-rule-files.ts) stores project rules in the application home, keyed with the same canonical realpath and platform case folding as exact approvals. Sessions below a normal repository share the nearest eligible repository root; nested repositories keep their own rules. A `.git` directory needs a valid regular `HEAD` file and `objects` and `refs` directories. A regular `.git` file must contain a single `gitdir:` path resolving to that metadata. Linked worktrees resolve their common store through `commondir` and must have a `gitdir` backlink to this checkout's marker. Their identity remains the checkout, not the shared metadata directory. Discovery bounds reads on opened regular metadata files without launching a subprocess. An invalid or unreadable marker stops discovery and leaves the session scoped to its own cwd.
+
+The canonical user home and every ancestor of home are excluded as inherited roots, including for sessions elsewhere below such an ancestor. A session whose cwd is exactly one of those directories keeps that exact identity. If the OS cannot provide an absolute home other than a filesystem root, discovery stays at the canonical cwd without walking up. Symlink resolution precedes discovery and home-boundary comparisons, and Windows comparisons use the same case folding as exact approvals.
+
+Existing rule files are retained unchanged. Rules previously keyed to home or an ancestor remain available only to sessions at that exact canonical cwd; child and sibling folders no longer load them. There is no automatic copying, deletion, or expansion of those approvals. The existing project rules UI can inspect and remove them when that exact directory is selected.
+
 ## Policy Inputs
 
 | Input | Meaning |
@@ -540,6 +548,457 @@ credential files. The actual environment remains owned by
 provides shared descriptions for the system prompt and approval UI; the prompt
 describes the default route, while the approval describes the final call's plan.
 
+## Shared Browser Control And Effects
+
+Browser sandboxing and context isolation apply in every control mode. Agent
+origin consent and site capability consent are separate from that baseline and
+from each other. Origin approval is not a complete browser network firewall.
+The [architecture](architecture.md#browser-and-terminal-workspace) owns state,
+tab lifetimes, and presentation; this section owns effect authorization.
+
+The host resolves the actual session actor and direct parent from trusted tool
+context. Window discovery does not authorize another conversation's owned tab.
+Owned-tab access allows the owner, the owner's direct parent, or a caller whose
+direct parent is that owner. The relation spans one parent/child step in either
+direction, never a grandchild, sibling, or unrelated session. A current lease
+still belongs exclusively to its exact actor.
+Agent mutation needs a valid scoped control lease and live `agent-active` mode.
+Recognized human input or Stop persistently pauses mutation until explicit trusted-chrome
+Resume. Page observation may continue under its ordinary policy. Resume changes
+the control generation; an earlier approval must fail even if tab and origin
+look unchanged. Effects recheck window, actor, lease, origin, document, target
+reference, and control generation across asynchronous boundaries.
+
+Mouse attribution is bounded dispatch/receipt correlation because native mouse
+receipts expose no injected-versus-human bit. The host arms exact guest,
+button, coordinates, click count, down/up phase, and order once per receipt;
+unmatched or expired input revokes the sequence and pauses mutation. A matching
+human click during the armed interval cannot be distinguished. This is not an
+absolute human-input provenance guarantee. Marked wheel events authorize only
+their expected derived scroll sequence; keyboard debugger-source checks remain.
+Stop provides an explicit takeover path independent of mouse correlation.
+
+Ordinary pointer/range drag requires observed native down and up. HTML5 text
+drag does not substitute a generic release acknowledgement for a missing raw
+receipt: it requires a browser-originated `dragIntercepted` event correlated to
+the observed source press, exact current guest/document/lease, and validated
+source/target references. Only the captured immutable bounded text payload is
+used for enter/over/drop. Interception grants no file-upload authority.
+
+The internal protocol surface is a fixed `Input.setInterceptDrags`,
+`Input.cancelDragging`, and `Input.dispatchDragEvent` path, not a model-facing
+dispatcher. Accepted browser payloads are limited to at most 16 items and 64 KiB
+of UTF-8 text and metadata, using `text/plain`, `text/html`, or `text/uri-list`
+items; files, file URLs, and absolute-host-path payloads are refused. Optional
+metadata and operation masks are validated rather than copied as authority.
+Source cancellation and confirmed interception disable precede destination
+enter/over/drop. A failed pre-drop teardown sends no drop and detaches/quarantines
+an uncertain debugger session. Cancellation after destination entry sends a
+bounded cancellation to the original session; it never retargets another guest.
+Once a drop is dispatched, a lost acknowledgement means its effect is unknown:
+the error must warn against automatic repetition. Cleanup cannot make that
+uncertainty a retry-safe failure or a proven success.
+
+Before keyboard effects, host-owned focus must resolve the same visible active
+embedded tab through its stored renderer ID and preserve the exact guest,
+document, generation, and lease across awaits. Trusted renderer focus is only a
+request; native guest focus and `focusedFrame === mainFrame` must be observed.
+Popups require native selection plus native focus. Missing, stale, hidden, or
+wrong-frame focus fails rather than sending input elsewhere.
+
+Acquiring a lease keeps the already-approved control generation stable. A
+page-input action can finish through navigation only after a confirmed final
+input effect and a typed document transition; no following input reaches the
+replacement document. A navigation request may follow document transitions only
+while its original caller, tab, and lease remain valid. Generic aborts,
+takeover, caller cancellation, lease loss, or destruction remain failures rather
+than page-load success.
+
+Typed hover, drag, native selection, targeted scroll, and upload retain the
+same document/frame/recipient and sensitive-field guards as existing actions.
+Unsupported or ambiguous controls fail explicitly. Native child-window discovery
+does not grant the popup its opener's approval. Popups require their own current
+origin approval and retain child-window isolation and owner-window checks.
+Embedded stop/pause/Resume APIs accept renderer slot IDs; popup pause/Resume
+APIs accept main-issued popup handles. The host validates kind and owning
+window, with no alias between those target namespaces.
+
+`browser_upload({tabId?, ref})` has no model- or renderer-supplied host path.
+It always requires explicit allow-once, including on an agent-created tab, then
+a trusted native file picker naming the destination. Composer attachment
+approval does not grant a browser upload. Cancellation consumes or revokes that
+upload lease and sends no files.
+
+The host binds an upload lease to window, session, tab, origin, document,
+element reference, and control generation. It validates file type, regular-file
+identity, sensitive-path policy, count, and size; stages bounded private readonly
+byte copies; and rechecks the destination after every await. Pathname checks
+alone do not prove immutable bytes. Staging outlives the tool result and stays bound to the
+selected input/document. Replacement, navigation, guest destruction, and shutdown
+release that selection. Native validation must separately verify browser read
+behavior across those boundaries; tool completion alone is not a release trigger.
+A process-wide storage ceiling includes active staging. Cleanup removes only
+the current process's verified owned staging. Unknown crash leftovers are
+neither adopted nor automatically deleted. Tool output contains nonsecret names,
+counts, sizes, and status, never host paths or a reusable upload capability.
+
+Bookmarks, history, find, zoom, previews, download status, and site decisions
+are trusted browser-chrome operations, not new agent data-export authority.
+Camera, microphone, geolocation, and notification checks require the live
+requesting origin, owned guest, and verified current main frame; iframe origins
+and redirects do not inherit unrelated grants. Fullscreen capability remains
+`false` until safe exit UI exists; a stored allow cannot override this capability
+gate. Unknown permissions deny. Download Save consent and rate limits remain
+in force.
+
+## Commands Typed Into A Workspace Terminal
+
+Each workspace terminal has separate **Manual · host** and **Agent · isolated**
+PTY lanes. Manual uses the user's real HOME/profile and is available independently
+of the confined backend. Agent uses a disposable HOME, authenticated shell
+integration, and active filesystem/process confinement. None of the integration
+startup files described below are written into Manual's real HOME. Missing
+shell integration leaves Manual's current directory and command exit status
+unknown. The [workspace guide](../guides/browser-terminal-workspace.md#terminal-lanes)
+explains lane selection and visible behavior.
+
+Agent spawn resolves its initial write-jail directory through host-owned
+authorized workspace projects, including user-approved external project roots.
+The candidate and admitted roots use canonical segment-aligned containment;
+paths resolving outside those roots and renderer-supplied authority are refused.
+This admission check is separate from sandbox access enforcement and is not
+by itself proof against subsequent path changes. The user HOME itself is
+never a valid Agent jail anchor, even if it appears as an authorized project.
+Manual's host cwd validation remains separate from this Agent confinement gate.
+
+`terminal_run` ([terminal-run.ts](../../src/tools/terminal-run.ts)) types one
+command into the target tab's Agent companion and presses Enter. It cannot type
+into Manual. It remains a builtin in the `shell` category and uses the same
+policy classifier as `bash`; the terminal lane is an execution identity, not a
+separate permission category. The checks in this section apply to Agent:
+
+- The command is the permission manager's bash rule subject, in the directory
+  the target terminal's shell last reported. `Bash(...)` deny, ask and allow
+  rules (user and project), the credential-exfiltration floor and the
+  sensitive-path floor read it exactly as they read a `bash` command. The
+  executor's shape-based shell checks (path containment and the structural
+  validator) read its `command` argument with the terminal's directory as its
+  working directory, as they read a `bash` call's `cwd`: a relative operand
+  that resolves outside the allowed directories asks for the directory grant.
+  Unlike a `bash` `cwd`, the terminal's own directory is not refused for being
+  outside them — the user may have moved the shell anywhere its sandbox
+  allows — so only the operands are judged.
+- A remembered decision covers the exact command and canonical directory in
+  the sealed tab, `lane: "agent"`, `terminalSessionId`, and host containment
+  identity, only for the app session (`terminal-command` scope). A restarted
+  companion is a new identity even when the tab ID is unchanged. Each Agent
+  jail is fixed when its shell spawns. A bare `terminal_run` allow
+  pattern does not cover every command, because the tool keys policy on its
+  command as `bash` does.
+- The reviewer sees the Agent companion's active containment. Execution
+  requires filesystem and process confinement for that exact incarnation;
+  an unavailable or changed capability fails closed. Its write paths, deny
+  floors, and egress allow-list were fixed at spawn, so later configuration
+  changes do not reach that running companion.
+
+The target terminal is resolved once, before any decision, and sealed into the
+approval scope: an explicit `tabId`, then the terminal the conversation's pane
+chat is docked beside (a sub-agent uses its hosting conversation's), then, for
+a conversation bound to no pane, the window's active terminal. A chat docked
+beside a page has no terminal of its own and fails without a `tabId`, and a
+bound terminal that is gone fails the call. With none of them the call fails;
+it never chooses a terminal itself. The host ensures that tab's Agent companion,
+then seals its lane, session incarnation, and containment before approval.
+Execute types only into that sealed companion and refuses when its shell has
+moved to another directory since approval. A pane chat reads the history of,
+or ends its chat with, only a pane tab its own window holds, named by a
+well-formed tab id.
+
+`terminal_read` inventories both lanes; a targeted read and a continuation
+identify the exact lane, session, and block. Input, resize, output, and exit
+also bind the host-issued session identity. An old message or delayed abort
+cannot operate on a replacement session or another command. A wait timeout can
+return a still-running command; cancellation of a waiter is not cleanup proof.
+Unmounting a pane keeps both lanes alive; closing its tab terminates both.
+
+If Agent confinement cannot be established, the call fails without a host or
+other-tab fallback while Manual remains usable. The current Windows interactive
+backend cannot attest this Agent contract and reports it unavailable; unrelated
+sandbox capabilities do not authorize interactive agent typing.
+
+The directory the shell reports is text on the terminal's output stream, so
+it is checked against the operating system before the rules, the approval
+scope or project rules use it
+([shell-process.ts](../../src/main/terminal/shell-process.ts)). The terminal's
+foreground process group must be the shell itself: the process spawned on
+the pty, matched by pid and program name, so neither a program running in
+front of it nor a nested shell of the same name passes. That process's working
+directory, symlinks resolved, must equal the reported one. On macOS the
+foreground group comes from `ps`, and the working directory comes from
+`lsof -d cwd`. Node cannot call `proc_pidinfo` without a native addon, and
+`lsof` is the stock unprivileged reader of that call. Linux verification follows
+the inner-PTY checks below. An unsupported backend refuses the call. The
+comparison directory in the approval scope is the verified one.
+
+On macOS every wrapper before the shell (the pty trampoline, `env`,
+`sandbox-exec`, `bash -c`) execs in place, so the pty's process is the shell.
+On Linux the sandbox runs under `bwrap --new-session --unshare-pid`, kept as
+bubblewrap's defense against TIOCSTI input injection, so nothing in the
+sandbox holds the pty node-pty opened. The shell runs on a pty of its own that
+util-linux `script` opens inside the sandbox
+([terminal-inner-pty.ts](../../src/main/terminal/terminal-inner-pty.ts)), as
+`su --pty` does for the same problem: Ctrl-C, job control and readline
+behave as on any terminal, and a shell on the outer pty (where Ctrl-C killed
+bubblewrap and with it the whole terminal) is never started; a host without
+util-linux `script` gets no Agent companion, with the reason; Manual remains
+available. The check reads `/proc`:
+- the shell is found by walking down from the pty's process along the one
+  chain the wrap builds (`bwrap`, `bwrap`, `bash` with the runtime's `socat`
+  bridges beside it, `apply-seccomp` twice, `script`, then the shell, by
+  name), one child per step. Only the verified outer bridge launcher's side
+  pids are exempt; extra children under a reaper are refused regardless of
+  their program names;
+- its innermost `NSpid` must equal the `Pid=` (`$$`) the prompt's `P` marker
+  reported, so the markers and the process are the same shell;
+- the foreground group of its own pty must be the shell itself;
+- it must have no child process: a command still finishing, or a background
+  job, which could write to the terminal or type into the line through
+  TIOCSTI on that pty, is refused (`shell-busy`). Any other process on that
+  pty sharing the shell's session or foreground group is also busy, including
+  processes that have been reparented;
+- its working directory must be the reported directory by device and inode,
+  not by path: the sandbox mounts directories of its own (an empty tmpfs over a
+  read-denied one) at paths the host also has.
+
+The command is typed only at an empty prompt, as the shell's own command
+markers report it ([terminal-blocks.ts](../../src/main/terminal/terminal-blocks.ts)
+`promptState`). Refused with the reason, before the card and again at
+execution:
+
+- a running command or full-screen program;
+- the user's unsent typing at the prompt, or any keystroke in the last 1.5
+  seconds;
+- a shell between prompts, or a zsh or bash still drawing its first prompt
+  (the model is told to retry in a moment);
+- an exited shell or a shell that emits no markers;
+- a shell that does not mark the end of its prompt (fish), which is not
+  supported;
+- a line editor that does not take bracketed paste as plain text, or one with
+  vi key bindings. Each prompt reports both (`Keys=`, `Paste=` in its `P`
+  marker). zsh reports paste only while `zle_bracketed_paste` is set and the
+  `bracketed-paste` and `self-insert` widgets are still the builtins (so
+  `bracketed-paste-magic` and `url-quote-magic` count as no paste), and
+  reports none while a right-hand prompt (`RPROMPT`) is set: zle draws it
+  after the end of the prompt, where it would read as the user's typing at
+  every prompt. A shell that reported no paste is refused for that before
+  the typing checks below. bash
+  reports it while readline has `enable-bracketed-paste on`, which the
+  startup file turns on for bash 4.4 and later. Bash before 4.4, such as
+  macOS `/bin/bash` 3.2, has none.
+- a shell with a command-not-found handler (`command_not_found_handle` in
+  bash, `command_not_found_handler` in zsh), reported as `NotFound=` in the
+  `P` marker; a shell that does not report it counts as having one
+  (`not-found-handler`). The shell runs the handler for any word that is not
+  a command, so a line the rules read as running nothing would run the
+  handler's code. Ubuntu's `/etc/bash.bashrc` defines one for every
+  interactive bash when the `command-not-found` package is installed (it runs
+  `/usr/lib/command-not-found`). Ave neither removes nor wraps the handler:
+  the user's own typing keeps it, and the refusal tells the model to ask the
+  user to run `unset -f command_not_found_handle` (bash) or
+  `unfunction command_not_found_handler` (zsh) in that terminal, which
+  removes it for that shell only. Wrapping it for typed lines alone was
+  rejected: the shell cannot tell a pasted line from the user's own.
+
+Executable shell registries (functions, aliases, command hashes and widgets)
+cannot be assigned or appended to by an agent line, including indirect writes
+and declaration or registration builtins. A handler cannot be installed earlier
+on the same approved line after a prompt reported no handler.
+
+Typing is a fixed protocol (pty-manager `typeLineAtPrompt`):
+1. Check the prompt state.
+2. Check the shell and its directory with the operating system.
+3. Write Ctrl-C. The tty (on Linux, the shell's own pty inside the sandbox)
+   turns it into SIGINT, which clears the line editor
+   whatever its state: an ESC or Ctrl-X prefix waiting for its next key, a
+   half-typed line.
+4. Wait for the fresh prompt, then check the directory and the state again.
+   bash 5.2 clears the line at once but draws the fresh prompt only when the
+   interrupt breaks its wait for a key, so a Ctrl-C that arrives while the
+   prompt is still being drawn leaves no fresh prompt until the next key.
+   Ctrl-C is sent again every half second until a fresh prompt is drawn
+   (3 seconds in all), and after more than one, typing waits until no further
+   prompt arrives for a full 500 ms inside that same 3-second budget. Each
+   resend checks unchanged user-input generation, foreground shell identity,
+   absence of shell children, and the approved directory with the OS. A user
+   keystroke aborts immediately, even if the shell redraws its prompt. The OS
+   check runs again immediately before pasting.
+5. Paste the line between bracketed-paste markers, without Enter.
+6. Wait until the line editor's echo of its edit line (wrapping removed) is
+   exactly the approved line, with no key from the user since the prompt. Only
+   then press Enter. Otherwise write Ctrl-C to clear the line and refuse
+   (`edit-line-mismatch`).
+
+Inside a paste, the line editor inserts the text and does not read it as
+keys. Raw typing after a pending ESC ran `[200~echo hi there~` in place of
+`echo hi there` in a real zsh.
+
+Once the shell reports starting the command (its `C` marker, waited for up
+to 3 seconds whatever `waitSeconds` is), the line it recorded is compared with
+the approved text, even while the command is still running. A difference fails
+the call. No `C` marker means the call fails as not verified. It also
+writes an audit row with the session, the terminal and the SHA-256 of both
+texts. Known false-difference sources, both history options that neither
+the terminal's startup file nor the macOS system files set, and that a typed
+command cannot set (options are shell state):
+- bash records the line through `history 1`. Under `HISTCONTROL=ignorespace`
+  (or `ignoreboth`), a line typed with a leading space is not saved, and the
+  record shows the previous line.
+- zsh hands its hook the line as history will save it. Under
+  `HIST_REDUCE_BLANKS`, `echo   a` is recorded as `echo a`.
+
+Both fail closed: the call reports a failure for a command that ran as
+approved.
+
+The markers that the hooks print (`D`, `P`, `A`, `C`) carry a per-terminal
+nonce, so printed text cannot forge them. The nonce reaches the shell in an
+owner-only file in the terminal's sandbox HOME. The startup file reads it into
+an unexported shell variable and deletes the file before the first prompt.
+The nonce is never in the environment, which other processes can read. Only
+the hook functions read it, and they print only to the terminal. bash 4.4 and
+later print `C` from `PS0`, which bash writes before running the line,
+outside any redirection the line makes. A DEBUG trap would run inside a
+group's redirection, so `{ cmd; } > f` would capture the marker.
+
+`B` marks the end of the prompt text, so it comes from the prompt string
+itself: the line editor redraws the prompt on a resize or Ctrl-L without
+running a hook. Prompt expansion can print anything in the prompt string
+(`print -P "$PS1"`, `${PS1@P}`), so `B` never carries the nonce. It carries a
+token the hook draws fresh from `/dev/urandom` for each prompt and announces
+in that prompt's nonce-carrying `P`. The tracker accepts a `B` only with the
+current token, and only while that prompt is up:
+- The first `B` ends the prompt.
+- A repeated `B` is a redraw: the echo starts over, and the prompt count and
+  any typing stay.
+- A `B` printed while a command runs is ordinary output.
+
+A command can therefore print only its own prompt's token, during its run,
+when it is refused, or a stale one afterwards.
+
+Residual risk: a process that is still running while the next prompt is up
+and can read the shell's current state. That means a background job asking
+the shell itself (not a copy made when it forked), or reading the shell's
+memory, such as `/proc/<pid>/mem` under a permissive `ptrace_scope`. The
+validator refuses every way for a command to expand or list shell state (see
+below). Nothing else runs at a prompt except the hooks.
+
+The 1.5-second quiet window is a heuristic. A key written to the PTY shows in
+the echo only after the shell reads it, so an empty echo just after typing
+proves nothing; the window covers that gap. A key the user presses after the
+final check, while the approved line is being written, can still mix with
+it. Replies the terminal emulator sends by itself on the same channel (focus
+in/out, device-attribute, status and cursor-position reports, OSC/DCS
+answers) do not count as typing. A cursor-position report and Shift+F3 have
+the same shape, so that key does not count either.
+
+The text must be one line that every supported shell runs exactly as shown and
+as the rules read it
+([terminal-command-text.ts](../../src/shared/terminal-command-text.ts)). Refused
+before any card, with no mode that lets them through:
+
+- control characters (newline, tab, ESC and bracketed-paste markers included);
+- characters a reader cannot see: format and default-ignorable characters,
+  non-ASCII spaces, the braille blank, combining marks on ASCII, and
+  whitespace runs longer than 16;
+- history expansion (`!word` outside single quotes and `$'…'`, unescaped; a
+  leading `^`; the `r` and `fc` re-run commands). Inside double quotes both
+  shells expand it, so it stays refused there;
+- constructs zsh and bash read differently:
+  - an unquoted `#` comment. A `#` inside a `${…}` expansion (`${#x}`,
+    `${x#p}`) is an operator, not a comment. The terminal's zsh also runs
+    with `interactivecomments`;
+  - a word starting with `=`, which zsh replaces with a program's path, as an
+    argument, a redirect target or a loop value;
+  - zsh parameter flags: `$=x`, `$+x`, `$~x`, `$^x` and their `${…}` forms;
+  - the precommand modifiers `nocorrect`, `noglob` and `-`;
+  - `repeat` and `foreach`;
+  - an assignment word after `command` or `builtin`;
+  - the clobbering redirect `>!`;
+  - a command made only of redirections, where zsh runs `$NULLCMD` or
+    `$READNULLCMD`.
+
+  A differential test found these
+  ([terminal-command-differential.test.ts](../../src/main/terminal/__tests__/terminal-command-differential.test.ts)).
+  It takes every command of a corpus that the validator accepts and the
+  classifier sees in full: the existing cases and their mutations, about
+  3,000 commands. Each one runs in a real interactive zsh and bash with the
+  terminal's startup file, xtrace on, and a PATH of recording shims. The test
+  fails on any program or builtin that ran without the classifier having
+  evaluated it with those words. That includes commands the classifier
+  marks as hiding code. The terminal's shell reads only its integration
+  startup file and the system's, never the user's own, so aliases, functions
+  and options from the user's startup files do not apply. Aliases and options
+  the user sets by hand in that terminal (such as `setopt extendedglob`) are
+  theirs, and this check does not cover them;
+- anything that would change the shell for the user's later commands:
+  - function definitions;
+  - assignments to prompt and hook variables, `PATH`, `IFS`, `TMOUT` and
+    similar, written as `NAME=value` or made through `read`, `mapfile`,
+    `readarray`, `getopts` or `printf -v` (a variable name taken from a
+    variable counts as one of them);
+  - builtins that install aliases, traps, hooks, options, key bindings,
+    limits, a umask, terminal settings or scheduled commands, edit the
+    history, or source code;
+  - callback text passed to `mapfile`/`readarray -C`, completion or style
+    callbacks, and other builtins that evaluate strings outside the parsed
+    command. Formatted printing cannot assign through `%n` or evaluate
+    nonliteral numeric operands; variable-name operands cannot hide arithmetic
+    or command substitutions in subscripts;
+- references to the shell integration's `__ave_*` names; block records also
+  redact the marker nonce, so printed text cannot forge markers;
+- anything that prints the shell's own state:
+  - prompt expansion (`print -P`, `echo -P`, `${…@P}`);
+  - any reference to the prompt, hook or line-editor variables (`PS0`–`PS9`,
+    `PROMPT*`, `RPROMPT*`, `PROMPT_COMMAND`, `*_functions`, `zle_*`,
+    `widgets`), so `echo $PS1` and `printf '%s' "$PS1"` are treated alike;
+  - bash's `${…@A}`/`${…@K}` declaration dumps;
+  - variable listings: `export`, `readonly`, `integer` or `float` with nothing
+    to declare or with `-p`, and `compgen`. `set`, `typeset`, `declare` and
+    `local` are refused already;
+  - `vared`;
+  - `print -z` (the line editor's buffer stack) and `print -s`/`-S` (the
+    history). `history` itself is refused as shell state;
+- a construct the shell analysis does not model (`case`,
+  `declare`/`typeset`/`local`, `let`, `((…))`, `select`, `coproc`), a glob
+  with parentheses (zsh glob qualifiers such as `*(e:'cmd':)` and `*(+cmd)`
+  run code), and a command name taken from a variable;
+- an incomplete construct.
+
+The card shows the exact command. It names by code point each character that
+can look like another
+([terminal-command-lookalikes.ts](../../src/shared/terminal-command-lookalikes.ts)).
+That covers a non-ASCII character that is not a letter, fullwidth and
+halfwidth forms, and the letters of a word that mixes scripts the way no
+writing system does, such as Latin with Cyrillic or Greek. This follows the
+"highly restrictive" mixed-script level of Unicode TS #39. A word in a single
+script, such as a Korean filename, gets no warning.
+
+Within the script mixes that are allowed, some characters still pass for ASCII
+or for each other, and the card names these too:
+
+- standalone Hangul jamo, such as U+3161 for a dash or U+3163 for `l` or `|`;
+  a Korean word is written in syllables, so these are named wherever they
+  appear;
+- a short list of one- and two-stroke Han and kana characters drawn from the
+  TS #39 confusables, such as U+4E00, U+4E28, U+53E3 and U+30A8. These are
+  named only in a word that also holds ASCII letters or digits, or that is
+  made of nothing else. Inside ordinary Chinese or Japanese words they are
+  not flagged.
+
+The card also notes when the terminal's directory is outside the allowed
+folders. The host seals that directory as the allowed-directory check compares
+it: symlinks resolved, and case folded where the file system folds case. The
+card can therefore compare it with the allowed folders as plain strings.
+
 ## Default Allowed Roots
 
 Layer 1 seeds its allow-list from the project root, the application data root
@@ -564,6 +1023,21 @@ conversation loop adds them to its per-turn base set
 where the world-writable `/tmp` tradeoff is stated. Layer 0 still hard-blocks
 sensitive leaves beneath any default root, and `permissions.additionalDirectories`
 extends the list rather than replacing it.
+
+The pinned `@anthropic-ai/sandbox-runtime` patch removes unconditional write
+grants for `/tmp/claude`, `/private/tmp/claude`, `<real home>/.npm/_logs` and
+`<real home>/.claude/debug` on every platform. Device write defaults remain.
+The four paths follow Ave's configured write grants, symlink resolution and
+generic sensitive-path floors; they have no dedicated compensating write denies.
+Runtime `TMPDIR` stays under the application-owned sandbox temp root, and
+plugin-owned processes receive only their principal's temp directory.
+
+Linux wraps keep the host temp tree visible. A shell granted `/tmp` can create
+a top-level entry that the host and later sandboxed commands see. The legacy
+`/tmp/claude` path follows that same grant. A plugin without a covering write
+grant cannot write there. Its existence, type or owner does not require host
+reservation or prevent the workload from starting. Normal filesystem access
+checks still apply.
 
 ## Saved-Session Reads
 

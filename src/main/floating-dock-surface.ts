@@ -251,6 +251,10 @@ export class ElectronFloatingDockSurface implements FloatingDockSurface {
     this.#post(CHANNELS.dock.resize, { panelId, height });
   }
 
+  retitleSlot(panelId: string, title: string): void {
+    this.#post(CHANNELS.dock.retitle, { panelId, title });
+  }
+
   unmountSlot(panelId: string): void {
     this.#post(CHANNELS.dock.unmount, { panelId });
   }

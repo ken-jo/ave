@@ -16,10 +16,11 @@
  * Shared by receipt verification, permissions and runtime-directory mutations
  * so their paths and host-side serialization agree.
  */
-import { constants, realpathSync, type Stats } from "node:fs";
+import { constants, realpathSync, type BigIntStats, type Stats } from "node:fs";
 import { link, lstat, mkdir, open, readdir, readlink, realpath, rename, rmdir, unlink, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { basename, dirname, resolve } from "node:path";
+import { sameFileIdentity } from "../lib/file-identity.js";
 import { renameDirectory } from "../lib/transient-fs-lock-retry.js";
 import { errorMessage } from "../shared/error-message.js";
 import { withInProcessFileQueue } from "../lib/with-file-lock.js";
@@ -846,7 +847,7 @@ async function socketEntriesMatch(from: string, to: string): Promise<boolean> {
     // bigint: a Windows 64-bit file id does not survive a double.
     const source = await lstat(from, { bigint: true });
     const target = await lstat(to, { bigint: true });
-    return source.ino !== 0n && source.ino === target.ino && source.dev === target.dev;
+    return source.ino !== 0n && sameFileIdentity(source, target);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
     throw error;
@@ -1152,9 +1153,9 @@ async function copyStorageTree(
   for (const name of names) {
     const source = resolve(from, name);
     const target = resolve(to, name);
-    let entry: Stats;
+    let entry: BigIntStats;
     try {
-      entry = await lstat(source);
+      entry = await lstat(source, { bigint: true });
     } catch (error) {
       skipped.push({ path: source, reason: unreadableReason(error) });
       continue;
@@ -1189,8 +1190,8 @@ async function copyStorageTree(
       continue;
     }
     try {
-      const opened = await handle.stat();
-      const changed = opened.ino !== entry.ino || opened.dev !== entry.dev
+      const opened = await handle.stat({ bigint: true });
+      const changed = !sameFileIdentity(opened, entry)
         || !(await openedAtPath(handle.fd, source));
       const openedRefusal = changed ? "replaced while it was being copied" : migratedFileRefusal(opened);
       if (openedRefusal !== undefined) {
@@ -1265,10 +1266,10 @@ function unreadableReason(error: unknown): string {
   return code === "ENOENT" ? "vanished" : `unreadable: ${code}`;
 }
 
-function migratedFileRefusal(entry: Stats): string | undefined {
+function migratedFileRefusal(entry: BigIntStats): string | undefined {
   if (!entry.isFile()) return entry.isSymbolicLink() ? "a link" : "not a regular file";
-  if (entry.nlink !== 1) return "hard-linked";
-  if (entry.size > MIGRATED_STORAGE_FILE_BYTES_MAX) return "larger than 8 MiB";
+  if (entry.nlink !== 1n) return "hard-linked";
+  if (entry.size > BigInt(MIGRATED_STORAGE_FILE_BYTES_MAX)) return "larger than 8 MiB";
   return undefined;
 }
 

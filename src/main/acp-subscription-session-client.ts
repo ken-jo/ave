@@ -72,7 +72,7 @@ const MAX_RPC_METHOD_LENGTH = 256;
 const MAX_RPC_ID_LENGTH = 512;
 const DEFAULT_REQUEST_TIMEOUT_MS = TOOL_TIMEOUT_POLICY.mcpRequestDefaultMs;
 const DEFAULT_PROMPT_TIMEOUT_MS = TOOL_TIMEOUT_POLICY.subAgentCeilingFloorMs;
-const DEFAULT_ABORT_GRACE_MS = TOOL_TIMEOUT_POLICY.processTreeKillMs;
+const DEFAULT_ABORT_GRACE_MS = TOOL_TIMEOUT_POLICY.acpAbortGraceMs;
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
 
 type RpcId = string | number;
@@ -418,6 +418,7 @@ export class AcpSubscriptionSessionClient {
   private readonly runtimeArgs: readonly string[];
   private readonly mcpServers: readonly AcpSubscriptionMcpServerConfig[];
   private child: ChildProcess | null = null;
+  private termination: void | Promise<void> = undefined;
   private startPromise: Promise<void> | null = null;
   private sessionId: string | null = null;
   private readonly pending = new JsonRpcPendingRequests();
@@ -522,20 +523,20 @@ export class AcpSubscriptionSessionClient {
 
   /** Permanently closes this client and force-kills its managed process tree. */
   async stop(): Promise<void> {
-    if (this.stopped) return;
+    if (this.stopped) return this.termination;
     this.stopped = true;
     const active = this.activePrompt;
     if (active) await this.cancelPrompt(active, new AcpSubscriptionSessionError("acp-session-stopped"));
-    this.abortTransport(new AcpSubscriptionSessionError("acp-session-stopped"));
+    await this.abortTransport(new AcpSubscriptionSessionError("acp-session-stopped"));
   }
 
   private async ensureStarted(): Promise<void> {
     if (this.stopped) throw new AcpSubscriptionSessionError("acp-session-stopped");
     if (this.child && this.sessionId) return;
     if (!this.startPromise) {
-      this.startPromise = this.startTransport().catch((error: unknown) => {
+      this.startPromise = this.startTransport().catch(async (error: unknown) => {
         const normalized = this.normalizeStartError(error);
-        this.abortTransport(normalized);
+        await this.abortTransport(normalized);
         throw normalized;
       });
     }
@@ -573,11 +574,11 @@ export class AcpSubscriptionSessionClient {
       throw new AcpSubscriptionSessionError("acp-session-start-failed");
     }
     if (!child.stdin || !child.stdout) {
-      forceKillManagedChildProcess(child, "acp subscription session missing stdio pipes");
+      await forceKillManagedChildProcess(child, "acp subscription session missing stdio pipes");
       throw new AcpSubscriptionSessionError("acp-session-start-failed");
     }
     if (this.stopped) {
-      forceKillManagedChildProcess(child, "acp subscription session stopped during startup");
+      await forceKillManagedChildProcess(child, "acp subscription session stopped during startup");
       throw new AcpSubscriptionSessionError("acp-session-stopped");
     }
 
@@ -991,7 +992,7 @@ export class AcpSubscriptionSessionClient {
     }
   }
 
-  private abortTransport(error: Error, expectedChild?: ChildProcess): void {
+  private abortTransport(error: Error, expectedChild?: ChildProcess): void | Promise<void> {
     const child = this.child;
     if (expectedChild && child !== expectedChild) return;
     this.child = null;
@@ -1008,6 +1009,7 @@ export class AcpSubscriptionSessionClient {
       active.reject(error);
     }
     this.pending.rejectAll(error);
-    if (child) forceKillManagedChildProcess(child, "acp subscription session transport closed");
+    if (child) this.termination = forceKillManagedChildProcess(child, "acp subscription session transport closed");
+    return this.termination;
   }
 }

@@ -16,7 +16,7 @@ import { TEST_IDS, testIdSelector } from "../../../shared/test-ids.js";
 function makeEvaluationContext(overrides: Partial<PermissionEvaluationContext> = {}): PermissionEvaluationContext {
   return {
     version: "permission-evaluation-context/v1",
-    reviewerFrameworkVersion: "permission-reviewer-framework/v2",
+    reviewerFrameworkVersion: "permission-reviewer-framework/v3",
     policyMode: "auto",
     headless: false,
     source: "builtin",
@@ -818,7 +818,7 @@ describe("ApprovalDock", () => {
     await waitFor(() => {
       expect(document.body.textContent).toContain("검증 환경 / 샌드박스 평가");
       expect(document.body.textContent).toContain("permission-evaluation-context/v1");
-      expect(document.body.textContent).toContain("permission-reviewer-framework/v2");
+      expect(document.body.textContent).toContain("permission-reviewer-framework/v3");
       expect(document.body.textContent).toContain("C:\\Users\\example\\workspace\\ave-project\\ave");
     });
   });
@@ -916,7 +916,6 @@ describe("ApprovalDock", () => {
       />,
     );
 
-    expect(document.body.querySelector('[data-testid="nl-justification-input"]')).toBeNull();
     expect(document.body.querySelector('[data-testid="high-risk-audit-reason"]')).toHaveTextContent(
       "사용자 요청에 따라 프로젝트 빌드 결과를 확인합니다.",
     );
@@ -949,7 +948,6 @@ describe("ApprovalDock", () => {
       />,
     );
 
-    expect(document.body.querySelector('[data-testid="nl-justification-input"]')).toBeNull();
     expect(document.body.querySelector('[data-testid="high-risk-audit-reason"]')).toHaveTextContent(
       "shell command",
     );
@@ -981,7 +979,6 @@ describe("ApprovalDock", () => {
       />,
     );
 
-    expect(document.body.querySelector('[data-testid="nl-justification-input"]')).toBeNull();
     expect(document.body.querySelector('[data-testid="high-risk-audit-reason"]')).toHaveTextContent(
       "external send",
     );

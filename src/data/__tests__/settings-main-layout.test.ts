@@ -16,6 +16,7 @@ describe("normalizeMainLayout", () => {
       focusedId: "group-9",
       surfaces: {},
       panelOpenIds: [],
+      thumbnailOpenIds: [],
       sideTabs: { main: [{ kind: "browser", tabId: "browser:0000000a-1", ordinal: 1, cwd: null, url: secret }] },
     };
     expect(normalizeMainLayout(layout)).toBeUndefined();

@@ -66,7 +66,7 @@ Fixed at **1600x1000** (`CAPTURE_VIEWPORT` in `fixtures.ts`). This was *not*
 picked to match any single existing screenshot — inspecting the previously
 published docs-site captures showed **inconsistent aspect ratios**
 per file (e.g. `chat-todo-queue.png` is 1600x830 ≈1.93:1, `chat-plugin-panel.png`
-is 484x889 ≈0.54:1, `ah-dashboard.png` is 1130x325 ≈3.48:1) — each existing
+is 484x889 ≈0.54:1) — each existing
 asset was clearly cropped to its own target element/region after capture, not
 captured at one fixed app window size. 1600x1000 is wide enough to show the
 expanded work-mode rail + full chat column without clipping, and gives full
@@ -107,12 +107,6 @@ screenshottable; the plugin's view renders inside an Electron `<webview>`.
 
 ## Capture coverage
 
-### App screens the harness cannot seed (marked `skip` in matrix.ts)
-
-| Key(s) | Reason |
-|---|---|
-| `agent-hub-my-work`, `agent-hub-team-board` | **No agent-hub plugin bundle exists**; nothing to install. |
-
 ### Scenarios with capture steps
 
 Conversational scenarios use the local scripted endpoint in `fixtures.ts`.
@@ -140,18 +134,6 @@ and this harness reads nothing outside this repository, so the keys are absent
 from `scenarios` (listed in `PLUGIN_REPOSITORY_KEYS_OUT_OF_SCOPE`). Their
 committed images stay as published; reshooting them belongs to the plugin's own
 repository.
-
-### Out of scope: web/server keys
-
-`ah-dashboard`/`ah-workboard`/`ah-worklog`/`ah-inbox`/
-`ah-report`/`ah-subscription` (Agent Hub **server** dashboard — distinct from
-the `agent-hub-my-work`/`agent-hub-team-board` **plugin** panel keys, which
-render inside this Electron app) are
-**web/server screens** rendered by a separate Next.js app, not the Electron
-host. They are intentionally absent from `matrix.ts`'s `scenarios` map
-entirely (listed separately in `WEB_SERVER_KEYS_OUT_OF_SCOPE` for
-completeness) — this harness has no way to launch or seed that app, and doing
-so was explicitly out of scope for this task.
 
 ## Re-running after theme changes
 

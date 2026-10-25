@@ -1,7 +1,15 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { parseAgentPluginManifest, validatePluginManifestShape } from "../agent-plugin-manifest.js";
 import manifestSchema from "../../../schemas/plugin-manifest.schema.json" with { type: "json" };
 import { resolveAddFormats, resolveAjv } from "../config-schema.js";
+
+const warn = vi.fn();
+vi.mock("../../lib/logger.js", () => ({
+  createLogger: () => ({ warn: (...args: unknown[]) => warn(...args) }),
+}));
+
+/** An extension namespace Ave does not own: another vendor's data, never Ave fields. */
+const UNKNOWN_NAMESPACE = "xyz.example";
 
 const ROOT = { $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json", name: "writer-plugin" };
 const MARKET = { ...ROOT, version: "1.0.0", description: "Writing tools" };
@@ -54,14 +62,25 @@ describe("agent-plugin manifest branches", () => {
     expect(() => parseAgentPluginManifest(JSON.stringify(namespace({ process: { command: "./bin/plugin" }, tools: [] })))).toThrow("extension process");
   });
 
-  it("refuses the renamed extension key by name on its own and beside the current one, never reading it as an alias", () => {
-    const renamed = "plugin.json extensions.ai.agent-connector.ave was renamed to extensions.ai.agent-connector.ave; update the manifest";
-    const legacyOnly = JSON.stringify({ ...MARKET, extensions: { "xyz.retiredname-namespace": { displayName: "Writer" } } });
-    const both = JSON.stringify({ ...MARKET, extensions: { "ai.agent-connector.ave": { displayName: "Writer" }, "xyz.retiredname-namespace": { displayName: "Writer" } } });
-    for (const bytes of [legacyOnly, both]) {
-      expect(() => validatePluginManifestShape(bytes)).toThrow(renamed);
-      expect(() => parseAgentPluginManifest(bytes)).toThrow(renamed);
-    }
-    expect(parseAgentPluginManifest(JSON.stringify({ ...MARKET, extensions: { "com.example.other": { displayName: "Writer" } } }))).toMatchObject(MARKET);
+  it("reads an unknown extension namespace as another vendor's data, never as Ave fields", () => {
+    // Only the Ave namespace is interpreted: the same extension entry that the
+    // Ave key refuses on this branch passes through unread under an unknown one.
+    const entry = { entry: "dist/index.js", tools: [] };
+    expect(() => parseAgentPluginManifest(JSON.stringify(namespace(entry)))).toThrow("extension process");
+    const unknownOnly = JSON.stringify({ ...MARKET, extensions: { [UNKNOWN_NAMESPACE]: entry } });
+    expect(validatePluginManifestShape(unknownOnly)).toMatchObject(MARKET);
+    expect(parseAgentPluginManifest(unknownOnly)).toMatchObject(MARKET);
+    // A malformed Ave block beside an unknown namespace is still refused.
+    const both = JSON.stringify({ ...MARKET, extensions: { "ai.agent-connector.ave": { entry: null, tools: [] }, [UNKNOWN_NAMESPACE]: { displayName: "Writer" } } });
+    expect(() => validatePluginManifestShape(both)).toThrow("plugin.json /extensions/ai.agent-connector.ave/entry: must be string");
+  });
+
+  it("reports each unknown extensions namespace as it reports an unknown top-level field, and never the Ave one", () => {
+    warn.mockClear();
+    validatePluginManifestShape(JSON.stringify({ ...MARKET, extensions: { "ai.agent-connector.ave": { displayName: "Writer" }, [UNKNOWN_NAMESPACE]: {} } }));
+    expect(warn.mock.calls).toEqual([[`plugin.json: ignoring unknown extensions namespace ${UNKNOWN_NAMESPACE}`]]);
+    warn.mockClear();
+    validatePluginManifestShape(JSON.stringify(namespace({ displayName: "Writer" })));
+    expect(warn).not.toHaveBeenCalled();
   });
 });

@@ -142,7 +142,7 @@ export interface WorkspaceTabsStore {
    * activate it. Never reuses a tab showing the same url: the agent gets a tab
    * of its own. Returns the new tab's id, or null for an unsafe url.
    */
-  openAgentBrowserTab: (url: string, agentRequestId: string) => string | null;
+  openAgentBrowserTab: (url: string, agentRequestId: string, active: boolean) => string | null;
 }
 
 function contentKey(ref: WorkspaceTabContentRef): string {
@@ -376,7 +376,7 @@ export function useWorkspaceTabs(): WorkspaceTabsStore {
     });
   }, []);
 
-  const openAgentBrowserTab = useCallback((rawUrl: string, agentRequestId: string): string | null => {
+  const openAgentBrowserTab = useCallback((rawUrl: string, agentRequestId: string, active: boolean): string | null => {
     const content: WorkspaceTabContentRef | null = isBrowserBlankBootstrap(rawUrl, agentRequestId)
       ? { source: "browser", url: rawUrl }
       : normalizeContentRef({ source: "browser", url: rawUrl });
@@ -385,7 +385,7 @@ export function useWorkspaceTabs(): WorkspaceTabsStore {
     // time, and the caller needs the id now.
     const id = mintTabId("browser");
     const tab: WorkspaceTab = { id, kind: "browser", ordinal: 0, mode: "pinned", content, agentRequestId };
-    setState((prev) => ({ ...prev, tabs: [...prev.tabs, tab], activeTabId: id }));
+    setState((prev) => ({ ...prev, tabs: [...prev.tabs, tab], activeTabId: active ? id : prev.activeTabId }));
     return id;
   }, []);
 

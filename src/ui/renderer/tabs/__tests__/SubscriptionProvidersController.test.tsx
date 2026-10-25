@@ -2,7 +2,9 @@ import "../../../../../test/renderer/setup.js";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getLocale, setLocale } from "../../../../i18n/runtime.js";
+import { loadLocaleMessages } from "../../../../i18n/messages/index.js";
 import type {
+  SubscriptionRuntimeActionResult,
   SubscriptionRuntimeId,
   SubscriptionRuntimeStatus,
   SubscriptionRuntimeStatusUpdatedEvent,
@@ -168,6 +170,40 @@ afterEach(() => {
 });
 
 describe("SubscriptionProvidersController", () => {
+  it.each(["en", "ko"] as const)("shows a verify failure on the card when the status refresh also fails in %s", async (locale) => {
+    await loadLocaleMessages(locale);
+    setLocale(locale);
+    const { api } = controllerApi();
+    let verified = false;
+    api.subscriptionRuntimeStatus = vi.fn(async (provider: SubscriptionRuntimeId): Promise<SubscriptionRuntimeActionResult> => {
+      if (verified && provider === "codex") {
+        return { ok: false, error: "subscription-operation-failed" };
+      }
+      return { ok: true, status: {
+        ...connectedStatus(provider),
+        runtime: "unverified",
+        connection: "unknown",
+        capabilities: { ...connectedStatus(provider).capabilities, chat: false },
+      } };
+    });
+    api.subscriptionVerifyRuntime = vi.fn(async (): Promise<SubscriptionRuntimeActionResult> => {
+      verified = true;
+      return { ok: false, error: "subscription-runtime-unavailable" };
+    });
+    render(<SubscriptionProvidersController api={api} />);
+    fireEvent.click(await screen.findByTestId("subscription-provider:codex:verify-runtime"));
+
+    const error = await screen.findByTestId("subscription-provider:codex:error");
+    expect(error).toBeVisible();
+    expect(error).toHaveAttribute("role", "alert");
+    expect(error).toHaveTextContent(locale === "en"
+      ? "The subscription runtime is unavailable."
+      : "구독 런타임을 사용할 수 없습니다.");
+    expect(api.subscriptionVerifyRuntime).toHaveBeenCalledWith("codex");
+    expect(screen.getByTestId("subscription-provider:codex")).toContainElement(error);
+    expect(screen.queryByTestId("subscription-provider:codex:login-browser")).toBeNull();
+  });
+
   it("loads every common provider status and uses the generic selected chat runtime", async () => {
     const {
       api,

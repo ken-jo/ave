@@ -631,6 +631,23 @@ export function resolveReviewerSandboxCapability(
     // not a reviewer verdict for a different late fallback.
     return hostShellExecutionPlan?.capability ?? getHostShellExecutionPlan().capability;
   }
+  // `terminal_run` types its command into a workspace terminal, whose shell
+  // runs under that PTY's own ASRT wrap (main/terminal/pty-manager.ts). A
+  // terminal spawns only while the active sandbox contains shell effects and
+  // stays wrapped for its whole life, so while that still holds the command
+  // lands on a confined substrate. Otherwise it reports `none` like any other
+  // in-process builtin (never more confinement than is proven now).
+  // What this reports is the sandbox as it is NOW. The terminal's own jail —
+  // its write paths (spawn cwd ∪ its HOME), deny floors and egress allow-list —
+  // was fixed when its shell spawned; later changes to allowed directories or
+  // the network allow-list do not reach a running terminal. The capability
+  // kind is the same; the exact policy may be older.
+  if (source === "builtin" && toolName === "terminal_run" && isActiveSandboxShellContained()) {
+    const active = detectSandboxCapability();
+    if (active.kind === "asrt") {
+      return { ...active, reason: `workspace terminal shell ASRT-wrapped — ${active.reason}` };
+    }
+  }
   // worker-confinement PR D-1: a wrapped host-spawned plugin worker genuinely
   // runs under ASRT — report its real capability so the reviewer composition
   // reflects the actual confinement (not the false `none` the unwrapped worker

@@ -7,8 +7,8 @@ import { spawn } from "node:child_process";
 import { noteConfinedProcessesMayRun } from "../lib/confined-process-phase.js";
 import { chmodSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
-import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { policyHomeAnchors } from "../shared/policy-home.js";
 import { aveHome } from "../shared/ave-home.js";
 import { agentPluginDataRoot } from "../marketplace/content/agent-plugin-data.js";
 import { testSandboxPrivateBase } from "../shared/ave-home-test-guard.js";
@@ -1165,47 +1165,53 @@ function readDenyCoversPath(denied: string, canonicalPath: string): boolean {
   }
 }
 
+function sensitiveDenyHomes(): string[] {
+  return policyHomeAnchors();
+}
+
 function getDefaultSensitiveDenyPaths(userDataDir: string | undefined, readablePrimarySessionRoot?: string): string[] {
-  const home = homedir();
+  const homes = sensitiveDenyHomes();
   const ave = aveHome();
+  const aveHomes = [ave, ...homes.map((home) => join(home, ".ave"))];
   // Electron userData dir — exact path when provided by a trusted caller;
-  // otherwise derived from os.homedir() + per-platform literal (NO `electron`
-  // import — keeps this module safe for any non-renderer context).
+  // otherwise derived from each home and platform layout, without a
+  // desktop runtime import — safe for any non-renderer context.
   // FIX 1 (security MINOR): Linux base honors XDG_CONFIG_HOME, mirroring
   // Electron's own resolution: `process.env.XDG_CONFIG_HOME || ~/.config`.
-  const electronUserData =
-    userDataDir ??
+  const electronUserData = userDataDir !== undefined
+    ? [process.platform === "win32" ? userDataDir.replace(/[/\\]+$/, "") + sep : userDataDir]
+    : homes.map((home) =>
     (process.platform === "darwin"
       ? join(home, "Library", "Application Support", "Ave")
       : process.platform === "win32"
-        ? join(home, "AppData", "Roaming", "Ave")
+        ? join(home, "AppData", "Roaming", "Ave") + sep
         : join(
             // Linux: mirror Electron's XDG_CONFIG_HOME resolution.
             process.env.XDG_CONFIG_HOME ?? join(home, ".config"),
             "Ave",
-          ));
+          )));
   const raw = [
     // ── The sensitive-path table, projected to literal absolute paths ──
     // Projected from the single authority, SENSITIVE_PATH_ENTRIES in
     // src/permissions/sensitive-paths.ts, which the in-process host-tool guard
     // projects into globs. Do NOT hand-add a `join(home, …)` entry here — add a
     // row to that table and BOTH surfaces deny it.
-    ...SENSITIVE_PATH_ENTRIES.filter((entry) => {
-      if (readablePrimarySessionRoot === undefined || entry.anchor !== "ave-home" || entry.access !== "read-only") return true;
-      const entryPath = canonicalizePathForMatch(join(ave, ...entry.segments));
-      return caseFoldForMatch(entryPath) !== caseFoldForMatch(readablePrimarySessionRoot);
-    }).map((entry) => {
+    ...SENSITIVE_PATH_ENTRIES.flatMap((entry) => {
+      let paths: string[];
       switch (entry.anchor) {
         case "ave-home":
-          return join(ave, ...entry.segments);
+          paths = aveHomes.map((home) => join(home, ...entry.segments));
+          break;
         case "home":
-          return join(home, ...entry.segments);
+          paths = homes.map((home) => join(home, ...entry.segments));
+          break;
         case "root":
           // POSIX-rooted (`/etc/…`). Kept literal rather than `join`ed so the
           // string stays a seatbelt/bwrap subpath on the platforms that have
           // it; on win32 it names nothing and ASRT skips it (No-Fallback: a
           // path that does not exist is harmless to list).
-          return "/" + entry.segments.join("/");
+          paths = ["/" + entry.segments.join("/")];
+          break;
         default: {
           // Fail closed: an unrecognised anchor must not silently push
           // `undefined` into the deny list ASRT is configured from.
@@ -1215,6 +1221,11 @@ function getDefaultSensitiveDenyPaths(userDataDir: string | undefined, readableP
           );
         }
       }
+      // A missing directory leaf needs its separator to avoid a file placeholder.
+      return paths.filter((path) => {
+        if (readablePrimarySessionRoot === undefined || entry.anchor !== "ave-home" || entry.access !== "read-only") return true;
+        return caseFoldForMatch(canonicalizePathForMatch(path)) !== caseFoldForMatch(readablePrimarySessionRoot);
+      }).map((path) => process.platform === "win32" && entry.kind === "dir" ? path + sep : path);
     }),
     // Operator-selected external keys can live inside a granted workspace.
     // Keep the same frozen literal targets as the in-process host guard.
@@ -1225,13 +1236,15 @@ function getDefaultSensitiveDenyPaths(userDataDir: string | undefined, readableP
     // Not a table row: the EXACT dir is only knowable at runtime from
     // `app.getPath("userData")`. The host guard pins the per-platform DEFAULT
     // locations as static globs in SENSITIVE_PATH_PATTERNS instead.
-    electronUserData,
+    ...electronUserData,
   ];
   const seen = new Set<string>();
   const out: string[] = [];
   for (const p of raw) {
-    if (!seen.has(p)) {
-      seen.add(p);
+    // Lexical key: a link alias is a separate spelling the sandbox must deny.
+    const key = caseFoldForMatch(resolve(p));
+    if (!seen.has(key)) {
+      seen.add(key);
       out.push(p);
     }
   }
@@ -1281,9 +1294,10 @@ function getDefaultSensitiveDenyPaths(userDataDir: string | undefined, readableP
  * @returns deduped, order-stable absolute paths to deny writes of.
  */
 export function getDefaultSensitiveWriteDenyPaths(userDataDir = _baseTrustedSettings?.userDataDir): string[] {
-  const home = homedir();
+  const homes = sensitiveDenyHomes();
   const readDeny = getDefaultSensitiveDenyPaths(userDataDir);
-  const writePersistence = [
+  // Non-device default grants are removed at the runtime source, so no compensating cache denies are needed.
+  const homeWritePersistence = homes.flatMap((home) => [
     // ── POSIX shell startup files — a write here re-executes on the next shell ──
     join(home, ".zshenv"),
     join(home, ".zprofile"),
@@ -1296,9 +1310,12 @@ export function getDefaultSensitiveWriteDenyPaths(userDataDir = _baseTrustedSett
     join(home, ".bash_logout"),
     join(home, ".profile"),
     // ── XDG config root — autostart entries, systemd --user units, app config ──
-    join(home, ".config"),
+    join(home, ".config") + (process.platform === "win32" ? sep : ""),
     // ── macOS per-user Launch Agents — launchd runs the plist at login ──
-    join(home, "Library", "LaunchAgents"),
+    join(home, "Library", "LaunchAgents") + (process.platform === "win32" ? sep : ""),
+  ]);
+  const writePersistence = [
+    ...homeWritePersistence,
     // ── User crontab spool + system cron drop-ins (a crontab edit re-executes
     //    outside the sandbox) ──
     "/usr/lib/cron/tabs", // macOS user crontab spool
@@ -1313,34 +1330,14 @@ export function getDefaultSensitiveWriteDenyPaths(userDataDir = _baseTrustedSett
     // that in a dev checkout this exe can sit inside a write grant). Grandparent
     // of the exe → covers every arch subdir + build script. Inert off win32.
     dirname(dirname(getVendoredSrtWinExePath())),
-    // ── ASRT's OWN default write paths ─────────────────────────────────────
-    // `sandbox-manager` composes the write allow-list as
-    // `[...getDefaultWritePaths(), ...userAllowWrite]`, so an ALLOW grant
-    // cannot subtract from it and every confined process on the machine — this
-    // app's plugins, this app's workers, and any OTHER ASRT consumer — reaches
-    // the same directories. Measured before this deny existed: a confined
-    // plugin child listed 141 entries under `/tmp/claude` and wrote a file of
-    // its own, and a second child spawned with a different plugin root read it
-    // back. That is a channel between two plugins the boundary exists to keep
-    // apart, and a channel out of the sandbox into two directories under the
-    // user's REAL home that belong to other tools.
-    //
-    // A DENY is what closes it: ASRT applies these as `denyWithinAllow`, which
-    // takes precedence over its own defaults. This could not be done until now
-    // for one reason, and it was not a small one — ASRT pointed `TMPDIR` AT
-    // this list, so denying it also broke every `writeFileSync(join(tmpdir(),
-    // …))` in every confined child. `useAppOwnedSandboxTempRoot` moved the temp
-    // root under `~/.ave` first, which is what makes the deny survivable.
-    "/tmp/claude",
-    "/private/tmp/claude",
-    join(home, ".npm", "_logs"),
-    join(home, ".claude", "debug"),
   ];
   const seen = new Set<string>();
   const out: string[] = [];
   for (const p of [...readDeny, ...writePersistence]) {
-    if (!seen.has(p)) {
-      seen.add(p);
+    // Lexical key: a link alias is a separate spelling the sandbox must deny.
+    const key = caseFoldForMatch(resolve(p));
+    if (!seen.has(key)) {
+      seen.add(key);
       out.push(p);
     }
   }
@@ -1650,7 +1647,7 @@ async function verifyLinuxAsrtRuntime(
       process.cwd(),
     );
     wrapped = true;
-    await executeLinuxAsrtRuntimeProbe(probe, abortController);
+    await executeLinuxAsrtRuntimeProbe(hardenLinuxSandboxWrap(probe), abortController);
   } catch (error) {
     if (isAsrtLinuxRuntimeProbeError(error)) throw error;
     throw new AsrtLinuxRuntimeProbeError("configured ASRT wrapper could not be prepared");
@@ -1741,6 +1738,7 @@ export async function initializeAsrtSandbox(
   // the base; withWorkerUnixSockets is a no-op until a worker registers.
   _baseTrustedSettings = trustedSettings;
   _workerUnixSocketDirs.clear();
+  useAppOwnedSandboxTempRoot();
   const config = buildSandboxConfig(withWorkerUnixSockets(trustedSettings));
   await SandboxManager.initialize(config, askCb, enableLogMonitor);
   try {
@@ -1804,10 +1802,8 @@ export async function wrapToolCommand(
   }
   // A wrapped command is a confined process that may write a plugin tree.
   noteConfinedProcessesMayRun();
-  // Publish the temp root HERE rather than trusting a boot step to have run.
-  // The deny floor refuses ASRT's shared default paths unconditionally, so a
-  // wrap that happened without this would hand the child a `TMPDIR` it is not
-  // allowed to write — a broken temp directory with no visible cause. Idempotent.
+  // Publish before wrapping: the runtime sets TMPDIR inside the command,
+  // ahead of any environment the spawning caller supplies. Idempotent.
   useAppOwnedSandboxTempRoot();
   assertPerExecFilesystemSupported(options.filesystem, "wrapToolCommand");
   const SandboxManager = await loadSandboxManager();
@@ -1822,34 +1818,10 @@ export async function wrapToolCommand(
 
 
 /**
- * Point ASRT's substituted temp root at a directory this app owns.
- *
- * WHAT IT REPLACES, and why that is not a hypothetical. On macOS and Linux ASRT
- * writes `TMPDIR=` into the sandboxed command line itself, reading
- * `CLAUDE_CODE_TMPDIR` (or the legacy `CLAUDE_TMPDIR`) from the WRAPPING
- * process and falling back to `/tmp/claude`. Because the assignment is inside
- * the command, no environment a caller composes can outrank it — measured: a
- * confined child whose `extraEnv` carried a `TMPDIR` still reported
- * `/tmp/claude`, while the `HOME` from that same object came through.
- *
- * `/tmp/claude` is not ours. It is a per-MACHINE path shared by every ASRT
- * consumer, and it is also one of ASRT's own default write paths, which no
- * grant this app passes can subtract from. Measured on a developer machine: a
- * confined plugin child listed 141 entries there and wrote a file of its own —
- * a read/write channel between this app's sandbox and whatever else on the
- * machine uses the same runtime, in both directions, that no manifest mentions.
- *
- * WHAT THIS CLOSES. Moving the root under `~/.ave` ends the
- * CROSS-APPLICATION half: the directory is ours, created `0o700`. The
- * cross-PRINCIPAL half — every confined child of this app sharing one root —
- * is closed one level down, by {@link ensureSandboxTempPrincipalDir}: plugin-
- * owned and third-party processes get a directory of their own under this root
- * and a `TMPDIR` naming it, set inside the wrap, and none of them is granted
- * the root itself. What this variable still decides is the `TMPDIR` ASRT
- * writes for a wrap that sets none of its own, which it keeps off
- * `/tmp/claude`.
- *
- * Called once, before any wrap, so nothing observes it changing.
+ * The host-owned root used for the runtime's inline TMPDIR assignment.
+ * Non-device write roots come only from caller policy; setting TMPDIR alone
+ * grants no access. Confined principals receive their own directory below this
+ * root, with the root read-denied and only their own directory granted.
  */
 export function appOwnedSandboxTempRoot(): string {
   return join(sandboxPrivateBase(), "tmp");
@@ -2129,10 +2101,8 @@ async function wrapLongLivedCommand(
     throw new Error(`${caller}: ASRT sandbox is not active (initialize at boot first)`);
   }
   noteConfinedProcessesMayRun();
-  // Publish the temp root HERE rather than trusting a boot step to have run.
-  // The deny floor refuses ASRT's shared default paths unconditionally, so a
-  // wrap that happened without this would hand the child a `TMPDIR` it is not
-  // allowed to write — a broken temp directory with no visible cause. Idempotent.
+  // Publish before wrapping: the runtime sets TMPDIR inside the command,
+  // ahead of any environment the spawning caller supplies. Idempotent.
   useAppOwnedSandboxTempRoot();
   assertPerExecFilesystemSupported(options.filesystem, caller);
   const SandboxManager = await loadSandboxManager();

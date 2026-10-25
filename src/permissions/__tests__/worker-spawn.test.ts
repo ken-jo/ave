@@ -21,8 +21,10 @@
  *   - win32 + gate ON → dedicated holder PID ACL grant + srt-win wrapped TCP
  *     worker, no shared all-plugin grant and no UDS injection.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { PassThrough } from "node:stream";
 import { join } from "node:path";
 
@@ -180,6 +182,28 @@ function setEnvForTest(values: Record<string, string | undefined>): () => void {
 }
 
 const REAL_PLATFORM = process.platform;
+
+/**
+ * The control socket lives under the Ave home, and a Unix socket path is
+ * limited to 103 bytes on macOS. The per-file test home sits under
+ * `$HOME/.ave/test-tmp/<run>/<file>`, so with a HOME of a little over 20 bytes the
+ * longest plugin/worker pair here passes the limit and every gate-ON case
+ * fails with the length error instead of testing what it names. These cases
+ * run in a short Ave home of their own; `/tmp` rather than `os.tmpdir()`,
+ * which on macOS is itself about 50 bytes. The guard allows it: it is outside
+ * the account's `~/.ave`.
+ */
+const REAL_AVE_HOME = process.env.AVE_HOME;
+let shortAveHome: string;
+beforeAll(() => {
+  shortAveHome = mkdtempSync(join(REAL_PLATFORM === "win32" ? tmpdir() : "/tmp", "ave-ws-"));
+  process.env.AVE_HOME = shortAveHome;
+});
+afterAll(() => {
+  if (REAL_AVE_HOME === undefined) delete process.env.AVE_HOME;
+  else process.env.AVE_HOME = REAL_AVE_HOME;
+  rmSync(shortAveHome, { recursive: true, force: true });
+});
 const REAL_SYSTEM_ROOT = process.env.SystemRoot;
 const REAL_WINDIR = process.env.WINDIR;
 
@@ -224,6 +248,36 @@ afterEach(() => {
 // ─── Gate OFF — plain unwrapped spawn ───────────────────────
 
 describe("spawnWorker — gate OFF (default)", () => {
+  it("waits for relayed stdout after process exit before publishing completion", async () => {
+    setProcessPlatform("win32");
+    gateActive = true;
+    setActiveSandboxCapability({ kind: "asrt", confidence: "verified", platform: "win32", reason: "Filesystem confinement", confines: { filesystem: true, process: false, network: true } });
+    wrapWorkerCommandMock.mockResolvedValueOnce({ argv: ["srt-win.exe", "exec", "--", "cmd.exe"], env: { ...process.env } });
+    const holder = new StubWorkerChild();
+    holder.pid = 5101;
+    const child = new StubWorkerChild();
+    child.pid = 5102;
+    spawnMock.mockReturnValueOnce(holder).mockReturnValueOnce(child);
+    const worker = await spawnWorker({ pluginId: "local-indexer", workerId: "relay-drain", command: "C:/runtime/worker.exe" });
+    const peer = await startFakeRelayPeer(child.stdout);
+    try {
+      await peer.request;
+      const events: unknown[] = [];
+      worker.onStdout((chunk) => events.push(["stdout", chunk]));
+      const completion = new Promise<void>((resolve) => worker.onExit((info) => { events.push(["exit", info]); resolve(); }));
+      child.emit("exit", 4, null);
+      child.stderr.end();
+      expect(events).toEqual([]);
+      child.stdout.end("trailing relay output");
+      await completion;
+      expect(events).toEqual([["stdout", "trailing relay output"], ["exit", { code: 4, signal: null }]]);
+      worker.stop();
+      expect(child.killCalls).toEqual([]);
+    } finally {
+      peer.close();
+    }
+  });
+
   it("rejects ambiguous path aliases instead of silently normalizing them", async () => {
     await expect(spawnWorker({
       pluginId: "local-indexer",
@@ -293,6 +347,39 @@ describe("spawnWorker — gate OFF (default)", () => {
 });
 
 // ─── Gate ON (macOS) — wrapped spawn + UDS + reviewer ───────
+
+describe("spawnWorker — control socket path length", () => {
+  it("refuses a socket path past the platform limit before creating, registering or spawning anything", async () => {
+    setProcessPlatform("darwin");
+    gateActive = true;
+    setActiveSandboxCapability({
+      kind: "asrt",
+      confidence: "verified",
+      platform: "darwin",
+      reason: "ASRT (Seatbelt) active — fs+process+network contained",
+      confines: { filesystem: true, process: true, network: true },
+    });
+    // A deep account home: the production layout under it cannot hold the socket.
+    process.env.AVE_HOME = join(shortAveHome, "a-very-long-account-home-directory-name", ".ave");
+    try {
+      await expect(spawnWorker({
+        pluginId: "local-indexer",
+        workerId: "embed",
+        command: "/opt/worker",
+        args: ["--serve"],
+        allowReadPaths: ["/opt/worker"],
+        allowWritePaths: ["/data/index"],
+        udsArgName: "--uds",
+      })).rejects.toThrow(/worker control socket for local-indexer\/embed: socket path is \d+ bytes, over this platform's \d+-byte limit/);
+    } finally {
+      process.env.AVE_HOME = shortAveHome;
+    }
+    expect(mkdirMock).not.toHaveBeenCalled();
+    expect(registerUdsMock).not.toHaveBeenCalled();
+    expect(wrapWorkerCommandMock).not.toHaveBeenCalled();
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+});
 
 describe("spawnWorker — gate ON (macOS)", () => {
   it("registers the socketDir on the shared config, wraps with allowWrite=[socketDir,…] (FS jail only), marks wrapped, socketPath non-null", async () => {
@@ -584,7 +671,142 @@ describe("spawnWorker — idempotent any-exit cleanup", () => {
     const exits: Array<{ code: number | null; signal: NodeJS.Signals | null }> = [];
     worker.onExit((info) => exits.push(info));
     child.emit("exit", 3, null);
+    child.stdout.emit("end");
+    child.stderr.emit("end");
     expect(exits).toEqual([{ code: 3, signal: null }]);
+  });
+
+  it("replays output and exit that happened before the consumer subscribed", async () => {
+    setProcessPlatform("darwin");
+    gateActive = true;
+    setActiveSandboxCapability({
+      kind: "asrt",
+      confidence: "verified",
+      platform: "darwin",
+      reason: "ASRT active",
+      confines: { filesystem: true, process: true, network: true },
+    });
+    wrapWorkerCommandMock.mockResolvedValueOnce({
+      argv: ["/bin/bash", "-c", "wrapped"],
+      env: { ...process.env },
+    });
+    const child = new StubWorkerChild();
+    spawnMock.mockReturnValueOnce(child);
+
+    const worker = await spawnWorker({
+      pluginId: "local-indexer",
+      workerId: "embed",
+      command: "/opt/worker",
+    });
+    child.stdout.write("already written");
+    child.stderr.write("already warned");
+    child.emit("exit", 7, null);
+    child.emit("exit", 8, null);
+    child.stdout.emit("end");
+    child.stderr.emit("end");
+
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const exits: Array<{ code: number | null; signal: NodeJS.Signals | null }> = [];
+    worker.onStdout((chunk) => stdout.push(chunk));
+    worker.onStderr((chunk) => stderr.push(chunk));
+    worker.onExit((info) => exits.push(info));
+    expect(stdout).toEqual(["already written"]);
+    expect(stderr).toEqual(["already warned"]);
+    expect(exits).toEqual([{ code: 7, signal: null }]);
+  });
+
+  it("drains trailing output after process exit before publishing completion", async () => {
+    const child = new StubWorkerChild();
+    spawnMock.mockReturnValueOnce(child);
+    const worker = await spawnWorker({ pluginId: "local-indexer", workerId: "drain", command: "/opt/worker" });
+    const events: unknown[] = [];
+    worker.onStdout((chunk) => events.push(["stdout", chunk]));
+    worker.onStderr((chunk) => events.push(["stderr", chunk]));
+    worker.onExit((info) => events.push(["exit", info]));
+    child.emit("exit", 7, null);
+    worker.stop();
+    expect(child.killCalls).toEqual([]);
+    expect(events).toEqual([]);
+    child.stdout.write("trailing output");
+    child.stderr.write("trailing warning");
+    child.stdout.end();
+    await new Promise<void>((resolve) => child.stdout.once("end", resolve));
+    expect(events).toEqual([["stdout", "trailing output"], ["stderr", "trailing warning"]]);
+    const stderrEnded = new Promise<void>((resolve) => child.stderr.once("end", resolve));
+    child.stderr.end();
+    await stderrEnded;
+    expect(events).toEqual([["stdout", "trailing output"], ["stderr", "trailing warning"], ["exit", { code: 7, signal: null }]]);
+    const late = vi.fn();
+    worker.onExit(late);
+    expect(late).toHaveBeenCalledExactlyOnceWith({ code: 7, signal: null });
+  });
+
+  it("stops and clears both output queues when a replay listener throws", async () => {
+    const child = new StubWorkerChild();
+    spawnMock.mockReturnValueOnce(child);
+    const worker = await spawnWorker({ pluginId: "local-indexer", workerId: "replay", command: "/opt/worker" });
+    child.stdout.write("first");
+    child.stdout.write("second");
+    child.stderr.write("warning");
+    const failure = new Error("listener failed");
+    const listener = vi.fn(() => { throw failure; });
+    expect(() => worker.onStdout(listener)).toThrow(failure);
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(child.killCalls).toHaveLength(1);
+    expect(() => worker.onStderr(() => {})).toThrow(failure);
+    child.stdout.write("late");
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([null, undefined, 0, ""])("retains a falsy replay failure (%s)", async (failure) => {
+    const child = new StubWorkerChild();
+    spawnMock.mockReturnValueOnce(child);
+    const worker = await spawnWorker({ pluginId: "local-indexer", workerId: "falsy-replay", command: "/opt/worker" });
+    child.stdout.write("captured");
+    const caught = (run: () => void) => {
+      try {
+        run();
+        return { thrown: false };
+      } catch (error) {
+        return { thrown: true, error };
+      }
+    };
+    expect(caught(() => worker.onStdout(() => { throw failure; }))).toEqual({ thrown: true, error: failure });
+    child.stderr.write("late");
+    expect(caught(() => worker.onStderr(() => {}))).toEqual({ thrown: true, error: failure });
+    expect(child.killCalls).toHaveLength(1);
+  });
+
+  it.each([
+    ["bytes", () => [Buffer.alloc(1024 * 1024 + 1, 0x61)]],
+    ["events", () => Array.from({ length: 257 }, () => Buffer.from("x"))],
+  ])("refuses a pre-listener stdout backlog past the %s bound", async (_name, chunks) => {
+    setProcessPlatform("darwin");
+    gateActive = true;
+    setActiveSandboxCapability({
+      kind: "asrt",
+      confidence: "verified",
+      platform: "darwin",
+      reason: "ASRT active",
+      confines: { filesystem: true, process: true, network: true },
+    });
+    wrapWorkerCommandMock.mockResolvedValueOnce({
+      argv: ["/bin/bash", "-c", "wrapped"],
+      env: { ...process.env },
+    });
+    const child = new StubWorkerChild();
+    spawnMock.mockReturnValueOnce(child);
+
+    const worker = await spawnWorker({
+      pluginId: "local-indexer",
+      workerId: "embed",
+      command: "/opt/worker",
+    });
+    for (const chunk of chunks()) child.stdout.write(chunk);
+
+    expect(() => worker.onStdout(() => {})).toThrow(/pre-listener buffer/);
+    expect(child.killCalls).toHaveLength(1);
   });
 
   it("keeps a live worker confined when a process operation emits error", async () => {

@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Stats } from "node:fs";
+import type { BigIntStats } from "node:fs";
 
 let onRead: (() => void) | undefined;
-let inspectStats: ((stats: Stats) => Stats) | undefined;
+let inspectStats: ((stats: BigIntStats) => BigIntStats) | undefined;
 const openDescriptors = new Set<number>();
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
@@ -19,12 +19,12 @@ vi.mock("node:fs", async (importOriginal) => {
       onRead?.();
       return count;
     },
-    lstatSync: (path: string) => {
-      const stats = actual.lstatSync(path);
+    lstatSync: (path: string, options: { bigint: true }) => {
+      const stats = actual.lstatSync(path, options);
       return inspectStats?.(stats) ?? stats;
     },
-    fstatSync: (fd: number) => {
-      const stats = actual.fstatSync(fd);
+    fstatSync: (fd: number, options: { bigint: true }) => {
+      const stats = actual.fstatSync(fd, options);
       return inspectStats?.(stats) ?? stats;
     },
   };
@@ -51,19 +51,21 @@ afterEach(async () => {
   await cleanupTmpDir(root);
 });
 
-describe("external key file invariants", () => {
+// These drive the POSIX owner, mode and inode guards, which never run on Windows:
+// the key reader refuses there before opening the file.
+describe.skipIf(process.platform === "win32")("external key file invariants", () => {
   it("rejects a different owner and special permission bits before reading", () => {
     let reads = 0;
     onRead = () => { reads += 1; };
-    inspectStats = (stats) => Object.assign(stats, { uid: stats.uid + 1 });
+    inspectStats = (stats) => Object.assign(stats, { uid: stats.uid + 1n });
     expect(() => createNodeSecretEncryption(keyFile)).toThrow(/owned by the current user/);
-    inspectStats = (stats) => Object.assign(stats, { mode: stats.mode | 0o4000 });
+    inspectStats = (stats) => Object.assign(stats, { mode: stats.mode | 0o4000n });
     expect(() => createNodeSecretEncryption(keyFile)).toThrow(/0400 or 0600/);
     expect(reads).toBe(0);
   });
 
   it("detects changed bytes even if equal-sized mutation preserves every observed metadata field", () => {
-    const pinned = statSync(keyFile);
+    const pinned = statSync(keyFile, { bigint: true });
     inspectStats = () => pinned;
     onRead = () => {
       onRead = undefined;
@@ -87,5 +89,18 @@ describe("external key file invariants", () => {
     };
     expect(() => createNodeSecretEncryption(keyFile)).toThrow(/0400 or 0600/);
     expect(statSync(keyFile).mode & 0o777).toBe(0o644);
+  });
+
+  it.each([
+    ["descriptor", 1],
+    ["path", 2],
+  ])("rejects a %s file ID that differs only beyond the exact number range", (_label, changedObservation) => {
+    const inode = 2n ** 60n;
+    let observations = 0;
+    inspectStats = (stats) => Object.assign(stats, {
+      ino: inode + (observations++ === changedObservation ? 1n : 0n),
+    });
+    expect(Number(inode)).toBe(Number(inode + 1n));
+    expect(() => createNodeSecretEncryption(keyFile)).toThrow(/changed during read/);
   });
 });

@@ -111,12 +111,11 @@ export interface McpDiscoverProjection {
  */
 function toWireTool(tool: McpTool): McpToolProjection {
   const meta: McpToolProjection["_meta"] = { ui: { visibility: toolVisibility(tool) } };
-  // Read the SOLE Ave-proprietary manifest key, `ave/pathFields`. The legacy
-  // reverse-DNS `xyz.ave/pathFields` dual-read was removed (the rename's
-  // transitional fallback): a manifest still carrying the legacy key is rejected
-  // fail-closed by the manifest schema (`_meta` is `additionalProperties:false`),
-  // so it never reaches this projection — it fails to load and the Plugin Doctor
-  // auto-repairs it by reinstalling the migrated marketplace version.
+  // Read the SOLE Ave-proprietary manifest key, `ave/pathFields`. A manifest
+  // carrying `pathFields` under any other `_meta` key is rejected fail-closed by
+  // the manifest schema (`_meta` is `additionalProperties:false`), so it never
+  // reaches this projection: it fails to load as a reinstall-fixable
+  // manifest-validation error.
   const pathFields = tool._meta?.["ave/pathFields"];
   if (pathFields !== undefined) {
     meta["ave/pathFields"] = pathFields;

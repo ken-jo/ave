@@ -118,9 +118,10 @@ function runChild(bytes: Buffer, format: PreviewDocumentFormat, sheetIndex: numb
     let ready = false;
     let parseTimer: ReturnType<typeof setTimeout> | undefined;
     let failure: TableDocumentError | undefined;
+    let termination: void | Promise<void>;
     const stop = (code: "parse-limit" | "read-failed" | "superseded"): void => {
       failure ??= documentError(code);
-      forceKillManagedChildProcess(child, "document-preview-stop");
+      termination = forceKillManagedChildProcess(child, "document-preview-stop");
     };
     const handleAbort = (): void => stop("superseded");
     const startupTimer = setTimeout(() => stop("read-failed"), PREVIEW_DOCUMENT_LIMITS.startupTimeoutMs);
@@ -152,10 +153,12 @@ function runChild(bytes: Buffer, format: PreviewDocumentFormat, sheetIndex: numb
       if (child.pid) stop("read-failed");
     });
     child.stdin!.on("error", () => stop("read-failed"));
-    child.once("close", (code, exitSignal) => {
+    child.once("close", async (code, exitSignal) => {
       clearTimeout(startupTimer);
       clearTimeout(parseTimer);
       signal.removeEventListener("abort", handleAbort);
+      // Settle only once a Windows tree kill has finished with the child.
+      if (termination) await termination;
       if (failure) { reject(failure); return; }
       if (!ready || exitSignal || code !== 0) {
         reject(documentError(ready ? "parse-limit" : "read-failed"));

@@ -1,6 +1,7 @@
 import "../../../../../test/renderer/setup.js";
 import { useState } from "react";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { userEvent } from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { installMockAveApi, type MockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
 import { deferred } from "../../../../../test/renderer/helpers.js";
@@ -11,11 +12,20 @@ import type {
   MarketplaceProviderModelDiscoveryPolicy,
 } from "../../../../shared/marketplace-package-assets.js";
 import type { SubscriptionProviderView } from "../SubscriptionProvidersSection.js";
+import { subscriptionRuntimeDescriptor } from "../../../../shared/subscription-runtime.js";
 import { TEST_IDS } from "../../../../shared/test-ids.js";
 import { t } from "../../../../i18n/runtime.js";
-import { freshAllVendorBlocks, llmImageInputKey } from "../../../../shared/llm-vendor-defaults.js";
+import { getVendorOption } from "../../constants.js";
+import { activeLlmRouteModel, freshAllVendorBlocks, llmImageInputKey, OPENAI_COMPATIBLE_VENDOR_PRESETS } from "../../../../shared/llm-vendor-defaults.js";
 import { resolveContextWindowForRoute } from "../../../../shared/context-budget.js";
 import { supportsVision } from "../../../../engine/llm/vendor-capabilities.js";
+import { catalogChatModelIds } from "../../../../shared/model-catalog/vendor-models.js";
+import { activeModelCatalog, installModelCatalog } from "../../../../shared/model-catalog/active.js";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { SettingsService } from "../../../../data/settings-store.js";
+import { cleanupTmpDir } from "../../../../__tests__/support/tmp-dir-teardown.js";
 
 const useSubscriptionProvidersMock = vi.hoisted(() => vi.fn());
 
@@ -65,9 +75,13 @@ function codexView(
     descriptor: {
       id: "codex",
       label: "Codex",
+      planName: "ChatGPT",
+      cliName: "Codex CLI",
+      executable: "discovered",
       description: "",
       loginMethods: ["browser", "device-code"],
       supportsLogout: true,
+      installGuidance: subscriptionRuntimeDescriptor("codex").installGuidance!,
     },
     status: {
       runtime: "ready",
@@ -76,6 +90,26 @@ function codexView(
     },
     busyAction: null,
     refreshPending: false,
+    ...overrides,
+  };
+}
+
+/** The Claude plan, as the settings controller describes it: the same shape as the ChatGPT plan's. */
+function claudeCodeView(
+  overrides: Partial<SubscriptionProviderView> = {},
+): SubscriptionProviderView {
+  const base = codexView();
+  return {
+    ...base,
+    descriptor: {
+      ...base.descriptor,
+      id: "claude-code",
+      label: "Claude Code",
+      planName: "Claude",
+      cliName: "Claude Code CLI",
+      loginMethods: ["browser"],
+      installGuidance: subscriptionRuntimeDescriptor("claude-code").installGuidance!,
+    },
     ...overrides,
   };
 }
@@ -119,6 +153,7 @@ function storedKeysFor(...providerIds: string[]) {
 }
 
 interface Profile {
+  pinnedModels?: string[];
   vendors?: Record<string, unknown>;
   installedProviderIds?: string[];
   installedProviderPresets?: readonly MarketplaceInstalledProviderPreset[];
@@ -136,7 +171,7 @@ interface Profile {
 function profileApi(profile: Profile, rest: MockApi = {}) {
   let settings: { llm: Record<string, unknown>; marketplace: Record<string, unknown> } = {
     llm: {
-      pinnedModels: [],
+      pinnedModels: profile.pinnedModels ?? [],
       vendors: profile.vendors ?? {},
       modelListCache: profile.modelListCache ?? {},
     },
@@ -182,11 +217,9 @@ function profileApi(profile: Profile, rest: MockApi = {}) {
         publish();
         await Promise.resolve();
       });
-      // A second act, so the effects the broadcast queued are mounted before
-      // this one waits on them — inside a single act they would not be.
-      await act(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 50));
-      });
+      // Separate acts, so the effects the broadcast queued are mounted before
+      // their requests are waited on — inside a single act they would not be.
+      await settleModelListRequests();
     },
   };
 }
@@ -254,6 +287,7 @@ function keyDraft(rowId: string, vendorId: string, keyInput: string): ProviderCr
 }
 
 interface TabHooks {
+  setModel: Mock<(modelId: string) => void>;
   setThinkingBudget: Mock<(budget: number) => void>;
   selectApiVendorModel: Mock<(vendorId: string, modelId: string) => void>;
   onSelectMarketplaceProviderPreset: Mock<(preset: MarketplaceInstalledProviderPreset) => void>;
@@ -264,6 +298,7 @@ interface TabHooks {
 
 function makeHooks(): TabHooks {
   return {
+    setModel: vi.fn(),
     setThinkingBudget: vi.fn(),
     selectApiVendorModel: vi.fn(),
     onSelectMarketplaceProviderPreset: vi.fn(),
@@ -308,7 +343,7 @@ function TabHarness({
         onSelectMarketplaceProviderPreset={hooks.onSelectMarketplaceProviderPreset}
         onClearMarketplaceProviderPreset={hooks.onClearMarketplaceProviderPreset}
         model={props.model ?? "gpt-5.4"}
-        setModel={vi.fn()}
+        setModel={hooks.setModel}
         selectApiVendorModel={hooks.selectApiVendorModel}
         enableThinking={props.enableThinking ?? false}
         setEnableThinking={vi.fn()}
@@ -334,7 +369,7 @@ function TabHarness({
 async function renderTab(api: MockApi, props: TabProps = {}) {
   const hooks = makeHooks();
   const result = render(<TabHarness api={api} props={props} hooks={hooks} />);
-  // The tab syncs the active vendor's catalogue on a debounce after mount.
+  // Let the mount commit; the catalogue requests it queues are awaited per test.
   await act(async () => {
     await Promise.resolve();
   });
@@ -391,7 +426,8 @@ function chooserOption(modelId: string): HTMLElement {
 
 /** The provider group a chooser row sits under, label included. */
 function chooserGroupText(modelId: string): string {
-  return chooserOption(modelId).closest("[role='group']")?.textContent ?? "";
+  const option = chooserOption(modelId);
+  return (option.closest("[data-model-provider]") ?? option.closest("[role='group']"))?.textContent ?? "";
 }
 
 /** Radix commits a chooser row on Enter, and only for the focused one. */
@@ -399,6 +435,22 @@ function pickChooserOption(modelId: string) {
   const option = chooserOption(modelId);
   option.focus();
   fireEvent.keyDown(option, { key: "Enter" });
+}
+
+/**
+ * Let every model-list request the tab queued reach the API stub. Nothing on
+ * that path is timed: the sync debounce went away when model lists became a
+ * cached catalogue, so a request is the tail of an effect → `hasApiKey` →
+ * `listLlmModels` promise chain. A few macrotask turns, each inside `act` so
+ * the effects a turn commits run before the next, is all the chance the tab
+ * needs to ask — and what "nothing was asked" has to wait for.
+ */
+async function settleModelListRequests(): Promise<void> {
+  for (let turn = 0; turn < 5; turn += 1) {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
 }
 
 function rowOrder(): (string | null)[] {
@@ -419,6 +471,149 @@ beforeEach(() => {
 });
 
 describe("LlmTab provider cards", () => {
+  it("offers the catalog in release order in the fallback chooser without a key", async () => {
+    const api = makeApi();
+    await renderTab(api, { hasKey: false, model: "", fallbackOpen: true, fallbackChain: [{ provider: "claude", model: "" }] });
+    await settleModelListRequests();
+    const fallback = screen.getByTestId("fallback-chain-section");
+    openMenu(within(fallback).getAllByRole("combobox")[1]!);
+    const ids = [...document.querySelectorAll('[role="option"] [data-model-id]')].map((node) => node.getAttribute("data-model-id"));
+    expect(ids).toEqual(catalogChatModelIds("claude"));
+    expect(ids).toEqual(expect.arrayContaining(["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-1"]));
+    expect(document.querySelector('[role="option"][aria-selected="true"]')).toBeNull();
+    expect(api.listLlmModels).not.toHaveBeenCalled();
+  });
+
+  it("offers only catalog models in release order on a newly connected route", async () => {
+    const original = activeModelCatalog();
+    const models = { ...original.providers.openai!.models };
+    delete models["gpt-5.4-mini"];
+    try {
+      installModelCatalog({ ...original, providers: { ...original.providers, openai: { models } } });
+      const { hooks } = await renderTab(makeApi({ hasApiKey: storedKeysFor("openai") }), { model: "" });
+      await settleModelListRequests();
+      const ids = await chooserModelIds();
+      expect(ids).toEqual(catalogChatModelIds("openai"));
+      expect(ids).toContain("gpt-6.1-sol");
+      expect(ids).not.toContain("gpt-5.4-mini");
+      expect(document.querySelector('[role="option"][aria-selected="true"]')).toBeNull();
+      expect(hooks.selectApiVendorModel).not.toHaveBeenCalled();
+    } finally {
+      installModelCatalog(original);
+    }
+  });
+
+  it("shows the model chooser after clearing a stored built-in default without an error", async () => {
+    const userDataPath = mkdtempSync(join(tmpdir(), "llm-tab-cleared-model-"));
+    const options = {
+      userDataPath,
+      encryption: {
+        isEncryptionAvailable: () => false,
+        getSelectedStorageBackend: () => "gnome_libsecret" as const,
+        encryptString: (value: string) => Buffer.from(value),
+        decryptString: (value: Buffer) => value.toString(),
+      },
+    };
+    try {
+      writeFileSync(join(userDataPath, "ave-settings.json"), JSON.stringify({
+        llm: { provider: "openai", vendors: { openai: { model: "gpt-5.4-mini" } } },
+      }));
+      const migrated = new SettingsService(options);
+      await migrated.patch({});
+      const llm = migrated.get("llm");
+      const { hooks } = await renderTab(makeApi({
+        hasApiKey: storedKeysFor("openai"),
+        getModelCatalog: vi.fn(async () => ({ ok: true, catalog: activeModelCatalog(), refreshPolicy: "auto" })),
+      }), {
+        vendor: llm.provider, model: llm.vendors.openai!.model, retiredLlmProvider: llm.retiredProvider,
+      });
+      await settleModelListRequests();
+      expect(screen.getByTestId(TEST_IDS.llmModelSelect)).toHaveTextContent(t("llmTab.model"));
+      expect(screen.getByTestId(TEST_IDS.llmModelSelect)).not.toHaveTextContent("gpt-5.4-mini");
+      expect(screen.queryAllByRole("alert").map((node) => node.textContent).join("\n")).toBe("");
+      expect(hooks.selectApiVendorModel).not.toHaveBeenCalled();
+    } finally {
+      await cleanupTmpDir(userDataPath);
+    }
+  });
+
+  it("shows choose a model after clearing a stored market default", async () => {
+    const userDataPath = mkdtempSync(join(tmpdir(), "llm-tab-cleared-market-model-"));
+    const gateway = preset("fixture-market-router", "Fixture Router", "https://fixture.example/v1", "static");
+    try {
+      writeFileSync(join(userDataPath, "ave-settings.json"), JSON.stringify({
+        marketplace: { installedProviderPresets: [gateway] },
+        llm: { provider: "openai-compatible", marketplaceProviderPresetId: gateway.providerId,
+          vendors: { "openai-compatible": { presetModels: { [gateway.providerId]: gateway.defaultModel } } } },
+      }));
+      const migrated = new SettingsService({ userDataPath, encryption: {
+        isEncryptionAvailable: () => false,
+        getSelectedStorageBackend: () => "gnome_libsecret" as const,
+        encryptString: (value: string) => Buffer.from(value),
+        decryptString: (value: Buffer) => value.toString(),
+      } });
+      await migrated.patch({});
+      const llm = migrated.get("llm");
+      const api = makeApi({
+        getSettings: vi.fn(async () => migrated.getAll()),
+        hasApiKey: storedKeysFor(`marketplace-provider:${gateway.providerId}`),
+      });
+      const { hooks } = await renderTab(api, {
+        vendor: llm.provider, model: activeLlmRouteModel(llm),
+        marketplaceProviderPresetId: llm.marketplaceProviderPresetId,
+        marketplaceProviderPresets: migrated.get("marketplace").installedProviderPresets,
+      });
+      await settleModelListRequests();
+      expect(screen.getByTestId(TEST_IDS.llmModelSelect)).toHaveTextContent(t("llmTab.model"));
+      expect(screen.getByTestId(TEST_IDS.llmModelSelect)).not.toHaveTextContent(gateway.defaultModel);
+      expect(await chooserModelIds()).toContain(gateway.defaultModel);
+      expect(chooserOption(gateway.defaultModel)).not.toHaveAttribute("aria-selected", "true");
+      expect(hooks.selectApiVendorModel).not.toHaveBeenCalled();
+    } finally {
+      await cleanupTmpDir(userDataPath);
+    }
+  });
+
+  it("keeps a saved selection outside the catalog without selecting a replacement", async () => {
+    const { hooks } = await renderTab(makeApi({ hasApiKey: storedKeysFor("openai") }), { model: "saved-private-model" });
+    expect(await chooserModelIds()).toContain("saved-private-model");
+    expect(chooserOption("saved-private-model")).toHaveAttribute("data-state", "checked");
+    expect(hooks.selectApiVendorModel).not.toHaveBeenCalled();
+  });
+
+  it("uses the native listing instead of a catalog seed when a key is stored", async () => {
+    const api = makeApi({
+      hasApiKey: storedKeysFor("claude"),
+      listLlmModels: vi.fn().mockResolvedValue({ ok: true, endpoint: "https://api.anthropic.com/v1/models", models: ["live-model"], fetchedAt: new Date().toISOString() }),
+    });
+    await renderTab(api, { vendor: "claude", model: "" });
+    await settleModelListRequests();
+    expect(api.listLlmModels).toHaveBeenCalledWith(expect.objectContaining({ vendor: "claude" }));
+    expect(await chooserModelIds()).toEqual(["live-model"]);
+  });
+
+  it("omits blank ids in every listing and keeps an empty live answer authoritative", async () => {
+    const api = makeApi({
+      hasApiKey: storedKeysFor("openai", "claude"),
+      listLlmModels: vi.fn(async ({ vendor }: { vendor: string }) => ({
+        ok: true, endpoint: "https://provider.invalid/models", models: vendor === "claude" ? ["", " ", "listed-model"] : [], fetchedAt: new Date().toISOString(),
+      })),
+    });
+    await renderTab(api, { model: "" });
+    await settleModelListRequests();
+    expect(await chooserModelIds()).toEqual(["listed-model"]);
+  });
+
+  it("omits blank runtime model ids instead of offering them as models", async () => {
+    installSubscription([codexView({
+      status: { runtime: "ready", connection: "connected", models: [{ id: " ", label: " " }, { id: "gpt-6.1-sol", label: "gpt-6.1-sol" }] },
+    })]);
+    await renderTab(makeApi({ hasApiKey: storedKeysFor("openai") }), { model: "" });
+    expect(await chooserModelIds()).toContain("gpt-6.1-sol");
+    // Codex offers no CLI-default row, so a blank id would be the only source of one.
+    expect(screen.queryByTestId("llm-tab:model-pin:codex::")).toBeNull();
+  });
+
   it("accepts an explicit choice of the same model after a provider retirement", async () => {
     const { hooks } = await renderTab(makeApi({ hasApiKey: storedKeysFor("openai") }), { model: "gpt-5.4", retiredLlmProvider: "copilot" });
     await chooserModelIds();
@@ -500,6 +695,24 @@ describe("LlmTab provider cards", () => {
     const route = resolveContextWindowForRoute({ provider: "openai", vendors, modelListCache });
     expect(supportsVision("openai", model, route)).toBe(vision);
     expect(route.toolCall?.supported).toBe(tools);
+  });
+
+  it("names no model on a first run with no provider connected", async () => {
+    // Owner report: an empty Model select above "Declares image support for
+    // gpt-5.4-mini on this provider". The id is the vendor default nobody
+    // picked, on a route with no credential behind it.
+    await renderTab(makeApi(), { vendor: "openai", model: "", hasKey: false });
+    await waitFor(() => expect(screen.getByTestId(TEST_IDS.llmModelSelect))
+      .toHaveTextContent(t("llmTab.modelPlaceholderNoProvider")));
+    expect(screen.queryByTestId("llm-tab:image-input-row")).toBeNull();
+    expect(screen.queryByRole("combobox", { name: "이미지 입력" })).toBeNull();
+    expect(document.body).not.toHaveTextContent(/gpt-5\.4-mini/);
+  });
+
+  it("shows image input for the selected model once its provider holds a key (control)", async () => {
+    await renderTab(makeApi({ hasApiKey: storedKeysFor("openai") }), { vendor: "openai", model: "gpt-5.4", hasKey: true });
+    const control = await screen.findByRole("combobox", { name: "이미지 입력" });
+    expect(control).toHaveAccessibleDescription(expect.stringContaining("gpt-5.4"));
   });
 
   it("saves the active vendor model without a stale preset's scope", async () => {
@@ -926,15 +1139,38 @@ describe("LlmTab provider cards", () => {
 
     const toggle = screen.getByTestId("llm-tab:connection:codex:toggle");
     fireEvent.click(toggle);
-    const form = screen.getByTestId("llm-tab:manual-section");
     const body = screen.getByTestId("llm-tab:connection:codex:detail");
-    // ONE row, so opening it shows both ways in to this provider at once.
+    // ONE row, opened on the method already in use — here the stored key — so
+    // the key form shows and the sign-in controls wait behind the other choice.
+    await waitFor(() => expect(screen.getByTestId("llm-tab:sign-in-method:codex:api"))
+      .toHaveAttribute("aria-checked", "true"));
+    const form = await screen.findByTestId("llm-tab:manual-section");
     expect(screen.getByTestId("llm-api-key-input")).toBeInTheDocument();
-    expect(screen.getByTestId("subscription-provider:codex:login-browser")).toBeInTheDocument();
+    expect(screen.queryByTestId("subscription-provider:codex:login-browser")).not.toBeInTheDocument();
     expect(body).toContainElement(form);
     expect(toggle).toHaveAttribute("aria-controls", body.id);
     expect(toggle).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByTestId("llm-tab:api-key-status")).toHaveTextContent(/설정됨|Configured|Set/);
+  });
+
+  it("asks for the sign-in method before showing its credential form", async () => {
+    installSubscription([codexView({
+      status: { runtime: "ready", connection: "connected", models: [] },
+    })]);
+    await renderTab(makeApi());
+    fireEvent.click(screen.getByTestId("llm-tab:connection:codex:toggle"));
+    expect(screen.queryByTestId("llm-api-key-input")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("llm-tab:save-providers")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("llm-tab:sign-in-method:codex:api"));
+    expect(screen.getByTestId("llm-api-key-input")).toHaveValue("");
+    expect(screen.queryByTestId("subscription-provider:codex:login-browser")).not.toBeInTheDocument();
+    fireEvent.change(screen.getByTestId("llm-api-key-input"), { target: { value: "sk-typed" } });
+    fireEvent.click(screen.getByTestId("llm-tab:sign-in-method:codex:subscription"));
+    expect(screen.queryByTestId("llm-api-key-input")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("llm-tab:sign-in-method:codex:api"));
+    expect(screen.getByTestId("llm-api-key-input")).toHaveValue("");
+    fireEvent.click(screen.getByTestId("llm-tab:save-providers-cancel"));
+    expect(screen.queryByTestId("llm-api-key-input")).not.toBeInTheDocument();
   });
 
   it("asks for no endpoint where the endpoint is fixed", async () => {
@@ -1177,6 +1413,316 @@ describe("LlmTab provider cards leave the chat route alone", () => {
   });
 });
 
+describe("LlmTab grouped model search", () => {
+  const routedEntries = [
+    { id: "google/gemini-fixture:free" },
+    { id: "openai/gpt-paid" },
+    { id: "anthropic/claude-fixture" },
+    { id: "openai/gpt-tagged", tags: { free: true } },
+    { id: "openrouter/free" },
+    { id: "acme/freeform-x" },
+    { id: "plain-model", name: "Display name fixture" },
+    { id: "openai/gpt-fixture:free" },
+    { id: "acme/custom-fixture" },
+  ];
+
+  async function openSearchCatalogue(
+    crossVendor = false,
+    pinnedModels: string[] = [],
+    user?: ReturnType<typeof userEvent.setup>,
+    additionalEntries: { id: string }[] = [],
+  ) {
+    const { api } = profileApi({
+      installedProviderIds: crossVendor ? ["openrouter", "requesty"] : ["openrouter"],
+      pinnedModels,
+    }, {
+      hasApiKey: storedKeysFor(...(crossVendor ? ["openrouter", "openai", "requesty"] : ["openrouter"])),
+      listLlmModels: vi.fn(async ({ vendor }: { vendor: string }): Promise<LlmModelListResult> => {
+        const entries = vendor === "openrouter" ? [...routedEntries, ...additionalEntries]
+          : vendor === "openai" ? [{ id: "gpt-direct-fixture" }]
+            : [{ id: "openai/gpt-gateway-fixture" }, { id: "google/gemini-gateway-fixture" }];
+        return {
+          ok: true,
+          vendor,
+          endpoint: "https://catalogue.invalid/models",
+          models: entries.map((entry) => entry.id),
+          modelEntries: entries,
+          fetchedAt: "2026-01-01T00:00:00.000Z",
+        };
+      }),
+    });
+    const result = await renderTab(api, {
+      vendor: "openrouter", model: user ? "plain-model" : "openai/gpt-paid",
+      baseUrl: getVendorOption("openrouter").baseUrlPlaceholder!,
+    });
+    await settleModelListRequests();
+    if (user) {
+      const trigger = screen.getByTestId(TEST_IDS.llmModelSelect);
+      for (let step = 0; step < 100 && document.activeElement !== trigger; step++) {
+        await user.tab();
+      }
+      expect(trigger).toHaveFocus();
+      await user.keyboard("[ArrowDown]");
+    }
+    expect(await chooserModelIds()).toContain("plain-model");
+    const input = screen.getByRole("textbox", { name: t("llmTab.modelSearchAriaLabel") });
+    const list = screen.getByRole("listbox");
+    const ids = () => within(screen.getByRole("listbox")).queryAllByRole("option").map((option) =>
+      option.querySelector("[data-model-id]")?.getAttribute("data-model-id"));
+    const search = (query: string) => fireEvent.change(input, { target: { value: query } });
+    return { ...result, input, list, ids, search };
+  }
+
+  it("groups upstream prefixes by readable labels, preserving order within each group", async () => {
+    const { list } = await openSearchCatalogue();
+    const provider = within(list).getByRole("group", { name: getVendorOption("openrouter").label });
+    for (const [vendorId, modelId] of [
+      ["claude", "anthropic/claude-fixture"],
+      ["gemini", "google/gemini-fixture:free"],
+      ["openai", "openai/gpt-paid"],
+    ]) {
+      const group = within(provider).getByRole("group", { name: getVendorOption(vendorId!).label });
+      expect(within(group).getAllByRole("option").some((option) =>
+        option.querySelector(`[data-model-id="${modelId}"]`))).toBe(true);
+    }
+    const labels = [...provider.querySelectorAll("[data-slot='select-label']")]
+      .slice(1).map((label) => label.textContent!)
+      .filter((label) => label !== t("llmTab.modelOtherGroup"));
+    expect(labels).toEqual([...labels].sort((a, b) => a.localeCompare(b)));
+    const group = within(provider).getByRole("group", { name: getVendorOption("openai").label });
+    expect(within(group).getAllByRole("option").map((option) =>
+      option.querySelector("[data-model-id]")?.getAttribute("data-model-id")))
+      .toEqual(["openai/gpt-paid", "openai/gpt-tagged", "openai/gpt-fixture:free"]);
+    expect(within(provider).getByRole("group", { name: "Acme" })).toBeInTheDocument();
+    expect(chooserOption("plain-model").closest("[data-model-provider]")).toBe(provider);
+    expect(chooserOption("openrouter/free").closest("[data-model-provider]")).toBe(provider);
+  });
+
+  it("places models without a prefix in the last subgroup labelled Other", async () => {
+    const { list, ids } = await openSearchCatalogue(false, [], undefined, [{ id: "zenith/model" }]);
+    const provider = within(list).getByRole("group", { name: getVendorOption("openrouter").label });
+    const groups = within(provider).getAllByRole("group");
+    const other = groups.at(-1)!;
+    expect(other).toHaveAccessibleName(t("llmTab.modelOtherGroup"));
+    expect(within(other).getByRole("option").querySelector("[data-model-id]"))
+      .toHaveAttribute("data-model-id", "plain-model");
+    expect(ids().at(-1)).toBe("plain-model");
+    const labels = groups.slice(0, -1).map((group) =>
+      group.querySelector("[data-slot='select-label']")!.textContent!);
+    expect(labels).toEqual([...labels].sort((a, b) => a.localeCompare(b)));
+  });
+
+  it("merges equal upstream display names while preserving model order and search", async () => {
+    const models = ["acme-labs/first", "acme_labs/second", "acme-labs/third"];
+    const { list, search, ids } = await openSearchCatalogue(false, [], undefined, models.map((id) => ({ id })));
+    const provider = within(list).getByRole("group", { name: getVendorOption("openrouter").label });
+    const merged = within(provider).getByRole("group", { name: "Acme Labs" });
+    expect(within(merged).getAllByRole("option").map((option) =>
+      option.querySelector("[data-model-id]")?.getAttribute("data-model-id"))).toEqual(models);
+    search("acme labs");
+    expect(ids()).toEqual(models);
+    expect(within(provider).getAllByRole("group")).toHaveLength(1);
+    search("acme_labs");
+    expect(ids()).toEqual([models[1]]);
+    expect(within(provider).getByRole("group", { name: "Acme Labs" })).toBeInTheDocument();
+    search("third");
+    expect(ids()).toEqual([models[2]]);
+    search("");
+    const restored = within(provider).getByRole("group", { name: "Acme Labs" });
+    expect(within(restored).getAllByRole("option").map((option) =>
+      option.querySelector("[data-model-id]")?.getAttribute("data-model-id"))).toEqual(models);
+  });
+
+  it.each([
+    ["fireworks", ["accounts/fireworks/models/first", "accounts/fireworks/models/second"]],
+    ["together", ["Qwen/model-one", "meta-llama/model-two"]],
+  ] as const)("keeps namespace paths flat for %s", async (vendor, models) => {
+    const { api } = profileApi({ installedProviderIds: [vendor] }, {
+      hasApiKey: storedKeysFor(vendor),
+      listLlmModels: vi.fn(async (): Promise<LlmModelListResult> => ({
+        ok: true, vendor, endpoint: "https://catalogue.invalid/models",
+        models: [...models], fetchedAt: "2026-01-01T00:00:00.000Z",
+      })),
+    });
+    await renderTab(api, { vendor, model: models[0], baseUrl: getVendorOption(vendor).baseUrlPlaceholder! });
+    await settleModelListRequests();
+    expect(await chooserModelIds()).toEqual([...models]);
+    const provider = screen.getByRole("group", { name: getVendorOption(vendor).label });
+    expect(within(provider).queryAllByRole("group")).toHaveLength(0);
+    expect(within(provider).getAllByRole("option")).toHaveLength(2);
+  });
+
+  it("derives upstream grouping from preset metadata and leaves other presets flat", async () => {
+    const preset = OPENAI_COMPATIBLE_VENDOR_PRESETS.together;
+    const original = Object.getOwnPropertyDescriptor(preset, "upstreamPrefixedModelIds");
+    Object.defineProperty(preset, "upstreamPrefixedModelIds", { configurable: true, value: true });
+    try {
+      const models = ["acme/model-one", "zenith/model-two"];
+      const { api } = profileApi({ installedProviderIds: ["together", "fireworks"] }, {
+        hasApiKey: storedKeysFor("together", "fireworks"),
+        listLlmModels: vi.fn(async ({ vendor }: { vendor: string }): Promise<LlmModelListResult> => ({
+          ok: true, vendor, endpoint: "https://catalogue.invalid/models",
+          models, fetchedAt: "2026-01-01T00:00:00.000Z",
+        })),
+      });
+      await renderTab(api, {
+        vendor: "together", model: models[0]!, baseUrl: getVendorOption("together").baseUrlPlaceholder!,
+      });
+      await settleModelListRequests();
+      await chooserModelIds();
+      const flat = screen.getByRole("group", { name: getVendorOption("fireworks").label });
+      expect(within(flat).queryAllByRole("group")).toHaveLength(0);
+      expect(within(flat).getAllByRole("option")).toHaveLength(2);
+      const grouped = screen.getByRole("group", { name: getVendorOption("together").label });
+      for (const [label, model] of [["Acme", models[0]], ["Zenith", models[1]]] as const) {
+        const group = within(grouped).getByRole("group", { name: label });
+        expect(within(group).getAllByRole("option")).toHaveLength(1);
+        expect(within(group).getByRole("option").querySelector("[data-model-id]"))
+          .toHaveAttribute("data-model-id", model);
+      }
+    } finally {
+      if (original) Object.defineProperty(preset, "upstreamPrefixedModelIds", original);
+      else Reflect.deleteProperty(preset, "upstreamPrefixedModelIds");
+    }
+  });
+
+  it("announces the match count and no results politely during search", async () => {
+    const { search } = await openSearchCatalogue();
+    const status = screen.getByTestId("llm-tab:model-search-status");
+    expect(status).toHaveAttribute("aria-live", "polite");
+    expect(status).toBeEmptyDOMElement();
+    search("gpt");
+    expect(status).toHaveTextContent(t("llmTab.modelMatchCount", { count: 3 }));
+    search("no-such-model");
+    expect(status).toHaveTextContent(t("llmTab.modelNoResults"));
+    search("");
+    expect(status).toBeEmptyDOMElement();
+  });
+
+  it.each(["free", "무료"])("filters the free keyword %s by metadata and route identity", async (query) => {
+    const { search, ids } = await openSearchCatalogue();
+    search(query);
+    const freeIds = ["openai/gpt-tagged", "google/gemini-fixture:free", "openrouter/free", "openai/gpt-fixture:free"];
+    expect(ids().sort()).toEqual(freeIds.sort());
+    for (const id of freeIds) {
+      expect(chooserOption(id)).toHaveTextContent(t("llmTab.openRouterFreeBadge"));
+    }
+  });
+
+  it("searches models across direct and gateway providers and keeps both grouping levels", async () => {
+    const { search, ids, list, hooks } = await openSearchCatalogue(true);
+    search("  GPT  ");
+    expect(ids()).toEqual(expect.arrayContaining([
+      "gpt-direct-fixture", "openai/gpt-paid", "openai/gpt-tagged", "openai/gpt-gateway-fixture",
+    ]));
+    expect(ids().every((id) => id?.toLowerCase().includes("gpt"))).toBe(true);
+    for (const vendor of ["openai", "openrouter", "requesty"]) {
+      expect(list.querySelector(`[data-model-provider="api:${vendor}"]`)).toHaveAccessibleName(getVendorOption(vendor).label);
+    }
+    const gateway = within(list).getByRole("group", { name: getVendorOption("requesty").label });
+    expect(within(gateway).getByRole("group", { name: getVendorOption("openai").label })).toBeInTheDocument();
+    pickChooserOption("openai/gpt-gateway-fixture");
+    await waitFor(() => expect(hooks.selectApiVendorModel).toHaveBeenCalledWith("requesty", "openai/gpt-gateway-fixture"));
+  });
+
+  it("intersects terms, reports no matches, restores cleared results, and preserves the selection", async () => {
+    const { search, ids, hooks } = await openSearchCatalogue();
+    const allIds = ids();
+    search("free gpt");
+    expect(ids()).toEqual(["openai/gpt-tagged", "openai/gpt-fixture:free"]);
+    search("무료 GPT");
+    expect(ids()).toEqual(["openai/gpt-tagged", "openai/gpt-fixture:free"]);
+    search("no-such-model");
+    expect(ids()).toEqual([]);
+    expect(screen.getByTestId("llm-tab:model-no-results")).toHaveTextContent(t("llmTab.modelNoResults"));
+    expect(screen.getByTestId(TEST_IDS.llmModelSelect)).toHaveTextContent("openai/gpt-paid");
+    expect(hooks.selectApiVendorModel).not.toHaveBeenCalled();
+    search("");
+    expect(ids()).toEqual(allIds);
+    expect(chooserOption("openai/gpt-paid")).toHaveAttribute("data-state", "checked");
+  });
+
+  it("matches display names, upstream labels, unknown prefixes, and gateway labels", async () => {
+    const { search, ids } = await openSearchCatalogue();
+    search("display name");
+    expect(ids()).toEqual(["plain-model"]);
+    search("GOOGLE gemini");
+    expect(ids()).toEqual(["google/gemini-fixture:free"]);
+    search("acme");
+    expect(ids()).toEqual(["acme/freeform-x", "acme/custom-fixture"]);
+    search("OpenRouter gpt");
+    expect(ids()).toEqual(["openai/gpt-paid", "openai/gpt-tagged", "openai/gpt-fixture:free"]);
+  });
+
+  it("opens search by keyboard, filters, navigates items, and selects the first match", async () => {
+    const user = userEvent.setup();
+    const { input, ids, hooks } = await openSearchCatalogue(false, [], user);
+    await waitFor(() => expect(input).toHaveFocus());
+    await user.keyboard("gpt");
+    expect(input).toHaveValue("gpt");
+    expect(ids()).toEqual(["openai/gpt-paid", "openai/gpt-tagged", "openai/gpt-fixture:free"]);
+    await user.keyboard("[ArrowDown]");
+    await waitFor(() => expect(chooserOption("openai/gpt-paid")).toHaveFocus());
+    await user.keyboard("[ArrowDown]");
+    await waitFor(() => expect(chooserOption("openai/gpt-tagged")).toHaveFocus());
+    await user.keyboard("[ArrowUp]");
+    await waitFor(() => expect(chooserOption("openai/gpt-paid")).toHaveFocus());
+    await user.keyboard("[Enter]");
+    await waitFor(() => expect(hooks.setModel).toHaveBeenCalledWith("openai/gpt-paid"));
+    expect(screen.queryByRole("listbox")).toBeNull();
+    await user.keyboard("[ArrowDown]");
+    await waitFor(() => expect(screen.getByTestId("llm-tab:model-search")).toHaveFocus());
+    expect(screen.getByTestId("llm-tab:model-search")).toHaveValue("");
+    expect(ids()).toContain("plain-model");
+  });
+
+  it("highlights hovered model items while keeping search focused", async () => {
+    const user = userEvent.setup();
+    const { input } = await openSearchCatalogue(false, [], user);
+    await waitFor(() => expect(input).toHaveFocus());
+    const option = chooserOption("openai/gpt-paid");
+    await user.hover(option);
+    expect(input).toHaveFocus();
+    expect(option).toHaveClass("hover:bg-accent", "hover:text-accent-foreground");
+    await user.keyboard("gpt");
+    expect(input).toHaveValue("gpt");
+    expect(input).toHaveFocus();
+  });
+
+  it("keeps hovered items from taking search typing and closes on Escape", async () => {
+    const user = userEvent.setup();
+    const { input, ids } = await openSearchCatalogue(false, [], user);
+    await waitFor(() => expect(input).toHaveFocus());
+    await user.hover(chooserOption("openai/gpt-paid"));
+    expect(input).toHaveFocus();
+    await user.keyboard("g");
+    expect(input).toHaveValue("g");
+    expect(input).toHaveFocus();
+    await user.keyboard("pt");
+    expect(ids()).toEqual(["openai/gpt-paid", "openai/gpt-tagged", "openai/gpt-fixture:free"]);
+    await user.keyboard("-missing[ArrowDown]");
+    expect(ids()).toEqual([]);
+    expect(input).toHaveFocus();
+    await user.keyboard("{Control>}a{/Control}{Backspace}gpt");
+    expect(input).toHaveValue("gpt");
+    expect(input).toHaveFocus();
+    await user.keyboard("[Escape]");
+    await waitFor(() => expect(screen.queryByRole("listbox")).toBeNull());
+    expect(screen.getByTestId(TEST_IDS.llmModelSelect)).toHaveFocus();
+  });
+
+  it("keeps matching pins first without duplicating them in provider groups", async () => {
+    const { list, search, ids } = await openSearchCatalogue(false, ["openai/gpt-tagged"]);
+    const pins = within(list).getByRole("group", { name: t("llmTab.modelPinnedGroup") });
+    expect(within(pins).getAllByRole("option")).toHaveLength(1);
+    search("free gpt");
+    expect(ids()).toEqual(["openai/gpt-tagged", "openai/gpt-fixture:free"]);
+    expect(ids().filter((id) => id === "openai/gpt-tagged")).toHaveLength(1);
+    search("google");
+    expect(within(list).queryByRole("group", { name: t("llmTab.modelPinnedGroup") })).toBeNull();
+  });
+});
+
 describe("LlmTab model chooser is the whole switch", () => {
   it("leaves an uncredentialed provider out of the chooser and says so on its card", async () => {
     const api = makeApi({ hasApiKey: storedKeysFor("gemini") });
@@ -1190,7 +1736,7 @@ describe("LlmTab model chooser is the whole switch", () => {
       .toHaveTextContent(/키|key|Schlüssel|clave|clé|キー|密钥/i);
     // The chooser is populated — by the provider that CAN answer, only.
     const offered = await chooserModelIds();
-    expect(offered).toContain("gemini-2.5-flash");
+    expect(offered).toContain("gemini-3.8-flash");
     expect(offered.some((id) => id.startsWith("claude"))).toBe(false);
   });
 
@@ -1233,7 +1779,9 @@ describe("LlmTab model chooser is the whole switch", () => {
     });
 
     expect(await chooserModelIds()).toContain("codex-mini");
-    expect(chooserGroupText("codex-mini")).toMatch(/Codex/);
+    // The company, not the runtime: the chooser never offers "Codex".
+    expect(chooserGroupText("codex-mini")).toMatch(/OpenAI/);
+    expect(chooserGroupText("codex-mini")).not.toMatch(/Codex/);
 
     pickChooserOption("codex-mini");
 
@@ -1592,7 +2140,172 @@ describe("LlmTab names each route's state on a row that has two", () => {
     // Which route is still unused is a question the expanded row answers, in
     // the only place that can do anything about it.
     fireEvent.click(within(card).getByTestId("llm-tab:connection:codex:toggle"));
+    fireEvent.click(await within(card).findByTestId("llm-tab:sign-in-method:codex:subscription"));
     expect(within(card).getByTestId("subscription-provider:codex:login-browser")).toBeInTheDocument();
+  });
+});
+
+describe("LlmTab asks how to sign in to a provider reached two ways", () => {
+  const method = (rowId: string, which: "subscription" | "api") =>
+    screen.getByTestId(`llm-tab:sign-in-method:${rowId}:${which}`);
+
+  it.each([
+    ["codex", "OpenAI", "ChatGPT", () => codexView()],
+    ["claude-code", "Anthropic Claude", "Claude", () => claudeCodeView()],
+  ] as const)("%s: chooses nothing until asked, then shows only the chosen method", async (rowId, company, plan, view) => {
+    installSubscription([view()], { beginLogin: vi.fn(), refreshStatus: vi.fn() });
+    await renderTab(makeApi(), { vendor: "openrouter", model: "" });
+
+    openMenu(screen.getByTestId("llm-tab:add-provider"));
+    fireEvent.click(await screen.findByTestId(`llm-tab:add-provider-item:${rowId}`));
+    const card = await screen.findByTestId(`llm-tab:connection:${rowId}`);
+    if (within(card).getByTestId(`llm-tab:connection:${rowId}:toggle`).getAttribute("aria-expanded") !== "true") {
+      fireEvent.click(within(card).getByTestId(`llm-tab:connection:${rowId}:toggle`));
+    }
+    expect(card).toHaveTextContent(company);
+
+    // Nothing configured: the card asks, and shows neither a key field nor sign-in.
+    expect(method(rowId, "subscription")).toHaveAttribute("aria-checked", "false");
+    expect(method(rowId, "api")).toHaveAttribute("aria-checked", "false");
+    expect(method(rowId, "subscription")).toHaveAccessibleName(
+      t("subscriptionProvidersSection.methodSubscription", { plan }),
+    );
+    expect(within(card).queryByTestId("llm-api-key-input")).toBeNull();
+    expect(within(card).queryByTestId(`subscription-provider:${rowId}:login-browser`)).toBeNull();
+
+    fireEvent.click(method(rowId, "api"));
+    expect(await within(card).findByTestId("llm-api-key-input")).toBeInTheDocument();
+    expect(within(card).queryByTestId(`subscription-provider:${rowId}`)).toBeNull();
+
+    fireEvent.click(method(rowId, "subscription"));
+    expect(within(card).queryByTestId("llm-api-key-input")).toBeNull();
+    expect(within(card).getByTestId(`subscription-provider:${rowId}:login-browser`)).toBeInTheDocument();
+    // The user never picks the CLI: there is no runtime picker on the card.
+    expect(within(card).queryByTestId(`subscription-provider:${rowId}:configure-runtime`)).toBeNull();
+    expect(within(card).queryByTestId(`subscription-provider:${rowId}:change-runtime`)).toBeNull();
+    expect(within(card).queryByTestId(`subscription-provider:${rowId}:forget-runtime`)).toBeNull();
+  });
+
+  it("opens a signed-in subscription on the subscription method, with no key field", async () => {
+    installSubscription([codexView({ status: { runtime: "ready", connection: "connected", models: [] } })], { logout: vi.fn() });
+    await renderTab(makeApi(), { vendor: "openrouter", model: "" });
+    fireEvent.click(await screen.findByTestId("llm-tab:connection:codex:toggle"));
+    expect(method("codex", "subscription")).toHaveAttribute("aria-checked", "true");
+    expect(screen.queryByTestId("llm-api-key-input")).toBeNull();
+    expect(screen.getByTestId("subscription-provider:codex:logout")).toBeInTheDocument();
+  });
+
+  it("keeps a saved key when switching to the subscription, and removes it only on request", async () => {
+    installSubscription([codexView()], { beginLogin: vi.fn() });
+    const api = makeApi({ hasApiKey: storedKeysFor("openai") });
+    api.deleteApiKey = vi.fn().mockResolvedValue(undefined);
+    await renderTab(api, { vendor: "openrouter", model: "" });
+    fireEvent.click(await screen.findByTestId("llm-tab:connection:codex:toggle"));
+    await waitFor(() => expect(method("codex", "api")).toHaveAttribute("aria-checked", "true"));
+
+    fireEvent.click(method("codex", "subscription"));
+    expect(api.deleteApiKey).not.toHaveBeenCalled();
+    const note = screen.getByTestId("llm-tab:other-credential:codex:api");
+    expect(note).toHaveTextContent(t("subscriptionProvidersSection.otherApiKeySaved"));
+
+    fireEvent.click(within(note).getByTestId("llm-tab:other-credential:codex:remove-api-key"));
+    await waitFor(() => expect(api.deleteApiKey).toHaveBeenCalledExactlyOnceWith("openai"));
+  });
+
+  it("keeps a signed-in subscription when switching to the API key, and signs out only on request", async () => {
+    const logout = vi.fn();
+    installSubscription([claudeCodeView({ status: { runtime: "ready", connection: "connected", models: [] } })], { logout });
+    await renderTab(makeApi(), { vendor: "openrouter", model: "" });
+    fireEvent.click(await screen.findByTestId("llm-tab:connection:claude-code:toggle"));
+
+    fireEvent.click(method("claude-code", "api"));
+    expect(await screen.findByTestId("llm-api-key-input")).toBeInTheDocument();
+    expect(logout).not.toHaveBeenCalled();
+    const note = screen.getByTestId("llm-tab:other-credential:claude-code:subscription");
+    expect(note).toHaveTextContent(t("subscriptionProvidersSection.otherSubscriptionSignedIn", { plan: "Claude" }));
+
+    fireEvent.click(within(note).getByTestId("llm-tab:other-credential:claude-code:sign-out"));
+    expect(logout).toHaveBeenCalledExactlyOnceWith("claude-code");
+  });
+
+  it("shows install guidance and Check again, not a file picker, when the CLI is missing", async () => {
+    const refreshStatus = vi.fn();
+    installSubscription([codexView({ status: { runtime: "not-configured", connection: "signed-out", models: [] } })], {
+      refreshStatus, configureRuntime: vi.fn(),
+    });
+    await renderTab(makeApi(), { vendor: "openrouter", model: "" });
+    openMenu(screen.getByTestId("llm-tab:add-provider"));
+    fireEvent.click(await screen.findByTestId("llm-tab:add-provider-item:codex"));
+    const card = await screen.findByTestId("llm-tab:connection:codex");
+    if (within(card).getByTestId("llm-tab:connection:codex:toggle").getAttribute("aria-expanded") !== "true") {
+      fireEvent.click(within(card).getByTestId("llm-tab:connection:codex:toggle"));
+    }
+    expect(within(card).getByTestId("llm-tab:connection-subline:codex"))
+      .toHaveTextContent(t("subscriptionProvidersSection.statusCliNotFound"));
+    expect(within(card).getByTestId("llm-tab:connection:codex:state"))
+      .toHaveTextContent(t("connectionRow.stateNeedsSetup"));
+    fireEvent.click(method("codex", "subscription"));
+    expect(within(card).getByTestId("subscription-provider:codex:install-guidance"))
+      .toHaveTextContent(t("subscriptionProvidersSection.installGuidance", { cli: "Codex CLI", plan: "ChatGPT" }));
+    expect(within(card).queryByTestId("subscription-provider:codex:configure-runtime")).toBeNull();
+    fireEvent.click(within(card).getByTestId("subscription-provider:codex:check-again"));
+    expect(refreshStatus).toHaveBeenCalledWith("codex");
+  });
+
+  it("words a Claude plan with no CLI found as needing setup, though its account is unknown", async () => {
+    installSubscription([claudeCodeView({ status: { runtime: "not-configured", connection: "unknown", models: [] } })]);
+    await renderTab(makeApi(), { vendor: "openrouter", model: "" });
+    openMenu(screen.getByTestId("llm-tab:add-provider"));
+    fireEvent.click(await screen.findByTestId("llm-tab:add-provider-item:claude-code"));
+    expect(await screen.findByTestId("llm-tab:connection:claude-code:state"))
+      .toHaveTextContent(t("connectionRow.stateNeedsSetup"));
+  });
+
+  it("does not hold a working API-key provider back on a CLI that is not installed", async () => {
+    installSubscription([codexView({ status: { runtime: "not-configured", connection: "signed-out", models: [] } })]);
+    await renderTab(makeApi({
+      hasApiKey: storedKeysFor("openai"),
+      listLlmModels: vi.fn().mockResolvedValue({
+        ok: true,
+        vendor: "openai",
+        endpoint: "https://api.openai.com/v1/models",
+        models: ["gpt-5"],
+        fetchedAt: "2026-01-01T00:00:00.000Z",
+      } satisfies LlmModelListResult),
+    }), { vendor: "openai", model: "gpt-5", hasKey: true });
+    const card = await screen.findByTestId("llm-tab:connection:codex");
+    await waitFor(() => expect(within(card).getByTestId("llm-tab:connection:codex:state")).toHaveTextContent(CONNECTED));
+    expect(card).not.toHaveTextContent(t("subscriptionProvidersSection.statusCliNotFound"));
+  });
+
+  it("keeps the key form on screen after the key it was opened for is deleted", async () => {
+    installSubscription([codexView()]);
+    const api = makeApi({ hasApiKey: storedKeysFor("openai") });
+    api.deleteApiKey = vi.fn().mockResolvedValue(undefined);
+    await renderTab(api, { vendor: "openrouter", model: "" });
+    fireEvent.click(await screen.findByTestId("llm-tab:connection:codex:toggle"));
+    await waitFor(() => expect(method("codex", "api")).toHaveAttribute("aria-checked", "true"));
+    api.hasApiKey = vi.fn().mockResolvedValue(false);
+    fireEvent.click(within(screen.getByTestId("llm-tab:manual-section")).getByRole("button", { name: t("llmTab.delete") }));
+    await waitFor(() => expect(api.deleteApiKey).toHaveBeenCalledWith("openai"));
+    await waitFor(() => expect(screen.getByTestId("llm-tab:api-key-status")).toHaveTextContent(t("llmTab.apiKeyNotSet")));
+    expect(method("codex", "api")).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByTestId("llm-api-key-input")).toBeInTheDocument();
+  });
+
+  it("offers each company once in 'add a provider', and never a runtime by name", async () => {
+    installSubscription([codexView(), claudeCodeView()]);
+    await renderTab(makeApi(), { vendor: "openrouter", model: "" });
+    openMenu(screen.getByTestId("llm-tab:add-provider"));
+    await screen.findByTestId("llm-tab:add-provider-item:codex");
+    const labels = screen.getAllByTestId(/^llm-tab:add-provider-item:/).map((item) => item.textContent ?? "");
+    expect(labels).toContain("OpenAI");
+    expect(labels).toContain("Anthropic Claude");
+    expect(labels.filter((label) => label === "Anthropic Claude")).toHaveLength(1);
+    expect(labels.filter((label) => label === "OpenAI")).toHaveLength(1);
+    expect(labels.join("\n")).not.toMatch(/Codex|Claude Code/);
+    // The Anthropic API vendor is that row's API-key method, not a second row.
+    expect(screen.queryByTestId("llm-tab:add-provider-item:claude")).toBeNull();
   });
 });
 
@@ -1852,16 +2565,6 @@ describe("LlmTab rows that are not the active one", () => {
 });
 
 describe("LlmTab asks only the rows that have a catalogue to give", () => {
-  /**
-   * Let the sync debounce elapse. Asserting "nothing was asked" before the
-   * window opens proves nothing at all.
-   */
-  async function settleSyncDebounce() {
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 550));
-    });
-  }
-
   /** Every endpoint the tab actually asked for a model list, in call order. */
   function requestedEndpoints(api: MockApi): string[] {
     return (api.listLlmModels as Mock<(request: {
@@ -1881,7 +2584,7 @@ describe("LlmTab asks only the rows that have a catalogue to give", () => {
     await renderTab(api, { vendor: "claude", model: "claude-sonnet-4-6", hasKey: false });
 
     await waitFor(() => expect(rowOrder()).toEqual(["codex"]));
-    await settleSyncDebounce();
+    await settleModelListRequests();
     expect(requestedEndpoints(api)).toEqual(["<fixed:openai>"]);
   });
 
@@ -1896,9 +2599,7 @@ describe("LlmTab asks only the rows that have a catalogue to give", () => {
     })]);
     await renderTab(api, { vendor: "openai", model: "", hasKey: false });
 
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 550));
-    });
+    await settleModelListRequests();
 
     expect(rowOrder()).toEqual(["codex"]);
     // The row's line reports no sync outcome at all for a route it has not
@@ -1924,7 +2625,7 @@ describe("LlmTab asks only the rows that have a catalogue to give", () => {
     await renderTab(api, { vendor: "claude", model: "claude-sonnet-4-6" });
 
     await screen.findByTestId("llm-tab:connection:azure-foundry");
-    await settleSyncDebounce();
+    await settleModelListRequests();
     expect(requestedEndpoints(api)).toEqual([]);
     // And its curated models are still choosable, so nothing was lost.
     expect(await chooserModelIds()).toContain("gpt-5.4-mini");
@@ -1991,7 +2692,7 @@ describe("LlmTab asks only the rows that have a catalogue to give", () => {
       expect(screen.getByTestId(`llm-tab:connection-blocked:${vendorId}`))
         .toHaveTextContent(/키|key|Schlüssel|clave|clé|キー|密钥/i);
     }
-    await settleSyncDebounce();
+    await settleModelListRequests();
     expect(requestedEndpoints(api)).toEqual([]);
   });
 });
@@ -2013,9 +2714,7 @@ describe("LlmTab says which kind of nothing a row has", () => {
     await renderTab(api, { vendor: "claude", model: "claude-sonnet-4-6" });
 
     expect(await blockerText()).toMatch(NOT_ASKED);
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 550));
-    });
+    await settleModelListRequests();
     expect(api.listLlmModels).not.toHaveBeenCalled();
   });
 
@@ -2067,9 +2766,6 @@ describe("LlmTab says which kind of nothing a row has", () => {
     await waitFor(async () => expect(await blockerText()).toMatch(EMPTY));
   });
 
-  /** Longer than the sync debounce, so a queued request has actually fired. */
-  const PAST_THE_SYNC_DEBOUNCE_MS = 550;
-
   function broadcast(api: MockApi, vendors: Record<string, unknown>) {
     const handler = (api.onSettingsUpdated as Mock).mock.calls.at(-1)?.[0] as
       ((s: unknown) => void) | undefined;
@@ -2082,11 +2778,9 @@ describe("LlmTab says which kind of nothing a row has", () => {
         });
         await Promise.resolve();
       });
-      // A second act, so the effects the broadcast queued are already mounted
-      // when the debounce window opens — inside one act they would not be.
-      await act(async () => {
-        await new Promise((resolve) => setTimeout(resolve, PAST_THE_SYNC_DEBOUNCE_MS));
-      });
+      // Separate acts, so the effects the broadcast queued are mounted before
+      // their requests are waited on — inside one act they would not be.
+      await settleModelListRequests();
     })();
   }
 
@@ -2211,9 +2905,7 @@ describe("LlmTab model lists are cached, not re-fetched", () => {
     first.unmount();
 
     await renderTab(api, { vendor: "claude", model: "claude-sonnet-4-6" });
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    });
+    await settleModelListRequests();
 
     // Leaving the settings tab and coming back is not a new launch.
     expect(askedCount(api)).toBe(1);
@@ -2242,9 +2934,7 @@ describe("LlmTab model lists are cached, not re-fetched", () => {
     });
 
     await waitFor(() => expect(askedCount(api)).toBe(2));
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    });
+    await settleModelListRequests();
     // The two routed rows, once each — and never Foundry, whose list is
     // curated here however its endpoint is configured.
     expect(askedAddresses(api).sort()).toEqual([CUSTOM_ENDPOINT, gateway.baseUrl].sort());
@@ -2331,9 +3021,7 @@ describe("LlmTab model lists are cached, not re-fetched", () => {
     });
 
     await waitFor(() => expect(askedCount(api)).toBeGreaterThan(0));
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    });
+    await settleModelListRequests();
     expect(askedCount(api)).toBe(1);
   });
 
@@ -2355,9 +3043,7 @@ describe("LlmTab model lists are cached, not re-fetched", () => {
     fireEvent.click(refresh);
 
     await waitFor(() => expect(askedCount(api)).toBe(2));
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    });
+    await settleModelListRequests();
     expect(askedCount(api)).toBe(2);
   });
 
@@ -2374,9 +3060,7 @@ describe("LlmTab model lists are cached, not re-fetched", () => {
     await renderTab(api, { model: "", hasKey: false });
 
     await waitFor(() => expect(api.hasApiKey).toHaveBeenCalledWith("openai"));
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    });
+    await settleModelListRequests();
     expect(askedCount(api)).toBe(0);
     expect(document.querySelector("[data-provider-sync-status=\"loading\"]")).toBeNull();
     expect(document.querySelector(".animate-spin")).toBeNull();
@@ -2397,7 +3081,8 @@ describe("LlmTab model lists are cached, not re-fetched", () => {
     expect(screen.getByTestId("llm-tab:connection-refresh:openai-compatible")).toBeInTheDocument();
     // A curated list has no endpoint to ask, so there is nothing to offer.
     expect(screen.queryByTestId("llm-tab:connection-refresh:azure-foundry")).toBeNull();
-    expect(screen.queryByTestId("llm-tab:connection-refresh:claude")).toBeNull();
+    // The native model-list address is fixed, so a keyed card can sync it.
+    expect(screen.getByTestId("llm-tab:connection-refresh:claude")).toBeInTheDocument();
   });
 
   it("asks a row again once its credential is replaced", async () => {
@@ -2947,5 +3632,31 @@ describe("LlmTab OpenAI model catalogue", () => {
     await waitFor(() => expect(rowOrder()).toEqual(["openrouter"]));
     expect(screen.getByTestId("llm-tab:connection-subline:openrouter"))
       .toHaveAttribute("data-provider-sync-status", "ready");
+  });
+});
+
+describe("subscription models in the unified chooser", () => {
+  it("offers the CLI default beside catalog model choices", async () => {
+    const useForChat = vi.fn();
+    installSubscription(
+      [codexView({
+        descriptor: { id: "claude-code", label: "Claude Code", planName: "Claude", cliName: "Claude Code CLI", executable: "discovered", description: "", loginMethods: ["browser"], supportsLogout: true },
+        status: {
+          runtime: "ready",
+          connection: "connected",
+          models: [{ id: "claude-sonnet-5-5", label: "claude-sonnet-5-5" }],
+        },
+      })],
+      { useForChat, useApiForChat: vi.fn() },
+    );
+    await renderTab(makeApi({ hasApiKey: storedKeysFor("openai") }), { vendor: "openai", model: "" });
+
+    const cliDefault = t("llmTab.cliDefaultModel");
+    expect(await chooserModelIds()).toEqual(expect.arrayContaining([cliDefault, "claude-sonnet-5-5"]));
+    expect(chooserGroupText(cliDefault)).toMatch(/Claude/);
+
+    pickChooserOption(cliDefault);
+    // No model is sent: the CLI runs its own default.
+    await waitFor(() => expect(useForChat).toHaveBeenCalledWith("claude-code", null));
   });
 });

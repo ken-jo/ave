@@ -54,7 +54,7 @@ describe("capabilities module namespace policy", () => {
     // Plugin-owned namespaces stay neutral by design — host is
     // intentionally agnostic to plugin ids (open-source-readiness).
     // A subscribing plugin pays a one-line load-time drift warn.
-    expect(classifySubscription("agent_hub.work_item.due_soon")).toBe("neutral");
+    expect(classifySubscription("samplehub.work_item.due_soon")).toBe("neutral");
   });
 
   it("maps event namespace → required capability for emit", () => {

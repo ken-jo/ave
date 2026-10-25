@@ -18,7 +18,8 @@
  *   A;<n>  prompt start      B;<n>  command input start
  *   C[;cmdline_url=…];<n>    command output start (command text percent-encoded)
  *   D[;<exit>];<n>           command finished
- *   P;Cwd=<encoded path>;<n> the working directory
+ *   P;Cwd=<encoded path>;<n> the working directory (zsh and bash also report
+ *                            Keys=, Paste=, B= and Pid=: see shell-integration.ts)
  *
  * A marker counts only when its last field is this terminal's nonce (see
  * shell-integration.ts): anything a command prints reaches the same stream,
@@ -38,6 +39,8 @@ import type {
   TerminalBlockSource,
   TerminalBlockSummary,
 } from "../../shared/terminal-blocks.js";
+
+import { terminalLaneKey, sameTerminalSession, type TerminalRef, type TerminalSessionRef, type TerminalSessionInfo } from "../../shared/terminal-session.js";
 
 /** Completed blocks kept per terminal; older ones are dropped first. */
 const MAX_BLOCKS_PER_TERMINAL = 100;
@@ -121,6 +124,11 @@ class PlainTextBuffer {
     this.tail += rest;
     // Trim in batches so a stream of short lines does not re-slice per line.
     if (this.tail.length > this.tailChars * 2) this.tail = this.tail.slice(-this.tailChars);
+  }
+
+  /** Whether the last character was a CR that no later character has acted on yet. */
+  carriageReturnPending(): boolean {
+    return this.crPending;
   }
 
   /** The current, uncommitted line (what the cursor row shows). */
@@ -219,6 +227,69 @@ function cleanCommand(raw: string): string {
 }
 
 /**
+ * Whether the shell is waiting at its prompt for a new command, and if not,
+ * why not. Read before `terminal_run` types a command into a terminal.
+ *  - `ready`: an empty prompt — the last command finished and nothing has
+ *    been typed at the new prompt;
+ *  - `no-shell-integration`: the shell emits no markers, so its state cannot
+ *    be known;
+ *  - `exited`: the shell is gone;
+ *  - `command-running`: a command (or a full-screen program) is in the
+ *    foreground, so typed text would go to it rather than to the shell;
+ *  - `between-prompts`: a command finished and the next prompt has not
+ *    started;
+ *  - `pending-input`: the user has typed at the prompt and not submitted it,
+ *    pressed any key since the prompt was drawn (an ESC or Ctrl-X prefix or
+ *    a switch to vi command mode leaves no echo, yet changes what typed text
+ *    does), or typed anything within the last {@link USER_INPUT_QUIET_MS}
+ *    (keys still on their way through the shell have not been echoed yet);
+ *  - `no-bracketed-paste`: the shell did not report bracketed paste on, so
+ *    text written to it would be read as keys rather than inserted (zsh also
+ *    reports it off while a right-hand prompt is set, whose text after the end
+ *    of the prompt cannot be told from typing);
+ *  - `vi-editing-mode`: the shell's line editor uses vi key bindings, where
+ *    typed text can be read as editing commands;
+ *  - `not-found-handler`: the shell defines a command-not-found handler
+ *    (bash `command_not_found_handle`, as Ubuntu's /etc/bash.bashrc does; zsh
+ *    `command_not_found_handler`), which runs code for any word that is not
+ *    a command, unseen by the permission rules (or the shell did not say);
+ *  - `shell-starting`: a shell that marks the end of its prompt (zsh, bash)
+ *    has begun its first prompt but not finished it yet;
+ *  - `no-prompt-end-marker`: the shell marks no end of prompt (fish), so
+ *    typing at its prompt cannot be told from the prompt itself.
+ */
+export type TerminalPromptState =
+  | "ready"
+  | "no-shell-integration"
+  | "exited"
+  | "command-running"
+  | "between-prompts"
+  | "pending-input"
+  | "no-bracketed-paste"
+  | "vi-editing-mode"
+  | "not-found-handler"
+  | "shell-starting"
+  | "no-prompt-end-marker";
+
+/**
+ * How long after the user's last keystroke the prompt is still treated as in
+ * use: a key written to the PTY reaches the echo only after the shell reads
+ * it, so an empty echo just after typing proves nothing.
+ */
+export const USER_INPUT_QUIET_MS = 1500;
+
+/**
+ * A write made only of replies the terminal emulator sends by itself through
+ * the same input channel as keystrokes: focus in/out (`CSI I`, `CSI O`),
+ * device-attribute, status and cursor-position reports (`CSI ? … c`,
+ * `CSI … n`, `CSI … R`), and OSC/DCS answers to a program's queries. None of
+ * them edits the prompt line. A key — an arrow, a letter, a paste — never
+ * has this shape.
+ */
+const TERMINAL_REPLY =
+  /^(?:\u001b\[[IO]|\u001b\[[?>=]?[0-9;]*[cnR]|\u001b\][0-9]+;[^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001bP[^\u001b]*\u001b\\)+$/u;
+
+/**
  * Turns one terminal's output (and, for the fallback, its typed input) into
  * blocks. One tracker per PTY session.
  */
@@ -238,14 +309,44 @@ export class TerminalBlockTracker {
   /** Echoed input between B and C, used when C carries no command text. */
   private echo = new PlainTextBuffer(MAX_COMMAND_CHARS, 0);
   private exited = false;
+  /** When the user last wrote to this terminal ({@link recordInput}), or null. */
+  private lastInputAt: number | null = null;
+  private userInputs = 0;
+  /** True once the shell has marked the end of a prompt (B). */
+  private sawPromptEnd = false;
+  /** How many prompts the shell has finished drawing (B markers). */
+  private promptEnds = 0;
+  /** True once the user pressed a key after the current prompt was drawn. */
+  private inputSincePromptEnd = false;
+  /**
+   * The line editor's set-up as the shell reported it at its last prompt
+   * (`Keys=` and `Paste=` on the P marker), or null when it reported none.
+   */
+  private editor: { readonly keys: string; readonly bracketedPaste: boolean; readonly notFoundHandler: boolean } | null = null;
+  /**
+   * The token the current prompt's B marker carries, announced in its P
+   * marker. B comes from the prompt string, which prompt expansion can print,
+   * so it carries this per-prompt token instead of the nonce.
+   */
+  private promptEndToken: string | null = null;
+  /**
+   * The shell's own pid (`$$`, in its own pid namespace) from its last P
+   * marker, or null when it reported none.
+   */
+  private shellPid: number | null = null;
+  /** Called after authenticated markers, user input, and exit (see {@link subscribe}). */
+  private readonly listeners = new Set<() => void>();
 
   private readonly nonce: string;
   private readonly now: () => number;
+  /** Whether this terminal's shell integration marks the end of its prompt (B): zsh and bash do, fish does not. */
+  private readonly marksPromptEnd: boolean;
 
-  constructor(options: { nonce: string; now?: () => number }) {
+  constructor(options: { nonce: string; marksPromptEnd: boolean; now?: () => number }) {
     // An empty nonce would make every bare marker "authenticated".
     if (!options.nonce) throw new Error("TerminalBlockTracker requires a nonce");
     this.nonce = options.nonce;
+    this.marksPromptEnd = options.marksPromptEnd;
     this.now = options.now ?? Date.now;
   }
 
@@ -256,6 +357,101 @@ export class TerminalBlockTracker {
 
   hasExited(): boolean {
     return this.exited;
+  }
+
+  /** The shell's state at this moment, from its markers alone ({@link TerminalPromptState}). */
+  promptState(): TerminalPromptState {
+    if (this.exited) return "exited";
+    if (!this.integrated) return "no-shell-integration";
+    if (this.open) return "command-running";
+    // zsh and bash mark the end of the prompt (B): anything echoed after it is
+    // the user's own typing. fish marks no B, so its prompt phase is the
+    // steady state and typing there cannot be told from the prompt text.
+    if (this.phase === "input") {
+      // A line editor the shell reported as taking no paste stays that way for
+      // the whole prompt, so say so before anything the user may still be
+      // doing: zsh reports Paste=0 while a right-hand prompt (RPROMPT) is set,
+      // whose text follows B and would otherwise read as typing forever.
+      if (this.editor !== null && !this.editor.bracketedPaste) return "no-bracketed-paste";
+      if (this.echo.text().trim() !== "" || this.inputSincePromptEnd) return "pending-input";
+      if (this.lastInputAt !== null && this.now() - this.lastInputAt < USER_INPUT_QUIET_MS) return "pending-input";
+      if (this.editor?.bracketedPaste !== true) return "no-bracketed-paste";
+      if (this.editor.keys !== "emacs") return "vi-editing-mode";
+      if (this.editor.notFoundHandler) return "not-found-handler";
+      return "ready";
+    }
+    if (this.phase === "prompt") {
+      if (!this.marksPromptEnd) return "no-prompt-end-marker";
+      return this.sawPromptEnd ? "between-prompts" : "shell-starting";
+    }
+    return "between-prompts";
+  }
+
+  /** How many prompts the shell has finished drawing; grows by one with each new prompt. */
+  promptEndCount(): number {
+    return this.promptEnds;
+  }
+
+  /** Monotonic user-input generation; prompt redraws never reset it. */
+  userInputGeneration(): number {
+    return this.userInputs;
+  }
+
+  /** Whether the user pressed a key at the current prompt (emulator replies aside). */
+  typedSincePromptEnd(): boolean {
+    return this.inputSincePromptEnd;
+  }
+
+  /**
+   * What the line editor shows after the prompt: typed or pasted text as the
+   * shell echoed it, with line breaks from wrapping removed. Empty when no
+   * prompt is up.
+   *
+   * A trailing space followed by a CR nothing has acted on yet is the line
+   * editor's wrap placeholder, not text: when prompt and line fill the row
+   * exactly, bash readline and zsh ZLE write one blank on the next row and
+   * return to its start (` ` CR), so the cursor sits where the next key goes
+   * (measured: bash 5.2 on ubuntu-24.04, bash 5.3 and zsh 5.9 on macOS echo
+   * a pasted line that ends at the margin as the line, ` `, CR).
+   * Only that one space goes; a later character turns the CR into an
+   * ordinary carriage return.
+   */
+  editLineText(): string {
+    if (this.phase !== "input") return "";
+    const text = this.echo.text().replace(/[\r\n]/gu, "");
+    return this.echo.carriageReturnPending() && text.endsWith(" ") ? text.slice(0, -1) : text;
+  }
+
+  /** The pid the shell reported for itself (`$$`) at its last prompt, or null. */
+  reportedShellPid(): number | null {
+    return this.shellPid;
+  }
+
+  /** The working directory the shell last reported, or null before it reported one. */
+  currentCwd(): string | null {
+    return this.cwd;
+  }
+
+  /** The id the next block will get: every block opened after this call has at least this id. */
+  nextBlockId(): number {
+    return this.nextId;
+  }
+
+  /**
+   * Be told when a block opens or closes or the prompt state changes (after
+   * every authenticated marker, user input, and shell exit). Returns the
+   * unsubscribe function. A listener runs inside the PTY data or input callback and
+   * must only record what it needs.
+   */
+  subscribe(listener: () => void): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  private notify(): void {
+    for (const listener of [...this.listeners]) listener();
   }
 
   /**
@@ -384,11 +580,20 @@ export class TerminalBlockTracker {
   }
 
   /**
-   * Feed one user input write. Used only by the fallback: before the shell has
-   * shown any marker, an Enter closes the running heuristic block and opens a
-   * new one named after the line on screen.
+   * Feed one user input write. Its time is kept for {@link promptState},
+   * unless the write is only replies the terminal emulator sent on its own
+   * ({@link TERMINAL_REPLY}), which are not the user typing. The
+   * fallback also uses it: before the shell has shown any marker, an Enter
+   * closes the running heuristic block and opens a new one named after the
+   * line on screen.
    */
   recordInput(data: string): void {
+    if (!TERMINAL_REPLY.test(data)) {
+      this.userInputs++;
+      this.lastInputAt = this.now();
+      this.notify();
+      if (this.phase === "input") this.inputSincePromptEnd = true;
+    }
     if (this.integrated || !data.includes("\r")) return;
     const line = this.open ? this.open.output.currentLine() : this.idle.currentLine();
     const command = cleanCommand(line || (this.open ? this.open.output.lastNonEmptyLine() : this.idle.lastNonEmptyLine()));
@@ -409,6 +614,7 @@ export class TerminalBlockTracker {
     this.exited = true;
     if (this.open) this.closeOpen(null);
     this.phase = "idle";
+    this.notify();
   }
 
   /** Newest first, completed and running. */
@@ -437,6 +643,7 @@ export class TerminalBlockTracker {
   private handleOsc(body: string, flush: () => void): string | null {
     if (!body.startsWith("133;")) return null;
     const fields = body.slice(4).split(";");
+    if (fields[0] === "B") return this.handlePromptEnd(fields, flush);
     // The nonce is the last field. Anything else — no nonce, a wrong one, a
     // marker a program printed — changes nothing, and in particular does not
     // switch the fallback off.
@@ -456,6 +663,17 @@ export class TerminalBlockTracker {
         if (cwd !== undefined && cwd.length > "Cwd=".length) {
           this.cwd = decodePercentEncoded(cwd.slice("Cwd=".length));
         }
+        const keys = params.find((p) => p.startsWith("Keys="))?.slice("Keys=".length);
+        const paste = params.find((p) => p.startsWith("Paste="))?.slice("Paste=".length);
+        const notFound = params.find((p) => p.startsWith("NotFound="))?.slice("NotFound=".length);
+        this.editor = keys === undefined || paste === undefined
+          ? null
+          // A shell that does not say whether it has a not-found handler is taken to have one.
+          : { keys, bracketedPaste: paste === "1", notFoundHandler: notFound !== "0" };
+        const token = params.find((p) => p.startsWith("B="))?.slice("B=".length);
+        this.promptEndToken = token !== undefined && /^[0-9a-f]{16,}$/u.test(token) ? token : null;
+        const pid = params.find((p) => p.startsWith("Pid="))?.slice("Pid=".length);
+        this.shellPid = pid !== undefined && /^[1-9][0-9]{0,9}$/u.test(pid) ? Number(pid) : null;
         break;
       }
       case "A":
@@ -463,10 +681,6 @@ export class TerminalBlockTracker {
         // interrupted command in some shells): close it without an exit code.
         if (this.open) this.closeOpen(null);
         this.phase = "prompt";
-        break;
-      case "B":
-        this.echo = new PlainTextBuffer(MAX_COMMAND_CHARS, 0);
-        this.phase = "input";
         break;
       case "C": {
         if (this.open) this.closeOpen(null);
@@ -495,7 +709,30 @@ export class TerminalBlockTracker {
       default:
         break;
     }
+    this.notify();
     return marker;
+  }
+
+  /**
+   * B, the end of the prompt text. Accepted only with the current prompt's
+   * token and only while that prompt is up: the first B after A ends the
+   * prompt; a later one is the line editor redrawing it (a resize, Ctrl-L),
+   * which re-echoes the edit line, so only the echo starts over. A B printed
+   * while a command runs, or with any other token, is ordinary output.
+   */
+  private handlePromptEnd(fields: readonly string[], flush: () => void): string | null {
+    if (fields.length !== 2 || this.promptEndToken === null || fields[1] !== this.promptEndToken) return null;
+    if (this.phase !== "prompt" && this.phase !== "input") return null;
+    flush();
+    if (this.phase === "prompt") {
+      this.sawPromptEnd = true;
+      this.promptEnds++;
+      this.inputSincePromptEnd = false;
+      this.phase = "input";
+    }
+    this.echo = new PlainTextBuffer(MAX_COMMAND_CHARS, 0);
+    this.notify();
+    return "B";
   }
 
   private appendText(text: string): void {
@@ -514,10 +751,19 @@ export class TerminalBlockTracker {
     }
   }
 
+  /**
+   * A command can print this terminal's marker nonce (the shell holds it in a
+   * variable). Block records go to the agent, and a nonce in the agent's hands
+   * would let printed text forge markers, so the records never carry it.
+   */
+  private redactNonce(text: string): string {
+    return text.includes(this.nonce) ? text.split(this.nonce).join("[terminal-nonce]") : text;
+  }
+
   private snapshotOpen(open: OpenBlock): TerminalBlock {
     return {
       id: open.id,
-      command: open.command,
+      command: this.redactNonce(open.command),
       cwd: open.cwd,
       exitCode: null,
       startedAt: open.startedAt,
@@ -526,7 +772,7 @@ export class TerminalBlockTracker {
       source: open.source,
       outputChars: open.output.chars(),
       truncated: open.output.truncated(),
-      output: open.output.text(),
+      output: this.redactNonce(open.output.text()),
     };
   }
 
@@ -554,52 +800,39 @@ function summarize(block: TerminalBlock): TerminalBlockSummary {
   return summary;
 }
 
-// ─── Registry: one tracker per terminal tab ─────────────────────────────────
-
+// Each lane/incarnation owns independent block IDs, state and output.
 interface RegisteredTracker {
   tracker: TerminalBlockTracker;
-  /**
-   * The app window whose renderer spawned the terminal (Electron
-   * BrowserWindow id), or null when it could not be told. terminal_read
-   * shows a session only the terminals of the window that hosts it.
-   */
+  session: TerminalSessionInfo;
   ownerWindowId: number | null;
 }
-
 const trackers = new Map<string, RegisteredTracker>();
 
-/** Install the tracker for a newly spawned PTY, replacing any previous one. */
-export function registerTerminalBlockTracker(
-  tabId: string,
-  tracker: TerminalBlockTracker,
-  ownerWindowId: number | null,
-): void {
-  trackers.set(tabId, { tracker, ownerWindowId });
+export function registerTerminalBlockTracker(session: TerminalSessionInfo, tracker: TerminalBlockTracker, ownerWindowId: number | null): void {
+  trackers.set(terminalLaneKey(session), { tracker, session, ownerWindowId });
 }
-
-/** Drop a tab's blocks (tab closed). */
-export function unregisterTerminalBlockTracker(tabId: string): void {
-  trackers.delete(tabId);
+export function unregisterTerminalBlockTracker(ref: TerminalRef): void {
+  trackers.delete(terminalLaneKey(ref));
 }
-
-export function getTerminalBlockTracker(tabId: string): TerminalBlockTracker | undefined {
-  return trackers.get(tabId)?.tracker;
+export function getTerminalBlockTracker(ref: TerminalSessionRef): TerminalBlockTracker | undefined {
+  const entry = trackers.get(terminalLaneKey(ref));
+  return entry && sameTerminalSession(entry.session, ref) ? entry.tracker : undefined;
 }
-
-/** One window's tracker for `tabId`, or undefined when the tab is another window's. */
-export function getWindowTerminalBlockTracker(tabId: string, windowId: number): TerminalBlockTracker | undefined {
-  const entry = trackers.get(tabId);
-  return entry && entry.ownerWindowId === windowId ? entry.tracker : undefined;
+export function getWindowTerminalBlockTracker(ref: TerminalSessionRef, windowId: number): TerminalBlockTracker | undefined {
+  const entry = trackers.get(terminalLaneKey(ref));
+  return entry && entry.ownerWindowId === windowId && sameTerminalSession(entry.session, ref) ? entry.tracker : undefined;
 }
-
-/** The terminal tabs of one window that have a tracker, in creation order. */
-export function listTerminalBlockTabs(windowId: number): Array<{ tabId: string; tracker: TerminalBlockTracker }> {
-  return [...trackers.entries()]
-    .filter(([, entry]) => entry.ownerWindowId === windowId)
-    .map(([tabId, entry]) => ({ tabId, tracker: entry.tracker }));
+function trackerInfo(entry: RegisteredTracker): TerminalSessionInfo {
+  const integrated = entry.session.lane === "agent" && entry.tracker.isIntegrated();
+  const currentCwd = integrated ? entry.tracker.currentCwd() : null;
+  return { ...entry.session, shellIntegration: integrated, currentCwd, cwdSource: currentCwd === null ? "unavailable" : "shell-marker" };
 }
-
-/** Test-only: clear the registry. */
-export function __resetTerminalBlocksForTest(): void {
-  trackers.clear();
+export function getWindowTerminalBlockSession(ref: TerminalSessionRef, windowId: number): TerminalSessionInfo | undefined {
+  const entry = trackers.get(terminalLaneKey(ref));
+  return entry && entry.ownerWindowId === windowId && sameTerminalSession(entry.session, ref) ? trackerInfo(entry) : undefined;
 }
+export function listTerminalBlockTabs(windowId: number): Array<{ tabId: string; session: TerminalSessionInfo; tracker: TerminalBlockTracker }> {
+  return [...trackers.values()].filter((entry) => entry.ownerWindowId === windowId)
+    .map((entry) => ({ tabId: entry.session.tabId, session: trackerInfo(entry), tracker: entry.tracker }));
+}
+export function __resetTerminalBlocksForTest(): void { trackers.clear(); }

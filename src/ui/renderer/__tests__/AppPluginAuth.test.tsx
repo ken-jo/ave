@@ -77,7 +77,7 @@ describe("App plugin auth routing", () => {
       pluginCards: [
         {
           id: "local-indexer",
-          name: "Ave Local Indexer",
+          name: "Local Indexer",
           description: "Indexes local documents",
           sampleTools: [],
           capabilities: [],
@@ -124,7 +124,7 @@ describe("App plugin auth routing", () => {
       pluginCards: [
         {
           id: "local-indexer",
-          name: "Ave Local Indexer",
+          name: "Local Indexer",
           description: "Indexes local documents",
           sampleTools: [],
           capabilities: [],

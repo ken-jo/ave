@@ -76,7 +76,6 @@ test.describe("side-chat tab", () => {
 
     // The dedicated, lightweight SideChatView mounts (not a placeholder).
     await expect(page.getByTestId("side-chat-view")).toBeVisible();
-    await expect(page.getByTestId("chat-side-panel-side-chat-placeholder")).toHaveCount(0);
 
     // The SHARED composer (same component as the main dock, at the side
     // surface) + the New affordance are present; the field is the side chat's

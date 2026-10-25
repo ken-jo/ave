@@ -367,7 +367,7 @@ describe("pendingAnswers", () => {
     { id: "s-board", family: "work-board" as const },
     { id: "s-side", family: "side-chat" as const, originSessionId: "s-main" },
   ];
-  const empty = { approvals: [], deferredSessionIds: [], overlayCards: [], sessions };
+  const empty = { approvals: [], deferredSessionIds: [], overlayCards: [], sessions, isClaimed: () => false };
 
   it("marks the row, and no control, for a card drawn where the user is", () => {
     // Over a drawn pane's composer: the conversation is interrupted, so its
@@ -467,6 +467,14 @@ describe("pendingAnswers", () => {
     const result = pendingAnswers({ ...empty, tiles, approvals: [host, plugin, unknown] });
     expect(result.unattributed).toEqual([host, plugin, unknown]);
     expect(result.sessionIds.size).toBe(0);
+  });
+
+  it("leaves a request to the surface that claimed its session, though no tile holds it", () => {
+    // A pane's own chat claims its side-chat session before the session has a row.
+    const paneChat = approval("a1", { sessionId: "s-pane-chat" });
+    const result = pendingAnswers({ ...empty, tiles: [tile("main", "s-main")], approvals: [paneChat], isClaimed: (id) => id === "s-pane-chat" });
+    expect(result.unattributed).toEqual([]);
+    expect(pendingAnswers({ ...empty, tiles: [tile("main", "s-main")], approvals: [paneChat] }).unattributed).toEqual([paneChat]);
   });
 
   it("marks the asking session's row for a question a hidden tile adopted", () => {

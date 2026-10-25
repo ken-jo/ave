@@ -31,22 +31,26 @@ import type { ProjectIdentity } from "../../shared/project-identity.js";
 import { isTurnStartEntry } from "./utils/classify-turn-entries.js";
 import { collectChatPreviewModel } from "./preview/preview-targets.js";
 import { useWorkspaceTabs } from "./preview/workspace-tabs.js";
-import { isMovableTabKind, registerSideTabsSink, type MovableTabKind } from "./preview/surface-moves.js";
+import { isMovableTabKind, registerSideTabsSink, useSurfaceMoves, type MovableTabKind } from "./preview/surface-moves.js";
 import { emitMainLayoutChange, takeRestoredSideTabs, terminalCwd } from "./preview/main-layout-restore.js";
 import { forgetActiveSurface } from "./preview/active-surface.js";
 import { savedSurfaceOf } from "./preview/main-layout-snapshot.js";
 import { webSurfaceLocation } from "./preview/web-surfaces.js";
 import { attachToComposer, registerComposerTarget } from "./preview/composer-targets.js";
-import { registerBrowserTabHost } from "./preview/agent-browser-bridge.js";
+import { closeBrowserTab, registerBrowserTabHost } from "./preview/agent-browser-bridge.js";
 import { SIDE_PANEL_WIDTH_PREF, usePanelWidth } from "./hooks/use-panel-width.js";
 import { normalizeBrowserNavigationUrl } from "./preview/url-safety.js";
 import { createPortal } from "react-dom";
 import { usePanePanelSlot } from "./components/PaneFrame.js";
 import { computeToolActivity } from "./utils/tool-activity.js";
 import { collectPromptHistory } from "./utils/prompt-history.js";
+import { interruptedTurnOffer } from "./utils/history.js";
+import { InterruptedTurnBanner } from "./components/InterruptedTurnBanner.js";
 import { SuggestedTasksPanel } from "./components/SuggestedTasksPanel.js";
 import type { SuggestedTask } from "./suggested-tasks/provider.js";
-import { sidePanelLayout, useContainerNarrow } from "./hooks/use-container-narrow.js";
+import { useContainerNarrow } from "./hooks/use-container-narrow.js";
+import { CHAT_THUMBNAIL_WIDTH, chatColumnsLayout, type ChatColumnsVisibility } from "./preview/chat-columns-layout.js";
+import { ChatThumbnailColumn } from "./components/chat-thumbnail-column.js";
 import { SIDE_PANEL_MIN_RESERVE } from "../../shared/side-panel.js";
 import { useChatScroll } from "./hooks/use-chat-scroll.js";
 import { useCheckpointView } from "./hooks/use-checkpoint-view.js";
@@ -85,7 +89,12 @@ export interface ChatViewProps {
   onReturnHere: (idx: number) => Promise<{ ok: boolean }>;
   onToggleStar: (idx: number) => void | Promise<void>;
   onRetryEffort: () => void | Promise<void>;
-  onContinueFromLastUser?: (sessionId: string) => void | Promise<void>;
+  /**
+   * `userBubble`: the bubble to show for the turn Continue starts. Set when the
+   * host appends a new user row (resuming an interrupted turn) rather than
+   * re-running the existing one.
+   */
+  onContinueFromLastUser?: (sessionId: string, opts?: { userBubble?: string }) => void | Promise<void>;
   isEntryStarred: (idx: number) => string | null;
   /** Abort current streaming turn */
   onAbort: () => void | Promise<void>;
@@ -135,8 +144,11 @@ export interface ChatViewProps {
   statusBar?: StatusBarProps;
   /** App-owned toast producer for attachment capability warnings. */
   onAttachmentWarning?: (message: string) => void;
+  /** Requested session-preview column state, preserved when the tile is narrow. */
+  thumbnailOpen?: boolean;
   /** Controlled right-side work panel state, toggled from the title bar. */
   sidePanelOpen?: boolean;
+  onColumnsVisibilityChange?: (visibility: ChatColumnsVisibility) => void;
   onSidePanelOpenChange: (open: boolean) => void;
   /**
    * The tile this view belongs to. Its side panel's tabs are what the main
@@ -172,7 +184,7 @@ export interface ChatViewProps {
 
 const SIDE_PANEL_LAYOUT_TRANSITION_MS = 300;
 
-export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEditSave, onFork, onReturnHere, onToggleStar, onRetryEffort, onContinueFromLastUser, isEntryStarred, onAbort, onGuide, onGuideError, onFeedback, subAgentSpawns, loadedSkills, hasAskQuestions, askQuestions, onResolveAskQuestion, approvalSentenceInterceptSubmit, pendingApprovals, plugins, onSelectPlugin, appMode = "work", onOpenApprovalQueue, currentSessionKind = "main", currentSessionTitle, onLoadSession, commandActions, slashPickerOpen, onSlashPickerOpenChange, statusBar, onAttachmentWarning, sidePanelOpen = false, onSidePanelOpenChange, sideChatOpenRequest, onSessionsChanged, sideChatPendingAnswer = false, blogLayout = false, activeProject, workspaceProjects, onNewChatForProject, onRefreshProjects, onProjectError, chatGroupId }: ChatViewProps) {
+export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEditSave, onFork, onReturnHere, onToggleStar, onRetryEffort, onContinueFromLastUser, isEntryStarred, onAbort, onGuide, onGuideError, onFeedback, subAgentSpawns, loadedSkills, hasAskQuestions, askQuestions, onResolveAskQuestion, approvalSentenceInterceptSubmit, pendingApprovals, plugins, onSelectPlugin, appMode = "work", onOpenApprovalQueue, currentSessionKind = "main", currentSessionTitle, onLoadSession, commandActions, slashPickerOpen, onSlashPickerOpenChange, statusBar, onAttachmentWarning, thumbnailOpen = false, sidePanelOpen = false, onColumnsVisibilityChange, onSidePanelOpenChange, sideChatOpenRequest, onSessionsChanged, sideChatPendingAnswer = false, blogLayout = false, activeProject, workspaceProjects, onNewChatForProject, onRefreshProjects, onProjectError, chatGroupId }: ChatViewProps) {
   const { t } = useTranslation();
   const approvals = useApprovalSurface();
   const approvalHead = pendingApprovals[0] ?? null;
@@ -266,6 +278,7 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
   // them on every such transition. ChatView stays mounted across those, so the
   // store lives here — tab state now survives. See preview/workspace-tabs.ts.
   const workspaceTabs = useWorkspaceTabs();
+  const surfaceMoves = useSurfaceMoves();
   // The main area reaches this tile's side-panel tabs through the sink: a
   // terminal or page moved here from a pane lands in these tabs.
   const { adoptTab, releaseTab, hasTab, setActiveTabId: selectWorkspaceTab } = workspaceTabs;
@@ -318,13 +331,8 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
     setWidth: setSidePanelWidth,
     commitWidth: commitSidePanelWidth,
   } = usePanelWidth(api, SIDE_PANEL_WIDTH_PREF);
-  const previewRailVisible = sidePanelOpen;
-  // The panel lives INSIDE this tile, always — never a window-level sheet.
-  // With room for both, it is a column that pushes the transcript; without,
-  // it keeps its own floor and floats over the transcript's right edge
-  // (sidePanelLayout). It is as tall as the TILE and stands beside the
-  // header, so it is measured against the tile and portaled into the frame's
-  // slot; outside a frame it stays a child of this view and measures it.
+  // Measure the tile, including both optional columns, so hiding a column
+  // cannot change the measurement that decided its visibility.
   const chatViewRootRef = useRef<HTMLDivElement | null>(null);
   const dockedPanelMotionRef = useRef<HTMLDivElement | null>(null);
   const panelSlot = usePanePanelSlot();
@@ -332,10 +340,13 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
   const panelHost = panelSlot?.panel ?? null;
   const tileElement = panelSlot?.tile ?? null;
   const tileRef = useMemo(() => ({ current: tileElement }), [tileElement]);
-  const { width: containerWidth, isNarrow: containerNarrow } = useContainerNarrow(inFrame ? tileRef : chatViewRootRef);
-  const panelLayout = sidePanelLayout(containerWidth, containerNarrow);
-  const dockedPanelWidth = Math.min(panelLayout.max, Math.max(panelLayout.min, sidePanelWidth));
-  const dockedPanelShouldOpen = previewRailVisible;
+  const { width: containerWidth } = useContainerNarrow(inFrame ? tileRef : chatViewRootRef);
+  const columns = chatColumnsLayout(containerWidth, thumbnailOpen, sidePanelOpen, sidePanelWidth);
+  useEffect(() => {
+    onColumnsVisibilityChange?.({ thumbnailHiddenForWidth: columns.thumbnailHiddenForWidth, panelHiddenForWidth: columns.panelHiddenForWidth });
+  }, [onColumnsVisibilityChange, columns.thumbnailHiddenForWidth, columns.panelHiddenForWidth]);
+  const { panelLayout, panelWidth: dockedPanelWidth } = columns;
+  const dockedPanelShouldOpen = columns.panelVisible;
   const [dockedPanelPresent, setDockedPanelPresent] = useState(dockedPanelShouldOpen);
   // A side chat's session claim, its parked approval cards and its question
   // queue live in its view, and that view lives in the panel. Closing the
@@ -402,8 +413,7 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
     (px: number) => {
       setSidePanelResizing(false);
       setSidePanelWidth(px);
-      // The setting is the panel's docked width everywhere; a floating panel
-      // in a tile narrower than the floor may not write a sub-floor value.
+      // Persist the preferred width, bounded below by the shared panel floor.
       commitSidePanelWidth(Math.max(SIDE_PANEL_MIN_RESERVE, px));
     },
     [commitSidePanelWidth, setSidePanelWidth],
@@ -418,6 +428,14 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
   // OS-open channel, so that menu item is hidden for files).
   const toolActivity = useMemo(() => computeToolActivity(entries), [entries]);
   const promptHistory = useMemo(() => collectPromptHistory(entries), [entries]);
+  // A session whose last turn the previous app run never finished. Offered,
+  // never auto-run: the user decides whether the model picks it back up.
+  const interruptedOffer = useMemo(
+    () => (streaming || viewMode || !currentSessionId || !onContinueFromLastUser
+      ? null
+      : interruptedTurnOffer(entries)),
+    [entries, streaming, viewMode, currentSessionId, onContinueFromLastUser],
+  );
   // A suggested task fills the composer and focuses it; the user reviews
   // (and replaces any `[placeholder]`) before sending.
   const handleChooseSuggestedTask = useCallback((task: SuggestedTask) => {
@@ -525,9 +543,9 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
   useEffect(() => registerBrowserTabHost(api, {
     sessionId: () => browserTabHostRef.current.currentSessionId ?? null,
     hasTab: (tabId) => browserTabHostRef.current.workspaceTabs.tabs.some((tab) => tab.id === tabId),
-    openAgentTab: (url, requestId) => {
+    openAgentTab: (url, requestId, active) => {
       const { workspaceTabs: store, onSidePanelOpenChange: openPanel } = browserTabHostRef.current;
-      if (store.openAgentBrowserTab(url, requestId) !== null) openPanel(true);
+      if (store.openAgentBrowserTab(url, requestId, active) !== null && active) openPanel(true);
     },
     selectTab: (tabId) => {
       browserTabHostRef.current.workspaceTabs.setActiveTabId(tabId);
@@ -936,6 +954,18 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
           surface, so there is no hard line / pink bar between the messages and
           the composer. The composer box (border + bg-input-bar) still reads as a
           distinct surface on its own. */}
+      <InterruptedTurnBanner
+        offer={interruptedOffer}
+        onContinue={() => {
+          if (!currentSessionId || !onContinueFromLastUser) return;
+          // "resume" appends a new user row ("Continue") after the interrupted
+          // answer; "rerun" re-asks the user's own last message, already on screen.
+          void onContinueFromLastUser(
+            currentSessionId,
+            interruptedOffer === "resume" ? { userBubble: t("chatView.interruptedTurnContinue") } : undefined,
+          );
+        }}
+      />
       <ChatComposerDock
         dockColumnClass={dockColumnClass}
         emptyConversation={emptyConversation}
@@ -1023,6 +1053,22 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
         reviewerSuggestion={approvals.reviewerSuggestion}
       />
       </div>
+      {columns.thumbnailVisible && (!inFrame || panelHost) ? (() => {
+        const column = <aside style={{ width: CHAT_THUMBNAIL_WIDTH, order: 1 }} className="flex min-h-0 shrink-0 self-stretch overflow-hidden border-l" data-testid="chat-thumbnail-column">
+          <ChatThumbnailColumn api={api} sessionId={currentSessionId} workspaceTabs={workspaceTabs} visible={!hidden}
+            onOpenTab={(tabId) => {
+              if (workspaceTabs.hasTab(tabId)) {
+                workspaceTabs.setActiveTabId(tabId);
+                onSidePanelOpenChange(true);
+              } else {
+                if (!surfaceMoves || chatGroupId === undefined) return;
+                surfaceMoves.tabToSide(tabId, chatGroupId);
+              }
+            }}
+            onCloseTab={closeBrowserTab} />
+        </aside>;
+        return panelHost ? createPortal(column, panelHost) : column;
+      })() : null}
       {dockedPanelPresent || sideChatKeepsPanel ? (() => {
         // Inside a frame the panel waits for the slot to commit: rendering it
         // inline for one pass and portaling it on the next would remount the
@@ -1037,7 +1083,9 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
           aria-hidden={!dockedPanelExpanded}
           inert={!dockedPanelExpanded}
           style={{
+            order: 2,
             width: dockedPanelExpanded ? `${dockedPanelWidth}px` : "0px",
+            maxWidth: columns.panelVisible ? dockedPanelWidth : 0,
             // Closed and settled, but kept for the side chat it holds: out of
             // the layout entirely, not a collapsed sliver of padding.
             ...(dockedPanelPresent ? {} : { display: "none" }),
@@ -1052,9 +1100,7 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
             // pixel count the main process also uses and the user's font scale
             // must not move it.
             "z-40 flex min-w-0 shrink-0 origin-right justify-end pt-(--shell-card-inset) pr-(--shell-card-inset) pb-(--shell-card-inset-bottom) pl-(--shell-card-inset) will-change-[width,opacity,transform]",
-            panelLayout.mode === "overlay"
-              ? "absolute inset-y-0 right-0"
-              : "relative self-stretch",
+            "relative self-stretch",
             sidePanelResizing
               ? "transition-none"
               : "transition-[width,opacity,transform] duration-[var(--motion-layout)] ease-[var(--motion-ease-out)] motion-reduce:transition-none",
@@ -1077,6 +1123,7 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
         >
           <ChatSidePanel
             api={api}
+            visible={columns.panelVisible && !hidden}
             {...(chatGroupId !== undefined ? { chatGroupId } : {})}
             sessionId={currentSessionId}
             targets={previewModel.targets}

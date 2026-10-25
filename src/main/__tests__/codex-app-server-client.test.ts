@@ -1,6 +1,6 @@
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -10,7 +10,12 @@ import {
   type CodexAppServerClientOptions,
 } from "../codex-app-server-client.js";
 import { CODEX_APP_SERVER_ARGV } from "../codex-conversation-runtime.js";
+import { CodexUserRuntimeError, type CodexResolvedRuntime } from "../codex-user-runtime.js";
+import { codexExecutableArtifactFixture, NATIVE_LOCATION_WAIT, normalizeFixtureAncestorPermissions } from "../../__tests__/support/native-executable.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+
+vi.mock("node:child_process", async (importOriginal) =>
+  (await import("../../__tests__/support/native-executable.js")).fakeFixtureAcl(await importOriginal()));
 
 interface RpcRequest {
   id?: unknown;
@@ -99,18 +104,24 @@ interface Harness {
   runtimeTempDir: string;
   server: FakeAppServer;
   spawnCalls: Array<{ command: string; args: ReadonlyArray<string>; options: SpawnOptions }>;
+  artifact: CodexResolvedRuntime;
 }
 
 const harnesses: Harness[] = [];
-const TEST_RUNTIME_PARENT = process.platform === "win32" ? "C:\\tmp" : tmpdir();
+const TEST_RUNTIME_PARENT = tmpdir();
 
 function createHarness(
   handler: RequestHandler,
-  options: { deferInitializeUntilInitialized?: boolean } = {},
+  options: {
+    deferInitializeUntilInitialized?: boolean;
+    resolveRuntime?: (artifact: CodexResolvedRuntime) => Promise<CodexResolvedRuntime>;
+    lastKnownVersion?: () => string | null;
+  } = {},
 ): Harness {
   const server = new FakeAppServer(handler, options.deferInitializeUntilInitialized);
   const openExternal = vi.fn(async (_url: string) => undefined);
   const runtimeRoot = mkdtempSync(join(TEST_RUNTIME_PARENT, "ave-codex-app-server-client-"));
+  if (process.platform !== "win32") normalizeFixtureAncestorPermissions(runtimeRoot);
   const runtimeHome = join(runtimeRoot, "home");
   const sqliteHome = join(runtimeRoot, "sqlite");
   const workspaceDir = join(runtimeRoot, "workspace");
@@ -119,6 +130,7 @@ function createHarness(
   mkdirSync(sqliteHome);
   mkdirSync(workspaceDir);
   mkdirSync(runtimeTempDir);
+  const artifact = { ...codexExecutableArtifactFixture(runtimeHome), version: "0.153.4" };
   const spawnCalls: Harness["spawnCalls"] = [];
   const spawn: Spawn = (command, args, options) => {
     spawnCalls.push({ command, args, options });
@@ -130,7 +142,8 @@ function createHarness(
     sqliteHome,
     workspaceDir,
     runtimeTempDir,
-    resolveExecutable: () => "C:\\test\\codex.exe",
+    resolveRuntime: () => options.resolveRuntime ? options.resolveRuntime(artifact) : Promise.resolve(artifact),
+    ...(options.lastKnownVersion ? { lastKnownVersion: options.lastKnownVersion } : {}),
     spawn,
     clientVersion: "test-version",
   });
@@ -144,6 +157,7 @@ function createHarness(
     runtimeTempDir,
     server,
     spawnCalls,
+    artifact,
   };
   harnesses.push(harness);
   return harness;
@@ -165,6 +179,61 @@ afterEach(async () => {
 });
 
 describe("CodexAppServerClient", () => {
+  it("reports a missing user CLI as not configured without starting anything", async () => {
+    const harness = createHarness(standardInitialize, {
+      resolveRuntime: async () => { throw new CodexUserRuntimeError("codex-runtime-not-installed"); },
+    });
+    await expect(harness.client.getStatus()).resolves.toMatchObject({
+      runtime: "not-configured",
+      connection: "signed-out",
+      version: null,
+    });
+    await expect(harness.client.startBrowserLogin()).rejects.toMatchObject({ code: "codex-runtime-not-configured" });
+    expect(harness.spawnCalls).toHaveLength(0);
+  });
+
+  it.each([
+    ["codex-runtime-version-unsupported", "0.151.0"],
+    ["codex-runtime-incompatible", "0.153.4"],
+    ["codex-runtime-invalid-executable", null],
+    ["codex-runtime-unsafe-location", null],
+    ["codex-runtime-start-failed", null],
+  ] as const)("fails clearly with %s and keeps the runtime unavailable", async (code, version) => {
+    const harness = createHarness(standardInitialize, {
+      resolveRuntime: async () => { throw new CodexUserRuntimeError(code, version); },
+      lastKnownVersion: () => version,
+    });
+    await expect(harness.client.getStatus()).rejects.toMatchObject({ code });
+    expect(harness.client.getCachedStatus()).toMatchObject({ runtime: "unavailable", version });
+    expect(harness.spawnCalls).toHaveLength(0);
+  });
+
+  it("starts the resolved user CLI and reports its version", async () => {
+    const harness = createHarness((request) => {
+      if (request.method === "account/read") return { account: null, requiresOpenaiAuth: true };
+      return standardInitialize(request);
+    }, {
+      resolveRuntime: async (artifact) => ({ ...artifact, version: "0.160.1" }),
+      lastKnownVersion: () => "0.160.1",
+    });
+    await expect(harness.client.getStatus()).resolves.toMatchObject({ runtime: "ready", version: "0.160.1" });
+    expect(harness.spawnCalls[0]?.command).toBe(harness.artifact.executable);
+  });
+
+  it("rechecks the qualified copy immediately before spawn and refuses a replacement", async () => {
+    const harness = createHarness(standardInitialize, {
+      resolveRuntime: async (artifact) => {
+        chmodSync(artifact.executable, 0o700);
+        writeFileSync(artifact.executable, "#!/bin/sh\necho substituted\n");
+        chmodSync(artifact.executable, 0o500);
+        return artifact;
+      },
+    });
+    await expect(harness.client.getStatus()).rejects.toMatchObject({ code: "codex-runtime-invalid-executable" });
+    expect(harness.spawnCalls).toEqual([]);
+    expect(harness.client.getCachedStatus().runtime).toBe("unavailable");
+  });
+
   it("rejects a non-string method envelope before it can consume a pending response", async () => {
     let harness: Harness;
     harness = createHarness((request) => {
@@ -224,14 +293,17 @@ describe("CodexAppServerClient", () => {
       planType: "plus",
       pendingLogin: null,
       pendingDeviceCode: null,
+      version: null,
     });
     const projected = JSON.stringify(status);
     expect(projected).not.toContain("owner@example.test");
     expect(projected).not.toContain("account-token-must-not-leave-main");
     expect(projected).not.toContain("refresh-token-must-not-leave-main");
     expect(harness.spawnCalls).toHaveLength(1);
+    expect(harness.spawnCalls[0]?.args).toBe(CODEX_APP_SERVER_ARGV);
+    expect(harness.server.requests.some((request) => request.method === "windowsSandbox/setupStart")).toBe(false);
     expect(harness.spawnCalls[0]).toMatchObject({
-      command: "C:\\test\\codex.exe",
+      command: harness.artifact.executable,
       // The one argv the conversation runtime also spawns with — the
       // hardening boundary cannot differ between the two processes.
       args: [...CODEX_APP_SERVER_ARGV],
@@ -281,7 +353,7 @@ describe("CodexAppServerClient", () => {
 
     const statusPromise = harness.client.getStatus();
     void statusPromise.catch(() => undefined);
-    await Promise.resolve();
+    await vi.waitFor(() => expect(harness.server.requests).toHaveLength(3), NATIVE_LOCATION_WAIT);
 
     expect(harness.server.requests.map((request) => request.method).slice(0, 2)).toEqual([
       "initialize",
@@ -293,6 +365,7 @@ describe("CodexAppServerClient", () => {
       planType: null,
       pendingLogin: null,
       pendingDeviceCode: null,
+      version: null,
     });
   });
 
@@ -316,6 +389,7 @@ describe("CodexAppServerClient", () => {
       planType: null,
       pendingLogin: "browser",
       pendingDeviceCode: null,
+      version: null,
     });
     expect(JSON.stringify(status)).not.toContain("browser-only-state");
     expect(JSON.stringify(status)).not.toContain("auth.openai.com");
@@ -376,6 +450,7 @@ describe("CodexAppServerClient", () => {
         planType: null,
         pendingLogin: "device-code",
         pendingDeviceCode: "ABCD-EFGH",
+        version: null,
       },
       userCode: "ABCD-EFGH",
     });
@@ -409,6 +484,7 @@ describe("CodexAppServerClient", () => {
       planType: null,
       pendingLogin: null,
       pendingDeviceCode: null,
+      version: null,
     });
     expect(harness.client.getCachedStatus()).toEqual(status);
     expect(harness.server.requests).toContainEqual(expect.objectContaining({
@@ -455,6 +531,7 @@ describe("CodexAppServerClient", () => {
       planType: null,
       pendingLogin: null,
       pendingDeviceCode: null,
+      version: null,
     });
   });
 
@@ -473,6 +550,7 @@ describe("CodexAppServerClient", () => {
       planType: null,
       pendingLogin: null,
       pendingDeviceCode: null,
+      version: null,
     });
     const logout = harness.server.requests.find((request) => request.method === "account/logout");
     expect(logout).toEqual({
@@ -529,6 +607,7 @@ describe("CodexAppServerClient", () => {
         planType: "pro",
         pendingLogin: null,
         pendingDeviceCode: null,
+        version: null,
       },
       models: [
         {

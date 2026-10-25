@@ -3,15 +3,16 @@ import type { AveApi } from "../types.js";
 
 /**
  * The window's ACTIVE SURFACE — the terminal or web page the user last
- * brought into view — which is what the side chat acts on.
+ * brought into view — which is what an unbound conversation's tools act on
+ * when a call names no tab. A pane's own chat is bound to its pane instead
+ * (`BoundSurfaceChip`, main's bound conversation).
  *
- * Following the agent browser the owner pointed at (Aside), the target
- * follows focus: focusing a pane that shows a terminal or a page, or bringing
- * one to the front of a side panel, makes it the target. Switching to the
- * side chat itself does not change it — the side chat is how the user talks
- * ABOUT what they were just looking at. The user can drop the target (the
- * chip's ×); showing a surface again picks it back up. Closing the target
- * clears it.
+ * The target follows focus: focusing a pane that shows a terminal or a
+ * page, or bringing one to the front of a side panel, makes it the target.
+ * Switching to a chat does not change it — the chat is how the user talks
+ * ABOUT what they were just looking at. The rail's side chat shows it as its
+ * chip (`ActiveSurfaceChip`), whose × drops it until another terminal or page
+ * is shown. Closing the target clears it.
  *
  * One value per window, because main tracks one per window: this store is
  * the single place the window's choice is made, and the one a main-side
@@ -64,9 +65,24 @@ export function clearActiveSurface(): void {
   emit();
 }
 
-/** A surface was closed; when it was the target, there is none. */
+const closedListeners = new Set<(tabId: string) => void>();
+
+/**
+ * A surface was closed; when it was the target, there is none. Every close
+ * site calls this, so it is also where a closed surface is announced (its
+ * pane chat ends with it).
+ */
 export function forgetActiveSurface(tabId: string): void {
   if (active?.tabId === tabId) clearActiveSurface();
+  for (const listener of [...closedListeners]) listener(tabId);
+}
+
+/** Hear of every surface `forgetActiveSurface` is told was closed. */
+export function subscribeSurfaceClosed(listener: (tabId: string) => void): () => void {
+  closedListeners.add(listener);
+  return () => {
+    closedListeners.delete(listener);
+  };
 }
 
 export function getActiveSurface(): ActiveSurface | null {

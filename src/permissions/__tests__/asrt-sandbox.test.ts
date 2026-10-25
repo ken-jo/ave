@@ -27,9 +27,11 @@ import {
   vi,
 } from "vitest";
 import { execFileSync, spawn } from "node:child_process";
+import { createServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, sep } from "node:path";
 import { shellQuote } from "../../lib/shell-resolver.js";
 import { gitFixtureEnv } from "../../__tests__/support/git-fixture-env.mjs";
 
@@ -40,6 +42,11 @@ vi.mock("node:os", async (importOriginal) => {
     homedir: () => {
       const isolated = process.env.AVE_ASRT_TEST_HOME;
       return process.platform === "win32" && isolated ? isolated : original.homedir();
+    },
+    userInfo: () => {
+      const info = original.userInfo();
+      const isolated = process.env.AVE_ASRT_TEST_HOME;
+      return process.platform === "win32" && isolated ? { ...info, homedir: isolated } : info;
     },
   };
 });
@@ -80,9 +87,11 @@ import { preparedShellExecutableReadPaths } from "../../tools/prepared-shell-inv
 // re-implementation that could drift from the package).
 import { matchesDomainPattern } from "@anthropic-ai/sandbox-runtime/dist/sandbox/domain-pattern.js";
 import { resolveParentProxy } from "@anthropic-ai/sandbox-runtime/dist/sandbox/parent-proxy.js";
+import { getDefaultWritePaths } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
 
 let originalAsrtTestHome: string | undefined;
 let originalAveHome: string | undefined;
+let originalHome: string | undefined;
 let isolatedWindowsHome: string | undefined;
 
 beforeAll(() => {
@@ -90,13 +99,18 @@ beforeAll(() => {
 
   originalAsrtTestHome = process.env.AVE_ASRT_TEST_HOME;
   originalAveHome = process.env.AVE_HOME;
+  originalHome = process.env.HOME;
   isolatedWindowsHome = mkdtempSync(join(tmpdir(), "ave-asrt-test-home-"));
   process.env.AVE_ASRT_TEST_HOME = isolatedWindowsHome;
-  process.env.AVE_HOME = join(isolatedWindowsHome, ".ave");
+  process.env.AVE_HOME = join(isolatedWindowsHome, "app");
+  process.env.HOME = isolatedWindowsHome;
 });
 
 afterAll(async () => {
   if (process.platform !== "win32" || isolatedWindowsHome === undefined) return;
+
+  if (originalHome === undefined) delete process.env.HOME;
+  else process.env.HOME = originalHome;
 
   if (originalAsrtTestHome === undefined) {
     delete process.env.AVE_ASRT_TEST_HOME;
@@ -183,9 +197,11 @@ describe("asrt-sandbox — gate ON wraps a real command under the OS sandbox", (
           : { filesystem: { allowWrite: [writeDir], allowRead: [writeDir] } },
       );
 
-      // mac/linux: [<shell>, "-c", <wrapped>]; Windows: [srt-win, "exec", ...]
+      // mac/linux: [<shell>, "-c", <wrapped>]; Windows: [srt-win, "--srt-win",
+      // "exec", ...], the dispatch argument ASRT prepends to every srt-win spawn.
       expect(argv.length).toBeGreaterThanOrEqual(3);
-      expect(argv[1]).toBe(process.platform === "win32" ? "exec" : "-c");
+      if (process.platform === "win32") expect(argv.slice(1, 3)).toEqual(["--srt-win", "exec"]);
+      else expect(argv[1]).toBe("-c");
 
       const res = await runArgv(argv, env, writeDir);
       cleanupAsrtSandboxAfterCommand();
@@ -318,16 +334,15 @@ describe("asrt-sandbox — Linux configured-wrapper runtime contract", () => {
       const checkout = checkoutRootAbove(helper);
       const { argv } = await wrapToolCommand("true", { filesystem: { denyRead: [checkout], allowRead: [] } });
       try {
-        const rendered = argv[2] ?? "";
-        expect(rendered).toContain(`--tmpfs ${checkout} `);
-        const reboundUnderDeny = [...rendered.matchAll(/--ro-bind (\S+) (\S+)/g)]
-          .filter(([, , target]) => target!.startsWith(`${checkout}/`))
-          .map(([, source, target]) => [source, target]);
+        const words = execFileSync("/bin/bash", ["-c", `set -- ${argv[2].split("\n# Run the confined command\n").at(-1)!.split("\naveTmpStatus=")[0]}; printf '%s\\n' "$@"`], { encoding: "utf8" }).trimEnd().split("\n");
+        expect(words.some((word, index) => word === "--tmpfs" && words[index + 1] === checkout)).toBe(true);
+        const reboundUnderDeny = words.flatMap((word, index) => word === "--ro-bind" && words[index + 2]!.startsWith(`${checkout}/`)
+          ? [[words[index + 1], words[index + 2]]] : []);
         // The helper is the one file this wrap re-allows; ASRT itself re-allows
         // its JVM proxy agent jar. No directory of the package comes back.
         const jar = getVendoredJavaProxyAgentJarPath();
         expect(reboundUnderDeny.sort()).toEqual([[helper, helper], [jar, jar]].sort());
-        expect(rendered).toContain(`${helper} `);
+        expect(words).toContain(helper);
       } finally {
         await cleanupAsrtSandboxAfterCommand();
       }
@@ -468,7 +483,8 @@ describe("asrt-sandbox — worker wrap carries only the filesystem jail", () => 
       filesystem: { allowWrite: [], allowRead: [] },
     });
     expect(argv.length).toBeGreaterThanOrEqual(3);
-    expect(argv[1]).toBe(process.platform === "win32" ? "exec" : "-c");
+    if (process.platform === "win32") expect(argv.slice(1, 3)).toEqual(["--srt-win", "exec"]);
+    else expect(argv[1]).toBe("-c");
   });
 });
 
@@ -479,22 +495,38 @@ describe("asrt-sandbox — REAL enforcement via the SHARED config (strict union 
    * union allow-list is permitted through the egress proxy; a host OUTSIDE it
    * is HARD-DENIED at the proxy with NO askCb fallthrough (strictAllowlist).
    *
-   * Probe hosts: both `example.com` and `example.org` are real, resolvable IANA
-   * reserved-example domains that return HTTP 200, so the ONLY variable is
-   * whether they are on the shared allow-list. (A non-resolvable TLD like
-   * `*.test` would conflate a DNS failure with a proxy denial.)
-   *
-   * Verified verbatim on darwin:
-   *   union=[example.com] strict → example.com: code=0 http=200 (ALLOWED);
-   *                                example.org: code=56 "CONNECT tunnel failed,
-   *                                response 403" (HARD-DENIED, no askCb).
-   *
-   * Skipped when the live network can't reach example.com (the in-union host
-   * must succeed for the deny side to be a meaningful contrast).
+   * Probe hosts: two names under the reserved `.localhost` domain, served by
+   * a loopback HTTP server this suite starts. ASRT's proxy resolves an
+   * allow-listed `.localhost` name to loopback itself (RFC 6761; see its
+   * resolved-address guard), so the ONLY variable is whether the name is on
+   * the shared allow-list, and no probe leaves the machine. These cases used
+   * to probe example.com/example.org over the internet: a slow or failed
+   * lookup on a loaded CI runner read as a denial (2026-10-19, PR #10) or
+   * silently skipped the case. curl is told to proxy every name
+   * (`--noproxy ""`) because ASRT's NO_PROXY lists `localhost`, which curl
+   * also applies to names under it; the case is about the proxy's decision.
    */
-  const curlProbe = async (url: string) => {
+  const ALLOWED_HOST = "allowed.localhost";
+  const OTHER_HOST = "other.localhost";
+  let server: Server | undefined;
+  let port = 0;
+
+  beforeAll(async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(200, { "content-type": "text/plain" });
+      response.end("ok");
+    });
+    await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", resolve));
+    port = (server.address() as AddressInfo).port;
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((resolve) => (server ? server.close(() => resolve()) : resolve()));
+  });
+
+  const curlProbe = async (host: string) => {
     const { argv, env } = await wrapWorkerCommand(
-      `curl -sS -o /dev/null -w '%{http_code}' --max-time 8 ${url}`,
+      `curl -sS -o /dev/null -w '%{http_code}' --max-time 20 --noproxy '' http://${host}:${port}/`,
       { filesystem: { allowWrite: [], allowRead: [] } },
     );
     const res = await runArgv(argv, env);
@@ -503,6 +535,8 @@ describe("asrt-sandbox — REAL enforcement via the SHARED config (strict union 
   };
   const httpOk = (r: { code: number | null; stdout: string }) =>
     r.code === 0 && /^[23]\d\d$/.test(r.stdout.trim());
+  /** The proxy refused the name: curl got an HTTP status, and it is 403. */
+  const proxyDenied = (r: { code: number | null; stdout: string }) => r.stdout.trim() === "403";
 
   it("in-union host is permitted and out-of-union host is hard-denied with NO askCb", async () => {
     if (!(await asrtCanInitialize())) return;
@@ -514,22 +548,19 @@ describe("asrt-sandbox — REAL enforcement via the SHARED config (strict union 
       return true; // would ALLOW if ever consulted — strict must bypass it.
     };
 
-    // Shared config: union includes example.com, NOT example.org.
+    // Shared config: union includes ALLOWED_HOST, NOT OTHER_HOST.
     // strictAllowlist hard-denies everything else.
     await initializeAsrtSandbox(
-      { allowedDomains: ["example.com"], strictAllowlist: true },
+      { allowedDomains: [ALLOWED_HOST], strictAllowlist: true },
       recordingAskCb,
     );
+    const allowed = await curlProbe(ALLOWED_HOST);
+    const denied = await curlProbe(OTHER_HOST);
+    await resetAsrtSandbox();
 
-    const allowed = await curlProbe("https://example.com");
-    const denied = await curlProbe("https://example.org");
-
-    // In-union host must reach the network; if it can't, the host is offline —
-    // skip rather than assert a false negative.
-    if (!httpOk(allowed)) return;
-
-    // Out-of-union host is HARD-DENIED at the egress proxy: never a 2xx/3xx.
-    expect(httpOk(denied)).toBe(false);
+    expect(httpOk(allowed)).toBe(true);
+    // Out-of-union host is HARD-DENIED at the egress proxy.
+    expect(proxyDenied(denied)).toBe(true);
     // Strict means the askCb is NEVER consulted — prove no interactive
     // fallthrough for the out-of-union host (the WIRING-A model is superseded).
     expect(askCalls).toHaveLength(0);
@@ -539,24 +570,21 @@ describe("asrt-sandbox — REAL enforcement via the SHARED config (strict union 
     if (!(await asrtCanInitialize())) return;
     if (process.platform !== "darwin" && process.platform !== "linux") return;
 
-    // Sanity: example.com reachable? If not, the host is offline — skip.
-    await initializeAsrtSandbox({ allowedDomains: ["example.com"], strictAllowlist: true });
-    const reachable = httpOk(await curlProbe("https://example.com"));
-    // With example.org OUT of the union it is denied.
-    const beforeAdd = await curlProbe("https://example.org");
+    await initializeAsrtSandbox({ allowedDomains: [ALLOWED_HOST], strictAllowlist: true });
+    // With OTHER_HOST out of the union it is denied.
+    const beforeAdd = await curlProbe(OTHER_HOST);
     await resetAsrtSandbox();
-    if (!reachable) return;
-    expect(httpOk(beforeAdd)).toBe(false);
+    expect(proxyDenied(beforeAdd)).toBe(true);
 
-    // Now ADD example.org to the union → the SHARED config now PERMITS it
+    // Now ADD OTHER_HOST to the union → the SHARED config now PERMITS it
     // (no longer a strict hard-deny on a config-rule miss). Same probe, same
     // host — only the shared allow-list changed. This is the property the inert
     // per-command override could never provide.
     await initializeAsrtSandbox({
-      allowedDomains: ["example.com", "example.org"],
+      allowedDomains: [ALLOWED_HOST, OTHER_HOST],
       strictAllowlist: true,
     });
-    const afterAdd = await curlProbe("https://example.org");
+    const afterAdd = await curlProbe(OTHER_HOST);
     await resetAsrtSandbox();
     expect(httpOk(afterAdd)).toBe(true);
   }, 60_000);
@@ -568,48 +596,40 @@ describe("asrt-sandbox — REAL enforcement via the SHARED config (strict union 
     // DYNAMIC-ENDPOINT PROVENANCE: the allow-list host comes from a SETTINGS
     // baseUrl reduced via computeDynamicEndpointHosts — the exact boot path for
     // a user-configured Azure/embedding endpoint — NOT a hardcoded literal.
-    // example.com/.org stand in for the configured resource (CI-reachable IANA
-    // domains; a real *.openai.azure.com is not resolvable offline).
     const dynamicHostsFor = (baseUrl: string) =>
       computeDynamicEndpointHosts({ llm: { vendors: { "azure-foundry": { baseUrl } } } });
 
-    // Union built from the CONFIGURED endpoint (example.com), normalized for
-    // ASRT exactly as boot does.
+    // Union built from the CONFIGURED endpoint, normalized for ASRT exactly
+    // as boot does.
     const initialUnion = normalizeUnionForAsrt(
-      computeUnionAllowedDomains([dynamicHostsFor("https://example.com/openai/v1")], []),
+      computeUnionAllowedDomains([dynamicHostsFor(`http://${ALLOWED_HOST}:${port}/openai/v1`)], []),
     );
-    expect(initialUnion).toContain("example.com");
+    expect(initialUnion).toContain(ALLOWED_HOST);
 
     await initializeAsrtSandbox({ allowedDomains: initialUnion, strictAllowlist: true });
-    const configuredAllowed = await curlProbe("https://example.com");
-    const reachable = httpOk(configuredAllowed);
+    const configuredAllowed = await curlProbe(ALLOWED_HOST);
     // A host NOT derived from any configured endpoint is HARD-DENIED.
-    const nonConfiguredDenied = await curlProbe("https://example.org");
+    const nonConfiguredDenied = await curlProbe(OTHER_HOST);
+    expect(httpOk(configuredAllowed)).toBe(true);
+    expect(proxyDenied(nonConfiguredDenied)).toBe(true);
 
-    if (!reachable) {
-      await resetAsrtSandbox();
-      return; // offline — the allow side can't be proven, skip the contrast.
-    }
-    // The configured-endpoint host is reachable; the non-configured one is not.
-    expect(httpOk(nonConfiguredDenied)).toBe(false);
-
-    // LIVE-REFRESH: user reconfigures the endpoint to example.org. Recompute the
-    // union from the NEW settings value and swap the live ASRT config (the same
-    // updateAsrtSandboxConfig call refreshSandboxNetworkConfig makes). No
+    // LIVE-REFRESH: user reconfigures the endpoint to OTHER_HOST. Recompute
+    // the union from the NEW settings value and swap the live ASRT config (the
+    // same updateAsrtSandboxConfig call refreshSandboxNetworkConfig makes). No
     // re-initialize — this is the live network swap.
     const refreshedUnion = normalizeUnionForAsrt(
-      computeUnionAllowedDomains([dynamicHostsFor("https://example.org/openai/v1")], []),
+      computeUnionAllowedDomains([dynamicHostsFor(`http://${OTHER_HOST}:${port}/openai/v1`)], []),
     );
-    expect(refreshedUnion).toContain("example.org");
+    expect(refreshedUnion).toContain(OTHER_HOST);
     await updateAsrtSandboxConfig({ allowedDomains: refreshedUnion, strictAllowlist: true });
 
     // After the live refresh: the NEW configured host is allowed, the OLD one
     // is now hard-denied — proving the swap took effect with no restart.
-    const newHostAllowed = await curlProbe("https://example.org");
-    const oldHostDenied = await curlProbe("https://example.com");
+    const newHostAllowed = await curlProbe(OTHER_HOST);
+    const oldHostDenied = await curlProbe(ALLOWED_HOST);
     await resetAsrtSandbox();
     expect(httpOk(newHostAllowed)).toBe(true);
-    expect(httpOk(oldHostDenied)).toBe(false);
+    expect(proxyDenied(oldHostDenied)).toBe(true);
   }, 60_000);
 });
 
@@ -949,7 +969,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
   });
 
   it("returns the expected absolute sensitive paths (Ave namespaces + standard credential stores)", () => {
-    const paths = getDefaultSensitiveReadDenyPaths();
+    const paths = getDefaultSensitiveReadDenyPaths().map((path) => path.replace(/[\\/]$/, ""));
     const home = homedir();
 
     // Every entry is an absolute path with NO glob char (literal — works on both
@@ -962,7 +982,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     // Ave host-domain sensitive namespaces, derived from the (overridden) aveHome.
     expect(paths).toContain(join(FAKE_AVE_HOME, "secrets"));
     expect(paths).toContain(join(FAKE_AVE_HOME, "sessions"));
-    expect(getDefaultSensitiveWriteDenyPaths()).toContain(join(FAKE_AVE_HOME, "sessions"));
+    expect(getDefaultSensitiveWriteDenyPaths()).toContain(join(FAKE_AVE_HOME, "sessions") + (process.platform === "win32" ? sep : ""));
     expect(paths).toContain(join(FAKE_AVE_HOME, "routine"));
     expect(paths).toContain(join(FAKE_AVE_HOME, "audit.log"));
     expect(paths).toContain(join(FAKE_AVE_HOME, "audit"));
@@ -1027,7 +1047,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
   it("projects subscription runtime state into both OS deny floors for a custom profile", () => {
     const profile = join(tmpdir(), "ave-subscription-custom-profile");
     process.env.AVE_HOME = profile;
-    const runtime = join(profile, "subscription-runtimes");
+    const runtime = join(profile, "subscription-runtimes") + (process.platform === "win32" ? sep : "");
     expect(getDefaultSensitiveReadDenyPaths()).toContain(runtime);
     expect(getDefaultSensitiveWriteDenyPaths()).toContain(runtime);
     const config = buildSandboxConfig({ allowedDomains: [], denyRead: [], denyWrite: [] });
@@ -1060,16 +1080,17 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
 
   it("FIX 2 — userDataDir param: exact path is denied when provided (handles --user-data-dir)", () => {
     const customUserData = join(tmpdir(), "custom-electron-userData-for-test");
+    const expected = customUserData + (process.platform === "win32" ? sep : "");
     const paths = getDefaultSensitiveReadDenyPaths(customUserData);
     // The exact provided path must be denied.
-    expect(paths).toContain(customUserData);
+    expect(paths).toContain(expected);
     // No duplicates.
     expect(new Set(paths).size).toBe(paths.length);
     // Over-deny safety: the derived fallback is NOT additionally added when
     // the exact path is provided (the dedup set handles this if they collide,
     // but the function uses the provided value exclusively for the userData slot).
     // Verify the provided path is present exactly once.
-    expect(paths.filter((p) => p === customUserData).length).toBe(1);
+    expect(paths.filter((p) => p === expected).length).toBe(1);
   });
 
   it("FIX 2 — userDataDir absent: falls back to per-platform derived path (no electron import)", () => {
@@ -1080,7 +1101,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
       process.platform === "darwin"
         ? join(home, "Library", "Application Support", "Ave")
         : process.platform === "win32"
-          ? join(home, "AppData", "Roaming", "Ave")
+          ? join(home, "AppData", "Roaming", "Ave") + sep
           : join(xdgBase, "Ave");
     expect(paths).toContain(fallback);
   });
@@ -1091,7 +1112,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
       allowedDomains: [],
       userDataDir: customUserData,
     });
-    expect(config.filesystem.denyRead).toContain(customUserData);
+    expect(config.filesystem.denyRead).toContain(customUserData + (process.platform === "win32" ? sep : ""));
   });
 
   it("buildSandboxConfig unions the sensitive deny-list into filesystem.denyRead", () => {
@@ -1105,7 +1126,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
       expect(config.filesystem.denyRead).toContain(spelled);
     }
     // Secrets is part of the floor (the prior single-entry deny is subsumed).
-    expect(config.filesystem.denyRead).toContain(join(FAKE_AVE_HOME, "secrets"));
+    expect(config.filesystem.denyRead).toContain(join(FAKE_AVE_HOME, "secrets") + (process.platform === "win32" ? sep : ""));
   });
 
   it("buildSandboxConfig keeps a caller-supplied denyRead AND adds the sensitive floor (union, deduped)", () => {
@@ -1114,14 +1135,14 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     // Caller entry survives.
     expect(config.filesystem.denyRead).toContain(extra);
     // Sensitive floor is still present.
-    expect(config.filesystem.denyRead).toContain(join(FAKE_AVE_HOME, "secrets"));
+    expect(config.filesystem.denyRead).toContain(join(FAKE_AVE_HOME, "secrets") + (process.platform === "win32" ? sep : ""));
     // Passing a path already on the floor does not duplicate it.
     const dupConfig = buildSandboxConfig({
       allowedDomains: [],
-      denyRead: [join(FAKE_AVE_HOME, "secrets")],
+      denyRead: [join(FAKE_AVE_HOME, "secrets") + (process.platform === "win32" ? sep : "")],
     });
     const occurrences = dupConfig.filesystem.denyRead.filter(
-      (p: string) => p === join(FAKE_AVE_HOME, "secrets"),
+      (p: string) => p === join(FAKE_AVE_HOME, "secrets") + (process.platform === "win32" ? sep : ""),
     ).length;
     expect(occurrences).toBe(1);
   });
@@ -1132,15 +1153,15 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     for (const p of sensitive) {
       expect(config.filesystem.denyWrite).toContain(p);
     }
-    expect(config.filesystem.denyWrite).toContain(join(homedir(), ".config"));
-    expect(config.filesystem.denyWrite).toContain(join(homedir(), ".ssh"));
+    expect(config.filesystem.denyWrite).toContain(join(homedir(), ".config") + (process.platform === "win32" ? sep : ""));
+    expect(config.filesystem.denyWrite).toContain(join(homedir(), ".ssh") + (process.platform === "win32" ? sep : ""));
   });
 
   it("buildSandboxConfig keeps caller-supplied denyWrite AND adds the sensitive write floor", () => {
     const extra = join(tmpdir(), "caller-supplied-write-deny-xyz");
     const config = buildSandboxConfig({ allowedDomains: [], denyWrite: [extra] });
     expect(config.filesystem.denyWrite).toContain(extra);
-    expect(config.filesystem.denyWrite).toContain(join(homedir(), ".config"));
+    expect(config.filesystem.denyWrite).toContain(join(homedir(), ".config") + (process.platform === "win32" ? sep : ""));
 
     const dup = join(homedir(), ".config");
     const dupConfig = buildSandboxConfig({ allowedDomains: [], denyWrite: [dup] });
@@ -1329,4 +1350,48 @@ describe("asrt-sandbox — worker-UDS register/unregister (shared-config, not pe
     },
     60_000,
   );
+});
+
+describe("runtime write defaults", () => {
+  it("grants only device defaults before caller policy is applied", () => {
+    expect(getDefaultWritePaths()).toEqual([
+      "/dev/stdout", "/dev/stderr", "/dev/null", "/dev/tty", "/dev/dtracehelper", "/dev/autofs_nowait",
+    ]);
+    expect(buildSandboxConfig({ allowWrite: [] }).filesystem.allowWrite).toEqual([]);
+  });
+
+  it("does not add compensating denies for paths without an implicit grant", () => {
+    const floor = getDefaultSensitiveWriteDenyPaths();
+    for (const target of ["/tmp/claude", "/private/tmp/claude", join(homedir(), ".npm", "_logs"), join(homedir(), ".claude", "debug")]) {
+      expect(floor).not.toContain(target);
+    }
+  });
+});
+
+describe.runIf(process.platform === "linux")("ordinary temporary write policy", () => {
+  it("shares explicitly granted temp writes with the host and later commands", async (context) => {
+    if (!(await asrtCanInitialize())) {
+      if (process.env.AVE_REQUIRE_SANDBOX_CASES === "1") throw new Error("ASRT cannot initialize on this machine");
+      return context.skip();
+    }
+    const root = mkdtempSync("/tmp/ave-ordinary-temp-");
+    try {
+      await initializeAsrtSandbox({ allowedDomains: [], allowWrite: ["/tmp"] });
+      const target = join(root, "shared.txt");
+      const first = await wrapToolCommand(`printf shared > ${shellQuote(target)}`);
+      expect(first.argv[1]).toBe("-c");
+      expect(/--tmpfs'?\s+'?\/tmp\/claude(?:'|\s|$)/u.test(first.argv[2] ?? "")).toBe(false);
+      const written = await runArgv(first.argv, first.env, process.cwd());
+      cleanupAsrtSandboxAfterCommand();
+      expect(written.code, written.stderr).toBe(0);
+      expect(readFileSync(target, "utf8")).toBe("shared");
+      const next = await wrapToolCommand(`cat ${shellQuote(target)}`);
+      const read = await runArgv(next.argv, next.env, process.cwd());
+      cleanupAsrtSandboxAfterCommand();
+      expect(read.code, read.stderr).toBe(0);
+      expect(read.stdout).toBe("shared");
+    } finally {
+      await cleanupTmpDir(root);
+    }
+  });
 });

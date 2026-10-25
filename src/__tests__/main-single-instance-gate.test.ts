@@ -18,7 +18,8 @@
  * listeners at module load and cannot be imported in a unit test context.
  */
 import { describe, it, expect } from "vitest";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 
 describe("main.ts — single-instance gate on app.whenReady", () => {
   const source = readFileSync("src/main.ts", "utf-8").replace(/\r\n/g, "\n");
@@ -65,23 +66,48 @@ describe("main.ts — single-instance gate on app.whenReady", () => {
     expect(negBranchCode, "second-instance must not call whenReady").not.toMatch(/whenReady/);
   });
 
-  it("keeps packaged-Windows marker registration synchronous before the lock", () => {
+  it("calls the OS protocol setter only at the guarded src/main.ts site, and nowhere in tests", () => {
+    // Every launch path (dev, E2E, CDP, packaged) reaches the setter only
+    // through decideAveProtocolClientRegistration; no launcher or spec may
+    // carry its own copy or monkeypatch of it.
+    const roots = ["src", "test", "scripts"];
+    const files = roots.flatMap(function walk(dir: string): string[] {
+      return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+        const path = join(dir, entry.name);
+        if (entry.isDirectory()) return entry.name === "node_modules" ? [] : walk(path);
+        return /\.(ts|tsx|mts|mjs|cjs|js)$/.test(entry.name) ? [path] : [];
+      });
+    });
+    const callers = files
+      .filter((path) => !/__tests__|main-single-instance-gate/.test(path))
+      .filter((path) => /\b(set|remove)AsDefaultProtocolClient\s*[(=]/.test(readFileSync(path, "utf-8")))
+      .map((path) => path.split("\\").join("/"));
+    expect(callers).toEqual(["src/main.ts"]);
+  });
+
+  it("decides ave:// self-registration synchronously before the lock, with one setter", () => {
+    const decision = source.indexOf("decideAveProtocolClientRegistration({");
     const markerProbe = source.indexOf(
-      "getPackagedWindowsProtocolMarkerState(process.execPath)",
+      "probeWindowsMarker: () => getPackagedWindowsProtocolMarkerState(process.execPath)",
     );
     const protocolSetter = source.indexOf(
       'app.setAsDefaultProtocolClient("ave")',
     );
     const lock = source.indexOf("app.requestSingleInstanceLock()");
 
-    expect(markerProbe).toBeGreaterThanOrEqual(0);
+    expect(decision).toBeGreaterThanOrEqual(0);
+    expect(markerProbe).toBeGreaterThan(decision);
     expect(protocolSetter).toBeGreaterThan(markerProbe);
     expect(lock).toBeGreaterThan(protocolSetter);
+    // The only setter call, behind the decision; no dev execPath/args branch.
+    expect(source.split("setAsDefaultProtocolClient(").length - 1).toBe(2);
+    expect(source).toContain("if (aveProtocolClientRegistration.register) {");
+    expect(source).toContain('hasUserDataDirSwitch: app.commandLine.hasSwitch("user-data-dir")');
+    expect(source).toContain("defaultAveHome: defaultAveHome()");
+    expect(source).not.toContain("buildDevProtocolArgs");
+    expect(source).not.toContain("removeAsDefaultProtocolClient");
     expect(source).toContain(
-      'app.isPackaged && process.platform === "win32"',
-    );
-    expect(source).toContain(
-      'packagedWindowsProtocolMarkerState === "unknown"',
+      'aveProtocolClientRegistration.reason === "nsis-marker-unknown"',
     );
     expect(source).toContain("skipped self-registration");
     expect(source).toContain("app.whenReady().then(() => {");

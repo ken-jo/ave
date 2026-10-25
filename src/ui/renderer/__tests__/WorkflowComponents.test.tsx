@@ -435,10 +435,6 @@ describe("SessionTasksPanel", () => {
     expect(list.textContent).toContain("완료");
     // The removed transient header badges must no longer render.
     expect(list.textContent).not.toContain("수정");
-    expect(container.querySelector('[data-testid="session-tasks-continuation"]')).toBeNull();
-    expect(container.querySelector('[data-testid="session-tasks-fresh"]')).toBeNull();
-    expect(container.querySelector('[data-testid="session-tasks-added"]')).toBeNull();
-    expect(container.querySelector('[data-testid="session-tasks-updated"]')).toBeNull();
   });
 
   it("numbers rows from 1 in list order, keeps completed rows listed and struck through, and counts completed/total on the chip", async () => {
@@ -595,7 +591,7 @@ describe("SessionTasksPanel", () => {
         return () => undefined;
       }) as never,
     });
-    const { queryByText, container } = render(
+    const { queryByText } = render(
       <SessionTasksPanel api={api} sessionId="session-race" />,
     );
 
@@ -609,11 +605,8 @@ describe("SessionTasksPanel", () => {
       resolveList([{ id: "old", content: "stale list snapshot", status: "pending" }]);
       await listPromise;
     });
-    // Live push wins over the late initial fetch; removed transient header
-    // badges never render.
+    // Live push wins over the late initial fetch.
     expect(queryByText("stale list snapshot")).toBeNull();
-    expect(container.querySelector('[data-testid="session-tasks-fresh"]')).toBeNull();
-    expect(container.querySelector('[data-testid="session-tasks-continuation"]')).toBeNull();
   });
 
   it("ignores malformed push events without a session id", async () => {

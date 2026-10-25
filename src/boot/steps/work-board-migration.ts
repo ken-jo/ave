@@ -98,7 +98,7 @@ async function findLegacyPluginBoards(pluginsRoot: string): Promise<string[]> {
  * this call, `false` otherwise (already migrated, no/ambiguous legacy board,
  * or an error swallowed for boot continuity).
  */
-export async function migrateAgentHubBoardToWorkBoard(): Promise<boolean> {
+export async function migrateLegacyPluginBoardToWorkBoard(): Promise<boolean> {
   const ns = openFeatureNamespace("work-board");
   const destPath = join(ns.dir, BOARD_FILE);
   const pluginsRoot = join(aveHome(), "plugins");

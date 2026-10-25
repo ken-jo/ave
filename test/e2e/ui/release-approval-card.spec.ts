@@ -24,8 +24,13 @@ import {
 } from "./seeded-electron.js";
 import { TEST_IDS } from "../../../src/shared/test-ids.js";
 
+const SEEDED_SESSION_ID = "abcdabcd-1111-4222-8333-444444444444";
+
+// A request names the session that asked; the tile drawing that session is the
+// one that docks its card.
 const OUT_OF_DIR_REQUEST = {
   id: "release-check-1",
+  sessionId: SEEDED_SESSION_ID,
   category: "tool",
   kind: "out-of-allowed-dir",
   allowedChoices: ["allow-once", "allow-always", "deny-once"],
@@ -62,7 +67,7 @@ test.describe("release check — docked approval card", () => {
     // The app blocks on "Loading user settings and memory..." until a session
     // exists, so seed one; without it ChatView never mounts and nothing below
     // can be observed.
-    const sessionId = "abcdabcd-1111-4222-8333-444444444444";
+    const sessionId = SEEDED_SESSION_ID;
     const sessionsDir = resolve(tempHome, ".ave", "sessions");
     mkdirSync(sessionsDir, { recursive: true });
     writeFileSync(
@@ -78,15 +83,24 @@ test.describe("release check — docked approval card", () => {
       JSON.stringify({ title: "release check" }, null, 2),
       "utf-8",
     );
+    writeFileSync(
+      resolve(sessionsDir, ".active-session.json"),
+      JSON.stringify({ mainActiveMode: "resume", mainActiveSessionId: sessionId, updatedAt: new Date().toISOString() }),
+      "utf-8",
+    );
 
     app = await launchElectron({
       // Isolate Chromium's profile before app startup. AVE_USER_DATA_DIR is
       // also passed for the app's own settings, but that environment variable
       // alone is too late to prevent Electron's process-singleton lock from
       // colliding with the canonical app intentionally left open for CDP.
+      // HOME points at the temp root so nothing reads the real one.
       args: [MAIN_ENTRY, `--user-data-dir=${userDataDir}`, "--no-sandbox"],
       env: buildIsolatedElectronEnv({
-        AVE_HOME: tempHome,
+        HOME: tempHome,
+        USERPROFILE: tempHome,
+        // The data home is the seeded `.ave` directory, where the session is.
+        AVE_HOME: resolve(tempHome, ".ave"),
         AVE_USER_DATA_DIR: userDataDir,
         AVE_DEV: "1",
         AVE_E2E: "1",
@@ -105,8 +119,9 @@ test.describe("release check — docked approval card", () => {
   test("boots with no renderer error", async () => {
     const errors: string[] = [];
     page.on("pageerror", (e) => errors.push(String(e)));
-    await expect(page.locator("body")).toBeVisible({ timeout: 30_000 });
-    await page.waitForTimeout(2_000);
+    // The toolbar is the first persistent element after React mounts, so the
+    // renderer has booted (and had its chance to throw) once it is visible.
+    await expect(page.getByTestId("main-toolbar")).toBeVisible({ timeout: 30_000 });
     expect(errors, `renderer threw: ${errors.join(" | ")}`).toEqual([]);
   });
 
@@ -132,14 +147,15 @@ test.describe("release check — docked approval card", () => {
     });
 
     const overlay = page.getByTestId(TEST_IDS.approvalDock);
-    for (let attempt = 0; attempt < 5; attempt += 1) {
+    let attempt = 0;
+    await expect.poll(async () => {
       await app.evaluate(({ BrowserWindow }, payload) => {
         const win = BrowserWindow.getAllWindows()[0];
         win?.webContents.send("ave:approval:request", payload);
       }, { ...OUT_OF_DIR_REQUEST, id: `release-check-${attempt}` });
-      if (await overlay.count()) break;
-      await page.waitForTimeout(1_000);
-    }
+      attempt += 1;
+      return overlay.count();
+    }, { timeout: 10_000, intervals: [250, 500, 1_000] }).toBeGreaterThan(0);
     const seen = await page.evaluate(() => (window as any).__relSeen ?? []);
     expect(seen.length, "renderer never received the approval event").toBeGreaterThan(0);
     const kinds = await page.evaluate(() =>

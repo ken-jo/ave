@@ -1,53 +1,22 @@
 import { test, expect } from './fixtures';
 
 /**
- * Search overlay smoke — opens chat search overlay via keyboard shortcut
- * or a dedicated button, verifies a search input renders, and exercises one
- * filter keystroke. Skips cleanly if overlay is unavailable.
+ * Unified search smoke — the find shortcut (⌘F / Ctrl+F, use-search.ts) opens
+ * the unified search panel, its input takes focus, accepts a query, and Escape
+ * closes the panel again.
  */
-test('search overlay opens and accepts filter input, or skips', async ({ mainWindow }) => {
-  const trigger = mainWindow
-    .locator(
-      [
-        '[data-testid="chat-search-trigger"]',
-        '[data-testid="open-search"]',
-        'button[aria-label*="Search" i]',
-        'button[aria-label*="검색"]',
-      ].join(', '),
-    )
-    .first();
+test('find shortcut opens unified search, accepts a query, and Escape closes it', async ({ mainWindow }) => {
+  const panel = mainWindow.getByTestId('unified-search-panel');
+  await expect(panel).toHaveCount(0);
 
-  const triggerVisible = await trigger
-    .waitFor({ state: 'visible', timeout: 5_000 })
-    .then(() => true)
-    .catch(() => false);
+  await mainWindow.keyboard.press(process.platform === 'darwin' ? 'Meta+F' : 'Control+F');
+  await expect(panel).toBeVisible();
 
-  if (triggerVisible) {
-    await trigger.click();
-  } else {
-    const accel = process.platform === 'darwin' ? 'Meta+F' : 'Control+F';
-    await mainWindow.keyboard.press(accel).catch(() => {});
-  }
+  const input = panel.getByTestId('unified-search-input');
+  await expect(input).toBeFocused();
+  await input.fill('hello');
+  await expect(input).toHaveValue('hello');
 
-  const overlayInput = mainWindow
-    .locator(
-      [
-        '[data-testid="chat-search-input"]',
-        'input[placeholder*="Search" i]',
-        'input[placeholder*="검색"]',
-        '[role="searchbox"]',
-      ].join(', '),
-    )
-    .first();
-
-  const overlayVisible = await overlayInput
-    .waitFor({ state: 'visible', timeout: 8_000 })
-    .then(() => true)
-    .catch(() => false);
-
-  test.skip(!overlayVisible, 'No search overlay input — skipping.');
-
-  await overlayInput.fill('hello');
-  const val = await overlayInput.inputValue().catch(() => '');
-  expect(val).toBe('hello');
+  await input.press('Escape');
+  await expect(panel).toHaveCount(0);
 });

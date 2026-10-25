@@ -203,7 +203,7 @@ describe("the private roots in a sandbox read deny", () => {
     () => {
       for (const root of appOwnedSandboxPrivateRoots()) ensureSandboxPrivateRoot(root);
       const floor = getDefaultSensitiveReadDenyPaths();
-      const denyRead = buildPerCommandSandboxCustomConfig({ denyRead: floor })!.filesystem!.denyRead;
+      const denyRead: string[] = buildPerCommandSandboxCustomConfig({ denyRead: floor })!.filesystem!.denyRead;
       const tempRoot = realpathSync(appOwnedSandboxTempRoot());
       const homeRoot = realpathSync(appOwnedSandboxHomeRoot());
       const handoffRoot = realpathSync(appOwnedTerminalHandoffRoot());

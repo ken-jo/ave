@@ -67,8 +67,6 @@ describe("ToolApprovalContent out-of-allowed-dir — one frame, one decision row
     expect(screen.getByTestId(TEST_IDS.allowAlwaysButton)).toHaveTextContent("항상 허용");
     expect(screen.getByTestId(TEST_IDS.approveButton)).toHaveTextContent("한 번만 허용");
     expect(screen.getByTestId(TEST_IDS.openPermanentDenySettings)).toBeTruthy();
-    // No second layout remains anywhere in the tree.
-    expect(document.body.querySelector('[data-testid="docked-approval-panel"]')).toBeNull();
   });
 
   it("keeps what will be granted on screen as the selection moves", () => {

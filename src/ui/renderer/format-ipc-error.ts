@@ -50,6 +50,7 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   // ── Browser tabs (agent browser tools) ──
   "bad-request": "formatIpcError.invalidRequest",
   "no-such-tab": "formatIpcError.notFound",
+  "not-resumable": "formatIpcError.notResumable",
   "a2a-remote-disabled": "formatIpcError.remoteA2aDisabled",
   "a2a-remote-start-failed": "formatIpcError.remoteA2aStartFailed",
   "tailnet-sharing-disabled": "formatIpcError.tailnetSharingDisabled",
@@ -95,6 +96,7 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "invalid-params": "formatIpcError.invalidParams",
   "invalid-input": "formatIpcError.invalidInput",
   "invalid-send-request-id": "formatIpcError.invalidInput",
+  "invalid-surface": "formatIpcError.invalidInput",
   "invalid-arguments": "formatIpcError.invalidInput",
   "invalid-answer": "formatIpcError.invalidInput",
   "invalid-proposal-key": "formatIpcError.invalidInput",
@@ -225,6 +227,7 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "not-found": "formatIpcError.notFound",
   // A terminal tab driven from a window other than the one that started its shell.
   "not-owner": "formatIpcError.notOwner",
+  "stale-terminal-session": "formatIpcError.staleTerminalSession",
   "no-such-request": "formatIpcError.noSuchRequest",
   "not-registered": "formatIpcError.notRegistered",
   "already-resolved": "formatIpcError.alreadyResolved",
@@ -377,6 +380,8 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "checkpoint-not-found": "formatIpcError.checkpointNotFound",
   "session-mismatch": "formatIpcError.sessionMismatch",
   "streaming-active": "formatIpcError.streamingActive",
+  "session-open-in-pane": "formatIpcError.sessionOpenInPane",
+  "pane-chat-ended": "formatIpcError.paneChatEnded",
   // ── Tiled chat groups ──
   "chat-group-limit-reached": "formatIpcError.chatGroupLimitReached",
   "chat-groups-unavailable": "formatIpcError.chatGroupsUnavailable",

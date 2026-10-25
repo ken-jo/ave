@@ -25,12 +25,11 @@ export const LONG_TOAST_TTL_MS = 5000;
 import type { AppSettings, ExecutionMode } from "./types.js";
 import {
   DEFAULT_VISIBLE_LLM_VENDOR_IDS,
-  LLM_VENDOR_DEFAULTS,
-  LLM_VENDOR_MODEL_OPTIONS,
   LLM_VENDORS,
   OPENAI_COMPATIBLE_PRESET_VENDOR_IDS,
   OPENAI_COMPATIBLE_VENDOR_PRESETS,
   isLLMVendor,
+  llmVendorModelOptions,
   getLlmThinkingBudgetRungs,
   type OpenAICompatiblePresetVendor,
   type LLMVendor,
@@ -46,8 +45,8 @@ export const SOURCE_BADGE: Record<string, string> = {
 // Settings-dialog UI metadata per vendor. Typed as `Record<LLMVendor, ...>`
 // so adding a new entry to `LLM_VENDORS` without updating this object is
 // a compile error — keeps the dropdown in lockstep with the canonical
-// vendor list. `defaultModel` derives from LLM_VENDOR_DEFAULTS so the
-// model selector stays in sync with the data layer's seed values.
+// vendor list. Model choices are read from the installed catalog without
+// selecting one on the user's behalf.
 export interface VendorUiMeta {
   label: string;
   placeholder: string;
@@ -57,8 +56,12 @@ export interface VendorUiMeta {
 
 export interface VendorOption extends VendorUiMeta {
   id: LLMVendor;
-  defaultModel: string;
-  modelOptions: readonly string[];
+  /**
+   * Read from the installed model catalog each time it is asked
+   * (`llmVendorModelOptions`). The renderer installs that catalog before it
+   * mounts, after this module has loaded, so the value cannot be taken here.
+   */
+  readonly modelOptions: readonly string[];
 }
 
 type VendorOptionFor<T extends LLMVendor> = VendorOption & { id: T };
@@ -109,8 +112,9 @@ const VENDOR_UI: Record<LLMVendor, VendorUiMeta> = {
 export const ALL_VENDORS: VendorOption[] = LLM_VENDORS.map((id) => ({
   id,
   ...VENDOR_UI[id],
-  defaultModel: LLM_VENDOR_DEFAULTS[id].model,
-  modelOptions: LLM_VENDOR_MODEL_OPTIONS[id],
+  get modelOptions() {
+    return llmVendorModelOptions(id);
+  },
 }));
 
 function requireVendorOption<T extends LLMVendor>(id: T): VendorOptionFor<T> {

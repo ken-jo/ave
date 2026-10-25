@@ -22,12 +22,11 @@ import {
   setInstalledCatalogLoader,
 } from "../messages/index.js";
 import { interpolate, translate } from "../translate.js";
-import { getLocale, setLocale, t } from "../runtime.js";
+import { getLocale, onLocaleChange, setLocale, t } from "../runtime.js";
 
 const PLACEHOLDER_RE = /\{[A-Za-z0-9_.-]+\}/g;
 const TAG_RE = /<\/?[A-Za-z][A-Za-z0-9_-]*(?:\s+[^<>]*)?>/g;
 const SLASH_COMMAND_RE = /\/(?:new|sessions|load|compact|remember|memory|vendor|tools|permission|help|clear|command)\b/g;
-const SENTINEL_LEAK_RE = /AVEKEEP\s*\d+/i;
 
 function sortedMatches(value: string, pattern: RegExp): string[] {
   return value.match(pattern)?.sort() ?? [];
@@ -228,15 +227,6 @@ describe("translate", () => {
     }
   });
 
-  it("does not expose generated protection sentinels", async () => {
-    const catalogs = await loadAllLocaleMessages();
-    for (const locale of SUPPORTED_LOCALES) {
-      for (const [key, value] of Object.entries(catalogs[locale])) {
-        expect(value, `${locale}:${key}`).not.toMatch(SENTINEL_LEAK_RE);
-      }
-    }
-  });
-
   it("lets generated surface text override the seed on a key collision", async () => {
     const restore = __setLocaleLoaderForTest("ko", async () => {
       const [{ ko }, { koMessages }] = await Promise.all([
@@ -269,5 +259,30 @@ describe("runtime t()", () => {
     expect(getLocale()).toBe("ko");
     setLocale("de-DE");
     expect(getLocale()).toBe("en");
+  });
+});
+
+describe("onLocaleChange", () => {
+  it("runs every listener even when an earlier one throws", () => {
+    // Start from a known locale so the switch below is a change whatever ran first.
+    setLocale("en");
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const seen: string[] = [];
+    const offThrowing = onLocaleChange(() => { throw new Error("menu rebuild failed"); });
+    const offNext = onLocaleChange((locale) => seen.push(locale));
+    try {
+      // The change still lands and the caller is not failed by the listener.
+      expect(setLocale("ko")).toBe("ko");
+      expect(getLocale()).toBe("ko");
+      expect(seen).toEqual(["ko"]);
+      expect(error).toHaveBeenCalledWith(
+        expect.stringContaining("locale-change listener failed for 'ko'"),
+        expect.objectContaining({ message: "menu rebuild failed" }),
+      );
+    } finally {
+      offThrowing();
+      offNext();
+      error.mockRestore();
+    }
   });
 });

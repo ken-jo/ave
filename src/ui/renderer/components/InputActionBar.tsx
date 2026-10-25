@@ -40,6 +40,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "../../../components/ui/
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../../components/ui/tooltip.js";
 import { t } from "../../../i18n/runtime.js";
 import { useTranslation } from "../../../i18n/react.js";
+import { isSubscriptionRuntimeId, subscriptionRuntimeDescriptor } from "../../../shared/subscription-runtime.js";
 import type { PluginEntry } from "../types.js";
 import { SlashPicker } from "./SlashPicker.js";
 import { ReasoningLevelControl, useReasoningLevel } from "./ReasoningSlider.js";
@@ -370,7 +371,12 @@ export function ComposerStatusRow({
   onToggleThinking,
 }: ComposerStatusRowProps) {
   const { t } = useTranslation();
-  const { vendorModel, permissionMode, pendingApprovals } = statusRow;
+  const { vendorModel, activeChatModel, permissionMode, pendingApprovals } = statusRow;
+  // No connected provider means no model: the row offers setup in the model's
+  // place instead of naming the vendor default nobody chose. A retired
+  // provider keeps its picker — choosing a model there is how the retirement
+  // notice is resolved.
+  const noActiveModel = activeChatModel?.kind === "none" && activeChatModel.reason === "no-connected-provider";
   // The row names the model only. Which vendor serves it is a detail of the
   // route, not of the sentence the person is about to send — it belongs in
   // the model card the cell opens, next to the models they can switch to.
@@ -440,14 +446,27 @@ export function ComposerStatusRow({
             the models (the current one among them, marked), the reasoning
             level, and the way to the full catalogue. Settings is one more
             click away, not the first thing a model click does. */}
-        <ModelQuickPicker
-          vendorModel={vendorModel}
-          displayModel={displayModel}
-          enableThinking={enableThinkingChat}
-          reasoningAvailable={reasoningAvailable}
-          onToggleThinking={onToggleThinking}
-          onOpenModelSettings={onOpenModelSettings}
-        />
+        {noActiveModel ? (
+          <button
+            type="button"
+            data-testid="iab-status-model-setup"
+            data-tour-anchor="model-picker"
+            onClick={onOpenModelSettings}
+            className="inline-flex min-w-0 shrink items-center gap-1 text-left text-input-bar-action transition-opacity duration-(--motion-fast) ease-(--motion-ease-standard) hover:opacity-80 focus:outline-none focus-visible:ring-1 focus-visible:ring-input-bar-focus motion-reduce:transition-none"
+          >
+            <Brain className="h-3 w-3 shrink-0" aria-hidden="true" />
+            <span className="min-w-0 truncate">{t("bottomActionRow.setUpProvider")}</span>
+          </button>
+        ) : (
+          <ModelQuickPicker
+            vendorModel={vendorModel}
+            displayModel={displayModel}
+            enableThinking={enableThinkingChat}
+            reasoningAvailable={reasoningAvailable}
+            onToggleThinking={onToggleThinking}
+            onOpenModelSettings={onOpenModelSettings}
+          />
+        )}
       </div>
     </div>
   );
@@ -762,8 +781,14 @@ function ModelQuickPicker({
             // it empty; the muted vendor column is then blank rather than
             // repeating the same label twice.
             const modelLessSubscription = subscriptionChoice !== null && subscriptionChoice.modelId === null;
-            const vendorText = modelLessSubscription ? "" : choice.vendorLabel;
-            const primaryText = modelLessSubscription ? choice.vendorLabel : (choice.modelId ?? "");
+            // A CLI that runs its own default when nothing is chosen
+            // says so instead of leaving the model column to the label.
+            const cliDefault = modelLessSubscription && isSubscriptionRuntimeId(subscriptionChoice.provider)
+              && subscriptionRuntimeDescriptor(subscriptionChoice.provider).offersCliDefaultModel;
+            const vendorText = modelLessSubscription && !cliDefault ? "" : choice.vendorLabel;
+            const primaryText = cliDefault
+              ? t("llmTab.cliDefaultModel")
+              : modelLessSubscription ? choice.vendorLabel : (choice.modelId ?? "");
             return (
             <li key={key} role="option" aria-selected={choice.current}>
               <button

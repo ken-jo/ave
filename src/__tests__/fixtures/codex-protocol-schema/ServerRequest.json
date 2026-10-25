@@ -1,0 +1,193 @@
+{
+ "$schema": "http://json-schema.org/draft-07/schema#",
+ "title": "ServerRequest",
+ "oneOf": [
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "item/commandExecution/requestApproval"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "item/fileChange/requestApproval"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "item/tool/requestUserInput"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "mcpServer/elicitation/request"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "item/permissions/requestApproval"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "item/tool/call"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "account/chatgptAuthTokens/refresh"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "attestation/generate"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "currentTime/read"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "applyPatchApproval"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  },
+  {
+   "properties": {
+    "method": {
+     "enum": [
+      "execCommandApproval"
+     ],
+     "type": "string"
+    },
+    "params": {
+     "type": "object"
+    }
+   },
+   "required": [
+    "method"
+   ],
+   "type": "object"
+  }
+ ]
+}

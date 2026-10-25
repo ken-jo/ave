@@ -63,9 +63,10 @@ const invoke = makeAppIpcInvoker(handlers);
  */
 function makeDeps(options: { initialFlow: WebViewPreferredFlow }) {
   let flow = options.initialFlow;
-  const llm = { provider: "openai", vendors: { "azure-foundry": { baseUrl: null } } };
+  const llm = { provider: "openai", activeChatRuntime: { kind: "api" }, vendors: { "azure-foundry": { baseUrl: null } } };
   return {
     settingsService: {
+      hasStoredSecret: vi.fn(() => false),
       getAll: vi.fn(() => ({ llm, webView: { preferredFlow: flow } })),
       get: vi.fn((key: string) => {
         if (key === "llm") return llm;

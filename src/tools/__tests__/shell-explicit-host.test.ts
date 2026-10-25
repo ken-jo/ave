@@ -24,10 +24,10 @@ function prepare() {
   const request: ApprovalRequestInput = { id: "host-once", category: "tool", toolCategory: "shell", toolName: "bash", args: HOST_INPUT, source: "builtin", createdAt: Date.now(), reason: "Explicit host execution", allowedChoices: ["allow-once", "deny-once"], forceExplicit: true, hostShellExecutionPermitBinding: binding };
   return { cwd, plan, binding, webContents, gate, request };
 }
-afterEach(() => {
+afterEach(async () => {
   __resetActiveSandboxCapabilityForTest();
   __resetSandboxRequestedAtBootForTest();
-  for (const dir of temporaryDirectories.splice(0)) cleanupTmpDir(dir);
+  for (const dir of temporaryDirectories.splice(0)) await cleanupTmpDir(dir);
 });
 
 describe("explicit host shell authorization", () => {

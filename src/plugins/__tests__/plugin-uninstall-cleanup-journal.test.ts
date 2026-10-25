@@ -167,7 +167,7 @@ describe("PluginUninstallCleanupJournal", () => {
   it("retains independent cleanup ownership for multiple plugins", () => {
     const { path } = fixture();
     const journal = new PluginUninstallCleanupJournal(path);
-    for (const pluginId of ["sampleportal", "agent-hub"]) {
+    for (const pluginId of ["sampleportal", "samplehub"]) {
       journal.prepare({
         pluginId,
         installPluginId: pluginId,
@@ -184,7 +184,7 @@ describe("PluginUninstallCleanupJournal", () => {
         .list()
         .map((record) => record.pluginId)
         .sort(),
-    ).toEqual(["agent-hub", "sampleportal"]);
+    ).toEqual(["samplehub", "sampleportal"]);
   });
 
   it("durably merges late auth partitions and reopens tracker cleanup", () => {

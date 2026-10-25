@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
 import { readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
@@ -48,7 +49,13 @@ afterAll(async () => {
   await cleanupTmpDir(bundleDir);
   // The ordinary filesystem sees the archive as a file during removal.
   const originalFs = createRequire(import.meta.url)("original-fs") as typeof import("node:fs");
-  originalFs.rmSync(`${bundleDir}.asar`, { force: true });
+  try {
+    originalFs.rmSync(`${bundleDir}.asar`, { force: true });
+  } catch (error) {
+    // Electron keeps an archive it has read open without share-delete for the
+    // life of this worker, so Windows refuses the removal until it exits.
+    if (process.platform !== "win32" || (error as NodeJS.ErrnoException).code !== "EPERM") throw error;
+  }
 });
 
 function childProgram(body: string): void {
@@ -192,6 +199,40 @@ describe("isolated table parsing", () => {
     childProgram(`process.stdout.write('x'.repeat(${PREVIEW_DOCUMENT_LIMITS.maxResponseBytes + 1}))`);
     await expect(parseTableDocumentIsolated(Buffer.from("a"), "csv", 0)).rejects.toMatchObject({ code: "parse-limit" });
     expect(getManagedChildProcessCount()).toBe(0);
+  });
+
+  it("settles a stopped parse only after its kill completes, on every platform", async () => {
+    childProgram(`process.stdout.write('x'.repeat(${PREVIEW_DOCUMENT_LIMITS.maxResponseBytes + 1}))`);
+    const realSpawn = managedChildren.spawnManaged;
+    const realKill = managedChildren.forceKillManagedChildProcess;
+    let closed!: Promise<unknown>;
+    let release!: () => void;
+    const latch = new Promise<void>((resolve) => { release = resolve; });
+    const spawned = vi.spyOn(managedChildren, "spawnManaged").mockImplementation((...args) => {
+      const child = realSpawn(...args);
+      closed = once(child, "close");
+      return child;
+    });
+    // POSIX kills complete synchronously; the latch stands in for a pending tree kill.
+    const stopped = vi.spyOn(managedChildren, "forceKillManagedChildProcess").mockImplementation((child, reason) => {
+      const done = realKill(child, reason);
+      return latch.then(() => done);
+    });
+    try {
+      let settled = false;
+      const pending = parseTableDocumentIsolated(Buffer.from("a"), "csv", 0).finally(() => { settled = true; });
+      pending.catch(() => {});
+      await vi.waitFor(() => expect(stopped).toHaveBeenCalled());
+      await closed;
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(settled).toBe(false);
+      release();
+      await expect(pending).rejects.toMatchObject({ code: "parse-limit" });
+    } finally {
+      release();
+      spawned.mockRestore();
+      stopped.mockRestore();
+    }
   });
 
   it("rejects source bytes and sheet indices before spawning", async () => {

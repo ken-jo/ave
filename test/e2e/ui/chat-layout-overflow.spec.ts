@@ -18,15 +18,15 @@ const LONG_ASSISTANT =
   '먼저 mia님의 “오늘(2026-05-06 KST)” 기준 할 일/마감 항목을 찾기 위해 ' +
   '`{"id":"session_tasks","arguments":{"steps":[{"title":"개인 작업 스냅샷 확인","status":"pending"},{"title":"승인 상태 확인","status":"in_progress"}]}}` ' +
   "이제 mia님의 개인 작업 스냅샷을 맞춰 다시 시도하겠습니다. " +
-  '`tool {"tool":"agent_hub_my_work_snapshot","arguments":{"includeDone":false,"long_unbroken_key":"agent_hub_list_approval_requests_agent_hub_list_inbox_agent_hub_my_work_snapshot"}}` ' +
+  '`tool {"tool":"samplehub_my_work_snapshot","arguments":{"includeDone":false,"long_unbroken_key":"samplehub_list_approval_requests_samplehub_list_inbox_samplehub_my_work_snapshot"}}` ' +
   "승인 요청하신 도구 결과가 반환되지 않아도 레이아웃은 오른쪽으로 밀려나면 안 됩니다.";
 
 const LONG_IDENTIFIER =
-  "agent_hub_list_approval_requests_agent_hub_list_inbox_agent_hub_my_work_snapshot_20260506_KST_layout_probe";
+  "samplehub_list_approval_requests_samplehub_list_inbox_samplehub_my_work_snapshot_20260506_KST_layout_probe";
 
 const LONG_RESULT =
   "승인 요청 없음. 결과 문자열에도 긴한국어문장과 " +
-  "`inline_code_with_long_identifier_agent_hub_list_approval_requests_agent_hub_list_inbox_agent_hub_my_work_snapshot_20260506_KST_layout_probe` " +
+  "`inline_code_with_long_identifier_samplehub_list_approval_requests_samplehub_list_inbox_samplehub_my_work_snapshot_20260506_KST_layout_probe` " +
   "이 포함됩니다. ".repeat(6);
 
 test.describe("chat layout overflow", () => {
@@ -70,7 +70,7 @@ test.describe("chat layout overflow", () => {
       [
         JSON.stringify({
           role: "user",
-          content: "사용자 mia의 오늘 할 일과 agent_hub_list_approval_requests 상태를 확인해줘.",
+          content: "사용자 mia의 오늘 할 일과 samplehub_list_approval_requests 상태를 확인해줘.",
         }),
         JSON.stringify({
           role: "assistant",
@@ -79,7 +79,7 @@ test.describe("chat layout overflow", () => {
           toolCalls: [
             {
               id: "t1",
-              name: "agent_hub_list_approval_requests",
+              name: "samplehub_list_approval_requests",
               input: {
                 query: "사용자 mia의 오늘 승인 요청 상태",
                 long_unbroken_key: LONG_IDENTIFIER,
@@ -90,7 +90,7 @@ test.describe("chat layout overflow", () => {
         JSON.stringify({
           role: "tool_result",
           toolUseId: "t1",
-          toolName: "agent_hub_list_approval_requests",
+          toolName: "samplehub_list_approval_requests",
           content: LONG_RESULT,
         }),
         JSON.stringify({
@@ -112,7 +112,7 @@ test.describe("chat layout overflow", () => {
             },
             {
               id: "t3",
-              name: "agent_hub_my_work_snapshot",
+              name: "samplehub_my_work_snapshot",
               input: { includeDone: false, long_unbroken_key: LONG_IDENTIFIER },
             },
           ],
@@ -126,7 +126,7 @@ test.describe("chat layout overflow", () => {
         JSON.stringify({
           role: "tool_result",
           toolUseId: "t3",
-          toolName: "agent_hub_my_work_snapshot",
+          toolName: "samplehub_my_work_snapshot",
           content: "긴 결과 본문입니다. " + LONG_RESULT,
         }),
         JSON.stringify({
@@ -222,7 +222,7 @@ test.describe("chat layout overflow", () => {
   test("historical WorkGroup tools do not clip chat horizontally", async () => {
     await page.setViewportSize({ width: 560, height: 900 });
     // A cleanly completed historical turn collapses into one "work complete"
-    // group with no step count (8810dec73); expanding it shows the tool rows.
+    // group with no step count; expanding it shows the tool rows.
     const workGroup = page.locator("[data-testid=\"work-group\"]").filter({ hasText: t("workGroup.completed") });
     await expect(workGroup).toHaveCount(1);
     await workGroup.waitFor({
@@ -230,7 +230,7 @@ test.describe("chat layout overflow", () => {
       timeout: 15_000,
     });
     await workGroup.locator("button").first().click();
-    await expect(workGroup).toContainText("agent_hub_list_approval_requests");
+    await expect(workGroup).toContainText("samplehub_list_approval_requests");
     const buttons = await workGroup.locator("button").count();
     for (let i = 1; i < buttons; i++) {
       await workGroup.locator("button").nth(i).click();

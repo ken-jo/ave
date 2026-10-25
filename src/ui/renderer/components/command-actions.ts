@@ -134,6 +134,7 @@ export function buildQuickActions({
   handleNewChat,
   openNewSurface,
   pluginViews,
+  locale,
 }: {
   setActiveView: (key: string) => void;
   openSettings: () => void;
@@ -141,6 +142,8 @@ export function buildQuickActions({
   /** Open a NEW terminal or web page in the focused pane. */
   openNewSurface: (view: InstanceViewKey) => void;
   pluginViews: PluginUiExtension[];
+  /** The UI language plugin labels resolve against. */
+  locale: string;
 }): QuickAction[] {
   return [
     { id: "home",       label: t("commandActions.goHome"),        run: () => setActiveView("home") },
@@ -152,7 +155,7 @@ export function buildQuickActions({
     { id: "new-web-panel",      label: t("mainPanels.newWebPanel"),      run: () => openNewSurface("web") },
     ...pluginViews.map((i) => {
       const viewKey = toViewKey(i);
-      const pluginLabel = getPluginViewLabel(i);
+      const pluginLabel = getPluginViewLabel(i, locale);
       return {
         id: `v:${viewKey}`,
         label: t("commandActions.openPlugin", { pluginLabel }),

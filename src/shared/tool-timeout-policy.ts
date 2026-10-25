@@ -2,10 +2,11 @@
  * Tool execution timeout policy — single source of truth.
  *
  * All values are milliseconds for direct comparison without unit conversion.
- * Only `shellDefaultMs` is model-facing: the bash/powershell Zod schema does
- * `/ 1000` at the boundary to expose `timeoutSeconds` to the model. Every
- * other key is host-internal and consumed as ms directly — no other surface
- * should do the `/ 1000` conversion.
+ * Only `shellDefaultMs` and the two `terminalRunWait*Ms` keys are
+ * model-facing: the bash/powershell Zod schema does `/ 1000` at the boundary
+ * to expose `timeoutSeconds` to the model, and `terminal_run` does the same
+ * for `waitSeconds`. Every other key is host-internal and consumed as ms
+ * directly — no other surface should do the `/ 1000` conversion.
  *
  * The module-level invariant block at the bottom of this file enforces
  * `shellDefaultMs % 1000 === 0` at load time so a non-divisible value would
@@ -107,6 +108,10 @@ export const TOOL_TIMEOUT_POLICY = {
   // margin so the executor policy remains route-independent.
   shellCeilingGraceMs: 31_000,
   globalCeilingMs: 120_000,
+  // Native location fixtures allow 15 s per check: cold host startup takes
+  // over 1 s. Bound each serial ACL request to that budget so a stalled host
+  // releases queued admissions well before the global ceiling.
+  windowsAclRequestMs: 15_000,
   // Pre-effect exact workload/Docker identity proof. This is also the
   // protocol handshake timeout; keep it here so the protocol and executor do
   // not maintain independent copies of the same phase budget.
@@ -128,6 +133,13 @@ export const TOOL_TIMEOUT_POLICY = {
   workloadBrokerOuterGuardMs: 1_000,
   // Includes admission, source reading and decoder process lifetime.
   imagePreparationMs: 30_000,
+  // How long `terminal_run` waits for the command it typed to finish before
+  // returning the block as still running (the agent reads the rest later with
+  // terminal_read). The command keeps running in the terminal either way. The
+  // maximum stays below `globalCeilingMs` so the wait, not the executor
+  // ceiling, is what ends a long call. Model-facing in whole seconds.
+  terminalRunWaitDefaultMs: 15_000,
+  terminalRunWaitMaxMs: 100_000,
   pluginImportMs: 10_000,
   pluginFactoryMs: 10_000,
   pluginStartupDefaultMs: 10_000,
@@ -202,10 +214,15 @@ export const TOOL_TIMEOUT_POLICY = {
   // consume the reserve, it aborts as cleanup-unproven and external workload
   // release remains authoritative.
   shutdownCleanupMs: 60_000,
-  // Inner timeout for `forceKillProcessTree` between SIGTERM and SIGKILL on
-  // a single tracked child. Bounded so shutdown never hangs on a stubborn
-  // grandchild while still giving graceful exits a window.
+  // Bounded POSIX child-list lookup during process tree termination.
   processTreeKillMs: 1_000,
+  // Loaded Windows hosts can take several seconds to enumerate and kill a tree.
+  windowsProcessTreeKillMs: 10_000,
+  // The whole emergency sweep shares one budget, sized for a single slow
+  // tree pass on a loaded host (1 s is what taskkill lost to under load).
+  windowsEmergencyProcessSweepMs: 10_000,
+  // Give an ACP prompt cancellation time to acknowledge before closing transport.
+  acpAbortGraceMs: 1_000,
   // Unreferenced polling retains detached groups until absence is observed.
   processGroupPollMs: 1_000,
   // Warn once if an owned group survives this long after root settlement or
@@ -299,14 +316,17 @@ export function resolveSubAgentCeilingMs(configuredRounds: number): number {
 // `.default(shellDefaultMs / 1000)`; if `shellDefaultMs` were e.g. 120_500,
 // that default is 120.5 and the `.int()` schema rejects its OWN default at
 // parse time. Crashing at module load makes the drift visible immediately.
-for (const key of ["shellDefaultMs"] as const) {
+for (const key of ["shellDefaultMs", "terminalRunWaitDefaultMs", "terminalRunWaitMaxMs"] as const) {
   if (TOOL_TIMEOUT_POLICY[key] % 1000 !== 0) {
     throw new Error(
       `TOOL_TIMEOUT_POLICY.${key} (${TOOL_TIMEOUT_POLICY[key]}) must be divisible by 1000 — ` +
-        "the bash/powershell Zod schema does `/ 1000` to expose seconds to the model, " +
+        "the bash/powershell and terminal_run schemas do `/ 1000` to expose seconds to the model, " +
         "and a non-divisible ms value yields a fractional default the integer schema rejects.",
     );
   }
+}
+if (TOOL_TIMEOUT_POLICY.terminalRunWaitMaxMs >= TOOL_TIMEOUT_POLICY.globalCeilingMs) {
+  throw new Error("TOOL_TIMEOUT_POLICY.terminalRunWaitMaxMs must stay below globalCeilingMs");
 }
 
 // Load-time invariant — the per-round allowance is DERIVED from the shipped

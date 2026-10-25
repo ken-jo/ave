@@ -1,5 +1,6 @@
 import type { SettingsService } from "../../data/settings-store.js";
 import type {
+  LlmModelListCache,
   LlmModelListEntry,
   LlmModelListPricing,
   LlmModelListRequest,
@@ -44,7 +45,78 @@ const MAX_MODEL_ID_LENGTH = 256;
 
 const STANDARD_MODEL_LIST_BASE_URLS: Partial<Record<LLMVendor, string>> = {
   openai: "https://api.openai.com/v1",
+  // Native model-list addresses.
+  claude: "https://api.anthropic.com/v1",
+  gemini: "https://generativelanguage.googleapis.com/v1beta",
 };
+
+/** A bounded paginated listing remains incomplete when its page cap is reached. */
+const MAX_MODEL_LIST_PAGES = 10;
+const VENDOR_MODEL_LIST_PAGE_SIZE = 1_000;
+
+/** Native key headers for each supported listing protocol. */
+function modelListAuthHeaders(vendor: LLMVendor, apiKey: string): Record<string, string> {
+  if (!apiKey) return {};
+  if (vendor === "claude") return { "x-api-key": apiKey, "anthropic-version": "2023-06-01" };
+  if (vendor === "gemini") return { "x-goog-api-key": apiKey };
+  return { Authorization: `Bearer ${apiKey}` };
+}
+
+/** Preserve the selected protocol's cursor and page-size parameters. */
+function modelListPageUrl(vendor: LLMVendor, endpoint: string, cursor: string | null): string {
+  if (vendor !== "claude" && vendor !== "gemini") return endpoint;
+  const url = new URL(endpoint);
+  if (vendor === "claude") {
+    url.searchParams.set("limit", String(VENDOR_MODEL_LIST_PAGE_SIZE));
+    if (cursor !== null) url.searchParams.set("after_id", cursor);
+  } else {
+    url.searchParams.set("pageSize", String(VENDOR_MODEL_LIST_PAGE_SIZE));
+    if (cursor !== null) url.searchParams.set("pageToken", cursor);
+  }
+  return url.toString();
+}
+
+/** A continuation without a usable cursor is a malformed listing. */
+function modelListNextCursor(vendor: LLMVendor, payload: unknown): string | null {
+  if (vendor !== "claude" && vendor !== "gemini") return null;
+  const record = payload !== null && typeof payload === "object" && !Array.isArray(payload)
+    ? payload as Record<string, unknown>
+    : {};
+  if (vendor === "claude") {
+    if (record.has_more !== true) return null;
+    if (typeof record.last_id === "string" && record.last_id.trim() !== "") return record.last_id;
+    throw new ModelListError("invalid-model-list-response", "model list says has_more without a last_id");
+  }
+  const token = record.nextPageToken;
+  return typeof token === "string" && token.trim() !== "" ? token : null;
+}
+
+/** Project native listing rows and omit models explicitly marked retired. */
+function modelListPageRows(vendor: LLMVendor, payload: unknown): unknown[] {
+  const rows = modelListRows(payload);
+  if (vendor === "claude") {
+    return rows.filter((row) => {
+      const lifecycle = optionalRecord(row)?.lifecycle;
+      return lifecycle !== "retired";
+    });
+  }
+  if (vendor !== "gemini") return rows;
+  const chatRows: unknown[] = [];
+  for (const row of rows) {
+    if (row === null || typeof row !== "object") continue;
+    const record = row as Record<string, unknown>;
+    const methods = record.supportedGenerationMethods;
+    if (!Array.isArray(methods) || !methods.includes("generateContent")) continue;
+    if (typeof record.name !== "string") continue;
+    chatRows.push({
+      ...record,
+      id: record.name.replace(/^models\//u, ""),
+      context_length: record.inputTokenLimit,
+      max_output_tokens: record.outputTokenLimit,
+    });
+  }
+  return chatRows;
+}
 
 export type LlmModelListFetchOptions = {
   /**
@@ -133,6 +205,27 @@ export function isDefaultModelListEndpoint(
 ): boolean {
   const base = vendorModelListBaseUrl(vendors, vendor);
   return base ? sameModelListEndpoint(endpoint, base) : false;
+}
+
+/**
+ * The model ids the vendor's own `/models` answer named for the endpoint its
+ * route reaches ({@link isDefaultModelListEndpoint}), from the saved model-list
+ * cache. Empty when no handshake for that endpoint is cached.
+ */
+export function cachedLiveModelIds(
+  llm: {
+    readonly vendors?: ModelListVendorBlocks;
+    readonly modelListCache?: LlmModelListCache;
+  },
+  vendor: LLMVendor,
+): string[] {
+  const ids = new Set<string>();
+  for (const entry of Object.values(llm.modelListCache ?? {})) {
+    if (entry.vendor !== vendor) continue;
+    if (!isDefaultModelListEndpoint(llm.vendors, vendor, entry.endpoint)) continue;
+    for (const model of entry.models) ids.add(model);
+  }
+  return [...ids];
 }
 
 function resolveModelListBaseUrl(
@@ -498,7 +591,7 @@ function modelEntryFromRow(row: unknown): LlmModelListEntry | null {
   const topProvider = optionalRecord(record.top_provider);
   const limits = optionalRecord(record.limits);
   const pricing = pricingFromRecord(record.pricing);
-  const name = optionalString(record.name);
+  const name = optionalString(record.display_name) ?? optionalString(record.displayName) ?? optionalString(record.name);
   const provider = optionalString(record.provider) ?? optionalString(record.publisher);
   const ownedBy = optionalString(record.owned_by);
   const description = optionalString(record.description) ?? optionalString(record.summary);
@@ -512,7 +605,8 @@ function modelEntryFromRow(row: unknown): LlmModelListEntry | null {
     ?? optionalNumber(limits?.max_input_tokens)
     ?? optionalNumber(record.max_input_tokens)
     ?? optionalNumber(record.max_model_len);
-  const maxOutputTokens = optionalNumber(record.max_output_tokens)
+  const maxOutputTokens = optionalNumber(record.max_tokens)
+    ?? optionalNumber(record.max_output_tokens)
     ?? optionalNumber(limits?.max_output_tokens);
   const inputModalities = optionalStringArray(architecture?.input_modalities)
     ?? optionalStringArray(record.supported_input_modalities);
@@ -725,8 +819,10 @@ export async function listLlmModelsFromSettings(
       message: "Credentialed model list endpoints must use https.",
     };
   }
-  const headers: Record<string, string> = { Accept: "application/json" };
-  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+  const headers: Record<string, string> = {
+    Accept: "application/json",
+    ...modelListAuthHeaders(request.vendor, apiKey),
+  };
 
   let requestEndpoint = endpoint;
   try {
@@ -739,47 +835,58 @@ export async function listLlmModelsFromSettings(
         ...networkAccess,
       },
     )).toString();
-    const response = await (
-      options.fetchPublicHttpResponseImpl ?? fetchPublicHttpResponse
-    )(requestEndpoint, {
-      method: "GET",
-      headers,
-      fetchImpl: options.fetchImpl,
-      maxRedirects: 0,
-      timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-      ...networkAccess,
-    });
-    if (!response.ok) {
-      return {
-        ok: false,
-        error: "model-list-fetch-failed",
-        endpoint: requestEndpoint,
-        status: response.status,
-        message: `Model list request failed with HTTP ${response.status}.`,
-      };
-    }
+    const rows: unknown[] = [];
+    let cursor: string | null = null;
+    let lastPayload: unknown;
+    for (let page = 0; page < MAX_MODEL_LIST_PAGES; page += 1) {
+      const pageUrl = modelListPageUrl(request.vendor, requestEndpoint, cursor);
+      const response = await (
+        options.fetchPublicHttpResponseImpl ?? fetchPublicHttpResponse
+      )(pageUrl, {
+        method: "GET",
+        headers,
+        fetchImpl: options.fetchImpl,
+        maxRedirects: 0,
+        timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+        ...networkAccess,
+      });
+      if (!response.ok) {
+        return {
+          ok: false,
+          error: "model-list-fetch-failed",
+          endpoint: requestEndpoint,
+          status: response.status,
+          message: `Model list request failed with HTTP ${response.status}.`,
+        };
+      }
 
-    const text = await readResponseTextLimited(
-      response,
-      options.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES,
-    );
-    let payload: unknown;
-    try {
-      payload = JSON.parse(text) as unknown;
-    } catch {
-      throw new ModelListError(
-        "invalid-model-list-response",
-        "model list response must be valid JSON",
+      const text = await readResponseTextLimited(
+        response,
+        options.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES,
       );
+      try {
+        lastPayload = JSON.parse(text) as unknown;
+      } catch {
+        throw new ModelListError(
+          "invalid-model-list-response",
+          "model list response must be valid JSON",
+        );
+      }
+      rows.push(...modelListPageRows(request.vendor, lastPayload));
+      cursor = modelListNextCursor(request.vendor, lastPayload);
+      if (cursor === null || rows.length >= MAX_MODEL_IDS) break;
     }
-    const modelEntries = parseStandardModelListEntries(payload);
+    const modelEntries = parseStandardModelListEntries({ data: rows });
+    // Complete only after the last page: a list still paging when the page
+    // cap or the id cap stopped it cannot prove a model gone.
+    const complete = cursor === null && modelListPayloadIsComplete(lastPayload, modelEntries.length);
     return {
       ok: true,
       vendor: request.vendor,
       endpoint: requestEndpoint,
       models: modelEntries.map((entry) => entry.id),
       modelEntries,
-      ...(modelListPayloadIsComplete(payload, modelEntries.length) ? { complete: true as const } : {}),
+      ...(complete ? { complete: true as const } : {}),
       fetchedAt: new Date().toISOString(),
     };
   } catch (err) {

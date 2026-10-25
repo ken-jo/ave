@@ -80,23 +80,24 @@ const execHeadless = execModeRequested(process.argv);
 
 /**
  * The console destination — pino-pretty (colorized text) for dev/unpackaged,
- * or raw pino JSON to stdout for production/packaged/CI. Used both by the
- * legacy single-transport path (kept for the exported `transport`) and as the
- * first multistream stream.
+ * or raw pino JSON to stdout for production/packaged/CI: the first stream of
+ * the non-test multistream.
  */
-const consoleStream: NodeJS.WritableStream = useJsonFormat
-  ? (execHeadless ? process.stderr : process.stdout)
-  : // pino-pretty as a STREAM (not a worker transport) so it can coexist with
-    // the file stream inside a single pino.multistream. Worker transports are
-    // avoided here because they resolve a separate worker entry file, which
-    // breaks in a packaged app.asar.
-    prettyStream({
-      colorize: true,
-      translateTime: "SYS:HH:MM:ss.l",
-      ignore: "pid,hostname",
-      // Its default destination is stdout, which a headless run has claimed.
-      ...(execHeadless ? { destination: process.stderr } : {}),
-    });
+function createConsoleStream(): NodeJS.WritableStream {
+  return useJsonFormat
+    ? (execHeadless ? process.stderr : process.stdout)
+    : // pino-pretty as a STREAM (not a worker transport) so it can coexist with
+      // the file stream inside a single pino.multistream. Worker transports are
+      // avoided here because they resolve a separate worker entry file, which
+      // breaks in a packaged app.asar.
+      prettyStream({
+        colorize: true,
+        translateTime: "SYS:HH:MM:ss.l",
+        ignore: "pid,hostname",
+        // Its default destination is stdout, which a headless run has claimed.
+        ...(execHeadless ? { destination: process.stderr } : {}),
+      });
+}
 
 /**
  * Exported for testing — the pino transport config chosen at module load. In
@@ -167,11 +168,17 @@ const redact = { paths: REDACT_PATHS, censor: "[redacted]" };
  * identical to before while the file sink is dormant.
  */
 export const logger = isTest
-  ? pino({ level: LOG_LEVEL, redact, transport })
+  // The same fd 1 as pino's default destination, written synchronously: an
+  // asynchronous destination registers a process-exit flush hook, and under
+  // the renderer suites' VM pool that hook outlives the file's context and
+  // throws when it fires there.
+  ? pino({ level: LOG_LEVEL, redact, transport }, pino.destination({ fd: 1, sync: true }))
   : pino(
       { level: LOG_LEVEL, redact },
       pino.multistream([
-        { stream: consoleStream, level: LOG_LEVEL as pino.Level },
+        // Built only here: pino-pretty opens an asynchronous stdout destination
+        // with a process-exit flush hook, which test mode never uses.
+        { stream: createConsoleStream(), level: LOG_LEVEL as pino.Level },
         { stream: fileStream as NodeJS.WritableStream, level: LOG_LEVEL as pino.Level },
       ]),
     );

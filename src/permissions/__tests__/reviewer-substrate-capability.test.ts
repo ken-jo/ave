@@ -85,6 +85,37 @@ describe("resolveReviewerSandboxCapability — execution-substrate awareness", (
     expect(isWeakSandbox(cap)).toBe(true);
   });
 
+  it("reports the active asrt capability for terminal_run only while the sandbox contains shells", () => {
+    // A workspace terminal exists only under a shell-containing sandbox and
+    // keeps its wrap for life, so a command typed into it lands confined.
+    setActiveSandboxCapability({
+      kind: "asrt",
+      confidence: "verified",
+      platform: "darwin",
+      reason: "ASRT (Seatbelt) active",
+      confines: { filesystem: true, process: true, network: true },
+    });
+    const contained = resolveReviewerSandboxCapability("builtin", "terminal_run");
+    expect(contained.kind).toBe("asrt");
+    expect(contained.reason).toMatch(/workspace terminal shell ASRT-wrapped/);
+    expect(isWeakSandbox(contained)).toBe(false);
+    // Only the builtin: a plugin or MCP tool of the same name is not the terminal.
+    expect(resolveReviewerSandboxCapability("plugin", "terminal_run").kind).toBe("none");
+    expect(resolveReviewerSandboxCapability("mcp", "terminal_run").kind).toBe("none");
+
+    // A sandbox that no longer confines processes proves nothing about the terminal now.
+    setActiveSandboxCapability({
+      kind: "asrt",
+      confidence: "verified",
+      platform: "win32",
+      reason: "ASRT partial",
+      confines: { filesystem: true, process: false, network: true },
+    });
+    expect(resolveReviewerSandboxCapability("builtin", "terminal_run").kind).toBe("none");
+    __resetActiveSandboxCapabilityForTest();
+    expect(resolveReviewerSandboxCapability("builtin", "terminal_run").kind).toBe("none");
+  });
+
   it("host-shell tools stay none when the gate is OFF (no over-grant)", () => {
     // No setActiveSandboxCapability call → global capability is none.
     const cap = resolveReviewerSandboxCapability("builtin", "bash");

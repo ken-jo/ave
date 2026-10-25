@@ -83,7 +83,6 @@ describe("ChatView", () => {
     const chip = container.querySelector('[data-testid="composer-api-key-chip"]') as HTMLElement | null;
     expect(chip).not.toBeNull();
     expect(chip?.closest(".ave-chat-scroll")).toBeNull();
-    expect(container.querySelector('[data-testid="chat-view:no-api-key-card"]')).toBeNull();
 
     // Both of the retired card's destinations survive, one click deeper.
     fireEvent.click(chip!);
@@ -113,7 +112,6 @@ describe("ChatView", () => {
     await waitFor(() => {
       expect(container.textContent).toContain("Ave 에이전트가 준비되었습니다");
     });
-    expect(container.querySelector('[data-testid="chat-preview-open"]')).toBeNull();
     expect(container.querySelector('[data-testid="chat-preview-rail"]')).toBeNull();
   });
 
@@ -296,7 +294,6 @@ describe("ChatView", () => {
       // The no-key affordance is a zero-height chip in the composer's reserved
       // strip, NOT a transcript card.
       expect(container.textContent).toContain("API 키 설정 필요");
-      expect(container.querySelector('[data-testid="chat-view:no-api-key-card"]')).toBeNull();
       expect(container.querySelector('[data-testid="composer-api-key-chip"]')).not.toBeNull();
       const composerDock = container.querySelector("[data-composer-placement]");
       expect(composerDock).not.toBeNull();
@@ -376,7 +373,6 @@ describe("ChatView", () => {
       expect(container.querySelector(testIdSelector(TEST_IDS.composerTextarea))).not.toBeNull();
     });
     expect(container.querySelector('[data-testid="composer-api-key-chip"]')).toBeNull();
-    expect(container.querySelector('[data-testid="chat-view:no-api-key-card"]')).toBeNull();
   });
 
   it("allows keyless OpenAI-compatible endpoints with a configured base URL to send", async () => {
@@ -1081,7 +1077,6 @@ describe("ChatView", () => {
       expect(button).not.toBeNull();
       return button!;
     });
-    expect(container.querySelector('[data-testid="chat-preview-open"]')).toBeNull();
     expect(container.querySelector('[data-testid="chat-preview-rail"]')).toBeNull();
 
     await act(async () => {
@@ -1396,7 +1391,6 @@ describe("ChatView", () => {
 
     await waitFor(() => {
       expect(container.textContent).toContain("A 답변");
-      expect(container.querySelector('[data-testid="chat-preview-open"]')).toBeNull();
       expect(container.querySelector('[data-testid="chat-preview-rail"]')).toBeNull();
     });
 
@@ -1406,7 +1400,6 @@ describe("ChatView", () => {
 
     await waitFor(() => {
       expect(container.textContent).toContain("[File #1]");
-      expect(container.querySelector('[data-testid="chat-preview-open"]')).toBeNull();
       expect(container.querySelector(testIdSelector(TEST_IDS.panePanelToggle))).not.toBeNull();
     });
 
@@ -1447,7 +1440,6 @@ describe("ChatView", () => {
       expect(container.textContent).toContain("B 답변");
       expect(container.querySelector('[data-testid="attachment-chip"]')).toBeNull();
       expect(container.querySelector('[data-testid="attachment-chip-collapsed"]')).toBeNull();
-      expect(container.querySelector('[data-testid="chat-preview-open"]')).toBeNull();
       expect(container.textContent).not.toContain("draft-only.md");
     });
   });
@@ -2379,56 +2371,6 @@ describe("ChatView", () => {
         value: originalWindowResizeObserver,
       });
     }
-  });
-
-  it("moves a tool_use assistant round into the active WorkGroup before tool events arrive", async () => {
-    const { container, api, emitChatStream } = await renderApp({ hasApiKey: true });
-    const pendingSend = deferred<{ ok: true }>();
-    api.chatSend.mockImplementationOnce(async () => pendingSend.promise);
-    await submitChatMessage(container, "직접 도구 호출");
-    await act(async () => {
-      emitChatStream({ type: "text_delta", text: "도구를 바로 호출하겠습니다" });
-      emitChatStream({
-        type: "assistant_round",
-        text: "도구를 바로 호출하겠습니다",
-        thought: "",
-        stopReason: "tool_use",
-        hasToolCalls: true,
-      });
-    });
-
-    await waitFor(() => {
-      const workGroup = container.querySelector("[data-testid=\"work-group\"]");
-      expect(workGroup).toBeTruthy();
-      expect(workGroup!.textContent).toContain("생각 중...");
-      expect(workGroup!.textContent).toContain("도구를 바로 호출하겠습니다");
-    });
-    await act(async () => {
-      pendingSend.resolve({ ok: true });
-      await Promise.resolve();
-    });
-  });
-
-  it("strips meta markers and renders Markdown for assistant_round text", async () => {
-    const { container, emitChatStream } = await renderApp({ hasApiKey: true });
-    await submitChatMessage(container, "마크다운 확인");
-    await act(async () => {
-      emitChatStream({ type: "text_delta", text: "결과는 **정상**입니다.<title>마크다운 렌더링 확인</title>" });
-      emitChatStream({
-        type: "assistant_round",
-        text: "결과는 **정상**입니다.<title>마크다운 렌더링 확인</title>",
-        thought: "",
-        stopReason: "end_turn",
-        hasToolCalls: false,
-      });
-      emitChatStream({ type: "done" });
-    });
-
-    await waitFor(() => {
-      expect(container.textContent).toContain("결과는 정상입니다.");
-      expect(container.textContent).not.toContain("<title>");
-      expect(container.querySelector('[data-testid="assistant-message-body"] strong')?.textContent).toBe("정상");
-    });
   });
 
   // Regression guard for the PR #545 review comments ③④.

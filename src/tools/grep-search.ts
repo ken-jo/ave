@@ -4,15 +4,15 @@ import { z } from "zod";
 import type { ToolExecutionResult } from "./base.js";
 import { sensitiveFilePattern } from "./file-access-policy.js";
 import { buildSafeChildEnv } from "./safe-env.js";
-import { resolveCodexVendorExecutable } from "../main/codex-vendor-path.js";
+import { resolvePinnedRipgrepExecutable } from "./ripgrep-executable.js";
 import { forceKillManagedChildProcess, spawnManaged } from "../main/managed-child-processes.js";
 import { errorMessage } from "../shared/error-message.js";
 
 /**
  * `grep_files` search engine: ripgrep, the engine Claude Code's Grep and
  * opencode's grep both run. The executable is the ripgrep build the pinned
- * Codex platform package ships (`vendor/<triple>/codex-path/rg`), resolved
- * without any PATH fallback.
+ * per-platform package ships (`@vscode/ripgrep-<platform>-<arch>/bin/rg`),
+ * resolved without any PATH fallback.
  *
  * Contract with the tool class in file-tools.ts: the class has already
  * resolved the root and passed the execute-time path gate for it. This module
@@ -98,14 +98,14 @@ class RipgrepUnavailableError extends Error {
   constructor() {
     super(
       "grep_files is unavailable: the bundled ripgrep executable is missing for this platform. "
-        + "Reinstall Ave; the search engine ships inside the @openai/codex platform package.",
+        + "Reinstall Ave; the search engine ships inside the @vscode/ripgrep platform package.",
     );
     this.name = "RipgrepUnavailableError";
   }
 }
 
 export function resolveBundledRipgrep(): string {
-  return resolveCodexVendorExecutable("rg", () => new RipgrepUnavailableError());
+  return resolvePinnedRipgrepExecutable(() => new RipgrepUnavailableError());
 }
 
 export function buildRipgrepArgs(root: string, input: GrepFilesInput): string[] {
@@ -217,11 +217,12 @@ function runRipgrep(
     let stderr = "";
     let stoppedEarly = false;
     let failure: Error | undefined;
+    let termination: void | Promise<void>;
     const decoder = new TextDecoder("utf-8");
 
     const stop = (error?: Error): void => {
       if (error) failure ??= error;
-      forceKillManagedChildProcess(child, "grep-files-stop");
+      termination = forceKillManagedChildProcess(child, "grep-files-stop");
     };
     const onAbort = (): void => {
       stop(signal?.reason instanceof Error ? signal.reason : new Error("grep_files was cancelled."));
@@ -269,7 +270,8 @@ function runRipgrep(
       failure ??= new Error(`grep_files could not start ripgrep: ${error.message}`);
       if (child.pid) stop();
     });
-    child.once("close", (code) => {
+    child.once("close", async (code) => {
+      if (termination) await termination;
       signal?.removeEventListener("abort", onAbort);
       consume(decoder.decode());
       if (pending.length > 0 && !stoppedEarly) accept(pending);

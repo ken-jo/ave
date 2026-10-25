@@ -1,8 +1,8 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { deflateSync } from "node:zlib";
+import { deflateSync, inflateSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
 import { writeFixtureFile as write } from "./gate-script-runner.js";
 import { gitFixtureEnv } from "../../src/__tests__/support/git-fixture-env.mjs";
@@ -298,6 +298,71 @@ describe("check-generated-assets", () => {
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("cannot verify the Git work tree");
   });
+});
+
+/** The same PNG with its pixel stream deflated again at `level`. */
+function reencodePng(png: Buffer, level: number): Buffer {
+  const chunks: Buffer[] = [png.subarray(0, 8)];
+  const idat: Buffer[] = [];
+  for (let offset = 8; offset + 8 <= png.length;) {
+    const length = png.readUInt32BE(offset);
+    const type = png.toString("ascii", offset + 4, offset + 8);
+    const body = png.subarray(offset + 8, offset + 8 + length);
+    if (type === "IDAT") idat.push(body);
+    else {
+      if (type === "IEND" && idat.length > 0) chunks.push(pngChunk("IDAT", deflateSync(inflateSync(Buffer.concat(idat)), { level })));
+      chunks.push(pngChunk(type, body));
+    }
+    offset += 12 + length;
+  }
+  return Buffer.concat(chunks);
+}
+
+describe("generate-ave-icons", () => {
+  /** A scratch root holding just what the generator reads, so it writes there and not here. */
+  function generatorRoot(): string {
+    const root = mkdtempSync(join(tmpdir(), "ave-generate-icons-"));
+    roots.push(root);
+    for (const rel of ["scripts/generate-ave-icons.cjs", "scripts/lib/normalized-image.cjs", "src/shared/ave-logo.ts"]) {
+      mkdirSync(dirname(join(root, rel)), { recursive: true });
+      copyFileSync(join(REPO_ROOT, rel), join(root, rel));
+    }
+    return root;
+  }
+
+  function generate(root: string): void {
+    const result = spawnSync(nodeCommand, [join(root, "scripts/generate-ave-icons.cjs")], { cwd: root, encoding: "utf-8" });
+    expect(result.stderr).toBe("");
+    expect(result.status).toBe(0);
+  }
+
+  it("keeps an image whose bytes differ from its output only by deflate encoding", () => {
+    // Rewriting it would dirty a tracked icon for no visible change, which the
+    // pre-push hook refuses after its build.
+    const root = generatorRoot();
+    generate(root);
+    const icon = join(root, "build/icon.png");
+    const generated = readFileSync(icon);
+    const reencoded = reencodePng(generated, 1);
+    expect(reencoded.equals(generated)).toBe(false);
+    writeFileSync(icon, reencoded);
+
+    generate(root);
+
+    expect(readFileSync(icon).equals(reencoded)).toBe(true);
+  }, 60_000);
+
+  it("rewrites an image that draws something else", () => {
+    const root = generatorRoot();
+    generate(root);
+    const icon = join(root, "build/icon.png");
+    const generated = readFileSync(icon);
+    writeFileSync(icon, icoWith(OTHER_PIXELS, 9).subarray(22));
+
+    generate(root);
+
+    expect(readFileSync(icon).equals(generated)).toBe(true);
+  }, 60_000);
 });
 
 describe("generated-asset manifest", () => {

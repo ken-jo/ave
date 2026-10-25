@@ -173,6 +173,12 @@ describe("env-surface policy", () => {
       ["pending", over["pending"] ?? []],
     ] as ReadonlyArray<readonly [string, readonly string[]]>);
 
+  it("keeps no bucket entry for the access-rule query, whose inputs travel in request lines", () => {
+    for (const name of ["AVE_EXECUTABLE_ACL_PATHS", "AVE_ACL_DESKTOP_PACKAGE", "AVE_ACL_CAP_SIDS"]) {
+      expect(BUCKETS.some(([, names]) => names.includes(name))).toBe(false);
+    }
+  });
+
   it("derives the development bucket from the packaged scrub inventory", () => {
     expect(DEVELOPMENT).toEqual(
       ACTIVE_DEVELOPMENT_ENV_VARS.filter((name) => name.startsWith("AVE_")),

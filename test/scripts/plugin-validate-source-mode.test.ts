@@ -20,6 +20,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, unlinkSync, wr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { systemProcessProbe } from "../../src/__tests__/support/test-run-dirs.js";
 
 const APP_ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const GOLDEN_PLUGINS = join(APP_ROOT, "src/plugins/isolation/__tests__/fixtures/host-protocol/3/plugins");
@@ -118,7 +119,7 @@ export const createPlugin = async () => {
 
 const descendantPids: number[] = [];
 
-afterAll(() => {
+afterAll(async () => {
   for (const pid of descendantPids) {
     try {
       process.kill(pid, "SIGKILL");
@@ -126,10 +127,26 @@ afterAll(() => {
       // Already gone.
     }
   }
+  // A live descendant keeps the checkout open, and Windows refuses to remove a
+  // directory a process still holds. The kill returns before the process is
+  // gone, and its handles close a moment after it reports an exit code, so
+  // the removal waits for both.
+  const deadline = Date.now() + 10_000;
+  while (descendantPids.some((pid) => systemProcessProbe.exists(pid)) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
   // The links go first, one by one and never recursively: a recursive removal
   // follows a Windows junction into the checkout it points at.
   for (const name of LINKED) unlinkSync(join(checkout, name));
-  rmSync(scratch, { recursive: true, force: true });
+  for (;;) {
+    try {
+      rmSync(scratch, { recursive: true, force: true });
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EPERM" || Date.now() >= deadline) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
 });
 
 function validate(pluginDir: string, env: NodeJS.ProcessEnv, timeout = 60_000) {

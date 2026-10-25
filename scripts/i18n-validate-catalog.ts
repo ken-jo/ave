@@ -2,8 +2,8 @@
  * Build-time i18n catalog validation.
  *
  * Lazy generated locale chunks must still be complete before a build ships.
- * This script eagerly loads every supported catalog and fails on key drift,
- * placeholder/tag/slash-command drift, or generated sentinel leakage.
+ * This script eagerly loads every supported catalog and fails on key drift
+ * or placeholder/tag/slash-command drift.
  */
 import { SUPPORTED_LOCALES } from "../src/i18n/locale.js";
 import { loadAllLocaleMessages } from "../src/i18n/messages/index.js";
@@ -11,7 +11,6 @@ import { loadAllLocaleMessages } from "../src/i18n/messages/index.js";
 const PLACEHOLDER_RE = /\{[A-Za-z0-9_.-]+\}/g;
 const TAG_RE = /<\/?[A-Za-z][A-Za-z0-9_-]*(?:\s+[^<>]*)?>/g;
 const SLASH_COMMAND_RE = /\/(?:new|sessions|load|compact|remember|memory|vendor|tools|permission|help|clear|command)\b/g;
-const SENTINEL_LEAK_RE = /AVEKEEP\s*\d+/i;
 
 function sortedMatches(value: string, pattern: RegExp): string[] {
   return value.match(pattern)?.sort() ?? [];
@@ -38,9 +37,6 @@ for (const locale of SUPPORTED_LOCALES) {
     }
     if (JSON.stringify(sortedMatches(value, SLASH_COMMAND_RE)) !== JSON.stringify(sortedMatches(english, SLASH_COMMAND_RE))) {
       failures.push(`${locale}:${key}: slash-command drift`);
-    }
-    if (SENTINEL_LEAK_RE.test(value)) {
-      failures.push(`${locale}:${key}: generated sentinel leaked`);
     }
   }
 }

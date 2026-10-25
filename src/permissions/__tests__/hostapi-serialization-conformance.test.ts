@@ -458,7 +458,8 @@ describe("hostApi marshalling — the surface a process boundary must carry", ()
   it("every member of the REAL hostApi carries a marshalling decision", async () => {
     const hostApi = await buildRealHostApi(
       harness,
-      resources.makeTmpDir("ave-hostapi-marshalling-"),
+      resources,
+      "ave-hostapi-marshalling-",
     );
     const paths: string[] = [];
     const nonPlainNamespaces: string[] = [];
@@ -487,7 +488,8 @@ describe("hostApi marshalling — the surface a process boundary must carry", ()
   it("the effect SOT and the marshalling table describe the SAME surface", async () => {
     const hostApi = await buildRealHostApi(
       harness,
-      resources.makeTmpDir("ave-hostapi-marshalling-"),
+      resources,
+      "ave-hostapi-marshalling-",
     );
     const paths: string[] = [];
     const nonPlainNamespaces: string[] = [];
@@ -571,7 +573,8 @@ describe("hostApi marshalling — the surface a process boundary must carry", ()
   it("the disposer-returning subscriptions really do hand back a function", async () => {
     const hostApi = await buildRealHostApi(
       harness,
-      resources.makeTmpDir("ave-hostapi-marshalling-"),
+      resources,
+      "ave-hostapi-marshalling-",
     );
     const disposers = [
       hostApi.onEvent("surface-probe:event", () => {}),
@@ -588,7 +591,8 @@ describe("hostApi marshalling — the surface a process boundary must carry", ()
   it("storage.read really does hand back bytes, not a JSON value", async () => {
     const hostApi = await buildRealHostApi(
       harness,
-      resources.makeTmpDir("ave-hostapi-marshalling-"),
+      resources,
+      "ave-hostapi-marshalling-",
     );
     await hostApi.storage.write("surface-probe.bin", "payload");
     const bytes = await hostApi.storage.read("surface-probe.bin");
@@ -610,7 +614,8 @@ describe("hostApi marshalling — the surface a process boundary must carry", ()
   it("the members classified representable really do return JSON values", async () => {
     const hostApi = await buildRealHostApi(
       harness,
-      resources.makeTmpDir("ave-hostapi-marshalling-"),
+      resources,
+      "ave-hostapi-marshalling-",
     );
     await hostApi.storage.writeJson("surface-probe.json", { ok: true });
 
@@ -661,7 +666,8 @@ describe("hostApi marshalling — the surface a process boundary must carry", ()
     // `await` on a plain value yields that value. This is what notices.
     const hostApi = await buildRealHostApi(
       harness,
-      resources.makeTmpDir("ave-hostapi-getsecret-"),
+      resources,
+      "ave-hostapi-getsecret-",
     );
     const returned = hostApi.getSecret("surface-probe-secret");
     expect(returned).toBeInstanceOf(Promise);

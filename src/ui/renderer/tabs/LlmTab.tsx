@@ -45,6 +45,7 @@ import {
   llmRouteImageInput,
   type LLMVendorSettings,
   LLM_VENDOR_DEFAULTS,
+  OPENAI_COMPATIBLE_VENDOR_PRESETS,
 } from "../../../shared/llm-vendor-defaults.js";
 import {
   cachedModelListEntry,
@@ -72,18 +73,23 @@ import { ModelCatalogRefreshSection } from "./ModelCatalogRefreshSection.js";
 import { useTranslation, type I18nContextValue } from "../../../i18n/react.js";
 import {
   SUBSCRIPTION_RUNTIME_API_COUNTERPART,
+  isSubscriptionRuntimeId,
+  subscriptionRuntimeDescriptor,
   type SubscriptionRuntimeId,
 } from "../../../shared/subscription-runtime.js";
 import { useSubscriptionProviders } from "./SubscriptionProvidersController.js";
 import {
   ERROR_MESSAGE_KEYS,
+  SignInMethodChoice,
   SubscriptionAuthControls,
+  type ProviderSignInMethod,
   type SubscriptionProviderView,
 } from "./SubscriptionProvidersSection.js";
 import { TEST_IDS } from "../../../shared/test-ids.js";
 import { formatTokensExact } from "../../../lib/cost-format.js";
 import { errorMessage } from "../../../shared/error-message.js";
 import { supportsVision } from "../../../engine/llm/vendor-capabilities.js";
+import { vendorHasCatalogProvider } from "../../../shared/model-catalog/vendor-models.js";
 import {
   resolveInputModalities,
   resolveModelRetirement,
@@ -599,7 +605,6 @@ function providerOptionFromPreset(
     placeholder: preset.apiKeyPlaceholder ?? "sk-...",
     needsBaseUrl: true,
     baseUrlPlaceholder: preset.baseUrl,
-    defaultModel: preset.defaultModel,
     modelOptions: preset.modelOptions,
     requiresApiKey: preset.requiresApiKey,
     ...(preset.modelDiscoveryPolicy ? { modelDiscoveryPolicy: preset.modelDiscoveryPolicy } : {}),
@@ -618,10 +623,20 @@ function providerOptionsForPresets(
  *
  * This is the renderer's half of `STANDARD_MODEL_LIST_BASE_URLS` in
  * `engine/llm/model-list.ts`: main resolves the URL, this decides that asking
- * is worthwhile. Kept as one set so the two questions the tab asks about these
- * vendors — "sync it?" and "may a static seed stand in?" — cannot disagree.
+ * is worthwhile.
  */
 const STANDARD_CATALOGUE_ENDPOINT_VENDORS: ReadonlySet<string> = new Set([
+  "openai",
+  "claude",
+  "gemini",
+]);
+
+/**
+ * Of those, the vendors whose list is the endpoint's word alone: until their
+ * `/models` answers, no catalog list stands in. Other native routes offer
+ * catalog models until their listing arrives, then the listing.
+ */
+const ENDPOINT_ONLY_CATALOGUE_VENDORS: ReadonlySet<string> = new Set([
   "openai",
 ]);
 
@@ -629,8 +644,8 @@ const STANDARD_CATALOGUE_ENDPOINT_VENDORS: ReadonlySet<string> = new Set([
  * Whether this provider has a model list worth asking its endpoint for.
  *
  * The two contract questions come FIRST, before any address is considered:
- * may the host fetch this provider's list at all, and is that list the
- * endpoint's word rather than ours. An address is not a catalogue — Azure AI
+ * may the host fetch this provider's list at all, and does this provider have
+ * an endpoint list at all. An address is not a catalogue — Azure AI
  * Foundry's `baseUrl` names one deployment while its models are the curated
  * table here — so letting a configured endpoint short-circuit these made a
  * card fetch a list it does not read, and paint itself red when the fetch
@@ -644,9 +659,9 @@ function shouldSyncModelList(
 ): boolean {
   if (!vendorId) return false;
   if (!modelDiscoveryPolicyAllowsFetch(modelDiscoveryPolicy)) return false;
+  if (STANDARD_CATALOGUE_ENDPOINT_VENDORS.has(vendorId)) return true;
   if (!usesEndpointModelCatalogue(vendorId)) return false;
-  if (baseUrl?.trim()) return true;
-  return STANDARD_CATALOGUE_ENDPOINT_VENDORS.has(vendorId);
+  return Boolean(baseUrl?.trim());
 }
 
 /**
@@ -663,14 +678,14 @@ function isOpenAICompatibleFamilyVendor(vendorId: string): boolean {
  * Whether this vendor's catalogue is the endpoint's word rather than ours.
  *
  * Two kinds qualify: the openai-compatible family, whose catalogue is defined
- * by whatever endpoint it points at, and the vendors with a fixed, known
- * `/models` endpoint. For both, a bundled list of model ids is a guess about
- * someone else's inventory, so it must never stand in for the answer — a
- * failed handshake has to READ as a failed handshake, not as a short catalogue.
+ * by whatever endpoint it points at, and {@link ENDPOINT_ONLY_CATALOGUE_VENDORS}.
+ * For both, a bundled list of model ids is a guess about someone else's
+ * inventory, so it must never stand in for the answer — a failed handshake has
+ * to READ as a failed handshake, not as a short catalogue.
  */
 function usesEndpointModelCatalogue(vendorId: string): boolean {
   return isOpenAICompatibleFamilyVendor(vendorId)
-    || STANDARD_CATALOGUE_ENDPOINT_VENDORS.has(vendorId);
+    || ENDPOINT_ONLY_CATALOGUE_VENDORS.has(vendorId);
 }
 
 /**
@@ -707,15 +722,13 @@ function modelOptionsFor(
   modelDiscoveryPolicy?: MarketplaceProviderModelDiscoveryPolicy,
   isRetired: (model: string) => boolean = () => false,
 ): string[] {
-  const hasSynced = Boolean(syncedOptions && syncedOptions.length > 0);
-  // Handshake-only: for every provider whose catalogue is the endpoint's word
-  // (see `usesEndpointModelCatalogue`) and whose discovery policy is not seeded
-  // (static/manual), never fall back to the static `info.modelOptions` seed or
-  // the seeded default model. The list stays empty until a live /models fetch
-  // succeeds; only the user's persisted selection is surfaced so an
-  // already-configured provider still shows its saved model.
+  const hasSynced = syncedOptions !== undefined;
+  // A catalog supplies choices until a live listing arrives. Without a catalog,
+  // an endpoint-defined route offers only its saved selection until it answers,
+  // unless the endpoint preset explicitly declares seeded options.
   const handshakeOnly =
     !hasSynced &&
+    !(isLLMVendor(vendorId) && vendorHasCatalogProvider(vendorId)) &&
     usesEndpointModelCatalogue(vendorId) &&
     !modelDiscoveryPolicyUsesSeededOptions(modelDiscoveryPolicy);
 
@@ -725,13 +738,6 @@ function modelOptionsFor(
       ? []
       : [...info.modelOptions];
 
-  if (!handshakeOnly) {
-    const defaultModel = info.defaultModel.trim();
-    if (defaultModel && !options.includes(defaultModel)) {
-      options.unshift(defaultModel);
-    }
-  }
-
   const currentModel = selectedModel.trim();
   if (currentModel && !options.includes(currentModel)) {
     options.unshift(currentModel);
@@ -740,7 +746,7 @@ function modelOptionsFor(
   // A retired model is not a choice, the saved one included: a saved
   // selection pointing at one shows as unresolved instead (design
   // `model-capability-catalog.md` §6.1).
-  return options.filter((option) => !isRetired(option));
+  return options.filter((option) => option.trim() && !isRetired(option));
 }
 
 /**
@@ -1074,6 +1080,28 @@ interface ConfiguredApiRoute {
   modelListKey: string;
 }
 
+/**
+ * The name Settings gives a subscription runtime: its company's, through the
+ * API counterpart ("OpenAI" for the ChatGPT plan, "Anthropic Claude" for the
+ * Claude plan). The runtime's own name is never a provider a user picks.
+ */
+function subscriptionCompanyLabel(view: SubscriptionProviderView): string {
+  const counterpart = SUBSCRIPTION_RUNTIME_API_COUNTERPART[view.descriptor.id];
+  return counterpart ? getVendorInfo(counterpart).label : view.descriptor.planName;
+}
+
+/**
+ * The chooser's group name for a subscription's models: the company and the
+ * plan, so a subscription pick and an API-key pick from the same company
+ * cannot be confused for one another ("OpenAI · ChatGPT subscription").
+ */
+function subscriptionModelsLabel(t: I18nContextValue["t"], view: SubscriptionProviderView): string {
+  return t("subscriptionProvidersSection.subscriptionModels", {
+    company: subscriptionCompanyLabel(view),
+    plan: view.descriptor.planName,
+  });
+}
+
 function apiRouteRowId(route: ConfiguredApiRoute): string {
   return route.presetId ? marketplaceProviderPresetSecretId(route.presetId) : route.vendorId;
 }
@@ -1092,6 +1120,28 @@ function parseUnifiedValue(value: string): { providerId: string; modelId: string
   const at = value.indexOf("::");
   if (at <= 0) return null;
   return { providerId: value.slice(0, at), modelId: value.slice(at + 2) };
+}
+
+function upstreamModelProvider(
+  modelId: string,
+  providerId: string,
+  providerLabel: string,
+  otherLabel: string,
+): { id: string; label: string } {
+  const presetId = providerId.startsWith(API_PROVIDER_PREFIX)
+    ? providerId.slice(API_PROVIDER_PREFIX.length) : "";
+  if (!isOpenAICompatiblePresetVendor(presetId)
+    || !OPENAI_COMPATIBLE_VENDOR_PRESETS[presetId].upstreamPrefixedModelIds) {
+    return { id: "", label: providerLabel };
+  }
+  const slash = modelId.indexOf("/");
+  const id = slash > 0 ? modelId.slice(0, slash) : "";
+  const vendorId = id === "anthropic" ? "claude" : id === "google" ? "gemini" : id;
+  const readableId = id.replace(/[-_]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+  return {
+    id,
+    label: isLLMVendor(vendorId) ? getVendorOption(vendorId).label : readableId || otherLabel,
+  };
 }
 
 /**
@@ -1129,15 +1179,93 @@ function UnifiedModelSelect({
   disabled?: boolean;
 }) {
   const { t } = useTranslation();
-  const pinnedSet = new Set(pinned);
-  const pinnedOptions = options.filter((option) => pinnedSet.has(option.modelId));
-  const restByProvider: Array<{ label: string; items: UnifiedModelOption[] }> = [];
-  for (const option of options) {
-    if (pinnedSet.has(option.modelId)) continue;
-    const last = restByProvider[restByProvider.length - 1];
-    if (last && last.label === option.providerLabel) last.items.push(option);
-    else restByProvider.push({ label: option.providerLabel, items: [option] });
-  }
+  const [query, setQuery] = useState("");
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const searchFocusPreferredRef = useRef(true);
+  const pinnedSet = useMemo(() => new Set(pinned), [pinned]);
+  const indexedOptions = useMemo(() => options.map((option) => {
+    const modelId = parseUnifiedValue(option.value)?.modelId ?? option.modelId;
+    const upstream = upstreamModelProvider(modelId, option.providerId, option.providerLabel, t("llmTab.modelOtherGroup"));
+    return {
+      option,
+      upstream,
+      free: option.entry?.tags?.free === true || isOpenRouterFreeModel(modelId),
+      searchText: normalizeProviderSearch([
+        modelId, option.modelId, option.entry?.name, upstream.id, upstream.label,
+        option.providerLabel, option.vendorLabel,
+      ].join(" ")),
+    };
+  }), [options, t]);
+  const groupedOptions = useMemo(() => {
+    const providers = new Map<string, {
+      label: string;
+      upstreams: Map<string, { label: string; unprefixed: boolean; items: UnifiedModelOption[] }>;
+    }>();
+    const pins: UnifiedModelOption[] = [];
+    for (const { option, upstream } of indexedOptions) {
+      if (pinnedSet.has(option.modelId)) {
+        pins.push(option);
+        continue;
+      }
+      let provider = providers.get(option.providerId);
+      if (!provider) {
+        provider = { label: option.providerLabel, upstreams: new Map() };
+        providers.set(option.providerId, provider);
+      }
+      let group = provider.upstreams.get(upstream.label);
+      if (!group) {
+        group = { label: upstream.label, unprefixed: false, items: [] };
+        provider.upstreams.set(upstream.label, group);
+      }
+      group.unprefixed ||= upstream.id === "";
+      group.items.push(option);
+    }
+    return {
+      pins,
+      providers: [...providers].map(([id, provider]) => ({
+        id,
+        label: provider.label,
+        groups: [...provider.upstreams].map(([upstreamId, group]) => ({ id: upstreamId, ...group }))
+          .sort((a, b) => Number(a.unprefixed) - Number(b.unprefixed) || a.label.localeCompare(b.label)),
+      })),
+    };
+  }, [indexedOptions, pinnedSet]);
+  const normalizedQuery = normalizeProviderSearch(query);
+  const matches = useMemo(() => {
+    const terms = normalizedQuery.split(/\s+/).filter(Boolean);
+    return new Set(indexedOptions.filter(({ free, searchText }) => terms.every((term) =>
+      term === "free" || term === "무료" ? free : searchText.includes(term),
+    )).map(({ option }) => option.value));
+  }, [indexedOptions, normalizedQuery]);
+  const visibleGroups = useMemo(() => ({
+    pins: groupedOptions.pins.filter((option) => matches.has(option.value)),
+    providers: groupedOptions.providers.map((provider) => ({
+      ...provider,
+      groups: provider.groups.map((group) => ({
+        ...group,
+        items: group.items.filter((option) => matches.has(option.value)),
+      })).filter((group) => group.items.length > 0),
+    })).filter((provider) => provider.groups.length > 0),
+  }), [groupedOptions, matches]);
+
+  const content = (option: UnifiedModelOption) => (
+    <ModelSelectItemContent
+      option={option.modelId}
+      {...(option.entry ? { entry: option.entry } : {})}
+      /* Kept on grouped rows too, where it repeats the group header: the
+         collapsed trigger renders this same content and has no label of its
+         own, so dropping it would leave the closed control showing a bare
+         model id. */
+      provider={option.vendorLabel}
+      {...(option.vision === true ? { vision: true } : {})}
+      {...(option.toolCall ? { toolCall: option.toolCall } : {})}
+      {...(option.reasoning ? { reasoning: option.reasoning } : {})}
+      {...(option.reasoningUnstatedVendor ? { reasoningUnstatedVendor: option.reasoningUnstatedVendor } : {})}
+      {...(option.facts ? { factsOverride: option.facts } : {})}
+      {...(option.unlisted ? { tone: "destructive" as const } : {})}
+    />
+  );
+  const selectedOption = options.find((option) => option.value === value);
 
   const row = (option: UnifiedModelOption) => {
     const isPinned = pinnedSet.has(option.modelId);
@@ -1145,6 +1273,10 @@ function UnifiedModelSelect({
       <SelectItem
         key={option.value}
         value={option.value}
+        className="hover:bg-accent hover:text-accent-foreground"
+        onPointerMove={(event) => {
+          if (document.activeElement === searchInputRef.current) event.preventDefault();
+        }}
         leading={
           /* Outside ItemText so the pin stays in the row and never mirrors
              into the collapsed trigger. Radix commits a row on POINTERUP, so
@@ -1172,45 +1304,95 @@ function UnifiedModelSelect({
           </span>
         }
       >
-        <ModelSelectItemContent
-          option={option.modelId}
-          {...(option.entry ? { entry: option.entry } : {})}
-          /* Kept on grouped rows too, where it repeats the group header. Radix
-             mirrors the chosen row's ItemText into the collapsed trigger, and
-             the trigger has no label of its own, so dropping it here would
-             leave the closed control showing a bare model id. */
-          provider={option.vendorLabel}
-          {...(option.vision === true ? { vision: true } : {})}
-          {...(option.toolCall ? { toolCall: option.toolCall } : {})}
-          {...(option.reasoning ? { reasoning: option.reasoning } : {})}
-          {...(option.reasoningUnstatedVendor ? { reasoningUnstatedVendor: option.reasoningUnstatedVendor } : {})}
-          {...(option.facts ? { factsOverride: option.facts } : {})}
-          {...(option.unlisted ? { tone: "destructive" as const } : {})}
-        />
+        {content(option)}
       </SelectItem>
     );
   };
 
   return (
-    <Select value={value} onValueChange={onValueChange} disabled={disabled}>
+    <Select
+      value={value}
+      onValueChange={(nextValue) => {
+        onValueChange(nextValue);
+        setQuery("");
+      }}
+      onOpenChange={(open) => {
+        searchFocusPreferredRef.current = true;
+        if (!open) setQuery("");
+      }}
+      disabled={disabled}
+    >
       <SelectTrigger id="model-select" className="w-full" data-testid={TEST_IDS.llmModelSelect}>
-        <SelectValue placeholder={placeholder} />
+        <SelectValue placeholder={placeholder}>
+          {selectedOption ? content(selectedOption) : undefined}
+        </SelectValue>
       </SelectTrigger>
-      <SelectContent className={popupClassName}>
-        {pinnedOptions.length > 0 && (
+      <SelectContent
+        className={popupClassName}
+        onFocusCapture={(event) => {
+          // Placement and changes to the selected row can request item focus.
+          // Keep search active until the user navigates or presses an item.
+          if (searchFocusPreferredRef.current && event.target !== searchInputRef.current) {
+            event.stopPropagation();
+            searchInputRef.current?.focus();
+          }
+        }}
+        onPointerDownCapture={(event) => {
+          const target = event.target as HTMLElement;
+          if (target.closest('[role="option"]') && !target.closest('[role="button"]')) {
+            searchFocusPreferredRef.current = false;
+          }
+        }}
+      >
+        <div className="sticky top-0 z-10 border-b border-border/(--opacity-medium) bg-popover p-2">
+          <Input
+            ref={searchInputRef}
+            value={query}
+            onFocus={() => { searchFocusPreferredRef.current = true; }}
+            onChange={(event) => setQuery(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "ArrowDown") {
+                const firstItem = event.currentTarget.closest('[role="listbox"]')
+                  ?.querySelector<HTMLElement>('[role="option"]:not([aria-disabled="true"])');
+                if (firstItem) {
+                  searchFocusPreferredRef.current = false;
+                  firstItem.focus();
+                }
+                event.preventDefault();
+              }
+              if (event.key !== "Escape") event.stopPropagation();
+            }}
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={(event) => event.stopPropagation()}
+            placeholder={t("llmTab.modelSearchPlaceholder")}
+            aria-label={t("llmTab.modelSearchAriaLabel")}
+            data-testid="llm-tab:model-search"
+            className="h-8 text-xs"
+          />
+        </div>
+        {visibleGroups.pins.length > 0 && (
           <SelectGroup>
             <SelectLabel className="text-[10px] uppercase tracking-normal text-muted-foreground">
               {t("llmTab.modelPinnedGroup")}
             </SelectLabel>
-            {pinnedOptions.map(row)}
+            {visibleGroups.pins.map(row)}
           </SelectGroup>
         )}
-        {restByProvider.map((group) => (
-          <SelectGroup key={group.label}>
+        {visibleGroups.providers.map((provider) => (
+          <SelectGroup key={provider.id} data-model-provider={provider.id}>
             <SelectLabel className="text-[10px] uppercase tracking-normal text-muted-foreground">
-              {group.label}
+              {provider.label}
             </SelectLabel>
-            {group.items.map(row)}
+            {provider.groups.map((group) => group.label === provider.label ? (
+              group.items.map(row)
+            ) : (
+              <SelectGroup key={group.id}>
+                <SelectLabel className="text-[10px] text-muted-foreground">
+                  {group.label}
+                </SelectLabel>
+                {group.items.map(row)}
+              </SelectGroup>
+            ))}
           </SelectGroup>
         ))}
         {options.length === 0 && (
@@ -1218,6 +1400,16 @@ function UnifiedModelSelect({
             {t("llmTab.modelNoConnectedProvider")}
           </div>
         )}
+        <div
+          aria-live="polite"
+          role="status"
+          className={normalizedQuery ? "px-2 py-2 text-center text-xs text-muted-foreground" : "sr-only"}
+          data-testid="llm-tab:model-search-status"
+        >
+          {normalizedQuery && (matches.size === 0 ? (
+            <span data-testid="llm-tab:model-no-results">{t("llmTab.modelNoResults")}</span>
+          ) : t("llmTab.modelMatchCount", { count: matches.size }))}
+        </div>
       </SelectContent>
     </Select>
   );
@@ -1254,11 +1446,12 @@ function modelListStatesFromCache(
 }
 
 function optionsFromModelListState(state: ModelListState | undefined): readonly string[] | undefined {
+  if (state?.status === "ready") return state.options ?? [];
   return state?.options && state.options.length > 0 ? state.options : undefined;
 }
 
 function hasUsableModelListOptions(state: ModelListState | undefined): boolean {
-  return Boolean(optionsFromModelListState(state));
+  return (optionsFromModelListState(state)?.length ?? 0) > 0;
 }
 
 /**
@@ -1342,14 +1535,10 @@ export function LlmTab(props: LlmTabProps) {
   const selectedMarketplaceProviderPreset = vendor === "openai-compatible" && marketplaceProviderPresetId
     ? marketplaceProviderPresets.find((preset) => preset.providerId === marketplaceProviderPresetId)
     : undefined;
-  const selectedMarketplaceProviderOption = selectedMarketplaceProviderPreset
-    ? providerOptionFromPreset(selectedMarketplaceProviderPreset)
-    : undefined;
-  const vendorInfo = selectedMarketplaceProviderOption ?? getVendorInfo(vendor);
   const activeModelListCredentialScope = selectedMarketplaceProviderPreset?.providerId ?? "";
   const hasOnSave = typeof onSave === "function";
   const trimmedModel = model.trim();
-  const activeModelValue = trimmedModel || vendorInfo.defaultModel;
+  const activeModelValue = trimmedModel;
   const [marketplaceProviderIds, setMarketplaceProviderIds] = useState<readonly string[]>([]);
   /** What is actually stored for each vendor, mirrored so the typed fields can
    *  say whether they still hold something uncommitted. */
@@ -1622,6 +1811,12 @@ export function LlmTab(props: LlmTabProps) {
    * and a list that closes one row to open another makes it impossible.
    */
   const [openRowIds, setOpenRowIds] = useState<readonly string[]>([]);
+  /**
+   * The sign-in method the user picked on a card that offers two (a provider
+   * with both a subscription and an API key). A pick only decides what the
+   * card shows; it never removes the other method's credential.
+   */
+  const [authMethodByRow, setAuthMethodByRow] = useState<Readonly<Record<string, ProviderSignInMethod>>>({});
   /** Rows whose last save was refused, so the row says so instead of closing. */
   const [saveFailedRowIds, setSaveFailedRowIds] = useState<readonly string[]>([]);
   const [addedRowIds, setAddedRowIds] = useState<readonly string[]>([]);
@@ -1951,8 +2146,13 @@ export function LlmTab(props: LlmTabProps) {
       && draft.baseUrl.trim() !== (saved?.baseUrl ?? "").trim();
   }, [draftForRow, draftProviderOption, savedVendorBlocks]);
 
-  /** The row the ACTIVE API provider is drawn on. */
-  const activeApiRowId = marketplaceProviderPresetId
+  /**
+   * The row the ACTIVE API provider is drawn on. A preset id only names the
+   * route while chat is on the vendor presets are reached through — the same
+   * rule main applies (`activeLlmRouteModel`, `activeApiRouteConnected`); a
+   * stale id left beside another vendor must not move the route off it.
+   */
+  const activeApiRowId = vendor === "openai-compatible" && marketplaceProviderPresetId
     ? marketplaceProviderPresetSecretId(marketplaceProviderPresetId)
     : vendor;
 
@@ -1991,7 +2191,7 @@ export function LlmTab(props: LlmTabProps) {
       rows.push({
         id: view.descriptor.id,
         // The company's name, not the runtime's: "OpenAI", not "Codex".
-        label: counterpart ? getVendorInfo(counterpart).label : view.descriptor.label,
+        label: subscriptionCompanyLabel(view),
         ...(counterpart ? { apiVendorId: counterpart } : {}),
         ...(counterpart
           ? { modelListKey: route?.modelListKey ?? llmModelListCacheKey(counterpart, "", "") }
@@ -2272,6 +2472,8 @@ export function LlmTab(props: LlmTabProps) {
     const pushed = new Set<string>();
     for (const row of connections) {
       if (!row.apiVendorId) continue;
+      // A connected subscription does not authenticate its separate API route.
+      if (row.apiVendorId !== "vertex-ai" && rowRequiresApiKey(row) && !credentialedProviderIds.has(rowCredentialId(row))) continue;
       if (rowChatBlocker(row) !== null) continue;
       const rowId = rowCredentialId(row);
       const state = row.modelListKey ? modelLists[row.modelListKey] : undefined;
@@ -2358,7 +2560,7 @@ export function LlmTab(props: LlmTabProps) {
       // Connected only. A signed-out provider has nothing to offer yet, and
       // listing its models would invite a choice that cannot be honoured.
       if (view.status?.connection !== "connected") continue;
-      const models = view.status.models ?? [];
+      const models = (view.status.models ?? []).filter((model) => model.id.trim());
       if (models.length === 0) {
         // No model choice at all — the row IS the provider. It still belongs in
         // the list, because picking it is exactly as much of a choice as
@@ -2366,20 +2568,32 @@ export function LlmTab(props: LlmTabProps) {
         options.push({
           value: unifiedValue(view.descriptor.id, ""),
           providerId: view.descriptor.id,
-          providerLabel: view.descriptor.label,
-          vendorLabel: view.descriptor.label,
+          providerLabel: subscriptionModelsLabel(t, view),
+          vendorLabel: subscriptionModelsLabel(t, view),
           modelId: t("llmTab.providerDefaultModel"),
           facts: t("llmTab.modelFixedByProvider"),
           fixed: true,
         });
         continue;
       }
+      if (isSubscriptionRuntimeId(view.descriptor.id)
+        && subscriptionRuntimeDescriptor(view.descriptor.id).offersCliDefaultModel) {
+        // Choosing no model is a real choice here: the user's CLI runs its
+        // own default. It is named as that, never as a model id.
+        options.push({
+          value: unifiedValue(view.descriptor.id, ""),
+          providerId: view.descriptor.id,
+          providerLabel: subscriptionCompanyLabel(view),
+          vendorLabel: subscriptionCompanyLabel(view),
+          modelId: t("llmTab.cliDefaultModel"),
+        });
+      }
       for (const model of models) {
         options.push({
           value: unifiedValue(view.descriptor.id, model.id),
           providerId: view.descriptor.id,
-          providerLabel: view.descriptor.label,
-          vendorLabel: view.descriptor.label,
+          providerLabel: subscriptionModelsLabel(t, view),
+          vendorLabel: subscriptionModelsLabel(t, view),
           modelId: model.label || model.id,
           // A subscription runtime answers the image question itself — the
           // model-name predicate is explicitly bypassed on this route — so the
@@ -2390,9 +2604,26 @@ export function LlmTab(props: LlmTabProps) {
     }
     return options;
   }, [
-    connections, rowChatBlocker, rowModelIds, modelLists, activeApiRowId,
+    connections, rowRequiresApiKey, credentialedProviderIds, rowChatBlocker, rowModelIds, modelLists, activeApiRowId,
     unlistedModel, subscription.providers, savedVendorBlocks, savedModelListCache, t,
   ]);
+
+  /**
+   * Whether the route chat is on right now can actually answer a turn.
+   *
+   * Saving a credential deliberately does NOT adopt the provider it belongs
+   * to — the model list is the one switch, and a save silently moving the
+   * route would make it two. What a save does owe the user is the pointer:
+   * this is what says the key landed but chat is still elsewhere.
+   */
+  const activeRouteCanChat = useMemo(() => {
+    if (subscription.activeRuntime.kind === "subscription") return true;
+    if (retiredLlmProvider) return false;
+    const active = connections.find(
+      (row) => row.apiVendorId && rowCredentialId(row) === activeApiRowId,
+    );
+    return Boolean(active) && rowChatBlocker(active!) === null;
+  }, [activeApiRowId, connections, rowChatBlocker, subscription.activeRuntime.kind, retiredLlmProvider]);
 
   // The saved model is hidden from the chooser in either retirement tier, so
   // the trigger names it and the tier instead of pointing at no option.
@@ -2401,10 +2632,16 @@ export function LlmTab(props: LlmTabProps) {
     : modelRetirementOn(savedModelListCache, activeSyncRow?.modelListKey, vendor)(activeModelValue);
   const selectedUnifiedValue = subscription.activeRuntime.kind === "subscription"
     ? unifiedValue(subscription.activeRuntime.provider, subscription.activeRuntime.model ?? "")
-    : retiredLlmProvider || activeModelRetirement ? "" : unifiedValue(apiProviderId(activeApiRowId), activeModelValue);
+    // No model is selected on a route that cannot answer: an empty value lets
+    // the trigger say so instead of pointing at an option that is not listed.
+    : retiredLlmProvider || activeModelRetirement || !activeRouteCanChat || !activeModelValue
+      ? ""
+      : unifiedValue(apiProviderId(activeApiRowId), activeModelValue);
   const unifiedPlaceholder = subscription.activeRuntime.kind === "api" && activeModelRetirement
     ? retiredModelPlaceholder(t, activeModelRetirement, isRetiredLlmModelMarker(retiredLlmProvider) ? retiredLlmProvider.model : activeModelValue)
-    : vendorInfo.defaultModel;
+    : subscription.activeRuntime.kind === "api" && !activeRouteCanChat
+      ? t("llmTab.modelPlaceholderNoProvider")
+      : t("llmTab.model");
 
   /**
    * A pick moves BOTH halves of the decision: which provider answers, and with
@@ -2511,12 +2748,77 @@ export function LlmTab(props: LlmTabProps) {
     draftForRow, installedPresetById, putDraft, savedVendorBlocks,
   ]);
 
-  /** What `openRowCredentialForm` has to be handed to open this row. */
-  const rowFormTarget = (row: ProviderConnection) => ({
-    rowId: row.id,
-    vendorId: row.apiVendorId!,
-    presetId: row.presetId ?? "",
-  });
+  /**
+   * Which sign-in method a two-way card is showing, or null when it should ask.
+   *
+   * The user's pick wins. Without one the card opens on the method that is
+   * already in use — the route chat runs on, then a subscription that is signed
+   * in or signing in, then a stored or half-typed key — and with nothing
+   * configured it asks, so no key field appears until "API key" is chosen.
+   * A row reached only one way has nothing to choose and answers that way.
+   */
+  const rowAuthMethod = useCallback((row: ProviderConnection): ProviderSignInMethod | null => {
+    if (!row.subscription) return row.apiVendorId ? "api" : null;
+    if (!row.apiVendorId) return "subscription";
+    const picked = authMethodByRow[row.id];
+    if (picked) return picked;
+    if (subscription.activeRuntime.kind === "subscription") {
+      if (subscription.activeRuntime.provider === row.id) return "subscription";
+    } else if (rowIsActiveApiProvider(row) && credentialedProviderIds.has(rowCredentialId(row))) {
+      return "api";
+    }
+    const connection = row.subscription.status?.connection;
+    if (connection === "connected" || connection === "pending") return "subscription";
+    if (credentialedProviderIds.has(rowCredentialId(row)) || rowCredentialDirty(row.id)) return "api";
+    return null;
+  }, [
+    authMethodByRow, credentialedProviderIds, rowCredentialDirty, rowCredentialId,
+    rowIsActiveApiProvider, subscription.activeRuntime,
+  ]);
+
+  /** Whether this row draws the API-key form when open. */
+  const rowShowsCredentialForm = useCallback(
+    (row: ProviderConnection): boolean => Boolean(row.apiVendorId) && rowAuthMethod(row) === "api",
+    [rowAuthMethod],
+  );
+
+  /** Open a row: the key form only when the row is on (or only has) the API-key method. */
+  const openRow = useCallback((row: ProviderConnection) => {
+    // A card opened on a defaulted method stays on it while it is open, even
+    // when a status that arrives later would default it elsewhere.
+    const method = rowAuthMethod(row);
+    if (row.subscription && row.apiVendorId && method && !authMethodByRow[row.id]) {
+      setAuthMethodByRow((current) => ({ ...current, [row.id]: method }));
+    }
+    if (rowShowsCredentialForm(row)) {
+      openRowCredentialForm({ rowId: row.id, vendorId: row.apiVendorId!, presetId: row.presetId ?? "" });
+    }
+    else setOpenRowIds((current) => current.includes(row.id) ? current : [...current, row.id]);
+  }, [authMethodByRow, openRowCredentialForm, rowAuthMethod, rowShowsCredentialForm]);
+
+  /**
+   * Switch a two-way card to `method`. Picking "API key" starts the key form;
+   * leaving it puts away only what was typed and not saved. Stored keys and
+   * signed-in subscriptions are untouched — the card offers their removal.
+   */
+  const chooseAuthMethod = useCallback((row: ProviderConnection, method: ProviderSignInMethod) => {
+    setAuthMethodByRow((current) => ({ ...current, [row.id]: method }));
+    setSaveFailedRowIds((current) => current.filter((rowId) => rowId !== row.id));
+    if (method === "api") {
+      openRowCredentialForm({ rowId: row.id, vendorId: row.apiVendorId!, presetId: row.presetId ?? "" });
+    } else {
+      dropDraft(row.id);
+    }
+  }, [dropDraft, openRowCredentialForm]);
+
+  // A row opened on the API-key method — by default or because its method
+  // resolved after it opened — needs the draft its key form is drawn from.
+  useEffect(() => {
+    for (const row of visibleRows) {
+      if (!openRowIds.includes(row.id) || !rowShowsCredentialForm(row) || draftForRow(row.id)) continue;
+      openRowCredentialForm({ rowId: row.id, vendorId: row.apiVendorId!, presetId: row.presetId ?? "" });
+    }
+  }, [draftForRow, openRowCredentialForm, openRowIds, rowShowsCredentialForm, visibleRows]);
 
   /** Whether this row is showing its credential form. */
   const rowFormOpen = useCallback(
@@ -2544,7 +2846,7 @@ export function LlmTab(props: LlmTabProps) {
     // reveal was actually asking for. Only a row with an API route ever grows
     // one: waiting on a form a subscription-only row will never have would
     // strand the reveal, and the row it named would never be scrolled to.
-    const expectsForm = visibleRows.some((row) => row.id === rowToReveal && row.apiVendorId);
+    const expectsForm = visibleRows.some((row) => row.id === rowToReveal && rowShowsCredentialForm(row));
     const form = node.querySelector<HTMLElement>('[data-testid="llm-tab:manual-section"]');
     if (expectsForm && openRowIds.includes(rowToReveal) && !form) return;
     setRowToReveal(null);
@@ -2553,7 +2855,7 @@ export function LlmTab(props: LlmTabProps) {
       ?? node.querySelector<HTMLElement>('[data-testid="llm-api-key-input"]')
       ?? node.querySelector<HTMLElement>("button");
     focusTarget?.focus();
-  }, [openFormRowId, openRowIds, rowToReveal, visibleRowKey, visibleRows]);
+  }, [openFormRowId, openRowIds, rowShowsCredentialForm, rowToReveal, visibleRowKey, visibleRows]);
 
   /**
    * Persist ONE card. Only what this row owns is written: its secret, and the
@@ -2609,6 +2911,96 @@ export function LlmTab(props: LlmTabProps) {
     // the store holds.
     dropDraft(row.id);
     setOpenRowIds((current) => current.filter((rowId) => rowId !== row.id));
+  };
+
+  /**
+   * Keep a two-way card on the method the user is acting in. Removing the
+   * credential the default was read from would otherwise move the card to
+   * another method (or to none) under the user's hands.
+   */
+  const pinAuthMethod = (row: ProviderConnection, method: ProviderSignInMethod) => {
+    if (!row.subscription || !row.apiVendorId) return;
+    setAuthMethodByRow((current) => current[row.id] === method ? current : { ...current, [row.id]: method });
+  };
+
+  /** Remove the key this row stores. Only ever on an explicit request. */
+  const deleteRowKey = (row: ProviderConnection) => {
+    const method = rowAuthMethod(row);
+    if (method) pinAuthMethod(row, method);
+    void api.deleteApiKey(rowCredentialId(row)).then(() => {
+      if (rowIsActiveApiProvider(row)) setHasKey(false);
+      // A row that existed only because of the key it held would otherwise
+      // disappear the moment the key does — taking the open card, and the
+      // field for entering a replacement, with it. Pin it so removing a key
+      // leaves somewhere to put the next one.
+      revealRow(row.id);
+      setSettingsRevision((current) => current + 1);
+      onSaved();
+    }).catch(() => {
+      // The key is still stored; re-ask the store so the card says so.
+      setSettingsRevision((current) => current + 1);
+    });
+  };
+
+  /**
+   * The other method's credential, on a two-way card.
+   *
+   * Switching the card to one method does not remove what the other one holds:
+   * a saved key or a signed-in subscription keeps working until the user says
+   * otherwise. The card says it is there and offers that removal.
+   */
+  const otherCredentialNote = (row: ProviderConnection) => {
+    if (!row.subscription || !row.apiVendorId) return null;
+    const method = rowAuthMethod(row);
+    if (method === "subscription" && credentialedProviderIds.has(rowCredentialId(row))) {
+      return (
+        <div
+          className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/(--opacity-muted) px-3 py-2 text-xs text-muted-foreground"
+          data-testid={`llm-tab:other-credential:${row.id}:api`}
+        >
+          <span>{t("subscriptionProvidersSection.otherApiKeySaved")}</span>
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className="h-7 text-xs text-destructive"
+            data-testid={`llm-tab:other-credential:${row.id}:remove-api-key`}
+            onClick={() => deleteRowKey(row)}
+          >
+            {t("subscriptionProvidersSection.removeApiKey")}
+          </Button>
+        </div>
+      );
+    }
+    const view = row.subscription;
+    if (method === "api" && view.status?.connection === "connected") {
+      const logout = subscription.props.actions.logout;
+      return (
+        <div
+          className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/(--opacity-muted) px-3 py-2 text-xs text-muted-foreground"
+          data-testid={`llm-tab:other-credential:${row.id}:subscription`}
+        >
+          <span>{t("subscriptionProvidersSection.otherSubscriptionSignedIn", { plan: view.descriptor.planName })}</span>
+          {view.descriptor.supportsLogout && logout ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="h-7 text-xs text-destructive"
+              disabled={Boolean(view.busyAction) || view.refreshPending === true}
+              data-testid={`llm-tab:other-credential:${row.id}:sign-out`}
+              onClick={() => {
+                pinAuthMethod(row, "api");
+                void Promise.resolve(logout(view.descriptor.id)).catch(() => undefined);
+              }}
+            >
+              {t("subscriptionProvidersSection.signOut")}
+            </Button>
+          ) : null}
+        </div>
+      );
+    }
+    return null;
   };
 
   /**
@@ -2704,17 +3096,7 @@ export function LlmTab(props: LlmTabProps) {
                   size="sm"
                   variant="ghost"
                   className="h-7 text-xs text-destructive"
-                  onClick={() => void api.deleteApiKey(rowCredentialId(row)).then(() => {
-                    if (rowIsActiveApiProvider(row)) setHasKey(false);
-                    // A row that existed only because of the key it held would
-                    // otherwise disappear the moment the key does — taking the
-                    // open card, and the field for entering a replacement,
-                    // with it. Pin it so removing a key leaves somewhere to
-                    // put the next one.
-                    revealRow(row.id);
-                    setSettingsRevision((current) => current + 1);
-                    onSaved();
-                  })}
+                  onClick={() => deleteRowKey(row)}
                 >
                   {t("llmTab.delete")}
                 </Button>
@@ -2764,23 +3146,6 @@ export function LlmTab(props: LlmTabProps) {
    * owns the missing piece says what it is, in the same words the list would
    * have needed.
    */
-  /**
-   * Whether the route chat is on right now can actually answer a turn.
-   *
-   * Saving a credential deliberately does NOT adopt the provider it belongs
-   * to — the model list is the one switch, and a save silently moving the
-   * route would make it two. What a save does owe the user is the pointer:
-   * this is what says the key landed but chat is still elsewhere.
-   */
-  const activeRouteCanChat = useMemo(() => {
-    if (subscription.activeRuntime.kind === "subscription") return true;
-    if (retiredLlmProvider) return false;
-    const active = connections.find(
-      (row) => row.apiVendorId && rowCredentialId(row) === activeApiRowId,
-    );
-    return Boolean(active) && rowChatBlocker(active!) === null;
-  }, [activeApiRowId, connections, rowChatBlocker, subscription.activeRuntime.kind, retiredLlmProvider]);
-
   const pickModelGuidance = (row: ProviderConnection) => {
     if (credentialSavedRowId !== row.id || activeRouteCanChat) return null;
     return (
@@ -2850,6 +3215,14 @@ export function LlmTab(props: LlmTabProps) {
     );
   };
 
+  /** Whether the subscription's state is the row's state (see `providerRowState`). */
+  const subscriptionSpeaksForRow = (row: ProviderConnection): boolean => {
+    if (!row.subscription) return false;
+    if (!row.apiConfigured) return true;
+    const connection = row.subscription.status?.connection;
+    return connection === "connected" || connection === "pending";
+  };
+
   /**
    * What a subscription row is waiting on, in the row's own words.
    *
@@ -2859,9 +3232,13 @@ export function LlmTab(props: LlmTabProps) {
    */
   const runtimeSentence = (row: ProviderConnection): string | null => {
     const status = row.subscription?.status;
-    if (!row.subscription || !status) return null;
+    if (!row.subscription || !status || !subscriptionSpeaksForRow(row)) return null;
     if (status.runtime === "unavailable") return t("subscriptionProvidersSection.statusRuntimeUnavailable");
-    if (status.runtime === "not-configured") return t("subscriptionProvidersSection.statusRuntimeNotConfigured");
+    if (status.runtime === "not-configured") {
+      return row.subscription.descriptor.executable === "discovered"
+        ? t("subscriptionProvidersSection.statusCliNotFound")
+        : t("subscriptionProvidersSection.statusRuntimeNotConfigured");
+    }
     if (status.runtime === "unverified") return t("subscriptionProvidersSection.statusRuntimeUnverified");
     if (status.connection === "pending") {
       return status.pendingLoginMethod === "device-code"
@@ -2894,14 +3271,22 @@ export function LlmTab(props: LlmTabProps) {
    * how a column stops being readable straight down.
    */
   const providerRowState = (row: ProviderConnection): ConnectionRowState | null => {
-    const status = row.subscription?.status;
+    // A row with a working API key is not held back by the other method: a
+    // missing or unusable CLI only speaks for the row while the subscription
+    // is the way in (signed in, signing in, or no key to fall back on).
+    const speaks = subscriptionSpeaksForRow(row);
+    const status = speaks ? row.subscription?.status ?? null : null;
     // No word at all while the surface that owns the real state is still
     // answering — guessing "signed out" during the check is how a row lies.
-    if (row.subscription && (!status || status.runtime === "checking" || status.connection === "unknown")) {
+    // "No CLI found" and "the CLI found cannot be used" are answers, though:
+    // a runtime with nothing usable to run has no account to ask about, so
+    // its connection stays unknown for good.
+    if (status?.runtime === "not-configured") return "needs-setup";
+    if (status?.runtime === "unavailable") return "attention";
+    if (speaks && (!status || status.runtime === "checking" || status.connection === "unknown")) {
       return null;
     }
-    if (status?.runtime === "unavailable") return "attention";
-    if (status?.runtime === "not-configured" || status?.runtime === "unverified") return "needs-setup";
+    if (status?.runtime === "unverified") return "needs-setup";
     if (status?.connection === "pending") return "pending";
     if (status?.connection === "connected" || row.apiConfigured) {
       // A failed catalogue fetch is the fifth word only when it left the row
@@ -3089,21 +3474,38 @@ export function LlmTab(props: LlmTabProps) {
                   closeRow(row.id);
                   return;
                 }
-                if (row.apiVendorId) openRowCredentialForm(rowFormTarget(row));
-                else setOpenRowIds((current) => [...current, row.id]);
+                openRow(row);
                 setRowToReveal(row.id);
               }}
               testId={`llm-tab:connection:${row.id}`}
             >
               <div className="space-y-3">
-                {/* Signing in, choosing the official runtime, and signing out are
-                    the half of this row that has no API-key counterpart. */}
-                {row.subscription ? (
-                  <SubscriptionAuthControls
-                    provider={row.subscription}
-                    actions={subscription.props.actions}
+                {/* A provider reached two ways asks which one first, and the
+                    body shows only that method: sign-in controls for the
+                    subscription, the key form for the API key. */}
+                {row.subscription && row.apiVendorId ? (
+                  <SignInMethodChoice
+                    rowId={row.id}
+                    planName={row.subscription.descriptor.planName}
+                    value={rowAuthMethod(row)}
+                    onChange={(method) => chooseAuthMethod(row, method)}
                   />
                 ) : null}
+                {row.subscription && rowAuthMethod(row) === "subscription" ? (
+                  <SubscriptionAuthControls
+                    provider={row.subscription}
+                    actions={{
+                      ...subscription.props.actions,
+                      // Signing out keeps the card on the subscription, so the
+                      // sign-in buttons come back instead of the card asking again.
+                      logout: (providerId) => {
+                        pinAuthMethod(row, "subscription");
+                        return subscription.props.actions.logout?.(providerId);
+                      },
+                    }}
+                  />
+                ) : null}
+                {otherCredentialNote(row)}
                 {saveFailedRowIds.includes(row.id) ? (
                   <p
                     role="alert"
@@ -3113,7 +3515,7 @@ export function LlmTab(props: LlmTabProps) {
                     {t("llmTab.connectionSaveFailed")}
                   </p>
                 ) : null}
-                {credentialFormFor(row)}
+                {rowShowsCredentialForm(row) ? credentialFormFor(row) : null}
               </div>
             </ConnectionRow>
           ))}
@@ -3150,7 +3552,7 @@ export function LlmTab(props: LlmTabProps) {
                 data-testid={`llm-tab:add-provider-item:${row.id}`}
                 onClick={() => {
                   revealRowFromAddMenu(row.id);
-                  if (row.apiVendorId) openRowCredentialForm(rowFormTarget(row));
+                  openRow(row);
                 }}
               >
                 {row.label}
@@ -3258,8 +3660,11 @@ export function LlmTab(props: LlmTabProps) {
               </p>
             )}
           </div>
-          {subscription.activeRuntime.kind === "api" && activeModelValue && (
-            <div className="min-w-0 space-y-1.5">
+          {/* Declares support for the SELECTED model, so it waits for one: a
+              route nothing can answer on has only its vendor's default id,
+              and naming that here would describe a model nobody chose. */}
+          {subscription.activeRuntime.kind === "api" && activeRouteCanChat && activeModelValue && (
+            <div className="min-w-0 space-y-1.5" data-testid="llm-tab:image-input-row">
               <Label htmlFor="model-image-input">{t("llmTab.imageInput")}</Label>
               <Select
                 value={selectedImageInput === undefined ? "automatic" : selectedImageInput ? "supported" : "unsupported"}
@@ -3376,11 +3781,10 @@ export function LlmTab(props: LlmTabProps) {
           {fallbackOpen && (
             <div id="fallback-chain-content" className="min-w-0 space-y-3">
               {fallbackChain.map((entry, idx) => {
-                const fallbackVendorInfo = getVendorInfo(entry.provider);
                 const trimmedFallbackModel = entry.model.trim();
                 const fallbackModelListKey = vendorModelListKey(entry.provider);
                 const fallbackModelRetired = modelRetiredOn(savedModelListCache, fallbackModelListKey, entry.provider);
-                const savedFallbackModel = trimmedFallbackModel || fallbackVendorInfo.defaultModel;
+                const savedFallbackModel = trimmedFallbackModel;
                 // A saved fallback at a retired or deprecated model stays
                 // unselected until the user picks another; it is not swapped
                 // for a default.
@@ -3402,12 +3806,11 @@ export function LlmTab(props: LlmTabProps) {
                       value={entry.provider}
                       onValueChange={(value) => {
                         if (!isLLMVendor(value)) return;
-                        const nextVendorInfo = getVendorInfo(value);
                         const next = [...fallbackChain];
                         next[idx] = {
                           ...next[idx]!,
                           provider: value,
-                          model: nextVendorInfo.defaultModel,
+                          model: "",
                         };
                         setFallbackChain(next);
                       }}
@@ -3430,7 +3833,7 @@ export function LlmTab(props: LlmTabProps) {
                         <SelectValue
                           placeholder={retiredFallbackModel && fallbackRetirement
                             ? retiredModelPlaceholder(t, fallbackRetirement, retiredFallbackModel)
-                            : fallbackVendorInfo.defaultModel}
+                            : t("llmTab.model")}
                         />
                       </SelectTrigger>
                       <SelectContent className={SELECT_POPUP_LAYOUT}>
@@ -3480,7 +3883,7 @@ export function LlmTab(props: LlmTabProps) {
                 className="h-8 text-xs"
                 onClick={() => setFallbackChain((c) => [
                   ...c,
-                  { provider: "openai", model: getVendorInfo("openai").defaultModel },
+                  { provider: "openai", model: "" },
                 ])}
               >
                 {t("llmTab.addEntry")}

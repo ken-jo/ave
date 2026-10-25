@@ -232,7 +232,7 @@ function parseWorkbook(
   sheetIndex: number,
   limits: TableDocumentLimits,
 ): Omit<PreviewTableDocument, "format"> {
-  const checkedBytes = prepareWorkbookContainer(bytes, format, limits);
+  const checkedBytes = prepareWorkbookContainer(bytes, format, limits, sheetIndex);
   const common: XLSX.ParsingOptions = {
     type: "buffer",
     cellFormula: false,
@@ -257,7 +257,9 @@ function parseWorkbook(
     // Sparse storage avoids allocating empty rows before a late used range.
     // Absolute sheetRows would silently discard e.g. the only cell at A10001.
     // The child heap/deadline contains the parse; the window below is relative.
-    worksheet = XLSX.read(checkedBytes, { ...common, dense: false, sheets: [sourceName] }).Sheets[sourceName];
+    // An index selects exactly the worksheet the container scan checked; a
+    // name would also select any case-insensitive duplicate.
+    worksheet = XLSX.read(checkedBytes, { ...common, dense: false, sheets: [sheetIndex] }).Sheets[sourceName];
   } catch (err) {
     throw workbookError(err);
   }

@@ -1,8 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  decideAveProtocolClientRegistration,
   getPackagedWindowsProtocolMarkerState,
   AVE_NSIS_PER_MACHINE_MARKER_FILENAME,
+  type AveProtocolClientRegistrationInput,
   type LstatSync,
+  type PackagedWindowsProtocolMarkerState,
 } from "../ave-protocol-registration.js";
 
 const CURRENT_EXE = "C:\\Program Files\\Ave\\Ave.exe";
@@ -87,5 +90,121 @@ describe("packaged Windows ave protocol marker", () => {
       getPackagedWindowsProtocolMarkerState(executable, inspectMarker),
     ).toBe("unknown");
     expect(inspectMarker).not.toHaveBeenCalled();
+  });
+});
+
+describe("decideAveProtocolClientRegistration", () => {
+  const POSIX_HOME = "/Users/example/.ave";
+  const WINDOWS_HOME = "C:\\Users\\example\\.ave";
+
+  function input(
+    overrides: Partial<AveProtocolClientRegistrationInput> = {},
+  ): AveProtocolClientRegistrationInput {
+    return {
+      isPackaged: true,
+      platform: "darwin",
+      env: {},
+      defaultAveHome: POSIX_HOME,
+      hasUserDataDirSwitch: false,
+      probeWindowsMarker: () => {
+        throw new Error("marker probed off Windows");
+      },
+      ...overrides,
+    };
+  }
+
+  function windowsInput(
+    marker: PackagedWindowsProtocolMarkerState,
+    overrides: Partial<AveProtocolClientRegistrationInput> = {},
+  ): AveProtocolClientRegistrationInput {
+    return input({
+      platform: "win32",
+      defaultAveHome: WINDOWS_HOME,
+      probeWindowsMarker: () => marker,
+      ...overrides,
+    });
+  }
+
+  it.each(["darwin", "linux"] as const)(
+    "registers a packaged app on its real profile (%s)",
+    (platform) => {
+      expect(decideAveProtocolClientRegistration(input({ platform }))).toEqual({ register: true });
+    },
+  );
+
+  it("registers a packaged Windows app with no per-machine marker on its real profile", () => {
+    expect(decideAveProtocolClientRegistration(windowsInput("absent"))).toEqual({ register: true });
+  });
+
+  it("treats AVE_HOME naming the real home as the real profile", () => {
+    expect(
+      decideAveProtocolClientRegistration(input({ env: { AVE_HOME: `${POSIX_HOME}/` } })),
+    ).toEqual({ register: true });
+    expect(
+      decideAveProtocolClientRegistration(
+        windowsInput("absent", { env: { AVE_HOME: "c:\\users\\EXAMPLE\\.ave" } }),
+      ),
+    ).toEqual({ register: true });
+  });
+
+  it("skips an unpackaged launch even on the real profile, without probing the marker", () => {
+    const probeWindowsMarker = vi.fn((): PackagedWindowsProtocolMarkerState => "absent");
+    expect(
+      decideAveProtocolClientRegistration(
+        windowsInput("absent", { isPackaged: false, probeWindowsMarker }),
+      ),
+    ).toEqual({ register: false, reason: "unpackaged" });
+    expect(decideAveProtocolClientRegistration(input({ isPackaged: false }))).toEqual({
+      register: false,
+      reason: "unpackaged",
+    });
+    expect(probeWindowsMarker).not.toHaveBeenCalled();
+  });
+
+  it("skips the E2E runtime (AVE_E2E=1 under NODE_ENV=test)", () => {
+    expect(
+      decideAveProtocolClientRegistration(input({ env: { AVE_E2E: "1", NODE_ENV: "test" } })),
+    ).toEqual({ register: false, reason: "e2e-runtime" });
+  });
+
+  it("does not read AVE_E2E alone as the E2E runtime", () => {
+    expect(decideAveProtocolClientRegistration(input({ env: { AVE_E2E: "1" } }))).toEqual({
+      register: true,
+    });
+  });
+
+  it("skips an isolated AVE_HOME", () => {
+    expect(
+      decideAveProtocolClientRegistration(input({ env: { AVE_HOME: "/tmp/ave-home-9222" } })),
+    ).toEqual({ register: false, reason: "isolated-ave-home" });
+    expect(
+      decideAveProtocolClientRegistration(
+        windowsInput("absent", { env: { AVE_HOME: "C:\\Temp\\ave-packaged-home-1" } }),
+      ),
+    ).toEqual({ register: false, reason: "isolated-ave-home" });
+  });
+
+  it("skips an explicit --user-data-dir profile", () => {
+    expect(decideAveProtocolClientRegistration(input({ hasUserDataDirSwitch: true }))).toEqual({
+      register: false,
+      reason: "isolated-user-data-dir",
+    });
+    expect(
+      decideAveProtocolClientRegistration(windowsInput("absent", { hasUserDataDirSwitch: true })),
+    ).toEqual({ register: false, reason: "isolated-user-data-dir" });
+  });
+
+  it("leaves the per-machine installer's HKLM association alone", () => {
+    expect(decideAveProtocolClientRegistration(windowsInput("present"))).toEqual({
+      register: false,
+      reason: "nsis-per-machine-install",
+    });
+  });
+
+  it("fails closed when the per-machine marker cannot be verified", () => {
+    expect(decideAveProtocolClientRegistration(windowsInput("unknown"))).toEqual({
+      register: false,
+      reason: "nsis-marker-unknown",
+    });
   });
 });

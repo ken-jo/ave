@@ -1,19 +1,21 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { gitFixtureEnv } from "../../src/__tests__/support/git-fixture-env.mjs";
+import { cleanupTmpDir } from "../../src/__tests__/support/tmp-dir-teardown.js";
 
 const HOOK = resolve("scripts/hooks/run-local-checks.mjs");
 const NULL_SHA = "0".repeat(40);
 const NOTES = "docs/notes/checkout.md";
 const FULL_TIER_FOR_TAGS = "[checks] tier=full pre-push: running typecheck, full test, build, and gate-core (non-branch updates require full checks)";
 
-function fixture() {
+let seed: { repo: string; base: string; head: string };
+
+beforeAll(() => {
   const repo = mkdtempSync(join(tmpdir(), "pre-push-checkout-"));
-  const env: NodeJS.ProcessEnv = { ...gitFixtureEnv(repo), AVE_HOME: join(repo, "runtime") };
-  delete env.AVE_PREPUSH_FULL;
+  const env = gitFixtureEnv(repo);
   const git = (args: string[]) => execFileSync("git", ["-C", repo, ...args], { env, encoding: "utf8" }).trim();
   git(["init", "-q"]);
   git(["config", "user.name", "Fixture"]);
@@ -28,24 +30,43 @@ function fixture() {
     'import { test } from "node:test"; test("fixture check", () => {});\n');
   writeFileSync(join(repo, "scripts/check-asrt-version-claims.mjs"),
     'import { writeFileSync } from "node:fs"; writeFileSync("checks-ran", "yes");\n');
+  writeFileSync(join(repo, "test/scripts/retired-name.test.mjs"),
+    'import { test } from "node:test"; test("fixture check", () => {});\n');
+  writeFileSync(join(repo, "scripts/check-retired-name.mjs"), "");
   git(["add", "."]);
   git(["commit", "-qm", "initial fixture"]);
   const base = git(["rev-parse", "HEAD"]);
   writeFileSync(join(repo, NOTES), "Updated notes.\n");
   git(["commit", "-qam", "update notes"]);
   const head = git(["rev-parse", "HEAD"]);
-  const pushInput = (input: string) =>
+  seed = { repo, base, head };
+});
+
+afterAll(async () => cleanupTmpDir(seed.repo));
+
+function fixture() {
+  const repo = mkdtempSync(join(tmpdir(), "pre-push-checkout-"));
+  cpSync(seed.repo, repo, { recursive: true });
+  const { base, head } = seed;
+  // The full tier takes a host lock; the fixture keeps it out of the shared one.
+  const env: NodeJS.ProcessEnv = { ...gitFixtureEnv(repo), AVE_HOME: join(repo, "runtime"), AVE_PREPUSH_LOCK_DIR: join(repo, "locks") };
+  delete env.AVE_PREPUSH_FULL;
+  delete env.AVE_PREPUSH_LOCK_TIMEOUT_S;
+  const git = (args: string[]) => execFileSync("git", ["-C", repo, ...args], { env, encoding: "utf8" }).trim();
+  const pushInput = (input: string, extraEnv: NodeJS.ProcessEnv = {}) =>
     spawnSync("node", [HOOK, "--repo", repo, "--stage", "pre-push"], {
-      env, encoding: "utf8", input, timeout: 15_000,
+      env: { ...env, ...extraEnv }, encoding: "utf8", input, timeout: 15_000,
     });
   const push = (localRef = "refs/heads/topic", localSha = head, remoteRef = "refs/heads/topic") =>
     pushInput(`${localRef} ${localSha} ${remoteRef} ${base}\n`);
+  // git writes loose objects read-only, and on Windows the synchronous rmSync
+  // refuses read-only files; the async removal clears the attribute.
   return { repo, git, head, base, push, pushInput, checked: () => existsSync(join(repo, "checks-ran")),
-    cleanup: () => rmSync(repo, { recursive: true, force: true }) };
+    cleanup: () => cleanupTmpDir(repo) };
 }
 
 describe("pre-push checkout binding", () => {
-  it("refuses another branch before running checks and names the commit to check out", () => {
+  it("refuses another branch before running checks and names the commit to check out", async () => {
     const f = fixture();
     try {
       f.git(["checkout", "-qb", "other"]);
@@ -58,10 +79,10 @@ describe("pre-push checkout binding", () => {
       expect(result.stderr).toContain("PRE_PUSH_CHECKOUT_MISMATCH");
       expect(result.stderr).toContain(`git checkout --detach ${other}`);
       expect(f.checked()).toBe(false);
-    } finally { f.cleanup(); }
+    } finally { await f.cleanup(); }
   });
 
-  it("refuses a non-HEAD sha refspec before running checks", () => {
+  it("refuses a non-HEAD sha refspec before running checks", async () => {
     const f = fixture();
     try {
       const result = f.push(f.base, f.base, "refs/heads/copy");
@@ -69,20 +90,20 @@ describe("pre-push checkout binding", () => {
       expect(result.stderr).toContain("PRE_PUSH_CHECKOUT_MISMATCH");
       expect(result.stderr).toContain(`git checkout --detach ${f.base}`);
       expect(f.checked()).toBe(false);
-    } finally { f.cleanup(); }
+    } finally { await f.cleanup(); }
   });
 
-  it("refuses a mismatched commit even when another update names HEAD", () => {
+  it("refuses a mismatched commit even when another update names HEAD", async () => {
     const f = fixture();
     try {
       const result = f.pushInput(`refs/heads/topic ${f.head} refs/heads/topic ${f.base}\n${f.base} ${f.base} refs/heads/copy ${f.base}\n`);
       expect(result.status).toBe(1);
       expect(result.stderr).toContain(`git checkout --detach ${f.base}`);
       expect(f.checked()).toBe(false);
-    } finally { f.cleanup(); }
+    } finally { await f.cleanup(); }
   });
 
-  it("passes an annotated tag whose peeled commit is HEAD", () => {
+  it("passes an annotated tag whose peeled commit is HEAD", async () => {
     const f = fixture();
     try {
       f.git(["tag", "-am", "fixture release", "fixture-release"]);
@@ -94,10 +115,10 @@ describe("pre-push checkout binding", () => {
       // tier, which this fixture cannot complete (it has no Electron runtime).
       expect(result.stderr).not.toMatch(/PRE_PUSH_[A-Z_]+/);
       expect(result.stdout).toContain(FULL_TIER_FOR_TAGS);
-    } finally { f.cleanup(); }
+    } finally { await f.cleanup(); }
   });
 
-  it("refuses an annotated tag whose peeled commit is not HEAD and says to check out that commit", () => {
+  it("refuses an annotated tag whose peeled commit is not HEAD and says to check out that commit", async () => {
     const f = fixture();
     try {
       f.git(["tag", "-am", "fixture release", "fixture-release", f.base]);
@@ -108,7 +129,7 @@ describe("pre-push checkout binding", () => {
       expect(result.stderr).toContain(`validates the commit it peels to (${f.base})`);
       expect(result.stderr).toContain(`git checkout --detach ${tag}^{commit}, then push the tag`);
       expect(f.checked()).toBe(false);
-    } finally { f.cleanup(); }
+    } finally { await f.cleanup(); }
   });
 
   it.each([
@@ -117,7 +138,7 @@ describe("pre-push checkout binding", () => {
       f.git(["tag", "-am", "inner tree tag", "inner-tree-tag", "HEAD^{tree}"]);
       return f.git(["rev-parse", "refs/tags/inner-tree-tag"]);
     }],
-  ])("refuses an annotated tag of %s", (_label, target) => {
+  ])("refuses an annotated tag of %s", async (_label, target) => {
     const f = fixture();
     try {
       f.git(["tag", "-am", "non-commit tag", "non-commit-tag", target(f)]);
@@ -127,10 +148,10 @@ describe("pre-push checkout binding", () => {
       expect(result.stderr).toContain("PRE_PUSH_REF_NOT_COMMIT");
       expect(result.stderr).toContain(`${tag} is an annotated tag that does not peel to a commit`);
       expect(f.checked()).toBe(false);
-    } finally { f.cleanup(); }
+    } finally { await f.cleanup(); }
   });
 
-  it("refuses a lightweight tag of a tree", () => {
+  it("refuses a lightweight tag of a tree", async () => {
     const f = fixture();
     try {
       const tree = f.git(["rev-parse", "HEAD^{tree}"]);
@@ -139,10 +160,10 @@ describe("pre-push checkout binding", () => {
       expect(result.stderr).toContain("PRE_PUSH_REF_NOT_COMMIT");
       expect(result.stderr).toContain(`${tree} is a tree`);
       expect(f.checked()).toBe(false);
-    } finally { f.cleanup(); }
+    } finally { await f.cleanup(); }
   });
 
-  it("keeps lightweight tags bound to HEAD", () => {
+  it("keeps lightweight tags bound to HEAD", async () => {
     const f = fixture();
     try {
       f.git(["tag", "fixture-light"]);
@@ -152,10 +173,41 @@ describe("pre-push checkout binding", () => {
       const refused = f.pushInput(`refs/tags/old-light ${f.base} refs/tags/old-light ${NULL_SHA}\n`);
       expect(refused.status).toBe(1);
       expect(refused.stderr).toContain(`git checkout --detach ${f.base}`);
-    } finally { f.cleanup(); }
+    } finally { await f.cleanup(); }
   });
 
-  it.each(["assume-unchanged", "skip-worktree"])("refuses hidden tracked changes under %s", (flag) => {
+  it("runs the full tier under the host lock and fails the push when the lock stays held past the timeout", async () => {
+    const f = fixture();
+    try {
+      f.git(["tag", "fixture-light"]);
+      const lock = join(f.repo, "locks", "ave-prepush-full.lock");
+      const tagPush = `refs/tags/fixture-light ${f.head} refs/tags/fixture-light ${NULL_SHA}\n`;
+      // Free lock: the full tier takes it and releases it whatever the checks do.
+      const free = f.pushInput(tagPush);
+      expect(free.stdout).toContain(FULL_TIER_FOR_TAGS);
+      expect(free.stdout).not.toContain("waiting for the full-tier host lock");
+      expect(existsSync(join(f.repo, "locks"))).toBe(true);
+      expect(existsSync(lock)).toBe(false);
+      // Held by a live process: the push waits, then fails; it never passes.
+      mkdirSync(lock, { recursive: true });
+      writeFileSync(join(lock, "owner-fixture-holder.json"), JSON.stringify({ pid: process.pid, token: "fixture-holder", createdAt: new Date().toISOString() }));
+      const held = f.pushInput(tagPush, { AVE_PREPUSH_LOCK_TIMEOUT_S: "1" });
+      expect(held.status).toBe(1);
+      expect(held.stdout).toContain(FULL_TIER_FOR_TAGS);
+      expect(held.stdout).toContain(`waiting for the full-tier host lock held by PID ${process.pid}`);
+      expect(held.stderr).toContain("[PRE_PUSH_HOST_LOCK_TIMEOUT]");
+      expect(held.stderr).toContain("no checks ran and the push is refused");
+      // AVE_PREPUSH_FULL=1 forces the full tier and therefore the same lock.
+      const forced = f.pushInput(`refs/heads/topic ${f.head} refs/heads/topic ${f.base}\n`,
+        { AVE_PREPUSH_FULL: "1", AVE_PREPUSH_LOCK_TIMEOUT_S: "1" });
+      expect(forced.status).toBe(1);
+      expect(forced.stdout).toContain("tier=full pre-push");
+      expect(forced.stderr).toContain("[PRE_PUSH_HOST_LOCK_TIMEOUT]");
+      expect(f.checked()).toBe(false);
+    } finally { await f.cleanup(); }
+  });
+
+  it.each(["assume-unchanged", "skip-worktree"])("refuses hidden tracked changes under %s", async (flag) => {
     const f = fixture();
     try {
       f.git(["update-index", `--${flag}`, NOTES]);
@@ -165,10 +217,10 @@ describe("pre-push checkout binding", () => {
       expect(result.status).toBe(1);
       expect(result.stderr).toContain("PRE_PUSH_HIDDEN_TRACKED_FILES");
       expect(f.checked()).toBe(false);
-    } finally { f.cleanup(); }
+    } finally { await f.cleanup(); }
   });
 
-  it.each(["worktree", "index", "package"] as const)("refuses dirty tracked %s before running checks", (kind) => {
+  it.each(["worktree", "index", "package"] as const)("refuses dirty tracked %s before running checks", async (kind) => {
     const f = fixture();
     try {
       writeFileSync(join(f.repo, kind === "package" ? "package.json" : NOTES), "Dirty tracked bytes.\n");
@@ -178,10 +230,10 @@ describe("pre-push checkout binding", () => {
       expect(result.stderr).toContain("PRE_PUSH_DIRTY_TREE");
       expect(result.stderr).toContain(`git checkout --detach ${f.head}`);
       expect(f.checked()).toBe(false);
-    } finally { f.cleanup(); }
+    } finally { await f.cleanup(); }
   });
 
-  it("passes a clean matching HEAD and runs the selected checks", () => {
+  it("passes a clean matching HEAD and runs the selected checks", async () => {
     const f = fixture();
     try {
       const result = f.push();
@@ -189,20 +241,20 @@ describe("pre-push checkout binding", () => {
       expect(result.stdout).toContain("tier=docs-only");
       expect(f.checked()).toBe(true);
       expect(readFileSync(join(f.repo, NOTES), "utf8")).toBe("Updated notes.\n");
-    } finally { f.cleanup(); }
+    } finally { await f.cleanup(); }
   });
 
-  it("accepts another branch name when its commit matches HEAD", () => {
+  it("accepts another branch name when its commit matches HEAD", async () => {
     const f = fixture();
     try {
       f.git(["branch", "same-commit", f.head]);
       const result = f.push("refs/heads/same-commit", f.head, "refs/heads/same-commit");
       expect(result.status, result.stdout + result.stderr).toBe(0);
       expect(f.checked()).toBe(true);
-    } finally { f.cleanup(); }
+    } finally { await f.cleanup(); }
   });
 
-  it("refuses a tracked mutation made during checks", () => {
+  it("refuses a tracked mutation made during checks", async () => {
     const f = fixture();
     try {
       writeFileSync(join(f.repo, "scripts/check-asrt-version-claims.mjs"),
@@ -216,10 +268,10 @@ describe("pre-push checkout binding", () => {
       expect(result.status).toBe(1);
       expect(result.stderr).toContain("PRE_PUSH_DIRTY_TREE");
       expect(f.checked()).toBe(true);
-    } finally { f.cleanup(); }
+    } finally { await f.cleanup(); }
   });
 
-  it("passes deletion-only updates without checking an unrelated dirty checkout", () => {
+  it("passes deletion-only updates without checking an unrelated dirty checkout", async () => {
     const f = fixture();
     try {
       writeFileSync(join(f.repo, NOTES), "Unrelated dirty bytes.\n");
@@ -227,6 +279,6 @@ describe("pre-push checkout binding", () => {
       expect(result.status, result.stdout + result.stderr).toBe(0);
       expect(result.stdout).toContain("deletion-only");
       expect(f.checked()).toBe(false);
-    } finally { f.cleanup(); }
+    } finally { await f.cleanup(); }
   });
 });

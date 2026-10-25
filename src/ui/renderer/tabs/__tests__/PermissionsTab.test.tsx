@@ -29,6 +29,7 @@ import type { HookTrustRow } from "../../types.js";
 import { isPolicyUserEditable, type PolicySource } from "../../../../shared/policy-editability.js";
 import { getLocale, setLocale, t } from "../../../../i18n/runtime.js";
 import { TEST_IDS, execModeTestId } from "../../../../shared/test-ids.js";
+import { LONG_TOAST_TTL_MS } from "../../constants.js";
 import { buildInternalApiSurface } from "../../../../preload/internal-api-surface.js";
 import { PERMISSIONS } from "../../../../shared/ipc-channels.js";
 import { hostFrameEvent } from "../../../../__tests__/test-helpers.js";
@@ -229,6 +230,37 @@ afterEach(() => {
 });
 
 describe("PermissionsTab hook quarantine notice", () => {
+  it("cancels a pending banner on unmount without a later state update or error", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const expiry = vi.fn();
+    const schedule = globalThis.setTimeout;
+    const timeout = vi.spyOn(globalThis, "setTimeout").mockImplementation(((callback: () => void, delay?: number, ...args: unknown[]) => {
+      if (delay === LONG_TOAST_TTL_MS) return schedule(() => { expiry(); callback(); }, delay);
+      return schedule(callback, delay, ...args);
+    }) as typeof setTimeout);
+    try {
+      const api = installApi([[]]);
+      api.permission.setMode.mockResolvedValueOnce({ ok: false, mode: "default" });
+      const view = await act(async () => render(<PermissionsTab />));
+      await act(async () => { fireEvent.click(screen.getByTestId(execModeTestId("auto"))); });
+      expect(screen.getByRole("alert")).toBeTruthy();
+      expect(vi.getTimerCount()).toBeGreaterThan(0);
+
+      view.unmount();
+      await act(async () => { await vi.advanceTimersByTimeAsync(LONG_TOAST_TTL_MS + 1); });
+
+      expect(expiry).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+      expect(error).not.toHaveBeenCalled();
+    } finally {
+      cleanup();
+      timeout.mockRestore();
+      error.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it("saves a permanent deny for the exact pending tool and canonical input", async () => {
     const api = installApi([[]]);
     const onExactDenySaved = vi.fn();

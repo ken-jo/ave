@@ -11,6 +11,7 @@ import { approvalSurfaceStub, deferred } from "../../../../../test/renderer/help
 import { AVE_SIDE_BROWSER_PARTITION } from "../../../../shared/side-browser.js";
 import { SIDE_PANEL_MIN_WIDTH } from "../../../../shared/side-panel.js";
 import { ChatSidePanel } from "../ChatSidePanel.js";
+import { deriveRovingPath } from "../ChatSidePanelWorkspaces.js";
 import { WebSurfaceLayer } from "../WebSurfaceLayer.js";
 import { PaneFrame } from "../PaneFrame.js";
 import { emptyToolActivity } from "../../../../../test/renderer/helpers.js";
@@ -402,10 +403,6 @@ describe("ChatSidePanel", () => {
     fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("file-browser")));
     // Single "+" button; the old per-kind add buttons are gone.
     expect(screen.getByTestId("chat-side-panel-add-tab")).toBeTruthy();
-    expect(screen.queryByTestId("chat-side-panel-add-browser-tab")).toBeNull();
-    expect(screen.queryByTestId("chat-side-panel-add-preview-tab")).toBeNull();
-    expect(screen.queryByTestId("chat-side-panel-add-terminal-tab")).toBeNull();
-    expect(screen.queryByTestId("chat-side-panel-add-file-browser-tab")).toBeNull();
 
     // The "+" dropdown opens the same launcher items and creates a tab.
     openLauncherMenu();
@@ -1112,6 +1109,18 @@ describe("ChatSidePanel", () => {
     return { listDir, reveal, removeRoot, writeText };
   }
 
+  /**
+   * The tree mounts before its first listing resolves, so wait for the rows
+   * and their roving row.
+   */
+  async function treeRowsReady(tree: HTMLElement): Promise<HTMLElement[]> {
+    return waitFor(() => {
+      const rows = within(tree).getAllByRole("treeitem");
+      expect(rows.some((row) => row.getAttribute("tabindex") === "0")).toBe(true);
+      return rows;
+    });
+  }
+
   it("renders rows as ARIA treeitems with level/setsize/posinset and a single roving tabindex", async () => {
     stubRichWorkspace();
     renderPanel(
@@ -1119,7 +1128,7 @@ describe("ChatSidePanel", () => {
     );
     fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("file-browser")));
     const tree = await screen.findByRole("tree");
-    const items = within(tree).getAllByRole("treeitem");
+    const items = await treeRowsReady(tree);
     expect(items.length).toBe(3);
     expect(items[0].getAttribute("aria-level")).toBe("1");
     expect(items[0].getAttribute("aria-setsize")).toBe("3");
@@ -1129,6 +1138,15 @@ describe("ChatSidePanel", () => {
     expect(tabbable.length).toBe(1);
   });
 
+  it("derives the roving row from the active row, falling back to the first row", () => {
+    const rows = [{ path: "/w/a" }, { path: "/w/b" }];
+    expect(deriveRovingPath("/w/b", rows)).toBe("/w/b");
+    expect(deriveRovingPath("/w/gone", rows)).toBe("/w/a");
+    expect(deriveRovingPath(null, rows)).toBe("/w/a");
+    expect(deriveRovingPath("/w/a", [])).toBeNull();
+    expect(deriveRovingPath(null, [])).toBeNull();
+  });
+
   it("ArrowDown moves the roving focus to the next row", async () => {
     stubRichWorkspace();
     renderPanel(
@@ -1136,6 +1154,7 @@ describe("ChatSidePanel", () => {
     );
     fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("file-browser")));
     const tree = await screen.findByRole("tree");
+    await treeRowsReady(tree);
     fireEvent.keyDown(tree, { key: "ArrowDown" });
     const items = within(tree).getAllByRole("treeitem");
     // Second row (beta) becomes the roving-focus row (tabindex=0). Roving focus
@@ -1143,6 +1162,7 @@ describe("ChatSidePanel", () => {
     // aria-selected — that tracks the opened file only (APG tree pattern).
     expect(items[1].getAttribute("tabindex")).toBe("0");
     expect(items[1].getAttribute("aria-selected")).toBeNull();
+    expect(items[1]).toHaveFocus();
   });
 
   it("Enter on a folder expands it (lazy-loads children into a role=group)", async () => {
@@ -1152,6 +1172,7 @@ describe("ChatSidePanel", () => {
     );
     fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("file-browser")));
     const tree = await screen.findByRole("tree");
+    await treeRowsReady(tree);
     // First row is "alpha" (a directory) and is the active item.
     fireEvent.keyDown(tree, { key: "Enter" });
     await screen.findByText("a1.md");
@@ -1165,9 +1186,12 @@ describe("ChatSidePanel", () => {
     );
     fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("file-browser")));
     const tree = await screen.findByRole("tree");
+    await treeRowsReady(tree);
     fireEvent.keyDown(tree, { key: "r" }); // -> readme.md
     const items = within(tree).getAllByRole("treeitem");
     expect(items[2].getAttribute("tabindex")).toBe("0");
+    expect(items[2].getAttribute("aria-selected")).toBeNull();
+    expect(items[2]).toHaveFocus();
   });
 
   it("right-click Reveal calls workspace.reveal with the row path (never opens the file)", async () => {
@@ -1528,7 +1552,6 @@ describe("ChatSidePanel", () => {
     const detail = screen.getByTestId("chat-side-panel-subagent-detail");
     const workGroup = within(detail).getByTestId("work-group");
     expect(workGroup).toBeTruthy();
-    expect(within(detail).queryByTestId("chat-side-panel-subagent-tool-group")).toBeNull();
     expect(detail.textContent).toContain("서울 날씨를 확인해줘");
     expect(detail.textContent).toContain("서울은 맑음입니다.");
     const buttons = detail.querySelectorAll("button");
@@ -2478,7 +2501,6 @@ describe("ChatSidePanel", () => {
     );
     fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("side-chat")));
     expect(screen.getByTestId("side-chat-view")).toBeTruthy();
-    expect(screen.queryByTestId("chat-side-panel-side-chat-placeholder")).toBeNull();
   });
 });
 
