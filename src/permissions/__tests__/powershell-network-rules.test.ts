@@ -186,6 +186,41 @@ describe("PowerShell rule identity keeps native arguments and command names lite
   });
 });
 
+// Re-review of #223: a deny or ask rule meets every spelling of the command name (a path, `.exe`, a `Module\` qualifier, an alias on either side), so a
+// deny written for a command wins over every allow on both lanes; an allow keeps the literal identity.
+describe("PowerShell deny and ask rules meet every spelling of the command name", () => {
+  it.each([
+    ["PowerShell(git push *)", "git.exe push --force"],
+    ["PowerShell(git push *)", "C:\\Git\\bin\\git.exe push"],
+    ["PowerShell(git push *)", "GIT.EXE push origin"],
+    ["PowerShell(remove-item *)", "Microsoft.PowerShell.Management\\Remove-Item x"],
+  ])("deny %s refuses %s, sandboxed or not, over any allow", (deny, command) => {
+    manager.setRules([{ pattern: "PowerShell(git *)", action: "allow" }, { pattern: "PowerShell(remove-item *)", action: "allow" }, { pattern: deny, action: "deny" }]);
+    expect(powershell(command, true)).toMatchObject({ decision: "deny", layer: 1 });
+    expect(powershell(command, false)).toMatchObject({ decision: "deny", layer: 1 });
+    manager.setRules([{ pattern: "PowerShell(git *)", action: "allow" }, { pattern: deny, action: "ask" }]);
+    expect(powershell(command, true)).toMatchObject({ decision: "ask" });
+  });
+
+  it.each([
+    ["PowerShell(gci *)", "Get-ChildItem src"],
+    ["PowerShell(iwr *)", "Invoke-WebRequest https://example.com"],
+    ["PowerShell(ls *)", "Get-ChildItem src"],
+  ])("a deny written with an alias (%s) also refuses its cmdlet (%s)", (deny, command) => {
+    manager.setRules([{ pattern: deny, action: "deny" }]);
+    expect(powershell(command, true)).toMatchObject({ decision: "deny", layer: 1 });
+    expect(powershell(command, false)).toMatchObject({ decision: "deny", layer: 1 });
+  });
+
+  it("keeps an allow literal: a pathed or .exe spelling is not the allowed command", () => {
+    manager.setRules([{ pattern: "PowerShell(git status)", action: "allow" }, { pattern: "PowerShell(gci src)", action: "allow" }]);
+    expect(powershell("git status", false)).toMatchObject({ decision: "allow", layer: 3 });
+    expect(powershell("git.exe status", false)).toMatchObject({ decision: "ask" });
+    expect(powershell("C:\\Git\\bin\\git.exe status", false)).toMatchObject({ decision: "ask" });
+    expect(powershell("Get-ChildItem src", false)).toMatchObject({ decision: "ask" });
+  });
+});
+
 // Security review of #223: an -EncodedCommand payload meets the same floors as plaintext -Command, and no allow rule covers it.
 describe("PowerShell -EncodedCommand", () => {
   const encode = (script: string) => Buffer.from(script, "utf16le").toString("base64");
@@ -213,9 +248,44 @@ describe("PowerShell -EncodedCommand", () => {
     expect(buildShellRuleApproval("powershell", "Get-ChildItem src", dir, { allow: true, deny: true })).not.toHaveProperty("decodedCommands");
   });
 
-  it("leaves a payload that is not UTF-16LE text opaque", () => {
+  it("leaves a payload that is not UTF-16LE text opaque, and offers no exact rule for it", () => {
     const card = buildShellRuleApproval("powershell", "pwsh -EncodedCommand AAAA", dir, { allow: true, deny: true });
     expect(card).not.toHaveProperty("decodedCommands");
+    expect(card.exactRule).toBeNull();
+  });
+
+  // Re-review: .NET's FromBase64String ignores whitespace, and PowerShell's parser takes any dash as a parameter prefix.
+  it("decodes a quoted payload split by whitespace", () => {
+    const split = encode(DESTRUCTIVE).replace(/(.{4})/g, "$1 ").trim();
+    const card = buildShellRuleApproval("powershell", `pwsh -enc "${split}"`, dir, { allow: true, deny: true });
+    expect(card.decodedCommands).toEqual([DESTRUCTIVE]);
+    expect(powershell(`pwsh -enc "${split}"`, true)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+  });
+
+  it.each(["\u2013", "\u2014", "\u2015", "/"])("decodes an encoded command behind the %s parameter prefix", (dash) => {
+    const command = `pwsh ${dash}enc ${encode(DESTRUCTIVE)}`;
+    expect(buildShellRuleApproval("powershell", command, dir, { allow: true, deny: true }).decodedCommands).toEqual([DESTRUCTIVE]);
+    expect(powershell(command, true)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+  });
+
+  // Fail closed: an encoded-command argument whose payload the host cannot fully decode hides the code that runs.
+  it.each([
+    "pwsh -enc AAAA",
+    'pwsh -enc "!!!!"',
+    "pwsh \u2013e ????",
+    "pwsh -EncodedCommand",
+    `powershell.exe -ec ${encode("Get-ChildItem").slice(0, -1)}`,
+  ])("treats an undecodable payload as hidden code: forced modal, no allow rule (%s)", (command) => {
+    manager.setRules([{ pattern: "PowerShell(pwsh *)", action: "allow" }, { pattern: "PowerShell(powershell.exe *)", action: "allow" }]);
+    expect(powershell(command, true)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    expect(powershell(command, false)).toMatchObject({ decision: "ask", forceModal: true });
+    expect(buildShellRuleApproval("powershell", command, dir, { allow: true, deny: true }).exactRule).toBeNull();
+  });
+
+  it("does not read a -Command script's own -e argument as an encoded command", () => {
+    const card = buildShellRuleApproval("powershell", 'pwsh -NoProfile -Command "Select-String -e needle notes.txt"', dir, { allow: true, deny: true });
+    expect(card).not.toHaveProperty("decodedCommands");
+    expect(powershell('pwsh -NoProfile -Command "Select-String -e needle notes.txt"', true)).not.toMatchObject({ forceModal: true });
   });
 });
 
