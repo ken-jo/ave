@@ -267,20 +267,29 @@ describe("sandbox protected Git quarantine", () => {
     expect(quarantinedEntries()).toEqual([]);
   });
 
-  it("uses unique timestamped invocation slots and quotes control characters in notices", async () => {
+  it("uses unique timestamped invocation slots", async () => {
     const first = await createSandboxQuarantine("same-invocation");
     const second = await createSandboxQuarantine("same-invocation");
-    const path = join(root, "config\nextra");
+    const path = join(root, "config");
     writeFileSync(path, "retained");
     first.move(path);
     expect(first.notice()).toContain(JSON.stringify(path));
-    expect(first.notice()).not.toContain("config\nextra");
     expect(first.moved).toHaveLength(1);
     expect(second.notice()).toBeUndefined();
     const slots = readdirSync(sandboxQuarantineRoot());
     expect(slots).toHaveLength(2);
     expect(new Set(slots).size).toBe(2);
     for (const slot of slots) expect(slot).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  // Windows filenames cannot contain newline characters.
+  it.skipIf(process.platform === "win32")("quotes control characters in notices", async () => {
+    const quarantine = await createSandboxQuarantine("control-characters");
+    const path = join(root, "config\nextra");
+    writeFileSync(path, "retained");
+    quarantine.move(path);
+    expect(quarantine.notice()).toContain(JSON.stringify(path));
+    expect(quarantine.notice()).not.toContain("config\nextra");
   });
 
   it("refuses a symbolic quarantine namespace before moving user data", async () => {
