@@ -7,14 +7,7 @@ import { TestPluginRuntime as PluginRuntime } from "./test-helpers.js";
 import { mkdtempSync } from "node:fs";
 import { agentPluginsDocument } from "./test-helpers.js";
 
-// ---------------------------------------------------------------------------
-// Module-level mock — hoisted by vitest before any imports.
-//
-// Wrap realpathSync with vi.fn() so regression tests can assert it is called
-// during reloadPlugin(). All other node:fs exports (and the real fs behaviour)
-// pass through unchanged, so existing tests that hit the real filesystem are
-// unaffected.
-// ---------------------------------------------------------------------------
+// Observe realpathSync during reload while leaving other filesystem operations intact.
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
   return {
@@ -23,14 +16,7 @@ vi.mock("node:fs", async (importOriginal) => {
   };
 });
 
-/**
- * I2 — PluginRuntime.reloadPlugin() unit tests.
- *
- * Uses a real tmp-dir fixture with a minimal ESM plugin entry so we exercise
- * the full stop → re-import → start path (not mocks). Module-cache bust via
- * `?reload=<ts>` query string is verified by rewriting the entry between
- * loads and observing the new handler response.
- */
+/** Rewrite a real entry between loads to verify reload cache busting. */
 describe("PluginRuntime.reloadPlugin", () => {
   let testDir: string;
   let installedDir: string;
@@ -100,7 +86,6 @@ describe("PluginRuntime.reloadPlugin", () => {
 
     expect(await runtime.call("p_reload_hello")).toBe("v-a");
 
-    // Rewrite entry — simulate bun run build producing new dist output.
     const pluginDir = join(installedDir, "p-reload");
     await writeFile(
       join(pluginDir, "entry.mjs"),
@@ -119,7 +104,6 @@ describe("PluginRuntime.reloadPlugin", () => {
 
     await runtime.reloadPlugin("p-reload");
 
-    // Method handler must still be registered AND return the new bundle's value.
     expect(runtime.listToolNames()).toContain("p_reload_hello");
     expect(await runtime.call("p_reload_hello")).toBe("v-b");
   });
@@ -140,7 +124,6 @@ describe("PluginRuntime.reloadPlugin", () => {
     await runtime.reloadPlugin("p-hook");
 
     expect(disabled).toEqual([]);
-    // After reload the plugin is re-loaded so call() still works.
     expect(runtime.listPluginIds()).toContain("p-hook");
   });
 
@@ -194,22 +177,16 @@ describe("PluginRuntime.reloadPlugin", () => {
     const runtime = new PluginRuntime({ hostRoot: testDir, registryPath, pluginsRoot: installedDir });
     await runtime.startAll();
 
-    // Clear call history accumulated during load() so we only observe calls
-    // that happen inside the reloadPlugin() invocation below.
+    // Ignore load-time calls so only reload canonicalization is observed.
     vi.mocked(nodeFs.realpathSync).mockClear();
 
     await runtime.reloadPlugin("p-realpath");
 
-    // realpathSync must have been invoked with the plugin's entry path.
-    // This confirms the Windows 8.3 short-path canonicalization block
-    // (RUNNER~1 → full canonical path to avoid %7E in the file:// URL)
-    // is reached inside reloadPlugin(), matching the identical pattern
-    // already present in load().
+    // Reload must canonicalize Windows short paths before building entry URLs.
     const expectedEntryPath = join(installedDir, "p-realpath", "entry.mjs");
     const calls = vi.mocked(nodeFs.realpathSync).mock.calls.map((args) => String(args[0]));
     expect(calls).toContain(expectedEntryPath);
 
-    // Plugin must remain functional after the reload.
     expect(runtime.listPluginIds()).toContain("p-realpath");
   });
 });

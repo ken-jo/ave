@@ -1,28 +1,5 @@
-/**
- * Plugin-storage containment refusals must reach the audit trail on BOTH
- * `createPluginStorage` wirings.
- *
- * This file covers the plugin-webview bridge wiring:
- * `PluginRuntime.getPluginStorage()` — the function the `bridge.storage.get/set`
- * IPC handlers call (src/ipc/domains/plugins.ts). Those handlers only *reply*
- * to the calling webview when storage refuses, so the refusal record has to be
- * produced by the storage sink or it does not exist at all.
- *
- * The producer here is the real `PluginRuntime`: a real registry is loaded, the
- * real `ensureDataDir` lays out the data root and the host-only storage root
- * beside it, and the refusal is triggered by a real reparse point on disk — no
- * trigger field is set by hand. A confined child cannot write the storage
- * root, so the link is planted here the way only a host-side corruption could;
- * the containment checks stay as defense in depth and must still be audited. The relative
- * path used is the exact string the IPC handler builds
- * (`ui-storage/<sanitized-key>.json`), which is the only shape a webview can
- * reach: `sanitizeStorageKey` restricts the key to `[A-Za-z0-9._-]+`, so the
- * lexical-escape branches are unreachable from a webview and the symlink
- * branches are not.
- *
- * The boot host-api-factory wiring is covered from its own real producer in
- * src/boot/steps/__tests__/plugin-runtime-hostapi-wiring.test.ts.
- */
+// Webview storage refusals must be audited by the sink; IPC only replies to the caller.
+// Use real reparse points because sanitized keys cannot express lexical escapes.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { realpath, rm } from "node:fs/promises";
@@ -36,9 +13,7 @@ import {
   type TestPluginRuntimeFixture,
 } from "./test-helpers.js";
 
-// Windows can create directory junctions without Developer Mode or
-// SeCreateSymbolicLinkPrivilege, so the escape is a real reparse point on
-// every platform CI runs on (same seam as storage.test.ts).
+// Directory junctions exercise Windows reparse traversal without symlink privileges.
 const dirLinkType = process.platform === "win32" ? "junction" : "dir";
 
 const PLUGIN_ID = "p-storage-audit";
@@ -70,30 +45,19 @@ describe("PluginRuntime.getPluginStorage — containment refusals are audited", 
     await rm(outsideDir, { recursive: true, force: true });
   });
 
-  /** The host-only storage root `ensurePluginDataDir` lays out for this plugin. */
   function pluginHostStorageDir(): string {
     const dir = join(fixture.pluginsRoot, PLUGIN_ID, "storage");
     mkdirSync(dir, { recursive: true });
     return dir;
   }
 
-  /**
-   * `getPluginStorage` runs once per webview storage IPC call. It used to
-   * ENSURE the data directory (now the storage root beside it), which put a `mkdir` on a per-request path — and
-   * an install swap has the plugin root renamed aside for the length of two
-   * renames. A request landing in that window recreated an empty state
-   * directory at the promoted root, and the carry that completes the swap then found two
-   * candidates for one state and refused: the install wedged, and in recovery
-   * `pendingUpdate` never cleared. The directory is created at LOAD; this path
-   * only resolves it.
-   */
+  /** Create storage at load, never per request; mkdir during an install swap can introduce conflicting state. */
   it("does not create the storage root on a per-request basis", async () => {
     const runtime = makeTestPluginRuntimeWithAudit(fixture, auditEntries);
     await runtime.load();
     expect(runtime.listPluginIds()).toContain(PLUGIN_ID);
 
-    // Exactly the state the swap leaves behind: the plugin root is there, its
-    // storage root is mid-move.
+    // The root exists while storage is mid-move.
     const storageDir = join(fixture.pluginsRoot, PLUGIN_ID, "storage");
     expect(existsSync(storageDir)).toBe(true);
     await rm(storageDir, { recursive: true, force: true });
@@ -103,9 +67,7 @@ describe("PluginRuntime.getPluginStorage — containment refusals are audited", 
   });
 
   it("emits plugin_storage_path_rejected when a webview read escapes via a planted symlink", async () => {
-    // A real escape target with real content outside the sandbox root.
     writeFileSync(join(outsideDir, "tokens.json"), '{"stolen":true}', "utf-8");
-    // The plugin plants `ui-storage` as a link to somewhere outside its root.
     symlinkSync(outsideDir, join(pluginHostStorageDir(), "ui-storage"), dirLinkType);
 
     const runtime = makeTestPluginRuntimeWithAudit(fixture, auditEntries);
@@ -115,8 +77,7 @@ describe("PluginRuntime.getPluginStorage — containment refusals are audited", 
     const storage = runtime.getPluginStorage(PLUGIN_ID);
     expect(storage).toBeDefined();
 
-    // Byte-for-byte the call the `ave:plugin:storage:get` handler makes for
-    // the webview key "tokens".
+    // Match the webview tokens key after IPC sanitization.
     await expect(storage!.readJson("ui-storage/tokens.json")).rejects.toThrow(
       /symlink escapes plugin storage root/,
     );
@@ -130,8 +91,7 @@ describe("PluginRuntime.getPluginStorage — containment refusals are audited", 
       pluginId: PLUGIN_ID,
       reason: "storage: rejected symlink escape",
     });
-    // The record must carry where the escape resolved to, or an operator
-    // cannot tell an escape attempt from a typo.
+    // Audit the resolved target so operators can distinguish an escape from a typo.
     const data = rejections[0]!.data as { real: string; target: string };
     expect(data.real).toBe(join(await realpath(outsideDir), "tokens.json"));
     expect(data.target).toContain("tokens.json");
@@ -162,7 +122,7 @@ describe("PluginRuntime.getPluginStorage — containment refusals are audited", 
     await expect(storage!.readJson("ui-storage/prefs.json")).resolves.toEqual({
       theme: "dark",
     });
-    // The webview bridge's storage lives in the host-only root, not in data/.
+    // Webview storage belongs in the host-only root.
     expect(existsSync(join(fixture.pluginsRoot, PLUGIN_ID, "storage", "ui-storage", "prefs.json"))).toBe(true);
     expect(existsSync(join(fixture.pluginsRoot, PLUGIN_ID, "data", "ui-storage"))).toBe(false);
 

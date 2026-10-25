@@ -1,18 +1,4 @@
-/**
- * Defense-in-depth zip-entry path sanitizer.
- *
- * Extracted from `marketplace.ts` (§FU#267 decomposition) so that
- * both `PluginArtifactStore` and the MCP install consumer
- * share the same path-validation rules instead of duplicating them.
- *
- * Returns:
- *   - the exact POSIX-style relative path on success
- *   - `null` for an empty archive member name
- * Throws:
- *   - on NUL bytes
- *   - on absolute, backslash, drive, empty-segment, dot, or parent syntax
- *   - on member names that alias or cannot be represented safely on Windows
- */
+/** Reject unsafe archive members before extraction; paths must be portable and remain inside the install root. */
 import { isPluginRuntimeDirName } from "./plugin-storage-layout.js";
 
 const WINDOWS_INVALID_SEGMENT_CHAR_RE = /[<>:"|?*]/u;
@@ -55,14 +41,7 @@ export function sanitizeZipEntryPath(slug: string, entryName: string): string | 
     throw new Error(`"${slug}" zip entry uses ambiguous or traversal syntax: ${entryName}`);
   }
   for (const segment of segments) assertPortableSegment(slug, entryName, segment);
-  // A payload may not ship a top-level RUNTIME directory. `data/`, `run/` and
-  // `sockets/` are the plugin's own state and the host's sockets, and the
-  // install swap moves the live `data/` into the promoted root as its last
-  // step — so an artifact carrying one arrives at a root where that name is
-  // already spoken for, and the carry has two candidates for one state with no
-  // way to merge them. Refused rather than dropped: an artifact that shipped
-  // state expected that state to be installed, and silently discarding it
-  // would leave the publisher believing it was.
+  // Refuse top-level runtime directories; silently dropping declared state would misrepresent the installed payload.
   if (isPluginRuntimeDirName(segments[0]!)) {
     throw new Error(
       `"${slug}" zip entry uses a reserved plugin runtime directory name: ${entryName}`,
@@ -71,12 +50,7 @@ export function sanitizeZipEntryPath(slug: string, entryName: string): string | 
   return path;
 }
 
-/**
- * Deterministic archive-member identity for case-insensitive filesystems.
- *
- * Unicode upper-casing catches multi-code-point aliases such as
- * `Straße`/`STRASSE`; plain lower-casing does not.
- */
+/** Use Unicode uppercase identity to catch multi-code-point case aliases missed by lowercase. */
 export function canonicalZipEntryPathIdentity(path: string): string {
   return path.normalize("NFC").toLocaleUpperCase("en-US");
 }

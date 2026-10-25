@@ -1,9 +1,4 @@
-/**
- * A runtime operation whose caller-facing ceiling fired before the underlying
- * plugin handler settled. The original error remains the public message while
- * the settlement promise lets generation/account lease owners retain authority
- * until detached work is actually finished.
- */
+/** A caller deadline may fire while handler work continues; retain operation and account leases until actual settlement. */
 export class PluginRuntimeDetachedOperationError extends Error {
   readonly settlement: Promise<unknown>;
 

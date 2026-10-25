@@ -256,8 +256,7 @@ describe("materializePluginContributions", () => {
   });
 });
 
-// A retained generation is a runtime root a child reads, never writes, so it
-// is deleted at once; a runtime directory inside it breaks that premise.
+// Retained generations are read-only runtime roots; unexpected runtime directories must prevent immediate deletion.
 describe("removeRetainedPluginGeneration", () => {
   it("refuses a generation that holds a runtime directory and leaves it", async () => {
     const cacheRoot = await mkdtemp(join(tmpdir(), "retained-generation-"));

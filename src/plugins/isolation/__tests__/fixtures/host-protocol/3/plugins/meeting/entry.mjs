@@ -1,9 +1,4 @@
-/**
- * The hostApi surface `meeting` reaches (plugin-hostapi-protocol.md §9.2) — the
- * streaming path, a floating panel, a worker and the secrets lease — each member
- * called once so the golden transcript beside this file shows every frame that
- * surface puts on the wire.
- */
+/** Record capture, floating panel, worker and secret calls through the real child stub. */
 export const createPlugin = async (context) => {
   const api = context.hostApi;
   const seen = { frames: [], ends: [], detached: [], ffmpeg: [] };

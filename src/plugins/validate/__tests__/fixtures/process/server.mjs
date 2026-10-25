@@ -1,8 +1,4 @@
-/**
- * The protocol script the fixture's launcher runs. It reports on stderr what
- * the launch handed it — the declared pair, the host-owned pair and its own
- * arguments — so the validator's test can read them, then answers the host.
- */
+/** Report launch environment and argv on stderr, then answer the host protocol. */
 import { speak } from "../raw/speak.mjs";
 
 process.stderr.write(

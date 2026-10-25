@@ -1,23 +1,5 @@
-/**
- * Regression: a confined plugin re-pointing a parent component of a storage
- * path between the host's containment check and the operation's syscall.
- *
- * The HostApi `storage` surface used to operate in the plugin's `data/` — the
- * directory its confined child writes. Every storage op checks containment
- * (realpath + lstat) and then issues a path-based syscall, so the child could
- * rename `data/sub` aside and put a link to an outside directory in its place
- * inside that window, and the host's syscall followed it: all eleven ops at
- * depth 2 read, wrote, listed, created or deleted outside the plugin's root.
- * No platform offers a path-based "never follow any component" for every op
- * (macOS `O_NOFOLLOW_ANY` covers `open` only; Windows has nothing).
- *
- * The fix moves the surface to the host-only `storage/` beside `data/`, which
- * is in no confined child's write envelope (pinned per platform by the
- * envelope tests). So the swap the child CAN still make — in `data/` — is
- * made here, at the same moment as before, and every op must now land in
- * `storage/` with the outside directory untouched. Against the old layout
- * this file fails all eleven cases.
- */
+// Storage must use host-only storage/; child-writable data/ permits parent swaps between checks and syscalls.
+// A swap in data/ must leave every storage operation and outside target unaffected.
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   existsSync,
@@ -32,7 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 
-/** The child's move, fired at the first storage syscall under the plugin root. */
+/** Swap the child-writable parent during the first storage syscall. */
 const swap = vi.hoisted(() => ({
   armed: false,
   pluginRoot: "",
@@ -85,7 +67,6 @@ afterAll(() => {
   rmSync(base, { recursive: true, force: true });
 });
 
-/** Seed `dir` with the files every op touches, each tagged with where it lives. */
 function seed(dir: string, tag: string): void {
   mkdirSync(join(dir, "tree"), { recursive: true });
   writeFileSync(join(dir, "f.txt"), tag);
@@ -108,7 +89,6 @@ function fresh(): Case {
   const dataDir = join(pluginRoot, "data");
   const storageDir = join(pluginRoot, "storage");
   const outside = join(root, "outside");
-  // What the child writes, what the host stores for it, and what neither owns.
   seed(join(dataDir, "sub"), "child");
   seed(join(storageDir, "sub"), "inside");
   seed(outside, "OUTSIDE");
@@ -148,9 +128,7 @@ describe("a parent the plugin re-points between the host's check and its syscall
     try {
       const result = await op(c.storage);
 
-      // The child's move really happened, inside the op.
       expect(swap.fired).toHaveLength(1);
-      // Nothing outside was read, written, listed, created or deleted.
       expect(readdirSync(c.outside).sort()).toEqual(OUTSIDE_LISTING);
       expect(readdirSync(join(c.outside, "tree"))).toEqual(["t-OUTSIDE"]);
       expect(readFileSync(join(c.outside, "victim"), "utf-8")).toBe("OUTSIDE");

@@ -55,8 +55,7 @@ beforeAll(async () => {
 });
 
 function prepareTestRuntime(runtime: PluginRuntime): PluginRuntime {
-  // All cases validate against the same schema. Validation and error reads are
-  // synchronous, so only its compiled code is shared, never a cached verdict.
+  // Share compiled schema code, never validation verdicts; validation and error reads are synchronous.
   (runtime as unknown as { manifestValidator: typeof manifestValidator }).manifestValidator = manifestValidator;
   testRuntimes.add(runtime);
   return runtime;
@@ -105,17 +104,10 @@ function makeGenerationBoundRuntime(
   })));
 }
 
-/**
- * Direct unit tests for disabling a plugin through
- * `PluginRuntime.setPluginEnabled(id, false)`, the one disable path.
- * Uses a real tmp-dir fixture with a minimal ESM plugin entry so the full
- * load → disable path is exercised (not mocks).
- */
 describe("PluginRuntime.setPluginEnabled(id, false)", () => {
   let testDir: string;
   let installedDir: string;
   let registryPath: string;
-  /** The machine policy's requiredInstalls the guard reads (design §10.2). */
   let required: PackageKey[] = [];
   const REQUIRED = { kind: "plugin" as const, name: "p-required", source: "corp" };
   const corpOrigin = {
@@ -160,8 +152,7 @@ describe("PluginRuntime.setPluginEnabled(id, false)", () => {
       requiredInstalls: async () => required,
     });
     const runtime = makeTestPluginRuntime(fixture, { deploymentGuard: guard });
-    // These three policy checks neither stop the stateless child nor change
-    // its manifest. Its separate root lives until every consumer has finished.
+    // Share the stateless child until every policy-check consumer finishes.
     testRuntimes.delete(runtime);
     sharedDisposers.unshift(async () => {
       const report = await runtime.stopAll();
@@ -185,8 +176,7 @@ describe("PluginRuntime.setPluginEnabled(id, false)", () => {
   async function resetRequiredPlugin() {
     required = [REQUIRED];
     vi.restoreAllMocks();
-    // Refused disables and an idempotent enable must leave this baseline
-    // intact. Detect a changed fixture instead of repairing it for the next case.
+    // Refusals and idempotent enable must leave the baseline intact; never repair it between cases.
     expect(await readFile(requiredPlugin.registryPath, "utf8")).toBe(requiredPlugin.registry);
     expect(requiredPlugin.runtime.listPluginIds()).toEqual(["p-required"]);
     expect(requiredPlugin.runtime.listToolNames()).toEqual(["p_required_hello"]);
@@ -195,8 +185,6 @@ describe("PluginRuntime.setPluginEnabled(id, false)", () => {
 
   beforeEach(async () => {
     testDir = mkdtempSync(join(tmpdir(), "ave-runtime-"));
-    // pluginsRoot — every install lives at <pluginsRoot>/<id>/plugin.json.
-    // The registry sits at the root of pluginsRoot.
     installedDir = join(testDir, "plugins");
     await mkdir(installedDir, { recursive: true });
     registryPath = join(installedDir, "registry.json");
@@ -352,7 +340,6 @@ describe("PluginRuntime.setPluginEnabled(id, false)", () => {
   });
 
   it("disable rejects a plugin the policy requires and leaves state unchanged", async () => {
-    // The refusal is a nonmutating policy check over the same live child.
     const { runtime, registryPath } = await resetRequiredPlugin();
 
     await expect(runtime.setPluginEnabled("p-required", false)).rejects.toThrow(
@@ -362,7 +349,6 @@ describe("PluginRuntime.setPluginEnabled(id, false)", () => {
     expect(runtime.listPluginIds()).toContain("p-required");
     expect(runtime.listToolNames()).toContain("p_required_hello");
 
-    // registry should NOT have enabled=false
     const registry = JSON.parse(await readFile(registryPath, "utf-8"));
     const entry = registry.plugins.find(
       (p: { id: string }) => p.id === "p-required",
@@ -398,16 +384,10 @@ describe("PluginRuntime.setPluginEnabled(id, false)", () => {
 
     await expect(runtime.setPluginEnabled("p-missing", false)).rejects.toThrow(/not found/i);
 
-    // Existing plugin still loaded
     expect(runtime.listPluginIds()).toContain("p-existing");
   });
 
-  /**
-   * `setPluginEnabled` is the one writer of the registry `enabled` field, and
-   * the one the renderer toggle reaches (`ave:plugins:set-enabled` →
-   * `PluginRuntime.setPluginEnabled`). It must consult the deployment guard —
-   * otherwise a required plugin could be switched off from the settings tab.
-   */
+  /** The registry enabled writer must consult deployment policy so settings cannot disable required plugins. */
   function makeRuntimeWithGuard(): {
     runtime: PluginRuntime;
     guard: PluginDeploymentGuard;
@@ -425,7 +405,6 @@ describe("PluginRuntime.setPluginEnabled(id, false)", () => {
   }
 
   it("setPluginEnabled(false) rejects a plugin the policy requires and leaves it enabled", async () => {
-    // This second refusal observes the same unchanged manifest and policy.
     const { runtime, registryPath } = await resetRequiredPlugin();
 
     await expect(runtime.setPluginEnabled("p-required", false)).rejects.toThrow(
@@ -474,7 +453,7 @@ describe("PluginRuntime.setPluginEnabled(id, false)", () => {
   });
 
   it("setPluginEnabled does not consult the disable guard on the enable direction", async () => {
-    // Enabling an already-enabled child does not replace its live generation.
+    // Idempotent enable must preserve the live generation.
     const { runtime, guard } = await resetRequiredPlugin();
     const canDisable = vi.spyOn(guard, "canDisable");
 
@@ -485,8 +464,7 @@ describe("PluginRuntime.setPluginEnabled(id, false)", () => {
   });
 
   it("plugin with kebab-case id (example-plugin) and underscore methods loads correctly", async () => {
-    // Plugin ID must use kebab-case (host schema pattern ^[a-z][a-z0-9-]*$)
-    // Tool names (methods[]) must still be underscore-only (LLM tool name namespace)
+    // Plugin IDs allow kebab-case; tool names use the separate underscore namespace.
     const pluginId = "example-plugin";
     const pluginDir = join(installedDir, "com-example-test");
     await mkdir(pluginDir, { recursive: true });
@@ -533,7 +511,6 @@ describe("PluginRuntime.setPluginEnabled(id, false)", () => {
   });
 
   it("plugin with dot-notation method name is dropped fail-soft with a clear error", async () => {
-    // Methods are LLM tool names and must not contain dots
     const pluginDir = join(installedDir, "bad-plugin");
     await mkdir(pluginDir, { recursive: true });
 
@@ -735,9 +712,7 @@ describe("PluginRuntime.setPluginEnabled(id, false)", () => {
   });
 
   it("callFromUi rejects tools not declared app-visible in _meta.ui.visibility", async () => {
-    // Renderer-originated plugin calls must only reach app-visible tools — the
-    // ones whose `_meta.ui.visibility` includes "app". Everything else has to go
-    // through ConversationLoop (scope + permission + expansion caps).
+    // Renderer calls require app visibility; other tools must pass conversation scope and permission gates.
     const pluginDir = join(installedDir, "ui-actions");
     await mkdir(pluginDir, { recursive: true });
 
@@ -765,14 +740,12 @@ describe("PluginRuntime.setPluginEnabled(id, false)", () => {
         description: "Test fixture.",
         entry: "entry.mjs",
         tools: [
-          // uic_get is UI-invokable (dual) — reachable from callFromUi.
           {
             name: "uic_get",
             description: "uic_get tool",
             inputSchema: { type: "object", properties: {} },
             _meta: { ui: { visibility: ["model", "app"] } },
           },
-          // uic_private is model-only — NOT reachable from the UI bypass.
           {
             name: "uic_private",
             description: "uic_private tool",
@@ -806,7 +779,6 @@ describe("PluginRuntime.setPluginEnabled(id, false)", () => {
     await expect(runtime.callFromUi("uic_private")).rejects.toThrow(
       /not an app-visible Tool/,
     );
-    // Normal call() path (ConversationLoop) still works for both.
     await expect(runtime.call("uic_private")).resolves.toBe("private-ok");
   });
 
@@ -836,7 +808,6 @@ describe("PluginRuntime.setPluginEnabled(id, false)", () => {
         version: "1.0.0",
         description: "Test fixture.",
         entry: "entry.mjs",
-        // UI-only method: app-only visibility, not model-visible (not an LLM tool).
         tools: [
           {
             name: "uio_upload_chunk",
@@ -916,9 +887,7 @@ describe("PluginRuntime.setPluginEnabled(id, false)", () => {
   });
 
   it("hands the HostApi factory the digest of the plugin.json document, the value installers pin", async () => {
-    // The registry's manifestSha256 is taken over the document as authored; the
-    // flat projection the runtime passes along hashes to something else, so a
-    // host-secret grant that compared the projection could never hold.
+    // Secret grants must hash the authored document, not the host flat projection.
     const pluginDir = join(installedDir, "pin-plugin");
     await mkdir(pluginDir, { recursive: true });
     await writeFile(join(pluginDir, "entry.mjs"), "export default async function createPlugin() { return { handlers: { pin_ping: async () => \"pong\" } }; }\n", "utf-8");
@@ -955,8 +924,7 @@ describe("PluginRuntime.setPluginEnabled(id, false)", () => {
   });
 
   it("digests a pre-switch plugin.json as authored, though the loader drops its retired fields", async () => {
-    // Installs from before the git marketplace keep installPolicy and publisher
-    // until their next update, and their registry pin covers both fields.
+    // Registry pins cover legacy installPolicy and publisher fields until the next update.
     const pluginDir = join(installedDir, "legacy-pin");
     await mkdir(pluginDir, { recursive: true });
     await writeFile(join(pluginDir, "entry.mjs"), "export default async function createPlugin() { return { handlers: { legacy_ping: async () => \"pong\" } }; }\n", "utf-8");
@@ -1056,7 +1024,7 @@ describe("PluginRuntime.setPluginEnabled(id, false)", () => {
       });
       await runtime.startAll();
 
-      // The plugin's own tool remains loaded, but HostApi has no direct delegate.
+      // Runtime tools may remain callable without a direct HostApi delegate.
       expect(runtime.listToolNames()).toContain("calltool_ping");
       expect(injectedHostApi).not.toHaveProperty("callTool");
     });
@@ -1119,11 +1087,9 @@ describe("PluginRuntime.setPluginEnabled(id, false)", () => {
       });
       await runtime.startAll();
 
-      // The runtime's own invocation path still returns Promise<T>.
       const result = await runtime.call("calltool_echo", { msg: "hello" });
       expect(result).toEqual({ echoed: { msg: "hello" } });
 
-      // Return value is a Promise
       const promise = runtime.call("calltool_echo", { msg: "world" });
       expect(promise).toBeInstanceOf(Promise);
       await expect(promise).resolves.toEqual({ echoed: { msg: "world" } });
@@ -1296,16 +1262,7 @@ describe("PluginRuntime.setPluginEnabled(id, false)", () => {
   });
 
   it("allows sampleassistant to subscribe to granted calendar events (P4 detector grants)", async () => {
-    // Regression net for the host catalog ↔ registry grants paired
-    // with the overlay-trigger plugin's calendar-* detectors:
-    //   - `calendar-event-detector` (PR #7) → `calendar.event.upcoming`
-    //   - `calendar-conflict-detector` (PR-C) → `calendar.event.conflict.detected`
-    // Without these grants the overlay-trigger plugin throws on boot at the
-    // first `hostApi.onEvent("calendar.event.<name>", ...)` call.
-    // Locks both the positive (granted) and negative (event not in
-    // scope, e.g. `calendar.event.starting`) paths so a future catalog
-    // edit that drops events from the array doesn't silently break the
-    // overlay trigger flow.
+    // Cross-plugin calendar subscriptions require explicit per-event grants or startup subscriptions are refused.
     const writePlugin = async (
       id: string,
       methodName: string,
@@ -1383,15 +1340,12 @@ describe("PluginRuntime.setPluginEnabled(id, false)", () => {
     const runtime = makeRuntime();
     await runtime.load();
 
-    // Granted path: each event in the grant is allowed.
     for (const ev of grantedEvents) {
       expect(() =>
         runtime.assertPluginEventAccess("sampleassistant", ev),
       ).not.toThrow();
     }
-    // Negative path — least-privilege: only the events explicitly
-    // listed in the grant pass. `calendar.event.starting` is also a
-    // calendar event but NOT in the grant, so the runtime denies.
+    // A grant for one calendar event must not authorize other events in the namespace.
     expect(() =>
       runtime.assertPluginEventAccess(
         "sampleassistant",
@@ -1467,13 +1421,7 @@ describe("PluginRuntime.setPluginEnabled(id, false)", () => {
     ).not.toThrow();
   });
 
-  // Before Admission the plugin ran in this heap and its synchronous
-  // `hostApi.onEvent` threw out of `createPlugin`, failing the load. Every
-  // `entry` plugin is now a child (§9.8 A1), where a subscription is a request
-  // the host answers after the fact (`host-api-child.ts` `subscribe`): the host
-  // refuses it and no subscription exists, and the plugin keeps loading. The
-  // property — no event of another plugin without pluginAccess — is asserted
-  // at the host, where the refusal now happens.
+  // Child subscriptions are asynchronous requests; missing pluginAccess refuses the subscription without failing load.
   it("refuses load-time event subscriptions to later-loaded plugins without pluginAccess", async () => {
     const calendarManifestPath = await writePluginWithEntry(
       "calendar",
@@ -1657,12 +1605,7 @@ describe("PluginRuntime.setPluginEnabled(id, false)", () => {
   });
 });
 
-/**
- * Trusted-path filter for registry-listed manifests. Marketplace installs
- * write under `~/.ave/plugins/{slug}/`, which lives outside the project
- * `hostRoot`. Without `pluginsRoot` widening, every cloud-installed
- * plugin gets dropped on `restartAll()` after install.
- */
+/** Trusted manifest discovery must include pluginsRoot outside hostRoot or installed plugins disappear on restart. */
 describe("PluginRuntime registry trusted-path", () => {
   let testDir: string;
   let hostRoot: string;
@@ -1762,8 +1705,7 @@ describe("PluginRuntime registry trusted-path", () => {
   });
 
   it("rejects a manifest path that is outside both trusted roots", async () => {
-    // Disguise the manifest at a sibling of pluginsRoot so neither root
-    // claims it; the prefix check must reject regardless of name similarity.
+    // A similarly named sibling belongs to neither trusted root.
     const escapeDir = join(testDir, "user-installs-evil");
     const manifestPath = await writeMinimalPlugin(escapeDir, "evil");
     await writeFile(
@@ -1789,20 +1731,7 @@ describe("PluginRuntime registry trusted-path", () => {
   });
 });
 
-/**
- * US-A3 — single-plugin lifecycle smoke tests.
- *
- * Audit complaint: ipc-bridge install / uninstall / install-local handlers
- * called `restartAll()` which wipes every loaded plugin's in-memory state.
- * `addPlugin(pluginId)` and `removePlugin(pluginId)` were added so a single
- * install/uninstall does not ripple into a full reload.
- *
- * The behavioral guarantee these tests anchor:
- *   - Adding a freshly-registered plugin does NOT restart any other plugin.
- *   - Removing one plugin does NOT restart any other plugin.
- *   - Re-adding an already-loaded plugin acts as a `restartPlugin` (picks up
- *     the latest bundle).
- */
+/** Adding or removing one plugin must not restart others; re-adding a loaded plugin refreshes only its bundle. */
 describe("PluginRuntime addPlugin/removePlugin (US-A3)", () => {
   let testDir: string;
   let installedDir: string;
@@ -1987,10 +1916,7 @@ export default async function createPlugin({ hostApi }) {
       onDisable: (pluginId) => disabled.push(pluginId),
       createHostApi: (pluginId, _manifest, _pluginDataDir, incarnation) => ({
         emitEvent: () => {},
-        // Once-only, as production's `registerOwnedDisposer` is: the
-        // incarnation runs it at teardown, and since every `entry` plugin is a
-        // child (§9.8 A1) the session's subscription ledger also returns it
-        // when the child ends — two owners of one registration, one effect.
+        // The incarnation and subscription ledger share one disposer; its effect must run only once.
         onEvent: () => {
           let done = false;
           const dispose = () => {
@@ -2070,8 +1996,7 @@ export default async function createPlugin({ hostApi }) {
 
     expect(runtime.listPluginIds()).not.toContain("p-start-fails");
     await expect(readFile(stoppedPath, "utf-8")).resolves.toBe("stopped");
-    // The failed generation's child had spawned (unwrapped: the sandbox is
-    // off here); the Doctor keeps where it ran after it is failed closed.
+    // Keep routing evidence for the failed child so repair diagnostics can identify where it ran.
     expect(runtime.listPluginCards().find((card) => card.id === "p-start-fails")).toMatchObject({
       loadStatus: "failed",
       arm: "child",
@@ -2218,8 +2143,7 @@ export default async function createPlugin() {
       expect(timedIncarnation?.isLifecycleHookActive()).toBe(true);
       expect(timedHostApi).toBeDefined();
       await slowPeer.waitFor("slow-peer-entered");
-      // Hold the peer until revocation is observed, so ordering does not
-      // depend on a fixed sleep outlasting child startup on a busy host.
+      // Wait for observed revocation rather than estimating child startup with a sleep.
       const revokeDeadline = Date.now() + 5_000;
       while (timedIncarnation!.isActive() && Date.now() < revokeDeadline) {
         await new Promise((resolve) => setTimeout(resolve, 5));
@@ -2289,8 +2213,7 @@ export default async function createPlugin() {
     await runtime.startAll();
     await expect(runtime.call(toolName)).resolves.toBe("active");
 
-    // Keep the real child and stop request; advance only the host's bound
-    // once retirement has actually entered the stop operation.
+    // Advance the host deadline only after the real child enters stop.
     const stopping = runtime as unknown as {
       stopPluginInstance(...args: unknown[]): Promise<boolean>;
     };
@@ -2466,8 +2389,7 @@ export default async function createPlugin() {
     expect(await runtime.call("p_restart_broken_ping")).toBe(
       "hi-p-restart-broken-1",
     );
-    // The failed replacement's private subscription is cleaned while the
-    // still-active original incarnation remains registered.
+    // Clean failed replacement subscriptions without removing the active predecessor registration.
     expect(disposed).toEqual(["p-restart-broken"]);
     expect(disabled).toEqual([]);
     await expect(readFile(stoppedPath, "utf-8")).resolves.toBe("stopped");
@@ -2499,7 +2421,6 @@ export default async function createPlugin() {
   });
 
   it("setting plugin A config does not restart plugin B (single-plugin lifecycle)", async () => {
-    // Two plugins both loaded; restartPlugin('p-a') must not affect p-b.
     const aPath = await writePlugin("p-a");
     const bPath = await writePlugin("p-b");
     await writeFile(
@@ -2516,21 +2437,15 @@ export default async function createPlugin() {
     const runtime = makeRuntime();
     await runtime.startAll();
 
-    // Sanity — both loaded with handlers.
     expect(runtime.listPluginIds().sort()).toEqual(["p-a", "p-b"]);
     const beforeA = await runtime.call("p_a_ping");
     const beforeB = await runtime.call("p_b_ping");
 
-    // restartPlugin only restarts p-a; p-b's module state must be unchanged.
     await runtime.restartPlugin("p-a");
 
     const afterA = await runtime.call("p_a_ping");
     const afterB = await runtime.call("p_b_ping");
-    // restartPlugin cache-busts the dynamic import so p-a 의 entry.mjs 가
-    // 새 module 로 다시 평가됨 → top-level `let started = 0` 리셋 → start()
-    // 가 다시 호출되어 1. p-b 는 미접촉 — 같은 module reuse, started=1 유지.
-    // (옛 동작은 cache hit 으로 p-a started 가 2 까지 증가했으나, 그건
-    // restart 의 의도된 의미가 아닌 ESM cache footgun 이었음.)
+    // Cache-busting restart reevaluates the target module and resets its state; other plugins keep their modules.
     expect(beforeA).toBe("hi-p-a-1");
     expect(afterA).toBe("hi-p-a-1");
     expect(beforeB).toBe("hi-p-b-1");
@@ -2579,9 +2494,6 @@ export default async function createPlugin() {
   });
 
   it("addPlugin loads a newly-registered plugin without restarting others", async () => {
-    // p-existing is loaded first; then p-new is added to the registry and
-    // addPlugin('p-new') is called. p-existing must not have its start
-    // counter incremented.
     const existingPath = await writePlugin("p-existing");
     await writeFile(
       registryPath,
@@ -2597,7 +2509,6 @@ export default async function createPlugin() {
     await runtime.startAll();
     expect(await runtime.call("p_existing_ping")).toBe("hi-p-existing-1");
 
-    // Simulate marketplace install: write the new plugin + extend registry.
     const newPath = await writePlugin("p-new");
     await writeFile(
       registryPath,
@@ -2615,7 +2526,6 @@ export default async function createPlugin() {
 
     expect(runtime.listPluginIds().sort()).toEqual(["p-existing", "p-new"]);
     expect(await runtime.call("p_new_ping")).toBe("hi-p-new-1");
-    // p-existing was NOT restarted — counter still at 1.
     expect(await runtime.call("p_existing_ping")).toBe("hi-p-existing-1");
   });
 
@@ -2982,8 +2892,7 @@ export default async function createPlugin() {
     await mkdir(staleDir, { recursive: true });
     const staleManifestPath = join(staleDir, "plugin.json");
 
-    // The stale start runs in its plugin child (§9.8 A1); the test steers it
-    // through files under its own temp root rather than a shared global.
+    // Child heaps are separate; steer stale startup through files in the fixture root.
     const gate = await childProcessGate(join(testDir, "stale-start-gate"));
     await writeFile(
       join(staleDir, "entry.mjs"),
@@ -3380,8 +3289,7 @@ export default async function createPlugin() {
   });
 
   it("addPlugin on an already-loaded plugin acts as restartPlugin (reinstall path)", async () => {
-    // A reinstall over an existing version should still pick up the latest
-    // bundle. addPlugin's idempotency contract: if loaded, defer to restartPlugin.
+    // Reinstalling a loaded plugin must refresh its bundle through restartPlugin.
     const aPath = await writePlugin("p-existing");
     const bPath = await writePlugin("p-other");
     await writeFile(
@@ -3403,10 +3311,7 @@ export default async function createPlugin() {
 
     await runtime.addPlugin("p-existing");
 
-    // p-existing restarted (cache-bust → fresh module → top-level
-    // `started=0` 다시 리셋 후 start() 한 번 호출 → 1). p-other 미접촉.
-    // 옛 캐시 hit 동작에선 module reuse 로 started 가 2 까지 갔으나,
-    // 그건 restart 의 의도된 의미가 아닌 footgun 이었음.
+    // Restart reevaluates the target module; bystander state must survive.
     expect(await runtime.call("p_existing_ping")).toBe("hi-p-existing-1");
     expect(await runtime.call("p_other_ping")).toBe("hi-p-other-1");
   });
@@ -3434,7 +3339,6 @@ export default async function createPlugin() {
 
     expect(runtime.listPluginIds()).toEqual(["p-bystander"]);
     expect(runtime.listToolNames()).not.toContain("p_target_ping");
-    // p-bystander was NOT restarted — counter still at 1.
     expect(await runtime.call("p_bystander_ping")).toBe("hi-p-bystander-1");
   });
 
@@ -3442,7 +3346,6 @@ export default async function createPlugin() {
     const runtime = makeRuntime();
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
-    // Should not throw.
     await runtime.removePlugin("nonexistent");
 
     expect(warnSpy).toHaveBeenCalledWith(
@@ -3453,7 +3356,6 @@ export default async function createPlugin() {
 
   it("addPlugin throws when registry has no entry for the id", async () => {
     const runtime = makeRuntime();
-    // Empty registry — no plugin to add.
     await writeFile(
       registryPath,
       JSON.stringify({ version: 1, plugins: [] }),
@@ -3465,13 +3367,9 @@ export default async function createPlugin() {
   });
 
   it("addPlugin surfaces the manifest read error when registry entry exists but manifest is invalid (update-banner regression)", async () => {
-    // Regression test for: addPlugin() throws "not found in registry" instead of the
-    // real manifest-validation error when the newly installed manifest fails AJV validation.
-    // This scenario arises when the update banner triggers install for a plugin that
-    // previously failed to load and the updated manifest still has a schema violation.
+    // A schema-invalid installed manifest must surface its validation error so the install handler can recover.
     const pluginDir = join(installedDir, "p-broken");
     await mkdir(pluginDir, { recursive: true });
-    // Write an invalid manifest (tool name has a dot, which fails schema validation).
     const badManifest = {
       id: "p-broken",
       name: "Broken",
@@ -3491,22 +3389,13 @@ export default async function createPlugin() {
     );
     const runtime = makeRuntime();
 
-    // Must throw the real schema error, not "not found in registry or disabled".
     await expect(runtime.addPlugin("p-broken")).rejects.toThrow(
       /schema validation failed|Invalid tool name/,
     );
   });
 
   it("addPlugin throws when the entry module fails to import (atomic-install rollback signal)", async () => {
-    // Regression test: pre-fix, an entry that throws at import
-    // time was silently markFailed-then-return — install-IPC handler had no
-    // way to know the install half-committed. Now addPlugin throws so the
-    // handler can roll back the registry/dir state via marketplace.uninstall().
-    //
-    // Reproduces by writing an entry that throws at the top level, which
-    // surfaces through esbuild-style "Dynamic require of …" / generic
-    // ReferenceError patterns observed for samplemail 0.1.18 / the indexer plugin 0.1.16
-    // pre-SDK-v3.4.2.
+    // Import failures must propagate from addPlugin so the install handler can roll back durable state.
     const pluginDir = join(installedDir, "p-broken-entry");
     await mkdir(pluginDir, { recursive: true });
     await writeFile(
@@ -3550,13 +3439,11 @@ export default async function createPlugin() { return {}; }`,
   });
 
   it("addPlugin on a running plugin re-reads manifest from disk (update entry-point regression)", async () => {
-    // Regression: restartPlugin() used the old in-memory manifest.entry after an
-    // update that changed the entry-point path. Now it re-reads from disk.
+    // Restart must reread the on-disk manifest to pick up a changed entry path.
     const pluginDir = join(installedDir, "p-update");
     await mkdir(pluginDir, { recursive: true });
     const manifestPath = join(pluginDir, "plugin.json");
 
-    // v1: entry.mjs returns "v1"
     await writeFile(
       join(pluginDir, "entry-v1.mjs"),
       `
@@ -3610,7 +3497,6 @@ export default async function createPlugin() {
         ?.configSchema?.properties,
     ).toHaveProperty("endpoint");
 
-    // Simulate marketplace update: write v2 entry and update manifest on disk.
     await writeFile(
       join(pluginDir, "entry-v2.mjs"),
       `
@@ -3625,7 +3511,6 @@ export default async function createPlugin() {
 `,
       "utf-8",
     );
-    // Update manifest.entry to point to the new entry file.
     await writeFile(
       manifestPath,
       JSON.stringify(servedPluginDocument({
@@ -3650,12 +3535,9 @@ export default async function createPlugin() {
       })),
       "utf-8");
 
-    // addPlugin sees it's loaded → calls restartPlugin → must re-read manifest from disk.
     await runtime.addPlugin("p-update");
 
-    // restartPlugin re-reads the manifest, picks up entry-v2.mjs.
-    // Note: ESM module caching means we can't test the v2 handler body here
-    // (same URL = cached module), but we verify the plugin is re-started (counter resets).
+    // Verify restart through module-state reset; a reused entry URL can still cache the handler body.
     expect(runtime.listPluginIds()).toContain("p-update");
     const card = runtime
       .listPluginCards()
@@ -3758,8 +3640,6 @@ export default async function createPlugin() {
   });
 });
 
-// ─── Lifecycle log emission smoke tests ────────────────────────────────────
-
 describe("PluginRuntime lifecycle log emission", () => {
   let testDir: string;
   let installedDir: string;
@@ -3808,8 +3688,7 @@ describe("PluginRuntime lifecycle log emission", () => {
     await writeTestPluginRegistry({ registryPath }, [
       { id: "lifecycle-log-test", manifestPath, enabled: true },
     ]);
-    // In test mode, createLogger maps debug→console.log.
-    // The ctx object is passed as 2nd arg; check the message string + ctx via JSON.
+    // The test logger passes structured context as console.log argument 2.
     const calls: unknown[][] = [];
     const spy = vi.spyOn(console, "log").mockImplementation((...args) => {
       calls.push(args);
@@ -3952,15 +3831,7 @@ describe("PluginRuntime lifecycle log emission", () => {
   });
 });
 
-/**
- * Where a failed boot or add attempt ran belongs to THAT attempt (§9.8 A1,
- * "Doctor, wired end to end"). Each attempt carries its own routing and
- * reports it explicitly, so overlapping attempts for one plugin cannot lend
- * or erase each other's arm and confinement, a failure before routing never
- * shows an arm, and a throw between routing and the factory still leaves a
- * failed card. Plugins run as real children; a host-side lifecycle seam
- * parks an attempt after its factory constructed the plugin.
- */
+/** Each failed attempt owns its routing evidence; overlapping attempts must not overwrite one another. */
 describe("PluginRuntime attempt diagnostics belong to their attempt", () => {
   const WORKING = 'export default async () => ({ handlers: {}, start: async () => {}, stop: async () => {} });\n';
   const BROKEN_START = 'export default async () => ({ handlers: {}, start: async () => { throw new Error("child startup refused"); }, stop: async () => {} });\n';
@@ -3976,7 +3847,6 @@ describe("PluginRuntime attempt diagnostics belong to their attempt", () => {
     const written = await writeTestPlugin(fixture, { id: ID, entrySource });
     await writeTestPluginRegistry(fixture, [{ id: ID, manifestPath: written.manifestPath }]);
     const runtime = makeTestPluginRuntime(fixture);
-    // This fixture's disposer owns its runtime and root together.
     testRuntimes.delete(runtime);
     const internals = runtime as unknown as {
       ensureDataDir(...args: unknown[]): string;
@@ -3996,7 +3866,6 @@ describe("PluginRuntime attempt diagnostics belong to their attempt", () => {
     return { runtime, internals, requires, card };
   }
 
-  /** Hold the first `count` constructed plugins until released, in order. */
   function parkAfterConstruct(internals: Awaited<ReturnType<typeof setup>>["internals"], count: number) {
     const releases: Array<() => void> = [];
     const entries = Array.from({ length: count }, () => deferred<void>());
@@ -4093,10 +3962,7 @@ describe("PluginRuntime attempt diagnostics belong to their attempt", () => {
 
   it("reports a boot attempt's own diagnostics, not those of an add in flight beside it", async () => {
     const { runtime, internals, card } = await setup(BROKEN_START);
-    // Hook 1 is the boot attempt's factory invocation: held, then failed
-    // without invoking the factory, so the boot attempt never had a child.
-    // Hook 2 is the overlapping add's factory, which spawns its child and is
-    // then held; hook 3 is that add's start, which the plugin fails.
+    // Hold boot before factory invocation; the overlapping add spawns a child, then fails start.
     let releaseBoot!: () => void;
     const bootHeld = new Promise<void>((resolve) => { releaseBoot = resolve; });
     let releaseAdd!: () => void;
@@ -4129,7 +3995,6 @@ describe("PluginRuntime attempt diagnostics belong to their attempt", () => {
         () => new Error("Plugin boot did not enter within 10000 ms"));
       expect(hooks).toBe(1);
       add = settle(runtime.addPlugin(ID));
-      // The add's factory has spawned its child before the boot attempt fails.
       await raceWithTimeout(addEntered.promise, 10_000,
         () => new Error("Plugin add did not construct within 10000 ms"));
       expect(addConstructed).toBe(true);
@@ -4166,16 +4031,8 @@ describe("PluginRuntime attempt diagnostics belong to their attempt", () => {
   });
 });
 
-/**
- * An attempt owns what it took until the plugin is registered (§9.8 A1):
- * the unpublished root, the HostApi incarnation and, once the factory
- * returned, the instance whose child is running. Every failure or
- * cancellation on that span releases each exactly once — the child stopped,
- * the incarnation retired and drained, the root removed — and a failed
- * cleanup never replaces the error it compensated for. Real children and
- * receipt-backed immutable roots; host-side seams count each release and
- * inject the faults.
- */
+// Before registration, an attempt owns its root, incarnation and child and must release each exactly once.
+// Cleanup failures are audited without replacing the original error.
 describe("PluginRuntime load attempts release what they own exactly once", () => {
   const ID = "attemptresources";
   const PING = "attemptresources_ping";
@@ -4205,7 +4062,6 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
     const originalError = new Error(`original ${mode} error`);
     const cleanupError = new Error("root cleanup failed");
     const counts = { disposed: 0, drained: 0 };
-    // Release steps in the order they happened.
     const timeline: string[] = [];
     const audits: string[] = [];
     const roots: string[] = [];
@@ -4251,11 +4107,9 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
         return createNoopHostApiForTests(args[0], args[1], args[2]);
       },
     });
-    // Its receipt-backed disposer also joins coordinator retirement before removal.
     testRuntimes.delete(runtime);
     const internals = runtime as unknown as Internals;
-    // The shared fixture substitutes the root materializer; these cases need
-    // the real receipt-backed generation root, so the class methods return.
+    // Restore real materialization so these cases exercise receipt-backed generation roots.
     delete (internals as Partial<Internals>).materializeImmutableRuntimeRoot;
     delete (internals as Partial<Internals>).removeUnpublishedRuntimeRoot;
     const materialize = internals.materializeImmutableRuntimeRoot.bind(runtime);
@@ -4298,7 +4152,6 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
       });
     }
     if (mode === "post-registration-crash") {
-      // The lifecycle registers the plugin, then rejects: a post-commit fault.
       const requireLifecycle = internals.requireCapabilityCommitLifecycle.bind(runtime);
       internals.requireCapabilityCommitLifecycle = (...args) => new Proxy(requireLifecycle(...args), {
         get: (target, key) => key === "replaceRuntime"
@@ -4318,8 +4171,7 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
         const stop = instance.stop?.bind(instance);
         instance.stop = async () => { record.stops += 1; timeline.push("stop"); await stop?.(); };
         constructed.push(record);
-        // A host-side fault after the factory returned: reading the instance's
-        // handlers throws while the runtime maps its tools.
+        // Throw while mapping returned handlers to exercise cleanup after child creation.
         if (mode === "mapping-crash" || mode === "cancel-mapping-crash" || (mode === "incumbent-crash" && constructed.length === 1)) {
           Object.defineProperty(instance, "handlers", { configurable: true, get: () => { throw originalError; } });
         }
@@ -4338,7 +4190,6 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
     });
     const stops = () => constructed.reduce((total, record) => total + record.stops, 0);
     const card = () => runtime.listPluginCards().find((entry) => entry.id === ID);
-    // What a prepared activation (update, re-enable) of the same artifact needs.
     const preparedInput = async () => ({
       installId: ID,
       manifest: runtime.getPluginManifest(ID)!,
@@ -4350,12 +4201,7 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
     return { fixture, runtime, internals, originalError, cleanupError, counts, timeline, audits, roots, removals, incarnations, constructed, exists, stops, card, preparedInput, toolGate };
   }
 
-  /**
-   * The production bundle lifecycle (coordinator, commit closure, post-commit
-   * handling) over the fixture's runtime, with inert loopback and MCP
-   * projections. `faults` injects a one-shot failure at a named point; it is
-   * read when the point is reached, so a test can arm it after warming up.
-   */
+  /** Use the real coordinator and commit closure with inert projections; fault injection is one-shot at the named boundary. */
   function bindNativeBundleLifecycle(
     f: Awaited<ReturnType<typeof setup>>,
     faults: { loopbackPrepare?: Error; loopbackPublish?: Error; contributionsUpdated?: Error } = {},
@@ -4415,7 +4261,6 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
       } as never,
     });
     f.runtime.setGenerationAccess(lifecycle);
-    // Retire whatever the lifecycle still holds before the fixture is torn down.
     disposers.unshift(async () => {
       faults.loopbackPrepare = undefined;
       faults.loopbackPublish = undefined;
@@ -4506,8 +4351,7 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
       arm: "child",
       confinement: "not-spawned",
     });
-    // The error is not modified: the cleanup failure is audited where it
-    // happened, never attached to the error.
+    // Audit cleanup failure separately without attaching it to the original error.
     expect((failure as Error).cause).toBeUndefined();
     expect(f.audits).toContain("plugin_attempt_cleanup_failed");
   });
@@ -4551,7 +4395,7 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
     const f = await setup("mapping-crash");
     if (path === "boot") await f.runtime.startAll();
     else await f.runtime.addPlugin(ID).catch(() => undefined);
-    // Authority ends first; the disposers run only after the child stopped.
+    // End authority before disposing; wait for the child to stop before draining.
     expect(f.timeline).toEqual(["deactivate", "stop", "discard", "disposer", "drain", "root"]);
   });
 
@@ -4561,7 +4405,6 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
     const failure = await f.runtime.addPlugin(ID).then(() => undefined, (error: unknown) => error);
     expect((failure as Error).cause).toBe(f.originalError);
     expect(lifecycle.getActive(ID)).toBeDefined();
-    // The runtime never published it, yet the attempt released nothing.
     expect(f.runtime.listPluginIds()).not.toContain(ID);
     expect({ ...f.counts, stops: f.stops() }).toEqual({ disposed: 0, drained: 0, stops: 0 });
     expect(f.incarnations[0]!.isActive()).toBe(true);
@@ -4603,7 +4446,6 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
     (f.runtime as unknown as { onEnable: () => void }).onEnable = () => { throw secondary; };
     const failure = await f.runtime.addPlugin(ID).then(() => undefined, (error: unknown) => error);
     expect(failure).toBe(f.originalError);
-    // The second failure is reported on its own.
     expect(f.audits).toContain("plugin_add_follow_up_failed");
     expect({ ...f.counts, stops: f.stops() }).toEqual({ disposed: 0, drained: 0, stops: 0 });
   });
@@ -4636,15 +4478,13 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
     const failure = await f.runtime.reloadPlugin(ID).then(() => undefined, (error: unknown) => error);
     await lifecycle.waitForRetirements();
     expect(f.constructed).toHaveLength(2);
-    // The incumbent retired once; the committed replacement was not touched.
     expect({ ...f.counts, stops: f.stops() }).toEqual({ disposed: 1, drained: 1, stops: 1 });
     expect(f.constructed[1]!.stops).toBe(0);
     expect(f.incarnations[1]!.isActive()).toBe(true);
     const replacementRoot = f.roots.at(-1)!;
     expect(await f.exists(replacementRoot)).toBe(true);
     await expect(f.constructed[1]!.ping({})).resolves.toBe("pong");
-    // The reload still fails with the lifecycle's fault: wrapped as a
-    // committed-publication error before the runtime publishes, itself after.
+    // Reload wraps faults before publication as committed-publication errors; later faults propagate directly.
     expect(failure === f.originalError || (failure as Error).cause === f.originalError).toBe(true);
     await f.runtime.removePlugin(ID);
     await lifecycle.waitForRetirements();
@@ -4665,7 +4505,6 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
     await expect(f.runtime.activatePreparedArtifact(input)).rejects.toBe(f.originalError);
     expect(f.constructed).toHaveLength(2);
     expect(lifecycle.getActive(ID)?.generationId).toBe(incumbent.generationId);
-    // The candidate is released once; the incumbent keeps serving.
     expect(f.constructed[1]!.stops).toBe(1);
     expect(f.incarnations[1]!.isActive()).toBe(false);
     expect({ ...f.counts, stops: f.stops() }).toEqual({ disposed: 1, drained: 1, stops: 1 });
@@ -4676,9 +4515,7 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
     expect({ ...f.counts, stops: f.stops() }).toEqual({ disposed: 2, drained: 2, stops: 2 });
   });
 
-  // `add` and `reload` leave the committed generation outside the runtime map.
-  // `boot` keeps the same generation in the map too: it guards against the
-  // shutdown stopping it once from each place.
+  // Boot can expose a committed generation through both maps; shutdown must stop it once.
   it.each(["add", "reload", "boot"] as const)("shutdown stops a %s generation the coordinator committed but the runtime map never received, exactly once", async (path) => {
     const f = await setup("success");
     const faults: { loopbackPublish?: Error } = {};
@@ -4697,7 +4534,6 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
     expect(candidate.stops).toBe(1);
     expect(f.incarnations.at(-1)!.isActive()).toBe(false);
     await expect(candidate.ping({})).rejects.toThrow();
-    // A reload's retired incumbent is not stopped or disposed again.
     expect({ ...f.counts, stops: f.stops() }).toEqual({ disposed: prior + 1, drained: prior + 1, stops: prior + 1 });
   });
 
@@ -4713,8 +4549,6 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
     let entered!: () => void;
     const atLoopback = new Promise<void>((resolve) => { entered = resolve; });
     loopback.retireGeneration = async (...args) => { entered(); await held; return retireLoopback(...args); };
-    // The removal commits and its retirement waits in the loopback phase,
-    // before the runtime phases, when shutdown begins.
     const removal = path === "removal"
       ? f.runtime.removePlugin(ID)
       : f.runtime.removePluginWithCommit(ID, async () => "uninstalled");
@@ -4734,8 +4568,7 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
     await f.runtime.addPlugin(ID);
     let lease: Awaited<ReturnType<typeof lifecycle.acquire>> | undefined = await lifecycle.acquire(ID);
     faults.loopbackPublish = f.originalError;
-    // The replacement commits; the incumbent stays in the runtime map and its
-    // retirement waits for the held lease.
+    // A committed replacement may leave the incumbent in the runtime map while retirement waits for its lease.
     await lifecycle.runWithLease(lease, () => f.runtime.reloadPlugin(ID)).catch(() => undefined);
     expect(f.constructed).toHaveLength(2);
     let settled = false;
@@ -4782,7 +4615,6 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
     }).then(() => undefined, () => undefined);
     try {
       await atCommit;
-      // Waits on the coordinator's transition barrier, before any lease.
       const call = f.runtime.call(PING, {}).then(() => "resolved", (error: unknown) => error);
       await new Promise((resolve) => setTimeout(resolve, 50));
       await f.runtime.stopAll();
@@ -4824,7 +4656,6 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
       const pluginId = `budget${i}`;
       const manifest = { id: pluginId, name: pluginId, version: "1.0.0", description: "shutdown budget fixture", entry: "entry.mjs", tools: [] };
       const incarnation = internals.buildHostApiIncarnation(pluginId, manifest, pluginDataDirIn(join(f.fixture.rootDir, "budget-roots", pluginId)), new HostApiGenerationScope(pluginId), null);
-      // Each generation's stop hook never returns and its HostApi drain stalls.
       (f.incarnations.at(-1) as unknown as { trackOperation(p: Promise<void>): void }).trackOperation(new Promise<void>((resolve) => { finishOperations.push(resolve); }));
       incarnation.commit();
       const instance = { handlers: {}, stop: () => { stopStarts += 1; return new Promise<void>(() => undefined); } };
@@ -4846,8 +4677,7 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
       await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.shutdownCleanupMs);
       expect(await result).toEqual({ status: "completed" });
       expect(stopStarts).toBe(generations);
-      // Every stop hook timed out, so every generation is named for the
-      // backstop — reported inside the budget, not after it.
+      // Report every timed-out generation for the backstop within the shutdown budget.
       expect(report).toEqual({ unfinished: Array.from({ length: generations }, (_, i) => `budget${i}`) });
     } finally {
       for (const finish of finishOperations) finish();
@@ -4859,7 +4689,6 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
     const f = await setup("hanging-tool");
     bindNativeBundleLifecycle(f);
     await f.runtime.addPlugin(ID);
-    // The stop hook outlives the deadline.
     const instance = f.constructed[0]!.instance as { stop?: () => Promise<void> };
     const stop = instance.stop!;
     let releaseStop!: () => void;
@@ -4879,7 +4708,6 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
     }
   });
 
-  /** Settle within `ms`, or report the promise as still pending. */
   async function settledWithin<T>(promise: Promise<T>, ms: number): Promise<{ state: "resolved"; value: T } | { state: "rejected"; error: unknown } | { state: "pending" }> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -4892,7 +4720,6 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
     }
   }
 
-  /** A bundled MCP server the plugin's active generation owns, on the real manager. */
   function bundledMcpManager(f: Awaited<ReturnType<typeof setup>>, lifecycle: PluginBundleLifecycle, client: Record<string, unknown>) {
     const manager = new McpManager(new McpGovernance(join(f.fixture.rootDir, "mcp-policy.json")), new ToolRegistry(), unusedNetworkFetch, join(f.fixture.rootDir, "mcp-config.json"));
     manager.setPluginGenerationAccess(lifecycle);
@@ -4934,8 +4761,7 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
     }).then(() => undefined, () => undefined);
     try {
       await atCommit;
-      // Queued behind the held transition: the tool executor's and the bundled
-      // MCP manager's own acquisitions, and the lifecycle's directly.
+      // Exercise real tool and bundled-server acquisition behind the coordinator transition barrier.
       const turn = new AbortController();
       const queued: Array<Promise<unknown>> = [
         executor.executeAll([{ id: "queued", name: PING, input: {} }], { sessionId: "shutdown-turn", abortSignal: turn.signal, permissionContext: { trustOrigin: "user-keyboard", allowedPluginIds: new Set([ID]) } } as never),
@@ -4951,7 +4777,7 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
       for (const outcome of [prompt, exact, any]) {
         expect(outcome).toMatchObject({ state: "rejected", error: { code: "plugin-runtime-shutdown" } });
       }
-      // Arriving after shutdown began: refused before reaching the server.
+      // Shutdown must refuse new acquisitions before they reach the server.
       await expect(manager.callTool(serverId, "fixture", {})).rejects.toMatchObject({ code: "plugin-runtime-shutdown" });
       await expect(lifecycle.acquireExact(ID, generationId)).rejects.toMatchObject({ code: "plugin-runtime-shutdown" });
       expect(served).toBe(0);
@@ -4978,7 +4804,6 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
       await atCommit;
       const deadline = new AbortController();
       const report = await f.runtime.stopAll({ signal: deadline.signal });
-      // Released by shutdown itself, while its durable commit is still held.
       expect(report).toEqual({ unfinished: [] });
       expect(f.constructed.map((record) => record.stops)).toEqual([1, 1]);
       expect(f.incarnations.map((incarnation) => incarnation.isActive())).toEqual([false, false]);
@@ -4987,11 +4812,11 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
       expect(refused).toBeInstanceOf(CommittedPluginGenerationPublicationError);
       expect((refused as CommittedPluginGenerationPublicationError).publicationCause).toMatchObject({ code: "plugin-runtime-shutdown" });
       expect(lifecycle.getActive(ID)?.generationId).toBe(incumbent);
-      // Released once: the activation's own cleanup found it already released.
+      // Shutdown and activation cleanup must release the candidate only once.
       expect(f.constructed.map((record) => record.stops)).toEqual([1, 1]);
       expect(f.incarnations[1]!.isActive()).toBe(false);
     } finally {
-      // An assertion failure must not leave the shared lifecycle lock held.
+      // Assertion failures must release the shared lifecycle lock.
       release();
       await update;
     }
@@ -5006,7 +4831,6 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
     const held = new Promise<void>((resolve) => { release = resolve; });
     let entered!: () => void;
     const inCallback = new Promise<void>((resolve) => { entered = resolve; });
-    // What the callback finds once it resumes: whether its payload is still there.
     const callback = async () => { entered(); await held; return f.exists(payload); };
     let payloadAtResume: Promise<boolean> | undefined;
     const tracked = async () => { payloadAtResume = callback(); return payloadAtResume; };
@@ -5025,10 +4849,9 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
     try {
       const report = await stopping;
       expect(await callerOutcome).toMatchObject({ state: "rejected", error: { code: "plugin-runtime-shutdown" } });
-      // Time enough for a retirement released early to remove the payload.
       await new Promise((resolve) => setTimeout(resolve, 300));
       expect(await f.exists(payload)).toBe(true);
-      // The retirement waits on the callback's lease: named, not reported done.
+      // Retirement must wait for callback leases rather than report premature completion.
       expect(report).toEqual({ unfinished: [ID] });
     } finally {
       release();
@@ -5074,7 +4897,6 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
     const held = new Promise<void>((resolve) => { release = resolve; });
     let entered!: () => void;
     const inFactory = new Promise<void>((resolve) => { entered = resolve; });
-    // The factory has returned and its child runs; registration is next.
     f.internals.runPluginLifecycleHook = async (scope, invoke) => {
       const result = await hook(scope, invoke);
       if (result && typeof result === "object" && "handlers" in result) {
@@ -5105,7 +4927,6 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
     const held = new Promise<void>((resolve) => { release = resolve; });
     let entered!: () => void;
     const inIntegration = new Promise<void>((resolve) => { entered = resolve; });
-    // Holds the incumbent, so the replacement's deferred startup waits for it.
     const integration = f.runtime.withPluginInstanceLease(ID, async () => { entered(); await held; })
       .then(() => undefined, () => undefined);
     await inIntegration;
@@ -5113,10 +4934,7 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
     const mcpManager = (lifecycle as unknown as { deps: { mcpManager: { prepareBundledGeneration: (...args: unknown[]) => Promise<unknown> } } }).deps.mcpManager;
     const mcpPrepare = vi.spyOn(mcpManager, "prepareBundledGeneration");
     const incumbent = lifecycle.getActive(ID)!.generationId;
-    // The activation returns once its deferred work is done; it is committed
-    // as soon as the pointer moves. The loopback publication runs right after
-    // the coordinator pointer names the candidate, so it marks that moment
-    // without assuming how long preparation takes on a loaded host.
+    // The coordinator pointer marks commit before deferred startup finishes; observe publication rather than elapsed time.
     const loopback = (lifecycle as unknown as { deps: { loopbackManager: { publishGeneration: (value: never) => void } } }).deps.loopbackManager;
     const publishLoopback = loopback.publishGeneration.bind(loopback);
     let pointerMoved!: () => void;
@@ -5136,7 +4954,7 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
       deadline.abort();
       await stopping;
     } finally {
-      // A failed step must not leave the incumbent leased for the next test.
+      // Release the incumbent lease even when an assertion fails.
       release();
       await integration;
     }
@@ -5165,7 +4983,6 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
     expect(flakyCalls).toBe(2);
   });
 
-  /** A prepared update held in its durable commit whose candidate cleanup fails. */
   async function heldUpdateWithFailingCleanup(f: Awaited<ReturnType<typeof setup>>) {
     let release!: () => void;
     const held = new Promise<void>((resolve) => { release = resolve; });

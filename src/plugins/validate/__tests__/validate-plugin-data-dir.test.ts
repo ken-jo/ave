@@ -1,9 +1,4 @@
-/**
- * The validator's temporary plugin data directory is written by the child it
- * spawns. Deleting it recursively while that child may still run would race
- * the child (a link swapped in mid-walk turns the delete onto outside files),
- * so it is deleted only after the child's exit was observed.
- */
+/** Delete child-writable data only after observed exit; otherwise a live child could redirect recursive cleanup. */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ChildProcess } from "node:child_process";
 import { cpSync, existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -11,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-/** Children whose `kill` takes Node's refusal path, so their exit is never observed. */
+/** These children refuse signals, so exit is never observed. */
 const refusal = vi.hoisted(() => ({
   commandPrefix: undefined as string | undefined,
   pids: [] as number[],
@@ -55,7 +50,7 @@ let scratch: string | undefined;
 afterEach(() => {
   vi.useRealTimers();
   for (const pid of refusal.pids.splice(0)) {
-    try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ }
+    try { process.kill(pid, "SIGKILL"); } catch {  }
   }
   refusal.commandPrefix = undefined;
   refusal.onConstruct = undefined;
@@ -64,13 +59,11 @@ afterEach(() => {
 });
 
 describe("validatePluginDirectory data directory", () => {
-  // Not on win32: validatePluginDirectory does not run a `process` entry
-  // there (it reports the protocol as not exercised), so no child exists.
+  // Process entries are unmeasured on Windows, where this case spawns no child.
   it.skipIf(process.platform === "win32")("leaves the data directory when the child did not exit", async () => {
     scratch = mkdtempSync(join(tmpdir(), "validate-data-dir-"));
     const plugin = join(scratch, "plugin");
     cpSync(PROCESS_PLUGIN, plugin, { recursive: true });
-    // Never answers construct in time, and its exit is never observed.
     writeFileSync(join(plugin, "server.mjs"), `import { constructed, reply, speak, WITHHOLD } from ${JSON.stringify(RAW_SPEAK)};
 speak({
   "ave/instance/construct": (request) => {
@@ -92,9 +85,7 @@ speak({
     });
     const settled = observe(validating);
     await inConstruct;
-    // The child is live and has withheld construct. Advance the protocol
-    // deadline and teardown until settled, with a virtual cap so a changed
-    // deadline fails an assertion instead of leaving this test awaiting it.
+    // Advance protocol and teardown only after child readiness, with a virtual bound on the test.
     for (let elapsed = 0; !settled() && elapsed < 60_000; elapsed += 100) {
       await vi.advanceTimersByTimeAsync(100);
     }

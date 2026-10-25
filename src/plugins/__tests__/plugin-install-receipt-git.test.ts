@@ -1,9 +1,5 @@
-/**
- * Receipt schema v4 — git installs (design §6.2). A git install has no
- * signer and no admission; it records the pinned or tree hash and the plan
- * (source, the two bound commits, every rung outcome). Signed and local
- * installs keep writing v3.
- */
+// Git receipts record source, bound commits, rung outcomes and content hashes without signer or admission.
+// Signed and local installs retain v3 receipts.
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

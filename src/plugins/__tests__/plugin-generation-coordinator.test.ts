@@ -142,8 +142,7 @@ describe("PluginGenerationCoordinator", () => {
     await expect(coordinator.acquire("bundle-host-test")).rejects.toMatchObject({ code: "host-shutdown" });
     await expect(coordinator.acquireExact("bundle-host-test", "g1")).rejects.toMatchObject({ code: "host-shutdown" });
 
-    // Durable state now names g2, but nothing publishes: reported as a
-    // publication failure after the durable commit, the pointer unchanged.
+    // A durable commit after admission closes must fail publication without changing the active pointer.
     finishCommit();
     const refused = await held.then(() => undefined, (error: unknown) => error);
     expect(refused).toBeInstanceOf(CommittedPluginGenerationPublicationError);
@@ -160,13 +159,11 @@ describe("PluginGenerationCoordinator", () => {
   it.each(["acquire", "acquireExact"] as const)("%s grants no lease once admission has closed, whichever turn the closure lands in", async (method) => {
     const shutdown = (pluginId: string) => Object.assign(new Error(`${pluginId} is shutting down`), { code: "host-shutdown" });
     const late: number[] = [];
-    // Close admission at every turn offset after the candidate's readiness
-    // opens; a lease handed out after the closure ran is a violation.
+    // Check every turn offset: no lease may be issued after admission closes.
     for (let turns = 0; turns < 24; turns += 1) {
       const coordinator = new PluginGenerationCoordinator<{ label: string }>();
       const transition = await coordinator.commit(generation("g1"), async () => undefined);
       let closed = false;
-      // Observed where the lease is created, in the same turn.
       const internals = coordinator as unknown as { createLease: (...args: unknown[]) => unknown };
       const createLease = internals.createLease.bind(coordinator);
       internals.createLease = (...args) => {
@@ -201,7 +198,6 @@ describe("PluginGenerationCoordinator", () => {
     expect(refused).toBeInstanceOf(CommittedPluginGenerationPublicationError);
     expect(refused.outcome).toEqual({ state: "inactive" });
     expect(refused.message).toMatch(/not published/);
-    // Staged, not yet active: never reported as an update that applied.
     expect(classifyApplyError(refused)).toEqual({ state: "applied-not-running" });
   });
 

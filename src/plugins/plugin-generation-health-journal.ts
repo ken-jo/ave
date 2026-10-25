@@ -21,7 +21,6 @@ interface HealthJournalFile {
   faults: PluginGenerationHealthFault[];
 }
 
-/** Durable visibility for internal faults discovered after pointer commit. */
 export class PluginGenerationHealthJournal {
   private readonly records = new Map<string, PluginGenerationHealthFault>();
 
@@ -85,12 +84,7 @@ export class PluginGenerationHealthJournal {
   }
 }
 
-/**
- * Post-commit failures can originate in provider/MCP code and may carry URLs,
- * headers, response bodies, or credentials in their message.  The durable
- * journal is diagnostic metadata, not a raw exception sink: phase and a stable
- * name/code are sufficient to route remediation without persisting secrets.
- */
+/** Persist only stable name/code diagnostic metadata; provider errors may contain URLs, bodies or credentials. */
 export function opaqueHealthError(error: unknown): Pick<
   PluginGenerationHealthFault,
   "errorName" | "errorCode" | "message"

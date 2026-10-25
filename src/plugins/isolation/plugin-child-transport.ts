@@ -1,33 +1,4 @@
-/**
- * The host end of one plugin child's pipes
- * (`docs/blueprints/plugin-process-isolation.md` §5.2).
- *
- * It owns exactly one thing: turning a pair of streams into the two halves of
- * the protocol that run over them — outbound requests (the five lifecycle
- * methods of `plugin-instance-wire.ts` through {@link PluginChildTransport.request},
- * the MCP requests through {@link PluginChildTransport.requestMcp}, and the one
- * verbatim frame of {@link PluginChildTransport.probe}) and inbound `ave/host/*`
- * traffic, which it hands to a {@link HostApiDispatcher}.
- *
- * STREAM-INJECTED, not process-owning. The spawn, the ASRT wrap and the
- * managed-child registration live in `out-of-process-plugin.ts`; this class
- * takes a {@link ChildLink}. That split is what lets the protocol be exercised
- * over in-memory paired streams — the pattern `stdio-server-loop`'s own tests
- * use — while the confinement is exercised against a real process, instead of
- * one slow test having to prove both.
- *
- * A DEAD CHILD IS A FAILED CALL, never a hung one. Every pending request
- * rejects when the pipes close, and every host-side subscription the child
- * opened is released. That is the whole recovery §2.4 promises: today a hung
- * in-process handler detaches and holds a generation lease forever; here the
- * process dies and the lease goes with it.
- *
- * AN OBSERVED EXIT IS NOT A REQUESTED TERMINATION. A child that left on its own
- * ({@link ChildLink.onGone}) is released without being terminated
- * ({@link PluginChildTransport.peerGone}); the host ending a child
- * ({@link PluginChildTransport.close}) starts the link's one termination
- * sequence, and the transport starts it at most once in its lifetime.
- */
+/** Own framing, call settlement and one child termination sequence; faults remain distinct from observed exit. */
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { Readable, Writable } from "node:stream";
 import { randomUUID } from "node:crypto";
@@ -59,39 +30,19 @@ import {
 
 const log = createLogger("plugin-child-transport");
 
-/**
- * How many settled `tools/call` invocations one connection keeps resolvable.
- *
- * A settled invocation stays resolvable so that work its handler left running
- * keeps the invocation's gate (decision 63). The bound caps what a long-lived
- * generation holds. When a call settles past it, the oldest settled entry is
- * dropped, and a later request naming that entry is refused, never run
- * ungated. Calls still in flight are never dropped.
- */
+/** Keep a bounded settled-invocation cache for late work; evicted tokens refuse and active calls are never dropped. */
 export const SETTLED_INVOCATIONS_MAX = 1024;
 
-/** Admission bound for unresolved child calls; detaching the host caller does not settle them. */
+/** Bound unresolved calls even after callers detach. */
 export const LIVE_INVOCATIONS_MAX = 64;
 
-/** A JSON-RPC error as it arrives from the child. */
 interface JsonRpcErrorBody {
   readonly code: number;
   readonly message: string;
   readonly data?: { readonly code?: unknown };
 }
 
-/**
- * A failed request to the child, with the child's own JSON-RPC code preserved.
- *
- * The code is kept because the child distinguishes "the plugin is not
- * constructed yet" from "your method does not exist" from "the handler threw",
- * and collapsing all three into one message would leave the host unable to tell
- * a protocol mistake from a plugin bug. `boundaryCode` is the boundary's own
- * refusal code when the error carries one (`payload-too-large` for a result
- * too large to frame), so a caller can tell a refused call from a failed one.
- * `body` is the error exactly as it crossed, which is what
- * {@link PluginChildTransport.probe} answers with.
- */
+/** Preserve child JSON-RPC codes and error data so callers can distinguish protocol refusal from plugin failure. */
 class PluginChildRequestError extends Error {
   readonly code: number;
   readonly boundaryCode: string | undefined;
@@ -106,18 +57,11 @@ class PluginChildRequestError extends Error {
   }
 }
 
-/** What {@link PluginChildTransport.probe} answers: the reply's `result` or its `error`. */
 export type PluginChildProbeReply =
   | { readonly result: unknown }
   | { readonly error: JsonRpcErrorBody };
 
-/**
- * The MCP requests the host sends a plugin child.
- *
- * Exactly the four the out-of-process arm and the validator use. Each of them
- * goes through {@link PluginChildTransport.requestMcp}, which is the one place
- * the per-request MCP metadata is produced.
- */
+/** All MCP requests share one metadata producer. */
 export type PluginMcpRequestMethod =
   | "server/discover"
   | "tools/list"
@@ -135,17 +79,7 @@ const PLUGIN_INSTANCE_METHOD_SET: ReadonlySet<string> = new Set<string>(
   Object.values(PLUGIN_INSTANCE_METHODS),
 );
 
-/**
- * The `_meta` every MCP request on a plugin child's pipes carries.
- *
- * MCP `2026-07-28` makes both keys mandatory on every request, and a server
- * MUST refuse a request missing either with `-32602`. `clientCapabilities` is
- * empty because the host serves no server-to-client MCP request on these pipes
- * (see the `default` arm of the transport's router), so declaring one would
- * promise a surface this channel does not have. `clientInfo` is omitted: it is
- * a self-reported SHOULD that must not change behaviour, and an app version in
- * every request would make the goldens move at each release.
- */
+/** Every MCP request needs required metadata; use stable protocol identity rather than release-specific app versions. */
 export function pluginChildRequestMeta(): Record<string, unknown> {
   return {
     [META_PROTOCOL_VERSION]: MCP_PROTOCOL_VERSION,
@@ -153,40 +87,14 @@ export function pluginChildRequestMeta(): Record<string, unknown> {
   };
 }
 
-/** The child's pipes plus the one thing only its owner can do: end it. */
 export interface ChildLink {
-  /** Framed messages FROM the child (its stdout). */
   readonly input: Readable;
-  /** Framed messages TO the child (its stdin). */
   readonly output: Writable;
-  /**
-   * Start the link's whole termination sequence for the child.
-   *
-   * Called by {@link PluginChildTransport.close} and by nothing else, and at
-   * most once per transport, so the transport never has to know whether it is
-   * holding a real process or a pair of in-memory streams. A process link's
-   * sequence escalates on its own (SIGTERM, then one SIGKILL after a grace
-   * period); the transport never retries it.
-   */
+  /** Start termination once; the link owns SIGTERM and escalation without transport retries. */
   terminate(reason: string): void;
-  /**
-   * The child no longer exists: the process exited, or a spawn produced no
-   * process at all.
-   *
-   * TERMINAL ONLY. A fault on a child that is still running — a signal that
-   * could not be delivered — is {@link onFault}, never this: reporting it here
-   * would release a live process as if it were gone.
-   */
+  /** onGone means terminal exit or failed spawn with no process, never a fault on a live child. */
   onGone(handler: (reason: string) => void): void;
-  /**
-   * Something went wrong with a child that still exists — for a process, an
-   * `error` event while it has a pid, which Node emits when a signal could
-   * not be delivered.
-   *
-   * Required, so a link that forgot the split fails to compile instead of
-   * folding its faults into {@link onGone}. A link with no process to fault
-   * registers the handler and never calls it.
-   */
+  /** Live-process errors report through onFault until actual exit. */
   onFault(handler: (reason: string) => void): void;
 }
 
@@ -201,45 +109,19 @@ export class PluginChildTransport {
   private readonly dispatcher: HostApiDispatcher;
   private readonly link: ChildLink;
   private readonly pluginId: string;
-  /** Why the channel stopped carrying calls: a requested close or an observed exit. */
   private closedReason: string | undefined;
-  /**
-   * Whether the link's termination sequence was ever started.
-   *
-   * Kept apart from {@link closedReason} because an observed exit closes the
-   * channel without terminating anything, and set BEFORE `link.terminate` is
-   * called, because a refused signal reports its fault synchronously from
-   * inside that call.
-   */
+  /** Mark termination started before calling the link because signal faults can reenter synchronously. */
   private terminating = false;
-  /** The exit the link reported, once it has. */
   private exitReason: string | undefined;
   private resolveExited!: (reason: string) => void;
-  /**
-   * Settles with the reason the link's `onGone` reported, and on nothing else.
-   *
-   * A deadline, a fault or a close does not settle it: each ends the child,
-   * and this settles when that child's exit is then observed.
-   */
+  /** Only observed terminal exit settles exited; close, timeout and fault do not. */
   readonly exited: Promise<string> = new Promise((resolve) => {
     this.resolveExited = resolve;
   });
-  /** Faults a live child reported while its termination sequence was running. */
   readonly terminationFaults: string[] = [];
-  /**
-   * The async context of every `tools/call` still in flight, by the token the
-   * call carried (`_meta[INVOCATION_META]`). A hostApi request the child makes
-   * while serving that call names the token, and runs in this context: the
-   * invocation's effect gate, effect ledger and origin, exactly as an
-   * in-process handler's hostApi call does.
-   */
+  /** Resolve child invocation tokens to captured host gate, ledger and origin context. */
   private readonly liveInvocations = new Map<string, InvocationContextRunner>();
-  /**
-   * The same, for calls that have settled, oldest first. Work a handler left
-   * running after it returned still names its token. In-process that work
-   * keeps the invocation's frame, so it must resolve here too. Released when
-   * the channel closes, and bounded by {@link SETTLED_INVOCATIONS_MAX}.
-   */
+  /** Retain bounded settled contexts for late work; release all when the channel closes. */
   private readonly settledInvocations = new Map<string, InvocationContextRunner>();
 
   constructor(options: PluginChildTransportOptions) {
@@ -253,11 +135,7 @@ export class PluginChildTransport {
       notifications: {
         deliver: (notification) => this.sendToChild(notification),
       },
-      // Bounded by the per-handler limit the host's shutdown runner applies,
-      // and enforced here as that runner cannot: a child whose handler
-      // overruns it is killed by the request deadline. The deadline sits a
-      // grace past the runner's, so the runner reports the overrun first and
-      // the kill follows it.
+      // Apply the shutdown-handler bound with grace so the host reports timeout before child termination.
       shutdownChild: async (subscriptionId) => {
         await this.request(
           PLUGIN_INSTANCE_METHODS.shutdown,
@@ -270,14 +148,9 @@ export class PluginChildTransport {
     this.stream = new FramedMessageStream(
       options.link.input,
       options.link.output,
-      // Everything off the pipe starts outside any invocation. The data
-      // callback would otherwise run in the context the child was spawned
-      // in, which is a finished tool call's when a call restarted the plugin.
-      // Only a request's own token puts it back in an invocation.
+      // Read pipe traffic outside spawn invocation context; restore only the request token context.
       (message) => runOutsideInvocation(() => this.route(message)),
-      // A child that broke the framing is killed like one that stopped
-      // answering: nothing it writes after an unbounded line can be trusted to
-      // start on a line boundary.
+      // Framing overflow kills the channel because subsequent boundaries cannot be trusted.
       (reason) => this.close(`[plugin-child-transport] ${reason}`),
       (dropped) => {
         log.warn(
@@ -288,32 +161,14 @@ export class PluginChildTransport {
     );
   }
 
-  /**
-   * Begin reading, and start listening for the child going away or faulting.
-   *
-   * The handlers are attached HERE rather than at the first request: a child
-   * that dies while it is still constructing must fail the construct call, and
-   * construct is the first request there is.
-   */
+  /** Attach exit and fault handlers before construct so setup failures reject its first request. */
   start(): void {
     this.link.onGone((reason) => this.peerGone(reason));
     this.link.onFault((reason) => this.fault(reason));
     this.stream.start();
   }
 
-  /**
-   * Send one `ave/instance/*` request and await the child's reply.
-   *
-   * Instance methods only, with their params verbatim: they are Ave methods,
-   * and the MCP metadata rule is MCP's. Any other method is an internal
-   * contract violation and is refused, so this cannot become a second path for
-   * an MCP request that would then cross without its metadata.
-   *
-   * `timeoutMs` is left UNSET by callers whose wait is already bounded on the
-   * host side — a `start()` sits under `runStartWithTimeout`. Passing one here
-   * in addition would put a second, quieter deadline on the same operation and
-   * make which of them fired a matter of milliseconds.
-   */
+  /** Lifecycle calls carry existing caller bounds; do not add competing timeouts. */
   async request(
     method: PluginInstanceMethod,
     params: Record<string, unknown>,
@@ -328,14 +183,7 @@ export class PluginChildTransport {
     return await this.send(method, params, timeoutMs);
   }
 
-  /**
-   * Send one MCP request with the metadata MCP requires, and await the reply.
-   *
-   * The one producer of that metadata on this channel. A caller-supplied
-   * `_meta` is refused rather than merged: no caller sets one, and a merge
-   * would make the producer's keys overridable. `timeoutMs` follows the rule
-   * {@link request} states — a tool call sits under `runWithCeiling`.
-   */
+  /** Stamp metadata once and preserve caller fields; tool calls use the existing ceiling cancellation. */
   async requestMcp(
     method: PluginMcpRequestMethod,
     params: Record<string, unknown>,
@@ -360,8 +208,7 @@ export class PluginChildTransport {
           + "restart the plugin to clear unresolved calls",
       );
     }
-    // Taken HERE, in the caller's async chain: the tool handler that called
-    // this runs inside the host's per-invocation context.
+    // Capture invocation context in the actual caller async chain.
     const token = randomUUID();
     const invocation: InvocationContextRunner = AsyncLocalStorage.snapshot();
     this.liveInvocations.set(token, invocation);
@@ -377,11 +224,7 @@ export class PluginChildTransport {
     }
   }
 
-  /**
-   * Keep a settled call's context resolvable for the rest of the channel's
-   * life (see {@link settledInvocations}). Nothing is kept once the channel
-   * has closed: no request can arrive on it.
-   */
+  /** Retain settled contexts only while the channel can receive requests. */
   private retainSettled(token: string, invocation: InvocationContextRunner): void {
     if (this.closedReason !== undefined) return;
     this.settledInvocations.set(token, invocation);
@@ -391,20 +234,12 @@ export class PluginChildTransport {
     }
   }
 
-  /** The channel is closed. No request can name an invocation now. */
   private releaseInvocations(): void {
     this.liveInvocations.clear();
     this.settledInvocations.clear();
   }
 
-  /**
-   * Send one request verbatim and answer with the child's reply, error or not.
-   *
-   * For the unknown-method check, where the error IS the answer. It refuses
-   * the methods {@link request} and {@link requestMcp} own, so it cannot become
-   * a third path for either. A closed channel still rejects: that is not a
-   * reply from the child.
-   */
+  /** Probe preserves raw success or error replies; a closed channel still rejects. */
   async probe(
     method: string,
     params?: Record<string, unknown>,
@@ -430,41 +265,29 @@ export class PluginChildTransport {
     if (this.closedReason !== undefined) throw new Error(this.closedReason);
     const id = randomUUID();
     const settled = this.pending.register(id, timeoutMs, () => {
-      // A request that outlived its deadline means the child stopped answering.
-      // Killing it is the recovery, not an escalation: the alternative is a
-      // confined process running plugin code that nothing is waiting for.
+      // Terminate a child that outlives its request bound rather than leave unwatched plugin code running.
       this.close(`[plugin-child-transport] '${method}' timed out after ${String(timeoutMs)}ms`);
     });
     try {
       this.stream.send({ jsonrpc: "2.0", id, method, params });
     } catch (error) {
-      // Refused before it was written (a request too large to frame), so no
-      // reply will ever come for it.
+      // An unwritten oversized request cannot receive a reply.
       this.pending.fail(id, error as Error);
     }
     return await settled;
   }
 
-  /** Push a host-originated notification to the child. */
   sendToChild(notification: HostApiNotification): void {
     if (this.closedReason !== undefined) return;
     this.stream.send(notification);
   }
 
-  /**
-   * The host ends the child: a request deadline, a fatal framing error, a
-   * fault on a live child, or the session's teardown.
-   *
-   * Idempotent, because those can race each other and the child's own exit.
-   * `terminating` is set before `link.terminate` is called: a refused signal
-   * re-enters {@link fault} from inside that call, and must find the sequence
-   * already running.
-   */
+  /** Close is idempotent; mark termination before fallible callbacks that can reenter. */
   close(reason: string): void {
     if (this.closedReason !== undefined) return;
     this.closedReason = reason;
     this.terminating = true;
-    // Release contexts before any fallible signal or subscription cleanup.
+    // Release invocation contexts before signal or subscription cleanup can fail.
     this.releaseInvocations();
     this.logPartialFrame();
     try {
@@ -475,13 +298,7 @@ export class PluginChildTransport {
     }
   }
 
-  /**
-   * The child is gone on its own. Everything {@link close} does except
-   * `link.terminate`, which has nothing left to end.
-   *
-   * The exit is recorded even after a close, because it is what settles
-   * {@link exited}.
-   */
+  /** Observed exit performs close cleanup without signaling an already-gone child. */
   peerGone(reason: string): void {
     if (this.exitReason === undefined) {
       this.exitReason = reason;
@@ -495,12 +312,7 @@ export class PluginChildTransport {
     this.dispatcher.childGone();
   }
 
-  /**
-   * A live child faulted. Starts the one termination sequence if none is
-   * running; with one running, the fault is recorded and nothing else happens
-   * — the sequence's own escalation is the retry, and a second `terminate`
-   * would start a second sequence.
-   */
+  /** Record faults during termination without starting a second signal sequence. */
   fault(reason: string): void {
     if (this.exitReason !== undefined) return;
     if (!this.terminating) {
@@ -514,11 +326,7 @@ export class PluginChildTransport {
     );
   }
 
-  /**
-   * A frame cut off by the close is dropped with the channel. Said here,
-   * quietly, so a child that died mid-write is distinguishable from one that
-   * went away between messages.
-   */
+  /** Drop partial frames on close while distinguishing truncated output from a clean boundary. */
   private logPartialFrame(): void {
     if (this.stream.pendingBytes > 0) {
       log.debug(
@@ -551,10 +359,7 @@ export class PluginChildTransport {
         this.dispatcher.handleNotification(message as unknown as HostApiNotification);
         return;
       default:
-        // An MCP request, an instance request, or an unrecognised frame. The
-        // host is a client on these pipes and never a server, so a frame in the
-        // server direction is a confused child — dropped, not answered, because
-        // answering would mean implementing a surface the host does not have.
+        // The host is only a client on these pipes; report server-directed or unknown frames without answering.
         return;
     }
   }

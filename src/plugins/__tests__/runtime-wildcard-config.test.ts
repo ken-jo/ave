@@ -1,10 +1,4 @@
-/**
- * #893 — Wildcard configOverrides slot tests for PluginRuntime.
- *
- * Verifies that `setWildcardConfigOverride` merges (does not clobber) and
- * `clearWildcardConfigOverride` removes only the named keys, leaving the
- * slot intact for unrelated injectors (e.g. boot's `pythonExecutable`).
- */
+/** Wildcard updates must merge; clearing named keys must preserve unrelated injectors. */
 import { describe, it, expect } from "vitest";
 import { TestPluginRuntime as PluginRuntime } from "./test-helpers.js";
 import { buildPluginContext } from "../runtime/sandbox.js";
@@ -23,8 +17,7 @@ describe("PluginRuntime wildcard configOverrides (#893)", () => {
       hostApiKey: "sk-test",
       hostApiVendor: "openai",
     });
-    // Access the internal map via the cast — production callers route via the
-    // plugin runtime context, but unit tests verify the in-memory map directly.
+    // Read the map directly to isolate wildcard-slot behavior from context construction.
     const slot = (rt as unknown as { configOverrides: Record<string, Record<string, unknown>> })
       .configOverrides["*"];
     expect(slot).toEqual({
@@ -64,7 +57,6 @@ describe("PluginRuntime wildcard configOverrides (#893)", () => {
     expect(slot).toEqual({ pythonExecutable: "/usr/bin/python3" });
   });
 
-  // PR #894 review B2 — getter for wildcard config, used by hostApi.config.get
   it("getWildcardConfigOverride returns a shallow copy of the wildcard slot", () => {
     const rt = makeRuntime({
       "*": { hostApiVendor: "openai", pythonExecutable: "/usr/bin/python3" },
@@ -74,7 +66,6 @@ describe("PluginRuntime wildcard configOverrides (#893)", () => {
       hostApiVendor: "openai",
       pythonExecutable: "/usr/bin/python3",
     });
-    // mutating the copy must not affect the underlying slot
     copy.attacker = "x";
     const slot = (rt as unknown as { configOverrides: Record<string, Record<string, unknown>> })
       .configOverrides["*"];
@@ -89,17 +80,13 @@ describe("PluginRuntime wildcard configOverrides (#893)", () => {
     expect(rt.getWildcardConfigOverride()).toEqual({});
   });
 
-  // CRIT-1 regression guard — llmApiKey must NOT appear in the wildcard slot
-  // or in the effective plugin config map. The raw API key flows through
-  // getSecret, not through configOverrides.
+  // Raw API keys flow through getSecret, never wildcard or effective config.
   it("config.get('llmApiKey') returns undefined — CRIT-1 regression guard", () => {
     const rt = makeRuntime({});
-    // Wildcard slot must not contain llmApiKey
     expect(rt.getWildcardConfigOverride()["llmApiKey"]).toBeUndefined();
     expect(rt.getWildcardConfigOverride()["llmProvider"]).toBeUndefined();
 
-    // Even after the vendor id is injected (normal cycle-3 boot path),
-    // llmApiKey must still be absent from the effective config.
+    // Injecting a vendor ID must not expose the raw key in effective config.
     rt.setWildcardConfigOverride({ hostApiVendor: "openai" });
     const effectiveConfig = buildPluginContext({
       pluginId: "test-plugin",
@@ -120,7 +107,6 @@ describe("PluginRuntime wildcard configOverrides (#893)", () => {
 
     expect((effectiveConfig as Record<string, unknown>)["llmApiKey"]).toBeUndefined();
     expect((effectiveConfig as Record<string, unknown>)["llmProvider"]).toBeUndefined();
-    // vendor id IS present (injected by boot)
     expect((effectiveConfig as Record<string, unknown>)["hostApiVendor"]).toBe("openai");
   });
 });

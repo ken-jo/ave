@@ -1,18 +1,10 @@
-/**
- * Backward-compat re-export shim.
- * Real implementation lives in runtime/.
- *
- * All existing importers of `./runtime.js` or `../plugins/runtime.js` continue
- * to work without modification — this shim re-exports every public symbol.
- */
+/** Preserve existing runtime import paths through the public re-export surface. */
 
-// resolvePluginEntryPath is used by unit tests and internal entry-path guards.
 export {
   createNoopHostApiForTests,
   resolvePluginEntryPath,
 } from "./runtime/sandbox.js";
 
-// Main class + interfaces
 export {
   PluginRuntime,
 } from "./runtime/index.js";

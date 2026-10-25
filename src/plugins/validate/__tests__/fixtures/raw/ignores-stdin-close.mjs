@@ -1,7 +1,4 @@
-/**
- * Answers the whole protocol, then ignores its stdin ending: a timer keeps it
- * alive, so only a termination ends it.
- */
+/** Keep a timer alive after stdin closes so termination is required. */
 import { speak } from "./speak.mjs";
 
 speak({}, { exitOnEnd: false });

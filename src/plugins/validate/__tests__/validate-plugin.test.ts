@@ -1,16 +1,4 @@
-/**
- * The plugin validator, row by row (`docs/design/plugin-hostapi-protocol.md`
- * §9.7 P2).
- *
- * Three kinds of child. The five protocol-3 golden fixtures are complete
- * plugins run by the reference runtime, from source, exactly as
- * `bun run plugin:validate` runs them. The raw fixtures under
- * `fixtures/raw/` are plain scripts that speak the protocol by hand and
- * depart from it at one place each — the behaviours the reference runtime
- * cannot produce — handed to `runProtocolChecks` below the manifest step.
- * `fixtures/process/` is a `process` plugin: its own `#!/bin/sh` launcher
- * that execs `node` on a protocol script, validated from its directory.
- */
+/** Validate reference-runtime, raw-protocol and executable-process fixtures through the real CLI sequence. */
 import { afterEach, beforeAll, afterAll, describe, expect, it, vi } from "vitest";
 import { spawn } from "node:child_process";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -55,7 +43,6 @@ const LOGGER_HOOK = fileURLToPath(
 );
 const GOLDEN_IDS = ["sampleportal", "local-indexer", "meeting", "samplemail", "sampleassistant"] as const;
 
-/** The reference runtime from source, as `plugin:validate` runs it. */
 const SOURCE_MODE: ValidateOptions = {
   childEntry: CHILD_MAIN,
   childExecArgs: ["--import", "tsx", "--import", pathToFileURL(LOGGER_HOOK).href],
@@ -63,7 +50,7 @@ const SOURCE_MODE: ValidateOptions = {
   toolArgs: {},
 };
 
-/** `process.execPath` is Electron under this suite's runner; the variable makes it Node. */
+/** The test executable needs ELECTRON_RUN_AS_NODE to behave as Node. */
 const CHILD_ENV = buildSafeChildEnv({ ELECTRON_RUN_AS_NODE: "1" });
 
 let scratch: string;
@@ -82,12 +69,11 @@ afterAll(() => {
 
 afterEach(() => {
   vi.useRealTimers();
-  // A child whose signals were refused is still alive when its run returns.
+  // Signal refusal leaves the child alive after validation returns.
   for (const pid of spawnedPids.splice(0)) {
     try {
       process.kill(pid, "SIGKILL");
     } catch {
-      // Already gone.
     }
   }
 });
@@ -127,10 +113,7 @@ function useProtocolClock(): number {
   return performance.now();
 }
 
-/**
- * Keep real pipes and signals, but advance the host clock only after the
- * child confirms the withheld operation. Startup never spends the deadline.
- */
+/** Keep real pipes and signals; advance virtual deadlines only after the child acknowledges the held operation. */
 async function timedRawChecks(
   fixture: string,
   method: string,
@@ -138,8 +121,7 @@ async function timedRawChecks(
   options = rawOptions(fixture),
   refuseSignals = false,
 ): Promise<ProtocolRun> {
-  // Observe input after the fixture's own listeners consumed it. The side
-  // channel belongs to this test launch; the raw protocol fixtures stay intact.
+  // Observe input after fixture listeners so side-channel instrumentation cannot change raw protocol behavior.
   const observer = `
 const emit = process.stdin.emit;
 let buffered = "";
@@ -177,7 +159,6 @@ process.stdin.emit = function(event, ...args) {
   });
   let settled = false;
   const pending = runProtocolChecksOnChild(child, manifest, options).finally(() => { settled = true; });
-  // Attach a rejection handler while waiting for the child's acknowledgement.
   void pending.catch(() => undefined);
   await received;
   await settle();
@@ -185,8 +166,7 @@ process.stdin.emit = function(event, ...args) {
   await vi.advanceTimersByTimeAsync(bound - 1);
   expect(settled).toBe(false);
   await vi.advanceTimersByTimeAsync(1);
-  // Fail at the virtual deadline even if a delayed abort would leave the
-  // real child alive and the pending run unable to finish.
+  // Bound the test itself if delayed abort leaves a real child and pending run.
   expect(vi.mocked(openValidationSession).mock.calls.at(-1)?.[0].signal?.aborted).toBe(true);
   if (refuseSignals) await vi.advanceTimersByTimeAsync(VALIDATION_TEARDOWN_WAIT_MS);
   else if (fixture === "ignores-sigterm" && process.platform !== "win32") {
@@ -195,7 +175,6 @@ process.stdin.emit = function(event, ...args) {
   return await pending;
 }
 
-/** Every row after `check`, but the always-reported teardown. */
 function rowsAfter(rows: readonly ReportRow[], check: string): ReportRow[] {
   const index = rows.findIndex((candidate) => candidate.check === check);
   return rows.slice(index + 1).filter((candidate) => candidate.check !== "protocol.teardown");
@@ -205,7 +184,6 @@ function eventAt(run: ProtocolRun, prefix: string): number {
   return run.record.timeline.findIndex((entry) => entry.event.startsWith(prefix));
 }
 
-/** A copy of a golden plugin, or of the process fixture, with its `plugin.json` edited. */
 function editedPlugin(id: string, edit: (extension: Record<string, unknown>) => void): string {
   const dir = mkdtempSync(join(scratch, `${id}-`));
   cpSync(id === "process" ? PROCESS_PLUGIN : join(GOLDEN_PLUGINS, id), dir, { recursive: true });
@@ -269,7 +247,6 @@ describe("the manifest step", () => {
 });
 
 describe("the process arm", () => {
-  /** The manifest step's rows, which run on every platform. */
   const MANIFEST_ROWS = [
     "manifest.schema",
     "manifest.host-protocol",
@@ -277,7 +254,6 @@ describe("the process arm", () => {
     "manifest.process",
   ] as const;
 
-  /** What the fixture's protocol script was handed, from its stderr line. */
   function launchSeen(stderr: string): Record<string, unknown> {
     const line = /^launch=(.*)$/m.exec(stderr)?.[1];
     if (line === undefined) throw new Error(`the process fixture reported no launch: ${JSON.stringify(stderr)}`);
@@ -325,10 +301,9 @@ describe("the process arm", () => {
     ]) {
       expect(row(rows, check).ok).toBe(true);
     }
-    // Construct carries the resolved command path, as the factory's does.
+    // Construct names the resolved executable, matching production.
     expect(vi.mocked(openValidationSession).mock.calls.at(-1)?.[0].entryPath).toBe(join(root, "bin", "plugin"));
-    // The declared pairs, resolved, then the host-owned pair: the plugin
-    // root, and the run's own data directory.
+    // Append host-owned root/data environment after declared pairs.
     const seen = launchSeen(stderr);
     expect(seen.PLUGIN_ROOT).toBe(root);
     expect(seen.SMOKE_VENDOR_DIR).toBe(join(root, "vendor"));
@@ -398,7 +373,7 @@ describe("the process arm", () => {
       const rows = await validatePluginDirectory(dir, SOURCE_MODE);
       expect(row(rows, check).ok).toBe(false);
       expect(row(rows, check).message).toContain(message);
-      // A hardening refusal leaves no manifest; a resolution failure fails a check of one.
+      // Manifest hardening failure differs from later entry resolution failure.
       expect(row(rows, "protocol")).toMatchObject({
         ok: null,
         message: `not exercised: the manifest ${check === "manifest.schema" ? "did not parse" : "checks failed"}`,
@@ -408,9 +383,7 @@ describe("the process arm", () => {
     });
   }
 
-  // The cross-language smoke (§9.7 P5): a Python plugin on the stock `mcp`
-  // library, which answers `server/discover` and refuses an MCP request that
-  // lacks the per-request metadata. A process entry never runs on win32.
+  // The cross-language fixture requires per-request metadata; process entry is unmeasured on Windows.
   it.runIf(process.platform !== "win32")("validates the Python smoke plugin end to end", async () => {
     const root = installPythonSmoke(join(scratch, "python-smoke"));
     const rows = await validatePluginDirectory(root, SOURCE_MODE);
@@ -445,7 +418,6 @@ describe("the session-level rows", () => {
     );
     expect(mcp.map((frame) => frame.method)).toEqual(["server/discover", "tools/list", "tools/call"]);
     for (const frame of mcp) {
-      // A tools/call also names the host invocation it serves (protocol §3.3).
       expect((frame.params as { _meta: unknown })._meta).toEqual({
         "io.modelcontextprotocol/protocolVersion": "2026-07-28",
         "io.modelcontextprotocol/clientCapabilities": {},
@@ -589,11 +561,9 @@ describe("the raw child-process fixtures", () => {
     }
     expect(row(run.rows, "protocol.teardown").ok).toBe(true);
     expect(reportExitCode(run.rows)).toBe(1);
-    // The session received the run's own signal, so it existed while
-    // construct was still pending.
+    // Cancellation must be active while construct is pending.
     const calls = vi.mocked(openValidationSession).mock.calls;
     expect(calls.at(-1)?.[0].signal).toBe(run.signal);
-    // The reply the fixture would have written at 2 s finds nothing to answer.
     const timeline = run.record.timeline.length;
     await vi.advanceTimersByTimeAsync(1_500);
     expect(run.record.timeline).toHaveLength(timeline);
@@ -618,8 +588,7 @@ describe("the raw child-process fixtures", () => {
     const exit = run.record.timeline.find((entry) => entry.event.startsWith("exit:"));
     expect(exit).toBeDefined();
     if (process.platform === "win32") {
-      // Node ends a Windows process on the first signal, whatever it handles:
-      // one SIGTERM, no SIGKILL, and the exit inside the teardown wait.
+      // Windows ends the process on the first signal; no escalation is expected.
       expect(run.record.signalsSent).toEqual(["SIGTERM"]);
       expect(exit!.at - signals[0]!.at).toBeLessThan(VALIDATION_TEARDOWN_WAIT_MS);
     } else {
@@ -656,8 +625,7 @@ describe("a descendant that holds the child's pipes", () => {
       const descendant = Number(/descendant-pid=(\d+)/.exec(stderr)?.[1]);
       expect(Number.isInteger(descendant)).toBe(true);
       spawnedPids.push(descendant);
-      // Still alive, still holding the inherited pipes: the run did not wait
-      // for it, and nothing of the run is left open on its account.
+      // Descendant-held pipes must not keep the validation run alive.
       expect(() => process.kill(descendant, 0)).not.toThrow();
       expect([child.stdin?.destroyed, child.stdout?.destroyed, child.stderr?.destroyed]).toEqual([true, true, true]);
       expect(elapsed).toBeLessThan(VALIDATION_TEARDOWN_WAIT_MS);

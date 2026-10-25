@@ -1,19 +1,4 @@
-/**
- * §9.2 — VSCode-style declarative plugin config schema utilities.
- *
- * Two responsibilities:
- *  1. Compile a `manifest.configSchema` fragment into an AJV validator that
- *     accepts the merged plugin config (defaults + saved overrides + secret
- *     placeholders) for runtime / IPC validation.
- *  2. Identify which schema entries are `format: "secret"` so the renderer
- *     and plugin-config IPC bridge can route them through the encrypted
- *     keychain (`hostApi.setSecret`) instead of cleartext `pluginConfigs`.
- *
- * The schema dialect is JSON Schema draft-07 (matches the existing
- * `toolSchemas` pipeline at architecture.md:2060). The only Ave-specific
- * extension is the `format: "secret"` UI hint, which AJV accepts as a
- * non-validating string format.
- */
+/** Config schemas use draft-07; format: "secret" routes values to encrypted storage without validating content. */
 
 import * as AjvModule from "ajv";
 import * as AddFormatsModule from "ajv-formats";
@@ -31,39 +16,26 @@ export interface AjvCtor {
   };
 }
 
-/**
- * Resolve the AJV constructor across CJS/ESM interop. AJV ships its
- * concrete class as either `module.default` (ESM) or `module.exports`
- * (CJS). The one interop seam for every AJV consumer in the host
- * (plugin config schemas here, manifest validation in
- * `runtime/manifest-validation.ts`).
- */
+/** Resolve the shared schema-validator constructor across default-export and CommonJS interop. */
 export function resolveAjv(): AjvCtor {
   const mod = AjvModule as unknown as { default?: unknown };
   return (mod.default ?? AjvModule) as AjvCtor;
 }
 
 export function resolveAddFormats(): (a: unknown) => void {
-
   const mod = AddFormatsModule as unknown as { default?: unknown };
   return (mod.default ?? AddFormatsModule) as (a: unknown) => void;
 }
 
-/** Storage key for a plugin-config secret in `ave-secrets.json`. */
 export function pluginSecretKey(pluginId: string, key: string): string {
   return `plugin.${pluginId}.${key}`;
 }
 
-/** True when the schema entry should be routed through the encrypted keychain. */
 export function isSecretProperty(prop: PluginConfigSchemaProperty | undefined): boolean {
   return Boolean(prop && prop.type === "string" && prop.format === "secret");
 }
 
-/**
- * Return the set of keys whose schema entry has `format: "secret"`. These
- * keys MUST be stripped from cleartext `pluginConfigs` and persisted via
- * the host's `setSecret` API instead.
- */
+/** Secret keys must be stripped from cleartext config and persisted through setSecret. */
 export function listSecretKeys(schema: PluginConfigSchema | undefined): Set<string> {
   const out = new Set<string>();
   if (!schema?.properties) return out;
@@ -73,12 +45,7 @@ export function listSecretKeys(schema: PluginConfigSchema | undefined): Set<stri
   return out;
 }
 
-/**
- * Compile the `manifest.configSchema` fragment into an AJV validator that
- * accepts the merged config object. Returns `null` (and logs) when AJV
- * compilation fails — callers fall back to the existing
- * `sanitizePluginConfig` path so a bad schema can never wedge boot.
- */
+/** Compilation failures return null so callers can sanitize config without wedging boot. */
 export function compileConfigSchemaValidator(
   schema: PluginConfigSchema,
 ): ValidateFunction | null {
@@ -91,12 +58,11 @@ export function compileConfigSchemaValidator(
       coerceTypes: false,
     });
     resolveAddFormats()(ajv);
-    // `format: "secret"` is an Ave UI/storage hint, not a validating format.
-    // Register it as a no-op so AJV strict-formats does not reject it.
+    // The secret format is a storage hint; register it as non-validating under strict format checks.
     try {
       ajv.addFormat("secret", { type: "string", validate: () => true });
     } catch {
-      // addFormat is idempotent only across separate ajv instances; ignore on re-register.
+      // Format registration can throw when repeated on the same instance.
     }
     const wrapper = {
       type: "object",
@@ -115,11 +81,7 @@ export function compileConfigSchemaValidator(
   }
 }
 
-/**
- * Apply schema-declared `default` values onto a saved config record. Saved
- * values always win over defaults (so user overrides survive). Returns a
- * shallow-copied object — callers should not assume reference identity.
- */
+/** Saved values override defaults; return a shallow copy. */
 export function applyConfigDefaults(
   schema: PluginConfigSchema | undefined,
   saved: Record<string, unknown>,
@@ -134,13 +96,7 @@ export function applyConfigDefaults(
   return out;
 }
 
-/**
- * Strip `format: "secret"` entries from a config object. Used by the IPC
- * `set` handler so a renderer that mistakenly POSTs a secret in cleartext
- * cannot end up writing it to `ave-settings.json`. The renderer should
- * call `hostApi.setSecret` directly — the strip is a defence-in-depth
- * net, not the primary path.
- */
+/** Strip secret fields at IPC as defense in depth against accidental cleartext settings writes. */
 export function stripSecretFields(
   schema: PluginConfigSchema | undefined,
   config: Record<string, unknown>,

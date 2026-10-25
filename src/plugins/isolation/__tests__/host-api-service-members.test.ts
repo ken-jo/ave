@@ -1,26 +1,4 @@
-/**
- * The service-reaching hostApi members, driven end to end across a real
- * dispatcher and a real child runtime.
- *
- * These nine hold every member §3.2 classified as NOT JSON-representable, so
- * what is under test is the marshalling itself: a `Response` that is a class
- * instance with a streaming body, a `RequestInit` that may carry a `Headers`, an
- * `AbortSignal` and a stream, an `AbortSignal` in `callLlm`'s options, a lease
- * with two closures in it, and a live worker handle with four methods.
- *
- * DRIVEN THROUGH THE CHILD'S OWN STUB, not by calling the handler directly. A
- * handler tested alone proves the host decodes what the test encoded, which is
- * a test of the test. Going through `child.hostApi.hostFetch(...)` proves the
- * child's encoder and the host's decoder agree, which is the only property that
- * matters at a boundary.
- *
- * The BYTE cases are deliberate rather than decorative. `Buffer` carries a
- * `toJSON()`, so a naive round trip succeeds into `{ type: "Buffer", data }` —
- * a different type that reads as success — and a text codec silently replaces
- * invalid UTF-8 with U+FFFD. Both failures pass a test that only checks
- * `res.ok`, so the bodies below carry a NUL, a lone continuation byte and a
- * 0xFF that no UTF-8 decoder can round-trip.
- */
+/** Exercise service marshalling through real child and host components, including bytes that cannot survive UTF-8. */
 import { describe, expect, it, vi } from "vitest";
 import { PassThrough } from "node:stream";
 import { EffectBoundaryDeniedError } from "../../../permissions/effect-enforcement.js";
@@ -60,32 +38,15 @@ import {
 const PLUGIN_ID = "com.example.service";
 const PLUGIN_ROOT = "/plugins/service";
 const PLUGIN_DATA_DIR = "/plugins/service/data";
-/**
- * A host-widened root, standing in for a declared host directory grant.
- *
- * READ-only, which is the shape `derivePluginChildEnvelope` produces for a
- * `hostDirectory` row: it pushes the directory into `read` alone, and a
- * `userChosenDirectory` value naming it back is refused by the entry
- * `ceilingSubtractions` carries for that grant. NOT by the `aveHome()` entry:
- * a host directory is a lexical join onto the
- * home and the containment question is asked on the canonical form, so a
- * granted directory that links out of the home escapes that entry.
- * `confined-plugin-child.test.ts` drives the production derivation for that
- * half. This fixture is therefore the derivation's own output shape rather than
- * a convenient one, and what it exercises is the boundary that consumes it.
- */
+/** Host-directory widening is read-only; delegated grants must consume the derived envelope unchanged. */
 const WIDENED_READ_ROOT = "/host/runtime";
 
-/**
- * The child's own filesystem envelope — the same lists the ASRT wrap grants it.
- * A worker the plugin delegates is checked against exactly this.
- */
+/** Delegated workers must stay inside the same read/write envelope as their plugin child. */
 const CONFINEMENT: DelegatedWorkerConfinement = {
   read: [PLUGIN_ROOT, PLUGIN_DATA_DIR, WIDENED_READ_ROOT],
   write: [PLUGIN_DATA_DIR],
 };
 
-/** Bytes no UTF-8 round trip survives: a NUL, a lone continuation byte, 0xFF. */
 const HOSTILE_BYTES = new Uint8Array([0x00, 0x80, 0xff, 0xfe, 0x41, 0xc3, 0x28]);
 
 const MANIFEST: PluginManifest = {
@@ -97,7 +58,6 @@ const MANIFEST: PluginManifest = {
   tools: [],
 };
 
-/** A `SpawnedPluginWorker` whose three listener members are drivable from a test. */
 function makeFakeWorker(): SpawnedPluginWorker & {
   emitStdout: (chunk: string) => void;
   emitStderr: (chunk: string) => void;
@@ -128,35 +88,17 @@ interface ServiceHarness {
   readonly child: PluginChildRuntime;
   readonly host: HostApiDispatcher;
   readonly api: PluginHostApi;
-  /** Every request the child put on the wire, in order. */
   readonly requests: HostApiRequest[];
-  /** Every notification either side emitted, in order. */
   readonly notifications: HostApiNotification[];
-  /** Every notification the HOST pushed at the child, in order. */
   readonly pushed: HostApiNotification[];
-  /** Every reply the host produced, in order, so a handle id can be named. */
   readonly replies: HostApiReply[];
-  /**
-   * Every `context.log` line the HOST actually received.
-   *
-   * Separate from `notifications`, which records what the CHILD put on the
-   * wire. Asserting on that one only proves the child sent something; the host
-   * dropping every `log` notification on the floor looks identical from there.
-   */
+  /** Assert host-received logs separately from sent notifications; sending alone cannot prove delivery. */
   readonly hostLogs: { message: string; meta?: unknown }[];
-  /** The context the child handed the plugin factory — the plugin's own view. */
   readonly pluginContext: PluginRuntimeContext;
-  /** Drop the child, as the host does on child exit. */
   readonly killChild: () => number;
 }
 
-/**
- * A real dispatcher wired to a real child over an in-memory channel.
- *
- * `hostApi` is the ONLY seam. Everything between the plugin's call and that
- * object is production code, which is what makes a failure here a failure of
- * the boundary rather than of a mock.
- */
+/** Replace only hostApi; every hop between it and the plugin call remains production code. */
 async function createServiceHarness(
   hostApi: Partial<PluginHostApi> = {},
   manifest: PluginManifest = MANIFEST,
@@ -185,13 +127,11 @@ async function createServiceHarness(
   const api = hostApi as PluginHostApi;
   const hostLogs: { message: string; meta?: unknown }[] = [];
   host = new HostApiDispatcher({
-    // Captured, not dropped: a sink that discards is what shipped, and a
-    // test that discards could not tell the difference.
+    // Capture host diagnostics so silently discarded failures cannot pass.
     log: (message, meta) => hostLogs.push({ message, meta }),
     pluginId: PLUGIN_ID,
     isActive: () => true,
     reportUnknownField: () => {},
-    // `ave/instance/shutdown`, answered by the child runtime itself.
     shutdownChild: (subscriptionId) => child.runShutdownHandler(subscriptionId),
     notifications: {
       deliver: (notification) => {
@@ -199,9 +139,7 @@ async function createServiceHarness(
         child.deliver(notification);
       },
     },
-    // Bound entries composed OVER the shipped table, which stays unbound: a
-    // static entry could never reach an incarnation's hostApi, so the binding
-    // is a closure and the composition happens where the child is owned.
+    // Compose bound entries over the static table only where the child incarnation is owned.
     table: {
       ...HOSTAPI_DISPATCH_TABLE,
       ...createServiceHostApiPaths(api, CONFINEMENT, onMalformedCredentialSelector),
@@ -244,23 +182,15 @@ async function createServiceHarness(
   };
 }
 
-/** The wire form of one request's Nth argument. */
 function wireArg<T>(harness: ServiceHarness, path: string, index: number): T {
   const request = harness.requests.find((candidate) => pathOfRequest(candidate) === path);
   expect(request, `no '${path}' request was sent`).toBeDefined();
   return argsOfRequest(request!)[index] as T;
 }
 
-/** Let queued microtasks and the notification hop settle. */
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 
-/**
- * The single log notification a fire-and-forget member emitted.
- *
- * Asserted as exactly one, because a failure reported twice and a failure
- * reported not at all are both wrong in the same way: the plugin's operator
- * cannot tell what actually happened from the log.
- */
+/** Require exactly one failure diagnostic; duplicate and missing reports both mislead operators. */
 function detachedLog(harness: ServiceHarness): { message: string; meta?: unknown } {
   const logs = harness.notifications.flatMap((notification) =>
     notification.method === "notifications/ave/log" ? [notification.params] : [],
@@ -277,29 +207,20 @@ describe("this group implements exactly the members left after the other three",
     for (const path of SERVICE_HOSTAPI_PATHS) {
       expect(bound[path].status).toBe("implemented");
       expect(bound[path].contract).toBe(HOSTAPI_PATH_CONTRACTS[path]);
-      // The SHIPPED table stays unbound. A static entry cannot reach an
-      // incarnation's hostApi, so publishing one here would be publishing a
-      // handler that can only fail — and nothing routes out-of-process yet.
+      // Keep the shipped table unbound; a static handler cannot act for one incarnation.
       expect(HOSTAPI_DISPATCH_TABLE[path].status).toBe("unimplemented");
     }
   });
 
   it("decides an optional member at bind time, so construct never advertises one it lacks", () => {
-    // `hostProtocol.capabilities` is read off the bound table (§3.2). A member
-    // bound unconditionally and refused per call would be advertised by a
-    // host that then answers path-not-implemented.
+    // Advertise only members the bound dispatcher can actually serve.
     const bound = createServiceHostApiPaths({} as PluginHostApi, CONFINEMENT);
     const unbound = SERVICE_HOSTAPI_PATHS.filter((path) => bound[path].status === "unimplemented");
     expect(unbound.sort()).toEqual(["hostFetch", "resolveApiKey", "spawnWorker"]);
   });
 
   it("cancels an abort-bearing member per request, so only the lease outlives its reply", () => {
-    // The three members that take an `AbortSignal` are cancelled through the
-    // dispatcher's per-request controller, which ends with the reply — so a
-    // signal alone opens no lifetime. `resolveApiKey` keeps one because its
-    // LEASE outlives the reply, not because of its signal. Each still declares
-    // `encoded`, because the signal is taken off the arguments before they
-    // cross.
+    // Request cancellation ends with the reply; key leases alone require a lifetime that survives it.
     expect(HOSTAPI_PATH_CONTRACTS.hostFetch.lifetime).toBe("none");
     expect(HOSTAPI_PATH_CONTRACTS.callLlm.lifetime).toBe("none");
     expect(HOSTAPI_PATH_CONTRACTS.resolveApiKey.lifetime).toBe("child-disposable");
@@ -314,17 +235,14 @@ describe("getSecret crosses as plain data and leaves the gate host-side", () => 
     const getSecret = vi.fn(async (key: string) => (key === "granted" ? "s3cret" : null));
     const harness = await createServiceHarness({ getSecret });
     await expect(harness.child.hostApi.getSecret("granted")).resolves.toBe("s3cret");
-    // A DENIED read is `null` from the gate, and it must arrive as `null` — not
-    // as a throw the boundary invented, and not as `undefined`.
+    // A denied secret is null, not a boundary-invented throw or undefined.
     await expect(harness.child.hostApi.getSecret("other")).resolves.toBeNull();
     expect(getSecret).toHaveBeenNthCalledWith(1, "granted");
     expect(getSecret).toHaveBeenNthCalledWith(2, "other");
   });
 
   it("does not re-decide the four-tier gate at the boundary", async () => {
-    // The boundary adds a TYPE check and nothing else. A second allow-list here
-    // would be a weaker copy of `runSecretGate` that the gate could drift from,
-    // so a key the host grants must cross whatever it looks like.
+    // Validate boundary types without copying the host secret allowlist.
     const getSecret = vi.fn(async () => "granted-anyway");
     const harness = await createServiceHarness({ getSecret });
     await expect(
@@ -370,8 +288,7 @@ describe("hasRoutineBySource and probePrivateHost cross as plain data", () => {
   });
 
   it("omits the options object entirely when the plugin omitted it", async () => {
-    // `probePrivateHost(host)` and `probePrivateHost(host, undefined)` are the
-    // same call in-process; they must stay the same call across the boundary.
+    // Omitted and explicit trailing undefined options must make the same call.
     const probePrivateHost = vi.fn(async () => false);
     const harness = await createServiceHarness({ probePrivateHost });
     await harness.child.hostApi.probePrivateHost("intranet.corp");
@@ -399,10 +316,7 @@ describe("hostFetch carries bytes a text codec would corrupt", () => {
   });
 
   it("does not let a Buffer body round-trip into { type: 'Buffer' }", async () => {
-    // The trap the design names: `Buffer` has a `toJSON()`, so JSON does not
-    // object — it succeeds into a DIFFERENT type. Asserting the reply's shape
-    // is what distinguishes "the bytes arrived" from "an object that looks like
-    // bytes arrived".
+    // Assert byte identity and type: Buffer.toJSON succeeds while changing both.
     let reply: unknown;
     const harness = await createServiceHarness({
       hostFetch: async () => new Response(Buffer.from(HOSTILE_BYTES)),
@@ -437,7 +351,6 @@ describe("hostFetch carries bytes a text codec would corrupt", () => {
     expect(wire.headers).toEqual([["x-a", "1"]]);
     expect(wire.body?.encoding).toBe("base64");
     expect(wire.method).toBe("POST");
-    // The host must receive the object an in-process plugin would have passed.
     const [, init] = hostFetch.mock.calls[0] as unknown as [string, RequestInit];
     expect(new Headers(init.headers).get("x-a")).toBe("1");
     expect([...(init.body as Uint8Array)]).toEqual([...HOSTILE_BYTES]);
@@ -445,9 +358,7 @@ describe("hostFetch carries bytes a text codec would corrupt", () => {
   });
 
   it("keeps a text body text rather than re-encoding it as bytes", async () => {
-    // A `utf8`-tagged body is a plugin sending TEXT, and `fetch` derives a
-    // different default content-type for the two branches — so the tag has to
-    // survive, not just the characters.
+    // Keep text bodies tagged as text because fetch derives a different default content type.
     const hostFetch = vi.fn(async () => new Response(new Uint8Array(0)));
     const harness = await createServiceHarness({ hostFetch });
     await harness.child.hostApi.hostFetch!("https://example.test/c", {
@@ -545,9 +456,7 @@ describe("hostFetch carries bytes a text codec would corrupt", () => {
   it.each([204, 205, 304])(
     "reconstructs status %i without a platform TypeError",
     async (status) => {
-      // Every null-body status, not just the familiar one: `new Response(body,
-      // { status })` throws a `TypeError` for all three, so a rule that covered
-      // only 204 would turn a 304 into a boundary crash.
+      // All null-body statuses must reconstruct without an empty byte body.
       const harness = await createServiceHarness({
         hostFetch: async () => new Response(null, { status }),
       });
@@ -558,8 +467,7 @@ describe("hostFetch carries bytes a text codec would corrupt", () => {
   );
 
   it("still carries a body on a status that allows one", async () => {
-    // The other half of the rule: a null-body list that swallowed 200 would
-    // pass every test above while dropping every real response.
+    // The null-body rule must not erase ordinary success bodies.
     const harness = await createServiceHarness({
       hostFetch: async () => new Response(new Uint8Array([7, 8, 9]), { status: 200 }),
     });
@@ -571,9 +479,7 @@ describe("hostFetch carries bytes a text codec would corrupt", () => {
     const harness = await createServiceHarness({
       hostFetch: async () =>
         new Response(new Uint8Array(8), {
-          // Declared, so the refusal happens before a byte is read — which is
-          // the only place the ceiling can prevent the allocation rather than
-          // observe it.
+          // Reject declared oversized bodies before allocation.
           headers: { "content-length": String(WIRE_BYTES_MAX + 1) },
         }),
     });
@@ -582,9 +488,7 @@ describe("hostFetch carries bytes a text codec would corrupt", () => {
     ).rejects.toMatchObject({ code: "payload-too-large" });
   });
 
-  // A refusal at the ceiling has to END the body, not merely stop reading it:
-  // an unread, uncancelled stream keeps the upstream socket open until GC, and
-  // a server that ignores Range sends exactly that oversized 200.
+  // Cancel refused body streams so upstream sockets do not remain open until collection.
   describe("cancels the upstream body it refuses", () => {
     function endlessBody(): { body: ReadableStream<Uint8Array>; cancelled: Promise<unknown>; pulledBytes: () => number } {
       let pulled = 0;
@@ -630,10 +534,7 @@ describe("hostFetch carries bytes a text codec would corrupt", () => {
     });
   });
 
-  // §8: "A plugin that needs more streams ... in chunks. No chunked body
-  // streaming in protocol 1 or 2." For a download that means HTTP Range: the
-  // body above the ceiling is refused whole, and the same bytes arrive intact
-  // as slices under it, through the child's encoder and the host's decoder.
+  // Oversized bodies refuse whole; range slices below the ceiling must round-trip intact.
   it("refuses a body above the ceiling whole and carries it intact as Range slices", async () => {
     const resource = new Uint8Array(WIRE_BYTES_MAX * 2 + 12_345);
     for (let i = 0; i < resource.byteLength; i += 1) resource[i] = (i * 31 + (i >>> 13)) & 0xff;
@@ -694,9 +595,7 @@ describe("hostFetch carries bytes a text codec would corrupt", () => {
   it("answers path-not-implemented on a host build without the member", async () => {
     const harness = await createServiceHarness({});
     await expect(
-      // Reached through the stub the child always presents: an ABSENT member is
-      // a `TypeError` that says nothing, so the stub is total and the refusal
-      // is the boundary's own.
+      // A total child stub must produce a boundary refusal rather than an unrelated missing-function TypeError.
       (harness.child.hostApi as unknown as { hostFetch: (u: string) => Promise<Response> })
         .hostFetch("https://example.test/i"),
     ).rejects.toMatchObject({ code: "path-not-implemented" });
@@ -719,8 +618,7 @@ describe("hostFetch carries bytes a text codec would corrupt", () => {
     expect(hostSignal?.aborted).toBe(false);
     controller.abort(new Error("plugin gave up"));
     await expect(pending).rejects.toBeTruthy();
-    // The proof: the abort reached the HOST's signal, not merely the child's
-    // promise. A boundary that rejected locally would leave this false.
+    // Assert the host signal aborted; local promise rejection alone cannot prove cancellation.
     expect(hostSignal?.aborted).toBe(true);
     expect(harness.host.openSubscriptionCount).toBe(0);
     expect(harness.child.openSubscriptionCount).toBe(0);
@@ -746,8 +644,7 @@ describe("callLlm carries plain data, and a signal cancels the request", () => {
     await expect(
       harness.child.hostApi.callLlm("hello", { maxTokens: 32, systemPrompt: "be terse" }),
     ).resolves.toBe("an answer");
-    // The host's per-request signal rides along whether or not the plugin
-    // passed one: the request is cancellable either way.
+    // Every request gets a host cancellation signal even if the plugin supplies none.
     expect(callLlm).toHaveBeenCalledWith("hello", {
       maxTokens: 32,
       systemPrompt: "be terse",
@@ -767,8 +664,7 @@ describe("callLlm carries plain data, and a signal cancels the request", () => {
     await harness.child.hostApi.callLlm("hi", { signal: controller.signal });
     const wire = wireArg<Record<string, unknown>>(harness, "callLlm", 1);
     expect(wire).toEqual({});
-    // An `AbortSignal` cannot cross; what the host holds is its OWN controller
-    // for this request, which the child's cancellation names by request id.
+    // Signals stay process-local; cancellation names the host controller by request ID.
     expect(hostSignal).toBeInstanceOf(AbortSignal);
     expect(hostSignal).not.toBe(controller.signal);
   });
@@ -845,8 +741,7 @@ describe("resolveApiKey crosses as an opaque lease", () => {
 
     await result.release();
     await settle();
-    // Both sides let go: the child dropped its copy and the host ran the lease's
-    // own `release`, which is the two-sided lifetime the contract declares.
+    // Release both the child registration and host lease.
     expect(release).toHaveBeenCalledTimes(1);
     expect(harness.host.openSubscriptionCount).toBe(0);
     expect(harness.child.openSubscriptionCount).toBe(0);
@@ -918,8 +813,6 @@ describe("resolveApiKey crosses as an opaque lease", () => {
     await harness.child.hostApi.resolveApiKey!({ purpose: "llm" });
     expect(harness.host.openSubscriptionCount).toBe(1);
     expect(harness.killChild()).toBe(1);
-    // Case 2 of the four ways a two-sided lifetime ends: the child never
-    // disposed, and the host must release anyway.
     expect(release).toHaveBeenCalledTimes(1);
     expect(harness.host.openSubscriptionCount).toBe(0);
   });
@@ -936,9 +829,7 @@ describe("resolveApiKey crosses as an opaque lease", () => {
     });
     const pending = harness.child.hostApi.resolveApiKey!({ purpose: "llm" });
     await settle();
-    // The child dies mid-resolve. The lease that arrives afterwards has nobody
-    // to go to, so it must be released rather than replied with — otherwise the
-    // host hands a live credential to a process that no longer exists.
+    // Release credentials arriving after child death instead of replying with an ownerless live lease.
     harness.killChild();
     admit();
     await expect(pending).rejects.toMatchObject({ code: "plugin-inactive" });
@@ -990,10 +881,7 @@ describe("context.log reaches the host and is not merely sent", () => {
   });
 
   it("is not satisfied by the child having sent the notification", async () => {
-    // The gap this closes was invisible for exactly this reason: the child DID
-    // put a well-formed `log` notification on the wire, and a test that stopped
-    // there passed while the host discarded every one of them. Both sides are
-    // asserted so the two can never again be confused for each other.
+    // Assert received host logs as well as child-sent notifications.
     const harness = await createServiceHarness();
 
     harness.pluginContext.log("sent and received are different claims");
@@ -1005,11 +893,7 @@ describe("context.log reaches the host and is not merely sent", () => {
   });
 
   it("carries a worker's forwarded stderr all the way to the host", async () => {
-    // The path that actually failed in the field: a plugin spawns a worker,
-    // forwards the worker's stderr through `context.log`, and the operator
-    // reads it in the host log. Exercised end to end rather than asserted at
-    // the plugin's own call, because every hop after that call is where it went
-    // wrong.
+    // Drive worker stderr through context.log to verify every forwarding hop reaches the host.
     const worker = makeFakeWorker();
     const harness = await createServiceHarness({
       spawnWorker: async () => worker as unknown as SpawnedPluginWorker,
@@ -1254,9 +1138,7 @@ describe("spawnWorker crosses as an id, never as a live handle", () => {
       args: ["-u", "worker.py"],
       udsArgName: { env: "AVE_CONTROL_SOCKET" },
     });
-    // What the plugin received is an id and two scalars — nothing that could be
-    // a `ChildProcess`, which is the security improvement over the in-process
-    // handle rather than merely a port of it.
+    // Return only IDs and scalars; live process handles remain host-owned.
     const request = harness.requests.find((request) => pathOfRequest(request) === "spawnWorker")!;
     const reply = harness.replies.find((reply) => reply.id === request.id)!;
     expect("result" in reply).toBe(true);
@@ -1283,13 +1165,9 @@ describe("spawnWorker crosses as an id, never as a live handle", () => {
     await settle();
     expect(exits).toEqual([{ code: 0, signal: null }]);
     expect(harness.host.openSubscriptionCount).toBe(0);
-    // BOTH sides, from ONE decision. The host owns the process, so it releases
-    // its own entry and the `subscription-closed` that follows drops the
-    // child's — rather than each side deciding separately that the worker is
-    // gone.
+    // The host owns exit and closes both registrations from one decision.
     expect(harness.child.openSubscriptionCount).toBe(0);
-    // A worker that already exited must NOT be stopped: `stop()` signals a pid,
-    // and a reaped pid can belong to something else by then.
+    // Never signal an already-reaped worker PID; it may have been reused.
     expect(worker.stopped()).toBe(0);
   });
 
@@ -1334,10 +1212,7 @@ describe("spawnWorker crosses as an id, never as a live handle", () => {
   });
 
   it("drops worker output produced after the handle was released", async () => {
-    // A chunk arriving after the release is a routine race — the process is
-    // still draining while `stop()` travels. `deliver` throws on an unknown
-    // subscription, so without the guard that race becomes an exception thrown
-    // inside a worker event listener, where nothing catches it.
+    // Ignore events arriving after release while a worker pipe drains.
     const worker = makeFakeWorker();
     const harness = await createServiceHarness({ spawnWorker: async () => worker });
     const handle = await harness.child.hostApi.spawnWorker!({
@@ -1370,7 +1245,6 @@ describe("emitEvent keeps its synchronous throw and its host-side authority", ()
   it("throws in the child, before any round trip, on an undeclared event", async () => {
     const emit = vi.fn();
     const harness = await createServiceHarness({ emitEvent: emit });
-    // `audit.*` is a plugin-private namespace: nothing a plugin may emit.
     expect(() => harness.child.hostApi.emitEvent("audit.tampered")).toThrow(
       /not allowed to emit undeclared event/u,
     );
@@ -1387,10 +1261,7 @@ describe("emitEvent keeps its synchronous throw and its host-side authority", ()
   });
 
   it("reports a host refusal through the log channel instead of dropping it", async () => {
-    // `emitEvent` returns `void`, so a host-side refusal lands after the
-    // plugin's call has returned. Swallowing it would make a refused emit look
-    // identical to an accepted one; leaving it unhandled would take the process
-    // down.
+    // Fire-and-forget emit refusals need diagnostics without unhandled rejection.
     const harness = await createServiceHarness({
       emitEvent: () => {
         throw new Error("host says no");
@@ -1407,10 +1278,7 @@ describe("emitEvent keeps its synchronous throw and its host-side authority", ()
 
 describe("a void-declared member that drifts is refused, not absorbed", () => {
   it("surfaces the dispatcher's void check when the host returns a value", async () => {
-    // The handler RETURNS the host's value rather than awaiting and discarding
-    // it. Discarding would make this check unreachable: the dispatcher would see
-    // `undefined` from every void member no matter what the host did, and a
-    // stub-vs-implementation drift would pass silently forever.
+    // Return host results unchanged so void-contract checks can detect drift.
     const harness = await createServiceHarness({
       emitEvent: (() => "surprise") as unknown as PluginHostApi["emitEvent"],
     });
@@ -1441,7 +1309,6 @@ describe("logEvent crosses as plain data", () => {
   });
 });
 
-/** The `handleId` the host allocated for the first call to `path`. */
 function handleIdOf(harness: ServiceHarness, path: string): string {
   const index = harness.requests.findIndex((request) => pathOfRequest(request) === path);
   expect(index, `no '${path}' request was sent`).toBeGreaterThanOrEqual(0);
@@ -1450,7 +1317,6 @@ function handleIdOf(harness: ServiceHarness, path: string): string {
   return (reply as { result: { handleId: string } }).result.handleId;
 }
 
-/** Every subscription-closed notification the host pushed at the child. */
 function closures(harness: ServiceHarness): { subscriptionId: string; reason: string }[] {
   return harness.pushed.flatMap((notification) =>
     notification.method === "notifications/ave/subscription/closed"
@@ -1478,11 +1344,7 @@ describe("a delegated worker cannot reach further than the plugin process itself
   });
 
   it("on Windows, grants the envelope root that holds each path, never a path the plugin can re-point", async () => {
-    // `srt-win acl grant` stamps its ACE on what a path RESOLVES to: a junction
-    // the plugin plants at `data\link` would carry the worker's write grant to
-    // its target. Every component below an envelope root is the plugin's, so
-    // the grant names the root — and on Windows the worker shares the plugin's
-    // one sandbox account, so the root reaches nothing the plugin does not.
+    // Windows grants must name the containing envelope root, never child-controlled linked descendants.
     const spawnWorker = vi.fn(async () => makeFakeWorker());
     const harness = await createServiceHarness({ spawnWorker });
     const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
@@ -1506,9 +1368,7 @@ describe("a delegated worker cannot reach further than the plugin process itself
   });
 
   it("on Windows, admits and maps a case-variant spelling of an envelope root as that root", async () => {
-    // The containment question is the one admission asks: NTFS takes
-    // `DATA\work` for `data\work`, so the check does too, and the grant
-    // names the root rather than the spelling the plugin chose.
+    // Use canonical case-folded containment so alternate Windows spelling cannot create a separate grant.
     const spawnWorker = vi.fn(async () => makeFakeWorker());
     const harness = await createServiceHarness({ spawnWorker });
     const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
@@ -1530,10 +1390,7 @@ describe("a delegated worker cannot reach further than the plugin process itself
   });
 
   it("refuses a write grant outside the jail, and never reaches the supervisor", async () => {
-    // The escape this check exists for: the child cannot write outside its data
-    // directory, so it asks the host to spawn something that can. A refusal
-    // that still spawned would be no refusal at all, which is why the spy is
-    // asserted as well as the rejection.
+    // A delegation refusal must occur before spawning anything.
     const spawnWorker = vi.fn(async () => makeFakeWorker());
     const harness = await createServiceHarness({ spawnWorker });
     await expect(
@@ -1560,9 +1417,7 @@ describe("a delegated worker cannot reach further than the plugin process itself
   });
 
   it("admits a read grant inside a root the HOST widened the child with", async () => {
-    // The composition claim, driven rather than asserted: the check reads the
-    // envelope, so a root the host added to it is delegable with no change to
-    // this file. Without the widening this exact grant is the refusal above.
+    // Host-widened envelope roots are delegable without a second allowlist.
     const spawnWorker = vi.fn(async () => makeFakeWorker());
     const harness = await createServiceHarness({ spawnWorker });
     await harness.child.hostApi.spawnWorker!({
@@ -1573,23 +1428,13 @@ describe("a delegated worker cannot reach further than the plugin process itself
     expect(spawnWorker).toHaveBeenCalledWith({
       workerId: "indexer",
       command: `${WIDENED_READ_ROOT}/venv/bin/python`,
-      // On Windows the ACL grant names the root that holds the path (decision 66).
+      // Windows grants name the envelope root containing the requested path.
       allowReadPaths: [process.platform === "win32" ? WIDENED_READ_ROOT : `${WIDENED_READ_ROOT}/venv/bin/python`],
     });
   });
 
   it("does not let a widened READ root become writable through a worker", async () => {
-    // The delegated half of the same rule the derivation enforces.
-    // `derivePluginChildEnvelope` subtracts each `hostDirectory` row's own
-    // resolved directory from the ceiling a `userChosenDirectory` value is
-    // bounded by, so such a root cannot be in `write` in the first place —
-    // `confined-plugin-child.test.ts` drives the production derivation for that
-    // half, including the case where the granted directory links out of the
-    // host's home. What THIS pins is the boundary that CONSUMES the two lists:
-    // a host decision that the child may READ the provisioned runtime must not
-    // hand it the ability to rewrite that runtime by asking the host to spawn a
-    // worker that can. The fixture's `write` omits the widened root because the
-    // derivation would too.
+    // Read-only host-directory widening must not become a writable delegated grant.
     const spawnWorker = vi.fn(async () => makeFakeWorker());
     const harness = await createServiceHarness({ spawnWorker });
     await expect(
@@ -1603,15 +1448,7 @@ describe("a delegated worker cannot reach further than the plugin process itself
   });
 
   it("does not let the plugin's own runtime root become writable through a worker", async () => {
-    // The delegated half of the ceiling. `PLUGIN_ROOT` is in `read` and its
-    // `data` subdirectory is in `write`, which is the production shape — so a
-    // grant naming a SIBLING of the data directory under that same root is the
-    // one a string-prefix reading of "inside my envelope" would wave through.
-    // What it names is the bundle the next load imports into the main process,
-    // and a worker must not reach it merely because the plugin process may read
-    // it. `derivePluginChildEnvelope` refuses to put such a path into `write` at
-    // all; this pins the boundary that CONSUMES that list, so the refusal does
-    // not rest on the derivation alone staying correct.
+    // A writable child subdirectory never grants its siblings under the readable package root.
     const spawnWorker = vi.fn(async () => makeFakeWorker());
     const harness = await createServiceHarness({ spawnWorker });
     await expect(
@@ -1638,8 +1475,7 @@ describe("a delegated worker cannot reach further than the plugin process itself
   });
 
   it("compares what a grant MEANS, not what it says", async () => {
-    // `<dataDir>/../..` starts with the data dir as a string and is not inside
-    // it. A containment check that skipped the resolve would admit it.
+    // Resolve traversal before containment; a string prefix can still name an outside path.
     const spawnWorker = vi.fn(async () => makeFakeWorker());
     const harness = await createServiceHarness({ spawnWorker });
     await expect(
@@ -1679,9 +1515,7 @@ describe("a delegated worker cannot reach further than the plugin process itself
   });
 
   it("refuses a spec field the boundary does not decode", async () => {
-    // A spec that grows a grant-shaped field must FAIL here until this decodes
-    // it. Passing an unknown field through unexamined is how a future grant
-    // reaches the supervisor without ever meeting the envelope check.
+    // New grant-shaped fields must be decoded before reaching the supervisor.
     const spawnWorker = vi.fn(async () => makeFakeWorker());
     const harness = await createServiceHarness({ spawnWorker });
     await expect(
@@ -1715,8 +1549,7 @@ describe("a host-side revocation reaches the child", () => {
     worker.emitExit(0, null);
     await settle();
 
-    // `subscription-closed` had a receiver and no sender until this: the child
-    // could act on it and nothing could produce it.
+    // Host revocation must send subscription-closed to the child.
     expect(closures(harness)).toEqual([{ subscriptionId: handleId, reason: "revoked" }]);
   });
 
@@ -1746,17 +1579,13 @@ describe("a host-side revocation reaches the child", () => {
     const harness = await createServiceHarness({ callLlm: async () => "answered" });
     await harness.child.hostApi.callLlm("hello", { signal: controller.signal });
     await settle();
-    // The call settled, so the host dropped its per-request controller —
-    // bookkeeping the child registered nothing for, and a close it would report
-    // as an unknown subscription.
+    // Settled request controllers open no child registration and need no close notification.
     expect(closures(harness)).toEqual([]);
     expect(harness.host.openSubscriptionCount).toBe(0);
   });
 
   it("refuses to cancel a subscription through the cancellation mechanism", async () => {
-    // A cancellation names a REQUEST. One naming a worker handle's id must not
-    // stop the worker through the cancellation path — nor bounce a close back
-    // at the child that sent it.
+    // Cancellation names a request, never a worker-handle ID.
     const worker = makeFakeWorker();
     const harness = await createServiceHarness({ spawnWorker: async () => worker });
     await harness.child.hostApi.spawnWorker!({ workerId: "indexer", command: "/bin/true" });
@@ -1803,14 +1632,12 @@ describe("a revoked key lease closes in the child", () => {
       },
     });
 
-    // The credential is a mutable closure variable precisely so this can drop
-    // it. Before the sender existed the child held it until the process ended.
+    // Host revocation must clear the child credential closure.
     expect(onClosed).toHaveBeenCalledWith("revoked");
   });
 });
 
 describe("startAudioCapture crosses as an id, and the PCM survives the wire", () => {
-  /** A capture whose frames and end the test decides. */
   function makeFakeCapture(opened = { microphone: true, systemAudio: true }) {
     const frames: ((frame: { seq: number; pcm: Uint8Array; peak: number }) => void)[] = [];
     const ends: ((end: { reason: string; detail?: string }) => void)[] = [];
@@ -1850,9 +1677,7 @@ describe("startAudioCapture crosses as an id, and the PCM survives the wire", ()
 
     const got: Uint8Array[] = [];
     handle.onFrame((frame) => got.push(frame.pcm));
-    // A NUL, a lone continuation byte and a 0xFF — none of which survive a
-    // text codec, which is exactly the mistake a `res.ok`-shaped test misses.
-    // Silence in int16 is 0x0000, so a codec that mangles NUL mangles silence.
+    // Exercise non-UTF-8 audio bytes; corrupting NUL also corrupts int16 silence.
     const pcm = new Uint8Array([0x00, 0x00, 0x80, 0xff, 0xfe, 0x7f]);
     capture.emitFrame({ seq: 0, pcm, peak: 0.5 });
     await settle();
@@ -1875,8 +1700,7 @@ describe("startAudioCapture crosses as an id, and the PCM survives the wire", ()
     capture.emitFrame({ seq: 7, pcm: new Uint8Array([1, 2]), peak: 0.25 });
     await settle();
 
-    // `seq` is what lets a plugin notice it lost audio; a frame that arrives
-    // without it looks exactly like one that did not.
+    // Preserve sequence numbers so plugins can detect lost frames.
     expect(seen).toEqual([{ seq: 7, peak: 0.25 }]);
   });
 
@@ -1889,7 +1713,6 @@ describe("startAudioCapture crosses as an id, and the PCM survives the wire", ()
       sampleRate: 16_000, frameMs: 200, microphone: true, systemAudio: true,
     });
 
-    // Asked for both, got one, and the plugin can see the difference.
     expect(handle.opened).toEqual({ microphone: true, systemAudio: false });
 
     const reply = await harness.host.handle(
@@ -1897,8 +1720,7 @@ describe("startAudioCapture crosses as an id, and the PCM survives the wire", ()
     );
     expect("result" in reply).toBe(true);
     if (!("result" in reply)) return;
-    // Nothing that could be a live capture — no MediaStream, no AudioContext,
-    // no function. The same property `spawnWorker` has.
+    // Return only capture data and IDs; never live media objects or functions.
     expect(Object.keys(reply.result as object).sort()).toEqual([
       "captureId",
       "handleId",
@@ -1920,14 +1742,12 @@ describe("startAudioCapture crosses as an id, and the PCM survives the wire", ()
     capture.emitEnd({ reason: "sources-lost", detail: "microphone track ended" });
     await settle();
 
-    // A plugin finalising its recording here needs to know WHY: a lost source
-    // is a truncated meeting, and a `stopped` is not.
+    // Preserve capture end reasons so source loss cannot appear as an intentional stop.
     expect(ends).toEqual([{ reason: "sources-lost", detail: "microphone track ended" }]);
   });
 });
 
 describe("attachFloatingPanel crosses as a receipt, and the detach reason survives", () => {
-  /** A dock slot whose detach the test decides. */
   function makeFakePanel(height = 180) {
     const listeners: ((reason: string) => void)[] = [];
     const detach = vi.fn(async () => {});
@@ -1953,16 +1773,13 @@ describe("attachFloatingPanel crosses as a receipt, and the detach reason surviv
       height: 240,
     });
 
-    // The height the DOCK applied, not the one asked for. A plugin that reads
-    // back its own request cannot tell it was clamped.
+    // Return the applied height after clamping, not the requested height.
     expect(handle.height).toBe(180);
 
     const index = harness.requests.findIndex((request) => pathOfRequest(request) === "attachFloatingPanel");
     const reply = harness.replies[index];
     expect("result" in reply).toBe(true);
     if (!("result" in reply)) return;
-    // Nothing that could be a live panel — the same property `spawnWorker` and
-    // `startAudioCapture` have.
     for (const value of Object.values(reply.result as Record<string, unknown>)) {
       expect(typeof value).not.toBe("function");
     }
@@ -1976,9 +1793,7 @@ describe("attachFloatingPanel crosses as a receipt, and the detach reason surviv
     } as unknown as Partial<PluginHostApi>);
     const handle = await harness.child.hostApi.attachFloatingPanel({ extensionId: "some-card" });
 
-    // A handle's METHOD cannot cross on its own — the wire carries calls by
-    // path — so resize is its own addressable member and this is the proof it
-    // is wired to one.
+    // Resize is a separately addressed path because handle methods cannot cross the wire.
     expect(await handle.resize(900)).toBe(300);
     expect(handle.height).toBe(300);
     expect(
@@ -1996,9 +1811,7 @@ describe("attachFloatingPanel crosses as a receipt, and the detach reason surviv
     await handle.detach();
     await settle();
 
-    // Releasing the subscription IS the detach. Without this the child's
-    // `detach()` would resolve while the slot stayed on the user's screen
-    // forever, and nothing would report it.
+    // Disposing the subscription must actually detach the visible slot.
     expect(panel.detach).toHaveBeenCalledTimes(1);
   });
 
@@ -2019,15 +1832,7 @@ describe("attachFloatingPanel crosses as a receipt, and the detach reason surviv
   });
 
   it("tells a late subscriber the real reason, not a fabricated one", async () => {
-    // THE NARROW ONE, and the reason it matters more than its width.
-    //
-    // A plugin subscribes in the same turn its attach resolves in, so the gap
-    // is a microtask. But `"requested"` is the one value that means "the
-    // plugin asked for this", and the child had the true reason one closure
-    // away while answering with that constant. A recorder told `"requested"`
-    // after the USER closed the dock concludes the teardown was its own, skips
-    // its orphan handling, and leaves a recording running with nothing on
-    // screen driving it.
+    // Replay the actual detach reason across the subscribe microtask gap so user closure cannot be mistaken for plugin-requested teardown.
     const panel = makeFakePanel();
     const harness = await createServiceHarness({
       attachFloatingPanel: async () => panel,

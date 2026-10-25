@@ -1,9 +1,4 @@
-/**
- * Git install entry (design §6.2, §2.3): a staged, already-verified artifact
- * goes through the same stage → receipt → registry → generation pipeline as
- * a catalog install, with a v4 receipt and the registry `origin`, and
- * without envelope verification.
- */
+/** Git installs use the artifact transaction and v4 provenance receipt without envelope verification. */
 import AdmZip from "adm-zip";
 import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync } from "node:fs";
@@ -67,7 +62,7 @@ function pluginDocument(version: string, auth: PluginAuthority = authority()): R
   return { name: "alpha", version, description: "alpha", extensions: { "ai.agent-connector.ave": { displayName: "Alpha", entry: "dist/index.js", ...auth } } };
 }
 
-/** A bundled command hook (design §18.7.3) and the files it adds. */
+/** A bundled command hook and its additional payload files. */
 const HOOK_FILES: Record<string, string> = {
   "hooks/audit.json": JSON.stringify({ hooks: { PreToolUse: [{ hooks: [{ type: "command", command: ["node", "${PLUGIN_ROOT}/hooks/audit.js"] }] }] } }),
   "hooks/audit.js": "process.exit(0)",
@@ -255,10 +250,7 @@ describe("PluginMarketplaceService.installGitPlugin", () => {
       return zip.toBuffer();
     }
 
-    /**
-     * A plan whose release pins `pin` (the zip's own digest unless given), and
-     * the artifact the ladder hands over for it from `rung`.
-     */
+    /** The release pin defaults to the archive digest; rung identifies the staged artifact source. */
     function processInstall(rung: "release" | "tree", patch: Partial<PluginInstallPlan> = {}, pin?: string) {
       const zipBuffer = processZip();
       const digest = createHash("sha256").update(zipBuffer).digest("hex");
@@ -289,7 +281,6 @@ describe("PluginMarketplaceService.installGitPlugin", () => {
       return { forPlan, artifact };
     }
 
-    /** Nothing of the refused install is left: no registry entry, payload or receipt. */
     async function nothingLeft(): Promise<void> {
       expect(await entry()).toBeUndefined();
       expect(existsSync(join(pluginsDir, "alpha"))).toBe(false);
@@ -333,7 +324,7 @@ describe("PluginMarketplaceService.installGitPlugin", () => {
       const { forPlan, artifact } = processInstall("release");
       const receipts = service as unknown as { prepareGitInstallReceipt: (...args: unknown[]) => Promise<string> };
       const prepare = receipts.prepareGitInstallReceipt.bind(service);
-      // A receipt whose provenance is in order but whose file digest is not the payload's.
+      // Valid provenance does not imply the payload digest matches.
       receipts.prepareGitInstallReceipt = async (...args) => {
         const receipt = JSON.parse(await prepare(...args)) as { files: Array<{ sha256: string }> };
         receipt.files[0]!.sha256 = "0".repeat(64);
@@ -404,7 +395,7 @@ describe("PluginMarketplaceService.installGitPlugin", () => {
   it("replaces an install without a source binding only as a switch", async () => {
     await install(plan("1.0.0"));
     await seedPluginDataFixture(join(pluginsDir, "alpha"));
-    // A catalog install from before this design: no origin.
+    // Catalog receipts may predate origin metadata.
     await updatePluginRegistry(registryPath, (registry) => {
       delete registry.plugins[0]!.origin;
     });
@@ -423,7 +414,7 @@ describe("PluginMarketplaceService.installGitPlugin", () => {
     await install(plan("1.0.0"));
     const before = (await entry())!;
     const receiptBefore = await readFile(installReceiptPath(cacheRoot, "alpha"), "utf8");
-    // The crash hits after the 1.1.0 tree was promoted, before its commit.
+    // Crash after promotion but before commit.
     const backupDir = join(pluginsDir, ".alpha.old-00000000-0000-4000-8000-000000000001");
     await preparePendingPluginUpdate(paths, before, { kind: "marketplace", recoveryBackupDir: backupDir, recoveryBackupMode: "rename" });
     await rename(join(pluginsDir, "alpha"), backupDir);
@@ -460,7 +451,6 @@ describe("PluginMarketplaceService.installGitPlugin", () => {
     const stored = raw.git.consent;
     delete raw.git.consent;
     await writeFile(path, JSON.stringify(raw));
-    // The same fields, computed from what is installed rather than read back.
     await expect(service.getInstalledConsentBaseline("alpha")).resolves.toMatchObject({ consent: stored });
     await writeFile(join(pluginsDir, "alpha", "dist", "index.js"), "export default 'changed';\n");
     await expect(service.getInstalledConsentBaseline("alpha")).resolves.toMatchObject({ consent: { kind: "plugin", fields: {}, unknown: ["*"] }, files: null });
@@ -486,7 +476,6 @@ describe("PluginMarketplaceService.installGitPlugin", () => {
     expect(await entry()).toEqual(before);
     expect(JSON.parse(await readFile(join(pluginsDir, "alpha", "plugin.json"), "utf8"))).toMatchObject({ version: "1.0.0" });
 
-    // The same release without the hook is equal, so it installs.
     await expect(service.installGitPlugin(next, { stage: async () => staged(next), assertConsent: requireConsentEqual("alpha", baseline), activatePreparedArtifact: activateAndCommitPreparedPluginForTest }))
       .resolves.toMatchObject({ version: "1.1.0" });
   });

@@ -1,14 +1,6 @@
-/**
- * probePrivateHost — host-owned private DNS presence probe.
- *
- * Verifies the ported DNS-race semantics (resolve→true, ENOTFOUND→false,
- * timeout→false, no cache, single-flight dedup) PLUS the host-side additions:
- * bare-hostname validation (reject URLs/ports) and timeout clamping.
- */
 import { describe, it, expect, beforeEach, vi } from "vitest";
 
-// vi.mock is hoisted above imports — capture the mock fn via vi.hoisted so the
-// factory can reference it without a TDZ issue.
+// Capture the mock with vi.hoisted so the hoisted factory avoids the temporal dead zone.
 const { mockLookup } = vi.hoisted(() => ({ mockLookup: vi.fn() }));
 vi.mock("node:dns/promises", () => ({
   __esModule: true,
@@ -80,7 +72,7 @@ describe("probePrivateHost", () => {
     );
     const p1 = probePrivateHost("slow.example.com", { timeoutMs: 100 });
     const p2 = probePrivateHost("slow.example.com", { timeoutMs: 100 });
-    expect(await p1).toBe(false); // timeout wins
+    expect(await p1).toBe(false);
     resolveLookup({ address: "10.0.0.1", family: 4 });
     await p2;
     expect(mockLookup).toHaveBeenCalledTimes(1);
@@ -110,10 +102,7 @@ describe("probePrivateHost", () => {
   });
 
   it("rejects IP literals — an IP resolves numerically and never reaches dns.lookup", async () => {
-    // IPv4 dotted-quads pass the bare-hostname regex, so they must be caught by
-    // the dedicated IP guard; otherwise `dns.lookup("10.0.0.1")` would resolve
-    // the address without a network round-trip and return `true` off-corp too,
-    // degrading the probe into a plain liveness oracle.
+    // Reject IP literals: dns.lookup can resolve them locally and falsely imply private-network access.
     for (const ip of ["10.0.0.1", "127.0.0.1", "169.254.169.254", "8.8.8.8", "0.0.0.0"]) {
       await expect(probePrivateHost(ip)).rejects.toThrow(/IP literal/);
     }
@@ -121,33 +110,21 @@ describe("probePrivateHost", () => {
   });
 
   it("rejects a new distinct host once the concurrent in-flight cap is reached (DoS bound)", async () => {
-    // Every lookup hangs so each distinct host stays in the in-flight map,
-    // filling it to the cap. The next DISTINCT host must be rejected with an
-    // explicit throw (not a fail-safe `false`), while same-host callers stay
-    // deduped and unaffected by the cap.
+    // Hung distinct hosts fill the in-flight cap; overflow throws while existing-host dedup remains available.
     mockLookup.mockReturnValue(new Promise(() => {}) as unknown as Promise<never>);
     const pending: Array<Promise<boolean>> = [];
     for (let i = 0; i < MAX_INFLIGHT_DISTINCT_HOSTS; i++) {
       pending.push(probePrivateHost(`host-${i}.example.com`, { timeoutMs: 5000 }));
     }
-    // Each probe registers its dedup entry SYNCHRONOUSLY before returning, so
-    // the in-flight map is already filled to the cap here (even though the
-    // actual dns.lookup call is deferred to a microtask).
-    //
-    // A host ALREADY in flight is served from the map — the cap does not apply
-    // and no new lookup is dispatched (dedup short-circuits before the bound).
+    // Dedup registration is synchronous even though lookup dispatch uses a microtask.
+    // A host already in flight consumes no extra slot.
     pending.push(probePrivateHost("host-0.example.com", { timeoutMs: 5000 }));
-    // A genuinely new distinct host exceeds the cap → explicit refusal, thrown
-    // before reaching dns.lookup.
     await expect(
       probePrivateHost("overflow.example.com", { timeoutMs: 5000 }),
     ).rejects.toThrow(/too many concurrent/);
-    // Let the deferred lookups fire: only the cap-many distinct hosts dispatch a
-    // lookup — the deduped repeat and the rejected overflow never do.
     await new Promise((r) => setTimeout(r, 0));
     expect(mockLookup).toHaveBeenCalledTimes(MAX_INFLIGHT_DISTINCT_HOSTS);
-    // The hung probes resolve to false at their (unref'd) deadline; nothing
-    // rejects, but attach a no-op so no promise dangles unobserved.
+    // Observe hung promises until their unref deadlines resolve false.
     pending.forEach((p) => void p.then(() => {}));
   });
 
@@ -166,9 +143,7 @@ describe("probePrivateHost", () => {
   });
 
   it("clamps an absurdly large timeout so a hung lookup still fails-safe within bounds", async () => {
-    // timeoutMs far above the max clamp; the lookup hangs. Unclamped, the
-    // deadline would be ~1h; clamped, it is the module's 10 s ceiling. Virtual
-    // time pins the deadline to that ceiling instead of waiting it out.
+    // Virtual time verifies the module ceiling clamps an excessive requested timeout.
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
       mockLookup.mockReturnValueOnce(new Promise(() => {}) as unknown as Promise<never>);

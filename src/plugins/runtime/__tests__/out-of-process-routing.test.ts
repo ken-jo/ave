@@ -1,38 +1,9 @@
-/**
- * The routing matrix (`docs/design/plugin-hostapi-protocol.md` §9.8 A1,
- * decisions 3 and 50).
- *
- * Every instantiation path reaches a plugin's factory through
- * `importPluginFactoryForLifecycle`, and routing has no input: no plugin-id
- * table, manifest field, setting or environment variable selects the arm. This
- * file is the mechanical form of "out of process by default for every install
- * and every source", in three kinds of case over three separate dimensions —
- * the registry's `origin.sourceKind`, the artifact rung and `installSource`,
- * plus an origin-less legacy entry — on each platform:
- *
- *  (i)   positive `entry` routing: every combination gets the out-of-process
- *        factory with an `entry` launch and `arm: "child"`;
- *  (ii)  admitted `process` routing: a pinned `git` receipt from a marketplace
- *        source kind, rung `release` or `archive`, on macOS or Linux with the
- *        sandbox on, gets the process launch;
- *  (iii) explicit refusals: a `process` manifest that is not pinned is refused
- *        by the provenance gate before any factory exists, and an admitted one
- *        on Windows or with the sandbox off is refused by the factory.
- *
- * Routing and admission are different questions; the matrix answers both and
- * never lets a refusal read as a route. The factory is observed, not replaced:
- * it records the spec it was built with and, except where a case would spawn,
- * runs as in production.
- */
+/** Every instantiation path uses the same routing decision and records its resolved launch without importing plugin code in main. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const factory = vi.hoisted(() => ({
   specs: [] as Array<{ launch: { kind: string; entryPath?: string; command?: string }; childEntryPath?: string }>,
-  /**
-   * Record the spec and hand back an inert plugin instead of the real factory's
-   * product, for a case that asserts the launch the routing resolved and would
-   * otherwise spawn a process.
-   */
+  /** Record launch specs instead of spawning when only routing is under test. */
   recordOnly: false,
 }));
 const sandbox = vi.hoisted(() => ({ active: false }));
@@ -110,8 +81,6 @@ const PROCESS_MANIFEST: PluginManifest = {
   tools: [],
 };
 
-// ─── The registry dimensions (`src/plugins/registry.ts`) ─────────────────────
-
 const SOURCE_KINDS = ["official", "managed", "custom", "direct"] as const;
 const RUNGS = ["release", "archive", "tree", "folder", "legacy"] as const;
 const INSTALL_SOURCES = ["user", "local-dev", "admin", "dev-link"] as const;
@@ -121,7 +90,6 @@ type InstallSource = (typeof INSTALL_SOURCES)[number];
 
 interface RegistryRow {
   installSource: InstallSource;
-  /** Absent: an origin-less legacy entry. */
   origin?: { sourceKind: SourceKind; rung: Rung };
 }
 
@@ -131,13 +99,7 @@ function label(row: RegistryRow): string {
     : `${row.installSource}/origin-less`;
 }
 
-/**
- * The evidence an activation path verifies for an install the row describes:
- * what reaches the routing function. A local-development install verifies a
- * `local-dev` receipt; a folder install a `folder` receipt; a migrated legacy
- * install a v3 marketplace receipt with no artifact pin; a git install the rung
- * and source kind it came through; an origin-less legacy entry nothing at all.
- */
+/** Each activation supplies the source and rung evidence its own receipt verification established. */
 function evidenceFor(row: RegistryRow): PluginIntegrityEvidence | undefined {
   if (row.installSource === "local-dev" || row.installSource === "dev-link") {
     return { installSource: "local-dev", signerKeyId: null, artifactSha256: null, rung: null, sourceOrigin: null };
@@ -167,7 +129,6 @@ const EVERY_ROW: RegistryRow[] = INSTALL_SOURCES.flatMap((installSource) => [
 const PLATFORMS = ["darwin", "linux", "win32"] as const;
 const hostPlatform = process.platform;
 
-/** A generation root with the executable the process manifest names. */
 function processGeneration(): { root: string; dataDir: string } {
   const root = mkdtempSync(join(tmpdir(), "routing-process-"));
   mkdirSync(join(root, "bin"));
@@ -190,8 +151,7 @@ describe("(i) every entry manifest routes to a child", () => {
     async (platform, sandboxOn) => {
       setProcessPlatform(platform);
       sandbox.active = sandboxOn;
-      // A path that cannot be imported: nothing is imported in main, so the
-      // route is decided without touching it.
+      // An unimportable path proves routing never imports plugin code in main.
       const entryPath = join(tmpdir(), "no-such-plugin-entry.mjs");
       expect(EVERY_ROW).toHaveLength(INSTALL_SOURCES.length * (1 + SOURCE_KINDS.length * RUNGS.length));
       for (const row of EVERY_ROW) {
@@ -205,7 +165,6 @@ describe("(i) every entry manifest routes to a child", () => {
         expect(routed.arm, label(row)).toBe("child");
         expect(factory.specs, label(row)).toHaveLength(1);
         expect(factory.specs[0]!.launch, label(row)).toEqual({ kind: "entry", entryPath });
-        // The child runs the entry the composition root injected.
         expect(factory.specs[0]!.childEntryPath, label(row)).toBe(pluginChildEntryPath());
       }
     },
@@ -220,8 +179,6 @@ describe("(ii) an admitted process manifest routes to its process launch", () =>
   it.each(admitted)("on %s, a pinned %s %s install with the sandbox on", async (platform, sourceKind, rung) => {
     setProcessPlatform(platform);
     sandbox.active = true;
-    // The launch is resolved when the lifecycle invokes the factory; the
-    // factory only records it here, so the case does not spawn.
     factory.recordOnly = true;
     const routed = await routing().importPluginFactoryForLifecycle(
       PLUGIN_ID,
@@ -280,8 +237,7 @@ describe("(iii) explicit refusals, never a route", () => {
       PROCESS_MANIFEST,
       evidenceFor({ installSource: "user", origin: { sourceKind: "official", rung: "release" } }),
     );
-    // A factory exists — the provenance gate admitted it — but invoking it is
-    // refused before anything is spawned: the real factory runs here.
+    // Admission may produce a factory that still refuses at invocation before spawning.
     const generation = processGeneration();
     try {
       await expect(

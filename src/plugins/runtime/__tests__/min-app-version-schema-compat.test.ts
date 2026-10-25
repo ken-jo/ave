@@ -1,12 +1,4 @@
-/**
- * `requires.minAppVersion` schema-compatibility — the host schema validator
- * path (not a permissive test schema). The schema's `requires` block declares
- * `minAppVersion` natively while keeping
- * `additionalProperties:false`, so a manifest declaring `requires.minAppVersion`
- * (the local-indexer shape) is accepted and an unknown `requires` field is still
- * rejected — with no host compatibility patch (sibling to
- * network-access-manifest).
- */
+/** Exercise minAppVersion through the real strict host schema without compatibility patches. */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";

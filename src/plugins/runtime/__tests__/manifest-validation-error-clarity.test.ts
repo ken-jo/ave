@@ -1,11 +1,4 @@
-/**
- * Issue #737 — schema validation error message must name the offending
- * additional property + suggest reinstall, instead of the opaque
- * "/ must NOT have additional properties".
- *
- * Companion to #736: clear error message helps users diagnose why a stale
- * plugin install fails AJV validation after the host schema tightens.
- */
+/** Validation errors must identify the offending field and give reinstall guidance only for stale-schema failures. */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -28,7 +21,6 @@ describe("manifest-validation enriched error messages (#737)", () => {
     await rm(workDir, { recursive: true, force: true });
   });
 
-  // Strict envelope, matching the host schema's additionalProperties:false rule.
   const makeValidator = permissiveManifestValidatorFactory({
     strict: true,
     namespaceProperties: {
@@ -40,8 +32,6 @@ describe("manifest-validation enriched error messages (#737)", () => {
 
   it("names the unknown top-level property and includes a reinstall hint", async () => {
     const path = join(workDir, "plugin.json");
-    // Stale manifest with a deprecated `startupTools` field (the actual
-    // samplemail v0.3.2 case the user hit).
     await writeFile(
       path,
       JSON.stringify(agentPluginsDocument({
@@ -86,7 +76,7 @@ describe("manifest-validation enriched error messages (#737)", () => {
     expect(err).toBeInstanceOf(Error);
     expect(err!.message).toContain("deprecatedField1");
     expect(err!.message).toContain("deprecatedField2");
-    expect(err!.message).toContain("fields"); // plural form
+    expect(err!.message).toContain("fields");
   });
 
   it("plural detection — single-property case uses 'a field' wording", async () => {
@@ -111,8 +101,7 @@ describe("manifest-validation enriched error messages (#737)", () => {
 
   it("non-additionalProperties errors still surface the original message + path", async () => {
     const path = join(workDir, "plugin.json");
-    // Wrong version format — validation should mention the path /version
-    // and the AJV pattern message, but NOT the reinstall hint.
+    // Format errors should include field and expected shape, without reinstall guidance.
     await writeFile(
       path,
       JSON.stringify(agentPluginsDocument({
@@ -136,9 +125,7 @@ describe("manifest-validation enriched error messages (#737)", () => {
 
   it("preserves AJV `params` for non-additionalProperties errors (Round 2 — was lossy pre-fix)", async () => {
     const path = join(workDir, "plugin.json");
-    // Pattern mismatch — AJV emits params.pattern with the regex source so
-    // users can see what was expected. Pre-Round-2 fix dropped params and
-    // only logged the AJV default text, which lost the regex itself.
+    // Preserve validator params so pattern errors include the expected expression.
     await writeFile(
       path,
       JSON.stringify(agentPluginsDocument({
@@ -156,17 +143,12 @@ describe("manifest-validation enriched error messages (#737)", () => {
       (e: Error) => e,
     );
     expect(err).toBeInstanceOf(Error);
-    // The pattern source must appear in the error message
     expect(err!.message).toContain("\\\\d+\\\\.\\\\d+\\\\.\\\\d+");
   });
 
   it("rejects a pre-v6 legacy string-tools manifest with an actionable upgrade message (#885 Phase R)", async () => {
     const path = join(workDir, "plugin.json");
-    // A legacy pre-v6 manifest: `tools` is a list of name STRINGS. The lenient
-    // validator (still carrying the legacy oneOf arm) ACCEPTS
-    // it, so the host-side pure-v6 guard is the loud fail-closed point — it must
-    // name the offending index and point the author at the app release contract,
-    // NOT fall through to the opaque "Invalid tool name 'undefined'".
+    // Even permissive schemas must fail string tool declarations with a clear pure-tool contract error.
     await writeFile(
       path,
       JSON.stringify(agentPluginsDocument({
@@ -178,7 +160,7 @@ describe("manifest-validation enriched error messages (#737)", () => {
         tools: ["legacy_tool_a", "legacy_tool_b"],
       })));
 
-    const validator = makeValidator(); // accepts string-item tools
+    const validator = makeValidator();
     const err = await parsePluginJson(path, validator).then(
       () => null,
       (e: Error) => e,
@@ -191,12 +173,7 @@ describe("manifest-validation enriched error messages (#737)", () => {
   });
 });
 
-/**
- * The exactly-one rule and the `process` shape checks are the hardening's own,
- * so they are exercised here against a validator that says nothing about
- * `entry` or `process`: the field-named refusal is the hardening's, not the
- * schema's `oneOf`.
- */
+/** Use a permissive entry/process validator to isolate the host exactly-one and shape checks. */
 describe("manifest-validation names the process-entry field to fix", () => {
   let workDir: string;
   beforeEach(async () => {

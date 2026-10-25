@@ -1,26 +1,4 @@
-/**
- * `ave-plugin-validate <plugin dir>` — validate a plugin without the app
- * (`docs/design/plugin-hostapi-protocol.md` §9.7 P2, §10.2).
- *
- * The entry the plugin repositories bundle as
- * `tools/vendor/ave-plugin-validate.js`, beside the reference runtime bundled
- * as `ave-plugin-child-main.js`, which this locates next to itself. In this
- * repository `bun run plugin:validate <dir>` runs it from source.
- *
- *   --child-entry <path>      the reference runtime's entry (default: the
- *                             sibling `ave-plugin-child-main.js`)
- *   --child-exec-arg <arg>    prepended to the child's `node` invocation;
- *                             repeatable. A spawned child inherits none of
- *                             this process's Node flags, so source mode names
- *                             its loader here.
- *   --tool-args <file.json>   `{ "<tool>": { …arguments } }` for tools whose
- *                             input requires arguments
- *   --fast                    cap every protocol bound at 1 s
- *
- * stdout carries the report and nothing else: one JSON object per row. The
- * summary, and the child's own stderr, go to stderr. Exit 0 when every row
- * passed or was not exercised, 1 when one failed, 2 for a usage error.
- */
+/** Validate a plugin directory without the app; exit 0 for no failures, 1 for failed checks and 2 for usage errors. */
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -89,9 +67,7 @@ async function main(argv: readonly string[]): Promise<number> {
 
 main(process.argv.slice(2)).then(
   (code) => {
-    // Not `process.exit`: stdout may be a pipe, and exiting now could cut the
-    // report short. Nothing the run leaves behind keeps the process alive — a
-    // child that outlived its termination was let go by the finalizer.
+    // Set exitCode rather than exit so piped report bytes can drain.
     process.exitCode = code;
   },
   (error: unknown) => {

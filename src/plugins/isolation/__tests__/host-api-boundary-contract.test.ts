@@ -1,14 +1,4 @@
-/**
- * The boundary contract, held against the surface SOT.
- *
- * Two enumerations have to describe the same 38 members: the effect
- * classification (`HOSTAPI_EFFECT_BY_PATH`, which the completeness test already
- * ties to the REAL hostApi object) and the marshalling contract this work
- * introduces. If they drift, a member exists that the boundary has no decision
- * for — and the failure mode is a plugin that works in every test and misbehaves
- * in the field, because today each member is a direct function call that no test
- * was written to pin.
- */
+/** Contract and effect tables must enumerate the same HostApi surface; mismatches must fail closed. */
 import { describe, expect, it, vi } from "vitest";
 import {
   ENFORCEMENT_EXCLUSIONS,
@@ -78,10 +68,7 @@ const PLUGIN_ID = "com.example.contract";
 
 const silentSink: ChildNotificationSink = { deliver: () => {} };
 
-/**
- * One `ave/host/*` request. Nothing in it names the plugin: the dispatcher is
- * built for one child, and the connection is the identity.
- */
+/** The connection binds plugin identity; requests must never choose it. */
 function request(
   overrides: {
     readonly path?: string;
@@ -102,14 +89,12 @@ function dispatcher(
 ): HostApiDispatcher {
   const hostLogs: { message: string; meta?: unknown }[] = [];
   return new HostApiDispatcher({
-    // Captured, not dropped: a sink that discards is what shipped, and a
-    // test that discards could not tell the difference.
+    // Capture host diagnostics so silently discarded failures cannot pass.
     log: (message, meta) => hostLogs.push({ message, meta }),
     pluginId: PLUGIN_ID,
     isActive: () => true,
     notifications: silentSink,
     reportUnknownField: () => {},
-    // No child runs here, so a shutdown reaching for one is a test bug.
     shutdownChild: async (subscriptionId) => {
       throw new Error(`no child to run shutdown handler '${subscriptionId}'`);
     },
@@ -125,9 +110,7 @@ describe("the marshalling contract covers exactly the classified hostApi surface
   });
 
   it("counts the surface from the SOT rather than from the design prose", () => {
-    // The design says 36. It is right today only because the `callTool` drift it
-    // named has since been closed; asserting the SOT's own size is what keeps
-    // the number honest when the surface next changes.
+    // Derive the surface count from the authoritative table so new members cannot escape coverage.
     expect(Object.keys(HOSTAPI_PATH_CONTRACTS)).toHaveLength(
       Object.keys(HOSTAPI_EFFECT_BY_PATH).length,
     );
@@ -155,10 +138,7 @@ describe("the marshalling contract covers exactly the classified hostApi surface
   });
 
   it("uses every value each axis's vocabulary offers", () => {
-    // A vocabulary member nothing declares is either a decision that was
-    // dropped or a word that means nothing — both worth knowing about. The
-    // annotations are the other half of the check: a declared value outside its
-    // union is a compile error here, not a silently accepted string.
+    // Every declared vocabulary value must be used and remain inside its type union.
     const argumentValues: ArgumentMarshalling[] = [
       "plain-json",
       "encoded",
@@ -191,9 +171,7 @@ describe("the marshalling contract covers exactly the classified hostApi surface
   });
 
   it("starts with every dispatchable member unimplemented", () => {
-    // The routing SOT is empty, so nothing calls these yet. Recording the
-    // starting state means a handler landing later is visible as a diff in this
-    // count rather than as an untracked change of behaviour.
+    // Track default-table implementation count so adding handlers is visible.
     const byStatus = new Map<HostApiPathStatus, string[]>();
     for (const handler of Object.values(HOSTAPI_DISPATCH_TABLE)) {
       byStatus.set(handler.status, [
@@ -252,8 +230,7 @@ describe("the marshalling contract covers exactly the classified hostApi surface
       .map((handler) => handler.path)
       .sort();
     expect(tableSaysLocal).toEqual(contractSaysLocal);
-    // Named literally: these four are the round-trip-free members, and the count
-    // moving is a design change, not a refactor.
+    // These synchronous members must remain round-trip-free.
     expect(contractSaysLocal).toEqual([
       "config.get",
       "getAppPreference",
@@ -263,12 +240,9 @@ describe("the marshalling contract covers exactly the classified hostApi surface
   });
 
   it("declares effect-boundary denial exactly where the gate can actually fire", () => {
-    // Derived from the enforcement SOT, not hand-listed: a future async write
-    // chokepoint joins GATED_EFFECT_PATHS automatically, and this test then
-    // fails until its contract admits the error the gate will throw at it.
+    // Derive gated effects from enforcement so new write chokepoints require a declared denial identity.
     const canDeny = new Set<string>(GATED_EFFECT_PATHS);
-    // hostFetch is excluded from the generic wrapper because it self-gates
-    // INLINE from its own verb snapshot — excluded from the wrapper, not ungated.
+    // hostFetch gates its captured verb inline; wrapper exclusion grants no bypass.
     expect(ENFORCEMENT_EXCLUSIONS.has("hostFetch")).toBe(true);
     canDeny.add("hostFetch");
 
@@ -296,10 +270,7 @@ describe("the marshalling contract covers exactly the classified hostApi surface
     expect(isHostApiPath("getSecret")).toBe(true);
     expect(isHostApiPath("callTool")).toBe(false);
     expect(isHostApiPath(42)).toBe(false);
-    // Inherited members are not hostApi members. The path arrives from the
-    // least-trusted process in the system, and an `in` check admits every one
-    // of these — after which the table lookup returns something off
-    // `Object.prototype` rather than a handler.
+    // Only own table keys are HostApi paths; attacker-controlled prototype names must be refused.
     for (const inherited of ["__proto__", "constructor", "toString", "valueOf"]) {
       expect(isHostApiPath(inherited), inherited).toBe(false);
     }
@@ -307,9 +278,7 @@ describe("the marshalling contract covers exactly the classified hostApi surface
 });
 
 describe("the in-process loader's removal predicate is fed from the registry", () => {
-  // The census that used to answer this by id is gone (§9.8 A1, decision 50):
-  // the predicate reads the arm each LOADED generation recorded from the
-  // routing function (decision 51), so what it says is what actually ran.
+  // Read execution arms recorded by loaded generations, never a plugin-ID census.
   it("is true over a runtime whose loaded plugins are children, and false once an in-process one is registered", async () => {
     const fixture = await makeTestPluginRuntimeFixture({ prefix: "ave-removal-predicate-" });
     const pluginId = "removalpredicatefixture";
@@ -322,21 +291,17 @@ describe("the in-process loader's removal predicate is fed from the registry", (
     const runtime = makeTestPluginRuntime(fixture);
     try {
       await runtime.startAll();
-      // The plugin really ran, in its child: its handler answers.
       await expect(runtime.call("predicate_ping")).resolves.toBe("pong");
       const loaded = runtime.listLoadedPluginArms();
       expect(loaded).toEqual([{ pluginId, arm: "child" }]);
       expect(allPluginsAreOutOfProcess(loaded)).toBe(true);
-      // The card the Doctor reads carries the same arm, and the wrap the spawn
-      // reported: the test process runs no OS sandbox, so the child is unwrapped.
+      // Repair diagnostics must expose the actual arm and confinement reported by spawn.
       expect(runtime.listPluginCards().find((card) => card.id === pluginId)).toMatchObject({
         loadStatus: "loaded",
         arm: "child",
         confinement: "unconfined",
       });
-      // A generation the registry records as in-process — what the retained
-      // in-process factory would produce — makes the predicate false, read
-      // from the same registry rather than from a list of ids.
+      // An in-process generation must report false through the same registry-based predicate.
       runtime._testInjectPlugin("inprocessregistryfixture", "inprocess_ping", async () => "in-process");
       const mixed = runtime.listLoadedPluginArms();
       expect(mixed).toContainEqual({ pluginId: "inprocessregistryfixture", arm: "in-process" });
@@ -354,20 +319,7 @@ describe("the in-process loader's removal predicate is fed from the registry", (
   });
 });
 
-/**
- * The import boundary of plugin code (§9.8 A1, in the style of
- * `validate-boundary.test.ts`): main imports no plugin module. `importPluginFactory`
- * — the one function that `import()`s a plugin's entry — is imported only by
- * the child (`plugin-child-main.ts`) and defined in `plugin-loader.ts`, whose
- * retained in-process factory is the only other caller; and that retained
- * factory has no production importer at all.
- *
- * The graph is the one `scripts/check-import-cycles.mjs` builds, so which
- * modules import `plugin-loader.ts` is decided by the same resolver the
- * import-cycle gate uses; the bindings each one takes are then read off its
- * import statements, and a dynamic `import()` of the module counts as taking
- * every binding.
- */
+/** Only the child may import plugin entry code; static, namespace and dynamic imports all count. */
 const SRC = SOURCE_ROOT;
 const PLUGIN_LOADER = join(SRC, "plugins", "runtime", "plugin-loader.ts");
 const PLUGIN_CHILD_MAIN = join(SRC, "plugins", "isolation", "plugin-child-main.ts");
@@ -376,7 +328,6 @@ const importGraph = buildRuntimeImportGraph(SRC);
 const display = sourceDisplayPath;
 const isProductionModule = isProductionSourceModule;
 
-/** Whether a relative specifier written in `from` names `plugin-loader.ts`. */
 function namesPluginLoader(from: string, specifier: string): boolean {
   if (!specifier.startsWith(".")) return false;
   const base = resolve(dirname(from), specifier);
@@ -386,11 +337,7 @@ function namesPluginLoader(from: string, specifier: string): boolean {
 const STATIC_IMPORT = /(?:^|[\n;])\s*(import|export)\s+(type\s+)?([\s\S]*?)\s+from\s+["']([^"']+)["']/gu;
 const DYNAMIC_IMPORT = /\bimport\(\s*["']([^"']+)["']\s*\)/gu;
 
-/**
- * The bindings `file` takes from `plugin-loader.ts`: each named import or
- * re-export by its exported name, and `*` for a namespace import, an
- * `export *` or a dynamic `import()`, each of which reaches every export.
- */
+/** Namespace imports, export-all and dynamic imports reach every exported loader binding. */
 function bindingsFromPluginLoader(file: string): string[] {
   const text = readFileSync(file, "utf-8");
   const names: string[] = [];
@@ -410,7 +357,6 @@ function bindingsFromPluginLoader(file: string): string[] {
   return names;
 }
 
-/** Every module that loads `plugin-loader.ts`, statically or by a dynamic `import()`. */
 function pluginLoaderImporters(): string[] {
   return [...importGraph.keys()].filter((file) => file !== PLUGIN_LOADER
     && (importGraph.get(file)!.has(PLUGIN_LOADER)
@@ -427,9 +373,7 @@ function importersOf(binding: string, filter: (file: string) => boolean): string
 
 describe("main imports no plugin code", () => {
   it("imports importPluginFactory only in the plugin child", () => {
-    // Every module under src — production and test alike — so the function that
-    // `import()`s a plugin's entry has exactly one importer besides its own
-    // module: the child that runs the plugin.
+    // Inspect production and test importers so plugin entry import remains exclusive to the child.
     expect(importersOf("importPluginFactory", () => true)).toEqual(["plugins/isolation/plugin-child-main.ts"]);
     expect(existsSync(PLUGIN_CHILD_MAIN)).toBe(true);
   });
@@ -440,9 +384,7 @@ describe("main imports no plugin code", () => {
   });
 
   it("sees the imports that do exist, so a green run is not an empty walk", () => {
-    // The instrument must find what is really there, through the same
-    // resolution the cases above use: the child's import of the subject, and
-    // main's import of the helpers it still takes from the same module.
+    // Positive graph controls prevent vacuous importer assertions.
     expect(bindingsFromPluginLoader(PLUGIN_CHILD_MAIN)).toContain("importPluginFactory");
     const runtimeIndex = join(SRC, "plugins", "runtime", "index.ts");
     expect(pluginLoaderImporters()).toContain(runtimeIndex);
@@ -474,10 +416,7 @@ describe("the dispatcher refuses rather than defaults", () => {
   });
 
   it("attributes a forged identity to the bound plugin and reports the fields as unknown", async () => {
-    // The plugin never names itself: the host spawned the process and owns its
-    // pipes, so the connection IS the plugin and the generation (§2.4). A params
-    // field claiming otherwise is not refused and not read — it is one more
-    // field the member does not declare, reported once and ignored (§3.3).
+    // The host owns connection identity; forged identity params are reported once and ignored.
     let seen: HostApiCall | undefined;
     const table = {
       ...HOSTAPI_DISPATCH_TABLE,
@@ -505,12 +444,11 @@ describe("the dispatcher refuses rather than defaults", () => {
       ["ave/host/hasRoutineBySource", "generationId"],
     ]);
 
-    // Once per (method, field) for the life of the connection, not per call.
+    // Deduplicate by method and field for the connection lifetime.
     await host.handle(forged);
     expect(reported).toHaveLength(2);
 
-    // Attributed to the BOUND plugin: a refusal names the plugin this
-    // dispatcher serves, never the one the params claimed.
+    // Attribute refusals to the bound plugin, never params claiming another identity.
     const refused = await dispatcher({ isActive: () => false }).handle(forged);
     if (!("error" in refused)) throw new Error("expected a refusal");
     expect(refused.error.message).toBe(
@@ -519,8 +457,7 @@ describe("the dispatcher refuses rather than defaults", () => {
   });
 
   it("caps what the child can make it report, and cuts long field names", async () => {
-    // The child chooses both the method and the field name, so per-(method,
-    // field) dedupe alone is a log flood and an unbounded set it controls.
+    // Bound dedup memory and diagnostics; both method and field are attacker-controlled.
     const table = {
       ...HOSTAPI_DISPATCH_TABLE,
       hasRoutineBySource: defineHostApiPath("hasRoutineBySource", async () => true),
@@ -541,7 +478,6 @@ describe("the dispatcher refuses rather than defaults", () => {
       method: "ave/host/hasRoutineBySource",
       field: `${"f".repeat(64)}…`,
     });
-    // One line says the rest are being dropped, and nothing follows it.
     expect(reports.filter((report) => report.kind === "suppressed")).toEqual([
       { kind: "suppressed", limit: UNKNOWN_FIELD_REPORTS_MAX },
     ]);
@@ -555,8 +491,7 @@ describe("the dispatcher refuses rather than defaults", () => {
     };
     const reports: UnknownFieldReport[] = [];
     const host = dispatcher({ table, reportUnknownField: (report) => reports.push(report) });
-    // The 64th code point is two UTF-16 units; a cut by unit would keep only
-    // the first of them.
+    // Truncate by code point so a surrogate pair is never split.
     const field = `${"f".repeat(63)}\u{1F600}tail`;
     await host.handle(request({ params: { source: "nightly", [field]: 1 } }));
     expect(reports).toEqual([
@@ -565,8 +500,7 @@ describe("the dispatcher refuses rather than defaults", () => {
   });
 
   it("reads an omitted params member as the empty object, and still refuses a non-object", async () => {
-    // JSON-RPC 2.0 §4 lets a client leave `params` out, which is how a stock
-    // client calls a member that takes no arguments.
+    // JSON-RPC permits omitted params for zero-argument calls.
     const table = {
       ...HOSTAPI_DISPATCH_TABLE,
       listAudioInputDevices: defineHostApiPath("listAudioInputDevices", async () => []),
@@ -619,8 +553,7 @@ describe("the dispatcher refuses rather than defaults", () => {
   });
 
   it("refuses a RESULT that would not survive the wire", async () => {
-    // The check §3.6 shows the in-process loopback does not perform: it passes
-    // `response.result` across by reference, so a Map is received as a Map today.
+    // Force a serialization check because an in-memory transport otherwise preserves Map by reference.
     const table = {
       ...HOSTAPI_DISPATCH_TABLE,
       hasRoutineBySource: defineHostApiPath(
@@ -638,8 +571,7 @@ describe("the dispatcher refuses rather than defaults", () => {
     const table = {
       ...HOSTAPI_DISPATCH_TABLE,
       logEvent: defineHostApiPath("logEvent", async () =>
-        // The contract says nothing comes back; returning something means the
-        // child's stub and the host's handler disagree about the member.
+        // A nonvoid host reply must expose signature drift rather than be discarded.
         "surprise" as unknown as void,
       ),
     };
@@ -745,9 +677,7 @@ describe("error identity survives the wire by code, never by message", () => {
 
 describe("the shared byte codec, which three members would otherwise each write", () => {
   it("keeps text and bytes distinguishable, which is the point of the tag", () => {
-    // A plugin writing the literal string "aGk=" and a plugin writing the bytes
-    // "hi" produce the same characters. Without the tag the file lands decoded
-    // in one of those two cases and nothing reports it.
+    // Tag bytes separately from base64-looking literal strings.
     const asText = encodeWireBytes("aGk=", "storage.write(data)");
     const asBytes = encodeWireBytes(new Uint8Array([104, 105]), "storage.write(data)");
     expect(asText).toEqual({ encoding: "utf8", data: "aGk=" });
@@ -778,8 +708,7 @@ describe("the shared byte codec, which three members would otherwise each write"
     } catch (error) {
       expect((error as HostApiBoundaryError).code).toBe("payload-too-large");
     }
-    // A truncating codec would return a shorter file and report success — the
-    // caller cannot tell that from a file that really is that short.
+    // Oversized binary payloads must refuse rather than silently truncate.
     expect(() =>
       decodeWireBytes(
         { encoding: "base64", data: "A".repeat(WIRE_BYTES_MAX * 2) },
