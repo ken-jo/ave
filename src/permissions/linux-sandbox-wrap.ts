@@ -2,14 +2,24 @@ import { lstatSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
 import { MAX_WALK_UP } from "./sensitive-paths.js";
 
-/** Only the option forms emitted by the pinned Linux wrapper are understood. */
+/**
+ * Only the option forms emitted by the pinned Linux wrapper are understood.
+ * ASRT 0.0.80 adds `--disable-userns` when no seccomp helper is in the chain
+ * (as with `allowAllUnixSockets`, which a registered worker socket turns on)
+ * and bubblewrap is 0.8 or later and not setuid; `--cap-add CAP_SETFCAP` is
+ * emitted for a uid-0 caller that uses the helper. Every option ASRT's
+ * `linux-sandbox-utils.js` can put before `--` must be listed here, or every
+ * wrap that carries it is refused.
+ */
 const BWRAP_OPTION_ARITY = {
   "--new-session": 0,
   "--die-with-parent": 0,
   "--unshare-net": 0,
   "--unshare-pid": 0,
   "--unshare-user": 0,
+  "--disable-userns": 0,
   "--cap-drop": 1,
+  "--cap-add": 1,
   "--unsetenv": 1,
   "--setenv": 2,
   "--ro-bind": 2,

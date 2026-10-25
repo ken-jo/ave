@@ -27,7 +27,7 @@
  *     so the worker may BIND the socket. The host connects from OUTSIDE the
  *     sandbox (unconstrained).
  *   - Windows: no reliable UDS-bind primitive, so the worker keeps its TCP
- *     control channel. ASRT 0.0.76 cannot accept per-exec filesystem
+ *     control channel. ASRT 0.0.80 cannot accept per-exec filesystem
  *     allowRead/allowWrite, but it DOES expose a live ACL grant primitive
  *     keyed by holder PID. The host therefore creates a dedicated holder
  *     process per worker, applies explicit worker-scoped read/write grants to
@@ -49,7 +49,8 @@
  * <workerId>/` — host-allocated from the host-bound pluginId and sanitized
  * workerId. mkdir 0o700; the worker binds the socket 0o600.
  *
- * GATE DEFAULT-OFF: when {@link isAsrtSandboxActive} is false, this is a plain
+ * GATE DEFAULT-OFF: when {@link isPluginWorkerConfinementActive} is false (ASRT off, or
+ * `features.pluginWorkerConfinement` off while ASRT serves shells), this is a plain
  * spawn of the exact command with the same secret-stripped worker env and returns
  * `socketPath: null` so the consumer falls back to the legacy TCP channel. No
  * UDS dir is created, nothing is wrapped.
@@ -80,7 +81,8 @@ import {
   terminateChildBestEffort,
 } from "./windows-acl-grant-holder.js";
 import {
-  isAsrtSandboxActive,
+  assertExtensionStartAllowed,
+  isPluginWorkerConfinementActive,
   cleanupAsrtSandboxAfterCommand,
   registerWorkerUnixSocketDir,
   unregisterWorkerUnixSocketDir,
@@ -268,6 +270,7 @@ function definedEnv(env: NodeJS.ProcessEnv | undefined): Record<string, string> 
  *   under srt-win.
  */
 export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker> {
+  assertExtensionStartAllowed();
   const safePlugin = safeSegment(spec.pluginId, "pluginId");
   const safeWorker = safeSegment(spec.workerId, "workerId");
   const args = [...(spec.args ?? [])];
@@ -278,7 +281,7 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
   const baseEnv: NodeJS.ProcessEnv = buildSafeChildEnv(definedEnv(spec.env));
 
   // ── Gate OFF → plain unwrapped spawn ────────────────────────────────
-  if (!isAsrtSandboxActive()) {
+  if (!isPluginWorkerConfinementActive()) {
     assertManagedChildProcessAdmissionOpen(`worker:${safePlugin}:${safeWorker}`);
     const child = spawn(spec.command, args, {
       stdio: WORKER_STDIO,
@@ -394,6 +397,7 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
         command: spec.command,
         args,
         label: `worker:${safePlugin}:${safeWorker}:asrt-win`,
+      egressOwner: { kind: "worker", role: "worker", pluginId: spec.pluginId, instanceId: spec.workerId },
         grantMode: "deny-only",
         baseEnv,
         extraEnv: { ...sandboxHome.env },
@@ -515,6 +519,7 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
       command: spec.command,
       args,
       label: `worker:${safePlugin}:${safeWorker}:asrt`,
+      egressOwner: { kind: "worker", role: "worker", pluginId: spec.pluginId, instanceId: spec.workerId },
       grantMode: "allow-list",
       // A worker shares its plugin's temp directory, and no other plugin's.
       tempPrincipal: { kind: "plugin", id: spec.pluginId },

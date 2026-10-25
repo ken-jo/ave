@@ -1,9 +1,25 @@
+import { canCreateSymlinks } from "../../src/__tests__/support/symlink-capability.js";
 import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import { gzipSync } from "node:zlib";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+const fixtureModes = vi.hoisted(() => new Map<string, number>());
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return {
+    ...actual,
+    lstatSync: (path: string) => {
+      const stats = actual.lstatSync(path);
+      const mode = fixtureModes.get(path);
+      // The extracted fixtures carry Linux modes even on a host without them.
+      if (process.platform === "win32" && mode !== undefined) stats.mode = (Number(stats.mode) & ~0o777) | mode;
+      return stats;
+    },
+  };
+});
 import {
   appImagePayloadOffset,
   auditLinuxRelease,
@@ -25,14 +41,6 @@ const EM = { x64: 62, arm64: 183 } as const;
 function posix(text: string): string {
   return text.split(sep).join("/");
 }
-
-/**
- * NTFS keeps no POSIX mode bits, so no file there is executable and the
- * audit's main-binary check fails every tree built on Windows.
- */
-const NO_EXEC_BIT_ON_WIN32 = process.platform === "win32"
-  ? ["linux-unpacked/: no executable ELF main binary at the app root"]
-  : [];
 
 /** A 64-byte ELF64 LE header: enough for the parser and for file(1). */
 function elf(machine: number, type = 3): Buffer {
@@ -70,6 +78,7 @@ function write(path: string, content: Buffer | string, mode = 0o644): void {
   } finally {
     process.noAsar = previous;
   }
+  fixtureModes.set(path, mode);
 }
 
 /** A linux-unpacked tree whose every native binary is `arch`. */
@@ -140,7 +149,7 @@ describe("Linux package architecture audit", () => {
     const root = tempRoot();
     unpackedApp(root, "x64");
     const { violations, checked } = auditLinuxRelease(root, "x64", { fileCommand: fakeFile });
-    expect(violations.map(posix)).toEqual(NO_EXEC_BIT_ON_WIN32);
+    expect(violations.map(posix)).toEqual([]);
     // main binary, crashpad, libffmpeg, two addons, rg, and the inflated uv
     expect(checked).toHaveLength(7);
   });
@@ -199,7 +208,7 @@ describe("Linux package architecture audit", () => {
       .toContain("no executable ELF main binary at the app root");
   });
 
-  it("never follows a symlink out of the tree", () => {
+  it.skipIf(!canCreateSymlinks())("never follows a symlink out of the tree", () => {
     const root = tempRoot();
     const app = unpackedApp(root, "x64");
     const outside = tempRoot();
@@ -208,7 +217,7 @@ describe("Linux package architecture audit", () => {
     symlinkSync(join(outside, "python3"), join(app, "resources/app.asar.unpacked/node_modules/node-pty/python3"));
     const after = auditLinuxRelease(root, "x64", { fileCommand: fakeFile });
     expect(after).toEqual(before);
-    expect(after.violations.map(posix)).toEqual(NO_EXEC_BIT_ON_WIN32);
+    expect(after.violations.map(posix)).toEqual([]);
   });
 
   it("checks the installers' declared arch and requires one of each", () => {

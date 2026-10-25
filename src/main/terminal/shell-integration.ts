@@ -8,7 +8,7 @@
  *
  * Each shell reports, around every command it runs (`<n>` is the nonce):
  *   OSC 133;D;<exit>;<n>            the previous command finished (first prompt: nothing open)
- *   OSC 133;P;Cwd=<encoded path>;Keys=<emacs|vi>;Paste=<0|1>;NotFound=<0|1>;B=<token>;Pid=<$$>;<n>
+ *   OSC 133;P;Cwd=<encoded path>;Keys=<emacs|vi>;Paste=<0|1>;NotFound=<0|1>;Edit=<0|1>;B=<token>;Pid=<$$>;<n>
  *                                   the working directory, the line editor's
  *                                   key bindings, whether it takes bracketed
  *                                   paste, whether a command-not-found handler
@@ -19,6 +19,7 @@
  *   OSC 133;A;<n>                   prompt start
  *   OSC 133;B;<token>               end of prompt / start of typed input (zsh, bash)
  *   OSC 133;C;cmdline_url=<percent-encoded command>;<n>  output starts
+ *   OSC 133;E;Line=<percent-encoded buffer>;B=<token>;<n>  private editor report
  *
  * NONCE. Anything a command prints reaches the same stream, so a program (or
  * `cat` of a file) could print these sequences and forge a block: its command,
@@ -103,6 +104,9 @@ const HEADER = "# Ave terminal shell integration (generated; this HOME is discar
  */
 export const SHELL_INTEGRATION_NONCE_FILE = ".ave-terminal-nonce";
 
+/** Private line-editor query; send only after the current prompt attests its binding. */
+export const TERMINAL_EDIT_LINE_QUERY = "\u0018\u0016";
+
 /** Characters of command text a script encodes into its C marker. */
 const MAX_ENCODED_COMMAND_CHARS = 4096;
 
@@ -133,6 +137,15 @@ const ZSH_RC = (noncePath: string): string => [
   "  done",
   '  REPLY="$out"',
   "}",
+  "__ave_report_edit_line() {",
+  "  emulate -L zsh",
+  "  local REPLY",
+  '  [[ -n "$__ave_prompt_token" ]] || return 0',
+  "  (( ${#BUFFER} <= " + MAX_ENCODED_COMMAND_CHARS + " )) || return 0",
+  '  __ave_encode "$BUFFER"',
+  "  printf '\\e]133;E;Line=%s;B=%s;%s\\a' \"$REPLY\" \"$__ave_prompt_token\" \"$__ave_nonce\"",
+  "}",
+  "__ave_edit_handler=\"${functions[__ave_report_edit_line]}\"",
   ...(process.platform === "darwin" ? [
     "__ave_rearm_interrupt() {",
     "  emulate -L zsh",
@@ -145,7 +158,7 @@ const ZSH_RC = (noncePath: string): string => [
     "}",
   ] : []),
   "__ave_precmd() {",
-  "  local ave_status=$? ave_keys=emacs ave_paste=0 ave_not_found=0 ave_token",
+  "  local ave_status=$? ave_keys=emacs ave_paste=0 ave_not_found=0 ave_edit=0 ave_token",
   "  printf '\\e]133;D;%s;%s\\a' \"$ave_status\" \"$__ave_nonce\"",
   // A command-not-found handler runs code for any word that is not a command.
   "  (( ${+functions[command_not_found_handler]} )) && ave_not_found=1",
@@ -157,9 +170,11 @@ const ZSH_RC = (noncePath: string): string => [
   '  [[ -n "$zle_bracketed_paste" && "${widgets[bracketed-paste]}" == builtin && "${widgets[self-insert]}" == builtin ]] && ave_paste=1',
   // A right-hand prompt is drawn after B, where it would read as typing.
   '  [[ -n "${RPROMPT}${RPS1}" ]] && ave_paste=0',
+  '  [[ "$ave_keys" == emacs && "$(bindkey -M main \'^X^V\' 2>/dev/null)" == \'"^X^V" __ave_report_edit_line\' && "${widgets[__ave_report_edit_line]}" == user:__ave_report_edit_line && "${functions[__ave_report_edit_line]}" == "$__ave_edit_handler" ]] && ave_edit=1',
   // A fresh token for this prompt's B, which the prompt string prints.
   '  ave_token="$(/usr/bin/od -An -N16 -tx1 /dev/urandom 2>/dev/null)"',
   '  ave_token="${ave_token//[^0-9a-f]/}"',
+  '  __ave_prompt_token="$ave_token"',
   "  __ave_b=$'\\e]133;B;'\"$ave_token\"$'\\a'",
   '  __ave_encode "$PWD"',
   // A child wait can leave SIGINT blocked on this platform. Resetting its
@@ -168,7 +183,7 @@ const ZSH_RC = (noncePath: string): string => [
   ...(process.platform === "darwin" ? [
     "  __ave_rearm_interrupt",
   ] : []),
-  "  printf '\\e]133;P;Cwd=%s;Keys=%s;Paste=%s;NotFound=%s;B=%s;Pid=%s;%s\\a\\e]133;A;%s\\a' \"$REPLY\" \"$ave_keys\" \"$ave_paste\" \"$ave_not_found\" \"$ave_token\" \"$$\" \"$__ave_nonce\" \"$__ave_nonce\"",
+  "  printf '\\e]133;P;Cwd=%s;Keys=%s;Paste=%s;NotFound=%s;Edit=%s;B=%s;Pid=%s;%s\\a\\e]133;A;%s\\a' \"$REPLY\" \"$ave_keys\" \"$ave_paste\" \"$ave_not_found\" \"$ave_edit\" \"$ave_token\" \"$$\" \"$__ave_nonce\" \"$__ave_nonce\"",
   "}",
   "__ave_preexec() {",
   '  __ave_encode "${1[1,' + MAX_ENCODED_COMMAND_CHARS + ']}"',
@@ -178,6 +193,8 @@ const ZSH_RC = (noncePath: string): string => [
   "add-zsh-hook precmd __ave_precmd",
   "add-zsh-hook preexec __ave_preexec",
   "zmodload zsh/zleparameter",
+  "zle -N __ave_report_edit_line",
+  "bindkey -M main '^X^V' __ave_report_edit_line",
   // The prompt prints the B marker of the moment (set by the hook above).
   "__ave_b=''",
   "setopt prompt_subst",
@@ -206,6 +223,14 @@ const BASH_PROFILE = (noncePath: string): string => [
   "  done",
   '  REPLY="$out"',
   "}",
+  "__ave_report_edit_line() {",
+  "  local REPLY",
+  '  [[ -n "$__ave_prompt_token" ]] || return 0',
+  "  (( ${#READLINE_LINE} <= " + MAX_ENCODED_COMMAND_CHARS + " )) || return 0",
+  '  __ave_encode "$READLINE_LINE"',
+  "  printf '\\e]133;E;Line=%s;B=%s;%s\\a' \"$REPLY\" \"$__ave_prompt_token\" \"$__ave_nonce\"",
+  "}",
+  '__ave_edit_handler="$(declare -f __ave_report_edit_line)"',
   "__ave_at_prompt=0",
   // Bracketed paste (readline 7 / bash 4.4 and later; on by default from
   // bash 5.1): pasted text is inserted, never read as keys. Older bash has
@@ -215,7 +240,7 @@ const BASH_PROFILE = (noncePath: string): string => [
   "  bind 'set enable-bracketed-paste on' 2>/dev/null && __ave_paste=1",
   "fi",
   "__ave_precmd() {",
-  "  local ave_status=$? ave_keys=emacs ave_paste=0 ave_not_found=0 ave_token",
+  "  local ave_status=$? ave_keys=emacs ave_paste=0 ave_not_found=0 ave_edit=0 ave_keymap=0 ave_token ave_binding",
   "  printf '\\e]133;D;%s;%s\\a' \"$ave_status\" \"$__ave_nonce\"",
   "  [[ -o vi ]] && ave_keys=vi",
   // A command-not-found handler (Ubuntu's /etc/bash.bashrc defines one) runs
@@ -223,12 +248,23 @@ const BASH_PROFILE = (noncePath: string): string => [
   "  declare -F command_not_found_handle >/dev/null && ave_not_found=1",
   // Bracketed paste as readline has it now (a user can turn it off by hand).
   '  [[ "$__ave_paste" = 1 && "$(bind -v)" == *"enable-bracketed-paste on"* ]] && ave_paste=1',
+  '  while IFS= read -r ave_binding; do',
+  '    [[ "$ave_binding" == "set keymap emacs" || "$ave_binding" == "set keymap emacs-standard" ]] && ave_keymap=1',
+  '  done < <(builtin bind -v 2>/dev/null)',
+  // Loading a keymap file can leave its command registry stale. Reserve this
+  // private key anew before reading back the installed callback.
+  '  if [[ "$ave_keys" == emacs && "$ave_keymap" == 1 && "$__ave_paste" == 1 && "$(declare -f __ave_report_edit_line)" == "$__ave_edit_handler" ]] && ! alias __ave_report_edit_line >/dev/null 2>&1 && builtin bind -m emacs-standard -x \'"\\C-x\\C-v":__ave_report_edit_line\' 2>/dev/null; then',
+  '    while IFS= read -r ave_binding; do',
+  '      [[ "$ave_binding" == \'"\\C-x\\C-v": "__ave_report_edit_line"\' || "$ave_binding" == \'"\\C-x\\C-v" "__ave_report_edit_line"\' ]] && ave_edit=1',
+  '    done < <(builtin bind -m emacs-standard -X 2>/dev/null)',
+  "  fi",
   // A fresh token for this prompt's B, which the prompt string prints.
   '  ave_token="$(/usr/bin/od -An -N16 -tx1 /dev/urandom 2>/dev/null)"',
   '  ave_token="${ave_token//[^0-9a-f]/}"',
+  '  __ave_prompt_token="$ave_token"',
   "  __ave_b=$'\\e]133;B;'\"$ave_token\"$'\\a'",
   '  __ave_encode "$PWD"',
-  "  printf '\\e]133;P;Cwd=%s;Keys=%s;Paste=%s;NotFound=%s;B=%s;Pid=%s;%s\\a\\e]133;A;%s\\a' \"$REPLY\" \"$ave_keys\" \"$ave_paste\" \"$ave_not_found\" \"$ave_token\" \"$$\" \"$__ave_nonce\" \"$__ave_nonce\"",
+  "  printf '\\e]133;P;Cwd=%s;Keys=%s;Paste=%s;NotFound=%s;Edit=%s;B=%s;Pid=%s;%s\\a\\e]133;A;%s\\a' \"$REPLY\" \"$ave_keys\" \"$ave_paste\" \"$ave_not_found\" \"$ave_edit\" \"$ave_token\" \"$$\" \"$__ave_nonce\" \"$__ave_nonce\"",
   "  __ave_at_prompt=1",
   "}",
   "__ave_preexec() {",

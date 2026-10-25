@@ -49,6 +49,9 @@ jobs:
       # One shard when the plan step did not run (a docs-only change), so the
       # matrix below always reads a list.
       shards: ${{ steps.plan.outputs.shards || '[1]' }}
+    env:
+      # Parallel runners may share a home; each workspace owns its Bun cache.
+      BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}/.cache/bun
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -103,9 +106,9 @@ jobs:
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         if: steps.docs-impact.outputs.docs_only != 'true' && steps.node-modules-cache.outputs.cache-hit != 'true'
         with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-ci-bun-${{ hashFiles('ave/bun.lock') }}
-          restore-keys: ${{ runner.os }}-ci-bun-
+          path: .cache/bun
+          key: ${{ runner.os }}-ci-bun-workspace-v1-${{ hashFiles('ave/bun.lock') }}
+          restore-keys: ${{ runner.os }}-ci-bun-workspace-v1-
       - run: bun install --frozen-lockfile
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
@@ -146,6 +149,10 @@ jobs:
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         run: bun run typecheck
+      - name: Verify Windows sandbox helper pins
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        working-directory: ave
+        run: node scripts/check-srt-win-integrity.cjs
       # `typecheck` covers production sources only — both tsconfigs exclude
       # `src/**/__tests__/**`, so before this step a test could reference an unimported
       # symbol and reach CI green. This is the ratchet for the rest: new test files are
@@ -207,6 +214,9 @@ jobs:
       fail-fast: false
       matrix:
         shard: ${{ fromJSON(needs.build.outputs.shards || '[1]') }}
+    env:
+      # Parallel runners may share a home; each workspace owns its Bun cache.
+      BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}/.cache/bun
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -260,9 +270,9 @@ jobs:
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         if: steps.node-modules-cache.outputs.cache-hit != 'true'
         with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-ci-bun-${{ hashFiles('ave/bun.lock') }}
-          restore-keys: ${{ runner.os }}-ci-bun-
+          path: .cache/bun
+          key: ${{ runner.os }}-ci-bun-workspace-v1-${{ hashFiles('ave/bun.lock') }}
+          restore-keys: ${{ runner.os }}-ci-bun-workspace-v1-
       - run: bun install --frozen-lockfile
         working-directory: ave
       # uv is fetched to resources/ (outside node_modules) by the postinstall,
@@ -350,6 +360,9 @@ jobs:
     # cross-repository integration belongs to trusted default-branch
     # repository_dispatch workflows.
     runs-on: ubuntu-24.04-arm
+    env:
+      # Parallel runners may share a home; each workspace owns its Bun cache.
+      BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}/.cache/bun
     steps:
       - name: Require the build and every Vitest shard
         if: always()
@@ -403,9 +416,9 @@ jobs:
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         if: needs.build.outputs.docs_only != 'true' && steps.node-modules-cache.outputs.cache-hit != 'true'
         with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-ci-bun-${{ hashFiles('ave/bun.lock') }}
-          restore-keys: ${{ runner.os }}-ci-bun-
+          path: .cache/bun
+          key: ${{ runner.os }}-ci-bun-workspace-v1-${{ hashFiles('ave/bun.lock') }}
+          restore-keys: ${{ runner.os }}-ci-bun-workspace-v1-
       - run: bun install --frozen-lockfile
         if: needs.build.outputs.docs_only != 'true'
         working-directory: ave
@@ -639,6 +652,8 @@ jobs:
           src/tools/__tests__/prepared-shell-invocation.test.ts
           src/permissions/__tests__/windows-sandbox-logic.test.ts
           src/permissions/__tests__/asrt-windows-support.test.ts
+          src/permissions/__tests__/srt-win-integrity.test.ts
+          src/permissions/__tests__/egress-runtime-proxy.test.ts
           src/tools/__tests__/shell-windows-partial-plan-b.test.ts
           src/lib/__tests__/atomic-file.test.ts
           src/shared/__tests__/ave-home.test.ts
@@ -738,6 +753,11 @@ jobs:
       # install the backend; this job needs no backend install.
       # `AVE_REQUIRE_SANDBOX_CASES=1` makes confinement jobs fail if the sandbox
       # cannot initialize, instead of passing without taking a measurement.
+      # terminal-egress-native.test.ts also needs the runner to reach
+      # https://example.com (a real public host: a local server cannot stand in
+      # for one behind the sandbox's proxy). Without that route its
+      # precondition case fails with one "network unreachable: …" assertion and
+      # its cases are skipped; that failure is the runner's network, not Ave.
       - name: Run macOS permission regressions
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
@@ -749,6 +769,10 @@ jobs:
           src/plugins/isolation/__tests__/adversarial-escapes.test.ts
           src/hooks/__tests__/bundled-hook-asrt.smoke.test.ts
           src/tools/__tests__/session-read-shell.test.ts
+          src/permissions/__tests__/egress-deny-native.test.ts
+          src/permissions/__tests__/egress-token-isolation-native.test.ts
+          src/main/terminal/__tests__/terminal-egress-native.test.ts
+          test/scripts/asrt-patched-symbols.test.ts
           src/permissions/__tests__/allowed-directories.test.ts
           src/permissions/__tests__/permission-manager-meta-override.test.ts
           src/tools/__tests__/registry-meta-governance.test.ts
@@ -773,6 +797,9 @@ jobs:
     # and ASRT's `arm64` seccomp filter both apply.
     # GitHub-hosted runner, as every job is; see workflow-runner-policy.ts.
     runs-on: ubuntu-24.04-arm
+    env:
+      # Parallel runners may share a home; each workspace owns its Bun cache.
+      BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}/.cache/bun
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -841,9 +868,9 @@ jobs:
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         if: steps.docs-impact.outputs.docs_only != 'true' && steps.node-modules-cache.outputs.cache-hit != 'true'
         with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-ci-bun-${{ hashFiles('ave/bun.lock') }}
-          restore-keys: ${{ runner.os }}-ci-bun-
+          path: .cache/bun
+          key: ${{ runner.os }}-ci-bun-workspace-v1-${{ hashFiles('ave/bun.lock') }}
+          restore-keys: ${{ runner.os }}-ci-bun-workspace-v1-
       - run: bun install --frozen-lockfile
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
@@ -863,6 +890,8 @@ jobs:
           python-version: "3.12"
       # With the flag set, a case that cannot initialise the sandbox FAILS
       # instead of returning green, so a green job is a measurement.
+      # terminal-egress-native.test.ts needs https://example.com: without a
+      # route it fails once with "network unreachable: …" (see the macOS job).
       - name: Run Linux confinement regressions
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
@@ -871,10 +900,15 @@ jobs:
           AVE_SMOKE_PYTHON: ${{ steps.python.outputs.python-path }}
         run: >
           bun run test --
+          test/scripts/asrt-bwrap-ownership.test.ts
           src/permissions/__tests__/linux-sandbox-wrap.test.ts
           src/permissions/__tests__/asrt-sandbox.test.ts
           src/plugins/isolation/__tests__/confined-plugin-child.test.ts
           src/plugins/isolation/__tests__/adversarial-escapes.test.ts
           src/hooks/__tests__/bundled-hook-asrt.smoke.test.ts
           src/tools/__tests__/session-read-shell.test.ts
+          src/permissions/__tests__/egress-deny-native.test.ts
+          src/permissions/__tests__/egress-token-isolation-native.test.ts
+          src/main/terminal/__tests__/terminal-egress-native.test.ts
+          test/scripts/asrt-patched-symbols.test.ts
           src/main/terminal/__tests__/pty-manager-linux-sandbox.test.ts

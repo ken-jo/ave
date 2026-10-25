@@ -21,6 +21,7 @@
  * paths only; the floor is not theirs to forget.
  */
 import { spawn, type ChildProcess, type StdioOptions } from "node:child_process";
+import { assertSrtWinSpawnIntegrity } from "./srt-win-integrity.js";
 import { existsSync } from "node:fs";
 import { extname, join } from "node:path";
 import type { Readable, Writable } from "node:stream";
@@ -29,12 +30,14 @@ import {
   ensureSandboxTempPrincipalDir,
   getDefaultSensitiveReadDenyPaths,
   getDefaultSensitiveWriteDenyPaths,
-  isAsrtSandboxActive,
+  isPluginWorkerConfinementActive,
+  assertExtensionStartAllowed,
   sandboxTempEnvLaunch,
   wrapWorkerCommand,
   type SandboxTempPrincipal,
   type WrapOptions,
 } from "./asrt-sandbox.js";
+import { openEgressInvocation, type EgressInvocation, type WorkerEgressOwner } from "./egress-invocations.js";
 import { buildSandboxedChildEnv, isSandboxWrapperEnvKey } from "../tools/safe-env.js";
 import {
   assertManagedChildProcessAdmissionOpen,
@@ -132,6 +135,13 @@ export interface ConfinedChildSpec {
   readonly args: readonly string[];
   /** Used for the managed-child registration and in errors. */
   readonly label: string;
+  /**
+   * Whose plugin-owned code this is, for egress attribution: while the sandbox
+   * is active the wrap carries an egress token (`egress-invocations.ts`) minted
+   * for this owner, and every proxy deny of the child is audited under it. The
+   * token lives as long as the child.
+   */
+  readonly egressOwner: WorkerEgressOwner;
   readonly grantMode: ConfinementGrantMode;
   /** Ignored under `deny-only`, where ACLs grant reachability instead. */
   readonly allowRead?: readonly string[];
@@ -242,7 +252,7 @@ export interface ConfinedChildSpec {
 }
 
 /**
- * The wrap a spawn actually applied — never the `features.osToolSandbox`
+ * The wrap a spawn actually applied — never the `features.pluginWorkerConfinement`
  * setting. A child spawned unwrapped is `unconfined` whatever the setting
  * says, because "confined" is a claim about this process, and only the wrap
  * makes it true. One value per substrate ASRT wraps with.
@@ -283,19 +293,39 @@ export async function spawnConfinedChild(spec: ConfinedChildSpec): Promise<Confi
   const stdio = spec.stdio ?? ["ignore", "pipe", "pipe"];
   if (spec.windowsStdio === "relay") assertRelayableSpec(spec, stdio);
 
-  const { executable, args, wrappedEnv, confinement, relayRequest } = await resolveSpawnLine(spec);
-  spec.assertStillValid?.();
-
-  assertManagedChildProcessAdmissionOpen(spec.label);
-  const child = spawn(executable, args, {
-    stdio,
-    shell: false,
-    windowsHide: true,
-    env: composeConfinedEnv(spec.baseEnv, wrappedEnv, spec.extraEnv ?? {}),
-    // On the relay the program's directory travels in its request; the relay
-    // itself needs none.
-    ...(spec.cwd !== undefined && relayRequest === undefined ? { cwd: spec.cwd } : {}),
-  });
+  const { executable, args, wrappedEnv, confinement, relayRequest, egress } = await resolveSpawnLine(spec);
+  let child: ChildProcess;
+  try {
+    spec.assertStillValid?.();
+    assertManagedChildProcessAdmissionOpen(spec.label);
+    if (confinement !== "unconfined") assertSrtWinSpawnIntegrity(executable);
+    child = spawn(executable, args, {
+      stdio,
+      shell: false,
+      windowsHide: true,
+      // A wrapped child starts its own process session, so the sandbox
+      // profile's refusal to read other processes' arguments and environment
+      // (the carried ASRT patch) covers this process group too: Seatbelt only
+      // refuses it across sessions.
+      ...(egress !== undefined && process.platform !== "win32" ? { detached: true } : {}),
+      env: composeConfinedEnv(spec.baseEnv, wrappedEnv, spec.extraEnv ?? {}),
+      // On the relay the program's directory travels in its request; the relay
+      // itself needs none.
+      ...(spec.cwd !== undefined && relayRequest === undefined ? { cwd: spec.cwd } : {}),
+    });
+  } catch (error) {
+    egress?.release();
+    throw error;
+  }
+  if (egress !== undefined) {
+    // Detached (POSIX), the child leads its own process group: the sandbox
+    // keeps the ended invocation's listener port while that group lives.
+    if (process.platform !== "win32" && child.pid !== undefined) egress.noteProcessGroup(child.pid);
+    // The token outlives neither the process nor a spawn that never started.
+    const running = child;
+    running.once("exit", () => egress.release());
+    running.once("error", () => { if (running.pid === undefined) egress.release(); });
+  }
   trackManagedChildProcess(child, { label: spec.label });
   if (relayRequest === undefined) {
     return { child, confinement, stdin: child.stdin, stdout: child.stdout };
@@ -392,7 +422,7 @@ function windowsRelayLaunch(spec: ConfinedChildSpec): {
 /**
  * The substrate ASRT wraps with on this platform. Asked only on the wrapped
  * path; a platform ASRT does not wrap on is an internal contract violation,
- * because `isAsrtSandboxActive()` reported a live sandbox there.
+ * because `isPluginWorkerConfinementActive()` reported a live sandbox there.
  */
 function wrapConfinement(label: string): Exclude<SpawnConfinement, "unconfined"> {
   switch (process.platform) {
@@ -420,8 +450,10 @@ async function resolveSpawnLine(
   wrappedEnv: NodeJS.ProcessEnv;
   confinement: SpawnConfinement;
   relayRequest?: RelayRequest;
+  egress?: EgressInvocation;
 }> {
-  if (!isAsrtSandboxActive()) {
+  assertExtensionStartAllowed();
+  if (!isPluginWorkerConfinementActive()) {
     return { executable: spec.command, args: [...spec.args], wrappedEnv: {}, confinement: "unconfined" };
   }
   const confinement = wrapConfinement(spec.label);
@@ -429,13 +461,23 @@ async function resolveSpawnLine(
   const temp = spec.grantMode === "allow-list" ? ensureSandboxTempPrincipalDir(requireTempPrincipal(spec)) : undefined;
   const launch = relay?.launch ?? (temp ? sandboxTempEnvLaunch(temp.dir, spec.command, spec.args) : spec);
   const { cmdline, binShell } = buildConfinedCommandLine(launch.command, launch.args, relay?.launch ?? spec);
-  const { argv, env } = await wrapWorkerCommand(cmdline, {
-    filesystem: buildFilesystemConfinement(spec, temp),
-    ...(binShell !== undefined ? { binShell } : {}),
-  });
+  const egress = openEgressInvocation(spec.egressOwner);
+  let argv: string[];
+  let env: NodeJS.ProcessEnv;
+  try {
+    ({ argv, env } = await wrapWorkerCommand(cmdline, {
+      filesystem: buildFilesystemConfinement(spec, temp),
+      ...(binShell !== undefined ? { binShell } : {}),
+      commandId: egress.token,
+    }));
+  } catch (error) {
+    egress.release();
+    throw error;
+  }
   spec.onWrapped?.();
   const [executable, ...args] = argv;
   if (executable === undefined) {
+    egress.release();
     throw new Error(`[confined-child] ASRT returned an empty argv for ${spec.label}`);
   }
   return {
@@ -443,6 +485,7 @@ async function resolveSpawnLine(
     args,
     wrappedEnv: env,
     confinement,
+    egress,
     ...(relay !== undefined ? { relayRequest: relay.request } : {}),
   };
 }

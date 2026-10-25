@@ -62,12 +62,13 @@ import { t } from "../../../i18n/runtime.js";
 import type { ActiveChatModel } from "../../../shared/active-chat-model.js";
 
 describe("renderer types are the owner types", () => {
-  it("AppSettings is the host settings minus the main-only a2aRemote block", () => {
+  it("AppSettings is the host settings minus the main-only a2aRemote block and the upstream proxy (own channels)", () => {
     expectTypeOf<AppSettings>().toEqualTypeOf<RendererSettingsSnapshot>();
     expectTypeOf<AppSettings>().toEqualTypeOf<
-      Omit<HostAppSettings, "a2aRemote"> & { readonly activeChatModel: ActiveChatModel }
+      Omit<HostAppSettings, "a2aRemote" | "upstreamProxy"> & { readonly activeChatModel: ActiveChatModel }
     >();
     expectTypeOf<"a2aRemote">().not.toMatchTypeOf<keyof AppSettings>();
+    expectTypeOf<"upstreamProxy">().not.toMatchTypeOf<keyof AppSettings>();
     expectTypeOf<MemoryCaptureMode>().toEqualTypeOf<HostMemoryCaptureMode>();
   });
 

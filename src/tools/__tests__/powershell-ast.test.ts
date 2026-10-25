@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -17,6 +17,15 @@ function check(summary: PowerShellAstSummary) {
 }
 
 describe("native PowerShell AST facts", () => {
+  it.skipIf(process.platform !== "win32")("refuses a content argument with ambiguous junction parents", () => {
+    const root = mkdtempSync(join(tmpdir(), "ave-ps-facts-")); roots.push(root);
+    const target = join(root, "a", "b");
+    mkdirSync(target, { recursive: true });
+    symlinkSync(target, join(root, "link"), "junction");
+    expect(findPowerShellAstPathViolation(command("Get-Content", [literal("link/../../ordinary.txt")]), root, root, [], true))
+      .toMatchObject({ kind: "invalid-path" });
+  });
+
   it("uses native literal values instead of re-expanding dollar or percent source", () => {
     const summary = command("Set-Content", [literal("$HOME/file.txt", "'$HOME/file.txt'"), literal("%CD%")]);
     expect(check(normalizePowerShellAstSummary(summary))).toBeNull();

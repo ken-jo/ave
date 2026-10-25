@@ -34,7 +34,9 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 });
 
 vi.mock("../asrt-sandbox.js", () => ({
+  assertExtensionStartAllowed: () => undefined,
   isAsrtSandboxActive: () => true,
+  isPluginWorkerConfinementActive: () => true,
   registerWorkerUnixSocketDir: async () => {},
   unregisterWorkerUnixSocketDir: async () => {},
   cleanupAsrtSandboxAfterCommand: async () => {},

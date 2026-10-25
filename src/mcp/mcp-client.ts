@@ -58,10 +58,12 @@ import {
   trackManagedChildProcess,
 } from "../main/managed-child-processes.js";
 import {
-  isAsrtSandboxActive,
+  isPluginWorkerConfinementActive,
+  assertExtensionStartAllowed,
   cleanupAsrtSandboxAfterCommand,
 } from "../permissions/asrt-sandbox.js";
 import { bundledWrappedEnv, spawnWindowsBundledProcess, wrapBundledCommand } from "../sandbox/wrap-bundled-command.js";
+import type { EgressInvocation } from "../permissions/egress-invocations.js";
 import type { Readable, Writable } from "node:stream";
 import { terminateChildProcess } from "../tools/terminate-child-process.js";
 import { createSandboxProcessHome } from "../permissions/sandbox-process-home.js";
@@ -2112,6 +2114,8 @@ class StdioTransport implements McpTransport {
   private asrtCleanupRan = false;
   private wrappedOwner: McpWrappedOwner | null = null;
   private sandboxHomeCleanup: (() => void) | null = null;
+  /** The macOS/Linux wrap's egress token; released with the ASRT cleanup. */
+  private egressInvocation: EgressInvocation | null = null;
   /**
    * Where requests are written and responses read: the process's own pipes,
    * or on Windows with the sandbox on the stdio relay's streams
@@ -2164,7 +2168,8 @@ class StdioTransport implements McpTransport {
     // hands the server to the host's stdio relay under a held ACL grant
     // (openWrappedWindows).
     // Gate OFF ⇒ the plain spawn below is UNCHANGED.
-    if (isAsrtSandboxActive()) {
+    assertExtensionStartAllowed();
+    if (isPluginWorkerConfinementActive()) {
       try {
         await this.openWrapped(spawnCommand, baseEnv);
         return;
@@ -2207,7 +2212,7 @@ class StdioTransport implements McpTransport {
    * ASRT's read model is deny-only, so a path not on the list stays
    * readable (the worker still needs cwd / its sandbox root / tmp). Network
    * egress is governed by the SHARED boot config (strict union allow-list), not
-   * per command. Only invoked when {@link isAsrtSandboxActive}.
+   * per command. Only invoked when {@link isPluginWorkerConfinementActive}.
    */
   private async openWrapped(
     spawnCommand: { command: string; args: string[] },
@@ -2231,7 +2236,7 @@ class StdioTransport implements McpTransport {
 
     let wrapped = false;
     try {
-      const { argv, env } = await wrapBundledCommand({
+      const { argv, env, egress } = await wrapBundledCommand({
         command: spawnCommand.command,
         args: spawnCommand.args,
         sandboxHome,
@@ -2240,8 +2245,10 @@ class StdioTransport implements McpTransport {
         // plugins root it is refused; a server of no plugin reads nothing there.
         ownPluginReads: this.config.bundledPayloadRoot ? [this.config.bundledPayloadRoot] : [],
         tempPrincipal: { kind: "mcp", id: this.config.id },
+        egressOwner: { kind: "worker", role: "mcp-server", pluginId: undefined, instanceId: this.config.id },
       });
       wrapped = true;
+      this.egressInvocation = egress;
 
       const [cmd, ...args] = argv;
       if (cmd === undefined) {
@@ -2258,11 +2265,20 @@ class StdioTransport implements McpTransport {
         stdio: ["pipe", "pipe", "pipe"],
         shell: false,
         windowsHide: true,
+        // Its own process session, as for every wrapped child
+        // (confined-child.ts): the sandbox's cross-session process-info deny.
+        // close() then signals the whole group. This path is POSIX-only: a
+        // Windows server returned to the srt-win path above, where
+        // `detached` would open a console instead.
+        detached: true,
         env: bundledWrappedEnv(baseEnv, env, { ...sandboxHome.env }),
         ...(this.config.cwd ? { cwd: this.config.cwd } : {}),
       });
 
       trackManagedChildProcess(this.process, { label: `mcp:${this.config.id}:asrt` });
+      // It leads its own process group: the sandbox keeps the ended
+      // invocation's listener port while anything in that group lives.
+      if (this.process.pid !== undefined) egress.noteProcessGroup(this.process.pid);
       this.processStdin = this.process.stdin;
       this.processStdout = this.process.stdout;
       this.setupProcessHandlers();
@@ -2272,6 +2288,8 @@ class StdioTransport implements McpTransport {
         this.cleanupSandboxHome();
       } else {
         if (wrapped) void cleanupAsrtSandboxAfterCommand();
+        this.egressInvocation?.release();
+        this.egressInvocation = null;
         sandboxHome.cleanup();
       }
       throw err;
@@ -2302,6 +2320,7 @@ class StdioTransport implements McpTransport {
       ...(this.config.cwd ? { cwd: this.config.cwd } : {}),
       allowRead: this.config.bundledPayloadRoot ? [this.config.bundledPayloadRoot] : [],
       allowWrite,
+      egressOwner: { kind: "worker", role: "mcp-server", pluginId: undefined, instanceId: this.config.id },
     });
     this.wrappedThroughAsrt = true;
     this.sandboxHomeCleanup = spawned.releaseHold;
@@ -2332,6 +2351,8 @@ class StdioTransport implements McpTransport {
       unmarkMcpServerWrapped(this.config.id, this.wrappedOwner);
       this.wrappedOwner = null;
     }
+    this.egressInvocation?.release();
+    this.egressInvocation = null;
     void cleanupAsrtSandboxAfterCommand();
   }
 
@@ -2362,6 +2383,8 @@ class StdioTransport implements McpTransport {
     // `this.process?.kill("SIGKILL")` as a no-op.
     const proc = this.process;
     const procStdin = this.processStdin;
+    // A wrapped server leads its own process group on POSIX (spawn above).
+    const wrappedGroup = this.wrappedThroughAsrt;
     this.process = null;
     this.processStdin = null;
     if (!proc) return;
@@ -2370,7 +2393,7 @@ class StdioTransport implements McpTransport {
     } catch {
       // A broken stdin must not suppress process termination below.
     }
-    const forceKillTimer = terminateChildProcess(proc, 3_000);
+    const forceKillTimer = terminateChildProcess(proc, 3_000, { processGroup: wrappedGroup });
     const clearForceKill = (): void => clearTimeout(forceKillTimer);
     proc.once("exit", clearForceKill);
     proc.once("close", clearForceKill);

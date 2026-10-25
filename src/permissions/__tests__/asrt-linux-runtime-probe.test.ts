@@ -9,6 +9,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
+import { useVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-privacy.js";
+
+useVerifiedAveHomePrivacy();
 
 const h = vi.hoisted(() => ({
   initialize: vi.fn(),
@@ -20,6 +23,7 @@ const h = vi.hoisted(() => ({
 
 vi.mock("@anthropic-ai/sandbox-runtime", () => ({
   SandboxManager: {
+    setParentProxyRouter: () => undefined,
     initialize: h.initialize,
     wrapWithSandboxArgv: h.wrapWithSandboxArgv,
     cleanupAfterCommand: h.cleanupAfterCommand,
@@ -29,6 +33,12 @@ vi.mock("@anthropic-ai/sandbox-runtime", () => ({
 
 vi.mock("node:child_process", () => ({
   spawn: h.spawn,
+}));
+
+vi.mock("../srt-win-integrity.js", () => ({
+  getSrtWinArchitecture: () => "x64",
+  prepareSrtWinExecutable: (source: string) => source,
+  srtWinPrivateDirectories: () => [],
 }));
 
 import {
@@ -122,6 +132,7 @@ describe("initializeAsrtSandbox — Linux configured-wrapper runtime probe", () 
         env: { ASRT_PROBE_ENV: "configured" },
         shell: false,
         stdio: "ignore",
+        windowsHide: true,
       },
     );
     const spawnedBwrapCommand = h.spawn.mock.calls[0]?.[1]?.[1];

@@ -21,6 +21,7 @@ import type {
   OnboardingProposalDisposition,
   PendingOnboardingProposal,
 } from "../main/onboarding-proposal-store.js";
+import type { EgressGrantNetwork } from "../shared/egress-grant-scopes.js";
 import { parseEnvForcedSettingsPaths } from "../shared/env-backed-settings.js";
 import { ipcUserKeyboardIntent } from "./gesture-intent.js";
 import { mcpApiSurface } from "./mcp-api-surface.js";
@@ -841,6 +842,31 @@ export function buildInternalApiSurface() {
     sandboxCapability: async () => ipcRenderer.invoke(PERMISSIONS.sandboxCapability),
     /** Read-only: Windows srt-win install readiness (group + WFP + instructions). */
     sandboxWindowsStatus: async () => ipcRenderer.invoke(PERMISSIONS.sandboxWindowsStatus),
+    /** Read-only: the ASRT proxy denies of the last 24 h, newest first. */
+    egressDenialsRecent: async () => ipcRenderer.invoke(PERMISSIONS.egressDenialsRecent),
+    /** Read-only: the shell egress grants for a conversation, a terminal tab, a workspace or always. */
+    egressGrantsList: async () => ipcRenderer.invoke(PERMISSIONS.egressGrantsList),
+    /** MUTATING: revoke one shell egress grant (user-keyboard intent attached). */
+    egressGrantRevoke: async (grant: {
+      network?: EgressGrantNetwork;
+      scope: "conversation" | "tab" | "workspace" | "always";
+      host: string;
+      port: number;
+      origin?: "shell" | "terminal";
+      workspaceRoot?: string;
+      sessionId?: string;
+      tabId?: string;
+    }) => ipcRenderer.invoke(PERMISSIONS.egressGrantRevoke, { ...grant, intent: ipcUserKeyboardIntent() }),
+    /** Read-only: the upstream proxy setting, whether credentials are stored, and the effective upstream. */
+    upstreamProxyGet: async () => ipcRenderer.invoke(PERMISSIONS.upstreamProxyGet),
+    /** MUTATING: change the upstream proxy setting (user-gesture intent attached). */
+    upstreamProxySet: async (patch: {
+      mode?: "off" | "system" | "manual";
+      manualUrl?: string;
+      bypass?: string;
+      resolvesNames?: boolean;
+      clearCredentials?: boolean;
+    }) => ipcRenderer.invoke(PERMISSIONS.upstreamProxySet, { ...patch, intent: ipcUserKeyboardIntent() }),
     /**
      * MUTATING: trigger the one-time Windows srt-win install (one self-elevating
      * UAC prompt). The ONLY user-consented privilege-escalation entry point —
@@ -849,6 +875,8 @@ export function buildInternalApiSurface() {
      */
     sandboxWindowsInstall: async () =>
       ipcRenderer.invoke(PERMISSIONS.sandboxWindowsInstall, { intent: ipcUserKeyboardIntent() }),
+    approveExtensionsWithoutIsolation: async () =>
+      ipcRenderer.invoke(PERMISSIONS.approveExtensionsWithoutIsolation, { intent: ipcUserKeyboardIntent() }),
     listRules: async () => ipcRenderer.invoke(PERMISSIONS.listRules),
     addRule: async (pattern: string, action: string) =>
       ipcRenderer.invoke(PERMISSIONS.addRule, { pattern, action, intent: ipcUserKeyboardIntent() }),

@@ -1,3 +1,4 @@
+import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
 /**
  * The boot migration that gives a plugin root its host-only `storage/`.
  *
@@ -173,9 +174,6 @@ describe("migratePluginHostStorage — what is copied", () => {
   it("skips what storage could never have written, and reports each", async () => {
     const data = dataOf("p");
     writeFileSync(join(data, "kept.json"), "{}");
-    // A link to a file and a link to a directory, both pointing outside.
-    symlinkSync(join(outside, "secret.txt"), join(data, "file-link"), "file");
-    symlinkSync(outside, join(data, "dir-link"), dirLinkType);
     // A second name for an inode the plugin may not own.
     writeFileSync(join(scratch, "elsewhere.txt"), "not the plugin's");
     linkSync(join(scratch, "elsewhere.txt"), join(data, "hard-link"));
@@ -184,18 +182,28 @@ describe("migratePluginHostStorage — what is copied", () => {
     truncateSync(join(data, "index.bin"), 8 * 1024 * 1024 + 1);
     if (posix) execFileSync("mkfifo", [join(data, "fifo")]);
 
+    const result = await migratePluginHostStorage(pluginsRoot);
+
+    expect(result.failed).toEqual([]);
+    expect(result.migrated).toEqual([join(pluginsRoot, "p")]);
+    expect(Object.fromEntries(result.skipped.map(({ path, reason }) => [path.slice(data.length + 1).split(sep).join("/"), reason]))).toEqual({
+      "hard-link": "hard-linked",
+      "index.bin": "larger than 8 MiB",
+      ...(posix ? { fifo: "not a regular file" } : {}),
+    });
+    expect(readdirSync(storageOf("p"))).toEqual(["kept.json"]);
+    expect(readdirSync(outside)).toEqual(["secret.txt"]);
+  });
+
+  it.skipIf(!canCreateSymlinks())("skips file and directory links without reading outside bytes", async () => {
+    const data = dataOf("p");
+    writeFileSync(join(data, "kept.json"), "{}");
+    symlinkSync(join(outside, "secret.txt"), join(data, "file-link"), "file");
+    symlinkSync(outside, join(data, "dir-link"), dirLinkType);
     try {
       const result = await migratePluginHostStorage(pluginsRoot);
-
       expect(result.failed).toEqual([]);
-      expect(result.migrated).toEqual([join(pluginsRoot, "p")]);
-      expect(Object.fromEntries(result.skipped.map(({ path, reason }) => [path.slice(data.length + 1).split(sep).join("/"), reason]))).toEqual({
-        "file-link": "a link",
-        "dir-link": "a link",
-        "hard-link": "hard-linked",
-        "index.bin": "larger than 8 MiB",
-        ...(posix ? { fifo: "not a regular file" } : {}),
-      });
+      expect(result.skipped.map(({ reason }) => reason)).toEqual(["a link", "a link"]);
       expect(readdirSync(storageOf("p"))).toEqual(["kept.json"]);
       expect(readdirSync(outside)).toEqual(["secret.txt"]);
     } finally {

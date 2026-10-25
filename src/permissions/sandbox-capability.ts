@@ -36,6 +36,7 @@ import type { ToolCategory, ToolSource } from "../tools/types.js";
 import type {
   SandboxBootOutcome,
   SandboxConfinement,
+  SandboxWindowsSubstrateInfo,
 } from "../shared/sandbox-capability-info.js";
 import {
   buildHostShellExecutionPlan,
@@ -167,8 +168,11 @@ export function isDisposableSubstrateCapability(
  */
 let _activeCapability: SandboxCapability | undefined;
 let _sandboxGeneration = 0;
-let _sandboxRequestedAtBoot = false;
+let _shellSandboxRequestedAtBoot = false;
+let _pluginWorkerConfinementRequestedAtBoot = false;
 let _bootOutcome: SandboxBootOutcome | null = null;
+let _windowsSubstrate: SandboxWindowsSubstrateInfo | null = null;
+let _mxcShellCapability: SandboxCapability | undefined;
 const _issuedHostShellExecutionPlans = new WeakMap<HostShellExecutionPlan, string>();
 
 /** Monotonic identity for capability and wrapped-worker membership changes. */
@@ -187,21 +191,43 @@ export function setActiveSandboxCapability(cap: SandboxCapability): void {
   _sandboxGeneration += 1;
 }
 /**
- * Publish the one boot-time sandbox intent snapshot. This is deliberately
- * independent from the live active capability: requested-on-but-degraded and
- * explicit-off both have kind="none", yet Windows Plan B must distinguish them
- * without re-reading mutable renderer settings.
+ * Publish the boot-time SHELL sandbox intent (`features.osToolSandbox` /
+ * `AVE_SANDBOX_ENABLED=1`). This is deliberately independent from the live
+ * active capability: requested-on-but-degraded and explicit-off both have
+ * kind="none", yet the host-shell plan must distinguish them without
+ * re-reading mutable renderer settings. It is also what scopes the published
+ * ASRT capability to shells: with it off, ASRT may still be active for plugin
+ * workers, and {@link detectShellSandboxCapability} reports `none`.
  *
  * @internal — only the boot-time sandbox init path and tests should call this.
  */
-export function setSandboxRequestedAtBoot(requested: boolean): void {
-  if (_sandboxRequestedAtBoot !== requested) _sandboxGeneration += 1;
-  _sandboxRequestedAtBoot = requested;
+export function setShellSandboxRequestedAtBoot(requested: boolean): void {
+  if (_shellSandboxRequestedAtBoot !== requested) _sandboxGeneration += 1;
+  _shellSandboxRequestedAtBoot = requested;
 }
 
-/** True only when the sandbox was requested for this process at boot. */
-export function isSandboxRequestedAtBoot(): boolean {
-  return _sandboxRequestedAtBoot;
+/** True only when the shell sandbox was requested for this process at boot. */
+export function isShellSandboxRequestedAtBoot(): boolean {
+  return _shellSandboxRequestedAtBoot;
+}
+
+/**
+ * Publish the boot-time PLUGIN-WORKER confinement intent
+ * (`features.pluginWorkerConfinement` / `AVE_PLUGIN_WORKER_CONFINEMENT=1`).
+ * Sealed once per process like the shell intent, so a worker spawn never
+ * re-reads the mutable setting; `isPluginWorkerConfinementActive` in
+ * asrt-sandbox.ts combines it with the live ASRT state.
+ *
+ * @internal — only the boot-time sandbox init path and tests should call this.
+ */
+export function setPluginWorkerConfinementRequestedAtBoot(requested: boolean): void {
+  if (_pluginWorkerConfinementRequestedAtBoot !== requested) _sandboxGeneration += 1;
+  _pluginWorkerConfinementRequestedAtBoot = requested;
+}
+
+/** True only when plugin-worker confinement was requested for this process at boot. */
+export function isPluginWorkerConfinementRequestedAtBoot(): boolean {
+  return _pluginWorkerConfinementRequestedAtBoot;
 }
 
 /**
@@ -215,6 +241,7 @@ export function setSandboxBootOutcome(outcome: SandboxBootOutcome): void {
   _bootOutcome = Object.freeze({
     ...outcome,
     dependencyErrors: Object.freeze([...outcome.dependencyErrors]),
+    causes: Object.freeze([...outcome.causes]),
   });
 }
 
@@ -233,10 +260,61 @@ export function __resetSandboxBootOutcomeForTest(): void {
   _bootOutcome = null;
 }
 
+/**
+ * Record which substrate carries Windows shells and extensions this boot
+ * (`sandbox-init.ts`), and — when MXC carries the agent shells — the
+ * capability their host-shell plans get. That capability is published here and
+ * NOT through {@link setActiveSandboxCapability}: it describes one launch path
+ * (Bash/PowerShell tool commands in an MXC container), not the process-wide
+ * runtime, so the workspace terminal and the plugin surfaces, which read the
+ * process-wide capability, never inherit it.
+ *
+ * @internal — only the boot-time sandbox init path and tests should call this.
+ */
+export function setWindowsSandboxSubstrate(
+  info: SandboxWindowsSubstrateInfo,
+  mxcShellCapability?: SandboxCapability,
+): void {
+  if (info.shells === "mxc" && mxcShellCapability === undefined) {
+    throw new Error("setWindowsSandboxSubstrate: shells run in MXC but no MXC shell capability was given");
+  }
+  if (info.shells !== "mxc" && mxcShellCapability !== undefined) {
+    throw new Error("setWindowsSandboxSubstrate: an MXC shell capability needs shells: \"mxc\"");
+  }
+  _windowsSubstrate = Object.freeze({ ...info, mxc: Object.freeze({ ...info.mxc }) });
+  _mxcShellCapability = mxcShellCapability === undefined ? undefined : Object.freeze({ ...mxcShellCapability });
+  _sandboxGeneration += 1;
+}
+
+/** What boot recorded for Windows, or null (off Windows, or before the gate ran). */
+export function getWindowsSandboxSubstrate(): SandboxWindowsSubstrateInfo | null {
+  return _windowsSubstrate;
+}
+
+/**
+ * The capability of a Bash/PowerShell tool command launched in an MXC
+ * container, or undefined when that route is not live: MXC carries the shells
+ * this boot, the shell sandbox was requested, and the process-wide ASRT
+ * runtime (whose proxy the containers reach) is still published.
+ */
+export function detectMxcShellCapability(): SandboxCapability | undefined {
+  if (_mxcShellCapability === undefined || !_shellSandboxRequestedAtBoot) return undefined;
+  if (_activeCapability?.kind !== "asrt") return undefined;
+  return _mxcShellCapability;
+}
+
+/** @internal — test teardown only. */
+export function __resetWindowsSandboxSubstrateForTest(): void {
+  if (_windowsSubstrate !== null || _mxcShellCapability !== undefined) _sandboxGeneration += 1;
+  _windowsSubstrate = null;
+  _mxcShellCapability = undefined;
+}
+
 /** @internal — test teardown only. */
 export function __resetSandboxRequestedAtBootForTest(): void {
-  if (_sandboxRequestedAtBoot) _sandboxGeneration += 1;
-  _sandboxRequestedAtBoot = false;
+  if (_shellSandboxRequestedAtBoot || _pluginWorkerConfinementRequestedAtBoot) _sandboxGeneration += 1;
+  _shellSandboxRequestedAtBoot = false;
+  _pluginWorkerConfinementRequestedAtBoot = false;
 }
 
 
@@ -250,14 +328,17 @@ export function __resetActiveSandboxCapabilityForTest(): void {
 }
 
 /**
- * Detect the OS execution sandbox available to spawned shell commands.
+ * Detect the OS sandbox ASRT provides in this process.
  *
  * Returns the capability stored by {@link setActiveSandboxCapability} when the
  * ASRT sandbox path was initialized at boot. Falls back to kind="none" when no
  * sandbox is active (the gate is DEFAULT-OFF; isolation=none).
  *
- * This is the single SOT the reviewer and UI consult — all callers automatically
- * see the correct kind once ASRT is active without re-probing the OS.
+ * ASRT activates when EITHER the shell sandbox or plugin-worker confinement was
+ * requested, so this describes what a WRAPPED process gets, not that a given
+ * substrate is wrapped. Host shells read {@link detectShellSandboxCapability};
+ * a worker, plugin child or MCP server reports this only when its own wrapped
+ * registry says it was wrapped ({@link resolveReviewerSandboxCapability}).
  */
 export function detectSandboxCapability(): SandboxCapability {
   if (_activeCapability) {
@@ -270,6 +351,52 @@ export function detectSandboxCapability(): SandboxCapability {
     reason: "no OS sandbox configured for the host process",
   };
 }
+
+/**
+ * The OS sandbox host shells (bash / powershell tools, the workspace terminal)
+ * get: the ASRT capability when the shell sandbox was requested at boot, and
+ * `none` otherwise — including when ASRT is active only because plugin-worker
+ * confinement is on, since no shell is wrapped then.
+ */
+export function detectShellSandboxCapability(): SandboxCapability {
+  if (_shellSandboxRequestedAtBoot) return detectSandboxCapability();
+  return {
+    kind: "none",
+    confidence: "verified",
+    platform: process.platform,
+    reason: "shell sandbox not requested at boot (features.osToolSandbox off)",
+  };
+}
+/**
+ * The OS sandbox extension processes (plugin workers, plugin children, plugin
+ * hooks, MCP stdio servers) get when wrapped: the ASRT capability when
+ * plugin-worker confinement was requested at boot, `none` otherwise —
+ * including when ASRT is active only for the shell sandbox. A per-process
+ * claim still needs that process's wrapped registry
+ * ({@link resolveReviewerSandboxCapability}); this is the scope-level view the
+ * settings surface reports.
+ */
+export function detectPluginWorkerSandboxCapability(): SandboxCapability {
+  if (_pluginWorkerConfinementRequestedAtBoot && _windowsSubstrate?.extensions === "none" && _activeCapability !== undefined) {
+    // Windows with ASRT running as the MXC shells' proxy only: there is no
+    // substrate that confines plugin processes this boot.
+    return {
+      kind: "none",
+      confidence: "verified",
+      platform: process.platform,
+      reason:
+        "extension confinement needs the one-time Windows sandbox install (srt-win); " +
+        "Microsoft Execution Containers confine agent shells only",
+    };
+  }
+  if (_pluginWorkerConfinementRequestedAtBoot) return detectSandboxCapability();
+  return {
+    kind: "none",
+    confidence: "verified",
+    platform: process.platform,
+    reason: "extension confinement not requested at boot (features.pluginWorkerConfinement off)",
+  };
+}
 /**
  * Resolve the boot-sealed execution plan for builtin host shell tools.
  * It is intentionally separate from detectSandboxCapability(): Windows Plan B
@@ -278,10 +405,12 @@ export function detectSandboxCapability(): SandboxCapability {
  */
 export function getHostShellExecutionPlan(executionMode: HostShellExecutionRequest = "default"): HostShellExecutionPlan {
   const generation = getSandboxGeneration();
+  const mxc = detectMxcShellCapability();
   const plan = buildHostShellExecutionPlan({
     platform: process.platform,
-    requestedSandbox: isSandboxRequestedAtBoot(),
-    activeCapability: detectSandboxCapability(),
+    requestedSandbox: isShellSandboxRequestedAtBoot(),
+    activeCapability: mxc ?? detectShellSandboxCapability(),
+    shellSubstrate: mxc === undefined ? "asrt" : "mxc",
     executionMode,
   });
   _issuedHostShellExecutionPlans.set(plan, generation);
@@ -913,7 +1042,7 @@ export function isWeakSandbox(cap: SandboxCapability): boolean {
  * Behaviour invariant: a full-confine ASRT relaxes ALL categories, matching the
  * historical `isWeakSandbox(cap) === false` behavior. A partial-confine ASRT
  * relaxes only the categories covered by its declared dimensions. This actively
- * applies on Windows ASRT 0.0.76 (`filesystem + network`, no process): network
+ * applies on Windows ASRT 0.0.80 (`filesystem + network`, no process): network
  * and filesystem-bearing read/write/meta calls may relax, but shell calls may
  * not relax because process isolation is absent.
  */
@@ -946,8 +1075,8 @@ export function sandboxRelaxesCategory(
  * is partial, but this generic signal only describes the host shell substrate;
  * plugin workers need the narrower per-worker/plugin provider below.
  *
- * Reads the SAME active capability the reviewer lane consults
- * ({@link detectSandboxCapability}) and applies the SAME filesystem-confinement
+ * Reads the host-shell view of the active capability
+ * ({@link detectShellSandboxCapability}) and applies the SAME filesystem-confinement
  * truth {@link sandboxRelaxesCategory} uses for filesystem-bearing categories
  * (`confines.filesystem === true`):
  *   - macOS / Linux ASRT (full-confine)           → true
@@ -960,7 +1089,7 @@ export function sandboxRelaxesCategory(
  * built-ins into a renderer bundle.
  */
 export function isActiveSandboxFilesystemContained(): boolean {
-  return detectSandboxCapability().confines?.filesystem === true;
+  return detectShellSandboxCapability().confines?.filesystem === true;
 }
 
 /**
@@ -970,7 +1099,7 @@ export function isActiveSandboxFilesystemContained(): boolean {
  * AND process confinement must both be true.
  */
 export function isActiveSandboxShellContained(): boolean {
-  return sandboxRelaxesCategory(detectSandboxCapability(), "shell");
+  return sandboxRelaxesCategory(detectShellSandboxCapability(), "shell");
 }
 
 export interface PluginEffectContainmentLookup {

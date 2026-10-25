@@ -1233,6 +1233,9 @@ describe("main-owned settings fields on ave:settings:update", () => {
   it.each([
     ["a2aRemote", "a2a-remote-settings-main-owned"],
     ["appliedMigrations", "applied-migrations-main-owned"],
+    // Where sandbox egress goes next: only the permissions upstreamProxySet
+    // channel (validated, credentials to the secret store) writes it.
+    ["upstreamProxy", "upstream-proxy-settings-main-owned"],
   ])("refuses a patch that names %s and writes nothing", async (field, error) => {
     const deps = makeDeps([makeWindow()]);
     const { registerSettingsHandlers } = await import("../settings.js");
@@ -1259,4 +1262,20 @@ describe("the server marketplace's theme and language lists", () => {
       expect(deps.settingsService.patch).not.toHaveBeenCalled();
     },
   );
+});
+
+describe("the renderer settings snapshot", () => {
+  it("leaves out the upstream proxy, which crosses only through its own permissions channels", async () => {
+    const deps = makeDeps([makeWindow()]);
+    deps.settingsService.getAll.mockReturnValue({
+      llm: { provider: "openai" },
+      upstreamProxy: { mode: "manual", manualUrl: "http://proxy.test:3128", bypass: "", resolvesNames: true },
+    } as never);
+    const { registerSettingsHandlers } = await import("../settings.js");
+    registerSettingsHandlers(deps as never);
+
+    const snapshot = await invoke("ave:settings:get") as Record<string, unknown>;
+
+    expect(snapshot).toEqual({ llm: { provider: "openai" }, activeChatModel: NO_CONNECTED_PROVIDER });
+  });
 });

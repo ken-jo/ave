@@ -563,8 +563,12 @@ vi.mock("../../permissions/sandbox-capability.js", () => ({
   isActiveSandboxShellContained: vi.fn(() => false),
   isActiveSandboxFilesystemContainedForPluginEffects: vi.fn(() => false),
   setActiveSandboxCapability: vi.fn(),
-  setSandboxRequestedAtBoot: vi.fn(),
+  setShellSandboxRequestedAtBoot: vi.fn(),
+  setPluginWorkerConfinementRequestedAtBoot: vi.fn(),
   setSandboxBootOutcome: vi.fn(),
+  setWindowsSandboxSubstrate: vi.fn(),
+  getWindowsSandboxSubstrate: vi.fn(() => null),
+  detectSandboxCapability: vi.fn(() => ({ kind: "none", confidence: "verified" })),
 }));
 vi.mock("../../permissions/asrt-sandbox.js", async () => {
   // The boot step sweeps both private roots and creates the HOME root, so they
@@ -583,12 +587,12 @@ vi.mock("../../permissions/asrt-sandbox.js", async () => {
       return root;
     },
     initializeAsrtSandbox: vi.fn(async () => {}),
+    subscribeAsrtViolations: vi.fn(async () => () => {}),
     useAppOwnedSandboxTempRoot: vi.fn(() => "/tmp/ave-test-sandbox-tmp"),
     checkAsrtDependencies: vi.fn(async () => ({ errors: [], warnings: [] })),
     isAsrtLinuxRuntimeProbeError: vi.fn(() => false),
+    closeAllEgressConnections: vi.fn(() => 0),
     isAsrtSandboxActive: vi.fn(() => false),
-    updateAsrtSandboxConfig: vi.fn(async () => {}),
-    computeUnionAllowedDomains: vi.fn(() => []),
     normalizeUnionForAsrt: vi.fn(() => []),
     computeDynamicEndpointHosts: vi.fn(() => []),
   };

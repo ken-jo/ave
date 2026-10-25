@@ -21,6 +21,7 @@ import {
   type PluginConfigRecord,
 } from "../shared/plugin-config.js";
 import type { AlertSettings, RetiredPluginConfigRecord } from "../shared/alerts-types.js";
+import type { UpstreamProxySettings } from "../shared/upstream-proxy.js";
 import {
   isMarketplaceEligibleLLMVendor,
   activeLlmRouteModel,
@@ -86,6 +87,7 @@ import {
   normalizeAppearance,
   normalizeChat,
   normalizeDiagnostics,
+  normalizeUpstreamProxy,
   normalizeFeatureFlags,
   normalizeMarketplace,
   normalizeProjectRootList,
@@ -269,6 +271,27 @@ const KNOWN_MIGRATIONS: readonly string[] = [
   MARKETPLACE_SERVER_SETTINGS_REMOVED_MIGRATION,
   BUILT_IN_DEFAULT_MODELS_CLEARED_MIGRATION,
 ];
+
+/**
+ * The split of the single OS sandbox setting into the shell sandbox
+ * (`osToolSandbox`) and plugin-worker confinement (`pluginWorkerConfinement`):
+ * before it, `osToolSandbox` also decided worker confinement. A stored file
+ * without a boolean `pluginWorkerConfinement` was last written by a build that
+ * predates the split, so its worker value is derived from the STORED
+ * `osToolSandbox` — an opt-in keeps workers confined, anything else (absent or
+ * not `true`) was not an opt-in and leaves them unconfined, whatever the shell
+ * default later becomes. A boolean already on disk is the user's and is kept.
+ *
+ * Applied on every load rather than once behind an `appliedMigrations` marker:
+ * every build since the split writes the boolean, so its absence always means
+ * an older build wrote the file — including a downgrade that kept a marker but
+ * dropped the unknown key on save, which a marker would have misread as "the
+ * user turned worker confinement off".
+ */
+function withPluginWorkerConfinementSplit(features: FeatureFlags): { features: FeatureFlags; changed: boolean } {
+  if (typeof features.pluginWorkerConfinement === "boolean") return { features, changed: false };
+  return { features: { ...features, pluginWorkerConfinement: features.osToolSandbox === true }, changed: true };
+}
 
 function withoutBuiltInDefaultModels(llm: LLMSettings): LLMSettings {
   const vendors = { ...llm.vendors };
@@ -682,14 +705,15 @@ export interface FeatureFlags {
    */
   hostClassifiesRisk?: boolean;
   /**
-   * OS tool sandbox — when `true` (and the platform is supported), shell and
-   * tool spawns are confined by the Anthropic Sandbox Runtime (ASRT; macOS
-   * Seatbelt / Linux bwrap backends). STAGED default (macOS-first): ships `true`
-   * on `darwin` and `false` on `linux`/`win32` (opt-in via Settings) until the
-   * C/D-series sandbox QA is green, after which the Linux/Windows default flips
-   * to `true`. See DEFAULT_SETTINGS for the convergence plan.
+   * Shell sandbox — when `true` (and the platform is supported), the host's
+   * shell tool spawns (bash / powershell) and the workspace terminal are
+   * confined by the Anthropic Sandbox Runtime (ASRT; macOS Seatbelt / Linux
+   * bwrap backends). It governs host shells ONLY: plugin workers, plugin
+   * children, plugin hooks and MCP stdio servers follow
+   * {@link pluginWorkerConfinement}. Off by default on every platform; see
+   * DEFAULT_SETTINGS for the decision.
    *
-   * Because the default is ON (on macOS), the boot gate distinguishes how the ON-signal
+   * The boot gate distinguishes how the ON-signal
    * arrived (see boot.ts + boot/steps/sandbox-gate.ts): the DEFAULT/settings-on
    * path degrades GRACEFULLY (loud warning, unsandboxed, non-bricking) when the
    * sandbox cannot activate, whereas the EXPLICIT `AVE_SANDBOX_ENABLED=1` env
@@ -715,6 +739,29 @@ export interface FeatureFlags {
    * user-discoverable control.
    */
   osToolSandbox?: boolean;
+  /**
+   * Plugin-worker confinement — when `true`, the processes extensions run
+   * (plugin workers, out-of-process plugin children, plugin script hooks and
+   * external MCP stdio servers) are spawned under ASRT. Separate from
+   * {@link osToolSandbox} so that turning the shell sandbox on does not by
+   * itself confine workers whose manifests under-declare their network
+   * domains. Off by default; `loadSettings` derives it from a stored
+   * `osToolSandbox: true` whenever a file lacks this boolean (one written by a
+   * build that predates the split), so an existing opt-in stays on for both.
+   *
+   * `AVE_PLUGIN_WORKER_CONFINEMENT=1` is this setting's environment override
+   * and, like `AVE_SANDBOX_ENABLED=1` for the shell sandbox, the explicit
+   * fail-closed signal.
+   */
+  pluginWorkerConfinement?: boolean;
+  /**
+   * Shell egress asks (proxy-egress PR 4): when a sandboxed Bash or
+   * PowerShell call connects to a host no grant covers, ask the person on the
+   * approval dock (Allow once / This conversation / This workspace / Always,
+   * or Deny once). Off: such connections are denied without asking; granted
+   * hosts still work and plugin workers are unaffected. On by default.
+   */
+  shellEgressAsk?: boolean;
 }
 
 /**
@@ -746,6 +793,13 @@ export interface AppSettings {
   updates: UpdateSettings;
   telemetry: TelemetrySettings;
   audit: AuditSettings;
+  /**
+   * Where the sandbox egress proxy sends allowed connections next. Main-owned:
+   * written only through the permissions `upstreamProxySet` channel (host
+   * renderer only) via `set`, never through `patch()`, and left out of the
+   * renderer snapshot. See `src/shared/upstream-proxy.ts`.
+   */
+  upstreamProxy: UpstreamProxySettings;
   /** §E2 (#1499) — diagnostics bundle + log retention. */
   diagnostics: DiagnosticsSettings;
   /** Visual theme and UI preferences. */
@@ -1491,7 +1545,7 @@ export class SettingsService {
     partial: Partial<Omit<
       AppSettings,
       | "llm" | "chat" | "marketplace" | "shortcuts" | "telemetry" | "appliedMigrations"
-      | "alerts" | "retiredPluginConfigs"
+      | "alerts" | "retiredPluginConfigs" | "upstreamProxy"
     >> & {
       marketplace?: Partial<MarketplaceSettings>;
       llm?: LLMSettingsPatch;
@@ -2336,12 +2390,21 @@ export class SettingsService {
       // this migration ran is a real opt-out and sticks, because the marker
       // suppresses any re-run. Remove this block (and the marker constant)
       // once no pre-flip installs remain — target 2026-10.
-      const normalizedFeatures = normalizeFeatureFlags(parsed.features);
+      let normalizedFeatures = normalizeFeatureFlags(parsed.features);
       if (!appliedMigrations.includes(SUBAGENT_WAKE_DEFAULT_FLIP_MIGRATION)) {
         if (normalizedFeatures.subAgentAutonomousWake === false) {
           delete normalizedFeatures.subAgentAutonomousWake;
         }
         appliedMigrations.push(SUBAGENT_WAKE_DEFAULT_FLIP_MIGRATION);
+        migrationWriteBack = true;
+      }
+
+      // The sandbox split: `osToolSandbox` used to confine shells AND workers.
+      // Written back, so the worker side of an existing opt-in is the user's
+      // own value from here on and a later shell default flip cannot reach it.
+      const split = withPluginWorkerConfinementSplit(normalizedFeatures);
+      if (split.changed) {
+        normalizedFeatures = split.features;
         migrationWriteBack = true;
       }
 
@@ -2389,6 +2452,7 @@ export class SettingsService {
         updates: { ...DEFAULT_SETTINGS.updates, ...parsed.updates },
         telemetry: normalizeTelemetry(parsed.telemetry),
         audit: { ...DEFAULT_SETTINGS.audit, ...parsed.audit },
+        upstreamProxy: normalizeUpstreamProxy(parsed.upstreamProxy),
         diagnostics: normalizeDiagnostics(parsed.diagnostics),
         appearance,
         webView: normalizeWebView(parsed.webView),

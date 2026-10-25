@@ -508,18 +508,60 @@ Bash and PowerShell accept `executionMode: "default" | "host"` and an optional
 requires a nonblank justification and foreground execution. The host selects
 the final plan after input hooks and before environment capture and path
 analysis. Outside an operator-attested guest, host mode selects plain execution
-without OS confinement and requires a fresh exact-action `allow-once`, including
-in allow mode or when sandboxing was already disabled. Sensitive-path,
-directory, command and dynamic-syntax checks remain mandatory on that route.
+without OS confinement. Following the reference hosts (Claude Code, Codex), a
+user allow rule that matches the command approves it without a prompt;
+otherwise it requires a fresh exact-action `allow-once`, including in allow mode
+or when sandboxing was already disabled. Deny rules still deny, and the shell
+floor (credential paths and the sink catalogue) and ask rules still force the
+per-call modal over any allow rule. Sensitive-path, directory, command and
+dynamic-syntax checks remain mandatory on that route.
 
-Only a response from the verified local desktop renderer can authorize this
-explicit request. The approval displays the exact command, cwd and justification
-and states that the command runs once as the current user without the OS sandbox.
-Headless and remote-controller requests are denied before approval. Automatic,
-remembered, plugin, platform and parent-agent decisions cannot authorize host
-mode. The signed approval receipt binds the final action; an opaque permit is
-consumed once before spawn. Changed commands, cwd, plans or request fields and
-replayed permits fail closed. The parser and plan in
+Without a matching allow rule, only a response from the verified local desktop
+renderer can authorize this explicit request. The approval displays the exact
+command, cwd and justification and states that the command runs once as the
+current user without the OS sandbox. Headless and remote-controller requests are
+denied before approval or rule evaluation. Automatic, remembered, allow-mode,
+plugin, platform and parent-agent decisions cannot authorize host mode. The
+opaque permit is minted from one of two host-issued, action-bound proofs — the
+signed approval receipt, or the PermissionManager's own layer-3 allow-rule
+decision for the same command and resolved cwd — and is consumed once before
+spawn. Changed commands, cwd, plans or request fields and replayed permits or
+rule decisions fail closed.
+
+An allow-rule proof is issued only for an explicit host execution plan. It
+belongs to the issuing PermissionManager and its policy epoch, including the
+project-rule revision. Rule, mode and relevant settings changes revoke
+outstanding proofs and permits. The proof also captures the cwd's physical
+realpath, device and inode during evaluation. Both proof consumption and the
+permit check immediately before spawn require the same policy epoch and physical
+directory. The checks also re-read hashes of the persisted user and relevant
+project rule stores; another writer's change or a read error revokes authority
+without requiring a cache reload. A changed identity or version rejects
+execution with an error. Rejected authority requires normal authorization again.
+
+Persisted policy mutations in this host and the final execution grant share a
+serial queue: a queued deny is durable before validation can grant the waiting
+child. Final validation and the grant run synchronously. Uncoordinated external
+edits that land after final validation are honoured from the next command.
+
+Permit-bearing shells spawn with the bound physical realpath. On macOS and
+Linux, a host-authored prelude checks the child's physical cwd and device/inode
+before the user command, then waits for the host's final policy grant on a
+private pipe. The prelude reports guard failure through that pipe and closes it
+before user code runs. The host maps guard failure to the revocation error;
+ordinary command output and exit status, including 197, remain intact. Native
+Windows shell routes use the physical spawn path but lack a child-side identity
+check; directory rename/replacement after the host check remains a limitation
+on that platform. Their final policy validation and native spawn share the same
+serial queue.
+
+A sandbox that is requested but unavailable (missing `bwrap` or `socat`, or a
+start failure) is not a one-shot route. The shell runs as a plain child under
+the normal rules, exactly like sandbox-off, while its plan keeps
+`fallbackReason: "requested-sandbox-unavailable"`: the approval card, the
+model's shell-environment description and the tool result say the sandbox is
+unavailable. The Windows partial-ASRT plan (`windows-partial-shell-acl-unsafe`)
+keeps its allow-once permit until its own routing change. The parser and plan in
 [host-shell-execution-plan.ts](../../src/permissions/host-shell-execution-plan.ts),
 the [approval gate](../../src/permissions/approval-gate.ts) and
 [execution permit](../../src/permissions/host-shell-execution-permit.ts) own this
@@ -831,12 +873,26 @@ Typing is a fixed protocol (pty-manager `typeLineAtPrompt`):
    resend checks unchanged user-input generation, foreground shell identity,
    absence of shell children, and the approved directory with the OS. A user
    keystroke aborts immediately, even if the shell redraws its prompt. The OS
-   check runs again immediately before pasting.
+   check runs again immediately before pasting. Query the shell's actual
+   editable buffer through the integration-owned Ctrl-X Ctrl-V binding and
+   require an authenticated empty-buffer acknowledgement for this prompt.
+   The prompt must attest the owned binding and original handler; otherwise
+   refuse without sending the query. Bash also verifies the active standard
+   emacs keymap and reinstalls this reserved key before attesting it, because
+   its command-binding registry can retain an entry after a keymap file
+   replaces the actual key. A replaced handler or same-name alias is refused.
 5. Paste the line between bracketed-paste markers, without Enter.
 6. Wait until the line editor's echo of its edit line (wrapping removed) is
-   exactly the approved line, with no key from the user since the prompt. Only
-   then press Enter. Otherwise write Ctrl-C to clear the line and refuse
-   (`edit-line-mismatch`).
+   exactly the approved line, then query the actual editable buffer again.
+   Enter requires a fresh authenticated acknowledgement containing exactly
+   the approved line, unchanged prompt and user-input generation, and another
+   OS check. A query widget can repaint the display without changing the
+   buffer: the exact echo is checked before querying, and the fresh actual
+   buffer acknowledgement supplies the final content check. Its generation
+   and content must remain unchanged through the final OS check.
+   The private acknowledgement is removed from display and
+   scrollback. Otherwise clear the line with Ctrl-C only while the same
+   untouched shell remains safe, and refuse (`edit-line-mismatch`).
 
 Inside a paste, the line editor inserts the text and does not read it as
 keys. Raw typing after a pending ESC ran `[200~echo hi there~` in place of

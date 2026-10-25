@@ -33,6 +33,8 @@ interface ClassificationOptions {
   replacedRemoteAvailable?: boolean;
   commentOnly?: boolean;
   historyReason?: string;
+  ownPaths?: string[];
+  ownCommits?: number;
   // The merge-base findNewBranchBase returns for a new or rewritten branch.
   newBranchBase?: string;
   baseFailure?: string;
@@ -50,13 +52,16 @@ function classify(entries: ReturnType<typeof modified>[], options: Classificatio
   const classifyChanges = runInNewContext(`${source.slice(start, end)}; classifyPrePushChanges`, {
     isNullObjectId: (sha: string) => /^0+$/.test(sha),
     getProtectedBranchNames: () => new Set(["main", "master"]),
-    findNewBranchBase: () => options.baseFailure ? { reason: options.baseFailure } : { sha: options.newBranchBase ?? baseSha },
+    findNewBranchBase: () => options.baseFailure ? { reason: options.baseFailure } : { sha: options.newBranchBase ?? baseSha, tips: [] },
+    listLiveBaseTips: () => ({ candidates: [] }),
     isIntegrationBranchRef,
     selectTriggeredLockSuites,
     ensureReplacedRemoteCommit: () => options.replacedRemoteAvailable !== false,
     isFastForwardUpdate: () => options.fastForward !== false,
     getChangedEntries: (_root: string, base: string) => options.diffFailure ? null : options.changedEntries?.(base) ?? entries,
-    getPushedHistoryFullReason: () => options.historyReason ?? null,
+    scanPushedHistory: () => options.historyReason
+      ? { reason: options.historyReason }
+      : { ownCommits: options.ownCommits ?? 1, excludedCommits: options.ownPaths ? 1 : 0, ownPaths: options.ownPaths ? new Set(options.ownPaths) : null },
     isCanonicalGitPath,
     classifyDocumentationChanges,
     selectFastSourceChecks,
@@ -229,12 +234,12 @@ describe("pre-push classification precedence", () => {
       expect(git(["diff", "--name-only", base, "HEAD"])).toBe("src/example.ts");
       const historyStart = source.indexOf("function decodeUtf8Strict(");
       const historyEnd = source.indexOf("function classifyPrePushChanges(");
-      const historyReason = runInNewContext(`${source.slice(historyStart, historyEnd)}; getPushedHistoryFullReason`, {
+      const scan = runInNewContext(`${source.slice(historyStart, historyEnd)}; scanPushedHistory`, {
         commands: { git: "git" }, TextDecoder, Buffer, classifyDocumentationChanges, selectFastSourceChecks, parseGitRawDiff,
         spawnSync: (command: string, args: string[], options: object) => spawnSync(command, args, { ...options, env }),
         captureOptional: (_command: string, args: string[]) => git(args),
       });
-      expect(historyReason(repo, base, git(["rev-parse", "HEAD"]))).toContain("package.json is a global test or build input in pushed history");
+      expect(scan(repo, base, git(["rev-parse", "HEAD"])).reason).toContain("package.json is a global test or build input in pushed history");
     } finally {
       await cleanupTmpDir(repo);
     }
@@ -268,14 +273,115 @@ describe("pre-push classification precedence", () => {
       expect(git(["diff", "--name-only", published, "HEAD"])).toBe("src/example.ts");
       const historyStart = source.indexOf("function decodeUtf8Strict(");
       const historyEnd = source.indexOf("function classifyPrePushChanges(");
-      const historyReason = runInNewContext(`${source.slice(historyStart, historyEnd)}; getPushedHistoryFullReason`, {
+      const scan = runInNewContext(`${source.slice(historyStart, historyEnd)}; scanPushedHistory`, {
         commands: { git: "git" }, TextDecoder, Buffer, classifyDocumentationChanges, selectFastSourceChecks, parseGitRawDiff,
         spawnSync: (command: string, args: string[], options: object) => spawnSync(command, args, { ...options, env }),
         captureOptional: (_command: string, args: string[]) => git(args),
       });
-      expect(historyReason(repo, published, git(["rev-parse", "HEAD"])))
+      expect(scan(repo, published, git(["rev-parse", "HEAD"])).reason)
         .toContain("package.json is a global test or build input in pushed history");
     } finally { await cleanupTmpDir(repo); }
+  });
+
+  it("decides the tier from the paths of the branch's own commits", () => {
+    const result = classify([modified("package.json"), modified("src/lib/example.ts")], { ownPaths: ["src/lib/example.ts"] });
+    expect(result).toMatchObject({ fastSource: true, relatedFiles: ["src/lib/example.ts"] });
+  });
+
+  it("checks nothing when every pushed commit is already on a live default or integration tip", () => {
+    expect(classify([modified("package.json")], { ownCommits: 0 })).toMatchObject({ alreadyOnRemote: true });
+  });
+
+  it("keeps the files a non-fast-forward rewrite drops even when its own commits are scoped", () => {
+    const mergeBase = "c".repeat(40);
+    // package.json is not an own path of the rewritten branch, but the remote
+    // commit the push replaces changed it: the push changes it back.
+    const result = classify([], {
+      fastForward: false,
+      newBranchBase: mergeBase,
+      ownPaths: ["src/lib/example.ts"],
+      changedEntries: (base) => base === mergeBase
+        ? [modified("src/lib/example.ts"), modified("package.json")]
+        : [modified("package.json")],
+    });
+    expect(result).toMatchObject({ tier: GLOBAL_INPUT_TIER });
+    expect(result.reason).toContain("package.json");
+  });
+
+  it("checks a rewrite that adds no own commit by the files it drops", () => {
+    const result = classify([modified("package.json")], { fastForward: false, ownCommits: 0 });
+    expect(result.alreadyOnRemote).not.toBe(true);
+    expect(result).toMatchObject({ tier: GLOBAL_INPUT_TIER });
+  });
+
+  describe("own commits in real history", () => {
+    // integration tip I changes package.json; topic merges it. Returns the
+    // repository, a git runner, the topic's published tip and I.
+    function baseMergeFixture(options: { conflict?: boolean; ownInput?: boolean } = {}) {
+      const repo = mkdtempSync(join(tmpdir(), "pre-push-own-"));
+      const env = gitFixtureEnv(repo);
+      const git = (args: string[]) => execFileSync("git", ["-C", repo, ...args], { env, encoding: "utf8" }).trim();
+      git(["init", "-qb", "integration/x"]);
+      git(["config", "user.name", "Fixture"]);
+      git(["config", "user.email", "fixture@example.invalid"]);
+      mkdirSync(join(repo, "src"));
+      writeFileSync(join(repo, "package.json"), "{}\n");
+      writeFileSync(join(repo, "src/example.ts"), "export const value = 1;\n");
+      git(["add", "."]);
+      git(["commit", "-qm", "initial fixture"]);
+      git(["checkout", "-qb", "topic"]);
+      writeFileSync(join(repo, "src/example.ts"), "export const value = 2;\n");
+      if (options.conflict) writeFileSync(join(repo, "package.json"), '{"topic":true}\n');
+      git(["commit", "-qam", "published topic"]);
+      const published = git(["rev-parse", "HEAD"]);
+      git(["checkout", "-q", "integration/x"]);
+      writeFileSync(join(repo, "package.json"), '{"scripts":{}}\n');
+      git(["commit", "-qam", "integration input"]);
+      const tip = git(["rev-parse", "HEAD"]);
+      git(["checkout", "-q", "topic"]);
+      if (options.conflict) {
+        spawnSync("git", ["-C", repo, "merge", "--no-ff", "-qm", "merge base", "integration/x"], { env });
+        writeFileSync(join(repo, "package.json"), '{"scripts":{},"topic":true}\n');
+        git(["add", "package.json"]);
+        git(["commit", "-qm", "merge base with resolution"]);
+      } else {
+        git(["merge", "--no-ff", "-qm", "merge base", "integration/x"]);
+      }
+      writeFileSync(join(repo, "src/example.ts"), "export const value = 3;\n");
+      if (options.ownInput) writeFileSync(join(repo, "package.json"), '{"scripts":{"own":""}}\n');
+      git(["commit", "-qam", "own follow-up"]);
+      const scan = runInNewContext(`${source.slice(source.indexOf("function decodeUtf8Strict("), start)}; scanPushedHistory`, {
+        commands: { git: "git" }, TextDecoder, Buffer, classifyDocumentationChanges, selectFastSourceChecks, parseGitRawDiff,
+        spawnSync: (command: string, args: string[], options: object) => spawnSync(command, args, { ...options, env }),
+        captureOptional: (_command: string, args: string[]) => git(args),
+      });
+      return { repo, scan, published, tip, head: git(["rev-parse", "HEAD"]) };
+    }
+
+    it("does not let a merge that only brings in base content force the full checks", async () => {
+      const { repo, scan, published, tip, head } = baseMergeFixture();
+      try {
+        expect(scan(repo, published, head).reason).toContain("package.json");
+        const own = scan(repo, published, head, [tip]);
+        expect(own.reason).toBeUndefined();
+        expect(own).toMatchObject({ ownCommits: 2, excludedCommits: 1 });
+        expect([...own.ownPaths]).toEqual(["src/example.ts"]);
+      } finally { await cleanupTmpDir(repo); }
+    });
+
+    it("counts a conflict resolution in a global input as the branch's own change", async () => {
+      const { repo, scan, published, tip, head } = baseMergeFixture({ conflict: true });
+      try {
+        expect(scan(repo, published, head, [tip]).reason).toContain("package.json is a global test or build input in pushed history");
+      } finally { await cleanupTmpDir(repo); }
+    });
+
+    it("keeps an own change to a global input on the full checks after a base merge", async () => {
+      const { repo, scan, published, tip, head } = baseMergeFixture({ ownInput: true });
+      try {
+        expect(scan(repo, published, head, [tip]).reason).toContain("package.json is a global test or build input in pushed history");
+      } finally { await cleanupTmpDir(repo); }
+    });
   });
 
   it("takes a message-only push on the fast tier with its consumers instead of the full suite", () => {

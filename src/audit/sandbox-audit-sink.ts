@@ -19,11 +19,16 @@
  * File permissions: 0o600 (user-read/write only).
  * Directory permissions: 0o700 (created if absent).
  */
-import { appendFile, mkdir } from "node:fs/promises";
+import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { resolve, dirname } from "node:path";
 import { aveHome } from "../shared/ave-home.js";
 import { utcDateKey } from "../shared/local-date.js";
-import type { SandboxAuditEntry } from "./sandbox-audit.js";
+import type {
+  SandboxAuditEntry,
+  SandboxEgressDecisionAuditEntry,
+  SandboxEgressDenyAuditEntry,
+  SandboxEgressRouteAuditEntry,
+} from "./sandbox-audit.js";
 
 // ─── Sink path ────────────────────────────────────────────────────────────────
 
@@ -63,7 +68,9 @@ function sinkPath(date = new Date()): string {
  * or surface the error. Production call-sites in `permission-manager.ts` wrap
  * this in a try/catch and log the error without blocking the tool execution.
  */
-export async function emitSandboxAudit(entry: SandboxAuditEntry): Promise<void> {
+export async function emitSandboxAudit(
+  entry: SandboxAuditEntry | SandboxEgressDenyAuditEntry | SandboxEgressDecisionAuditEntry | SandboxEgressRouteAuditEntry,
+): Promise<void> {
   const path = sinkPath();
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   await appendFile(path, `${JSON.stringify(entry)}\n`, { mode: 0o600 });
@@ -74,4 +81,65 @@ export async function emitSandboxAudit(entry: SandboxAuditEntry): Promise<void> 
  */
 export function sandboxAuditSinkPath(): string {
   return sinkPath();
+}
+
+// ─── Recent egress denials ────────────────────────────────────────────────────
+
+const DAY_MS = 86_400_000;
+
+/**
+ * The proxy denies of the last `windowMs` (24 h by default), newest first, at
+ * most `limit` of them, read back from the sandbox channel itself so the
+ * Settings list and the audit log cannot disagree and the list survives a
+ * restart. A 24 h window spans at most two UTC days, so at most two daily
+ * files are read; a missing file is an empty day. A line that does not parse
+ * is skipped: the channel is append-only and a torn last line from a crash
+ * must not hide the rest.
+ */
+export async function readRecentSandboxEgressDenials(options: {
+  now?: Date;
+  windowMs?: number;
+  limit?: number;
+} = {}): Promise<SandboxEgressDenyAuditEntry[]> {
+  const now = options.now ?? new Date();
+  const windowMs = options.windowMs ?? DAY_MS;
+  const limit = options.limit ?? 200;
+  const since = now.getTime() - windowMs;
+  const days = new Set([sinkPath(new Date(since)), sinkPath(now)]);
+  const rows: SandboxEgressDenyAuditEntry[] = [];
+  for (const path of days) {
+    let text: string;
+    try {
+      text = await readFile(path, "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      throw error;
+    }
+    for (const line of text.split("\n")) {
+      // Cheap pre-filter: most rows on this channel are tool-execution rows.
+      if (!line.includes('"entryKind":"egress-deny"')) continue;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (!isEgressDenyEntry(parsed)) continue;
+      const at = Date.parse(parsed.timestamp);
+      if (Number.isNaN(at) || at < since || at > now.getTime()) continue;
+      rows.push(parsed);
+    }
+  }
+  rows.sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp));
+  return rows.slice(0, limit);
+}
+
+function isEgressDenyEntry(value: unknown): value is SandboxEgressDenyAuditEntry {
+  if (typeof value !== "object" || value === null) return false;
+  const row = value as Partial<SandboxEgressDenyAuditEntry>;
+  return row.entryKind === "egress-deny"
+    && typeof row.timestamp === "string"
+    && typeof row.invocation === "object" && row.invocation !== null
+    && typeof row.deny === "object" && row.deny !== null
+    && typeof row.deny.host === "string";
 }

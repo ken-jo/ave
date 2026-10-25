@@ -9,6 +9,7 @@ import type { ExecutionMode } from "../shared/permission-mode.js";
 import { withFileLock } from "../lib/with-file-lock.js";
 import { writeUtf8FileAtomicSync, isMissingPathError } from "../lib/atomic-file.js";
 import { PermissionRulesFileCorruptError, invalidJsonDetail, validateRuleList } from "./rules/rule-files.js";
+import { withShellPolicyMutation } from "./shell-policy-handoff.js";
 
 
 
@@ -76,7 +77,7 @@ export async function updatePermissionsFile(
   filePath: string,
   mutator: (file: PermissionsFile) => void | Promise<void>,
 ): Promise<void> {
-  await withPermissionsLock(filePath, async () => {
+  await withShellPolicyMutation(() => withPermissionsLock(filePath, async () => {
     await withFileLock(filePath, async () => {
       const existing = await readPermissionsFile(filePath);
       const file: PermissionsFile = existing ?? {
@@ -90,5 +91,5 @@ export async function updatePermissionsFile(
       file.updatedAt = new Date().toISOString();
       writeUtf8FileAtomicSync(filePath, `${JSON.stringify(file, null, 2)}\n`, 0o600);
     });
-  });
+  }));
 }

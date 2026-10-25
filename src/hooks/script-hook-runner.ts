@@ -49,8 +49,11 @@ import { canonicalizePathForMatch, caseFoldForMatch } from "../permissions/sensi
 import { isPathWithin } from "../plugins/plugin-storage-containment.js";
 import { getHostShellExecutionPlan, getIssuedHostShellExecutionPlanGeneration, getSandboxGeneration, isIssuedHostShellExecutionPlan } from "../permissions/sandbox-capability.js";
 import type { HostShellExecutionPlan } from "../permissions/host-shell-execution-plan.js";
-import { cleanupAsrtSandboxAfterCommand, isAsrtSandboxActive } from "../permissions/asrt-sandbox.js";
+import {
+  assertExtensionStartAllowed, cleanupAsrtSandboxAfterCommand, isPluginWorkerConfinementActive,
+} from "../permissions/asrt-sandbox.js";
 import { createSandboxProcessHome } from "../permissions/sandbox-process-home.js";
+import type { EgressInvocation, WorkerEgressOwner } from "../permissions/egress-invocations.js";
 import {
   bundledWrappedEnv,
   spawnWindowsBundledProcess,
@@ -299,9 +302,24 @@ export async function runOneHookScript(
   }
 
   assertManagedChildProcessAdmissionOpen("hook:script");
+  if (confinement) {
+    try {
+      assertExtensionStartAllowed();
+    } catch (error) {
+      return deny(`sandbox unavailable: ${(error as Error).message}`);
+    }
+  }
   let cleanupWrap: (() => void) | undefined;
+  let wrappedEgress: EgressInvocation | undefined;
   let windowsSpawn: WindowsBundledSpawn | undefined;
-  const sandboxEnabled = admittedPlan ? admittedPlan.mode === "asrt" : isAsrtSandboxActive();
+  // Each hook reads its own scope's gate (sandbox-scope-gates.test.ts). A
+  // bundled hook is an extension process: it is confined only while
+  // plugin-worker confinement is active. A user hook runs the user's own
+  // command, so it takes the host-shell plan: the one it was admitted under,
+  // or the live plan when no admission ran.
+  const sandboxEnabled = confinement
+    ? isPluginWorkerConfinementActive()
+    : (admittedPlan ?? getHostShellExecutionPlan()).mode === "asrt";
   const scriptAnchor = resolveScriptAnchor(runnable.command);
   const canonicalAnchor = scriptAnchor === null ? undefined : resolve(canonicalizePathForMatch(resolve(cwd, scriptAnchor)));
   // Only an exact script inside the protected hook directory gets a read
@@ -309,6 +327,10 @@ export async function runOneHookScript(
   const userScriptReads = canonicalAnchor !== undefined && isPathWithin(
     caseFoldForMatch(resolve(defaultHooksDir())), caseFoldForMatch(canonicalAnchor),
   ) ? [canonicalAnchor] : [];
+  // A user hook has no plugin, so its egress gets no extension allowlist.
+  const hookEgressOwner: WorkerEgressOwner = confinement
+    ? { kind: "worker", role: "hook", pluginId: confinement.pluginId }
+    : { kind: "worker", role: "hook", pluginId: undefined, instanceId: sha256Hex(runnable.id) };
   if (sandboxEnabled && process.platform === "win32" && (confinement || admittedPlan?.mode === "asrt")) {
     // srt-win: the hook runs through the stdio relay with an ACL grant on its
     // own generation root (read) and data root (write); see
@@ -322,6 +344,7 @@ export async function runOneHookScript(
         cwd,
         allowRead: confinement ? [confinement.generationRoot] : userScriptReads,
         allowWrite: confinement ? [confinement.dataDir] : [cwd],
+        egressOwner: hookEgressOwner,
         assertStillValid: () => {
           if (admittedPlan && (getIssuedHostShellExecutionPlanGeneration(admittedPlan) !== getSandboxGeneration()
             || admittedPlan.identity !== getHostShellExecutionPlan().identity)) {
@@ -344,13 +367,17 @@ export async function runOneHookScript(
     };
   } else if (sandboxEnabled && process.platform !== "win32") {
     const sandboxHome = createSandboxProcessHome();
+    let wrappedAsrt = false;
     try {
       const wrapped = await wrapBundledCommand({ command: spawnCmd, args: spawnArgs,
         sandboxHome,
         allowWrite: confinement ? [confinement.dataDir] : [cwd],
         ownPluginReads: confinement ? [confinement.generationRoot] : userScriptReads,
         tempPrincipal: confinement ? { kind: "plugin", id: confinement.pluginId }
-          : { kind: "hook", id: sha256Hex(runnable.id) } });
+          : { kind: "hook", id: sha256Hex(runnable.id) },
+        egressOwner: hookEgressOwner });
+      wrappedEgress = wrapped.egress;
+      wrappedAsrt = true;
       [spawnCmd, ...spawnArgs] = wrapped.argv;
       spawnEnv = bundledWrappedEnv(childEnvBase, wrapped.env, sandboxHome.env);
       let cleaned = false;
@@ -361,6 +388,8 @@ export async function runOneHookScript(
         sandboxHome.cleanup();
       };
     } catch (error) {
+      wrappedEgress?.release();
+      if (wrappedAsrt) void cleanupAsrtSandboxAfterCommand();
       sandboxHome.cleanup();
       return deny(`sandbox unavailable: ${(error as Error).message}`);
     }
@@ -369,6 +398,7 @@ export async function runOneHookScript(
   if (admittedPlan && (getIssuedHostShellExecutionPlanGeneration(admittedPlan) !== getSandboxGeneration()
     || admittedPlan.identity !== getHostShellExecutionPlan().identity)) {
     if (windowsSpawn) forceKillManagedChildProcess(windowsSpawn.child, "hook shell policy changed");
+    wrappedEgress?.release();
     cleanupWrap?.();
     return deny("hook shell execution policy changed before spawn");
   }
@@ -376,6 +406,7 @@ export async function runOneHookScript(
     assertCommandAllowed?.();
   } catch (error) {
     if (windowsSpawn) forceKillManagedChildProcess(windowsSpawn.child, "hook command permission changed");
+    wrappedEgress?.release();
     cleanupWrap?.();
     return deny(`hook command denied before spawn: ${(error as Error).message}`);
   }
@@ -384,6 +415,7 @@ export async function runOneHookScript(
     let child: ChildProcess;
     try {
       child = windowsSpawn?.child ?? spawn(spawnCmd, spawnArgs, {
+        windowsHide: true,
         cwd,
         // Forward only the stripped environment and host-owned hook variables.
         env: spawnEnv,
@@ -392,9 +424,16 @@ export async function runOneHookScript(
         detached: process.platform !== "win32",
       });
     } catch (error) {
+      wrappedEgress?.release();
       cleanupWrap?.();
       resolve(deny(`hook spawn error: ${(error as Error).message}`));
       return;
+    }
+    if (wrappedEgress !== undefined) {
+      const egress = wrappedEgress;
+      child.once("exit", () => egress.release());
+      child.once("close", () => egress.release());
+      child.once("error", () => { if (child.pid === undefined) egress.release(); });
     }
     // A Windows sandboxed hook is registered by `spawnConfinedChild`.
     if (windowsSpawn === undefined) {
@@ -402,6 +441,11 @@ export async function runOneHookScript(
         label: "hook:script",
         killProcessGroup: process.platform !== "win32",
       });
+    }
+    // Detached (POSIX), the hook leads its own process group: the sandbox
+    // keeps the ended invocation's listener port while that group lives.
+    if (wrappedEgress !== undefined && process.platform !== "win32" && child.pid !== undefined) {
+      wrappedEgress.noteProcessGroup(child.pid);
     }
     // Through the relay the hook's input and output are the relay's streams,
     // not the child's own pipes (`spawnWindowsBundledProcess`).

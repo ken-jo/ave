@@ -5,7 +5,8 @@
  * reaches it through `plugin.uninstalled`.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setupAlerts } from "../alerts-setup.js";
@@ -101,7 +102,7 @@ afterEach(async () => {
   revocationRegistry.resetForTesting();
   if (previousHome === undefined) delete process.env.AVE_HOME;
   else process.env.AVE_HOME = previousHome;
-  rmSync(home, { recursive: true, force: true });
+  await cleanupTmpDir(home);
 });
 
 describe("setupAlerts", () => {

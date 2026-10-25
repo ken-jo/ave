@@ -126,10 +126,30 @@ export const PERMISSIONS = {
   // verbatim ASRT install instructions. Drives the win32 consent panel in
   // PermissionsTab. Non-win32 returns a clean "not-applicable" shape.
   sandboxWindowsStatus: "ave:permissions:sandbox-windows-status",
+  // Read-only (sender-frame-guarded: audit data): the ASRT proxy denies of the
+  // last 24 h, read back from the sandbox audit channel. Drives Settings →
+  // Permissions → Network "Recent denials".
+  egressDenialsRecent: "ave:permissions:egress-denials-recent",
+  // Read-only (sender-frame-guarded): the shell egress grants that outlive a
+  // conversation ("This workspace" and "Always"). Drives Settings →
+  // Permissions → Network "Allowed hosts".
+  egressGrantsList: "ave:permissions:egress-grants-list",
+  // MUTATING (sender-frame-guarded + user-keyboard intent): revoke one of
+  // those grants.
+  egressGrantRevoke: "ave:permissions:egress-grant-revoke",
+  // Read-only (sender-frame-guarded): the main-owned upstream proxy setting
+  // (no credential values), whether manual credentials are stored, and the
+  // effective upstream for https://example.com. Drives Settings →
+  // Permissions → OS Tool Sandbox "Upstream proxy".
+  upstreamProxyGet: "ave:permissions:upstream-proxy-get",
+  // MUTATING (sender-frame-guarded + user-gesture intent): change it. The
+  // only writer of `upstreamProxy`; `settings:update` refuses the key.
+  upstreamProxySet: "ave:permissions:upstream-proxy-set",
   // MUTATING (sender-frame-guarded): the ONLY user-consented privilege
   // escalation entry point — triggers ASRT installWindowsSandbox's single
   // self-elevating UAC prompt. Never auto-triggered.
   sandboxWindowsInstall: "ave:permissions:sandbox-windows-install",
+  approveExtensionsWithoutIsolation: "ave:permissions:approve-extensions-without-isolation",
   // `/allow <sentence>` — resolve a user sentence onto one of the PENDING
   // approval's own scopes. Gesture-gated because only a keyboard-origin
   // submission may speak for the user, but it grants nothing on its own: the

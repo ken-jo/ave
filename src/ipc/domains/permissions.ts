@@ -2,13 +2,29 @@
  * Permissions domain IPC handlers.
  * Covers: ave:permission:*, ave:approval:*, ave:policy:*
  */
-import { ipcMain } from "electron";
+import { ipcMain, session } from "electron";
 import { randomUUID } from "node:crypto";
 import { loadPolicy, savePolicy } from "../../permissions/policy-store.js";
 import { isPolicyUserEditable } from "../../shared/policy-editability.js";
 import type { ApprovalDecision } from "../../permissions/approval-gate.js";
 import { PERMISSIONS } from "../../shared/ipc-channels.js";
-import { resolveEnvBackedBoolean } from "../../shared/env-backed-settings.js";
+import {
+  UPSTREAM_PROXY_CREDENTIALS_SECRET,
+  UPSTREAM_PROXY_MODES,
+  type UpstreamProxySettings,
+  type UpstreamProxyView,
+} from "../../shared/upstream-proxy.js";
+
+/** The destination the Settings diagnostic line resolves. */
+const UPSTREAM_PROXY_DIAGNOSTIC_URL = "https://example.com/";
+import { errorMessage } from "../../shared/error-message.js";
+import { approveExtensionsWithoutIsolation, areExtensionsWithoutIsolationApproved, getAveHomePrivacyFailure } from "../../shared/ave-home.js";
+import {
+  RECENT_EGRESS_DENIALS_LIMIT,
+  RECENT_EGRESS_DENIALS_WINDOW_HOURS,
+  type EgressDenialRow,
+} from "../../shared/egress-denials.js";
+import { envForcedValueForSettingsPath, resolveEnvBackedBoolean } from "../../shared/env-backed-settings.js";
 import {
   isSessionOnlyApprovalMemoryScope,
   type PermissionReviewSuggestionPayload,
@@ -50,14 +66,21 @@ import {
   canonicalStringify,
 } from "../../permissions/user-approval-store.js";
 import { getLlmVendorSettings } from "../../shared/llm-vendor-defaults.js";
+import { isEgressGrantNetwork } from "../../shared/egress-grant-scopes.js";
+import { isTerminalTabId } from "../../shared/tab-id.js";
 import type {
   SandboxWindowsStatusInfo,
   SandboxWindowsInstallResult,
   SandboxRuntimeCapabilityInfo,
+  ShellSandboxStatusInfo,
 } from "../../shared/sandbox-capability-info.js";
 import {
-  detectSandboxCapability,
+  detectPluginWorkerSandboxCapability,
+  detectShellSandboxCapability,
+  getHostShellExecutionPlan,
   getSandboxBootOutcome,
+  getWindowsSandboxSubstrate,
+  isShellSandboxRequestedAtBoot,
   type SandboxCapability,
 } from "../../permissions/sandbox-capability.js";
 import {
@@ -242,16 +265,17 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
   // as unavailable merely because it's off.
   // `enabled` separately reflects the current setting.
   ipcMain.handle(PERMISSIONS.sandboxCapability, async () => {
-    const { sandboxConfinementForPlatform } = await import(
+    const { sandboxConfinementForPlatform, describeShellSandboxStatus, sandboxBootOutcomeView } = await import(
       "../../shared/sandbox-capability-info.js"
     );
     const platform = process.platform;
-    // Must answer the same question boot answered (`sandboxOptIn` in
+    const storedShellSetting = deps.settingsService.get("features")?.osToolSandbox ?? false;
+    // Must answer the same question boot answered (`shellRequested` in
     // sandbox-init.ts), so it resolves through the registry rather than
     // re-stating which variable forces it on.
     const enabled = resolveEnvBackedBoolean(
       "features.osToolSandbox",
-      deps.settingsService.get("features")?.osToolSandbox ?? false,
+      storedShellSetting,
       process.env,
       false,
     );
@@ -259,7 +283,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     // and Linux (bwrap) confine fs + process + network ("full"). Windows
     // (srt-win) confines filesystem + network but not process, which is a
     // genuine PARTIAL confinement, NOT "none". Earlier code reported Windows as
-    // network-only; ASRT 0.0.76 uses the dedicated srt-sandbox user ACL backend.
+    // network-only; ASRT 0.0.80 uses the dedicated srt-sandbox user ACL backend.
     //
     // The gate (enabled) only controls whether the ASRT sandbox initializes at
     // boot, not what the platform is capable of, so report the platform's
@@ -284,9 +308,46 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
         : platform === "linux"
           ? "ASRT (bwrap) confines filesystem, process, and network egress when enabled"
           : platform === "win32"
-            ? "ASRT (srt-win) confines filesystem access and network egress against the host; every confined process, plugins included, runs as one shared sandbox account, so plugins are not isolated from each other; process isolation is unavailable on Windows; needs a one-time admin install"
+            ? "Agent shell commands run each in its own Microsoft Execution Containers container where Windows offers it (filesystem, process and network confined; no admin install). ASRT (srt-win) confines plugin processes' filesystem access and network egress against the host after a one-time admin install; every confined plugin runs as one shared sandbox account, so plugins are not isolated from each other"
             : "OS sandbox is fail-closed on this platform; tools run unconfined";
-    const runtime = runtimeInfoFromCapability(detectSandboxCapability());
+    // Per scope: ASRT is one runtime, but each scope is confined only when it
+    // was requested at boot, so a worker-only boot must not show shells as
+    // sandboxed (and the reverse).
+    const runtime = runtimeInfoFromCapability(detectShellSandboxCapability());
+    const workerRuntime = runtimeInfoFromCapability(detectPluginWorkerSandboxCapability());
+    const boot = getSandboxBootOutcome();
+    // The route a default host shell takes right now — the same plan the bash
+    // and powershell tools run under, so "on" means shells are contained, not
+    // merely that ASRT is running (Windows Plan B runs shells plain).
+    const shellPlan = getHostShellExecutionPlan();
+    const envForced = envForcedValueForSettingsPath("features.osToolSandbox") === true;
+    let shell: ShellSandboxStatusInfo;
+    try {
+      shell = describeShellSandboxStatus({
+        platformSupported: kind !== "none",
+        setting: storedShellSetting,
+        envForced,
+        requestedAtBoot: isShellSandboxRequestedAtBoot(),
+        boot,
+        shellPlanMode: shellPlan.mode,
+        shellPlanFallback: shellPlan.fallbackReason,
+      });
+    } catch (error) {
+      // The boot seal and the shell plan contradict each other — a host bug,
+      // not a user state. It is reported loudly here and on the one row that
+      // depends on it; the rest of this snapshot (and every Settings section
+      // loaded beside it) still describes what the host does observe.
+      const message = errorMessage(error);
+      log.error("sandboxCapability: shell sandbox status contract violated: %s", message);
+      auditLogger.log({
+        timestamp: new Date().toISOString(),
+        sessionId: "permissions",
+        type: "error",
+        output: `[sandbox-status:contract-violation] ${message}`,
+      });
+      shell = { state: "error", setting: storedShellSetting, envForced, causes: [] };
+    }
+    const privacyFailure = getAveHomePrivacyFailure();
     return {
       platform,
       enabled,
@@ -295,11 +356,24 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       reason: potentialReason,
       potentialReason,
       runtime,
+      workerRuntime,
+      ...(privacyFailure ? { homePrivacyError: {
+        path: privacyFailure.failedPath ?? privacyFailure.home,
+        category: privacyFailure.category,
+        extraPrincipals: privacyFailure.extraPrincipals,
+        approvedForSession: areExtensionsWithoutIsolationApproved(),
+      } } : {}),
       // What the gate decided THIS boot. The runtime snapshot cannot stand in
       // for it: a degraded gate never publishes a capability, so `runtime`
       // reports the same "no OS sandbox configured" it reports when the user
       // never turned the sandbox on.
-      boot: getSandboxBootOutcome(),
+      // Raw dependency messages stay main-side (boot log); the renderer gets
+      // the classified causes.
+      boot: boot === null ? null : sandboxBootOutcomeView(boot),
+      shell,
+      // Windows: which substrate carries shells and extensions this boot and
+      // how strongly their egress is attributed (proxy-egress PR 9).
+      windowsSubstrate: platform === "win32" ? getWindowsSandboxSubstrate() : null,
       confines: sandboxConfinementForPlatform(platform, kind),
     };
   });
@@ -311,6 +385,198 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
   // enum may run ASRT's local behavioral egress verifier.
   ipcMain.handle(PERMISSIONS.sandboxWindowsStatus, async (): Promise<SandboxWindowsStatusInfo> => {
     return readAsrtWindowsStatus();
+  });
+
+  // read-only, sender-frame-guarded (it is audit data, like auditShow) — the
+  // proxy denies of the last 24 h, newest first, from the sandbox audit
+  // channel the deny monitor writes (egress-deny-monitor.ts).
+  ipcMain.handle(PERMISSIONS.egressDenialsRecent, async (e): Promise<EgressDenialRow[] | typeof UNAUTHORIZED_FRAME> => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.egressDenialsRecent, e); return UNAUTHORIZED_FRAME; }
+    const { readRecentSandboxEgressDenials } = await import("../../audit/sandbox-audit-sink.js");
+    const rows = await readRecentSandboxEgressDenials({
+      windowMs: RECENT_EGRESS_DENIALS_WINDOW_HOURS * 3_600_000,
+      limit: RECENT_EGRESS_DENIALS_LIMIT,
+    });
+    return rows.map((row) => ({ timestamp: row.timestamp, source: row.invocation, deny: row.deny }));
+  });
+
+  // read-only, sender-frame-guarded — the shell egress grants that outlive a
+  // call (conversation, terminal tab, workspace, always), for Settings →
+  // Permissions → Network.
+  ipcMain.handle(PERMISSIONS.egressGrantsList, async (e) => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.egressGrantsList, e); return UNAUTHORIZED_FRAME; }
+    const { listEgressGrants } = await import("../../permissions/egress-runtime.js");
+    try {
+      return { ok: true as const, grants: await listEgressGrants() };
+    } catch (error) {
+      return { ok: false as const, error: "egress-grant-store-unreadable", message: errorMessage(error) };
+    }
+  });
+
+  // MUTATING (sender-frame-guarded + user-keyboard intent): revoke one shell
+  // egress grant. The payload names it exactly; anything else is refused.
+  ipcMain.handle(PERMISSIONS.egressGrantRevoke, async (e, payload: unknown) => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.egressGrantRevoke, e); return UNAUTHORIZED_FRAME; }
+    const body = payloadRecord(payload);
+    const intent = requireUserKeyboardIntent(body.intent);
+    if (!intent.ok) return intent;
+    const { scope, origin, host, port, workspaceRoot, sessionId, tabId, network } = body;
+    if (network !== undefined && !isEgressGrantNetwork(network)) {
+      return { ok: false, error: "invalid-egress-grant-destination", message: "revoke: invalid network class" };
+    }
+    if (scope !== "conversation" && scope !== "tab" && scope !== "workspace" && scope !== "always") {
+      return { ok: false, error: "invalid-egress-grant-scope", message: "revoke: scope must be conversation, tab, workspace or always" };
+    }
+    if (typeof host !== "string" || host.length === 0 || typeof port !== "number" || !Number.isInteger(port)) {
+      return { ok: false, error: "invalid-egress-grant-destination", message: "revoke: host and port are required" };
+    }
+    if (scope === "workspace" ? typeof workspaceRoot !== "string" : workspaceRoot !== undefined) {
+      return { ok: false, error: "invalid-egress-grant-workspace", message: "revoke: a workspace grant names its workspaceRoot, no other grant does" };
+    }
+    if (scope === "conversation" ? typeof sessionId !== "string" || sessionId.length === 0 : sessionId !== undefined) {
+      return { ok: false, error: "invalid-egress-grant-conversation", message: "revoke: a conversation grant names its sessionId, no other grant does" };
+    }
+    if (scope === "tab" ? typeof tabId !== "string" || !isTerminalTabId(tabId) : tabId !== undefined) {
+      return { ok: false, error: "invalid-egress-grant-tab", message: "revoke: a tab grant names its terminal tabId, no other grant does" };
+    }
+    const persistent = scope === "workspace" || scope === "always";
+    if (persistent
+      ? (scope === "workspace" ? origin !== "shell" : origin !== "shell" && origin !== "terminal")
+      : origin !== undefined) {
+      return { ok: false, error: "invalid-egress-grant-origin", message: "revoke: a workspace or always grant names its origin (shell, or terminal for always), no other grant does" };
+    }
+    const destination = { host, port, ...(network === undefined ? {} : { network }) };
+    const { revokeEgressGrant } = await import("../../permissions/egress-runtime.js");
+    try {
+      const { removed, closed } = await revokeEgressGrant(
+        scope === "conversation" ? { scope, sessionId: sessionId as string, ...destination }
+        : scope === "tab" ? { scope, tabId: tabId as string, ...destination }
+        : scope === "workspace" ? { scope, origin: "shell", workspaceRoot: workspaceRoot as string, ...destination }
+        : { scope, origin: origin as "shell" | "terminal", ...destination },
+      );
+      auditLogger.log({
+        timestamp: new Date().toISOString(),
+        sessionId: "settings",
+        type: "approval",
+        output: `[egress-grant:revoke] scope=${scope}${persistent ? ` origin=${String(origin)}` : ""} host=${host} port=${port} removed=${removed} closedConnections=${closed}`,
+      });
+      return removed ? { ok: true } : { ok: false, error: "not-found", message: "revoke: no such grant" };
+    } catch (error) {
+      return { ok: false, error: "egress-grant-store-unreadable", message: errorMessage(error) };
+    }
+  });
+
+  // Upstream proxy (owner decision 2026-10-20). Main-owned setting: these two
+  // handlers are its only reader and writer for the renderer, and neither
+  // ever returns a credential value (only whether one is stored).
+  const upstreamProxyView = async (): Promise<UpstreamProxyView> => {
+    const { describeUpstreamProxy, upstreamProxyDeps, parseStoredProxyCredentials } = await import("../../permissions/upstream-proxy.js");
+    const routerDeps = upstreamProxyDeps(deps.settingsService, (url) => session.defaultSession.resolveProxy(url));
+    const settings = deps.settingsService.get("upstreamProxy");
+    const stored = parseStoredProxyCredentials(deps.settingsService.getSecret(UPSTREAM_PROXY_CREDENTIALS_SECRET));
+    return {
+      settings,
+      // Only credentials that would be sent count: bound to the manual proxy as it is now.
+      hasCredentials: stored !== null && stored.origin === settings.manualUrl,
+      diagnostic: await describeUpstreamProxy(routerDeps, UPSTREAM_PROXY_DIAGNOSTIC_URL),
+    };
+  };
+
+  ipcMain.handle(PERMISSIONS.upstreamProxyGet, async (e) => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.upstreamProxyGet, e); return UNAUTHORIZED_FRAME; }
+    return upstreamProxyView();
+  });
+
+  ipcMain.handle(PERMISSIONS.upstreamProxySet, async (e, payload: unknown) => {
+    // This setter redirects all sandbox egress, and the keyboard-intent marker
+    // below is the renderer's own claim: it also requires the main frame of
+    // one of Ave's own windows (the approvalRespond rule), never a subframe
+    // or another webContents that loads a host-renderer URL.
+    const windows = deps.getAppWindows?.() ?? [deps.getMainWindow()];
+    const appWindowMainFrame = e.senderFrame !== null && e.senderFrame === e.sender?.mainFrame
+      && windows.some((window) => window?.webContents === e.sender);
+    if (!validateHostRendererSender(e) || !appWindowMainFrame) { auditUnauthorized(auditLogger, PERMISSIONS.upstreamProxySet, e); return UNAUTHORIZED_FRAME; }
+    const body = payloadRecord(payload);
+    const intent = requireUserKeyboardIntent(body.intent);
+    if (!intent.ok) return intent;
+    const { parseProxyUrl, proxyOrigin, parseStoredProxyCredentials } = await import("../../permissions/upstream-proxy.js");
+    const { normalizeUpstreamProxy } = await import("../../data/settings-normalization.js");
+    const next = deps.settingsService.get("upstreamProxy");
+    if (body.mode !== undefined) {
+      if (typeof body.mode !== "string" || !(UPSTREAM_PROXY_MODES as readonly string[]).includes(body.mode)) {
+        return { ok: false, error: "invalid-upstream-proxy-mode", message: "upstream proxy: mode must be off, system or manual" };
+      }
+      next.mode = body.mode as UpstreamProxySettings["mode"];
+    }
+    if (body.resolvesNames !== undefined) {
+      if (typeof body.resolvesNames !== "boolean") {
+        return { ok: false, error: "invalid-upstream-proxy-resolves-names", message: "upstream proxy: resolvesNames must be a boolean" };
+      }
+      next.resolvesNames = body.resolvesNames;
+    }
+    if (body.bypass !== undefined) {
+      if (typeof body.bypass !== "string" || body.bypass.length > 8192) {
+        return { ok: false, error: "invalid-upstream-proxy-bypass", message: "upstream proxy: the bypass list must be text of at most 8192 characters" };
+      }
+      next.bypass = body.bypass;
+    }
+    let credentials: { username: string; password: string } | undefined;
+    if (body.manualUrl !== undefined) {
+      if (typeof body.manualUrl !== "string" || body.manualUrl.length > 2048) {
+        return { ok: false, error: "invalid-upstream-proxy-url", message: "upstream proxy: the URL must be text of at most 2048 characters" };
+      }
+      if (body.manualUrl.trim() === "") {
+        next.manualUrl = "";
+      } else {
+        const parsed = parseProxyUrl(body.manualUrl);
+        if (!parsed.ok) {
+          return parsed.reason === "socks"
+            ? { ok: false, error: "upstream-proxy-socks-unsupported", message: "upstream proxy: SOCKS proxies cannot be used as the sandbox's upstream" }
+            : { ok: false, error: "invalid-upstream-proxy-url", message: "upstream proxy: enter http://host:port or https://host:port" };
+        }
+        next.manualUrl = proxyOrigin(parsed);
+        credentials = parsed.auth;
+      }
+    }
+    if (next.mode === "manual" && next.manualUrl === "") {
+      return { ok: false, error: "upstream-proxy-url-required", message: "upstream proxy: manual mode needs a proxy URL" };
+    }
+    // Stored credentials are bound to the manual proxy's origin: entered with
+    // a URL, they are saved for that URL's origin; a URL change to another
+    // host, port or scheme removes them (and says so), so the old proxy's
+    // password is never sent to the new one.
+    let credentialsChange: "replaced" | "cleared" | "removed" | "unchanged" = "unchanged";
+    if (credentials !== undefined) {
+      await deps.settingsService.setSecret(UPSTREAM_PROXY_CREDENTIALS_SECRET, JSON.stringify({ ...credentials, origin: next.manualUrl }));
+      credentialsChange = "replaced";
+    } else if (body.clearCredentials === true) {
+      await deps.settingsService.deleteSecret(UPSTREAM_PROXY_CREDENTIALS_SECRET);
+      credentialsChange = "cleared";
+    } else {
+      const storedSecret = deps.settingsService.getSecret(UPSTREAM_PROXY_CREDENTIALS_SECRET);
+      const stored = parseStoredProxyCredentials(storedSecret);
+      if (storedSecret !== null && (stored === null || stored.origin !== next.manualUrl)) {
+        await deps.settingsService.deleteSecret(UPSTREAM_PROXY_CREDENTIALS_SECRET);
+        credentialsChange = "removed";
+      }
+    }
+    // `set` notifies the boot router, which drops its cached routes.
+    const stored = normalizeUpstreamProxy(next);
+    await deps.settingsService.set("upstreamProxy", stored);
+    auditLogger.log({
+      timestamp: new Date().toISOString(),
+      sessionId: "settings",
+      type: "approval",
+      output: `[upstream-proxy:set] mode=${stored.mode} manual=${stored.manualUrl === "" ? "-" : stored.manualUrl}`
+        + ` credentials=${credentialsChange}`
+        + ` bypassEntries=${stored.bypass === "" ? 0 : stored.bypass.split(",").filter((entry) => entry.trim() !== "").length}`
+        + ` resolvesNames=${stored.resolvesNames}`,
+    });
+    return {
+      ok: true as const,
+      view: await upstreamProxyView(),
+      ...(credentialsChange === "removed" ? { credentialsRemoved: true as const } : {}),
+    };
   });
 
   // MUTATING (sender-frame-guarded + user-keyboard intent) — the SINGLE
@@ -333,6 +599,21 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       return { ok: false, error: "not-applicable", message: "Windows sandbox install is only available on win32" };
     }
     return installAsrtWindowsSandbox();
+  });
+
+  ipcMain.handle(PERMISSIONS.approveExtensionsWithoutIsolation, async (e, payload: unknown) => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.approveExtensionsWithoutIsolation, e); return UNAUTHORIZED_FRAME; }
+    const intent = requireUserKeyboardIntent(payloadRecord(payload).intent);
+    if (!intent.ok) return intent;
+    const failure = getAveHomePrivacyFailure();
+    if (failure === undefined) return { ok: false, error: "not-applicable", message: "Home privacy approval is not applicable" };
+    if (!areExtensionsWithoutIsolationApproved()) {
+      auditLogger.log({ timestamp: new Date().toISOString(), sessionId: "permissions", type: "approval",
+        output: JSON.stringify({ action: "extensions_without_isolation_approved", who: "user-ui",
+          category: failure.category, path: failure.failedPath ?? failure.home }) });
+      approveExtensionsWithoutIsolation();
+    }
+    return { ok: true };
   });
 
   ipcMain.handle(PERMISSIONS.setMode, async (e, payload: unknown) => {
@@ -424,7 +705,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       const nativeRenderer = e.senderFrame === e.sender?.mainFrame &&
         windows.some((window) => window?.webContents === e.sender);
       honoredDecision = nativeRenderer
-        ? approvalGate.resolveFromDesktopRenderer(decision.requestId, decision)
+        ? approvalGate.resolveFromDesktopRenderer(decision.requestId, decision, e.sender)
         : approvalGate.resolve(decision.requestId, decision);
     }
     if (honoredDecision) {

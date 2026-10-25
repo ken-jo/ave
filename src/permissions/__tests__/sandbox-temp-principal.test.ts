@@ -46,6 +46,7 @@ import { sweepSandboxPrivateRoot } from "../../boot/steps/sandbox-init.js";
 import { makeTestTreeWritable } from "../../plugins/__tests__/test-helpers.js";
 import { createSandboxProcessHome } from "../sandbox-process-home.js";
 import { asrtCanInitialize } from "./test-helpers.js";
+import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
 
 let home: string;
 let previousAveHome: string | undefined;
@@ -206,7 +207,7 @@ describe("the private roots in a sandbox read deny", () => {
     () => {
       for (const root of appOwnedSandboxPrivateRoots()) ensureSandboxPrivateRoot(root);
       const floor = getDefaultSensitiveReadDenyPaths();
-      const denyRead: string[] = buildPerCommandSandboxCustomConfig({ denyRead: floor })!.filesystem!.denyRead;
+      const denyRead = buildPerCommandSandboxCustomConfig({ denyRead: floor })!.filesystem!.denyRead;
       const tempRoot = realpathSync(appOwnedSandboxTempRoot());
       const homeRoot = realpathSync(appOwnedSandboxHomeRoot());
       const handoffRoot = realpathSync(appOwnedTerminalHandoffRoot());
@@ -219,7 +220,8 @@ describe("the private roots in a sandbox read deny", () => {
       expect(denyRead).not.toContain(appOwnedSandboxHomeRoot());
       expect(denyRead).not.toContain(appOwnedTerminalHandoffRoot());
       const others = floor.filter((path) => !appOwnedSandboxPrivateRoots().includes(path));
-      expect(denyRead.filter((path) => !/\[[pef]\]$/.test(path))).toEqual(others);
+      // A marked `{ path, literal: true }` entry (ASRT 0.0.79) is kept, so it fails the equality.
+      expect(denyRead.filter((path) => typeof path !== "string" || !/\[[pef]\]$/.test(path))).toEqual(others);
     },
   );
 
@@ -245,7 +247,7 @@ describe("the private roots in a sandbox read deny", () => {
         // `~/.ave`: an ancestor of both private roots.
         const { argv, env } = await wrapWorkerCommand(
           `/bin/cat '${join(own.path, "own")}'; echo; /bin/cat '${join(other.path, "other")}' 2>/dev/null || echo refused`,
-          {
+          { commandId: TEST_COMMAND_ID,
             filesystem: {
               allowRead: [home, own.path],
               allowWrite: [own.path],

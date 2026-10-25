@@ -2,7 +2,7 @@
  * The Windows filesystem grant a confined plugin process holds for its
  * lifetime: a plugin child's own directories, or a delegated worker's.
  *
- * ASRT 0.0.76's `srt-win exec` takes per-execution denies only, so a confined
+ * ASRT 0.0.80's `srt-win exec` takes per-execution denies only, so a confined
  * process reaches a path through an explicit ACL grant to the one
  * `srt-sandbox` account, refcounted by a HOLDER process id
  * ({@link grantWindowsWorkerFilesystemAccess}). The holder here is a

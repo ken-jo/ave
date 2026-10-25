@@ -973,7 +973,11 @@ export async function runToolInvocation(
         legacyPlan: hostShellExecutionPlan,
         toolName: hostShellToolName,
         command: hostShellInput.command,
-        cwd: resolveHostShellWorkingDirectory(executionCwd, hostShellInput.cwd),
+        cwd: brokeredWorkloadCapability === null
+          ? resolveHostShellWorkingDirectory(executionCwd, hostShellInput.cwd)
+          : (await import("../workload/runtime.js")).resolveBrokeredWorkloadPath(
+              brokeredWorkloadCapability, hostShellInput.cwd ?? ".",
+            ),
         unresolvedRequirementKind,
         timeoutSeconds: hostShellInput.timeoutSeconds,
         background: hostShellInput.runInBackground,
@@ -1247,6 +1251,7 @@ export async function runToolInvocation(
       | HostShellExecutionPermitBinding
       | undefined;
     let hostShellApprovalDecision: ApprovalDecision | undefined;
+    let hostShellAllowRuleDecision: PermissionCheckResult | undefined;
     const makeEvaluationContext = (input: {
       pathFields: readonly string[];
       targetFilePaths?: readonly string[];
@@ -2203,6 +2208,7 @@ export async function runToolInvocation(
     }
     permissionResult = authorization.permissionResult;
     hostShellApprovalDecision = authorization.hostShellApprovalDecision;
+    hostShellAllowRuleDecision = authorization.hostShellAllowRuleDecision;
 
     if (brokeredFileRouteSelected &&
         (canonicalFileTool !== undefined || canonicalBrokerLifecycleTool !== undefined)) {
@@ -2285,6 +2291,7 @@ export async function runToolInvocation(
       abortSignal,
       hostShellExecutionPermitBinding,
       hostShellApprovalDecision,
+      hostShellAllowRuleDecision,
       hostShellExecutionPlan,
       hostShellRequiresExplicitApproval,
       executionRouteGrant,

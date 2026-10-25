@@ -195,6 +195,11 @@ function installApi(
           kind: "none" as const,
           reason: "no OS sandbox configured for the host process",
         },
+        workerRuntime: {
+          available: false,
+          kind: "none" as "none" | "full" | "partial",
+          reason: "no OS sandbox configured for the host process",
+        },
         confines: { filesystem: true, process: true, network: true },
       })),
     },
@@ -244,7 +249,7 @@ describe("PermissionsTab hook quarantine notice", () => {
       api.permission.setMode.mockResolvedValueOnce({ ok: false, mode: "default" });
       const view = await act(async () => render(<PermissionsTab />));
       await act(async () => { fireEvent.click(screen.getByTestId(execModeTestId("auto"))); });
-      expect(screen.getByRole("alert")).toBeTruthy();
+      expect(screen.getByText(t("permissionsTab.errorModeChangeFailed")).closest('[role="alert"]')).toBeTruthy();
       expect(vi.getTimerCount()).toBeGreaterThan(0);
 
       view.unmount();
@@ -1066,6 +1071,88 @@ describe("PermissionsTab — OS sandbox toggle and capability rendering", () => 
     expect(screen.queryByText("저장 실패")).toBeNull();
   });
 
+  it("writes only the shell setting from the shell toggle and only the worker setting from the worker toggle", async () => {
+    installApi([[]]);
+    settingsApi().updateSettings.mockResolvedValue({ ok: true });
+
+    await act(async () => {
+      render(<PermissionsTab />);
+    });
+
+    const shellToggle = screen.getByTestId("os-sandbox-toggle");
+    const workerToggle = screen.getByTestId("worker-confinement-toggle");
+    expect(screen.getByLabelText(t("permissionsTab.osSandboxCheckboxAriaLabel"))).toBe(shellToggle);
+    expect(screen.getByLabelText(t("permissionsTab.workerConfinementCheckboxAriaLabel"))).toBe(workerToggle);
+    expect(workerToggle).toHaveAttribute("aria-checked", "false");
+
+    await act(async () => {
+      fireEvent.click(workerToggle);
+    });
+    expect(settingsApi().updateSettings).toHaveBeenLastCalledWith({
+      features: { pluginWorkerConfinement: true },
+    });
+    expect(workerToggle).toHaveAttribute("aria-checked", "true");
+    expect(shellToggle).toHaveAttribute("aria-checked", "false");
+
+    await act(async () => {
+      fireEvent.click(shellToggle);
+    });
+    expect(settingsApi().updateSettings).toHaveBeenLastCalledWith({
+      features: { osToolSandbox: true },
+    });
+    expect(settingsApi().updateSettings).toHaveBeenCalledTimes(2);
+    expect(workerToggle).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("loads the worker toggle from its own setting", async () => {
+    installApi([[]]);
+    settingsApi().getSettings.mockResolvedValueOnce({
+      features: { osToolSandbox: false, pluginWorkerConfinement: true },
+    });
+
+    await act(async () => {
+      render(<PermissionsTab />);
+    });
+
+    expect(screen.getByTestId("os-sandbox-toggle")).toHaveAttribute("aria-checked", "false");
+    expect(screen.getByTestId("worker-confinement-toggle")).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("shows each scope's runtime on its own line, so a worker-only boot does not read as a sandboxed shell", async () => {
+    const api = installApi([[]]);
+    api.permission.sandboxCapability.mockResolvedValueOnce({
+      platform: "darwin" as NodeJS.Platform,
+      enabled: false,
+      available: true,
+      kind: "full" as const,
+      reason: "summary",
+      potentialReason: "platform can confine",
+      runtime: { available: false, kind: "none" as const, reason: "shell sandbox not requested at boot" },
+      workerRuntime: { available: true, kind: "full" as const, reason: "ASRT (Seatbelt) active" },
+      confines: { filesystem: true, process: true, network: true },
+    });
+
+    await act(async () => {
+      render(<PermissionsTab />);
+    });
+
+    expect(screen.getByTestId("os-sandbox-runtime-reason")).toHaveTextContent(t("permissionsTab.osSandboxKindNone"));
+    expect(screen.getByTestId("worker-confinement-runtime-reason")).toHaveTextContent(t("permissionsTab.osSandboxKindFull"));
+  });
+
+  it("says the environment is deciding worker confinement when its variable is set", async () => {
+    installApi([[]], ["features.pluginWorkerConfinement"]);
+
+    await act(async () => {
+      render(<PermissionsTab />);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("worker-confinement-forced")).toHaveTextContent("AVE_PLUGIN_WORKER_CONFINEMENT");
+    });
+    expect(screen.queryByTestId("os-sandbox-forced")).toBeNull();
+  });
+
   it("renders platform potential, runtime reason, and restart note as separate branches", async () => {
     const api = installApi([[]]);
     api.permission.sandboxCapability.mockResolvedValueOnce({
@@ -1163,6 +1250,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
   function installApiWithWindows(overrides: {
     sandboxWindowsInstall?: ReturnType<typeof vi.fn>;
     sandboxWindowsStatus?: ReturnType<typeof vi.fn>;
+    togglesOff?: boolean;
   } = {}) {
     const windowsStatus = {
       applicable: true,
@@ -1231,7 +1319,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     };
     (globalThis as unknown as { window: typeof window }).window.ave = ave as never;
     // osToolSandbox=true so the component loads into the Windows consent state
-    const api = installMockAveApi({ settings: { features: { osToolSandbox: true } } });
+    const api = installMockAveApi({ settings: { features: { osToolSandbox: overrides.togglesOff !== true } } });
     return { ave, updateSettings: api.updateSettings! };
   }
 
@@ -1244,7 +1332,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
       platform: "win32", enabled: true, available: true, kind: "partial", reason: raw,
       potentialReason: raw, runtime: { available: false, kind: "none", reason: raw },
       confines: { filesystem: true, process: false, network: true },
-      boot: { action: "degrade", reason: "degrade-windows-not-installed", onSignal: "default-settings", dependencyErrors: [raw] },
+      boot: { action: "degrade", reason: "degrade-windows-not-installed", onSignal: "default-settings", causes: ["windows-setup-incomplete"] },
     } as never);
     await act(async () => { render(<PermissionsTab />); });
     expect(document.body.textContent).not.toContain("EACCES");
@@ -1261,6 +1349,223 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     await act(async () => { fireEvent.click(screen.getByTestId("os-sandbox-windows-install")); });
     expect(document.body.textContent).not.toContain("EACCES");
     expect(document.body.textContent).not.toContain("AppData");
+  });
+
+  it("shows MXC shells, the Bash note and unconfined extensions when ASRT runs only as the containers' proxy", async () => {
+    const { ave } = installApiWithWindows();
+    ave.permission.sandboxCapability.mockResolvedValueOnce({
+      platform: "win32", enabled: true, available: true, kind: "partial", reason: "r", potentialReason: "r",
+      runtime: { available: true, kind: "none", reason: "r" },
+      confines: { filesystem: true, process: false, network: true },
+      boot: { action: "activate", reason: "activate-windows-mxc-proxy-only", onSignal: "default-settings", causes: [] },
+      windowsSubstrate: {
+        mxc: { state: "available" }, windowsBuild: "10.0.26300.9711", srtWinReady: false,
+        shells: "mxc", extensions: "none", shellEgressIdentity: "kernel-channel", extensionEgressIdentity: "shared",
+      },
+    } as never);
+    await act(async () => { render(<PermissionsTab />); });
+    const block = screen.getByTestId("os-sandbox-windows-substrate");
+    expect(block.dataset.shells).toBe("mxc");
+    expect(screen.getByTestId("os-sandbox-windows-substrate-shells").textContent).toBe(t("permissionsTab.osSandboxWindowsShellsMxc"));
+    expect(screen.getByTestId("os-sandbox-windows-bash-note")).toBeTruthy();
+    expect(screen.getByTestId("os-sandbox-windows-substrate-extensions").textContent).toBe(t("permissionsTab.osSandboxWindowsExtensionsNone"));
+    expect(screen.queryByTestId("os-sandbox-windows-mxc-reason")).toBeNull();
+    expect(screen.queryByTestId("os-sandbox-windows-shared-identity")).toBeNull();
+  });
+
+  it.each([
+    ["srt-win-not-found", "permissionsTab.osSandboxWindowsInstallFailedHelperMissing"],
+    ["srt-win-integrity-mismatch", "permissionsTab.osSandboxWindowsHelperIntegrityError"],
+  ] as const)("shows %s and restores setup actions on a fresh status", async (helperError, messageKey) => {
+    const sandboxWindowsStatus = vi.fn().mockResolvedValueOnce({
+      applicable: true, userState: null, wfpState: null, ready: false,
+      helperError, instructions: "",
+    }).mockResolvedValueOnce({
+      applicable: true, userState: "absent", wfpState: "absent", ready: false, instructions: "",
+    });
+    const { ave } = installApiWithWindows({ sandboxWindowsStatus });
+    ave.permission.sandboxCapability.mockResolvedValue({
+      platform: "win32", enabled: true, available: true, kind: "partial", reason: "r", potentialReason: "r",
+      runtime: { available: true, kind: "none", reason: "r" },
+      confines: { filesystem: true, process: false, network: true },
+      boot: { action: "activate", reason: "activate-windows-mxc-proxy-only", onSignal: "default-settings", causes: [] },
+      windowsSubstrate: {
+        mxc: { state: "available" }, windowsBuild: "10.0.26300", srtWinReady: false,
+        shells: "mxc", extensions: "none", shellEgressIdentity: "kernel-channel", extensionEgressIdentity: "shared",
+      },
+    } as never);
+    await act(async () => { render(<PermissionsTab />); });
+    expect(screen.getByTestId("os-sandbox-windows-helper-unavailable"))
+      .toHaveAttribute("data-error-code", helperError);
+    expect(screen.getByTestId("os-sandbox-windows-helper-unavailable"))
+      .toHaveTextContent(t(messageKey));
+    expect(screen.getByTestId("os-sandbox-windows-substrate-shells"))
+      .toHaveTextContent(t("permissionsTab.osSandboxWindowsShellsMxc"));
+    expect(screen.getByTestId("os-sandbox-windows-substrate-extensions"))
+      .toHaveTextContent(t("permissionsTab.osSandboxWindowsExtensionsNone"));
+    expect(screen.getByTestId("os-sandbox-toggle")).not.toBeDisabled();
+    expect(document.querySelector('[data-settings-section="permissions-network"]')).toBeInTheDocument();
+    expect(screen.queryByText(t("permissionsTab.errorLoadFailed"))).toBeNull();
+    expect(screen.queryByTestId("os-sandbox-windows-install")).toBeNull();
+    expect(ave.permission.sandboxWindowsInstall).not.toHaveBeenCalled();
+
+    cleanup();
+    await act(async () => { render(<PermissionsTab />); });
+    expect(screen.queryByTestId("os-sandbox-windows-helper-unavailable")).toBeNull();
+    expect(screen.getByTestId("os-sandbox-windows-consent")).toBeInTheDocument();
+    expect(screen.getByTestId("os-sandbox-windows-install")).toBeInTheDocument();
+  });
+
+  it.each([
+    ["en", "icacls-failed"], ["ko", "icacls-failed"],
+    ["en", "read-back-failed"], ["ko", "read-back-failed"],
+    ["en", "not-protected"], ["ko", "not-protected"],
+    ["en", "extra-principals"], ["ko", "extra-principals"],
+    ["en", "reparse-point"], ["ko", "reparse-point"],
+  ] as const)("names the private directory and reason in %s for %s without elevated setup", async (locale, category) => {
+    const previousLocale = getLocale();
+    setLocale(locale);
+    try {
+      const path = String.raw`D:\private-state\secrets`;
+      const { ave } = installApiWithWindows({
+        sandboxWindowsStatus: vi.fn().mockResolvedValue({
+          applicable: true, userState: null, wfpState: null, ready: false,
+          homePrivacyError: { path, category, extraPrincipals: [{ sid: "S-1-1-0", account: "Everyone" }, { sid: "S-1-5-21-100-200-300-9999" }] }, instructions: "",
+        }),
+      });
+      await act(async () => { render(<PermissionsTab />); });
+      const notice = screen.getByTestId("os-sandbox-windows-home-privacy-error");
+      expect(notice).toHaveAttribute("role", "alert");
+      expect(notice).toHaveTextContent(path);
+      expect(notice).toHaveTextContent("AVE_HOME");
+      expect(screen.getByRole("button", { name: t("permissionsTab.homePrivacyApproveForSession") })).toBeInTheDocument();
+      if (category === "extra-principals") {
+        expect(notice).toHaveTextContent("S-1-1-0 (Everyone)");
+        expect(notice).toHaveTextContent("S-1-5-21-100-200-300-9999");
+        expect(notice).toHaveTextContent(t("permissionsTab.homePrivacyExtraPrincipals", { principals: "S-1-1-0 (Everyone), S-1-5-21-100-200-300-9999" }));
+      } else {
+        expect(notice).toHaveTextContent({
+          "icacls-failed": t("permissionsTab.homePrivacyIcaclsFailed"),
+          "read-back-failed": t("permissionsTab.homePrivacyReadBackFailed"),
+          "not-protected": t("permissionsTab.homePrivacyNotProtected"),
+          "reparse-point": t("permissionsTab.homePrivacyReparsePoint"),
+        }[category]);
+      }
+      expect(screen.queryByTestId("os-sandbox-windows-install")).toBeNull();
+      expect(ave.permission.sandboxWindowsInstall).not.toHaveBeenCalled();
+    } finally {
+      setLocale(previousLocale);
+    }
+  });
+
+  it("requests a session approval once and reads the main-owned OFF status again after a reload", async () => {
+    const status = { applicable: true, userState: null, wfpState: null, ready: false, instructions: "",
+      homePrivacyError: { path: "D:/private-state/secrets", category: "read-back-failed", approvedForSession: false } };
+    const readStatus = vi.fn(async () => structuredClone(status));
+    const { ave } = installApiWithWindows({ sandboxWindowsStatus: readStatus });
+    const approve = vi.fn(async () => { status.homePrivacyError.approvedForSession = true; return { ok: true }; });
+    Object.assign(ave.permission, { approveExtensionsWithoutIsolation: approve });
+    await act(async () => { render(<PermissionsTab />); });
+    expect(approve).not.toHaveBeenCalled();
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: t("permissionsTab.homePrivacyApproveForSession") })); });
+    expect(approve).toHaveBeenCalledTimes(1);
+    expect(screen.getByText(t("permissionsTab.homePrivacyApprovedForSession"))).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: t("permissionsTab.homePrivacyApproveForSession") })).toBeNull();
+    cleanup();
+    await act(async () => { render(<PermissionsTab />); });
+    expect(approve).toHaveBeenCalledTimes(1);
+    expect(screen.getByText(t("permissionsTab.homePrivacyApprovedForSession"))).toBeInTheDocument();
+  });
+
+  it.each([
+    ["srt-win-not-found", "windows-sandbox-missing"],
+    ["srt-win-integrity-mismatch", "windows-sandbox-integrity-failed"],
+  ] as const)("shows %s from a boot opt-in while the toggles are off", async (helperError, cause) => {
+    const { ave } = installApiWithWindows({
+      togglesOff: true,
+      sandboxWindowsStatus: vi.fn(async () => ({
+        applicable: true, userState: null, wfpState: null, ready: false, helperError, instructions: "",
+      })),
+    });
+    const capability = {
+      platform: "win32", enabled: false, available: false, kind: "none", reason: "r", potentialReason: "r",
+      runtime: { available: false, kind: "none", reason: "r" },
+      confines: { filesystem: false, process: false, network: false },
+      boot: { action: "degrade", reason: "degrade-windows-not-installed", onSignal: "explicit-env", causes: [cause] },
+    };
+    ave.permission.sandboxCapability.mockResolvedValue(capability as never);
+    await act(async () => { render(<PermissionsTab />); });
+    expect(screen.getByTestId("os-sandbox-toggle")).toHaveAttribute("aria-checked", "false");
+    expect(screen.getByTestId("os-sandbox-boot-degraded")).toBeInTheDocument();
+    expect(screen.getByTestId("os-sandbox-windows-helper-unavailable"))
+      .toHaveAttribute("data-error-code", helperError);
+
+    // Without a helper cause at boot, toggles off keep the notice hidden.
+    cleanup();
+    ave.permission.sandboxCapability.mockResolvedValue({ ...capability, boot: null } as never);
+    await act(async () => { render(<PermissionsTab />); });
+    expect(screen.queryByTestId("os-sandbox-windows-helper-unavailable")).toBeNull();
+  });
+
+  it("says the container check is still running instead of claiming MXC or a failure", async () => {
+    const { ave } = installApiWithWindows();
+    ave.permission.sandboxCapability.mockResolvedValueOnce({
+      platform: "win32", enabled: true, available: true, kind: "partial", reason: "r", potentialReason: "r",
+      runtime: { available: true, kind: "none", reason: "r" },
+      confines: { filesystem: true, process: false, network: true },
+      boot: { action: "activate", reason: "activate-windows-mxc-proxy-only", onSignal: "default-settings", causes: [] },
+      windowsSubstrate: {
+        mxc: { state: "checking" }, windowsBuild: "10.0.26300", srtWinReady: false,
+        shells: "approved-host", extensions: "none", shellEgressIdentity: "shared", extensionEgressIdentity: "shared",
+      },
+    } as never);
+    await act(async () => { render(<PermissionsTab />); });
+    expect(screen.getByTestId("os-sandbox-windows-substrate").dataset.mxc).toBe("checking");
+    expect(screen.getByTestId("os-sandbox-windows-substrate-shells").textContent).toBe(t("permissionsTab.osSandboxWindowsShellsChecking"));
+    expect(screen.queryByTestId("os-sandbox-windows-mxc-reason")).toBeNull();
+    expect(screen.queryByTestId("os-sandbox-windows-bash-note")).toBeNull();
+  });
+
+  it("says MXC is available but unused when the sandbox did not start", async () => {
+    const { ave } = installApiWithWindows();
+    ave.permission.sandboxCapability.mockResolvedValueOnce({
+      platform: "win32", enabled: true, available: true, kind: "partial", reason: "r", potentialReason: "r",
+      runtime: { available: false, kind: "none", reason: "r" },
+      confines: { filesystem: true, process: false, network: true },
+      boot: { action: "degrade", reason: "degrade-windows-init-failed", onSignal: "default-settings", causes: ["init-failed"] },
+      windowsSubstrate: {
+        mxc: { state: "available" }, windowsBuild: "10.0.26300.9711", srtWinReady: true,
+        shells: "none", extensions: "none", shellEgressIdentity: "shared", extensionEgressIdentity: "shared",
+      },
+    } as never);
+    await act(async () => { render(<PermissionsTab />); });
+    expect(screen.getByTestId("os-sandbox-windows-mxc-unused").textContent)
+      .toBe(t("permissionsTab.osSandboxWindowsMxcUnused", { build: "10.0.26300.9711" }));
+    expect(screen.queryByTestId("os-sandbox-windows-mxc-reason")).toBeNull();
+  });
+
+  it("says why MXC is unavailable and that extensions share one proxy identity", async () => {
+    const { ave } = installApiWithWindows();
+    ave.permission.sandboxCapability.mockResolvedValueOnce({
+      platform: "win32", enabled: true, available: true, kind: "partial", reason: "r", potentialReason: "r",
+      runtime: { available: true, kind: "partial", reason: "r" },
+      confines: { filesystem: true, process: false, network: true },
+      boot: { action: "activate", reason: "deps-present", onSignal: "default-settings", causes: [] },
+      windowsSubstrate: {
+        mxc: { state: "unavailable", reason: "tier-unsupported" }, windowsBuild: "10.0.22631.4317", srtWinReady: true,
+        shells: "approved-host", extensions: "srt-win", shellEgressIdentity: "shared", extensionEgressIdentity: "shared",
+      },
+    } as never);
+    await act(async () => { render(<PermissionsTab />); });
+    expect(screen.getByTestId("os-sandbox-windows-substrate-shells").textContent).toBe(t("permissionsTab.osSandboxWindowsShellsApprovedHost"));
+    const reason = screen.getByTestId("os-sandbox-windows-mxc-reason");
+    expect(reason.dataset.reason).toBe("tier-unsupported");
+    expect(reason.textContent).toBe(t("permissionsTab.osSandboxWindowsMxcUnavailable", {
+      reason: t("permissionsTab.osSandboxWindowsMxcReasonTierUnsupported"),
+      build: "10.0.22631.4317",
+    }));
+    expect(screen.getByTestId("os-sandbox-windows-shared-identity").textContent).toBe(t("permissionsTab.osSandboxWindowsSharedIdentity"));
+    expect(screen.queryByTestId("os-sandbox-windows-bash-note")).toBeNull();
   });
 
   it("does not claim a timeout or an unverified install proves isolation or an unchanged machine", async () => {

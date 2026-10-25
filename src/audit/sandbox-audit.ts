@@ -24,6 +24,7 @@ import type { SandboxKind, SandboxCapability } from "../permissions/sandbox-capa
 import type { UserApprovalVerdict } from "../shared/permissions-events.js";
 import type { ToolTrustOrigin } from "../tools/types.js";
 import type { RiskLevel } from "../shared/permission-review-status.js";
+import type { EgressDenial, EgressDenialSource } from "../shared/egress-denials.js";
 
 // ─── Event shapes ─────────────────────────────────────────────────────────────
 
@@ -170,4 +171,112 @@ export function buildSandboxAuditEntry(params: {
     sandbox: params.sandbox,
     reviewer: params.reviewer,
   };
+}
+
+// ─── SandboxEgressDenyAuditEntry ─────────────────────────────────────────────
+
+/**
+ * Who opened a connection the ASRT proxy refused, as the audit row records
+ * it. Mirrors `EgressInvocationOwner` (`permissions/egress-invocations.ts`)
+ * without the token, which is a live label and never written down, plus
+ * "unattributed" for a deny whose key no live invocation holds: a forged or
+ * stale key, or a wrap that carried none.
+ */
+export type SandboxEgressDenyInvocation = EgressDenialSource;
+
+/**
+ * One row per ASRT proxy deny, on the same daily sandbox channel as
+ * {@link SandboxAuditEntry}. `entryKind` is the discriminator: the
+ * tool-execution rows carry `reviewer` and no `entryKind`.
+ */
+export interface SandboxEgressDenyAuditEntry {
+  timestamp: string; // ISO 8601, when ASRT recorded the deny
+  entryKind: "egress-deny";
+  sandbox: {
+    kind: SandboxKind;
+    confidence: SandboxCapability["confidence"];
+    /** Exactly one `egress_attempted` event with `blocked: true`. */
+    events: [Extract<SandboxEvent, { type: "egress_attempted" }>];
+  };
+  invocation: SandboxEgressDenyInvocation;
+  deny: EgressDenial;
+}
+
+export function buildSandboxEgressDenyAuditEntry(params: {
+  timestamp: Date;
+  sandbox: { kind: SandboxKind; confidence: SandboxCapability["confidence"] };
+  invocation: SandboxEgressDenyInvocation;
+  deny: SandboxEgressDenyAuditEntry["deny"];
+}): SandboxEgressDenyAuditEntry {
+  const target = params.deny.port === null ? params.deny.host : `${params.deny.host}:${params.deny.port}`;
+  return {
+    timestamp: params.timestamp.toISOString(),
+    entryKind: "egress-deny",
+    sandbox: {
+      kind: params.sandbox.kind,
+      confidence: params.sandbox.confidence,
+      events: [{ type: "egress_attempted", blocked: true, target }],
+    },
+    invocation: params.invocation,
+    deny: params.deny,
+  };
+}
+
+// ─── SandboxEgressDecisionAuditEntry ─────────────────────────────────────────
+
+/** How the egress ask callback reached a decision. */
+export type EgressDecisionBasis =
+  /** A plugin worker reached a host its extension declares (or the host's model endpoint). */
+  | "extension-allowlist"
+  /** A shell reached a host a standing grant covers. */
+  | "grant"
+  /** The person was asked. */
+  | "prompt"
+  /** Refused before any lookup: unattributed, wrong kind of identity, or a rule. */
+  | "policy"
+  /**
+   * Refused by the sandbox proxy itself before the callback was asked (a
+   * deny-listed or malformed host, another invocation's listener, a name
+   * resolving to this host through an upstream proxy). Written by the deny
+   * monitor from ASRT's violation line.
+   */
+  | "sandbox";
+
+/**
+ * One row per decision the egress ask callback makes, on the same daily
+ * sandbox channel. A refusal also produces an `egress-deny` row through
+ * ASRT's violation store; this row adds how it was decided and, for an ask,
+ * what the person chose.
+ */
+export interface SandboxEgressDecisionAuditEntry {
+  timestamp: string;
+  entryKind: "egress-decision";
+  invocation: SandboxEgressDenyInvocation;
+  /** The destination, host DLP-masked like the deny rows. */
+  destination: { host: string; port: number | null };
+  decision: "allow" | "deny";
+  basis: EgressDecisionBasis;
+  /** The grant scope that matched, or the one the person picked; null otherwise. */
+  scope: "once" | "conversation" | "tab" | "workspace" | "always" | null;
+  /** Why a refusal happened; null for an allow. */
+  reason: string | null;
+}
+
+// ─── SandboxEgressRouteAuditEntry ────────────────────────────────────────────
+
+/**
+ * One row when the upstream proxy configuration offered entries the sandbox
+ * passed over for a destination (a SOCKS proxy, a malformed PAC entry, an
+ * unusable environment URL). Written once per lookup, not per connection
+ * (lookups are cached briefly). Host and entries are DLP-masked; entries
+ * never carry credentials (PAC answers have none, and environment entries
+ * are reported by variable name).
+ */
+export interface SandboxEgressRouteAuditEntry {
+  timestamp: string;
+  entryKind: "egress-route";
+  destination: { host: string; port: number };
+  /** Where the routes came from (`UpstreamProxySource`). */
+  source: string;
+  skipped: string[];
 }

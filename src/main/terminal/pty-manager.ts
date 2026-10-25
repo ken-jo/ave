@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { basename, isAbsolute, join } from "node:path";
 import type { IPty } from "node-pty";
 import { createLogger } from "../../lib/logger.js";
+import { assertSrtWinSpawnIntegrity } from "../../permissions/srt-win-integrity.js";
 import { shellQuote } from "../../lib/shell-resolver.js";
 import { buildHostShellChildEnv, buildSandboxedChildEnv } from "../../tools/safe-env.js";
 import {
@@ -13,9 +14,10 @@ import {
   wrapTerminalCommand,
   wrapWorkerCommand,
   cleanupAsrtSandboxAfterCommand,
-  isAsrtSandboxActive,
+  isShellSandboxActive,
   sandboxTempEnvLaunch,
 } from "../../permissions/asrt-sandbox.js";
+import { openEgressInvocation } from "../../permissions/egress-invocations.js";
 import { getSandboxGeneration, isActiveSandboxShellContained } from "../../permissions/sandbox-capability.js";
 import { deriveSandboxWritePaths } from "../../permissions/sandbox-write-jail.js";
 import { canonicalizePathForMatch, caseFoldForMatch } from "../../permissions/sensitive-paths.js";
@@ -23,7 +25,7 @@ import { isPathAllowed } from "../../permissions/allowed-directories.js";
 import { listAuthorizedWorkspaceProjects } from "../project-root-authorization.js";
 import { createSandboxProcessHome } from "../../permissions/sandbox-process-home.js";
 import { errorMessage } from "../../shared/error-message.js";
-import { installShellIntegration } from "./shell-integration.js";
+import { installShellIntegration, TERMINAL_EDIT_LINE_QUERY } from "./shell-integration.js";
 import {
   forwardResizeToSandboxedPtyRelay,
   readSandboxedShell,
@@ -107,6 +109,11 @@ interface TerminalSession {
   ringBytes: number;
   disposeData: () => void;
   disposeExit: () => void;
+  /**
+   * Aborted when the tab closes or its shell ends: denies the tab's pending
+   * egress asks at once instead of leaving their banners to time out.
+   */
+  egressAbort?: AbortController;
   forceKillTimer: ReturnType<typeof setTimeout> | null;
   closing: boolean;
   exited: boolean;
@@ -145,7 +152,7 @@ function sessionInfo(session: TerminalSession): TerminalSessionInfo {
 }
 
 function agentSession(ref: TerminalSessionRef, ownerWindowId: number): TerminalSession | undefined {
-  if (ref.lane !== "agent" || process.platform === "win32" || !isAsrtSandboxActive() || !isActiveSandboxShellContained()) return undefined;
+  if (ref.lane !== "agent" || process.platform === "win32" || !isShellSandboxActive() || !isActiveSandboxShellContained()) return undefined;
   const session = sessions.get(terminalLaneKey(ref));
   return session && !session.exited && !session.closing && session.ownerWindowId === ownerWindowId
     && sameTerminalSession(session.info, ref) && session.info.lane === "agent"
@@ -247,10 +254,9 @@ function pushRing(session: TerminalSession, chunk: string): void {
 }
 
 /**
- * Spawn (or, if a session already exists for `tabId`, REPLAY) an interactive
- * terminal. Idempotent per tab: a renderer remount re-invokes spawn with the
- * same `tabId` and receives the buffered scrollback rather than a fresh shell —
- * the PTY survives ChatSidePanel unmount (redesign "state survives" goal).
+ * Spawn or replay one interactive terminal lane. A renderer remount with the
+ * same tab and lane receives buffered scrollback rather than a fresh shell;
+ * the PTY survives view unmount.
  */
 export function spawnTerminal(options: SpawnTerminalOptions): Promise<SpawnTerminalResult> {
   return spawnTerminalBefore(options, Date.now() + RETIRING_WAIT_MS);
@@ -323,7 +329,7 @@ function spawnTerminalBefore(options: SpawnTerminalOptions, deadline: number): P
   // Idempotent replay for a remounting renderer.
   const existing = sessions.get(key);
   if (existing && !existing.exited) {
-    if (existing.info.lane === "agent" && (process.platform === "win32" || !isAsrtSandboxActive()
+    if (existing.info.lane === "agent" && (process.platform === "win32" || !isShellSandboxActive()
       || !isActiveSandboxShellContained() || existing.info.sandboxGeneration !== getSandboxGeneration())) {
       return Promise.resolve({ ok: false, reason: "not-shell-contained", message: "agent terminal containment changed; close and reopen the tab" });
     }
@@ -389,7 +395,7 @@ async function spawnNewTerminal(
   // the active OS sandbox contains shell effects (filesystem + process). No
   // plain-spawn fallback (No-Fallback rule) — a terminal outside shell
   // confinement is strictly more dangerous than a one-shot bash tool. ──
-  if (process.platform === "win32" || !isAsrtSandboxActive() || !isActiveSandboxShellContained()) {
+  if (process.platform === "win32" || !isShellSandboxActive() || !isActiveSandboxShellContained()) {
     return {
       ok: false,
       reason: "not-shell-contained",
@@ -562,11 +568,24 @@ async function spawnNewTerminal(
       ownTty = ttyHandoff.ownPtySlavePath(trampolinePty);
     }
 
+    // The tab's egress token, for the life of this shell: every proxy deny of
+    // the shell and its children is audited under the tab, and a connection to
+    // a host no grant covers is asked about in the tab's banner. Releasing it
+    // (the shell ended: the tab closed) drops the tab's "This tab" grants.
+    const egressAbort = new AbortController();
+    const egress = openEgressInvocation(
+      { kind: "terminal", tabId },
+      { abortSignal: egressAbort.signal },
+    );
+    const releaseEgress = addCleanup(() => {
+      egressAbort.abort(new Error("terminal shell ended"));
+      egress.release();
+    });
     const { argv, env } =
       ownTty === undefined
-        ? await wrapWorkerCommand(cmdline, { filesystem, abortSignal: owner.abort.signal })
-        : await wrapTerminalCommand(cmdline, { filesystem, ownTty, abortSignal: owner.abort.signal });
-    const cleanupWrap = addCleanup(() => { void cleanupAsrtSandboxAfterCommand(); });
+        ? await wrapWorkerCommand(cmdline, { filesystem, abortSignal: owner.abort.signal, commandId: egress.token })
+        : await wrapTerminalCommand(cmdline, { filesystem, ownTty, abortSignal: owner.abort.signal, commandId: egress.token });
+    const cleanupWrap = addCleanup(() => { void cleanupAsrtSandboxAfterCommand(); releaseEgress(); });
     owner.abort.signal.throwIfAborted();
 
     const [cmd, ...wrappedArgs] = argv;
@@ -594,9 +613,13 @@ async function spawnNewTerminal(
     } else {
       const { spawn: ptySpawn } = await loadPty();
       owner.abort.signal.throwIfAborted();
+      assertSrtWinSpawnIntegrity(cmd);
       pty = ptySpawn(cmd, wrappedArgs, { ...ptyOptions, env: childEnv });
       addCleanup(() => pty.kill("SIGKILL"));
     }
+    // node-pty starts the shell in its own session, so its pid is the
+    // process group the sandbox keeps the ended tab's listener port for.
+    if (pty.pid > 1) egress.noteProcessGroup(pty.pid);
 
     let markGone!: () => void;
     const gone = new Promise<void>((resolve) => { markGone = resolve; });
@@ -612,6 +635,7 @@ async function spawnNewTerminal(
       ringBytes: 0,
       disposeData: () => {},
       disposeExit: () => {},
+      egressAbort,
       forceKillTimer: null,
       closing: false,
       exited: false,
@@ -676,7 +700,7 @@ async function spawnNewTerminal(
 
     owner.abort.signal.throwIfAborted();
     pendingSession = undefined;
-    if (sandboxGeneration !== getSandboxGeneration() || !isAsrtSandboxActive() || !isActiveSandboxShellContained()) throw new Error("terminal sandbox changed during launch");
+    if (sandboxGeneration !== getSandboxGeneration() || !isShellSandboxActive() || !isActiveSandboxShellContained()) throw new Error("terminal sandbox changed during launch");
     sessions.set(key, session);
     registerTerminalBlockTracker(session.info, session.blocks, options.ownerWindowId ?? null);
     if (session.ring.length > 0) _emit("data", { ...session.info, chunk: session.ring.join("") }, session.ownerWindowId);
@@ -831,12 +855,24 @@ function waitForTerminalSpawn(promise: Promise<SpawnTerminalResult>, signal?: Ab
 }
 
 /**
- * Whether `ownerWindowId` may act on `tabId`: no live or starting terminal has
- * that id, or the one that has it is this window's. A terminal being closed
- * (its tab or its window went away) belongs to no one any more.
+ * The authenticated window that reserved this logical tab, or undefined when
+ * no tab is reserved. A null owner represents a host-owned tab.
  */
 export function terminalTabOwnerWindow(tabId: string): number | null | undefined {
   return logicalTabs.get(tabId)?.ownerWindowId;
+}
+
+/**
+ * The window that owns a live (or starting) terminal tab: where that tab's
+ * egress asks are drawn. Undefined when no shell runs or starts under the id;
+ * null when the shell belongs to no window.
+ */
+export function terminalOwnerWindowId(tabId: string): number | null | undefined {
+  const session = sessions.get(terminalLaneKey({ tabId, lane: "agent" }));
+  if (session && !session.exited && !session.closing) return session.ownerWindowId;
+  const inFlight = terminalSpawnsInFlight.get(terminalLaneKey({ tabId, lane: "agent" }));
+  if (inFlight && !inFlight.cancelled) return inFlight.ownerWindowId;
+  return undefined;
 }
 
 export function terminalOwnedBy(tabId: string, ownerWindowId: number | null): boolean {
@@ -1035,13 +1071,14 @@ function waitForFreshPrompt(blocks: TerminalBlockTracker, since: number, timeout
  *     for one more key before it draws that prompt, so Ctrl-C is sent again
  *     until it does ({@link resetToFreshPrompt}).
  *  3. Wait for that fresh prompt, and check it is still idle, untouched and
- *     in the same directory.
+ *     in the same directory, then require its actual editable buffer to be empty.
  *  4. Write the line as a bracketed paste (`ESC[200~ … ESC[201~`), which the
  *     line editor inserts as text and never reads as keys. The shell reported
  *     bracketed paste on, with the builtin paste widgets, at this prompt
  *     (promptState).
- *  5. Press Enter only once the edit line the shell echoes is exactly the
- *     approved line and the user pressed no key; otherwise clear it (Ctrl-C).
+ *  5. Press Enter only once both the echo and a fresh private editor-buffer
+ *     acknowledgement match the approved line and the user pressed no key;
+ *     otherwise clear it (Ctrl-C) only while the untouched shell remains safe.
  *
  * Returns the id the command's block will have at least, so the caller can
  * wait for it, and compare the command the shell ran with the approved one.
@@ -1118,6 +1155,9 @@ export async function typeLineAtPrompt(
   };
   const before = check();
   if (before || !blocks) return before ?? notTyped("no-terminal", target.missing);
+  if (!blocks.supportsEditLineQuery()) {
+    return notTyped("edit-line-mismatch", "the terminal cannot confirm its editable command buffer");
+  }
 
   // 1. The operating system agrees: the shell holds the terminal, in the approved directory.
   const verified = await target.verify();
@@ -1133,24 +1173,44 @@ export async function typeLineAtPrompt(
     return notTyped("cwd-mismatch", "the terminal's shell changed directory while the command was being prepared");
   }
 
-  // 4. Recheck the OS after the wait, immediately before the paste.
+  // 4. Recheck the OS and confirm the editor is empty before pasting.
   const beforeWrite = await safeToWrite() ?? check();
   if (beforeWrite) return beforeWrite;
   const prompt = blocks.promptEndCount();
+  const empty = await requestEditLine(blocks, target, prompt, interrupted);
+  if (target.signal?.aborted) return notTyped("aborted", "terminal command preparation was cancelled; no further input was sent");
+  if (!empty || empty.line !== "" || interrupted()) {
+    if (target.isLive() && !await safeToWrite()) target.write("\u0003");
+    return notTyped("edit-line-mismatch", "the terminal did not confirm an empty editable command buffer; no command was pasted");
+  }
+  const beforePaste = await safeToWrite() ?? check();
+  if (beforePaste) return beforePaste;
+  if (blocks.promptEndCount() !== prompt || blocks.editLineReport()?.generation !== empty.generation) {
+    return notTyped("edit-line-mismatch", "the terminal prompt or editable buffer changed before pasting");
+  }
   target.write(`\u001b[200~${line}\u001b[201~`);
-  // 5. Enter only once the line editor shows exactly the approved line, as
-  // pasted: a widget that rewrites pasted text (bracketed-paste-magic,
-  // url-quote-magic) or a key the user pressed in between shows here.
+  // 5. Confirm both the display and the editor's actual buffer before Enter.
   const shown = await waitForEditLine(blocks, prompt, line, EDIT_LINE_TIMEOUT_MS, target.signal);
   if (target.signal?.aborted) return notTyped("aborted", "terminal command preparation was cancelled; Enter was not pressed");
   if (!shown || !target.isLive() || interrupted()) {
     if (target.isLive() && !await safeToWrite()) target.write("\u0003");
     return notTyped("edit-line-mismatch", "the terminal's line editor did not show exactly the approved line after it was pasted, so Enter was not pressed");
   }
+  const beforeQuery = await safeToWrite();
+  if (beforeQuery) return beforeQuery;
+  const confirmed = await requestEditLine(blocks, target, prompt, interrupted);
+  if (target.signal?.aborted) return notTyped("aborted", "terminal command preparation was cancelled; Enter was not pressed");
+  if (!confirmed || confirmed.line !== line || interrupted()) {
+    if (target.isLive() && !await safeToWrite()) target.write("\u0003");
+    return notTyped("edit-line-mismatch", "the terminal's editable command buffer did not match the approved line; Enter was not pressed");
+  }
   const beforeEnter = await safeToWrite();
   if (beforeEnter) return beforeEnter;
-  if (blocks.promptEndCount() !== prompt || blocks.typedSincePromptEnd() || blocks.editLineText() !== line) {
-    return notTyped("edit-line-mismatch", "the terminal prompt or edit line changed before Enter; no further input was sent");
+  // The query widget can repaint the display without changing its buffer.
+  // Echo was checked before the query; the fresh report is the buffer proof.
+  if (blocks.promptEndCount() !== prompt || blocks.typedSincePromptEnd()
+    || blocks.editLineReport()?.generation !== confirmed.generation || blocks.editLineReport()?.line !== line) {
+    return notTyped("edit-line-mismatch", "the terminal prompt or editor acknowledgement changed before Enter; no further input was sent");
   }
   const firstBlockId = blocks.nextBlockId();
   target.write("\r");
@@ -1219,6 +1279,30 @@ async function resetToFreshPrompt(
 
 /** How long typing waits for the pasted line to show in the line editor. */
 const EDIT_LINE_TIMEOUT_MS = 2_000;
+
+/** Ask the owned shell editor for its buffer, rather than infer it from display echo. */
+async function requestEditLine(
+  blocks: TerminalBlockTracker,
+  target: PromptTypingTarget,
+  prompt: number,
+  interrupted: () => TypeTerminalCommandResult | null,
+): Promise<{ readonly generation: number; readonly line: string } | null> {
+  const state = blocks.promptState();
+  if (!blocks.supportsEditLineQuery() || !target.isLive() || interrupted()
+    || blocks.promptEndCount() !== prompt || blocks.typedSincePromptEnd()
+    || (state !== "ready" && state !== "pending-input")) return null;
+  const generation = blocks.editLineReportGeneration();
+  target.write(TERMINAL_EDIT_LINE_QUERY);
+  const deadline = Date.now() + EDIT_LINE_TIMEOUT_MS;
+  for (;;) {
+    if (!target.isLive() || interrupted() || blocks.promptEndCount() !== prompt
+      || !blocks.supportsEditLineQuery() || blocks.typedSincePromptEnd()) return null;
+    const report = blocks.editLineReport();
+    if (report && report.generation > generation) return report;
+    if (Date.now() >= deadline) return null;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
 
 /**
  * Wait until the prompt typed at (`prompt`, its end count) shows exactly
@@ -1382,6 +1466,8 @@ function killTerminalLane(key: string): void {
   const session = sessions.get(key);
   if (!session || session.closing) return;
   session.closing = true;
+  // The tab is closing: its banners go now, not when the shell has exited.
+  session.egressAbort?.abort(new Error("terminal tab closed"));
   session.disposeData();
   try {
     if (!session.exited) session.pty.kill();
@@ -1407,7 +1493,7 @@ function killTerminalLane(key: string): void {
   }, 3_000);
 }
 
-/** Force-kill every live terminal (app shutdown). Returns the count killed. */
+/** Close every logical tab through ordinary escalation; return live lanes closed. */
 export function killAllTerminals(): number {
   const count = [...sessions.values()].filter((session) => !session.closing).length;
   for (const id of [...logicalTabs.keys()]) killTerminal(id);

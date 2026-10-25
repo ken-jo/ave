@@ -28,6 +28,12 @@ import { tmpdir } from "node:os";
 import { PassThrough } from "node:stream";
 import { join } from "node:path";
 
+// Lifecycle fixtures intercept the launch; real image verification has native tests.
+vi.mock("../srt-win-integrity.js", async (original) => ({
+  ...await original<typeof import("../srt-win-integrity.js")>(),
+  assertSrtWinSpawnIntegrity: vi.fn(),
+}));
+
 // ─── node:fs / node:fs/promises mocks (no real disk touch) ──
 const mkdirMock = vi.fn<(path: unknown, opts?: unknown) => Promise<undefined>>(() =>
   Promise.resolve(undefined),
@@ -103,6 +109,7 @@ const grantWindowsWorkerFilesystemAccessMock = vi.fn<
   }),
 );
 vi.mock("../asrt-sandbox.js", async (importOriginal) => ({
+  assertExtensionStartAllowed: (await importOriginal<typeof import("../asrt-sandbox.js")>()).assertExtensionStartAllowed,
   // The real launcher and naming; the directory itself is not created.
   sandboxTempEnvLaunch: (await importOriginal<typeof import("../asrt-sandbox.js")>()).sandboxTempEnvLaunch,
   ensureSandboxTempPrincipalDir: (principal: { kind: string; id: string }) => ({
@@ -110,6 +117,7 @@ vi.mock("../asrt-sandbox.js", async (importOriginal) => ({
     root: "/tmp/ave-test-sandbox-tmp",
   }),
   isAsrtSandboxActive: () => gateActive,
+  isPluginWorkerConfinementActive: () => gateActive,
   wrapWorkerCommand: (command: string, options?: unknown) =>
     wrapWorkerCommandMock(command, options),
   cleanupAsrtSandboxAfterCommand: () => cleanupMock(),

@@ -1,3 +1,4 @@
+import { canCreateSymlinks } from "../../../__tests__/support/symlink-capability.js";
 /**
  * The confinement half, against a REAL process.
  *
@@ -116,6 +117,7 @@ import {
   resolvePluginWorkerRunRoot,
 } from "../../plugin-storage-layout.js";
 import { aveHome } from "../../../shared/ave-home.js";
+import { TEST_WORKER_EGRESS_OWNER } from "../../../__tests__/support/egress-fixture.js";
 // Global setup builds this entry once with the shipped bundle boundary.
 // Every confinement case still spawns that real bundle through the real wrap.
 import { repositoryRoot } from "./child-entry-bundle.js";
@@ -141,7 +143,11 @@ import {
   type SandboxTempPrincipal,
 } from "../../../permissions/asrt-sandbox.js";
 import { sandboxCasesRun } from "./sandbox-cases.js";
-import { isPluginChildConfined } from "../../../permissions/sandbox-capability.js";
+import {
+  __resetSandboxRequestedAtBootForTest,
+  isPluginChildConfined,
+  setPluginWorkerConfinementRequestedAtBoot,
+} from "../../../permissions/sandbox-capability.js";
 import { connect } from "node:net";
 import { createServer } from "node:http";
 import { spawnConfinedPluginChild } from "../out-of-process-plugin.js";
@@ -150,6 +156,7 @@ import { runOneHookScript } from "../../../hooks/script-hook-runner.js";
 import { flattenAgentPluginsManifest } from "../../public-contract.js";
 import { createValidationHost } from "../../validate/validation-host.js";
 import { createRecordingHost } from "./host-protocol-recording-host.js";
+import { useVerifiedAveHomePrivacy } from "../../../__tests__/support/ave-home-privacy.js";
 import { assertProcessEntryAdmitted, resolveProcessLaunch } from "../../process-entry.js";
 import { PLUGIN_INSTANCE_METHODS } from "../plugin-instance-wire.js";
 import { bundledWrappedEnv, wrapBundledCommand } from "../../../sandbox/wrap-bundled-command.js";
@@ -166,6 +173,8 @@ import { verifyPluginIntegrity } from "../../runtime/index.js";
 import { installPythonSmoke, reportSmoke } from "./python-smoke-harness.js";
 import { execFile, execFileSync, spawn, spawnSync } from "node:child_process";
 import { promisify } from "node:util";
+
+useVerifiedAveHomePrivacy();
 
 const execFileAsync = promisify(execFile);
 
@@ -777,10 +786,14 @@ beforeEach(() => {
   // is what makes `<AVE_HOME>/secrets` a real denied path with a real file in
   // it rather than an assertion about the developer's own home directory.
   process.env.AVE_HOME = fixture.aveHome;
+  // Every child here is a plugin child: it is wrapped only while
+  // plugin-worker confinement was requested at boot and ASRT is active.
+  setPluginWorkerConfinementRequestedAtBoot(true);
 });
 
 afterEach(async () => {
   if (!retainedSandbox && isAsrtSandboxActive()) await resetAsrtSandbox();
+  __resetSandboxRequestedAtBootForTest();
   if (previousAveHome === undefined) delete process.env.AVE_HOME;
   else process.env.AVE_HOME = previousAveHome;
   if (previousSandboxTmpdir === undefined) delete process.env.CLAUDE_CODE_TMPDIR;
@@ -1025,10 +1038,8 @@ describe("the host decides how far a plugin child reaches", () => {
 
   it.runIf(process.platform === "win32")(
     "folds an 8.3 short spelling of a directory inside data/ into data/",
-    () => {
-      // 8.3 names are created on C: here; the fixture's temp directory may be
-      // on a volume without them, so this case builds its own tree on C:.
-      const base = mkdtempSync(join(homedir(), "AppData", "Local", "Temp", "ave-eight-dot-three-"));
+    (context) => {
+      const base = mkdtempSync(join(tmpdir(), "ave-eight-dot-three-"));
       try {
         const pluginRoot = join(base, "plugins", "acme-plugin-with-a-long-name");
         const pluginDataDir = join(pluginRoot, "data");
@@ -1036,11 +1047,13 @@ describe("the host decides how far a plugin child reaches", () => {
         mkdirSync(longWork, { recursive: true });
         // Verbatim: Node's argument quoting would hand cmd `\"` and the loop
         // would echo its input untouched.
-        const short = spawnSync("cmd.exe", [`/d /s /c "for %I in ("${longWork}") do @echo %~sI"`], {
+        const result = spawnSync("cmd.exe", [`/d /s /c "for %I in ("${longWork}") do @echo %~sI"`], {
           encoding: "utf8",
           windowsVerbatimArguments: true,
-        }).stdout.trim();
-        expect(short, "8.3 short names must be enabled on C: for this case to measure anything").not.toBe(longWork);
+        });
+        expect(result.status, result.stderr).toBe(0);
+        const short = result.stdout.trim();
+        if (short === longWork) context.skip("8.3 short names are unavailable on the fixture volume");
         const envelope = derivePluginChildEnvelope({
           pluginId: WIDENED_PLUGIN_ID,
           sandbox: WIDENED_SANDBOX,
@@ -1147,7 +1160,7 @@ describe("the host decides how far a plugin child reaches", () => {
     ).toThrow(/resolves inside the host's own storage namespace/);
   });
 
-  it("refuses a declared host root even when it links out of the host's home", () => {
+  it.skipIf(!canCreateSymlinks())("refuses a declared host root even when it links out of the host's home", () => {
     // WHAT THE `~/.ave` SUBTRACTION ALONE DOES NOT REACH, and the reason the
     // declared host directories are enumerated. A `hostDirectory` grant is a LEXICAL join onto
     // `aveHome()`; the value it is compared against is canonical. Point the
@@ -1180,7 +1193,7 @@ describe("the host decides how far a plugin child reaches", () => {
     }
   });
 
-  it("refuses a chosen directory under a bundle root that is itself a symlink", () => {
+  it.skipIf(!canCreateSymlinks())("refuses a chosen directory under a bundle root that is itself a symlink", () => {
     // The same divergence, on the other subtraction. The install-root entry is
     // the LEXICAL parent of this plugin's bundle, which is the right way to
     // name the directory every install lives in and the wrong way to name a
@@ -1262,7 +1275,7 @@ describe("the host decides how far a plugin child reaches", () => {
     expect(envelope.write).toEqual([fx.pluginDataDir, socketDirOf(fx)]);
   });
 
-  it("refuses a chosen directory that reaches out of the data dir through a symlink", () => {
+  it.skipIf(!canCreateSymlinks())("refuses a chosen directory that reaches out of the data dir through a symlink", () => {
     // THE OTHER HALF OF THE SAME ESCALATION. The plugin writes its own data
     // directory, so a containment test on spellings alone is one it can satisfy
     // by planting the link and then naming it: the value reads as inside the
@@ -1282,7 +1295,7 @@ describe("the host decides how far a plugin child reaches", () => {
     ).toThrow(/no workspace root the user approved covers it/);
   });
 
-  it("still admits a symlink that stays inside the plugin's own data dir", () => {
+  it.skipIf(!canCreateSymlinks())("still admits a symlink that stays inside the plugin's own data dir", () => {
     // The canonical comparison must not refuse the legitimate case, or the
     // fix would be a narrowing dressed as a containment result. Admitted means
     // folded into `data/`: the envelope already grants it, and a root of its
@@ -1394,7 +1407,7 @@ setTimeout(() => process.exit(0), 2000).unref?.();
     }
   });
 
-  it("throws rather than granting a root that is a dangling symlink", async () => {
+  it.skipIf(!canCreateSymlinks())("throws rather than granting a root that is a dangling symlink", async () => {
     // The containment answer for a path that does not resolve is the nearest
     // existing ancestor plus the missing tail, which for a link planted inside
     // the data dir is a path INSIDE the ceiling — correct, because that is
@@ -1417,7 +1430,7 @@ setTimeout(() => process.exit(0), 2000).unref?.();
     ).rejects.toThrow(/ENOENT/);
   });
 
-  it("releases the throwaway sandbox HOME when a granted root cannot be created", async () => {
+  it.skipIf(!canCreateSymlinks())("releases the throwaway sandbox HOME when a granted root cannot be created", async () => {
     // The refusal above is the DOCUMENTED fail-closed path, so it is the one
     // that must not leave anything behind. `createSandboxProcessHome()` runs
     // first and only `releaseSandboxState()` removes what it made, so a
@@ -3060,6 +3073,10 @@ describe("a confined child and a Unix-domain socket", () => {
     mkdirSync(process.env.AVE_HOME, { recursive: true });
     await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
     retainedSandbox = true;
+    // beforeAll runs before the file's beforeEach, after the previous case's
+    // afterEach cleared the boot request: the retained child is a plugin
+    // child, wrapped only while plugin-worker confinement was requested.
+    setPluginWorkerConfinementRequestedAtBoot(true);
     session = await openUnixProbeSession(shortPlugin);
   });
 
@@ -4468,7 +4485,7 @@ async function runBundledWrapToExit(
 ): Promise<void> {
   const sandboxHome = home ?? createSandboxProcessHome();
   try {
-    const { argv, env } = await wrapBundledCommand({
+    const { argv, env } = await wrapBundledCommand({ egressOwner: TEST_WORKER_EGRESS_OWNER,
       command: process.execPath,
       args: [probe],
       sandboxHome,

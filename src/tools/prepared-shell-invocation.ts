@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { getPolicyHome } from "../shared/policy-home.js";
 import { getBashCapabilities, resolveShell, shellEnvForChild, shellPathForHostPath, shellQuote, type ResolvedShellCommand } from "../lib/shell-resolver.js";
@@ -49,10 +49,9 @@ export function prepareShellInvocation(identity: ShellInvocationIdentity, signal
   try {
     if (identity.plan.mode === "asrt") {
       home = createSandboxProcessHome();
-      const temporary = join(home.path, "tmp");
-      // On Windows the profile's TEMP/TMP is this same directory and already
-      // exists; the HOME itself was just created fresh, so nothing else can.
-      mkdirSync(temporary, { recursive: process.platform === "win32", mode: 0o700 });
+      // The profile may already own a temp root. Atomically create our own
+      // directory rather than trusting any existing entry at a fixed name.
+      const temporary = mkdtempSync(join(home.path, "shell-tmp-"));
       Object.assign(safe, home.env, { TMPDIR: temporary, TMP: temporary, TEMP: temporary });
     }
     // Bash initializes PWD from its actual cwd. Pin the same initial value for
@@ -92,6 +91,8 @@ export function matchesPreparedShellInvocation(handle: PreparedShellInvocation, 
     && original.resolvedCwd === identity.resolvedCwd && original.toolUseId === identity.toolUseId;
 }
 
+/** The provider tool-use id the invocation was prepared for, when it had one. */
+export function preparedShellToolUseId(handle: PreparedShellInvocation): string | undefined { return stateOf(handle).identity.toolUseId; }
 export function preparedShellFacts(handle: PreparedShellInvocation): Readonly<ShellExecutionFacts> { return stateOf(handle).facts; }
 
 /** Bind only after command policy accepts the final source, before approval. */
@@ -120,11 +121,13 @@ export function preparedShellCommand(handle: PreparedShellInvocation): Readonly<
  * caller strips from stderr; the plain argv and no probe when the command
  * cannot change directory. Background shells use {@link preparedShellCommand}.
  */
-export function preparedShellCwdProbe(handle: PreparedShellInvocation): Readonly<{
+export function preparedShellCwdProbe(handle: PreparedShellInvocation, prelude?: string): Readonly<{
   argv: readonly string[]; probe?: ShellCwdProbe;
 }> {
   const state = stateOf(handle);
-  return Object.freeze({ argv: state.probedArgv, probe: state.cwdProbe });
+  const argv = prelude === undefined ? state.probedArgv
+    : Object.freeze(state.shell.shellArgs(prelude + (state.cwdProbe?.script ?? state.identity.command)));
+  return Object.freeze({ argv, probe: state.cwdProbe });
 }
 
 /**

@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { BashAstValidator } from "../../main/bash-ast-validator.js";
-import { __resetActiveSandboxCapabilityForTest, setSandboxRequestedAtBoot } from "../../permissions/sandbox-capability.js";
+import { __resetActiveSandboxCapabilityForTest, setShellSandboxRequestedAtBoot } from "../../permissions/sandbox-capability.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { BashTool } from "../../tools/shell-tools.js";
 import { ConversationLoop } from "../conversation-loop.js";
@@ -35,7 +35,7 @@ describe("conversation shell project context", () => {
     }
     vi.stubEnv("AVE_HOME", aveHome);
     __resetActiveSandboxCapabilityForTest();
-    setSandboxRequestedAtBoot(false);
+    setShellSandboxRequestedAtBoot(false);
 
     const bash = new BashTool();
     const execute = vi.spyOn(bash, "execute");

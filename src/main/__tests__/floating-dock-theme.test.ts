@@ -7,8 +7,8 @@
  * refuses it; see plugin-theme-replay.test.ts for the real handler).
  */
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CHANNELS } from "../../contract/app-contract.js";
 import { emitEvent } from "../../boot/types.js";

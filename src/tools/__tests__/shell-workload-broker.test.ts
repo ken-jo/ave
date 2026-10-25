@@ -1,11 +1,11 @@
-import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { posix } from "node:path";
 
 import {
   __resetActiveSandboxCapabilityForTest,
   __resetSandboxRequestedAtBootForTest,
   getHostShellExecutionPlan,
-  setSandboxRequestedAtBoot,
+  setShellSandboxRequestedAtBoot,
 } from "../../permissions/sandbox-capability.js";
 import {
   buildHostShellExecutionRoute,
@@ -58,6 +58,8 @@ vi.mock("../../workload/runtime.js", async (importOriginal) => {
   return {
     ...actual,
     isWorkloadBrokerActive: () => broker.active,
+    acquireBrokeredWorkloadCapability: async () => broker.capability,
+    resolveBrokeredWorkloadPath: (_capability: unknown, input: string) => posix.resolve(broker.capability.workload.cwd, input),
     isIssuedActiveBrokeredWorkloadCapability: (value: unknown) =>
       broker.active && broker.issued && value === broker.capability,
     executeBrokeredWorkloadRequest: broker.execute,
@@ -175,7 +177,7 @@ function terminalResult(
 beforeEach(() => {
   __resetActiveSandboxCapabilityForTest();
   __resetSandboxRequestedAtBootForTest();
-  setSandboxRequestedAtBoot(false);
+  setShellSandboxRequestedAtBoot(false);
   backgroundShellManager._resetForTest();
   broker.active = true;
   broker.issued = true;
@@ -195,11 +197,27 @@ afterEach(() => {
 // path only on a POSIX host. Native Windows refuses the broker flags at parse
 // time, so cases that dispatch a guest cwd to the broker are Linux-only.
 const itPosixGuest = it.skipIf(process.platform === "win32");
-// Routing, limit and refusal cases never inspect the guest path, so they bind
-// the host-resolved form (identical on Linux) and also run on win32.
-const hostResolvedCwd = (guestPath: string) => resolve(guestPath);
+// Broker grants bind the guest path independently of the host's filesystem.
+const guestResolvedCwd = (guestPath: string) => posix.resolve(guestPath);
 
 describe("brokered workload shell execution", () => {
+  it.each([undefined, "subdir"])("resolves cwd %s inside the guest workload, independent of the host cwd", async (cwd) => {
+    const command = "pwd";
+    const expectedCwd = cwd === undefined ? "/app" : "/app/subdir";
+    const binding = issueBrokerShellGrant({ command, cwd: expectedCwd });
+    broker.execute.mockResolvedValueOnce(successfulRun(expectedCwd));
+    const result = await new BashTool().execute(
+      { command, ...(cwd === undefined ? {} : { cwd }), timeoutSeconds: 10 },
+      context({ ...binding, cwd: process.cwd() }),
+    );
+    expect(result.isError).toBe(false);
+    expect(broker.execute).toHaveBeenCalledWith(
+      broker.capability, "shell.run", { command, cwd: expectedCwd, timeoutMs: 10_000 },
+      expect.objectContaining({ operation: "shell.run", toolName: "bash" }), undefined,
+    );
+    expect(spawnSpy).not.toHaveBeenCalled();
+  });
+
   itPosixGuest("uses the exact grant capability and accepts a clean non-default guest cwd", async () => {
     const command = "pwd";
     const cwd = "/tmp";
@@ -234,7 +252,7 @@ describe("brokered workload shell execution", () => {
 
   it("accepts the broker protocol maximum timeout", async () => {
     const command = "long-build";
-    const cwd = hostResolvedCwd("/app");
+    const cwd = guestResolvedCwd("/app");
     const binding = issueBrokerShellGrant({ command, cwd, timeoutSeconds: 3_600 });
     broker.execute.mockResolvedValueOnce(successfulRun("done"));
 
@@ -255,7 +273,7 @@ describe("brokered workload shell execution", () => {
 
   it("returns an actionable broker timeout-limit error above 3600 seconds without sending a request", async () => {
     const command = "too-long-build";
-    const cwd = hostResolvedCwd("/app");
+    const cwd = guestResolvedCwd("/app");
     const binding = issueBrokerShellGrant({ command, cwd, timeoutSeconds: 3_601 });
 
     const result = await new BashTool().execute(
@@ -334,7 +352,7 @@ describe("brokered workload shell execution", () => {
 
   it("fails closed for missing, forged, replayed, and changed broker grants", async () => {
     const command = "printf should-not-run";
-    const cwd = hostResolvedCwd("/workspace");
+    const cwd = guestResolvedCwd("/workspace");
     broker.execute.mockResolvedValue(successfulRun());
 
     const missing = await new BashTool().execute(
@@ -433,7 +451,7 @@ describe("brokered workload shell execution", () => {
 
   it("returns broker transport failures without trying a host process", async () => {
     const command = "make all";
-    const cwd = hostResolvedCwd("/app");
+    const cwd = guestResolvedCwd("/app");
     const binding = issueBrokerShellGrant({ command, cwd });
     const failure: ToolExecutionResult = {
       output: "Workload broker refused execution (handshake-binding-mismatch).",
@@ -875,7 +893,7 @@ describe("brokered workload shell execution", () => {
 
   it("does not start a background job that would outlive its broker capability", async () => {
     const command = "too-late";
-    const cwd = hostResolvedCwd("/app");
+    const cwd = guestResolvedCwd("/app");
     const binding = issueBrokerShellGrant({ command, cwd, background: true });
     const expiresAt = Date.parse(broker.capability.expiresAt);
     vi.spyOn(Date, "now").mockReturnValue(expiresAt - 25_000);

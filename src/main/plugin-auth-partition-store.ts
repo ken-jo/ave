@@ -11,6 +11,9 @@
  * - AVE_HOME env override flows through `aveHome()`.
  * - Corrupt / unreadable JSON → throws immediately with a descriptive error.
  *   Caller (boot.ts) logs to audit and re-throws — no silent empty-set fallback.
+ * - An EMPTY file reads as "no data", like a missing one. On Windows the
+ *   sandbox's write deny (`srt-win acl stamp`) creates each missing deny
+ *   target as an empty placeholder file, and this file is one of them.
  * - One serial mutation queue owns both writes and deletes. Every caller's
  *   promise settles only after its exact snapshot mutation reaches disk.
  */
@@ -43,6 +46,11 @@ function isPartitionsFile(value: unknown): value is PartitionsFile {
       return false;
   }
   return true;
+}
+
+/** The sandbox's empty deny placeholder (see the header): no data yet. */
+function isPlaceholder(raw: string): boolean {
+  return raw.trim() === "";
 }
 
 // ---------------------------------------------------------------------------
@@ -118,6 +126,7 @@ export async function readPersistedPluginAuthPartitions(): Promise<
       `plugin-auth-partition-store: failed to read ${path}: ${(err as Error).message}`,
     );
   }
+  if (isPlaceholder(raw)) return null;
 
   let parsed: unknown;
   try {
@@ -167,6 +176,7 @@ export async function deletePersistedPluginAuthPartitions(pluginId: string): Pro
         `plugin-auth-partition-store: failed to read ${path} for deletion: ${(err as Error).message}`,
       );
     }
+    if (isPlaceholder(raw)) return;
 
     let parsed: unknown;
     try {
