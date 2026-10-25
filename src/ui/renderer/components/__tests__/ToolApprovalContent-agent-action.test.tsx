@@ -35,8 +35,8 @@ describe("ToolApprovalContent external agent-action affordances", () => {
     const { container } = renderApproval(makeAgentActionRequest("local-api"), onDecide);
 
     expect(screen.getByTestId(TEST_IDS.denyButton)).toHaveTextContent("거절");
-    expect(screen.getByTestId(TEST_IDS.allowAlwaysButton)).toHaveTextContent("항상 허용");
-    expect(screen.getByTestId(TEST_IDS.allowAlwaysButton)).toBeDisabled();
+    expect(screen.getByTestId(TEST_IDS.allowSessionButton)).toHaveTextContent("항상 허용");
+    expect(screen.getByTestId(TEST_IDS.allowSessionButton)).toBeDisabled();
     expect(container.querySelector('input, textarea, [contenteditable="true"], [role="textbox"]'))
       .toBeNull();
 
@@ -51,8 +51,8 @@ describe("ToolApprovalContent external agent-action affordances", () => {
     renderApproval(makeAgentActionRequest("user-keyboard"), vi.fn());
 
     expect(screen.getByTestId(TEST_IDS.denyButton)).toHaveTextContent("거절");
-    expect(screen.getByTestId(TEST_IDS.allowAlwaysButton)).toHaveTextContent("항상 허용");
-    expect(screen.getByTestId(TEST_IDS.allowAlwaysButton)).toBeDisabled();
+    expect(screen.getByTestId(TEST_IDS.allowSessionButton)).toHaveTextContent("항상 허용");
+    expect(screen.getByTestId(TEST_IDS.allowSessionButton)).toBeDisabled();
     expect(screen.getByTestId(TEST_IDS.approveButton)).toHaveTextContent("한 번만 허용");
   });
 
@@ -63,8 +63,8 @@ describe("ToolApprovalContent external agent-action affordances", () => {
     const onDecide = vi.fn();
     renderApproval(makeAgentActionRequest("a2a-remote-wire", "a2a-send", source), onDecide);
 
-    expect(screen.getByTestId(TEST_IDS.allowAlwaysButton)).toHaveTextContent("항상 허용");
-    expect(screen.getByTestId(TEST_IDS.allowAlwaysButton)).toBeDisabled();
+    expect(screen.getByTestId(TEST_IDS.allowSessionButton)).toHaveTextContent("항상 허용");
+    expect(screen.getByTestId(TEST_IDS.allowSessionButton)).toBeDisabled();
     const approve = screen.getByTestId(TEST_IDS.approveButton);
     expect(approve).toHaveTextContent("한 번만 허용");
     fireEvent.click(approve);
@@ -75,8 +75,8 @@ describe("ToolApprovalContent external agent-action affordances", () => {
     const onDecide = vi.fn();
     renderApproval(makeAgentActionRequest("a2a-remote-wire", "a2a-send", "plugin"), onDecide);
 
-    expect(screen.getByTestId(TEST_IDS.allowAlwaysButton)).toHaveTextContent("항상 허용");
-    expect(screen.getByTestId(TEST_IDS.allowAlwaysButton)).toBeDisabled();
+    expect(screen.getByTestId(TEST_IDS.allowSessionButton)).toHaveTextContent("항상 허용");
+    expect(screen.getByTestId(TEST_IDS.allowSessionButton)).toBeDisabled();
     const approve = screen.getByTestId(TEST_IDS.approveButton);
     expect(approve).toHaveTextContent("한 번만 허용");
     fireEvent.click(approve);

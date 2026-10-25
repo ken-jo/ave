@@ -24,7 +24,7 @@ function shellRequest(overrides: Partial<ApprovalRequest> = {}): ApprovalRequest
 const SAVE_BUTTONS = {
   session: "approval-allow-session",
   project: "approval-allow-project",
-  always: TEST_IDS.allowAlwaysButton,
+  always: TEST_IDS.allowSessionButton,
 } as const;
 
 const originalLocale = getLocale();
@@ -97,10 +97,10 @@ describe("shell approval five choices", () => {
     const record = vi.fn().mockResolvedValueOnce({ ok: false, error: "invalid-rule" }).mockResolvedValueOnce({ ok: true }); const onDecide = vi.fn();
     vi.stubGlobal("ave", { userApproval: { record } });
     renderApproval(shellRequest(), onDecide);
-    fireEvent.click(screen.getByTestId(TEST_IDS.allowAlwaysButton));
+    fireEvent.click(screen.getByTestId(TEST_IDS.allowSessionButton));
     await waitFor(() => expect(screen.getByTestId("exact-decision-save-error")).toBeVisible());
     expect(onDecide).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByTestId(TEST_IDS.allowAlwaysButton));
+    fireEvent.click(screen.getByTestId(TEST_IDS.allowSessionButton));
     await waitFor(() => expect(onDecide).toHaveBeenCalledTimes(1));
   });
 

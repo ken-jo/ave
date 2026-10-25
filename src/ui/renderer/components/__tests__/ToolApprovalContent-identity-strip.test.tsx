@@ -108,7 +108,7 @@ describe("ToolApprovalContent identity strip", () => {
     // Fail-closed means the allow options are not presented at all — a permanently disabled button teaches users to distrust
     // the panel.
     expect(screen.queryByTestId(TEST_IDS.approveButton)).toBeNull();
-    expect(screen.queryByTestId(TEST_IDS.allowAlwaysButton)).toBeNull();
+    expect(screen.queryByTestId(TEST_IDS.allowSessionButton)).toBeNull();
     expect(screen.getByTestId(TEST_IDS.denyButton)).toBeInTheDocument();
   });
 
@@ -156,7 +156,7 @@ describe("ToolApprovalContent identity strip", () => {
     }, onDecide);
     const panel = screen.getByTestId("tool-approval-panel");
     // Focus the parent-grant decision, as a keyboard user would before committing.
-    screen.getByTestId(TEST_IDS.allowAlwaysButton).focus();
+    screen.getByTestId(TEST_IDS.allowSessionButton).focus();
     fireEvent.keyDown(panel, { key: "a" });
     fireEvent.keyDown(panel, { key: "d" });
     expect(onDecide).not.toHaveBeenCalled();

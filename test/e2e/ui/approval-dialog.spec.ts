@@ -147,7 +147,7 @@ test('approval dock floats over the route without changing its layout', async ({
 
   const approve = dock.getByTestId(TEST_IDS.approveButton);
   const deny = dock.getByTestId(TEST_IDS.denyButton);
-  const allowAlways = dock.getByTestId(TEST_IDS.allowAlwaysButton);
+  const allowAlways = dock.getByTestId(TEST_IDS.allowSessionButton);
   await expect(approve).toBeVisible();
   await expect(deny).toBeVisible();
   await expect(allowAlways).toBeVisible();
@@ -389,7 +389,7 @@ test('approval dock floats over the route without changing its layout', async ({
   await expect(dock).toBeVisible();
   const secondApprove = dock.getByTestId(TEST_IDS.approveButton);
   const secondDeny = dock.getByTestId(TEST_IDS.denyButton);
-  const secondAlways = dock.getByTestId(TEST_IDS.allowAlwaysButton);
+  const secondAlways = dock.getByTestId(TEST_IDS.allowSessionButton);
   await expect(secondDeny).toBeFocused();
   await secondDeny.press('ArrowRight');
   await expect(secondAlways).toBeFocused();

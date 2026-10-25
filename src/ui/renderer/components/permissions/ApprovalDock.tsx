@@ -113,7 +113,7 @@ export function ApprovalDock({
       '[data-testid="egress-approval-allow-once"]:not(:disabled)',
       `${testIdSelector(TEST_IDS.denyButton)}:not(:disabled)`,
       `${testIdSelector(TEST_IDS.approveButton)}:not(:disabled)`,
-      `${testIdSelector(TEST_IDS.allowAlwaysButton)}:not(:disabled)`,
+      `${testIdSelector(TEST_IDS.allowSessionButton)}:not(:disabled)`,
     ];
     for (const selector of selectors) {
       const target = root.querySelector<HTMLElement>(selector);

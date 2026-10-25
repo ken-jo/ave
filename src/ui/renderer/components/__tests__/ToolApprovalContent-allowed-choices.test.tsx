@@ -45,7 +45,7 @@ describe("ToolApprovalContent allowed choices", () => {
     };
     renderApproval(request, onDecide);
     expect(screen.getByTestId("allow-always-exact-scope")).toHaveTextContent("/workspace/project");
-    const always = screen.getByTestId(TEST_IDS.allowAlwaysButton);
+    const always = screen.getByTestId(TEST_IDS.allowSessionButton);
     expect(always).toBeEnabled();
     fireEvent.click(always);
     await waitFor(() => expect(onDecide).toHaveBeenCalledWith("allow-always", undefined));
@@ -58,7 +58,7 @@ describe("ToolApprovalContent allowed choices", () => {
   it("keeps a non-recordable ordinary request disabled even when its displayed risk is medium", () => {
     const request = { ...makeOneShotPluginRequest(), allowedChoices: undefined, persistentAllowAllowed: false };
     renderApproval(request, vi.fn());
-    expect(screen.getByTestId(TEST_IDS.allowAlwaysButton)).toBeDisabled();
+    expect(screen.getByTestId(TEST_IDS.allowSessionButton)).toBeDisabled();
   });
 
   it("honors a host one-shot approval contract", () => {
@@ -68,8 +68,8 @@ describe("ToolApprovalContent allowed choices", () => {
     renderApproval(makeOneShotPluginRequest(), onDecide);
 
     expect(screen.getByTestId(TEST_IDS.denyButton)).toHaveTextContent("거절");
-    expect(screen.getByTestId(TEST_IDS.allowAlwaysButton)).toHaveTextContent("항상 허용");
-    expect(screen.getByTestId(TEST_IDS.allowAlwaysButton)).toBeDisabled();
+    expect(screen.getByTestId(TEST_IDS.allowSessionButton)).toHaveTextContent("항상 허용");
+    expect(screen.getByTestId(TEST_IDS.allowSessionButton)).toBeDisabled();
 
     const approve = screen.getByTestId(TEST_IDS.approveButton);
     expect(approve).toHaveTextContent("한 번만 허용");

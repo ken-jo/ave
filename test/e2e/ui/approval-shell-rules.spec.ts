@@ -58,7 +58,7 @@ for (const locale of ["en", "ko"] as const) {
       const dock = mainWindow.getByTestId(TEST_IDS.approvalDock).first();
       await expect(dock.getByTestId("approval-shell-outside-sandbox")).toContainText(locale === "ko" ? "샌드박스 밖에서 실행" : "outside the sandbox");
       await expect(dock.getByTestId("approval-shell-rule-pattern")).toHaveText("Bash(npm test)");
-      for (const testId of [TEST_IDS.denyButton, TEST_IDS.approveButton, "approval-allow-session", "approval-allow-project", TEST_IDS.allowAlwaysButton]) {
+      for (const testId of [TEST_IDS.denyButton, TEST_IDS.approveButton, "approval-allow-session", "approval-allow-project", TEST_IDS.allowSessionButton]) {
         await expect(dock.getByTestId(testId)).toBeEnabled();
       }
       await expect(dock.getByTestId("approval-deny-always")).toHaveCount(0);
@@ -66,7 +66,7 @@ for (const locale of ["en", "ko"] as const) {
 
       await dock.getByTestId(TEST_IDS.denyButton).click();
       await showShellRequest(app, mainWindow, false);
-      for (const testId of ["approval-allow-session", "approval-allow-project", TEST_IDS.allowAlwaysButton]) {
+      for (const testId of ["approval-allow-session", "approval-allow-project", TEST_IDS.allowSessionButton]) {
         await expect(dock.getByTestId(testId)).toBeDisabled();
       }
       await expect(dock.getByTestId("approval-shell-rule-pattern")).toHaveCount(0);
