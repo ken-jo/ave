@@ -214,7 +214,9 @@ describe.skipIf(process.platform !== "win32")("Windows administrative policy tru
     expect((await loadPolicy(user, admin)).adminStatus).toBe("invalid");
     if (!token.elevated) context.skip("An elevated token is required to set the fixture owner");
     const parent = join(root, "machine", "Ave");
-    execFileSync(win32SystemBinary("icacls"), [parent, "/inheritance:r", "/grant:r", "*S-1-5-32-544:(OI)(CI)F", "*S-1-5-18:(OI)(CI)F", "/setowner", "*S-1-5-32-544", "/q"], { windowsHide: true });
+    // icacls rejects `/setowner` combined with `/grant` or `/inheritance` (exit 87).
+    execFileSync(win32SystemBinary("icacls"), [parent, "/setowner", "*S-1-5-32-544", "/q"], { windowsHide: true });
+    execFileSync(win32SystemBinary("icacls"), [parent, "/inheritance:r", "/grant:r", "*S-1-5-32-544:(OI)(CI)F", "*S-1-5-18:(OI)(CI)F", "/q"], { windowsHide: true });
     await writeFile(admin, '{"version":1,"requireExplicitApproval":false}');
     execFileSync(win32SystemBinary("icacls"), [admin, "/setowner", "*S-1-5-32-544", "/q"], { windowsHide: true });
     expect(await loadPolicy(user, admin)).toMatchObject({ source: "admin", requireExplicitApproval: false, managed: false });
