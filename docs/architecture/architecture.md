@@ -1562,9 +1562,18 @@ rule: everything else asks on the dock. With nobody to ask (a headless or
 routine turn) the same exact rule still runs the command — sandbox-off bash,
 the Plan B and an explicit host request alike — and without one the call is
 denied and audited (I5). A `PowerShell(...)` rule is matched on the parsed
-command in canonical form: the command name lower-cased with its alias
-resolved (`ls` and `gci` are `get-childitem`), `-Parameter` names
-lower-cased, every other token verbatim. The host builds the card's rule from
+command with a literal identity: case is folded only for a known cmdlet's
+name and its `-Parameter` names (before a `:`); a native program, an unknown
+command and every value stay verbatim (`git branch -d` and `-D`, `git clean
+-n` and `-N`, `java -Dfoo=SAFE` are distinct rules). An alias never merges
+two identities (`sc`, `curl`, `wget`, `ls`, `rm` and `cat` differ by edition):
+aliases are resolved only to classify the command against the floors, and a
+deny or ask rule also matches the alias-resolved command, since matching more
+only narrows. A `-EncodedCommand` payload (`-e`, `-ec`, `-enc…`) is decoded
+(UTF-16LE base64): the destructive, exfiltration and secret floors run on the
+decoded script, a destructive one gets the same forced modal as the plain
+text, no allow rule covers an encoded command, and the card shows the decoded
+script. The host builds the card's rule from
 the parsed command and matches it again before saving; a command that is not
 one literal simple command has no exact rule.
 
@@ -1587,9 +1596,24 @@ allowed). Each approval type maps the six choices onto its own store:
 |---|---|---|
 | Shell | user-global deny rule (`Bash(...)` / `PowerShell(...)`) | session, project or user-global allow rule, the host-derived exact rule unless edited |
 | Network | user-global `Network(<host>[:<port>])` deny rule | the grant of that lifetime (This session / This tab, This project, Always); an edited rule is saved as a `Network(...)` host rule instead |
-| Exact tool approval | exact deny of this tool and input (edited in Settings) | exact approval for the conversation, or for the project folder; everywhere is not offered |
-| Folder access | exact deny of this request (edited in Settings) | everywhere = the parent-folder grant; session and project are not offered |
+| Exact tool approval | exact deny of this tool and input (edited in Settings) | exact approval for the conversation (answers `allow-session`), for the project folder, or everywhere (a user-global approval, owner decision 2026-10-25) |
+| Folder access | exact deny of this request (edited in Settings) | **Always allow this folder** = the parent-folder grant; session and project are not offered |
 | One-shot request | not offered | not offered |
+
+An exact tool approval is stored with one of three scopes: `session` (the
+root conversation), `persistent` (bound to the project folder's
+working-directory identity) and `global` (no folder; it applies in every
+project). Any deny beats any allow, whatever their scopes: an exact deny,
+project or global, refuses the request even where a conversation, project or
+global allow exists. Among allows the conversation is consulted first, then
+the project, then the global entry; since each of them allows, a project
+entry neither narrows nor widens a global one. Settings → Permissions lists
+global entries as "Everywhere" and revokes them like the others. Where the
+host will not record an exact decision for a request (a layer-1/2 ask, a
+forced modal, a non-read reason prefix, a remote out-of-folder one-shot),
+the gate says so on the request (`exactRecordAllowed: false`) and the card
+shows Always deny disabled with the one-shot reason instead of offering a
+choice the host refuses with `one-shot-not-recordable`.
 
 Choices a request does not offer stay visible in the dropdowns, disabled with
 the reason. No card sends the gate's tool-wide `deny-always`: Always deny is
@@ -1898,7 +1922,16 @@ same root a project `Bash(...)` rule applies to) and Always allow everywhere
 (persisted, global). `Network(<host>[:<port>])` host rules (a leading `*.`
 matches subdomains) are consulted before grants: a deny rule refuses the
 connection, an allow rule admits a public destination, and an ask rule skips
-the grants. An address literal has no host rule. The scope values on the wire and on disk are
+the grants. A host rule keeps the grant invariants: an allow rule decides a
+connection only for a lifetime that request offers (a user rule where Always
+is offered, a project rule where This project is, a session rule where This
+session is), so a shared or session-strength connection identity is never
+admitted by a persistent rule; deny and ask rules apply everywhere. Host rules
+are shell-origin: a terminal tab's connection never consults them and its
+banner offers none. An address literal has no host rule, and a
+`Network(...)` rule naming one is refused when it is parsed. An edited
+wildcard host allow is saved with the same `wildcard-allow-sandboxed-only`
+warning as a wildcard shell allow. The scope values on the wire and on disk are
 `once`, `session`, `project` and `always`; the earlier `conversation` and
 `workspace` names are refused everywhere, except that a version-1 grant file's
 `workspace` grants are migrated once: a grant made at its project root becomes
@@ -1912,8 +1945,9 @@ sub-agents, and deleting a sub-agent session ends only that session's own
 network hosts, since its rules and approvals belong to the root. A workspace terminal tab (always in
 the foreground) reaches a host a grant covers, and otherwise the person is
 asked in a banner in that tab, drawn only in, fetched by and answered from
-the window that owns the tab, with the same shared decision row (Deny, Always
-deny, Allow once, Allow for this tab, Always allow everywhere: a
+the window that owns the tab, with the same shared decision row (Deny, Allow
+once, Allow for this tab, Always allow everywhere; Always deny is shown
+disabled, since host rules are shell-origin: a
 terminal's Allow once lets that one connection through and is never held;
 "This tab" takes the place of "This session" and lasts until the tab's
 shell exits, including an exit followed by a respawn; terminals have no
@@ -1936,7 +1970,8 @@ ask is drawn on the focused pane's lane instead
 Permissions → Network. Stored grants without `network` match only
 `public`; a valid recorded class is honored and an invalid explicit class is
 rejected. Only `public` destinations are eligible for persistent grants
-(This project and Always); recording a class does not extend that eligibility.
+(Always allow in this project and Always allow everywhere); recording a class
+does not extend that eligibility.
 A background call nobody can answer, asks turned off
 (`features.shellEgressAsk`), or an unreadable grant file is a refusal.
 Destinations are classed by `egressDestinationNetwork()` on the host and every
