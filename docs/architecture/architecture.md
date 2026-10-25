@@ -288,17 +288,18 @@ Plugin UI code runs inside host-created shells. The host resolves plugin asset
 URLs, applies theme tokens, and passes a bridge. Plugin code can request host
 operations only through declared capabilities and HostApi methods.
 
-A preload that runs in a sandboxed frame can require only `electron` and the
-Node modules `events`, `timers` and `url`. The sandboxed frames are the floating
-dock window and plugin and MCP app webviews. Anything such a preload would
-resolve from disk, such as the dock's plugin shell and preload URLs, is resolved
-by main and passed as window arguments. Each preload's file and sandbox mode
-come from one table, `src/shared/preload-bundles.json`: windows spread
-`preloadPreferences(id)`, sessions register `preloadBundlePath(id)`, and webpack
-builds a preload config per row. `test/scripts/preload-sites.test.ts` reads
-`src` with the TypeScript compiler. It finds windows by their resolved Electron
-type and follows electron through imports, `require` and awaited dynamic
-imports. It holds these sites to the table: window `webPreferences`,
+A preload that runs in a sandboxed frame can require only `electron` (with its
+`electron/renderer` and `electron/common` subpaths), and since Electron 45 it
+runs without `Buffer`, `setImmediate` and `clearImmediate`. The sandboxed frames
+are the floating dock window and plugin and MCP app webviews. Anything such a
+preload would resolve from disk, such as the dock's plugin shell and preload
+URLs, is resolved by main and passed as window arguments. Each preload's file
+and sandbox mode come from one table, `src/shared/preload-bundles.json`: windows
+spread `preloadPreferences(id)`, sessions register `preloadBundlePath(id)`, and
+webpack builds a preload config per row. `test/scripts/preload-sites.test.ts`
+reads `src` with the TypeScript compiler. It finds windows by their resolved
+Electron type and follows electron through imports, `require` and awaited
+dynamic imports. It holds these sites to the table: window `webPreferences`,
 `registerPreloadScript`, guest `sandbox` assignments, and `<webview>`s created
 in JSX, `createElement`, `document.createElement` with `setAttribute`, HTML
 string literals and the HTML sinks `innerHTML`, `outerHTML`,
@@ -307,18 +308,18 @@ string literals and the HTML sinks `innerHTML`, `outerHTML`,
 those sites it refuses what it cannot read: computed keys, spreads whose type
 may carry `webPreferences`, non-literal options or `webpreferences` requests, a
 window class used as a value, subclassed or passed to `Reflect.construct`, a
-dynamic import of electron that is not awaited into a binding, and HTML with
-an interpolated tag name or an interpolation that could carry markup. Code that
+dynamic import of electron that is not awaited into a binding, and HTML with an
+interpolated tag name or an interpolation that could carry markup. Code that
 reaches Electron outside these forms is not checked; the attach guards in main
-are what enforce a guest's preferences. Each window that hosts `<webview>`s sets its guests' preferences in main: the
-main window routes plugin, MCP app and side-browser partitions to their guards
-(`configureMainWindowWebviewAttach`) and refuses any other partition. The
-`build` composite's
-`check-sandboxed-preloads` fails when webpack builds a preload the table does
-not classify, or when a row has no webpack config or asset copy behind it. It
-then checks the built file of each table row: a sandboxed one may require only
-the modules above and may have no chunks. It does not scan `dist/src` for other
-files.
+are what enforce a guest's preferences. Each window that hosts `<webview>`s sets
+its guests' preferences in main: the main window routes plugin, MCP app and
+side-browser partitions to their guards (`configureMainWindowWebviewAttach`) and
+refuses any other partition. The `build` composite's `check-sandboxed-preloads`
+fails when webpack builds a preload the table does not classify, or when a row
+has no webpack config or asset copy behind it. It then checks the built file of
+each table row: a sandboxed one may require only the modules above, may name
+none of the removed globals, and may have no chunks. It does not scan `dist/src`
+for other files.
 
 Every surface that copies theme values follows the theme the host renderer has
 applied, including a theme updated in place under the same id. Plugin webviews
