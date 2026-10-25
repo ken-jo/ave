@@ -294,6 +294,7 @@ export interface SandboxCapabilityInfo {
   runtime?: SandboxRuntimeCapabilityInfo;
   /** What EXTENSION processes run under in this process (the plugin-worker confinement scope). ASRT is one runtime, so either scope can be active while the other reports none. */
   workerRuntime?: SandboxRuntimeCapabilityInfo;
+  workerRestartPending: boolean;
   /** What the boot gate decided for this process. `null` when boot has not run the gate (tests, or a host
    * that never called sandbox init); absence is not "off", so the renderer must not render it as such. */
   boot?: SandboxBootOutcomeView | null;

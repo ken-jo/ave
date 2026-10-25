@@ -1,4 +1,5 @@
 import type { RevocableEgressGrant } from "../shared/egress-grant-scopes.js";
+import type { AppRelaunchResult } from "../shared/app-relaunch.js";
 // The internal renderer API is intentionally assembled in one typed surface.
 import { ipcRenderer } from "electron";
 import { buildBrowserTabsApiSurface } from "./browser-api-surface.js";
@@ -175,6 +176,7 @@ async function invokeRemoteA2AAction(
 
 export function buildInternalApiSurface() {
   return {
+  relaunchApp: () => ipcRenderer.invoke(CHANNELS.app.relaunch, { intent: ipcUserKeyboardIntent() }) as Promise<AppRelaunchResult>,
   getSettings: async () => ipcRenderer.invoke(CHANNELS.settings.get),
   updateSettings: async (partial: unknown) => ipcRenderer.invoke(CHANNELS.settings.update, partial),
   // Parsed here rather than in the renderer: an unrecognized path is drift in this build's own registry, not something to render.

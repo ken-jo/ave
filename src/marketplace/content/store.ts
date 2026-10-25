@@ -1,6 +1,7 @@
 /** Installs use unique directories and roll back failed activation without moving live files.
  * Loading verifies installed bytes; replaced directories survive until their activation retires. */
 import { randomUUID } from "node:crypto";
+import { withInstalledStateMutation } from "../../main/installed-state-mutation.js";
 import { lstat, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { createMarketplaceLogger } from "../log.js";
@@ -205,6 +206,10 @@ export class ContentStore {
     return next;
   }
 
+  private mutate<T>(work: () => Promise<T>): Promise<T> {
+    return withInstalledStateMutation(() => this.serialize(work));
+  }
+
   list(): LedgerEntry[] {
     return this.ledger.list();
   }
@@ -226,7 +231,7 @@ export class ContentStore {
     staged: StagedContent,
     options: { switchSource?: boolean; adopt?: boolean; componentConsents?: readonly ComponentConsent[]; assertConsent?: (consent: ConsentFingerprint) => void } = {},
   ): Promise<{ action: InstallAction; entry: LedgerEntry }> {
-    return this.serialize(async () => {
+    return this.mutate(async () => {
       const { plan } = staged;
       const previous = this.ledger.get(plan.kind, plan.name) ?? null;
       const action = classifyInstall(plan, this.installed(plan.kind, plan.name), options);
@@ -280,18 +285,18 @@ export class ContentStore {
   private removeWhenRetired(previous: LedgerEntry, retired: Promise<void>): void {
     const dir = this.packageDir(previous);
     void retired
-      .then(async () => {
+      .then(() => withInstalledStateMutation(async () => {
         // A same-version legacy reinstall leaves nothing to remove twice; a directory a live entry names is never removed.
         const current = this.ledger.get(previous.kind, previous.name);
         if (current && this.packageDir(current) === dir) return;
         await rm(dir, { recursive: true, force: true });
-      })
+      }))
       .catch((error: unknown) => log.warn({ dir, err: errorMessage(error) }, "the replaced package's files stay until the next start"));
   }
 
   /** Before activation, remove install directories not named by the ledger. */
   async sweep(): Promise<string[]> {
-    return this.serialize(async () => {
+    return this.mutate(async () => {
       const removed: string[] = [];
       const named = new Set(this.ledger.list().map((entry) => this.packageDir(entry)));
       const entries = async (dir: string) => readdir(dir, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
@@ -335,7 +340,7 @@ export class ContentStore {
 
   /** Policy-locked source bindings cannot be removed; absent packages return null. */
   async uninstall(kind: ContentKind, name: string, policy: MarketplacePolicy): Promise<LedgerEntry | null> {
-    return this.serialize(async () => {
+    return this.mutate(async () => {
       const entry = this.ledger.get(kind, name);
       if (!entry) return null;
       assertNotRequiredByPolicy(policy, kind, name, entry.origin.sourceId, "uninstall");
@@ -371,7 +376,7 @@ export class ContentStore {
 
   /** Approvals must match the installed id and component digests under serialization or expire unchanged. */
   async approveComponents(name: string, installId: string, consents: readonly ReviewedComponentConsent[]): Promise<void> {
-    await this.serialize(async () => {
+    await this.mutate(async () => {
       const entry = this.ledger.get("agent-plugin", name);
       const stale = () => new MarketplaceError("PLAN_EXPIRED", `agent plugin ${name} changed since it was reviewed`, { detail: { reason: "package-changed" } });
       if (!entry || entry.origin.installId !== installId) throw stale();

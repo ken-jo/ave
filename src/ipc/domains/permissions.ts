@@ -80,6 +80,7 @@ import {
   getSandboxBootOutcome,
   getWindowsSandboxSubstrate,
   isShellSandboxRequestedAtBoot,
+  isPluginWorkerConfinementRequestedAtBoot,
   type SandboxCapability,
 } from "../../permissions/sandbox-capability.js";
 import {
@@ -331,6 +332,12 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       potentialReason,
       runtime,
       workerRuntime,
+      workerRestartPending: boot !== null && resolveEnvBackedBoolean(
+        "features.pluginWorkerConfinement",
+        deps.settingsService.get("features")?.pluginWorkerConfinement ?? false,
+        process.env,
+        false,
+      ) !== isPluginWorkerConfinementRequestedAtBoot(),
       ...(privacyFailure ? { homePrivacyError: {
         path: privacyFailure.failedPath ?? privacyFailure.home,
         category: privacyFailure.category,

@@ -479,6 +479,7 @@ export type NotificationClickPayload = {
 };
 
 export type AveApi = {
+  relaunchApp: () => Promise<import("../../shared/app-relaunch.js").AppRelaunchResult>;
   /**
    * Deterministic file:// URL of the bundled `plugin-preload.js`. Computed in
    * the host preload from `__dirname` (= `dist/src/`) so the plugin <webview>

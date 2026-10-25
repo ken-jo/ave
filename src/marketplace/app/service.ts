@@ -98,6 +98,7 @@ import type { RetirementEntry, RetirementEntryLookup } from "./retirement-entry.
 import { effectiveRevocations } from "../catalog/effective-revocations.js";
 import { revocationFeed, type BoundInstall, type RevocationFeed } from "./revocations.js";
 import { OperationLock } from "./operation-lock.js";
+import { withMarketplaceInstall } from "./install-lifecycle.js";
 import { KeyedMutex, type MutexLease } from "./keyed-mutex.js";
 import { Tickets } from "./tickets.js";
 import type { ComponentApprovalState, InstallerPorts, InstalledRecord, TokenStore } from "./ports.js";
@@ -1555,7 +1556,7 @@ export class MarketplaceService implements RetirementEntryLookup {
   }
 
   async executeInstall(planId: string, componentConsents: readonly ComponentConsent[] = [], reviewedAuthority = false): Promise<InstallResultView> {
-    return this.operation(() => this.executeInstallNow(planId, componentConsents, { reviewedAppVersion: reviewedAuthority ? getAveAppVersion() : null }));
+    return withMarketplaceInstall(() => this.operation(() => this.executeInstallNow(planId, componentConsents, { reviewedAppVersion: reviewedAuthority ? getAveAppVersion() : null })));
   }
 
   private async executeInstallNow(planId: string, componentConsents: readonly ComponentConsent[], review: InstallReview): Promise<InstallResultView> {
@@ -1977,7 +1978,7 @@ export class MarketplaceService implements RetirementEntryLookup {
   /** Reauthorize queued updates under operation and package locks using current facts and settings.
      * Automatic updates check installed consent; required policy entries authorize their own review. */
   async applyUpdate(target: ApplyTarget, decide: ApplyDecision, signal?: AbortSignal): Promise<ApplyOutcome> {
-    return this.operation(() => this.withPackage(target.key.kind, target.key.name, () => this.applyUpdateNow(target, decide), signal ? { signal } : {}), signal);
+    return withMarketplaceInstall(() => this.operation(() => this.withPackage(target.key.kind, target.key.name, () => this.applyUpdateNow(target, decide), signal ? { signal } : {}), signal));
   }
 
   private async applyUpdateNow(target: ApplyTarget, decide: ApplyDecision): Promise<ApplyOutcome> {
@@ -2179,7 +2180,7 @@ export class MarketplaceService implements RetirementEntryLookup {
     applied: AppliedDefaults,
     signal?: AbortSignal,
   ): Promise<{ report: BootInstallReport; notice: BootInstallNoticeView | null }> {
-    return this.operation(() => this.applyBootInstallsNow(defaults, applied, signal), signal);
+    return withMarketplaceInstall(() => this.operation(() => this.applyBootInstallsNow(defaults, applied, signal), signal));
   }
 
   private async applyBootInstallsNow(
