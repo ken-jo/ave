@@ -84,13 +84,13 @@ export interface A2ARouterRuntime {
   dispose?: () => void | Promise<void>;
 }
 
-export interface A2ARouterFactoryContext {
+interface A2ARouterFactoryContext {
   approveAgentAction: AgentActionApprover | undefined;
 }
 
 type A2ARouterFactoryResult = A2AHttpRouter | A2ARouterRuntime | null;
 
-export type A2ARouterFactory = (
+type A2ARouterFactory = (
   context: A2ARouterFactoryContext,
 ) => A2ARouterFactoryResult | Promise<A2ARouterFactoryResult>;
 

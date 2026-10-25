@@ -12,10 +12,10 @@ import { activeLlmRouteModel } from "../shared/llm-vendor-defaults.js";
 import type { AuditLogger, AuditEntry } from "./audit-logger.js";
 import { utcDateKey } from "../shared/local-date.js";
 
-export const DIAGNOSTICS_BUNDLE_SCHEMA_VERSION = 1;
+const DIAGNOSTICS_BUNDLE_SCHEMA_VERSION = 1;
 
 /** Skip entries exceeding the uncompressed byte ceiling and mark the manifest truncated. */
-export const MAX_BUNDLE_BYTES = 50 * 1024 * 1024;
+const MAX_BUNDLE_BYTES = 50 * 1024 * 1024;
 
 export interface CrashDumpMeta {
   /** File name only; never expose the userData directory. */
@@ -24,7 +24,7 @@ export interface CrashDumpMeta {
   size: number;
 }
 
-export interface DiagnosticsBundleManifest {
+interface DiagnosticsBundleManifest {
   schemaVersion: number;
   appVersion: string;
   createdAt: string;

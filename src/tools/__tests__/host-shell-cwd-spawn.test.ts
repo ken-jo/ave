@@ -50,8 +50,7 @@ function authorizedContext(cwd: string, command = "touch marker", rulePatterns: 
   manager.setRules(rulePatterns.map((pattern) => ({ pattern, action: "allow" as const })));
   const decision = manager.checkDetailed("bash", "builtin", "shell", null, {
     hostShellExecutionPlan: plan, ruleSubject: { kind: "shell", dialect: "bash", command: input.command, cwd: join(directory, cwd) },
-    // An explicit host retry on a sandbox-capable host, where a wildcard
-    // allow may issue the rule proof (without a sandbox only an exact one can).
+    // An explicit host retry on a sandbox-capable host, where a wildcard allow may issue the rule proof (without a sandbox only an exact one can).
     shellExecution: { runsSandboxed: false, sandboxAvailable: true },
   });
   const binding = buildHostShellExecutionPermitBinding({
@@ -99,8 +98,7 @@ describe("host cwd races after permit consumption", () => {
     await persisted;
     expect(persisted).toBeDefined();
     if (process.platform === "win32") {
-      // The synchronous native handoff precedes this queued write on platforms
-      // without a child guard, so the mutation applies to the next invocation.
+      // The synchronous native handoff precedes this queued write on platforms without a child guard, so the mutation applies to the next invocation.
       expect(result.isError).toBe(false);
       expect(existsSync(join(current, "marker"))).toBe(true);
       return;
@@ -171,8 +169,7 @@ describe("host cwd races after permit consumption", () => {
     const result = await new BashTool().execute(input, context);
     expect(spawnBoundary.cwd).toBe(current);
     if (process.platform === "win32") {
-      // Physical spawn protects junction retargeting, but native child-side
-      // directory identity verification is not implemented on this platform.
+      // Physical spawn protects junction retargeting, but native child-side directory identity verification is not implemented on this platform.
       expect(result.isError).toBe(false);
       expect(existsSync(join(current, "marker"))).toBe(true);
       return;

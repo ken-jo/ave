@@ -436,13 +436,11 @@ describe("reviewer-owned scope reevaluation", () => {
       scopeReasons: ["sealed targets match the request"],
       reevaluatedVerdict, now: NOW,
     });
-    // The tie must resolve exactly as the owning authority resolves it
-    // (src/permissions/reviewer/risk-classifier.ts `maxVerdict`: ties prefer `b`).
+    // Match the owning risk classifier's tie rule: maxVerdict prefers b.
     expect(control.initialVerdict.level).toBe(reevaluation.reevaluatedVerdict.level);
     expect(reevaluation.effectiveVerdict)
       .toEqual(maxVerdict(control.initialVerdict, reevaluation.reevaluatedVerdict));
     expect(reevaluation.effectiveVerdict.reason).toBe(reevaluatedVerdict.reason);
-    // Producer and verifier must both defer to that same authority.
     expect(validateReviewerScopeReevaluation(reevaluation, control, NOW)).toBe(true);
   });
 });
@@ -481,16 +479,13 @@ describe("isReviewerAutoApproveEligible", () => {
     const reevaluation = createReviewerScopeReevaluation({
       control: fixture(), outcome, now: NOW,
     });
-    // Failure outcomes force scopeAlignment "unknown" and re-carry the initial
-    // verdict; the predicate never auto-approves them (fail-closed → modal).
+    // Failures retain the initial verdict and unknown alignment, failing closed to a modal.
     expect(reevaluation.scopeAlignment).toBe("unknown");
     expect(isReviewerAutoApproveEligible(reevaluation)).toBe(false);
   });
 
   it("gates on reevaluatedVerdict, not effectiveVerdict", () => {
-    // effectiveVerdict = max(initial, reevaluated). Construct a case where they
-    // diverge (reevaluated below the sealed effectiveVerdict) and confirm the
-    // predicate follows reevaluatedVerdict, never the composed effectiveVerdict.
+    // Diverge reevaluated and effective verdicts to prove auto-approval uses reevaluatedVerdict.
     const control = fixture();
     const reevaluation = createReviewerScopeReevaluation({
       control, outcome: "fresh", scopeAlignment: "aligned",
@@ -533,8 +528,7 @@ describe("ticket/action-bound lifecycle truth table", () => {
     const universal = new Set<RationaleTicketEventName>([
       "abort", "session-close", "identity-mismatch", "stale-replay", "expire",
     ]);
-    // The reviewer auto-approve terminal moves rationale_ready straight to
-    // allowed_once, so reviewer-authorize-once is legal only from that state.
+    // Reviewer-authorize-once is legal only from rationale_ready, before the allowed_once terminal.
     const specific: Record<string, readonly RationaleTicketEventName[]> = {
       review_required: ["request-rationale"],
       rationale_requested: ["rationale-ready", "rationale-failed"],

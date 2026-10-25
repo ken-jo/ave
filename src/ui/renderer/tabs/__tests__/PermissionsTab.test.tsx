@@ -6,8 +6,7 @@ import { useState, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup } from "@testing-library/react";
 
-// The real preload surface is used by the issue #1608 gesture test below; its
-// ipcRenderer is routed to a fake main per test.
+// The real preload surface is used by the gesture test below; its ipcRenderer is routed to a fake main per test.
 const { ipcInvoke, mainHandlers } = vi.hoisted(() => ({
   ipcInvoke: vi.fn(),
   mainHandlers: new Map<string, (...args: unknown[]) => unknown>(),
@@ -25,6 +24,7 @@ vi.mock("../../../../components/ui/scroll-area.js", () => ({
 
 import { PermissionsTab } from "../PermissionsTab.js";
 import { makeHookTrustRow as hook } from "./test-helpers.js";
+import { renderPermissionsTab } from "./support/render-permissions-tab.js";
 import type { HookTrustRow, ScopedPermissionRuleError } from "../../types.js";
 import { isPolicyUserEditable, type PolicySource } from "../../../../shared/policy-editability.js";
 import { getLocale, setLocale, t } from "../../../../i18n/runtime.js";
@@ -35,11 +35,8 @@ import { PERMISSIONS } from "../../../../shared/ipc-channels.js";
 import { hostFrameEvent } from "../../../../__tests__/test-helpers.js";
 import { setProcessPlatform } from "../../../../__tests__/support/process-platform.js";
 
-/**
- * Mirrors the `PERMISSIONS.policyGet` handler: the host attaches `editable`
- * from the real predicate. Built here the same way so a renderer that goes back
- * to reading `managed` directly fails these tests.
- */
+/** Mirrors the `PERMISSIONS.policyGet` handler: the host attaches `editable` from the real predicate.
+ * Built here the same way so a renderer that goes back to reading `managed` directly fails these tests. */
 function policyGetPayload(loaded: {
   requireExplicitApproval: boolean;
   managed: boolean;
@@ -47,6 +44,18 @@ function policyGetPayload(loaded: {
   adminPath?: string;
 }) {
   return { version: 1 as const, updatedAt: "2026-01-01T00:00:00.000Z", ...loaded, editable: isPolicyUserEditable(loaded) };
+}
+
+function reviewerResult(
+  verb: "show" | "mode" | "fallback" | "interactive",
+  mode: "disabled" | "llm",
+  fallbackOnError: "deny" | "rule",
+  autoApprove: "off" | "low" | "medium",
+) {
+  return {
+    ok: true as const, verb,
+    settings: { mode, fallbackOnError, parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION, interactive: { autoApprove } },
+  };
 }
 
 function installApi(
@@ -86,76 +95,22 @@ function installApi(
       })),
       reviewerDispatch: vi.fn(async (rawArgs: string) => {
         if (rawArgs === "show") {
-          return {
-            ok: true as const,
-            verb: "show" as const,
-            settings: {
-              mode: "disabled" as const,
-              fallbackOnError: "deny" as const,
-              parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
-              interactive: { autoApprove: "off" as const },
-            },
-          };
+          return reviewerResult("show", "disabled", "deny", "off");
         }
         if (rawArgs === "mode llm") {
-          return {
-            ok: true as const,
-            verb: "mode" as const,
-            settings: {
-              mode: "llm" as const,
-              fallbackOnError: "deny" as const,
-              parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
-              interactive: { autoApprove: "off" as const },
-            },
-          };
+          return reviewerResult("mode", "llm", "deny", "off");
         }
         if (rawArgs === "mode disabled") {
-          return {
-            ok: true as const,
-            verb: "mode" as const,
-            settings: {
-              mode: "disabled" as const,
-              fallbackOnError: "deny" as const,
-              parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
-              interactive: { autoApprove: "off" as const },
-            },
-          };
+          return reviewerResult("mode", "disabled", "deny", "off");
         }
         if (rawArgs === "fallback rule") {
-          return {
-            ok: true as const,
-            verb: "fallback" as const,
-            settings: {
-              mode: "llm" as const,
-              fallbackOnError: "rule" as const,
-              parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
-              interactive: { autoApprove: "off" as const },
-            },
-          };
+          return reviewerResult("fallback", "llm", "rule", "off");
         }
         if (rawArgs === "interactive low" || rawArgs === "interactive medium") {
-          return {
-            ok: true as const,
-            verb: "interactive" as const,
-            settings: {
-              mode: "llm" as const,
-              fallbackOnError: "deny" as const,
-              parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
-              interactive: { autoApprove: rawArgs === "interactive medium" ? "medium" as const : "low" as const },
-            },
-          };
+          return reviewerResult("interactive", "llm", "deny", rawArgs === "interactive medium" ? "medium" : "low");
         }
         if (rawArgs === "interactive off") {
-          return {
-            ok: true as const,
-            verb: "interactive" as const,
-            settings: {
-              mode: "disabled" as const,
-              fallbackOnError: "deny" as const,
-              parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
-              interactive: { autoApprove: "off" as const },
-            },
-          };
+          return reviewerResult("interactive", "disabled", "deny", "off");
         }
         throw new Error(`unexpected reviewerDispatch: ${rawArgs}`);
       }),
@@ -379,9 +334,7 @@ describe("PermissionsTab hook quarantine notice", () => {
   it("opens the audit log inside its own settings section, in the pane", async () => {
     installApi([[]]);
 
-    await act(async () => {
-      render(<PermissionsTab />);
-    });
+    await renderPermissionsTab();
 
     const section = document.querySelector<HTMLElement>('[data-settings-section="permissions-audit-log"]')!;
     expect(section.querySelector('[data-testid="audit-panel"]')).toBeNull();
@@ -390,9 +343,8 @@ describe("PermissionsTab hook quarantine notice", () => {
       fireEvent.click(screen.getByRole("button", { name: t("permissionsTab.auditLogOpenButton") }));
     });
 
-    // The log is a region of THIS section: it takes the pane's width and pushes
-    // what follows down. It is not a panel fixed to the window edge, which
-    // covered the tiles beside the Settings pane and the title bar.
+    // The log is a region of THIS section: it takes the pane's width and pushes what follows down. It is not
+    // a panel fixed to the window edge, which covered the tiles beside the Settings pane and the title bar.
     const panel = await waitFor(() => {
       const el = section.querySelector<HTMLElement>('[data-testid="audit-panel"]');
       expect(el).not.toBeNull();
@@ -411,9 +363,7 @@ describe("PermissionsTab hook quarantine notice", () => {
   it("shows the four user-facing permission policy choices and their read behavior", async () => {
     installApi([[]]);
 
-    await act(async () => {
-      render(<PermissionsTab />);
-    });
+    await renderPermissionsTab();
 
     expect(screen.getByTestId(execModeTestId("default"))).toHaveTextContent("쓰기 확인");
     expect(screen.getByText(/읽기 도구는 허용/)).toBeTruthy();
@@ -432,9 +382,7 @@ describe("PermissionsTab hook quarantine notice", () => {
       message: "사용자가 모드 변경을 거부했습니다.",
     });
 
-    await act(async () => {
-      render(<PermissionsTab />);
-    });
+    await renderPermissionsTab();
 
     expect(screen.getByTestId(execModeTestId("default"))).toBeTruthy();
 
@@ -456,9 +404,7 @@ describe("PermissionsTab hook quarantine notice", () => {
   it("marks the returned mode active after durable mode confirmation succeeds", async () => {
     const api = installApi([[]]);
 
-    await act(async () => {
-      render(<PermissionsTab />);
-    });
+    await renderPermissionsTab();
 
     await act(async () => {
       fireEvent.click(screen.getByTestId(execModeTestId("auto")));
@@ -466,9 +412,7 @@ describe("PermissionsTab hook quarantine notice", () => {
 
     expect(api.permission.reviewerDispatch).toHaveBeenCalledWith("mode llm");
     expect(api.permission.setMode).toHaveBeenCalledWith("auto");
-    // Round-2 test-engineer MAJOR — exec-mode-auto must ALSO fire the
-    // `interactive medium` dispatch so the global LOW+MEDIUM threshold stays
-    // coupled to the legacy `auto` UX.
+    // Round-2 test-engineer MAJOR; exec-mode-auto must ALSO fire the `interactive medium` dispatch so the global LOW+MEDIUM threshold stays coupled to the legacy `auto` UX.
     expect(api.permission.reviewerDispatch).toHaveBeenCalledWith("interactive medium");
     expect(api.permission.setMode.mock.invocationCallOrder[0]).toBeLessThan(
       api.permission.reviewerDispatch.mock.invocationCallOrder.at(-1)!,
@@ -482,35 +426,15 @@ describe("PermissionsTab hook quarantine notice", () => {
     api.permission.getMode.mockResolvedValueOnce({ mode: "auto" });
     api.permission.reviewerDispatch.mockImplementation(async (rawArgs: string) => {
       if (rawArgs === "show") {
-        return {
-          ok: true as const,
-          verb: "show" as const,
-          settings: {
-            mode: "llm" as const,
-            fallbackOnError: "deny" as const,
-            parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
-            interactive: { autoApprove: "off" as const },
-          },
-        };
+        return reviewerResult("show", "llm", "deny", "off");
       }
       if (rawArgs === "mode disabled") {
-        return {
-          ok: true as const,
-          verb: "mode" as const,
-          settings: {
-            mode: "disabled" as const,
-            fallbackOnError: "deny" as const,
-            parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
-            interactive: { autoApprove: "off" as const },
-          },
-        };
+        return reviewerResult("mode", "disabled", "deny", "off");
       }
       throw new Error(`unexpected reviewerDispatch: ${rawArgs}`);
     });
 
-    await act(async () => {
-      render(<PermissionsTab />);
-    });
+    await renderPermissionsTab();
     await act(async () => {
       fireEvent.click(screen.getByTestId(execModeTestId("allow")));
     });
@@ -527,9 +451,7 @@ describe("PermissionsTab hook quarantine notice", () => {
     const api = installApi([[]]);
     api.permission.getMode.mockResolvedValueOnce({ mode: "auto" });
 
-    await act(async () => {
-      render(<PermissionsTab />);
-    });
+    await renderPermissionsTab();
 
     const autoButton = screen.getByTestId(execModeTestId("auto"));
     expect(autoButton.className).toContain("border-primary");
@@ -548,9 +470,7 @@ describe("PermissionsTab hook quarantine notice", () => {
 
   it("renders a non-modal notice with the hooks list slash path", async () => {
     installApi([[hook("pre-scan.sh")]]);
-    await act(async () => {
-      render(<PermissionsTab />);
-    });
+    await renderPermissionsTab();
 
     expect(screen.getByTestId("hook-quarantine-notice")).toBeTruthy();
     expect(screen.getByText("검토 대기 1")).toBeTruthy();
@@ -560,9 +480,7 @@ describe("PermissionsTab hook quarantine notice", () => {
 
   it("clears the notice after the quarantined list becomes empty", async () => {
     const api = installApi([[hook("pre-scan.sh")], []]);
-    await act(async () => {
-      render(<PermissionsTab />);
-    });
+    await renderPermissionsTab();
     expect(screen.getByTestId("hook-quarantine-notice")).toBeTruthy();
 
     await act(async () => {
@@ -576,9 +494,7 @@ describe("PermissionsTab hook quarantine notice", () => {
   it("does not render the reviewer settings section", async () => {
     const api = installApi([[]]);
 
-    await act(async () => {
-      render(<PermissionsTab />);
-    });
+    await renderPermissionsTab();
 
     expect(api.permission.reviewerDispatch).toHaveBeenCalledWith("show");
     expect(screen.getAllByText("명시 액션 필수").length).toBeGreaterThan(0);
@@ -595,9 +511,7 @@ describe("PermissionsTab hook quarantine notice", () => {
   it("keeps hidden reviewer auto-wiring and shows only the prompt collapse inside 자동 검증", async () => {
     const api = installApi([[]]);
 
-    await act(async () => {
-      render(<PermissionsTab />);
-    });
+    await renderPermissionsTab();
 
     await act(async () => {
       fireEvent.click(screen.getByTestId(execModeTestId("auto")));
@@ -624,9 +538,7 @@ describe("PermissionsTab hook quarantine notice", () => {
       .mockResolvedValueOnce({ mode: "default" })
       .mockResolvedValue({ mode: "auto" });
 
-    await act(async () => {
-      render(<PermissionsTab />);
-    });
+    await renderPermissionsTab();
 
     expect(screen.queryByTestId(TEST_IDS.reviewerPromptPanel)).toBeNull();
     const onModeChanged = api.permission.onModeChanged.mock.calls[0]?.[0] as ((mode: string) => void) | undefined;
@@ -643,9 +555,7 @@ describe("PermissionsTab hook quarantine notice", () => {
   it("does not expose the reviewer fallback policy in Settings", async () => {
     const api = installApi([[]]);
 
-    await act(async () => {
-      render(<PermissionsTab />);
-    });
+    await renderPermissionsTab();
     await act(async () => {
       fireEvent.click(screen.getByTestId(execModeTestId("auto")));
     });
@@ -665,9 +575,7 @@ describe("PermissionsTab hook quarantine notice", () => {
       modelOptions: [{ vendor: "claude", model: "claude-reviewer" }],
     });
 
-    await act(async () => {
-      render(<PermissionsTab />);
-    });
+    await renderPermissionsTab();
     await act(async () => {
       fireEvent.click(screen.getByTestId(execModeTestId("auto")));
     });
@@ -695,9 +603,7 @@ describe("PermissionsTab hook quarantine notice", () => {
     }));
     Object.assign(api.permission, { judgeGet, judgeSet });
 
-    await act(async () => {
-      render(<PermissionsTab />);
-    });
+    await renderPermissionsTab();
     const picker = await screen.findByTestId("permission-reviewer-model");
     const pick = async (label: RegExp) => {
       fireEvent.keyDown(picker, { key: "ArrowDown" });
@@ -734,9 +640,7 @@ describe("PermissionsTab hook quarantine notice", () => {
       reviewerModelUnavailable: true,
     });
 
-    await act(async () => {
-      render(<PermissionsTab />);
-    });
+    await renderPermissionsTab();
 
     expect(await screen.findByTestId("permission-reviewer-model-unavailable"))
       .toHaveTextContent(t("permissionJudge.reviewerModelUnavailable"));
@@ -748,23 +652,12 @@ describe("PermissionsTab hook quarantine notice", () => {
     api.permission.getMode.mockResolvedValueOnce({ mode: "auto" });
     api.permission.reviewerDispatch.mockImplementation(async (rawArgs: string) => {
       if (rawArgs === "show") {
-        return {
-          ok: true as const,
-          verb: "show" as const,
-          settings: {
-            mode: "llm" as const,
-            fallbackOnError: "deny" as const,
-            parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
-            interactive: { autoApprove: "off" as const },
-          },
-        };
+        return reviewerResult("show", "llm", "deny", "off");
       }
       throw new Error(`unexpected reviewerDispatch: ${rawArgs}`);
     });
 
-    await act(async () => {
-      render(<PermissionsTab />);
-    });
+    await renderPermissionsTab();
     expect(screen.getByTestId("interactive-auto-approve-select")).toBeTruthy();
     expect(screen.queryByTestId("permissions-legacy-auto-mode-banner")).toBeNull();
     expect(screen.getByTestId(TEST_IDS.reviewerPromptPanel)).toBeTruthy();
@@ -775,16 +668,7 @@ describe("PermissionsTab hook quarantine notice", () => {
     const api = installApi([[]]);
     api.permission.reviewerDispatch.mockImplementation(async (rawArgs: string) => {
       if (rawArgs === "show") {
-        return {
-          ok: true as const,
-          verb: "show" as const,
-          settings: {
-            mode: "disabled" as const,
-            fallbackOnError: "deny" as const,
-            parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
-            interactive: { autoApprove: "off" as const },
-          },
-        };
+        return reviewerResult("show", "disabled", "deny", "off");
       }
       if (rawArgs === "mode llm") {
         return { ok: false as const, error: "reviewer-rewire-failed: missing provider" };
@@ -792,15 +676,12 @@ describe("PermissionsTab hook quarantine notice", () => {
       throw new Error(`unexpected reviewerDispatch: ${rawArgs}`);
     });
 
-    await act(async () => {
-      render(<PermissionsTab />);
-    });
+    await renderPermissionsTab();
     await act(async () => {
       fireEvent.click(screen.getByTestId(execModeTestId("auto")));
     });
 
-    // The exec mode switch succeeds, but the auto-wired `mode llm` reviewer
-    // dispatch fails → surface the rewire-failure banner.
+    // The exec mode switch succeeds, but the auto-wired `mode llm` reviewer dispatch fails → surface the rewire-failure banner.
     expect(api.permission.setMode).toHaveBeenCalledWith("auto");
     expect(api.permission.reviewerDispatch).toHaveBeenCalledWith("mode llm");
     expect(screen.getByText(/이전 설정으로 복원했습니다/)).toBeTruthy();
@@ -836,9 +717,7 @@ describe("PermissionsTab hook quarantine notice", () => {
       };
     });
 
-    await act(async () => {
-      render(<PermissionsTab />);
-    });
+    await renderPermissionsTab();
 
     await act(async () => {
       fireEvent.change(screen.getByPlaceholderText("경로 (예: ~/Documents/project)"), {
@@ -941,9 +820,7 @@ describe("PermissionsTab hook quarantine notice", () => {
       throw new Error(`unexpected dirDispatch: ${rawArgs}`);
     });
 
-    await act(async () => {
-      render(<PermissionsTab />);
-    });
+    await renderPermissionsTab();
 
     await act(async () => {
       fireEvent.change(screen.getByPlaceholderText("경로 (예: ~/Documents/project)"), {
@@ -966,10 +843,8 @@ describe("PermissionsTab hook quarantine notice", () => {
   it("renders only the prompt panel when mode=auto + interactive.autoApprove=off", async () => {
     const api = installApi([[]]);
     api.permission.getMode.mockResolvedValueOnce({ mode: "auto" });
-    // Note: reviewerDispatch("show") default returns interactive.autoApprove="off".
-    await act(async () => {
-      render(<PermissionsTab />);
-    });
+    // reviewerDispatch("show") default returns interactive.autoApprove="off".
+    await renderPermissionsTab();
     expect(screen.getByTestId(TEST_IDS.reviewerPromptPanel)).toBeTruthy();
     expect(screen.getByTestId(execModeTestId("auto"))).toContainElement(screen.getByTestId(TEST_IDS.reviewerPromptPanel));
     expect(screen.queryByTestId("permissions-legacy-auto-mode-banner")).toBeNull();
@@ -977,34 +852,24 @@ describe("PermissionsTab hook quarantine notice", () => {
     expect(screen.queryByTestId("reviewer-framework-panel")).toBeNull();
   });
 
-  it("hides the reviewer section (and its banners) entirely under strict mode", async () => {
-    const api = installApi([[]]);
-    api.permission.getMode.mockResolvedValueOnce({ mode: "strict" });
-    await act(async () => {
-      render(<PermissionsTab />);
-    });
-    // Single-axis: the reviewer config only exists under 자동 검증, so strict
-    // shows no reviewer section and none of its banners.
-    expect(screen.queryByTestId("reviewer-framework-panel")).toBeNull();
-    expect(screen.queryByTestId("permissions-legacy-auto-mode-banner")).toBeNull();
-  });
+  // The reviewer config only exists under 자동 검증, so other modes show none of its panels or banners.
+  function hiddenReviewerCase(mode: "strict" | "allow") {
+    return async () => {
+      const api = installApi([[]]);
+      api.permission.getMode.mockResolvedValueOnce({ mode });
+      await renderPermissionsTab();
+      expect(screen.queryByTestId("reviewer-framework-panel")).toBeNull();
+      expect(screen.queryByTestId("permissions-legacy-auto-mode-banner")).toBeNull();
+    };
+  }
 
-  it("hides the reviewer section entirely under allow mode", async () => {
-    const api = installApi([[]]);
-    api.permission.getMode.mockResolvedValueOnce({ mode: "allow" });
-    await act(async () => {
-      render(<PermissionsTab />);
-    });
-    expect(screen.queryByTestId("reviewer-framework-panel")).toBeNull();
-    expect(screen.queryByTestId("permissions-legacy-auto-mode-banner")).toBeNull();
-  });
+  it("hides the reviewer section (and its banners) entirely under strict mode", hiddenReviewerCase("strict"));
+  it("hides the reviewer section entirely under allow mode", hiddenReviewerCase("allow"));
 
   it("does NOT render the auto-mode auto-approve-off banner under non-auto modes", async () => {
     installApi([[]]);
     // Default = mode "default" → reviewer section (and its banner) hidden.
-    await act(async () => {
-      render(<PermissionsTab />);
-    });
+    await renderPermissionsTab();
     expect(screen.queryByTestId("permissions-legacy-auto-mode-banner")).toBeNull();
   });
 });
@@ -1014,16 +879,13 @@ describe("PermissionsTab — explicit-approval policy editability", () => {
 
   it("enables the checkbox when no admin policy is deployed", async () => {
     installApi([[]]);
-    await act(async () => {
-      render(<PermissionsTab />);
-    });
+    await renderPermissionsTab();
     expect(screen.getByLabelText(CHECKBOX_LABEL)).not.toBeDisabled();
     expect(screen.queryByTitle("IT 관리자 설정")).toBeNull();
   });
 
-  // The case the `managed` flag alone gets wrong: an admin-dir policy that
-  // pins requireExplicitApproval without claiming `managed`. loadPolicy returns
-  // managed:false + source:"admin", savePolicy still refuses every write.
+  // The case the `managed` flag alone gets wrong: an admin-dir policy that pins requireExplicitApproval without
+  // claiming `managed`. loadPolicy returns managed:false + source:"admin", savePolicy still refuses every write.
   it("locks the checkbox for an admin-dir policy that does not set managed:true", async () => {
     const api = installApi([[]]);
     api.policy.get.mockResolvedValueOnce(policyGetPayload({
@@ -1032,40 +894,23 @@ describe("PermissionsTab — explicit-approval policy editability", () => {
       source: "admin",
       adminPath: "/etc/ave/policy.json",
     }));
-    await act(async () => {
-      render(<PermissionsTab />);
-    });
+    await renderPermissionsTab();
     expect(screen.getByLabelText(CHECKBOX_LABEL)).toBeDisabled();
     expect(screen.getByTitle("IT 관리자 설정")).toBeTruthy();
     expect(screen.getByText(/\/etc\/ave\/policy.json/)).toBeTruthy();
   });
 
-  it("locks the checkbox for a merged admin+user policy with managed:false", async () => {
-    const api = installApi([[]]);
-    api.policy.get.mockResolvedValueOnce(policyGetPayload({
-      requireExplicitApproval: false,
-      managed: false,
-      source: "merged",
-      adminPath: "/etc/ave/policy.json",
-    }));
-    await act(async () => {
-      render(<PermissionsTab />);
-    });
-    expect(screen.getByLabelText(CHECKBOX_LABEL)).toBeDisabled();
-  });
+  function lockedPolicyCase(policy: Parameters<typeof policyGetPayload>[0]) {
+    return async () => {
+      const api = installApi([[]]);
+      api.policy.get.mockResolvedValueOnce(policyGetPayload(policy));
+      await renderPermissionsTab();
+      expect(screen.getByLabelText(CHECKBOX_LABEL)).toBeDisabled();
+    };
+  }
 
-  it("locks the checkbox for a user policy with managed:true", async () => {
-    const api = installApi([[]]);
-    api.policy.get.mockResolvedValueOnce(policyGetPayload({
-      requireExplicitApproval: true,
-      managed: true,
-      source: "user",
-    }));
-    await act(async () => {
-      render(<PermissionsTab />);
-    });
-    expect(screen.getByLabelText(CHECKBOX_LABEL)).toBeDisabled();
-  });
+  it("locks the checkbox for a merged admin+user policy with managed:false", lockedPolicyCase({ requireExplicitApproval: false, managed: false, source: "merged", adminPath: "/etc/ave/policy.json" }));
+  it("locks the checkbox for a user policy with managed:true", lockedPolicyCase({ requireExplicitApproval: true, managed: true, source: "user" }));
 });
 
 describe("PermissionsTab — OS sandbox toggle and capability rendering", () => {
@@ -1084,9 +929,7 @@ describe("PermissionsTab — OS sandbox toggle and capability rendering", () => 
       message: "저장 실패",
     });
 
-    await act(async () => {
-      render(<PermissionsTab />);
-    });
+    await renderPermissionsTab();
 
     const toggle = screen.getByTestId("os-sandbox-toggle");
     expect(toggle).toHaveAttribute("aria-checked", "false");
@@ -1109,9 +952,7 @@ describe("PermissionsTab — OS sandbox toggle and capability rendering", () => 
     installApi([[]]);
     settingsApi().updateSettings.mockResolvedValue({ ok: true });
 
-    await act(async () => {
-      render(<PermissionsTab />);
-    });
+    await renderPermissionsTab();
 
     const shellToggle = screen.getByTestId("os-sandbox-toggle");
     const workerToggle = screen.getByTestId("worker-confinement-toggle");
@@ -1144,9 +985,7 @@ describe("PermissionsTab — OS sandbox toggle and capability rendering", () => 
       features: { osToolSandbox: false, pluginWorkerConfinement: true },
     });
 
-    await act(async () => {
-      render(<PermissionsTab />);
-    });
+    await renderPermissionsTab();
 
     expect(screen.getByTestId("os-sandbox-toggle")).toHaveAttribute("aria-checked", "false");
     expect(screen.getByTestId("worker-confinement-toggle")).toHaveAttribute("aria-checked", "true");
@@ -1166,9 +1005,7 @@ describe("PermissionsTab — OS sandbox toggle and capability rendering", () => 
       confines: { filesystem: true, process: true, network: true },
     });
 
-    await act(async () => {
-      render(<PermissionsTab />);
-    });
+    await renderPermissionsTab();
 
     expect(screen.getByTestId("os-sandbox-runtime-reason")).toHaveTextContent(t("permissionsTab.osSandboxKindNone"));
     expect(screen.getByTestId("worker-confinement-runtime-reason")).toHaveTextContent(t("permissionsTab.osSandboxKindFull"));
@@ -1177,9 +1014,7 @@ describe("PermissionsTab — OS sandbox toggle and capability rendering", () => 
   it("says the environment is deciding worker confinement when its variable is set", async () => {
     installApi([[]], ["features.pluginWorkerConfinement"]);
 
-    await act(async () => {
-      render(<PermissionsTab />);
-    });
+    await renderPermissionsTab();
 
     await waitFor(() => {
       expect(screen.getByTestId("worker-confinement-forced")).toHaveTextContent("AVE_PLUGIN_WORKER_CONFINEMENT");
@@ -1205,9 +1040,7 @@ describe("PermissionsTab — OS sandbox toggle and capability rendering", () => 
     });
     settingsApi().getSettings.mockResolvedValueOnce({ features: { osToolSandbox: true } });
 
-    await act(async () => {
-      render(<PermissionsTab />);
-    });
+    await renderPermissionsTab();
 
     expect(screen.getByTestId("os-sandbox-potential-reason")).toHaveTextContent(
       t("permissionsTab.osSandboxKindFull"),
@@ -1219,29 +1052,23 @@ describe("PermissionsTab — OS sandbox toggle and capability rendering", () => 
   });
 
   it("says the environment is deciding the sandbox when the variable is set", async () => {
-    // `AVE_SANDBOX_ENABLED=1` is OR-ed with the setting at boot, so without
-    // this line the toggle reads "off" while the sandbox is on, and turning it
-    // off again does nothing — a control that lies about the running app.
+    // `AVE_SANDBOX_ENABLED=1` is OR-ed with the setting at boot, so without this line the toggle reads "off"
+    // while the sandbox is on, and turning it off again does nothing; a control that lies about the running app.
     installApi([[]], ["features.osToolSandbox"]);
 
-    await act(async () => {
-      render(<PermissionsTab />);
-    });
+    await renderPermissionsTab();
 
     await waitFor(() => {
       expect(screen.getByTestId("os-sandbox-forced")).toHaveTextContent("AVE_SANDBOX_ENABLED");
     });
-    // The control stays usable: the stored value still decides the next run
-    // launched without the variable.
+    // The control stays usable: the stored value still decides the next run launched without the variable.
     expect(screen.getByTestId("os-sandbox-toggle")).not.toBeDisabled();
   });
 
   it("stays silent about the environment when no variable is forcing it", async () => {
     installApi([[]]);
 
-    await act(async () => {
-      render(<PermissionsTab />);
-    });
+    await renderPermissionsTab();
 
     expect(screen.queryByTestId("os-sandbox-forced")).toBeNull();
   });
@@ -1263,9 +1090,7 @@ describe("PermissionsTab — OS sandbox toggle and capability rendering", () => 
       confines: { filesystem: false, process: false, network: false },
     });
 
-    await act(async () => {
-      render(<PermissionsTab />);
-    });
+    await renderPermissionsTab();
 
     expect(screen.getByTestId("os-sandbox-unavailable")).toHaveTextContent("freebsd");
     expect(screen.getByTestId("os-sandbox-toggle")).toBeDisabled();
@@ -1275,12 +1100,8 @@ describe("PermissionsTab — OS sandbox toggle and capability rendering", () => 
 });
 
 describe("PermissionsTab — handleWindowsInstall error-shape robustness", () => {
-  /**
-   * When sandboxWindowsInstall returns an error shape (ok: false), the handler
-   * must keep the user's opt-in setting enabled and keep the consent panel
-   * visible so the install can be retried. The UI surfaces the error separately
-   * from the persisted desire to enable ASRT.
-   */
+  /** When sandboxWindowsInstall returns an error shape (ok: false), the handler must keep the user's opt-in setting enabled and keep the
+   * consent panel visible so the install can be retried. The UI surfaces the error separately from the persisted desire to enable ASRT. */
   function installApiWithWindows(overrides: {
     sandboxWindowsInstall?: ReturnType<typeof vi.fn>;
     sandboxWindowsStatus?: ReturnType<typeof vi.fn>;
@@ -1314,16 +1135,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
           userAdditions: [],
           effective: [],
         })),
-        reviewerDispatch: vi.fn(async () => ({
-          ok: true as const,
-          verb: "show" as const,
-          settings: {
-            mode: "disabled" as const,
-            fallbackOnError: "deny" as const,
-            parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
-            interactive: { autoApprove: "off" as const },
-          },
-        })),
+        reviewerDispatch: vi.fn(async () => (reviewerResult("show", "disabled", "deny", "off"))),
         sandboxCapability: vi.fn(async () => ({
           platform: "win32" as NodeJS.Platform,
           enabled: true,
@@ -1619,9 +1431,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
       })),
     });
 
-    await act(async () => {
-      render(<PermissionsTab />);
-    });
+    await renderPermissionsTab();
 
     // The consent panel must be visible (sandboxEnabled=true, applicable, not ready).
     expect(screen.getByTestId("os-sandbox-windows-consent")).toBeTruthy();
@@ -1630,12 +1440,10 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
       fireEvent.click(screen.getByText("재설정"));
     });
 
-    // osToolSandbox must not be reverted to false; the user opted in and the
-    // consent panel remains the place to retry/follow instructions.
+    // osToolSandbox must not be reverted to false; the user opted in and the consent panel remains the place to retry/follow instructions.
     expect(updateSettings).not.toHaveBeenCalledWith({ features: { osToolSandbox: false } });
 
-    // The refusal is visible and localized; main's free text (srt-win output,
-    // local paths with the user name) is not on screen.
+    // The refusal is visible and localized; main's free text (srt-win output, local paths with the user name) is not on screen.
     const outcome = screen.getByTestId("os-sandbox-windows-install-outcome");
     expect(outcome).toHaveAttribute("data-outcome", "refused");
     expect(outcome).toHaveTextContent("Windows 샌드박스 설정 오류:");
@@ -1651,9 +1459,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
       sandboxWindowsInstall: vi.fn(async () => ({ cancelled: true })),
     });
 
-    await act(async () => {
-      render(<PermissionsTab />);
-    });
+    await renderPermissionsTab();
 
     await act(async () => {
       fireEvent.click(screen.getByText("재설정"));
@@ -1664,14 +1470,11 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     expect(screen.getByTestId("os-sandbox-windows-consent")).toBeTruthy();
   });
 
-  // Issue #1608: the click must always end in a visible state of its own. The
-  // status mock returns the same not-ready snapshot before and after, which is
-  // exactly when the old handler left the panel looking untouched.
+  // the click must always end in a visible state of its own. The status mock returns the same not-ready
+  // snapshot before and after, which is exactly when the old handler left the panel looking untouched.
   async function clickInstall(result: () => Promise<unknown>) {
     const api = installApiWithWindows({ sandboxWindowsInstall: vi.fn(result) });
-    await act(async () => {
-      render(<PermissionsTab />);
-    });
+    await renderPermissionsTab();
     await act(async () => {
       fireEvent.click(screen.getByText(t("permissionsTab.osSandboxWindowsInstallButton")));
     });
@@ -1786,9 +1589,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
 
   it("shows a localized banner, not the raw error, when the status re-read after install fails", async () => {
     const { ave } = installApiWithWindows({ sandboxWindowsInstall: vi.fn(async () => ({ outcome: "timed-out" })) });
-    await act(async () => {
-      render(<PermissionsTab />);
-    });
+    await renderPermissionsTab();
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     (ave.permission.sandboxWindowsStatus as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error(RAW_DETAIL));
     await act(async () => {
@@ -1890,9 +1691,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     let finishReread: ((value: unknown) => void) | undefined;
     const install = vi.fn(() => new Promise((resolve) => { finishInstall = resolve; }));
     const { ave } = installApiWithWindows({ sandboxWindowsInstall: install });
-    await act(async () => {
-      render(<PermissionsTab />);
-    });
+    await renderPermissionsTab();
     const status = ave.permission.sandboxWindowsStatus as ReturnType<typeof vi.fn>;
     const statusCallsAtMount = status.mock.calls.length;
     status.mockImplementationOnce(() => new Promise((resolve) => { finishReread = resolve; }));
@@ -1925,8 +1724,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
   });
 
   describe("through the real preload surface (issue #1608 gesture expiry)", () => {
-    // Electron 44 measured: navigator.userActivation.isActive is true ~4.8 s
-    // after a click and false by ~5.3 s. The fake keeps that window.
+    // Electron 44 measured: navigator.userActivation.isActive is true ~4.8 s after a click and false by ~5.3 s. The fake keeps that window.
     const ACTIVATION_WINDOW_MS = 5_000;
     // Slower than the window: a real status read is up to ~45 s.
     const STATUS_READ_MS = 6_000;
@@ -2033,15 +1831,12 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
 });
 
 describe("PermissionsTab — failures never put raw text on screen", () => {
-  // What main's free-text messages and thrown errors can carry: English
-  // internals and local paths with the user's account name.
+  // What main's free-text messages and thrown errors can carry: English internals and local paths with the user's account name.
   const RAW = String.raw`EACCES: open C:\Users\example\AppData\Local\ave\settings.json`;
 
   async function renderTab() {
     const api = installApi([[]]);
-    await act(async () => {
-      render(<PermissionsTab />);
-    });
+    await renderPermissionsTab();
     return api;
   }
 
@@ -2114,8 +1909,7 @@ describe("PermissionsTab — failures never put raw text on screen", () => {
     warn.mockRestore();
   });
 
-  // The slash-backed directory dispatch puts chat-oriented English, or a bare
-  // IPC code, in `error` itself.
+  // The slash-backed directory dispatch puts chat-oriented English, or a bare IPC code, in `error` itself.
   function dirDispatchFailing(failure: { add?: unknown; remove?: unknown }) {
     const api = installApi([[]]);
     mock(api.permission.dirDispatch).mockImplementation(async (rawArgs: string) => {
@@ -2142,9 +1936,7 @@ describe("PermissionsTab — failures never put raw text on screen", () => {
   ] as const)("a directory add refused with %s shows localized copy", async (_label, add, shown, raw) => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     dirDispatchFailing({ add });
-    await act(async () => {
-      render(<PermissionsTab />);
-    });
+    await renderPermissionsTab();
     await addDirectory();
     expect(screen.getByText(shown)).toBeTruthy();
     expect(document.body.textContent).not.toContain(raw);
@@ -2159,9 +1951,7 @@ describe("PermissionsTab — failures never put raw text on screen", () => {
   ] as const)("a directory remove refused with %s shows localized copy", async (_label, remove, shown, raw) => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     dirDispatchFailing({ remove });
-    await act(async () => {
-      render(<PermissionsTab />);
-    });
+    await renderPermissionsTab();
     await act(async () => {
       fireEvent.click(screen.getAllByText("✕").at(-1)!);
     });
@@ -2176,22 +1966,11 @@ describe("PermissionsTab — failures never put raw text on screen", () => {
     const api = installApi([[]]);
     mock(api.permission.reviewerDispatch).mockImplementation(async (rawArgs: string) => {
       if (rawArgs === "show") {
-        return {
-          ok: true,
-          verb: "show",
-          settings: {
-            mode: "disabled",
-            fallbackOnError: "deny",
-            parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
-            interactive: { autoApprove: "off" },
-          },
-        };
+        return reviewerResult("show", "disabled", "deny", "off");
       }
       return { ok: false, error: "unknown subcommand 'llm' — expected show|mode|model" };
     });
-    await act(async () => {
-      render(<PermissionsTab />);
-    });
+    await renderPermissionsTab();
     await act(async () => {
       fireEvent.click(screen.getByTestId(execModeTestId("auto")));
     });
@@ -2205,9 +1984,7 @@ describe("PermissionsTab — failures never put raw text on screen", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const api = installApi([[]]);
     api.permission.getMode.mockRejectedValueOnce(new Error(RAW));
-    await act(async () => {
-      render(<PermissionsTab />);
-    });
+    await renderPermissionsTab();
     await waitFor(() => expect(screen.getByTestId("permissions-load-error")).toHaveTextContent(t("permissionsTab.errorLoadFailed")));
     expectNoRaw();
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("load failed"), RAW);
@@ -2215,25 +1992,14 @@ describe("PermissionsTab — failures never put raw text on screen", () => {
   });
 });
 
-/**
- * A refresh must not blank the panel.
- *
- * Every rule/directory mutation broadcasts a permission-config-changed hint,
- * and this tab answers it by re-running `fetchAll`. While `loading` was true
- * for THAT fetch too, the whole panel collapsed to a single "loading" line —
- * the scroll container went from thousands of pixels to one viewport, the
- * browser clamped scrollTop to the new maximum, and the position was gone by
- * the time the content came back. Measured on the real app: removing a rule
- * near the bottom took the scroll container from 1562 to 8.
- */
+/** A refresh must not blank the panel. Every rule/directory mutation broadcasts a permission-config-changed hint, and this tab answers it by re-running `fetchAll`. While `loading` was true for THAT fetch too, the whole panel collapsed to a single "loading" line; the
+ * scroll container went from thousands of pixels to one viewport, the browser clamped scrollTop to the new maximum, and the position was gone by the time the content came back. Measured on the real app: removing a rule near the bottom took the scroll container from 1562 to 8. */
 describe("PermissionsTab background refresh", () => {
   it("keeps the loaded panel on screen while a config-change refresh runs", async () => {
     const api = installApi([[], []]);
     const onConfigChanged = api.permission.onConfigChanged as unknown as ReturnType<typeof vi.fn>;
 
-    await act(async () => {
-      render(<PermissionsTab />);
-    });
+    await renderPermissionsTab();
     await waitFor(() => expect(screen.queryByTestId("permissions-loading")).toBeNull());
 
     // The hint the host broadcasts after addRule/removeRule.
@@ -2266,9 +2032,7 @@ describe("PermissionsTab background refresh", () => {
       () => new Promise((resolve) => { resolveRules = resolve as (rows: { rules: never[]; errors: ScopedPermissionRuleError[] }) => void; }),
     );
 
-    await act(async () => {
-      render(<PermissionsTab />);
-    });
+    await renderPermissionsTab();
     expect(screen.getByTestId("permissions-loading")).toBeTruthy();
 
     await act(async () => {
@@ -2280,10 +2044,8 @@ describe("PermissionsTab background refresh", () => {
 
 describe("PermissionsTab — revoking a stored approval", () => {
   it("revokes a persistent decision at once, with nothing to confirm", async () => {
-    // Removing a stored decision destroys nothing and grants nothing: the next
-    // matching call follows the current policy and may ask again. A browser
-    // confirm here blocked the renderer thread to ask about an action that was
-    // already reversible by re-answering the prompt.
+    // Removing a stored decision destroys nothing and grants nothing: the next matching call follows the current policy and may ask
+    // again. A browser confirm here blocked the renderer thread to ask about an action that was already reversible by re-answering the prompt.
     const confirm = vi.spyOn(window, "confirm");
     try {
       const api = installApi([[]]);

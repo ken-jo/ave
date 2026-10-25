@@ -24,12 +24,12 @@ const TAILNET_SHARING_ERROR_CODES = [
 ] as const;
 export type TailnetSharingErrorCode = (typeof TAILNET_SHARING_ERROR_CODES)[number];
 
-export interface TailnetSharingInvitationSummary {
+interface TailnetSharingInvitationSummary {
   readonly id: string;
   readonly expiresAt: number;
 }
 
-export interface TailnetSharingPairingSummary {
+interface TailnetSharingPairingSummary {
   readonly id: string;
   /** Opaque, shortened local fingerprint; never a Tailnet login. */
   readonly actorFingerprint: string;
@@ -37,7 +37,7 @@ export interface TailnetSharingPairingSummary {
   readonly expiresAt: number | null;
 }
 
-export interface TailnetSharingShareSummary {
+interface TailnetSharingShareSummary {
   readonly id: string;
   readonly pairingId: string;
   /** Opaque, shortened local fingerprint; never a Tailnet login. */
@@ -82,7 +82,7 @@ export interface TailnetSharingRevokeInput {
   readonly id: string;
 }
 
-export type TailnetSharingFailure = {
+type TailnetSharingFailure = {
   readonly ok: false;
   readonly error: TailnetSharingErrorCode;
 };

@@ -11,11 +11,7 @@ export interface PermissionEvaluationContext {
   source: ToolSource;
   category: ToolCategory;
   trustOrigin: ToolTrustOrigin;
-  /**
-   * Raw-by-design display payload. Approval args are DLP-redacted elsewhere;
-   * this context intentionally preserves policy paths so the user can verify
-   * the sandbox/scope that the permission decision actually used.
-   */
+  // Raw-by-design display payload. Approval args are DLP-redacted elsewhere; this context intentionally preserves policy paths so the user can verify the sandbox/scope that the permission decision actually used.
   executionCwd: string;
   allowedDirectories: readonly string[];
   pathFields: readonly string[];

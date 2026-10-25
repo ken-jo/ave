@@ -21,7 +21,7 @@ import { resolveBundledUvBinaryPath } from "./uv-runtime.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 const log = createLogger("python-runtime");
 
-export type BootstrapPhase =
+type BootstrapPhase =
   | "pending"
   | "installing-python"
   | "installing-deps"

@@ -22,31 +22,14 @@ export function assertSrtWinDigest(bytes: Uint8Array, arch: string): void {
   }
 }
 
-// Each script names the modules it uses instead of letting PowerShell search
-// for them. The child gets a minimal environment, so a search has no command
-// cache to read and scans every installed module first. Core cmdlets need no
-// import.
+// Import required modules explicitly; minimal child env otherwise forces a full installed-module scan. Core cmdlets need no import.
 const POWERSHELL_PROLOGUE = [
   "$ErrorActionPreference = 'Stop'",
   "$PSModuleAutoLoadingPreference = 'None'",
   "Import-Module ($PSHOME + '\\Modules\\Microsoft.PowerShell.Utility\\Microsoft.PowerShell.Utility.psd1')",
 ];
 
-// Objects the host creates are owned by the current user, set when they are
-// created (docs/architecture/architecture.md, "Windows object ownership"). An
-// elevated token's default owner is usually BUILTIN\Administrators, so this one
-// PowerShell step creates the directory and both files with their final
-// security descriptors: owner the token user, a protected DACL, full control
-// for the user and read/execute for the runner and consent identities. It
-// never changes the owner or DACL of an object that already exists. The name
-// is random and unpublished until this step creates it, and anything already
-// at that path, a link included, refuses creation. `CreateDirectory` returns an
-// existing directory without applying the descriptor, so that check comes
-// first; the descriptor is then read back without trusting the create call.
-// Each file is opened `CreateNew` with its own descriptor, and its owner is
-// read on that same handle. The image's bytes are written only after this
-// step. This path is synchronous, so it cannot use the resident ACL host. Any
-// failure after creation removes what the step made, then throws.
+// Create random unpublished directories/files with final user ownership and protected DACLs; elevated defaults may assign administrator ownership. Refuse existing paths/links, verify descriptors and file owners on the same creation handle, write bytes afterward and remove created objects on failure. Never modify existing ACLs (docs/architecture/architecture.md).
 const PRIVATE_DIRECTORY_SCRIPT = [
   ...POWERSHELL_PROLOGUE,
   "$directory = $env:AVE_SRT_PRIVATE_DIRECTORY",
@@ -86,8 +69,7 @@ const PRIVATE_DIRECTORY_SCRIPT = [
 ].join("; ");
 const PRIVATE_DIRECTORY_COMMAND = Buffer.from(PRIVATE_DIRECTORY_SCRIPT, "utf16le").toString("base64");
 
-// A marker is useful only inside a directory whose owner and modification
-// grants we verified. Never recurse: these directories contain two plain files.
+// A marker is useful only inside a directory whose owner and modification grants we verified. Never recurse: these directories contain two plain files.
 const SWEEP_SCRIPT = [
   ...POWERSHELL_PROLOGUE,
   "$root = [System.IO.Path]::GetFullPath($env:AVE_SRT_TEMP_ROOT).TrimEnd('\\')",
@@ -114,8 +96,7 @@ const SWEEP_SCRIPT = [
   "$live = $true; try { $p = [System.Diagnostics.Process]::GetProcessById($owner.pid); $live = $p.StartTime.ToUniversalTime().Ticks.ToString() -eq $owner.started; $p.Dispose() } catch [System.ArgumentException] { $live = $false }",
   "if ($live) { continue }",
   "$image = [System.IO.Path]::Combine($directory, 'srt-win.exe')",
-  // A running image or an incompatible open handle prevents this write open.
-  // Hold the handle through deletion; sharing permits only deletion, not spawn.
+  // A running image or an incompatible open handle prevents this write open. Hold the handle through deletion; sharing permits only deletion, not spawn.
   "$handle = [System.IO.File]::Open($image, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::Delete)",
   "try { [System.IO.File]::Delete($image) } finally { $handle.Dispose() }",
   "[System.IO.File]::Delete($marker)",
@@ -135,7 +116,7 @@ function runDirectoryCommand(command: string, env: Record<string, string>): void
   });
 }
 
-/** Keep uncertain entries, including unmarked copies left by older releases. */
+// Keep uncertain entries, including unmarked copies left by older releases.
 export function sweepStaleSrtWinDirectories(): void {
   if (type() !== "Windows_NT") return;
   try {
@@ -146,7 +127,7 @@ export function sweepStaleSrtWinDirectories(): void {
   } catch { /* Cleanup is best effort. */ }
 }
 
-/** The bundled helper supports two architectures; 32-bit hosts use x64. */
+// The bundled helper supports two architectures; 32-bit hosts use x64.
 export function getSrtWinArchitecture(arch: string = process.arch): "arm64" | "x64" {
   return arch === "arm64" ? "arm64" : "x64";
 }
@@ -166,19 +147,7 @@ function readHelper(path: string): Buffer {
   }
 }
 
-/**
- * Execute a verified snapshot, never the mutable package path. The directory
- * has no inherited grants: only the host identity can modify its contents.
- * The runner re-executes this image under the sandbox account. Its SID is only
- * available through a helper status call and may not exist before installation,
- * so BUILTIN\Users receives read/execute, as do privileged consent identities.
- * The restricted runner retains bypass-traverse privilege, also required for
- * workspace grants beneath the host profile; no parent profile ACL is widened.
- * Confined processes must also receive this directory in their write-deny floor
- * so a covering filesystem grant cannot lend them modification rights.
- * Keep the copy for the process lifetime: the runtime retains and re-spawns the
- * configured path for status, ACL operations, installation and teardown.
- */
+// Execute a private verified snapshot, never the mutable package path; only host identity may modify it. Read/execute permissions support the runner before its SID exists without widening parent profile ACLs; add the snapshot to every write floor. Keep it for process lifetime because status/install/teardown re-spawn it.
 export function prepareSrtWinExecutable(source: string, arch = getSrtWinArchitecture()): string {
   if (!swept) {
     swept = true;
@@ -192,18 +161,13 @@ export function prepareSrtWinExecutable(source: string, arch = getSrtWinArchitec
     assertSrtWinDigest(readHelper(cached.executable), arch);
     return cached.executable;
   }
-  // A fresh, unpublished name: on Windows the protecting step creates it, and
-  // anything already at the path refuses creation.
+  // A fresh, unpublished name: on Windows the protecting step creates it, and anything already at the path refuses creation.
   const directory = join(tmpdir(), `ave-srt-win-${randomBytes(16).toString("hex")}`);
-  // A refused creation leaves nothing of ours: the step removes what it made,
-  // and whatever was already at the path is not ours to delete.
+  // A refused creation leaves nothing of ours: the step removes what it made, and whatever was already at the path is not ours to delete.
   let created = false;
   try {
     const executable = join(directory, "srt-win.exe");
-    // POSIX modes do not enforce a Windows boundary. On Windows the directory
-    // and the empty image are created with their protected DACL and the
-    // current user as owner before any executable byte exists; this needs no
-    // elevation, and the bytes go into the file that step made.
+    // POSIX modes do not enforce a Windows boundary. On Windows the directory and the empty image are created with their protected DACL and the current user as owner before any executable byte exists; this needs no elevation, and the bytes go into the file that step made.
     const windows = type() === "Windows_NT";
     if (windows) runDirectoryCommand(PRIVATE_DIRECTORY_COMMAND, { AVE_SRT_PRIVATE_DIRECTORY: directory });
     else mkdirSync(directory, { mode: 0o700 });
@@ -226,7 +190,7 @@ export function srtWinPrivateDirectories(): string[] {
   return [...copies.values()].map((copy) => copy.directory);
 }
 
-/** Recheck immediately before each host-controlled helper spawn. */
+// Recheck immediately before each host-controlled helper spawn.
 export function assertSrtWinSpawnIntegrity(executable: string): void {
   if (process.platform !== "win32" || basename(executable).toLowerCase() !== "srt-win.exe") return;
   const copy = [...copies.values()].find((candidate) => candidate.executable === executable);
@@ -234,11 +198,7 @@ export function assertSrtWinSpawnIntegrity(executable: string): void {
   assertSrtWinDigest(readHelper(executable), copy.arch);
 }
 
-/**
- * Remove a private copy without recursing. The copy holds only the image and
- * its owner marker; a link found at the path is removed itself, never followed,
- * so a swapped-in junction cannot steer a recursive delete into its target.
- */
+// Remove a private copy without recursing. The copy holds only the image and its owner marker; a link found at the path is removed itself, never followed, so a swapped-in junction cannot steer a recursive delete into its target.
 function removePrivateCopy(directory: string): void {
   const entry = lstatSync(directory, { throwIfNoEntry: false });
   if (entry === undefined) return;

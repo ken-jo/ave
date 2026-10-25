@@ -73,7 +73,7 @@ const WEB_MAX_COOKIE_CHARS = 4 * 1024;
 const TAILNET_ATTACHMENT_SCOPE_HEADER = "x-ave-tailnet-scope";
 const WEB_MAX_SESSION_LIFETIME_MS = 60 * 60_000;
 
-export interface TailnetControllerOptions {
+interface TailnetControllerOptions {
   readonly commandPort: ConversationCommandPort;
   readonly receiptStore: TailnetControllerReceiptStore;
   readonly attachmentStore?: TailnetAttachmentStagingStore;
@@ -132,7 +132,7 @@ export interface TailnetSurfaceServer {
   close(): Promise<void>;
 }
 
-export interface TailnetObserverEvent {
+interface TailnetObserverEvent {
   readonly version: typeof SHARED_CONVERSATION_PROTOCOL_VERSION;
   readonly cursor: number;
   readonly emittedAt: number;
@@ -140,7 +140,7 @@ export interface TailnetObserverEvent {
   readonly scope: string;
 }
 
-export interface TailnetObserverSnapshot {
+interface TailnetObserverSnapshot {
   readonly version: typeof SHARED_CONVERSATION_PROTOCOL_VERSION;
   readonly cursor: number;
   readonly updatedAt: number | null;

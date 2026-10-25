@@ -1,10 +1,4 @@
-/**
- * Tests for migrateCanonicalization() — issue #837 follow-up to PR #828.
- *
- * Verifies that boot-time migration correctly re-keys persistent entries
- * whose args contain nested-array-of-objects (affected by the RFC 8785 JCS
- * deep-canonicalization upgrade in canonical-json.ts).
- */
+// Canonicalization migration re-keys nested-array object inputs to the current canonical JSON identity.
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -27,7 +21,6 @@ import {
 const APPROVALS_PATH = join(TEST_HOME, "permissions", "user-approvals.json");
 const MARKER_PATH = join(TEST_HOME, "permissions", ".canonicalization-migration-v1");
 
-/** Build a sha256 entryKey the same way user-approval-store does. */
 function makeKey(
   toolName: string,
   args: string,
@@ -41,7 +34,6 @@ function makeKey(
   return createHash("sha256").update(components.join("\0")).digest("hex");
 }
 
-/** Write a raw approvals file directly to disk (bypasses recordApproval). */
 async function writeRawApprovals(approvals: Record<string, unknown>): Promise<void> {
   await mkdir(join(TEST_HOME, "permissions"), { recursive: true, mode: 0o700 });
   await writeFile(APPROVALS_PATH, `${JSON.stringify({ approvals }, null, 2)}\n`, { mode: 0o600 });
@@ -53,23 +45,16 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  // No drain needed. `mutatePersistentApprovals` RETURNS the promise covering
-  // `readApprovalsFile → mutator → atomicWrite` and every public caller awaits it, so an
-  // awaited `recordApproval` has already landed by the time this runs. A comment here used to
-  // claim the opposite — that it "resolves when the write is QUEUED" — and instructed a drain
-  // on that basis; the claim was false and the helper it called was removed, but the comment
-  // outlived it and sat here with no code under it. Do not add one back.
+// Public mutation promises await atomic persistence, so awaited writes need no extra drain.
   await rm(TEST_HOME, { recursive: true, force: true });
   __resetSessionStoreForTest();
 });
 
-// ─── Case 1: stale entry with nested-array-of-objects gets re-keyed ───────────
+// Case 1: stale entry with nested-array-of-objects gets re-keyed
 
 describe("migrateCanonicalization — Case 1: nested-array-of-objects entry re-keyed", () => {
   it("migrates a stale entry whose args contain nested objects inside an array", async () => {
-    // Simulate the OLD canonicalization: before PR #828, arrays were handed
-    // directly to JSON.stringify without recursing into nested objects.
-    // So [{b:2,a:1}] was stored as '[{"b":2,"a":1}]' (key order not sorted).
+    // Simulate the OLD canonicalization: before, arrays were handed directly to JSON.stringify without recursing into nested objects. So [{b:2,a:1}] was stored as '[{"b":2,"a":1}]' (key order not sorted).
     const toolName = "mcp_tool";
     const source = "mcp";
     const argsObj = [{ b: 2, a: 1 }]; // nested object inside array
@@ -85,7 +70,6 @@ describe("migrateCanonicalization — Case 1: nested-array-of-objects entry re-k
     // Sanity: the two keys must be different for this test to be meaningful.
     expect(oldKey).not.toBe(newKey);
 
-    // Write a stale entry under the OLD key, with args stored as the old form.
     await writeRawApprovals({
       [oldKey]: {
         approvedAt: "2026-01-01T00:00:00.000Z",
@@ -101,12 +85,10 @@ describe("migrateCanonicalization — Case 1: nested-array-of-objects entry re-k
 
     await migrateCanonicalization();
 
-    // After migration the entry must be under the NEW key.
     const file = await readApprovals();
     expect(file.approvals[oldKey]).toBeUndefined();
     expect(file.approvals[newKey]).toBeDefined();
-    // Raw args are migration-only material and are scrubbed after the new key
-    // has been derived so renderer-readable history cannot recover them.
+    // Raw args are migration-only material and are scrubbed after the new key has been derived so renderer-readable history cannot recover them.
     expect(file.approvals[newKey].args).toBeUndefined();
 
     // Marker file must exist.
@@ -143,7 +125,7 @@ describe("migrateCanonicalization — Case 1: nested-array-of-objects entry re-k
   });
 });
 
-// ─── Case 2: second call is a noop (idempotency) ──────────────────────────────
+// Case 2: second call is a noop (idempotency)
 
 describe("migrateCanonicalization — Case 2: idempotency", () => {
   it("second call is a noop — file and marker unchanged", async () => {
@@ -175,7 +157,7 @@ describe("migrateCanonicalization — Case 2: idempotency", () => {
   });
 });
 
-// ─── Case 3: entries without nested-array-of-objects are unchanged ─────────────
+// Case 3: entries without nested-array-of-objects are unchanged
 
 describe("migrateCanonicalization — Case 3: flat entries keep their key while raw metadata is scrubbed", () => {
   it("keeps the flat canonical key and removes migration-only args", async () => {
@@ -203,8 +185,7 @@ describe("migrateCanonicalization — Case 3: flat entries keep their key while 
     await migrateCanonicalization();
     const fileAfter = await readFile(APPROVALS_PATH, "utf8");
 
-    // The identity key remains unchanged, but raw input metadata is removed
-    // after migration even when no re-keying was necessary.
+    // The identity key remains unchanged, but raw input metadata is removed after migration even when no re-keying was necessary.
     expect(fileAfter).not.toBe(fileBefore);
     const parsedAfter = JSON.parse(fileAfter) as {
       approvals: Record<string, { args?: string }>;
@@ -237,11 +218,10 @@ describe("migrateCanonicalization — Case 3: flat entries keep their key while 
   });
 });
 
-// ─── Case 4: corrupt / unreadable approvals file — boot must not crash ────────
+// Case 4: corrupt / unreadable approvals file — boot must not crash
 
 describe("migrateCanonicalization — Case 4: corrupt JSON file does not abort boot", () => {
   it("gracefully handles a corrupt JSON approvals file without throwing", async () => {
-    // Write a syntactically invalid JSON file to simulate corruption.
     await mkdir(join(TEST_HOME, "permissions"), { recursive: true, mode: 0o700 });
     await writeFile(APPROVALS_PATH, "{ this is not valid JSON !!! }", { mode: 0o600 });
 
@@ -253,8 +233,7 @@ describe("migrateCanonicalization — Case 4: corrupt JSON file does not abort b
   });
 
   it("gracefully handles a truncated/incomplete JSON file without throwing", async () => {
-    // Write a truncated JSON file — simulates a partially-written file from
-    // a prior crash (a different kind of read-level failure from corrupt JSON).
+    // Write a truncated JSON file — simulates a partially-written file from a prior crash (a different kind of read-level failure from corrupt JSON).
     await mkdir(join(TEST_HOME, "permissions"), { recursive: true, mode: 0o700 });
     await writeFile(APPROVALS_PATH, '{"approvals": {"abc": {', { mode: 0o600 });
 
@@ -265,13 +244,11 @@ describe("migrateCanonicalization — Case 4: corrupt JSON file does not abort b
   });
 });
 
-// ─── Case 5: write failure — boot does not crash, marker not written ──────────
+// Case 5: write failure — boot does not crash, marker not written
 
 describe("migrateCanonicalization — Case 5: write failure does not crash boot and skips marker", () => {
   it("does not write marker when the approvals file cannot be read (EACCES-like)", async () => {
-    // Simulate a read failure by writing a corrupt file that throws on JSON.parse
-    // but in a way that is NOT ENOENT (so readApprovalsFile re-throws).
-    // We achieve this by writing a non-JSON file that is NOT empty.
+    // Simulate a read failure by writing a corrupt file that throws on JSON.parse but in a way that is NOT ENOENT (so readApprovalsFile re-throws). We achieve this by writing a non-JSON file that is NOT empty.
     await mkdir(join(TEST_HOME, "permissions"), { recursive: true, mode: 0o700 });
     await writeFile(APPROVALS_PATH, "NOT_VALID_JSON", { mode: 0o600 });
 
@@ -283,10 +260,7 @@ describe("migrateCanonicalization — Case 5: write failure does not crash boot 
   });
 
   it("atomic write uses tmp+rename so a mid-write crash leaves original intact", async () => {
-    // Verify that the atomicWrite pattern means the approvals file is only
-    // replaced after a successful rename — i.e., the original file path is
-    // never partially written. We test this by confirming the final file is
-    // a complete valid JSON document after a successful migration.
+    // Verify that the atomicWrite pattern means the approvals file is only replaced after a successful rename — i.e., the original file path is never partially written. We test this by confirming the final file is a complete valid JSON document after a successful migration.
     const toolName = "mcp_tool";
     const source = "mcp";
     const argsObj = [{ b: 2, a: 1 }];
@@ -315,14 +289,14 @@ describe("migrateCanonicalization — Case 5: write failure does not crash boot 
     const parsed = JSON.parse(raw) as { approvals: Record<string, unknown> };
     expect(parsed.approvals[newKey]).toBeDefined();
     expect(parsed.approvals[oldKey]).toBeUndefined();
-    // No .tmp files left behind.
+    // No.tmp files left behind.
     const { readdir } = await import("node:fs/promises");
     const files = await readdir(join(TEST_HOME, "permissions"));
     expect(files.some((f) => f.endsWith(".tmp"))).toBe(false);
   });
 });
 
-// ─── Case 6: mixed-version entries (old args-having + legacy no-args) ─────────
+// Case 6: mixed-version entries (old args-having + legacy no-args)
 
 describe("migrateCanonicalization — Case 6: mixed old-format and legacy entries", () => {
   it("migrates args-having entries and carries forward legacy no-args entries", async () => {
@@ -371,7 +345,7 @@ describe("migrateCanonicalization — Case 6: mixed old-format and legacy entrie
   });
 });
 
-// ─── Case 7: revokedAt entry is carried forward to new key ────────────────────
+// Case 7: revokedAt entry is carried forward to new key
 
 describe("migrateCanonicalization — Case 7: revokedAt entry carries forward on re-key", () => {
   it("preserves revokedAt timestamp after re-keying a stale entry", async () => {
@@ -416,14 +390,11 @@ describe("migrateCanonicalization — Case 7: revokedAt entry carries forward on
     const newArgs = canonicalStringify(argsObj);
     const newKey = makeKey(toolName, newArgs, source);
 
-    // Two stale entries that both canonicalize to newKey.
-    // entry A: active (revokedAt null), entry B: revoked.
+    // Two stale entries that both canonicalize to newKey. entry A: active (revokedAt null), entry B: revoked.
     const oldArgsA = JSON.stringify(argsObj);
     const oldKeyA = makeKey(toolName, oldArgsA, source);
 
-    // Manufacture a second distinct stale key that also maps to newKey by
-    // writing the already-canonical args under a hand-crafted hash that
-    // differs from newKey (simulates a real collision scenario via direct write).
+    // Manufacture a second distinct stale key that also maps to newKey by writing the already-canonical args under a hand-crafted hash that differs from newKey (simulates a real collision scenario via direct write).
     const collisionKey = randomBytes(32).toString("hex");
     const revokedAt = "2026-03-01T00:00:00.000Z";
 

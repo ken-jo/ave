@@ -1,8 +1,3 @@
-/**
- * buildSafeChildEnv() — allowlist correctness, secret stripping, extra merging.
- *
- * UQ-QUALITY SEV-2 #2
- */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { vi } from "vitest";
 
@@ -51,7 +46,6 @@ const SECRET_KEYS = [
 ];
 
 beforeEach(() => {
-  // Inject known-value safe keys and dangerous secret keys into process.env
   vi.stubEnv("PATH", "/usr/bin:/bin");
   vi.stubEnv("HOME", "/home/testuser");
   vi.stubEnv("ANTHROPIC_API_KEY", "sk-secret-anthropic-key");
@@ -144,13 +138,12 @@ describe("buildSafeChildEnv — allowlist forwarding", () => {
     const env = buildSafeChildEnv();
     for (const key of Object.keys(env)) {
       const isSafeKey = (SAFE_KEYS as readonly string[]).includes(key);
-      // extra keys would be added separately — base call has no extras
       expect(isSafeKey).toBe(true);
     }
   });
 
   it("omits undefined safe keys (does not inject empty strings)", () => {
-    // USERNAME is often undefined on macOS — confirm no undefined values
+    // USERNAME may be absent on macOS.
     const env = buildSafeChildEnv();
     for (const [, val] of Object.entries(env)) {
       expect(val).not.toBeUndefined();
@@ -171,7 +164,7 @@ describe("buildSafeChildEnv — extra merging", () => {
   });
 
   it("extras do NOT include secret keys that were not in FORWARD_ENV_KEYS", () => {
-    // Confirm that secrets from process.env are still not forwarded even with extras present
+    // Extras must not cause host secrets to be forwarded.
     const env = buildSafeChildEnv({ CUSTOM_KEY: "safe-value" });
     expect(env).not.toHaveProperty("ANTHROPIC_API_KEY");
     expect(env.CUSTOM_KEY).toBe("safe-value");
@@ -289,9 +282,7 @@ describe("plain host shell CA trust inheritance", () => {
 
 describe("buildSandboxedChildEnv — ASRT env composition (PR #1356 allow-list)", () => {
   it("strips host secrets on the sandbox path (wrapped env carrying them does not re-leak)", () => {
-    // ASRT's wrapped env = process.env + its additions. Simulate it carrying
-    // the host secrets verbatim (same value as process.env) — they must NOT
-    // appear in the composed child env.
+    // Wrapped environments may copy host secrets verbatim; composition must strip them.
     const wrapped: NodeJS.ProcessEnv = {
       ...process.env,
       HTTP_PROXY: "http://localhost:9999",
@@ -337,14 +328,12 @@ describe("buildSandboxedChildEnv — ASRT env composition (PR #1356 allow-list)"
   });
 
   it("does NOT propagate a non-allow-listed key even when it differs from process.env", () => {
-    // A future ASRT (or a tampered wrap) emits a non-allow-listed key with a
-    // value that differs from process.env. Under the old "overlay anything that
-    // differs" rule this would leak; the explicit allow-list refuses it.
+    // Reject non-allowlisted wrapper keys even when their values differ from the host environment.
     const wrapped: NodeJS.ProcessEnv = {
       ...process.env,
-      ANTHROPIC_API_KEY: "sk-MUTATED-leaked-value", // differs from process.env
+      ANTHROPIC_API_KEY: "sk-MUTATED-leaked-value",
       SOME_FUTURE_ASRT_VAR: "unexpected",
-      HTTP_PROXY: "http://localhost:8080", // allow-listed → should pass
+      HTTP_PROXY: "http://localhost:8080",
     };
     const env = buildSandboxedChildEnv(wrapped);
     expect(Object.prototype.hasOwnProperty.call(env, "ANTHROPIC_API_KEY")).toBe(false);

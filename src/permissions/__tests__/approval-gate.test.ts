@@ -1,6 +1,3 @@
-/**
- * ApprovalGate unit tests
- */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   ApprovalGate,
@@ -41,7 +38,7 @@ import { sentApprovalCards } from "../../__tests__/test-helpers.js";
 import { PermissionManager } from "../permission-manager.js";
 import { buildPermissionEvaluationContext } from "../evaluation-context.js";
 
-// ─── Mock WebContents ─────────────────────────────────
+// Mock WebContents
 
 function makeMockWebContents(
   opts: { isDestroyed?: boolean; sendThrows?: boolean } = {},
@@ -108,11 +105,7 @@ function makeRationaleRequest(
   });
 }
 
-/**
- * §D2: helper — pull the most recent (nonce, hmac) issued by the gate from
- * the mock webContents.send call log, so tests can echo them back unchanged
- * in the ApprovalDecision.
- */
+// helper — pull the most recent (nonce, hmac) issued by the gate from the mock webContents.send call log, so tests can echo them back unchanged in the ApprovalDecision.
 function lastSentNonceHmac(wc: ReturnType<typeof makeMockWebContents>): {
   nonce: string;
   hmac: string;
@@ -122,8 +115,7 @@ function lastSentNonceHmac(wc: ReturnType<typeof makeMockWebContents>): {
   return { nonce: last.nonce as string, hmac: last.hmac as string };
 }
 
-
-/** The request ids the gate announced as no longer answerable, in order. */
+// The request ids the gate announced as no longer answerable, in order.
 function announcedSettledIds(
   wc: ReturnType<typeof makeMockWebContents>,
 ): string[] {
@@ -133,7 +125,7 @@ function announcedSettledIds(
     .map(([, payload]) => payload.requestId);
 }
 
-/** The text of every audit row a gate wrote, in order. */
+// The text of every audit row a gate wrote, in order.
 function makeAuditingGate(): {
   wc: ReturnType<typeof makeMockWebContents>;
   auditLogger: { log: ReturnType<typeof vi.fn> };
@@ -149,8 +141,6 @@ function makeAuditingGate(): {
   );
   return { wc, auditLogger, gate };
 }
-
-// ─── Tests ───────────────────────────────────────────
 
 describe("ApprovalGate", () => {
   it("requestAndWait resolves when resolve() is called", async () => {
@@ -644,7 +634,6 @@ describe("ApprovalGate", () => {
     const p1 = gate.requestAndWait(req1);
     const p2 = gate.requestAndWait(req2);
 
-    // First send was req-a, second was req-b — extract each nonce/hmac pair
     const callA = wc.send.mock.calls[0] as [string, ApprovalRequest];
     const callB = wc.send.mock.calls[1] as [string, ApprovalRequest];
     // req-b를 먼저 응답
@@ -681,8 +670,7 @@ describe("ApprovalGate", () => {
     const promise = gate.requestAndWait(req);
     const sent = (wc.send.mock.calls[0] as [string, ApprovalRequest])[1];
     expect(sent.allowedChoices).toEqual(["allow-once", "deny-once"]);
-    // Restrictive exact deny remains available through Settings even though
-    // the foreground approval itself is one-shot.
+    // Restrictive exact deny remains available through Settings even though the foreground approval itself is one-shot.
     expect(gate.getRequestSnapshot(req.id)?.durableApprovalRecordAllowed).toBe(true);
 
     const resolved = gate.resolve(req.id, {
@@ -793,7 +781,6 @@ describe("ApprovalGate", () => {
     // default policy: requireExplicitApproval = true
     expect(payload.requireExplicit).toBe(true);
 
-    // cleanup
     gate.resolve(req.id, { requestId: req.id, choice: "deny-once" });
   });
 
@@ -808,7 +795,6 @@ describe("ApprovalGate", () => {
     const [, payload] = wc.send.mock.calls[0] as [string, ApprovalRequest];
     expect(payload.requireExplicit).toBe(false);
 
-    // cleanup
     gate.resolve(req.id, { requestId: req.id, choice: "deny-once" });
   });
 
@@ -928,7 +914,7 @@ describe("ApprovalGate", () => {
     dispose();
   });
 
-  // ── F2: webContents lifecycle guards ─────────────
+  // F2: webContents lifecycle guards
 
   it("isDestroyed() true → deny-once immediately, no pending entry", async () => {
     const wc = makeMockWebContents({ isDestroyed: true });
@@ -976,7 +962,7 @@ describe("ApprovalGate", () => {
     expect(gate.pendingCount).toBe(0);
   });
 
-  // ── S1: Sensitive path hard-block ─────────────────
+  // S1: Sensitive path hard-block
 
   it("sensitive path is hard-blocked even with mode=full_auto — dialog never shown", async () => {
     const wc = makeMockWebContents();
@@ -1042,7 +1028,7 @@ describe("ApprovalGate", () => {
     );
   });
 
-  // ── S4: isReadOnly short-circuit ──────────────────
+  // S4: isReadOnly short-circuit
 
   it("isReadOnly=true + mode=default → auto-approve, dialog skipped", async () => {
     const wc = makeMockWebContents();
@@ -1088,7 +1074,6 @@ describe("ApprovalGate", () => {
     expect(payload.isReadOnly).toBe(true);
     expect(gate.pendingCount).toBe(1);
 
-    // Simulate user denying
     gate.resolve("req-readonly-ask-all", {
       requestId: "req-readonly-ask-all",
       choice: "deny-once",
@@ -1097,7 +1082,7 @@ describe("ApprovalGate", () => {
     expect(result.choice).toBe("deny-once");
   });
 
-  // ── Path canonicalization before sensitive-path check ────
+  // Path canonicalization before sensitive-path check
 
   it("path with '..' segments is canonicalized and still blocked", async () => {
     const wc = makeMockWebContents();
@@ -1122,14 +1107,7 @@ describe("ApprovalGate", () => {
   it("NFD-decomposed path is NFC-normalized and still blocked", async () => {
     const wc = makeMockWebContents();
     const gate = new ApprovalGate(wc as never);
-    // ".\u0073\u0073h" is already composed (".ssh") — use a real NFD
-    // vector: "é" decomposed is "e\u0301". We craft a path that only
-    // matches the pattern after NFC normalization. The sensitive set
-    // itself is ASCII, so we exercise the normalize() call by feeding a
-    // no-op path that still must be accepted. Absent an NFD sensitive
-    // pattern we assert via a path whose normalize leaves it identical —
-    // the key guarantee is that normalize() does NOT corrupt the match
-    // for ASCII paths.
+    // ".\u0073\u0073h" is already composed (".ssh") — use a real NFD vector: "é" decomposed is "e\u0301". We craft a path that only matches the pattern after NFC normalization. The sensitive set itself is ASCII, so we exercise the normalize call by feeding a no-op path that still must be accepted. Absent an NFD sensitive pattern we assert via a path whose normalize leaves it identical — the key guarantee is that normalize does NOT corrupt the match for ASCII paths.
     const req = makeRequest({
       id: "req-nfc",
       toolName: "file_read",
@@ -1144,10 +1122,7 @@ describe("ApprovalGate", () => {
   });
 
   it("mixed-case path on macOS is case-folded and still blocked", async () => {
-    // Case-fold only kicks in on darwin/win32; on linux runners this
-    // test still exercises the canonicalization path but the underlying
-    // assertion only makes sense when the folder matches after toLowerCase.
-    // We gate on process.platform to keep linux CI green.
+    // Case-fold only kicks in on darwin/win32; on linux runners this test still exercises the canonicalization path but the underlying assertion only makes sense when the folder matches after toLowerCase. We gate on process.platform to keep linux CI green.
     if (process.platform !== "darwin" && process.platform !== "win32") {
       return;
     }
@@ -1166,7 +1141,7 @@ describe("ApprovalGate", () => {
     expect(wc.send).not.toHaveBeenCalled();
   });
 
-  // ── D1: args DLP masking for UI payload ──────────
+  // D1: args DLP masking for UI payload
 
   it("D1: API key in args is masked in UI payload, original preserved in caller's object", async () => {
     const wc = makeMockWebContents();
@@ -1200,7 +1175,6 @@ describe("ApprovalGate", () => {
     expect(originalArgs.nested.phone).toBe("010-1234-5678");
     expect(req.args).toBe(originalArgs);
 
-    // cleanup
     gate.resolve(req.id, { requestId: req.id, choice: "deny-once" });
   });
 
@@ -1237,7 +1211,7 @@ describe("ApprovalGate", () => {
     gate.resolve(req.id, { requestId: req.id, choice: "deny-once" });
   });
 
-  // ── D2: HMAC nonce / confused-deputy defense ─────────────
+  // D2: HMAC nonce / confused-deputy defense
 
   it("D2: happy path — valid nonce+hmac echo is honored", async () => {
     const wc = makeMockWebContents();
@@ -1388,10 +1362,7 @@ describe("ApprovalGate", () => {
     );
   });
 
-  // NO-LEAK INVARIANT (sandbox-capability.ts): "never report `asrt` for a
-  // worker this process did not wrap". A plugin operation-grant ask runs in an
-  // unwrapped long-lived worker, so the isolation row must never claim the
-  // host-shell ASRT confinement the process itself happens to have.
+  // NO-LEAK INVARIANT (sandbox-capability.ts): "never report `asrt` for a worker this process did not wrap". A plugin operation-grant ask runs in an unwrapped long-lived worker, so the isolation row must never claim the host-shell ASRT confinement the process itself happens to have.
   it("never reports the process-global capability for a plugin execution ask", () => {
     const wc = makeMockWebContents();
     setActiveSandboxCapability({
@@ -1450,10 +1421,7 @@ describe("ApprovalGate", () => {
   });
 
   it("resolves the isolation row through the real substrate authority (round-6 test-engineer MAJOR)", () => {
-    // Production-path integration test — the gate must reach the REAL
-    // resolveReviewerSandboxCapability, not a stub. A refactor that drops the
-    // wiring would silently break the dialog's "보안 격리" row in production
-    // but pass every stubbed unit test.
+    // Production-path integration test — the gate must reach the REAL resolveReviewerSandboxCapability, not a stub. A refactor that drops the wiring would silently break the dialog's "보안 격리" row in production but pass every stubbed unit test.
     const wc = makeMockWebContents();
     const gate = new ApprovalGate(wc as never);
     gate.requestAndWait(makeRequest({ id: "req-real-default", source: "builtin" }));
@@ -1466,10 +1434,7 @@ describe("ApprovalGate", () => {
   it("does NOT inject sandboxCapability for toolCategory=meta requests (round-5 critic MAJOR-1)", () => {
     const wc = makeMockWebContents();
     const gate = new ApprovalGate(wc as never);
-    // Mode-change asks (permission-mode-apply.ts) and agent-action asks
-    // (agent-action-requester.ts) both pass toolCategory="meta". The
-    // sandbox row is meaningless on config-change cards — verify the
-    // injection is suppressed.
+    // Mode-change asks (permission-mode-apply.ts) and agent-action asks (agent-action-requester.ts) both pass toolCategory="meta". The sandbox row is meaningless on config-change cards — verify the injection is suppressed.
     gate.requestAndWait(
       makeRequest({
         id: "req-meta",
@@ -1955,19 +1920,9 @@ describe("ApprovalGate", () => {
     });
   });
 
-  // ── Conversation attribution ──────────────────────────
-  //
-  // `sessionId` names the conversation whose turn is blocked on the modal.
-  // It is signed, not merely carried: a request re-signed under a different
-  // conversation must not verify.
+  // Conversation attribution `sessionId` names the conversation whose turn is blocked on the modal. It is signed, not merely carried: a request re-signed under a different conversation must not verify.
   describe("conversation attribution", () => {
-    /**
-     * The gate's HMAC key is `private` in TypeScript only — it is an ordinary
-     * runtime property. Reading it lets a test mint the exact signature the
-     * gate would have produced for a *different* conversation, which is the
-     * only way to prove the attribution is inside the signing preimage rather
-     * than sitting beside it.
-     */
+    // The gate's HMAC key is `private` in TypeScript only — it is an ordinary runtime property. Reading it lets a test mint the exact signature the gate would have produced for a *different* conversation, which is the only way to prove the attribution is inside the signing preimage rather than sitting beside it.
     function gateSessionKey(gate: ApprovalGate): Buffer {
       return (gate as unknown as { sessionKey: Buffer }).sessionKey;
     }
@@ -2002,8 +1957,7 @@ describe("ApprovalGate", () => {
 
       const sent = lastSentRequest(wc);
       expect(sent.sessionId).toBe("conv-a");
-      // The gate's own digest is exactly the signature over the attribution
-      // it emitted — binding the emit path to the shared signing function.
+      // The gate's own digest is exactly the signature over the attribution it emitted — binding the emit path to the shared signing function.
       expect(sent.hmac).toBe(
         signApprovalRequest(gateSessionKey(gate), {
           id: "attr-roundtrip",
@@ -2031,9 +1985,7 @@ describe("ApprovalGate", () => {
       const promise = gate.requestAndWait(req);
       const sent = lastSentRequest(wc);
 
-      // Same id, nonce, tool and args — only the conversation differs. If the
-      // attribution were outside the preimage this digest would equal the one
-      // the gate issued and the allow-always below would be honored.
+      // Same id, nonce, tool and args — only the conversation differs. If the attribution were outside the preimage this digest would equal the one the gate issued and the allow-always below would be honored.
       const reattributed = signApprovalRequest(gateSessionKey(gate), {
         id: "attr-tampered",
         nonce: sent.nonce as string,
@@ -2065,9 +2017,7 @@ describe("ApprovalGate", () => {
       const sent = lastSentRequest(wc);
       expect(sent.sessionId).toBeUndefined();
 
-      // Absence is signed as an explicit null, so it is a distinct preimage
-      // from any real conversation rather than a shape a legacy signature
-      // could satisfy.
+      // Absence is signed as an explicit null, so it is a distinct preimage from any real conversation rather than a shape a legacy signature could satisfy.
       const asAttributed = signApprovalRequest(gateSessionKey(gate), {
         id: "attr-absent",
         nonce: sent.nonce as string,
@@ -2128,8 +2078,7 @@ describe("ApprovalGate", () => {
       expect(sessionFor("[approval:decided] attr-audit-a")).toEqual(["conv-a"]);
       expect(sessionFor("[approval:requested] attr-audit-b")).toEqual(["conv-b"]);
       expect(sessionFor("[approval:decided] attr-audit-b")).toEqual(["conv-b"]);
-      // Replay can now separate the two conversations, and no row is filed
-      // under the old subsystem placeholder.
+      // Replay can now separate the two conversations, and no row is filed under the old subsystem placeholder.
       expect(rows.map((row) => row.sessionId)).not.toContain("approval-gate");
     });
 
@@ -2173,8 +2122,7 @@ describe("ApprovalGate", () => {
         auditLogger as never,
       );
 
-      // Sensitive-path hard-block resolves before any nonce is minted, so its
-      // audit row is the only record that the conversation was denied.
+      // Sensitive-path hard-block resolves before any nonce is minted, so its audit row is the only record that the conversation was denied.
       await expect(
         gate.requestAndWait(
           makeRequest({
@@ -2214,15 +2162,9 @@ describe("ApprovalGate", () => {
     });
   });
 
-  // ── Answerer attribution ──────────────────────────────
-  //
-  // `sessionId` names the conversation that was blocked; `answeredBy` names who
-  // ended the block. The assertions below are about the shape of the record:
-  // the field is present with a real value on the row that records an answer,
-  // absent everywhere else, host-derived, and closed. The choice BETWEEN
-  // answerers is exercised in the away-authority block further down.
+  // Answerer attribution `sessionId` names the conversation that was blocked; `answeredBy` names who ended the block. The assertions below are about the shape of the record: the field is present with a real value on the row that records an answer, absent everywhere else, host-derived, and closed. The choice BETWEEN answerers is exercised in the away-authority block further down.
   describe("approval answerer", () => {
-    /** Read the row's answerer, so a test asserts its value and not merely that the word appears. */
+    // Read the row's answerer, so a test asserts its value and not merely that the word appears.
     function answererOf(row: string): string | undefined {
       return /(?:^| )answeredBy=(\S+)/.exec(row)?.[1];
     }
@@ -2261,9 +2203,7 @@ describe("ApprovalGate", () => {
       await promise;
 
       const rows = auditRowTexts(auditLogger);
-      // The requested row is emitted for this same approval, so "only the
-      // decided row names an answerer" constrains a non-empty set of other rows
-      // rather than asserting something about nothing.
+      // The requested row is emitted for this same approval, so "only the decided row names an answerer" constrains a non-empty set of other rows rather than asserting something about nothing.
       expect(
         rows.some((row) => row.includes("[approval:requested] answerer-scope")),
       ).toBe(true);
@@ -2289,8 +2229,7 @@ describe("ApprovalGate", () => {
           row.includes("[approval:timeout] answerer-timeout"),
         );
         expect(timeout).toBeDefined();
-        // Absence is the record. Nobody answered, so naming the desk here would
-        // assert a user action that never happened.
+        // Absence is the record. Nobody answered, so naming the desk here would assert a user action that never happened.
         expect(answererOf(timeout as string)).toBeUndefined();
       } finally {
         vi.useRealTimers();
@@ -2307,10 +2246,7 @@ describe("ApprovalGate", () => {
         choice: "allow-once",
         nonce,
         hmac,
-        // A hostile renderer sends whatever JSON it likes. `answeredBy` is not
-        // a field of ApprovalDecision precisely because the host never reads
-        // one — an integrity-verified response still does not get to say who
-        // sent it.
+        // A hostile renderer sends whatever JSON it likes. `answeredBy` is not a field of ApprovalDecision precisely because the host never reads one — an integrity-verified response still does not get to say who sent it.
         answeredBy: "remote",
       } as ApprovalDecision & { answeredBy: string });
       await expect(promise).resolves.toMatchObject({ choice: "allow-once" });
@@ -2330,14 +2266,11 @@ describe("ApprovalGate", () => {
       // unused the moment an answerer named "remote" is added.
       const widened: ApprovalAnswerer = "remote";
       expect(approvalAnswererAuditToken(widened)).toBe("unrecognized-answerer");
-      // The runtime half: the guarantee has to survive a caller that casts past
-      // the type, and an inherited property is not an answerer.
+      // The runtime half: the guarantee has to survive a caller that casts past the type, and an inherited property is not an answerer.
       expect(approvalAnswererAuditToken("toString" as never)).toBe(
         "unrecognized-answerer",
       );
-      // Every member renders as itself. A new member that forgot its token
-      // would fail to compile in the audit table; one that mistyped it fails
-      // here.
+      // Every member renders as itself. A new member that forgot its token would fail to compile in the audit table; one that mistyped it fails here.
       expect(approvalAnswererAuditToken("desk")).toBe("desk");
       expect(approvalAnswererAuditToken("away-authority")).toBe(
         "away-authority",
@@ -2345,13 +2278,7 @@ describe("ApprovalGate", () => {
     });
   });
 
-  // ── Remote-controller origin ──────────────────────────
-  //
-  // The marker answers "was a remote controller's turn blocked on this
-  // approval?" It is a fact the host wrote down, not one a later reader
-  // reconstructs from the reason text, and not one the renderer is asked for or
-  // told. Every assertion below is about that: the value the host set, on the
-  // rows that outlive the request, and nowhere the renderer can see.
+  // Remote-controller origin The marker answers "was a remote controller's turn blocked on this approval?" It is a fact the host wrote down, not one a later reader reconstructs from the reason text, and not one the renderer is asked for or told. Every assertion below is about that: the value the host set, on the rows that outlive the request, and nowhere the renderer can see.
   describe("remote-controller origin", () => {
     function originOf(row: string): string | undefined {
       return /(?:^| )remoteControllerOrigin=(\S+)/.exec(row)?.[1];
@@ -2387,8 +2314,7 @@ describe("ApprovalGate", () => {
         "[approval:requested]",
         "[approval:decided]",
       ]);
-      // The decided row is written from the pending entry after the request
-      // object is gone, so this pins that the entry kept the marker too.
+      // The decided row is written from the pending entry after the request object is gone, so this pins that the entry kept the marker too.
       expect(rows.map(originOf)).toEqual([
         "tailnet-controller",
         "tailnet-controller",
@@ -2432,9 +2358,7 @@ describe("ApprovalGate", () => {
       });
       await promise;
 
-      // Not an absent key: a reviewer partitioning rows by origin would have to
-      // guess whether an absence meant "the desk asked" or "this row's writer
-      // never carried the marker".
+      // Not an absent key: a reviewer partitioning rows by origin would have to guess whether an absence meant "the desk asked" or "this row's writer never carried the marker".
       expect(rowsFor(auditLogger, "origin-desk").map(originOf)).toEqual([
         "none",
         "none",
@@ -2459,9 +2383,7 @@ describe("ApprovalGate", () => {
           row.startsWith("[approval:timeout]"),
         );
         expect(timeout).toBeDefined();
-        // Unlike `answeredBy`, which is absent here because nobody answered,
-        // the origin is still true of the request and is exactly what a review
-        // of an unanswered remote turn is looking for.
+        // Unlike `answeredBy`, which is absent here because nobody answered, the origin is still true of the request and is exactly what a review of an unanswered remote turn is looking for.
         expect(originOf(timeout as string)).toBe("tailnet-controller");
       } finally {
         vi.useRealTimers();
@@ -2485,8 +2407,7 @@ describe("ApprovalGate", () => {
       const blocked = rowsFor(auditLogger, "origin-blocked").find((row) =>
         row.startsWith("[approval:sensitive-path-blocked]"),
       );
-      // The hard-block resolves before a nonce is minted, so this row is the
-      // only record that a bridged turn tried it at all.
+      // The hard-block resolves before a nonce is minted, so this row is the only record that a bridged turn tried it at all.
       expect(originOf(blocked as string)).toBe("platform-bridge");
     });
 
@@ -2506,27 +2427,19 @@ describe("ApprovalGate", () => {
         string,
         ApprovalRequest,
       ];
-      // Non-vacuous: this is the real payload, carrying the fields the renderer
-      // is meant to have.
+      // Non-vacuous: this is the real payload, carrying the fields the renderer is meant to have.
       expect(sent.id).toBe("origin-not-sent");
       expect(sent.nonce).toEqual(expect.any(String));
-      // The renderer is neither asked for the marker nor told it. There is no
-      // copy of it outside the main process to author or to alter.
+      // The renderer is neither asked for the marker nor told it. There is no copy of it outside the main process to author or to alter.
       expect(sent).not.toHaveProperty("remoteControllerOrigin");
-      // Same property, same reason. The scope list is host-only too: it is
-      // what bounds an away answer, so a renderer that could see it is one
-      // step from a renderer that could argue about it.
+      // Same property, same reason. The scope list is host-only too: it is what bounds an away answer, so a renderer that could see it is one step from a renderer that could argue about it.
       expect(sent).not.toHaveProperty("scopeTargetFilePaths");
-      // And the abort signal. An AbortSignal is not structured-cloneable,
-      // so leaving it on the payload throws at `webContents.send` in
-      // production — loud rather than silent, but still a crash, and the
-      // mock here clones nothing so only this assertion would catch it.
+      // And the abort signal. An AbortSignal is not structured-cloneable, so leaving it on the payload throws at `webContents.send` in production — loud rather than silent, but still a crash, and the mock here clones nothing so only this assertion would catch it.
       expect(sent).not.toHaveProperty("abortSignal");
     });
 
     it("reports an unrecognised controller as an anomaly instead of echoing it", () => {
-      // Audit rows are space-delimited `key=value`, so echoing a raw value
-      // would let it append fields of its own choosing.
+      // Audit rows are space-delimited `key=value`, so echoing a raw value would let it append fields of its own choosing.
       expect(
         remoteControllerOriginAuditToken(
           "tailnet-controller choice=allow-always" as never,
@@ -2561,29 +2474,20 @@ describe("ApprovalGate", () => {
         remoteControllerOrigin: "tailnet-controller",
       };
 
-      // The runtime half. The marker is host-only and never leaves the main
-      // process, so it has no echoed copy for a signature to authenticate — a
-      // digest over it would compare the host's own value to itself. Carrying
-      // it must therefore change nothing about the digest.
+      // The runtime half. The marker is host-only and never leaves the main process, so it has no echoed copy for a signature to authenticate — a digest over it would compare the host's own value to itself. Carrying it must therefore change nothing about the digest.
       expect(signApprovalRequest(key, withMarker)).toBe(
         signApprovalRequest(key, signed),
       );
     });
   });
 
-  // ── Away Authority ────────────────────────────────────
-  //
-  // The desk-armed second answerer, exercised through the gate. Two things are
-  // being proved here and nothing else: that an away answer is reachable and
-  // fully recorded, and that its position in `requestAndWait` leaves every hard
-  // gate above it intact. Per-condition eligibility lives in
-  // `away-authority.test.ts`, which drives the answerer directly.
+  // Away Authority The desk-armed second answerer, exercised through the gate. Two things are being proved here and nothing else: that an away answer is reachable and fully recorded, and that its position in `requestAndWait` leaves every hard gate above it intact. Per-condition eligibility lives in `away-authority.test.ts`, which drives the answerer directly.
   describe("away authority", () => {
     const AWAY_CONVERSATION = "conv-away";
     const AWAY_DIR = "/srv/away-gate-scope";
     const AWAY_FILE = "/srv/away-gate-scope/report.md";
 
-    /** A request the armed grant below would answer, before any test flips it. */
+    // A request the armed grant below would answer, before any test flips it.
     function makeAwayRequest(overrides?: Partial<RequestInput>): RequestInput {
       return makeRequest({
         id: "away-1",
@@ -2597,9 +2501,7 @@ describe("ApprovalGate", () => {
         remoteControllerOrigin: "platform-bridge",
         remoteControllerAuthority: makePlatformBridgeAuthority(),
         target: { filePath: AWAY_FILE },
-        // The host-only scope list. `target` is the display path; the
-        // answerer reads this, so a fixture that set only `target` would
-        // test a request the real producer never builds.
+        // The host-only scope list. `target` is the display path; the answerer reads this, so a fixture that set only `target` would test a request the real producer never builds.
         scopeTargetFilePaths: [AWAY_FILE],
         isReadOnly: false,
         ...overrides,
@@ -2630,16 +2532,14 @@ describe("ApprovalGate", () => {
         choice: "allow-once",
       });
 
-      // Nobody was asked. No modal, and no OS toast to wake a room the owner
-      // is not in — the answer is the whole point.
+      // Nobody was asked. No modal, and no OS toast to wake a room the owner is not in — the answer is the whole point.
       expect(wc.send).not.toHaveBeenCalled();
       const answered = auditRowStartingWith(auditLogger, "[approval:away-answered]");
       expect(answered).toContain("away-1");
       expect(answered).toContain("answeredBy=away-authority");
       expect(answered).toContain("remoteControllerOrigin=platform-bridge");
       expect(answered).toContain("toolName=fs_write");
-      // Below the requested row, so an away-answered call still has the full
-      // pair a reviewer replays.
+      // Below the requested row, so an away-answered call still has the full pair a reviewer replays.
       expect(auditRowStartingWith(auditLogger, "[approval:requested]")).toContain("away-1");
     });
 
@@ -2650,9 +2550,7 @@ describe("ApprovalGate", () => {
         { choice: "allow-once" },
       );
 
-      // It returns before a pending entry exists. There is no entry for
-      // `resolve` to accept a later `allow-always` against, and none for
-      // `getRequestSnapshot` to bind a user-approval record to.
+      // It returns before a pending entry exists. There is no entry for `resolve` to accept a later `allow-always` against, and none for `getRequestSnapshot` to bind a user-approval record to.
       expect(gate.pendingCount).toBe(0);
       expect(gate.getRequestSnapshot("away-1")).toBeNull();
       expect(
@@ -2671,8 +2569,7 @@ describe("ApprovalGate", () => {
       await expect(gate.requestAndWait(makeAwayRequest())).resolves.toMatchObject(
         { choice: "allow-once" },
       );
-      // Spent in the same step that answered. The row says so, because from
-      // the next call on there is no grant left to explain the silence.
+      // Spent in the same step that answered. The row says so, because from the next call on there is no grant left to explain the silence.
       expect(auditRowStartingWith(auditLogger, "[approval:away-answered]")).toContain(
         "remaining=0",
       );
@@ -2681,8 +2578,7 @@ describe("ApprovalGate", () => {
       );
       expect(gate.awayAuthoritySnapshot()).toBeNull();
 
-      // The second call finds no grant and falls through to a desk nobody is
-      // at, exactly as it would have before anything was ever armed.
+      // The second call finds no grant and falls through to a desk nobody is at, exactly as it would have before anything was ever armed.
       const second = gate.requestAndWait(makeAwayRequest({ id: "away-2" }));
       expect(auditRowTexts(auditLogger).filter((row) =>
         row.startsWith("[approval:away-answered]"),
@@ -2701,8 +2597,7 @@ describe("ApprovalGate", () => {
       expect(auditRowStartingWith(auditLogger, "[approval:away-answered]")).toContain(
         "remaining=1",
       );
-      // Non-vacuous companion to the test above: with budget left, the grant
-      // survives and no retirement row is written.
+      // Non-vacuous companion to the test above: with budget left, the grant survives and no retirement row is written.
       expect(gate.awayAuthoritySnapshot()?.remaining).toBe(1);
       expect(auditRowStartingWith(auditLogger, "[approval:away-retired]")).toBeUndefined();
     });
@@ -2710,8 +2605,7 @@ describe("ApprovalGate", () => {
     it("re-checks the controller authority at the moment it answers", async () => {
       const { wc, auditLogger, gate } = armedGate();
 
-      // Same grant, same conversation, same scope — only the live guard has
-      // gone stale, which is what a revoke mid-turn looks like.
+      // Same grant, same conversation, same scope — only the live guard has gone stale, which is what a revoke mid-turn looks like.
       const promise = gate.requestAndWait(
         makeAwayRequest({ remoteControllerAuthority: makePlatformBridgeAuthority(false) }),
       );
@@ -2720,8 +2614,7 @@ describe("ApprovalGate", () => {
         "reason=authority-not-current",
       );
       expect(auditRowStartingWith(auditLogger, "[approval:away-answered]")).toBeUndefined();
-      // It fell through to the desk rather than being denied outright: the
-      // answerer declining is not a decision about the request.
+      // It fell through to the desk rather than being denied outright: the answerer declining is not a decision about the request.
       expect(wc.send).toHaveBeenCalledTimes(1);
       gate.disposeAll();
       await expect(promise).resolves.toMatchObject({ choice: "deny-once" });
@@ -2738,8 +2631,7 @@ describe("ApprovalGate", () => {
 
       const promise = gate.requestAndWait(makeAwayRequest());
       expect(auditRowStartingWith(auditLogger, "[approval:away-answered]")).toBeUndefined();
-      // A retired grant is not this answerer's business any more, so it is also
-      // not worth a declined row on every later approval.
+      // A retired grant is not this answerer's business any more, so it is also not worth a declined row on every later approval.
       expect(auditRowStartingWith(auditLogger, "[approval:away-declined]")).toBeUndefined();
       gate.disposeAll();
       await expect(promise).resolves.toMatchObject({ choice: "deny-once" });
@@ -2748,8 +2640,7 @@ describe("ApprovalGate", () => {
     it("stays quiet about approvals that were never its business", async () => {
       const { auditLogger, gate } = armedGate();
 
-      // An ordinary desk approval while armed. If this wrote a declined row,
-      // every approval in the app would write one.
+      // An ordinary desk approval while armed. If this wrote a declined row, every approval in the app would write one.
       const promise = gate.requestAndWait(
         makeRequest({ id: "desk-while-armed", sessionId: AWAY_CONVERSATION }),
       );
@@ -2783,9 +2674,7 @@ describe("ApprovalGate", () => {
       expect(armedRow).toContain("categories=read,write");
       expect(armedRow).toContain("directories=1");
       expect(armedRow).toContain("budget=5");
-      // The count, not the paths. Keeping local paths off a remote transport is
-      // the reason this feature is a desk gesture rather than a relay; an audit
-      // row is not an exception to it.
+      // The count, not the paths. Keeping local paths off a remote transport is the reason this feature is a desk gesture rather than a relay; an audit row is not an exception to it.
       expect(armedRow).not.toContain("away-gate-scope");
     });
 
@@ -2809,11 +2698,7 @@ describe("ApprovalGate", () => {
       await expect(promise).resolves.toMatchObject({ choice: "deny-once" });
     });
 
-    // ── Hard gates above the injection point ────────────
-    //
-    // Each row below is an otherwise-eligible away request that one hard gate
-    // rejects first. They are the reason the answerer sits where it does: move
-    // its block above any of these and the matching row fails.
+    // Hard gates above the injection point Each row below is an otherwise-eligible away request that one hard gate rejects first. They are the reason the answerer sits where it does: move its block above any of these and the matching row fails.
     it("cannot re-open the sensitive-path hard block", async () => {
       const { wc, auditLogger, gate } = armedGate();
 
@@ -2848,9 +2733,7 @@ describe("ApprovalGate", () => {
       await expect(
         gate.requestAndWait(
           makeAwayRequest({
-            // A binding that does not describe the displayed request — the
-            // request is an `fs_write`, the binding a shell spawn. The gate
-            // rejects it before the answerer is consulted.
+            // A binding that does not describe the displayed request — the request is an `fs_write`, the binding a shell spawn. The gate rejects it before the answerer is consulted.
             hostShellExecutionPermitBinding: Object.freeze({
               plan,
               planIdentity: plan.identity,
@@ -2918,9 +2801,7 @@ describe("ApprovalGate", () => {
     it("does not reach the read-only fail-open", async () => {
       const { auditLogger, gate } = armedGate();
 
-      // A read-only request short-circuits above the answerer. The point is
-      // that the away answerer is not the thing that approved it: the row names
-      // no answerer at all, because the host reached that outcome on its own.
+      // A read-only request short-circuits above the answerer. The point is that the away answerer is not the thing that approved it: the row names no answerer at all, because the host reached that outcome on its own.
       await expect(
         gate.requestAndWait(
           makeAwayRequest({ toolCategory: "read", isReadOnly: true }),
@@ -2935,12 +2816,7 @@ describe("ApprovalGate", () => {
   });
 
   describe("turn abort", () => {
-    /**
-     * A tool ask with nothing to short-circuit it on the way in: not
-     * read-only, no away grant armed, no sensitive target. It reaches the
-     * renderer and then waits, which is the only state a stop can be observed
-     * from.
-     */
+    // A tool ask with nothing to short-circuit it on the way in: not read-only, no away grant armed, no sensitive target. It reaches the renderer and then waits, which is the only state a stop can be observed from.
     function makeAbortableRequest(signal?: AbortSignal): RequestInput {
       return makeRequest({
         id: "abort-1",
@@ -2957,8 +2833,7 @@ describe("ApprovalGate", () => {
       const turn = new AbortController();
 
       const parked = gate.requestAndWait(makeAbortableRequest(turn.signal));
-      // The modal really was raised. Without this the rest of the test would
-      // also pass against a gate that refused the request on its way in.
+      // The modal really was raised. Without this the rest of the test would also pass against a gate that refused the request on its way in.
       expect(wc.send).toHaveBeenCalledTimes(1);
       expect(gate.pendingCount).toBe(1);
 
@@ -2966,14 +2841,11 @@ describe("ApprovalGate", () => {
       const decision = await parked;
 
       expect(decision.choice).toBe("deny-once");
-      // Host-generated, not a deny the owner authored, and not the timeout —
-      // the gate's five minutes never elapsed here.
+      // Host-generated, not a deny the owner authored, and not the timeout — the gate's five minutes never elapsed here.
       expect(isHostApprovalRejectedDecision(decision)).toBe(true);
       expect(isHostApprovalTimeoutDecision(decision)).toBe(false);
       expect(decision.rememberPattern).toBeUndefined();
-      // The entry is gone, so a desk answer that crossed the abort in flight
-      // arrives as an unknown-request replay rather than an answer to a turn
-      // that no longer exists.
+      // The entry is gone, so a desk answer that crossed the abort in flight arrives as an unknown-request replay rather than an answer to a turn that no longer exists.
       expect(gate.pendingCount).toBe(0);
 
       const cancelled = auditRowTexts(auditLogger).find((row) =>
@@ -2985,9 +2857,7 @@ describe("ApprovalGate", () => {
     });
 
     it("keeps a parked request for the next renderer while its turn is not stopped", async () => {
-      // A renderer reload does not stop the primary conversation's turn; the
-      // request it parked on is what `listPendingRendererRequests` hands the
-      // renderer that comes back.
+      // A renderer reload does not stop the primary conversation's turn; the request it parked on is what `listPendingRendererRequests` hands the renderer that comes back.
       const { wc, gate } = makeAuditingGate();
       const turn = new AbortController();
       const parked = gate.requestAndWait(makeAbortableRequest(turn.signal));
@@ -3001,9 +2871,7 @@ describe("ApprovalGate", () => {
     });
 
     it("retires a parked request with the release that stopped its turn, and says so", async () => {
-      // A tile the host let go of — closed, or released by a renderer reload
-      // — has no turn left to answer into; the request is not re-offered, and
-      // the row names the release rather than a stop the user never made.
+      // A tile the host let go of — closed, or released by a renderer reload — has no turn left to answer into; the request is not re-offered, and the row names the release rather than a stop the user never made.
       const { auditLogger, gate } = makeAuditingGate();
       const turn = new AbortController();
       const parked = gate.requestAndWait(makeAbortableRequest(turn.signal));
@@ -3022,9 +2890,7 @@ describe("ApprovalGate", () => {
     });
 
     it("tells the renderer a request it can no longer answer is over", async () => {
-      // The card for a released tile is drawn by a surface that has already
-      // unmounted, so nothing in the renderer will retire it on its own. The
-      // announcement is the only thing that can.
+      // The card for a released tile is drawn by a surface that has already unmounted, so nothing in the renderer will retire it on its own. The announcement is the only thing that can.
       const { wc, gate } = makeAuditingGate();
       const turn = new AbortController();
       const parked = gate.requestAndWait(makeAbortableRequest(turn.signal));
@@ -3038,9 +2904,7 @@ describe("ApprovalGate", () => {
     });
 
     it("announces a desk answer too, so one path covers every way a request ends", async () => {
-      // Announced for EVERY settlement rather than a chosen subset: the
-      // renderer has already dropped this one, and a closed list of announced
-      // causes would be a second thing to keep in step with `settle`.
+      // Announced for EVERY settlement rather than a chosen subset: the renderer has already dropped this one, and a closed list of announced causes would be a second thing to keep in step with `settle`.
       const { wc, gate } = makeAuditingGate();
       const parked = gate.requestAndWait(makeAbortableRequest());
       const { nonce, hmac } = lastSentNonceHmac(wc);
@@ -3058,8 +2922,7 @@ describe("ApprovalGate", () => {
 
       const decision = await gate.requestAndWait(makeAbortableRequest(turn.signal));
 
-      // The destroyed-renderer guard denies on the way in, so nothing is sent
-      // at all: there is no window left holding a card to take down.
+      // The destroyed-renderer guard denies on the way in, so nothing is sent at all: there is no window left holding a card to take down.
       expect(decision.choice).toBe("deny-once");
       expect(wc.send).not.toHaveBeenCalled();
     });
@@ -3075,8 +2938,7 @@ describe("ApprovalGate", () => {
       expect(wc.send).not.toHaveBeenCalled();
       expect(gate.pendingCount).toBe(0);
       const rows = auditRowTexts(auditLogger);
-      // The cancelled row keeps its requested row. An approval that leaves no
-      // trace at all reads exactly like one that was never asked for.
+      // The cancelled row keeps its requested row. An approval that leaves no trace at all reads exactly like one that was never asked for.
       expect(rows.some((row) => row.startsWith("[approval:requested]"))).toBe(true);
       expect(rows.some((row) => row.startsWith("[approval:cancelled]"))).toBe(true);
     });
@@ -3094,8 +2956,7 @@ describe("ApprovalGate", () => {
       unrelated.abort(new Error("user cancelled turn"));
       await Promise.resolve();
 
-      // The signal is the mechanism, not some ambient "any abort ends every
-      // wait" behaviour a passing test above could otherwise be crediting.
+      // The signal is the mechanism, not some ambient "any abort ends every wait" behaviour a passing test above could otherwise be crediting.
       expect(settled).toBe(false);
       expect(gate.pendingCount).toBe(1);
 
@@ -3120,9 +2981,7 @@ describe("ApprovalGate", () => {
 
       expect(removeListener).toHaveBeenCalledWith("abort", expect.any(Function));
 
-      // A later stop of the same turn has nothing left to cancel here. One
-      // turn can ask many times, and an answered request that stayed attached
-      // would keep piling listeners onto the one signal it shares with them.
+      // A later stop of the same turn has nothing left to cancel here. One turn can ask many times, and an answered request that stayed attached would keep piling listeners onto the one signal it shares with them.
       turn.abort(new Error("user cancelled turn"));
       expect(
         auditRowTexts(auditLogger).some((row) =>

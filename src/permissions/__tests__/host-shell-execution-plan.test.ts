@@ -110,9 +110,7 @@ describe("host shell execution plan", () => {
         requestedSandbox: true,
         mode: "plain",
         fallbackReason: "requested-sandbox-unavailable",
-        // Design I3: an unavailable sandbox warns and continues under the
-        // normal rules, so it needs no one-shot permit. The fallback reason
-        // and the separate identity keep it distinct from sandbox-off.
+        // Design I3: an unavailable sandbox warns and continues under the normal rules, so it needs no one-shot permit. The fallback reason and the separate identity keep it distinct from sandbox-off.
         requiresExplicitUserApproval: false,
         capability: {
           kind: "none",
@@ -168,7 +166,6 @@ describe("host shell execution plan", () => {
     });
   });
   it("partitions cache identity by the entire safe plan projection", () => {
-
     const requested = buildHostShellExecutionPlan({
       platform: "darwin",
       requestedSandbox: true,
@@ -180,8 +177,7 @@ describe("host shell execution plan", () => {
       activeCapability: { ...NONE, platform: "darwin" },
     });
 
-    // The sealed requested-unavailable plan gets a distinct route identity, and
-    // its cache identity must remain distinct from explicit sandbox-off.
+    // The sealed requested-unavailable plan gets a distinct route identity, and its cache identity must remain distinct from explicit sandbox-off.
     expect(requested.identity).not.toBe(explicitOff.identity);
     const requestedProjection = getHostShellExecutionPlanAuditProjection(requested);
     const offProjection = getHostShellExecutionPlanAuditProjection(explicitOff);

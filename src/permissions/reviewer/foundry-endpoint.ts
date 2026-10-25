@@ -1,22 +1,7 @@
-/**
- * Azure AI Foundry endpoint validation for the chat `azure-foundry` vendor's
- * `baseUrl` setting. The settings IPC rejects an endpoint that fails here
- * before it is saved, so a chat request never leaves for an untrusted host.
- */
+// Reject untrusted endpoint settings before persistence so chat requests cannot leave for them.
 import { TRUSTED_NETWORK_HOST_SUFFIXES } from "./risk-classifier.js";
 
-/**
- * Validate that the Foundry endpoint is HTTPS, ends with one of the approved
- * Azure suffixes, and has a well-formed subdomain (LOW: tightened check).
- * Throws on invalid input so the caller fails closed (atomic cutover).
- *
- * Subdomain takeover analysis: both accepted suffixes are managed by the
- * Azure control plane. A dangling CNAME attack requires an attacker to claim
- * the exact Azure resource, which requires the user's subscription credentials.
- *
- * LOW: subdomain regex rejects double-dot, percent-encoded dots, and other
- * malformed label sequences that pass the suffix-only check.
- */
+// Validate that the Foundry endpoint is HTTPS, ends with one of the approved Azure suffixes, and has a well-formed subdomain (LOW: tightened check). Throws on invalid input so the caller fails closed (atomic cutover). Subdomain takeover analysis: both accepted suffixes are managed by the Azure control plane. A dangling CNAME attack requires an attacker to claim the exact Azure resource, which requires the user's subscription credentials. LOW: subdomain regex rejects double-dot, percent-encoded dots, and other malformed label sequences that pass the suffix-only check.
 export function validateFoundryEndpoint(endpoint: string): void {
   let url: URL;
   try {
@@ -40,8 +25,7 @@ export function validateFoundryEndpoint(endpoint: string): void {
       `e.g. https://<project>.services.ai.azure.com`,
     );
   }
-  // LOW: validate the subdomain portion (everything before the matched suffix).
-  // Rejects: bare suffix (no subdomain), double-dot sequences, invalid label chars.
+  // LOW: validate the subdomain portion (everything before the matched suffix). Rejects: bare suffix (no subdomain), double-dot sequences, invalid label chars.
   const subdomain = url.hostname.slice(0, url.hostname.length - matchedSuffix.length);
   if (
     subdomain.length === 0 ||

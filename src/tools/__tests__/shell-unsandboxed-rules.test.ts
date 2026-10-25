@@ -1,20 +1,5 @@
-/**
- * Unsandboxed host shells follow the reference rule (Claude Code / Codex),
- * decided by the owner on 2026-10-16 (design I3):
- *
- *   - sandbox off (the user's choice): normal rules; an allow rule runs it.
- *   - sandbox requested but unavailable: warn and continue under normal rules;
- *     the plan still records `requested-sandbox-unavailable`.
- *   - explicit unsandboxed retry (`executionMode: "host"`): a matching allow
- *     rule approves it without asking; without one it asks, and the card keeps
- *     the host-execution plan (`requiresExplicitUserApproval`).
- *   - everywhere: the floor (credential paths, sink catalogue) forces the
- *     modal over an allow rule, and a deny rule denies.
- *
- * Every case drives the real ToolExecutor, the real PermissionManager with
- * real `Bash(...)` rules, the real ApprovalGate and the real BashTool, so a
- * rule-approved explicit host run also proves the spawn-side permit check.
- */
+/** Host shells use normal rules when isolation is off or unavailable; unavailable requests retain warning metadata.
+ * Explicit host retries ask unless an allow rule matches; sensitive and exfiltration floors still force approval, and deny rules always win. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, symlinkSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -210,10 +195,8 @@ describe("explicit unsandboxed retry (executionMode host)", () => {
     expect(existsSync(join(dir, "marker"))).toBe(false);
   });
 
-  // The research names the hazard: a remembered approval given for a
-  // sandboxed/default run must not silently cover the unsandboxed retry. Only
-  // an allow rule may (I3). The remembered-approval key carries the sealed plan,
-  // and the explicit-host gate never consults approval memory.
+  // The research names the hazard: a remembered approval given for a sandboxed/default run must not silently cover the unsandboxed retry.
+  // Only an allow rule may (I3). The remembered-approval key carries the sealed plan, and the explicit-host gate never consults approval memory.
   it("keeps a default run's remembered approval apart from the unsandboxed retry", async () => {
     const first = await run({
       substrate: "sandbox-off", rules: [], command: "printf granted",

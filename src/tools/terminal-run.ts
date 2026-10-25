@@ -1,50 +1,8 @@
-/**
- * `terminal_run` LLM tool — run in the isolated Agent companion of a visible tab.
- * The Manual host PTY is never an agent typing target.
- *
- * The command is typed into the terminal's shell and Enter is pressed, as if
- * the user had typed it: it appears and runs in the visible terminal, under
- * the terminal's own OS sandbox (pty-manager.ts), and its output is recorded
- * as a command block like any other. The tool waits (bounded) for that block
- * and returns it through the same frame as `terminal_read`.
- *
- *   { command }                   the chat's bound terminal, else the one the user is looking at
- *   { command, tabId }            a named terminal of this window (from terminal_read)
- *   { command, waitSeconds }      how long to wait for the command to finish (0: return at once)
- *
- * TARGET. Resolved once, before any approval is asked, and sealed into the
- * invocation's approval scope (`terminal-command`): an explicit tabId wins,
- * then the terminal the conversation is bound to (when the host binds one),
- * then the window's active terminal. With none of them — or a tabId this
- * window does not have — the call fails and names the way out; it never
- * picks a terminal on its own. Execute types into the SEALED terminal, and
- * refuses when its shell has since moved to another directory: switching
- * terminals or `cd`-ing while the card is open cannot redirect an approval.
- *
- * PERMISSION. Category `shell`, so the call takes the shell lane of the one
- * pipeline the `bash` tool takes: the invocation runner's shape-based shell
- * checks (path containment and the structural validator read the `command`
- * argument), and the permission manager's `Bash(...)` deny/ask/allow rules
- * and credential-exfiltration and sensitive-path floors, which read this
- * command as their rule subject in the terminal's directory
- * (invocation-authorization.ts). Not auto-allowed means an approval card.
- * A remembered decision covers this exact command in this directory, for
- * this app session only.
- *
- * BUSY TERMINAL. The shell's own command markers decide (terminal-blocks.ts
- * `promptState`): the command is typed only at an empty prompt. A running
- * command or full-screen program, a prompt holding the user's unfinished
- * typing or a keystroke too recent to have been echoed, a shell between
- * prompts, an exited shell, a shell with no markers at all, or one that marks
- * no end of prompt (fish) is refused with the reason — before the card when
- * it is already so, and again at execute time.
- *
- * TEXT. One line of plain characters that zsh and bash both run exactly as
- * shown and as the rules read it (terminal-command-text.ts): no newline, tab,
- * ESC or other control or invisible character, no long whitespace run, no
- * history expansion, no `#` comment or zsh-only construct, nothing that
- * changes the shell for the user's later commands, nothing left open.
- */
+/** Type only into the visible isolated Agent companion, never the Manual host terminal.
+ * Seal tab and cwd before approval; choose explicit, bound, then active tab without inventing a target, and refuse changed targets at execution.
+ * Use ordinary shell rules, containment, and sensitive/exfiltration floors; remembered approval covers this exact command/cwd only for the app session.
+ * Require a fresh empty shell prompt before approval and execution; refuse busy, unmarked, edited, or exited terminals.
+ * Accept only one plain command line with no control/invisible text, history expansion, comments, dialect-only syntax, or persistent shell-state changes. */
 import { createDynamicTool, type Tool, type ToolPolicyContext } from "./base.js";
 import type { ToolExecutionContext, ToolExecutionResult } from "./types.js";
 import { getWindowTerminalBlockTracker, type TerminalBlockTracker } from "../main/terminal/terminal-blocks.js";
@@ -70,11 +28,8 @@ const TERMINAL_RUN_TOOL_NAME = "terminal_run";
 const DEFAULT_WAIT_SECONDS = TOOL_TIMEOUT_POLICY.terminalRunWaitDefaultMs / 1000;
 const MAX_WAIT_SECONDS = TOOL_TIMEOUT_POLICY.terminalRunWaitMaxMs / 1000;
 
-/**
- * Type a command into a terminal (pty-manager `typeAgentTerminalCommand`): reset
- * the line editor, check the shell against the operating system, paste the
- * line, and press Enter once the edit line shows exactly that line.
- */
+/** Type a command into a terminal (pty-manager `typeAgentTerminalCommand`): reset the line editor, check the
+ * shell against the operating system, paste the line, and press Enter once the edit line shows exactly that line. */
 export type TypeTerminalCommand = (
   ref: TerminalSessionRef,
   ownerWindowId: number,
@@ -83,11 +38,8 @@ export type TypeTerminalCommand = (
   signal?: AbortSignal,
 ) => Promise<{ ok: true; firstBlockId: number } | { ok: false; reason: string; message: string }>;
 
-/**
- * Check a terminal's shell against the operating system (pty-manager
- * `verifyAgentTerminalShell`): its own process holds the terminal, and its real
- * directory is the one its markers reported.
- */
+/** Check a terminal's shell against the operating system (pty-manager
+ * `verifyAgentTerminalShell`): its own process holds the terminal, and its real directory is the one its markers reported. */
 type VerifyTerminalShell = (
   ref: TerminalSessionRef,
   ownerWindowId: number,
@@ -108,14 +60,8 @@ export interface TerminalRunToolDeps extends SessionWindowScopeDeps {
   ensureAgentTerminal: (tabId: string, ownerWindowId: number, signal?: AbortSignal) => Promise<TerminalSessionInfo>;
   /** The terminal tab the user is looking at in a window, if a terminal is the active surface. */
   activeTerminalTabId: (windowId: number) => string | undefined;
-  /**
-   * The pane a conversation is bound to in `windowId` (a chat docked beside a
-   * terminal or a page), by the session hosting the call: a sub-agent asks
-   * with its parent's. A conversation bound to a terminal types there (a
-   * bound tab that is gone fails the call); one bound to a page has no
-   * terminal of its own and never falls back to the active terminal; only an
-   * unbound conversation uses the active terminal.
-   */
+  /** The pane a conversation is bound to in `windowId` (a chat docked beside a terminal or a page), by the session hosting the call: a sub-agent asks with its parent's. A conversation bound to a terminal
+   * types there (a bound tab that is gone fails the call); one bound to a page has no terminal of its own and never falls back to the active terminal; only an unbound conversation uses the active terminal. */
   boundSurface: (windowId: number, hostSessionId: string) => { kind: "terminal" | "browser"; tabId: string } | undefined;
   /** Type one line into a terminal and press Enter. */
   typeCommand: TypeTerminalCommand;
@@ -125,7 +71,7 @@ export interface TerminalRunToolDeps extends SessionWindowScopeDeps {
   auditMismatch: (mismatch: TerminalCommandMismatch) => void;
 }
 
-/** The tools this module created — the only ones the authorization step treats as terminal commands. */
+/** The tools this module created; the only ones the authorization step treats as terminal commands. */
 const canonicalTerminalRunTools = new WeakSet<object>();
 
 /** True for a `terminal_run` this module created (never a lookalike registered under the name). */
@@ -135,12 +81,8 @@ export function isCanonicalTerminalRunTool(tool: unknown): boolean {
 
 export type TerminalCommandScope = Extract<ApprovalMemoryScope, { kind: "terminal-command" }>;
 
-/**
- * The terminal target sealed into a `terminal_run` invocation's approval
- * memory. Every canonical `terminal_run` invocation has one (its
- * `approvalMemoryScope` returns one or refuses the call), so its absence is a
- * pipeline contract violation and throws.
- */
+/** The terminal target sealed into a `terminal_run` invocation's approval memory. Every canonical `terminal_run` invocation has
+ * one (its `approvalMemoryScope` returns one or refuses the call), so its absence is a pipeline contract violation and throws. */
 export function terminalCommandScopeOf(memory: ApprovalMemory | undefined): TerminalCommandScope {
   if (memory?.kind !== "key" || memory.scope.kind !== "terminal-command") {
     throw new Error("terminal_run reached authorization without its sealed terminal target");
@@ -220,10 +162,7 @@ interface BlockWait {
   readonly finished: boolean;
 }
 
-/**
- * Wait until block `id` is done (or the shell exits), `waitMs` passes, or
- * `signal` aborts — whichever is first.
- */
+/** Wait until block `id` is done (or the shell exits), `waitMs` passes, or `signal` aborts; whichever is first. */
 function waitForBlock(
   tracker: TerminalBlockTracker,
   id: number,
@@ -259,10 +198,7 @@ function waitForBlock(
 }
 
 export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
-  /**
-   * The terminal this call types into and the directory its shell is in.
-   * Throws with the reason when there is none to name.
-   */
+  /** The terminal this call types into and the directory its shell is in. Throws with the reason when there is none to name. */
   const resolveTarget = async (input: TerminalRunInput, sessionId: string | undefined): Promise<{
     windowId: number;
     tabId: string;
@@ -277,8 +213,7 @@ export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
       throw new Error("terminal_run is available only to a conversation in an app window (or its sub-agents); this session has no terminals");
     }
     const { windowId } = scope;
-    // An explicit tabId, else the terminal this chat is docked beside, else
-    // (a chat docked beside nothing) the terminal shown in the window.
+    // An explicit tabId, else the terminal this chat is docked beside, else (a chat docked beside nothing) the terminal shown in the window.
     let tabId = input.tabId;
     if (tabId === undefined) {
       const bound = deps.boundSurface(windowId, scope.hostSessionId);
@@ -306,8 +241,7 @@ export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
     }
     const cwd = tracker.currentCwd();
     if (cwd === null) throw new Error(`terminal ${tabId} has not reported its working directory yet`);
-    // The directory decides the rules, the project rules and the card: take
-    // it from the markers only when the operating system agrees.
+    // The directory decides the rules, the project rules and the card: take it from the markers only when the operating system agrees.
     const verified = await deps.verifyShell(session, windowId, cwd);
     if (!verified.ok) throw new Error(`terminal ${tabId} cannot take a command: ${verified.message}. Nothing was typed`);
     return { windowId, tabId, tracker, session, cwd, verifiedCwd: verified.cwd };
@@ -324,9 +258,8 @@ export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
       terminalSessionId: target.session.terminalSessionId,
       sandboxGeneration: target.session.sandboxGeneration,
       cwd: target.cwd,
-      // The form the allowed-directory list is kept in (allowed-directories.ts),
-      // so the card can compare the two as strings: a symlinked $PWD and a
-      // case-folding file system both resolve here.
+      // The form the allowed-directory list is kept in (allowed-directories.ts), so the card can
+      // compare the two as strings: a symlinked $PWD and a case-folding file system both resolve here.
       cwdForMatch: caseFoldForMatch(target.verifiedCwd),
     };
   };
@@ -366,8 +299,7 @@ export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
     if (!typed.ok) {
       return fail(`nothing was typed into terminal ${scope.tabId}: ${typed.message}`);
     }
-    // Whatever the wait, give the shell time to report starting the command
-    // (its C marker, which records the line it ran), so the line can be checked.
+    // Whatever the wait, give the shell time to report starting the command (its C marker, which records the line it ran), so the line can be checked.
     await waitForBlockStart(tracker, typed.firstBlockId, BLOCK_START_WAIT_MS, ctx.abortSignal);
     const { block, finished } = await waitForBlock(tracker, typed.firstBlockId, input.waitSeconds * 1000, ctx.abortSignal);
     if (block === null) {
@@ -376,9 +308,7 @@ export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
         isError: true,
       };
     }
-    // The shell's own record of what it ran (its C marker) against what was
-    // approved. Typing cannot prove the line editor inserted the text as
-    // written; this can, after the fact.
+    // The shell's own record of what it ran (its C marker) against what was approved. Typing cannot prove the line editor inserted the text as written; this can, after the fact.
     if (block.command.trim() !== input.command.trim()) {
       deps.auditMismatch({
         sessionId,
@@ -431,8 +361,7 @@ export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
       required: ["command"],
       additionalProperties: false,
     },
-    // As for `bash`: the command carries the permission scope, so a bare
-    // tool-name allow never covers every command.
+    // As for `bash`: the command carries the permission scope, so a bare tool-name allow never covers every command.
     approvalCacheKey: (raw) => sha256Hex(JSON.stringify({ command: parseInput(raw).command })),
     approvalMemoryScope,
     execute,

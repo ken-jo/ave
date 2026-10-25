@@ -88,37 +88,20 @@ describe("MessagingConnectionsSection", () => {
       .toBe("@ave_desk_bot");
   });
 
-  it("reads a connection that still needs its bot token as setup-needed", async () => {
-    const { api } = makeApi([], "connected-unpaired");
-    render(<Harness api={api} />);
-    await waitFor(() => {
-      expect(screen.getByTestId("connection:telegram:state").textContent).toBe("설정 필요");
-    });
-  });
+  function connectionStateCase(state: TelegramConnectionState, expected: string) {
+    return async () => {
+      const { api } = makeApi([], state);
+      render(<Harness api={api} />);
+      await waitFor(() => {
+        expect(screen.getByTestId("connection:telegram:state").textContent).toBe(expected);
+      });
+    };
+  }
 
-  it("reads a pairing waiting on the other side as waiting, not as unset", async () => {
-    const { api } = makeApi([], "pairing-pending");
-    render(<Harness api={api} />);
-    await waitFor(() => {
-      expect(screen.getByTestId("connection:telegram:state").textContent).toBe("대기 중");
-    });
-  });
-
-  it("reads a connection Telegram stopped answering as needing attention, not connected", async () => {
-    const { api } = makeApi([], "reconnecting");
-    render(<Harness api={api} />);
-    await waitFor(() => {
-      expect(screen.getByTestId("connection:telegram:state").textContent).toBe("확인 필요");
-    });
-  });
-
-  it("reads a connection the owner paused as off", async () => {
-    const { api } = makeApi([], "paused-by-owner");
-    render(<Harness api={api} />);
-    await waitFor(() => {
-      expect(screen.getByTestId("connection:telegram:state").textContent).toBe("꺼짐");
-    });
-  });
+  it("reads a connection that still needs its bot token as setup-needed", connectionStateCase("connected-unpaired", "설정 필요"));
+  it("reads a pairing waiting on the other side as waiting, not as unset", connectionStateCase("pairing-pending", "대기 중"));
+  it("reads a connection Telegram stopped answering as needing attention, not connected", connectionStateCase("reconnecting", "확인 필요"));
+  it("reads a connection the owner paused as off", connectionStateCase("paused-by-owner", "꺼짐"));
 
   it("folds an installed Telegram catalog entry into the built-in row", async () => {
     const { api, openExternalUrl } = makeApi([TELEGRAM]);

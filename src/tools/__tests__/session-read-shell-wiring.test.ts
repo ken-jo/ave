@@ -108,9 +108,8 @@ describe.skipIf(process.platform === "win32")("saved-session native shell policy
   it.each([
     ["bash", "linux", false], ["powershell", "linux", false], ["bash", "darwin", true], ["powershell", "darwin", true],
   ] as const)("%s on %s: the wrap grants a protected write root only where the grant stays write-only", async (dialect, platform, granted) => {
-    // A bubblewrap write grant is a read-write bind over the deny's mask, so
-    // on Linux it would reopen reads the protected floor hides. The shell
-    // hands its roots to the wrap unchanged; the wrap's shared layer decides.
+    // A bubblewrap write grant is a read-write bind over the deny's mask, so on Linux it would reopen reads the
+    // protected floor hides. The shell hands its roots to the wrap unchanged; the wrap's shared layer decides.
     const protectedRoot = join(root, ".ssh", "work"); mkdirSync(protectedRoot, { recursive: true });
     const ordinary = join(root, "ordinary"); mkdirSync(ordinary);
     setProcessPlatform(platform);

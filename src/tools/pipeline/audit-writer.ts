@@ -1,17 +1,4 @@
-/**
- * Tool pipeline — audit write chokepoint + non-blocking lifecycle fire.
- *
- * Extracted from `executor.ts` (C7 decomposition). {@link AuditWriter} owns the
- * three permission-audit append paths (grant / ask / tool-call) plus the
- * observe-only lifecycle-event dispatch. It composes the pure entry builders
- * from `audit-entries.ts` with the shared AuditLogger + ToolRegistry +
- * ScriptHookManager handed in by the executor.
- *
- * INVARIANT: `auditToolCall` is the single chokepoint every tool-deny path
- * funnels through, so the `PermissionDenied` lifecycle event fires here EXACTLY
- * ONCE where a deny is finalized — the firing conditions below are load-bearing
- * and must stay exact.
- */
+// Every ordinary tool denial must finalize through auditToolCall so PermissionDenied fires exactly once.
 import { randomUUID } from "node:crypto";
 import type { ToolRegistry } from "../registry.js";
 import type { ToolSource, ToolCategory, TrustLevel } from "../types.js";
@@ -58,14 +45,7 @@ export class AuditWriter {
     private readonly requirePermissionAuditChain: boolean,
   ) {}
 
-  /**
-   * Fire a NON-BLOCKING lifecycle event (#811 milestone-2). OBSERVE-ONLY: the
-   * returned decision is recorded in audit but NEVER affects control flow — the
-   * executor ignores it. Fail-soft: the manager's `runLifecycleEvent` never
-   * throws, but we additionally swallow any unexpected error so a lifecycle hook
-   * can never break a tool call. No-op when the manager is unwired (back-compat:
-   * no hooks.json ⇒ no lifecycle dispatch, behavior identical).
-   */
+  // Lifecycle hooks are observe-only: audit decisions but never alter tool control flow or propagate errors.
   async fireLifecycleEvent(
     event: "PostToolUseFailure" | "PermissionDenied",
     sessionId: string | undefined,
@@ -86,8 +66,7 @@ export class AuditWriter {
       if (result.reason === "no matching lifecycle hooks") {
         return { status: "no-match", result };
       }
-      // A wired manager returned no execution evidence and did not positively
-      // identify the no-match case. Treat that boundary as indeterminate.
+      // Missing evidence without a confirmed no-match is indeterminate.
       return { status: "uncertain", result };
     } catch {
       // Defensive: observe-only events must never break a tool call.
@@ -95,26 +74,8 @@ export class AuditWriter {
     }
   }
 
-  /**
-   * Emit the Layer-1 `AuditAllow` row for a directory decision, whichever of
-   * the two ways it was reached.
-   *
-   * `grantLifetime` is the USER path: the person resolved an out-of-allowed-dir
-   * approval (allow-once / allow-session / allow-always), or
-   * `propagateGrantScope` degraded a session-intent grant to turn scope because
-   * the session callback was unwired.
-   *
-   * `policyRule` is the POLICY path: nobody was asked, and a rule admitted the
-   * path — today a read reaching outside the authorized directories, which the
-   * host does not confine. That admission produces no dialog and no grant, so
-   * this row is the only place the decision is recorded; without it the audit
-   * would show the wide read as indistinguishable from a call that stayed
-   * inside the boundary.
-   *
-   * Exactly one of the two is passed. Both paths stay decoupled from
-   * `auditToolCall` so the per-tool row keeps reporting execution outcome while
-   * the directory decision lives in its own forensic row.
-   */
+  // Record directory grants separately from tool outcome, with exactly one user grantLifetime or automatic policyRule.
+  // Wide reads produce no grant or dialog, so this row is their only directory-decision evidence.
   async auditPermissionGrant(args: {
     toolName: string;
     source: ToolSource;
@@ -174,10 +135,7 @@ export class AuditWriter {
     auditDirectory?: string,
     audit?: ToolExecutionAuditMetadata,
   ): Promise<void> {
-    // Operation-governed tools may carry presence, identity, or reservation
-    // payloads. Their audit contract is metadata-only: operation + outcome.
-    // The bearer/account hash are held in ToolPermissionContext and are never
-    // serialized here.
+    // Governed-operation audit is metadata-only; never serialize presence, identity, reservation payloads, bearer, or account hash.
     const auditSafeInput = auditSafeToolInput(input, audit);
     const tool = this.toolRegistry.findByName(toolName);
     const entry = permissionAuditAskEntryFromToolCall({
@@ -237,17 +195,8 @@ export class AuditWriter {
     const auditSafeOutput = governedTool
       ? (isError ? "governed operation failed" : "governed operation completed")
       : output;
-    // ── #811 m2: PermissionDenied (NON-BLOCKING) ──
-    // `auditToolCall` is the single chokepoint every ordinary tool-deny path
-    // funnels through, so firing here observes the deny EXACTLY ONCE where it is
-    // finalized. Governed plugin operations deliberately suppress this
-    // effect-capable extension boundary: several deny paths occur before an
-    // operation lease exists, and arbitrary hooks cannot be part of the
-    // serialized provider-state proof.
-    // A user-abort is a CANCEL, not a permission denial — exclude it so a policy
-    // hook never sees false "denied" signals. `denyReason.reason` carries the
-    // finalized reason so a hook can discriminate the remaining cases (e.g.
-    // tool-not-found) itself — restoring forensic granularity beyond the layer.
+    // Emit ordinary denials once; exclude cancellations and governed operations whose lease/proof cannot include effect-capable hooks.
+    // Preserve the finalized denial reason for forensic discrimination.
     if (
       permission?.decision === "deny" &&
       permissionContext !== undefined &&
@@ -267,8 +216,7 @@ export class AuditWriter {
     }
     try {
       const inputText = JSON.stringify(auditSafeInput);
-      // Audit text is one of the surfaces `privacy.piiRedactEnabled` governs;
-      // credentials are scrubbed either way.
+      // The privacy toggle governs audit PII masking; credentials are always scrubbed.
       const auditInput = maskSensitiveData(inputText, {
         pii: isPiiRedactionEnabled(),
       }).masked;

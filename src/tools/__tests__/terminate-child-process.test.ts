@@ -118,8 +118,7 @@ describe("terminateChildProcess", () => {
   });
 
   it.skipIf(process.platform === "win32")("takes a detached child's own children down with it when asked to signal the group", async () => {
-    // The shell starts a long sleep and prints its pid; only a group signal
-    // reaches the sleep, because the shell does not forward SIGTERM.
+    // The shell starts a long sleep and prints its pid; only a group signal reaches the sleep, because the shell does not forward SIGTERM.
     const child = spawn("/bin/sh", ["-c", "sleep 30 & echo $!; wait"], { detached: true, stdio: ["ignore", "pipe", "ignore"] });
     const grandchild = await new Promise<number>((resolve, reject) => {
       child.stdout.once("data", (chunk: Buffer) => resolve(Number(chunk.toString().trim())));

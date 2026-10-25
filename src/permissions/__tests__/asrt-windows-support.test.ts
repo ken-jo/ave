@@ -19,10 +19,7 @@ import {
   resolveAsrtWindowsReady,
 } from "../asrt-windows-support.js";
 
-// ASRT 0.0.80: readAsrtWindowsStatus reads BOTH the sandbox-user and WFP state
-// from a SINGLE `srt-win status` spawn (checkWindowsSandboxStatusAsync). Override
-// only that one export; everything else (resolveSrtWin, WindowsSandboxError, …)
-// stays real so the DI-based install tests are unaffected.
+// Mock only the combined async status probe; keep install helpers and errors real.
 const { checkWindowsSandboxStatusAsyncMock } = vi.hoisted(() => ({
   checkWindowsSandboxStatusAsyncMock: vi.fn(),
 }));
@@ -35,32 +32,7 @@ vi.mock("@anthropic-ai/sandbox-runtime", async (importOriginal) => {
   };
 });
 
-/**
- * Whether ASRT still releases the Windows ACLs it took when `initialize` fails.
- *
- * The behaviour being pinned: a partially-initialized sandbox has already
- * granted the sandbox user an ACE on the owner's files. If initialization then
- * throws without revoking, that grant outlives the failure — a sandbox user
- * that never started holding rights on files nobody sandboxed.
- *
- * Locating the block is the whole point, and the previous version of this test
- * did not. It asserted `config = undefined;` and `throw e;` as bare substrings
- * of a 1,500-line bundle, which proves only that those characters appear
- * somewhere, and it pinned the literal
- * `revokeWindowsAcl({ sandboxUserSid: sb, srtWin })` — which is the TEARDOWN
- * call site, a different function from the failure path this test is named for.
- * ASRT could have deleted the rollback from the failure path entirely and every
- * assertion would still have passed, because the teardown call kept them true.
- *
- * So: find the catches that fail initialization closed — identified by clearing
- * the config and rethrowing the value they caught, with a backreference so a
- * rethrow of something else does not match — and require one of them to release
- * the ACLs. ASRT has several such catches, one per subsystem it brings up, and
- * only the filesystem one holds ACLs; scanning all of them and asking whether
- * the release happens inside a failure path is what distinguishes that from the
- * teardown function, which is not a failure path at all. Identifier names are
- * minifier output and are deliberately not pinned; only the shape is.
- */
+// Initialization failure must revoke acquired ACLs. Match rollback inside a catch that clears config and rethrows the same error; teardown substrings cannot prove it. Match structure rather than minified identifiers.
 function rollsBackWindowsAclOnFailedInitialize(source: string): boolean {
   const failClosed = new RegExp(
     String.raw`catch\s*\(\s*([A-Za-z_$][\w$]*)\s*\)\s*\{([\s\S]{0,1500}?)` +
@@ -407,11 +379,7 @@ describe("asrt-windows-support adapter", () => {
   });
 
   it("returns timed-out for an install_timeout WindowsSandboxError (UAC left open)", async () => {
-    // ASRT 0.0.80 installWindowsSandboxAsync throws WindowsSandboxError with code
-    // 'install_timeout' when the self-elevating subprocess is killed by the 120s
-    // spawn timeout with the UAC consent dialog still open. The adapter must
-    // surface that distinctly (not as a generic failure), and must NOT run the
-    // backend ACL grant or the WFP verification.
+    // ASRT 0.0.80 installWindowsSandboxAsync throws WindowsSandboxError with code 'install_timeout' when the self-elevating subprocess is killed by the 120s spawn timeout with the UAC consent dialog still open. The adapter must surface that distinctly (not as a generic failure), and must NOT run the backend ACL grant or the WFP verification.
     const { WindowsSandboxError } = await import("@anthropic-ai/sandbox-runtime");
     const grantBackendAcl = vi.fn(async () => undefined);
     const verifyWindowsWfpEgress = vi.fn(async () => undefined);
@@ -437,14 +405,7 @@ describe("asrt-windows-support adapter", () => {
   });
 
   it("does not accept an install whose ambient write-deny stamping failed", async () => {
-    // ASRT 0.0.73 added an install step that deny-stamps the stock
-    // world-writable system dirs for the sandbox user, with its own exit code
-    // (17 → 'install_ambient_failed'). The WFP filters and the sandbox user can
-    // both be in place when it fails, so the tempting reading is "mostly
-    // installed". It is not: the win32 capability Ave publishes claims
-    // `filesystem: true`, and that claim assumes those stamps landed. The
-    // adapter must reject the install rather than let a half-stamped machine
-    // publish filesystem confinement.
+    // ASRT 0.0.73 added an install step that deny-stamps the stock world-writable system dirs for the sandbox user, with its own exit code (17 → 'install_ambient_failed'). The WFP filters and the sandbox user can both be in place when it fails, so the tempting reading is "mostly installed". It is not: the win32 capability Ave publishes claims `filesystem: true`, and that claim assumes those stamps landed. The adapter must reject the install rather than let a half-stamped machine publish filesystem confinement.
     const { WindowsSandboxError } = await import("@anthropic-ai/sandbox-runtime");
     const grantBackendAcl = vi.fn(async () => undefined);
     const verifyWindowsWfpEgress = vi.fn(async () => undefined);
@@ -465,15 +426,13 @@ describe("asrt-windows-support adapter", () => {
       }),
     ).resolves.toEqual({ outcome: "failed", errorCode: "install_ambient_failed" });
 
-    // Fail-closed: neither the backend ACL grant nor the readiness verification
-    // may run for an install that was not accepted.
+    // Fail-closed: neither the backend ACL grant nor the readiness verification may run for an install that was not accepted.
     expect(grantBackendAcl).not.toHaveBeenCalled();
     expect(verifyWindowsWfpEgress).not.toHaveBeenCalled();
   });
 
   it("returns already-ready without asking for elevation when the sandbox is ready (#1608)", async () => {
-    // Main reads status after the IPC entry has validated the click's gesture,
-    // so a slow read cannot outlive it; a ready sandbox needs no UAC prompt.
+    // Main reads status after the IPC entry has validated the click's gesture, so a slow read cannot outlive it; a ready sandbox needs no UAC prompt.
     const installWindowsSandboxAsync = vi.fn();
     const result = await installAsrtWindowsSandbox({
       readStatus: async () => ({ applicable: true, userState: "ready", wfpState: "cannot-read", ready: true, instructions: "" }),
@@ -500,9 +459,7 @@ describe("asrt-windows-support adapter", () => {
   });
 
   it("returns installed-unverified when the install ran but readiness is not proven (issue #1608)", async () => {
-    // What an already-provisioned machine looks like from a non-elevated app
-    // whose WFP check cannot prove the fence: the install succeeds, nothing on
-    // the panel changes, and before this outcome the click read as a no-op.
+    // What an already-provisioned machine looks like from a non-elevated app whose WFP check cannot prove the fence: the install succeeds, nothing on the panel changes, and before this outcome the click read as a no-op.
     const { WindowsSandboxError } = await import("@anthropic-ai/sandbox-runtime");
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const result = await installAsrtWindowsSandbox({
@@ -530,8 +487,7 @@ describe("asrt-windows-support adapter", () => {
   });
 
   it("maps every other ASRT install error to failed with its stable code, and keeps the message in the main log", async () => {
-    // ASRT's messages carry srt-win stdout/stderr and local paths (the user
-    // profile among them). The result crossing IPC carries the code only.
+    // ASRT's messages carry srt-win stdout/stderr and local paths (the user profile among them). The result crossing IPC carries the code only.
     const { WindowsSandboxError } = await import("@anthropic-ai/sandbox-runtime");
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     for (const code of ["install_wfp_failed", "install_user_failed", "install_config_conflict", "install_failed", "spawn_failed", "srt_win_not_found"] as const) {
@@ -556,8 +512,7 @@ describe("asrt-windows-support adapter", () => {
   });
 
   it("maps a non-ASRT install error, and an injected ACL grant that throws, to failed/unexpected", async () => {
-    // The default grant is best-effort and never throws; the catch only keeps
-    // the never-throw contract against an injected implementation.
+    // The default grant is best-effort and never throws; the catch only keeps the never-throw contract against an injected implementation.
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const thrown = await installAsrtWindowsSandbox({
       loadRuntime: async () => ({
@@ -584,8 +539,7 @@ describe("asrt-windows-support adapter", () => {
   });
 
   it("pins the srt-win install exit codes the outcomes rest on", () => {
-    // 0 ok, 10 UAC cancelled, 12/13/14/17 the mapped failures; a renumbering
-    // upstream must come back here.
+    // 0 ok, 10 UAC cancelled, 12/13/14/17 the mapped failures; a renumbering upstream must come back here.
     const source = readAsrtWindowsUtilsSource();
     expect(source).toMatch(/r\.status === 0 \|\| r\.status === 10/);
     expect(source).toMatch(/r\.status === 10 \? \{ \.\.\.state, cancelled: true \}/);
@@ -596,21 +550,14 @@ describe("asrt-windows-support adapter", () => {
   });
 
   it("pins the ambient write-deny exit code the adapter maps", () => {
-    // The mapping above is only meaningful while ASRT still emits this code.
-    // If upstream renumbers or drops the ambient stamping step, this fails and
-    // sends us back to the adapter instead of leaving a mapping for a code that
-    // no longer occurs.
+    // The mapping above is only meaningful while ASRT still emits this code. If upstream renumbers or drops the ambient stamping step, this fails and sends us back to the adapter instead of leaving a mapping for a code that no longer occurs.
     const source = readAsrtWindowsUtilsSource();
     expect(source).toMatch(/case 17:/);
     expect(source).toContain("install_ambient_failed");
   });
 
   it("pins Windows per-exec filesystem to deny-only", () => {
-    // `assertPerExecFilesystemSupported` (asrt-sandbox.ts), the powershell win32
-    // refusal, and the MCP-stdio win32 refusal all rest on ONE upstream fact:
-    // `srt-win exec` takes --deny-read/--deny-write but no allow grants. Pin it
-    // against the installed bundle so a version bump that ADDS allow grants
-    // surfaces here — those refusals would then be over-strict, not honest.
+    // `assertPerExecFilesystemSupported` (asrt-sandbox.ts), the powershell win32 refusal, and the MCP-stdio win32 refusal all rest on ONE upstream fact: `srt-win exec` takes --deny-read/--deny-write but no allow grants. Pin it against the installed bundle so a version bump that ADDS allow grants surfaces here — those refusals would then be over-strict, not honest.
     const source = readAsrtWindowsUtilsSource();
     expect(source).toContain("'--deny-read'");
     expect(source).toContain("'--deny-write'");
@@ -621,9 +568,7 @@ describe("asrt-windows-support adapter", () => {
   it("reads user + WFP from the single checkWindowsSandboxStatusAsync spawn (ASRT 0.0.80)", async () => {
     const ORIGINAL_PLATFORM = process.platform;
     Object.defineProperty(process, "platform", { value: "win32", configurable: true });
-    // On a real Windows host the install cases above already reach
-    // `readAsrtWindowsStatus` through this mock, and nothing clears it between
-    // cases, so the call count below would include their calls.
+    // On a real Windows host the install cases above already reach `readAsrtWindowsStatus` through this mock, and nothing clears it between cases, so the call count below would include their calls.
     checkWindowsSandboxStatusAsyncMock.mockReset();
     checkWindowsSandboxStatusAsyncMock.mockResolvedValue({
       user: {
@@ -703,8 +648,7 @@ describe("asrt-windows-support adapter", () => {
       expect(JSON.stringify(missing)).not.toContain(helperPath);
       expect(checkWindowsSandboxStatusAsyncMock).not.toHaveBeenCalled();
 
-      // The resolver is real; only the status subprocess is replaced. No
-      // executable is launched by this lifecycle test.
+      // The resolver is real; only the status subprocess is replaced. No executable is launched by this lifecycle test.
       writeFileSync(helperPath, originalBytes);
       const restored = await readAsrtWindowsStatus();
       expect(restored).toMatchObject({ applicable: true, userState: "ready", wfpState: "installed", ready: true });
@@ -858,21 +802,16 @@ describe("asrt-windows-support adapter", () => {
 
   it("pins Windows filesystem ACL readiness to ASRT initialize fail-closed behavior", () => {
     const source = readAsrtSandboxManagerSource();
-    // Applied at all — whitespace-tolerant, because the argument formatting is
-    // the bundler's choice and not a behaviour we are pinning.
+    // Applied at all — whitespace-tolerant, because the argument formatting is the bundler's choice and not a behaviour we are pinning.
     expect(source).toMatch(/grantWindowsAcl\(\s*\{/);
     expect(source).toMatch(/stampWindowsAcl\(\s*\{/);
-    // And released again when initialization fails. This is the assertion the
-    // test is named for; see the helper for why locating the block matters.
+    // And released again when initialization fails. This is the assertion the test is named for; see the helper for why locating the block matters.
     expect(rollsBackWindowsAclOnFailedInitialize(source)).toBe(true);
   });
 
-  // The assertion above reads a file this repo does not control, so it cannot
-  // be mutation-tested without editing `node_modules`. These drive the same
-  // predicate over fixtures instead: each is a shape ASRT could plausibly ship,
-  // and the first two are exactly what the previous assertions let through.
+  // The assertion above reads a file this repo does not control, so it cannot be mutation-tested without editing `node_modules`. These drive the same predicate over fixtures instead: each is a shape ASRT could plausibly ship, and the first two are exactly what the previous assertions let through.
   describe("the ACL rollback pin", () => {
-    /** The shape ASRT ships today, minified names and all. */
+    // The shape ASRT ships today, minified names and all.
     const FAIL_CLOSED = `
       catch (e) {
         if (windowsFsSbUserSid) {
@@ -883,7 +822,7 @@ describe("asrt-windows-support adapter", () => {
         config = undefined;
         throw e;
       }`;
-    /** The teardown call site, in a different function. Not a rollback. */
+    // The teardown call site, in a different function. Not a rollback.
     const TEARDOWN = `
       function releaseWindowsHolds() {
         for (const e of revokeWindowsAcl({ sandboxUserSid: sb, srtWin }) ?? []) log(e);
@@ -895,9 +834,7 @@ describe("asrt-windows-support adapter", () => {
     });
 
     it("rejects a failure path that keeps the ACLs it took", () => {
-      // The regression that matters: initialization still fails closed, but the
-      // sandbox user keeps its ACE. Every assertion this test used to make was
-      // satisfied by a source in this state.
+    // A failed initialization must revoke its ACL grant; fail-closed startup alone does not prove rollback.
       const kept = `
       catch (e) {
         windowsFsSbUserSid = undefined;
@@ -921,10 +858,7 @@ describe("asrt-windows-support adapter", () => {
     });
 
     it("rejects the shipped source once the release calls are taken out of it", () => {
-      // The fixtures above are hand-written, so they prove the predicate's logic
-      // and not that it is aimed at the real artifact. This mutates the shipped
-      // file in memory instead: strip the release calls and the same predicate
-      // that passes on ASRT as published must reject what is left.
+      // The fixtures above are hand-written, so they prove the predicate's logic and not that it is aimed at the real artifact. This mutates the shipped file in memory instead: strip the release calls and the same predicate that passes on ASRT as published must reject what is left.
       const source = readAsrtSandboxManagerSource();
       expect(rollsBackWindowsAclOnFailedInitialize(source)).toBe(true);
 
@@ -932,15 +866,13 @@ describe("asrt-windows-support adapter", () => {
         /^[^\n]*(?:revoke|restore)WindowsAcl\(\s*\{\s*sandboxUserSid[^\n]*\n/gm,
         "",
       );
-      // Non-vacuous: a strip that matched nothing would make the assertion
-      // below true for the wrong reason.
+      // Non-vacuous: a strip that matched nothing would make the assertion below true for the wrong reason.
       expect(stripped.length).toBeLessThan(source.length);
       expect(rollsBackWindowsAclOnFailedInitialize(stripped)).toBe(false);
     });
 
     it("requires the rethrow to carry the value that was caught", () => {
-      // A catch that swallows its own error and throws something else is not
-      // failing closed, whatever else the block does.
+      // A catch that swallows its own error and throws something else is not failing closed, whatever else the block does.
       const swallowed = FAIL_CLOSED.replace("throw e;", "throw new Error('boom');");
       expect(rollsBackWindowsAclOnFailedInitialize(swallowed)).toBe(false);
     });

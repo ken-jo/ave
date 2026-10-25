@@ -17,11 +17,8 @@ function containsWorkspace(parent: string, child: string): boolean {
   return suffix === "" || (suffix !== ".." && !suffix.startsWith(`..${sep}`) && !isAbsolute(suffix));
 }
 
-/**
- * Defer host workspace Git reads until the sandbox's post-command cleanup
- * succeeds. The owner retains the hold after failed cleanup; release is
- * idempotent and affects only this invocation, including overlapping holds.
- */
+/** Defer host workspace Git reads until the sandbox's post-command cleanup succeeds. The owner retains the hold
+ * after failed cleanup; release is idempotent and affects only this invocation, including overlapping holds. */
 export function holdSandboxGitWrites(writeRoots: readonly string[]): () => void {
   const roots = [...new Set(writeRoots.map(canonicalWorkspacePath))];
   if (roots.length === 0) return () => {};
@@ -45,12 +42,8 @@ export function isHostGitWorkspaceAvailable(root: string): boolean {
   return true;
 }
 
-/**
- * Refuse implicit bare-repository discovery and prevent repository metadata
- * from starting monitors or hooks. Callers retain their environment, transport
- * and credential policy. A supplied hooks path must be an empty host-owned
- * directory; otherwise the null device makes every hook lookup absent.
- */
+/** Refuse implicit bare-repository discovery and prevent repository metadata from starting monitors or hooks. Callers retain their environment,
+ * transport and credential policy. A supplied hooks path must be an empty host-owned directory; otherwise the null device makes every hook lookup absent. */
 export function buildHostGitArgs(args: readonly string[], options: {
   /** Caller-owned global configuration, applied before the mandatory floor. */
   configArgs?: readonly string[];

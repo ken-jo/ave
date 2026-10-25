@@ -1,9 +1,5 @@
-/**
- * Proxy-deny records as the audit log stores them and Settings shows them.
- *
- * Shared by main (the sandbox audit channel, `audit/sandbox-audit.ts`) and the
- * renderer (Settings → Permissions → Network), so both read one shape.
- */
+/** Proxy-deny records as the audit log stores them and Settings shows them. Shared by main (the sandbox audit
+ * channel, `audit/sandbox-audit.ts`) and the renderer (Settings → Permissions → Network), so both read one shape. */
 
 /** Who opened the refused connection. The egress token itself is never recorded. */
 export type EgressDenialSource =

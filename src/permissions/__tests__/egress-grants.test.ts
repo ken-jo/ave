@@ -1,8 +1,4 @@
-/**
- * The shell egress grant store (egress-grants.ts), the per-extension worker
- * lists (egress-runtime.ts) and the identity strength that caps the scopes
- * (egress-identity.ts).
- */
+// The shell egress grant store (egress-grants.ts), the per-extension worker lists (egress-runtime.ts) and the identity strength that caps the scopes (egress-identity.ts).
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -541,8 +537,7 @@ describe("identity strength and the scopes it allows", () => {
 
 describe("worker egress lists", () => {
   it("gives a worker its own extension's domains and the model endpoints, never another extension's", () => {
-    // Bare names cover their subdomains too, as the shared allowlist did
-    // (normalizeUnionForAsrt).
+    // Bare names cover their subdomains too, as the shared allowlist did (normalizeUnionForAsrt).
     setWorkerEgressAllowlists({
       byExtension: new Map([
         ["ext_a", ["api.a.example", "*.cdn.a.example"]],

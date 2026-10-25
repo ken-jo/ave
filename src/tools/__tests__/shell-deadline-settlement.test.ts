@@ -36,8 +36,7 @@ describe.skipIf(process.platform === "win32")("foreground shell deadline settlem
     const exitedPids = new Set<number>();
     const trackedBefore = getManagedChildProcessCount();
     const cleanupCalls = vi.mocked(cleanupAsrtSandboxAfterCommand).mock.calls.length;
-    // The fixture alone owns these PIDs. The detached holder has a bounded
-    // lifetime even if the test's explicit cleanup is interrupted.
+    // Fixture-owned PIDs self-expire even if explicit cleanup is interrupted.
     writeFileSync(join(dir, "child.cjs"), `
       const { spawn } = require("node:child_process");
       const { writeFileSync } = require("node:fs");

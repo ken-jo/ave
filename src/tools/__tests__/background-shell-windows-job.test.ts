@@ -69,8 +69,7 @@ describe.skipIf(process.platform !== "win32")("BashTool Windows background job o
   afterEach(async () => {
     if (!dir) return;
     manager.disposeSession(dir);
-    // The fixture-owned stop file also handles a direct-spawn regression that
-    // has already lost its parent before the manager receives disposal.
+    // The stop file also cleans up direct-spawn children that already lost their parent.
     writeFileSync(join(dir, "stop"), "stop");
     try {
       await vi.waitFor(() => {
@@ -84,9 +83,8 @@ describe.skipIf(process.platform !== "win32")("BashTool Windows background job o
   });
 
   async function start(mode: "wait" | "root-exit") {
-    // Quote paths, not inline program text, so the shell cannot reinterpret
-    // the fixture's JavaScript. Native drive paths with forward slashes are
-    // understood by both the host path policy and the installed shell.
+    // Quote paths instead of inline code to prevent shell reinterpretation.
+    // Forward-slash drive paths work with both the host path policy and shell.
     const executable = shellQuote(nodeExecutable.replaceAll("\\", "/"));
     const fixture = shellQuote(join(dir, "child fixture.cjs").replaceAll("\\", "/"));
     const command = `${executable} ${fixture} ${shellQuote(mode)}; exit $?`;

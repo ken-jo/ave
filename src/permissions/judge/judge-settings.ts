@@ -1,20 +1,4 @@
-/**
- * `permissions.judge` settings block (issue #28 P2).
- *
- * The judge is an ordered CHAIN of stages: a fast selection model (e.g. jev
- * behind the external adapter) decides first, its ambiguous calls escalate to
- * the next stage (e.g. the builtin LLM judge with a user-selected model), and
- * anything still undecided goes to the user. An empty chain is `off` — today's
- * behavior. When a chain is configured the mode defaults to `shadow` (the
- * chain runs and is audited, the user still decides) until the user selects
- * `active`.
- *
- * The earlier single-provider form (`provider: "off" | "builtin-llm" |
- * "external"` plus `external`) is accepted and migrated to a one-stage chain.
- *
- * The whole `permissions.judge` subtree is a floor: the agent never writes it.
- * Only the user (Settings UI / hand edit) may change it.
- */
+// An empty chain is off; configured chains default to audit-only shadow until explicitly activated. Migrate single-provider settings to one stage; only the user may write this subtree, never the agent.
 import { isAbsolute } from "node:path";
 import { isIP } from "node:net";
 import { classifyAddress } from "../../core/network-guard.js";
@@ -22,36 +6,28 @@ import { isLLMVendor, llmVendorModelOptions, type LLMVendor } from "../../shared
 import type { JudgeCategory } from "./judge-contract.js";
 import { MAX_PERMISSION_JUDGE_STAGES } from "../../shared/permission-judge-settings.js";
 
-/**
- * Settings path of the subtree. The write floor is enforced outside this
- * module: agent file and shell writes to `~/.ave/settings.json` hit the
- * sensitive-path floor, and the only writer is the user-keyboard-gated
- * Settings IPC in `src/ipc/domains/permission-judge.ts`.
- */
+// Settings path of the subtree. The write floor is enforced outside this module: agent file and shell writes to `~/.ave/settings.json` hit the sensitive-path floor, and the only writer is the user-keyboard-gated Settings IPC in `src/ipc/domains/permission-judge.ts`.
 const JUDGE_SETTINGS_KEY = "permissions.judge";
 
 const JUDGE_STAGE_PROVIDERS = ["builtin-llm", "external"] as const;
 type JudgeStageProvider = (typeof JUDGE_STAGE_PROVIDERS)[number];
 
-/** Legacy single-provider values, accepted only for migration. */
+// Legacy single-provider values, accepted only for migration.
 const LEGACY_PROVIDERS = ["off", ...JUDGE_STAGE_PROVIDERS] as const;
 
 const JUDGE_MODES = ["shadow", "active"] as const;
 export type JudgeMode = (typeof JUDGE_MODES)[number];
 
 export interface JudgeExternalSettings {
-  /** argv array; argv[0] must be an absolute path. Run without a shell. */
+  // argv array; argv[0] must be an absolute path. Run without a shell.
   command?: readonly string[];
-  /** HTTPS URL, or HTTP on a loopback host only. */
+  // HTTPS URL, or HTTP on a loopback host only.
   url?: string;
-  /**
-   * Extra environment variable NAMES forwarded to the command judge on top of
-   * the minimal base set. Ave's own variables and credential names are refused.
-   */
+  // Extra environment variable NAMES forwarded to the command judge on top of the minimal base set. Ave's own variables and credential names are refused.
   env?: readonly string[];
 }
 
-/** A chat-picker model: vendor plus a model id the picker offers for it. */
+// A chat-picker model: vendor plus a model id the picker offers for it.
 export interface JudgeModelRef {
   vendor: LLMVendor;
   model: string;
@@ -59,41 +35,33 @@ export interface JudgeModelRef {
 
 export interface JudgeStageSettings {
   provider: JudgeStageProvider;
-  /** Stage id recorded in the audit, unique within the chain (e.g. `jev`). */
+  // Stage id recorded in the audit, unique within the chain (e.g. `jev`).
   id: string;
-  /**
-   * Confidence threshold in [0, 1]. A verdict whose confidence is below it —
-   * or that reports no confidence — escalates to the next stage.
-   */
+  // Confidence threshold in [0, 1]. A verdict whose confidence is below it — or that reports no confidence — escalates to the next stage.
   escalateBelow?: number;
-  /** builtin-llm only. Absent = the permission reviewer model (`JudgeSettings.model`, else the active chat model). */
+  // builtin-llm only. Absent = the permission reviewer model (`JudgeSettings.model`, else the active chat model).
   model?: JudgeModelRef;
-  /** external only. */
+  // external only.
   external?: JudgeExternalSettings;
 }
 
 export interface JudgeBreakerSettings {
-  /** Consecutive judge denials per session that pause automation. */
+  // Consecutive judge denials per session that pause automation.
   consecutive: number;
-  /** Total judge denials per session that pause automation. */
+  // Total judge denials per session that pause automation.
   total: number;
 }
 
 export interface JudgeSettings {
-  /**
-   * The permission reviewer's model, picked by the user from the connected
-   * models. `null` is the explicit "unset" state: the reviewer runs on the
-   * active chat model and follows it when chat switches. Never resolved to a
-   * fixed default here; the host resolves it each time it wires the reviewer.
-   */
+  // The permission reviewer's model, picked by the user from the connected models. `null` is the explicit "unset" state: the reviewer runs on the active chat model and follows it when chat switches. Never resolved to a fixed default here; the host resolves it each time it wires the reviewer.
   model: JudgeModelRef | null;
-  /** Ordered stages; empty = off. */
+  // Ordered stages; empty = off.
   chain: JudgeStageSettings[];
   mode: JudgeMode;
   categories: Record<JudgeCategory, boolean>;
-  /** Per-stage timeout. */
+  // Per-stage timeout.
   timeoutMs: number;
-  /** Whole-chain deadline; exceeding it is a failure and the fallback applies. */
+  // Whole-chain deadline; exceeding it is a failure and the fallback applies.
   chainDeadlineMs: number;
   breaker: JudgeBreakerSettings;
 }
@@ -122,7 +90,7 @@ export class JudgeSettingsError extends Error {
   }
 }
 
-/** Returns an error message, or null when the command is acceptable. */
+// Returns an error message, or null when the command is acceptable.
 export function checkExternalCommand(command: unknown): string | null {
   if (!Array.isArray(command) || command.length === 0) {
     return "external.command must be a non-empty argv array";
@@ -146,10 +114,7 @@ function isLoopbackHost(hostname: string): boolean {
 }
 
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
-/**
- * Never forwarded to an external judge: Ave / Electron runtime variables and
- * well-known credential names.
- */
+// Never forwarded to an external judge: Ave / Electron runtime variables and well-known credential names.
 const REFUSED_ENV_NAMES: readonly RegExp[] = [
   /^(AVE|ELECTRON)_/i,
   /_(API_KEY|TOKEN|SECRET|PASSWORD)$/i,
@@ -158,7 +123,7 @@ const REFUSED_ENV_NAMES: readonly RegExp[] = [
   /^(ANTHROPIC|OPENAI)_/i,
 ];
 
-/** Returns an error message, or null when the env name list is acceptable. */
+// Returns an error message, or null when the env name list is acceptable.
 export function checkExternalEnv(env: unknown): string | null {
   if (!Array.isArray(env)) return "external.env must be an array of variable names";
   for (const name of env) {
@@ -170,7 +135,7 @@ export function checkExternalEnv(env: unknown): string | null {
   return null;
 }
 
-/** Returns an error message, or null when the URL is acceptable. */
+// Returns an error message, or null when the URL is acceptable.
 export function checkExternalUrl(raw: unknown): string | null {
   if (typeof raw !== "string" || raw.length === 0) return "external.url must be a non-empty string";
   let url: URL;
@@ -216,20 +181,17 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-/** The models the chat model picker offers, per provider. */
+// The models the chat model picker offers, per provider.
 export interface JudgeModelCatalog {
   optionsFor(vendor: LLMVendor): readonly string[];
 }
 
-/** Static-only catalog, for callers that have no live `llm` settings (tests, schema checks). */
+// Static-only catalog, for callers that have no live `llm` settings (tests, schema checks).
 const STATIC_JUDGE_MODEL_CATALOG: JudgeModelCatalog = {
   optionsFor: (vendor) => llmVendorModelOptions(vendor),
 };
 
-/**
- * Parse `<vendor>/<model>` (split on the FIRST slash; model ids may contain
- * slashes) and check it against the chat model picker's option list.
- */
+// Parse `<vendor>/<model>` (split on the FIRST slash; model ids may contain slashes) and check it against the chat model picker's option list.
 function parseJudgeModel(
   raw: unknown,
   catalog: JudgeModelCatalog = STATIC_JUDGE_MODEL_CATALOG,
@@ -291,7 +253,7 @@ function parseStage(raw: unknown, index: number, catalog: JudgeModelCatalog): { 
   return { value: stage };
 }
 
-/** Parse a chain array; any invalid stage invalidates the whole chain. */
+// Parse a chain array; any invalid stage invalidates the whole chain.
 function parseChain(raw: unknown, catalog: JudgeModelCatalog): { value?: JudgeStageSettings[]; error?: string } {
   if (!Array.isArray(raw)) return { error: "chain must be an array of stages" };
   if (raw.length > MAX_PERMISSION_JUDGE_STAGES) return { error: `chain allows at most ${MAX_PERMISSION_JUDGE_STAGES} stages` };
@@ -307,7 +269,7 @@ function parseChain(raw: unknown, catalog: JudgeModelCatalog): { value?: JudgeSt
   return { value: stages };
 }
 
-/** Legacy `{ provider, external? }` → chain. */
+// Legacy `{ provider, external? }` → chain.
 function migrateLegacyProvider(obj: Record<string, unknown>, catalog: JudgeModelCatalog): { value?: JudgeStageSettings[]; error?: string } {
   if (!(LEGACY_PROVIDERS as readonly unknown[]).includes(obj.provider)) {
     return { error: `provider invalid: '${String(obj.provider)}'` };
@@ -333,27 +295,17 @@ function defaults(): JudgeSettings {
 export interface NormalizedJudgeSettings {
   settings: JudgeSettings;
   issues: string[];
-  /** The supplied chain could not be accepted; an empty chain is not an explicit off choice. */
+  // The supplied chain could not be accepted; an empty chain is not an explicit off choice.
   chainRejected?: true;
-  /** True when the legacy single-provider form was read; the caller persists the chain form. */
+  // True when the legacy single-provider form was read; the caller persists the chain form.
   migrated: boolean;
-  /**
-   * A reviewer model is configured but is not one the connected providers
-   * offer. The reviewer must then fail as unavailable; it never substitutes
-   * the chat model or any other model for the user's choice.
-   */
+  // A reviewer model is configured but is not one the connected providers offer. The reviewer must then fail as unavailable; it never substitutes the chat model or any other model for the user's choice.
   modelRejected?: true;
-  /** A rejected reviewer model that is still a well-formed `<provider>/<model>`, for display. */
+  // A rejected reviewer model that is still a well-formed `<provider>/<model>`, for display.
   rejectedModel?: JudgeModelRef;
 }
 
-/**
- * Read path: settings file content is user input. Each invalid field falls back
- * to its default and is reported in `issues` so the caller can surface it. An
- * invalid chain resolves to an empty chain plus `chainRejected`; the host
- * applies unavailable behavior under the normalized mode. It never adopts a
- * partial chain or a different provider.
- */
+// Read path: settings file content is user input. Each invalid field falls back to its default and is reported in `issues` so the caller can surface it. An invalid chain resolves to an empty chain plus `chainRejected`; the host applies unavailable behavior under the normalized mode. It never adopts a partial chain or a different provider.
 export function normalizeJudgeSettings(
   parsed: unknown,
   catalog: JudgeModelCatalog = STATIC_JUDGE_MODEL_CATALOG,
@@ -442,10 +394,7 @@ export function normalizeJudgeSettings(
   };
 }
 
-/**
- * Write path (Settings UI patch): any invalid field is a clear error, nothing
- * is coerced. Returns the validated settings to persist (always the chain form).
- */
+// Write path (Settings UI patch): any invalid field is a clear error, nothing is coerced. Returns the validated settings to persist (always the chain form).
 export function validateJudgeSettings(
   patch: unknown,
   catalog: JudgeModelCatalog = STATIC_JUDGE_MODEL_CATALOG,

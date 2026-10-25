@@ -11,14 +11,14 @@ export const MCP_APP_DOWNLOAD_MAX_FILES = 8;
 
 export const MCP_APP_DOWNLOAD_FALLBACK_FILENAME = "download";
 
-export const MCP_APP_DOWNLOAD_MAX_FILENAME_CHARS = 128;
+const MCP_APP_DOWNLOAD_MAX_FILENAME_CHARS = 128;
 
 /** User cancellation is a successful cancelled disposition, never a protocol error. */
 export type McpUiDownloadOutcome =
   | { ok: true; disposition: "saved" | "cancelled" }
   | { ok: false; error: string; message: string };
 
-export interface McpAppDownloadFile {
+interface McpAppDownloadFile {
   filename: string;
   mimeType?: string;
   bytes: Buffer;

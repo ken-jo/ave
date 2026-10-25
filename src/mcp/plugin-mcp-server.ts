@@ -24,7 +24,7 @@ import { PLUGIN_RESULT_CACHE } from "./plugin-server-projection.js";
 import type { JsonRpcId, JsonRpcRequest, JsonRpcResponse } from "./mcp-client.js";
 import { errorMessage } from "../shared/error-message.js";
 
-export interface PluginToolContent {
+interface PluginToolContent {
   type: string;
   text?: string;
   [key: string]: unknown;

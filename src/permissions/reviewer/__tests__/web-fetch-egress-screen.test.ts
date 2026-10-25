@@ -1,31 +1,11 @@
-/**
- * `web_fetch` grades the REQUEST, not the destination.
- *
- * Grading the destination meant every public fetch rated HIGH and raised a
- * dialog, so reading a documentation page cost an approval. A dialog answered
- * that often is answered with "always", which is auto-allow with extra steps —
- * the same hole the destination rule existed to close, reached by a route the
- * user opened themselves.
- *
- * What actually distinguishes an exfiltrating fetch is the shape of the URL:
- * data leaves in the tail. So a screened-clean public fetch runs unprompted and
- * a request carrying a credential, an oversized tail, an opaque blob or
- * userinfo still escalates. Everything the `network` category buys — withheld
- * from unattended lanes, not covered by an away-authority read grant, no
- * standing allow rule — is unchanged, and this file asserts the parts of that
- * which are decided here.
- *
- * Lives beside `network-target.test.ts` rather than inside it: that file pins
- * the one extractor two consumers share, this one pins the verdict lane built
- * on top of it.
- */
+// Clean public fetches may run without prompting, but credentials, oversized/opaque tails and userinfo escalate. Network category restrictions remain: no unattended or away-read grant and no standing allow rule.
 import { describe, it, expect } from "vitest";
 import { RuleBasedRiskClassifier } from "../risk-classifier.js";
 import { makeRiskClassifierContext } from "../../__tests__/test-helpers.js";
 
 const rb = new RuleBasedRiskClassifier();
 
-/** Grade a `web_fetch` invocation the way the pipeline does. */
+// Grade a `web_fetch` invocation the way the pipeline does.
 function verdictFor(input: Record<string, unknown>) {
   return rb.classify(makeRiskClassifierContext({
     toolName: "web_fetch",
@@ -36,11 +16,11 @@ function verdictFor(input: Record<string, unknown>) {
   }));
 }
 
-/** 40 hex characters — the shape a content-addressed URL also has. */
+// 40 hex characters — the shape a content-addressed URL also has.
 const OPAQUE_BLOB = "9f2b1c8a7d3e4f5061728394a5b6c7d8e9f0a1b2";
-/** base64url: its own alphabet includes `-` and `_`, so it carries separators. */
+// base64url: its own alphabet includes `-` and `_`, so it carries separators.
 const BASE64URL_BLOB = "aGVsbG8td29ybGQ_dGhpcyBpcyBzZWNyZXQtZGF0YQ";
-/** A credential the shared scrubber recognizes. */
+// A credential the shared scrubber recognizes.
 const CREDENTIAL = "sk-ant-api03-0123456789abcdefghijklmnopqrstuvwxyz";
 
 describe("web_fetch — public requests run unprompted", () => {
@@ -58,10 +38,7 @@ describe("web_fetch — public requests run unprompted", () => {
     expect(verdictFor({ url: "https://api.github.com/repos/x/y" }).level).toBe("low");
   });
 
-  // The whole point of the change. These are the URLs a model reads
-  // documentation from, and every one of them scores 3.5-4.0 bits per
-  // character — the same range as a commit hash — so an entropy threshold
-  // cannot tell them apart from a payload. Word separators can.
+  // The whole point of the change. These are the URLs a model reads documentation from, and every one of them scores 3.5-4.0 bits per character — the same range as a commit hash — so an entropy threshold cannot tell them apart from a payload. Word separators can.
   it.each([
     ["a long article slug", "https://example.org/how-to-configure-your-database-connection"],
     ["a versioned guide slug", "https://example.org/v2-migration-guide-for-the-parser-api"],
@@ -92,8 +69,7 @@ describe("web_fetch — the screen escalates a request that carries data", () =>
   });
 
   it("escalates an oversized tail whatever it is made of", () => {
-    // Low-entropy on purpose: length alone is the signal, because prose is
-    // exactly what a URL is not a way to carry.
+    // Low-entropy on purpose: length alone is the signal, because prose is exactly what a URL is not a way to carry.
     const verdict = verdictFor({ url: `https://example.org/p?note=${"aba".repeat(200)}` });
     expect(verdict.level).toBe("high");
     expect(verdict.reason).toContain("oversized-url-tail");
@@ -113,8 +89,7 @@ describe("web_fetch — destinations the screen does not clear", () => {
   });
 
   it("does not clear a reserved literal either — it is not a routable public host", () => {
-    // TEST-NET-3 (RFC 5737) is not globally routable, so it is not the public
-    // destination this lane clears; it keeps the verdict it had before.
+    // TEST-NET-3 (RFC 5737) is not globally routable, so it is not the public destination this lane clears; it keeps the verdict it had before.
     expect(verdictFor({ url: "http://203.0.113.7/data" }).level).not.toBe("low");
   });
 

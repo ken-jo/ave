@@ -59,11 +59,6 @@
     },
     {
       "type": "exports",
-      "file": "scripts/lib/dev-watcher-gate.mjs",
-      "name": "waitForFirstBuild"
-    },
-    {
-      "type": "exports",
       "file": "scripts/lib/main-bundle-budget.mjs",
       "name": "isMainBundleRootScriptPath"
     },
@@ -89,51 +84,6 @@
     },
     {
       "type": "exports",
-      "file": "src/agents/agent-registry.ts",
-      "name": "writeAgentRegistry"
-    },
-    {
-      "type": "exports",
-      "file": "src/api/a2a-exact-replay-handler.ts",
-      "name": "createA2AExactReplayHandler"
-    },
-    {
-      "type": "exports",
-      "file": "src/api/a2a-remote-transport.ts",
-      "name": "validateA2ARemoteUrl"
-    },
-    {
-      "type": "exports",
-      "file": "src/api/a2a-router.ts",
-      "name": "buildA2AAgentCard"
-    },
-    {
-      "type": "exports",
-      "file": "src/audit/diagnostics-bundle.ts",
-      "name": "DIAGNOSTICS_BUNDLE_SCHEMA_VERSION"
-    },
-    {
-      "type": "exports",
-      "file": "src/audit/diagnostics-bundle.ts",
-      "name": "MAX_BUNDLE_BYTES"
-    },
-    {
-      "type": "exports",
-      "file": "src/audit/rationale-audit-adapter.ts",
-      "name": "RATIONALE_AUDIT_MAX_DAILY_BYTES"
-    },
-    {
-      "type": "exports",
-      "file": "src/audit/rationale-audit-adapter.ts",
-      "name": "RATIONALE_AUDIT_MAX_DAILY_LINES"
-    },
-    {
-      "type": "exports",
-      "file": "src/audit/rationale-audit-adapter.ts",
-      "name": "RATIONALE_AUDIT_SCHEMA_VERSION"
-    },
-    {
-      "type": "exports",
       "file": "src/boot/dev-flags.ts",
       "name": "isConfigured"
     },
@@ -141,66 +91,6 @@
       "type": "exports",
       "file": "src/boot/steps/reviewer-wiring.ts",
       "name": "ReviewerProviderUnconfiguredError"
-    },
-    {
-      "type": "exports",
-      "file": "src/components/ui/badge.tsx",
-      "name": "badgeVariants"
-    },
-    {
-      "type": "exports",
-      "file": "src/components/ui/dialog.tsx",
-      "name": "DialogPortal"
-    },
-    {
-      "type": "exports",
-      "file": "src/components/ui/dialog.tsx",
-      "name": "DialogTrigger"
-    },
-    {
-      "type": "exports",
-      "file": "src/components/ui/dropdown-menu.tsx",
-      "name": "DropdownMenuGroup"
-    },
-    {
-      "type": "exports",
-      "file": "src/components/ui/dropdown-menu.tsx",
-      "name": "DropdownMenuPortal"
-    },
-    {
-      "type": "exports",
-      "file": "src/components/ui/dropdown-menu.tsx",
-      "name": "DropdownMenuSub"
-    },
-    {
-      "type": "exports",
-      "file": "src/components/ui/dropdown-menu.tsx",
-      "name": "DropdownMenuSubContent"
-    },
-    {
-      "type": "exports",
-      "file": "src/components/ui/dropdown-menu.tsx",
-      "name": "DropdownMenuSubTrigger"
-    },
-    {
-      "type": "exports",
-      "file": "src/components/ui/native-select.tsx",
-      "name": "NativeSelectOptGroup"
-    },
-    {
-      "type": "exports",
-      "file": "src/components/ui/select.tsx",
-      "name": "SelectScrollDownButton"
-    },
-    {
-      "type": "exports",
-      "file": "src/components/ui/select.tsx",
-      "name": "SelectScrollUpButton"
-    },
-    {
-      "type": "exports",
-      "file": "src/components/ui/select.tsx",
-      "name": "SelectSeparator"
     },
     {
       "type": "exports",
@@ -224,26 +114,6 @@
     },
     {
       "type": "exports",
-      "file": "src/engine/auto-compact.ts",
-      "name": "getModelContextWindow"
-    },
-    {
-      "type": "exports",
-      "file": "src/engine/conversation-platform-protocol.ts",
-      "name": "PLATFORM_CONVERSATION_PROTOCOL_VERSION"
-    },
-    {
-      "type": "exports",
-      "file": "src/engine/turn/rationale-conversation-orchestration.ts",
-      "name": "RATIONALE_TRIGGER_CANCELLED_RESULT"
-    },
-    {
-      "type": "exports",
-      "file": "src/engine/turn/tool-scope.ts",
-      "name": "scopedToolNameSet"
-    },
-    {
-      "type": "exports",
       "file": "src/i18n/index.ts",
       "name": "interpolate"
     },
@@ -261,11 +131,6 @@
       "type": "exports",
       "file": "src/i18n/index.ts",
       "name": "loadAllLocaleMessages"
-    },
-    {
-      "type": "exports",
-      "file": "src/ipc/handlers/chat.ts",
-      "name": "normalizePersonaPromptId"
     },
     {
       "type": "exports",
@@ -294,36 +159,6 @@
     },
     {
       "type": "exports",
-      "file": "src/main/a2a-remote-runtime.ts",
-      "name": "A2A_REMOTE_ROUTE_CONTROL_SECRET_KEY"
-    },
-    {
-      "type": "exports",
-      "file": "src/main/a2a-remote-runtime.ts",
-      "name": "a2aRemoteDataSecretKey"
-    },
-    {
-      "type": "exports",
-      "file": "src/main/acp-subscription-runtime-config.ts",
-      "name": "GROK_BUILD_GOVERNED_AGENT_FILE_NAME"
-    },
-    {
-      "type": "exports",
-      "file": "src/main/acp-subscription-runtime-config.ts",
-      "name": "GROK_BUILD_MCP_TOOLSET_SENTINEL"
-    },
-    {
-      "type": "exports",
-      "file": "src/main/acp-subscription-runtime-config.ts",
-      "name": "validateAcpSubscriptionMcpServerConfig"
-    },
-    {
-      "type": "exports",
-      "file": "src/main/acp-subscription-session-client.ts",
-      "name": "buildAcpSubscriptionSessionNewParams"
-    },
-    {
-      "type": "exports",
       "file": "src/main/ask-user-question-gate.ts",
       "name": "IPC_ASK_USER_QUESTION_REQUEST"
     },
@@ -334,43 +169,8 @@
     },
     {
       "type": "exports",
-      "file": "src/main/auto-updater.ts",
-      "name": "CHECK_INTERVAL_MS"
-    },
-    {
-      "type": "exports",
-      "file": "src/main/early-boot-env.ts",
-      "name": "WINDOWS_TOAST_ACTIVATOR_CLSID"
-    },
-    {
-      "type": "exports",
-      "file": "src/main/main-window-bounds.ts",
-      "name": "WORK_MODE_HEIGHT"
-    },
-    {
-      "type": "exports",
-      "file": "src/main/main-window-bounds.ts",
-      "name": "WORK_MODE_WIDTH"
-    },
-    {
-      "type": "exports",
       "file": "src/main/project-root-authorization.ts",
       "name": "DEFAULT_PROJECT_NAME"
-    },
-    {
-      "type": "exports",
-      "file": "src/main/shutdown-timeout.ts",
-      "name": "__resetShutdownTimeoutWarnLatchesForTest"
-    },
-    {
-      "type": "exports",
-      "file": "src/main/subscription-attachment-input.ts",
-      "name": "isSubscriptionPromptAttachment"
-    },
-    {
-      "type": "exports",
-      "file": "src/main/subscription-attachment-input.ts",
-      "name": "normalizeInlineLocalDataUrl"
     },
     {
       "type": "exports",
@@ -399,51 +199,6 @@
     },
     {
       "type": "exports",
-      "file": "src/main/uv-runtime.ts",
-      "name": "isPackagedUvRuntime"
-    },
-    {
-      "type": "exports",
-      "file": "src/mcp/mcp-app-download.ts",
-      "name": "MCP_APP_DOWNLOAD_MAX_FILENAME_CHARS"
-    },
-    {
-      "type": "exports",
-      "file": "src/mcp/mcp-ui-message.ts",
-      "name": "APP_NOTIFICATION_META_KEY"
-    },
-    {
-      "type": "exports",
-      "file": "src/mcp/mcp-ui-message.ts",
-      "name": "MCP_APP_MESSAGE_MAX_CHARS"
-    },
-    {
-      "type": "exports",
-      "file": "src/memory/session-search-index.ts",
-      "name": "codePointLength"
-    },
-    {
-      "type": "exports",
-      "file": "src/memory/session-search-index.ts",
-      "name": "escapeFtsQuery"
-    },
-    {
-      "type": "exports",
-      "file": "src/memory/session-search-index.ts",
-      "name": "escapeLikePattern"
-    },
-    {
-      "type": "exports",
-      "file": "src/memory/session-search-index.ts",
-      "name": "excerptAroundMatch"
-    },
-    {
-      "type": "exports",
-      "file": "src/observability/conversation-trace.ts",
-      "name": "isTraceEnabled"
-    },
-    {
-      "type": "exports",
       "file": "src/permissions/approval-gate.ts",
       "name": "IPC_APPROVAL_RESPOND"
     },
@@ -459,38 +214,8 @@
     },
     {
       "type": "exports",
-      "file": "src/plugins/capabilities.ts",
-      "name": "EVENT_NAMESPACE_CAPABILITY"
-    },
-    {
-      "type": "exports",
       "file": "src/plugins/installed-entry-fs.ts",
       "name": "deferTombstoneRemoval"
-    },
-    {
-      "type": "exports",
-      "file": "src/plugins/plugin-id.ts",
-      "name": "SAFE_ARTIFACT_SLUG_RE"
-    },
-    {
-      "type": "exports",
-      "file": "src/plugins/secret-shape.ts",
-      "name": "isApiKeyLikeSecretField"
-    },
-    {
-      "type": "exports",
-      "file": "src/plugins/secret-shape.ts",
-      "name": "looksLikeEndpointUrl"
-    },
-    {
-      "type": "exports",
-      "file": "src/preload/gesture-intent.ts",
-      "name": "USER_KEYBOARD_INTENT_TTL_MS"
-    },
-    {
-      "type": "exports",
-      "file": "src/preload/gesture-intent.ts",
-      "name": "userKeyboardIntentTokens"
     },
     {
       "type": "exports",
@@ -549,21 +274,6 @@
     },
     {
       "type": "exports",
-      "file": "src/shared/composer-image-input.ts",
-      "name": "composerImageMimeForExtension"
-    },
-    {
-      "type": "exports",
-      "file": "src/shared/initial-app-mode.ts",
-      "name": "LEGACY_ACTION_APP_MODE"
-    },
-    {
-      "type": "exports",
-      "file": "src/shared/marketplace-announcements.ts",
-      "name": "MARKETPLACE_ANNOUNCEMENT_LEVELS"
-    },
-    {
-      "type": "exports",
       "file": "src/shared/marketplace-package-assets.ts",
       "name": "MARKETPLACE_PROVIDER_PRESET_ID_MAX_LENGTH"
     },
@@ -574,163 +284,8 @@
     },
     {
       "type": "exports",
-      "file": "src/shared/marketplace-package-sections.ts",
-      "name": "MARKETPLACE_PACKAGE_TYPE_LABELS"
-    },
-    {
-      "type": "exports",
-      "file": "src/shared/mcp-app-message-source.ts",
-      "name": "APP_MESSAGE_SOURCE_PATTERN"
-    },
-    {
-      "type": "exports",
-      "file": "src/shared/openrouter-free-models.ts",
-      "name": "OPENROUTER_FREE_MODEL_VARIANT_SUFFIX"
-    },
-    {
-      "type": "exports",
-      "file": "src/shared/permission-reviewer-framework.ts",
-      "name": "PERMISSION_REVIEWER_COMPOSITION_RULES"
-    },
-    {
-      "type": "exports",
-      "file": "src/shared/permission-reviewer-framework.ts",
-      "name": "PERMISSION_REVIEWER_INPUT_FIELDS"
-    },
-    {
-      "type": "exports",
-      "file": "src/shared/permission-reviewer-framework.ts",
-      "name": "PERMISSION_REVIEWER_LEVELS"
-    },
-    {
-      "type": "exports",
-      "file": "src/shared/permission-reviewer-framework.ts",
-      "name": "PERMISSION_REVIEWER_OUTPUT_CONTRACT"
-    },
-    {
-      "type": "exports",
       "file": "src/shared/plugin-partition.ts",
       "name": "pluginPartitionHash"
-    },
-    {
-      "type": "exports",
-      "file": "src/shared/pricing-data.ts",
-      "name": "anthropicCacheRates"
-    },
-    {
-      "type": "exports",
-      "file": "src/shared/project-identity.ts",
-      "name": "normalizeProjectName"
-    },
-    {
-      "type": "exports",
-      "file": "src/shared/project-identity.ts",
-      "name": "normalizeProjectRoot"
-    },
-    {
-      "type": "exports",
-      "file": "src/shared/project-identity.ts",
-      "name": "projectIdentityFromRoot"
-    },
-    {
-      "type": "exports",
-      "file": "src/shared/render-html-preview.ts",
-      "name": "buildRenderHtmlCspMeta"
-    },
-    {
-      "type": "exports",
-      "file": "src/shared/render-html-preview.ts",
-      "name": "buildRenderHtmlThemeStyle"
-    },
-    {
-      "type": "exports",
-      "file": "src/shared/render-html-preview.ts",
-      "name": "clampRenderHtmlWindowSize"
-    },
-    {
-      "type": "exports",
-      "file": "src/shared/render-html-preview.ts",
-      "name": "RENDER_HTML_WINDOW_DEFAULT_HEIGHT"
-    },
-    {
-      "type": "exports",
-      "file": "src/shared/render-html-preview.ts",
-      "name": "RENDER_HTML_WINDOW_DEFAULT_WIDTH"
-    },
-    {
-      "type": "exports",
-      "file": "src/shared/render-html-preview.ts",
-      "name": "RENDER_HTML_WINDOW_MAX_HEIGHT"
-    },
-    {
-      "type": "exports",
-      "file": "src/shared/render-html-preview.ts",
-      "name": "RENDER_HTML_WINDOW_MAX_HTML_BYTES"
-    },
-    {
-      "type": "exports",
-      "file": "src/shared/render-html-preview.ts",
-      "name": "RENDER_HTML_WINDOW_MAX_WIDTH"
-    },
-    {
-      "type": "exports",
-      "file": "src/shared/render-html-preview.ts",
-      "name": "RENDER_HTML_WINDOW_MIN_HEIGHT"
-    },
-    {
-      "type": "exports",
-      "file": "src/shared/render-html-preview.ts",
-      "name": "RENDER_HTML_WINDOW_MIN_WIDTH"
-    },
-    {
-      "type": "exports",
-      "file": "src/shared/sidebar-tab.ts",
-      "name": "SIDEBAR_TABS"
-    },
-    {
-      "type": "exports",
-      "file": "src/shared/status-bar-emojis.ts",
-      "name": "STATUS_BAR_OS_EMOJIS"
-    },
-    {
-      "type": "exports",
-      "file": "src/shared/status-bar-emojis.ts",
-      "name": "STATUS_BAR_RUNTIME_EMOJIS"
-    },
-    {
-      "type": "exports",
-      "file": "src/skills/skill-registry.ts",
-      "name": "writeSkillRegistry"
-    },
-    {
-      "type": "exports",
-      "file": "src/tools/file-read-core.ts",
-      "name": "BINARY_SAMPLE_BYTES"
-    },
-    {
-      "type": "exports",
-      "file": "src/tools/memory-write.ts",
-      "name": "MEMORY_WRITE_RESERVED_MARKER_PATTERN"
-    },
-    {
-      "type": "exports",
-      "file": "src/tools/memory-write.ts",
-      "name": "memoryWriteTitleHasControlChar"
-    },
-    {
-      "type": "exports",
-      "file": "src/tools/pipeline/rationale-control.ts",
-      "name": "validateHostAnchorRoundReservationReceipt"
-    },
-    {
-      "type": "exports",
-      "file": "src/tools/routine-schedule.ts",
-      "name": "routineScheduleApprovalCacheKey"
-    },
-    {
-      "type": "exports",
-      "file": "src/tools/tool-result-chunk.ts",
-      "name": "READ_TOOL_RESULT_CHUNK_TOOL"
     },
     {
       "type": "exports",
@@ -739,108 +294,13 @@
     },
     {
       "type": "exports",
-      "file": "src/ui/renderer/components/LazyCalendar.tsx",
-      "name": "preloadCalendar"
-    },
-    {
-      "type": "exports",
-      "file": "src/ui/renderer/components/permissions/PermissionDecisionCard.tsx",
-      "name": "formatSummaryValue"
-    },
-    {
-      "type": "exports",
-      "file": "src/ui/renderer/components/slash-picker-data.ts",
-      "name": "normalizeSlashQuery"
-    },
-    {
-      "type": "exports",
-      "file": "src/ui/renderer/components/WorkBoardPanel.tsx",
-      "name": "WorkItemCreateDialog"
-    },
-    {
-      "type": "exports",
-      "file": "src/ui/renderer/components/WorkBoardPanel.tsx",
-      "name": "WorkItemDetailDialog"
-    },
-    {
-      "type": "exports",
-      "file": "src/ui/renderer/hooks/status-bar/toast-field.ts",
-      "name": "TOAST_FIELD_MAX"
-    },
-    {
-      "type": "exports",
       "file": "src/ui/renderer/hooks/status-bar/vendor-label.ts",
       "name": "vendorEmoji"
     },
     {
       "type": "exports",
-      "file": "src/ui/renderer/theme/index.ts",
-      "name": "applyBundleToDocument"
-    },
-    {
-      "type": "exports",
-      "file": "src/ui/renderer/theme/index.ts",
-      "name": "bundleShell"
-    },
-    {
-      "type": "exports",
-      "file": "src/ui/renderer/theme/index.ts",
-      "name": "resolveSystemPair"
-    },
-    {
-      "type": "exports",
-      "file": "src/ui/renderer/theme/plugin-token-map.ts",
-      "name": "resolvePluginTokens"
-    },
-    {
-      "type": "exports",
       "file": "src/ui/renderer/theme/resolve-theme.ts",
       "name": "bundleShell"
-    },
-    {
-      "type": "exports",
-      "file": "src/ui/renderer/theme/ThemeProvider.tsx",
-      "name": "BUNDLES"
-    },
-    {
-      "type": "exports",
-      "file": "src/ui/renderer/theme/ThemeProvider.tsx",
-      "name": "bundleToPluginTokens"
-    },
-    {
-      "type": "exports",
-      "file": "src/ui/renderer/utils/html-preview.ts",
-      "name": "clampPreviewHeight"
-    },
-    {
-      "type": "exports",
-      "file": "src/work-board/activity-log.ts",
-      "name": "ACTIVITY_FILE"
-    },
-    {
-      "type": "exports",
-      "file": "src/work-board/storage.ts",
-      "name": "featureNamespaceStorage"
-    },
-    {
-      "type": "exports",
-      "file": "src/work-board/storage.ts",
-      "name": "WORK_BOARD_FEATURE"
-    },
-    {
-      "type": "exports",
-      "file": "src/work-board/work-memory.ts",
-      "name": "MEMORIES_DIR"
-    },
-    {
-      "type": "exports",
-      "file": "src/work-board/work-report.ts",
-      "name": "REPORT_GENERATED_EVENT"
-    },
-    {
-      "type": "exports",
-      "file": "web/lib/i18n.ts",
-      "name": "locales"
     },
     {
       "type": "files",
@@ -909,16 +369,6 @@
     },
     {
       "type": "types",
-      "file": "src/agents/agent-registry.ts",
-      "name": "AgentRegistryEntry"
-    },
-    {
-      "type": "types",
-      "file": "src/api/a2a-exact-replay-handler.ts",
-      "name": "A2ARemoteCallerAuthenticator"
-    },
-    {
-      "type": "types",
       "file": "src/api/a2a-remote-contracts.ts",
       "name": "A2APreparedSecretHandle"
     },
@@ -939,123 +389,8 @@
     },
     {
       "type": "types",
-      "file": "src/api/a2a-remote-transport.ts",
-      "name": "A2ADnsAnswer"
-    },
-    {
-      "type": "types",
-      "file": "src/api/a2a-route-control-client.ts",
-      "name": "A2ARouteControlAuthHandle"
-    },
-    {
-      "type": "types",
-      "file": "src/api/a2a-route-control-client.ts",
-      "name": "A2ARouteControlAuthResolver"
-    },
-    {
-      "type": "types",
-      "file": "src/api/a2a-router.ts",
-      "name": "A2AHttpRouterAuditEvent"
-    },
-    {
-      "type": "types",
-      "file": "src/api/tailnet-attachment-staging-store.ts",
-      "name": "TailnetAttachmentClaim"
-    },
-    {
-      "type": "types",
-      "file": "src/api/tailnet-attachment-staging-store.ts",
-      "name": "TailnetAttachmentStageInput"
-    },
-    {
-      "type": "types",
-      "file": "src/api/tailnet-attachment-staging-store.ts",
-      "name": "TailnetAttachmentStageResult"
-    },
-    {
-      "type": "types",
-      "file": "src/api/tailnet-surface-server.ts",
-      "name": "TailnetControllerOptions"
-    },
-    {
-      "type": "types",
-      "file": "src/api/tailnet-surface-server.ts",
-      "name": "TailnetObserverEvent"
-    },
-    {
-      "type": "types",
-      "file": "src/api/tailnet-surface-server.ts",
-      "name": "TailnetObserverSnapshot"
-    },
-    {
-      "type": "types",
-      "file": "src/api/tailnet-web-session-store.ts",
-      "name": "TailnetWebIssuedSession"
-    },
-    {
-      "type": "types",
-      "file": "src/audit/audit-schema.ts",
-      "name": "AuditAllow"
-    },
-    {
-      "type": "types",
-      "file": "src/audit/audit-schema.ts",
-      "name": "AuditAsk"
-    },
-    {
-      "type": "types",
-      "file": "src/audit/audit-schema.ts",
-      "name": "AuditCommon"
-    },
-    {
-      "type": "types",
-      "file": "src/audit/audit-schema.ts",
-      "name": "AuditDeferred"
-    },
-    {
-      "type": "types",
-      "file": "src/audit/audit-schema.ts",
-      "name": "AuditDeferredResolve"
-    },
-    {
-      "type": "types",
-      "file": "src/audit/audit-schema.ts",
-      "name": "AuditDeny"
-    },
-    {
-      "type": "types",
-      "file": "src/audit/audit-schema.ts",
-      "name": "AuditManifestViolation"
-    },
-    {
-      "type": "types",
-      "file": "src/audit/audit-schema.ts",
-      "name": "AuditModeChange"
-    },
-    {
-      "type": "types",
-      "file": "src/audit/audit-schema.ts",
-      "name": "RiskVerdict"
-    },
-    {
-      "type": "types",
-      "file": "src/audit/audit-schema.ts",
-      "name": "RoutineScopeSnapshot"
-    },
-    {
-      "type": "types",
-      "file": "src/audit/diagnostics-bundle.ts",
-      "name": "DiagnosticsBundleManifest"
-    },
-    {
-      "type": "types",
       "file": "src/audit/sandbox-audit.ts",
       "name": "SandboxEvent"
-    },
-    {
-      "type": "types",
-      "file": "src/boot/plugin-surface-permissions.ts",
-      "name": "PluginSurfacePermissionBase"
     },
     {
       "type": "types",
@@ -1066,31 +401,6 @@
       "type": "types",
       "file": "src/boot/steps/reviewer-wiring.ts",
       "name": "RuntimeReviewerMode"
-    },
-    {
-      "type": "types",
-      "file": "src/components/ui/badge.tsx",
-      "name": "BadgeProps"
-    },
-    {
-      "type": "types",
-      "file": "src/components/ui/button.tsx",
-      "name": "ButtonProps"
-    },
-    {
-      "type": "types",
-      "file": "src/components/ui/dialog.tsx",
-      "name": "DialogContentProps"
-    },
-    {
-      "type": "types",
-      "file": "src/core/work-board-engine.ts",
-      "name": "RunItemOptions"
-    },
-    {
-      "type": "types",
-      "file": "src/core/work-board-engine.ts",
-      "name": "RunItemResult"
     },
     {
       "type": "types",
@@ -1154,158 +464,8 @@
     },
     {
       "type": "types",
-      "file": "src/engine/a2a-agent-message-envelope.ts",
-      "name": "A2ASubAgentAddress"
-    },
-    {
-      "type": "types",
-      "file": "src/engine/a2a-agent-message-mailbox.ts",
-      "name": "A2AAgentMailboxDiagnosticReason"
-    },
-    {
-      "type": "types",
-      "file": "src/engine/a2a-agent-message-mailbox.ts",
-      "name": "A2AAgentMailboxDraft"
-    },
-    {
-      "type": "types",
-      "file": "src/engine/a2a-subagent-message-codec.ts",
-      "name": "InboundA2ASubAgentMessageFailureReason"
-    },
-    {
-      "type": "types",
-      "file": "src/engine/conversation-event-hub.ts",
-      "name": "ConversationEventInput"
-    },
-    {
-      "type": "types",
-      "file": "src/engine/conversation-event-hub.ts",
-      "name": "ConversationEventListener"
-    },
-    {
-      "type": "types",
-      "file": "src/engine/conversation-event-hub.ts",
-      "name": "ConversationEventPayload"
-    },
-    {
-      "type": "types",
-      "file": "src/engine/conversation-event-hub.ts",
-      "name": "ConversationEventProtocolVersion"
-    },
-    {
-      "type": "types",
-      "file": "src/engine/conversation-event-hub.ts",
-      "name": "ConversationEventSubscription"
-    },
-    {
-      "type": "types",
-      "file": "src/engine/conversation-platform-protocol.ts",
-      "name": "ConversationAssistantRound"
-    },
-    {
-      "type": "types",
-      "file": "src/engine/conversation-platform-protocol.ts",
-      "name": "ConversationPermissionReview"
-    },
-    {
-      "type": "types",
-      "file": "src/engine/conversation-platform-protocol.ts",
-      "name": "ConversationToolEndOwnerDetail"
-    },
-    {
-      "type": "types",
-      "file": "src/engine/conversation-platform-protocol.ts",
-      "name": "ConversationToolReference"
-    },
-    {
-      "type": "types",
-      "file": "src/engine/conversation-platform-protocol.ts",
-      "name": "ConversationToolStartOwnerDetail"
-    },
-    {
-      "type": "types",
-      "file": "src/engine/conversation-platform-protocol.ts",
-      "name": "ConversationUsageReport"
-    },
-    {
-      "type": "types",
-      "file": "src/engine/conversation-platform-protocol.ts",
-      "name": "PlatformConversationEventInput"
-    },
-    {
-      "type": "types",
-      "file": "src/engine/conversation-platform-protocol.ts",
-      "name": "PlatformConversationEventListener"
-    },
-    {
-      "type": "types",
-      "file": "src/engine/conversation-platform-protocol.ts",
-      "name": "PlatformConversationProtocolVersion"
-    },
-    {
-      "type": "types",
-      "file": "src/engine/conversation-platform-protocol.ts",
-      "name": "PlatformConversationReplay"
-    },
-    {
-      "type": "types",
-      "file": "src/engine/conversation-platform-protocol.ts",
-      "name": "PlatformConversationSubscription"
-    },
-    {
-      "type": "types",
-      "file": "src/engine/conversation-platform-protocol.ts",
-      "name": "PlatformConversationSubscriptionOptions"
-    },
-    {
-      "type": "types",
       "file": "src/engine/llm/types.ts",
       "name": "StreamSmoothing"
-    },
-    {
-      "type": "types",
-      "file": "src/engine/shared-conversation-projection.ts",
-      "name": "SharedConversationReplay"
-    },
-    {
-      "type": "types",
-      "file": "src/engine/structured-compact.ts",
-      "name": "OpenAICompactionItem"
-    },
-    {
-      "type": "types",
-      "file": "src/engine/structured-compact.ts",
-      "name": "SummarySectionName"
-    },
-    {
-      "type": "types",
-      "file": "src/engine/structured-compact.ts",
-      "name": "ToolCallSummary"
-    },
-    {
-      "type": "types",
-      "file": "src/engine/structured-compact.ts",
-      "name": "VendorOpaqueState"
-    },
-    {
-      "type": "types",
-      "file": "src/engine/subagent-message-mailbox.ts",
-      "name": "ParentMailboxLoadDiagnosticReason"
-    },
-    {
-      "type": "types",
-      "file": "src/engine/suggested-replies.ts",
-      "name": "StreamingFilterResult"
-    },
-    {
-      "type": "types",
-      "file": "src/engine/turn/rationale-round.ts",
-      "name": "RationaleOnlyRoundGenerationFailure"
-    },
-    {
-      "type": "types",
-      "file": "src/engine/turn/rationale-round.ts",
-      "name": "RationaleOnlyRoundInterrupted"
     },
     {
       "type": "types",
@@ -1409,33 +569,8 @@
     },
     {
       "type": "types",
-      "file": "src/ipc/handlers/usage.ts",
-      "name": "UsageDailySummaryItem"
-    },
-    {
-      "type": "types",
       "file": "src/ipc/index.ts",
       "name": "IpcDeps"
-    },
-    {
-      "type": "types",
-      "file": "src/ipc/window-fanout.ts",
-      "name": "BroadcastAuditLogger"
-    },
-    {
-      "type": "types",
-      "file": "src/lib/chat-stream-state.ts",
-      "name": "TokenUsageSegment"
-    },
-    {
-      "type": "types",
-      "file": "src/lib/stream-markers.ts",
-      "name": "DetectorResult"
-    },
-    {
-      "type": "types",
-      "file": "src/main/a2a-loopback-runtime.ts",
-      "name": "A2ALoopbackDiscovery"
     },
     {
       "type": "types",
@@ -1446,11 +581,6 @@
       "type": "types",
       "file": "src/main/auth-partition-viewer-service.ts",
       "name": "AuthPartitionViewerAuditEvent"
-    },
-    {
-      "type": "types",
-      "file": "src/main/bash-ast-validator.ts",
-      "name": "ValidationDecision"
     },
     {
       "type": "types",
@@ -1479,31 +609,6 @@
     },
     {
       "type": "types",
-      "file": "src/main/conversation-command-port.ts",
-      "name": "ConversationCommand"
-    },
-    {
-      "type": "types",
-      "file": "src/main/conversation-command-port.ts",
-      "name": "ConversationCommandResult"
-    },
-    {
-      "type": "types",
-      "file": "src/main/conversation-command-port.ts",
-      "name": "ConversationCommandSubmission"
-    },
-    {
-      "type": "types",
-      "file": "src/main/conversation-command-port.ts",
-      "name": "HostOwnedPublicTurn"
-    },
-    {
-      "type": "types",
-      "file": "src/main/crash-reporter.ts",
-      "name": "SentryLike"
-    },
-    {
-      "type": "types",
       "file": "src/main/host-fetch-guard.ts",
       "name": "HostFetchAllow"
     },
@@ -1519,113 +624,13 @@
     },
     {
       "type": "types",
-      "file": "src/main/idle-scheduler.ts",
-      "name": "Priority"
-    },
-    {
-      "type": "types",
-      "file": "src/main/local-api-server.ts",
-      "name": "A2ARouterFactory"
-    },
-    {
-      "type": "types",
-      "file": "src/main/local-api-server.ts",
-      "name": "A2ARouterFactoryContext"
-    },
-    {
-      "type": "types",
-      "file": "src/main/notification-service.ts",
-      "name": "NotificationActivationRegistration"
-    },
-    {
-      "type": "types",
-      "file": "src/main/notification-service.ts",
-      "name": "NotificationLike"
-    },
-    {
-      "type": "types",
-      "file": "src/main/notification-service.ts",
-      "name": "ToastPayload"
-    },
-    {
-      "type": "types",
-      "file": "src/main/platform-bridge-delivery.ts",
-      "name": "PlatformBridgeDeliveryChannelState"
-    },
-    {
-      "type": "types",
-      "file": "src/main/platform-bridge-delivery.ts",
-      "name": "PlatformBridgeDeliveryEnqueueResult"
-    },
-    {
-      "type": "types",
-      "file": "src/main/platform-bridge-delivery.ts",
-      "name": "PlatformBridgeOutboundStatus"
-    },
-    {
-      "type": "types",
-      "file": "src/main/python-runtime.ts",
-      "name": "BootstrapPhase"
-    },
-    {
-      "type": "types",
-      "file": "src/main/routines-scheduler.ts",
-      "name": "RoutineFiredEvent"
-    },
-    {
-      "type": "types",
-      "file": "src/main/routines-store.ts",
-      "name": "RoutinesFile"
-    },
-    {
-      "type": "types",
-      "file": "src/main/skill-approvals-store.ts",
-      "name": "SkillApprovalRecord"
-    },
-    {
-      "type": "types",
-      "file": "src/main/skill-approvals-store.ts",
-      "name": "SkillApprovalsFile"
-    },
-    {
-      "type": "types",
-      "file": "src/main/tailnet-pairing-share-store.ts",
-      "name": "TailnetOwnerShareSummary"
-    },
-    {
-      "type": "types",
       "file": "src/mcp/claude-desktop-import.ts",
       "name": "ClaudeDesktopImportEntry"
     },
     {
       "type": "types",
-      "file": "src/mcp/mcp-app-download.ts",
-      "name": "McpAppDownloadFile"
-    },
-    {
-      "type": "types",
       "file": "src/mcp/mcp-client.ts",
       "name": "JsonRpcNotification"
-    },
-    {
-      "type": "types",
-      "file": "src/mcp/mcp-ui-message.ts",
-      "name": "AppNotificationMeta"
-    },
-    {
-      "type": "types",
-      "file": "src/mcp/mcp-ui-message.ts",
-      "name": "AppNotificationSeverity"
-    },
-    {
-      "type": "types",
-      "file": "src/mcp/plugin-mcp-server.ts",
-      "name": "PluginToolContent"
-    },
-    {
-      "type": "types",
-      "file": "src/mcp/plugin-ui-resource-provider.ts",
-      "name": "PluginUiResourceListing"
     },
     {
       "type": "types",
@@ -1771,21 +776,6 @@
       "type": "types",
       "file": "src/permissions/workspace-root-reconciler.ts",
       "name": "WorkspaceRootRetentionReason"
-    },
-    {
-      "type": "types",
-      "file": "src/plugins/lifecycle-log.ts",
-      "name": "PluginPhaseValue"
-    },
-    {
-      "type": "types",
-      "file": "src/plugins/plugin-removal-transaction.ts",
-      "name": "RemovalTransactionMapping"
-    },
-    {
-      "type": "types",
-      "file": "src/plugins/plugin-removal-transaction.ts",
-      "name": "RemovalTransactionPhase"
     },
     {
       "type": "types",
@@ -1984,48 +974,8 @@
     },
     {
       "type": "types",
-      "file": "src/shared/attachments-deny-list.ts",
-      "name": "DenyExtension"
-    },
-    {
-      "type": "types",
-      "file": "src/shared/chat-history.ts",
-      "name": "SerializedCheckpointMeta"
-    },
-    {
-      "type": "types",
-      "file": "src/shared/chat-history.ts",
-      "name": "SerializedHistoryToolCall"
-    },
-    {
-      "type": "types",
-      "file": "src/shared/chat-history.ts",
-      "name": "SerializedImportedTriggerMeta"
-    },
-    {
-      "type": "types",
-      "file": "src/shared/chat-history.ts",
-      "name": "SerializedToolDisplayMeta"
-    },
-    {
-      "type": "types",
-      "file": "src/shared/chat-history.ts",
-      "name": "SerializedTurnSummary"
-    },
-    {
-      "type": "types",
       "file": "src/shared/llm-model-list.ts",
       "name": "LlmModelListError"
-    },
-    {
-      "type": "types",
-      "file": "src/shared/llm-vendor-defaults.ts",
-      "name": "BuiltInLLMVendor"
-    },
-    {
-      "type": "types",
-      "file": "src/shared/llm-vendor-defaults.ts",
-      "name": "KnownLegacyLLMVendor"
     },
     {
       "type": "types",
@@ -2084,228 +1034,13 @@
     },
     {
       "type": "types",
-      "file": "src/shared/rationale-approval-display.ts",
-      "name": "RationaleApprovalDisplayScopeAlignment"
-    },
-    {
-      "type": "types",
-      "file": "src/shared/rationale-approval-display.ts",
-      "name": "RationaleApprovalDisplayStatus"
-    },
-    {
-      "type": "types",
-      "file": "src/shared/render-html-preview.ts",
-      "name": "RenderHtmlThemeTokenName"
-    },
-    {
-      "type": "types",
-      "file": "src/shared/routines-types.ts",
-      "name": "RoutinePluginScope"
-    },
-    {
-      "type": "types",
-      "file": "src/shared/tailnet-sharing.ts",
-      "name": "TailnetSharingFailure"
-    },
-    {
-      "type": "types",
-      "file": "src/shared/tailnet-sharing.ts",
-      "name": "TailnetSharingInvitationSummary"
-    },
-    {
-      "type": "types",
-      "file": "src/shared/tailnet-sharing.ts",
-      "name": "TailnetSharingPairingSummary"
-    },
-    {
-      "type": "types",
-      "file": "src/shared/tailnet-sharing.ts",
-      "name": "TailnetSharingShareSummary"
-    },
-    {
-      "type": "types",
-      "file": "src/shared/work-board-types.ts",
-      "name": "WorkBoardRunPhase"
-    },
-    {
-      "type": "types",
-      "file": "src/shared/work-board-types.ts",
-      "name": "WorkItemRunHistoryEntry"
-    },
-    {
-      "type": "types",
-      "file": "src/skills/skill-registry.ts",
-      "name": "SkillRegistryEntry"
-    },
-    {
-      "type": "types",
-      "file": "src/tools/agent-send.ts",
-      "name": "A2AQuestionWaitReservation"
-    },
-    {
-      "type": "types",
-      "file": "src/tools/executor-ceiling.ts",
-      "name": "ToolCeilingTerminationReason"
-    },
-    {
-      "type": "types",
-      "file": "src/tools/file-read-core.ts",
-      "name": "AssertReadableFailure"
-    },
-    {
-      "type": "types",
-      "file": "src/tools/pipeline/invocation-context.ts",
-      "name": "InvocationContext"
-    },
-    {
-      "type": "types",
-      "file": "src/tools/pipeline/rationale-control.ts",
-      "name": "RationaleTaint"
-    },
-    {
-      "type": "types",
-      "file": "src/tools/pipeline/rationale-orchestrator.ts",
-      "name": "RationaleEligiblePermission"
-    },
-    {
-      "type": "types",
-      "file": "src/tools/pipeline/rationale-resume-contract.ts",
-      "name": "RationaleSecuritySuffixStep"
-    },
-    {
-      "type": "types",
-      "file": "src/tools/pipeline/rationale-ticket-lifecycle.ts",
-      "name": "InvocationAuditState"
-    },
-    {
-      "type": "types",
-      "file": "src/tools/shell-path-policy.ts",
-      "name": "ShellPathPolicyViolationKind"
-    },
-    {
-      "type": "types",
-      "file": "src/ui/renderer/components/AskUserQuestionCard.tsx",
-      "name": "ChoiceResult"
-    },
-    {
-      "type": "types",
-      "file": "src/ui/renderer/components/mcp-app-host-context.ts",
-      "name": "McpUiDisplayMode"
-    },
-    {
-      "type": "types",
-      "file": "src/ui/renderer/components/mcp-app-host-context.ts",
-      "name": "McpUiHostStyles"
-    },
-    {
-      "type": "types",
-      "file": "src/ui/renderer/components/mcp-app-host-context.ts",
-      "name": "McpUiStyles"
-    },
-    {
-      "type": "types",
       "file": "src/ui/renderer/components/mcp-app-host-context.ts",
       "name": "McpUiStyleVariableKey"
     },
     {
       "type": "types",
-      "file": "src/ui/renderer/components/mcp-app-host-context.ts",
-      "name": "McpUiTheme"
-    },
-    {
-      "type": "types",
-      "file": "src/ui/renderer/components/StarredView.tsx",
-      "name": "StarredItem"
-    },
-    {
-      "type": "types",
-      "file": "src/ui/renderer/components/TranscriptRenderer.tsx",
-      "name": "TranscriptActionProps"
-    },
-    {
-      "type": "types",
-      "file": "src/ui/renderer/components/TranscriptRenderer.tsx",
-      "name": "TranscriptEditProps"
-    },
-    {
-      "type": "types",
-      "file": "src/ui/renderer/components/TranscriptRenderer.tsx",
-      "name": "TranscriptSearchProps"
-    },
-    {
-      "type": "types",
-      "file": "src/ui/renderer/constants.ts",
-      "name": "VendorUiMeta"
-    },
-    {
-      "type": "types",
-      "file": "src/ui/renderer/context/OverlayContext.tsx",
-      "name": "OverlayItemSource"
-    },
-    {
-      "type": "types",
-      "file": "src/ui/renderer/hooks/use-add-project-folder.ts",
-      "name": "PendingRootWarning"
-    },
-    {
-      "type": "types",
       "file": "src/ui/renderer/preview/preview-renderers.tsx",
       "name": "PreviewRenderKind"
-    },
-    {
-      "type": "types",
-      "file": "src/ui/renderer/preview/preview-targets.ts",
-      "name": "ChatPreviewKind"
-    },
-    {
-      "type": "types",
-      "file": "src/ui/renderer/preview/preview-targets.ts",
-      "name": "ChatPreviewTargetBase"
-    },
-    {
-      "type": "types",
-      "file": "src/ui/renderer/preview/preview-targets.ts",
-      "name": "DiffPreviewTarget"
-    },
-    {
-      "type": "types",
-      "file": "src/ui/renderer/preview/preview-targets.ts",
-      "name": "FilePreviewTarget"
-    },
-    {
-      "type": "types",
-      "file": "src/ui/renderer/preview/preview-targets.ts",
-      "name": "HtmlPreviewTarget"
-    },
-    {
-      "type": "types",
-      "file": "src/ui/renderer/preview/preview-targets.ts",
-      "name": "ImagePreviewTarget"
-    },
-    {
-      "type": "types",
-      "file": "src/ui/renderer/preview/preview-targets.ts",
-      "name": "JsonPreviewTarget"
-    },
-    {
-      "type": "types",
-      "file": "src/ui/renderer/preview/preview-targets.ts",
-      "name": "PastePreviewTarget"
-    },
-    {
-      "type": "types",
-      "file": "src/ui/renderer/preview/preview-targets.ts",
-      "name": "PluginPreviewTarget"
-    },
-    {
-      "type": "types",
-      "file": "src/ui/renderer/preview/preview-targets.ts",
-      "name": "ToolResultPreviewTarget"
-    },
-    {
-      "type": "types",
-      "file": "src/ui/renderer/preview/preview-targets.ts",
-      "name": "UrlPreviewTarget"
     },
     {
       "type": "types",
@@ -2316,11 +1051,6 @@
       "type": "types",
       "file": "src/ui/renderer/preview/workspace-tabs.ts",
       "name": "WorkspaceTabMode"
-    },
-    {
-      "type": "types",
-      "file": "src/ui/renderer/theme/index.ts",
-      "name": "ThemeContextValue"
     },
     {
       "type": "types",
@@ -2436,51 +1166,6 @@
       "type": "types",
       "file": "src/ui/renderer/types.ts",
       "name": "UsagePerX"
-    },
-    {
-      "type": "types",
-      "file": "src/ui/renderer/types/attachments.ts",
-      "name": "AttachmentKind"
-    },
-    {
-      "type": "types",
-      "file": "src/ui/renderer/utils/file-diff.ts",
-      "name": "FileDiffTool"
-    },
-    {
-      "type": "types",
-      "file": "src/work-board/work-report.ts",
-      "name": "CallLlm"
-    },
-    {
-      "type": "types",
-      "file": "src/work-board/work-report.ts",
-      "name": "DailyReportInput"
-    },
-    {
-      "type": "types",
-      "file": "src/work-board/work-report.ts",
-      "name": "ReportBoardReader"
-    },
-    {
-      "type": "types",
-      "file": "src/work-board/work-report.ts",
-      "name": "ReportKind"
-    },
-    {
-      "type": "types",
-      "file": "src/work-board/work-report.ts",
-      "name": "ReportResult"
-    },
-    {
-      "type": "types",
-      "file": "src/work-board/work-report.ts",
-      "name": "ReportStorage"
-    },
-    {
-      "type": "types",
-      "file": "src/work-board/work-report.ts",
-      "name": "WeeklyReportInput"
     },
     {
       "type": "types",

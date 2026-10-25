@@ -1,14 +1,6 @@
 import { terminalSessionFixture } from "../../__tests__/support/terminal-session-fixtures.js";
-/**
- * terminal_run takes the shell lane of the one permission pipeline: the
- * command it types is the rule subject of the same `Bash(...)` rules and
- * shell floors the bash tool's command is, in the directory the target
- * terminal's shell reported.
- *
- * Drives the real `ToolExecutor` with a real `PermissionManager` and the real
- * `terminal_run`; only the PTY write is a stub that records what would have
- * been typed. The terminal is a registered block tracker at an empty prompt.
- */
+/** terminal_run takes the shell lane of the one permission pipeline: the command it types is the rule subject of the same `Bash(...)` rules and shell floors the bash tool's command is, in the directory the target terminal's shell
+ * reported. Drives the real `ToolExecutor` with a real `PermissionManager` and the real `terminal_run`; only the PTY write is a stub that records what would have been typed. The terminal is a registered block tracker at an empty prompt. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -159,8 +151,7 @@ describe("terminal_run permission", () => {
   });
 
   it("resolves relative operands in the terminal's directory, not the session's", async () => {
-    // The terminal's shell is outside the session's allowed directories, so
-    // `cat notes.txt` reads a file there and needs the directory grant.
+    // The terminal's shell is outside the session's allowed directories, so `cat notes.txt` reads a file there and needs the directory grant.
     const outside = mkdtempSync(join(tmpdir(), "ave-terminal-run-outside-"));
     terminalCwd = outside;
     try {
@@ -173,9 +164,8 @@ describe("terminal_run permission", () => {
     }
   });
 
-  // The terminal's zsh would run text after a `#` that bash (and so the
-  // rules) reads as a comment; such a command must never reach allow mode's
-  // no-card typing or slip past a Bash(...) deny rule.
+  // The terminal's zsh would run text after a `#` that bash (and so the rules) reads as a comment;
+  // such a command must never reach allow mode's no-card typing or slip past a Bash(...) deny rule.
   it.each([
     ["echo SAFE # ; echo PWNED", /# comment/],
     ["ls # ; rm -rf build", /# comment/],
@@ -205,10 +195,8 @@ describe("terminal_run permission", () => {
     const memory = request?.approvalMemory as Extract<ApprovalMemory, { kind: "key" }>;
     expect(memory.kind).toBe("key");
     expect(isSessionOnlyApprovalMemoryScope(memory.scope)).toBe(true);
-    // Each terminal's shell has its own sandbox jail, fixed when it spawned,
-    // so a decision for one terminal is not one for another.
-    // The key is the tool name and a JSON identity: compare the parsed scope,
-    // since JSON escapes the backslashes of a Windows directory.
+    // Each terminal's shell has its own sandbox jail, fixed when it spawned, so a decision for one terminal is not one for another.
+    // The key is the tool name and a JSON identity: compare the parsed scope, since JSON escapes the backslashes of a Windows directory.
     expect(memory.key.startsWith("terminal_run:")).toBe(true);
     const { scope } = JSON.parse(memory.key.slice("terminal_run:".length)) as { scope: Record<string, unknown> };
     expect(scope).toMatchObject({ cwd: terminalCwd, tabId: TAB });

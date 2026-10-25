@@ -1,11 +1,4 @@
-/**
- * Permission review scenario board coverage.
- *
- * Pins the 16 user-visible scenarios in
- * docs/design/permission-review-scenario-board-v2.html against the current
- * permission policy path. The board is a PR artifact, but these tests keep it
- * tied to executable behavior instead of letting it drift into a static mockup.
- */
+// Keep the permission scenario board tied to executable policy (docs/design/permission-review-scenario-board-v2.html).
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -43,9 +36,7 @@ function makeManager(
   const pm = new PermissionManager(join(dir, "permissions.json"));
   const queue = new DeferredQueue(join(dir, "deferred-queue.jsonl"));
   pm.setMode(mode);
-  // Round-1 critic MAJOR-2 — `interactive.autoApprove` is now the SOT
-  // for foreground-auto reviewer dispatch. When the scenario asserts
-  // `mode="auto"` behaviour the test must opt in explicitly.
+  // Round-1 critic MAJOR-2 — `interactive.autoApprove` is now the SOT for foreground-auto reviewer dispatch. When the scenario asserts `mode="auto"` behaviour the test must opt in explicitly.
   if (mode === "auto") {
     pm.setInteractiveAutoApprove("low");
   }
@@ -247,8 +238,7 @@ describe("permission-review-scenario-board-v2.html contract", () => {
   });
 
   it("S5 auto-review MED foreground mutation routes to the approval modal (user authority)", async () => {
-    // Phase 0: a non-LOW foreground verdict ASKS the user instead of silently
-    // hard-denying. Here the user allows → the mutation runs.
+    // Phase 0: a non-LOW foreground verdict ASKS the user instead of silently hard-denying. Here the user allows → the mutation runs.
     const { pm, cleanup } = makeManager("auto", fixedClassifier({ level: "medium", reason: "external summary send" }));
     try {
       const { tool, execute } = makeTool({
@@ -325,9 +315,7 @@ describe("permission-review-scenario-board-v2.html contract", () => {
   it("S8 auto-review with missing reviewer asks foreground and does not silently allow", async () => {
     const pm = new PermissionManager(tmpFile("permissions.json"));
     pm.setMode("auto");
-    // Round-1 critic MAJOR-2 — interactive opt-in is required for the
-    // foreground-auto reviewer lane to fire. With it set + reviewer
-    // missing, the scenario tests fail-closed behaviour.
+    // Round-1 critic MAJOR-2 — interactive opt-in is required for the foreground-auto reviewer lane to fire. With it set + reviewer missing, the scenario tests fail-closed behaviour.
     pm.setInteractiveAutoApprove("low");
     const { tool, execute } = makeTool({ name: "write_file", category: "write", pathFields: ["path"] });
     const gate = makeGate("deny-once");
@@ -559,9 +547,7 @@ describe("permission-review-scenario-board-v2.html contract", () => {
   });
 
   it("S10 a category-less plugin tool loads at the host default-strict baseline (write-equivalent)", () => {
-    // host-classifies-risk: the host no longer trusts (or requires) the plugin
-    // to declare its own danger. A category-less tool registers as
-    // write-equivalent — the safe default — instead of failing the load.
+    // host-classifies-risk: the host no longer trusts (or requires) the plugin to declare its own danger. A category-less tool registers as write-equivalent — the safe default — instead of failing the load.
     const manifest = {
       id: "bad-plugin",
       name: "bad-plugin",

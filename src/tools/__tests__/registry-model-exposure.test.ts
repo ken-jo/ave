@@ -1,25 +1,5 @@
-/**
- * THE MODEL-EXPOSURE BOUNDARY — MCP Apps `_meta.ui.visibility: ["app"]`, on BOTH arms.
- *
- * `["app"]` is the spec's spelling for a tool that serves the server's own CARD and
- * is hidden from the model: a plugin ships `*_ui_list_rows` / `*_ui_toggle_star`
- * without polluting the LLM's tool surface. Making that declaration WORK means
- * separating three things the registry used to conflate:
- *
- *   1. EXECUTION — an app-only tool MUST be a registry `Tool`. That is the only way
- *      a call to it runs under `inspectHostRisk` → reviewer/approval → audit. So it
- *      is registered, `findByName` resolves it, and the executor can run it.
- *   2. MODEL EXPOSURE — and it MUST be absent from the list handed to the LLM. That
- *      subtraction happens HERE, in the registry's model-facing listings, and
- *      therefore covers both arms at once: a first-party plugin's loopback server
- *      (`plugin-server-projection` → `plugin-tool-from-mcp`) and a foreign MCP server
- *      (`mcp-tool-adapter`) both reach the registry with `modelVisible` materialized.
- *      (This is also the fix for external servers' app-only tools leaking into the
- *      model's tool list — one filter, one place, both arms.)
- *   3. OWNERSHIP — untouched here; see `plugins/runtime/__tests__/known-tool-owners-model-only.test.ts`.
- *
- * Registered ≠ exposed. Every assertion below is one half of that sentence.
- */
+// App-only tools remain registered for governed execution but must be absent from every model listing.
+// Registration, model exposure, and ownership are separate boundaries.
 import { describe, it, expect, vi } from "vitest";
 import { ToolRegistry } from "../registry.js";
 import { createDynamicTool, type Tool } from "../base.js";
@@ -37,15 +17,7 @@ const SERVER_ID = "github";
 
 type Visibility = Array<"model" | "app">;
 
-/**
- * The plugin arm, built exactly as production does: manifest → the loopback's
- * `tools/list` projection → the reverse projection into a registry `Tool`.
- *
- * `meeting_ui_list_rows` is the card-serving tool of the design brief;
- * `meeting_auth_status` / `meeting_auth_login` are the auth trio, which the manifest
- * validator REQUIRES to be exactly `["app"]` — so they are app-only by construction
- * and this fixture is the real shape, not a contrived one.
- */
+// Use production manifest projection; auth tools must declare app-only visibility.
 const MANIFEST: PluginManifest = {
   id: PLUGIN_ID,
   name: "Meeting",
@@ -69,7 +41,6 @@ function pluginTools(): Tool[] {
   return manifestToolsToMcpTools(MANIFEST).map((t) => mcpToolToPluginTool(PLUGIN_ID, t, invoke));
 }
 
-/** The external arm, built exactly as `mcp-client` does from a foreign `tools/list`. */
 function externalTool(name: string, visibility?: Visibility): Tool {
   const schema = {
     name,
@@ -97,8 +68,8 @@ function loadedRegistry(): ToolRegistry {
     builtinTool("bash"),
     ...pluginTools(),
     externalTool("query", ["model", "app"]),
-    externalTool("gh_ui_rows", ["app"]), // an external server's card-serving tool
-    externalTool("legacy"), // declares nothing ⇒ spec default ["model","app"]
+    externalTool("gh_ui_rows", ["app"]),
+    externalTool("legacy"), // Undeclared visibility defaults to both model and app.
   ]);
   return registry;
 }
@@ -108,19 +79,16 @@ const FULL_SCOPE = {
   includeBuiltins: true,
   includeMcp: true,
   includeEgress: true,
-  deferral: false, // eager: every in-scope tool's full schema loads
+  deferral: false,
 };
 
 describe("registry — an app-only tool IS registered (it must run under the gate)", () => {
   it("resolves app-only tools by name on BOTH arms — findByName is the executor's lookup, and it must see them", () => {
     const registry = loadedRegistry();
-    // Plugin arm: the card's tool, and the auth trio.
     expect(registry.findByName("meeting_ui_list_rows")).toBeDefined();
     for (const name of AUTH_TRIO) expect(registry.findByName(name)).toBeDefined();
-    // External arm.
     expect(registry.findByName("mcp_gh_gh_ui_rows")).toBeDefined();
-    // Without a registry `Tool` there is no risk classifier, no approval gate and no
-    // audit row — nothing to run the card's call under. That is why this matters.
+    // Registry registration is required for risk, approval, and audit enforcement.
     expect(registry.findByName("meeting_ui_list_rows")!.source).toBe("plugin");
     expect(registry.findByName("mcp_gh_gh_ui_rows")!.mcpServerId).toBe(SERVER_ID);
   });
@@ -147,13 +115,10 @@ describe("registry — an app-only tool is NOT exposed to the model (both arms, 
     ];
 
     for (const [label, names] of listings) {
-      // PLUGIN arm app-only — the regression this whole change exists to make safe:
-      // it is now registered, so a listing that forgot the filter WOULD leak it.
+      // Registered app-only plugin tools must still be hidden from model listings.
       expect(names, label).not.toContain("meeting_ui_list_rows");
-      // EXTERNAL arm app-only — the separately-requested leak: `mcp-tool-adapter`
-      // has always registered everything, so before the filter the model SAW this.
+      // The same exposure filter must hide external app-only tools.
       expect(names, label).not.toContain("mcp_gh_gh_ui_rows");
-      // …while model-visible tools on both arms, and builtins, are all still there.
       expect(names, label).toEqual(
         expect.arrayContaining(["bash", "meeting_start", "meeting_toggle", "mcp_gh_query", "mcp_gh_legacy"]),
       );
@@ -162,9 +127,7 @@ describe("registry — an app-only tool is NOT exposed to the model (both arms, 
 
   it("keeps app-only tools out of the DEFERRED catalog too — a tool the model may not see is not a candidate it may promote", () => {
     const registry = loadedRegistry();
-    // Deferred mode: nothing is loaded, everything in scope goes to the catalog the
-    // model picks from with `tool_search`. An app-only tool must not appear there
-    // either — being invisible is worthless if the model can ask for it by name.
+    // App-only tools must also be absent from the deferred search catalogue.
     const deferredScope = { ...FULL_SCOPE, deferral: true, activeToolNames: [] as string[] };
     const catalog = registry.getToolCatalogForScope(deferredScope).map((e) => e.name);
 
@@ -176,9 +139,7 @@ describe("registry — an app-only tool is NOT exposed to the model (both arms, 
 
   it("cannot be forced into exposure by naming the tool in activeToolNames", () => {
     const registry = loadedRegistry();
-    // `activeToolNames` is the promotion channel (keyword preload, tool_search,
-    // carry-forward). Naming an app-only tool there must not load its schema: the
-    // exposure filter runs BEFORE the scope filter, so there is no promotion path.
+    // Promotion by activeToolNames cannot bypass the model-visibility filter.
     const names = registry
       .getToolSchemasForScope({
         ...FULL_SCOPE,
@@ -190,53 +151,33 @@ describe("registry — an app-only tool is NOT exposed to the model (both arms, 
     expect(names).not.toContain("meeting_ui_list_rows");
     expect(names).not.toContain("meeting_auth_status");
     expect(names).not.toContain("mcp_gh_gh_ui_rows");
-    expect(names).toContain("meeting_start"); // the promoted model-visible one loads
+    expect(names).toContain("meeting_start");
   });
 
   it("THE AUTH TRIO stays model-invisible and IS registered under the gate (app-only by manifest law)", () => {
     const registry = loadedRegistry();
     for (const name of AUTH_TRIO) {
-      // Not shown to the model, in any listing…
       expect(registry.getModelVisibleTools().map((t) => t.name)).not.toContain(name);
       expect(registry.getToolSchemas().map((s) => s.name)).not.toContain(name);
       expect(registry.getToolSchemasForScope(FULL_SCOPE).map((s) => s.name)).not.toContain(name);
-      // …yet IS registered, so that a CARD's auth call runs under the gate — the exact
-      // call the old ungoverned bypass handed to an untrusted iframe with no risk check
-      // and no audit row. `findByName` resolving it is DELIBERATE, not a leak: model
-      // exposure (what the LLM is shown) is subtracted at the listings above, while
-      // registration (what may execute under the gate) is retained here.
+      // Keep app-only tools registered so card-origin calls still traverse risk, approval, and audit gates.
       expect(registry.findByName(name)).toBeDefined();
       expect(registry.findByName(name)!.modelVisible).toBe(false);
     }
-    // The "model can't RUN it" half of the invariant is NOT a registry property — the
-    // registry resolves the name on purpose — it is an EXECUTOR property, proved in the
-    // "executor refuses a model-origin call" block below. Asserting it here would be the
-    // lie this block used to carry (title once said "…AND model-uncallable" while only
-    // showing findByName resolves).
+    // Model-origin execution is denied by the executor; registry lookup must still resolve card tools.
   });
 
   it("leaves builtins alone — a tool that declares no MCP visibility is model-visible", () => {
     const registry = loadedRegistry();
-    // `modelVisible` is undefined on every builtin (they have no `_meta.ui`), and the
-    // predicate treats absent as EXPOSED. A fail-closed default here would silently
-    // empty the model's tool list.
+    // Absent modelVisible means exposed, preserving builtin tools without UI metadata.
     expect(registry.findByName("bash")!.modelVisible).toBeUndefined();
     expect(registry.getModelVisibleTools().map((t) => t.name)).toContain("bash");
-    // Same for an external server that declares nothing: SEP-1865 default is dual.
+    // Undeclared external visibility defaults to both model and app.
     expect(registry.findByName("mcp_gh_legacy")!.modelVisible).toBe(true);
   });
 });
 
-/**
- * THE OTHER HALF — registration is NOT executability-by-the-model. `findByName`
- * resolving an app-only tool (proved above) is exactly why the EXECUTOR needs its own
- * guard: a model `tool_use` naming `meeting_auth_login` (whose handler spawns a
- * credentialed auth window) or an ordinary app-only card tool (`meeting_ui_list_rows`)
- * must be REFUSED, while the SAME tool invoked on a governed card origin ("mcp-app",
- * the arm that legitimately reaches app-only tools) still runs. The discriminator is
- * the effective invocation origin: the model's main-loop executor runs in no
- * `runWithInvocationOrigin` frame (undefined), the card arm runs inside one ("mcp-app").
- */
+// The executor must reject model-origin app-only calls while allowing governed mcp-app calls.
 describe("executor refuses a model-origin call to an app-only tool (the model-uncallable half)", () => {
   const APP_ONLY = ["meeting_ui_list_rows", "meeting_auth_login"];
 
@@ -250,11 +191,7 @@ describe("executor refuses a model-origin call to an app-only tool (the model-un
     return { registry, invoke };
   }
 
-  /**
-   * Auto-allow permission manager: the MAJOR-1 deny fires right after `findByName`,
-   * BEFORE any permission check, so the model-origin case never consults this — it only
-   * lets the app-origin (governed) case reach the tool's handler so the contrast is real.
-   */
+  // Auto-allow makes a missing origin guard observable; model denial must precede permission checks.
   function executorFor(registry: ToolRegistry): ToolExecutor {
     const permMgr = new PermissionManager("/tmp/nonexistent-model-exposure.json");
     permMgr.checkDetailed = () => ({ decision: "allow", reason: "test auto-allow", layer: 3 });

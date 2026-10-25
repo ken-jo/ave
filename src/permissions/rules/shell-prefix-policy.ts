@@ -1,21 +1,11 @@
-/**
- * Shell prefix policy (issue #28, P1a): the single refused-prefix list and the
- * bounded static-argv suggestion used by the dock and validated on every write.
- *
- * A broad prefix can still receive exact one-call consent; it can never
- * become a persistent `Bash(<prefix> *)` allow rule. Deny and ask rules are not
- * restricted — `Bash(sudo *)` as a deny rule is useful.
- */
+// Broad shell prefixes may receive exact one-call consent but never persistent prefix allows; deny/ask rules remain unrestricted.
 
 import { analyzeShell, staticShellWord, type ShellAnalysis, type ShellCommand, type ShellWord } from "../../shared/shell-analysis.js";
 
 import { SHELLS, INTERPRETERS, WRAPPERS, STRING_JOINING_WRAPPERS, RUNNER_COMMAND_PREFIXES, PACKAGE_RUNNERS, runnerHasPrefix, BANNED_PREFIX_SUGGESTIONS, isDestructiveShellArgv, noReusableRuleReason, SHELL_SET, INTERPRETER_SET, WRAPPER_SET, RUNNER_SET, programName, runnerName, literalCommandAfterPrefix, refusedShellPrefix } from "./shell-prefix-values.js";
 export { refusedShellPrefix } from "./shell-prefix-values.js";
 
-/**
- * Setup operands, value options and shell-command options share one grammar.
- * A command view widens inspection and restrictions, never allow coverage.
- */
+// Setup operands, value options and shell-command options share one grammar. A command view widens inspection and restrictions, never allow coverage.
 interface WrapperGrammar {
   flags?: readonly string[];
   flagPattern?: RegExp;
@@ -52,9 +42,7 @@ const WRAPPER_GRAMMAR: Readonly<Record<string, WrapperGrammar>> = {
   setsid: { flags: ["-c", "-f", "-w", "--ctty", "--fork", "--wait"] },
   // https://manpages.debian.org/trixie/expect/unbuffer.1.en.html: optional -p then argv.
   unbuffer: { flags: ["-p"] },
-  // https://man7.org/linux/man-pages/man1/script.1.html: optional log file, -c text or -- argv.
-  // https://raw.githubusercontent.com/freebsd/freebsd-src/main/usr.bin/script/script.1: recording setup operands, file then argv.
-  // https://raw.githubusercontent.com/apple-oss-distributions/shell_cmds/main/script/script.1: alternate -F flush arity stays visible to floor scans.
+  // https://man7.org/linux/man-pages/man1/script.1.html: optional log file, -c text or -- argv. https://raw.githubusercontent.com/freebsd/freebsd-src/main/usr.bin/script/script.1: recording setup operands, file then argv. https://raw.githubusercontent.com/apple-oss-distributions/shell_cmds/main/script/script.1: alternate -F flush arity stays visible to floor scans.
   script: { flags: ["-a", "-d", "-e", "-f", "-k", "-q", "-r", "-w", "--append", "--return", "--flush", "--force", "--quiet"], values: ["-t", "-F", "-E", "-B", "-I", "-O", "-T", "-m", "-o", "--echo", "--log-io", "--log-in", "--log-out", "--log-timing", "--logging-format", "--output-limit"], alternateFlags: ["-F"], code: ["-c", "--command"], operand: true, optionsAfterOperand: true, boundary: ["--"] },
   // https://man7.org/linux/man-pages/man1/su.1.html: optional user and -c text (in either order).
   su: { flags: ["-", "-l", "-m", "-p", "-f", "-P", "-T", "--login", "--preserve-environment", "--fast", "--pty", "--no-pty"], values: ["-s", "-g", "-G", "-w", "--shell", "--group", "--supp-group", "--whitelist-environment"], code: ["-c", "--command", "--session-command"], operand: true, optionsAfterOperand: true },
@@ -72,12 +60,7 @@ const WRAPPER_GRAMMAR: Readonly<Record<string, WrapperGrammar>> = {
   wsl: { flags: ["--system"], values: ["-d", "-u", "--distribution", "--distribution-id", "--user", "--cd", "--shell-type"], boundary: ["-e", "--exec"], noCommand: ["-l", "--list", "--status", "--shutdown"], shell: true },
 };
 
-/**
- * The inner argv boundary or a wrapper's explicit shell-command payload.
- * Uncertain positions retain floor-only candidates, never an allow-rule boundary.
- * Setup values retain proven arity.
- * At most sixteen wrappers are followed.
- */
+// The inner argv boundary or a wrapper's explicit shell-command payload. Uncertain positions retain floor-only candidates, never an allow-rule boundary. Setup values retain proven arity. At most sixteen wrappers are followed.
 export function wrapperCommand(argv: readonly (string | undefined)[]): { index: number; code?: { text: string | undefined }; ordinaryAsk?: string; candidates?: number[] } {
   let index = 0;
   let ordinaryAsk: string | undefined;
@@ -102,8 +85,7 @@ export function wrapperCommand(argv: readonly (string | undefined)[]): { index: 
       return uncertain(index + 1);
     }
     const program = programName(head);
-    // `eval` / `source` / `.` run a string or file: they are code carriers,
-    // not transparent wrappers.
+    // `eval` / `source` / `.` run a string or file: they are code carriers, not transparent wrappers.
     if (!WRAPPER_SET.has(program) || program === "eval" || program === "source" || program === ".") return finish(index);
     index += 1;
     const declared = WRAPPER_GRAMMAR[program];
@@ -143,8 +125,7 @@ export function wrapperCommand(argv: readonly (string | undefined)[]): { index: 
           if (!code && !grammar.values?.includes(flag)) {
             if (declared && !grammar.flags?.includes(flag)) {
               ordinaryAsk ??= "unsupported wrapper option";
-              // A setup operand is provisional when the remaining grammar is
-              // unknown. Keep it and every later word visible to floor scans.
+              // A setup operand is provisional when the remaining grammar is unknown. Keep it and every later word visible to floor scans.
               return uncertain(Math.min(operandIndex ?? index + 1, payload?.index ?? index + 1));
             }
             continue;
@@ -198,23 +179,19 @@ export function wrapperCommand(argv: readonly (string | undefined)[]): { index: 
   return finish(index);
 }
 
-/** Shared boundary for deny/ask matching, inline-code and sink inspection. */
+// Shared boundary for deny/ask matching, inline-code and sink inspection.
 export function wrapperPrefixLength(argv: readonly (string | undefined)[]): number {
   return wrapperCommand(argv).index;
 }
 
-/** Value-taking global options of multi-verb tools (before the verb). */
+// Value-taking global options of multi-verb tools (before the verb).
 const GLOBAL_VALUE_OPTIONS: Readonly<Record<string, ReadonlySet<string>>> = {
   git: new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix", "--config-env", "--exec-path"]),
   docker: new Set(["-H", "--host", "--context", "-c", "--config", "-l", "--log-level", "--tlscacert", "--tlscert", "--tlskey"]),
   kubectl: new Set(["-n", "--namespace", "--context", "--cluster", "--user", "-s", "--server", "--kubeconfig", "--token"]),
 };
 
-/**
- * argv with a multi-verb tool's global options removed (`git -C . push` →
- * `git push`). Deny/ask matching tries this form as well as the original, so
- * a global option can never step a command around a restriction.
- */
+// argv with a multi-verb tool's global options removed (`git -C. push` → `git push`). Deny/ask matching tries this form as well as the original, so a global option can never step a command around a restriction.
 export function stripGlobalOptions(argv: readonly (string | undefined)[]): readonly (string | undefined)[] {
   const head = argv[0];
   if (head === undefined) return argv;
@@ -231,7 +208,7 @@ export function stripGlobalOptions(argv: readonly (string | undefined)[]): reado
   return index === 1 ? argv : [head, ...argv.slice(index)];
 }
 
-/** A proposed wildcard prefix must be the supplied complete static argv. */
+// A proposed wildcard prefix must be the supplied complete static argv.
 export function suggestShellPrefix(argv: readonly (string | undefined)[], wildcard = true): string[] | null {
   if (argv.length === 0 || argv.some((token) => token === undefined || /[\s;&|<>()$`'"\\*?[\]{}#~!]/.test(token))
     || isDestructiveShellArgv(argv) || noReusableRuleReason(argv) !== null) return null;
@@ -239,7 +216,7 @@ export function suggestShellPrefix(argv: readonly (string | undefined)[], wildca
   return refusedShellPrefix(tokens, wildcard) === null ? [...tokens] : null;
 }
 
-/** Exposed for the design doc and tests; do not fork these lists elsewhere. */
+// Exposed for the design doc and tests; do not fork these lists elsewhere.
 export const SHELL_PREFIX_POLICY = Object.freeze({
   shells: Object.freeze([...SHELLS]),
   interpreters: Object.freeze([...INTERPRETERS]),
@@ -248,25 +225,20 @@ export const SHELL_PREFIX_POLICY = Object.freeze({
   bannedPrefixSuggestions: BANNED_PREFIX_SUGGESTIONS,
 });
 
-/** Used by deny/ask matching to look through wrappers (it only ever widens a deny). */
+// Used by deny/ask matching to look through wrappers (it only ever widens a deny).
 export function isShellWrapperProgram(token: string): boolean {
   return WRAPPER_SET.has(programName(token));
 }
 
-// ─── Hidden code and credential-flow inspection ─────────────────────────
-// The matcher and the exfiltration floor share interpreter, wrapper and
-// network identities. Saved escape rules do not model program option safety.
+// Hidden code and credential-flow inspection The matcher and the exfiltration floor share interpreter, wrapper and network identities. Saved escape rules do not model program option safety.
 
-/** Arguments that make a shell or interpreter print and exit without running code. */
+// Arguments that make a shell or interpreter print and exit without running code.
 const INFO_ONLY_ARGS = new Set(["--version", "--help"]);
 
-/**
- * Variables whose value is a command, a code path or a config that runs one
- * (`GIT_SSH_COMMAND='rm x' git fetch`, `LESSOPEN`, `BASH_ENV`, `PATH`).
- */
+// Variables whose value is a command, a code path or a config that runs one (`GIT_SSH_COMMAND='rm x' git fetch`, `LESSOPEN`, `BASH_ENV`, `PATH`).
 const CODE_CARRYING_VARIABLE = /^(?:GIT_SSH_COMMAND|GIT_SSH|GIT_EXTERNAL_DIFF|GIT_PAGER|GIT_EDITOR|GIT_SEQUENCE_EDITOR|GIT_ASKPASS|SSH_ASKPASS|GIT_PROXY_COMMAND|GIT_CONFIG_PARAMETERS|GIT_CONFIG_COUNT|GIT_CONFIG_(?:KEY|VALUE)_\d+|GIT_CONFIG|GIT_CONFIG_GLOBAL|GIT_CONFIG_SYSTEM|GIT_EXEC_PATH|GIT_TEMPLATE_DIR|GIT_DIR|PAGER|MANPAGER|EDITOR|VISUAL|LESS|LESSOPEN|LESSCLOSE|LESSKEY|LESSKEYIN|MORE|BASH_ENV|ENV|PROMPT_COMMAND|PS4|SHELLOPTS|BASHOPTS|IFS|LD_PRELOAD|LD_LIBRARY_PATH|DYLD_INSERT_LIBRARIES|DYLD_LIBRARY_PATH|NODE_OPTIONS|NODE_PATH|PYTHONSTARTUP|PYTHONPATH|PYTHONHOME|PERL5OPT|PERL5LIB|PERLLIB|RUBYOPT|RUBYLIB|BROWSER|RIPGREP_CONFIG_PATH|TAR_OPTIONS|FZF_DEFAULT_OPTS|BAT_PAGER|DELTA_PAGER|GH_PAGER|AWS_PAGER|PSQL_PAGER|SYSTEMD_PAGER|ZDOTDIR|HOME|PATH)$/;
 
-/** `NAME` when the variable carries code (see {@link CODE_CARRYING_VARIABLE}). */
+// `NAME` when the variable carries code (see CODE_CARRYING_VARIABLE).
 export function codeCarryingVariable(name: string): boolean {
   return CODE_CARRYING_VARIABLE.test(name);
 }
@@ -279,7 +251,7 @@ function codeCarryingAssignment(args: readonly (string | undefined)[]): string |
   return null;
 }
 
-/** Editors and pagers whose command mode runs shell commands. */
+// Editors and pagers whose command mode runs shell commands.
 const EDITORS = new Set(["vi", "vim", "nvim", "gvim", "rvim", "view", "vimdiff", "ex", "ed", "red", "emacs", "emacsclient", "nano", "pico", "micro", "joe", "mcedit", "kak", "hx"]);
 const NETWORK_PROGRAMS = new Set([
   "curl", "wget", "ssh", "scp", "sftp", "rsync", "openssl", "nc", "ncat", "netcat", "socat", "telnet", "nslookup",
@@ -291,15 +263,10 @@ const NETWORK_PROGRAMS = new Set([
 
 const LITERAL_VARIABLE_NAME = /^[A-Za-z_][A-Za-z0-9_]*(?:\[\d+\])?$/;
 
-/** Options of `read` whose value is the next word (`-a` names an array, the rest are data). */
+// Options of `read` whose value is the next word (`-a` names an array, the rest are data).
 const READ_VALUE_OPTIONS = new Set(["d", "i", "n", "N", "p", "t", "u"]);
 
-/**
- * The words these builtins take as variable NAMES. Bash evaluates an array
- * subscript in such a name arithmetically, and that evaluation runs command
- * substitutions even from a quoted, otherwise static word
- * (`read 'a[$(rm x)]'`, `printf -v 'a[$(rm x)]' 1`, `[ -v 'a[$(rm x)]' ]`).
- */
+// The words these builtins take as variable NAMES. Bash evaluates an array subscript in such a name arithmetically, and that evaluation runs command substitutions even from a quoted, otherwise static word (`read 'a[$(rm x)]'`, `printf -v 'a[$(rm x)]' 1`, `[ -v 'a[$(rm x)]' ]`).
 function variableNameArgs(program: string, args: readonly (string | undefined)[]): (string | undefined)[] {
   const names: (string | undefined)[] = [];
   const after = (flag: RegExp): void => {
@@ -357,20 +324,13 @@ function subscriptedNameReason(program: string, args: readonly (string | undefin
   return null;
 }
 
-/**
- * A runner always needs ordinary approval unless a rule or grant covers its
- * raw argv. Its option spellings and sources do not establish execution facts.
- */
+// A runner always needs ordinary approval unless a rule or grant covers its raw argv. Its option spellings and sources do not establish execution facts.
 export function opaqueRunnerReason(argv: readonly (string | undefined)[]): string | null {
   const head = argv[wrapperPrefixLength(argv)];
   return head !== undefined && RUNNER_SET.has(runnerName(head)) ? "opaque runner prefix" : null;
 }
 
-/**
- * Downstream command views for sink inspection only. Literal boundaries keep
- * delegated runner identities; opaque options retain conservative candidates.
- * Rules must retain the complete runner prefix and must not use this list.
- */
+// Downstream command views for sink inspection only. Literal boundaries keep delegated runner identities; opaque options retain conservative candidates. Rules must retain the complete runner prefix and must not use this list.
 export function runnerCommandIndexes(argv: readonly (string | undefined)[]): readonly number[] {
   let start = wrapperPrefixLength(argv);
   const head = argv[start];
@@ -397,15 +357,14 @@ export function runnerCommandIndexes(argv: readonly (string | undefined)[]): rea
     const target = argv[start];
     if (target === undefined) break;
     const program = programName(target);
-    // A proved non-runner interpreter owns its code arguments. Those words
-    // cannot also acquire another language's command catalogue meanings.
+    // A proved non-runner interpreter owns its code arguments. Those words cannot also acquire another language's command catalogue meanings.
     if (!RUNNER_SET.has(runnerName(target)) && (INTERPRETER_SET.has(program)
       || (SHELL_SET.has(program) && !["pwsh", "powershell", "cmd"].includes(program)))) return candidates.filter((index) => index <= start);
   }
   return candidates;
 }
 
-/** Script/code prefixes declare a language without interpreting runner options. */
+// Script/code prefixes declare a language without interpreting runner options.
 export function runnerCodeContext(argv: readonly (string | undefined)[]): { interpreter: string; operandIndex: number } | undefined {
   let start = wrapperPrefixLength(argv);
   while (start < argv.length) {
@@ -486,7 +445,7 @@ function hiddenCodeAt(argv: readonly (string | undefined)[], start: number): str
 }
 
 const ARITHMETIC_TEST_OPERATORS = new Set(["-eq", "-ne", "-lt", "-le", "-gt", "-ge"]);
-/** An operand bash's arithmetic evaluates without looking anything up (`1`, `-2`, `0x1f`, `8#17`). */
+// An operand bash's arithmetic evaluates without looking anything up (`1`, `-2`, `0x1f`, `8`).
 const ARITHMETIC_CONSTANT = /^\s*[-+]?(?:0[xX][0-9a-fA-F]+|\d+(?:#[0-9A-Za-z@_]+)?)\s*$/;
 
 function arithmeticInWord(word: ShellWord): string | null {
@@ -501,15 +460,7 @@ function arithmeticInWord(word: ShellWord): string | null {
   return null;
 }
 
-/**
- * Reason this command evaluates a variable arithmetically, else null. Bash
- * arithmetic evaluates a variable's VALUE as an expression, and an array
- * subscript inside it runs command substitutions
- * (`x='a[$(rm -rf y)]'; echo $((x))`), so `$((…))` with a variable operand,
- * `[[ … -eq … ]]` with a non-constant operand, and opaque arithmetic or
- * array-index expansions are hidden code. `(( ))`, `let` and `declare -i`
- * already lower to unsupported syntax. `echo $((1+2))` stays visible.
- */
+// Reason this command evaluates a variable arithmetically, else null. Bash arithmetic evaluates a variable's VALUE as an expression, and an array subscript inside it runs command substitutions (`x='a[$(rm -rf y)]'; echo $((x))`), so `$((…))` with a variable operand, `[[ … -eq … ]]` with a non-constant operand, and opaque arithmetic or array-index expansions are hidden code. `()`, `let` and `declare -i` already lower to unsupported syntax. `echo $((1+2))` stays visible.
 export function arithmeticEvaluationReason(cmd: ShellCommand): string | null {
   const words = [
     ...cmd.words,
@@ -533,14 +484,7 @@ export function arithmeticEvaluationReason(cmd: ShellCommand): string | null {
   return null;
 }
 
-/**
- * Reason this argv runs code the matcher cannot read, else null: a shell or
- * interpreter given any code source (stdin, here-document, script file,
- * `-c`/`-e`/`-m`, `-s`, `-`), a code carrier (`eval`, `source`, `trap`,
- * `hash -p`, `alias`, `bind -x`, `mapfile -C`, editors, …), a
- * code-carrying variable. Behind a wrapper every later word is tried as the program,
- * because wrapper option grammars differ too much to skip exactly.
- */
+// Reason this argv runs code the matcher cannot read, else null: a shell or interpreter given any code source (stdin, here-document, script file, `-c`/`-e`/`-m`, `-s`, `-`), a code carrier (`eval`, `source`, `trap`, `hash -p`, `alias`, `bind -x`, `mapfile -C`, editors, …), a code-carrying variable. Behind a wrapper every later word is tried as the program, because wrapper option grammars differ too much to skip exactly.
 export function hiddenCodeReason(argv: readonly (string | undefined)[]): string | null {
   const wrapper = wrapperCommand(argv);
   const inner = wrapper.index;
@@ -556,23 +500,19 @@ export function hiddenCodeReason(argv: readonly (string | undefined)[]): string 
   return null;
 }
 
-/** True when this argv (or the program behind a wrapper) can send data off the machine. */
+// True when this argv (or the program behind a wrapper) can send data off the machine.
 export function isNetworkProgram(argv: readonly (string | undefined)[]): boolean {
   const starts = argv[0] !== undefined && WRAPPER_SET.has(programName(argv[0])) ? argv.map((_, index) => index) : [0];
   return starts.some((start) => argv[start] !== undefined && NETWORK_PROGRAMS.has(programName(argv[start]!)));
 }
 
-// ─── One parse per decision ─────────────────────────────────────────────
+// One parse per decision
 
-/**
- * A shell command parsed once, with the facts the matcher and the floors
- * derive from it memoized per cwd, so one `checkDetailed` call parses the
- * command once instead of once per consumer.
- */
+// A shell command parsed once, with the facts the matcher and the floors derive from it memoized per cwd, so one `checkDetailed` call parses the command once instead of once per consumer.
 export interface ParsedShellCommand {
   readonly command: string;
   readonly analysis: ShellAnalysis;
-  /** Set when the parser runtime threw (reported as unparseable). */
+  // Set when the parser runtime threw (reported as unparseable).
   readonly parserError?: unknown;
   readonly facts: Map<string, unknown>;
 }
@@ -591,7 +531,7 @@ export function asParsedShellCommand(input: ShellCommandInput): ParsedShellComma
   return typeof input === "string" ? parseShellCommand(input) : input;
 }
 
-/** `compute()` once per parsed command and key. */
+// `compute` once per parsed command and key.
 export function shellFact<T>(parsed: ParsedShellCommand, key: string, compute: () => T): T {
   if (parsed.facts.has(key)) return parsed.facts.get(key) as T;
   const value = compute();

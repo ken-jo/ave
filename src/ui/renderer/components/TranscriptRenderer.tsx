@@ -58,7 +58,7 @@ export type TurnSummary = {
 
 /** Edit-cluster props: cohesion group co-derived from the transcript in the caller. Presence enables the inline
  * user-message editor + the "edit" hover action. Omit to render the transcript read-only (side-chat / sub-agent). */
-export interface TranscriptEditProps {
+interface TranscriptEditProps {
   editingEntryIdx: number | null;
   editBusy: boolean;
   setEditingEntryIdx: (i: number | null) => void;
@@ -67,7 +67,7 @@ export interface TranscriptEditProps {
 
 /** Search-cluster props: highlight + match-ring state. Omit to render without search highlighting (defaults collapse to no
  * ring, no highlight). */
-export interface TranscriptSearchProps {
+interface TranscriptSearchProps {
   searchOpen: boolean;
   searchMatches: number[];
   searchMatchSet: Set<number>;
@@ -82,7 +82,7 @@ export interface TranscriptSearchProps {
  * actions). `isEntryStarred` defaults to `() => null` so the star indicator is
  * inert when the caller does not track starred state.
  */
-export interface TranscriptActionProps {
+interface TranscriptActionProps {
   isEntryStarred?: (idx: number) => string | null;
   onFork?: (idx: number) => void | Promise<void>;
   /** Rewind to just before this user message: the conversation from it onward is discarded and its text goes back into the

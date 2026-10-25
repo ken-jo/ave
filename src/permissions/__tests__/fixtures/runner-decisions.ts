@@ -1,10 +1,4 @@
-// Expected from the shell permission contract, independently of classifier output.
-// Contract: docs/design/permissions-always-allow-and-judge.md.
-// Static interpreter code without credential or sink evidence is normal.
-// Opaque runners, unresolved bindings, and parser refusals ask ordinarily.
-// Credential paths and retained sink effects keep a floor across syntax failures.
-// These classifier inputs never execute. A floor requires per-call consent;
-// an ordinary ask is rememberable; normal follows the configured allow mode.
+// Static code without credential/sink evidence is normal; opaque or unresolved code asks, while credential and retained sink floors require per-call consent even on parse failure. Inputs never execute (docs/design/permissions-always-allow-and-judge.md).
 type RunnerDecisionBucket = "floor" | "ordinary" | "normal";
 interface RunnerDecisionExpectation { bucket: RunnerDecisionBucket; why: string }
 interface RunnerDecisionCase extends RunnerDecisionExpectation {

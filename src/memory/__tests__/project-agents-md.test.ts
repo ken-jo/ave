@@ -1,6 +1,4 @@
-/**
- * Project AGENTS.md discovery leaf — unit tests.
- */
+/** Project AGENTS.md discovery leaf; unit tests. */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 
@@ -85,7 +83,7 @@ describe("discoverProjectAgentsMd", () => {
       symlinkSync(secret, join(root, "AGENTS.md"));
       symlinked = true;
     } catch {
-      // Windows without privilege can't symlink — skip the assertion there.
+      // Windows without privilege can't symlink; skip the assertion there.
     }
     try {
       if (symlinked) {

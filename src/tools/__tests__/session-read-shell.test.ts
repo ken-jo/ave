@@ -43,15 +43,12 @@ beforeEach(() => {
   vi.stubEnv("AVE_HOME", profile);
   vi.stubEnv("CLAUDE_CODE_TMPDIR", process.env.CLAUDE_CODE_TMPDIR);
   vi.stubEnv("CLAUDE_TMPDIR", process.env.CLAUDE_TMPDIR);
-  // baseAllowedDirectories() grants os.tmpdir() as a write root, and the
-  // sandbox scans and sweeps write roots for repositories with identity
-  // checks. The run's shared temp directory has concurrent repository churn
-  // from other test files, so this file grants a private one.
+  // baseAllowedDirectories() grants os.tmpdir() as a write root, and the sandbox scans and sweeps write roots for repositories with
+  // identity checks. The run's shared temp directory has concurrent repository churn from other test files, so this file grants a private one.
   const privateTmp = join(root, "tmp");
   mkdirSync(privateTmp);
   vi.stubEnv("TMPDIR", privateTmp);
-  // These cases drive the host shell tools and a confined child, which are
-  // wrapped only while their scope was requested at boot.
+  // These cases drive the host shell tools and a confined child, which are wrapped only while their scope was requested at boot.
   setShellSandboxRequestedAtBoot(true);
   setPluginWorkerConfinementRequestedAtBoot(true);
 });
@@ -191,9 +188,7 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("s
     expect(statSync(transcript).ino).toBe(transcriptIdentity);
     expect(existsSync(created)).toBe(false);
     if (process.platform === "linux") {
-      // Across bubblewrap's separate mounts `mv` gets EXDEV and falls back to a
-      // copy before its unlink is refused. The copy is a granted read; the
-      // transcript itself must never move.
+      // Across bubblewrap's separate mounts `mv` gets EXDEV and falls back to a copy before its unlink is refused. The copy is a granted read; the transcript itself must never move.
       if (existsSync(moved)) expect(statSync(moved).ino).not.toBe(transcriptIdentity);
     } else {
       // One filesystem, so `mv` is a rename the sandbox refuses outright.
@@ -276,11 +271,8 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("s
     expect(result.output).not.toContain(CONTENT.trim());
   });
 
-  // A registered worker socket turns on `allowAllUnixSockets` on Linux, which
-  // takes the seccomp helper out of the chain; ASRT 0.0.80 then asks
-  // bubblewrap 0.8+ for `--disable-userns` (#588). Every shell wrap after a
-  // worker starts carries that wrap shape, so it must still run, and a command
-  // inside it must not get a user namespace of its own.
+  // A registered worker socket turns on `allowAllUnixSockets` on Linux, which takes the seccomp helper out of the chain; ASRT 0.0.80 then asks bubblewrap 0.8+ for
+  // `--disable-userns` . Every shell wrap after a worker starts carries that wrap shape, so it must still run, and a command inside it must not get a user namespace of its own.
   it("runs a sandboxed shell after a worker socket is registered", async (test) => {
     await requireSandboxCases(test);
     await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });

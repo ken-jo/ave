@@ -22,13 +22,7 @@ vi.mock("../../permissions/asrt-sandbox.js", async (original) => ({
   isAsrtSandboxActive: () => false,
 }));
 
-// A plan that needs a per-invocation permit. On this line a requested but
-// unavailable sandbox needs none (design I3), so the permit path is reached
-// through the Windows partial-ASRT plan, which does. The live provider issues
-// it as on a Windows host: only its platform read is Windows, and only while
-// the plan is built, so the hook itself still runs on this host.
-// The authorizer otherwise reads only the plan's route, so a sandbox-capable
-// host here needs no live substrate.
+// The partial Windows sandbox plan requires a per-invocation permit; an unavailable sandbox does not. Override only the plan's platform probe so the hook still runs on this host.
 const plans = vi.hoisted(() => ({ windowsPartial: false }));
 vi.mock("../../permissions/sandbox-capability.js", async (original) => {
   const actual = await original<typeof import("../../permissions/sandbox-capability.js")>();
@@ -82,7 +76,7 @@ afterEach(async () => {
   for (const root of roots.splice(0)) await cleanupTmpDir(root);
 });
 
-/** The Windows partial-ASRT plan: requested sandbox, srt-win active, process confinement absent. */
+// The Windows partial-ASRT plan: requested sandbox, srt-win active, process confinement absent.
 function windowsPartialPlan(): void {
   plans.windowsPartial = true;
   setShellSandboxRequestedAtBoot(true);
@@ -209,9 +203,7 @@ describe("hook command permission admission", () => {
   });
 
   it("follows the normal rules, without a one-shot receipt, when the requested sandbox is unavailable", async () => {
-    // A requested-but-unavailable sandbox is a plain shell under the normal
-    // permission rules, as for the bash tool (design I3 in
-    // host-shell-execution-plan.ts); it records its fallback reason instead.
+    // A requested-but-unavailable sandbox is a plain shell under the normal permission rules, as for the bash tool (design I3 in host-shell-execution-plan.ts); it records its fallback reason instead.
     setShellSandboxRequestedAtBoot(true);
     expect(getHostShellExecutionPlan()).toMatchObject({
       mode: "plain", fallbackReason: "requested-sandbox-unavailable", requiresExplicitUserApproval: false,

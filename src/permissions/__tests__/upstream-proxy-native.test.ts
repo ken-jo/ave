@@ -1,19 +1,4 @@
-/**
- * The upstream proxy end to end against the real sandbox (macOS Seatbelt,
- * Linux bwrap): a sandboxed curl reaches a local stand-in upstream proxy
- * through Ave's per-invocation proxy, with the route the router answers.
- *
- * Covers the three sources without touching this machine's proxy settings:
- * the app process's environment (HTTP_PROXY with credentials), a manual URL
- * from Settings (credentials from the secret store), and the OS path through
- * an injected `resolveProxy` answering a PAC string (SOCKS entry skipped, a
- * dead proxy falling back to the next). And that the sandboxed process sees
- * only Ave's proxy: neither the upstream URL nor its credentials are in its
- * environment.
- *
- * Nothing leaves the machine: destinations are documentation addresses
- * reached only through the stand-in upstream on loopback.
- */
+// Use only local upstream stand-ins; confined processes see the invocation proxy, never upstream credentials. Exercise environment, manual and ordered system routes without changing host settings.
 import { afterEach, beforeEach, describe, expect, it, type TestContext } from "vitest";
 import { createServer, type AddressInfo, type Socket } from "node:net";
 import { existsSync, mkdtempSync, realpathSync } from "node:fs";
@@ -39,7 +24,7 @@ async function requireNativeCase(context: TestContext): Promise<void> {
   }
 }
 
-/** A stand-in upstream: records each request line and Proxy-Authorization, answers plain HTTP with a marker body. */
+// A stand-in upstream: records each request line and Proxy-Authorization, answers plain HTTP with a marker body.
 async function standInUpstream(): Promise<{ port: number; requests: Array<{ line: string; authorization?: string }>; close: () => Promise<void> }> {
   const requests: Array<{ line: string; authorization?: string }> = [];
   const sockets = new Set<Socket>();
@@ -93,7 +78,7 @@ afterEach(async () => {
   if (isAsrtSandboxActive()) await resetAsrtSandbox();
 });
 
-/** Initialize the sandbox the way boot does, with every destination allowed and the router built from `deps`. */
+// Initialize the sandbox the way boot does, with every destination allowed and the router built from `deps`.
 async function startSandbox(deps: Partial<UpstreamProxyRouterDeps> & { settings: () => UpstreamProxySettings }): Promise<void> {
   const upstream = createUpstreamProxyRouter({
     manualCredentials: () => null,

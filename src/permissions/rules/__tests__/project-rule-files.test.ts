@@ -55,8 +55,7 @@ describe("project rule root boundaries", () => {
     mkdirSync(cwd);
     vi.stubEnv("HOME", value);
     vi.stubEnv("USERPROFILE", value);
-    // An unset environment uses the account's absolute home; invalid values
-    // must not let this child inherit an otherwise valid repository identity.
+    // An unset environment uses the account's absolute home; invalid values must not let this child inherit an otherwise valid repository identity.
     expect(projectRulesLocation(root, cwd).projectRoot).toBe(captureApprovalWorkingDirectory(inherits ? repo : cwd).path);
   });
 

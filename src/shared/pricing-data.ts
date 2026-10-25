@@ -45,7 +45,7 @@ export interface TokenRates {
 }
 
 /** Missing cache rates use 0.1 times input for reads and 1.25 times input for short-TTL writes; longer TTLs require an explicit write rate. */
-export function anthropicCacheRates(
+function anthropicCacheRates(
   pricing: Pick<TokenRates, "inputPer1M" | "cacheReadPer1M" | "cacheWritePer1M">,
 ): { read: number; write: number } {
   return {

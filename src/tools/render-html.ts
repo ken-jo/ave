@@ -23,11 +23,9 @@ const CSP_META =
   `">`;
 
 export interface RenderHtmlResult {
-  /** marker so the renderer can detect this tool's payload. */
   kind: "ave.render_html";
   title?: string;
   height: number;
-  /** CSP-wrapped, sanitized HTML document ready for the preview-window data URL. */
   html: string;
   warnings: string[];
 }
@@ -98,28 +96,13 @@ export function createRenderHtmlTool(): Tool {
   });
 }
 
-// ─── Sanitization ───────────────────────────────────
-
 export interface SanitizeResult {
   sanitized: string;
   warnings: string[];
 }
 
-/**
- * 서버-측 스트리핑. webview 프로세스 격리 + will-navigate 훅 + CSP가 주
- * 방어선이고, 이 단계는 defense-in-depth로 이들 경계가 커버하기 애매한 요소를
- * 선제 제거한다. 인라인 <script>·on* 핸들러·javascript: URL은 webview 내부에서만
- * 실행되므로 허용한다.
- *
- * 제거 항목:
- *   - <iframe>, <object>, <embed>, <frame>, <frameset> — nested browsing
- *     context는 webview sandbox 정책 상속이 불분명해 선제 차단.
- *   - <meta http-equiv="refresh"> — 자동 redirect 경로.
- *   - <script src="..."> — 외부 스크립트 URL 로드.
- *   - <a href="외부URL"> — 유저 클릭 시 webview top-level navigation을 유발.
- *     will-navigate 훅으로도 막히지만 UI 상 dead link로 표시하는 편이 덜 혼란
- *     스럽고, 훅보다 먼저 네트워크 prefetch(rel=prefetch)가 나갈 여지도 사라진다.
- */
+// Webview isolation, navigation guards, and CSP are primary; strip nested contexts, refresh, external script sources, and external links.
+// Inline scripts, handlers, and javascript URLs stay inside the webview; removed links also prevent prefetch.
 export function sanitizeHtml(html: string): SanitizeResult {
   const warnings: string[] = [];
   let out = html;
@@ -139,7 +122,6 @@ export function sanitizeHtml(html: string): SanitizeResult {
     }
   }
 
-  // <meta http-equiv="refresh">
   if (/<meta\b[^>]*http-equiv\s*=\s*["']?refresh/i.test(out)) {
     warnings.push("removed <meta refresh>");
     out = out.replace(
@@ -148,7 +130,7 @@ export function sanitizeHtml(html: string): SanitizeResult {
     );
   }
 
-  // <script src="..."> → drop src attribute (keep the tag body if any).
+  // Remove external src while retaining inline script bodies.
   const scriptSrcRe =
     /(<script\b[^>]*?)\ssrc\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)([^>]*>)/gi;
   if (scriptSrcRe.test(out)) {
@@ -156,15 +138,13 @@ export function sanitizeHtml(html: string): SanitizeResult {
     out = out.replace(scriptSrcRe, "$1$2");
   }
 
-  // <a href="외부URL"> → href 속성 제거. 허용되는 href는 in-document fragment
-  // (#으로 시작) 뿐. 상대 경로조차도 about:blank나 data: base 기준으로 예상
-  // 밖의 네트워크 이동을 트리거할 수 있어 모두 제거한다.
+  // Keep only fragment hrefs; relative links can also navigate or fetch unexpectedly from blank/data bases.
   let hrefStripped = false;
   out = out.replace(
     /(<a\b[^>]*?)\s+href\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)([^>]*>)/gi,
     (match, before: string, value: string, after: string) => {
       const unquoted = value.replace(/^["']|["']$/g, "");
-      if (unquoted.startsWith("#")) return match; // in-page fragment — keep
+      if (unquoted.startsWith("#")) return match;
       hrefStripped = true;
       return `${before}${after}`;
     },
@@ -183,7 +163,7 @@ export function wrapWithCsp(body: string, title?: string): string {
     CSP_META +
     '<meta charset="utf-8">' +
     `<title>${safeTitle}</title>` +
-    // font-family mirrors HOST_FONT_STACK (src/shared/host-font-stack.ts) — issue #556
+    // Keep font-family aligned with src/shared/host-font-stack.ts.
     '<style>html,body{margin:0;padding:8px;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Apple SD Gothic Neo","Noto Sans KR","Malgun Gothic",sans-serif;color:#e5e7eb;background:transparent;}</style>' +
     "</head><body>" +
     body +

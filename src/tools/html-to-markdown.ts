@@ -1,15 +1,4 @@
-/**
- * Readable Markdown from fetched HTML, for `web_fetch`.
- *
- * Reference behavior: opencode's webfetch converts HTML to Markdown by default
- * (headings, links, lists, code and tables survive), Claude Code's WebFetch
- * also hands the model Markdown. The main-process bundle is under a growth
- * ratchet and no HTML parser ships in the runtime dependencies, so this is a
- * small tolerant tokenizer + tree builder rather than a DOM library. It never
- * executes anything and only ever produces text.
- *
- * Bounded by its input: `web_fetch` caps the body at 2 MiB before calling it.
- */
+// Bounded, non-executing HTML tokenizer and Markdown renderer; web_fetch caps input at 2 MiB.
 
 interface ElementNode {
   readonly kind: "element";
@@ -68,8 +57,6 @@ export function decodeHtmlEntities(value: string): string {
   });
 }
 
-// ─── Parsing ────────────────────────────────────────────────────────
-
 function parseAttributes(source: string): Map<string, string> {
   const attrs = new Map<string, string>();
   const pattern = /([^\s"'<>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
@@ -86,14 +73,7 @@ const MAX_TAG_CHARS = 16_384;
 /** Deepest element nesting the tree keeps (the render walks recurse). */
 const MAX_NESTING_DEPTH = 512;
 
-/**
- * Index of the `>` that ends the tag starting at `lt`, or -1. Quotes are
- * honoured, and an unquoted `<` ends the attempt: browsers would read it as
- * part of an attribute name, but stopping there is what keeps the whole parse
- * linear. Without it every `<` of an input like `<a <a <a …` (no `>`) scanned
- * its full window again, which held the main process for tens of seconds on
- * a 2 MB page.
- */
+// Stop unquoted tags at a new < to prevent repeated scans and keep malformed-input parsing linear.
 function scanTagEnd(html: string, lt: number): number {
   const limit = Math.min(html.length, lt + MAX_TAG_CHARS);
   let quote = "";
@@ -203,16 +183,12 @@ function parseHtml(html: string): ElementNode {
       continue;
     }
     if (VOID.has(name) || tag[3].trimEnd().endsWith("/")) continue;
-    // Deeper elements stay in the tree as leaves and their content lands one
-    // level up: every walk over the tree recurses, and 100k nested <div>s
-    // would otherwise overflow the stack and make the page unreadable.
+    // Keep over-depth elements as leaves and lift their content to prevent recursive stack overflow.
     if (stack.length >= MAX_NESTING_DEPTH) continue;
     stack.push(element);
   }
   return root;
 }
-
-// ─── Rendering ──────────────────────────────────────────────────────
 
 // Layout markers survive whitespace normalization and become text at the end.
 const INDENT = "\u0001";
@@ -222,13 +198,7 @@ const CODE = "\u0003";
 interface RenderContext {
   readonly baseUrl: URL | undefined;
   readonly codeBlocks: string[];
-  /**
-   * Characters the render may still produce, summed over every level. Each
-   * level re-reads what its children produced (lists and quotes re-indent
-   * it), so the sum grows with depth × size: 262k nested `<ul><li>` in a
-   * 2 MB page took two minutes. Past the budget the page is read as plain
-   * text instead.
-   */
+  // Cap cumulative rendered characters across levels; re-indentation otherwise grows with depth times size.
   budget: number;
 }
 
@@ -310,9 +280,7 @@ function renderList(element: ElementNode, ctx: RenderContext): string {
 function renderTable(element: ElementNode, ctx: RenderContext): string {
   const rows: string[][] = [];
   let caption = "";
-  // Content that is not a row (malformed markup, or a list the parser left
-  // inside an unclosed table) is still page text. Browsers foster-parent it
-  // out in front of the table, so it is rendered there.
+  // Preserve malformed non-row table content by rendering it before the table.
   const stray: string[] = [];
   const visit = (node: ElementNode): void => {
     for (const child of node.children) {
@@ -415,7 +383,7 @@ function renderChildren(nodes: readonly HtmlNode[], ctx: RenderContext): string 
   return output;
 }
 
-/** The page's text in document order, one pass and no recursion: the fallback past the budget. */
+// Beyond the render budget, collect document-order text iteratively.
 function plainText(tree: ElementNode): string {
   const parts: string[] = [];
   const pending: HtmlNode[] = [tree];
@@ -432,10 +400,7 @@ function plainText(tree: ElementNode): string {
   return parts.join("").replace(/[ \t\f\v\r]+/g, " ").replace(/ *\n[\s]*/g, "\n\n").trim();
 }
 
-/**
- * Strip layout whitespace (leading spaces inside a line, trailing spaces,
- * runs of blank lines) while keeping the INDENT/QUOTE markers.
- */
+// Normalize whitespace while preserving layout markers.
 function normalizeMarkdown(markdown: string): string {
   const lines = markdown.split("\n").map((line) => line.replace(/^([\u0001\u0002]*)[ \t]+/, "$1").replace(/[ \t]+$/, ""));
   const kept: string[] = [];

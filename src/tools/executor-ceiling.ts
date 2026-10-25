@@ -1,58 +1,15 @@
-/**
- * Tool execution ceiling — last-resort cap with linked AbortController.
- *
- * The wrapper bridges the executor's parent `abortSignal` and a ceiling
- * timer into a single `AbortSignal` passed to the underlying tool. The wrapper
- * also returns as soon as either abort boundary fires, even when the underlying
- * tool ignores the signal and leaves its Promise pending.
- *
- * Extracted from `executor.ts` Step 6 (Execute) so the ceiling semantics can
- * be unit-tested without instantiating the full 8-step pipeline.
- */
+// Link parent cancellation and the execution ceiling; return promptly even if the task ignores abort.
 
 import type { Tool } from "./base.js";
 import { MAX_TIMER_DELAY_MS, resolveShellTimeoutMs, TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 
-/** Termination reason recorded for audit and error message branching. */
-export type ToolCeilingTerminationReason = "ceiling" | "user-abort" | "error";
+type ToolCeilingTerminationReason = "ceiling" | "user-abort" | "error";
 
-/**
- * Head-room between a shell tool's own `timeoutSeconds` expiry and the
- * executor ceiling. The tool kills the child itself and then formats a
- * retryable "timed out after N seconds" result; without this margin the
- * ceiling would race that formatting and replace a retryable tool error with
- * an opaque ceiling abort.
- */
+// Leave time for shell timeout cleanup and retryable error formatting before the executor ceiling fires.
 const SHELL_CEILING_GRACE_MS = TOOL_TIMEOUT_POLICY.shellCeilingGraceMs;
 
-/**
- * Ceiling for one tool invocation.
- *
- * Two host-owned escalation paths exist, and BOTH are gated on
- * `source === "builtin"`:
- *
- *  - A builtin that runs a bounded loop of its own declares
- *    `resolveHostCeilingMs` (today: `agent_spawn`, whose wall clock scales
- *    with the configured sub-agent round budget). The value is host-derived,
- *    never read from tool input.
- *  - Builtin shell tools carry their own `timeoutSeconds`, which is unbounded
- *    above the default on purpose (see TOOL_TIMEOUT_POLICY): when the model
- *    escalates past `globalCeilingMs` the ceiling follows, otherwise the retry
- *    that names a larger budget would still be cut at the old ceiling.
- *
- * Every other tool keeps `globalCeilingMs`. A plugin or MCP tool cannot raise
- * its own ceiling — not by declaring a `timeoutSeconds` field (only builtin
- * shell inputs are read) and not by declaring `resolveHostCeilingMs` (neither
- * adapter can produce a builtin `Tool`). Its expiry is not a dead end either:
- * the executor turns it into a retryable tool error naming the host bound, so
- * the model can narrow the work and call again.
- *
- * Both escalation paths scale without an upper bound of their own, so the
- * resolved value is clamped HERE — the one place every executor timer arm is
- * computed — to {@link MAX_TIMER_DELAY_MS}. Above that bound `setTimeout`
- * overflows its 32-bit delay and fires after 1ms, which would turn the largest
- * configured budgets into instant aborts; see the constant for the full note.
- */
+// Only builtins may raise ceilings through host-derived loop budgets or shell timeoutSeconds; plugins and external tools cannot.
+// Clamp both paths to MAX_TIMER_DELAY_MS so timer overflow cannot turn large budgets into 1ms aborts.
 export function resolveEffectiveCeilingMs(
   tool: Pick<Tool, "name" | "source" | "category" | "resolveHostCeilingMs">,
   input: Record<string, unknown>,
@@ -60,7 +17,7 @@ export function resolveEffectiveCeilingMs(
   return Math.min(MAX_TIMER_DELAY_MS, resolveRequestedCeilingMs(tool, input));
 }
 
-/** The unclamped policy result. Only `resolveEffectiveCeilingMs` may call it. */
+// Only the clamping resolver may call this.
 function resolveRequestedCeilingMs(
   tool: Pick<Tool, "name" | "source" | "category" | "resolveHostCeilingMs">,
   input: Record<string, unknown>,
@@ -81,30 +38,16 @@ function resolveRequestedCeilingMs(
   );
 }
 
-/** Actual underlying task settlement. Discriminated by `ok`. */
 type ToolTaskOutcome<T> =
   | { ok: true; value: T }
   | { ok: false; reason: ToolCeilingTerminationReason; error: Error };
 
-/**
- * Prompt caller-facing outcome. When interruption wins before a
- * signal-ignoring task settles, `settlement` remains pending until that actual
- * task finishes so authority owners can keep their lease poisoned meanwhile.
- */
+// After prompt interruption, settlement tracks actual completion so authority leases remain poisoned until the task stops.
 export type ToolCeilingOutcome<T> = ToolTaskOutcome<T> & {
   readonly settlement?: Promise<ToolTaskOutcome<T>>;
 };
 
-/**
- * Run `task` under a ceiling. The task receives a signal that aborts when:
- *   (a) the ceiling timer fires (`reason: "ceiling"`),
- *   (b) the caller-supplied `parentAbortSignal` aborts (`reason: "user-abort"`),
- *   (c) the task throws on its own (`reason: "error"`).
- *
- * The ceiling timer is always cleared, and any listener attached to the
- * parent signal is detached in the `finally` block so the wrapper does not
- * leak timers or event listeners on the long-lived parent signal.
- */
+// Always clear the timer and detach parent listeners after ceiling, parent abort, or task failure.
 export async function runWithCeiling<T>(
   task: (signal: AbortSignal) => Promise<T>,
   ceilingMs: number,
@@ -133,9 +76,7 @@ export async function runWithCeiling<T>(
     ceilingController.abort(err);
   }, ceilingMs);
 
-  // Fast path: parent already aborted at entry. Skip calling `task` entirely
-  // — many tools subscribe to abort via `addEventListener("abort", ...)`,
-  // which is a no-op on an already-aborted signal, so the tool would hang.
+  // Already-aborted signals do not fire newly attached listeners; skip the task to avoid hanging.
   if (parentAbortSignal?.aborted) {
     clearTimeout(timer);
     return { ok: false, reason: "user-abort", error: parentAbortError() };

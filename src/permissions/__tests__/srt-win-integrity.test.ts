@@ -226,9 +226,7 @@ describe("Windows helper integrity", () => {
     const { source } = fixture();
     const executable = prepareSrtWinExecutable(source);
     directories.push(dirname(executable));
-    // Core cmdlets and .NET only. In this minimal environment a Utility cmdlet
-    // such as Write-Output would make PowerShell scan every installed module
-    // first, which took 40 s or more on the hosted runner.
+    // Core cmdlets and.NET only. In this minimal environment a Utility cmdlet such as Write-Output would make PowerShell scan every installed module first, which took 40 s or more on the hosted runner.
     const script = [
       "$ErrorActionPreference='Stop'",
       "$PSModuleAutoLoadingPreference='None'",
@@ -265,10 +263,7 @@ describe("Windows helper integrity", () => {
     expect(output.trim()).toBe("private-image-protected");
   });
 
-  /**
-   * The two PowerShell steps as `prepareSrtWinExecutable` sends them, captured
-   * on any host: the stale-copy sweep, then the private-directory step.
-   */
+  // The two PowerShell steps as `prepareSrtWinExecutable` sends them, captured on any host: the stale-copy sweep, then the private-directory step.
   async function captureScripts(): Promise<string[]> {
     const scripts: string[] = [];
     vi.resetModules();
@@ -277,8 +272,7 @@ describe("Windows helper integrity", () => {
       ...await importOriginal<typeof import("node:child_process")>(),
       execFileSync: (_command: string, args: readonly string[], options: { env: Record<string, string> }) => {
         scripts.push(Buffer.from(args.at(-1)!, "base64").toString("utf16le"));
-        // Stand in for the private-directory step, which creates the directory
-        // and the empty image itself: nothing may exist at its path before.
+        // Stand in for the private-directory step, which creates the directory and the empty image itself: nothing may exist at its path before.
         const directory = options.env.AVE_SRT_PRIVATE_DIRECTORY;
         if (directory) {
           expect(existsSync(directory)).toBe(false);
@@ -333,8 +327,7 @@ describe("Windows helper integrity", () => {
     expect(script).toContain("$stream.GetAccessControl().GetOwner(");
   });
 
-  // Run the captured step against a path that already holds something: it must
-  // refuse, and leave that object's owner and DACL exactly as they were.
+  // Run the captured step against a path that already holds something: it must refuse, and leave that object's owner and DACL exactly as they were.
   it.runIf(process.platform === "win32").each(["Administrators-owned directory", "SYSTEM-owned directory", "junction"])(
     "refuses a private path that is already a %s and changes nothing",
     async (kind) => {

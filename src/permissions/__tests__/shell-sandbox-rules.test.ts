@@ -13,9 +13,14 @@ import { BashTool } from "../../tools/shell-tools.js";
 import { userPermissionContext } from "../../tools/__tests__/tool-context-fixture.js";
 import { VerdictCache } from "../reviewer/verdict-cache.js";
 import { DeferredQueue } from "../reviewer/deferred-queue.js";
+import { AuditLogger } from "../../audit/audit-logger.js";
+import { flushSandboxAudit } from "../../audit/sandbox-audit-sink.js";
 
 let dir: string;
 let manager: PermissionManager;
+// Audit writes are queued, not awaited, by the code under test; teardown must
+// drain them before removing the directory they write into.
+const auditLoggers: AuditLogger[] = [];
 beforeEach(() => {
   dir = realpathSync(mkdtempSync(join(tmpdir(), "shell-sandbox-rules-")));
   const home = join(dir, "home");
@@ -27,7 +32,9 @@ beforeEach(() => {
   setShellSandboxRequestedAtBoot(true);
   setActiveSandboxCapability({ kind: "asrt", confidence: "verified", platform: process.platform, reason: "fixture full shell containment", confines: { filesystem: true, process: true, network: true } });
 });
-afterEach(() => {
+afterEach(async () => {
+  await Promise.all(auditLoggers.splice(0).map((logger) => logger.close()));
+  await flushSandboxAudit();
   __resetSessionStoreForTest();
   __resetActiveSandboxCapabilityForTest();
   __resetSandboxRequestedAtBootForTest();
@@ -103,7 +110,9 @@ function executorWithDock(options: { executionMode?: "host" | "sandbox"; headles
     gate.resolveFromDesktopRenderer(request.id, { requestId: request.id, choice: "allow-once", nonce: request.nonce, hmac: request.hmac });
   });
   gate = new ApprovalGate({ isDestroyed: () => false, send } as never);
-  const executor = new ToolExecutor(registry, undefined, manager, undefined, gate);
+  const auditLogger = new AuditLogger();
+  auditLoggers.push(auditLogger);
+  const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, undefined, auditLogger);
   const executionMode = options.executionMode ?? "host";
   const input = executionMode === "host"
     ? { command: "printf ready", executionMode, justification: "Read the host environment" }
@@ -172,8 +181,7 @@ describe("plain-shell invocation authorization", () => {
     return { classifier, cache };
   }
 
-  // I3 (owner 2026-10-16) sends an unavailable sandbox to the normal rules,
-  // reviewer included.
+  // I3 (owner 2026-10-16) sends an unavailable sandbox to the normal rules, reviewer included.
   it.each([["low", 0], ["high", 1]] as const)("reviews a plain call at %s while the sandbox is unavailable (%s prompts)", async (level, prompts) => {
     setActiveSandboxCapability({ kind: "none", confidence: "verified", platform: process.platform, reason: "fixture sandbox unavailable" });
     const { classifier, cache } = lowReviewer();
@@ -187,8 +195,7 @@ describe("plain-shell invocation authorization", () => {
     } finally { await cache.flush(); }
   });
 
-  // I3: an explicit host request runs on a matching allow rule, otherwise it
-  // asks with the host-execution warning. A low reviewer verdict is no rule.
+  // I3: an explicit host request runs on a matching allow rule, otherwise it asks with the host-execution warning. A low reviewer verdict is no rule.
   it("does not let a low reviewer verdict stand in for the card on an explicit host request", async () => {
     const { classifier, cache } = lowReviewer();
     try {
@@ -200,8 +207,7 @@ describe("plain-shell invocation authorization", () => {
     } finally { await cache.flush(); }
   });
 
-  // I5 (owner 2026-10-16): with nobody to answer, an explicit host request is
-  // denied, with or without a matching rule, and no card is raised.
+  // I5 (owner 2026-10-16): with nobody to answer, an explicit host request is denied, with or without a matching rule, and no card is raised.
   it.each([false, true])("denies a headless explicit host request without asking (matching rule %s)", async (withRule) => {
     if (withRule) manager.setRules([{ pattern: "Bash(printf ready)", action: "allow" }]);
     const { classifier, cache } = lowReviewer();

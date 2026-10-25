@@ -1,16 +1,4 @@
-/**
- * Reviewer wrapped-registry for host-spawned PLUGIN WORKERS (worker-confinement
- * PR D-1).
- *
- * Mirrors the MCP wrapped-registry no-leak invariant for the OTHER long-lived
- * worker substrate: a `source === 'plugin'` tool whose side-effects run in a
- * host-spawned, ASRT-wrapped plugin worker ({@link spawnWorker}). The `asrt`
- * reviewer relaxation must apply ONLY to a worker GENUINELY wrapped in THIS
- * process — gate ON + the worker id in the registry. An unwrapped worker (gate
- * off, never spawned, wrap failed, or after the worker exits / the sandbox is
- * torn down) must stay `none` so the reviewer cannot relax a MEDIUM/HIGH
- * verdict to LOW for an UNSANDBOXED plugin effect.
- */
+// Reviewer relaxation requires an active gate and a live wrapped-worker registry entry; unwrapped, failed, exited or torn-down workers must remain unconfined in verdicts.
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
@@ -97,8 +85,7 @@ describe("resolveReviewerSandboxCapability — plugin-worker substrate awareness
   });
 
   it("forces none after the sandbox is torn down (active cap cleared) even if the marker lingers", () => {
-    // Marker present but the active capability is gone (resetAsrtSandbox cleared
-    // it). The resolver re-checks detectSandboxCapability → none (no stale asrt).
+    // Marker present but the active capability is gone (resetAsrtSandbox cleared it). The resolver re-checks detectSandboxCapability → none (no stale asrt).
     markPluginWorkerWrapped("local-indexer", "embed");
     __resetActiveSandboxCapabilityForTest(); // simulate sandbox torn down
     const cap = resolveReviewerSandboxCapability("plugin", "index_search", undefined, "embed", "local-indexer");
@@ -121,9 +108,7 @@ describe("resolveReviewerSandboxCapability — plugin-worker substrate awareness
       reason: "ASRT active",
       confines: { filesystem: true, process: true, network: true },
     });
-    // Plugin A wraps a worker named "main"; plugin B has a worker with the SAME
-    // id but it was NEVER wrapped. Keying on workerId alone would let B inherit
-    // A's asrt signal and falsely relax the reviewer for an UNCONFINED call.
+    // Plugin A wraps a worker named "main"; plugin B has a worker with the SAME id but it was NEVER wrapped. Keying on workerId alone would let B inherit A's asrt signal and falsely relax the reviewer for an UNCONFINED call.
     markPluginWorkerWrapped("plugin-a", "main");
     expect(isPluginWorkerWrapped("plugin-a", "main")).toBe(true);
     expect(isPluginWorkerWrapped("plugin-b", "main")).toBe(false);

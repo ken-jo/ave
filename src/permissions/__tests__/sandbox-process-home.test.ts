@@ -22,13 +22,9 @@ import {
   sandboxProcessProfileEnvironment,
 } from "../sandbox-process-home.js";
 
-// The HOMEs are created under `<AVE_HOME>/sandbox/home` on macOS and Linux,
-// so the real AVE_HOME is never the one these cases fill.
+// The HOMEs are created under `<AVE_HOME>/sandbox/home` on macOS and Linux, so the real AVE_HOME is never the one these cases fill.
 let aveHomeDir: string;
-// Every directory a case creates belongs under the temp roots. A Windows
-// profile built on a POSIX host names `\private\var\…\AppData\Local`, which
-// `mkdirSync` there takes for ONE relative name and creates in the working
-// directory — the checkout — so the working directory is held to its listing.
+// Every directory a case creates belongs under the temp roots. A Windows profile built on a POSIX host names `\private\var\…\AppData\Local`, which `mkdirSync` there takes for ONE relative name and creates in the working directory — the checkout — so the working directory is held to its listing.
 let cwdBefore: string[];
 beforeEach(() => {
   cwdBefore = readdirSync(process.cwd()).sort();
@@ -113,8 +109,7 @@ describe("createSandboxProcessHome", () => {
     },
   );
 
-  // Windows only: the profile's paths are Windows paths (`win32.join`), which
-  // only a Windows host creates where they name.
+  // Windows only: the profile's paths are Windows paths (`win32.join`), which only a Windows host creates where they name.
   it.runIf(process.platform === "win32")("keeps the Windows HOME under the host temp directory, as before", () => {
     const home = createSandboxProcessHome("win32");
     try {

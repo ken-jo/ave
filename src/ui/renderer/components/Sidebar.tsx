@@ -566,41 +566,27 @@ function FailedPluginNavItem({
     </span>
   );
 
+  const renderItem = (itemIcon: ReactNode) => (
+    <NavItem
+      viewKey={viewKey}
+      label={label}
+      icon={itemIcon}
+      isActive={false}
+      {...rowHandlers(viewKey)}
+      collapsed={collapsed}
+
+      role={role}
+      data-testid={sidebarViewTestId(viewKey)}
+      data-viewkey={viewKey}
+      title={title}
+      tooltipLabel={title}
+      trailingSlot={collapsed ? undefined : trailingSlot}
+    />
+  );
+
   return (
-    <Suspense
-      fallback={
-        <NavItem
-          viewKey={viewKey}
-          label={label}
-          icon={<Wrench className="h-4 w-4 text-destructive" />}
-          isActive={false}
-          {...rowHandlers(viewKey)}
-          collapsed={collapsed}
-
-          role={role}
-          data-testid={sidebarViewTestId(viewKey)}
-          data-viewkey={viewKey}
-          title={title}
-          tooltipLabel={title}
-          trailingSlot={collapsed ? undefined : trailingSlot}
-        />
-      }
-    >
-      <NavItem
-        viewKey={viewKey}
-        label={label}
-        icon={icon}
-        isActive={false}
-        {...rowHandlers(viewKey)}
-        collapsed={collapsed}
-
-        role={role}
-        data-testid={sidebarViewTestId(viewKey)}
-        data-viewkey={viewKey}
-        title={title}
-        tooltipLabel={title}
-        trailingSlot={collapsed ? undefined : trailingSlot}
-      />
+    <Suspense fallback={renderItem(<Wrench className="h-4 w-4 text-destructive" />)}>
+      {renderItem(icon)}
     </Suspense>
   );
 }
@@ -634,48 +620,34 @@ function InactivePluginNavItem({
     </span>
   );
 
+  const renderItem = (itemIcon: ReactNode) => (
+    <NavItem
+      viewKey={viewKey}
+      label={label}
+      icon={itemIcon}
+      isActive={false}
+      {...rowHandlers(viewKey)}
+      collapsed={collapsed}
+
+      role={role}
+      data-testid={sidebarViewTestId(viewKey)}
+      data-viewkey={viewKey}
+      title={title}
+      tooltipLabel={title}
+      trailingSlot={collapsed ? undefined : trailingSlot}
+    />
+  );
+
   return (
-    <Suspense
-      fallback={
-        <NavItem
-          viewKey={viewKey}
-          label={label}
-          icon={<PowerOff className="h-4 w-4 text-muted-foreground" />}
-          isActive={false}
-          {...rowHandlers(viewKey)}
-          collapsed={collapsed}
-
-          role={role}
-          data-testid={sidebarViewTestId(viewKey)}
-          data-viewkey={viewKey}
-          title={title}
-          tooltipLabel={title}
-          trailingSlot={collapsed ? undefined : trailingSlot}
-        />
-      }
-    >
-      <NavItem
-        viewKey={viewKey}
-        label={label}
-        icon={
-          <span className="relative h-4 w-4">
-            <IconComponent className="h-4 w-4 text-muted-foreground" />
-            <span className="absolute -right-1 -top-1 flex h-3 w-3 items-center justify-center rounded-full bg-muted text-muted-foreground">
-              <PowerOff className="h-2 w-2" aria-hidden="true" />
-            </span>
+    <Suspense fallback={renderItem(<PowerOff className="h-4 w-4 text-muted-foreground" />)}>
+      {renderItem(
+        <span className="relative h-4 w-4">
+          <IconComponent className="h-4 w-4 text-muted-foreground" />
+          <span className="absolute -right-1 -top-1 flex h-3 w-3 items-center justify-center rounded-full bg-muted text-muted-foreground">
+            <PowerOff className="h-2 w-2" aria-hidden="true" />
           </span>
-        }
-        isActive={false}
-        {...rowHandlers(viewKey)}
-        collapsed={collapsed}
-
-        role={role}
-        data-testid={sidebarViewTestId(viewKey)}
-        data-viewkey={viewKey}
-        title={title}
-        tooltipLabel={title}
-        trailingSlot={collapsed ? undefined : trailingSlot}
-      />
+        </span>,
+      )}
     </Suspense>
   );
 }

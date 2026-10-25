@@ -188,8 +188,7 @@ describe("builtin shell - Windows partial Plan-B native execution", () => {
     __resetShellResolverCache();
     childProcessMock.spawn.mockReset();
     childProcessMock.execFileSync.mockReset();
-    // Bash resolves a POSIX shell by probing it synchronously on Windows.
-    // Keep that probe fully mocked too: no real host child is started.
+    // Mock the Windows shell capability probe too so no real host child starts.
     childProcessMock.execFileSync.mockImplementation((_file, args) => args.join(" ").includes("AVE_PROBE_RHS") ? "parent\0AB가😀\0" : "__ave_shell_ok__");
     childProcessMock.spawn.mockImplementation(
       (
@@ -315,9 +314,7 @@ describe.each(["darwin", "linux", "win32"] as const)(
       childProcessMock.execFileSync.mockReset();
     });
 
-    // Design I3: a requested-but-unavailable sandbox follows the normal rules
-    // (the permission layer is the authority), so the tool spawns without a
-    // one-shot permit and records the fallback plan on its result.
+    // Unavailable sandboxing follows ordinary permission authority and records the fallback execution plan.
     it.each(SHELLS)(
       "runs $label as a permitless plain child and records the fallback plan",
       async ({ toolName, create, input, expectedSpawnCount }) => {

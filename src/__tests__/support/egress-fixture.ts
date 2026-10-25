@@ -1,12 +1,7 @@
-/**
- * Egress attribution fixtures for tests that wrap or spawn confined processes
- * directly. Production callers mint a token per invocation
- * (`permissions/egress-invocations.ts`); a test that is not about attribution
- * passes these fixed values instead.
- */
+/** Fixed attribution values are for tests outside attribution coverage; production mints a token per invocation. */
 import type { ShellEgressContext, WorkerEgressOwner } from "../../permissions/egress-invocations.js";
 
-/** A well-formed ASRT `commandId`: 32 hex characters, like a minted token. */
+/** A valid commandId is 32 hexadecimal characters. */
 export const TEST_COMMAND_ID = "0123456789abcdef0123456789abcdef";
 
 export const TEST_WORKER_EGRESS_OWNER: WorkerEgressOwner = {
@@ -16,7 +11,7 @@ export const TEST_WORKER_EGRESS_OWNER: WorkerEgressOwner = {
   instanceId: "fixture_worker",
 };
 
-/** A shell call outside any conversation that nobody can be asked about. */
+/** The invocation has no conversation or possible approver. */
 export const TEST_SHELL_EGRESS_CONTEXT: ShellEgressContext = {
   sessionId: undefined,
   workspaceRoot: undefined,

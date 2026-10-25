@@ -46,7 +46,7 @@ export interface RationaleOnlyRoundBatchResult {
   usage: TokenUsage | null;
 }
 
-export interface RationaleOnlyRoundGenerationFailure {
+interface RationaleOnlyRoundGenerationFailure {
   kind: "generation-failure";
   generationOutcome: RationaleGenerationProviderFailureCause;
   streamKind: "context_error" | "stream_error" | "interrupted";
@@ -55,7 +55,7 @@ export interface RationaleOnlyRoundGenerationFailure {
   usage: null;
 }
 
-export interface RationaleOnlyRoundInterrupted {
+interface RationaleOnlyRoundInterrupted {
   kind: "interrupted";
   usage: null;
 }

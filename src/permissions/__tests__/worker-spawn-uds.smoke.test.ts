@@ -1,22 +1,4 @@
-/**
- * macOS UDS runtime smoke — the make-or-break for worker-confinement PR D-1.
- *
- * REAL ASRT, NO MOCKS. Proves the host can drive a long-lived, ASRT-wrapped
- * (Seatbelt) HTTP plugin worker over a bind-mounted Unix-domain-socket control
- * channel, while the worker's egress stays governed by the shared strict-union
- * allow-list and its filesystem stays jailed. Mirrors the no-mock style of
- * asrt-sandbox.test.ts and is gated to darwin with the sandbox deps present.
- *
- * What it asserts (and prints VERBATIM):
- *   1. HOST connects INBOUND over the host-provided socketPath (http.request
- *      { socketPath }) → /health 200 (loopback ingress over UDS under seatbelt).
- *   2. From INSIDE the wrapped worker: an allow-listed host succeeds (via the
- *      ASRT egress proxy) and a non-allowed host is HARD-DENIED.
- *   3. socket mode 0o600, socketDir mode 0o700.
- *   4. A filesystem write OUTSIDE the jail is denied.
- *
- * Skipped off darwin or when ASRT can't initialize (deps missing / offline).
- */
+// Native worker isolation must preserve inbound UDS health, declared-only egress, private socket modes and the write jail. Skip when the native backend is unavailable.
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { request as httpRequest } from "node:http";
 import { writeFileSync, mkdtempSync, statSync, existsSync } from "node:fs";
@@ -37,7 +19,7 @@ import {
 import { asrtCanInitialize } from "./test-helpers.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
-/** GET over a UDS from the HOST (outside the sandbox). */
+// GET over a UDS from the HOST (outside the sandbox).
 function udsGet(
   socketPath: string,
   path: string,
@@ -56,7 +38,7 @@ function udsGet(
   });
 }
 
-/** Poll the UDS until /health answers (the worker may take a beat to bind). */
+// Poll the UDS until /health answers (the worker may take a beat to bind).
 async function waitForHealth(socketPath: string, attempts = 40): Promise<boolean> {
   for (let i = 0; i < attempts; i++) {
     try {
@@ -70,14 +52,7 @@ async function waitForHealth(socketPath: string, attempts = 40): Promise<boolean
   return false;
 }
 
-/**
- * The fake HTTP worker, written verbatim to a temp file and spawned through
- * spawnWorker. Binds the UDS at `--uds <path>` (0o600) and serves:
- *   - /health           → 200 {"ok":true}
- *   - /echo?msg=…       → 200 {"echo":"…"}
- *   - /egress?url=…     → 200 {"status":N} on success, {"error":"…"} on denial
- *   - /fswrite?path=…   → 200 {"wrote":true} | {"error":"…"} (jail probe)
- */
+// The fake HTTP worker, written verbatim to a temp file and spawned through spawnWorker. Binds the UDS at `--uds <path>` (0o600) and serves: - /health → 200 {"ok":true} - /echo?msg=… → 200 {"echo":"…"} - /egress?url=… → 200 {"status":N} on success, {"error":"…"} on denial - /fswrite?path=… → 200 {"wrote":true} | {"error":"…"} (jail probe)
 const WORKER_SOURCE = `
 const http = require("node:http");
 const fs = require("node:fs");
@@ -139,13 +114,11 @@ afterEach(async () => {
   }
 });
 
-// The UDS control channel and the Seatbelt write-jail are the macOS worker
-// path; other platforms confine workers differently and are covered elsewhere.
+// The UDS control channel and the Seatbelt write-jail are the macOS worker path; other platforms confine workers differently and are covered elsewhere.
 describe.runIf(process.platform === "darwin")("worker-spawn UDS smoke (macOS, real ASRT)", () => {
   it("host drives the wrapped worker over the UDS; egress allow/deny enforced; perms correct", async (test) => {
     if (!(await asrtCanInitialize())) {
-      // A confinement job asks for real sandbox cases; there a missing
-      // sandbox is a failure, not a skip.
+      // A confinement job asks for real sandbox cases; there a missing sandbox is a failure, not a skip.
       if (process.env.AVE_REQUIRE_SANDBOX_CASES === "1") throw new Error("ASRT cannot initialize on this machine");
       return test.skip("ASRT cannot initialize (sandbox dependencies missing)");
     }
@@ -156,21 +129,16 @@ describe.runIf(process.platform === "darwin")("worker-spawn UDS smoke (macOS, re
     vi.stubEnv("AVE_HOME", tmpRoot);
     const workerFile = join(tmpRoot, "worker.cjs");
     writeFileSync(workerFile, WORKER_SOURCE, "utf8");
-    // GENUINELY outside the write-jail (jail = [socketDir, tmpRoot]). A path in
-    // HOME is covered by neither, so the seatbelt write-deny must reject it.
+    // GENUINELY outside the write-jail (jail = [socketDir, tmpRoot]). A path in HOME is covered by neither, so the seatbelt write-deny must reject it.
     const outsideJail = join(homedir(), `.uds-smoke-denied-${process.pid}-${Date.now()}.txt`);
 
-    // Shared config: example.com is in the union (allow), example.org is NOT
-    // (hard-deny). strictAllowlist → no askCb fallthrough.
+    // Shared config: example.com is in the union (allow), example.org is NOT (hard-deny). strictAllowlist → no askCb fallthrough.
     await initializeAsrtSandbox(
       { allowedDomains: ["example.com"], strictAllowlist: true },
       undefined,
     );
 
-    // Spawn the worker WRAPPED. allowWritePaths includes the temp worker dir so
-    // the node worker can read its own script + the host injects the UDS path.
-    // RunAsNode makes process.execPath the Electron binary; the wrapper retains
-    // its host Node path so this smoke still exercises a standalone Node worker.
+    // Spawn the worker WRAPPED. allowWritePaths includes the temp worker dir so the node worker can read its own script + the host injects the UDS path. RunAsNode makes process.execPath the Electron binary; the wrapper retains its host Node path so this smoke still exercises a standalone Node worker.
     const nodeCommand = process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath;
     worker = await spawnWorker({
       pluginId: "uds-smoke-plugin",
@@ -189,7 +157,6 @@ describe.runIf(process.platform === "darwin")("worker-spawn UDS smoke (macOS, re
     // Surface worker stderr for diagnosis if anything goes wrong.
     worker.onStderr((c) => console.log(`[uds-smoke][worker-stderr] ${c.trim()}`));
 
-    // 1) HOST connects INBOUND over the socketPath → /health 200.
     const healthy = await waitForHealth(socketPath);
     console.log(`[uds-smoke] /health reachable over UDS = ${healthy}`);
     expect(healthy).toBe(true);
@@ -199,17 +166,13 @@ describe.runIf(process.platform === "darwin")("worker-spawn UDS smoke (macOS, re
     expect(echo.status).toBe(200);
     expect(echo.body).toContain("hello");
 
-    // 3) Permissions: socket 0o600, socketDir 0o700.
     const socketMode = statSync(socketPath).mode & 0o777;
     const dirMode = statSync(join(socketPath, "..")).mode & 0o777;
     console.log(`[uds-smoke] socket mode=0o${socketMode.toString(8)} dir mode=0o${dirMode.toString(8)}`);
     expect(socketMode).toBe(0o600);
     expect(dirMode).toBe(0o700);
 
-    // 2) Egress from INSIDE the wrapped worker: allow-listed succeeds, the
-    // non-allowed host is hard-denied. The in-union host must be reachable for
-    // the deny side to be a meaningful contrast — if offline, skip the egress
-    // asserts but keep the UDS + perms proof.
+    // 2) Egress from INSIDE the wrapped worker: allow-listed succeeds, the non-allowed host is hard-denied. The in-union host must be reachable for the deny side to be a meaningful contrast — if offline, skip the egress asserts but keep the UDS + perms proof.
     const allowRes = await udsGet(socketPath, "/egress?url=" + encodeURIComponent("https://example.com"));
     const denyRes = await udsGet(socketPath, "/egress?url=" + encodeURIComponent("https://example.org"));
     console.log(`[uds-smoke] egress ALLOW(example.com)=${allowRes.body}`);
@@ -218,15 +181,13 @@ describe.runIf(process.platform === "darwin")("worker-spawn UDS smoke (macOS, re
     const denyParsed = JSON.parse(denyRes.body) as { httpCode?: string; denied?: boolean };
     const allowOk = !allowParsed.denied && /^[23]\d\d$/.test(allowParsed.httpCode ?? "");
     if (allowOk) {
-      // Online + allow side proven → the deny side MUST be hard-denied (the ASRT
-      // egress proxy returns no 2xx/3xx for an out-of-union host under strict).
+      // Online + allow side proven → the deny side MUST be hard-denied (the ASRT egress proxy returns no 2xx/3xx for an out-of-union host under strict).
       console.log(`[uds-smoke] egress contrast proven: allow=${allowParsed.httpCode} deny=${JSON.stringify(denyParsed)}`);
       expect(denyParsed.denied).toBe(true);
     } else {
       console.log("[uds-smoke] egress allow side not reachable (offline) — egress contrast skipped");
     }
 
-    // 4) Filesystem write OUTSIDE the jail is denied.
     const fsRes = await udsGet(socketPath, "/fswrite?path=" + encodeURIComponent(outsideJail));
     console.log(`[uds-smoke] fswrite OUTSIDE jail = ${fsRes.body}`);
     const fsParsed = JSON.parse(fsRes.body) as { wrote?: boolean; error?: string };

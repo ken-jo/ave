@@ -1,10 +1,5 @@
-/**
- * Mockable AveApi surface for renderer tests.
- *
- * Every method is a `vi.fn()` so tests can spy on calls, and the default
- * return values are sensible empty/pass values so <App /> can mount without
- * crashing.
- */
+/** Mockable AveApi surface for renderer tests. Every method is a `vi.fn()` so tests can spy on calls,
+ * and the default return values are sensible empty/pass values so <App /> can mount without crashing. */
 import { vi, type Mock } from "vitest";
 import type { RewindMode, RewindResult } from "../../src/shared/code-rewind.js";
 import { MAIN_CHAT_GROUP_ID } from "../../src/contract/app-contract.js";
@@ -26,25 +21,12 @@ import type { BrowserTabControlState, SessionTabBindingsState } from "../../src/
 
 export type MockAveApi = Record<string, Mock>;
 
-/**
- * A seeded conversation row: the REAL {@link SessionSummary} with everything
- * the mock can derive made optional. Re-declaring the row here let a fixture
- * describe a shape production never produces — the copy was missing
- * `projectRoot`, `projectName`, `archivedAt`, `unreadSince` and
- * `branchedFromCompactNum`, so a test could not seed the fields the sidebar
- * groups and badges by.
- */
+/** A seeded conversation row: the REAL {@link SessionSummary} with everything the mock can derive made optional. Re-declaring the row here let a fixture describe a shape production never
+ * produces; the copy was missing `projectRoot`, `projectName`, `archivedAt`, `unreadSince` and `branchedFromCompactNum`, so a test could not seed the fields the sidebar groups and badges by. */
 export type SessionSeed = Partial<SessionSummary> & Pick<SessionSummary, "id" | "modifiedAt">;
 
-/**
- * One conversation row with the defaults main would have stamped.
- *
- * The suites that render lists (sidebar, starred, insights) each wrote the same
- * literal out per row; this is that literal, once. `family` follows from the
- * other fields when a fixture does not name one, so a test written before
- * families still describes the row it meant.
- */
-/** The session the mock side-chat channel opens on `new` and `load`. */
+/** One conversation row with the defaults main would have stamped. The suites that render lists (sidebar, starred, insights) each wrote the same literal out per row; this is that literal, once. `family`
+ * follows from the other fields when a fixture does not name one, so a test written before families still describes the row it meant. The session the mock side-chat channel opens on `new` and `load`. */
 export const MOCK_SIDE_CHAT_SESSION_ID = "side-chat-1";
 
 export function sessionRow(seed: SessionSeed): SessionSummary {
@@ -62,11 +44,8 @@ export function sessionRow(seed: SessionSeed): SessionSummary {
   };
 }
 
-/**
- * Persisted default of `permissions.reviewer.parentAdjudication`. The
- * Permissions tab renders the block unconditionally, so every mock of
- * `reviewerDispatch("show")` has to carry it — main always does.
- */
+/** Persisted default of `permissions.reviewer.parentAdjudication`. The Permissions tab renders the
+ * block unconditionally, so every mock of `reviewerDispatch("show")` has to carry it; main always does. */
 export const MOCK_REVIEWER_PARENT_ADJUDICATION = {
   maxVerdict: "medium",
   timeoutMs: 30_000,
@@ -76,11 +55,8 @@ export const MOCK_REVIEWER_PARENT_ADJUDICATION = {
   model: "reviewer",
 } as const;
 
-/**
- * `PERMISSIONS.judgeGet` for a home with no `permissions.judge` block (judge
- * off, reviewer model unset) unless overridden. The Permissions tab renders the judge section unconditionally, so a
- * tab mock without it shows a read-failure status the real host never does.
- */
+/** `PERMISSIONS.judgeGet` for a home with no `permissions.judge` block (judge off, reviewer model unset) unless overridden. The
+ * Permissions tab renders the judge section unconditionally, so a tab mock without it shows a read-failure status the real host never does. */
 export function mockJudgeGet(overrides: {
   model?: { vendor: string; model: string } | null;
   modelOptions?: Array<{ vendor: string; model: string }>;
@@ -116,16 +92,8 @@ type HistoryMock = {
   messages: unknown[];
 };
 
-/**
- * Give seeded history rows the identity main always serializes.
- *
- * Every row main hands the renderer has been through `ConversationHistory`,
- * which stamps `messageId` — so a fixture without one is not a smaller version
- * of production, it is a shape production never produces, and the actions that
- * address a row by id would be unreachable in every test that uses it. Ids are
- * derived from the row's position here only because a fixture is static; the
- * app never derives them that way.
- */
+/** Give seeded history rows the identity main always serializes. Every row main hands the renderer has been through `ConversationHistory`, which stamps `messageId`; so a fixture without one is not a smaller version of production, it is a
+ * shape production never produces, and the actions that address a row by id would be unreachable in every test that uses it. Ids are derived from the row's position here only because a fixture is static; the app never derives them that way. */
 function withSeededMessageIds(messages: unknown[]): unknown[] {
   return messages.map((message, index) =>
     message !== null && typeof message === "object" && !("messageId" in message)
@@ -137,17 +105,11 @@ function withSeededMessageIds(messages: unknown[]): unknown[] {
 type AgentSpawnEvent = SharedAgentSpawnEvent<ChatEntry>;
 
 type ApiOverrides = {
-  /**
-   * Give the double a terminal surface (`api.terminal`). Off by default: most
-   * suites never open a terminal, and the app treats an absent surface as "no
-   * terminal here". A suite that turns it on also mocks xterm.
-   */
+  /** Give the double a terminal surface (`api.terminal`). Off by default: most suites never open a terminal,
+   * and the app treats an absent surface as "no terminal here". A suite that turns it on also mocks xterm. */
   terminal?: boolean;
-  /**
-   * Give the double the agent browser surface (`api.browserTabs`) and the
-   * active-surface report (`api.setActiveSurface`). A test drives main's side
-   * with `emitBrowserTabOp` / `emitBrowserControl` below.
-   */
+  /** Give the double the agent browser surface (`api.browserTabs`) and the active-surface report
+   * (`api.setActiveSurface`). A test drives main's side with `emitBrowserTabOp` / `emitBrowserControl` below. */
   browserTabs?: boolean;
   settings?: unknown;
   /** Override the settings RPC itself when a renderer test needs to control its timing. */
@@ -175,11 +137,7 @@ type ApiOverrides = {
   skills?: unknown;
   pluginCards?: unknown[];
   pluginUiExtensions?: unknown[];
-  /**
-   * Give the app a side-chat channel. Off by default because the panel offers
-   * the side-chat tab only when the host has one, and most suites want the
-   * launcher as it is without it.
-   */
+  /** Give the app a side-chat channel. Off by default because the panel offers the side-chat tab only when the host has one, and most suites want the launcher as it is without it. */
   sideChat?: boolean;
   latestRoutineResult?: unknown;
   pendingRoutineResults?: unknown[];
@@ -192,9 +150,8 @@ type ApiOverrides = {
   } | null;
 };
 
-/** The settings a mock app boots with. Exported so a test that needs to vary
- *  ONE field can start from a complete, bootable object instead of a partial
- *  one — App reads `llm.provider` during mount and throws on a bare stub. */
+/** The settings a mock app boots with. Exported so a test that needs to vary ONE field can start from a
+ * complete, bootable object instead of a partial one; App reads `llm.provider` during mount and throws on a bare stub. */
 export const MOCK_DEFAULT_SETTINGS = {
   llm: fakeLlmSettings({ provider: "openai", model: "gpt-4o-mini" }),
   chat: { systemPrompt: "", autoCompact: true },
@@ -207,14 +164,10 @@ export const MOCK_DEFAULT_SETTINGS = {
   routine: {},
   homeDocs: { keepLatest: false },
   privacy: { piiRedactEnabled: false },
-  // Global shortcuts are off with no accelerator chosen — the persisted
-  // default in `settings-defaults.ts`.
+  // Global shortcuts are off with no accelerator chosen; the persisted default in `settings-defaults.ts`.
   shortcuts: { toggleWindow: null, enabled: false },
-  // Z onboarding chain — mark the seed user as already past onboarding so
-  // the first-boot probe dispatches `probe-skip` and the chain advances
-  // straight to `done`. Without this, the chain stays at the new default
-  // initial stage ("showcase") and masks the ChatView empty-state branch
-  // that several tests rely on.
+  // Z onboarding chain; mark the seed user as already past onboarding so the first-boot probe dispatches `probe-skip` and the chain advances straight to
+  // `done`. Without this, the chain stays at the new default initial stage ("showcase") and masks the ChatView empty-state branch that several tests rely on.
   features: { idlePreferenceRefresh: false, onboardingCompleted: true },
 };
 
@@ -232,8 +185,7 @@ const DEFAULT_USAGE = {
   generatedAt: new Date().toISOString(),
 };
 
-/** The app identity a mock app boots with — exported so a test asserting the
- *  version on screen reads the same value the mock serves. */
+/** The app identity a mock app boots with; exported so a test asserting the version on screen reads the same value the mock serves. */
 export const DEFAULT_APP_INFO = {
   version: "0.0.0-test",
   electronVersion: "0.0.0",
@@ -245,11 +197,7 @@ export const DEFAULT_APP_INFO = {
   userDataPath: "/tmp/ave-test-user-data",
 };
 
-/**
- * The terminal surface: every shell spawns, and output reaches the app through
- * the `onData` listeners the app registered — a test drives them with
- * `emitTerminalData` below.
- */
+/** The terminal surface: every shell spawns, and output reaches the app through the `onData` listeners the app registered; a test drives them with `emitTerminalData` below. */
 function makeTerminalDouble() {
   const dataListeners = new Set<(payload: TerminalDataEvent) => void>();
   return {
@@ -317,17 +265,17 @@ function makeBrowserTabsDouble() {
 
 export function makeMockAveApi(overrides: ApiOverrides = {}): {
   api: MockAveApi;
-  /** Which groups' loops were released — one spy per group, see the body. */
+  /** Which groups' loops were released; one spy per group, see the body. */
   releasedGroupIds: () => string[];
   emitChatStream: (ev: ChatStreamEvent) => void;
   /** `ave:chat:fallback` addressed to one tile, as preload's per-group filter delivers it. */
   emitChatFallback: (chatGroupId: string, payload: { from: string; to: string }) => void;
   emitAgentSpawnEvent: (event: AgentSpawnEvent) => void;
-  /** `ave:skill-load:event` — window-wide, stamped with the turn's session. */
+  /** `ave:skill-load:event`; window-wide, stamped with the turn's session. */
   emitSkillLoaded: (event: { name: string; description: string; sessionId: string }) => void;
-  /** `onSessionTasksChanged` push — the assistant's checklist for one session. */
+  /** `onSessionTasksChanged` push; the assistant's checklist for one session. */
   emitSessionTasksChanged: (payload: { sessionId: string; items: unknown[] }) => void;
-  /** `onSessionGoalChanged` push — the goal one session is working towards, or its absence. */
+  /** `onSessionGoalChanged` push; the goal one session is working towards, or its absence. */
   emitSessionGoalChanged: (payload: { sessionId: string; goal: unknown }) => void;
   emitOverlayShow: (item: unknown) => void;
   emitOverlayDismiss: (id: string) => void;
@@ -363,20 +311,17 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
   const historyBySession = overrides.historyBySession ?? {};
   const hasApiKey = overrides.hasApiKey ?? true;
   // Main derives `activeChatModel` onto every snapshot it sends
-  // (`rendererSettingsSnapshot`); the mock does the same from its own key
-  // answer, unless a test hands one in explicitly.
+  // (`rendererSettingsSnapshot`); the mock does the same from its own key answer, unless a test hands one in explicitly.
   const projectSnapshot = (value: unknown): unknown => {
     const record = value as { llm?: Partial<ActiveChatModelSettings>; activeChatModel?: unknown };
     if (record.activeChatModel !== undefined) return record;
-    // Many fixtures hand-write a partial `llm`; main's store would have
-    // normalized it, so fill what normalization fills before deriving.
+    // Many fixtures hand-write a partial `llm`; main's store would have normalized it, so fill what normalization fills before deriving.
     const llm = {
       ...MOCK_DEFAULT_SETTINGS.llm,
       ...record.llm,
       activeChatRuntime: record.llm?.activeChatRuntime ?? { kind: "api" as const },
     } as ActiveChatModelSettings;
-    // Main's rule (`activeApiRouteConnected`): a stored key, or a route that
-    // runs without one.
+    // Main's rule (`activeApiRouteConnected`): a stored key, or a route that runs without one.
     const connected = hasApiKey
       || canUseLlmVendorWithoutApiKey(llm.provider, getLlmVendorSettings(llm.vendors, llm.provider));
     return { ...record, activeChatModel: resolveActiveChatModel(llm, connected) };
@@ -386,9 +331,8 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
     chatGroupRelease: ReturnType<typeof vi.fn>;
     onChatFallback: ReturnType<typeof vi.fn>;
   }>();
-  // The provider-fallback frame is labelled with its chat group in preload
-  // and filtered per tile; the mock keeps one handler set per group so a test
-  // can address the frame to ONE tile, as main does.
+  // The provider-fallback frame is labelled with its chat group in preload and filtered per tile; the
+  // mock keeps one handler set per group so a test can address the frame to ONE tile, as main does.
   const chatFallbackHandlers = new Map<string, Set<(payload: { from: string; to: string }) => void>>();
   const subscribeChatFallback = (chatGroupId: string) =>
     vi.fn((handler: (payload: { from: string; to: string }) => void) => {
@@ -397,9 +341,7 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
       handlers.add(handler);
       return () => handlers.delete(handler);
     });
-  // The primary group is not reached through `chatGroup()` — `chatGroupApi`
-  // hands it the window api itself — so its release is the top-level member,
-  // exactly as in `AveApi`.
+  // The primary group is not reached through `chatGroup()`; `chatGroupApi` hands it the window api itself; so its release is the top-level member, exactly as in `AveApi`.
   const chatGroupRelease = vi.fn(async () => ({ ok: true, released: true }));
   const subscriptionRuntimeStatus = overrides.subscriptionRuntimeStatus ?? {
     ok: false,
@@ -479,14 +421,8 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
         return () => tourStartHandlers.delete(handler);
       }),
     },
-    // No plugin declares onboarding in the default fixture, so the host has
-    // nothing to propose and stages no card.
-    //
-    // The cast is the price of `MockAveApi` being `Record<string, Mock>`: a
-    // namespaced surface is not a `Mock`, so the literal fails the index
-    // signature. Five surfaces above and below carry that error untyped rather
-    // than cast; widening the type is a change every consumer of `api.<fn>`
-    // would feel, and it is not this one's to make.
+    // No plugin declares onboarding in the default fixture, so the host has nothing to propose and stages no card. The cast is the price of `MockAveApi` being `Record<string, Mock>`: a namespaced surface is not a `Mock`, so
+    // the literal fails the index signature. Five surfaces above and below carry that error untyped rather than cast; widening the type is a change every consumer of `api.<fn>` would feel, and it is not this one's to make.
     onboarding: {
       listPending: vi.fn(async () => ({ ok: true, pending: [] })),
       answer: vi.fn(async () => ({ ok: true, pending: [] })),
@@ -498,9 +434,8 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
       settingsUpdatedHandlers.forEach((handler) => handler(snapshot));
       return snapshot;
     }),
-    // Nothing is env-forced by default: a test that cares about the forced
-    // notice says so explicitly, and every other test gets the ordinary case
-    // rather than a rejected promise from a missing method.
+    // Nothing is env-forced by default: a test that cares about the forced notice says so explicitly,
+    // and every other test gets the ordinary case rather than a rejected promise from a missing method.
     envForcedSettings: vi.fn(async () => overrides.envForcedSettings ?? []),
     getModelCatalog: vi.fn(async (): Promise<ModelCatalogIpcResult> => overrides.modelCatalog ?? { ok: false, error: "catalog-unavailable" }),
     telemetryAllowedHosts: vi.fn(async () => overrides.telemetryAllowedHosts ?? ["localhost"]),
@@ -594,18 +529,11 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
     },
 
     chatHasProvider: vi.fn(async () => hasProvider),
-    // A tile binds its own view of the window api through `chatGroupApi`, so a
-    // window with more than one tile needs this to exist at all — without it a
-    // split throws `chat-group-unavailable`. Each non-primary group answers
-    // with its OWN conversation id, which is what lets a test tell two tiles
-    // apart; everything else is deliberately the window's shared mock.
+    // A tile binds its own view of the window api through `chatGroupApi`, so a window with more than one tile needs this to exist at all; without it a split throws
+    // `chat-group-unavailable`. Each non-primary group answers with its OWN conversation id, which is what lets a test tell two tiles apart; everything else is deliberately the window's shared mock.
     chatGroup: vi.fn((chatGroupId: string) => {
-      // Memoized per group, so a spy a test reads is the same one production
-      // called. A fresh object per call would hand every assertion a spy
-      // nothing had touched, and "was a loop released?" could not be asked.
-      // The spy is per GROUP, not shared: the interesting question at the
-      // conversation ceiling is not whether something was released but WHICH
-      // group was — a shared spy answers the first and hides the second.
+      // Memoized per group, so a spy a test reads is the same one production called. A fresh object per call would hand every assertion a spy nothing had touched, and "was a loop released?" could not be
+      // asked. The spy is per GROUP, not shared: the interesting question at the conversation ceiling is not whether something was released but WHICH group was; a shared spy answers the first and hides the second.
       const existing = chatGroupApis.get(chatGroupId);
       if (existing) return existing;
       const made = {
@@ -618,11 +546,8 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
     }),
     chatGroupRelease,
     captureUserKeyboardIntent: vi.fn(() => ({ inputOrigin: "user-keyboard", token: "mock-user-intent" })),
-    // Mirrors `runStreamedTurn`: every accepted turn announces its input and
-    // the identity of the row the host appended for it, which is how the
-    // transcript's optimistic bubble learns which row it stands for. Without
-    // this the bubble would never become addressable and every action that
-    // names a past message would be dead in tests but alive in the app.
+    // Mirrors `runStreamedTurn`: every accepted turn announces its input and the identity of the row the host appended for it, which is how the transcript's optimistic bubble
+    // learns which row it stands for. Without this the bubble would never become addressable and every action that names a past message would be dead in tests but alive in the app.
     chatSend: vi.fn(async (payload?: unknown) => {
       const text = typeof payload === "string"
         ? payload
@@ -642,8 +567,7 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
       const beforeTime = opts?.before ? Date.parse(opts.before) : Number.NaN;
       const afterTime = opts?.after ? Date.parse(opts.after) : Number.NaN;
       const filtered = sessions.filter((session) => {
-        // Mirrors the handler: a `families` request selects by family and
-        // ignores `kind`; without one, `kind` governs the main store alone.
+        // Mirrors the handler: a `families` request selects by family and ignores `kind`; without one, `kind` governs the main store alone.
         const family = session.family;
         if (opts?.families) {
           if (!opts.families.includes(family)) return false;
@@ -664,9 +588,7 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
       };
     }),
     chatSessionResume: vi.fn(async (id: string) => ({ ok: true, compacted: false, compactedAt: null, removedMessageCount: 0 })),
-    // Reached whenever a tile that is NOT focused takes stream activity — the
-    // window marks that conversation unread. A window with two tiles hits it
-    // in the ordinary course of a test.
+    // Reached whenever a tile that is NOT focused takes stream activity; the window marks that conversation unread. A window with two tiles hits it in the ordinary course of a test.
     chatSessionUpdate: vi.fn(async () => ({ ok: true as const })),
     chatCompact: vi.fn(async () => ({ compacted: false, compactedAt: null, summary: "불필요", removedMessageCount: 0 })),
     chatMainActiveState: vi.fn(async () => mainActiveState),
@@ -687,9 +609,8 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
       };
     }),
     chatEditResend: vi.fn(async () => ({ ok: true })),
-    // Main hands back the input to restore, resolved from the row it cut, so
-    // the double resolves it from the seeded history the same way rather than
-    // returning an empty string the composer would silently accept.
+    // Main hands back the input to restore, resolved from the row it cut, so the double resolves it from the
+    // seeded history the same way rather than returning an empty string the composer would silently accept.
     chatRewindTo: vi.fn(async (messageId: string, mode?: RewindMode): Promise<RewindResult> => {
       if (mode === "code") return { ok: true, text: "" };
       const resolved = await history;
@@ -703,9 +624,8 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
       };
     }),
     chatFork: vi.fn(async () => ({ ok: true, sessionId: currentSession })),
-    // Shapes match actual preload/IPC return types exactly — discriminated union:
-    // success paths have no `ok` field (enter → { messageIndexAtCreation }, branch → { newSessionId, ...branchState });
-    // error paths return { error: string }. IPC may also return UNAUTHORIZED_FRAME { ok: false, error }.
+    // Shapes match actual preload/IPC return types exactly; discriminated union: success paths have no `ok` field (enter → { messageIndexAtCreation },
+    // branch → { newSessionId, ...branchState }); error paths return { error: string }. IPC may also return UNAUTHORIZED_FRAME { ok: false, error }.
     chatEnterCheckpointView: vi.fn(async (_sessionId: string, _compactNum: number) => ({ messageIndexAtCreation: 5 })),
     chatExitCheckpointView: vi.fn(async () => ({ ok: true })),
     chatBranchFromCheckpoint: vi.fn(async (_sessionId: string, _compactNum: number) => ({
@@ -811,8 +731,7 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
       install: vi.fn(async () => ({ ok: false as const, error: "git-runtime-unavailable" as const })),
       onProgress: vi.fn(() => () => {}),
     } as unknown as Mock,
-    // Marketplace agent/skill surface. Settings/dashboard tests still read
-    // these counts even though the composer no longer injects them per turn.
+    // Marketplace agent/skill surface. Settings/dashboard tests still read these counts even though the composer no longer injects them per turn.
     listAgentProfiles: vi.fn(async () => agentProfiles),
     listSkills: vi.fn(async () => skills),
     uninstallAgentPackage: vi.fn(async (slug: string) => ({
@@ -881,10 +800,8 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
     onRoutineRunningFinished: vi.fn((_h: (id: string) => void) => () => {}),
     onRoutineFailed: vi.fn((_handler: (event: { routineId: string; error: string }) => void) => () => {}),
     listRoutineSessions: vi.fn(async (routineId: string) => routineSessionsByRoutine[routineId] ?? []),
-    // Work Board API — board panel subscribes to onWorkBoardItemChanged at
-    // mount, so the smoke test mock must define these even when the suite
-    // doesn't exercise the board. CRUD mocks return the store's discriminated
-    // `status` envelopes; events are no-op subscribe handles by default.
+    // Work Board API; board panel subscribes to onWorkBoardItemChanged at mount, so the smoke test mock must define these even when the suite
+    // doesn't exercise the board. CRUD mocks return the store's discriminated `status` envelopes; events are no-op subscribe handles by default.
     listWorkBoard: vi.fn(async () => ({ status: "ok", items: [] })),
     getWorkBoardItem: vi.fn(async (id: number) => ({ status: "not_found", itemId: id })),
     addWorkBoardItem: vi.fn(async () => ({ status: "invalid", reason: "mock" })),
@@ -914,8 +831,7 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
     onWorkBoardRunFailed: vi.fn((_h: (p: unknown) => void) => () => {}),
     onWorkBoardFailed: vi.fn((_h: (event: { itemId: number; error: string }) => void) => () => {}),
     onWorkBoardDueSoon: vi.fn((_h: (p: unknown) => void) => () => {}),
-    // Overlay trigger lifecycle. Tests that don't exercise the
-    // trigger card just need these to be callable subscribe/no-op functions.
+    // Overlay trigger lifecycle. Tests that don't exercise the trigger card just need these to be callable subscribe/no-op functions.
     onTriggerStarted: vi.fn((_h: (p: unknown) => void) => () => {}),
     onTriggerCompleted: vi.fn((_h: (r: unknown) => void) => () => {}),
     onTriggerFailed: vi.fn((_h: (p: unknown) => void) => () => {}),
@@ -951,8 +867,7 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
             const chat = paneChats.get(surface.tabId) ?? { sessionId: `00000000-0000-4000-8000-${String(++mintedPaneChats).padStart(12, "0")}`, messages: [] };
             chat.messages.push({ index: chat.messages.length, role: "user" as const, content: input });
             paneChats.set(surface.tabId, chat);
-            // Main announces the turn's session in its prelude and closes the
-            // stream with `done`; the pane chat's turn then reads as finished.
+            // Main announces the turn's session in its prelude and closes the stream with `done`; the pane chat's turn then reads as finished.
             const streamId = ++paneChatStreams;
             for (const handler of [...sideStreamHandlers]) {
               handler({ type: "user_message", streamId, sessionId: chat.sessionId, sendRequestId: _request, text: input } as ChatStreamEvent);
@@ -1009,13 +924,11 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
       bootstrapStatusHandlers.add(handler);
       return () => bootstrapStatusHandlers.delete(handler);
     }),
-    // Late-mount snapshot pull. `null` is the host's answer when nothing was
-    // reported yet, which is what most suites want: the mock stays event-driven.
+    // Late-mount snapshot pull. `null` is the host's answer when nothing was reported yet, which is what most suites want: the mock stays event-driven.
     getBootstrapStatus: vi.fn(async () => null),
     retryBootstrap: vi.fn(async () => ({ ok: true })),
-    // App auto-update bridge — renderer's useAppUpdate hook subscribes
-    // immediately at App mount, so the smoke test mock must define these
-    // even when the suite doesn't exercise update flow.
+    // App auto-update bridge; renderer's useAppUpdate hook subscribes immediately at App mount,
+    // so the smoke test mock must define these even when the suite doesn't exercise update flow.
     onAppUpdateState: vi.fn(() => () => {}),
     getAppUpdateState: vi.fn(async () => ({ kind: "idle" })),
     downloadAppUpdate: vi.fn(async () => ({ ok: true })),
@@ -1032,12 +945,8 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
 
   return {
     api,
-    /**
-     * Which groups' loops were released. One spy per group rather than one
-     * shared spy: at the conversation ceiling the interesting question is not
-     * whether something was released but WHICH group was, and a shared spy
-     * answers only the first.
-     */
+    /** Which groups' loops were released. One spy per group rather than one shared spy: at the conversation ceiling the
+     * interesting question is not whether something was released but WHICH group was, and a shared spy answers only the first. */
     releasedGroupIds: (): string[] => [
       ...(chatGroupRelease.mock.calls.length > 0 ? [MAIN_CHAT_GROUP_ID] : []),
       ...[...chatGroupApis.entries()]
@@ -1072,15 +981,8 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
   };
 }
 
-/**
- * Build the double and put it where the renderer looks for it.
- *
- * Every settings-tab test needs the same two lines — make the api, assign it to
- * `window.aveApi` — and each one had written its own `installApi`, which is
- * how two of them ended up as the same function under the same name in two
- * files. One implementation, so a component that starts calling a new method
- * gets it everywhere at once instead of failing per test file.
- */
+/** Build the double and put it where the renderer looks for it. Every settings-tab test needs the same two lines; make the api, assign it to `window.aveApi`; and each one had written its own `installApi`, which is
+ * how two of them ended up as the same function under the same name in two files. One implementation, so a component that starts calling a new method gets it everywhere at once instead of failing per test file. */
 export function installMockAveApi(overrides: ApiOverrides = {}): MockAveApi {
   const { api } = makeMockAveApi(overrides);
   (globalThis as unknown as { window: { aveApi?: unknown } }).window.aveApi = api;
@@ -1098,10 +1000,7 @@ type AveNamespaceOverrides = {
   pendingApprovals?: unknown[];
   /** Project folders `workspace.listRoots` reports; the default is `/ws` alone. */
   workspaceRoots?: Array<{ path: string; isDefault: boolean }>;
-  /**
-   * Install the native context-menu bridge (`ave.ui`). Opt-in: without it the
-   * renderer's menus fall through to their ancestors, which most suites rely on.
-   */
+  /** Install the native context-menu bridge (`ave.ui`). Opt-in: without it the renderer's menus fall through to their ancestors, which most suites rely on. */
   nativeContextMenu?: boolean;
 };
 
@@ -1146,12 +1045,9 @@ export function makeMockAveNamespace(overrides: AveNamespaceOverrides = {}) {
           return () => approvalSettledHandlers.delete(cb);
         }),
         respond: vi.fn(async () => ({ ok: true })),
-        // Nothing parked on the host by default; a test that opens with a
-        // request already waiting (a reload mid-approval) overrides this.
+        // Nothing parked on the host by default; a test that opens with a request already waiting (a reload mid-approval) overrides this.
         listPending: vi.fn(async () => overrides.pendingApprovals ?? []),
-        // `/allow` selector. Defaults to "no provider configured" so a test
-        // that never opts in still exercises the failure path rather than a
-        // silently successful proposal.
+        // `/allow` selector. Defaults to "no provider configured" so a test that never opts in still exercises the failure path rather than a silently successful proposal.
         selectSentence: vi.fn(async () => ({
           ok: false as const,
           error: "allow-selector-unavailable",
@@ -1173,9 +1069,8 @@ export function makeMockAveNamespace(overrides: AveNamespaceOverrides = {}) {
         })),
         set: vi.fn(async () => ({ ok: true })),
       },
-      // File-preview + project-folder browser surfaces (workspace rail). Default
-      // stubs so any renderApp-based test that opens the file-browser tab renders
-      // without a real preload bridge.
+      // File-preview + project-folder browser surfaces (workspace rail). Default stubs so any
+      // renderApp-based test that opens the file-browser tab renders without a real preload bridge.
       preview: {
         readFile: vi.fn(async (path: string) => ({ ok: true, content: "", path, truncated: false })),
       },
@@ -1194,7 +1089,7 @@ export function makeMockAveNamespace(overrides: AveNamespaceOverrides = {}) {
       ...ui,
     },
     emitApproval: (r: unknown) => approvalHandlers.forEach((h) => h(r)),
-    /** The host retired a parked request — see `ave:approval:settled`. */
+    /** The host retired a parked request; see `ave:approval:settled`. */
     emitApprovalSettled: (requestId: string) =>
       approvalSettledHandlers.forEach((h) => h({ requestId })),
     /** Answer the last native menu the renderer asked for with `command`. */

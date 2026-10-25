@@ -320,9 +320,9 @@ describe("documentation consumer guard", () => {
 
   it("installs the document dependency check in the site build configuration", async () => {
     const { default: site } = await import(resolve(root, "web/next.config.mjs")) as {
-      default: { webpack: (config: { plugins: unknown[] }) => { plugins: unknown[] } };
+      default: { webpack: (config: { plugins: unknown[]; resolve: object }) => { plugins: unknown[] } };
     };
-    const config = site.webpack({ plugins: [] });
+    const config = site.webpack({ plugins: [], resolve: {} });
     expect(config.plugins.some((plugin) => plugin instanceof DocumentDependencyPlugin)).toBe(true);
   });
 

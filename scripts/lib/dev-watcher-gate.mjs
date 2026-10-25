@@ -2,7 +2,7 @@ import { statSync } from "node:fs";
 
 // Prefer readiness signals because skip-write builds may leave output timestamps unchanged.
 // Poll mtime only for watchers that always rewrite their first output.
-export async function waitForFirstBuild(watcher, since, timeoutMs, sleepMs = 100) {
+async function waitForFirstBuild(watcher, since, timeoutMs, sleepMs = 100) {
   if (watcher.readyPromise) {
     const timeout = new Promise((r) => setTimeout(() => r("__timeout__"), timeoutMs));
     const result = await Promise.race([watcher.readyPromise.then(() => "__ready__"), timeout]);

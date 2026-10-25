@@ -26,8 +26,7 @@ export function approvalFailureOutcome(
       ...permission,
       decision: "deny",
       reason,
-      // A preceding policy result describes why approval was requested; the
-      // denial audit must describe why that request actually ended.
+      // Denial audit must record why approval ended, not merely why it was requested.
       denyReasons: [{ layer: permission.layer, source: "approval-gate", reason }],
     },
   };

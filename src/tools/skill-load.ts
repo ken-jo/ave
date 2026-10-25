@@ -1,26 +1,5 @@
-/**
- * `skill_load` LLM tool — READS a skill (SKILL.md markdown w/ frontmatter) on
- * demand. Progressive disclosure: the system prompt carries only the skill
- * index (name + description); the body enters the context only as this
- * tool's result, so reading a skill is an explicit step the transcript shows
- * ("Read skill · <name>"). The tool name is kept for contract stability (the
- * Tailnet P1 block list and reviewer rules key on it).
- *
- * Security model (post C2 review + #1104 file-seed migration):
- *   - Skill bodies are NEVER appended to conversation history as `user`-role
- *     messages, and never spliced into the system prompt. The body is the
- *     tool_result (the data channel, like `read_file`), fenced with
- *     `<ave-skill name="…">…</ave-skill>` and fence-neutralized so provenance
- *     is unambiguous (see {@link renderSkillReadResult}).
- *   - Every skill — including seeded built-ins under `~/.ave/skills/`,
- *     which are user-editable on disk — runs through {@link ApprovalGate}
- *     on first load. Approval is persisted in `~/.ave/skills/approvals.json`
- *     and hash-bound to the current body so a post-approval body swap
- *     re-prompts (R2-CR-3 TOCTOU close).
- *   - Skill names are allowlisted to `[a-zA-Z0-9_-]+` and traversal-checked
- *     by {@link SkillStore} — see `skill-store.ts` for the file-side
- *     defenses.
- */
+// Skill bodies are neutralized, fenced tool data, never user messages or trusted system-prompt additions.
+// Content-bound approval covers editable seeded skills; selector allowlists and store traversal checks constrain access.
 import { randomUUID } from "node:crypto";
 import { t } from "../i18n/index.js";
 import { createDynamicTool, type Tool } from "./base.js";
@@ -37,33 +16,12 @@ const log = createLogger("ave");
 export interface SkillLoadEvent {
   name: string;
   description: string;
-  /**
-   * Conversation the loading turn belongs to. The badge rides a window-wide
-   * channel, and a window holds several conversations at once, so without the
-   * asking session every tile would wear every tile's skill badges.
-   */
+  // Attribute window-wide skill badges to the loading conversation so other tiles cannot inherit them.
   sessionId: string;
 }
 
-/**
- * What the approval record is hash-bound to.
- *
- * The body alone stopped being sufficient once a skill can ship bundled files:
- * their NAMES render inside the `<ave-skill>` fence, so a bundle that gains
- * files while SKILL.md is unchanged would reach the model without re-prompting — the exact TOCTOU the body-hash binding exists to prevent.
- *
- * Scope: the body plus each bundled file's NAME and SIZE — i.e. exactly what the
- * `<ave-skill>` fence renders. Resource CONTENT is deliberately not covered; it
- * arrives only on a separate `skill_read` call.
- *
- * Two encodings live here — the bare body (no bundle) and a digest pair (bundle)
- * — so they are kept in SEPARATE key spaces by {@link approvalRecordKey}. Within
- * the bundle space the pair is unambiguous (fixed-width hex either side of `|`),
- * and across spaces a crafted body can no longer impersonate a pair because the
- * two never share a record key. Skills with no resources still hash the bare
- * body under the unchanged key, so existing approvals (all seeded built-ins,
- * which are flat files, included) stay valid.
- */
+// Bind approval to body plus bundled names and sizes shown in the fence; resource bytes require separate reads.
+// Keep flat-body and bundled-digest encodings in separate key spaces while preserving existing flat approvals.
 function approvalMaterial(skill: { body: string; resources: readonly { path: string; bytes: number }[] }): string {
   if (skill.resources.length === 0) return skill.body;
   const manifest = skill.resources
@@ -73,15 +31,7 @@ function approvalMaterial(skill: { body: string; resources: readonly { path: str
   return `${sha256Hex(skill.body)}|${sha256Hex(manifest)}`;
 }
 
-/**
- * Which approval record {@link approvalMaterial} is stored under.
- *
- * Bundle-bearing approvals get their own namespace so the two material
- * encodings never share a key space (see `approvalMaterial`). Resource-bearing
- * skills are new, so no legacy record exists under the namespaced key and the
- * separation costs nothing; resource-less skills keep the original key and
- * their existing approvals.
- */
+// Namespace bundled approval records so digest material cannot collide with flat bodies; retain legacy flat keys.
 function approvalRecordKey(skill: {
   name: string;
   approvalKey?: string;
@@ -97,13 +47,8 @@ export interface SkillLoadToolDeps {
   overlay: SkillOverlay;
   /** Persistent allowlist for user-authored skills. */
   approvals: SkillApprovalsStore;
-  /**
-   * ApprovalGate for first-use prompts (user-authored skills only). Held by
-   * value like every other gate wiring: the gate is constructed before the
-   * builtin tools are registered, so there is nothing to late-bind.
-   */
+  // First-use approval gate is constructed before tool registration and needs no late binding.
   approvalGate: ApprovalGate;
-  /** Renderer event sink — used by the chat to render the SkillBadge. */
   emit: (event: SkillLoadEvent) => void;
   /** Exact generation lease held while the materialized body is read and registered. */
   acquirePluginGeneration?: (
@@ -114,7 +59,6 @@ export interface SkillLoadToolDeps {
   }>;
 }
 
-/** One category for the tool and for its body-approval request. */
 const SKILL_LOAD_CATEGORY = "read" as const;
 
 export function createSkillLoadTool(deps: SkillLoadToolDeps): Tool {
@@ -122,11 +66,7 @@ export function createSkillLoadTool(deps: SkillLoadToolDeps): Tool {
     name: "skill_load",
     description: t("be_skillLoad.toolDescription"),
     source: "builtin",
-    // A pure read: no filesystem mutation, and the body lands in a
-    // tool_result (the data channel), not in the trusted system prompt. The
-    // content-bound control is the body-hash approval below — every skill,
-    // seeded built-ins included, still goes through the approval dock on its
-    // first read and again whenever its body or bundle changes.
+    // Read-only tool results still require content-bound approval on first load and whenever body or bundle changes.
     category: SKILL_LOAD_CATEGORY,
     isReadOnly: () => true,
     jsonSchema: {
@@ -148,9 +88,7 @@ export function createSkillLoadTool(deps: SkillLoadToolDeps): Tool {
           isError: true,
         };
       }
-      // C2(b): allowlist check before doing any filesystem work — defense in
-      // depth even though SkillStore enforces the same constraint on file
-      // discovery.
+      // Check selector allowlists before any filesystem work, independently of store discovery checks.
       if (!SKILL_SELECTOR_ALLOWLIST.test(skillName)) {
         return {
           output: JSON.stringify({
@@ -187,14 +125,7 @@ export function createSkillLoadTool(deps: SkillLoadToolDeps): Tool {
       }
 
       try {
-
-      // C2(d): every skill body is user-editable on disk — seeded built-in
-      // files included — so the approval gate runs uniformly. R2-CR-3:
-      // hash-bind approval to the current body AND its bundled manifest (see
-      // `approvalMaterial`). If the user approved an earlier body, or the
-      // bundle has since gained/resized a file, `isApproved` returns false and
-      // we re-prompt — closing the TOCTOU window where post-approval mutations
-      // would silently inherit the previous "yes."
+      // Editable skill bodies and bundled names/sizes must match approved material; any change requires approval again.
       const alreadyApproved = await deps.approvals.isApproved(
         approvalRecordKey(skill),
         approvalMaterial(skill),
@@ -204,14 +135,9 @@ export function createSkillLoadTool(deps: SkillLoadToolDeps): Tool {
           id: randomUUID(),
           category: "tool",
           toolName: "skill_load",
-          // The tool's real category, so the dock describes a read. No
-          // `allowedChoices` is set on purpose: away-authority answers only the
-          // allow-once/deny-once one-shot contract, and an unseen skill body
-          // must never be approved by an away grant on "read".
+          // Leave allowedChoices unset so remote one-shot read grants cannot approve unseen skill bodies.
           toolCategory: SKILL_LOAD_CATEGORY,
-          // Attribute the modal to the conversation loading the skill. The
-          // missing-session case is still rejected further down, after the
-          // user has decided — do not change that ordering here.
+          // Attribute approval to the loading session; preserve rejection of missing identity after the user's decision.
           ...(typeof ctx.metadata?.sessionId === "string" && ctx.metadata.sessionId
             ? { sessionId: ctx.metadata.sessionId }
             : {}),
@@ -228,9 +154,7 @@ export function createSkillLoadTool(deps: SkillLoadToolDeps): Tool {
             isError: true,
           };
         }
-        // R2-CR-3: persist approval BOUND TO the current body + bundled
-        // manifest. A later body swap, or a bundle file added/resized,
-        // invalidates this record.
+        // Persist body-and-manifest-bound approval so swaps and added/resized files invalidate it.
         await deps.approvals.approve(approvalRecordKey(skill), approvalMaterial(skill)).catch((err) => {
           log.warn(
             "skill_load: approval persistence failed (non-fatal): %s",
@@ -239,10 +163,7 @@ export function createSkillLoadTool(deps: SkillLoadToolDeps): Tool {
         });
       }
 
-      // R2-SEC-INFO: refuse to register a skill without a real session id.
-      // Falling back to "unknown" piles unattributed skills under one synthetic
-      // bucket and lets them leak across debug/test runs. The tool cannot
-      // function correctly without session attribution, so error out.
+      // Refuse missing session identity; a shared synthetic bucket would leak skill attribution across calls.
       const sessionId =
         typeof ctx.metadata?.sessionId === "string" && ctx.metadata.sessionId
           ? (ctx.metadata.sessionId as string)
@@ -256,9 +177,7 @@ export function createSkillLoadTool(deps: SkillLoadToolDeps): Tool {
           isError: true,
         };
       }
-      // Record the read for this conversation: `skill_read` authorizes bundled
-      // resources against the identity captured here. The generation lease is
-      // NOT held beyond this call — `skill_read` re-acquires and compares.
+      // Record approved identity in this conversation's overlay; skill_read reacquires and compares generation rather than retaining the lease.
       deps.overlay.register(sessionId, skill);
 
       deps.emit({

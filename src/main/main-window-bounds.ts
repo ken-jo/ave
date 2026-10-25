@@ -20,8 +20,8 @@ const MAIN_WINDOW_BOTTOM_GAP = 24;
 const MAIN_WINDOW_RIGHT_GAP = 10;
 
 // Initial work-mode bounds and runtime resize share these dimensions to prevent drift. Golden-ratio landscape: height 768, width = round(768 × φ) = 1243 (φ≈1.618).
-export const WORK_MODE_WIDTH = 1243;
-export const WORK_MODE_HEIGHT = 768;
+const WORK_MODE_WIDTH = 1243;
+const WORK_MODE_HEIGHT = 768;
 
 function initialMainWindowY(
   workArea: WorkAreaBounds,

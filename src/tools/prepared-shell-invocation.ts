@@ -49,13 +49,11 @@ export function prepareShellInvocation(identity: ShellInvocationIdentity, signal
   try {
     if (identity.plan.mode === "asrt") {
       home = createSandboxProcessHome();
-      // The profile may already own a temp root. Atomically create our own
-      // directory rather than trusting any existing entry at a fixed name.
+      // The profile may already own a temp root. Atomically create our own directory rather than trusting any existing entry at a fixed name.
       const temporary = mkdtempSync(join(home.path, "shell-tmp-"));
       Object.assign(safe, home.env, { TMPDIR: temporary, TMP: temporary, TEMP: temporary });
     }
-    // Bash initializes PWD from its actual cwd. Pin the same initial value for
-    // analysis and the final inner shell, independently of the parent's alias.
+    // Bash initializes PWD from its actual cwd. Pin the same initial value for analysis and the final inner shell, independently of the parent's alias.
     safe.PWD = shellPathForHostPath(shell, identity.resolvedCwd);
     const environment = Object.freeze(safe);
     const capabilities = getBashCapabilities(selected, environment, identity.resolvedCwd);
@@ -116,11 +114,8 @@ export function preparedShellCommand(handle: PreparedShellInvocation): Readonly<
   return Object.freeze({ shell: state.shell, argv: state.argv, environment: state.environment, homePath: state.home?.path, hostHome: state.hostHome });
 }
 
-/**
- * Foreground argv carrying the host's cwd probe, with the delimiters the
- * caller strips from stderr; the plain argv and no probe when the command
- * cannot change directory. Background shells use {@link preparedShellCommand}.
- */
+/** Foreground argv carrying the host's cwd probe, with the delimiters the caller strips from stderr; the plain
+ * argv and no probe when the command cannot change directory. Background shells use {@link preparedShellCommand}. */
 export function preparedShellCwdProbe(handle: PreparedShellInvocation, prelude?: string): Readonly<{
   argv: readonly string[]; probe?: ShellCwdProbe;
 }> {
@@ -130,10 +125,7 @@ export function preparedShellCwdProbe(handle: PreparedShellInvocation, prelude?:
   return Object.freeze({ argv, probe: state.cwdProbe });
 }
 
-/**
- * The wrapper runs only this launcher; the command is one exact inner -c
- * argument, behind the fixed cwd probe when `cwdProbe` is set.
- */
+/** The wrapper runs only this launcher; the command is one exact inner -c argument, behind the fixed cwd probe when `cwdProbe` is set. */
 export function preparedSandboxBootstrap(handle: PreparedShellInvocation, options: { cwdProbe?: boolean } = {}): string {
   const state = stateOf(handle);
   if (!state.home) throw new Error("Sandbox shell preparation has no owned HOME");
@@ -160,9 +152,7 @@ export function disposePreparedShellInvocation(handle: PreparedShellInvocation |
   state.home?.cleanup();
 }
 
-/** Claim once, synchronously before wrapper/native effects. The helper retaining
- * this cleanup owns pending preparation even if its caller settles or cancels.
- */
+/** Claim once, synchronously before wrapper/native effects. The helper retaining this cleanup owns pending preparation even if its caller settles or cancels. */
 export function claimPreparedShellInvocation(handle: PreparedShellInvocation): () => void {
   const state = stateOf(handle);
   if (state.phase !== "prepared") throw new Error("Shell preparation has already been claimed");

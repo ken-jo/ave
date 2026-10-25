@@ -1,16 +1,4 @@
-/**
- * Substrate-aware reviewer sandbox capability.
- *
- * The reviewer's `asrt` strong-relaxation (isWeakSandbox === false → the LLM
- * may downgrade a rule-based MEDIUM/HIGH verdict to LOW) must apply ONLY to
- * executions GENUINELY isolated by ASRT — the `wrapToolCommand`-wrapped
- * `bash`/`powershell` host-shell path. Plugin/MCP tool effects run in the
- * unwrapped long-lived MCP worker (isolation=none) and other in-process
- * builtins are not OS-jailed, so they must NEVER receive the asrt relaxation
- * even when the process-global capability is `asrt` (gate ON). Otherwise
- * enabling the host sandbox would SILENTLY relax the approval gate for
- * unsandboxed plugin/MCP tools — the opposite of intent.
- */
+// Only genuinely isolated executions receive sandbox relaxation; process-global shell capability must never relax unwrapped plugin/server or in-process tool effects.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -29,8 +17,7 @@ import {
 import { makeRiskClassifierContext as ctx } from "./test-helpers.js";
 
 describe("resolveReviewerSandboxCapability — execution-substrate awareness", () => {
-  // The host-shell view of the capability exists only while the shell
-  // sandbox was requested at boot.
+  // The host-shell view of the capability exists only while the shell sandbox was requested at boot.
   beforeEach(() => setShellSandboxRequestedAtBoot(true));
   afterEach(() => {
     __resetActiveSandboxCapabilityForTest();
@@ -50,8 +37,7 @@ describe("resolveReviewerSandboxCapability — execution-substrate awareness", (
     for (const toolName of ["bash", "powershell"]) {
       const cap = resolveReviewerSandboxCapability("builtin", toolName);
       expect(cap.kind).toBe("asrt");
-      // The host-shell substrate genuinely runs wrapped → NOT weak → reviewer
-      // may relax for these calls.
+      // The host-shell substrate genuinely runs wrapped → NOT weak → reviewer may relax for these calls.
       expect(isWeakSandbox(cap)).toBe(false);
     }
   });
@@ -98,8 +84,7 @@ describe("resolveReviewerSandboxCapability — execution-substrate awareness", (
   });
 
   it("reports the active asrt capability for terminal_run only while the sandbox contains shells", () => {
-    // A workspace terminal exists only under a shell-containing sandbox and
-    // keeps its wrap for life, so a command typed into it lands confined.
+    // A workspace terminal exists only under a shell-containing sandbox and keeps its wrap for life, so a command typed into it lands confined.
     setShellSandboxRequestedAtBoot(true);
     setActiveSandboxCapability({
       kind: "asrt",
@@ -140,16 +125,14 @@ describe("resolveReviewerSandboxCapability — execution-substrate awareness", (
 });
 
 describe("substrate-aware capability — end-to-end reviewer prompt + downgrade guard", () => {
-  // The host-shell view of the capability exists only while the shell
-  // sandbox was requested at boot.
+  // The host-shell view of the capability exists only while the shell sandbox was requested at boot.
   beforeEach(() => setShellSandboxRequestedAtBoot(true));
   afterEach(() => {
     __resetActiveSandboxCapabilityForTest();
     __resetSandboxRequestedAtBootForTest();
   });
 
-  // Capture the userPrompt the reviewer hands the LLM so we can prove which
-  // executionSandbox value reaches the model per substrate.
+  // Capture the userPrompt the reviewer hands the LLM so we can prove which executionSandbox value reaches the model per substrate.
   const capturingProvider = (): { provider: LlmReviewerProvider; complete: ReturnType<typeof vi.fn> } => {
     const complete = vi.fn(async () => ({
       text: '{"level":"low","reason":"looks fine"}',
@@ -178,15 +161,13 @@ describe("substrate-aware capability — end-to-end reviewer prompt + downgrade 
         source: "plugin",
         category: "shell",
         finalInput: { command: "make build" },
-        // The substrate resolver is what production threads in — a plugin call
-        // resolves to none even though the global capability is asrt.
+        // The substrate resolver is what production threads in — a plugin call resolves to none even though the global capability is asrt.
         sandboxCapability: resolveReviewerSandboxCapability("plugin", "plugin_run"),
         conversationContext: { recentUserMessage: "please build the project for me" },
       }),
     );
     const userPrompt = complete.mock.calls[0]![0].userPrompt as string;
-    // PROOF: the worker-routed (unwrapped) substrate is reported as none — the
-    // reviewer is told NOT to relax for this unsandboxed effect.
+    // PROOF: the worker-routed (unwrapped) substrate is reported as none — the reviewer is told NOT to relax for this unsandboxed effect.
     expect(userPrompt).toContain("executionSandbox=none");
     expect(userPrompt).not.toContain("executionSandbox=asrt");
   });
@@ -246,17 +227,7 @@ describe("substrate-aware capability — end-to-end reviewer prompt + downgrade 
 });
 
 describe("synthetic network-only asrt — per-category relaxation gating", () => {
-  // A synthetic NETWORK-ONLY ASRT capability — confines egress but provides no
-  // filesystem jail. Current Windows ASRT is fs+network partial; this synthetic
-  // case remains as a regression guard for any future network-only substrate.
-  //
-  // Composition contract (design §401/§512): final = max(rule, llm); the LLM is
-  // escalate-only and can NEVER pull a verdict below the rule. The per-category
-  // guard therefore manifests as the explicit no-downgrade enforcement: for a
-  // category the sandbox does NOT relax (no matching confines dimension), an LLM
-  // LOW is rejected and the rule verdict is honoured. For a category the sandbox
-  // DOES relax (e.g. network egress is jailed), the guard does not fire and the
-  // max(rule, llm) composition applies — an LLM escalation is still honoured.
+  // Network-only isolation cannot relax filesystem risk. Where the category is unconfined, reject model downgrades and keep the rule floor; otherwise normal max(rule, model) composition still honors escalation.
   const networkOnlyAsrt = (): SandboxCapability => ({
     kind: "asrt",
     confidence: "verified",
@@ -286,8 +257,7 @@ describe("synthetic network-only asrt — per-category relaxation gating", () =>
         conversationContext: { recentUserMessage: "please build the project for me" },
       }),
     );
-    // confines.filesystem === false → sandboxRelaxesCategory('shell') === false
-    // → guard fires → MEDIUM rule verdict survives the LLM LOW.
+    // confines.filesystem === false → sandboxRelaxesCategory('shell') === false → guard fires → MEDIUM rule verdict survives the LLM LOW.
     expect(verdict.level).toBe("medium");
   });
 
@@ -309,9 +279,7 @@ describe("synthetic network-only asrt — per-category relaxation gating", () =>
   });
 
   it("relaxation IS allowed for the network category — guard does NOT fire, max(rule, llm) applies (LLM escalation honoured)", async () => {
-    // Network egress IS jailed → sandboxRelaxesCategory('network') === true →
-    // the no-downgrade guard does NOT short-circuit; the standard max(rule, llm)
-    // composition runs. An escalating LLM (HIGH) is still honoured.
+    // Network egress IS jailed → sandboxRelaxesCategory('network') === true → the no-downgrade guard does NOT short-circuit; the standard max(rule, llm) composition runs. An escalating LLM (HIGH) is still honoured.
     const classifier = new LlmRiskClassifier(llmProvider("high"), "gpt-4o-mini");
     const verdict = await classifier.classify(
       ctx({
@@ -327,10 +295,7 @@ describe("synthetic network-only asrt — per-category relaxation gating", () =>
   });
 
   it("network-category relaxation does NOT bleed into a write call on the SAME network-only cap (guard still fires for write)", async () => {
-    // Same capability, escalate-only LLM is irrelevant here: an LLM LOW on a
-    // write-category call must NOT relax (filesystem is not jailed) even though
-    // the same cap WOULD relax the network category — proves the gate is keyed
-    // on the call's category, not the capability alone.
+    // Same capability, escalate-only LLM is irrelevant here: an LLM LOW on a write-category call must NOT relax (filesystem is not jailed) even though the same cap WOULD relax the network category — proves the gate is keyed on the call's category, not the capability alone.
     const classifier = new LlmRiskClassifier(llmProvider("low"), "gpt-4o-mini");
     const verdict = await classifier.classify(
       ctx({

@@ -1,7 +1,3 @@
-/**
- * Tests for R-2 user-approval-store.
- * Issue: #691 PR-A4
- */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -29,10 +25,10 @@ import {
   __resetSessionStoreForTest,
 } from "../user-approval-store.js";
 
-/** Every session approval belongs to a conversation (owner decision 2026-10-23). */
+// Every session approval belongs to a conversation (owner decision 2026-10-23).
 const SESSION = "11111111-1111-4111-8111-111111111111";
 
-/** An args-identity key: narrows the exact-input identity, never replaces it. */
+// An args-identity key: narrows the exact-input identity, never replaces it.
 const argsKey = (key: string) => approvalCacheKeyIdentity(key, { kind: "args" })!;
 
 beforeEach(async () => {
@@ -187,7 +183,6 @@ describe("revokeApproval", () => {
   });
 
   it("is idempotent on unknown triple", async () => {
-    // Should not throw
     await expect(revokeApproval("unknown_tool", "{}", "builtin")).resolves.toBeUndefined();
   });
 });
@@ -280,7 +275,7 @@ describe("atomicWrite safety", () => {
   });
 });
 
-// ─── CRITICAL-4: trustOrigin cache identity isolation ─────────────────────────
+// CRITICAL-4: trustOrigin cache identity isolation
 
 describe("CRITICAL-4: different trustOrigin values produce distinct cache keys", () => {
   it("approval recorded with trustOrigin A is not visible under trustOrigin B", async () => {
@@ -380,7 +375,7 @@ describe("CRITICAL-4: different trustOrigin values produce distinct cache keys",
   });
 });
 
-// ─── HIGH-2: canonicalStringify key-order invariance ──────────────────────────
+// HIGH-2: canonicalStringify key-order invariance
 
 describe("HIGH-2: canonicalStringify produces key-order-invariant output", () => {
   it("{a,b} and {b,a} produce the same string", () => {
@@ -402,11 +397,7 @@ describe("HIGH-2: canonicalStringify produces key-order-invariant output", () =>
   });
 
   it("callers that pre-canonicalize args get key-order-invariant store hits", async () => {
-    // The store's public API takes pre-stringified args; key-order invariance is
-    // the caller's responsibility (permission-manager.ts uses canonicalStringify
-    // before calling lookupApproval). This test verifies that if two callers
-    // both use canonicalStringify they get the same canonical string and therefore
-    // the same store key.
+    // The store's public API takes pre-stringified args; key-order invariance is the caller's responsibility (permission-manager.ts uses canonicalStringify before calling lookupApproval). This test verifies that if two callers both use canonicalStringify they get the same canonical string and therefore the same store key.
     const argsObj1 = { path: "/tmp/a", mode: "r" };
     const argsObj2 = { mode: "r", path: "/tmp/a" };
     const canonical1 = canonicalStringify(argsObj1);
@@ -429,7 +420,7 @@ describe("HIGH-2: canonicalStringify produces key-order-invariant output", () =>
   });
 });
 
-// ─── Target-wide memory identity (v2) and rows written before it ───────────
+// Target-wide memory identity (v2) and rows written before it
 
 describe("target-wide memory key as the remembered identity", () => {
   const policyKey = "web_fetch:web_fetch:host:a.example";

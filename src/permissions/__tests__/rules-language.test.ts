@@ -1,7 +1,4 @@
-/**
- * Issue #28 P1a — rules language, refused-prefix list, arity suggestion and the
- * AST shell matcher (compound commands, substitutions, wrappers, floors).
- */
+// Compound commands, substitutions and wrappers must preserve shell rule floors.
 import { describe, expect, it } from "vitest";
 import {
   canonicalRuleSpecifier,
@@ -469,8 +466,7 @@ describe("AST shell matcher", () => {
 });
 
 describe("security review: arithmetic evaluation of a variable is hidden code", () => {
-  // Bash arithmetic evaluates a variable's value as an expression; an array
-  // subscript inside it runs command substitutions.
+  // Bash arithmetic evaluates a variable's value as an expression; an array subscript inside it runs command substitutions.
   it.each([
     "x='a[$(rm -rf y)]'; echo $((x))",
     "echo $((x+1))",

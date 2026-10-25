@@ -1,11 +1,4 @@
-/**
- * Linux ASRT runtime probe — adapter-level regression coverage.
- *
- * ASRT's dependency check is binary-only on Linux. These mocks prove Ave only
- * reports the adapter active after the exact initialized wrapper can spawn a
- * fixed, no-I/O command; any wrapper, timeout, or cleanup failure resets the
- * initialized singleton before boot can publish a verified capability.
- */
+// Publish an active adapter only after its initialized wrapper runs a fixed no-I/O probe; wrap, timeout or cleanup failures reset it.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
@@ -93,8 +86,7 @@ function childThatCloses(
 ): ProbeChild {
   const child = new EventEmitter() as ProbeChild;
   child.kill = vi.fn(() => true);
-  // Queue after spawn() returns so the adapter has registered close/error
-  // listeners. Real ChildProcess events are asynchronous too.
+  // Queue after spawn returns so the adapter has registered close/error listeners. Real ChildProcess events are asynchronous too.
   queueMicrotask(() => child.emit("close", code, signal));
   return child;
 }
@@ -126,8 +118,7 @@ beforeEach(() => {
   h.initialize.mockResolvedValue(undefined);
   h.openInvocationListener.mockResolvedValue({ port: 12345 });
   h.wrapWithSandboxArgv.mockResolvedValue({
-    // This is the exact shape ASRT uses on Linux: its outer shell runs a
-    // rendered bwrap command. The adapter hardens its mounts before spawning.
+    // This is the exact shape ASRT uses on Linux: its outer shell runs a rendered bwrap command. The adapter hardens its mounts before spawning.
     argv: ["/bin/bash", "-c", CONFIGURED_LINUX_BWRAP_COMMAND],
     env: { ASRT_PROBE_ENV: "configured" },
   });
@@ -179,8 +170,7 @@ describe("Linux wrap filesystem discovery snapshot", () => {
     const base = realpathSync(mkdtempSync(join(tmpdir(), "asrt-sweep-cost-")));
     temporaryRoots.push(base);
     const project = join(base, "project");
-    // 20 x 20 directories within the scan depth: 420 entries the before and
-    // after sweeps both visit and test against every exclusion pattern.
+    // 20 x 20 directories within the scan depth: 420 entries the before and after sweeps both visit and test against every exclusion pattern.
     for (let outer = 0; outer < 20; outer += 1) {
       for (let inner = 0; inner < 20; inner += 1) mkdirSync(join(project, `d${outer}`, `e${inner}`), { recursive: true });
     }
@@ -203,8 +193,7 @@ describe("Linux wrap filesystem discovery snapshot", () => {
     // The new control is still found and quarantined.
     expect(notice).toContain(JSON.stringify(join(repository, ".git")));
     expect(existsSync(join(repository, ".git", "hooks", "pre-commit"))).toBe(false);
-    // Neither sweep compiled a pattern again: the per-entry checks reuse the
-    // patterns compiled with the policy, however many entries were scanned.
+    // Neither sweep compiled a pattern again: the per-entry checks reuse the patterns compiled with the policy, however many entries were scanned.
     expect(compile.mock.calls.length).toBe(compiledAtBuild);
     expect(match).not.toHaveBeenCalled();
   });
@@ -440,8 +429,7 @@ describe("Linux wrap filesystem discovery snapshot", () => {
       expect(Object.isFrozen(literal)).toBe(true);
       expect(Reflect.set(applied, "denyWrite", [])).toBe(false);
       expect(Reflect.set(applied.denyWrite, "0", ordinary)).toBe(false);
-      // A caller changing its lists while the runtime awaits cannot replace
-      // the snapshot the Linux replay was handed alongside this wrap.
+      // A caller changing its lists while the runtime awaits cannot replace the snapshot the Linux replay was handed alongside this wrap.
       filesystem.denyWrite.push(ordinary);
       return {
         argv: ["/bin/bash", "-c", [
@@ -561,9 +549,7 @@ describe("initializeAsrtSandbox — Linux configured-wrapper runtime probe", () 
   });
 
   it("turns an EPERM configured-wrapper error into degradation, never verified capability", async () => {
-    // A hardened Linux host can deny the bwrap/user-namespace setup with EPERM.
-    // We intentionally do not scrape wrapper stderr; the typed probe result is
-    // enough for boot to degrade and keep the capability source of truth inactive.
+    // A hardened Linux host can deny the bwrap/user-namespace setup with EPERM. We intentionally do not scrape wrapper stderr; the typed probe result is enough for boot to degrade and keep the capability source of truth inactive.
     h.spawn.mockImplementation(() => childThatErrors("EPERM"));
 
     const failure = initializeAsrtSandbox({ allowedDomains: [] });
@@ -601,13 +587,11 @@ describe("initializeAsrtSandbox — Linux configured-wrapper runtime probe", () 
     });
 
     const failure = initializeAsrtSandbox({ allowedDomains: [] });
-    // Attach the rejection observer before advancing fake time so Vitest does
-    // not see the expected timeout as an unhandled rejection.
+    // Attach the rejection observer before advancing fake time so Vitest does not see the expected timeout as an unhandled rejection.
     const expectedFailure = expect(failure).rejects.toSatisfy((error: unknown) => {
       return isAsrtLinuxRuntimeProbeError(error);
     });
-    // Fake timers also own queueMicrotask in this runner. Flush zero-time work
-    // before advancing to the fixed five-second timeout.
+    // Fake timers also own queueMicrotask in this runner. Flush zero-time work before advancing to the fixed five-second timeout.
     await vi.advanceTimersByTimeAsync(0);
     await flushMicrotasks();
     expect(h.spawn).toHaveBeenCalledTimes(1);
@@ -684,8 +668,7 @@ describe("configured profile launch on macOS", () => {
   });
 });
 
-// The read policy checks every grant against every floor entry. It compiles
-// each entry once; this oracle is the per-path, per-ancestor check it replaced.
+// The read policy checks every grant against every floor entry. It compiles each entry once; this oracle is the per-path, per-ancestor check it replaced.
 describe.each([
   ["darwin", "a trusted subtree deny", ["~/secret/**"]],
   ["linux", "a trusted subtree deny", ["~/secret/**"]],
@@ -720,8 +703,7 @@ describe.each([
       paths.add(`${base}-sibling`);
     }
     for (const pierce of empty.floorPierces) paths.add(join(pierce, "nested", ".ssh", "id_ed25519"));
-    // The trusted denies: the subtree root and a path in it, a near miss, and
-    // names the bracket would match and would not.
+    // The trusted denies: the subtree root and a path in it, a near miss, and names the bracket would match and would not.
     for (const name of ["secret", join("secret", "x"), "secretive", "sa", "sb", "sc"]) paths.add(join(homedir(), name));
     for (const ordinary of [["projects", "x"], ["projects", "x", ".git", "hooks"], [".config"], [".claude", "hooks"], [".husky"]]) {
       paths.add(join(homedir(), ...ordinary));
@@ -747,8 +729,7 @@ describe.each([
     expect(policy.allowRead).toEqual(expected);
     expect(policy.denyRead).toEqual([...sessions.denyRead, ...privateRoots]);
     if (denyRead[0] === "~/secret/**") {
-      // The subtree root itself is denied only through its trailing-slash
-      // spelling: `/**` does not match the bare directory.
+      // The subtree root itself is denied only through its trailing-slash spelling: `/**` does not match the bare directory.
       expect(policy.allowRead).not.toContain(join(homedir(), "secret"));
       expect(policy.allowRead).not.toContain(join(homedir(), "secret", "x"));
       expect(policy.allowRead).toContain(join(homedir(), "secretive"));
@@ -769,8 +750,7 @@ describe.each([
     compile.mockClear();
     match.mockClear();
     getBuiltinShellReadPolicy([...ordinary, ...Array.from({ length: 40 }, (_, index) => join(homedir(), "projects", `p${index}`))], homedir());
-    // Before, every path re-canonicalized and recompiled every deny for each
-    // of its ancestors: 40 more paths cost thousands more compiles.
+    // Before, every path re-canonicalized and recompiled every deny for each of its ancestors: 40 more paths cost thousands more compiles.
     expect(work()).toBe(forOne);
   });
 });

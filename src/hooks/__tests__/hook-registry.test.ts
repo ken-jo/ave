@@ -1,10 +1,4 @@
-/**
- * Tests for the unified hook registry (#811 command-hooks milestone).
- *
- * Spec ref: docs/architecture/hook-runtime-expansion-design.md §4.1. Covers `.sh`
- * + config merge into one normalized list and event+matcher filtering (reusing
- * the `.sh` matcher engine).
- */
+// Script and config hooks share event and matcher filtering (docs/architecture/hook-runtime-expansion-design.md).
 import { describe, expect, it, vi } from "vitest";
 import {
   buildHookRegistry,
@@ -145,7 +139,6 @@ describe("filterRegistryByEventAndTool — event + matcher (decision a)", () => 
 
   it("regex matcher matches across both .sh and config origins", () => {
     const r = filterRegistryByEventAndTool(registry, "pre", "mcp__hr_list");
-    // pre-all (no matcher) + pre-mcp (^mcp__.*$) match; the bash config entry does not.
     expect(r.map((e) => e.id)).toEqual(["sh:pre-all.sh", "sh:pre-mcp.sh"]);
   });
 

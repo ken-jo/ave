@@ -71,8 +71,7 @@ describe("approval judge settings", () => {
       await pickModel(screen.getByLabelText("Judge model"), /team\/reviewer/);
       fireEvent.click(screen.getByRole("button", { name: "Save judge settings" }));
       await screen.findByText("Judge settings saved.");
-      // Only changed fields are sent: the stored mode is already shadow and the
-      // unchanged reviewer model is left as stored.
+      // Only changed fields are sent: the stored mode is already shadow and the unchanged reviewer model is left as stored.
       expect(view.judgeSet).toHaveBeenCalledWith({
         chain: [{ id: "stage-1", provider: "builtin-llm", model: { vendor: "openai-compatible", model: "team/reviewer" } }],
       });

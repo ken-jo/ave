@@ -61,9 +61,8 @@ import type { SerializedHistoryMessage } from "../shared/chat-history.js";
 import type { SubAgentTranscriptRequest, SubAgentTranscriptResult } from "../shared/subagent-transcript.js";
 import type { TurnResult } from "../engine/conversation-loop.js";
 import type { AppBootstrapStatus } from "../shared/bootstrap-status.js";
-// Type-only: the renderer declares the surface it consumes; this file is the
-// one implementation and is checked against it (`satisfies` below), so a
-// handler shape that drifts on either side is a compile error here.
+// Type-only: the renderer declares the surface it consumes; this file is the one implementation and is
+// checked against it (`satisfies` below), so a handler shape that drifts on either side is a compile error here.
 import type {
   AskUserQuestionRequest,
   AskUserQuestionResponse,
@@ -175,11 +174,9 @@ async function invokeRemoteA2AAction(
 
 export function buildInternalApiSurface() {
   return {
-  // ─── Settings ────────────────────────────────────
   getSettings: async () => ipcRenderer.invoke(CHANNELS.settings.get),
   updateSettings: async (partial: unknown) => ipcRenderer.invoke(CHANNELS.settings.update, partial),
-  // Parsed here rather than in the renderer: an unrecognized path is drift in
-  // this build's own registry, not something to render.
+  // Parsed here rather than in the renderer: an unrecognized path is drift in this build's own registry, not something to render.
   envForcedSettings: async () =>
     parseEnvForcedSettingsPaths(await ipcRenderer.invoke(CHANNELS.settings.envForcedSettings)) ?? [],
   telemetryAllowedHosts: async () => {
@@ -268,28 +265,19 @@ export function buildInternalApiSurface() {
   setWebApiKey: async (provider: string, apiKey: string) => ipcRenderer.invoke(CHANNELS.settings.setWebApiKey, provider, apiKey),
   hasWebApiKey: async (provider: string) => ipcRenderer.invoke(CHANNELS.settings.hasWebApiKey, provider) as Promise<boolean>,
   deleteWebApiKey: async (provider: string) => ipcRenderer.invoke(CHANNELS.settings.deleteWebApiKey, provider),
-  // ─── Internal Usage Insights ─────────────────────
-  // This can trigger a provider-backed LLM call, so it is intentionally kept
-  // out of the externally-parity-safe public surface and local API allowlist.
+  // This can trigger a provider-backed LLM call, so it is intentionally kept out of the externally-parity-safe public surface and local API allowlist.
   getUsageDailySummary: async (input: unknown) => ipcRenderer.invoke(CHANNELS.usage.dailySummary, input),
   // The price corrections in force, which the renderer's cost surfaces apply.
   getPricingOverrides: async () => ipcRenderer.invoke(CHANNELS.usage.pricingOverrides) as Promise<unknown>,
-  // ─── Interactive PTY terminal (#1444) ────────────────
-  // Host-renderer-only surface. spawn/input/resize/kill are invokes; onData /
-  // onExit subscribe to main→renderer events and return an unsubscribe fn (the
-  // settings.updated / auth.progress pattern). All channels are INTERNAL — an
-  // external origin can never reach them (fail-closed isPublicChannel).
+  // Host-renderer-only surface. spawn/input/resize/kill are invokes; onData / onExit subscribe to main→renderer events and return an unsubscribe fn
+  // (the settings.updated / auth.progress pattern). All channels are INTERNAL; an external origin can never reach them (fail-closed isPublicChannel).
   terminal: buildTerminalApiSurface(),
   browserTabs: buildBrowserTabsApiSurface(),
   browserWorkspace: buildBrowserWorkspaceApiSurface(),
   setActiveSurface: async (surface: ActiveWorkspaceSurface | null) =>
     ipcRenderer.invoke(CHANNELS.surface.setActive, surface) as Promise<{ ok: true } | { ok: false; error: string }>,
-  // ─── Side chat (workspace rail) ──────────────────────
-  // A second, independently-streaming chat session. send/new/load/abort are
-  // invokes; onStream/onFallback subscribe to the DEDICATED
-  // CHANNELS.sidechat.{stream,fallback} events (NOT chat.stream) and return an
-  // unsubscribe fn (the onChatStream pattern). All channels are INTERNAL — an
-  // external origin can never reach them (fail-closed isPublicChannel).
+  // A second, independently-streaming chat session. send/new/load/abort are invokes; onStream/onFallback subscribe to the DEDICATED CHANNELS.sidechat.{stream,fallback} events
+  // (NOT chat.stream) and return an unsubscribe fn (the onChatStream pattern). All channels are INTERNAL; an external origin can never reach them (fail-closed isPublicChannel).
   sideChat: {
     send: async (
       input: string,
@@ -345,11 +333,8 @@ export function buildInternalApiSurface() {
       return () => ipcRenderer.removeListener(CHANNELS.sidechat.fallback, listener);
     },
   },
-  // Tutorial-C — SpotlightTour state bridge. Host stores tour completion
-  // under `~/.ave/onboarding/tour-state.json`; `tour.start` broadcasts a
-  // `ave:tour:start` event through the host's trusted renderer target set.
-  // `getState` is read-never-throws (returns the default
-  // shape on any failure) per the project storage contract.
+  // Tutorial-C; SpotlightTour state bridge. Host stores tour completion under `~/.ave/onboarding/tour-state.json`; `tour.start` broadcasts a `ave:tour:start`
+  // event through the host's trusted renderer target set. `getState` is read-never-throws (returns the default shape on any failure) per the project storage contract.
   tour: {
     getState: async () =>
       ipcRenderer.invoke(CHANNELS.tour.getState) as Promise<
@@ -406,11 +391,8 @@ export function buildInternalApiSurface() {
       return () => ipcRenderer.removeListener(CHANNELS.tour.start, listener);
     },
   },
-  // Plugin onboarding proposals. `listPending` is what the renderer calls once
-  // the tour gate opens; the host answers with the ordered pending list AND
-  // stages the head of it as an overlay card, so which proposal is asked next
-  // is never decided here. `answer` records the user's word and stages whatever
-  // follows it.
+  // Plugin onboarding proposals. `listPending` is what the renderer calls once the tour gate opens; the host answers with the ordered pending list AND stages
+  // the head of it as an overlay card, so which proposal is asked next is never decided here. `answer` records the user's word and stages whatever follows it.
   onboarding: {
     listPending: async (locale: string) =>
       ipcRenderer.invoke(CHANNELS.onboarding.listPending, { locale }) as Promise<
@@ -427,8 +409,7 @@ export function buildInternalApiSurface() {
         | { ok: false; error: string; message: string }
       >,
   },
-  // Open an http(s) URL in the system browser. Main-side validates the
-  // scheme and rejects file://, javascript:, and any other handler.
+  // Open an http(s) URL in the system browser. Main-side validates the scheme and rejects file://, javascript:, and any other handler.
   openExternalUrl: async (url: string) =>
     ipcRenderer.invoke(CHANNELS.shell.openExternal, url) as Promise<{
       ok: boolean;
@@ -451,7 +432,6 @@ export function buildInternalApiSurface() {
 
   // Plugin-owned OAuth removed host-owned provider auth IPC bridges.
 
-  // ─── Memory ──────────────────────────────────────
   memoryListEntries: async (opts?: MemoryProjectOptions) =>
     invokeWithOptionalMemoryOptions(CHANNELS.memory.entriesList, opts),
   memoryListCandidates: async (opts?: MemoryProjectOptions) =>
@@ -483,7 +463,6 @@ export function buildInternalApiSurface() {
   memoryRefreshUserPrefs: async () => ipcRenderer.invoke(CHANNELS.memory.userPrefsRefresh),
   memoryRefreshLongTerm: async () => ipcRenderer.invoke(CHANNELS.memory.longTermRefresh),
 
-  // ─── ~/.ave reference docs ──────────────────────
   homeDocsStatus: async () => ipcRenderer.invoke(CHANNELS.homeDocs.upgradeMarkersList),
   homeDocsReadMarker: async (markerPath: string) =>
     ipcRenderer.invoke(CHANNELS.homeDocs.markerRead, markerPath),
@@ -501,7 +480,6 @@ export function buildInternalApiSurface() {
     ipcRenderer.invoke(CHANNELS.homeDocs.mergeApply, expectedContent),
   homeDocsDiscardMerged: async () => ipcRenderer.invoke(CHANNELS.homeDocs.mergeDiscard),
 
-  // ─── Plugins ─────────────────────────────────────
   listPersonaPromptSummaries: async () => ipcRenderer.invoke(CHANNELS.prompts.listSummaries),
   listPersonaPrompts: async () => ipcRenderer.invoke(CHANNELS.prompts.list),
   savePersonaPrompt: async (prompt: { id: string; name: string; systemPromptAdd: string }) =>
@@ -510,18 +488,15 @@ export function buildInternalApiSurface() {
   listAgentProfiles: async () => ipcRenderer.invoke(CHANNELS.agents.list),
   listSkills: async () => ipcRenderer.invoke(CHANNELS.skills.list),
   listPluginUiExtensions: async () => ipcRenderer.invoke(CHANNELS.plugins.uiList),
-  // #237 — host renderer pre-binds (webContents.id → pluginId, entryUrl)
-  // before each plugin webview navigates. Main rejects unknown pluginId
-  // and any non-host frame.
+  // #237; host renderer pre-binds (webContents.id → pluginId, entryUrl) before each plugin webview navigates. Main rejects unknown pluginId and any non-host frame.
   registerPluginWebview: async (payload: { webContentsId: number; pluginId: string; entryUrl: string }) =>
     ipcRenderer.invoke(CHANNELS.pluginBridge.registerWebview, payload) as Promise<{ ok: boolean; error?: string }>,
-  // Awaited before the panel renders its <webview> — see the channel comment.
+  // Awaited before the panel renders its <webview>; see the channel comment.
   ensurePluginPartition: async (pluginId: string) =>
     ipcRenderer.invoke(CHANNELS.pluginBridge.ensurePartition, { pluginId }) as Promise<{ ok: boolean; error?: string }>,
   readPluginUiModule: async (pluginId: string, viewId: string) =>
     ipcRenderer.invoke(CHANNELS.plugins.uiReadModule, { pluginId, viewId }) as Promise<string>,
-  // #1176 — toggle a plugin active/inactive. Returns the IPC result frame
-  // ({ ok, pluginId, enabled } | { ok:false, error, message }).
+  // #1176; toggle a plugin active/inactive. Returns the IPC result frame ({ ok, pluginId, enabled } | { ok:false, error, message }).
   setPluginEnabled: async (pluginId: string, enabled: boolean) =>
     ipcRenderer.invoke(CHANNELS.plugins.setEnabled, pluginId, enabled),
   listPluginContributionTrust: async (pluginId?: string) =>
@@ -556,7 +531,6 @@ export function buildInternalApiSurface() {
       hookProbeToolName,
     ) as Promise<unknown>,
 
-  // ─── Overlay trigger lifecycle ────────────────────────────────────────
   onTriggerStarted: (handler: (payload: OverlayTriggerStartedPayload) => void) => {
     const listener = (_event: unknown, payload: Parameters<typeof handler>[0]) => handler(payload);
     ipcRenderer.on(CHANNELS.trigger.started, listener);
@@ -587,33 +561,24 @@ export function buildInternalApiSurface() {
   importTrigger: async (sessionId: string) =>
     ipcRenderer.invoke(CHANNELS.trigger.import, sessionId) as ReturnType<AveApi["importTrigger"]>,
 
-  // ─── Marketplace update notifications ────────────
   onMarketplaceUpdatesAvailable: (handler: (updates: PackageUpdateView[]) => void) => {
     const listener = (_event: unknown, updates: Parameters<typeof handler>[0]) => handler(updates);
     ipcRenderer.on(CHANNELS.marketplace.updatesAvailable, listener);
     return () => ipcRenderer.removeListener(CHANNELS.marketplace.updatesAvailable, listener);
   },
 
-  // ─── Marketplace announcements ───────────────────
-  // The host pushes the active, not-yet-dismissed announcement set whenever
-  // the announcement poller runs (boot + interval). Dismissals are persisted
-  // by the renderer via updateSettings, and the host filters them out before
-  // the next push so a dismissed banner never reappears.
+  // The host pushes the active, not-yet-dismissed announcement set whenever the announcement poller runs (boot + interval). Dismissals are
+  // persisted by the renderer via updateSettings, and the host filters them out before the next push so a dismissed banner never reappears.
   onMarketplaceAnnouncements: (handler: (announcements: MarketplaceAnnouncementPayload) => void) => {
     const listener = (_event: unknown, announcements: Parameters<typeof handler>[0]) => handler(announcements);
     ipcRenderer.on(MARKETPLACE.announcements, listener);
     return () => ipcRenderer.removeListener(MARKETPLACE.announcements, listener);
   },
 
-  // ─── App auto-update (electron-updater) ──────────
-  // Main process emits `ave:update:state` whenever the updater state
-  // transitions (available / downloading / downloaded). Renderer renders
-  // a permanent badge next to the Home button so the user always sees the
-  // current state, not a transient toast. The two action commands are
-  // user-gated — `downloadAppUpdate` is only called from a badge click,
+  // Main process emits `ave:update:state` whenever the updater state transitions (available / downloading / downloaded). Renderer renders a permanent badge next to the Home
+  // button so the user always sees the current state, not a transient toast. The two action commands are user-gated; `downloadAppUpdate` is only called from a badge click,
 
-  // UpdateState type imported from the SoT at src/shared/update-state.ts
-  // so adding a new variant only needs editing that one file.
+  // UpdateState type imported from the SoT at src/shared/update-state.ts so adding a new variant only needs editing that one file.
   onAppUpdateState: (
     handler: (state: import("../shared/update-state.js").UpdateState) => void,
   ) => {
@@ -621,71 +586,45 @@ export function buildInternalApiSurface() {
     ipcRenderer.on(CHANNELS.update.state, listener);
     return () => ipcRenderer.removeListener(CHANNELS.update.state, listener);
   },
-  /** Fetch the last-known state synchronously (for late-mounting components
-   *  that miss the initial broadcast). Returns { kind: "idle" } before the
-   *  first check completes. */
+  /** Fetch the last-known state synchronously (for late-mounting components that miss the initial broadcast). Returns { kind: "idle" } before the first check completes. */
   getAppUpdateState: () =>
     ipcRenderer.invoke(CHANNELS.update.getState) as Promise<
       import("../shared/update-state.js").UpdateState
     >,
-  /** Start the actual download. Only valid when the current state is
-   *  "available"; rejected (ok:false) otherwise. */
+  /** Start the actual download. Only valid when the current state is "available"; rejected (ok:false) otherwise. */
   downloadAppUpdate: () =>
     ipcRenderer.invoke(CHANNELS.update.downloadNow) as Promise<{ ok: boolean; reason?: string }>,
-  /** Quit and apply the downloaded update. Main validates the sender and
-   *  owns the native confirmation dialog before it calls quitAndInstall().
-   *  Only valid when the current state is "downloaded"; rejected
-   *  (ok:false) otherwise. */
+  /** Quit and apply the downloaded update. Main validates the sender and owns the native confirmation dialog before
+   * it calls quitAndInstall(). Only valid when the current state is "downloaded"; rejected (ok:false) otherwise. */
   installAppUpdate: () =>
     ipcRenderer.invoke(CHANNELS.update.installNow) as Promise<{ ok: boolean; reason?: string }>,
   skipAppUpdate: () =>
     ipcRenderer.invoke(CHANNELS.update.skipVersion) as Promise<{ ok: boolean; reason?: string }>,
 
-  // ─── Boot-install status ────────────────────
-  // The marketplace boot pass emits these so the renderer can show a banner /
-  // toast during startup install. Three lifecycle states:
-  //   - { phase: "start" }
-  //   - { phase: "complete", installed[], failed[], skipped? }
-  //   - { phase: "error", message }
-  // Best-effort: the host swallows send errors, so the renderer must
-  // tolerate missing events (page reload during startup, etc.).
+  // The marketplace boot pass emits these so the renderer can show a banner / toast during startup install. Three lifecycle states: - { phase: "start" } - { phase: "complete",
+  // installed[], failed[], skipped? } - { phase: "error", message } Best-effort: the host swallows send errors, so the renderer must tolerate missing events (page reload during startup, etc.).
   onBootstrapStatus: (handler: (status: AppBootstrapStatus) => void) => {
     const listener = (_event: unknown, status: Parameters<typeof handler>[0]) => handler(status);
     ipcRenderer.on(CHANNELS.bootstrap.status, listener);
     return () => ipcRenderer.removeListener(CHANNELS.bootstrap.status, listener);
   },
-  // Late-mount sync: on a cold boot the events above are all emitted before
-  // this renderer exists, so the subscription alone never sees them. Resolves
-  // `null` when the host has reported nothing yet.
+  // Late-mount sync: on a cold boot the events above are all emitted before this renderer exists, so
+  // the subscription alone never sees them. Resolves `null` when the host has reported nothing yet.
   getBootstrapStatus: () =>
     ipcRenderer.invoke(CHANNELS.bootstrap.statusGet) as Promise<AppBootstrapStatus | null>,
-  // Banner-driven retry. Re-emits the start/complete/error
-  // status sequence so the banner subscriber updates without needing a
-  // separate result channel.
+  // Banner-driven retry. Re-emits the start/complete/error status sequence so the banner subscriber updates without needing a separate result channel.
   retryBootstrap: () => ipcRenderer.invoke(CHANNELS.bootstrap.retry),
 
-  // ─── Local install lifecycle ─────────────────────
-  // Fires when a local-folder install has finished installing + restartAll()
-  // in the main process. Renderer uses this to refresh its plugin UI list so
-  // newly-installed plugin views appear without requiring an app restart.
+  // Fires when a local-folder install has finished installing + restartAll() in the main process. Renderer uses
+  // this to refresh its plugin UI list so newly-installed plugin views appear without requiring an app restart.
   onPluginInstallResult: (handler: (payload: PluginInstallResultPayload) => void) => {
     const listener = (_event: unknown, payload: Parameters<typeof handler>[0]) => handler(payload);
     ipcRenderer.on(CHANNELS.plugins.installResult, listener);
     return () => ipcRenderer.removeListener(CHANNELS.plugins.installResult, listener);
   },
 
-  /**
-   * Dev-only: install a plugin from a local directory (AVE_DEV=1 required).
-   *
-   * Return shape:
-   *   - `null` — the user cancelled the folder picker. NOT an error.
-   *   - `{ pluginId, installed: true }` — install succeeded.
-   *   - throws — auth/dev-mode/IO error. Callers should surface this as a
-   *     toast/alert rather than collapsing it into `null`, otherwise users
-   *     can't distinguish "didn't run" from "ran but failed". See
-   *     `installLocal` in `src/plugins/marketplace.ts` for the error
-   *     producer side.
-   */
+  /** Dev-only: install a plugin from a local directory (AVE_DEV=1 required). Return shape: - `null`; the user cancelled the folder picker. NOT an error. - `{ pluginId, installed: true }`; install succeeded. - throws; auth/dev-mode/IO error.
+   * Callers should surface this as a toast/alert rather than collapsing it into `null`, otherwise users can't distinguish "didn't run" from "ran but failed". See `installLocal` in `src/plugins/marketplace.ts` for the error producer side. */
   installLocalPlugin: async () => {
     const r = await ipcRenderer.invoke(CHANNELS.plugins.installLocal) as
       | { pluginId: string; installed: true }
@@ -698,17 +637,15 @@ export function buildInternalApiSurface() {
     return r;
   },
 
-  // Sibling of onPluginInstallResult — fires after PluginConfigTab or any
-  // other surface drives uninstall through the IPC handler. Renderer uses
-  // this to drop the removed plugin view + marketplace card.
+  // Sibling of onPluginInstallResult; fires after PluginConfigTab or any other surface drives
+  // uninstall through the IPC handler. Renderer uses this to drop the removed plugin view + marketplace card.
   onPluginUninstallResult: (handler: (payload: { slug: string; success: boolean; error?: string }) => void) => {
     const listener = (_event: unknown, payload: Parameters<typeof handler>[0]) => handler(payload);
     ipcRenderer.on(CHANNELS.plugins.uninstallResult, listener);
     return () => ipcRenderer.removeListener(CHANNELS.plugins.uninstallResult, listener);
   },
-  // #1176 — fires after a plugin's active/inactive state is toggled (via this
-  // surface or any other). Renderer surfaces use this to refresh plugin cards
-  // so a disabled plugin's tools/UI disappear (and reappear on re-enable).
+  // #1176; fires after a plugin's active/inactive state is toggled (via this surface or any other). Renderer
+  // surfaces use this to refresh plugin cards so a disabled plugin's tools/UI disappear (and reappear on re-enable).
   onPluginEnabledChanged: (handler: (payload: { pluginId: string; enabled: boolean }) => void) => {
     const listener = (_event: unknown, payload: Parameters<typeof handler>[0]) => handler(payload);
     ipcRenderer.on(CHANNELS.plugins.enabledChanged, listener);
@@ -736,37 +673,31 @@ export function buildInternalApiSurface() {
     return () => ipcRenderer.removeListener(CHANNELS.skills.uninstallResult, listener);
   },
 
-  // Status bar — aggregated runtime counters (tools / plugins / mcps).
+  // Status bar; aggregated runtime counters (tools / plugins / mcps).
   getRuntimeCounts: async () =>
     ipcRenderer.invoke(CHANNELS.runtime.counts) as Promise<{
       tools: number;
       plugins: number;
       mcps: number;
     }>,
-  // Status bar — static environment info (platform / hostname / user).
-  // Static enough to fetch once on mount; values don't change while the
-  // process is alive. Cwd is intentionally NOT exposed — least-privilege
-  // for plugin UI panels that share this contextBridge.
+  // Status bar; static environment info (platform / hostname / user). Static enough to fetch once on mount; values don't change
+  // while the process is alive. Cwd is intentionally NOT exposed; least-privilege for plugin UI panels that share this contextBridge.
   getRuntimeEnv: async () =>
     ipcRenderer.invoke(CHANNELS.runtime.env) as Promise<{
       platform: string;
       hostname: string;
       user: string;
     }>,
-  // Status bar — active LLM provider reachability probe. This performs a
-  // tiny one-shot model call from the main process so "connected" means the
-  // provider itself answered, not only that the marketplace backend is online.
+  // Status bar; active LLM provider reachability probe. This performs a tiny one-shot model call from the main
+  // process so "connected" means the provider itself answered, not only that the marketplace backend is online.
   pingAiProvider: async () =>
     ipcRenderer.invoke(CHANNELS.llm.ping) as Promise<AiProviderPingIpcResult>,
-  // The model catalog main resolves against; the renderer installs it before
-  // it mounts (`src/ui/renderer/model-catalog-bootstrap.ts`).
+  // The model catalog main resolves against; the renderer installs it before it mounts (`src/ui/renderer/model-catalog-bootstrap.ts`).
   getModelCatalog: async () =>
     ipcRenderer.invoke(CHANNELS.llm.getModelCatalog) as Promise<ModelCatalogIpcResult>,
 
-  // Settings "일반" dashboard — host metadata. SoT for `version` is the
-  // Ave project package.json (resolved by the main process via
-  // `app.getAppPath()`); stack fields come from `process.versions`. The
-  // renderer never hard-codes these values.
+  // Settings "일반" dashboard; host metadata. SoT for `version` is the Ave project package.json (resolved by the main
+  // process via `app.getAppPath()`); stack fields come from `process.versions`. The renderer never hard-codes these values.
   getAppInfo: async () =>
     ipcRenderer.invoke(CHANNELS.app.info) as Promise<{
       version: string;
@@ -779,26 +710,14 @@ export function buildInternalApiSurface() {
       userDataPath: string;
     }>,
 
-  // ─── Plugin Events ──────────────────────────────
   onPluginEvent: (
     eventType: string,
     handler: (data: unknown) => void,
   ): (() => void) => {
-    // Reject subscriptions to private-namespace events at the preload boundary.
-    // This prevents renderer code from subscribing to sensitive host state
-    // (memory contents, secrets, audit trails, DLP decisions) even if the IPC
-    // channel delivers them.
-    //
-    // "What counts as private" has exactly one definition —
-    // `classifySubscription` in plugins/capabilities.ts, the same authority the
-    // emit gate (`canEmitEvent`) and the runtime access control use. Do not
-    // re-derive it from PLUGIN_PRIVATE_NAMESPACES here: the classifier already
-    // distinguishes prefix namespaces from exact host-owned event types
-    // (PUBLIC_HOST_EVENT_TYPES was split out of PUBLIC_EVENT_NAMESPACES for
-    // exactly that reason), and a re-derivation cannot track a refinement of
-    // the private branch.
+    // Reject private subscriptions at preload using classifySubscription, the shared event authority.
+    // Do not reconstruct namespace rules here; exact host event types and sensitive state must follow the same classifier.
     if (classifySubscription(eventType) === "private") {
-      // Return a no-op unsubscribe — the subscription is silently rejected.
+      // Return a no-op unsubscribe; the subscription is silently rejected.
       return () => undefined;
     }
     const listener = (_event: unknown, type: string, data: unknown) => {
@@ -808,11 +727,9 @@ export function buildInternalApiSurface() {
     return () => ipcRenderer.removeListener(CHANNELS.pluginBridge.event, listener);
   },
 
-  // ─── MCP ─────────────────────────────────────────
   // Assembled in its own module for size; spliced in here unchanged.
   mcp: mcpApiSurface,
 
-  // ─── Permission ───────────────────────────────────
   permission: {
     getMode: async () => ipcRenderer.invoke(PERMISSIONS.getMode),
     setMode: async (mode: string) => ipcRenderer.invoke(PERMISSIONS.setMode, {
@@ -827,12 +744,8 @@ export function buildInternalApiSurface() {
       return () =>
         ipcRenderer.removeListener(PERMISSIONS.modeChanged, listener);
     },
-    /**
-     * Hint event — directory config mutated. Listeners refresh state by
-     * calling `permission.dirDispatch("list")` rather than receiving the
-     * full directory list in the broadcast payload (slash dispatcher is
-     * the single source of truth).
-     */
+    /** Hint event; directory config mutated. Listeners refresh state by calling `permission.dirDispatch("list")` rather
+     * than receiving the full directory list in the broadcast payload (slash dispatcher is the single source of truth). */
     onConfigChanged: (cb: () => void) => {
       const listener = () => cb();
       ipcRenderer.on(PERMISSIONS.configChanged, listener);
@@ -859,12 +772,8 @@ export function buildInternalApiSurface() {
       resolvesNames?: boolean;
       clearCredentials?: boolean;
     }) => ipcRenderer.invoke(PERMISSIONS.upstreamProxySet, { ...patch, intent: ipcUserKeyboardIntent() }),
-    /**
-     * MUTATING: trigger the one-time Windows srt-win install (one self-elevating
-     * UAC prompt). The ONLY user-consented privilege-escalation entry point —
-     * only ever called from an explicit "Install now" click. Auto-injects the
-     * user-keyboard intent the sender-guarded handler requires.
-     */
+    /** MUTATING: trigger the one-time Windows srt-win install (one self-elevating UAC prompt). The ONLY user-consented privilege-escalation entry
+     * point; only ever called from an explicit "Install now" click. Auto-injects the user-keyboard intent the sender-guarded handler requires. */
     sandboxWindowsInstall: async () =>
       ipcRenderer.invoke(PERMISSIONS.sandboxWindowsInstall, { intent: ipcUserKeyboardIntent() }),
     approveExtensionsWithoutIsolation: async () =>
@@ -877,22 +786,20 @@ export function buildInternalApiSurface() {
       ipcRenderer.invoke(PERMISSIONS.addRule, { pattern, action, intent: ipcUserKeyboardIntent() }),
     removeRule: async (pattern: string, action: string) =>
       ipcRenderer.invoke(PERMISSIONS.removeRule, { pattern, action, intent: ipcUserKeyboardIntent() }),
-    /** Permission policy — deferred queue for reviewer HIGH verdicts. */
+    /** Permission policy; deferred queue for reviewer HIGH verdicts. */
     deferredList: async () => ipcRenderer.invoke(PERMISSIONS.deferredList),
-    /** Permission policy issue #633 — hook quarantine state for non-modal settings badge. */
+    /** Permission policy hook quarantine state for non-modal settings badge. */
     hookTrustList: async () => ipcRenderer.invoke(PERMISSIONS.hookTrustList),
-    /** Permission policy — `/permission dir ...` slash dispatch via IPC. */
+    /** Permission policy; `/permission dir ...` slash dispatch via IPC. */
     dirDispatch: async (rawArgs: string) =>
       ipcRenderer.invoke(PERMISSIONS.dirDispatch, { rawArgs, intent: ipcUserKeyboardIntent() }),
     deferredResolve: async (
       id: string,
       decision: "approved" | "rejected",
       reason: string | undefined,
-      // Required: callers must explicitly opt into a provenance value
-      // before main writes the HMAC-chained audit row.
+      // Required: callers must explicitly opt into a provenance value before main writes the HMAC-chained audit row.
       approvalSource: DeferredApprovalSource,
-      // Grant breadth + adjacency acknowledgement for an approval. Omitting
-      // `scope` grants the narrowest breadth; main never widens on its own.
+      // Grant breadth + adjacency acknowledgement for an approval. Omitting `scope` grants the narrowest breadth; main never widens on its own.
       options?: { scope?: "session" | "always"; acknowledgeWarnings?: boolean },
     ) =>
       ipcRenderer.invoke(PERMISSIONS.deferredResolve, {
@@ -906,7 +813,7 @@ export function buildInternalApiSurface() {
           : {}),
         intent: ipcUserKeyboardIntent(),
       }),
-    /** Foreground-entry pending notification — main→renderer event. */
+    /** Foreground-entry pending notification; main→renderer event. */
     onDeferredPending: (cb: (summary: { pending: number }) => void) => {
       const listener = (_event: unknown, summary: { pending: number }) =>
         cb(summary);
@@ -914,7 +821,7 @@ export function buildInternalApiSurface() {
       return () =>
         ipcRenderer.removeListener(PERMISSIONS.deferredPending, listener);
     },
-    /** Memory-hit auto-approve disclosure — main→renderer event. */
+    /** Memory-hit auto-approve disclosure; main→renderer event. */
     onUserApprovalHit: (cb: (payload: UserApprovalHitPayload) => void) => {
       const listener = (_event: unknown, payload: UserApprovalHitPayload) =>
         cb(payload);
@@ -929,7 +836,7 @@ export function buildInternalApiSurface() {
       return () =>
         ipcRenderer.removeListener(PERMISSIONS.reviewSuggestion, listener);
     },
-    /** Permission policy — `/permission reviewer ...` slash dispatch via IPC. */
+    /** Permission policy; `/permission reviewer ...` slash dispatch via IPC. */
     reviewerDispatch: async (rawArgs: string) =>
       ipcRenderer.invoke(PERMISSIONS.reviewerDispatch, { rawArgs, intent: ipcUserKeyboardIntent() }),
     judgeGet: async () => ipcRenderer.invoke(PERMISSIONS.judgeGet),
@@ -939,17 +846,13 @@ export function buildInternalApiSurface() {
         settings: serializePermissionJudgeSettingsPatch(patch),
         intent: ipcUserKeyboardIntent(),
       }),
-    /** Permission policy — `/permission audit show` — fetch recent permission audit entries. */
+    /** Permission policy; `/permission audit show`; fetch recent permission audit entries. */
     auditShow: async (last: number) =>
       ipcRenderer.invoke(PERMISSIONS.auditShow, { last }),
-    /** Permission policy — `/permission audit verify` — chain integrity check. */
+    /** Permission policy; `/permission audit verify`; chain integrity check. */
     auditVerify: async () =>
       ipcRenderer.invoke(PERMISSIONS.auditVerify),
-    /**
-     * Permission policy — manifest integrity violation notifier. Subscribes
-     * to `PERMISSIONS.manifestViolation` so the renderer can
-     * surface a "Plugin X disabled — reinstall?" prompt.
-     */
+    /** Permission policy; manifest integrity violation notifier. Subscribes to `PERMISSIONS.manifestViolation` so the renderer can surface a "Plugin X disabled; reinstall?" prompt. */
     onManifestViolation: (
       handler: (payload: {
         pluginId: string;
@@ -965,14 +868,12 @@ export function buildInternalApiSurface() {
     },
   },
 
-  // ─── Policy (Governance) ─────────────────────────
   policy: {
     get: async () => ipcRenderer.invoke(PERMISSIONS.policyGet),
     set: async (patch: unknown) =>
       ipcRenderer.invoke(PERMISSIONS.policySet, { patch, intent: ipcUserKeyboardIntent() }),
   },
 
-  // ─── Approval Gate ─────────────────────────────
   approval: {
     /** main→renderer 단방향 이벤트 구독 */
     onRequest: (cb: Parameters<AveApi["approval"]["onRequest"]>[0]) => {
@@ -980,11 +881,8 @@ export function buildInternalApiSurface() {
       ipcRenderer.on(CHANNELS.approval.request, listener);
       return () => ipcRenderer.removeListener(CHANNELS.approval.request, listener);
     },
-    /**
-     * main→renderer: a request the host is no longer waiting on. Window-wide
-     * like `onRequest` — the queue it reconciles is the window's one FIFO,
-     * and the surface drawing the card is decided renderer-side.
-     */
+    /** main→renderer: a request the host is no longer waiting on. Window-wide like `onRequest`; the queue
+     * it reconciles is the window's one FIFO, and the surface drawing the card is decided renderer-side. */
     onSettled: (cb: Parameters<AveApi["approval"]["onSettled"]>[0]) => {
       const listener = (_event: unknown, payload: Parameters<typeof cb>[0]) => cb(payload);
       ipcRenderer.on(CHANNELS.approval.settled, listener);
@@ -993,18 +891,11 @@ export function buildInternalApiSurface() {
     /** 사용자 결정을 main으로 전송 */
     respond: async (decision: unknown) =>
       ipcRenderer.invoke(PERMISSIONS.approvalRespond, decision),
-    /**
-     * The requests the host is still waiting on, exactly as `onRequest`
-     * delivered them. A renderer that (re)loads while a turn is parked on an
-     * approval subscribed after the request went out, so this is how it gets
-     * the card back instead of leaving the turn to time out.
-     */
+    /** The requests the host is still waiting on, exactly as `onRequest` delivered them. A renderer that (re)loads while a turn is parked
+     * on an approval subscribed after the request went out, so this is how it gets the card back instead of leaving the turn to time out. */
     listPending: async () => ipcRenderer.invoke(PERMISSIONS.approvalPending),
-    /**
-     * `/allow <sentence>` — ask the host which of the PENDING request's own
-     * scopes the sentence meant. Returns a choice to pre-select; it decides
-     * nothing, so `respond` above is still the only way to answer a prompt.
-     */
+    /** `/allow <sentence>`; ask the host which of the PENDING request's own scopes the sentence meant. Returns
+     * a choice to pre-select; it decides nothing, so `respond` above is still the only way to answer a prompt. */
     selectSentence: async (requestId: string, input: string) =>
       ipcRenderer.invoke(PERMISSIONS.approvalSentenceSelect, {
         requestId,
@@ -1013,11 +904,10 @@ export function buildInternalApiSurface() {
       }),
   },
 
-  // ─── User-Approval Store ─────────────
   userApproval: {
     /** Record an exact user decision (legacy callers default to allow). */
     record: async (entry: {
-      /** Server-side ApprovalRequest binding — required for IPC handler validation. */
+      /** Server-side ApprovalRequest binding; required for IPC handler validation. */
       requestId: string;
       rule?: { pattern: string; scope: "project" | "user" };
       toolName: string;
@@ -1040,12 +930,10 @@ export function buildInternalApiSurface() {
     listSession: async () => ipcRenderer.invoke(PERMISSIONS.userApprovalList, { scope: "session" }),
   },
 
-  // ─── DLP Hit Statistics (Observability) ─────────
   dlp: {
     getStats: async (days: number) => ipcRenderer.invoke(CHANNELS.dlp.stats, days),
   },
 
-  // ─── Audit Log Search (Observability) ────────────
   audit: {
     search: async (filter: {
       dateFrom?: string;
@@ -1074,11 +962,9 @@ export function buildInternalApiSurface() {
       ipcRenderer.invoke(CHANNELS.logs.tail, args),
   },
 
-  // ─── Message feedback ────────────────────────────
   submitFeedback: async (payload: { sessionId: string; messageIndex: number; rating: "up" | "down"; reason?: string }) =>
     ipcRenderer.invoke(CHANNELS.feedback.submit, payload) as Promise<{ ok: boolean; error?: string }>,
 
-  // ─── View Events ─────────────────────────────────
   onViewActivate: (handler: (viewKey: string, settingsTab?: string) => void) => {
     const listener = (_event: unknown, payload: { viewKey?: string; settingsTab?: string }) =>
       handler(payload?.viewKey ?? "home", typeof payload?.settingsTab === "string" ? payload.settingsTab : undefined);
@@ -1086,9 +972,7 @@ export function buildInternalApiSurface() {
     return () => ipcRenderer.removeListener(CHANNELS.view.activate, listener);
   },
 
-  // ─── Workflow tools ──────────────────────────────
-  // ask_user_question — main process pushes FIFO question requests to the
-  // renderer's non-modal composer dock; the card resolves via this channel.
+  // ask_user_question; main process pushes FIFO question requests to the renderer's non-modal composer dock; the card resolves via this channel.
   onAskUserQuestion: (handler: (req: AskUserQuestionRequest) => void) => {
     const listener = (_e: unknown, req: Parameters<typeof handler>[0]) => handler(req);
     ipcRenderer.on(CHANNELS.askUserQuestion.request, listener);
@@ -1098,9 +982,8 @@ export function buildInternalApiSurface() {
     ipcRenderer.invoke(CHANNELS.askUserQuestion.respond, response),
   // Questions sent before this renderer subscribed (it loaded later).
   listPendingAskUserQuestions: async () => ipcRenderer.invoke(CHANNELS.askUserQuestion.pending),
-  // Timeout side-channel — main process notifies the renderer when an
-  // ask_user_question request expired (5 min default) so the card can drop
-  // the stale prompt before the user clicks into a no-op.
+  // Timeout side-channel; main process notifies the renderer when an ask_user_question request
+  // expired (5 min default) so the card can drop the stale prompt before the user clicks into a no-op.
   onAskUserQuestionTimeout: (
     handler: (payload: { requestId: string }) => void,
   ) => {
@@ -1109,7 +992,7 @@ export function buildInternalApiSurface() {
     return () => ipcRenderer.removeListener(CHANNELS.askUserQuestion.timeout, listener);
   },
 
-  // routine_schedule — persistent routine list + lifecycle
+  // routine_schedule; persistent routine list + lifecycle
   listRoutines: async () => ipcRenderer.invoke(ROUTINES.list),
   dismissRoutine: async (id: string) => ipcRenderer.invoke(ROUTINES.dismiss, id),
   removeRoutine: async (id: string) => ipcRenderer.invoke(ROUTINES.remove, id),
@@ -1131,9 +1014,8 @@ export function buildInternalApiSurface() {
     ipcRenderer.on(ROUTINES.fired, listener);
     return () => ipcRenderer.removeListener(ROUTINES.fired, listener);
   },
-  // Routine running indicator: emitted when a routine LLM session starts/finishes
-  // runningStarted payload enriched to { routineId, firedAt, title } so the
-  // renderer can push a proper OverlayItem immediately without waiting for fired.
+  // Routine running indicator: emitted when a routine LLM session starts/finishes runningStarted payload enriched to {
+  // routineId, firedAt, title } so the renderer can push a proper OverlayItem immediately without waiting for fired.
   onRoutineRunningStarted: (handler: (payload: { routineId: string; firedAt: string; title: string }) => void) => {
     const listener = (_e: unknown, payload: Parameters<typeof handler>[0]) => handler(payload);
     ipcRenderer.on(ROUTINES.runningStarted, listener);
@@ -1144,27 +1026,21 @@ export function buildInternalApiSurface() {
     ipcRenderer.on(ROUTINES.runningFinished, listener);
     return () => ipcRenderer.removeListener(ROUTINES.runningFinished, listener);
   },
-  // failed: emitted when the routine LLM session throws (e.g. provider error).
-  // Without this bridge the renderer never learns the session failed and the
-  // running OverlayItem stays stuck with running:true indefinitely.
+  // failed: emitted when the routine LLM session throws (e.g. provider error). Without this bridge the
+  // renderer never learns the session failed and the running OverlayItem stays stuck with running:true indefinitely.
   onRoutineFailed: (handler: (event: { routineId: string; error: string }) => void) => {
     const listener = (_e: unknown, payload: { routineId: string; error: string }) => handler(payload);
     ipcRenderer.on(ROUTINES.failed, listener);
     return () => ipcRenderer.removeListener(ROUTINES.failed, listener);
   },
-  // Routine session history — the same conversation rows the sidebar lists,
-  // scoped by routineId, plus the opening snippet the panel shows.
+  // Routine session history; the same conversation rows the sidebar lists, scoped by routineId, plus the opening snippet the panel shows.
   listRoutineSessions: async (routineId: string, limit?: number) =>
     ipcRenderer.invoke(ROUTINES.listSessions, routineId, limit) as Promise<
       import("../shared/session-lookup.js").RoutineRunRow[]
     >,
 
-  // ─── Work Board ──────────────────────────────────
-  // Personal board CRUD + lifecycle. Each method maps 1:1 to a WORK_BOARD.*
-  // channel; the main-process store returns discriminated `status` envelopes
-  // (or `{ ok:false, error }` for unauthorized-frame / no-store), forwarded
-  // verbatim — no fallback / re-shaping. Shared payload + result types come
-  // from the renderer-safe `shared/work-board-types.js` (no Node built-ins).
+  // Personal board CRUD + lifecycle. Each method maps 1:1 to a WORK_BOARD.* channel; the main-process store returns discriminated `status` envelopes (or `{ ok:false, error }` for
+  // unauthorized-frame / no-store), forwarded verbatim; no fallback / re-shaping. Shared payload + result types come from the renderer-safe `shared/work-board-types.js` (no Node built-ins).
   listWorkBoard: async (filter?: import("../shared/work-board-types.js").WorkItemListFilter) =>
     ipcRenderer.invoke(WORK_BOARD.list, filter) as Promise<
       | import("../shared/work-board-types.js").WorkItemListResult
@@ -1205,9 +1081,8 @@ export function buildInternalApiSurface() {
       | import("../shared/work-board-types.js").WorkItemDeleteResult
       | { ok: false; error: string }
     >,
-  // Board view live refresh: emitted by the work-board IPC domain after any
-  // successful mutation (created/updated/transitioned/completed/reopened/
-  // removed) so the renderer board view re-lists without polling.
+  // Board view live refresh: emitted by the work-board IPC domain after any successful mutation
+  // (created/updated/transitioned/completed/reopened/ removed) so the renderer board view re-lists without polling.
   onWorkBoardItemChanged: (
     handler: (payload: import("../shared/work-board-types.js").WorkItemChangedEventPayload) => void,
   ) => {
@@ -1215,19 +1090,15 @@ export function buildInternalApiSurface() {
     ipcRenderer.on(WORK_BOARD.itemChanged, listener);
     return () => ipcRenderer.removeListener(WORK_BOARD.itemChanged, listener);
   },
-  // Agent-orchestration run: kick off plan→approve→execute for one item. The
-  // promise resolves with the terminal WorkItemRunResult, but live phase
-  // updates flow over onWorkBoardRunProgress; coarse started/finished/failed
-  // markers (for the per-item running indicator) flow over the on* siblings.
-  // `opts.agentName` selects a named agent profile (drives the child model).
+  // Agent-orchestration run: kick off plan→approve→execute for one item. The promise resolves with the terminal WorkItemRunResult, but live phase updates flow over
+  // onWorkBoardRunProgress; coarse started/finished/failed markers (for the per-item running indicator) flow over the on* siblings. `opts.agentName` selects a named agent profile (drives the child model).
   runWorkBoardItem: async (id: number, opts?: { agentName?: string }) =>
     ipcRenderer.invoke(WORK_BOARD.run, id, opts) as Promise<
       | import("../shared/work-board-types.js").WorkItemRunResult
       | { ok: false; error: string }
     >,
-  // Generate a daily / weekly personal work report from the board state +
-  // activity log + learned memory. Resolves with the report markdown (ok),
-  // an empty-period envelope, an error envelope (LLM failure), or no-reporter.
+  // Generate a daily / weekly personal work report from the board state + activity log + learned memory.
+  // Resolves with the report markdown (ok), an empty-period envelope, an error envelope (LLM failure), or no-reporter.
   generateWorkBoardReport: async (
     kind: "daily" | "weekly",
     input?: { date?: string; weekIso?: string; weekOffset?: number; projectRoot?: string; includeUnscoped?: boolean },
@@ -1236,10 +1107,8 @@ export function buildInternalApiSurface() {
       | import("../shared/work-board-types.js").WorkBoardReportResult
       | { ok: false; error: string }
     >,
-  // Run the daily / weekly briefing: a read-only sub-agent survey of the user's
-  // work whose findings are filed onto the board as proposals. Resolves with
-  // the ids of the cards it wrote (ok), a nothing-found envelope, an error
-  // envelope, or no-engine.
+  // Run the daily / weekly briefing: a read-only sub-agent survey of the user's work whose findings are filed onto the board
+  // as proposals. Resolves with the ids of the cards it wrote (ok), a nothing-found envelope, an error envelope, or no-engine.
   runWorkBoardBriefing: async (
     kind: import("../shared/work-board-types.js").WorkBoardBriefingKind,
     projectRoot?: string,
@@ -1248,10 +1117,8 @@ export function buildInternalApiSurface() {
       | import("../shared/work-board-types.js").WorkBoardBriefingResult
       | { ok: false; error: string }
     >,
-  // ─── Recommended work (plugin-proposed cards) ────
-  // Read the open proposals, promote one into a work item, or close it. There
-  // is no renderer path that CREATES a proposal — a proposal is a plugin's
-  // claim, and the user's own additions are ordinary work items.
+  // Read the open proposals, promote one into a work item, or close it. There is no renderer path that
+  // CREATES a proposal; a proposal is a plugin's claim, and the user's own additions are ordinary work items.
   listWorkProposals: async () =>
     ipcRenderer.invoke(WORK_BOARD.listProposals) as Promise<
       | import("../shared/work-board-types.js").WorkProposalListResult
@@ -1274,16 +1141,14 @@ export function buildInternalApiSurface() {
     ipcRenderer.on(WORK_BOARD.proposalChanged, listener);
     return () => ipcRenderer.removeListener(WORK_BOARD.proposalChanged, listener);
   },
-  // Read a past run's persisted transcript (plan+execute conversation) for the
-  // run-history view. Resolves with the ordered events (empty when absent).
+  // Read a past run's persisted transcript (plan+execute conversation) for the run-history view. Resolves with the ordered events (empty when absent).
   getWorkBoardRunTranscript: async (itemId: number, runId: string) =>
     ipcRenderer.invoke(WORK_BOARD.runTranscript, itemId, runId) as Promise<
       | { events: import("../shared/work-board-types.js").RunTranscriptEvent[] }
       | { ok: false; error: string }
     >,
-  // Live per-phase progress for an in-flight run (planning / awaiting_approval /
-  // executing / denied / done / error). Payload === the engine's
-  // WorkBoardRunEvent (aliased as RunProgressEventPayload).
+  // Live per-phase progress for an in-flight run (planning / awaiting_approval / executing / denied /
+  // done / error). Payload === the engine's WorkBoardRunEvent (aliased as RunProgressEventPayload).
   onWorkBoardRunProgress: (
     handler: (payload: import("../shared/work-board-types.js").RunProgressEventPayload) => void,
   ) => {
@@ -1299,8 +1164,7 @@ export function buildInternalApiSurface() {
     ipcRenderer.on(WORK_BOARD.runStarted, listener);
     return () => ipcRenderer.removeListener(WORK_BOARD.runStarted, listener);
   },
-  // Coarse marker: a run finished for `itemId` with a terminal status (renderer
-  // clears the running flag). `status` mirrors WorkItemRunResult.status.
+  // Coarse marker: a run finished for `itemId` with a terminal status (renderer clears the running flag). `status` mirrors WorkItemRunResult.status.
   onWorkBoardRunFinished: (
     handler: (payload: {
       itemId: number;
@@ -1312,8 +1176,7 @@ export function buildInternalApiSurface() {
     ipcRenderer.on(WORK_BOARD.runFinished, listener);
     return () => ipcRenderer.removeListener(WORK_BOARD.runFinished, listener);
   },
-  // Coarse marker: the engine threw before producing a result (renderer clears
-  // the running flag and surfaces `reason`).
+  // Coarse marker: the engine threw before producing a result (renderer clears the running flag and surfaces `reason`).
   onWorkBoardRunFailed: (
     handler: (payload: { itemId: number; reason: string; at: string }) => void,
   ) => {
@@ -1339,8 +1202,7 @@ export function buildInternalApiSurface() {
     return () => ipcRenderer.removeListener(OVERLAY_V1.dismiss, listener);
   },
 
-  // Plugin alert cards: what the user did with one, and the cards staged
-  // before this window was listening.
+  // Plugin alert cards: what the user did with one, and the cards staged before this window was listening.
   alerts: {
     removePredecessor: async (kindKey: string) =>
       ipcRenderer.invoke(ALERTS.removePredecessor, kindKey) as Promise<import("../shared/alerts-types.js").RemoveAlertPredecessorResult>,
@@ -1361,7 +1223,7 @@ export function buildInternalApiSurface() {
       ipcRenderer.invoke(ALERTS.listOpen) as Promise<import("../shared/alerts-types.js").AlertCard[]>,
   },
 
-  // session_tasks — assistant's current-turn checklist
+  // session_tasks; assistant's current-turn checklist
   listSessionTasks: async (sessionId: string) =>
     ipcRenderer.invoke(CHANNELS.sessionTasks.list, sessionId),
   clearSessionTasks: async (sessionId: string) =>
@@ -1377,7 +1239,7 @@ export function buildInternalApiSurface() {
     return () => ipcRenderer.removeListener(CHANNELS.sessionTasks.changed, listener);
   },
 
-  // session_goal — the objective this session is working towards
+  // session_goal; the objective this session is working towards
   getSessionGoal: async (sessionId: string) =>
     ipcRenderer.invoke(CHANNELS.sessionGoal.get, sessionId),
   pauseSessionGoal: async (sessionId: string) =>
@@ -1394,7 +1256,7 @@ export function buildInternalApiSurface() {
     return () => ipcRenderer.removeListener(CHANNELS.sessionGoal.changed, listener);
   },
 
-  // agent_spawn — sub-agent lifecycle event stream
+  // agent_spawn; sub-agent lifecycle event stream
   onAgentSpawnEvent: (
     handler: (event: AgentSpawnEvent<ChatEntry>) => void,
   ) => {
@@ -1403,7 +1265,7 @@ export function buildInternalApiSurface() {
     return () => ipcRenderer.removeListener(CHANNELS.agentSpawn.event, listener);
   },
 
-  // skill_load — chat-side badge event
+  // skill_load; chat-side badge event
   onSkillLoaded: (
     handler: (event: {
       name: string;
@@ -1416,11 +1278,8 @@ export function buildInternalApiSurface() {
     return () => ipcRenderer.removeListener(CHANNELS.skillLoad.event, listener);
   },
 
-  // ─── Notifications (#260) ────────────────────────
-  // Main process pushes in-app toast payloads when the window is focused;
-  // OS notifications fire when backgrounded/minimized. Renderer also signals
-  // back when an in-app toast / OS notification is clicked so main can focus
-  // the window and the renderer can scroll/navigate to the source surface.
+  // Main process pushes in-app toast payloads when the window is focused; OS notifications fire when backgrounded/minimized. Renderer also signals
+  // back when an in-app toast / OS notification is clicked so main can focus the window and the renderer can scroll/navigate to the source surface.
   onNotificationToast: (handler: (payload: NotificationToastPayload) => void) => {
     const listener = (_e: unknown, p: Parameters<typeof handler>[0]) => handler(p);
     ipcRenderer.on(CHANNELS.notification.toast, listener);
@@ -1434,21 +1293,14 @@ export function buildInternalApiSurface() {
   notifyClick: async (payload: NotificationClickPayload) =>
     ipcRenderer.invoke(CHANNELS.notification.clicked, payload),
 
-  // ─── Main-window management ──────────────────────────────────────────────
   window: {
-    /**
-     * Resize the main window to match the current workspace mode.
-     * "work" → centered work canvas on the primary work area;
-     * "chat" → the right-docked initial bounds (computeInitialMainWindowBounds).
-     */
+    /** Resize the main window to match the current workspace mode. "work" → centered work canvas on
+     * the primary work area; "chat" → the right-docked initial bounds (computeInitialMainWindowBounds). */
     resizeForMode: async (mode: "chat" | "work") =>
       ipcRenderer.invoke(CHANNELS.window.resizeForMode, mode) as Promise<
         { ok: true } | { ok: false; error: string }
       >,
-    /**
-     * Resize the chat-mode main window for the right-side work panel. Opening
-     * adds side-panel width; closing restores the normal chat bounds.
-     */
+    /** Resize the chat-mode main window for the right-side work panel. Opening adds side-panel width; closing restores the normal chat bounds. */
     resizeForSidePanel: async (open: boolean) =>
       ipcRenderer.invoke(CHANNELS.window.resizeForSidePanel, open) as Promise<
         { ok: true } | { ok: false; error: string }
@@ -1458,12 +1310,8 @@ export function buildInternalApiSurface() {
       ipcRenderer.invoke(CHANNELS.window.openHtmlPreview, payload) as Promise<OpenHtmlPreviewWindowResult>,
   },
 
-  /**
-   * Dev tools bridge — only useful in non-production builds. Renderer
-   * floating panel uses this to adjust the token preflight threshold
-   * at runtime (so compact scenarios can be reproduced without filling
-   * the actual model context window).
-   */
+  /** Dev tools bridge; only useful in non-production builds. Renderer floating panel uses this to adjust the token
+   * preflight threshold at runtime (so compact scenarios can be reproduced without filling the actual model context window). */
   dev: {
     setPreflightOverride: async (tokens: number | null) =>
       ipcRenderer.invoke(CHANNELS.dev.setPreflightOverride, tokens) as Promise<

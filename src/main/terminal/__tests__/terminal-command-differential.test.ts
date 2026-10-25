@@ -1,40 +1,5 @@
-/**
- * Differential check of terminal_run's two readers of one command line: the
- * permission classifier (which reads it as bash, `analyzeShellForRules`) and
- * the interactive shell that actually runs it.
- *
- * Every command of the corpus that the terminal_run validator ACCEPTS (and
- * the classifier can parse) is typed, with the real
- * typing protocol, into a real interactive zsh and bash on a pseudo-terminal,
- * started with the terminal's shell integration. Each shell has:
- *  - xtrace on, written to a file, with a PS4 that names the running function
- *    so the integration's own hook lines can be dropped;
- *  - PATH set to a directory of recording shims only: every program the shell
- *    starts by name writes its argv (NUL-separated) to a file and exits 0, so
- *    nothing real runs;
- *  - a temporary sandbox directory as its working directory and HOME.
- *
- * The property: every simple command the shell executed \u2014 each program a
- * shim recorded, each builtin xtrace reports \u2014 is one the classifier
- * evaluated. A command whose words the classifier read as static literals
- * must have run with exactly those words; one with an expansion must have run
- * under the head the classifier named. Commands the classifier marks as
- * hiding code (a wrapper or interpreter fed a string) are run too: the shims
- * do not run what they are handed, so what the shell itself runs must still
- * be visible to the rules. Anything else is a word the rules never
- * saw, and fails the test.
- *
- * Each session starts with a command-not-found handler, as Ubuntu's
- * /etc/bash.bashrc defines one for bash: such a handler runs a program for any
- * word that is not a command, so terminal_run refuses to type while one is
- * defined. The harness checks that refusal, then removes the handler as a
- * user would and runs the corpus; a handler that still ran would show as a
- * recorded program.
- *
- * Commands that wait for terminal input or end the shell (read, exit, kill,
- * ...), and background jobs (which may run after their records are read),
- * are not run; the summary counts them.
- */
+/** Compare approved command analysis with real interactive shells using recording shims and temporary homes.
+ * Every executed command must match the classifier's literal words or expansion head; command-not-found handlers must be refused before typing. */
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { open } from "node:fs/promises";
@@ -59,9 +24,7 @@ import { TERMINAL_CALLBACK_COMMANDS, TERMINAL_PRINT_DATA_COMMANDS, TERMINAL_PRIN
 
 const NONCE = "0123456789abcdef0123456789abcdef";
 
-// ---------------------------------------------------------------------------
-// Corpus: the validator's own accepted and refused cases, ordinary commands,
-// and constructs where zsh and bash part ways, each then mutated.
+// Corpus: the validator's own accepted and refused cases, ordinary commands, and constructs where zsh and bash part ways, each then mutated.
 
 const BASE_COMMANDS: readonly string[] = [
   ...TERMINAL_REGISTRY_COMMANDS,
@@ -279,7 +242,6 @@ const NOT_RUN_HEADS: ReadonlySet<string> = new Set([
   "read", "exit", "logout", "bye", "kill", "suspend", "wait", "fg", "bg", "disown", "cat",
 ]);
 
-// ---------------------------------------------------------------------------
 // What the classifier evaluated.
 
 type Argv = readonly (string | undefined)[];
@@ -300,8 +262,7 @@ function commandStarts(argv: Argv): number[] {
   return [...starts].filter((start) => start < argv.length);
 }
 
-/** Whether `ran` is the classifier's command `argv` (from some command start). */
-/** Builtins whose `NAME=value` arguments the classifier reads as assignments, not words. */
+/** Whether `ran` is the classifier's command `argv` (from some command start). Builtins whose `NAME=value` arguments the classifier reads as assignments, not words. */
 const DECLARATIONS: ReadonlySet<string> = new Set(["export", "readonly", "declare", "typeset", "local"]);
 
 function covers(argv: Argv, executed: Executed): boolean {
@@ -319,14 +280,12 @@ function covers(argv: Argv, executed: Executed): boolean {
     if (window.every((word) => word !== undefined)) {
       return window.length === ran.length && window.slice(1).every((word, i) => word === ran[i + 1]);
     }
-    // A dynamic word may expand to any number of words: the static words
-    // before the first one must still be what ran.
+    // A dynamic word may expand to any number of words: the static words before the first one must still be what ran.
     const firstDynamic = window.findIndex((word) => word === undefined);
     return window.slice(1, firstDynamic).every((word, i) => word === ran[i + 1]);
   });
 }
 
-// ---------------------------------------------------------------------------
 // What the shell executed.
 
 /** Decode one xtrace line into words (`'\u2026'`, `$'\u2026'`, `"\u2026"`, backslash). */
@@ -389,7 +348,6 @@ interface Executed {
   readonly argv: readonly string[];
 }
 
-// ---------------------------------------------------------------------------
 // The shells.
 
 interface Rig {
@@ -409,8 +367,7 @@ function makeRig(root: string, shimNames: ReadonlySet<string>): Rig {
   const shim = join(shims, ".shim");
   writeFileSync(shim, [
     "#!/bin/sh",
-    // One record per shim process. Keep real executable lookup and argv, but
-    // avoid starting another process just to allocate the record's filename.
+    // One record per shim process. Keep real executable lookup and argv, but avoid starting another process just to allocate the record's filename.
     `f='${calls}/call.'$$`,
     "set -C",
     "printf '%s\\0' \"${0##*/}\" \"$@\" > \"$f\" || exit 97",
@@ -446,10 +403,8 @@ async function openSession(shellPath: string, rig: Rig, promptTokens?: string): 
   const trace = join(rig.root, `trace-${name}`);
   writeFileSync(trace, "");
   const { env } = installShellIntegration(home, shellPath, { nonce: NONCE, sandboxEnv: { HOME: home, XDG_CONFIG_HOME: join(home, "config") } });
-  // Every session starts as on an Ubuntu desktop, whatever the host: a
-  // command-not-found handler (Ubuntu's /etc/bash.bashrc defines one for
-  // bash) ahead of the integration. Its program records a call like a shim,
-  // so a handler that ever ran would show as a program the rules never saw.
+  // Every session starts as on an Ubuntu desktop, whatever the host: a command-not-found handler (Ubuntu's /etc/bash.bashrc defines one for
+  // bash) ahead of the integration. Its program records a call like a shim, so a handler that ever ran would show as a program the rules never saw.
   const notFoundProgram = join(rig.root, `command-not-found-${name}`);
   writeFileSync(notFoundProgram, [
     "#!/bin/sh",
@@ -470,27 +425,23 @@ async function openSession(shellPath: string, rig: Rig, promptTokens?: string): 
     tracedIntegration = instrument(tracedIntegration, '  __ave_at_prompt=1\n}', '  __ave_close_fence\n  __ave_at_prompt=1\n}');
     tracedIntegration = instrument(tracedIntegration, '[ "$BASH_COMMAND" = "__ave_precmd" ]', '[[ "$BASH_COMMAND" = "__ave_precmd" || "$BASH_COMMAND" = "__ave_begin_fence" ]]');
   }
-  // Per-character encoding was already excluded from the executable trace.
-  // Disable only that bookkeeping, with native local-option restoration so
-  // every command and builtin still runs with the original global xtrace.
+  // Per-character encoding was already excluded from the executable trace. Disable only that bookkeeping, with
+  // native local-option restoration so every command and builtin still runs with the original global xtrace.
   const encoder = name === "bash" ? "__ave_encode() {\n" : "__ave_encode() {\n  emulate -L zsh\n";
   tracedIntegration = instrument(tracedIntegration, encoder, encoder + (name === "bash" ? "  local -\n  set +x\n" : "  unsetopt xtrace\n"));
   let promptFixture = "";
   if (promptTokens !== undefined) {
-    // Each session reads its immutable cryptographic token stream through
-    // its own descriptor. Exhaustion is an error, never a reused token.
+    // Each session reads its immutable cryptographic token stream through its own descriptor. Exhaustion is an error, never a reused token.
     const tokenSource = '  ave_token="$(/usr/bin/od -An -N16 -tx1 /dev/urandom 2>/dev/null)"\n  ave_token="${ave_token//[^0-9a-f]/}"';
     tracedIntegration = instrument(tracedIntegration, tokenSource, '  if ! IFS= read -r ave_token <&8; then printf "Prompt token fixture exhausted\\n" >&2; exit 98; fi');
     promptFixture = `exec 8<'${promptTokens}'\n`;
-    // Query the actual bindings on every prompt using native builtins and a
-    // per-session file instead of forking to capture their standard output.
+    // Query the actual bindings on every prompt using native builtins and a per-session file instead of forking to capture their standard output.
     const bindings = join(rig.root, "prompt-bindings");
     if (name === "zsh") {
       tracedIntegration = instrument(tracedIntegration, '  [[ "$(bindkey -lL main)" == *vi* ]]',
         `  local ave_keymap\n  bindkey -lL main >'${bindings}'\n  IFS= read -r ave_keymap <'${bindings}'\n  [[ "$ave_keymap" == *vi* ]]`);
       if (process.platform === "darwin") {
-        // Query current traps with the native builtin as well. The focused
-        // default-prompt case retains the production pipe and its child wait.
+        // Query current traps with the native builtin as well. The focused default-prompt case retains the production pipe and its child wait.
         const traps = join(rig.root, "prompt-traps");
         tracedIntegration = instrument(tracedIntegration,
           "  { builtin trap && builtin printf '\\0'; } | IFS= builtin read -r -d '' ave_traps",
@@ -506,9 +457,8 @@ async function openSession(shellPath: string, rig: Rig, promptTokens?: string): 
   }
   const fencePath = join(rig.root, "descendants-finished");
   expect(spawnSync("mkfifo", [fencePath]).status).toBe(0);
-  // Opening this descriptor immediately before Enter gives every native
-  // descendant a writer. The prompt closes the shell's own copy; EOF then
-  // proves process substitutions finished before their records are read.
+  // Opening this descriptor immediately before Enter gives every native descendant a writer. The prompt
+  // closes the shell's own copy; EOF then proves process substitutions finished before their records are read.
   const fenceHooks = [
     `__ave_begin_fence() { exec 9>'${fencePath}'; printf f >&9; __ave_fence_open=1; }`,
     '__ave_close_fence() { if [ "${__ave_fence_open:-0}" = 1 ]; then exec 9>&-; __ave_fence_open=0; fi; return 0; }',
@@ -573,8 +523,7 @@ async function openSession(shellPath: string, rig: Rig, promptTokens?: string): 
       reader.on("error", (error) => resolve({ code: null, error }));
       reader.on("close", (code) => resolve({ code }));
     });
-    // Hold a writer until the command returns, including the interval before
-    // its native editor callback opens FD 9. Neither FIFO open can lose EOF.
+    // Hold a writer until the command returns, including the interval before its native editor callback opens FD 9. Neither FIFO open can lose EOF.
     const writer = await open(fencePath, "w");
     let finished: Promise<{ code: number | null; error?: Error }> | undefined;
     const finish = () => finished ??= (async () => {
@@ -589,8 +538,7 @@ async function openSession(shellPath: string, rig: Rig, promptTokens?: string): 
     })();
     fence = { cancel: async () => {
       reader.kill("SIGKILL");
-      // Cleanup is bounded and makes no assertions that could mask the
-      // command failure. Completion is checked by the command's own caller.
+      // Cleanup is bounded and makes no assertions that could mask the command failure. Completion is checked by the command's own caller.
       try { await finish(); } catch (error) { process.stderr.write(`FIFO cleanup: ${String(error)}\n`); }
     } };
     return async () => {
@@ -612,8 +560,7 @@ async function openSession(shellPath: string, rig: Rig, promptTokens?: string): 
 
   const waitForEditor = async () => {
     if (tracker.promptState() !== "ready") throw new Error(`${name}: prompt is ${tracker.promptState()} after ${previous}`);
-    // Observe the native editor's enable sequence and B in this prompt's
-    // output, including split reads. The two shells emit them in opposite orders.
+    // Observe the native editor's enable sequence and B in this prompt's output, including split reads. The two shells emit them in opposite orders.
     const editorReady = name === "zsh"
       ? /\u001b\]133;B;[0-9a-f]{32}\u0007[\s\S]*\u001b\[\?2004h/u
       : /\u001b\[\?2004h[\s\S]*\u001b\]133;B;[0-9a-f]{32}\u0007/u;
@@ -630,8 +577,7 @@ async function openSession(shellPath: string, rig: Rig, promptTokens?: string): 
       if (tracker.nextBlockId() !== expectedBlockId) throw new Error(`${name}: a command started during refused preparation: ${line}`);
     };
     const capturePreparationState = async (stage: string, reason: string, query: boolean): Promise<void> => {
-      // Capture the live terminal before teardown; a ready marker alone does
-      // not establish that the shell owns the tty or still receives SIGINT.
+      // Capture the live terminal before teardown; a ready marker alone does not establish that the shell owns the tty or still receives SIGINT.
       const foreground = await readTerminalForeground(pty.pid);
       const ttyPath: unknown = Reflect.get(pty, "pty");
       const tty = typeof ttyPath === "string"
@@ -654,8 +600,7 @@ async function openSession(shellPath: string, rig: Rig, promptTokens?: string): 
         isLive: () => !tracker.hasExited(),
         // A submission behind the completion fence carries its marker key.
         write: (data) => writeInput(data === "\r" && fence ? "\u001b[98~\r" : data),
-        // The operating-system check is pty-manager's, tested on its own; here
-        // the shell is known to be the foreground process.
+        // The operating-system check is pty-manager's, tested on its own; here the shell is known to be the foreground process.
         verify: async () => ({ ok: true, cwd: canonicalizePathForMatch(tracker.currentCwd() ?? "") }),
         missing: "no terminal",
       }, line);
@@ -663,8 +608,7 @@ async function openSession(shellPath: string, rig: Rig, promptTokens?: string): 
       else if (result.firstBlockId !== expectedBlockId) throw new Error(`${name}: another command started before approved submission: ${line}`);
       return result;
     };
-    // A preparation refusal is a failure of its own: it must have run
-    // nothing, and the line is not retried behind a fresh prompt.
+    // A preparation refusal is a failure of its own: it must have run nothing, and the line is not retried behind a fresh prompt.
     const typed = await typeOnce();
     if (!typed.ok) {
       await capturePreparationState("final-refusal", typed.reason, true);
@@ -679,16 +623,14 @@ async function openSession(shellPath: string, rig: Rig, promptTokens?: string): 
       await until(() => tracker.promptEndCount() > prompts, 3_000);
       return { blockId: typed.firstBlockId, hung: true };
     }
-    // The next line is typed only at a ready prompt (the shell may still be
-    // writing after its prompt marker).
+    // The next line is typed only at a ready prompt (the shell may still be writing after its prompt marker).
     if (!await until(() => tracker.promptState() === "ready", 3_000)) return { blockId: typed.firstBlockId, hung: true };
     if (tracker.nextBlockId() > expectedBlockId + 1) throw new Error(`${name}: multiple command blocks started for one approved submission: ${line}`);
     return { blockId: typed.firstBlockId, hung: false };
   };
 
-  // terminal_run types nothing while the handler is defined: it runs code for
-  // any word that is not a command. The user removes it for this terminal (a
-  // key they type, not a line terminal_run types), and the run goes on.
+  // terminal_run types nothing while the handler is defined: it runs code for any word that is not a command.
+  // The user removes it for this terminal (a key they type, not a line terminal_run types), and the run goes on.
   await until(() => tracker.promptState() !== "shell-starting", 3_000);
   const refused = await typeLineAtPrompt({
     blocks: tracker,
@@ -706,9 +648,8 @@ async function openSession(shellPath: string, rig: Rig, promptTokens?: string): 
     throw new Error(`${name}: the prompt was not ready after the handler was removed (${tracker.promptState()})`);
   }
 
-  // Trace to a file, every program through the shims, in the sandbox. zsh
-  // asks before `rm *` (rm_star_silent off) and waits for the user's y/n;
-  // nothing runs until it is answered, so the query is turned off here.
+  // Trace to a file, every program through the shims, in the sandbox. zsh asks before `rm *` (rm_star_silent
+  // off) and waits for the user's y/n; nothing runs until it is answered, so the query is turned off here.
   const setup = name === "zsh"
     ? `exec 7>>'${trace}' 2>&7; PS4='+%N> '; PATH='${rig.shims}'; cd '${rig.box}'; setopt rm_star_silent xtrace`
     : `exec 7>>'${trace}'; BASH_XTRACEFD=7; PS4='+\${FUNCNAME[0]:-main}> '; PATH='${rig.shims}'; cd '${rig.box}'; set -x`;
@@ -735,8 +676,7 @@ async function openSession(shellPath: string, rig: Rig, promptTokens?: string): 
         if (!match) continue;
         const [, context, text] = match as unknown as [string, string, string];
         if (context.startsWith("__ave_") || context === "add-zsh-hook") continue;
-        // zsh traces a command's assignments on the command's own line:
-        // `+zsh> X=1 +zsh> echo hi`.
+        // zsh traces a command's assignments on the command's own line: `+zsh> X=1 +zsh> echo hi`.
         for (const segment of text.split(/ ?\++[^ >]*> /u)) {
           if (ARRAY_ASSIGNMENT.test(segment)) continue;
           const words = traceWords(segment);
@@ -754,8 +694,6 @@ async function openSession(shellPath: string, rig: Rig, promptTokens?: string): 
     close,
   };
 }
-
-// ---------------------------------------------------------------------------
 
 const BASH = TERMINAL_TEST_MODERN_BASH;
 const ZSH = TERMINAL_TEST_ZSH;
@@ -817,8 +755,7 @@ function plan(baseCommands: readonly string[] = BASE_COMMANDS): Plan {
     const shape = analyzeShellForRules(command);
     if (!shape.ok) { unparsed++; continue; }
     if (shape.hidden.length > 0) hidden++;
-    // A background job may run after the prompt returns, past the point its
-    // records are read: not run, counted with the others.
+    // A background job may run after the prompt returns, past the point its records are read: not run, counted with the others.
     if (hasBackgroundJob(command) || hasUnboundedArrayRead(command)) { notRun++; continue; }
     const commands = shape.commands.map((c) => c.argv);
     if (commands.some((argv) => commandStarts(argv).some((start) => NOT_RUN_HEADS.has(argv[start] ?? "")))) { notRun++; continue; }
@@ -956,9 +893,8 @@ describe.runIf(SHELLS.length === 2)("terminal_run: what the classifier evaluated
   });
 
   it("keeps native prompt subprocesses ready after pipelines", async () => {
-    // Keep the shipped prompt subprocesses real at this integration boundary;
-    // the larger classifier matrix prebuilds entropy and captures bindings
-    // with native builtins instead of repeatedly forking for bookkeeping.
+    // Keep the shipped prompt subprocesses real at this integration boundary; the larger classifier matrix
+    // prebuilds entropy and captures bindings with native builtins instead of repeatedly forking for bookkeeping.
     const { runs } = plan(["git log --oneline | head -5"]);
     const root = realpathSync(mkdtempSync(join(tmpdir(), "ave-native-prompt-")));
     opened.push(root);
@@ -1025,8 +961,7 @@ print -r -- "$options[trapsasync]"` };
     const root = realpathSync(mkdtempSync(join(tmpdir(), "ave-diff-")));
     opened.push(root);
 
-    // Each session gets a disjoint immutable stream of real cryptographic
-    // tokens. Reserve for cwd restoration and the protocol's internal resets.
+    // Each session gets a disjoint immutable stream of real cryptographic tokens. Reserve for cwd restoration and the protocol's internal resets.
     const tokensPerSession = (Math.ceil(runs.length / SESSIONS_PER_SHELL) + 2) * 16;
     const streamCount = SHELLS.length * SESSIONS_PER_SHELL;
     const tokens = randomBytes(16 * tokensPerSession * streamCount).toString("hex").match(/.{32}/gu)!;
@@ -1040,8 +975,7 @@ print -r -- "$options[trapsasync]"` };
     const recordedDiffers: string[] = [];
     const hung: string[] = [];
     const stuckAfter: string[] = [];
-    // Each shell runs the corpus in SESSIONS_PER_SHELL parts at once, each
-    // session with its own sandbox, shims and call records.
+    // Each shell runs the corpus in SESSIONS_PER_SHELL parts at once, each session with its own sandbox, shims and call records.
     const parts = Array.from({ length: SESSIONS_PER_SHELL }, (_, part) => runs.filter((_run, i) => i % SESSIONS_PER_SHELL === part));
     const results = await Promise.allSettled(SHELLS.flatMap((shellPath, shellIndex) => parts.map(async (part, index) => {
       const rig = makeRig(join(root, `${basename(shellPath)}-${index}`), shimNames);

@@ -96,8 +96,7 @@ describe.skipIf(shouldSkipNativeSandboxTests())("terminal background egress thro
   });
 
   async function startTerminal(): Promise<TerminalBlockTracker> {
-    // This fixture only reserves logical tab ownership; spawnTerminal still owns
-    // its native wrapper, stripped environment, node-pty and invocation lifecycle.
+    // This fixture only reserves logical tab ownership; spawnTerminal still owns its native wrapper, stripped environment, node-pty and invocation lifecycle.
     const spawned = await spawnTerminal({ tabId: TAB_ID, ownerWindowId: OWNER_WINDOW_ID, cwd: root, cols: 100, rows: 30 });
     expect(spawned, JSON.stringify(spawned)).toMatchObject({ ok: true, session: { lane: "agent", substrate: "asrt" } });
     const tracker = getTerminalBlockTracker(TAB_ID)!;

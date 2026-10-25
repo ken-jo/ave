@@ -44,10 +44,7 @@ beforeAll(async () => {
   accountDirectory = join(directory, "accounts");
   mkdirSync(accountDirectory);
   accountDirectory = realpathSync.native(accountDirectory).replaceAll("\\", "/");
-  // These cases classify command text, so application roots only supply path
-  // identities. Prepare them once instead of rediscovering missing ancestors
-  // for every scalar. They stay immutable until the run-home teardown; the
-  // persistence cases below write their own files outside this fixture.
+  // These cases classify command text, so application roots only supply path identities. Prepare them once instead of rediscovering missing ancestors for every scalar. They stay immutable until the run-home teardown; the persistence cases below write their own files outside this fixture.
   const home = aveHome();
   const applicationRoots = SENSITIVE_PATH_ENTRIES.filter((entry) => entry.anchor === "ave-home")
     .map((entry) => ({ entry, path: join(home, ...entry.segments) }));
@@ -60,8 +57,7 @@ beforeAll(async () => {
     }
   }
   expect(applicationRoots.map(({ path }) => canonicalizePathForMatch(path))).toEqual(canonicalRoots);
-  // These checks only read policy. Persist exact-action grants once per
-  // dialect; the saved-grant cases still exercise mutation independently.
+  // These checks only read policy. Persist exact-action grants once per dialect; the saved-grant cases still exercise mutation independently.
   for (const dialect of DIALECTS) {
     const permissionsPath = join(directory, `floor-${dialect}.json`);
     await updatePermissionsFile(permissionsPath, (file) => {
@@ -88,8 +84,7 @@ function actionKey(dialect: ShellDialect, command: string): string {
 }
 
 function checkCommand(manager: PermissionManager, dialect: ShellDialect, command: string) {
-  // Absolute credential suffixes do not depend on the host's account lookup.
-  // Keep native drive syntax intact on platforms without the account mount.
+  // Absolute credential suffixes do not depend on the host's account lookup. Keep native drive syntax intact on platforms without the account mount.
   const source = process.platform === "win32"
     ? command
     : command.replaceAll("/home/u/", `${accountDirectory}/u/`);

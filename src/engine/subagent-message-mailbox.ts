@@ -33,7 +33,7 @@ interface PersistedParentMailbox {
   entries: ParentMailboxEntry[];
 }
 
-export type ParentMailboxLoadDiagnosticReason =
+type ParentMailboxLoadDiagnosticReason =
   | "cross-origin"
   | "invalid-message"
   | "budget-exhausted";

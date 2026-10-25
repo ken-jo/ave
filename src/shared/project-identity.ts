@@ -75,13 +75,13 @@ export function projectBasename(path: string): string {
   return parts[parts.length - 1] || path;
 }
 
-export function normalizeProjectRoot(value: unknown): string | undefined {
+function normalizeProjectRoot(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
-export function normalizeProjectName(value: unknown): string | undefined {
+function normalizeProjectName(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
@@ -131,7 +131,7 @@ export function disambiguateProjectNames(
   });
 }
 
-export function projectIdentityFromRoot(
+function projectIdentityFromRoot(
   projectRoot: string,
   fallbackName: string,
   isDefault = false,

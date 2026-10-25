@@ -79,8 +79,7 @@ describe("wireReviewerAndPermissions subscription runtime", () => {
         get: vi.fn((key: string) => {
           if (key === "llm") {
             return {
-              // Deliberately different: reviewer must not consult this stale
-              // API-key setting while the subscription runtime is active.
+              // Deliberately different: reviewer must not consult this stale API-key setting while the subscription runtime is active.
               provider: "claude",
               retiredProvider,
               activeChatRuntime: selection,
@@ -115,8 +114,7 @@ describe("wireReviewerAndPermissions subscription runtime", () => {
       });
       expect(options.streamProviderFor("subscription:codex")).toBe(subscriptionProvider);
       expect(subscriptionProviderFactory).toHaveBeenCalledWith(selection);
-      // A forged/legacy API-key identity cannot fall through while a
-      // subscription runtime owns the active reviewer transport.
+      // A forged/legacy API-key identity cannot fall through while a subscription runtime owns the active reviewer transport.
       expect(options.streamProviderFor("claude")).toBeNull();
       expect(subscriptionProviderFactory).toHaveBeenCalledOnce();
       expect(settingsService.getSecret).not.toHaveBeenCalled();

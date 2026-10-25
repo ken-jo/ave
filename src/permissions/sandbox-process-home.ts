@@ -16,24 +16,15 @@ const log = createLogger("sandbox-process-home");
 const SANDBOX_HOME_PREFIX = "ave-sandbox-home-";
 const CLEANUP_RETRY_DELAYS_MS = [50, 250, 1_000] as const;
 
-/** The sandbox HOMEs this process created and has not yet removed. */
+// The sandbox HOMEs this process created and has not yet removed.
 const liveHomes = new Set<string>();
 
-/**
- * The sandbox HOMEs this process created and has not yet removed. The boot
- * sweep keeps them: a HOME a process started during this boot is using is
- * never removed, whatever order boot and the first spawn run in.
- */
+// The sandbox HOMEs this process created and has not yet removed. The boot sweep keeps them: a HOME a process started during this boot is using is never removed, whatever order boot and the first spawn run in.
 export function sandboxProcessHomesInUse(): ReadonlySet<string> {
   return liveHomes;
 }
 
-/**
- * Where a sandbox HOME is created: the app-owned root on macOS and Linux,
- * which the sandbox read floor denies to every other confined process
- * (`appOwnedSandboxHomeRoot`); the host temp directory on Windows, unchanged,
- * where a confined process reaches a path only through an ACL grant.
- */
+// Where a sandbox HOME is created: the app-owned root on macOS and Linux, which the sandbox read floor denies to every other confined process (`appOwnedSandboxHomeRoot`); the host temp directory on Windows, unchanged, where a confined process reaches a path only through an ACL grant.
 function sandboxHomeParent(platform: NodeJS.Platform): string {
   if (platform === "win32") return realpathSync.native(tmpdir());
   return realpathSync.native(ensureSandboxPrivateRoot(appOwnedSandboxHomeRoot()));
@@ -57,11 +48,7 @@ export function sandboxProcessProfileEnvironment(
       USERPROFILE: homePath,
       APPDATA: appData,
       LOCALAPPDATA: localAppData,
-      // Windows only, and it DOES take effect here: ASRT deletes the `TMPDIR`
-      // it generates on this platform ("serves no purpose on Windows and breaks
-      // msys2 tools") and sets no replacement, so the profile's own value is
-      // what the child sees. Node reads TEMP then TMP; both, so a child that
-      // consults either lands in the same place.
+      // Windows only, and it DOES take effect here: ASRT deletes the `TMPDIR` it generates on this platform ("serves no purpose on Windows and breaks msys2 tools") and sets no replacement, so the profile's own value is what the child sees. Node reads TEMP then TMP; both, so a child that consults either lands in the same place.
       TEMP: win32.join(homePath, "tmp"),
       TMP: win32.join(homePath, "tmp"),
     };
@@ -70,8 +57,7 @@ export function sandboxProcessProfileEnvironment(
       env.HOMEDRIVE = drive;
       env.HOMEPATH = homePath.slice(2) || "\\";
     } else {
-      // Never inherit the real profile pair when TEMP is UNC-backed. Programs
-      // that use %HOMEDRIVE%%HOMEPATH% still resolve the isolated profile.
+      // Never inherit the real profile pair when TEMP is UNC-backed. Programs that use %HOMEDRIVE%%HOMEPATH% still resolve the isolated profile.
       env.HOMEDRIVE = "";
       env.HOMEPATH = homePath;
     }
@@ -84,13 +70,7 @@ export function sandboxProcessProfileEnvironment(
     XDG_DATA_HOME: join(homePath, "data"),
     XDG_CACHE_HOME: join(homePath, "cache"),
     XDG_STATE_HOME: join(homePath, "state"),
-    // NO `TMPDIR` here, deliberately. On macOS and Linux ASRT writes its own
-    // `TMPDIR=` into the sandboxed command line, which is evaluated INSIDE the
-    // sandbox and therefore wins over anything this env carries. Setting one
-    // would be a value that never applies — a comment claiming a substitution
-    // the child never sees. The POSIX temp directory is set where it CAN take
-    // effect: inside the wrap, per principal (`sandboxTempEnvLaunch`,
-    // `asrt-sandbox.ts`).
+    // NO `TMPDIR` here, deliberately. On macOS and Linux ASRT writes its own `TMPDIR=` into the sandboxed command line, which is evaluated INSIDE the sandbox and therefore wins over anything this env carries. Setting one would be a value that never applies — a comment claiming a substitution the child never sees. The POSIX temp directory is set where it CAN take effect: inside the wrap, per principal (`sandboxTempEnvLaunch`, `asrt-sandbox.ts`).
   };
 }
 
@@ -104,13 +84,7 @@ function createProfileDirectories(env: Readonly<Record<string, string>>): void {
     env.XDG_DATA_HOME,
     env.XDG_CACHE_HOME,
     env.XDG_STATE_HOME,
-    // The temp root has to EXIST, and that is the whole point of it being
-    // here. ASRT substitutes a temp root and creates nothing, so a confined
-    // child's `os.tmpdir()` routinely names a directory that is not there —
-    // `readdirSync` and `mkdtempSync` fail `ENOENT` while a recursive `mkdir`
-    // on the same path succeeds. An unguarded sweep of `tmpdir()` in a
-    // plugin's activation body therefore does not degrade a feature, it stops
-    // the plugin from loading.
+    // The temp root has to EXIST, and that is the whole point of it being here. ASRT substitutes a temp root and creates nothing, so a confined child's `os.tmpdir` routinely names a directory that is not there — `readdirSync` and `mkdtempSync` fail `ENOENT` while a recursive `mkdir` on the same path succeeds. An unguarded sweep of `tmpdir` in a plugin's activation body therefore does not degrade a feature, it stops the plugin from loading.
     env.TMPDIR,
     env.TEMP,
     env.TMP,
@@ -119,34 +93,7 @@ function createProfileDirectories(env: Readonly<Record<string, string>>): void {
   }
 }
 
-/**
- * Create a fresh HOME/profile — and temp root — for one ASRT-confined process
- * lifetime.
- *
- * The real user HOME remains on the sandbox deny-list, but child programs no
- * longer probe denied implicit config files such as `.gitconfig`, `.npmrc`, or
- * shell startup files. A unique directory is mandatory: sharing a writable
- * synthetic HOME would let one sandboxed command persist config that changes a
- * later command's behavior.
- *
- * THE TEMP ROOT IS PART OF THAT, and it is the one substitution that is right
- * BECAUSE it vanishes. Rooting durable state at the throwaway HOME is a trap —
- * the write succeeds and the state is gone at exit, which reads as working and
- * costs the user their data on the next start. Temp is the case where vanishing
- * at exit is the contract rather than the defect.
- *
- * On Windows that temp root is `TEMP`/`TMP` here. On macOS and Linux ASRT
- * writes its own `TMPDIR=` inside the sandbox, so the temp directory is set
- * there instead: per principal (`sandboxTempEnvLaunch`, `asrt-sandbox.ts`), or
- * by the shell tool's own bootstrap. Every caller of this module already
- * grants `home.path` for writing, so a temp root beneath it needs no new grant.
- *
- * WHERE IT LIVES. On macOS and Linux, under the app-owned
- * `<AVE_HOME>/sandbox/home`, which the sandbox read floor denies: every
- * caller re-allows its own HOME, so no confined process can list the root or
- * read another one's HOME. Under the host temp directory, where it used to be,
- * nothing denied it.
- */
+// Give each process a fresh HOME and temp root so writable config cannot alter later commands; never store durable state there because cleanup discards it. POSIX homes live under a read-denied app root with only the process's own home re-allowed; Windows sets TEMP/TMP, while POSIX wrap/bootstrap owns TMPDIR.
 export function createSandboxProcessHome(
   platform: NodeJS.Platform = process.platform,
   removeHome: typeof rmSync = rmSync,
@@ -221,8 +168,7 @@ export function createSandboxProcessHome(
         log.error({ homePath }, "sandbox process HOME cleanup refused unsafe path");
         return;
       }
-      // A later definitive lifecycle event may arrive before the scheduled
-      // retry. Let that call retry immediately instead of waiting for backoff.
+      // A later definitive lifecycle event may arrive before the scheduled retry. Let that call retry immediately instead of waiting for backoff.
       if (retryTimer !== null) {
         clearTimeout(retryTimer);
         retryTimer = null;
