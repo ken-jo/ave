@@ -12,13 +12,11 @@ import { McpGovernance } from "../mcp-governance.js";
 import { McpManager } from "../mcp-manager.js";
 import type { McpGovernancePolicy, McpHttpServerConfig } from "../types.js";
 
-// Public-host resolution for the network-guard path; loopback literals never resolve.
 const lookupMock = vi.hoisted(() => vi.fn(async (_host: string, _options: unknown) => [{ address: "93.184.216.34", family: 4 }]));
 vi.mock("node:dns", () => ({ promises: { lookup: (host: string, options: unknown) => lookupMock(host, options) } }));
 
 interface WireFixture {
   origin: string;
-  /** Where the fixture actually listens; differs from origin for a public-host fixture. */
   listenOrigin: string;
   endpoint: string;
   acceptedAccessToken: string;
@@ -209,7 +207,6 @@ function createEncryption(): SecretEncryption {
   };
 }
 
-/** Sends a request addressed to the fixture's public origin to its loopback listener. */
 async function fetchFixture(fixture: WireFixture, input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   const request = new Request(input, init);
   if (!request.url.startsWith(fixture.origin)) return fetch(request);
@@ -331,7 +328,6 @@ describe("remote authorization over the real client transport", () => {
     expect(fixture.pkceAccepted).toBe(1);
     expect(fixture.tokenRequests[0].get("resource")).toBe("https://mcp.example.test/mcp");
     expect(browserOpens()).toBe(1);
-    // Every resource, metadata and token request resolved the public host through the network guard.
     expect(lookupMock.mock.calls.map(([host]) => host)).toEqual(expect.arrayContaining(["mcp.example.test"]));
     expect(lookupMock.mock.calls.every(([host]) => host === "mcp.example.test")).toBe(true);
     expect(egressPaths).toEqual(expect.arrayContaining([

@@ -1,10 +1,5 @@
-/**
- * The documented boundary of §18.2.4, pinned: a proxy chosen by the system
- * configuration is trusted beyond its socket. Ave checks and connects only
- * to the proxy's address; the proxy resolves the target, and a target it
- * resolves to this computer is reached. This test asserts that behaviour, not
- * a guard: changing the boundary changes this test and §18.2.4 together.
- */
+/** System-configured proxies are trusted beyond their socket and resolve targets themselves.
+ * This test pins that contract; changes must update its specification too. */
 import { createServer, request as httpRequest, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -38,7 +33,6 @@ describe("a PAC proxy is trusted beyond its socket (§18.2.4)", () => {
       response.end("loopback service");
     });
     targetPort = await listen(target);
-    // A forwarding proxy that resolves every name to this computer, as a local proxy may.
     proxy = createServer((request, response) => {
       forwarded.push(request.url ?? "");
       const url = new URL(request.url ?? "");
@@ -67,7 +61,6 @@ describe("a PAC proxy is trusted beyond its socket (§18.2.4)", () => {
       resolveProxy: async () => `PROXY proxy.test:${proxyPort}`,
     });
     const gate = new NetworkGate({ policy: policySource(policyLoad()), allowLoopback: false, transport });
-    // A public marketplace with no confirmations: a direct download to this computer would be refused (§18.3 #4).
     const catalog: CatalogSource = { id: "acme", label: "Acme", url: normalizeSourceUrl("https://1.1.1.1/acme/market"), acknowledged: new Set() };
     const response = await gate.fetch(`http://internal.test:${targetPort}/admin`, { official: false, catalog });
     expect(await response.text()).toBe("loopback service");

@@ -1,11 +1,4 @@
-/**
- * MCP image content reaches the model as an image, not as base64 text.
- *
- * The decoder is replaced here: its own suite proves format sniffing and size
- * bounds. What is under test is the routing — which block becomes the image,
- * what the text says in its place, and what the model is told when an image
- * is not attached.
- */
+/** Verify image routing independently of decoder format and size checks. */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const decoder = vi.hoisted(() => ({ prepareBytes: vi.fn() }));

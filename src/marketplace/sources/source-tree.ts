@@ -1,14 +1,4 @@
-/**
- * One revision of a source's files, as the snapshot builder, the descriptor
- * reads and every kind's staging read them (design §18.4.2): a git commit of
- * the source's bare partial clone ({@link GitTree}), a folder read in place
- * (`FolderTree`), or the copy of a folder package an install plan captured
- * ({@link StagedTree}). The readers are the git ones; only how bytes are
- * reached differs.
- *
- * A source's pin names its revision: a 40-hex commit for a git source,
- * `local-<sha256>` for a folder source (§18.4.3), never the other way round.
- */
+/** Readers share one revision interface across git commits, live folders and staged captures. */
 import { createHash } from "node:crypto";
 import { lstat, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -22,49 +12,33 @@ import { treeDigest } from "../resolve/tree-digest.js";
 export const GIT_COMMIT_RE = /^[0-9a-f]{40}$/u;
 export const FOLDER_REVISION_RE = /^local-[0-9a-f]{64}$/u;
 
-/** A folder source's pin (§18.4.3). */
 export function isFolderRevision(value: string): boolean {
   return FOLDER_REVISION_RE.test(value);
 }
 
-/** Either kind of pin: what a state file, a snapshot name or an install origin may hold. */
 export function isSourcePin(value: unknown): value is string {
   return typeof value === "string" && (GIT_COMMIT_RE.test(value) || FOLDER_REVISION_RE.test(value));
 }
 
 export interface SourceTree {
-  /** Make the files under these paths readable: a partial clone fetches their blobs; a folder has them. */
+  /** Partial clones fetch blobs; folder sources already have readable files. */
   ensure(paths: readonly string[]): Promise<void>;
-  /** One regular file's bytes, or null when the path holds none; larger than `maxBytes` is CONTENT_RULE_VIOLATION. */
+  /** Missing regular files return null; oversized reads fail content rules. */
   readFile(path: string, maxBytes: number): Promise<Buffer | null>;
-  /** Write every file under `path` ("" is the root) into `dest`, relative to `path`, under `limits`. */
   exportPath(path: string, dest: string, limits: ExportLimits): Promise<ExportedFile[]>;
-  /** When this revision was made: a commit's committer time, a folder's read time. */
   revisionTime(): Promise<string>;
-  /**
-   * The version a package at `path` that declares none gets here (§8.2,
-   * §18.4.7): `0.0.0+g<commit12>` at a commit, `0.0.0+t<digest12>` from the
-   * tree digest of what a folder package installs.
-   */
+  /** Missing versions derive from commit or payload digests so tree changes become updates. */
   synthesizedVersion(path: string, kind: PackageKind): Promise<string>;
 }
 
-/** What an install plan reads its package through: the tree at the revision it was bound to. */
 export interface RepositoryAccess {
   treeAt(revision: string): SourceTree;
-  /** The source is direct: its one package is detected rather than described by an index (§8.1). */
   direct: boolean;
-  /** The repository's or folder's own name, which names a direct package at its root that names none. */
   rootName: string;
   signal?: AbortSignal;
 }
 
-/**
- * Whether a package of `kind` installs the top-level entry `name` of its
- * folder (§18.4.2): a plugin its built tree (`plugin.json`, `dist/`,
- * `assets/`), an MCP server its `server/` files, every other kind every
- * entry but its descriptor.
- */
+/** Plugins install built trees, MCP installs server files, other kinds exclude only the descriptor. */
 export function packageInstalls(kind: PackageKind, name: string, isDirectory: boolean): boolean {
   switch (kind) {
     case "plugin":
@@ -76,13 +50,11 @@ export function packageInstalls(kind: PackageKind, name: string, isDirectory: bo
   }
 }
 
-/** The last segment of a repository path or folder: what names a direct package at its root. */
 export function rootNameOf(location: string): string {
   const segments = location.split(/[\\/]/u).filter(Boolean);
   return segments[segments.length - 1] ?? "";
 }
 
-/** One commit of a git source: blobs are fetched from `remote` as the partial clone needs them. */
 export class GitTree implements SourceTree {
   constructor(
     readonly repo: BareRepo,
@@ -114,23 +86,16 @@ export class GitTree implements SourceTree {
   }
 }
 
-/** Every commit of one git source's clone, read through `remote`. */
 export function gitAccess(repo: BareRepo, remote: GitRemote, direct: boolean, signal?: AbortSignal): RepositoryAccess {
   return { treeAt: (commit) => new GitTree(repo, remote, commit, signal), direct, rootName: rootNameOf(remote.url.path), ...(signal ? { signal } : {}) };
 }
 
-/**
- * The files a folder install plan captured into its staging directory under
- * `workRoot` (§18.4.2): what was reviewed is what installs, so execution
- * reads this copy and never the folder. The directory is Ave's own and
- * holds only regular files and directories the capture wrote.
- */
+/** Folder execution reads only the reviewed capture, never the live source again. */
 export class StagedTree implements SourceTree {
   constructor(
     readonly dir: string,
     readonly revision: string,
     private readonly readAt: string,
-    /** The execute bit of every captured file, by `/`-separated path. */
     private readonly executable: ReadonlySet<string>,
   ) {
     if (!isFolderRevision(revision)) throw new Error(`a staged folder tree needs a folder revision, not ${revision}`);
@@ -207,7 +172,6 @@ export class StagedTree implements SourceTree {
   }
 }
 
-/** A folder plan's access: the captured copy at the plan's revision, and nothing else. */
 export function stagedAccess(tree: StagedTree, direct: boolean, rootName: string): RepositoryAccess {
   return {
     treeAt: (revision) => {
@@ -219,7 +183,7 @@ export function stagedAccess(tree: StagedTree, direct: boolean, rootName: string
   };
 }
 
-/** The revision a folder read's files and package digests name (§18.4.3): `local-` + sha256 of the sorted lines. */
+/** Folder revisions hash sorted file and package digest lines under the local- prefix. */
 export function folderRevision(read: ReadonlyMap<string, string>, packages: ReadonlyMap<string, string>): string {
   const lines = [
     ...[...read].map(([path, digest]) => ({ key: Buffer.from(path, "utf8"), line: `${digest} ${path}\n` })),

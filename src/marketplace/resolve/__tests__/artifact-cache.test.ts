@@ -1,8 +1,3 @@
-/**
- * Kept plugin artifacts: a zip comes back only under the digest it hashes
- * to, keeping follows the setting at each use, and the oldest-used zips go
- * once the total passes the cap.
- */
 import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -71,7 +66,6 @@ describe("createArtifactCache", () => {
   it("refuses to keep bytes under another digest or a key that is not a sha256, and misses on reading one", async () => {
     await expect(cache().keep(sha(Buffer.from("a")), Buffer.from("b"))).rejects.toThrow(/another digest/);
     await expect(cache().keep("../../etc/passwd", Buffer.from("a"))).rejects.toThrow(/another digest|not a sha256/);
-    // A miss, as with keeping off, so the downloading rung reports the bad pin the same way.
     await expect(cache().read("../../etc/passwd")).resolves.toBeNull();
   });
 
@@ -93,7 +87,6 @@ describe("createArtifactCache", () => {
     clock += 60_000;
     await kept.keep(sha(b), b);
     clock += 60_000;
-    // Reading `a` makes `b` the oldest-used.
     await kept.read(sha(a));
     clock += 60_000;
     await kept.keep(sha(c), c);

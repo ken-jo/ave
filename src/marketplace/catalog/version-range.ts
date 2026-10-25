@@ -1,14 +1,4 @@
-/**
- * Version ranges for `policy/revocations.json` (design §10.4).
- *
- *   range      := alternative ("||" alternative)*
- *   alternative:= "*" | comparator (" " comparator)*
- *   comparator := (">=" | ">" | "<=" | "<" | "=")? semver
- *
- * Comparators in one alternative must all hold; any alternative may match.
- * Precedence is the host's `compareSemver`, so a pre-release sorts below its
- * release exactly as it does everywhere else.
- */
+/** Revocation ranges are OR alternatives of AND semver comparators; * matches all versions. */
 import { compareSemver, isSemver } from "../../shared/semver-compare.js";
 
 type Operator = ">=" | ">" | "<=" | "<" | "=";
@@ -20,7 +10,6 @@ interface Comparator {
 
 export type VersionRange = ReadonlyArray<ReadonlyArray<Comparator>>;
 
-/** Parse a range, or throw with the reason. `*` is an alternative with no comparators. */
 export function parseVersionRange(text: string): VersionRange {
   const alternatives = text.split("||").map((part) => part.trim());
   if (alternatives.some((part) => part.length === 0)) throw new Error(`empty alternative in range "${text}"`);

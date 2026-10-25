@@ -1,7 +1,3 @@
-/**
- * The git runtime as one service (design §9.1, §9.2, §15.7): what is detected
- * under the configured mode, and the managed install with its progress.
- */
 import { join } from "node:path";
 import { scrubDiagnosticSecrets } from "../../shared/dlp.js";
 import type { GitRuntimeMode } from "../../shared/git-runtime-mode.js";
@@ -12,10 +8,8 @@ import { findManagedGit, installManagedGit } from "./managed-git.js";
 import { MANAGED_GIT, type ManagedGitPins } from "./managed-git-pins.js";
 
 export interface GitRuntimeServiceOptions {
-  /** `~/.ave/runtime/git`. */
   runtimeRoot: string;
   mode: () => GitRuntimeMode;
-  /** The gated, PAC-aware download (§7.4). */
   download: (url: string, signal?: AbortSignal) => Promise<Response>;
   onProgress: (progress: GitRuntimeProgress) => void;
   platform?: NodeJS.Platform;
@@ -64,7 +58,6 @@ export class GitRuntimeService {
     };
   }
 
-  /** Install (or repair) the managed copy, then report the status. A failure is part of the status. */
   async install(signal?: AbortSignal): Promise<GitRuntimeStatus> {
     try {
       await installManagedGit({

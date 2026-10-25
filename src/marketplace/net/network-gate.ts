@@ -1,32 +1,5 @@
-/**
- * The one network gate every marketplace target passes (design §7.4, §18.2):
- * git remotes, release and archive downloads, and the managed git archive.
- *
- *   1. normalize (§7.1; a download URL keeps its query, which policy ignores);
- *   2. managed policy (§12, §18.6): `block` wins, then `allow` when present,
- *      then `requireHttps`. An unreadable policy blocks every source but the
- *      official one;
- *   3. the target's class (§18.2.1) and who chose it:
- *      - an entered target (a source's own address, a build constant) is
- *        accepted, warned about, or refused (§18.2.2). A warning the source
- *        does not hold is SOURCE_CONFIRMATION_REQUIRED; a policy-listed host
- *        needs none of `unencrypted`, `internal-network` and `this-computer`,
- *        and an unpackaged build with AVE_DEV=1 none for this computer;
- *      - a catalog-supplied download, and every redirect hop of one, follows
- *        §18.2.3: the source's own host inherits its confirmations, another
- *        internal host needs `internal-downloads`, another service on this
- *        computer is refused (§18.3 #4);
- *      - metadata and unroutable addresses are refused for every target,
- *        policy-listed hosts included (§18.3 #3); `blockPrivateNetworks`
- *        makes internal and this-computer targets a policy block;
- *   4. the address rule is bound to the connection (§18.2.4): this gate does
- *      not resolve. It hands an {@link AddressPolicy} to the git runner (one
- *      lookup per git call, pinned with `http.curloptResolve`, or the ssh
- *      preflight) and to the pinned download transport (one lookup per hop);
- *   5. downloads follow a redirect only after steps 1–4 pass for the new URL,
- *      and never carry `Authorization` or `Cookie` to a different origin. Git
- *      never follows redirects (`http.followRedirects=false`, run-git.ts).
- */
+/** Every target passes policy and address checks; metadata and unroutable answers are always refused.
+ * Bind checked addresses to connections and recheck redirects without forwarding cross-origin credentials. */
 import { isIP } from "node:net";
 import {
   NetworkGuardError,
@@ -44,14 +17,10 @@ import type { FolderNetwork } from "./source-input.js";
 import { normalizeDownloadPath, normalizeSourceHost, type NormalizedSourceUrl, type PatternTarget } from "./source-url.js";
 
 export interface NetworkGateOptions {
-  /** Read at each check, so a policy change applies to the next operation (§18.6). */
+  /** Read policy at each check so changes affect the next operation. */
   policy: PolicySource;
-  /**
-   * An unpackaged build with AVE_DEV=1: entered this-computer targets, and
-   * plain http to them, need no confirmation (§18.2.2).
-   */
+  /** Explicit unpackaged development builds exempt entered loopback targets from confirmation. */
   allowLoopback: boolean;
-  /** The pinned download transport (`pinned-fetch.ts`). */
   transport: AddressCheckedFetch;
 }
 
@@ -60,45 +29,34 @@ export interface GateSubject {
   official: boolean;
 }
 
-/** A source's own address, and the confirmations the source holds (§18.5). */
 export interface RemoteSubject extends GateSubject {
   acknowledged: ReadonlySet<SourceWarning>;
 }
 
-/** What the git runner needs to reach a remote under the gate. */
 export interface RemoteVerdict {
-  /** `GIT_ALLOW_PROTOCOL` may name `http`: the source is http and was listed, acknowledged or exempt. */
+  /** HTTP is allowed only for a listed, acknowledged or explicitly exempt source. */
   allowHttp: boolean;
-  /** Credentials may answer: always over https and ssh, over http only with `token-unencrypted` (§18.2.2). */
+  /** HTTP credentials require token-unencrypted consent; HTTPS and SSH do not. */
   credentialsAllowed: boolean;
-  /** The rule each resolved address of the remote's host is judged by. */
   addressPolicy: AddressPolicy;
 }
 
-/** The source whose catalog named a download (§18.2.3). */
 export interface CatalogSource {
   id: string;
-  /** How messages name the source. */
   label: string;
   url: NormalizedSourceUrl;
   acknowledged: ReadonlySet<SourceWarning>;
 }
 
 export interface GatedFetchInit extends GateSubject {
-  /** The source whose catalog named the URL; null for an address Ave itself chose (an entered target). */
+  /** Null for host-chosen targets rather than catalog downloads. */
   catalog: CatalogSource | null;
   method?: "GET" | "HEAD";
   headers?: Record<string, string>;
   signal?: AbortSignal;
   timeoutMs?: number;
   maxRedirects?: number;
-  /**
-   * Told of each hop that answered after passing every check, lexical and
-   * address: the first URL and every redirect target, as a string snapshot
-   * of what was requested. A caller learns from it which transport the bytes
-   * actually travelled over (§15.2 Delivery). It only observes: what it
-   * throws is logged and changes neither the gate's decision nor the download.
-   */
+  /** Observe immutable snapshots of accepted hops; observer failures cannot alter transport or policy. */
   onHop?: (hop: string) => void;
 }
 
@@ -106,10 +64,7 @@ const log = createMarketplaceLogger("marketplace-network-gate");
 
 const CROSS_ORIGIN_STRIPPED_HEADERS = ["authorization", "cookie"];
 
-/**
- * How restrictive a dropped answer's refusal is: when every answer is
- * refused, the hop fails with the highest (`selectAnswers`).
- */
+/** When all answers fail, report the most restrictive refusal. */
 const RANK: Record<Exclude<AddressClass, "public">, number> = {
   metadata: 4,
   unroutable: 3,
@@ -127,7 +82,7 @@ function hostListedBy(policy: MarketplacePolicy): Set<string> {
   return hosts;
 }
 
-/** The policy view of a download URL: same host and path rules as a source URL, query ignored. */
+/** Queries do not participate in policy URL matching. */
 export function downloadUrlForPolicy(url: URL): NormalizedSourceUrl {
   const scheme = url.protocol === "https:" ? "https" : url.protocol === "http:" ? "http" : null;
   if (!scheme || url.username || url.password) {
@@ -144,26 +99,23 @@ function bareHost(host: string): string {
   return host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
 }
 
-/** The host as an address when it is an IP literal, else null. */
 function literalAddress(host: string): string | null {
   const bare = bareHost(host);
   return isIP(bare) !== 0 ? bare : null;
 }
 
-/** A this-computer host known without a lookup: a loopback or unspecified literal, or `localhost`. */
 function isLoopbackName(host: string): boolean {
   const literal = literalAddress(host);
   return literal !== null ? classifyAddress(literal) === "this-computer" : host === "localhost";
 }
 
-/** The port a URL's web server listens on: an ssh source's derived release URL is https on 443 (§6.2). */
+/** Release URLs derived from SSH sources use HTTPS port 443. */
 function webPort(url: NormalizedSourceUrl | URL): number {
   if (url instanceof URL) return url.port ? Number(url.port) : url.protocol === "https:" ? 443 : 80;
   if (url.scheme === "ssh") return 443;
   return url.port ?? (url.scheme === "https" ? 443 : 80);
 }
 
-/** A refusal or block carried through the guard as one answer's verdict. */
 function verdict(error: MarketplaceError, rank: number, fatal = false): NetworkGuardError {
   return new NetworkGuardError(error.message, { cause: error, rank, fatal });
 }
@@ -185,7 +137,6 @@ export class NetworkGate {
     return policy !== null && hostListedBy(policy).has(host);
   }
 
-  /** Step 2 for one normalized target: block, allow, `requireHttps`. */
   private checkPolicy(url: NormalizedSourceUrl, subject: GateSubject, target: PatternTarget): void {
     const load = this.options.policy.load;
     if (!load.ok) {
@@ -211,7 +162,7 @@ export class NetworkGate {
     }
   }
 
-  /** Metadata and unroutable answers: refused for every target, listed or not (§18.3 #3). */
+  /** Metadata and unroutable answers are refused even for policy-listed targets. */
   private refusal(kind: "metadata" | "unroutable", host: string, address: string): NetworkGuardError {
     const reason = kind === "metadata" ? "address-metadata" : "address-unroutable";
     return verdict(new MarketplaceError("SOURCE_URL_REJECTED", `${host} resolves to ${address}, a ${kind} address`, { detail: { reason, host, address } }), RANK[kind]);
@@ -226,13 +177,7 @@ export class NetworkGate {
     );
   }
 
-  /**
-   * The rule for an entered target's addresses (§18.2.2): public accepted;
-   * internal and this-computer accepted when listed, blocked under
-   * `blockPrivateNetworks`, else accepted with the source's confirmation
-   * (this computer also in a dev build) or failing the connection with
-   * SOURCE_CONFIRMATION_REQUIRED.
-   */
+  /** Private-network policy blocks override consent; other internal targets require listing or confirmation. */
   private enteredPolicy(host: string, target: string, acknowledged: ReadonlySet<SourceWarning>): AddressPolicy {
     const listed = this.listed(host);
     return (address) => {
@@ -256,12 +201,7 @@ export class NetworkGate {
     };
   }
 
-  /**
-   * Steps 1–3 for a git remote, without any lookup: policy, the lexical
-   * warnings (`unencrypted`, a literal address's class) and the address rule
-   * the runner judges every answer by. Throws SOURCE_CONFIRMATION_REQUIRED
-   * listing every warning the source does not hold that is known now.
-   */
+  /** Check lexical policy and known warnings before lookup; the connection must enforce the returned address rule. */
   checkRemote(url: NormalizedSourceUrl, subject: RemoteSubject): RemoteVerdict {
     this.checkPolicy(url, subject, "repository");
     const addressPolicy = this.enteredPolicy(url.host, url.url, subject.acknowledged);
@@ -286,17 +226,12 @@ export class NetworkGate {
     };
   }
 
-  /** Step 2 alone for the policy view of `url`: an add re-checks the policy it was previewed under (§18.6). */
+  /** Recheck preview policy when adding the source. */
   checkSourcePolicy(url: NormalizedSourceUrl, subject: GateSubject): void {
     this.checkPolicy(url, subject, "repository");
   }
 
-  /**
-   * A folder's policy (§18.4.1 stage 3, §18.6): `allowLocalSources`, then
-   * the `path:` patterns of `block` and `allow`. Applied to the lexical path
-   * before anything touches it, and to the canonical path after stage 4. An
-   * unreadable policy blocks every folder: the official source is never one.
-   */
+  /** Check lexical and canonical folder paths; unreadable policy blocks every folder before access. */
   checkFolderPolicy(path: string): void {
     const load = this.options.policy.load;
     if (!load.ok) {
@@ -314,12 +249,7 @@ export class NetworkGate {
     });
   }
 
-  /**
-   * Stage 3 for a folder (§18.4.1): policy, then consent. A folder on
-   * another computer needs `network-folder`, which a managed folder holds
-   * through its policy entry; without it this throws
-   * SOURCE_CONFIRMATION_REQUIRED and nothing has touched the path.
-   */
+  /** Require network-folder consent before any access; managed folders obtain it from policy entries. */
   checkFolder(path: string, network: FolderNetwork, acknowledged: ReadonlySet<SourceWarning>): void {
     this.checkFolderPolicy(path);
     if (network.network && !acknowledged.has("network-folder")) {
@@ -329,11 +259,7 @@ export class NetworkGate {
     }
   }
 
-  /**
-   * `allowDirectInstall: false` (§12): packages install from marketplaces
-   * only, so no direct source is previewed, added or installed from. Folder
-   * or git alike; an unreadable policy blocks it too.
-   */
+  /** Direct-install policy applies to git and folder previews, additions and installs, failing closed. */
   checkDirectInstall(target: string): void {
     const load = this.options.policy.load;
     if (!load.ok) {
@@ -347,10 +273,7 @@ export class NetworkGate {
     });
   }
 
-  /**
-   * The rule for a download's addresses at one hop (§18.2.3). An entered
-   * download (`catalog` null) follows §18.2.2 with no confirmations.
-   */
+  /** Host-chosen downloads have no inherited confirmations; catalog downloads use source consent. */
   private downloadPolicy(catalog: CatalogSource | null): AddressPolicy {
     return (address, hop) => {
       const kind = classifyAddress(address);
@@ -361,8 +284,7 @@ export class NetworkGate {
       // The source's own host inherits the source's confirmations; on this computer only at its own port.
       const ownHost = host === catalog.url.host && (kind !== "this-computer" || webPort(hop) === webPort(catalog.url));
       if (ownHost) return this.enteredPolicy(host, hop.href, catalog.acknowledged)(address, hop);
-      // A hard refusal (§18.3 #4) comes before every exemption: listing one service on this
-      // computer must not let any catalog reach the others.
+      // Refuse other local services before exemptions; listing one port cannot authorize every port.
       if (kind === "this-computer") {
         return verdict(
           new MarketplaceError("SOURCE_URL_REJECTED", `${catalog.label} points a download at this computer (${host}, ${address})`, {
@@ -384,16 +306,11 @@ export class NetworkGate {
     };
   }
 
-  /**
-   * Policy and scheme for a download that is fetched under another URL: a
-   * GitHub release asset a token fetches through api.github.com is governed
-   * by the rules for its github.com repository.
-   */
+  /** Tokenized release API requests remain governed by their source repository policy. */
   checkDownloadPolicy(rawUrl: string, subject: GateSubject): void {
     this.checkPolicy(downloadUrlForPolicy(new URL(rawUrl)), subject, "download");
   }
 
-  /** A download under steps 1–5, over the pinned transport. */
   async fetch(rawUrl: string, init: GatedFetchInit): Promise<Response> {
     let start: URL;
     try {
@@ -408,7 +325,7 @@ export class NetworkGate {
     const transport: AddressCheckedFetch = async (input, hopInit, select) => {
       const hop = new URL(input);
       this.checkPolicy(downloadUrlForPolicy(hop), { official }, "download");
-      // A catalog's http download is verified by its pinned sha256 (§18.2.3); an address Ave chose holds no confirmation for http.
+      // Catalog HTTP bytes require a pinned hash; host-chosen HTTP targets have no inherited consent.
       if (catalog === null && hop.protocol === "http:") {
         const host = normalizeSourceHost(hop.href, hop.hostname);
         if (!this.listed(host) && !(this.options.allowLoopback && isLoopbackName(host))) {
@@ -420,7 +337,6 @@ export class NetworkGate {
         for (const name of CROSS_ORIGIN_STRIPPED_HEADERS) hopHeaders.delete(name);
       }
       const requested = hop.href;
-      // The transport applies the address check (`select`); a hop is reported only once it answered past it.
       const response = await this.options.transport(requested, { ...hopInit, headers: hopHeaders }, select);
       if (onHop) observeHop(onHop, requested);
       return response;
@@ -441,13 +357,7 @@ export class NetworkGate {
   }
 }
 
-/**
- * Hand an observer its hop. The step is total: nothing the observer throws,
- * and nothing that describing the failure throws, reaches the download, whose
- * answered body the caller still reads or cancels. The diagnostic names only
- * the hop's origin and a fixed kind (`ThrownKind`): a path or query can carry
- * a signature, and any string on the thrown value can quote one.
- */
+/** Observer failures cannot affect downloads; diagnostics use only the origin and a fixed thrown-kind label. */
 function observeHop(onHop: (hop: string) => void, hop: string): void {
   try {
     onHop(hop);
@@ -455,16 +365,11 @@ function observeHop(onHop: (hop: string) => void, hop: string): void {
     try {
       log.warn(`download hop observer failed for ${new URL(hop).origin}: ${thrownKind(error)}`);
     } catch {
-      // Describing the failure failed as well (a value no conversion accepts); the download is unaffected.
     }
   }
 }
 
-/**
- * What a hop observer threw, as one of a closed set. No string is taken from
- * the thrown value: its name, message and constructor are the observer's to
- * choose, so any of them can quote a credential.
- */
+/** Never read observer-controlled error text; it may contain credentials. */
 type ThrownKind = "error" | "non-error-object" | "primitive" | "unreadable";
 
 function thrownKind(error: unknown): ThrownKind {
@@ -478,7 +383,6 @@ function thrownKind(error: unknown): ThrownKind {
   }
 }
 
-/** `getaddrinfo` failures: the name has no address, or no resolver answered. */
 const DNS_ERROR_CODES: ReadonlySet<string> = new Set(["ENOTFOUND", "EAI_AGAIN", "EAI_NONAME", "EAI_FAIL", "ENODATA"]);
 const REFUSED_ERROR_CODES: ReadonlySet<string> = new Set(["ECONNREFUSED", "ECONNRESET", "EHOSTUNREACH", "EPIPE"]);
 
@@ -486,11 +390,7 @@ function isTlsError(code: string | undefined): boolean {
   return code !== undefined && (code.startsWith("ERR_TLS_") || code.startsWith("ERR_SSL_") || code.includes("CERT") || code === "UNABLE_TO_VERIFY_LEAF_SIGNATURE");
 }
 
-/**
- * A failure of the gate's fetch as a marketplace error: an answer's verdict
- * carries its refusal, block or confirmation; a connection failure becomes
- * SOURCE_UNREACHABLE with its reason when the error names one.
- */
+/** Preserve address-policy verdicts; map connection failures to unreachable with a stable reason. */
 export function mapGuardError(error: unknown, host: string): MarketplaceError {
   if (isMarketplaceError(error)) return error;
   if (error instanceof NetworkGuardError && isMarketplaceError(error.cause)) return error.cause;

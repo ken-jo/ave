@@ -1,8 +1,3 @@
-/**
- * Stage 1 of a folder input (design §18.4.1), on both path families: what
- * normalizes, what is refused with which reason, and what stays a git
- * address. Pure string work: no filesystem call is possible here.
- */
 import { describe, expect, it } from "vitest";
 import { MarketplaceError } from "../../errors.js";
 import { FakeVolume } from "../../__tests__/fixtures/folder-fs.js";
@@ -129,7 +124,6 @@ describe("stage 1 on Windows (path.win32)", () => {
   });
 
   it("refuses a token pasted as a network path's account before anything echoes it", () => {
-    // Built here, never written out whole.
     const token = `ghp_${"a".repeat(36)}`;
     const input = `\\\\user:${token}@server.example\\share\\tools`;
     expect(refusal(input, "win32")).toBe("unc-credentials");
@@ -149,7 +143,6 @@ describe("stage 2: network classification without touching the path", () => {
     expect(await classifyFolder("/network/servers/nas/m", "darwin", posix)).toEqual({ network: true, server: "nas" });
     expect(await classifyFolder("/NET/nas/m", "darwin", posix)).toEqual({ network: true, server: "nas" });
     expect(await classifyFolder("/NET/nas/m", "linux", posix)).toEqual({ network: false });
-    // An automount root itself, and `/`, which holds them.
     expect(await classifyFolder("/net", "linux", posix)).toEqual({ network: true, server: null });
     expect(await classifyFolder("/", "linux", posix)).toEqual({ network: true, server: null });
     expect(await classifyFolder("/", "darwin", posix)).toEqual({ network: true, server: null });
@@ -164,7 +157,6 @@ describe("stage 2: network classification without touching the path", () => {
         "D:": "\\Device\\CdRom0",
         "S:": "\\??\\C:\\work\\market",
         "T:": "\\??\\Z:\\nested",
-        // `subst R: Z:\` is reported without the trailing separator.
         "R:": "\\??\\Z:",
         "Z:": "\\Device\\Mup\\;LanmanRedirector\\;Z:000000000001a2b3\\files.corp\\share",
         "W:": "\\Device\\WebDavRedirector\\dav.corp@SSL\\DavWWWRoot",
@@ -182,7 +174,6 @@ describe("stage 2: network classification without touching the path", () => {
     // A drive the OS has no mapping for is a network folder: a wrong guess only warns.
     expect(await classifyFolder("Q:\\m", "win32", volume)).toEqual({ network: true, server: null });
     expect(await classifyDosDeviceMapping("\\Device\\Unknown7", volume, 0, "Q:\\m")).toEqual({ network: true, server: null });
-    // Only the drive letters were asked about; no path was touched.
     expect(volume.calls.every((call) => call.op === "queryDosDevice")).toBe(true);
     expect(volume.paths("queryDosDevice")).toEqual(["C:", "D:", "S:", "C:", "T:", "Z:", "R:", "Z:", "Z:", "W:", "U:", "Q:"]);
   });

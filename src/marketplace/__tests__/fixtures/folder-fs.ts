@@ -1,14 +1,4 @@
-/**
- * Test fixtures for folder sources (design §18.4.5): the real filesystem as
- * the composition root wires it, and a recording in-memory volume whose every
- * call is logged, so a test can prove which paths were touched, and when.
- *
- * The fake volume behaves as the OS does where the folder rules depend on it:
- * an intermediate link is followed by every call, a final link only by `open`
- * on Windows (macOS and Linux open with `O_NOFOLLOW`, which fails with
- * ELOOP), `lstat` and `readlink` never follow a final link, and names are
- * matched with or without case as the volume is configured.
- */
+/** Records filesystem calls and models link-following and case sensitivity. */
 import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -22,11 +12,7 @@ export const TEST_FOLDER_LIMITS = {
   maxBytes: DEFAULT_MARKETPLACE_ARTIFACT_LIMITS.maxTotalUncompressedBytes,
 };
 
-/**
- * The real filesystem for tests that read real folders. Test folders live
- * under the system temp directory, so on Windows its drive is answered as a
- * local volume; asking about any other drive fails the test.
- */
+/** Only the system temp drive is modeled as local; other drives fail the test. */
 export function nodeFolders(platform: NodeJS.Platform = process.platform) {
   const tempDrive = tmpdir().slice(0, 2).toUpperCase();
   return {
@@ -42,7 +28,6 @@ export function nodeFolders(platform: NodeJS.Platform = process.platform) {
   };
 }
 
-/** Write `files` (relative path to text) under the real folder `root`, creating directories. */
 export function writeFolderFiles(root: string, files: Record<string, string>): void {
   for (const [path, content] of Object.entries(files)) {
     mkdirSync(dirname(join(root, path)), { recursive: true });
@@ -50,7 +35,6 @@ export function writeFolderFiles(root: string, files: Record<string, string>): v
   }
 }
 
-/** The MarketplaceError `run` rejects with; any other outcome fails the test. */
 export async function marketplaceRefusal(run: Promise<unknown>): Promise<MarketplaceError> {
   try {
     await run;
@@ -93,7 +77,6 @@ export class FakeVolume implements FolderFs {
   readonly caseSensitive: boolean;
   readonly dev: bigint;
   private readonly drives: Record<string, string>;
-  /** Paths every call on fails with this error code (EACCES, EIO). */
   private readonly failing = new Map<string, string>();
 
   constructor(
@@ -104,8 +87,6 @@ export class FakeVolume implements FolderFs {
     this.dev = options.dev ?? 7n;
     this.drives = options.drives ?? {};
   }
-
-  // ─── building the volume ────────────────────────────────────────────────
 
   private root(root: string): Node & { kind: "directory" } {
     const key = this.caseSensitive ? root : root.toLowerCase();
@@ -121,7 +102,7 @@ export class FakeVolume implements FolderFs {
     return this.caseSensitive ? name : name.toLowerCase();
   }
 
-  /** The directory holding `path`'s last component, created as needed (never through a link). */
+  /** Creates parents without traversing links. */
   private parentOf(path: string): { parent: Node & { kind: "directory" }; name: string } {
     const split = splitFolderPath(path, this.platform);
     let dir = this.root(split.root);
@@ -168,16 +149,15 @@ export class FakeVolume implements FolderFs {
     return this;
   }
 
-  /** Point an existing entry at another node (a hard link): both paths are one directory or file. */
+  /** Both paths share one node, as with a hard link. */
   alias(path: string, existing: string): this {
     const node = this.walk(existing, true, 0);
     const { parent, name } = this.parentOf(path);
-    // The same identity, contents and children under another name.
     parent.children.set(this.key(name), { ...node, name } as Node);
     return this;
   }
 
-  /** A Windows 8.3 short name for an existing entry: the same node by another name that `readdir` does not list. */
+  /** A short-name alias that readdir does not list. */
   shortName(path: string, existing: string): this {
     const node = this.walk(existing, false, 0);
     const { parent, name } = this.parentOf(path);
@@ -185,18 +165,14 @@ export class FakeVolume implements FolderFs {
     return this;
   }
 
-  /** Make every call on `path` fail with `code`, as a permission or I/O error would. */
   fail(path: string, code: string): this {
     this.failing.set(path, code);
     return this;
   }
 
-  /** Every recorded path of `op` (all ops when omitted). */
   paths(op?: FolderCall["op"]): string[] {
     return this.calls.filter((call) => op === undefined || call.op === op).map((call) => call.path);
   }
-
-  // ─── walking ────────────────────────────────────────────────────────────
 
   private walk(path: string, followFinal: boolean, depth: number): Node {
     if (depth > 64) throw fsError("ELOOP", path);
@@ -239,8 +215,6 @@ export class FakeVolume implements FolderFs {
     const code = this.failing.get(path);
     if (code !== undefined && op !== "queryDosDevice") throw fsError(code, path);
   }
-
-  // ─── FolderFs ───────────────────────────────────────────────────────────
 
   async lstat(path: string): Promise<FolderStat> {
     this.record("lstat", path);
@@ -286,7 +260,6 @@ export class FakeVolume implements FolderFs {
     this.record("close", handle.path);
   }
 
-  /** A drive the volume was given no mapping for has none: the OS's answer for an unknown drive. */
   async queryDosDevice(drive: string): Promise<string | null> {
     this.record("queryDosDevice", drive);
     return this.drives[drive.toUpperCase()] ?? null;

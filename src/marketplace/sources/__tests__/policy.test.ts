@@ -119,7 +119,6 @@ describe("loadMarketplacePolicy", () => {
     expect(await loaded({ requireHttps: false, blockPrivateNetworks: true })).toMatchObject({ requireHttps: false, blockPrivateNetworks: true });
     expect(await rejected({ requireHttps: "yes" })).toContain("requireHttps: must be true or false");
     expect(await rejected({ blockPrivateNetworks: 1 })).toContain("blockPrivateNetworks: must be true or false");
-    // A near miss is not one of them: the section is invalid, not unrestricted.
     expect(await rejected({ requireHTTPS: true })).toContain("marketplaces.requireHTTPS: is not a known key");
   });
 
@@ -169,7 +168,6 @@ describe("loadMarketplacePolicy", () => {
       ],
     });
     expect(error).toContain("marketplaces.requiredInstalls[2]: requires plugin/wiki from corp, but marketplaces.requiredInstalls[0] requires it from ave; a package is installed from one source");
-    // Another kind of the same name, and defaults naming a package from two sources, are not a conflict.
     const policy = await loaded({
       additional: [corp],
       defaultInstalls: [{ kind: "plugin", name: "wiki", source: "ave" }, { kind: "plugin", name: "wiki", source: "corp" }],
@@ -208,7 +206,6 @@ describe("isBlockedByPolicy", () => {
     expect(isBlockedByPolicy(policy, normalizeSourceUrl("acme/market"))).toBe(false);
     expect(isBlockedByPolicy(policy, normalizeSourceUrl("https://github.com/ACME/Market.git"))).toBe(false);
     expect(isBlockedByPolicy(policy, normalizeSourceUrl("acme/secret"))).toBe(true);
-    // Neither case nor another scheme sidesteps the block.
     expect(isBlockedByPolicy(policy, normalizeSourceUrl("git@github.com:ACME/Secret.git"))).toBe(true);
     expect(isBlockedByPolicy(policy, normalizeSourceUrl("https://github.com:443/Acme/secret/"))).toBe(true);
     expect(isBlockedByPolicy(policy, normalizeSourceUrl("acme-corp/market"))).toBe(true);
@@ -253,7 +250,6 @@ describe("FilePolicySource (§18.6)", () => {
   });
 
   const FIRST = JSON.stringify({ version: 1, marketplaces: { requireHttps: false } });
-  // Other content of the same length.
   const SECOND = JSON.stringify({ version: 1, marketplaces: { requireHttps: true } }).padEnd(FIRST.length, " ");
 
   it.each(["ino", "dev"] as const)("rejects a cached policy after an exact %s replacement", async (field) => {
@@ -280,9 +276,7 @@ describe("FilePolicySource (§18.6)", () => {
     writeFileSync(path, FIRST);
     utimesSync(path, fixed, fixed);
     const source = await FilePolicySource.open(path);
-    // The modification time put back: only the status-change time can move, and on a coarse clock (NTFS) it often
-    // does not within one tick. The read above began within the racy window of that change, so the check reads
-    // the file again whatever the clock did.
+    // Coarse clocks can preserve every stat field; reads in the write tick must re-read content.
     expect(SECOND.length).toBe(FIRST.length);
     writeFileSync(path, SECOND);
     utimesSync(path, fixed, fixed);
@@ -290,10 +284,7 @@ describe("FilePolicySource (§18.6)", () => {
     expect((await source.check())?.load).toMatchObject({ ok: true, policy: { requireHttps: true } });
   });
 
-  /**
-   * node's file system under a clock that does not tick on its own: every write is stamped `clock.stamp`, and a
-   * read begins at `clock.now`. Counts the reads of the file's content.
-   */
+  /** Stamps writes and starts reads with a controlled clock to expose same-tick changes. */
   function coarseClock(clock: { stamp: number; now: number }) {
     const counts = { reads: 0 };
     const access: PolicyFileAccess = {
@@ -315,8 +306,7 @@ describe("FilePolicySource (§18.6)", () => {
   const T = Date.UTC(2026, 0, 1);
 
   it("reads again after a read in the same clock tick as the change it saw", async () => {
-    // The change and the read land in one tick; so does the rewrite after it, with the same size and times:
-    // the stat is identical, and only the content tells the rewrite apart.
+    // Identical size and times cannot distinguish a same-tick rewrite; only content can.
     const clock = { stamp: T, now: T + 1 };
     const { access, counts } = coarseClock(clock);
     writeFileSync(path, FIRST);
@@ -336,7 +326,6 @@ describe("FilePolicySource (§18.6)", () => {
     expect(await source.check()).toBeNull();
     expect(await source.check()).toBeNull();
     expect(counts.reads).toBe(1);
-    // A later write is stamped by a clock that has moved on since the read.
     clock.stamp = T + 3_500;
     writeFileSync(path, SECOND);
     expect((await source.check())?.load).toMatchObject({ ok: true, policy: { requireHttps: true } });
@@ -348,7 +337,6 @@ describe("FilePolicySource (§18.6)", () => {
     const { access, counts } = coarseClock(clock);
     writeFileSync(path, FIRST);
     const source = await FilePolicySource.open(path, access);
-    // Same content: nothing to apply, but each check reads, since the times cannot tell a same-tick rewrite apart.
     expect(await source.check()).toBeNull();
     expect(await source.check()).toBeNull();
     expect(counts.reads).toBe(3);
@@ -366,7 +354,6 @@ describe("FilePolicySource (§18.6)", () => {
     const source = await FilePolicySource.open(path, access);
     expect(await source.check()).toBeNull();
     expect(counts.reads).toBe(1);
-    // The clock steps back to the recorded change, and a rewrite carries the recorded times again.
     clock.now = T;
     writeFileSync(path, SECOND);
     expect((await source.check())?.load).toMatchObject({ ok: true, policy: { requireHttps: true } });
@@ -374,7 +361,6 @@ describe("FilePolicySource (§18.6)", () => {
   });
 
   it("treats a change time ahead of the clock as racy until the clock passes it", async () => {
-    // A file server whose clock runs ahead of this one, or a modification time set forward.
     const clock = { stamp: T + 60_000, now: T };
     const { access, counts } = coarseClock(clock);
     writeFileSync(path, FIRST);
@@ -394,7 +380,7 @@ describe("FilePolicySource (§18.6)", () => {
   it("goes unreadable when the file can no longer be read, and back when it can (§12 fail closed)", async () => {
     writePolicy({ requireHttps: false });
     const source = await FilePolicySource.open(path);
-    // A directory where the file was: present, but not readable as a file, on every platform.
+    // Replacing a file with a directory gives a portable unreadable-file case.
     rmSync(path);
     mkdirSync(path);
     const gone = await source.check();
@@ -407,9 +393,8 @@ describe("FilePolicySource (§18.6)", () => {
     const back = await source.check();
     expect(back?.load).toMatchObject({ ok: true, policy: { requireHttps: false } });
     source.apply(back!);
-    // A quiet check records the file as it stands, as between two operations.
     expect(await source.check()).toBeNull();
-    // The reproduction: permissions taken away leave size and modification time alone.
+    // Permission changes can preserve both file size and modification time.
     if (process.platform !== "win32" && process.getuid?.() !== 0) {
       chmodSync(path, 0o000);
       try {
@@ -439,7 +424,6 @@ describe("FilePolicySource (§18.6)", () => {
     const update = await source.check();
 
     expect(update?.load).toMatchObject({ ok: false });
-    // The digest carries the OS code: Windows reports a path through a file as ENOENT.
     expect(update?.digest).toBe(process.platform === "win32" ? "unreadable:ENOENT" : "unreadable:ENOTDIR");
     source.apply(update!);
     expect(source.load.ok).toBe(false);
@@ -481,7 +465,6 @@ describe("folder sources in the policy (§18.6)", () => {
 
   it("keeps path: patterns to folders and host or URL patterns to git", async () => {
     const policy = await loaded({ block: ["path:*", "host:git.example.org"], allow: ["path:/opt/*", "https://github.com/acme/*"] }, "linux");
-    // A folder pattern never matches a git address, and a git pattern never matches a folder.
     expect(isBlockedByPolicy(policy, normalizeSourceUrl("acme/market"))).toBe(false);
     expect(isBlockedByPolicy(policy, normalizeSourceUrl("https://git.example.org/a/b"))).toBe(true);
     expect(folderPolicyBlock(policy, "/opt/market")).toEqual({ reason: "blocked-by-pattern", pattern: "path:*" });
@@ -522,7 +505,6 @@ describe("folder sources in the policy (§18.6)", () => {
     const nested = await rejected({ additional: [{ id: "outer", path: "/srv/team" }, { id: "inner", path: "/srv/team/market" }] }, "linux");
     expect(nested).toContain("lies inside the folder of outer");
     expect(await rejected({ additional: [{ id: "alpha", path: "/srv/team/market" }, { id: "beta", path: "/srv/team" }] }, "linux")).toContain("folder of alpha");
-    // Siblings that share a prefix are not nested.
     expect((await loaded({ additional: [{ id: "alpha", path: "/srv/team" }, { id: "beta", path: "/srv/teams" }] }, "linux")).additional).toHaveLength(2);
   });
 });

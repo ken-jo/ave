@@ -1,61 +1,20 @@
-/**
- * Claude Desktop config importer.
- *
- * Maps the Claude Desktop `claude_desktop_config.json` schema onto Ave's
- * `McpServerConfig` discriminated union so users migrating from Claude
- * Desktop don't have to rewrite their MCP entries by hand.
- *
- * Claude Desktop format (stdio-only, as documented in modelcontextprotocol/quickstart):
- *
- *   {
- *     "mcpServers": {
- *       "<id>": {
- *         "command": "npx",
- *         "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path"],
- *         "env": { "API_KEY": "..." }
- *       },
- *       ...
- *     }
- *   }
- *
- * The mapper:
- *   - parses + validates the raw JSON
- *   - rejects malformed entries (missing command, non-string args, etc.)
- *   - heuristically flags env values that look like secrets so the renderer
- *     can prompt the user to move them into the OS keychain instead of
- *     persisting plaintext in `mcp-servers.json`
- *
- * Out of scope (separate FU): VSCode / Cline config formats, automatic
- * keychain extraction (we surface the heuristic but defer the storage
- * decision to the renderer / user).
- */
+/** Imports stdio desktop configurations and flags suspected secrets for protected storage. */
 
 import type { McpServerConfig } from "./types.js";
 
 export interface ClaudeDesktopImportEntry {
-  /** Source key from `mcpServers` — used as the Ave server id. */
   id: string;
   config: McpServerConfig;
-  /** Env keys whose values look like secrets (heuristic). */
   suspectedSecretEnvKeys: string[];
-  /** Best-effort warning text — empty string when import is clean. */
   warning?: string;
 }
 
 export interface ClaudeDesktopImportResult {
   entries: ClaudeDesktopImportEntry[];
-  /** IDs that failed to parse — surfaced so the renderer can show them. */
   errors: Array<{ id: string; reason: string }>;
 }
 
-/**
- * Why adding one imported server failed, for the sentence the renderer shows
- * with its next action; the raw reason stays behind *Copy details*.
- *   - `permission-denied`: Ave may not write its MCP settings file;
- *   - `not-found`: the file or its folder is gone;
- *   - `unreadable`: the file cannot be read, or is not valid;
- *   - `other`: anything else (a governance refusal, an invalid entry).
- */
+/** Expose stable import failure reasons; raw errors stay behind Copy details. */
 export type ClaudeDesktopImportFailure = "permission-denied" | "not-found" | "unreadable" | "other";
 
 export function importFailureKind(error: unknown): ClaudeDesktopImportFailure {
@@ -76,13 +35,7 @@ export function importFailureKind(error: unknown): ClaudeDesktopImportFailure {
   }
 }
 
-/**
- * Heuristic: an env key is "suspected secret" if its uppercase form
- * contains any of these tokens. The list intentionally errs toward
- * false-positive — better to prompt the user once than silently persist
- * plaintext credentials. Loop #5 security review M-2 expanded the list
- * to cover the most common foot-guns we saw in real-world MCP configs.
- */
+/** Prefer false-positive secret-name warnings over silently persisting credentials. */
 const SECRET_KEY_PATTERNS = [
   "KEY",
   "SECRET",
@@ -101,16 +54,12 @@ const SECRET_KEY_PATTERNS = [
   "APIKEY",
 ];
 
-/**
- * Heuristic: a value looks like a secret if it matches one of the
- * well-known credential formats. Catches cases where the env *name* is
- * generic (e.g. `MY_SETTING`) but the value is unmistakably a token.
- */
+/** Detect token-shaped values even when their environment variable names are generic. */
 const SECRET_VALUE_PATTERNS: RegExp[] = [
-  /^eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/, // JWT
-  /^(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{30,}$/, // GitHub PAT
-  /^sk-[A-Za-z0-9_-]{20,}$/, // OpenAI / Anthropic-style
-  /^xox[baprs]-[A-Za-z0-9-]{10,}$/, // Slack
+  /^eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/,
+  /^(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{30,}$/,
+  /^sk-[A-Za-z0-9_-]{20,}$/,
+  /^xox[baprs]-[A-Za-z0-9-]{10,}$/,
 ];
 
 function looksLikeSecretKey(key: string): boolean {
@@ -122,23 +71,7 @@ function looksLikeSecretValue(value: string): boolean {
   return SECRET_VALUE_PATTERNS.some((p) => p.test(value));
 }
 
-/**
- * Parse a raw Claude Desktop config string into Ave-shaped MCP entries.
- *
- * Always returns a result object — never throws. Per-entry parse failures
- * collect into `errors` so the renderer can show them alongside the
- * successful imports.
- *
- * Rejection rules:
- *   - top-level not an object / `mcpServers` missing → empty result, single error
- *   - per-entry: missing or non-string `command` → entry-level error
- *   - per-entry: non-array args / non-string args entries → entry-level error
- *   - per-entry: env that is not a `Record<string, string>` → entry-level error
- *
- * Imports always come back as `transport: "stdio"`. Claude Desktop only
- * supports stdio MCP servers; the Ave HTTP transport stays opt-in via
- * the manual McpTab form.
- */
+/** Return successful stdio entries alongside per-entry errors; malformed input never throws. */
 export function parseClaudeDesktopConfig(raw: string): ClaudeDesktopImportResult {
   const result: ClaudeDesktopImportResult = { entries: [], errors: [] };
   let parsed: unknown;
@@ -207,9 +140,7 @@ export function parseClaudeDesktopConfig(raw: string): ClaudeDesktopImportResult
           break;
         }
         cleaned[k] = v;
-        // Flag if EITHER the key name OR the value shape looks like a
-        // secret. The empty-value placeholder convention (`API_KEY: ""`)
-        // is intentionally NOT flagged — see below.
+        // Check both key and value shapes; empty placeholders contain no credential.
         if (v.length > 0 && (looksLikeSecretKey(k) || looksLikeSecretValue(v))) {
           suspectedSecretEnvKeys.push(k);
         }
@@ -218,11 +149,7 @@ export function parseClaudeDesktopConfig(raw: string): ClaudeDesktopImportResult
       if (Object.keys(cleaned).length > 0) env = cleaned;
     }
 
-    // NOTE: `sandboxRoot` is deliberately NOT set here. The
-    // filesystem-jail root for the ASRT-wrapped stdio worker is HOST-derived at
-    // connect time (`McpManager.connectServer` → `~/.ave/mcp/<id>/sandbox/`),
-    // never from imported/persisted config — a config-supplied jail root would
-    // defeat the jail. It is also not persisted to servers.json.
+    // Derive sandbox roots in the host at connection time; imported or persisted roots cannot define confinement.
     const config: McpServerConfig = {
       id,
       transport: "stdio",

@@ -1,9 +1,4 @@
-/**
- * Single-use ids for install plans and source previews (design §13): an id
- * is taken once and expires after ten minutes, so a renderer cannot replay
- * a plan or act on one whose source has moved on meanwhile. Both are
- * PLAN_EXPIRED.
- */
+/** Single-use tickets expire after ten minutes to prevent replay and stale-plan execution. */
 import { randomBytes } from "node:crypto";
 import { MarketplaceError } from "../errors.js";
 
@@ -18,14 +13,12 @@ interface Held<T> {
 
 export class Tickets<T> {
   private readonly held = new Map<string, Held<T>>();
-  /** The live ticket id per slot: a newer ticket for the same thing replaces the older one. */
   private readonly slots = new Map<string, string>();
 
   constructor(
     private readonly what: string,
     private readonly now: () => number = Date.now,
     private readonly ttlMs: number = TICKET_TTL_MS,
-    /** Called with a value dropped unused, e.g. to remove a preview's scratch clone. */
     private readonly onDrop?: (value: T) => void,
   ) {}
 
@@ -47,11 +40,7 @@ export class Tickets<T> {
     this.onDrop?.(item.value);
   }
 
-  /**
-   * Hold `value` for the TTL. A value left unused is dropped when it expires even if no one asks
-   * again, so a preview's clone or typed token does not outlive an abandoned dialog. Issuing into
-   * an occupied `slot` drops the ticket held there: only the newest plan for one package is live.
-   */
+  /** Expiry actively drops unused values; a newer ticket in the same slot drops the older one. */
   issue(value: T, slot: string | null = null): { id: string; expiresAt: string } {
     this.sweep();
     if (slot !== null) {
@@ -71,7 +60,6 @@ export class Tickets<T> {
     return { id, expiresAt: new Date(expiresAt).toISOString() };
   }
 
-  /** Read without using it up; PLAN_EXPIRED when unknown or expired. */
   peek(id: string): T {
     this.sweep();
     const item = this.held.get(id);
@@ -79,14 +67,12 @@ export class Tickets<T> {
     return item.value;
   }
 
-  /** Use the id up. */
   take(id: string): T {
     const value = this.peek(id);
     this.release(id, this.held.get(id)!);
     return value;
   }
 
-  /** Drop every held value (shutdown). */
   clear(): void {
     for (const [id, item] of [...this.held]) this.drop(id, item);
   }

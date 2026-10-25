@@ -1,18 +1,5 @@
-/**
- * The one package of a direct source (design §8.1, §8.2).
- *
- * At the source's path the first file found decides, in this order:
- * `ave-package.json` (used as is), `plugin.json` (an Agent Plugins
- * manifest), `SKILL.md`, `AGENTS.md`, `server.json`. Anything but the
- * descriptor yields a synthesized descriptor held to the same schema. The
- * snapshot and every install read the package through here, at the same
- * commit, so both see the same descriptor.
- *
- * A file that declares no version gets one its tree names
- * (`isSynthesizedVersion`): `0.0.0+g<commit12>` at a git commit, so any new
- * commit is an update, and `0.0.0+t<digest12>` in a folder, from the
- * package's tree digest, so any edit is (§18.4.7).
- */
+/** Direct packages prefer descriptors, then manifests, skills, profiles and server specs.
+ * Missing versions are synthesized from commit or tree digests so byte changes offer updates. */
 import { parse as parseYaml } from "yaml";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -40,7 +27,6 @@ export const DIRECT_FILES = [MARKETPLACE_DESCRIPTOR_FILE, "plugin.json", "SKILL.
 
 export type DirectDetectedFile = (typeof DIRECT_FILES)[number];
 
-/** Per-file read limits: the descriptor's, the plugin manifest's, and the entry files'. */
 const LIMITS: Readonly<Record<DirectDetectedFile, number>> = {
   [MARKETPLACE_DESCRIPTOR_FILE]: 256 * 1024,
   "plugin.json": 1024 * 1024,
@@ -64,15 +50,12 @@ export type DirectRead =
   | { ok: false; code: MarketplaceErrorCode; error: string; detail?: MarketplaceErrorDetail };
 
 export interface DirectReadInput {
-  /** The source's files at the revision being read. */
   tree: SourceTree;
-  /** The package path in the source; "" is the root. */
   path: string;
-  /** The repository's or folder's own name, which names a package at the root that names none. */
   rootName: string;
 }
 
-/** A version the tree names because the package declares none (design §8.2, §18.4.7). */
+/** A synthesized version tracks tree identity when no version is declared. */
 export function isSynthesizedVersion(version: string): boolean {
   return SYNTHESIZED.test(version);
 }
@@ -81,13 +64,11 @@ function filePath(dir: string, file: string): string {
   return dir ? `${dir}/${file}` : file;
 }
 
-/** A package name from a directory or repository name: lowercase, `-` for anything else. */
 function nameFrom(raw: string): string | null {
   const name = raw.toLowerCase().replace(/\.git$/u, "").replace(/[^a-z0-9-]+/gu, "-").replace(/-{2,}/gu, "-").replace(/^[^a-z]+|-+$/gu, "");
   return isPackageName(name) ? name : null;
 }
 
-/** The package directory's own name, or the repository's or folder's at the root. */
 function placeName(path: string, rootName: string): string | null {
   const segments = (path || rootName).split("/").filter(Boolean);
   const last = segments[segments.length - 1];
@@ -129,9 +110,7 @@ async function fromPluginManifest(source: string, input: DirectReadInput): Promi
     const rule = CONTENT_RULES["agent-plugin"];
     const dest = await mkdtemp(join(tmpdir(), "ave-agent-plugin-direct-"));
     try {
-      // Reading the tree fails with its own reason (a folder's link rule, an
-      // unreadable folder, a broken classifier), which reaches the caller
-      // unchanged; only what the tree holds is this package's fault.
+      // Preserve tree-read failures; only invalid package contents become package errors.
       const exported = await input.tree.exportPath(input.path, dest, { maxFiles: rule.maxFiles + 1, maxBytes: rule.maxBytes + 256 * 1024 });
       const files = await Promise.all(exported.filter((file) => file.path !== MARKETPLACE_DESCRIPTOR_FILE)
         .map(async (file) => ({ path: file.path, data: await readFile(join(dest, ...file.path.split("/"))) })));
@@ -158,7 +137,7 @@ async function fromPluginManifest(source: string, input: DirectReadInput): Promi
   if (typeof minAppVersion !== "string") {
     return { ok: false, code: "PACKAGE_COMPAT_UNDECLARED", error: "plugin.json does not declare requires.minAppVersion" };
   }
-  // Exactly the manifest's own fields: the staged plugin.json is compared with them field by field.
+  // Copy manifest authority exactly for the staged-manifest comparison.
   const authority = manifestAuthority(manifest)!;
   return {
     ok: true,
@@ -198,7 +177,6 @@ async function fromMarkdown(kind: "skill" | "agent", entry: "SKILL.md" | "AGENTS
       kind,
       name,
       version: declared ?? (await input.tree.synthesizedVersion(input.path, kind)),
-      // These kinds run no code; any Ave reads them (design §8.2).
       minAppVersion: "0.0.0",
       ...presentation(undefined, header.description),
       payload: { entry },
@@ -234,7 +212,7 @@ function fromServerJson(source: string): Synthesis {
   };
 }
 
-/** A descriptor the catalog rules refuse; an identifier with a credential's shape keeps its reason (§18.8). */
+/** Preserve credential-admission reasons when catalog validation refuses the descriptor. */
 function refused(checked: { error: string; credential?: CredentialDetail }): DirectRead {
   return {
     ok: false,
@@ -244,11 +222,7 @@ function refused(checked: { error: string; credential?: CredentialDetail }): Dir
   };
 }
 
-/**
- * Read the direct package at `path` and `commit`. `null` when none of the
- * files is there (SOURCE_NOT_A_MARKETPLACE for the caller); a failure names
- * the file that decided and why it cannot be used.
- */
+/** The first recognized file decides identity; null only when no recognized entry exists. */
 export async function readDirectPackage(input: DirectReadInput): Promise<DirectRead | null> {
   if (input.path) assertRepoPath(input.path);
   const paths = DIRECT_FILES.map((file) => filePath(input.path, file));

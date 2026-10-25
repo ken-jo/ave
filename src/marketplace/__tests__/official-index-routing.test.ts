@@ -1,21 +1,4 @@
-/**
- * "True for the official index" (`docs/design/plugin-hostapi-protocol.md` §9.1
- * Admission row, §9.8 A1, decision 51).
- *
- * The fixture is the official repository's committed `marketplace.json`
- * (`ken-jo/agent-marketplace` at `6a4d3b3df60fbc1ffe4ade7ffb601b61781c6a27`,
- * sha256 `2e31b360da69f2915f45653cdee2f65ccb057ccf13cf0213d5ec1a4302d96221`),
- * reduced to its `plugin` packages — the five this test is about, with every
- * version as published, `sampleassistant` included because it is still
- * indexed; the other kinds carry no code and are not routed. It is a
- * captured record of what was published, read here as raw JSON for the
- * versions' manifest shapes; the catalog reader, which reads only
- * `schemaVersion: 2`, never sees it. Nothing is downloaded.
- *
- * Each version's released manifest shape is read off the index and routed
- * through the runtime's routing function with the evidence an install from
- * the official source verifies — a pinned release — and every one is a child.
- */
+/** Captured plugin index entries exercise pinned-release routing without downloads. */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const factory = vi.hoisted(() => ({ launches: [] as Array<{ kind: string }> }));
@@ -60,13 +43,7 @@ interface IndexPackage {
 const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "official-marketplace-6a4d3b3df.plugins.json");
 const index = JSON.parse(readFileSync(FIXTURE, "utf-8")) as { schemaVersion: number; packages: IndexPackage[] };
 
-/**
- * The manifest shape a released version has, as the index records it. The
- * fixture is a historical capture from before the index carried `process`
- * launches or `platforms`, so it names neither and each version
- * is an `entry` plugin; the shape check below fails loudly the day a version
- * says otherwise, so a `process` plugin is never routed as an `entry` one here.
- */
+/** This fixture contains entry plugins only; reject other manifest shapes rather than misroute them. */
 function releasedManifest(pkg: IndexPackage, version: IndexVersion): PluginManifest {
   expect(version.process ?? version.authority?.process, `${pkg.name}@${version.version}`).toBeUndefined();
   expect(version.platforms ?? version.authority?.platforms, `${pkg.name}@${version.version}`).toBeUndefined();
@@ -81,7 +58,6 @@ function releasedManifest(pkg: IndexPackage, version: IndexVersion): PluginManif
   };
 }
 
-/** What an install of this version from the official source verifies: a pinned release. */
 function officialRelease(version: IndexVersion): PluginIntegrityEvidence {
   const sha256 = version.artifact.release?.sha256;
   expect(sha256).toMatch(/^[a-f0-9]{64}$/u);

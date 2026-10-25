@@ -24,15 +24,10 @@ export interface PreparedPluginMcpProjection {
   serverId: string;
   config: McpServerConfig;
   approval: McpServerApproval;
-  /** What an approval of this server covers (design §18.7.3); null when it cannot be determined. */
   approvalDigest: string | null;
 }
 
-/**
- * Exact-generation static-descriptor approval. A new generation's server is
- * approved explicitly or carried forward by its approval digest (design
- * §18.7.3).
- */
+/** Approval binds an exact generation and carries only when the approval digest matches. */
 export class PluginMcpTrustStore implements ProjectionTrust<PreparedPluginMcpProjection> {
   private readonly store: PluginContributionTrustStore;
 
@@ -52,7 +47,6 @@ export class PluginMcpTrustStore implements ProjectionTrust<PreparedPluginMcpPro
     return this.store.record(projection.owner);
   }
 
-  /** Give an approval of this exact generation the digest of its running bytes, when it has none (version-2 migration). */
   recordDigest(projection: PreparedPluginMcpProjection): void {
     this.store.recordDigest(projection.owner, projection.approvalDigest);
   }
@@ -135,11 +129,8 @@ function buildProjection(
   configWithoutId: Omit<McpServerConfig, "id">,
   approvalDigest: string | null,
 ): PreparedPluginMcpProjection {
-  // HTTP connections are content-addressed and may be reused across runtime
-  // activations. A stdio client is a child process rooted in one immutable
-  // activation payload, so its identity must change even when signed bytes are
-  // identical; otherwise the successor can inherit a process whose root is
-  // deleted when the predecessor retires.
+  // Stdio identity includes activation because its immutable payload root retires with that generation.
+      // Content-addressed HTTP clients may be reused across activations.
   const activationIdentity = configWithoutId.transport === "stdio"
     ? owner.activationId
     : "";
@@ -178,13 +169,7 @@ function buildProjection(
   return Object.freeze({ owner: Object.freeze(owner), serverId, config, approval: Object.freeze(approval), approvalDigest });
 }
 
-/**
- * Build an approval from a host-resolved bundled configuration. A stdio server
- * of an agent plugin carries its plugin's two host-resolved roots: the data
- * directory it writes, and the generation it runs from — the one directory
- * under the refused `<AVE_HOME>/packages/agent-plugin` it reads
- * (`PerCommandFilesystem.denyPluginsRoot`).
- */
+/** Host-resolved bundled approval grants only its data directory and immutable payload root. */
 export function prepareBundledMcpProjection(
   owner: PluginMcpOwner,
   rawConfig: unknown,
@@ -199,11 +184,10 @@ export function prepareBundledMcpProjection(
   });
 }
 
-/** Static parse/fingerprint preparation. It performs no spawn, network, discovery, or registration. */
+/** Static preparation performs no I/O, spawn, discovery or registration. */
 export function preparePluginMcpGeneration(
   generation: ActivePluginGeneration,
   payloadRoot: string,
-  /** Each server's approval digest, by local id (`extensionComponentDigests`). */
   approvalDigests: ReadonlyMap<string, string | null>,
 ): readonly PreparedPluginMcpProjection[] {
   const projections: PreparedPluginMcpProjection[] = [];
@@ -234,8 +218,7 @@ export function preparePluginMcpGeneration(
         ...parsed,
         command: anchored.command[0]!,
         args: anchored.command.slice(1),
-        // The root the command was anchored in, canonical as the anchor is:
-        // the one directory under the refused plugins root this server reads.
+        // Grant reads only for the canonical payload root beneath the otherwise-denied plugins root.
         bundledPayloadRoot: realpathSync(payloadRoot),
       });
     }

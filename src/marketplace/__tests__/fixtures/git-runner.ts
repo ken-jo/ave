@@ -1,7 +1,4 @@
-/**
- * Test fixture: a {@link GitRunner} over the host's git with a real askpass
- * broker, an empty generated global config and Ave-owned empty directories.
- */
+/** Host git with a real askpass broker and isolated global config. */
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

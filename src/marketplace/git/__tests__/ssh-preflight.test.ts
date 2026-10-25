@@ -12,11 +12,7 @@ import { AskpassBroker } from "../askpass.js";
 import { GitRunner, type GitRemote } from "../run-git.js";
 import { parseSshConfig, sshConfigArgs, type SshConfigReader } from "../ssh-preflight.js";
 
-/**
- * The ssh preflight (design §18.2.4) through the runner. git is a path that
- * does not exist, so a call that starts git fails GIT_RUNTIME_MISSING and one
- * the preflight refuses never gets that far: the code says which happened.
- */
+/** Missing git distinguishes preflight refusal from a launch attempt. */
 const NO_GIT = "/nonexistent/ave-test/git";
 
 function printed(hostname: string, extra: Record<string, string> = {}): string {
@@ -73,7 +69,6 @@ describe("GitRunner ssh preflight", () => {
     return { git, lookups, readConfig };
   }
 
-  /** The remote as the gate hands it to the runner. */
   function remote(url: string, load = policyLoad(), acknowledged: SourceWarning[] = []): GitRemote {
     const normalized = normalizeSourceUrl(url);
     const gate = new NetworkGate({ policy: policySource(load), allowLoopback: false, transport: async () => new Response(null) });
@@ -107,7 +102,7 @@ describe("GitRunner ssh preflight", () => {
     const { git, lookups } = runner(printed("metadata.example.com"), () => ["169.254.169.254"]);
     const error = await failure(lsRemote(git, remote("git@git.example.com:acme/tools")));
     expect(error.code).toBe("SOURCE_URL_REJECTED");
-    // The sentence names the address the user entered; the printed hostname is what ssh connects to, so it is what was resolved.
+    // Resolve the hostname reported by SSH, while errors name the user-entered address.
     expect(error.detail).toEqual({ reason: "address-metadata", host: "git.example.com", address: "169.254.169.254" });
     expect(lookups).toEqual(["metadata.example.com"]);
   });
@@ -121,7 +116,6 @@ describe("GitRunner ssh preflight", () => {
     expect(blocked.code).toBe("SOURCE_POLICY_BLOCKED");
     expect(blocked.detail).toMatchObject({ reason: "private-network-blocked", address: "10.0.0.5" });
 
-    // An internal answer the source holds no confirmation for asks for one.
     const unconfirmed = await failure(lsRemote(internal.git, remote("git@git.example.com:acme/tools")));
     expect(unconfirmed.code).toBe("SOURCE_CONFIRMATION_REQUIRED");
     expect(unconfirmed.detail).toEqual({ reason: "internal-network", host: "git.example.com", address: "10.0.0.5" });
@@ -139,7 +133,6 @@ describe("GitRunner ssh preflight", () => {
     const { git, lookups } = runner(printed("git.example.com"), (call) => (call === 1 ? ["1.1.1.1"] : ["127.0.0.1"]));
     const target = remote("git@git.example.com:acme/tools");
     const error = await failure(lsRemote(git, target));
-    // The preflight passed and git was started, with the ssh command unchanged.
     expect(error.code).toBe("GIT_RUNTIME_MISSING");
     expect(lookups).toEqual(["git.example.com"]);
     expect(git.environment(target).GIT_SSH_COMMAND).toBe("ssh -o BatchMode=yes");

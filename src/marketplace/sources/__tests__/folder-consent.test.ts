@@ -1,9 +1,3 @@
-/**
- * Folder input through the existing preview (design §18.4.1, §18.5): stages
- * 1–3 make no filesystem call on the path, so a block or a confirmation ends
- * the preview before a share is contacted; root resolution follows the
- * entered path's own links by their text, after the network check.
- */
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -68,7 +62,6 @@ describe("a network folder answers confirm before anything touches it", () => {
     const answer = await preview(volume, "\\\\files.corp\\share\\m", { acknowledge: ["network-folder"] });
     expect(answer).toMatchObject({ type: "package", transport: "folder", path: "\\\\files.corp\\share\\m", kind: "skill", name: "note", url: null });
     expect(volume.paths("lstat").length).toBeGreaterThan(0);
-    // FolderFs has no realpath: every call is one of the folder reader's own.
     expect(volume.calls.every((call) => READ_OPS.has(call.op))).toBe(true);
   });
 
@@ -117,13 +110,11 @@ describe("root resolution follows the entered path's own links (§18.4.1 stage 4
     const policy = policySource({ block: [{ kind: "path", folder: "/srv/blocked/", prefix: true, text: "path:/srv/blocked/*" }] });
     const error = await refused(preview(volume, "/home/example/m", {}, policy));
     expect(error).toMatchObject({ code: "SOURCE_POLICY_BLOCKED", detail: { reason: "blocked-by-pattern", target: "/srv/blocked/m", pattern: "path:/srv/blocked/*" } });
-    // The block came before anything read the folder's files.
     expect(volume.paths("open")).toEqual([]);
   });
 });
 
 describe("a network location the walk reaches is classified before it is touched (§18.4.1 stage 4)", () => {
-  /** Every call on a path under an automount root, in any spelling. */
   const onNetwork = (volume: FakeVolume) => volume.calls.filter((call) => /^\/(?:network|net)(?:\/|$)/iu.test(call.path));
 
   it("refuses a relative link from a local path onto an automount path as link-to-network, confirmed or not", async () => {

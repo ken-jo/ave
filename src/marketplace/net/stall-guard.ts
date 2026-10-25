@@ -1,9 +1,4 @@
-/**
- * A response body read chunk by chunk, where a gap longer than `stallMs`
- * fails the read instead of hanging it (design §9.2, §6.2). The reader is
- * cancelled on every exit, which releases the connection of a stalled or
- * oversized body.
- */
+/** Bound inter-chunk stalls and cancel the reader on every exit to release the connection. */
 import { raceWithTimeout } from "../../shared/abortable-deadline.js";
 
 export async function* stallGuarded(

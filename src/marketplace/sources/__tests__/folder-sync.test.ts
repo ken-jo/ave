@@ -1,8 +1,3 @@
-/**
- * Reading a folder source (design §18.4.2, §18.4.3, §18.8): its revision
- * covers every package's files, no git command runs, and a failed background
- * read keeps its reason through the Sources status after a reload.
- */
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -113,10 +108,8 @@ describe("folder source reads", () => {
     const first = view.pinnedCommit!;
     expect(first).toMatch(/^local-[0-9a-f]{64}$/u);
 
-    // Unchanged: the same revision, the same snapshot.
     await expect(harness.syncer.sync("team")).resolves.toEqual({ status: "ok", pinnedCommit: first, changed: false });
 
-    // The index and the descriptor do not change; only the package's own file does.
     writeFolderFiles(folder, { "skills/alpha/SKILL.md": "Write alpha, better.\n" });
     const edited = await harness.syncer.sync("team");
     expect(edited).toMatchObject({ status: "ok", changed: true });
@@ -125,7 +118,6 @@ describe("folder source reads", () => {
     expect(snapshot.commit).toBe(edited.pinnedCommit);
     expect(snapshot.packages[0]!.versions[0]!.commit).toBe(edited.pinnedCommit);
     expect(snapshot.packages[0]!.treeSha256).toMatch(/^[0-9a-f]{64}$/u);
-    // The snapshot is named by its revision, and the previous one is kept as the previous pin.
     expect(readdirSync(join(root, "marketplaces", "team", "snapshots")).sort()).toEqual([`${first}.json`, `${edited.pinnedCommit}.json`].sort());
 
     expect(harness.gitCalls).toEqual([]);
@@ -172,7 +164,6 @@ describe("folder source reads", () => {
     expect(failed).toMatchObject({ status: "failed", code: "SOURCE_LOCAL_UNREADABLE", detail: { reason: "permission", path: "/srv/team" }, pinnedCommit: pinned });
     first.service.close();
 
-    // A new service over the same files: the reason comes back from the state file.
     const reloaded = await folderService({ root, folders });
     const [, row] = await reloaded.service.listSources();
     expect(row).toMatchObject({
@@ -182,7 +173,6 @@ describe("folder source reads", () => {
     });
     const sentence = sourceStatusDetail((key, vars) => translate("en", key, vars), row!);
     expect(sentence).toBe(translate("en", "gitMarketplace.error.localUnreadable.permission", { path: "/srv/team", message: "EACCES: /srv/team" }));
-    // The last good snapshot is still served.
     await expect(reloaded.syncer.readSnapshot("team")).resolves.toMatchObject({ commit: pinned });
     reloaded.service.close();
     expect(reloaded.gitCalls).toEqual([]);
@@ -230,7 +220,6 @@ describe("folder source reads", () => {
     expect(moved).toMatchObject({ status: "failed", code: "SOURCE_LOCAL_UNREADABLE", detail: { reason: "moved", path: "/srv/team", target: "/srv/other" } });
     expect(volume.paths("open")).toEqual([]);
 
-    // Another directory at the same path (a different identity) is moved too.
     volume.remove("/srv/team").file("/srv/team/SKILL.md", "---\nname: note\ndescription: Note\n---\nREPLACED.\n");
     volume.calls.length = 0;
     await expect(harness.syncer.sync("note")).resolves.toMatchObject({ status: "failed", detail: { reason: "moved", path: "/srv/team", target: "/srv/team" } });

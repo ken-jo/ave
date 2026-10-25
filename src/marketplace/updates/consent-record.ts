@@ -1,15 +1,9 @@
-/**
- * The stored form of a consent fingerprint (design §18.7.3): the baseline a
- * receipt's `git`/`folder` record, a content ledger entry and an MCP install
- * record keep. Free of other imports, so every store that validates one can
- * read it without pulling in how a fingerprint is computed
- * (`consent.ts`).
- */
+/** Import-free persisted consent shape shared by receipt and ledger validators. */
 import { PACKAGE_KINDS, type PackageKind } from "../catalog/types.js";
 
 type ConsentJson = null | boolean | number | string | ConsentJson[] | { [key: string]: ConsentJson };
 
-/** What the user agreed to, field by field. `unknown` names the fields that could not be computed. */
+/** Unknown fields cannot establish consent. */
 export interface ConsentFingerprint {
   kind: PackageKind;
   fields: Record<string, ConsentJson>;
@@ -27,10 +21,7 @@ function isConsentJson(value: unknown, depth = 0): value is ConsentJson {
   return false;
 }
 
-/**
- * Read a stored fingerprint exactly: `kind`, `fields` and `unknown` and
- * nothing else. Throws on any other shape: a baseline is never guessed.
- */
+/** Reject extra or malformed fingerprint fields rather than guess a baseline. */
 export function parseConsentFingerprint(value: unknown, what: string): ConsentFingerprint {
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error(`${what} is not a consent fingerprint`);
   const record = value as Record<string, unknown>;

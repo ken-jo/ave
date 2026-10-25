@@ -25,7 +25,6 @@ function version(patch: Record<string, unknown> = {}) {
   return { version: "1.0.0", commit: COMMIT, minAppVersion: "0.12.0", publishedAt: AT, ...patch };
 }
 
-/** A repository with one package of four kinds, each valid, and its index. */
 function validFiles(): Map<string, unknown> {
   return new Map<string, unknown>([
     [
@@ -180,7 +179,6 @@ describe("checkMarketplaceRepository", () => {
     expect(checkMarketplaceRepository(tree(validFiles()), released([["alpha@0.9.0", manifest({}, "0.9.0")]]))).toEqual([
       { subject: "plugin/alpha", message: "a released plugin.json was supplied for alpha@0.9.0, which the index does not list" },
     ]);
-    // A key naming no listed plugin (a typo, or a package the index dropped) is not skipped.
     expect(checkMarketplaceRepository(tree(validFiles()), released([["alhpa@1.0.0", manifest({})]]))).toEqual([
       { subject: "alhpa@1.0.0", message: "a released plugin.json was supplied for a plugin the index does not list" },
     ]);
@@ -198,7 +196,6 @@ describe("checkMarketplaceRepository", () => {
     ]);
     Object.assign(fieldPin, { yanked: { reason: "Kept so installs of this zip keep their grant.", at: AT } });
     expect(run()).toEqual([]);
-    // Everything else still has to match.
     legacy.extensions["ai.agent-connector.ave"].capabilities = ["host:tasks"] as never[];
     expect(run()).toEqual([{ subject: "plugin/alpha", message: "the released plugin.json of 0.9.0: capabilities differs from the descriptor's authority" }]);
   });
@@ -310,7 +307,6 @@ describe("process-entry rules, per released version (§9.7 P4)", () => {
   const processAuthority = (minAppVersion: string) => ({ capabilities: [], requires: { minAppVersion, hostProtocol: "3" } });
   const pinned = () => ({ release: { repo: "acme/market", tag: "alpha-v2.0.0", asset: "alpha-2.0.0.zip", sha256: SHA } });
 
-  /** `2.0.0`: a process entry, no Windows, a pinned release, 0.14.0 (the protocol-3 floor). `1.0.0`: an entry on every platform, from the tree. */
   function alpha(newer: Patch = {}, older: Patch = {}) {
     const newMin = newer.minAppVersion ?? "0.14.0";
     const oldMin = older.minAppVersion ?? "0.12.0";
@@ -348,7 +344,6 @@ describe("process-entry rules, per released version (§9.7 P4)", () => {
     ["lowers its minAppVersion below the protocol-3 floor", { minAppVersion: "0.13.0" },
       `minAppVersion in ${DESCRIPTOR} is "0.13.0"; host protocol 3 needs 0.14.0 or newer, the first release that serves it`],
   ])("reports 2.0.0 when it %s, naming the descriptor and the version", (_label, patch, message) => {
-    // A declared tree without a plugin.json beside the descriptor is its own, older rule.
     const treeAlone = patch.artifact?.tree ? [{ subject: "plugin/alpha", message: "artifact.tree is declared but plugins/alpha/plugin.json is missing" }] : [];
     expect(alpha(patch)).toEqual([...problem(message), ...treeAlone]);
   });

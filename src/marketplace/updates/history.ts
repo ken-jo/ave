@@ -1,20 +1,5 @@
-/**
- * `~/.ave/marketplaces/updates.json` and the due rules of the update
- * scheduler (design §18.7.1).
- *
- * The file remembers when a discovery was last attempted and last
- * succeeded, how it ended, when the last apply check succeeded, and what the
- * apply checks classified. It moves only timing and retry counts, never what
- * applies, so a file that cannot be read is replaced by an empty one and the
- * Updates card says so (`historyReset`); a missing file is an empty history.
- *
- * Discovery is due after a failed attempt (`partial`, `offline`, `error`)
- * once `lastAttemptAt` is an hour old, whatever `lastSuccessAt` says, and
- * after a success once `lastSuccessAt` is `updateCheckIntervalMs` old (never
- * by the interval when it is 0). The apply check is due 24 hours after the
- * last successful one, and a failed discovery holds it to the same hourly
- * retry, so a partial or offline apply check never runs back to back.
- */
+/** History controls timing and attempts, never install authority; unreadable history may reset safely.
+ * Failed discovery retries hourly; successful apply checks are due daily. */
 import { readFile } from "node:fs/promises";
 import { isMissingPathError } from "../../lib/atomic-file.js";
 import { errorMessage } from "../../shared/error-message.js";
@@ -27,30 +12,22 @@ import { fsErrorCode } from "../sources/registry.js";
 import { SOURCE_ID_RE } from "../sources/official.js";
 
 export const HOUR_MS = 60 * 60 * 1000;
-/** A failed discovery is retried this long after its attempt (§18.7.1). */
 const RETRY_AFTER_FAILURE_MS = HOUR_MS;
-/** The owner's "once a day" for updates (§18.1). Not a setting. */
 const APPLY_CHECK_INTERVAL_MS = 24 * HOUR_MS;
 
-/** How a sync pass ended, before the scheduler adds `error` for a pass that threw. */
 export interface SyncDiscovery {
   result: Exclude<UpdateDiscoveryResult, "error">;
-  /** The sources that synced; a `partial` pass classifies only their updates. */
+  /** Partial discovery classifies only reached sources. */
   reached: string[];
 }
 
 export interface DiscoveryRecord {
   lastAttemptAt: string;
-  /** Null until a discovery has succeeded. */
   lastSuccessAt: string | null;
   result: UpdateDiscoveryResult;
 }
 
-/**
- * The last failure of an apply attempt (§18.7.5): a marketplace refusal by
- * its code and detail, or anything else as `unavailable` with its scrubbed
- * message, which the renderer shows only behind *Copy details*.
- */
+/** Unexpected apply failures use unavailable with scrubbed details behind Copy details. */
 export interface UpdateFailureRecord {
   code: MarketplaceErrorCode | "unavailable";
   detail?: MarketplaceErrorDetail;
@@ -64,14 +41,9 @@ export interface PackageUpdateRecord {
   attempts: number;
   lastError?: UpdateFailureRecord;
   appliedAt?: string;
-  /**
-   * The version it was updated from and its display name: an applied entry
-   * stays in the view after its offer is gone (the card's recent list,
-   * `approval-pending`).
-   */
+  /** Applied entries retain labels and source versions after their offers disappear. */
   from?: string;
   displayName?: string;
-  /** `origin.commit` before and after the applied update: *What changed* (§15.6). */
   commits?: { from: string | null; to: string };
 }
 
@@ -79,7 +51,6 @@ export interface UpdateHistory {
   version: 1;
   discovery: DiscoveryRecord | null;
   applyCheckAt: string | null;
-  /** Keyed by {@link updateRecordKey}. */
   packages: Record<string, PackageUpdateRecord>;
 }
 
@@ -87,17 +58,14 @@ export function emptyUpdateHistory(): UpdateHistory {
   return { version: 1, discovery: null, applyCheckAt: null, packages: Object.create(null) as Record<string, PackageUpdateRecord> };
 }
 
-/** `<sourceId>:<kind>:<name>`, the key of `packages`. */
 export function updateRecordKey(key: { sourceId: string; kind: PackageKind; name: string }): string {
   return `${key.sourceId}:${key.kind}:${key.name}`;
 }
 
-/** The source of a `packages` key; the key was checked when the file was read or written. */
 export function updateRecordSource(recordKey: string): string {
   return recordKey.slice(0, recordKey.indexOf(":"));
 }
 
-/** The package a `packages` key names; the key was checked when the file was read or written. */
 export function parseUpdateRecordKey(recordKey: string): { sourceId: string; kind: PackageKind; name: string } {
   const [sourceId, kind, ...name] = recordKey.split(":");
   if (!sourceId || !kind || !KINDS.has(kind) || name.length !== 1 || !name[0]) throw new Error(`${recordKey} is not <sourceId>:<kind>:<name>`);
@@ -146,7 +114,7 @@ function packageRecord(value: unknown, what: string): PackageUpdateRecord {
     const error = object(entry.lastError, `${what}.lastError`, ["code", "detail", "message", "at"]);
     if (typeof error.code !== "string" || !CODES.has(error.code)) invalid(`${what}.lastError.code is not an error code`);
     const code = error.code as UpdateFailureRecord["code"];
-    // As the source state does (§18.8): a detail that does not belong to its code is dropped, the code kept.
+    // Unknown details are dropped without discarding the failure code.
     const detail = error.detail === undefined || code === "unavailable" ? undefined : parseMarketplaceErrorDetail(code, error.detail);
     if (error.message !== undefined && typeof error.message !== "string") invalid(`${what}.lastError.message is not text`);
     record.lastError = { code, ...(detail ? { detail } : {}), ...(typeof error.message === "string" ? { message: error.message } : {}), at: time(error.at, `${what}.lastError.at`) };
@@ -164,7 +132,6 @@ function packageRecord(value: unknown, what: string): PackageUpdateRecord {
     if (typeof commits.to !== "string" || commits.to.length === 0) invalid(`${what}.commits.to is not a commit`);
     record.commits = { from: commits.from as string | null, to: commits.to };
   }
-  // An applied entry outlives its offer, so it carries what the view shows of it.
   if ((record.state === "applied" || record.state === "applied-not-running" || record.state === "approval-pending")
     && (record.from === undefined || record.displayName === undefined || record.commits === undefined)) {
     invalid(`${what} is ${record.state} without from, displayName and commits`);
@@ -172,7 +139,6 @@ function packageRecord(value: unknown, what: string): PackageUpdateRecord {
   return record;
 }
 
-/** Parse the file's text; throws on anything but the version-1 shape. */
 export function parseUpdateHistory(text: string): UpdateHistory {
   let value: unknown;
   try {
@@ -203,12 +169,7 @@ export function parseUpdateHistory(text: string): UpdateHistory {
   return { version: 1, discovery, applyCheckAt: timeOrNull(file.applyCheckAt, "applyCheckAt"), packages };
 }
 
-/**
- * What a load found. `reset`: the file existed but could not be read or
- * parsed, and `reason` says why; `history` is empty. The loader neither
- * writes nor logs: the scheduler says so and writes the empty history in the
- * file's place while it runs (so not after a stop).
- */
+/** Loading reports unreadable history without writing; the running scheduler owns reset and notification. */
 type LoadedUpdateHistory = { history: UpdateHistory; reset: false } | { history: UpdateHistory; reset: true; reason: string };
 
 export interface UpdateHistoryStore {
@@ -240,7 +201,7 @@ export function updateHistoryStore(path: string): UpdateHistoryStore {
   };
 }
 
-/** When discovery is next due, in epoch ms: `-Infinity` when it never ran, `Infinity` when only boot and *Check now* run it. */
+/** Never-run discovery is due immediately; disabled intervals allow only boot and explicit checks. */
 export function discoveryDueAt(discovery: DiscoveryRecord | null, intervalMs: number): number {
   if (discovery === null) return Number.NEGATIVE_INFINITY;
   if (discovery.result !== "ok") return Date.parse(discovery.lastAttemptAt) + RETRY_AFTER_FAILURE_MS;
@@ -248,7 +209,7 @@ export function discoveryDueAt(discovery: DiscoveryRecord | null, intervalMs: nu
   return Date.parse(discovery.lastSuccessAt!) + intervalMs;
 }
 
-/** When the apply check is next due, in epoch ms; a failed discovery holds it to the hourly retry. */
+/** Failed discovery holds daily apply checks to the hourly retry floor. */
 export function applyCheckDueAt(history: Pick<UpdateHistory, "discovery" | "applyCheckAt">): number {
   const daily = history.applyCheckAt === null ? Number.NEGATIVE_INFINITY : Date.parse(history.applyCheckAt) + APPLY_CHECK_INTERVAL_MS;
   const retry = history.discovery !== null && history.discovery.result !== "ok"

@@ -1,11 +1,4 @@
-/**
- * The manifest-supplied environment-name rule, which MCP servers and `process`
- * entries share (docs/design/plugin-hostapi-protocol.md §9.7 P3, decision 36).
- *
- * Every refusal is case-insensitive: on Windows environment names are, and a
- * name that differs from a host-owned one only in case is never something a
- * plugin needs.
- */
+/** Reject environment-name overrides case-insensitively because Windows treats case variants as the same key. */
 import { describe, expect, it } from "vitest";
 import { isSafeMcpEnvironmentName } from "../safe-names.js";
 

@@ -1,12 +1,5 @@
-/**
- * What every install plan shares (design §6.1, §6.2): the source, the
- * snapshot commit the catalog row came from, the version's own commit and
- * the package path. Execution reads only those commits.
- *
- * Only plugin versions carry their payload in the index (authority and
- * artifact pins); every other kind reads its payload from the descriptor at
- * the version's commit, which must still name the planned package.
- */
+/** Execution reads only the planned snapshot and version commits.
+ * Non-plugin payloads come from the version descriptor, which must match the planned identity. */
 import type { CatalogRow } from "../catalog/aggregate.js";
 import { hasVersionTree, MARKETPLACE_DESCRIPTOR_FILE, type AgentPluginComponents, type IndexVersion, type PackageDescriptor, type PackageKind } from "../catalog/types.js";
 import { canonicalStringify } from "../../shared/canonical-json.js";
@@ -21,11 +14,8 @@ export type { RepositoryAccess };
 export interface PackagePlan {
   sourceId: string;
   sourceOrigin: SourceOrigin;
-  /** The source's pin the catalog row came from: a commit, or a folder source's revision (§18.4.3). */
   snapshotCommit: string;
-  /** The version's own commit; a folder source's only version is at its revision. */
   versionCommit: string;
-  /** Package directory in the repository; "" is the root of a direct source. */
   packagePath: string;
   kind: PackageKind;
   name: string;
@@ -38,11 +28,7 @@ export interface PackagePlan {
 
 const DESCRIPTOR_LIMIT = 256 * 1024;
 
-/**
- * The row's candidate version (design §6.1). Without one: PACKAGE_REVOKED or
- * PACKAGE_YANKED when that is why every version is dropped, else
- * PACKAGE_INCOMPATIBLE (design §14).
- */
+/** Distinguish fully revoked or yanked rows from other incompatibility when no candidate exists. */
 export function candidateVersion(row: CatalogRow): IndexVersion {
   const { choice } = row;
   if (choice.state === "candidate") return choice.version;
@@ -63,10 +49,9 @@ export function candidateVersion(row: CatalogRow): IndexVersion {
   }
 }
 
-/** The plan fields every kind shares, for one listed version of the row. */
 export function planPackage(row: CatalogRow, version: IndexVersion): PackagePlan {
   if (!row.package.versions.includes(version)) throw new Error(`${row.name}@${version.version} is not a version of this row`);
-  // A legacy grant pin is grant evidence only (design §16.3): there is no tree to install from.
+  // Legacy grant pins are evidence only and have no installable tree.
   if (!hasVersionTree(version)) {
     throw new MarketplaceError("PACKAGE_YANKED", `${row.name}@${version.version} is a legacy grant pin and cannot be installed`);
   }
@@ -90,13 +75,7 @@ export function repoPath(dir: string, file: string): string {
   return dir === "" ? file : `${dir}/${file}`;
 }
 
-/**
- * The descriptor at the version's commit, validated, naming the planned
- * package. Anything else is MANIFEST_MISMATCH: the index said one thing and
- * the commit it points at says another. A direct source's package is read
- * as its snapshot read it, synthesized from its own file when it has no
- * descriptor (design §8.2).
- */
+/** Validate the version descriptor against the plan; synthesize direct-source descriptors as at snapshot read. */
 export async function readDescriptorAtVersion(plan: PackagePlan, access: RepositoryAccess): Promise<PackageDescriptor> {
   const path = repoPath(plan.packagePath, MARKETPLACE_DESCRIPTOR_FILE);
   const fail = (why: string) => new MarketplaceError("MANIFEST_MISMATCH", `${plan.kind} ${plan.name}@${plan.version} at ${plan.versionCommit}: ${why}`);
@@ -120,10 +99,8 @@ export async function readDescriptorAtVersion(plan: PackagePlan, access: Reposit
   return descriptor;
 }
 
-/** The index's copy of a version, as far as every kind compares it with the descriptor. */
 export type IndexedVersionFields = Pick<PackagePlan, "kind" | "name" | "version" | "minAppVersion" | "hostProtocol" | "platforms" | "components">;
 
-/** The fields in which `descriptor` says something other than the index's copy of its version; empty when they agree. */
 export function descriptorDiffersFromIndex(descriptor: PackageDescriptor, indexed: IndexedVersionFields): string[] {
   return [
     descriptor.kind !== indexed.kind && "kind",

@@ -48,7 +48,6 @@ function workGit(repo: FixtureRepo, args: string[]): string {
   }).trim();
 }
 
-/** Replace the served history: reset the working clone to `base`, commit `files`, force-push. */
 function rewrite(repo: FixtureRepo, base: string, files: Record<string, string>): string {
   workGit(repo, ["reset", "--quiet", "--hard", base]);
   for (const [path, content] of Object.entries(files)) {
@@ -235,7 +234,6 @@ describe("SourceSyncer", () => {
     expect(snapshotFiles("acme")).toEqual([`${first}.json`, `${second}.json`, `${third}.json`].sort());
     expect((await syncer.readSnapshot("acme"))!.packages[0]!.latest).toBe("2.0.0");
 
-    // One more move: the old previous pin goes, the retained first commit stays.
     const fourth = repo.commit(files("2.1.0"), "v2.1");
     await syncer.sync("acme");
     expect(snapshotFiles("acme")).toEqual([`${first}.json`, `${third}.json`, `${fourth}.json`].sort());
@@ -249,12 +247,10 @@ describe("SourceSyncer", () => {
     await registry.add({ id: "acme", origin: "custom", url: server.url(name), auth: { kind: "none" } });
     await syncer.sync("acme");
 
-    // The full-history fetch brings the pinned commit back when the candidate descends from it.
     await cleanupTmpDir(join(root, "acme", "repo.git"));
     const moved = repo.commit({ "README.md": "v3\n" }, "third");
     expect(await syncer.sync("acme")).toEqual({ status: "ok", pinnedCommit: moved, changed: true });
 
-    // When it does not, the pinned object stays missing and the move is held for review.
     await cleanupTmpDir(join(root, "acme", "repo.git"));
     const rewritten = rewrite(repo, base, { "README.md": "other\n" });
     expectFailed(await syncer.sync("acme"), "SOURCE_HISTORY_REWRITTEN");
@@ -294,7 +290,6 @@ describe("SourceSyncer", () => {
       expect(readdirSync(root).filter((entry) => entry.startsWith(".trash-"))).toEqual([]);
       expect(readdirSync(outside)).toEqual(["canary"]);
       expect(readFileSync(join(outside, "canary"), "utf8")).toBe("kept\n");
-      // Unpinned again, so the first sync trusts what the source serves now.
       expect(await syncer.sync("acme")).toEqual({ status: "ok", pinnedCommit: first, changed: true });
     } finally {
       await cleanupTmpDir(outside);
@@ -317,12 +312,10 @@ describe("SourceSyncer", () => {
     expect(await registry.readState("acme")).toEqual({ pinnedCommit: null, enabled: true });
   });
 
-  /** A synced custom source whose snapshot at the pin no longer parses; the pin itself still reads. */
   async function damagedSnapshot() {
     const { repo, name } = fixture();
     const base = repo.commit({ "marketplace.json": index("acme", []) }, "base");
     const pinned = repo.commit({ "README.md": "v2\n" }, "second");
-    // These consumers exercise real history rewrites and read-only object cleanup.
     const context = await setup({ runner: git.runner });
     await context.registry.add({ id: "acme", origin: "custom", url: server.url(name), auth: { kind: "none" } });
     expect(await context.syncer.sync("acme")).toMatchObject({ status: "ok", pinnedCommit: pinned });
@@ -355,11 +348,9 @@ describe("SourceSyncer", () => {
       message: "could not write the kept pin of source acme (ENOSPC)",
       detail: { reason: "repair-write-failed", sourceId: "acme" },
     });
-    // Nothing moved: the pin reads as before and the row is still broken, so Repair stays on offer.
     expect(await registry.readState("acme")).toEqual(before);
     await expect(syncer.readSnapshot("acme")).rejects.toMatchObject({ detail: { reason: "snapshot-invalid" } });
     expect(existsSync(join(root, "acme", "repo.git", "HEAD"))).toBe(true);
-    // And the history rule still holds: a rewritten upstream is held for review, not accepted.
     rewrite(repo, base, { "README.md": "other\n" });
     expectFailed(await syncer.sync("acme"), "SOURCE_HISTORY_REWRITTEN");
     expect((await registry.readState("acme")).pinnedCommit).toBe(pinned);
@@ -375,7 +366,6 @@ describe("SourceSyncer", () => {
 
     await expect(syncer.resetLocalData("acme")).rejects.toMatchObject({ detail: { reason: "repair-failed", sourceId: "acme" } });
     expect(await registry.readState("acme")).toEqual({ pinnedCommit: pinned, enabled: true });
-    // Whichever entry went first, the source is either still repairable or rebuilds at the pin; never unpinned.
     move.mockRestore();
     await syncer.resetLocalData("acme");
     expect(trashLeft()).toEqual([]);
@@ -388,7 +378,7 @@ describe("SourceSyncer", () => {
     const { syncer, registry, pinned } = await damagedSnapshot();
     const objects = join(root, "acme", "repo.git", "objects");
     const files = (readdirSync(objects, { recursive: true }) as string[]).map((name) => join(objects, name)).filter((path) => statSync(path).isFile());
-    // git writes its packs and loose objects read-only (Windows: the read-only attribute), so this is the case to walk.
+    // Git object files carry the read-only attribute on Windows.
     expect(files.length).toBeGreaterThan(0);
     expect(files.filter((path) => (statSync(path).mode & 0o200) === 0).length).toBeGreaterThan(0);
 
@@ -419,8 +409,7 @@ describe("SourceSyncer", () => {
     const { registry, syncer } = await setup({ runner: git.runner });
     await registry.add({ id: "acme", origin: "custom", url: server.url(name), auth: { kind: "none" } });
     const first = await syncer.sync("acme");
-    // What an interrupted walk of an older build leaves: HEAD without objects or refs. Removed with the
-    // teardown helper: git's objects are read-only, which a synchronous recursive rm refuses on Windows.
+    // Simulate missing objects without synchronous recursive removal of read-only Windows files.
     await cleanupTmpDir(join(root, "acme", "repo.git", "objects"));
     await cleanupTmpDir(join(root, "acme", "repo.git", "refs"));
 
@@ -449,7 +438,6 @@ describe("SourceSyncer", () => {
     await cleanupTmpDir(join(root, "acme", "repo.git", "objects"));
     await cleanupTmpDir(join(root, "acme", "repo.git", "refs"));
     expect(await syncer.sync("acme")).toMatchObject({ code: "SOURCE_LOCAL_DATA_DAMAGED", detail: { reason: "repository-damaged" } });
-    // The review is still pending in the state, but the row offers Repair.
     const state = await registry.readState("acme");
     expect(state.pendingRewrite).toBeDefined();
     expect(sourceStatus(state, false, true, true)).toMatchObject({ state: "broken", detail: { reason: "repository-damaged", sourceId: "acme" } });
@@ -563,7 +551,6 @@ describe("SourceSyncer", () => {
     await syncer.sync("acme");
     const fresh = (await syncer.readSnapshot("acme"))!;
     expect(fresh.packages.map((item) => item.name)).toEqual(["alpha"]);
-    // The snapshot an earlier build wrote at the same commit: the package listed, nothing diagnosed.
     const alpha = fresh.packages[0]!;
     const held = { ...alpha, name: token, path: "skills/held" };
     const stored = { ...fresh, packages: [alpha, held], diagnostics: [] };
@@ -578,7 +565,6 @@ describe("SourceSyncer", () => {
       expect(JSON.stringify(served)).not.toContain(token);
       expect(await syncer.readRevocations("acme", "0.12.0")).toEqual([entry]);
     }
-    // The stored file is not rewritten or removed: admission is how it is read.
     expect(readFileSync(path, "utf8")).toBe(JSON.stringify(stored));
   });
 
@@ -634,7 +620,6 @@ describe("SourceSyncer", () => {
       (error: unknown) => error instanceof MarketplaceError && error.code === "PLAN_EXPIRED",
     );
 
-    // A sync that sees another rewrite in between expires the reviewed one.
     const rewrittenAgain = rewrite(repo, base, { "README.md": "again\n" });
     expectFailed(await syncer.sync("acme"), "SOURCE_HISTORY_REWRITTEN");
     await expect(syncer.acceptRewrite("acme", rewritten)).rejects.toSatisfy(
@@ -695,17 +680,14 @@ describe("SourceSyncer", () => {
     const { syncer: offline } = await setup({ official: unreachable, runner: git.runner });
     expectFailed(await offline.sync("ave"), "SOURCE_UNREACHABLE");
     expect((await registry.readState("ave")).pinnedCommit).toBe(commit);
-    // Offline: the last good snapshot is still served.
     expect((await offline.readSnapshot("ave"))!.commit).toBe(commit);
 
-    // A candidate from the mirror meets the same history rule as one from the primary.
     rewrite(repo, base, { "README.md": "forked\n" });
     expectFailed(await syncer.sync("ave"), "SOURCE_HISTORY_REWRITTEN");
     expect((await registry.readState("ave")).pinnedCommit).toBe(commit);
   });
 
   it("persists why a background sync failed, and the reason survives reopening the registry", async () => {
-    // The resolver answers for every other name, so only this source's host is missing.
     const lookup = dnsPromises.lookup.bind(dnsPromises);
     const spy = vi.spyOn(dnsPromises, "lookup").mockImplementation(((host: string, options: unknown) => {
       if (host === "nowhere.invalid") return Promise.reject(Object.assign(new Error(`getaddrinfo ENOTFOUND ${host}`), { code: "ENOTFOUND" }));
@@ -773,7 +755,6 @@ describe("SourceSyncer", () => {
     expectFailed(await syncer.sync("acme"), "SOURCE_HISTORY_REWRITTEN");
     await second.close();
 
-    // The candidate's commits are local; its blobs are not.
     expectFailed(await syncer.acceptRewrite("acme", rewritten), "SOURCE_UNREACHABLE");
     expect(await registry.readState("acme")).toMatchObject({
       pinnedCommit: pinned,
@@ -812,7 +793,7 @@ describe("SourceSyncer", () => {
   it("refuses a marketplace.json at another schemaVersion by naming it, whatever layout the descriptors use", async () => {
     const { repo, name } = fixture();
     repo.commit({ "README.md": "start\n" }, "start");
-    // Tree entries, not files: Windows cannot create `odd:name` on disk.
+    // Use tree entries because Windows cannot create this path on disk.
     repo.commitEntries(
       Object.entries({
         "marketplace.json": `${JSON.stringify({ schemaVersion: 1, name: "acme", displayName: "Legacy", packages: [] })}\n`,
@@ -905,9 +886,7 @@ describe("SourceSyncer", () => {
       description: "Checks Korean spelling",
       versions: [{ version: `0.0.0+g${commit.slice(0, 12)}`, minAppVersion: "0.0.0" }],
     });
-    // A descriptor beside SKILL.md is used as is.
     expect(await only("versioned-src")).toMatchObject({ kind: "skill", name: "versioned", latest: "3.0.0" });
-    // AGENTS.md without front matter: the folder names the package.
     expect(await only("agent-src")).toMatchObject({ kind: "agent", name: "release-captain" });
     expect(await only("mcp-src")).toMatchObject({ kind: "mcp", name: "weather", latest: "0.5.0" });
   });
@@ -1014,7 +993,6 @@ describe("SourceSyncer", () => {
     const c = new AbortController();
     const lone = syncer.sync("acme", c.signal);
     c.abort(new Error("the only caller gave up"));
-    // A caller arriving while the abandoned run winds down gets a run of its own.
     const late = syncer.sync("acme");
     await expect(lone).rejects.toThrow("the only caller gave up");
     expect(await late).toEqual({ status: "ok", pinnedCommit: commit, changed: false });
@@ -1052,7 +1030,6 @@ describe("SourceSyncer and source auth", () => {
     commit = repo.commit({ "marketplace.json": index("ave", []) }, "initial");
     privateRepo = createFixtureRepo(serverRoot, "private-tools");
     privateCommit = privateRepo.commit({ "marketplace.json": index("acme", []) }, "initial");
-    // The server answers only Basic auth carrying TOKEN; the runner holds TOKEN for its host.
     server = await startGitHttpServer({ root: serverRoot, token: TOKEN });
     git = await createTestGitRunner({ tokens: { "127.0.0.1": TOKEN } });
   });
@@ -1078,7 +1055,7 @@ describe("SourceSyncer and source auth", () => {
     const policy = policySource(policyWith({}));
     const official: OfficialMarketplace = { id: "ave", url: server.url("guarded"), mirrors: [], auth };
     const registry = await SourceRegistry.open({ root, policy, official });
-    // Credentials may cross this loopback http fixture, so only `auth` decides whether the token is offered.
+    // The loopback fixture permits plaintext credentials so the source auth setting alone decides token use.
     await registry.acknowledge("ave", ["token-unencrypted"]);
     const syncer = new SourceSyncer({
       folders: nodeFolders(),

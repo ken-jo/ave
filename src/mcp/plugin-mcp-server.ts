@@ -1,20 +1,4 @@
-/**
- * In-process MCP server for a single Ave plugin (#1230, design §3.1/§3.3).
- *
- * This is the server half of "plugins as MCP servers": given a plugin manifest
- * and a delegate that actually runs a tool, it answers the MCP `2026-07-28` RC
- * request methods a plugin-server must implement — `server/discover`,
- * `tools/list`, and `tools/call` — using the pure projection in
- * `plugin-server-projection.ts`. It is transport-agnostic: it consumes a parsed
- * JSON-RPC request and returns a parsed JSON-RPC response, so it can be driven
- * by an in-process loopback transport (first-party plugins) or, later, a stdio
- * subprocess wrapper (out-of-process untrusted plugins) — the hybrid topology.
- *
- * Stateless (RC): there is no `initialize` handshake and no session. Every
- * request carries the client's identity/capabilities in `params._meta`; the
- * server validates only the protocol version here (capability gating arrives
- * with the `governance-per-request` milestone).
- */
+/** Transport-independent stateless plugin server; requests carry client metadata and protocol version. */
 import type { PluginManifest } from "../plugins/types.js";
 import {
   manifestToDiscoverResult,
@@ -40,29 +24,22 @@ import { PLUGIN_RESULT_CACHE } from "./plugin-server-projection.js";
 import type { JsonRpcId, JsonRpcRequest, JsonRpcResponse } from "./mcp-client.js";
 import { errorMessage } from "../shared/error-message.js";
 
-/** One content block of a tool result (a 2026-07-28 `CallToolResult` content). */
 export interface PluginToolContent {
   type: string;
   text?: string;
   [key: string]: unknown;
 }
 
-/** What a plugin's tool execution returns to the server. */
 export interface PluginToolOutcome {
   content: PluginToolContent[];
   isError?: boolean;
-  /** Optional MCP Apps `_meta.ui` extension passthrough. */
   _meta?: Record<string, unknown>;
 }
 
-/** Delegate that actually runs the plugin's tool (the plugin runtime supplies this). */
 export type PluginToolDelegate = (
   name: string,
   args: Record<string, unknown>,
-  /**
-   * Present only when the request named the host invocation it serves
-   * (`_meta[INVOCATION_META]`); see {@link INVOCATION_META}.
-   */
+  /** Present only for work bound to a host invocation token. */
   context?: { readonly invocation: string },
 ) => Promise<PluginToolOutcome>;
 
@@ -70,22 +47,12 @@ export class PluginMcpServer {
   constructor(
     private readonly manifest: PluginManifest,
     private readonly callTool: PluginToolDelegate,
-    /**
-     * Serves this plugin's declared `ui://` resources (MCP App cards). Absent
-     * when the plugin ships no `uiResources[]`; a `resources/read` then always
-     * fails-closed with resource-not-found, and `resources/list` returns an
-     * empty set.
-     */
+    /** Without a provider, resource reads fail closed and resource listing is empty. */
     private readonly uiResources?: PluginUiResourceProvider,
   ) {}
 
-  /**
-   * Handle one JSON-RPC request and return its response. Tool-execution
-   * failures surface as `isError: true` in a `complete` result (NOT a JSON-RPC
-   * error) — matching the RC `CallToolResult` model; only protocol/dispatch
-   * problems use JSON-RPC error codes. Every RESULT is stamped with the
-   * reserved `serverInfo` `_meta` identity (spec SHOULD) — errors are not.
-   */
+  /** Tool failures return isError results; protocol failures use JSON-RPC errors.
+     * Stamp server identity only on results. */
   async handle(request: JsonRpcRequest<JsonRpcId>): Promise<JsonRpcResponse<JsonRpcId>> {
     const response = await this.dispatch(request);
     if (
@@ -150,10 +117,7 @@ export class PluginMcpServer {
             error: { code: RPC_INVALID_PARAMS, message: "resources/read requires a string 'uri'" },
           };
         }
-        // Fail-closed: no provider ⇒ this plugin serves no ui:// resource. The
-        // provider itself enforces own-namespace-only + declared-only + path
-        // containment (the single chokepoint), so a denied/undeclared/escaping
-        // uri surfaces here as resource-not-found — never a served body.
+        // No provider means no served UI; namespace, declaration and containment checks remain mandatory.
         if (!this.uiResources) {
           return {
             jsonrpc: "2.0",
@@ -220,8 +184,7 @@ export class PluginMcpServer {
           if (outcome._meta !== undefined) result._meta = outcome._meta;
           return { jsonrpc: "2.0", id, result };
         } catch (err) {
-          // A thrown delegate is a tool-execution failure → isError result, not
-          // a JSON-RPC error (RC CallToolResult model).
+          // A thrown delegate is a tool failure, not a protocol-dispatch error.
           return {
             jsonrpc: "2.0",
             id,
@@ -243,11 +206,7 @@ export class PluginMcpServer {
     }
   }
 
-  /**
-   * Validate the client's advertised protocol version (`_meta`). A request
-   * with no `_meta` protocol version is tolerated (e.g. an internal caller);
-   * an explicit mismatch is rejected with `-32022` per §8.
-   */
+  /** Missing protocol metadata is allowed internally; explicit mismatches are rejected. */
   private checkProtocolVersion(
     params: Record<string, unknown> | undefined,
   ): { code: number; message: string; data?: unknown } | null {

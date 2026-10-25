@@ -1,19 +1,4 @@
-/**
- * MCP Client — Transport tests.
- *
- * Covers (§9.5):
- *   1. `McpServerConfig` discriminated-union typing.
- *   2. Streamable HTTP happy path (`initialize` → `tools/list` → `tools/call`).
- *   3. NetworkGuard rejection when an HTTP URL resolves to a private IP
- *      and `allowPrivateNetworks` is not set.
- *   4. SSE streaming path: a multi-chunk `text/event-stream` body is
- *      reassembled into one JSON-RPC response.
- *   5. stdio transport: newline-delimited JSON-RPC (MCP stdio transport)
- *      handshake, and a response split across chunks.
- *
- * No live network / process I/O — `fetch`, `dns.lookup`, and
- * `child_process.spawn` are stubbed.
- */
+/** Transport tests replace network and process I/O while preserving handshake and framing boundaries. */
 import {
   describe,
   it,
@@ -26,16 +11,10 @@ import { PassThrough } from "node:stream";
 import { getAveAppVersion } from "../../shared/app-version.js";
 import { EventEmitter } from "node:events";
 
-/**
- * The outbound transport `McpClient` hands its HTTP transport. Every HTTP case
- * here drives the server by replacing the global `fetch` (`vi.stubGlobal`), so
- * this reads that stub at call time rather than capturing one at construction;
- * the stdio cases never reach it.
- */
+/** Read the fetch stub at call time so per-test replacements affect the injected HTTP transport. */
 const stubbedGlobalNetworkFetch = ((input: RequestInfo | URL, init?: RequestInit) =>
   globalThis.fetch(input, init)) as typeof fetch;
 
-// ─── dns mock — configurable per test ───────────────────────
 type LookupResult = { address: string; family: number };
 const lookupMock = vi.fn<
   (host: string, opts: unknown) => Promise<LookupResult[]>
@@ -46,7 +25,6 @@ vi.mock("node:dns", () => ({
   },
 }));
 
-// ─── child_process mock — stdio path ────────────────────────
 const spawnMock = vi.fn<
   (cmd: string, args?: readonly string[], opts?: unknown) => unknown
 >();
@@ -58,7 +36,7 @@ vi.mock("../../main/uv-runtime.js", () => ({
   resolveBundledUvBinaryPath: vi.fn(() => "/test-runtime/uv"),
 }));
 
-// Module imports must come AFTER the mocks above.
+// Import after mocks so transport bindings use the test doubles.
 import { McpClient } from "../mcp-client.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import {
@@ -78,8 +56,6 @@ import {
   buildPolicy,
   FakeChildProcess,
 } from "./test-helpers.js";
-
-// ─── Helpers ────────────────────────────────────────────────
 
 function httpApproval(
   id: string,
@@ -105,7 +81,6 @@ function httpApproval(
 }
 
 
-/** Simple JSON-RPC body matcher. */
 function readRpcMethod(init: RequestInit | undefined): string | undefined {
   if (!init?.body) return undefined;
   try {
@@ -131,12 +106,7 @@ function jsonRpcResponse(id: number, result: unknown): Response {
   });
 }
 
-/**
- * #1230 — golden `server/discover` result for the RC stateless handshake. The
- * client now probes `server/discover` first; these mock servers answer it as
- * RC servers (so the connect path runs in "rc" mode, not the dual-era legacy
- * fallback). Tool-call mocks below omit `resultType` ⇒ treated as "complete".
- */
+/** Stateless discovery fixture; omitted resultType means complete. */
 const RC_DISCOVER_RESULT = {
   resultType: "complete",
   ttlMs: 0,
@@ -162,7 +132,6 @@ function readRpcParams(init: RequestInit | undefined): Record<string, unknown> |
   }
 }
 
-/** Construct a streaming SSE response from a list of byte chunks. */
 function sseResponse(chunks: string[]): Response {
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
@@ -177,8 +146,6 @@ function sseResponse(chunks: string[]): Response {
   });
 }
 
-// ─── Lifecycle ──────────────────────────────────────────────
-
 beforeEach(() => {
   lookupMock.mockReset();
   spawnMock.mockReset();
@@ -189,16 +156,10 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-/**
- * Fake only the timers the client arms itself — the list_changed refresh
- * debounce and the listen re-open backoff — so a test can step past them in
- * virtual time. Fetch stubs and SSE bodies settle on promises, not timers.
- */
+/** Fake client timers only; fetch stubs and SSE bodies settle through promises. */
 function fakeClientTimers(): void {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
 }
-
-// ─── 1. Discriminated union typing ──────────────────────────
 
 describe("McpServerConfig discriminated union", () => {
   it("accepts a stdio config with command/args", () => {
@@ -210,7 +171,6 @@ describe("McpServerConfig discriminated union", () => {
       env: { NODE_ENV: "production" },
     };
     expect(cfg.transport).toBe("stdio");
-    // Narrowing: `command` is required on the stdio branch.
     if (cfg.transport === "stdio") {
       expect(cfg.command).toBe("ave-mcp-fs");
     }
@@ -240,8 +200,6 @@ describe("McpServerConfig discriminated union", () => {
     expect(cfg.allowPrivateNetworks).toBe(true);
   });
 });
-
-// ─── 2. HTTP happy path ─────────────────────────────────────
 
 describe("HttpTransport — happy path", () => {
   it("performs initialize → tools/list → tools/call over JSON responses", async () => {
@@ -311,8 +269,6 @@ describe("HttpTransport — happy path", () => {
 
     await client.disconnect();
 
-    // RC round-trip (#1230): server/discover → tools/list → tools/call. The
-    // stateless RC handshake has no initialize / notifications/initialized.
     const methods = fetchMock.mock.calls
       .map(([, init]) => readRpcMethod(init as RequestInit))
       .filter(Boolean);
@@ -510,13 +466,9 @@ describe("HttpTransport — happy path", () => {
   });
 });
 
-// ─── 3. NetworkGuard rejection ──────────────────────────────
-
 describe("HttpTransport — NetworkGuard", () => {
   it("rejects a URL whose host resolves to a private IP when allowPrivateNetworks is not set", async () => {
-    // Governance passes (https, allowed host); DNS then resolves the host
-    // to an RFC1918 address — NetworkGuard must reject with the
-    // "network guard:" prefix before any fetch is issued.
+    // DNS refusal must precede fetch even when lexical governance accepts the URL.
     lookupMock.mockResolvedValueOnce([{ address: "10.0.0.5", family: 4 }]);
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
@@ -566,9 +518,7 @@ describe("HttpTransport — NetworkGuard", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
 
-    // Per-server approval opts the server into the private-network escape
-    // hatch; the client config then additionally sets `allowPrivateNetworks`.
-    // Both gates must be aligned.
+    // Both governance approval and client configuration must authorize private networking.
     const gov = governanceWithPolicy(
       buildPolicy([
         httpApproval("local", "http://localhost:4040/mcp", {
@@ -595,10 +545,7 @@ describe("HttpTransport — NetworkGuard", () => {
   });
 
   it("rejects allowPrivateNetworks when admin policy has not authorised it", async () => {
-    // Client config sets allowPrivateNetworks=true but governance approval
-    // / globalRules have not opted in — governance must reject with a
-    // message that names the `allowPrivateNetworks` gate so operators can
-    // tell why the connection was refused.
+    // Client configuration alone cannot bypass governance private-network approval.
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
 
@@ -710,16 +657,10 @@ describe("HttpTransport — NetworkGuard", () => {
   });
 });
 
-// ─── 4. SSE streaming path ──────────────────────────────────
-
 describe("HttpTransport — SSE streaming", () => {
   it("reassembles a multi-chunk text/event-stream response", async () => {
     lookupMock.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
 
-    // The server answers `initialize` via SSE across three TCP chunks:
-    //   chunk 1: "event: message\ndata: {\"jsonrpc\""
-    //   chunk 2: ":\"2.0\",\"id\":1,"
-    //   chunk 3: "\"result\":{...}}\n\n"
     const initResult = {
       protocolVersion: "2024-11-05",
       capabilities: { tools: {} },
@@ -735,8 +676,6 @@ describe("HttpTransport — SSE streaming", () => {
           return jsonRpcResponse(id, RC_DISCOVER_RESULT);
         }
         if (method === "initialize") {
-          // Split the JSON payload in half to prove the SSE reader
-          // concatenates chunks before parsing.
           const midpoint = Math.floor(initPayload.length / 2);
           const head = initPayload.slice(0, midpoint);
           const tail = initPayload.slice(midpoint);
@@ -776,8 +715,6 @@ describe("HttpTransport — SSE streaming", () => {
     await client.disconnect();
   });
 });
-
-// ─── 5. stdio regression ────────────────────────────────────
 
 describe("StdioTransport — regression", () => {
   it("connects via subprocess with newline-delimited JSON-RPC", async () => {
@@ -867,7 +804,6 @@ describe("StdioTransport — regression", () => {
       id: toolsList.id,
       result: { tools: [{ name: "read", description: "파일 읽기", inputSchema: { type: "object", properties: {} } }] },
     })}\r\n`);
-    // Cut inside the first byte sequence of "파" (3 bytes in UTF-8).
     const cut = bytes.indexOf(Buffer.from("파")) + 1;
     fake.stdout.write(bytes.subarray(0, cut));
     fake.stdout.write(bytes.subarray(cut));
@@ -951,7 +887,6 @@ describe("StdioTransport — regression", () => {
         command: "uvx",
         auth: "none",
         apiKey: "secret-should-not-appear",
-        // intentionally no apiKeyEnv — apiKey must NOT appear in the spawn env
       } as McpStdioServerConfig,
       gov,
       new ToolRegistry(),
@@ -960,17 +895,13 @@ describe("StdioTransport — regression", () => {
 
     await client.connect();
     const spawnEnv = (spawnMock.mock.calls[0]?.[2] as { env?: Record<string, unknown> })?.env ?? {};
-    // apiKey value must not appear in any env-var value
     const envValues = Object.values(spawnEnv).map(String);
     expect(envValues).not.toContain("secret-should-not-appear");
     await client.disconnect();
   });
 
   it("SIGKILL fallback fires when the subprocess ignores SIGTERM", async () => {
-    // Build a FakeChildProcess that REFUSES to exit on SIGTERM so we can
-    // verify the SIGKILL fallback timer (mcp-client.ts close()) actually
-    // reaches `proc.kill("SIGKILL")`. Previous regression: `this.process`
-    // was nulled synchronously before the 3-second timer fired.
+    // Keep the child alive after SIGTERM to verify the delayed SIGKILL still targets it.
     vi.useFakeTimers();
     try {
       const killCalls: string[] = [];
@@ -989,13 +920,10 @@ describe("StdioTransport — regression", () => {
 
         kill(signal?: string): boolean {
           killCalls.push(signal ?? "SIGTERM");
-          // Do NOT emit exit — simulate a stuck child.
           return true;
         }
       }
       const fake = new StubbornChild();
-      // Respond to the initial handshake so connect() can succeed. We stuff
-      // framed JSON-RPC responses into `stdout` manually.
       spawnMock.mockReturnValueOnce(fake);
 
       const gov = governanceWithPolicy(
@@ -1012,36 +940,27 @@ describe("StdioTransport — regression", () => {
         stubbedGlobalNetworkFetch,
       );
 
-      // connect() pends on `initialize` — resolve it asynchronously.
       const connectPromise = client.connect();
-      // Wait one microtask for the send() to hit stdin.write, then feed
-      // canned responses back.
       await Promise.resolve();
       const reply = (id: number, result: unknown): void => {
         const payload = JSON.stringify({ jsonrpc: "2.0", id, result });
         fake.stdout.write(`${payload}\n`);
       };
-      // initialize → id 1, tools/list → id 2
       reply(1, {
         protocolVersion: "2024-11-05",
         capabilities: { tools: {} },
         serverInfo: { name: "stubborn", version: "0.0.1" },
       });
-      // Allow the pending promise to resolve before we advance to tools/list.
       await vi.advanceTimersByTimeAsync(0);
       reply(2, { tools: [] });
       await vi.advanceTimersByTimeAsync(0);
       await connectPromise;
 
-      // Now ask it to disconnect — triggers StdioTransport.close().
       const disconnectPromise = client.disconnect();
-      // SIGTERM should have been sent synchronously.
       expect(killCalls).toContain("SIGTERM");
-      // Advance time past the 3-second SIGKILL fallback.
       await vi.advanceTimersByTimeAsync(3_500);
       expect(killCalls).toContain("SIGKILL");
 
-      // disconnect() resolves regardless — simulate the process finally exiting.
       fake.exitCode = 0;
       fake.emit("exit", 0, "SIGKILL");
       await disconnectPromise;
@@ -1106,8 +1025,6 @@ describe("StdioTransport — regression", () => {
   });
 });
 
-// ─── 6. CRLF header rejection at governance ────────────────
-
 describe("McpGovernance — header validation", () => {
   it("rejects http config whose headers contain CR/LF", async () => {
     const gov = governanceWithPolicy(
@@ -1156,13 +1073,9 @@ describe("McpGovernance — header validation", () => {
   });
 });
 
-// ─── 7. DNS rebinding on send() ─────────────────────────────
-
 describe("HttpTransport — per-request DNS rebinding defense", () => {
   it("rejects a send() after DNS flips to a private IP mid-session", async () => {
-    // First lookup (during open()) returns a public IP → connect succeeds.
-    // Subsequent lookups (during send()) return a private IP → fetch must
-    // never be issued on the rebinding hop.
+    // Rebind to a private address after open to verify every send rechecks before fetch.
     lookupMock.mockImplementation(async () => {
       if (lookupMock.mock.calls.length === 1) {
         return [{ address: "93.184.216.34", family: 4 }];
@@ -1211,27 +1124,15 @@ describe("HttpTransport — per-request DNS rebinding defense", () => {
       stubbedGlobalNetworkFetch,
     );
 
-    // Connect expects initialize/tools-list to succeed; those also go through
-    // `send()` which re-validates DNS. The second lookup (send path) is the
-    // rebinding attempt and should reject BEFORE fetch is called for that
-    // request. Capture the outcome through the thrown error.
     await expect(client.connect()).rejects.toThrow(/network guard:/);
-    // The first fetch (initialize) should never have fired because DNS
-    // rebinding is caught on every hop now — fetchPublicHttpResponse calls
-    // ensurePublicHttpUrl before each hop.
     expect(fetchCallCount).toBe(0);
   });
 });
-
-// ─── 8. SSE stream-death transitions transport to dead ──────
 
 describe("HttpTransport — SSE stream death", () => {
   it("marks transport dead and rejects pending requests when SSE body errors out", async () => {
     lookupMock.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
 
-    // First call: initialize — normal JSON response so the handshake finishes.
-    // Second call (notifications/initialized): 202, third (tools/list): JSON.
-    // Fourth call (tools/call): SSE stream that errors mid-flight.
     const fetchMock = vi.fn(
       async (_url: string, init?: RequestInit): Promise<Response> => {
         const method = readRpcMethod(init);
@@ -1263,10 +1164,8 @@ describe("HttpTransport — SSE stream death", () => {
             ],
           });
         }
-        // tools/call → SSE stream that throws on read.
         const failingStream = new ReadableStream<Uint8Array>({
           start(controller) {
-            // Queue an initial partial event, then error the stream.
             const enc = new TextEncoder();
             controller.enqueue(enc.encode("event: message\ndata: {\"jsonrpc\""));
             controller.error(new Error("connection reset by peer"));
@@ -1297,16 +1196,10 @@ describe("HttpTransport — SSE stream death", () => {
     await client.connect();
     expect(client.getState().status).toBe("connected");
 
-    // Fire the streaming tool call. The SSE body errors during read →
-    // transport should transition to dead and the pending tools/call should
-    // reject with the stream-termination reason (not wait for timeout).
     await expect(client.callTool("stream", {})).rejects.toThrow();
-    // Transport is now reported dead by the client state machine.
     expect(client.getState().status).toBe("error");
   });
 });
-
-// ─── 9. Timeout path honours AbortController ──────────────
 
 describe("HttpTransport — timeout path", () => {
   it("aborts the underlying fetch when the request times out", async () => {
@@ -1314,12 +1207,11 @@ describe("HttpTransport — timeout path", () => {
 
     vi.useFakeTimers();
     try {
-      // Capture the signal passed to fetch so we can assert abort propagated.
       let capturedSignal: AbortSignal | undefined;
       const fetchMock = vi.fn(
         (_url: string, init?: RequestInit): Promise<Response> => {
           capturedSignal = init?.signal ?? undefined;
-          // Never resolve — only an abort can terminate this request.
+          // Only abort can settle this intentionally unresponsive request.
           return new Promise<Response>((_resolve, reject) => {
             init?.signal?.addEventListener("abort", () => {
               reject(new Error("AbortError"));
@@ -1343,18 +1235,12 @@ describe("HttpTransport — timeout path", () => {
         stubbedGlobalNetworkFetch,
       );
 
-      // Fire connect() but do NOT await yet — it will hang on initialize.
       const connectPromise = client.connect().catch((e) => e);
-      // Let open() + initial send() fire.
       await vi.advanceTimersByTimeAsync(0);
       expect(capturedSignal).toBeDefined();
       expect(capturedSignal?.aborted).toBe(false);
-      // Advance past the default 30s request timeout so the abort timer fires.
       await vi.advanceTimersByTimeAsync(31_000);
-      // The AbortController must have propagated to the fetch signal.
       expect(capturedSignal?.aborted).toBe(true);
-      // And the connect() promise resolves (to rejection) because the
-      // transport now surfaces a fetch failure.
       const err = await connectPromise;
       expect(err).toBeInstanceOf(Error);
     } finally {
@@ -1457,8 +1343,6 @@ describe("McpClient — 2026-07-28 RC stateless handshake (#1230)", () => {
 
     fakeClientTimers();
     await client.connect();
-    // The listen request is fired-and-forgotten at connect; let its async send
-    // chain reach the fetch stub before scanning calls.
     await vi.advanceTimersByTimeAsync(150);
     for (const [, init] of fetchMock.mock.calls) {
       if (readRpcMethod(init as RequestInit) === "subscriptions/listen") {
@@ -1497,9 +1381,7 @@ describe("McpClient — 2026-07-28 RC stateless handshake (#1230)", () => {
         return jsonRpcResponse(id, { tools: listCalls === 1 ? [TOOL_V1] : [TOOL_V2] });
       }
       if (method === "subscriptions/listen")
-        // Ack + one change notification, then the stream ENDS (no final
-        // response) — expected for proxies/idle timeouts; must not kill the
-        // transport, only settle the listen request for re-open.
+        // Ending a listen stream without a final response requires reopening, not killing the connection.
         return sseResponse([
           `data: {"jsonrpc":"2.0","method":"notifications/subscriptions/acknowledged"}\n\n`,
           `data: {"jsonrpc":"2.0","method":"notifications/tools/list_changed"}\n\n`,
@@ -1510,10 +1392,7 @@ describe("McpClient — 2026-07-28 RC stateless handshake (#1230)", () => {
     fakeClientTimers();
     await client.connect();
     expect(client.getState().registeredTools).toEqual(["mcp_lsn2_a"]);
-    // Past the 500 ms refresh debounce, short of the 1 s listen re-open.
     await vi.advanceTimersByTimeAsync(900);
-    // The notification refreshed tools, and the ended stream left the
-    // connection alive.
     expect(listCalls).toBe(2);
     expect(client.getState().registeredTools).toEqual(["mcp_lsn2_b"]);
     expect(client.getState().status).toBe("connected");
@@ -1538,8 +1417,6 @@ describe("McpClient — 2026-07-28 RC stateless handshake (#1230)", () => {
 
     fakeClientTimers();
     await client.connect();
-    // Past the first re-open backoff window (1s): an advertisement without an
-    // implementation is remembered, not retried.
     await vi.advanceTimersByTimeAsync(1300);
     expect(listenCalls).toBe(1);
     expect(client.getState().status).toBe("connected");
@@ -1576,7 +1453,6 @@ describe("McpClient — 2026-07-28 RC stateless handshake (#1230)", () => {
   });
 
   it("retries ONCE after HeaderMismatch by refreshing tools/list and rebuilding the mirrors", async () => {
-    // The server rotates its x-mcp-header name between discovery and the call.
     const toolWithHeader = (headerName: string) => ({
       name: "q",
       description: "q",
@@ -1609,8 +1485,6 @@ describe("McpClient — 2026-07-28 RC stateless handshake (#1230)", () => {
     await client.connect();
     const result = await client.callTool("q", { region: "us-west1" });
     expect(result.text).toBe("ok");
-    // One refresh between the two calls, and the SECOND call mirrors the
-    // renamed header from the refreshed schema.
     expect(listCalls).toBe(2);
     expect(callCalls).toBe(2);
     const toolCallInits = fetchMock.mock.calls.filter(
@@ -1660,8 +1534,7 @@ describe("McpClient — 2026-07-28 RC stateless handshake (#1230)", () => {
           discoverCalls += 1;
           return jsonRpcResponse(id, {
             ...RC_DISCOVER_RESULT,
-            ttlMs: 1, // clamped to the 30s floor
-            // Apps advertised only from the SECOND discover on.
+            ttlMs: 1,
             capabilities:
               discoverCalls === 1
                 ? { tools: {} }
@@ -1679,12 +1552,10 @@ describe("McpClient — 2026-07-28 RC stateless handshake (#1230)", () => {
       });
 
       await client.connect();
-      // Fresh snapshot, no Apps advertised → the ui payload is dropped.
       expect((await client.callTool("t", {})).uiPayload).toBeUndefined();
       expect(discoverCalls).toBe(1);
 
       vi.setSystemTime(Date.now() + 31_000);
-      // Expired → single-flight re-discover; the NEW advertisement wins.
       const result = await client.callTool("t", {});
       expect(discoverCalls).toBe(2);
       expect(result.uiPayload?.resourceUri).toBe("ui://snap/card.html");
@@ -1723,8 +1594,7 @@ describe("McpClient — 2026-07-28 RC stateless handshake (#1230)", () => {
       );
 
       vi.setSystemTime(Date.now() + 31_000);
-      // Security gate: a stale-and-unrefreshable advertisement is NOT honored —
-      // the card is dropped, but the text result still flows.
+      // Unrefreshable stale UI advertisements are refused while text results still flow.
       const result = await client.callTool("t", {});
       expect(result.text).toBe("ok");
       expect(result.uiPayload).toBeUndefined();
@@ -1758,7 +1628,6 @@ describe("McpClient — 2026-07-28 RC stateless handshake (#1230)", () => {
       await client.connect();
       vi.setSystemTime(Date.now() + 31_000);
       await Promise.all([client.callTool("t", {}), client.callTool("t", {})]);
-      // Initial discover + exactly ONE shared refresh, not one per read.
       expect(discoverCalls).toBe(2);
       await client.disconnect();
     } finally {
@@ -1787,8 +1656,6 @@ describe("McpClient — 2026-07-28 RC stateless handshake (#1230)", () => {
     });
 
     await client.connect();
-    // `callTool` takes the WIRE tool name (the adapter's execute callback passes
-    // `schema.name`, not the namespaced registry name).
     await client.callTool("get_weather", { region: "us-west1", query: "rain" });
 
     const headerOf = (init: unknown, name: string) =>
@@ -1796,15 +1663,12 @@ describe("McpClient — 2026-07-28 RC stateless handshake (#1230)", () => {
     for (const [, init] of fetchMock.mock.calls) {
       const method = readRpcMethod(init as RequestInit);
       if (!method) continue;
-      // Mcp-Method mirrors the body's method; the version header mirrors _meta.
       expect(headerOf(init, "mcp-method")).toBe(method);
       expect(headerOf(init, "mcp-protocol-version")).toBe("2026-07-28");
     }
     const callInit = fetchMock.mock.calls.find(
       ([, i]) => readRpcMethod(i as RequestInit) === "tools/call",
     )?.[1];
-    // Mcp-Name mirrors params.name; the x-mcp-header-designated argument rides
-    // as an Mcp-Param-* header.
     expect(headerOf(callInit, "mcp-name")).toBe("get_weather");
     expect(headerOf(callInit, "mcp-param-region")).toBe("us-west1");
     expect(headerOf(callInit, "mcp-param-query")).toBeUndefined();
@@ -1832,7 +1696,7 @@ describe("McpClient — 2026-07-28 RC stateless handshake (#1230)", () => {
     });
 
     await client.connect();
-    // Failure isolation (spec MUST): only the malformed tool is rejected.
+    // Isolate malformed tools rather than dropping the complete catalog.
     expect(client.getState().registeredTools).toEqual(["mcp_xh_good_tool"]);
     await client.disconnect();
   });
@@ -1852,16 +1716,13 @@ describe("McpClient — 2026-07-28 RC stateless handshake (#1230)", () => {
 
     const methods = fetchMock.mock.calls.map(([, i]) => readRpcMethod(i as RequestInit)).filter(Boolean);
     expect(methods).toEqual(["server/discover", "initialize", "notifications/initialized", "tools/list"]);
-    // legacy mode strips the RC _meta from the request envelope.
     const initInit = fetchMock.mock.calls.find(([, i]) => readRpcMethod(i as RequestInit) === "initialize")?.[1];
     expect(readRpcParams(initInit as RequestInit)?._meta).toBeUndefined();
     await client.disconnect();
   });
 
   it("falls back to initialize when a session-enforcing legacy server answers the probe with a bare 400", async () => {
-    // Pre-final Streamable HTTP servers reject ANY request before initialize
-    // with a non-JSON-RPC 400 ("Bad Request: no session") — never -32601. The
-    // final spec's detection rule: 4xx + non-modern body ⇒ legacy server.
+    // Non-modern 4xx probe responses identify legacy servers that reject requests before initialize.
     const SESSION = "sess-legacy-1";
     const { client, fetchMock } = rcHttpClient("sess", (method, id) => {
       if (method === "server/discover")
@@ -1887,8 +1748,6 @@ describe("McpClient — 2026-07-28 RC stateless handshake (#1230)", () => {
     await client.connect();
     expect(client.getState().status).toBe("connected");
 
-    // The initialize request proposes the newest legacy revision we implement,
-    // and every request AFTER the server minted the session echoes it.
     const initInit = fetchMock.mock.calls.find(
       ([, i]) => readRpcMethod(i as RequestInit) === "initialize",
     )?.[1];
@@ -1918,7 +1777,7 @@ describe("McpClient — 2026-07-28 RC stateless handshake (#1230)", () => {
       return new Response("unexpected", { status: 500 });
     });
 
-    // A modern server rejecting the probe is a REAL failure — no initialize.
+    // A modern probe rejection is a connection failure, never permission to initialize as legacy.
     await expect(client.connect()).rejects.toThrow(/unsupported/);
   });
 
@@ -1961,8 +1820,7 @@ describe("McpClient — 2026-07-28 RC stateless handshake (#1230)", () => {
         return jsonRpcResponse(id, { tools: listCalls === 1 ? [TOOL_V1] : [TOOL_V2] });
       }
       if (method === "tools/call")
-        // Request-scoped SSE stream: a list_changed notification precedes the
-        // final response — previously both were silently dropped.
+        // Request-scoped SSE notifications must be handled before its final response.
         return sseResponse([
           `data: {"jsonrpc":"2.0","method":"notifications/tools/list_changed"}\n\n`,
           `data: {"jsonrpc":"2.0","id":${id},"result":{"resultType":"complete","content":[{"type":"text","text":"ok"}]}}\n\n`,
@@ -1975,7 +1833,6 @@ describe("McpClient — 2026-07-28 RC stateless handshake (#1230)", () => {
     expect(client.getState().registeredTools).toEqual(["mcp_lc_alpha"]);
 
     await client.callTool("alpha", {});
-    // Debounce (500ms) + refresh round-trip.
     await vi.advanceTimersByTimeAsync(900);
 
     expect(listCalls).toBe(2);
@@ -2008,11 +1865,9 @@ describe("McpClient — 2026-07-28 RC stateless handshake (#1230)", () => {
     fakeClientTimers();
     await client.connect();
     await client.callTool("alpha", {});
-    // Past the 500 ms refresh debounce.
     await vi.advanceTimersByTimeAsync(900);
 
-    // The notification is advisory: a failed re-fetch must not tear down
-    // working tools.
+    // Failed advisory refreshes must preserve working tools.
     expect(listCalls).toBe(2);
     expect(client.getState().registeredTools).toEqual(["mcp_lcf_alpha"]);
     await client.disconnect();
@@ -2027,8 +1882,7 @@ describe("McpClient — 2026-07-28 RC stateless handshake (#1230)", () => {
     });
 
     await client.connect();
-    // No resolver injected → the client cannot satisfy input_required and never
-    // fabricates a response.
+    // Without an elicitation resolver, never fabricate an input response.
     await expect(client.callTool("q", {})).rejects.toThrow(/input_required/);
     await client.disconnect();
   });
@@ -2045,7 +1899,6 @@ describe("McpClient — 2026-07-28 RC stateless handshake (#1230)", () => {
         if (method === "server/discover") return jsonRpcResponse(id, RC_DISCOVER_RESULT);
         if (method === "tools/list") return jsonRpcResponse(id, { tools: [] });
         if (method === "tools/call") {
-          // First call → input_required; second (retry) → complete.
           const toolCalls = calls.filter(Boolean).length;
           if (toolCalls === 0) {
             calls.push({});
@@ -2066,10 +1919,8 @@ describe("McpClient — 2026-07-28 RC stateless handshake (#1230)", () => {
     const out = await client.callTool("q", { a: 1 });
     expect(out.text).toBe("done");
 
-    // Resolver was invoked with the inputRequest keyed by its opaque id.
     expect(resolver).toHaveBeenCalledWith("q1", { method: "elicitation/create", message: "need a token" });
 
-    // The retry (2nd tools/call) carried inputResponses + the echoed requestState.
     const toolCallInits = fetchMock.mock.calls
       .filter(([, i]) => readRpcMethod(i as RequestInit) === "tools/call")
       .map(([, i]) => readRpcParams(i as RequestInit));
@@ -2084,13 +1935,12 @@ describe("McpClient — 2026-07-28 RC stateless handshake (#1230)", () => {
   });
 
   it("derives clientCapabilities per request from the injected provider (governance-per-request)", async () => {
-    // The active turn flips from interactive (can elicit) to headless (cannot)
-    // between requests; each request's _meta must reflect the value at send time.
+    // Elicitation capability must reflect current turn mode at each send.
     let turn = 0;
     const provider = vi.fn(() =>
       turn++ === 0
         ? { elicitation: { form: {}, url: {} }, extensions: {} }
-        : { extensions: {} }, // headless: no elicitation advertised
+        : { extensions: {} },
     );
     const { client, fetchMock } = rcHttpClient(
       "perreq",
@@ -2108,7 +1958,6 @@ describe("McpClient — 2026-07-28 RC stateless handshake (#1230)", () => {
     const caps = fetchMock.mock.calls.map(
       ([, i]) => readRpcParams(i as RequestInit)?._meta as Record<string, unknown>,
     );
-    // discover (turn 0) advertised elicitation; tools/list (turn 1) did not.
     expect(caps[0]["io.modelcontextprotocol/clientCapabilities"]).toMatchObject({ elicitation: {} });
     expect(caps[1]["io.modelcontextprotocol/clientCapabilities"]).not.toHaveProperty("elicitation");
     expect(provider).toHaveBeenCalledTimes(caps.length);
@@ -2171,7 +2020,6 @@ describe("McpClient — 2026-07-28 RC stateless handshake (#1230)", () => {
       capabilities: { tools: {}, extensions: { "io.modelcontextprotocol/ui": {} } },
     };
 
-    // Server WITH the ui extension → _meta.ui is honored.
     const withApps = rcHttpClient("apps", (method, id) => {
       if (method === "server/discover") return jsonRpcResponse(id, discoverWithApps);
       if (method === "tools/list") return jsonRpcResponse(id, { tools: [] });
@@ -2181,13 +2029,10 @@ describe("McpClient — 2026-07-28 RC stateless handshake (#1230)", () => {
     await withApps.client.connect();
     const uiPayload = (await withApps.client.callTool("q", {})).uiPayload;
     expect(uiPayload).toMatchObject({ resourceUri: "ui://app/p.html" });
-    // A `csp` on the TOOL result is IGNORED. Per spec it lives on the RESOURCE
-    // (`resources/read` content item `_meta.ui`), and main derives the sandbox-proxy
-    // CSP header from there — never from a tool result, and never from the renderer.
+    // Read CSP only from resource metadata, never tool-result metadata or renderer input.
     expect(uiPayload).not.toHaveProperty("csp");
     await withApps.client.disconnect();
 
-    // Same _meta.ui from a server that did NOT advertise Apps → ignored (gate).
     const noApps = rcHttpClient("noapps", (method, id) => {
       if (method === "server/discover") return jsonRpcResponse(id, RC_DISCOVER_RESULT);
       if (method === "tools/list") return jsonRpcResponse(id, { tools: [] });
@@ -2200,10 +2045,7 @@ describe("McpClient — 2026-07-28 RC stateless handshake (#1230)", () => {
   });
 
   it("readResource: surfaces the RESOURCE's own _meta.ui (csp/permissions), gated by advertise", async () => {
-    // The CSP main builds comes from HERE — the resources/read content item's
-    // `_meta.ui` — not from the tool result. And it is fail-closed: a server that did
-    // not advertise the ui extension has its csp/permissions dropped, so it cannot
-    // open its own containment envelope.
+    // Only advertised Apps resource metadata may set CSP and permissions.
     const readResult = {
       contents: [
         {
@@ -2232,10 +2074,7 @@ describe("McpClient — 2026-07-28 RC stateless handshake (#1230)", () => {
     });
     await withApps.client.connect();
     const advertised = await withApps.client.readResource("ui://app/p.html");
-    // An ADVERTISED server's `_meta.ui` is surfaced faithfully into the read model —
-    // csp AND permissions. Whether a given permission is HONORED is a separate layer
-    // (`shared/mcp-app-permissions.ts`): clipboardWrite is not in the capability table,
-    // so it survives here on the wire but is never delegated or granted downstream.
+    // Preserve advertised wire permissions here; capability policy decides which can be granted.
     expect(advertised).toEqual({
       html: "<h1>app</h1>",
       csp: { connectDomains: ["https://api.example.com"] },
@@ -2243,7 +2082,6 @@ describe("McpClient — 2026-07-28 RC stateless handshake (#1230)", () => {
     });
     await withApps.client.disconnect();
 
-    // Same content from a server that did NOT advertise Apps → csp/permissions DROPPED.
     const noApps = rcHttpClient("noapps-res", (method, id) => {
       if (method === "server/discover") return jsonRpcResponse(id, RC_DISCOVER_RESULT);
       if (method === "tools/list") return jsonRpcResponse(id, { tools: [] });
@@ -2257,10 +2095,7 @@ describe("McpClient — 2026-07-28 RC stateless handshake (#1230)", () => {
   });
 
   it("drops a tool result's ui card when its resourceUri is unusable, keeping the text", async () => {
-    // Fail-closed at extraction, mirroring the plugin arm. Before this the card mounted,
-    // installed a partition policy, and failed later at `readResource` with a message a
-    // user cannot connect to the server's declaration. The TEXT must still come through —
-    // a tool result is never withheld because its optional UI declaration was malformed.
+    // Malformed optional UI must fail closed without withholding the tool text.
     const discoverWithApps = {
       ...RC_DISCOVER_RESULT,
       capabilities: { tools: {}, extensions: { "io.modelcontextprotocol/ui": {} } },
@@ -2292,21 +2127,7 @@ describe("McpClient — 2026-07-28 RC stateless handshake (#1230)", () => {
   });
 
   it("readResource: refuses any URI that is not the Apps path, before the request", async () => {
-    // The hole a cluster review found, closed here. `resources/read` is ONE wire method
-    // serving two host paths: `readDeclaredResource`, gated on the listed set, and this
-    // one. The renderer picks the URI on this path, and nothing in MAIN checked it — the
-    // `ui://` restriction lived only in the renderer's bridge handler, which is the side
-    // the threat model assumes is compromised. Governance could not close it either: it
-    // sees one method and cannot tell the callers apart, so a non-`ui:` URI fell through
-    // to requiring `resources`, which any resource-publishing server holds.
-    //
-    // Net effect before the fix: a compromised renderer could read ANY URI from ANY
-    // connected external server.
-    // The fixture server holds `resources`, deliberately. `rcHttpClient` approves only
-    // `tools`, and on such a server governance already denied `file:`/`https:`/`doc:`
-    // for lacking the capability — so a tools-only fixture would have "passed" against
-    // the pre-fix code for a reason that has nothing to do with this gate. The
-    // exploitable class was a server approved for `resources`, which is most of them.
+    // Test non-ui URI refusal on a resources-approved server so governance cannot mask a missing Apps-path gate.
     let reads = 0;
     const url = "https://api.example.com/apps-scheme/mcp";
     lookupMock.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
@@ -2344,11 +2165,8 @@ describe("McpClient — 2026-07-28 RC stateless handshake (#1230)", () => {
     ]) {
       await expect(client.readResource(uri), uri).rejects.toThrow(/ui:\/\/ resources only/);
     }
-    // Not one request left the host for any of them — and on THIS server governance
-    // would have let every one of them through.
     expect(reads).toBe(0);
 
-    // …and the path it exists to serve still works.
     const ok = await client.readResource("ui://app/p.html");
     expect(ok.html).toBe("<h1>app</h1>");
     expect(reads).toBe(1);
@@ -2375,7 +2193,6 @@ describe("McpClient — 2026-07-28 RC stateless handshake (#1230)", () => {
   });
 
   it("maps a -32021 missing-required-client-capability error on a tool call", async () => {
-    // Final `2026-07-28` numbering (the draft's -32003 moved to -32021).
     const { client } = rcHttpClient("mc", (method, id) => {
       if (method === "server/discover") return jsonRpcResponse(id, RC_DISCOVER_RESULT);
       if (method === "tools/list") return jsonRpcResponse(id, { tools: [] });
@@ -2467,10 +2284,7 @@ describe("MCP prompts discovery", () => {
     expect(client.getState().prompts).toBeUndefined();
   });
 
-  // `prompts/list` output is wire data: the declared types are casts. A non-string
-  // name reaches the renderer and throws when React renders it, and a name main
-  // would later reject for length renders a field the user can fill but the host
-  // silently drops. Both are filtered HERE so one shape reaches every consumer.
+  // Filter malformed prompt names at discovery before they can break rendering or become unusable fields.
   it("drops prompts and arguments whose declared names are unusable", async () => {
     const { client } = connectWith({
       advertisePrompts: true,
@@ -2574,7 +2388,6 @@ describe("MCP getPrompt gating", () => {
     );
     await client.connect();
 
-    // A name the host never saw at discovery is refused BEFORE any request.
     await expect(client.getPrompt("not_declared", {})).rejects.toThrow(/did not declare prompt/);
 
     const got = await client.getPrompt("code_review", { diff: "x" });
@@ -2708,8 +2521,7 @@ describe("MCP resources discovery and read", () => {
     await client.disconnect();
   });
 
-  // Two keys, same as prompts: a capability the server never advertised, or one the
-  // user never approved, means nothing leaves the host.
+  // Reads require both server advertisement and user approval before any request leaves.
   it("does NOT call resources/list when advertised but not approved", async () => {
     const { client, listCalls, templateListCalls } = connectWith({
       advertiseResources: true,
@@ -2717,9 +2529,6 @@ describe("MCP resources discovery and read", () => {
     });
     await client.connect();
     expect(listCalls).toHaveLength(0);
-    // TEMPLATES ride the same key, and asserting it here is the point: the gate is
-    // one capability, so a template discovery that quietly used a different rule
-    // would be a second answer to a question the user already answered once.
     expect(templateListCalls).toHaveLength(0);
     expect(client.getState().resources).toBeUndefined();
     expect(client.getState().resourceTemplates).toBeUndefined();
@@ -2733,17 +2542,13 @@ describe("MCP resources discovery and read", () => {
     });
     await client.connect();
     expect(listCalls).toHaveLength(0);
-    // The half of the two-key gate that `sendRequest` does NOT back up: governance
-    // re-checks the capability on every request, but nothing re-checks that the
-    // server advertised it. If this line goes, so does the only thing asserting it
-    // for templates.
+    // Template discovery must enforce advertisement as well as governance approval.
     expect(templateListCalls).toHaveLength(0);
     expect(client.getState().resourceTemplates).toBeUndefined();
     await client.disconnect();
   });
 
-  // Wire data is typed but not checked. Anything the host would later have to
-  // render, log, or hand back to the server is filtered at this boundary.
+  // Validate all discovery values that may be rendered, logged or sent back.
   it("drops unusable entries and de-duplicates by URI", async () => {
     const { client } = connectWith({
       advertiseResources: true,
@@ -2762,18 +2567,13 @@ describe("MCP resources discovery and read", () => {
         },
       ],
     });
-    // `createLogger` proxies to console.log for info in test mode (lib/logger.ts).
     const info = vi.spyOn(console, "log").mockImplementation(() => {});
     await client.connect();
     const resources = client.getState().resources ?? [];
     expect(resources.map((r) => r.uri)).toEqual(["file:///dup", "file:///ok"]);
     expect(resources[0].name).toBe("first");
-    // A non-string name falls back to the URI rather than dropping the resource.
     expect(resources[1].name).toBe("file:///ok");
-    // The whole point of the count is that a user can ask where their resource went
-    // and read an answer that adds up. 7 published, 2 catalogued, so it must say 5 —
-    // counting only the malformed ones (4 here) would report a number that leaves the
-    // duplicate unexplained and reads as "everything else made it".
+    // Rejection counts must include duplicates as well as malformed entries.
     const line = info.mock.calls.map((c) => c.join(" ")).find((l) => l.includes("discovered"));
     expect(line).toContain("discovered 2 resource(s)");
     expect(line).toContain("5 of 7 published not catalogued");
@@ -2819,9 +2619,7 @@ describe("MCP resources discovery and read", () => {
     await client.disconnect();
   });
 
-  // The operator cases matter more here than in the predicate's own suite: this is
-  // where a `{+path}` template would become an offer to the user, and reserved
-  // expansion does not percent-encode what they type into it.
+  // Reserved template operators could let user input escape percent-encoded segments.
   it("drops templates the host will not expand, and says how many", async () => {
     const { client } = connectWith({
       advertiseResources: true,
@@ -2846,7 +2644,6 @@ describe("MCP resources discovery and read", () => {
     const templates = client.getState().resourceTemplates ?? [];
     expect(templates.map((template) => template.uriTemplate)).toEqual(["file:///ok/{path}"]);
     expect(templates[0].name).toBe("first");
-    // 7 published, 1 catalogued — the line has to say 6, not just the malformed ones.
     const line = info.mock.calls.map((c) => c.join(" "))
       .find((l) => l.includes("resource template(s)"));
     expect(line).toContain("discovered 1 resource template(s)");
@@ -2856,9 +2653,7 @@ describe("MCP resources discovery and read", () => {
   });
 
   it("flags a template whose LITERAL scheme the host will not fetch", async () => {
-    // Not a guess: the literal part is fixed at discovery, so if the scheme is literally
-    // `https:` then every expansion of it is too. The picker disables the row on this,
-    // which is what stops a user filling a form whose only outcome is a refusal.
+    // A literal forbidden scheme can disable the picker before a useless form is offered.
     const { client } = connectWith({
       advertiseResources: true,
       approveCapabilities: ["tools", "resources"],
@@ -2875,18 +2670,12 @@ describe("MCP resources discovery and read", () => {
 
     const templates = client.getState().resourceTemplates ?? [];
     expect(templates[0]).toMatchObject({ uriTemplate: "https://example.com/{doc}", hostFetchRefused: true });
-    // …and the flag is ABSENT rather than false on a template the host will fetch, so a
-    // consumer cannot read "we checked and it is fine" off a missing property.
     expect(templates[1]).not.toHaveProperty("hostFetchRefused");
     await client.disconnect();
   });
 
   it("refuses at READ time when the flag could not have known", async () => {
-    // The discovery flag is display-only, and this is what proves it: a variable in
-    // scheme position is honestly UNflagged (the literal scheme is not known until
-    // expansion), the picker therefore offers the row, and the read refuses anyway
-    // because it re-derives from the expansion rather than consulting the flag. If it
-    // ever started trusting the flag, this is the case that would leak.
+    // Display flags are not authority; variable schemes must be rechecked after host-side expansion.
     const { client, readCalls } = connectWith({
       advertiseResources: true,
       approveCapabilities: ["tools", "resources"],
@@ -2920,17 +2709,13 @@ describe("MCP resources discovery and read", () => {
     );
 
     expect(read.uri).toBe("file:///project/a.md");
-    // The wire request carries the host's expansion — `toMatchObject` because every
-    // request also carries the handshake `_meta` envelope.
     expect(readCalls).toMatchObject([{ uri: "file:///project/a.md" }]);
     expect(read.blocks[0].text).toBe("BODY");
     await client.disconnect();
   });
 
   it("cannot be walked out of the published path by what the user types", async () => {
-    // The reason expansion is host-side at all. The value is percent-encoded, so the
-    // server receives one segment — not a traversal — and the URI on the wire is the
-    // one the host produced rather than one the renderer chose.
+    // Host expansion percent-encodes one segment so renderer input cannot select traversal paths.
     const { client, readCalls } = connectWith({
       advertiseResources: true,
       approveCapabilities: ["tools", "resources"],
@@ -2949,9 +2734,7 @@ describe("MCP resources discovery and read", () => {
   });
 
   it("refuses a template it never listed, before any request", async () => {
-    // Same gate as the plain read, on the pattern rather than the URI: matching an
-    // expanded URI back against a template would need a matcher, and a matcher for
-    // `file:///{path}` accepts `file:///../../etc/passwd`.
+    // Approve the listed template, not an expanded URI matched back against a permissive pattern.
     const { client, readCalls } = connectWith({
       advertiseResources: true,
       approveCapabilities: ["tools", "resources"],
@@ -2968,8 +2751,7 @@ describe("MCP resources discovery and read", () => {
   });
 
   it("refuses when a value is missing rather than expanding it away", async () => {
-    // An empty substitution points at the directory above — a different resource than
-    // the user asked for, and one they cannot see they asked for.
+    // Empty substitutions can select an unintended parent resource.
     const { client, readCalls } = connectWith({
       advertiseResources: true,
       approveCapabilities: ["tools", "resources"],
@@ -2986,11 +2768,6 @@ describe("MCP resources discovery and read", () => {
   });
 
   it("refuses to fetch a template whose LITERAL scheme is refused", async () => {
-    // Deliberately the easy half, and labelled as such after a review pointed out that
-    // its old title ("when the EXPANSION lands on a refused scheme") was a claim this
-    // fixture cannot make: `https://…/{doc}` is refused identically whether the check
-    // reads the template or the expansion. The re-derivation is pinned by "refuses at
-    // READ time when the flag could not have known", which uses a variable scheme.
     const { client, readCalls } = connectWith({
       advertiseResources: true,
       approveCapabilities: ["tools", "resources"],
@@ -3012,8 +2789,7 @@ describe("MCP resources discovery and read", () => {
       resourcePages: [{ resources: [{ uri: "file:///listed", name: "listed" }] }],
     });
     await client.connect();
-    // The gate that stops `resources/read` becoming a general fetch primitive
-    // against the server URI space.
+    // Keep resource reads restricted to the declared server URI space.
     await expect(client.readDeclaredResource("file:///not-listed")).rejects.toThrow(
       /did not declare/,
     );
@@ -3031,8 +2807,7 @@ describe("MCP resources discovery and read", () => {
     });
     await client.connect();
     expect(client.getState().resources?.[0]).toMatchObject({ hostFetchRefused: true });
-    // Host-side fetching of a server-chosen URL is an SSRF primitive, so the read
-    // is refused rather than proxied.
+    // Host-fetching server-selected URLs would create an SSRF primitive.
     await expect(client.readDeclaredResource("https://example.com/doc")).rejects.toThrow(
       /does not fetch/,
     );
@@ -3056,15 +2831,13 @@ describe("MCP resources discovery and read", () => {
     await client.connect();
     const read = await client.readDeclaredResource("file:///doc");
     expect(read.blocks[0]).toEqual({ uri: "file:///doc", mimeType: "text/plain", text: "hello" });
-    // Never decoded into the turn, never silently dropped.
     expect(read.blocks[1]).toMatchObject({ omittedKind: "binary" });
     expect(read.blocks[2]).toMatchObject({ omittedKind: "unknown" });
     expect(read.droppedBlocks).toBe(0);
     await client.disconnect();
   });
 
-  // Spent ACROSS blocks: a server that splits one huge document into many blocks
-  // must not get a bigger budget than one that sends it whole.
+  // Share one budget across blocks so splitting content cannot widen the limit.
   it("spends one character budget across all blocks", async () => {
     const { client } = connectWith({
       advertiseResources: true,
@@ -3087,9 +2860,7 @@ describe("MCP resources discovery and read", () => {
     await client.disconnect();
   });
 
-  // A catalogue that outlives its connection is worse than an empty one: the model
-  // keeps being offered URIs whose read can only fail, and the failure surfaces far
-  // from the cause. Both teardown paths clear it.
+  // Clear discovery catalogs on disconnect and crash to stop advertising unreadable resources.
   it("stops advertising resources once the server is gone", async () => {
     const { client } = connectWith({
       advertiseResources: true,
@@ -3102,8 +2873,6 @@ describe("MCP resources discovery and read", () => {
     expect(client.getState().resources).toBeUndefined();
   });
 
-  // The CRASH path is the one that was actually broken: it cleared the tools and
-  // left prompts and resources behind, so a dead server kept advertising both.
   it("clears the catalogue when the transport dies, not just on a clean disconnect", async () => {
     const { client } = connectWith({
       advertiseResources: true,
@@ -3112,7 +2881,6 @@ describe("MCP resources discovery and read", () => {
     });
     await client.connect();
     expect(client.getState().resources).toHaveLength(1);
-    // Same entry point the stdio transport uses when the child exits.
     (client as unknown as { handleTransportClose(reason: string): void })
       .handleTransportClose("child exited");
     expect(client.getState().status).toBe("error");
@@ -3135,7 +2903,6 @@ describe("MCP resources discovery and read", () => {
       resourcePages: [page, page, page],
     });
     await client.connect();
-    // Stops at the per-server cap rather than following `nextCursor` forever.
     expect(client.getState().resources).toHaveLength(MCP_RESOURCE_MAX_PER_SERVER);
     expect(listCalls).toHaveLength(1);
     await client.disconnect();

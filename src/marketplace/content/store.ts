@@ -1,21 +1,5 @@
-/**
- * Content package store (design §2, §5.4, §18.7.4).
- *
- * Staging reads the package directory at the version commit, holds every
- * file to the kind's rules and parses the entry files. Installing writes the
- * files to a directory of their own, `packages/<kind>/<name>/.installs/<installId>/`,
- * records the ledger entry and then activates the content; a failed
- * activation puts the previous state back. Nothing a running generation
- * uses is moved or overwritten: the replaced install's directory is removed
- * only once its activation has retired, and a boot sweep removes what a
- * quit or a failed removal left. Loading re-reads each installed package
- * from disk under the same rules and the recorded digest, so a package whose
- * files changed after install is listed as broken and never applied.
- *
- * Identity follows the plugin rules (design §15.1): `(kind, name)` is bound
- * to the source it came from, and replacing it from another source is an
- * explicit switch.
- */
+/** Installs use unique directories and roll back failed activation without moving live files.
+ * Loading verifies installed bytes; replaced directories survive until their activation retires. */
 import { randomUUID } from "node:crypto";
 import { lstat, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -55,15 +39,13 @@ interface LocalContentPlan {
 export interface StagedContent {
   plan: DataContentPlan | LocalContentPlan;
   files: ContentFile[];
-  /** Tree digest (design §6.4) of `files`. */
   contentSha256: string;
   content: ParsedContent;
-  /** The descriptor's `minAppVersion` and `hostProtocol`; null for a local agent plugin, which has no descriptor. */
+  /** Null for local agent plugins without a descriptor. */
   minAppVersion: string | null;
   hostProtocol: string | null;
 }
 
-/** The consent fingerprint of staged content (§18.7.3): what installing it asks the user to accept. */
 export function stagedConsent(staged: StagedContent): ConsentFingerprint {
   if (staged.content.kind === "agent-plugin") {
     return agentPluginConsent({ minAppVersion: staged.minAppVersion, hostProtocol: staged.hostProtocol, components: staged.content.components, files: staged.files });
@@ -71,7 +53,6 @@ export function stagedConsent(staged: StagedContent): ConsentFingerprint {
   return contentConsent(staged.plan.kind as Exclude<ContentKind, "agent-plugin">, staged.minAppVersion, staged.files);
 }
 
-/** Stage bytes selected from a local directory or archive under the same content rules. */
 export function stageLocalAgentPlugin(files: readonly ContentFile[]): StagedContent {
   checkContentFiles("agent-plugin", files);
   const manifest = files.find((file) => file.path === "plugin.json");
@@ -88,9 +69,7 @@ export function stageLocalAgentPlugin(files: readonly ContentFile[]): StagedCont
 }
 
 export interface StageOptions {
-  /** Scratch directory for the export; removed before returning. */
   workRoot: string;
-  /** The English catalog a language package is checked against. */
   english: Readonly<Record<string, string>>;
 }
 
@@ -105,12 +84,7 @@ function digestOf(files: readonly ContentFile[]): string {
   return treeDigest(files.map((file) => ({ ...file, executable: file.executable === true })));
 }
 
-/**
- * Read `plan`'s package at its version's revision (a commit, or the copy a
- * folder plan captured): the descriptor must match
- * the index (MANIFEST_MISMATCH), every file must fit the kind's rules and
- * the entry files must parse (CONTENT_RULE_VIOLATION).
- */
+/** Descriptor identity, file rules and entry parsing must all pass before staging succeeds. */
 export async function stageContentPackage(plan: PackagePlan, access: RepositoryAccess, options: StageOptions): Promise<StagedContent> {
   const dataPlan = asDataPlan(plan);
   const descriptor: PackageDescriptor = await readDescriptorAtVersion(dataPlan, access);
@@ -144,34 +118,18 @@ export async function stageContentPackage(plan: PackagePlan, access: RepositoryA
   }
 }
 
-/**
- * How installed content takes effect. Themes, languages and fonts are read
- * by the renderer from the loaded store; providers and messaging
- * connections are written into settings, and uninstalling a selected theme,
- * language or font returns its setting to the default.
- */
+/** Uninstalling a selected visual package resets its setting; other kinds update connection settings. */
 export interface ContentActivation {
-  /**
-   * After the ledger records the package; a throw undoes the install.
-   * `previous` is the entry it replaces, null for a first install. `adopt`:
-   * the first-boot migration is recording an activation the settings already
-   * hold (design §16.3), which leaves those settings as they are.
-   */
+  /** Activation failure rolls back the recorded install; adoption preserves existing settings. */
   activate(content: ParsedContent, entry: LedgerEntry, previous: LedgerEntry | null, adopt: boolean, dir?: string, componentConsents?: readonly ComponentConsent[]): Promise<{ retired: Promise<void> }>;
   /** Before the ledger drops the package; a throw leaves it installed. `content` is null when its files no longer parse. */
   deactivate(entry: LedgerEntry, content: ParsedContent | null, dir?: string): Promise<void>;
-  /**
-   * Approve components of the installed agent plugin `entry` (design
-   * §18.7.5), after the store checked the review's binding: publish them
-   * with these consents on the installed generation.
-   */
+  /** Publish approvals only after the store validates their binding to the installed generation. */
   approveComponents(entry: LedgerEntry, content: ParsedContent & { kind: "agent-plugin" }, dir: string, consents: readonly ComponentConsent[]): Promise<void>;
 }
 
 export interface ContentStoreOptions {
-  /** `~/.ave/packages`. */
   root: string;
-  /** The English catalog a language package is checked against. */
   english: Readonly<Record<string, string>>;
   activation: ContentActivation;
   now?: () => Date;
@@ -180,7 +138,6 @@ export interface ContentStoreOptions {
 export interface LoadedContent {
   entry: LedgerEntry;
   content: ParsedContent;
-  /** The installed package directory. */
   dir: string;
 }
 
@@ -191,18 +148,13 @@ export interface BrokenContent {
 
 const SAFE_VERSION = /^[0-9A-Za-z][0-9A-Za-z.+-]*$/u;
 
-/** What only one installed package may provide at a time: a locale, or a font family name. */
 function claimOf(content: ParsedContent): string | null {
   if (content.kind === "language") return `the ${content.locale} language`;
   if (content.kind === "font") return `the ${content.family} font family`;
   return null;
 }
 
-/**
- * Run each undo step of a failed install. A step that fails is logged and the
- * rest still run, so the caller rethrows the install's own error; the return
- * says whether every step held.
- */
+/** Run every rollback step despite failures, then rethrow the original install error. */
 async function undo(steps: ReadonlyArray<readonly [string, () => Promise<unknown>]>): Promise<boolean> {
   let held = true;
   for (const [what, step] of steps) {
@@ -257,28 +209,19 @@ export class ContentStore {
     return this.ledger.list();
   }
 
-  /** The installed package for identity checks (design §15.1). */
   installed(kind: ContentKind, name: string): InstalledPackage | null {
     const entry = this.ledger.get(kind, name);
     return entry ? { kind, name, version: entry.version, sourceId: entry.origin.sourceId } : null;
   }
 
-  /**
-   * Where an installed entry's files are: its own install directory, or a
-   * legacy install's `<version>/` directory.
-   */
+  /** Legacy installs use version directories; current installs have unique install directories. */
   packageDir(entry: Pick<LedgerEntry, "kind" | "name" | "version" | "origin">): string {
     if (entry.origin.payloadDir !== undefined) return join(this.options.root, ...entry.origin.payloadDir.split("/"));
     if (!SAFE_VERSION.test(entry.version)) throw new Error(`unsafe version ${entry.version}`);
     return join(this.options.root, entry.kind, entry.name, entry.version);
   }
 
-  /**
-   * Install `staged` into a directory of its own. `assertConsent` is
-   * checkpoint two of an automatic update (§18.7.3): it sees the staged
-   * consent fingerprint before anything is written, and a throw installs
-   * nothing.
-   */
+  /** Check staged consent before writes; a refusal installs nothing. */
   async install(
     staged: StagedContent,
     options: { switchSource?: boolean; adopt?: boolean; componentConsents?: readonly ComponentConsent[]; assertConsent?: (consent: ConsentFingerprint) => void } = {},
@@ -333,11 +276,7 @@ export class ContentStore {
     });
   }
 
-  /**
-   * Remove exactly the replaced install's own directory once its activation
-   * has retired, outside the store's serialization. A removal that fails, or
-   * a quit before it, is the boot sweep's.
-   */
+  /** Remove replaced files only after retirement, outside serialization; boot sweeps abandoned directories. */
   private removeWhenRetired(previous: LedgerEntry, retired: Promise<void>): void {
     const dir = this.packageDir(previous);
     void retired
@@ -350,11 +289,7 @@ export class ContentStore {
       .catch((error: unknown) => log.warn({ dir, err: errorMessage(error) }, "the replaced package's files stay until the next start"));
   }
 
-  /**
-   * The boot sweep (§18.7.4): remove every `.installs/<installId>/` no
-   * ledger entry names, and every `<version>/` no legacy ledger entry names.
-   * Runs before anything is activated.
-   */
+  /** Before activation, remove install directories not named by the ledger. */
   async sweep(): Promise<string[]> {
     return this.serialize(async () => {
       const removed: string[] = [];
@@ -385,11 +320,7 @@ export class ContentStore {
     });
   }
 
-  /**
-   * A second package may not provide a locale or font family another
-   * installed package provides (PACKAGE_ID_CONFLICT): removing either would
-   * otherwise take the other's selection with it.
-   */
+  /** Locale and font-family providers must be unique so removing one cannot clear another selection. */
   private async assertClaimFree(staged: StagedContent): Promise<void> {
     const claim = claimOf(staged.content);
     if (!claim) return;
@@ -402,11 +333,7 @@ export class ContentStore {
     }
   }
 
-  /**
-   * Remove an installed package; null when it is not installed. A package
-   * the policy's `requiredInstalls` locks, from its bound source, cannot be
-   * removed (PACKAGE_REQUIRED_BY_POLICY).
-   */
+  /** Policy-locked source bindings cannot be removed; absent packages return null. */
   async uninstall(kind: ContentKind, name: string, policy: MarketplacePolicy): Promise<LedgerEntry | null> {
     return this.serialize(async () => {
       const entry = this.ledger.get(kind, name);
@@ -420,14 +347,8 @@ export class ContentStore {
     });
   }
 
-  /**
-   * The consent baseline of an installed package (§18.7.3): the fingerprint
-   * its ledger entry stored, or, for an install from before slice F, one
-   * computed from its installed files with `minAppVersion` (and an agent
-   * plugin's `hostProtocol`) from the catalog it was installed from, which
-   * `descriptor` reads from the retained snapshot (null: not kept, so
-   * unknown). Files that no longer verify give an entirely unknown one.
-   */
+  /** Reconstruct missing consent from verified installed files and retained descriptor fields.
+     * Unverifiable files make the entire baseline unknown. */
   async installedConsent(
     kind: ContentKind,
     name: string,
@@ -448,13 +369,7 @@ export class ContentStore {
     return contentConsent(kind as Exclude<ContentKind, "agent-plugin">, fields?.minAppVersion ?? null, files);
   }
 
-  /**
-   * Approve components of an `approval-pending` agent plugin (§18.7.5).
-   * Inside the install serialization: the installed entry must be the
-   * reviewed install `installId`, and each consent's approval digest must be
-   * the one its component has in that install's files; otherwise nothing is
-   * approved and the review is stale (`PLAN_EXPIRED` `package-changed`).
-   */
+  /** Approvals must match the installed id and component digests under serialization or expire unchanged. */
   async approveComponents(name: string, installId: string, consents: readonly ReviewedComponentConsent[]): Promise<void> {
     await this.serialize(async () => {
       const entry = this.ledger.get("agent-plugin", name);
@@ -474,7 +389,6 @@ export class ContentStore {
     });
   }
 
-  /** Every installed data package, re-read from disk; a package that no longer holds is listed as broken. */
   async load(): Promise<{ loaded: LoadedContent[]; broken: BrokenContent[] }> {
     // Queued behind installs, so a load never reads a package directory mid-rename.
     return this.serialize(async () => {
