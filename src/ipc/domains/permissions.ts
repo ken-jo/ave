@@ -1231,7 +1231,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       return { ok: false, error: "no-such-request", message: "user-approval record: no in-flight ApprovalRequest for requestId" };
     }
     if (body.rule !== undefined) {
-      // A bash card's save choice (owner 2026-10-25, D3): the host stores the exact `Bash(<command>)` rule it derived from the live command, at the chosen scope. The renderer names only the scope; a pattern or any other field is refused, never used.
+      // A bash card's save choice (owner 2026-10-25, five-choice shell card): the host stores the exact `Bash(<command>)` rule it derived from the live command, at the chosen scope. The renderer names only the scope; a pattern or any other field is refused, never used.
       const rule = payloadRecord(body.rule);
       const context = snapshot.shellRule;
       const ruleScope = rule.scope;

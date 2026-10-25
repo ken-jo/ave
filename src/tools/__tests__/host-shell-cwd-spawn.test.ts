@@ -50,7 +50,7 @@ function authorizedContext(cwd: string, command = "touch marker", rulePatterns: 
   manager.setRules(rulePatterns.map((pattern) => ({ pattern, action: "allow" as const })));
   const decision = manager.checkDetailed("bash", "builtin", "shell", null, {
     hostShellExecutionPlan: plan, ruleSubject: { kind: "shell", dialect: "bash", command: input.command, cwd: join(directory, cwd) },
-    // An explicit host retry runs without a sandbox, so only an exact Bash(<command>) allow issues the rule proof (owner 2026-10-25, D2).
+    // An explicit host retry runs without a sandbox, so only an exact Bash(<command>) allow issues the rule proof (owner 2026-10-25, unsandboxed shell exact-rule requirement).
     shellExecution: { runsSandboxed: false },
   });
   const binding = buildHostShellExecutionPermitBinding({

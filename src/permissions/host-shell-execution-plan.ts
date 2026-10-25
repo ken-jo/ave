@@ -235,7 +235,7 @@ export function buildHostShellExecutionPlan(input: {
     });
   }
 
-  // A requested sandbox that is unavailable (missing bwrap/socat, start failure) yields an honest plain child on every platform. It takes the same policy path as explicit sandbox-off, floor and deny rules included, so it needs no one-shot permit: without a sandbox only an exact `Bash(<command>)` allow rule runs it unasked, and everything else asks (owner 2026-10-25, D2, superseding I3's normal-rule auto-allow). The fallback reason stays on the plan so the approval card, the tool result and audit can say the sandbox was unavailable.
+  // A requested sandbox that is unavailable (missing bwrap/socat, start failure) yields an honest plain child on every platform. It takes the same policy path as explicit sandbox-off, floor and deny rules included, so it needs no one-shot permit: without a sandbox only an exact `Bash(<command>)` allow rule runs it unasked, and everything else asks (owner 2026-10-25, unsandboxed shell exact-rule requirement, superseding I3's normal-rule auto-allow). The fallback reason stays on the plan so the approval card, the tool result and audit can say the sandbox was unavailable.
   if (requestedSandbox && input.activeCapability.kind === "none") {
     const fallbackReason: HostShellFallbackReason = "requested-sandbox-unavailable";
     const capability = noneCapability(

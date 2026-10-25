@@ -142,7 +142,7 @@ function grantSubject(token: string, owner: ShellEgressOwner | TerminalEgressOwn
     : { token, sessionId: undefined, tabId: owner.tabId, projectRoot: undefined, origin: "terminal" };
 }
 
-// The project a shell call's "This project" grant keys on: the repository root of its working directory, the same root a project `Bash(...)` rule applies to (D1/D3). A relative working directory is a host contract violation and throws, which the callback turns into an audited deny.
+// The project a shell call's "This project" grant keys on: the repository root of its working directory, the same root a project `Bash(...)` rule applies to (five-choice cards). A relative working directory is a host contract violation and throws, which the callback turns into an audited deny.
 function egressProjectRoot(cwd: string | undefined): string | undefined {
   return cwd === undefined ? undefined : projectRuleRoot(cwd);
 }

@@ -803,7 +803,7 @@ describe("execution router", () => {
   });
 
   it("selects the host route for a requested-but-unavailable sandbox and keeps its fallback reason", () => {
-    // An unavailable sandbox runs plain under the exact-rule policy (owner 2026-10-25, D2); the route records why it is uncontained.
+    // An unavailable sandbox runs plain under the exact-rule policy (owner 2026-10-25, unsandboxed shell exact-rule requirement); the route records why it is uncontained.
     const fallback = issuedUnavailableFallback();
     expect(buildExecutionPlan({
       legacyPlan: fallback,

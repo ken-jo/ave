@@ -72,7 +72,7 @@ describe("host shell invocation authorization", () => {
     expect(execute).not.toHaveBeenCalled();
     if (change === "remove allow") {
       expect(cards).toHaveLength(1);
-      // A bash card is not narrowed to once/deny: the gate offers the five choices for its exact rule (owner 2026-10-25, D3).
+      // A bash card is not narrowed to once/deny: the gate offers the five choices for its exact rule (owner 2026-10-25, five-choice shell card).
       expect(cards[0]?.allowedChoices).toBeUndefined();
       expect(cards[0]).toMatchObject({ requireExplicit: true });
     } else {

@@ -49,7 +49,7 @@ for (const locale of ["en", "ko"] as const) {
   test.describe(`Shell permission rules (${locale})`, () => {
     test.use({ seedLocale: locale });
 
-    // Owner 2026-10-25 (D3): Deny, Allow once, This session, This project, Always; each save stores the shown exact rule.
+    // Owner 2026-10-25 (five-choice shell card): Deny, Allow once, This session, This project, Always; each save stores the shown exact rule.
     test("shows the five choices with the exact rule and keeps credential requests one-time", async ({ app, mainWindow }, testInfo) => {
       await showShellRequest(app, mainWindow, true);
       const dock = mainWindow.getByTestId(TEST_IDS.approvalDock).first();

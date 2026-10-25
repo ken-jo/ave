@@ -215,7 +215,7 @@ describe("shared runner decisions", () => {
     expect(evaluateShellRules(command, { allow: [], deny: [shellRule("helper")], ask: [] }).decision).toBeNull();
     const manager = runnerManager();
     expectBucket(checkCommand(manager, "bash", command), "ordinary");
-    // Without a sandbox a prefix rule does not run it (owner 2026-10-25, D2); the exact rule does.
+    // Without a sandbox a prefix rule does not run it (owner 2026-10-25, unsandboxed shell exact-rule requirement); the exact rule does.
     await manager.addRulePersist({ pattern: shellRule(prefix).pattern, action: "allow" }, { kind: "user" });
     expectBucket(checkCommand(manager, "bash", command), "ordinary");
     await manager.addRulePersist({ pattern: `Bash(${command})`, action: "allow" }, { kind: "user" });
@@ -234,7 +234,7 @@ describe("shared runner decisions", () => {
     { command: "pwsh -c 'npm test'", dialect: "bash" as const, bucket: "normal" as const },
     { command: "pwsh -c 'npm test'", dialect: "powershell" as const, bucket: "ordinary" as const },
   ])("keeps saved exact-action grants and action-key rules from running $dialect without a sandbox: $command ($bucket)", async ({ command, dialect, bucket }) => {
-    // Owner 2026-10-25 (D2): only an exact Bash(<command>) rule runs a plain shell unasked; a remembered action key is not one.
+    // Owner 2026-10-25 (unsandboxed shell exact-rule requirement): only an exact Bash(<command>) rule runs a plain shell unasked; a remembered action key is not one.
     const savedPath = join(directory, `saved-${managerSequence++}.json`);
     const saved = runnerManager(savedPath);
     expectBucket(checkCommand(saved, dialect, command), bucket);

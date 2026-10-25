@@ -275,7 +275,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     );
   });
 
-  // Owner 2026-10-25 (D2/D3): a Plan B shell runs without a sandbox, so with no exact Bash(<command>) rule it goes to the five-choice card in every mode, allow mode included, and never to the reviewer.
+  // Owner 2026-10-25 (unsandboxed shell exact-rule requirement and five-choice shell card): a Plan B shell runs without a sandbox, so with no exact Bash(<command>) rule it goes to the five-choice card in every mode, allow mode included, and never to the reviewer.
   it.each(["default", "auto", "allow"] as const)("asks for a Plan B shell in %s mode without consulting the reviewer", async (mode) => {
     partialWindowsAsrt();
     const execute = vi.fn();
@@ -307,7 +307,48 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     expect(result[0]?.is_error).toBe(true);
   });
 
-  // The positive half of D2 for Plan B: an exact rule runs it with no card and no reviewer, on the policy-lane permit.
+  // The card a Plan B shell raises, as the host sends it to the renderer: Deny, Allow once, This session, This project
+  // and Always, the three saves all naming the one exact Bash(<command>) rule the host derived.
+  it.each(["default", "allow"] as const)("sends a Plan B shell card that offers the session, project and always saves in %s mode", async (mode) => {
+    partialWindowsAsrt();
+    const execute = vi.fn();
+    const registry = new ToolRegistry();
+    registry.register(shellProbe(execute));
+    const pm = new PermissionManager("/tmp/nonexistent-windows-partial-plan-b-card.json");
+    pm.setMode(mode);
+    let gate: ApprovalGate;
+    const send = vi.fn((channel: string, request: ApprovalRequest) => {
+      if (channel !== "ave:approval:request") return;
+      gate.resolveFromDesktopRenderer(request.id, { requestId: request.id, choice: "allow-once", nonce: request.nonce, hmac: request.hmac });
+    });
+    gate = new ApprovalGate({ isDestroyed: () => false, send } as never);
+    const result = await new ToolExecutor(registry, undefined, pm, undefined, gate).executeAll(
+      [{ id: "partial-shell-card", name: "bash", input: { command: "echo plan-b" } }],
+      { sessionId: "partial-shell-card", permissionContext: permissionContext() },
+    );
+
+    const cards = sentApprovalCards<ApprovalRequest>({ send } as never);
+    expect(cards).toHaveLength(1);
+    const card = cards[0]!;
+    expect(card.executionPlan).toMatchObject({ fallbackReason: "windows-partial-shell-acl-unsafe", requiresExplicitUserApproval: true });
+    // No once/deny narrowing: the renderer shows the full grid.
+    expect(card.allowedChoices).toBeUndefined();
+    expect(card.reviewerVerdict).toBeUndefined();
+    // This session (the conversation is known), This project and Always (persistent saves allowed), all for the exact rule.
+    expect(card.shellRule).toEqual({
+      exactRule: "Bash(echo plan-b)",
+      projectCwd: expect.any(String),
+      projectRoot: expect.any(String),
+      sessionAllowed: true,
+      persistentAllowed: true,
+    });
+    expect(card.persistentAllowAllowed).toBe(true);
+    expect(card.sessionId).toBe("partial-shell-card");
+    expect(execute).toHaveBeenCalledOnce();
+    expect(result[0]?.is_error).toBeUndefined();
+  });
+
+  // The positive half of the unsandboxed shell exact-rule requirement for Plan B: an exact rule runs it with no card and no reviewer, on the policy-lane permit.
   it.each(["default", "allow"] as const)("runs a Plan B shell on its exact Bash(<command>) rule in %s mode without a card", async (mode) => {
     partialWindowsAsrt();
     let observedPermit: unknown;
@@ -615,7 +656,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     expect(result[0]?.is_error).toBe(true);
   });
 
-  // Owner 2026-10-25 (D2, superseding I3's normal-rule path): a requested-but-unavailable sandbox runs a shell plain, so only an exact Bash(<command>) rule runs it unasked; a reviewer never does. The sealed plan keeps `requested-sandbox-unavailable` so the card, result and audit can say so.
+  // Owner 2026-10-25 (unsandboxed shell exact-rule requirement, superseding I3's normal-rule path): a requested-but-unavailable sandbox runs a shell plain, so only an exact Bash(<command>) rule runs it unasked; a reviewer never does. The sealed plan keeps `requested-sandbox-unavailable` so the card, result and audit can say so.
   it.each(["darwin", "linux", "win32"] as const)(
     "runs a requested-unavailable %s shell on its exact rule, with the fallback recorded, and asks without one",
     async (platform) => {
@@ -664,7 +705,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     },
   );
 
-  // An unavailable requested sandbox needs no one-shot permit: once the policy allows (for a plain shell only an exact Bash(<command>) rule can, D2), the pipeline runs it without a card.
+  // An unavailable requested sandbox needs no one-shot permit: once the policy allows (for a plain shell only an exact Bash(<command>) rule can, unsandboxed shell exact-rule requirement), the pipeline runs it without a card.
   it.each(["darwin", "linux", "win32"] as const)(
     "runs requested-unavailable %s shells on a policy allow without a card or permit",
     async (platform) => {

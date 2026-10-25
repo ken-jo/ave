@@ -136,7 +136,7 @@ describe("hook command permission admission", () => {
       .toMatchObject({ decision: "deny", rawStdout: "", reason: expect.stringContaining("hook command denied") });
   });
 
-  // Owner 2026-10-25 (D2): a hook runs without a sandbox, so only an exact Bash(<command>) rule admits it, on any host.
+  // Owner 2026-10-25 (unsandboxed shell exact-rule requirement): a hook runs without a sandbox, so only an exact Bash(<command>) rule admits it, on any host.
   it.each([true, false])("admits a hook only through an exact allow (sandbox-capable host %s)", async (active) => {
     sandboxedHost.active = active;
     const p = policy();
@@ -202,7 +202,7 @@ describe("hook command permission admission", () => {
   });
 
   it("follows the sandbox-off policy, without a one-shot receipt, when the requested sandbox is unavailable", async () => {
-    // A requested-but-unavailable sandbox is a plain shell under the exact-rule policy, as for the bash tool (owner 2026-10-25, D2); it records its fallback reason instead.
+    // A requested-but-unavailable sandbox is a plain shell under the exact-rule policy, as for the bash tool (owner 2026-10-25, unsandboxed shell exact-rule requirement); it records its fallback reason instead.
     setShellSandboxRequestedAtBoot(true);
     expect(getHostShellExecutionPlan()).toMatchObject({
       mode: "plain", fallbackReason: "requested-sandbox-unavailable", requiresExplicitUserApproval: false,
@@ -261,7 +261,7 @@ describe("hook command permission admission", () => {
       .toMatchObject({ decision: "deny", rawStdout: "", reason: "hook shell execution policy changed during approval" });
   });
 
-  it("denies an unattended hook a prefix rule does not admit, without raising a card (D2, I5)", async () => {
+  it("denies an unattended hook a prefix rule does not admit, without raising a card (unsandboxed shell exact-rule requirement, I5)", async () => {
     const p = policy();
     p.permissionManager.setRules([{ pattern: "Bash(node *)", action: "allow" }]);
     const result = await turnExtensionPolicyContext.run(resolveTurnExtensionPolicy(undefined, true),

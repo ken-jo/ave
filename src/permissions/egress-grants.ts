@@ -1,5 +1,5 @@
 // Shell grants bind canonical destination, approved network class and origin; spelling/class changes cannot widen them and terminal grants never cover agent shells. Invocation/session/tab grants stay in memory (session grants end with their conversation); project/always persist until revoked. Terminal once means one connection, and tab grants end with the shell.
-// Never consult these grants for workers or add them to runtime allowedDomains. Canonicalize project roots and strictly validate persisted shape; corrupt stores raise an error and the ask denies instead of silently dropping data. The v1 file's `workspace` scope is migrated to `project` explicitly on read (owner 2026-10-25, D1); no other old value is accepted.
+// Never consult these grants for workers or add them to runtime allowedDomains. Canonicalize project roots and strictly validate persisted shape; corrupt stores raise an error and the ask denies instead of silently dropping data. The v1 file's `workspace` scope is migrated to `project` explicitly on read (owner 2026-10-25, five-choice network card); no other old value is accepted.
 import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { canonicalizeHost } from "@anthropic-ai/sandbox-runtime/dist/sandbox/parent-proxy.js";
@@ -15,6 +15,7 @@ import { BlockList, isIP } from "node:net";
 import { openFeatureNamespace, writeFileAtomicAtPath } from "../main/storage/feature-namespace.js";
 import { isMissingPathError } from "../lib/atomic-file.js";
 import { createSerialQueue } from "../lib/with-file-lock.js";
+import { projectRuleRoot } from "./rules/project-rule-files.js";
 import { canonicalizePathForMatch, foldCanonicalPathSeparators } from "./sensitive-paths.js";
 import { maxEgressGrantScope, type EgressIdentityStrength } from "../shared/sandbox-capability-info.js";
 import {
@@ -175,11 +176,25 @@ interface GrantFile {
   readonly grants: PersistentEgressGrant[];
 }
 
-// v2 (owner 2026-10-25, D1): `project`/`projectRoot` replaced v1's `workspace`/`workspaceRoot`.
+// A v1 `workspace` grant the v1 → v2 migration could not carry over exactly (see `migrateLegacyGrant`).
+export interface DroppedLegacyEgressGrant {
+  readonly host: string;
+  readonly port: number;
+  // The v1 grant's exact directory.
+  readonly workspaceRoot: string;
+  // The repository root a v2 project grant for that directory would key on (a strict ancestor of it).
+  readonly projectRoot: string;
+}
+
+interface ParsedGrantFile extends GrantFile {
+  readonly droppedLegacy: readonly DroppedLegacyEgressGrant[];
+}
+
+// v2 (owner 2026-10-25, five-choice network card): `project`/`projectRoot` replaced v1's `workspace`/`workspaceRoot`.
 const FILE_VERSION = 2;
 const LEGACY_FILE_VERSION = 1;
 
-function parseGrantFile(path: string, raw: string): GrantFile {
+function parseGrantFile(path: string, raw: string): ParsedGrantFile {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -193,13 +208,21 @@ function parseGrantFile(path: string, raw: string): GrantFile {
   if (Object.keys(extra).length > 0) throw new EgressGrantFileError(path, `unknown field ${Object.keys(extra)[0]}`);
   if (version !== FILE_VERSION && version !== LEGACY_FILE_VERSION) throw new EgressGrantFileError(path, `unsupported version ${String(version)}`);
   if (!Array.isArray(grants)) throw new EgressGrantFileError(path, "grants is not an array");
-  const entries = version === LEGACY_FILE_VERSION
-    ? grants.map((entry, index) => migrateLegacyGrant(path, entry, index))
-    : grants;
-  return { version: FILE_VERSION, grants: entries.map((entry, index) => parseGrant(path, entry, index)) };
+  if (version !== LEGACY_FILE_VERSION) {
+    return { version: FILE_VERSION, grants: grants.map((entry, index) => parseGrant(path, entry, index)), droppedLegacy: [] };
+  }
+  const migrated: PersistentEgressGrant[] = [];
+  const droppedLegacy: DroppedLegacyEgressGrant[] = [];
+  grants.forEach((entry, index) => {
+    const grant = parseGrant(path, migrateLegacyGrant(path, entry, index), index);
+    const dropped = grant.scope === "project" && grant.projectRoot !== undefined ? inexactLegacyProjectGrant(grant, grant.projectRoot) : undefined;
+    if (dropped === undefined) migrated.push(grant);
+    else droppedLegacy.push(dropped);
+  });
+  return { version: FILE_VERSION, grants: migrated, droppedLegacy };
 }
 
-// The one v1 → v2 rename: a `workspace` grant becomes a `project` grant on the same directory (never a wider one); `always` is unchanged. Anything else in a v1 file is invalid, as before.
+// The one v1 → v2 rename: a `workspace` grant becomes a `project` grant on the same directory; `always` is unchanged. Anything else in a v1 file is invalid, as before.
 function migrateLegacyGrant(path: string, entry: unknown, index: number): unknown {
   if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return entry;
   const record = entry as Record<string, unknown>;
@@ -208,6 +231,13 @@ function migrateLegacyGrant(path: string, entry: unknown, index: number): unknow
   if (record.scope !== "workspace") return entry;
   const { workspaceRoot, scope: _scope, ...rest } = record;
   return { ...rest, scope: "project", projectRoot: workspaceRoot };
+}
+
+// A v1 grant covered its exact directory; a v2 project grant covers the repository root of the working directory (`projectRuleRoot`), so it is looked up by that root. A migrated grant keeps its exact meaning only when its directory is that root: it then covers what a "This project" choice made there covers. A grant made in a subdirectory would never match again under v2 (lookups key on the root), and re-keying it on the root would widen it to the whole repository, so it is dropped and reported instead (the user is asked again). Returns the drop, or undefined when the grant carries over.
+function inexactLegacyProjectGrant(grant: PersistentEgressGrant, workspaceRoot: string): DroppedLegacyEgressGrant | undefined {
+  const projectRoot = canonicalProjectRoot(projectRuleRoot(workspaceRoot));
+  if (projectRoot === canonicalProjectRoot(workspaceRoot)) return undefined;
+  return { host: grant.host, port: grant.port, workspaceRoot, projectRoot };
 }
 
 function parseGrant(path: string, entry: unknown, index: number): PersistentEgressGrant {
@@ -263,7 +293,14 @@ export class EgressGrantStore {
   private persistent: PersistentEgressGrant[] | undefined;
   private readonly writes = createSerialQueue();
 
-  constructor(private readonly filePath: string = egressGrantFilePath()) {}
+  // Destination keys of v1 grants already reported dropped, so a re-read before the file is rewritten does not report them twice.
+  private readonly reportedLegacyDrops = new Set<string>();
+
+  constructor(
+    private readonly filePath: string = egressGrantFilePath(),
+    // Told once per v1 grant the migration drops (`migrateLegacyGrant`), so the caller can audit it.
+    private readonly onLegacyGrantDropped: (dropped: DroppedLegacyEgressGrant) => void = () => {},
+  ) {}
 
   // The narrowest eligible grant covering this destination for this subject, or undefined. The caller limits scopes by current identity, origin and network class. Throws EgressGrantFileError when the persistent file is invalid, so the caller can deny with that reason instead of guessing.
   async matchingScope(
@@ -377,10 +414,10 @@ export class EgressGrantStore {
     return dropped;
   }
 
-  // Forget every "This session" grant of a conversation that ended (deleted). Returns the grants dropped.
-  releaseSession(sessionId: string): readonly SessionEgressGrant[] {
-    const dropped = this.listSession().filter((grant) => grant.sessionId === sessionId);
-    this.session.delete(sessionId);
+  // Forget every "This session" grant held by the sessions `ended` selects (a deleted conversation and, for a root, its sub-agents). Returns the grants dropped.
+  releaseSessions(ended: (sessionId: string) => boolean): readonly SessionEgressGrant[] {
+    const dropped = this.listSession().filter((grant) => ended(grant.sessionId));
+    for (const sessionId of new Set(dropped.map((grant) => grant.sessionId))) this.session.delete(sessionId);
     for (const grant of dropped) this.uses.delete(grantUseKey(grant));
     return dropped;
   }
@@ -451,7 +488,14 @@ export class EgressGrantStore {
       }
       throw error;
     }
-    this.persistent = parseGrantFile(this.filePath, raw).grants;
+    const parsed = parseGrantFile(this.filePath, raw);
+    for (const dropped of parsed.droppedLegacy) {
+      const key = `${dropped.workspaceRoot}\n${dropped.host}\n${dropped.port}`;
+      if (this.reportedLegacyDrops.has(key)) continue;
+      this.reportedLegacyDrops.add(key);
+      this.onLegacyGrantDropped(dropped);
+    }
+    this.persistent = parsed.grants;
     return this.persistent;
   }
 

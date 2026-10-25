@@ -222,7 +222,7 @@ describe("Windows partial-shell execution permit", () => {
   });
 });
 
-describe("explicit host execution permit from a matching exact allow rule (D2)", () => {
+describe("explicit host execution permit from a matching exact allow rule (unsandboxed shell exact-rule requirement)", () => {
   let directory: string;
   let pm: PermissionManager;
   beforeEach(() => {
@@ -296,7 +296,9 @@ describe("explicit host execution permit from a matching exact allow rule (D2)",
     expect(mintHostShellExecutionPermit({
       plan: binding.plan, approvalDecision: undefined, allowRuleDecision: ruleDecision("echo one-shot", directory), permissionManager: pm, binding,
     })).toBeUndefined();
-    // The Windows Plan B is allow-once only: a rule never authorizes it.
+    // This rule-proof path serves only an explicit host retry. A Windows Plan B shell that an exact Bash(<command>) rule
+    // allows gets its permit from the policy lane, which invocation authorization records for that exact action
+    // (see executor-windows-partial-shell.test.ts), so a bare rule decision never mints a Plan B permit here.
     const planB = windowsPlan();
     const planBBinding = hostBinding(planB);
     expect(mintHostShellExecutionPermit({
@@ -319,7 +321,7 @@ describe("explicit host execution permit from a matching exact allow rule (D2)",
     });
     // Allow mode does not admit a plain shell outside the sandbox: it still
     // needs an exact Bash(<command>) rule or approval, and the mode issues no
-    // rule proof (owner 2026-10-25, D2).
+    // rule proof (owner 2026-10-25, unsandboxed shell exact-rule requirement).
     expect(modeAllow).toMatchObject({ decision: "ask", layer: 6 });
     expect(isIssuedShellAllowRuleDecision(modeAllow)).toBe(false);
   });

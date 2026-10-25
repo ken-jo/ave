@@ -31,7 +31,7 @@ export function createHookCommandAuthorizer(deps: {
       projectRulesCwd: cwd,
       headless: turnExtensionPolicyContext.getStore()?.headless === true,
     } as const;
-    // Matched as a plain host shell: a hook runs without a sandbox, so only an exact Bash(<command>) allow rule applies (owner 2026-10-25, D2).
+    // Matched as a plain host shell: a hook runs without a sandbox, so only an exact Bash(<command>) allow rule applies (owner 2026-10-25, unsandboxed shell exact-rule requirement).
     const check = () => deps.permissionManager.checkDetailed("bash", "builtin", "shell", undefined, {
       ...context,
       shellExecution: { runsSandboxed: false },

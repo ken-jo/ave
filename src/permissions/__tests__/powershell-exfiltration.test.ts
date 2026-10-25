@@ -605,7 +605,7 @@ describe("checkDetailed applies the floors by dialect", () => {
     if (command === "Set-Content build.ps1 Get-Date; build.ps1") {
       expect(pending.reason).toMatch(/materialized.*file/);
     }
-    // PowerShell has no Bash(<command>) rule, so without a sandbox a saved exact-action grant never runs it unasked (owner 2026-10-25, D2).
+    // PowerShell has no Bash(<command>) rule, so without a sandbox a saved exact-action grant never runs it unasked (owner 2026-10-25, unsandboxed shell exact-rule requirement).
     await pm.addAlwaysAllowedPersist(ps(command).approvalCacheKey, "write");
     expect(pm.checkDetailed("powershell", "builtin", "shell", null, ps(command))).toMatchObject({ decision: "ask", layer: 6 });
     const reloaded = new PermissionManager(join(dir, "permissions.json"));

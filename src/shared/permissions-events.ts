@@ -28,7 +28,7 @@ export interface ScopedPermissionRule {
   invalidReason?: StoredRuleInvalidReason;
 }
 
-/** Where a bash approval card saves its exact `Bash(<command>)` allow rule (owner 2026-10-25, D3): this conversation (in memory, ends with it), this project's rule file, or the user-global rules. */
+/** Where a bash approval card saves its exact `Bash(<command>)` allow rule (owner 2026-10-25, five-choice shell card): this conversation (in memory, ends with it), this project's rule file, or the user-global rules. */
 export type ShellRuleSaveScope = "session" | "project" | "always";
 
 export function isShellRuleSaveScope(value: unknown): value is ShellRuleSaveScope {

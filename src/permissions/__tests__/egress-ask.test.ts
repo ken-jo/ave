@@ -733,7 +733,7 @@ describe("egress ask callback — shell calls", () => {
   });
 
   it("offers the owner's five choices on a kernel-channel host and keys This project on the repository root", async () => {
-    // Owner 2026-10-25 (D1): Deny plus once, session, project and always; no once/always cap.
+    // Owner 2026-10-25 (five-choice network card): Deny plus once, session, project and always; no once/always cap.
     owners.set(SHELL_TOKEN, { ...interactiveShell, context: { ...interactiveShell.context, workspaceRoot: PROJECT_SUBDIR } });
     answer = async () => ({ allow: true, scope: "project" });
     expect(await callback()({ host: "pypi.org", port: 443 }, listener(SHELL_TOKEN))).toBe(true);

@@ -1621,7 +1621,7 @@ describe("state-mutating permission channels refuse non-host frames", () => {
 
 
 describe("command rules recorded from live approvals", () => {
-  // Owner 2026-10-25 (D3): the renderer names only a save scope; the host stores the exact rule it derived.
+  // Owner 2026-10-25 (five-choice shell card): the renderer names only a save scope; the host stores the exact rule it derived.
   const exactRule = "Bash(git status --short)";
   const body = { requestId: "live-shell", args: "{}", scope: "persistent", verdictAtApproval: "medium", nlJustification: null, rule: { scope: "project" } };
   const shellRule = { exactRule, projectCwd: "/srv/project", projectRoot: "/srv/project", persistentAllowed: true, sessionAllowed: true };
@@ -1832,7 +1832,7 @@ describe("shell egress grants in Settings", () => {
       [{ scope: "session", sessionId: "s", host: "pypi.org", port: 443, network: "reserved" }, "invalid-egress-grant-destination"],
       [{ scope: "session", sessionId: "s", host: "pypi.org", port: 443, network: null }, "invalid-egress-grant-destination"],
       [{ scope: "once", host: "pypi.org", port: 443 }, "invalid-egress-grant-scope"],
-      // The pre-2026-10-25 names are refused, never mapped (owner D1).
+      // The pre-2026-10-25 names are refused, never mapped (owner five-choice network card decision).
       [{ scope: "conversation", sessionId: "s", host: "pypi.org", port: 443 }, "invalid-egress-grant-scope"],
       [{ scope: "workspace", origin: "shell", projectRoot: "/w", host: "pypi.org", port: 443 }, "invalid-egress-grant-scope"],
       [{ scope: "project", origin: "shell", workspaceRoot: "/w", host: "pypi.org", port: 443 }, "invalid-egress-grant-project"],

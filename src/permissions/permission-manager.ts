@@ -394,7 +394,7 @@ export function isShellAllowRuleAuthorizationCurrent(
     matchesShellWorkingDirectoryIdentity(authorization.cwd, authorization.cwdIdentity);
 }
 
-// Layer-3 allow-rule decisions for a host shell, keyed on the exact result object `checkDetailed` returned. An explicit unsandboxed shell request may be authorized by a matching exact `Bash(<command>)` allow rule (owner 2026-10-25, D2); this is the host-issued, object-identity proof of that match. A structural `{ decision: "allow", layer: 3 }` lookalike is not in this map and authorizes nothing.
+// Layer-3 allow-rule decisions for a host shell, keyed on the exact result object `checkDetailed` returned. An explicit unsandboxed shell request may be authorized by a matching exact `Bash(<command>)` allow rule (owner 2026-10-25, unsandboxed shell exact-rule requirement); this is the host-issued, object-identity proof of that match. A structural `{ decision: "allow", layer: 3 }` lookalike is not in this map and authorizes nothing.
 const issuedShellAllowRuleDecisions = new WeakMap<
   PermissionCheckResult,
   ShellAllowRuleAuthorization
@@ -846,7 +846,7 @@ export class PermissionManager {
     this.revokeAllPluginAccess(`rule-added:${validated.action}:${validated.pattern}`);
   }
 
-  // Add an exact `Bash(<command>)` allow rule for one conversation (owner 2026-10-25, D3). Wildcards and other rule kinds are refused, not narrowed.
+  // Add an exact `Bash(<command>)` allow rule for one conversation (owner 2026-10-25, five-choice shell card). Wildcards and other rule kinds are refused, not narrowed.
   addSessionShellRule(sessionId: string, pattern: string): void {
     if (sessionId.length === 0) throw new Error("A session shell rule requires its conversation session");
     const validated = validatePermissionRule({ pattern, action: "allow" });
@@ -868,9 +868,12 @@ export class PermissionManager {
     return (this.sessionShellRules.get(approvalConversationRoot(sessionId)) ?? []).map((rule) => rule.pattern);
   }
 
-  // Forget everything scoped to a conversation that ended. Returns whether it held any session shell rule.
-  endSession(sessionId: string): boolean {
-    const dropped = this.sessionShellRules.delete(approvalConversationRoot(sessionId));
+  // Forget the session shell rules of a root conversation that ended. Rules are held under the root (its sub-agents share them), so only a root id is accepted: a sub-agent's end must not drop its parent's rules. Returns whether it held any.
+  endSession(rootSessionId: string): boolean {
+    if (approvalConversationRoot(rootSessionId) !== rootSessionId) {
+      throw new Error("Session shell rules end only with their root conversation");
+    }
+    const dropped = this.sessionShellRules.delete(rootSessionId);
     if (dropped) {
       this.policyGeneration += 1;
       this.broadcastConfigChanged?.();
@@ -1207,7 +1210,7 @@ export class PermissionManager {
     const parsedSubject = ruleSubject?.dialect === "bash" ? parseShellCommand(ruleSubject.command) : undefined;
     const powerShellSignals = ruleSubject?.dialect === "powershell" ? inspectPowerShellCommand(ruleSubject.command, ruleSubject.cwd) : undefined;
     const shellSubject = ruleSubject?.dialect === "bash"
-      // No sandbox for this command (off, unavailable, excluded, or an explicit host request): only an exact `Bash(<command>)` allow rule may run it unasked (owner 2026-10-25, D2).
+      // No sandbox for this command (off, unavailable, excluded, or an explicit host request): only an exact `Bash(<command>)` allow rule may run it unasked (owner 2026-10-25, unsandboxed shell exact-rule requirement).
       ? { command: parsedSubject!, cwd: ruleSubject.cwd, exactAllowOnly: !shellExecution.runsSandboxed }
       : undefined;
     const sessionRules = context.sessionId === undefined || shellSubject === undefined
@@ -1395,7 +1398,7 @@ export class PermissionManager {
       if (rule.action !== "allow") continue;
       if (rule.source && rule.source !== source) continue;
       if (isRuleSpecifier(rule.pattern)) continue;
-      // Only an exact `Bash(<command>)` rule (matched above) grants plain-shell execution; tool-wide, glob and legacy action-key allows never do (owner 2026-10-25, D2).
+      // Only an exact `Bash(<command>)` rule (matched above) grants plain-shell execution; tool-wide, glob and legacy action-key allows never do (owner 2026-10-25, unsandboxed shell exact-rule requirement).
       if (plainShell) continue;
       if (globMatch(allowTarget, rule.pattern)) {
         // tier gate — a read-tier grant must not cover a write/shell/network/meta invocation. Untiered/legacy rules default to "write" (grandfather = the pre-all-or-nothing behaviour). This gate MUST mirror the layer-5 gate below. loadRulesFromFile rehydrates a persisted "Allow always" grant into BOTH this.rules (evaluated HERE, first) AND alwaysAllowed (layer-5). A tier gate applied only at layer-5 would therefore be silently defeated by this layer-3 shadow on the first app restart.
@@ -1407,7 +1410,7 @@ export class PermissionManager {
 
     // 5. Always-allowed (previous user approval)
     let storedDockGrant = false;
-    // A remembered dock grant is not an exact `Bash(<command>)` rule, so it never runs a plain shell (D2).
+    // A remembered dock grant is not an exact `Bash(<command>)` rule, so it never runs a plain shell (unsandboxed shell exact-rule requirement).
     if (result === undefined && !plainShell) {
       const grantTier = this.alwaysAllowed.get(allowTarget);
       // tier gate — see the layer-3 mirror above. A read-tier grant covers only read invocations; write-tier covers everything.
@@ -1420,7 +1423,7 @@ export class PermissionManager {
 
     // 6. Category × Source × Trust via registry descriptor
     if (result === undefined && plainShell) {
-      // No exact rule matched a shell that runs without a sandbox: a person decides, in every mode, and never a reviewer or judge (owner 2026-10-25, D2). With nobody to ask it is denied and audited (I5).
+      // No exact rule matched a shell that runs without a sandbox: a person decides, in every mode, and never a reviewer or judge (owner 2026-10-25, unsandboxed shell exact-rule requirement). With nobody to ask it is denied and audited (I5).
       return context.headless === true
         ? { decision: "deny", reason: t("be_permissionManager.shellUnsandboxedHeadlessReason"), layer: 6 }
         : { decision: "ask", reason: ordinaryShellAsk ?? t("be_permissionManager.shellUnsandboxedReason"), layer: 6 };
@@ -1452,7 +1455,7 @@ export class PermissionManager {
       };
     }
 
-    // Record the host-shell action a layer-3 allow rule matched. Every floor, deny and ask rule has already returned above, so this result is the rule lane itself; the record lets an explicit unsandboxed request be authorized by the same exact rule without a prompt (D2).
+    // Record the host-shell action a layer-3 allow rule matched. Every floor, deny and ask rule has already returned above, so this result is the rule lane itself; the record lets an explicit unsandboxed request be authorized by the same exact rule without a prompt (unsandboxed shell exact-rule requirement).
     if (
       result.decision === "allow" &&
       result.layer === 3 &&

@@ -464,8 +464,12 @@ function projectApprovalForList(key: string, entry: UserApprovalEntry): UserAppr
 }
 
 // Forget the "This session" approvals of a conversation that ended (owner 2026-10-25: session scope dies with the session). Returns how many were dropped.
-export function dropSessionApprovals(sessionId: string): number {
-  const root = approvalConversationRoot(sessionId);
+// Session approvals are held under the root conversation, so only a root id is accepted: a sub-agent's end must not drop its parent's approvals.
+export function dropSessionApprovals(rootSessionId: string): number {
+  if (approvalConversationRoot(rootSessionId) !== rootSessionId) {
+    throw new Error("Session approvals end only with their root conversation");
+  }
+  const root = rootSessionId;
   let dropped = 0;
   for (const [key, entry] of sessionStore) {
     if (entry.scope === "session" && entry.sessionId === root) {

@@ -355,7 +355,7 @@ describe("bounded sensitive-path inspection", () => {
       expect(pending).toMatchObject({ decision: "ask", layer: 6 });
       expect(pending.forceModal).not.toBe(true);
       await manager.addAlwaysAllowedPersist(`bash-action:${command}`);
-      // Owner 2026-10-25 (D2): only an exact Bash(<command>) rule runs a plain shell unasked.
+      // Owner 2026-10-25 (unsandboxed shell exact-rule requirement): only an exact Bash(<command>) rule runs a plain shell unasked.
       expect(check(command)).toMatchObject({ decision: "ask", layer: 6 });
       expect(check(`${command} .env`)).toMatchObject({ decision: "ask", forceModal: true });
     } finally { rmSync(dir, { recursive: true, force: true }); }

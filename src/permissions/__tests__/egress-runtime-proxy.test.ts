@@ -135,7 +135,7 @@ async function expectResponse(client: ReturnType<typeof connect>, status: number
 
 describe.skipIf(process.platform !== "win32")("native proxy with production egress callback", () => {
   it("keeps the invocation listener identity through the ordinary shell frontend", async () => {
-    // Owner 2026-10-25 (D1): a shell call is offered once, This session, This project and Always (with Deny).
+    // Owner 2026-10-25 (five-choice network card): a shell call is offered once, This session, This project and Always (with Deny).
     const runtime = await startRuntime(() => "always");
     const invocation = openShell();
     const other = openShell();

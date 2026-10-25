@@ -493,14 +493,14 @@ export async function authorizeToolInvocation(
     // returned a forced-modal ask.
     //   • Explicit host request: only a matching host-issued, epoch-bound
     //     layer-3 exact `Bash(<command>)` allow rule approves it (owner
-    //     2026-10-25, D2); otherwise it asks with the host-execution warning.
+    //     2026-10-25, unsandboxed shell exact-rule requirement); otherwise it asks with the host-execution warning.
     //     A reviewer or mode-wide allow never stands in for that rule or card.
     //   • Nobody can answer (headless or routine): denied and audited (I5,
     //     owner 2026-10-16), whatever the rules say.
     //   • Windows Plan B (foreground) runs without a sandbox, so it follows
-    //     D2: an exact `Bash(<command>)` rule or the five-choice dock card
-    //     (owner 2026-10-25, D3); its rule allow is recorded for this exact
-    //     action below.
+    //     the unsandboxed shell exact-rule requirement: an exact
+    //     `Bash(<command>)` rule or the five-choice dock card (owner
+    //     2026-10-25); its rule allow is recorded for this exact action below.
     const explicitHostRequest = hostShellExecutionPlan?.executionRequest === "host";
     const explicitHostAllowRule =
       explicitHostRequest &&
@@ -1538,7 +1538,7 @@ export async function authorizeToolInvocation(
                 // remote-controller and per-action requests retain exact
                 // one-shot consent. A Plan B bash card offers the five choices,
                 // each persistent one saving only the exact `Bash(<command>)`
-                // rule (owner 2026-10-25, D3).
+                // rule (owner 2026-10-25, five-choice shell card).
                 allowedChoices: ["allow-once", "deny-once"] as const,
                 durableApprovalRecordAllowed: false as const,
                 forceExplicit: true as const,
@@ -2055,7 +2055,7 @@ export async function authorizeToolInvocation(
       hostShellApprovalDecision === undefined && !ruleProofStands && services.permissionManager !== undefined &&
       permissionResult?.decision === "allow" && !requiresRemoteLocalOneShot &&
       // Defense in depth for the gate above: the policy lane is the Windows
-      // Plan B in the foreground only (D2, I5).
+      // Plan B in the foreground only (unsandboxed shell exact-rule requirement, I5).
       hostShellExecutionPlan?.executionRequest !== "host" && invocationPermissionContext.headless !== true) {
     recordHostShellPolicyAuthorization(hostShellExecutionPermitBinding);
   }

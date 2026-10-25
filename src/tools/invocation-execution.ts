@@ -624,7 +624,7 @@ export async function executeAuthorizedToolInvocation(
   // The permit is private host state, binds this exact final shell action,
   // and is consumed once by the plain explicit-host / Plan-B spawn path. Its
   // authority is either the user's allow-once receipt or, for an explicit host
-  // request only, the matching exact allow-rule decision (owner 2026-10-25, D2).
+  // request only, the matching exact allow-rule decision (owner 2026-10-25, unsandboxed shell exact-rule requirement).
   const hostShellExecutionPermit =
     hostShellExecutionPlan !== undefined &&
     hostShellExecutionPermitBinding !== undefined

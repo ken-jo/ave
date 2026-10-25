@@ -1,6 +1,6 @@
 /** Grant lifetimes differ by origin: once means one shell call or one terminal connection; session ends with its conversation (deleted, or the app quits); tab ends with its shell.
  * Project (keyed by the project root of the call's working directory) and always (global) persist until revoked; every grant binds the approved network class, and persistent grants also bind shell versus terminal origin.
- * The scope names are the owner's five-choice card (2026-10-25, D1): Deny, once, session, project, always. Earlier names (`conversation`, `workspace`) are not accepted anywhere. */
+ * The scope names are the owner's five-choice card (2026-10-25, five-choice network card): Deny, once, session, project, always. Earlier names (`conversation`, `workspace`) are not accepted anywhere. */
 import type { EgressGrantScope } from "./sandbox-capability-info.js";
 
 export type { EgressGrantScope };

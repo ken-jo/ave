@@ -117,7 +117,7 @@ describe("missing shell route", () => {
     }
   });
 
-  // Owner 2026-10-25 (D3): This session saves the same exact rule as the persistent scopes, so it needs no sandbox evidence, only a conversation to hold it.
+  // Owner 2026-10-25 (five-choice shell card): This session saves the same exact rule as the persistent scopes, so it needs no sandbox evidence, only a conversation to hold it.
   it("offers This session as the exact rule on a dock request with a conversation", async () => {
     let displayed: ApprovalRequest | undefined;
     const gate = new ApprovalGate({ isDestroyed: () => false, send: (channel: string, request: ApprovalRequest) => {

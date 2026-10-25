@@ -182,7 +182,7 @@ describe("decision path", () => {
   it("Bash allow rules persist, survive restart, and match only via the shell subject", async () => {
     const pm = new PermissionManager(permissionsFile);
     await pm.addRulePersist({ pattern: "Bash(git status *)", action: "allow" }, { kind: "user" });
-    // A plain (unsandboxed) shell runs only on an exact rule (owner 2026-10-25, D2): the stored prefix does not run it.
+    // A plain (unsandboxed) shell runs only on an exact rule (owner 2026-10-25, unsandboxed shell exact-rule requirement): the stored prefix does not run it.
     expect(pm.checkDetailed("bash", "builtin", "shell", null, shell("git status -s"))).toMatchObject({ decision: "ask" });
     await pm.addRulePersist({ pattern: "Bash(git status)", action: "allow" }, { kind: "user" });
 
@@ -626,7 +626,7 @@ describe("host shell-rule suggestions", () => {
     expect(buildShellRuleApproval(command, project, true, "conversation-a")).toMatchObject({ exactRule: null, persistentAllowed: false, sessionAllowed: false });
   });
 
-  // Owner 2026-10-25 (D3): every save scope stores this one exact rule, never a prefix, and only a single simple command has one.
+  // Owner 2026-10-25 (five-choice shell card): every save scope stores this one exact rule, never a prefix, and only a single simple command has one.
   it.each(["git status --short", "npm test -- --watch=false", "ls -la src"])("offers session, project and always for the exact rule of %s, sandboxed or not", (command) => {
     const approval = buildShellRuleApproval(command, project, true, "conversation-a");
     expect(approval.exactRule).toBe(`Bash(${command})`);

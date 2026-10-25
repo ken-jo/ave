@@ -30,7 +30,7 @@ const SAVE_BUTTONS = {
 const originalLocale = getLocale();
 afterEach(() => { vi.unstubAllGlobals(); setLocale(originalLocale); });
 
-// Owner 2026-10-25 (D3): an unsandboxed bash card offers exactly Deny, Allow once, This session, This project and Always; every save stores the host's exact rule.
+// Owner 2026-10-25 (five-choice shell card): an unsandboxed bash card offers exactly Deny, Allow once, This session, This project and Always; every save stores the host's exact rule.
 describe("shell approval five choices", () => {
   it("offers exactly the five choices and shows the exact rule read-only", () => {
     vi.stubGlobal("ave", { userApproval: { record: vi.fn() } });

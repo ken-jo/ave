@@ -104,8 +104,42 @@ describe("EgressGrantStore", () => {
     expect((await store.revoke({ ...legacy, network: "public" })).removed).toBe(true);
   });
 
+  it("migrates a v1 grant made at a repository root exactly, and drops and reports one made in a subdirectory", async () => {
+    // A v1 grant covered its exact directory; v2 keys project grants on the repository root. Carrying a subdirectory
+    // grant over would either never match again or widen it to the whole repository, so it is dropped and reported.
+    const repo = join(dir, "repo");
+    mkdirSync(join(repo, ".git", "objects"), { recursive: true });
+    mkdirSync(join(repo, ".git", "refs"), { recursive: true });
+    writeFileSync(join(repo, ".git", "HEAD"), "ref: refs/heads/main\n");
+    mkdirSync(join(repo, "sub"));
+    const repoRoot = canonicalizePathForMatch(repo);
+    const subDir = canonicalizePathForMatch(join(repo, "sub"));
+    const crates = { host: "crates.io", port: 443 };
+    writeFileSync(file, JSON.stringify({
+      version: 1,
+      grants: [
+        { scope: "workspace", origin: "shell", workspaceRoot: repoRoot, ...github, network: "public", grantedAt: "2026-10-19T00:00:00Z" },
+        { scope: "workspace", origin: "shell", workspaceRoot: subDir, ...crates, network: "public", grantedAt: "2026-10-19T00:00:01Z" },
+      ],
+    }));
+    const dropped: unknown[] = [];
+    const store = new EgressGrantStore(file, (entry) => dropped.push(entry));
+    expect(await store.listPersistent()).toEqual([
+      { scope: "project", origin: "shell", projectRoot: repoRoot, ...github, network: "public", grantedAt: "2026-10-19T00:00:00Z" },
+    ]);
+    expect(dropped).toEqual([{ ...crates, workspaceRoot: subDir, projectRoot: repoRoot }]);
+    // The root grant now means what a "This project" choice at the root means; the dropped one is asked again.
+    const inSub = { ...subject, projectRoot: repoRoot };
+    expect(await store.matchingScope(inSub, github, matchingScopes)).toBe("project");
+    expect(await store.matchingScope(inSub, crates, matchingScopes)).toBeUndefined();
+    // A re-read before the file is rewritten reports nothing twice, and the next write stores only the exact grant.
+    await store.grant("always", ALL, subject, { host: "pypi.org", port: 443 }, new Date("2026-10-19T02:00:00.000Z"));
+    expect(dropped).toHaveLength(1);
+    expect(JSON.parse(readFileSync(file, "utf8")).grants.map((g: { host: string }) => g.host)).toEqual(["github.com", "pypi.org"]);
+  });
+
   it("migrates a v1 workspace grant to a project grant on the same root, and the next write stores version 2", async () => {
-    // Owner 2026-10-25 (D1): the v1 names are migrated once, explicitly, never matched as aliases.
+    // Owner 2026-10-25 (five-choice network card): the v1 names are migrated once, explicitly, never matched as aliases.
     const v1 = {
       version: 1,
       grants: [
@@ -232,7 +266,7 @@ describe("EgressGrantStore", () => {
     ["a grant without an origin", JSON.stringify({ version: 2, grants: [{ scope: "always", host: "a.com", port: 1, grantedAt: "2026-10-19T00:00:00Z" }] }), /origin that is neither shell nor terminal/u],
     ["a grant with an unknown origin", JSON.stringify({ version: 2, grants: [{ scope: "always", origin: "worker", host: "a.com", port: 1, grantedAt: "2026-10-19T00:00:00Z" }] }), /origin that is neither shell nor terminal/u],
     ["a project grant from a terminal", JSON.stringify({ version: 2, grants: [{ scope: "project", origin: "terminal", projectRoot: "/w", host: "a.com", port: 1, grantedAt: "2026-10-19T00:00:00Z" }] }), /project grant not made by a shell call/u],
-    // No silent alias across the v1 -> v2 rename (owner 2026-10-25, D1): a v2 file never accepts the old names, a v1 file never the new ones.
+    // No silent alias across the v1 -> v2 rename (owner 2026-10-25, five-choice network card): a v2 file never accepts the old names, a v1 file never the new ones.
     ["a v2 workspace grant", JSON.stringify({ version: 2, grants: [{ scope: "workspace", origin: "shell", projectRoot: "/w", host: "a.com", port: 1, grantedAt: "2026-10-19T00:00:00Z" }] }), /neither project nor always/u],
     ["a v2 grant with a workspaceRoot", JSON.stringify({ version: 2, grants: [{ scope: "always", origin: "shell", workspaceRoot: "/w", host: "a.com", port: 1, grantedAt: "2026-10-19T00:00:00Z" }] }), /unknown field workspaceRoot/u],
     ["a v2 conversation grant", JSON.stringify({ version: 2, grants: [{ scope: "conversation", origin: "shell", host: "a.com", port: 1, grantedAt: "2026-10-19T00:00:00Z" }] }), /neither project nor always/u],
@@ -275,7 +309,7 @@ describe("session grants and what a revoke closes", () => {
     store.noteUse("session", subject, github);
     store.noteUse("session", otherSession, github);
 
-    const dropped = store.releaseSession("session-1");
+    const dropped = store.releaseSessions((id) => id === "session-1");
     expect(dropped.map((g) => g.host).sort()).toEqual(["github.com", "pypi.org"]);
     expect(store.listSession()).toEqual([
       { scope: "session", sessionId: "session-2", host: "github.com", port: 443, network: "public", grantedAt: "2026-10-25T01:00:02.000Z" },
@@ -286,7 +320,7 @@ describe("session grants and what a revoke closes", () => {
     // The dropped grant's uses are gone; the other session's are kept for its own revoke.
     expect((await store.revoke({ scope: "session", sessionId: "session-1", host: "github.com", port: 443 })).tokens).toEqual([]);
     expect((await store.revoke({ scope: "session", sessionId: "session-2", host: "github.com", port: 443 })).tokens).toEqual([otherSession.token]);
-    expect(store.releaseSession("session-unknown")).toEqual([]);
+    expect(store.releaseSessions((id) => id === "session-unknown")).toEqual([]);
   });
 
   it("hands back the live calls a revoked grant let through, and forgets released ones", async () => {
@@ -490,7 +524,7 @@ describe("shell domain grants in the running process", () => {
       await revokeEgressGrant(target);
       expect(await ask(first.token)).toBe(true);
       expect(requests).toEqual([expect.objectContaining({
-        // Owner 2026-10-25 (D1): the shell card offers once, session, project and always (with Deny); the ip2 once/always cap is gone.
+        // Owner 2026-10-25 (five-choice network card): the shell card offers once, session, project and always (with Deny); the ip2 once/always cap is gone.
         kind: "egress-host", egressHost: expect.objectContaining({ scopes: ["once", "session", "project", "always"] }),
       })]);
       expect(await listEgressGrants()).toContainEqual(expect.objectContaining(target));

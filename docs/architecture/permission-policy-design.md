@@ -1012,11 +1012,11 @@ start failure) is not a one-shot route. The shell runs as a plain child under
 the same policy as sandbox-off, while its plan keeps
 `fallbackReason: "requested-sandbox-unavailable"`: the approval card, the
 model's shell-environment description and the tool result say the sandbox is
-unavailable. By owner decision 2026-10-25 (D2) every plain shell — sandbox off,
+unavailable. By owner decision 2026-10-25 (unsandboxed shell exact-rule requirement) every plain shell — sandbox off,
 unavailable or not covering the command, an explicit host request, and the
 Windows partial-ASRT plan (`windows-partial-shell-acl-unsafe`) — runs unasked
 only on an exact `Bash(<command>)` allow rule; otherwise it asks on the
-five-choice card (D3) in every mode, and headless it is denied and audited.
+five-choice card (five-choice shell card) in every mode, and headless it is denied and audited.
 The reviewer and the judge are not consulted for it. The parser and plan in
 [host-shell-execution-plan.ts](../../src/permissions/host-shell-execution-plan.ts),
 the [approval gate](../../src/permissions/approval-gate.ts) and

@@ -216,7 +216,7 @@ export function sandboxBootOutcomeView(outcome: SandboxBootOutcome): SandboxBoot
  * `egress-invocation-listener.ts`). A process cannot present another invocation's identity. - `shared`: confined processes share one proxy endpoint and the identity is a label the client presents (ASRT's proxy username). Attribution, not a boundary between concurrent invocations. */
 export type EgressIdentityStrength = "kernel-channel" | "shared";
 
-/** The scopes an egress grant can be given. A shell tool call's card offers Deny plus once, session, project, always (owner 2026-10-25, D1); a workspace terminal
+/** The scopes an egress grant can be given. A shell tool call's card offers Deny plus once, session, project, always (owner 2026-10-25, five-choice network card); a workspace terminal
  * tab's ladder is once, tab, always (`tab` takes the place of `session`: a terminal belongs to no conversation, design F). */
 export type EgressGrantScope = "once" | "session" | "tab" | "project" | "always";
 

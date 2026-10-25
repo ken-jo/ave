@@ -51,7 +51,7 @@ describe("shell confinement and escape rules", () => {
     expect(check("printf ready", false)).toMatchObject({ decision: "allow", layer: 3 });
   });
 
-  // Owner 2026-10-25 (D2): without a sandbox for this command only an exact Bash(<command>) rule runs it unasked, even on a host whose sandbox works for other commands.
+  // Owner 2026-10-25 (unsandboxed shell exact-rule requirement): without a sandbox for this command only an exact Bash(<command>) rule runs it unasked, even on a host whose sandbox works for other commands.
   it.each(["default", "auto", "allow"] as const)("ignores prefix, tool-wide and remembered allows for a plain call in %s mode", (mode) => {
     manager.setMode(mode);
     manager.setRules([{ pattern: "Bash(printf *)", action: "allow" }, { pattern: "bash", action: "allow" }]);
@@ -68,7 +68,7 @@ describe("shell confinement and escape rules", () => {
     expect(check("printf ready", true)).toMatchObject({ decision: "allow" });
   });
 
-  it("denies a headless plain call that no exact rule covers, and runs one that an exact rule covers (D2, I5)", () => {
+  it("denies a headless plain call that no exact rule covers, and runs one that an exact rule covers (unsandboxed shell exact-rule requirement, I5)", () => {
     manager.setRules([{ pattern: "Bash(printf *)", action: "allow" }]);
     expect(check("printf ready", false, { headless: true })).toMatchObject({ decision: "deny", layer: 6 });
     expect(check("printf ready", false, { headless: true }).reviewer).toBeUndefined();
@@ -76,7 +76,7 @@ describe("shell confinement and escape rules", () => {
     expect(check("printf ready", false, { headless: true })).toMatchObject({ decision: "allow", layer: 3 });
   });
 
-  it("applies a This session rule to its conversation only, until the conversation ends (D3)", () => {
+  it("applies a This session rule to its conversation only, until the conversation ends (five-choice shell card)", () => {
     manager.addSessionShellRule("conversation-a", "Bash(printf ready)");
     expect(check("printf ready", false, { sessionId: "conversation-a" })).toMatchObject({ decision: "allow", layer: 3 });
     expect(check("printf ready", false, { sessionId: "conversation-b" })).toMatchObject({ decision: "ask" });
@@ -117,7 +117,7 @@ describe("shell confinement and escape rules", () => {
     expect(check("printf ready", true)).toMatchObject({ decision: "deny" });
   });
 
-  it("never routes an unresolved plain call to the automatic reviewer (D2)", () => {
+  it("never routes an unresolved plain call to the automatic reviewer (unsandboxed shell exact-rule requirement)", () => {
     manager.setMode("auto");
     manager.setInteractiveAutoApprove("medium");
     const result = check("printf ready", false);
@@ -208,7 +208,7 @@ describe("plain-shell invocation authorization", () => {
     return { classifier, cache };
   }
 
-  // Owner 2026-10-25 (D2, superseding I3's normal-rule path): an unavailable sandbox never lets a reviewer verdict run a plain call; the card asks whatever the reviewer would say.
+  // Owner 2026-10-25 (unsandboxed shell exact-rule requirement, superseding I3's normal-rule path): an unavailable sandbox never lets a reviewer verdict run a plain call; the card asks whatever the reviewer would say.
   it.each(["low", "high"] as const)("asks for a plain call while the sandbox is unavailable without consulting a %s reviewer", async (level) => {
     setActiveSandboxCapability({ kind: "none", confidence: "verified", platform: process.platform, reason: "fixture sandbox unavailable" });
     const { classifier, cache } = lowReviewer();

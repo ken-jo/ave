@@ -762,7 +762,7 @@ export function ToolApprovalContent({
   // did not narrow the choices. A browser scope is remembered until restart only; the remember button says so and records `scope: "session"` (the record handler enforces it).
   const rememberIsSessionOnly = !outOfDirScopes && isSessionOnlyRemember(request);
   const shellRule = request?.shellRule;
-  // The exact `Bash(<command>)` rule the host derived; the card shows it and saves only it (owner 2026-10-25, D3).
+  // The exact `Bash(<command>)` rule the host derived; the card shows it and saves only it (owner 2026-10-25, five-choice shell card).
   const shellExactRule = shellRule?.exactRule ?? null;
   // A session allow belongs to the request's root conversation; a request with no conversation cannot hold one (the host answers `missing-session`).
   const sessionRememberWithoutConversation = !shellRule && !outOfDirScopes && rememberIsSessionOnly && !request?.sessionId;

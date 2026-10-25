@@ -1,4 +1,4 @@
-/** Host shells without isolation (off or unavailable) run unasked only on an exact Bash(<command>) rule (owner 2026-10-25, D2); unavailable requests retain warning metadata.
+/** Host shells without isolation (off or unavailable) run unasked only on an exact Bash(<command>) rule (owner 2026-10-25, unsandboxed shell exact-rule requirement); unavailable requests retain warning metadata.
  * Explicit host retries ask unless an exact allow rule matches; sensitive and exfiltration floors still force approval, and deny rules always win. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, symlinkSync, unlinkSync } from "node:fs";
@@ -195,7 +195,7 @@ describe("explicit unsandboxed retry (executionMode host)", () => {
   });
 
   // The research names the hazard: a remembered approval given for a sandboxed/default run must not silently cover the unsandboxed retry.
-  // Only an exact allow rule may (D2). The remembered-approval key carries the sealed plan, and the explicit-host gate never consults approval memory.
+  // Only an exact allow rule may (unsandboxed shell exact-rule requirement). The remembered-approval key carries the sealed plan, and the explicit-host gate never consults approval memory.
   it("keeps a default run's remembered approval apart from the unsandboxed retry", async () => {
     const first = await run({
       substrate: "sandbox-off", rules: [], command: "printf granted",
@@ -211,7 +211,7 @@ describe("explicit unsandboxed retry (executionMode host)", () => {
       executionMode: "host", answer: "deny-once", pm: first.pm,
     });
     expect(retry.cards).toHaveLength(1);
-    // A bash card is not narrowed to once/deny: the gate offers the five choices for its exact rule (owner 2026-10-25, D3).
+    // A bash card is not narrowed to once/deny: the gate offers the five choices for its exact rule (owner 2026-10-25, five-choice shell card).
     expect(retry.cards[0]?.allowedChoices).toBeUndefined();
     expect(retry.cards[0]).toMatchObject({
       executionPlan: { executionRequest: "host", requiresExplicitUserApproval: true },
@@ -228,7 +228,7 @@ describe("explicit unsandboxed retry (executionMode host)", () => {
       executionMode: "host", answer: "allow-once",
     });
     expect(cards).toHaveLength(1);
-    // A bash card is not narrowed to once/deny: the gate offers the five choices for its exact rule (owner 2026-10-25, D3).
+    // A bash card is not narrowed to once/deny: the gate offers the five choices for its exact rule (owner 2026-10-25, five-choice shell card).
     expect(cards[0]?.allowedChoices).toBeUndefined();
     expect(cards[0]).toMatchObject({
       requireExplicit: true,

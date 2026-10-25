@@ -1552,13 +1552,13 @@ reviewer, audit and cache consumers use that plan.
 A shell whose plan is not sandboxed (the sandbox is off, unavailable or does
 not cover the command, an explicit host request, or the Windows Plan B) runs
 without asking only when an exact `Bash(<command>)` allow rule — user, project
-or This session — matches it (owner decision 2026-10-25, D2, superseding the
+or This session — matches it (owner decision 2026-10-25, unsandboxed shell exact-rule requirement, superseding the
 I3 rule that sent such shells to the normal rules). Prefix and tool-wide
 rules, remembered dock grants, allow mode, the reviewer and the judge never
 stand in for that rule: everything else asks on the dock, and with nobody to
 ask (a headless or routine turn) it is denied and audited (I5). PowerShell has
 no rule language, so an unsandboxed PowerShell call always asks. The bash card
-for such a shell offers the same five choices as the network card (D3): Deny,
+for such a shell offers the same five choices as the network card (five-choice shell card): Deny,
 Allow once, This session, This project and Always. Each save stores exactly
 the host-derived `Bash(<command>)` rule for the single simple command on the
 card — in memory for the conversation (ending with it), in the project's rule
@@ -1850,15 +1850,22 @@ every connection: a plugin worker reaches its own extension's declared
 domains and the configured model endpoints, nothing else, and is never asked;
 a Bash or PowerShell call reaches a host a grant covers, and otherwise
 the person is asked on the approval dock with exactly five choices (owner
-decision 2026-10-25, D1): Deny, Allow once, This session (in memory; it ends
+decision 2026-10-25, five-choice network card): Deny, Allow once, This session (in memory; it ends
 when the conversation is deleted or the app quits), This project (persisted,
 keyed by the project root of the call's working directory: the repository
 root when one is found, the same root a project `Bash(...)` rule applies to)
 and Always (persisted, global). The scope values on the wire and on disk are
 `once`, `session`, `project` and `always`; the earlier `conversation` and
 `workspace` names are refused everywhere, except that a version-1 grant file's
-`workspace` grants are read once as `project` grants on the same directory and
-written back as version 2 on the next change. A workspace terminal tab (always in
+`workspace` grants are migrated once: a grant made at its project root becomes
+the `project` grant for that root, and one made in a subdirectory of a
+repository is dropped (re-keying it on the root would widen it) and recorded as
+an `egress-grant-migration` sandbox-audit row, so that host is asked again. The
+file is written back as version 2 on the next change. "This session" choices
+(network hosts, `Bash(<command>)` rules, exact approvals) end when the
+conversation is deleted: deleting a root conversation ends them for it and its
+sub-agents, and deleting a sub-agent session ends only that session's own
+network hosts, since its rules and approvals belong to the root. A workspace terminal tab (always in
 the foreground) reaches a host a grant covers, and otherwise the person is
 asked in a banner in that tab, drawn only in, fetched by and answered from
 the window that owns the tab (Deny, Allow once, This tab, Always: a

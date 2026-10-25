@@ -145,6 +145,18 @@ export interface SandboxEgressDecisionAuditEntry {
   reason: string | null;
 }
 
+/** A v1 "This workspace" network grant the v1 → v2 grant-file migration dropped instead of widening it: its directory was inside a repository, and a v2 "This project" grant keys on the repository root. DLP-mask the host and both directories as for denial rows. */
+export interface SandboxEgressGrantMigrationAuditEntry {
+  timestamp: string;
+  entryKind: "egress-grant-migration";
+  action: "dropped";
+  destination: { host: string; port: number };
+  /** The v1 grant's exact directory. */
+  workspaceRoot: string;
+  /** The repository root a v2 project grant would have covered. */
+  projectRoot: string;
+}
+
 /** Record skipped unusable proxy routes once per lookup, not connection.
  * DLP-mask hosts and entries; never record credentials, and name environment entries only by variable. */
 export interface SandboxEgressRouteAuditEntry {

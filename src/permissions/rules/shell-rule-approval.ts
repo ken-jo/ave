@@ -9,7 +9,7 @@ import { validatePermissionRule } from "./rule-files.js";
 import { isDestructiveShellArgv, noReusableRuleReason } from "./shell-prefix-values.js";
 import { projectRuleRoot } from "./project-rule-files.js";
 
-// Derive the one exact rule a bash card may save from the host's original shell input: the complete argv of a single simple command, never a prefix or wildcard (owner 2026-10-25, D3).
+// Derive the one exact rule a bash card may save from the host's original shell input: the complete argv of a single simple command, never a prefix or wildcard (owner 2026-10-25, five-choice shell card).
 export function buildShellRuleApproval(command: string, projectCwd: string, rememberAllowed: boolean, sessionId?: string): ShellRuleApproval {
   const parsed = parseShellCommand(command);
   const shape = analyzeShellForRules(parsed, projectCwd);
