@@ -596,7 +596,7 @@ describe("checkDetailed applies the floors by dialect", () => {
     "Write-Host 'unterminated", "iex $code", "Get-Content $missing",
     "Invoke-Item payload.bat", "Set-Content build.ps1 Get-Date; build.ps1",
     `Get-Content (${"'a' + ".repeat(3000)}'b')`,
-  ])("keeps parser, code and provenance asks rememberable: %#", async (command) => {
+  ])("keeps parser, code and provenance asks ordinary but unremembered without a sandbox: %#", async (command) => {
     const pm = new PermissionManager(join(dir, "permissions.json"));
     pm.setMode("allow");
     const pending = pm.checkDetailed("powershell", "builtin", "shell", null, ps(command));
@@ -605,31 +605,32 @@ describe("checkDetailed applies the floors by dialect", () => {
     if (command === "Set-Content build.ps1 Get-Date; build.ps1") {
       expect(pending.reason).toMatch(/materialized.*file/);
     }
+    // PowerShell has no Bash(<command>) rule, so without a sandbox a saved exact-action grant never runs it unasked (owner 2026-10-25, unsandboxed shell exact-rule requirement).
     await pm.addAlwaysAllowedPersist(ps(command).approvalCacheKey, "write");
-    expect(pm.checkDetailed("powershell", "builtin", "shell", null, ps(command))).toMatchObject({ decision: "allow" });
+    expect(pm.checkDetailed("powershell", "builtin", "shell", null, ps(command))).toMatchObject({ decision: "ask", layer: 6 });
     const reloaded = new PermissionManager(join(dir, "permissions.json"));
     await reloaded.loadRulesFromFile();
-    expect(reloaded.checkDetailed("powershell", "builtin", "shell", null, ps(command))).toMatchObject({ decision: "allow" });
+    expect(reloaded.checkDetailed("powershell", "builtin", "shell", null, ps(command))).toMatchObject({ decision: "ask", layer: 6 });
   });
 
   it.each([
     "npm test", "npx helper", "npx --unknown-runner-code helper", "deno run https://x.invalid/main.ts",
-  ])("honors saved exact-action grants for opaque runners: %s", async (command) => {
+  ])("does not let a saved exact-action grant run an opaque runner without a sandbox: %s", async (command) => {
     const pm = new PermissionManager(join(dir, "permissions.json"));
     pm.setMode("allow");
     const pending = pm.checkDetailed("powershell", "builtin", "shell", null, ps(command));
     expect(pending).toMatchObject({ decision: "ask", layer: 6, reason: "opaque runner prefix" });
     expect(pending.forceModal).toBeUndefined();
     await pm.addAlwaysAllowedPersist(ps(command).approvalCacheKey, "write");
-    expect(pm.checkDetailed("powershell", "builtin", "shell", null, ps(command))).toMatchObject({ decision: "allow" });
+    expect(pm.checkDetailed("powershell", "builtin", "shell", null, ps(command))).toMatchObject({ decision: "ask", layer: 6 });
   });
 
-  it("lets an exact-action allow rule satisfy an ordinary code ask", async () => {
+  it("does not let an exact-action allow rule satisfy an ordinary code ask without a sandbox", async () => {
     const pm = new PermissionManager(join(dir, "permissions.json"));
     await pm.addAlwaysAllowedPersist(ps("iex $code").approvalCacheKey, "write");
     await pm.loadRulesFromFile();
     expect(pm.checkDetailed("powershell", "builtin", "shell", null, ps("iex $code")))
-      .toMatchObject({ decision: "allow", layer: 3 });
+      .toMatchObject({ decision: "ask", layer: 6 });
   });
 
   it.each([
@@ -664,8 +665,8 @@ describe("checkDetailed applies the floors by dialect", () => {
       .toMatchObject({ decision: "ask", layer: 2, forceModal: true, reason: expect.stringMatching(/upload of a file \(-InFile\)/) });
     expect(pm.checkDetailed("powershell", "builtin", "shell", null, ps("Get-Content ~\\.ssh\\id_rsa")))
       .toMatchObject({ decision: "ask", layer: 2, forceModal: true, reason: expect.stringMatching(/sensitive path argument/) });
-    expect(pm.checkDetailed("powershell", "builtin", "shell", null, { ...ps("Get-ChildItem"), shellExecution: { runsSandboxed: true, sandboxAvailable: true } })).toMatchObject({ decision: "allow" });
-    expect(pm.checkDetailed("powershell", "builtin", "shell", null, { ...ps("iwr https://example.com -OutFile page.html"), shellExecution: { runsSandboxed: true, sandboxAvailable: true } })).toMatchObject({ decision: "allow" });
+    expect(pm.checkDetailed("powershell", "builtin", "shell", null, { ...ps("Get-ChildItem"), shellExecution: { runsSandboxed: true } })).toMatchObject({ decision: "allow" });
+    expect(pm.checkDetailed("powershell", "builtin", "shell", null, { ...ps("iwr https://example.com -OutFile page.html"), shellExecution: { runsSandboxed: true } })).toMatchObject({ decision: "allow" });
   });
 
   it("Bash(...) rules match bash only — never powershell, in either direction", async () => {

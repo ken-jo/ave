@@ -9,7 +9,8 @@ import { closeEgressConnections, normalizeUnionForAsrt } from "./asrt-sandbox.js
 import type { ListedEgressGrant, RevocableEgressGrant } from "../shared/egress-grant-scopes.js";
 import { createApprovalGateEgressRequester } from "./egress-approval.js";
 import { createEgressAskCallback } from "./egress-ask.js";
-import { EgressGrantStore } from "./egress-grants.js";
+import { EgressGrantStore, egressGrantFilePath } from "./egress-grants.js";
+import { maskSensitiveData } from "../audit/dlp-filter.js";
 import { egressIdentityStrength } from "./egress-identity.js";
 import {
   egressInvocationAbortSignal,
@@ -24,7 +25,17 @@ let grantStore: EgressGrantStore | undefined;
 // The process's shell egress grant store (Settings lists and revokes through it). Created on first use; its "Allow once" hosts go with their invocation, and a terminal tab's "This tab" hosts with the tab's shell (the tab closed).
 function egressGrantStore(): EgressGrantStore {
   if (grantStore === undefined) {
-    const store = new EgressGrantStore();
+    const store = new EgressGrantStore(egressGrantFilePath(), (dropped) => {
+      log.warn(`[egress] a v1 "This workspace" network grant made inside a repository was dropped by the grant-file migration; it will be asked again`);
+      emitSandboxAudit({
+        timestamp: new Date().toISOString(),
+        entryKind: "egress-grant-migration",
+        action: "dropped",
+        destination: { host: maskSensitiveData(dropped.host).masked, port: dropped.port },
+        workspaceRoot: maskSensitiveData(dropped.workspaceRoot).masked,
+        projectRoot: maskSensitiveData(dropped.projectRoot).masked,
+      }).catch((error: unknown) => log.warn(`[egress] grant migration audit write failed: ${errorMessage(error)}`));
+    });
     onEgressInvocationReleased((token, { owner }) => {
       store.releaseToken(token);
       if (owner.kind === "terminal") store.releaseTab(owner.tabId);
@@ -34,10 +45,16 @@ function egressGrantStore(): EgressGrantStore {
   return grantStore;
 }
 
-// Every grant Settings lists: this run's conversation and tab grants, then the persistent ones.
+// Every grant Settings lists: this run's session and tab grants, then the persistent ones.
 export async function listEgressGrants(): Promise<readonly ListedEgressGrant[]> {
   const store = egressGrantStore();
-  return [...store.listConversation(), ...store.listTab(), ...(await store.listPersistent())];
+  return [...store.listSession(), ...store.listTab(), ...(await store.listPersistent())];
+}
+
+// Drop a deleted conversation's "This session" hosts (owner 2026-10-25: session scope dies with the session).
+export function releaseEgressSessions(ended: (sessionId: string) => boolean): void {
+  if (grantStore === undefined) return;
+  grantStore.releaseSessions(ended);
 }
 
 // Revoke one grant and close the connections it had let through that are still open. Resolves whether it existed and how many connections closed.
@@ -80,10 +97,7 @@ export interface EgressAskRuntimeDeps {
 export function createEgressAskRuntimeCallback(deps: EgressAskRuntimeDeps): SandboxAskCallback {
   const requester = createApprovalGateEgressRequester(deps.approvalGate, deps.permissionManager);
   return createEgressAskCallback({
-    // OWNER ITEM: ip2 caps shell egress grants at once/always; owner 2026-10-16 offers
-    // once/conversation/workspace/always (Windows shared frontend capped at
-    // once/conversation, 2026-10-19). This follows ip2 until the owner picks.
-    shellGrantScopes: ["once", "always"],
+    // Shell cards offer Deny plus once/session/project/always (owner 2026-10-25, five-choice network card); a shared identity or a local/unverified destination keeps only the in-memory rungs.
     identityStrength: egressIdentityStrength,
     ownerOf: egressInvocationOwner,
     abortSignalOf: egressInvocationAbortSignal,

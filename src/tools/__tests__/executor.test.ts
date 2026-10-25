@@ -446,7 +446,10 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
     expect(requestApproval).not.toHaveBeenCalled();
   });
 
-  it.skipIf(process.platform === "win32")("threads shell approvalCacheKey through permission rules so one command does not authorize another", async () => {
+  it.skipIf(process.platform === "win32")("runs an unsandboxed shell only on its exact Bash(<command>) rule, so one command does not authorize another", async () => {
+    // Unsandboxed shell exact-rule requirement (owner 2026-10-25): with the sandbox off, a remembered dock grant
+    // for the sealed approval key no longer runs the command; only an exact Bash(<command>) allow rule does, and it
+    // covers that command alone.
     const registry = new ToolRegistry();
     const bash = new BashTool();
     registry.register(bash);
@@ -476,20 +479,24 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
         })),
       };
       const executor = new ToolExecutor(registry, undefined, permMgr, undefined, approvalGate as never);
-
-      const first = await executor.executeAll(
-        [{ id: "tu-shell-1", name: "bash", input: firstInput }],
+      const run = (id: string, input: typeof firstInput) => executor.executeAll(
+        [{ id, name: "bash", input }],
         { sessionId: "sess-shell-approval", permissionContext: userPermissionContext({ trustOrigin: "llm-tool-arg" }) },
       );
+
+      const grantOnly = await run("tu-shell-0", firstInput);
+      expect(approvalGate.requestAndWait).toHaveBeenCalledTimes(1);
+      expect(grantOnly[0].is_error).toBe(true);
+      expect(grantOnly[0].content).toContain("승인 거부");
+
+      await permMgr.addRulePersist({ pattern: "Bash(echo safe)", action: "allow" }, { kind: "user" });
+      const first = await run("tu-shell-1", firstInput);
       expect(first[0].is_error).toBeUndefined();
       expect(first[0].content).toContain("safe");
-      expect(approvalGate.requestAndWait).not.toHaveBeenCalled();
-
-      const second = await executor.executeAll(
-        [{ id: "tu-shell-2", name: "bash", input: secondInput }],
-        { sessionId: "sess-shell-approval", permissionContext: userPermissionContext({ trustOrigin: "llm-tool-arg" }) },
-      );
       expect(approvalGate.requestAndWait).toHaveBeenCalledTimes(1);
+
+      const second = await run("tu-shell-2", secondInput);
+      expect(approvalGate.requestAndWait).toHaveBeenCalledTimes(2);
       expect(second[0].is_error).toBe(true);
       expect(second[0].content).toContain("승인 거부");
     } finally {

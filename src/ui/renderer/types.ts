@@ -1397,6 +1397,7 @@ import type {
   ScopedPermissionRuleError,
   UserApprovalDecision,
   UserApprovalHitPayload,
+  ShellRuleSaveScope,
   UserApprovalScope,
   UserApprovalVerdict,
 } from "../../shared/permissions-events.js";
@@ -1410,7 +1411,7 @@ export type AveUserApprovalApi = {
      *  ApprovalGate.getRequestSnapshot — renderer-supplied authority fields
      *  below are ignored (kept on the wire for legacy callers + audit). */
     requestId: string;
-    rule?: { pattern: string; scope: "project" | "user" };
+    rule?: { scope: ShellRuleSaveScope };
     toolName: string;
     args: string;
     source: string;

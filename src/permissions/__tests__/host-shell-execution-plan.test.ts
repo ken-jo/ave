@@ -110,7 +110,7 @@ describe("host shell execution plan", () => {
         requestedSandbox: true,
         mode: "plain",
         fallbackReason: "requested-sandbox-unavailable",
-        // Design I3: an unavailable sandbox warns and continues under the normal rules, so it needs no one-shot permit. The fallback reason and the separate identity keep it distinct from sandbox-off.
+        // An unavailable sandbox follows the same exact-rule policy as sandbox-off (owner 2026-10-25, unsandboxed shell exact-rule requirement), so it needs no one-shot permit. The fallback reason and the separate identity keep it distinct from sandbox-off.
         requiresExplicitUserApproval: false,
         capability: {
           kind: "none",

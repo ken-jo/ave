@@ -7,6 +7,8 @@ import type { ApprovalRequest } from "../../types.js";
 import { TEST_IDS } from "../../../../shared/test-ids.js";
 import { getLocale, setLocale, t } from "../../../../i18n/runtime.js";
 
+const EXACT_RULE = "Bash(git status --short)";
+
 function shellRequest(overrides: Partial<ApprovalRequest> = {}): ApprovalRequest {
   return {
     id: "shell-rule-request", category: "tool", kind: "tool", toolCategory: "shell",
@@ -14,121 +16,81 @@ function shellRequest(overrides: Partial<ApprovalRequest> = {}): ApprovalRequest
     reason: "Review shell command", createdAt: Date.now(), requireExplicit: false,
     reviewerVerdict: { level: "medium", reason: "Review shell command" },
     persistentAllowAllowed: true, persistentApprovalCwd: "/workspace/project",
-    shellRule: { suggestedPattern: "Bash(git status *)", projectCwd: "/workspace/project", projectRoot: "/workspace/project", sessionAllowed: true, persistentAllowed: true },
+    shellRule: { exactRule: EXACT_RULE, projectCwd: "/workspace/project", projectRoot: "/workspace/project", sessionAllowed: true, persistentAllowed: true },
     ...overrides,
   };
 }
 
+const SAVE_BUTTONS = {
+  session: "approval-allow-session",
+  project: "approval-allow-project",
+  always: TEST_IDS.allowAlwaysButton,
+} as const;
+
 const originalLocale = getLocale();
 afterEach(() => { vi.unstubAllGlobals(); setLocale(originalLocale); });
 
-describe("shell approval rule controls", () => {
-  it("saves an edited project rule before answering once and never records an exact persistent grant", async () => {
+// Owner 2026-10-25 (five-choice shell card): an unsandboxed bash card offers exactly Deny, Allow once, This session, This project and Always; every save stores the host's exact rule.
+describe("shell approval five choices", () => {
+  it("offers exactly the five choices and shows the exact rule read-only", () => {
+    vi.stubGlobal("ave", { userApproval: { record: vi.fn() } });
+    renderApproval(shellRequest(), vi.fn());
+    expect(screen.getByTestId("approval-shell-outside-sandbox")).toHaveTextContent(t("toolApprovalDialog.shellOutsideSandbox"));
+    const pattern = screen.getByTestId("approval-shell-rule-pattern");
+    expect(pattern.tagName).toBe("CODE");
+    expect(pattern).toHaveTextContent(EXACT_RULE);
+    for (const testId of [TEST_IDS.denyButton, TEST_IDS.approveButton, ...Object.values(SAVE_BUTTONS)]) {
+      expect(screen.getByTestId(testId)).toBeEnabled();
+    }
+    expect(screen.queryByRole("textbox")).toBeNull();
+    expect(screen.queryByRole("combobox")).toBeNull();
+    expect(screen.queryByTestId("approval-deny-always")).toBeNull();
+    expect(screen.getByTestId("approval-shell-rule-scope-target")).toHaveTextContent(t("toolApprovalDialog.shellScopeProjectTarget", { root: "/workspace/project" }));
+  });
+
+  it.each(Object.entries(SAVE_BUTTONS))("saves the %s scope by name only, then answers allow-once", async (scope, testId) => {
     let finishSave: ((result: { ok: boolean }) => void) | undefined;
     const record = vi.fn(() => new Promise((resolve) => { finishSave = resolve; }));
     const onDecide = vi.fn();
     vi.stubGlobal("ave", { userApproval: { record } });
     renderApproval(shellRequest(), onDecide);
-    expect(screen.getByTestId("approval-shell-outside-sandbox")).toHaveTextContent(t("toolApprovalDialog.shellOutsideSandbox"));
-    expect(screen.getByTestId("approval-shell-rule-pattern")).toHaveValue("Bash(git status *)");
-    expect(screen.getByTestId("approval-shell-rule-scope")).toHaveValue("project");
-    fireEvent.change(screen.getByTestId("approval-shell-rule-pattern"), { target: { value: "Bash( git status )" } });
-    expect(screen.getByTestId("approval-shell-rule-preview")).toHaveTextContent(t("toolApprovalDialog.shellRulePreview", { pattern: "Bash(git status)" }));
-    fireEvent.click(screen.getByTestId(TEST_IDS.allowAlwaysButton));
+    fireEvent.click(screen.getByTestId(testId));
     expect(onDecide).not.toHaveBeenCalled();
     expect(record).toHaveBeenCalledTimes(1);
-    expect(record).toHaveBeenCalledWith(expect.objectContaining({ rule: { pattern: "Bash(git status)", scope: "project" }, decision: "allow" }));
+    expect(record).toHaveBeenCalledWith(expect.objectContaining({
+      rule: { scope }, decision: "allow", scope: scope === "session" ? "session" : "persistent",
+    }));
+    expect(JSON.stringify(record.mock.calls[0])).not.toContain("pattern");
     finishSave?.({ ok: true });
     await waitFor(() => expect(onDecide).toHaveBeenCalledWith("allow-once", undefined));
   });
 
-  it.each([
-    { name: "tabs", typed: "Bash(\tgit\tstatus\t*)", saved: "Bash(git status *)" },
-    { name: "internal runs of spaces", typed: "  Bash(git   status    *)  ", saved: "Bash(git status *)" },
-    { name: "mixed tabs and spaces", typed: "Bash( \t git \t status )", saved: "Bash(git status)" },
-  ])("normalizes $name before saving and previews the saved rule", async ({ typed, saved }) => {
-    const record = vi.fn().mockResolvedValue({ ok: true }); const onDecide = vi.fn();
+  it("answers Allow once and Deny without saving anything", () => {
+    const record = vi.fn(); const onDecide = vi.fn();
     vi.stubGlobal("ave", { userApproval: { record } });
     renderApproval(shellRequest(), onDecide);
-    fireEvent.change(screen.getByTestId("approval-shell-rule-pattern"), { target: { value: typed } });
-    expect(screen.getByTestId("approval-shell-rule-preview")).toHaveTextContent(t("toolApprovalDialog.shellRulePreview", { pattern: saved }));
-    fireEvent.click(screen.getByTestId(TEST_IDS.allowAlwaysButton));
-    await waitFor(() => expect(onDecide).toHaveBeenCalledWith("allow-once", undefined));
-    expect(record).toHaveBeenCalledWith(expect.objectContaining({ rule: { pattern: saved, scope: "project" } }));
-  });
-
-  it("names the directory a project rule will apply to", () => {
-    vi.stubGlobal("ave", { userApproval: { record: vi.fn() } });
-    renderApproval(shellRequest({
-      shellRule: { suggestedPattern: "Bash(git status *)", projectCwd: "/workspace/project/packages/app", projectRoot: "/workspace/project", sessionAllowed: true, persistentAllowed: true },
-    }), vi.fn());
-    expect(screen.getByTestId("approval-shell-rule-scope-target")).toHaveTextContent(/^\/workspace\/project$/);
-    fireEvent.change(screen.getByTestId("approval-shell-rule-scope"), { target: { value: "user" } });
-    expect(screen.getByTestId("approval-shell-rule-scope-target")).toHaveTextContent(t("toolApprovalDialog.shellScopeUserHelp"));
-  });
-
-  it("shows no preview for an already canonical rule", () => {
-    vi.stubGlobal("ave", { userApproval: { record: vi.fn() } });
-    renderApproval(shellRequest(), vi.fn());
-    expect(screen.queryByTestId("approval-shell-rule-preview")).toBeNull();
-  });
-
-  it.each([
-    { name: "empty after trimming", typed: "Bash( \t )" },
-    { name: "still invalid after normalization", typed: "Bash( git | status )" },
-  ])("keeps a rule that is $name flagged invalid", ({ typed }) => {
-    const record = vi.fn();
-    vi.stubGlobal("ave", { userApproval: { record } });
-    renderApproval(shellRequest(), vi.fn());
-    fireEvent.change(screen.getByTestId("approval-shell-rule-pattern"), { target: { value: typed } });
-    expect(screen.getAllByText(t("toolApprovalDialog.shellRuleInvalid")).length).toBeGreaterThan(0);
-    expect(screen.queryByTestId("approval-shell-rule-preview")).toBeNull();
-    expect(screen.getByTestId(TEST_IDS.allowAlwaysButton)).toBeDisabled();
-    expect(screen.getByTestId("approval-deny-always")).toBeDisabled();
+    fireEvent.click(screen.getByTestId(TEST_IDS.denyButton));
+    expect(onDecide).toHaveBeenLastCalledWith("deny-once");
+    fireEvent.click(screen.getByTestId(TEST_IDS.approveButton));
     expect(record).not.toHaveBeenCalled();
   });
 
-  it("saves a user deny rule before answering deny-once", async () => {
-    const record = vi.fn().mockResolvedValue({ ok: true }); const onDecide = vi.fn();
-    vi.stubGlobal("ave", { userApproval: { record } });
-    renderApproval(shellRequest(), onDecide);
-    fireEvent.change(screen.getByTestId("approval-shell-rule-scope"), { target: { value: "user" } });
-    fireEvent.click(screen.getByTestId("approval-deny-always"));
-    await waitFor(() => expect(onDecide).toHaveBeenCalledWith("deny-once", undefined));
-    expect(record).toHaveBeenCalledWith(expect.objectContaining({ decision: "deny", rule: { pattern: "Bash(git status *)", scope: "user" } }));
-  });
-
-  it("uses exact session memory and responds only once", async () => {
-    const record = vi.fn().mockResolvedValue({ ok: true }); const onDecide = vi.fn();
-    vi.stubGlobal("ave", { userApproval: { record } });
-    renderApproval(shellRequest(), onDecide);
-    fireEvent.click(screen.getByTestId("approval-allow-session"));
-    await waitFor(() => expect(onDecide).toHaveBeenCalledWith("allow-once", undefined));
-    expect(record).toHaveBeenCalledWith(expect.objectContaining({ scope: "session", decision: "allow" }));
-    expect(record.mock.calls[0][0]).not.toHaveProperty("rule");
-  });
-
-  it("keeps a refused prefix session-eligible without offering always allow", () => {
+  it("disables only This session when the request has no conversation", () => {
     vi.stubGlobal("ave", { userApproval: { record: vi.fn() } });
-    renderApproval(shellRequest({ shellRule: { suggestedPattern: null, projectCwd: "/workspace/project", projectRoot: "/workspace/project", sessionAllowed: true, persistentAllowed: false } }), vi.fn());
-    expect(screen.getByTestId(TEST_IDS.allowAlwaysButton)).toBeDisabled();
-    expect(screen.getByTestId("approval-allow-session")).toBeEnabled();
+    renderApproval(shellRequest({ shellRule: { exactRule: EXACT_RULE, projectCwd: "/workspace/project", projectRoot: "/workspace/project", sessionAllowed: false, persistentAllowed: true } }), vi.fn());
+    expect(screen.getByTestId(SAVE_BUTTONS.session)).toBeDisabled();
+    expect(screen.getByTestId(SAVE_BUTTONS.project)).toBeEnabled();
+    expect(screen.getByTestId(SAVE_BUTTONS.always)).toBeEnabled();
   });
 
-  it.each(["Bash(node *)", "Bash(sudo *)", "Bash(env *)", "Bash(bash *)"])("blocks edited refused allow prefix %s while retaining deny", (pattern) => {
+  it("keeps a command with no exact rule to Deny and Allow once, and says why", () => {
     vi.stubGlobal("ave", { userApproval: { record: vi.fn() } });
-    renderApproval(shellRequest(), vi.fn());
-    fireEvent.change(screen.getByTestId("approval-shell-rule-pattern"), { target: { value: pattern } });
-    expect(screen.getByTestId(TEST_IDS.allowAlwaysButton)).toBeDisabled();
-    expect(screen.getByTestId("approval-deny-always")).toBeEnabled();
-    expect(screen.getByTestId("approval-allow-session")).toBeEnabled();
-  });
-
-  it("never widens a one-shot floor into session or persistent allow", () => {
-    vi.stubGlobal("ave", { userApproval: { record: vi.fn() } });
-    renderApproval(shellRequest({ persistentAllowAllowed: false, allowedChoices: ["allow-once", "deny-once"], shellRule: { suggestedPattern: null, projectCwd: "/workspace/project", projectRoot: "/workspace/project", sessionAllowed: false, persistentAllowed: false } }), vi.fn());
-    expect(screen.getByTestId(TEST_IDS.allowAlwaysButton)).toBeDisabled();
-    expect(screen.queryByTestId("approval-allow-session")).toBeNull();
+    renderApproval(shellRequest({ persistentAllowAllowed: false, allowedChoices: ["allow-once", "deny-once"], shellRule: { exactRule: null, projectCwd: "/workspace/project", projectRoot: "/workspace/project", sessionAllowed: false, persistentAllowed: false } }), vi.fn());
+    for (const testId of Object.values(SAVE_BUTTONS)) expect(screen.getByTestId(testId)).toBeDisabled();
+    expect(screen.getByTestId(TEST_IDS.approveButton)).toBeEnabled();
+    expect(screen.getByTestId(TEST_IDS.denyButton)).toBeEnabled();
+    expect(screen.queryByTestId("approval-shell-rule-pattern")).toBeNull();
+    expect(screen.getByTestId("allow-always-unavailable-reason")).toHaveTextContent(t("toolApprovalDialog.shellExactRuleUnavailable"));
   });
 
   it("keeps the request pending and allows retry after a rejected rule save", async () => {
@@ -149,14 +111,17 @@ describe("shell approval rule controls", () => {
     const record = vi.fn().mockResolvedValue({ ok: false, error, message });
     vi.stubGlobal("ave", { userApproval: { record } });
     renderApproval(shellRequest(), vi.fn());
-    fireEvent.click(screen.getByTestId(TEST_IDS.allowAlwaysButton));
+    fireEvent.click(screen.getByTestId(SAVE_BUTTONS.project));
     await waitFor(() => expect(screen.getByTestId("exact-decision-save-error")).toHaveTextContent(`${t(key)} (${message})`));
   });
 
-  it.each(["en", "ko"] as const)("localizes the editable rule controls in %s", (locale) => {
+  it.each(["en", "ko"] as const)("localizes the five choices in %s", (locale) => {
     setLocale(locale); vi.stubGlobal("ave", { userApproval: { record: vi.fn() } });
     renderApproval(shellRequest(), vi.fn());
-    expect(screen.getByLabelText(t("toolApprovalDialog.shellRulePattern"))).toBeVisible();
-    expect(screen.getByTestId("approval-deny-always")).toHaveTextContent(t("toolApprovalDialog.shellDenyAlways"));
+    expect(screen.getByTestId(SAVE_BUTTONS.session)).toHaveTextContent(t("toolApprovalDialog.allowForSession"));
+    expect(screen.getByTestId(SAVE_BUTTONS.project)).toHaveTextContent(t("toolApprovalDialog.allowForProject"));
+    expect(screen.getByTestId(SAVE_BUTTONS.always)).toHaveTextContent(t("toolApprovalDialog.allowAlways"));
+    expect(screen.getByTestId(TEST_IDS.approveButton)).toHaveTextContent(t("toolApprovalDialog.allowOnce"));
+    expect(screen.getByTestId(TEST_IDS.denyButton)).toHaveTextContent(t("toolApprovalDialog.denyOnce"));
   });
 });

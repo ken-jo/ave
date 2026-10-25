@@ -21,7 +21,7 @@ async function showDomainRequest(app: ElectronApplication, page: Page) {
       reason: "A sandboxed command wants to connect to downloads.example.com:443.",
       createdAt: Date.now(), requireExplicit: true,
       allowedChoices: ["allow-once", "deny-once"],
-      egressHost: { host: "downloads.example.com", port: 443, network: "public", scopes: ["once", "always"] },
+      egressHost: { host: "downloads.example.com", port: 443, network: "public", scopes: ["once", "session", "project", "always"] },
     });
   }, sessionId);
 }
@@ -38,9 +38,11 @@ for (const locale of ["en", "ko"] as const) {
       await expect(dock).toContainText(t("egressApprovalCard.title"));
       await expect(dock.getByTestId("egress-approval-target")).toHaveText("downloads.example.com:443");
       await expect(dock.getByTestId("egress-approval-allow-once")).toHaveText(t("egressApprovalCard.allowOnce"));
+      await expect(dock.getByTestId("egress-approval-allow-session")).toHaveText(t("egressApprovalCard.allowSession"));
+      await expect(dock.getByTestId("egress-approval-allow-project")).toHaveText(t("egressApprovalCard.allowProject"));
       await expect(dock.getByTestId("egress-approval-allow-always")).toHaveText(t("egressApprovalCard.allowAlways"));
       await expect(dock.getByTestId("egress-approval-deny")).toBeFocused();
-      await expect(dock.getByTestId("egress-approval-card").locator("button")).toHaveCount(3);
+      await expect(dock.getByTestId("egress-approval-card").locator("button")).toHaveCount(5);
       await expect(dock.locator('input, textarea, [contenteditable="true"]')).toHaveCount(0);
       await mainWindow.screenshot({ path: testInfo.outputPath(`domain-approval-${locale}.png`) });
       await dock.getByTestId("egress-approval-deny").click();

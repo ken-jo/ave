@@ -603,7 +603,10 @@ describe("configured judge dispatch lanes", () => {
     expect(provider.requests).toHaveLength(0);
   });
 
-  it("keeps the headless plain-shell reviewer path under a shadow chain", async () => {
+  it("denies a headless plain shell with no exact rule before any reviewer, under a shadow chain too", async () => {
+    // Unsandboxed shell exact-rule requirement (owner 2026-10-25): with no exact Bash(<command>) rule a plain
+    // shell asks a person; headless there is nobody to ask, so it is denied and audited (I5). The automatic
+    // reviewer, which used to decide this headless call, is never consulted, and a shadow chain changes nothing.
     const reviewer = llm("low");
     const command = "echo 'unterminated";
     const context = { headless: true, ruleSubject: { kind: "shell" as const, dialect: "bash" as const, command, cwd: "/" } };
@@ -614,10 +617,12 @@ describe("configured judge dispatch lanes", () => {
     subject.manager.setMode("allow");
     const provider = external(subject, { decision: "allow", rationale: "shadow opinion" }, { mode: "shadow" });
     const after = await checkAndDispatch(subject, { ...context, ruleSubject: { ...context.ruleSubject, cwd: subject.root } });
-    expect(before.decision).toBe("allow");
-    expect(after).toMatchObject({ decision: before.decision, reason: before.reason });
-    expect(provider.requests).toHaveLength(1);
-    expect(reviewer.calls()).toBe(2);
+    expect(before).toMatchObject({ decision: "deny", layer: 6 });
+    expect(before.reviewer).toBeUndefined();
+    expect(after).toMatchObject({ decision: before.decision, reason: before.reason, layer: 6 });
+    expect(after.reviewer).toBeUndefined();
+    expect(reviewer.calls()).toBe(0);
+    expect(provider.requests).toHaveLength(0);
   });
 
   it.each(["default", "allow"] as const)("adds no reviewer call or deferred entry to %s foreground layer-6 asks under shadow", async (mode) => {

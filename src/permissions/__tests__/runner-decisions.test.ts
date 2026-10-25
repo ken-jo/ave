@@ -90,7 +90,7 @@ function checkCommand(manager: PermissionManager, dialect: ShellDialect, command
     : command.replaceAll("/home/u/", `${accountDirectory}/u/`);
   return manager.checkDetailed(dialect, "builtin", "shell", null, {
     ruleSubject: { kind: "shell", dialect, command: source, cwd: CWD },
-    shellExecution: { runsSandboxed: false, sandboxAvailable: true },
+    shellExecution: { runsSandboxed: false },
     approvalCacheKey: actionKey(dialect, command),
   });
 }
@@ -215,8 +215,9 @@ describe("shared runner decisions", () => {
     expect(evaluateShellRules(command, { allow: [], deny: [shellRule("helper")], ask: [] }).decision).toBeNull();
     const manager = runnerManager();
     expectBucket(checkCommand(manager, "bash", command), "ordinary");
+    // Without a sandbox a prefix rule does not run it (owner 2026-10-25, unsandboxed shell exact-rule requirement); the exact rule does.
     await manager.addRulePersist({ pattern: shellRule(prefix).pattern, action: "allow" }, { kind: "user" });
-    expect(checkCommand(manager, "bash", command)).toMatchObject({ decision: "allow", layer: 3 });
+    expectBucket(checkCommand(manager, "bash", command), "ordinary");
     await manager.addRulePersist({ pattern: `Bash(${command})`, action: "allow" }, { kind: "user" });
     expect(checkCommand(manager, "bash", command)).toMatchObject({ decision: "allow", layer: 3 });
     expectBucket(checkCommand(manager, "powershell", command), "ordinary");
@@ -232,18 +233,19 @@ describe("shared runner decisions", () => {
     ...ORDINARY_CONTROLS.flatMap((command) => DIALECTS.map((dialect) => ({ command, dialect, bucket: "ordinary" as const }))),
     { command: "pwsh -c 'npm test'", dialect: "bash" as const, bucket: "normal" as const },
     { command: "pwsh -c 'npm test'", dialect: "powershell" as const, bucket: "ordinary" as const },
-  ])("honors saved exact-action grants and rules in $dialect: $command ($bucket)", async ({ command, dialect, bucket }) => {
+  ])("keeps saved exact-action grants and action-key rules from running $dialect without a sandbox: $command ($bucket)", async ({ command, dialect, bucket }) => {
+    // Owner 2026-10-25 (unsandboxed shell exact-rule requirement): only an exact Bash(<command>) rule runs a plain shell unasked; a remembered action key is not one.
     const savedPath = join(directory, `saved-${managerSequence++}.json`);
     const saved = runnerManager(savedPath);
     expectBucket(checkCommand(saved, dialect, command), bucket);
     await saved.addAlwaysAllowedPersist(actionKey(dialect, command));
-    expect(checkCommand(saved, dialect, command)).toMatchObject({ decision: "allow", layer: 5 });
+    expectBucket(checkCommand(saved, dialect, command), bucket);
     const reloaded = runnerManager(savedPath);
     await reloaded.loadRulesFromFile();
-    expect(checkCommand(reloaded, dialect, command)).toMatchObject({ decision: "allow", layer: 3 });
+    expectBucket(checkCommand(reloaded, dialect, command), bucket);
     const ruled = runnerManager();
     ruled.setRules([{ pattern: actionKey(dialect, command), action: "allow" }]);
-    expect(checkCommand(ruled, dialect, command)).toMatchObject({ decision: "allow", layer: 3 });
+    expectBucket(checkCommand(ruled, dialect, command), bucket);
   });
 
   it.each(FLOOR_CASES)("keeps a credential or sink floor above saved grants and allow rules in $dialect: $command", ({ command, dialect }) => {
@@ -285,13 +287,13 @@ describe("shared runner decisions", () => {
     { name: "expression work budget", dialect: "powershell" as const, command: `Get-Content (${"'a' + ".repeat(3000)}'b')` },
     { name: "opaque program binding", dialect: "powershell" as const, command: "$runner @options" },
     { name: "opaque script provenance", dialect: "powershell" as const, command: "Set-Content launch.ps1 x; ./launch.ps1" },
-  ])("makes $name ordinary and rememberable", async ({ name, dialect, command }) => {
+  ])("makes $name ordinary, and not remembered as an action key without a sandbox", async ({ name, dialect, command }) => {
     const manager = runnerManager();
     const result = checkCommand(manager, dialect, command);
     expectBucket(result, "ordinary");
     if (name.includes("budget")) expect(result.reason).toMatch(/budget|limit/i);
     await manager.addAlwaysAllowedPersist(actionKey(dialect, command));
-    expect(checkCommand(manager, dialect, command)).toMatchObject({ decision: "allow", layer: 5 });
+    expectBucket(checkCommand(manager, dialect, command), "ordinary");
   });
 
   it.each([

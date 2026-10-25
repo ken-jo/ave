@@ -90,7 +90,7 @@ describe("terminal_run permission", () => {
     const { context } = await run("npm test");
     expect(context?.ruleSubject).toEqual({ kind: "shell", dialect: "bash", command: "npm test", cwd: terminalCwd });
     expect(context?.projectRulesCwd).toBe(terminalCwd);
-    expect(context?.shellExecution).toEqual({ runsSandboxed: false, sandboxAvailable: false });
+    expect(context?.shellExecution).toEqual({ runsSandboxed: false });
   });
 
   it("asks with a card naming the sealed terminal and directory, and types only after approval", async () => {

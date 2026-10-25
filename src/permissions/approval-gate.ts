@@ -25,7 +25,7 @@ import {
   type SandboxCapability,
 } from "./sandbox-capability.js";
 import type { PermissionEvaluationContext } from "./evaluation-context.js";
-import { matchesReviewerApprovalBasis, type PermissionCheckContext, type ReviewerApprovalBasis, type ReviewerDispatchOutcome } from "./permission-manager.js";
+import { matchesReviewerApprovalBasis, type ReviewerApprovalBasis, type ReviewerDispatchOutcome } from "./permission-manager.js";
 import {
   isSensitivePath,
   canonicalizePathForMatch,
@@ -288,8 +288,6 @@ export type ApprovalRequestInput = Omit<
   readonly durableApprovalRecordAllowed?: boolean;
   // Host-only binding for an explicit plain-shell fallback permit. It is retained only in the pending entry and never serialized to the renderer or audit payload.
   readonly hostShellExecutionPermitBinding?: HostShellExecutionPermitBinding;
-  // Host-only invocation route, shared with the permission decision; never serialized.
-  readonly shellExecution?: PermissionCheckContext["shellExecution"];
   // Derive remote origin only from host-owned controller authority, never reason text or renderer input. Keep it off ApprovalRequest and all renderer payloads; absence means no host-observed remote controller.
   readonly remoteControllerOrigin?: RemoteControllerOrigin;
   // Host-only: the live authority object the marker above was projected from. The marker records what was true when the request was built; this is the thing that can still be asked. AwayAuthority re-checks it at the moment it answers, so a share revoked while the turn was in flight is not answered by a grant that was valid when the turn started. Nothing else in the gate reads it, and like the marker it never reaches the renderer, the audit payload, or pending state.
@@ -492,14 +490,14 @@ function assertEgressHostRequestShape(req: ApprovalRequestInput): void {
   if (payload.network !== "public" && payload.network !== "local" && payload.network !== "unverified") {
     throw new Error("approval: an egress-host request names its network (public, local or unverified)");
   }
-  if (payload.network !== "public" && payload.scopes.some((scope) => scope === "workspace" || scope === "always")) {
+  if (payload.network !== "public" && payload.scopes.some((scope) => scope === "project" || scope === "always")) {
     throw new Error("approval: a local, private or unverified destination is never offered a persistent scope");
   }
   if (payload.terminalTabId !== undefined) {
     if (!isTerminalTabId(payload.terminalTabId)) throw new Error("approval: terminalTabId is not a terminal tab id");
     if (req.sessionId !== undefined) throw new Error("approval: a terminal tab's egress ask names no conversation");
-    if (payload.scopes.includes("conversation")) throw new Error("approval: a terminal tab is offered This tab, not This conversation");
-    if (payload.scopes.includes("workspace")) throw new Error("approval: a terminal tab is never offered This workspace");
+    if (payload.scopes.includes("session")) throw new Error("approval: a terminal tab is offered This tab, not This session");
+    if (payload.scopes.includes("project")) throw new Error("approval: a terminal tab is never offered This project");
   } else if (payload.scopes.includes("tab")) {
     throw new Error("approval: only a terminal tab's egress ask offers This tab");
   }
@@ -1439,7 +1437,6 @@ export class ApprovalGate {
       forceExplicit = false,
       durableApprovalRecordAllowed: requestedDurableApprovalRecordAllowed,
       hostShellExecutionPermitBinding,
-      shellExecution,
       executionPlan: requestedExecutionPlan,
       executionCwd: _requestedExecutionCwd,
       sandboxCapability: requestedSandboxCapability,
@@ -1624,10 +1621,7 @@ export class ApprovalGate {
     const shellRule = req.source === "builtin" && req.toolName === "bash" &&
       (req.kind === undefined || req.kind === "tool") && req.category === "tool" &&
       typeof rawShellArgs?.command === "string" && shellRuleCwd
-      ? buildShellRuleApproval(
-          rawShellArgs.command, shellRuleCwd, persistentAllowAllowed, req.sessionId,
-          shellExecution?.runsSandboxed ?? false,
-        )
+      ? buildShellRuleApproval(rawShellArgs.command, shellRuleCwd, persistentAllowAllowed, req.sessionId)
       : undefined;
     const fullReq: ApprovalRequest = {
       ...request,

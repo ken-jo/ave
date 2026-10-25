@@ -1549,6 +1549,24 @@ its `sandboxed` field describes the selected child, including exclusions and
 unsandboxed retries, rather than merely repeating the setting. Permission,
 reviewer, audit and cache consumers use that plan.
 
+A shell whose plan is not sandboxed (the sandbox is off, unavailable or does
+not cover the command, an explicit host request, or the Windows Plan B) runs
+without asking only when an exact `Bash(<command>)` allow rule — user, project
+or This session — matches it (owner decision 2026-10-25, unsandboxed shell exact-rule requirement, superseding the
+I3 rule that sent such shells to the normal rules). Prefix and tool-wide
+rules, remembered dock grants, allow mode, the reviewer and the judge never
+stand in for that rule: everything else asks on the dock, and with nobody to
+ask (a headless or routine turn) it is denied and audited (I5). PowerShell has
+no rule language, so an unsandboxed PowerShell call always asks. The bash card
+for such a shell offers the same five choices as the network card (five-choice shell card): Deny,
+Allow once, This session, This project and Always. Each save stores exactly
+the host-derived `Bash(<command>)` rule for the single simple command on the
+card — in memory for the conversation (ending with it), in the project's rule
+file, or in the user-global rules — never a prefix or an edited pattern; the
+renderer names only the scope (`userApprovalRecord` `rule: { scope }`). A
+compound, irreversible, floor-hitting or secret-bearing command has no such
+rule and offers only Deny and Allow once.
+
 The [builtin shell sandbox policy](permission-policy-design.md#os-shell-sandbox-policy)
 defines writes within project and temporary roots, mandatory control-file
 write denies for repository configuration, hooks and pointers, bounded nested
@@ -1736,7 +1754,7 @@ a plain-HTTP request by name through an upstream (its absolute-form target
 names the host, which the upstream resolves, so it cannot be pinned), is
 refused without an upstream; through a remote upstream it is forwarded by name and the callback
 is told `resolution: "upstream"`, which Ave treats as `unverified` (at most
-This conversation, a card note that the proxy decides the address,
+This session, a card note that the proxy decides the address,
 persistent grants ignored); through an upstream on this host (loopback,
 `localhost`-style names, or one of this host's addresses, e.g. cntlm or px)
 it is refused with a reason, unless the trusted `upstreamProxy.resolvesNames`
@@ -1831,25 +1849,38 @@ ASRT runs non-strict with an empty `allowedDomains`, so the callback decides
 every connection: a plugin worker reaches its own extension's declared
 domains and the configured model endpoints, nothing else, and is never asked;
 a Bash or PowerShell call reaches a host a grant covers, and otherwise
-the person is asked on the approval dock (Deny, Allow once, This
-conversation, This workspace, Always; OWNER ITEM: pending — this line carries
-Ave's merged main, while the permissions-2 line offers a shell call only Allow
-once and Always, until the owner picks); a workspace terminal tab (always in
+the person is asked on the approval dock with exactly five choices (owner
+decision 2026-10-25, five-choice network card): Deny, Allow once, This session (in memory; it ends
+when the conversation is deleted or the app quits), This project (persisted,
+keyed by the project root of the call's working directory: the repository
+root when one is found, the same root a project `Bash(...)` rule applies to)
+and Always (persisted, global). The scope values on the wire and on disk are
+`once`, `session`, `project` and `always`; the earlier `conversation` and
+`workspace` names are refused everywhere, except that a version-1 grant file's
+`workspace` grants are migrated once: a grant made at its project root becomes
+the `project` grant for that root, and one made in a subdirectory of a
+repository is dropped (re-keying it on the root would widen it) and recorded as
+an `egress-grant-migration` sandbox-audit row, so that host is asked again. The
+file is written back as version 2 on the next change. "This session" choices
+(network hosts, `Bash(<command>)` rules, exact approvals) end when the
+conversation is deleted: deleting a root conversation ends them for it and its
+sub-agents, and deleting a sub-agent session ends only that session's own
+network hosts, since its rules and approvals belong to the root. A workspace terminal tab (always in
 the foreground) reaches a host a grant covers, and otherwise the person is
 asked in a banner in that tab, drawn only in, fetched by and answered from
 the window that owns the tab (Deny, Allow once, This tab, Always: a
 terminal's Allow once lets that one connection through and is never held;
-"This tab" takes the place of "This conversation" and lasts until the tab's
+"This tab" takes the place of "This session" and lasts until the tab's
 shell exits, including an exit followed by a respawn; terminals have no
-This workspace, since every tab runs in the app's one default workspace,
+This project, since every tab runs in the app's one default workspace,
 which agent shell calls share). Every grant is bound to its origin (`shell` or
 `terminal`) and destination network class (`public`, `local` or `unverified`),
-for Allow once, conversation, tab, workspace and Always scopes. Matching,
+for Allow once, session, tab, project and Always scopes. Matching,
 listing, use tracking and revocation preserve both fields, so neither another
 origin nor another class can reuse it. Settings shows the origin and preserves
 the class when revoking. A replan to a
 different class requires a fresh warning and decision before connecting.
-Working directories are compared after `canonicalizePathForMatch`. The
+Project roots are compared after `canonicalizePathForMatch`. The
 connection is held while the banner is up and denied after 120 s without an
 answer, or at once when the tab closes; connections from one tab to one
 destination share one banner row. While no view of the tab is mounted the
@@ -1857,10 +1888,10 @@ ask is drawn on the focused pane's lane instead
 (`src/ui/renderer/components/permissions/TerminalEgressBanner.tsx`).
 `src/permissions/egress-grants.ts` holds the grants, the persistent ones in
 `<AVE_HOME>/permissions/shell-egress-hosts.json`, revocable in Settings →
-Permissions → Network. Version-1 stored grants without `network` match only
+Permissions → Network. Stored grants without `network` match only
 `public`; a valid recorded class is honored and an invalid explicit class is
 rejected. Only `public` destinations are eligible for persistent grants
-(This workspace and Always); recording a class does not extend that eligibility.
+(This project and Always); recording a class does not extend that eligibility.
 A background call nobody can answer, asks turned off
 (`features.shellEgressAsk`), or an unreadable grant file is a refusal.
 Destinations are classed by `egressDestinationNetwork()` on the host and every
@@ -1868,16 +1899,16 @@ address it resolved to, most restrictive first: link-local, cloud metadata,
 unspecified, multicast and broadcast addresses are refused without asking;
 loopback, `localhost`/`*.localhost`, local-network names (`*.local`,
 `*.localdomain`, `*.home.arpa`, `*.internal`, `*.lan`), RFC1918, CGNAT, ULA
-and site-local addresses are offered at most This conversation (a terminal:
+and site-local addresses are offered at most This session (a terminal:
 This tab), with a local-network warning on the card, and persistent grants
 never apply to them. Only the desktop window
-answers an egress ask; an answer from any other surface leaves it pending. Conversation and
+answers an egress ask; an answer from any other surface leaves it pending. Session and
 tab grants are listed and revocable in Settings too, and revoking a grant closes the
 connections it let through that are still open. Each decision, including a
 refusal the proxy made before asking, writes an `egress-decision` sandbox audit
 row. Where `egressIdentityStrength() === "shared"` (the Windows shared proxy,
 or macOS with `allowAllUnixSockets`), both new approvals and reused grants stop
-at This conversation (a terminal: This tab). Persistent grants remain stored
+at This session (a terminal: This tab). Persistent grants remain stored
 when the channel becomes shared, but cannot authorize it; they apply again
 when the channel is strong. Grant lookup filters eligible scopes before
 selecting the narrowest match.

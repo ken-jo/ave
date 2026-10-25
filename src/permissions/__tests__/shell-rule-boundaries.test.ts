@@ -23,7 +23,7 @@ beforeEach(() => {
 });
 afterEach(() => rmSync(root, { recursive: true, force: true }));
 
-const plainRoute = { runsSandboxed: false, sandboxAvailable: true };
+const plainRoute = { runsSandboxed: false };
 const shellSubject = (command: string) => ({ kind: "shell" as const, dialect: "bash" as const, command, cwd: project });
 
 describe("stored broad wildcard compatibility", () => {
@@ -81,7 +81,7 @@ describe("bounded rule consent", () => {
   });
 
   it.each(["printf ready", "git status --short", "git -c core.pager=less log"])("defaults to the complete exact argv: %s", (command) => {
-    expect(buildShellRuleApproval(command, project, true, "conversation", false)).toMatchObject({ suggestedPattern: `Bash(${command})`, persistentAllowed: true, sessionAllowed: false });
+    expect(buildShellRuleApproval(command, project, true, "conversation")).toMatchObject({ exactRule: `Bash(${command})`, persistentAllowed: true, sessionAllowed: true });
     expect(suggestShellPrefix(command.split(" "))).toEqual(command.split(" "));
   });
 
@@ -97,7 +97,7 @@ describe("bounded rule consent", () => {
     const spec = parseRuleSpecifier(pattern);
     if (spec.kind !== "bash") throw new Error("Expected shell rule");
     expect(evaluateShellRules(command, { allow: [{ pattern, spec }], ask: [], deny: [] }, project).decision).toBeNull();
-    expect(buildShellRuleApproval(command, project, true, "conversation", false)).toMatchObject({ suggestedPattern: null, persistentAllowed: false });
+    expect(buildShellRuleApproval(command, project, true, "conversation")).toMatchObject({ exactRule: null, persistentAllowed: false });
     const manager = new PermissionManager(permissionsFile);
     manager.setRules([{ pattern, action: "allow" }]);
     expect(manager.checkDetailed("bash", "builtin", "shell", null, { ruleSubject: shellSubject(command), shellExecution: plainRoute }).decision).toBe("ask");
@@ -117,7 +117,8 @@ describe("missing shell route", () => {
     }
   });
 
-  it("never infers sandboxed session consent in a dock request without execution evidence", async () => {
+  // Owner 2026-10-25 (five-choice shell card): This session saves the same exact rule as the persistent scopes, so it needs no sandbox evidence, only a conversation to hold it.
+  it("offers This session as the exact rule on a dock request with a conversation", async () => {
     let displayed: ApprovalRequest | undefined;
     const gate = new ApprovalGate({ isDestroyed: () => false, send: (channel: string, request: ApprovalRequest) => {
       if (channel === "ave:approval:request") displayed = request;
@@ -127,7 +128,7 @@ describe("missing shell route", () => {
       args: { command: "printf ready" }, reason: "Approval required", createdAt: Date.now(), trustOrigin: "user-keyboard", ruleVerdict: { level: "medium", reason: "Bounded command" },
       evaluationContext: buildPermissionEvaluationContext({ policyMode: "default", headless: false, source: "builtin", category: "shell", trustOrigin: "user-keyboard", executionCwd: project, allowedDirectories: [project], pathFields: [], targetFilePaths: [], sensitivePathsAdjacent: [] }),
     });
-    expect(displayed?.shellRule).toMatchObject({ suggestedPattern: "Bash(printf ready)", sessionAllowed: false });
+    expect(displayed?.shellRule).toMatchObject({ exactRule: "Bash(printf ready)", sessionAllowed: true, persistentAllowed: true });
     gate.resolveFromDesktopRenderer("missing-route", { requestId: "missing-route", choice: "deny-once", nonce: displayed!.nonce, hmac: displayed!.hmac });
     await pending;
   });

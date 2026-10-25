@@ -38,7 +38,7 @@ const SHELL: EgressInvocationOwner = {
 const TERMINAL: EgressInvocationOwner = { kind: "terminal", tabId: "egress-tab" };
 const GRANT_CASES = [
   { origin: "shell", scope: "once" },
-  { origin: "shell", scope: "conversation" },
+  { origin: "shell", scope: "session" },
   { origin: "shell", scope: "always" },
   { origin: "terminal", scope: "once" },
   { origin: "terminal", scope: "tab" },
@@ -493,7 +493,7 @@ describe.runIf(process.platform !== "win32")("egress grant class across route re
       token: "fedcba9876543210fedcba9876543210",
       sessionId: undefined,
       tabId: undefined,
-      workspaceRoot: undefined,
+      projectRoot: undefined,
       origin: grantedOrigin,
     };
     await approval.grants.grant("always", ["always"], subject, DESTINATION);

@@ -153,7 +153,10 @@ describe("shell floors cover powershell in allow mode", () => {
   it.each([
     "npm test", "npx helper", "pwsh -enc !!!", "iex $code",
     "Set-Content build.ps1 Get-Date; build.ps1",
-  ])("reuses saved grants for ordinary shell approval: %s", async (command) => {
+  ])("a saved grant does not run an unsandboxed command; it asks again: %s", async (command) => {
+    // Unsandboxed shell exact-rule requirement (owner 2026-10-25): only an exact Bash(<command>) rule runs a
+    // shell without a sandbox unasked. PowerShell has no such rule, so a remembered dock grant for this exact
+    // call is no longer consulted and the card is raised again, in allow mode too.
     const pending = await run("powershell", command);
     expect(pending.decision).toMatchObject({ decision: "ask", layer: 6 });
     expect(pending.decision.forceModal).toBeUndefined();
@@ -161,9 +164,23 @@ describe("shell floors cover powershell in allow mode", () => {
     expect(pending.requestAndWait).toHaveBeenCalledTimes(1);
     expect(pending.context?.approvalCacheKey).toEqual(expect.any(String));
     const remembered = await run("powershell", command, pending.context?.approvalCacheKey);
-    expect(remembered.decision).toMatchObject({ decision: "allow" });
-    expect(remembered.requestAndWait).not.toHaveBeenCalled();
-    expect(remembered.execute).toHaveBeenCalledTimes(1);
+    expect(remembered.decision).toMatchObject({ decision: "ask", layer: 6 });
+    expect(remembered.decision.forceModal).toBeUndefined();
+    expect(remembered.requestAndWait).toHaveBeenCalledTimes(1);
+    expect(remembered.execute).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "npm test", "npx helper", "pwsh -enc !!!", "iex $code",
+    "Set-Content build.ps1 Get-Date; build.ps1",
+  ])("runs the same command inside confinement with or without a saved grant: %s", async (command) => {
+    // The exact-rule requirement applies only without a sandbox; a sandboxed call keeps its existing lanes.
+    for (const savedGrant of [undefined, "powershell"]) {
+      const sandboxed = await run("powershell", command, savedGrant, true);
+      expect(sandboxed.decision).toMatchObject({ decision: "allow", layer: 3 });
+      expect(sandboxed.requestAndWait).not.toHaveBeenCalled();
+      expect(sandboxed.execute).toHaveBeenCalledTimes(1);
+    }
   });
 
   it.each([

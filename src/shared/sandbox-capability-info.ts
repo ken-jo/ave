@@ -216,14 +216,14 @@ export function sandboxBootOutcomeView(outcome: SandboxBootOutcome): SandboxBoot
  * `egress-invocation-listener.ts`). A process cannot present another invocation's identity. - `shared`: confined processes share one proxy endpoint and the identity is a label the client presents (ASRT's proxy username). Attribution, not a boundary between concurrent invocations. */
 export type EgressIdentityStrength = "kernel-channel" | "shared";
 
-/** The scopes an egress grant can be given. A shell tool call's ladder is once, conversation, workspace, always; a workspace terminal
- * tab's is once, tab, workspace, always (`tab` takes the place of `conversation`: a terminal belongs to no conversation, design F). */
-export type EgressGrantScope = "once" | "conversation" | "tab" | "workspace" | "always";
+/** The scopes an egress grant can be given. A shell tool call's card offers Deny plus once, session, project, always (owner 2026-10-25, five-choice network card); a workspace terminal
+ * tab's ladder is once, tab, always (`tab` takes the place of `session`: a terminal belongs to no conversation, design F). */
+export type EgressGrantScope = "once" | "session" | "tab" | "project" | "always";
 
 /** The widest egress-grant scope an identity strength can carry. With a shared identity another invocation of the same session can present the id a
- * grant was given to, so a grant must not outlive the conversation it was given in. The egress ask (proxy-egress PR 4) caps the scopes it offers with this. */
+ * grant was given to, so a grant must not outlive the session it was given in. The egress ask (proxy-egress PR 4) caps the scopes it offers with this. */
 export function maxEgressGrantScope(strength: EgressIdentityStrength): EgressGrantScope {
-  return strength === "kernel-channel" ? "always" : "conversation";
+  return strength === "kernel-channel" ? "always" : "session";
 }
 
 /** Why Microsoft Execution Containers cannot carry agent shells on this host (`mxc-windows.ts`). */

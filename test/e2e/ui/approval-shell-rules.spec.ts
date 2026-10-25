@@ -35,10 +35,10 @@ async function showShellRequest(app: ElectronApplication, page: Page, persistent
         ? ["allow-once", "allow-always", "deny-once", "deny-always"]
         : ["allow-once", "deny-once"],
       shellRule: {
-        suggestedPattern: input.persistentAllowed ? "Bash(npm test)" : null,
+        exactRule: input.persistentAllowed ? "Bash(npm test)" : null,
         projectCwd: "/workspace/project",
         projectRoot: "/workspace/project",
-        sessionAllowed: false,
+        sessionAllowed: input.persistentAllowed,
         persistentAllowed: input.persistentAllowed,
       },
     });
@@ -49,27 +49,24 @@ for (const locale of ["en", "ko"] as const) {
   test.describe(`Shell permission rules (${locale})`, () => {
     test.use({ seedLocale: locale });
 
-    test("shows the editable rule and keeps credential requests one-time", async ({ app, mainWindow }, testInfo) => {
+    // Owner 2026-10-25 (five-choice shell card): Deny, Allow once, This session, This project, Always; each save stores the shown exact rule.
+    test("shows the five choices with the exact rule and keeps credential requests one-time", async ({ app, mainWindow }, testInfo) => {
       await showShellRequest(app, mainWindow, true);
       const dock = mainWindow.getByTestId(TEST_IDS.approvalDock).first();
-      const pattern = dock.getByTestId("approval-shell-rule-pattern");
-      await expect(dock.getByTestId("approval-shell-outside-sandbox")).toContainText(locale === "ko" ? "샌드박스 밖 실행" : "outside the sandbox");
-      await expect(pattern).toHaveValue("Bash(npm test)");
-      await expect(dock.getByTestId("approval-allow-session")).toHaveCount(0);
-      await expect(dock.getByTestId("approval-deny-always")).toBeEnabled();
-      await dock.getByTestId("approval-shell-rule-scope").selectOption("user");
-      await pattern.fill("Bash(npm test)");
-      await expect(dock.getByTestId(TEST_IDS.allowAlwaysButton)).toBeEnabled();
+      await expect(dock.getByTestId("approval-shell-outside-sandbox")).toContainText(locale === "ko" ? "샌드박스 밖에서 실행" : "outside the sandbox");
+      await expect(dock.getByTestId("approval-shell-rule-pattern")).toHaveText("Bash(npm test)");
+      for (const testId of [TEST_IDS.denyButton, TEST_IDS.approveButton, "approval-allow-session", "approval-allow-project", TEST_IDS.allowAlwaysButton]) {
+        await expect(dock.getByTestId(testId)).toBeEnabled();
+      }
+      await expect(dock.getByTestId("approval-deny-always")).toHaveCount(0);
       await mainWindow.screenshot({ path: testInfo.outputPath(`shell-rule-${locale}.png`) });
-      await pattern.fill("Bash(node *)");
-      await expect(dock.getByTestId(TEST_IDS.allowAlwaysButton)).toBeDisabled();
-      await expect(dock.getByTestId("approval-allow-session")).toHaveCount(0);
 
       await dock.getByTestId(TEST_IDS.denyButton).click();
       await showShellRequest(app, mainWindow, false);
-      await expect(dock.getByTestId(TEST_IDS.allowAlwaysButton)).toBeDisabled();
-      await expect(dock.getByTestId("approval-allow-session")).toHaveCount(0);
-      await expect(dock.getByTestId("approval-shell-rule-pattern")).toHaveValue("");
+      for (const testId of ["approval-allow-session", "approval-allow-project", TEST_IDS.allowAlwaysButton]) {
+        await expect(dock.getByTestId(testId)).toBeDisabled();
+      }
+      await expect(dock.getByTestId("approval-shell-rule-pattern")).toHaveCount(0);
       await mainWindow.screenshot({ path: testInfo.outputPath(`credential-floor-${locale}.png`) });
     });
   });

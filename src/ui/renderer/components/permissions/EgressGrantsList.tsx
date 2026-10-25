@@ -1,4 +1,4 @@
-/** Settings → Permissions → Network: the hosts a sandboxed shell may reach without asking because someone chose "This conversation", "This tab" (a workspace terminal), "This workspace" or "Always" on an egress ask, each with a Revoke button. A workspace or always grant
+/** Settings → Permissions → Network: the hosts a sandboxed shell may reach without asking because someone chose "This session", "This tab" (a workspace terminal), "This project" or "Always" on an egress ask, each with a Revoke button. A project or always grant
  * names its origin (agent shell calls or workspace terminals): it covers only that origin. Revoking also closes the connections that grant let through that are still open. "Allow once" grants end with their call and are not listed. Plugin workers never use these grants. */
 import { useCallback, useEffect, useState, type ReactElement } from "react";
 import { Button } from "../../../../components/ui/button.js";
@@ -29,9 +29,9 @@ const NETWORK_LABEL_KEYS = {
 } as const;
 
 function grantKey(grant: ListedEgressGrant): string {
-  const owner = grant.scope === "conversation" ? grant.sessionId
+  const owner = grant.scope === "session" ? grant.sessionId
     : grant.scope === "tab" ? grant.tabId
-    : `${grant.origin}\n${grant.workspaceRoot ?? ""}`;
+    : `${grant.origin}\n${grant.projectRoot ?? ""}`;
   return `${grant.scope}\n${owner}\n${grant.host}\n${grant.port}\n${grant.network ?? "public"}`;
 }
 
@@ -54,13 +54,13 @@ function revokeTarget(grant: ListedEgressGrant): RevocableEgressGrant {
     port: grant.port,
     ...(grant.network === undefined ? {} : { network: grant.network }),
   };
-  if (grant.scope === "conversation") return { ...destination, scope: "conversation", sessionId: grant.sessionId };
+  if (grant.scope === "session") return { ...destination, scope: "session", sessionId: grant.sessionId };
   if (grant.scope === "tab") return { ...destination, scope: "tab", tabId: grant.tabId };
   return {
     ...destination,
     scope: grant.scope,
     origin: grant.origin,
-    ...(grant.workspaceRoot === undefined ? {} : { workspaceRoot: grant.workspaceRoot }),
+    ...(grant.projectRoot === undefined ? {} : { projectRoot: grant.projectRoot }),
   };
 }
 
@@ -143,9 +143,9 @@ export function EgressGrantsList({ fetcher, revoker }: EgressGrantsListProps): R
                         origin: translate(ORIGIN_LABEL_KEYS[grant.origin]),
                         time: formatDateTime(grant.grantedAt),
                       })
-                    : grant.scope === "conversation"
-                      ? translate("permissionsTab.networkGrantScopeConversation", {
-                          conversation: grant.sessionId,
+                    : grant.scope === "session"
+                      ? translate("permissionsTab.networkGrantScopeSession", {
+                          session: grant.sessionId,
                           time: formatDateTime(grant.grantedAt),
                         })
                       : grant.scope === "tab"
@@ -153,9 +153,9 @@ export function EgressGrantsList({ fetcher, revoker }: EgressGrantsListProps): R
                             tab: terminalTabLabel(grant.tabId) ?? translate("permissionsTab.networkGrantTabElsewhere"),
                             time: formatDateTime(grant.grantedAt),
                           })
-                        : translate("permissionsTab.networkGrantScopeWorkspace", {
+                        : translate("permissionsTab.networkGrantScopeProject", {
                             origin: translate(ORIGIN_LABEL_KEYS[grant.origin]),
-                            workspace: grant.workspaceRoot ?? "",
+                            project: grant.projectRoot ?? "",
                             time: formatDateTime(grant.grantedAt),
                           })}
                 </p>

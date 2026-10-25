@@ -75,7 +75,7 @@ interface ObservedAsk {
   readonly context: Parameters<SandboxAskCallback>[1];
 }
 
-async function startRuntime(answerScope: () => EgressGrantScope = () => "conversation") {
+async function startRuntime(answerScope: () => EgressGrantScope = () => "session") {
   const upstream = await localUpstream();
   const observed: ObservedAsk[] = [];
   // This controlled gate exercises production request conversion and grant storage. It does not stand in for a person's installed-app approval.
@@ -135,7 +135,7 @@ async function expectResponse(client: ReturnType<typeof connect>, status: number
 
 describe.skipIf(process.platform !== "win32")("native proxy with production egress callback", () => {
   it("keeps the invocation listener identity through the ordinary shell frontend", async () => {
-    // Shell calls are offered Allow once and Always only.
+    // Owner 2026-10-25 (five-choice network card): a shell call is offered once, This session, This project and Always (with Deny).
     const runtime = await startRuntime(() => "always");
     const invocation = openShell();
     const other = openShell();
@@ -150,8 +150,7 @@ describe.skipIf(process.platform !== "win32")("native proxy with production egre
     expect(runtime.requestAndWait.mock.calls[0]?.[0]).toMatchObject({
       kind: "egress-host", toolName: "powershell", sessionId: invocation.owner.kind === "shell" ? invocation.owner.context.sessionId : undefined,
       forceExplicit: true, durableApprovalRecordAllowed: false,
-      // OWNER ITEM: ip2 caps shell egress grants at once/always; owner 2026-10-16 offers once/conversation/workspace/always (Windows shared frontend capped at once/conversation, 2026-10-19). This follows ip2 until the owner picks.
-      egressHost: { ...DESTINATION, scopes: ["once", "always"], network: "public" },
+      egressHost: { ...DESTINATION, scopes: ["once", "session", "project", "always"], network: "public" },
     });
     expect(await listEgressGrants()).toEqual([expect.objectContaining({
       scope: "always", origin: "shell", ...DESTINATION, network: "public",
@@ -159,7 +158,7 @@ describe.skipIf(process.platform !== "win32")("native proxy with production egre
     expect(runtime.upstream.received).toHaveLength(1);
   });
 
-  it("offers a shared frontend shell call only once, without reusing or deleting a stronger stored grant", async () => {
+  it("offers a shared frontend shell call only the in-memory scopes, without reusing or deleting a stronger stored grant", async () => {
     let scope: EgressGrantScope = "always";
     const runtime = await startRuntime(() => scope);
     const invocation = openShell();
@@ -176,10 +175,8 @@ describe.skipIf(process.platform !== "win32")("native proxy with production egre
     expect(runtime.requestAndWait).toHaveBeenCalledTimes(2);
     expect(runtime.requestAndWait.mock.calls[1]?.[0]).toMatchObject({
       forceExplicit: true, durableApprovalRecordAllowed: false,
-      // A shared channel stops shell grants below Always, and shell calls
-      // have no This conversation scope, so only once remains.
-      // OWNER ITEM: ip2 caps shell egress grants at once/always; owner 2026-10-16 offers once/conversation/workspace/always (Windows shared frontend capped at once/conversation, 2026-10-19). This follows ip2 until the owner picks.
-      egressHost: { ...DESTINATION, scopes: ["once"], network: "public" },
+      // A shared channel keeps shell grants to the in-memory rungs: once and This session.
+      egressHost: { ...DESTINATION, scopes: ["once", "session"], network: "public" },
     });
     const grants = await listEgressGrants();
     expect(grants.filter((grant) => grant.scope === "always")).toEqual(stronger);
@@ -218,12 +215,11 @@ describe.skipIf(process.platform !== "win32")("native proxy with production egre
   });
 
   it("refuses a shared answer selecting a durable scope that the real request did not offer", async () => {
-    const runtime = await startRuntime(() => "workspace");
+    const runtime = await startRuntime(() => "project");
     const invocation = openShell();
     await expectResponse(connect(runtime.sharedPort, proxyAuthorization(invocation.token, runtime.credential)), 403);
     expect(runtime.requestAndWait).toHaveBeenCalledTimes(1);
-    // OWNER ITEM: ip2 caps shell egress grants at once/always; owner 2026-10-16 offers once/conversation/workspace/always (Windows shared frontend capped at once/conversation, 2026-10-19). This follows ip2 until the owner picks.
-    expect(runtime.requestAndWait.mock.calls[0]?.[0].egressHost?.scopes).toEqual(["once"]);
+    expect(runtime.requestAndWait.mock.calls[0]?.[0].egressHost?.scopes).toEqual(["once", "session"]);
     expect(runtime.upstream.received).toEqual([]);
     expect(await listEgressGrants()).toEqual([]);
   });

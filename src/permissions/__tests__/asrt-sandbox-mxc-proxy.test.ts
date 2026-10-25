@@ -187,14 +187,14 @@ describe.skipIf(process.platform !== "win32")("proxy-only connection revocation"
     const listener = await startListener(async () => ({ routes: [{ kind: "http", host: "127.0.0.1", port: upstream.port }] }));
     expect(getWindowsProxyPortRange()).toEqual([42000, 42009]);
     expect(listener.port < 42000 || listener.port > 42009).toBe(true);
-    const subject = { token: TOKEN, sessionId: "proxy-session", tabId: undefined, workspaceRoot: undefined, origin: "shell" as const };
+    const subject = { token: TOKEN, sessionId: "proxy-session", tabId: undefined, projectRoot: undefined, origin: "shell" as const };
     const grants = new EgressGrantStore(join(process.env.AVE_HOME!, "grants.json"));
-    await grants.grant("conversation", ["conversation"], subject, DESTINATION);
-    grants.noteUse("conversation", subject, DESTINATION);
+    await grants.grant("session", ["session"], subject, DESTINATION);
+    grants.noteUse("session", subject, DESTINATION);
     const tunnel = await openTunnel(listener);
     expect(upstream.received.join("")).toBe("before-close");
 
-    const revoked = await grants.revoke({ scope: "conversation", sessionId: subject.sessionId, ...DESTINATION });
+    const revoked = await grants.revoke({ scope: "session", sessionId: subject.sessionId, ...DESTINATION });
     expect(revoked.removed).toBe(true);
     expect(revoked.tokens).toEqual([TOKEN]);
     expect(closeEgressConnections(revoked.tokens, DESTINATION.host, DESTINATION.port)).toBeGreaterThan(0);

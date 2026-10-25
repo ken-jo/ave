@@ -193,9 +193,9 @@ describe.skipIf(process.platform !== "win32")("container proxy regression covera
 
   it.each(["listener", "launcher"] as const)("revokes live tunnels and stops echo through the %s path", async (kind) => {
     const proxy = await localProxy();
-    const subject = { token: TOKEN_A, sessionId: "review", tabId: undefined, workspaceRoot: undefined, origin: "shell" as const };
+    const subject = { token: TOKEN_A, sessionId: "review", tabId: undefined, projectRoot: undefined, origin: "shell" as const };
     const grants = new EgressGrantStore(join(process.env.AVE_HOME!, "review-grants.json"));
-    await grants.grant("conversation", ["conversation"], subject, DESTINATION);
+    await grants.grant("session", ["session"], subject, DESTINATION);
     await initialize(async () => ({ routes: [{ kind: "http", host: "127.0.0.1", port: proxy.port, resolvesNames: true }] }),
       async (request, context) => {
         if (context?.attributionKey !== TOKEN_A || request.host !== DESTINATION.host || request.port !== DESTINATION.port) return false;
@@ -208,7 +208,7 @@ describe.skipIf(process.platform !== "win32")("container proxy regression covera
     const client = track(net.connect(listener.port, "127.0.0.1"));
     expect(await exchange(client, connectRequest())).toMatch(/^HTTP\/1\.1 200/u);
     expect(await exchange(client, "before-revoke", (text) => text.includes("before-revoke"))).toBe("before-revoke");
-    const revoked = await grants.revoke({ scope: "conversation", sessionId: "review", ...DESTINATION });
+    const revoked = await grants.revoke({ scope: "session", sessionId: "review", ...DESTINATION });
     expect(revoked.tokens).toEqual([TOKEN_A]);
     expect(closeEgressConnections(revoked.tokens, DESTINATION.host, DESTINATION.port)).toBeGreaterThanOrEqual(1);
     // Install the observer before yielding to socket destruction, then try data.

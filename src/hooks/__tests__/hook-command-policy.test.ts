@@ -136,24 +136,23 @@ describe("hook command permission admission", () => {
       .toMatchObject({ decision: "deny", rawStdout: "", reason: expect.stringContaining("hook command denied") });
   });
 
-  it("admits a hook through a wildcard allow on a sandbox-capable host", async () => {
-    sandboxedHost.active = true;
+  // Owner 2026-10-25 (unsandboxed shell exact-rule requirement): a hook runs without a sandbox, so only an exact Bash(<command>) rule admits it, on any host.
+  it.each([true, false])("admits a hook only through an exact allow (sandbox-capable host %s)", async (active) => {
+    sandboxedHost.active = active;
     const p = policy();
-    // An interpreter prefix is never an allowable wildcard; a plain command's is.
     p.permissionManager.setRules([{ pattern: "Bash(printf *)", action: "allow" }]);
     const command = { ...hook, command: ["printf", "ready"] };
+    expect((await p.authorizeCommand(command, payload, process.cwd())).decision).toBe("deny");
+    expect(p.requestAndWait).toHaveBeenCalledOnce();
+    p.permissionManager.setRules([{ pattern: "Bash(printf ready)", action: "allow" }]);
     const admitted = await p.authorizeCommand(command, payload, process.cwd());
     expect(admitted.decision, admitted.reason).toBe("allow");
-    expect(p.requestAndWait).not.toHaveBeenCalled();
-    // The same rule does not admit it where no sandbox is available.
-    sandboxedHost.active = false;
-    expect((await p.authorizeCommand(command, payload, process.cwd())).decision).toBe("deny");
     expect(p.requestAndWait).toHaveBeenCalledOnce();
   });
 
   it("invalidates an automatic admission when an ask rule replaces its allow", async () => {
     const p = policy();
-    // Exact: without a sandbox-capable host a wildcard allow does not admit a plain shell.
+    // Exact: a hook runs without a sandbox, so a wildcard allow never admits it.
     p.permissionManager.setRules([{ pattern: "Bash(node --version)", action: "allow" }]);
     const admitted = await p.authorizeCommand({ ...hook, command: ["node", "--version"] }, payload, process.cwd());
     expect(admitted.decision).toBe("allow");
@@ -202,8 +201,8 @@ describe("hook command permission admission", () => {
     expect(JSON.parse(result.rawStdout).reason).toBe("received");
   });
 
-  it("follows the normal rules, without a one-shot receipt, when the requested sandbox is unavailable", async () => {
-    // A requested-but-unavailable sandbox is a plain shell under the normal permission rules, as for the bash tool (design I3 in host-shell-execution-plan.ts); it records its fallback reason instead.
+  it("follows the sandbox-off policy, without a one-shot receipt, when the requested sandbox is unavailable", async () => {
+    // A requested-but-unavailable sandbox is a plain shell under the exact-rule policy, as for the bash tool (owner 2026-10-25, unsandboxed shell exact-rule requirement); it records its fallback reason instead.
     setShellSandboxRequestedAtBoot(true);
     expect(getHostShellExecutionPlan()).toMatchObject({
       mode: "plain", fallbackReason: "requested-sandbox-unavailable", requiresExplicitUserApproval: false,
@@ -262,12 +261,12 @@ describe("hook command permission admission", () => {
       .toMatchObject({ decision: "deny", rawStdout: "", reason: "hook shell execution policy changed during approval" });
   });
 
-  it("preserves unattended shell approval requirements instead of reusing a foreground allow rule", async () => {
+  it("denies an unattended hook a prefix rule does not admit, without raising a card (unsandboxed shell exact-rule requirement, I5)", async () => {
     const p = policy();
     p.permissionManager.setRules([{ pattern: "Bash(node *)", action: "allow" }]);
     const result = await turnExtensionPolicyContext.run(resolveTurnExtensionPolicy(undefined, true),
       () => runOneHookScript(hook, payload, { authorizeCommand: p.authorizeCommand }));
     expect(result.decision).toBe("deny");
-    expect(p.requestAndWait).toHaveBeenCalledOnce();
+    expect(p.requestAndWait).not.toHaveBeenCalled();
   });
 });
