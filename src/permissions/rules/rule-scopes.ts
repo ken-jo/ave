@@ -172,14 +172,15 @@ function matchesPowerShellRule(spec: PowerShellRuleSpecifier, argv: readonly (st
   return spec.tokens.every((token, index) => argv[index] === token);
 }
 
-// The name a deny or ask rule compares, on both sides: a directory path, a `Module\` qualifier and an executable extension are dropped, case is
+// The name a deny or ask rule compares, on both sides: a directory path, a `Module\` qualifier, trailing dots (Win32 strips them) and an executable
+// extension are dropped, case is
 // folded and an alias resolves to its cmdlet, so `C:\Git\bin\git.exe`, `GIT` and `git` meet `PowerShell(git push *)`, and
 // `Microsoft.PowerShell.Management\Remove-Item`, `ri` and `PowerShell(gci *)`'s `gci` meet their cmdlets. Matching more only narrows; an allow keeps
 // comparing the literal identity (`matchesPowerShellRule` on the unnormalized tokens).
 function restrictionTokens<T extends string | null>(tokens: readonly T[]): T[] {
   const head = tokens[0];
   if (typeof head !== "string") return [...tokens];
-  const base = head.slice(Math.max(head.lastIndexOf("\\"), head.lastIndexOf("/")) + 1).replace(/\.(?:exe|com|cmd|bat)$/i, "");
+  const base = head.slice(Math.max(head.lastIndexOf("\\"), head.lastIndexOf("/")) + 1).replace(/\.+$/, "").replace(/\.(?:exe|com|cmd|bat)$/i, "").replace(/\.+$/, "");
   const name = canonicalPowerShellName(base.length > 0 ? base : head);
   return canonicalPowerShellRuleTokens([name as T, ...tokens.slice(1)]);
 }
