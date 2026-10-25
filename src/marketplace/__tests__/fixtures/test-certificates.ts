@@ -1,13 +1,4 @@
-/**
- * Test fixture: a throwaway certificate authority and the server
- * certificates it signs, generated when a test asks for them.
- *
- * No private key is committed: each run makes ECDSA P-256 keys with
- * node:crypto and writes the X.509 structure by hand (DER), so the TLS
- * tests need no openssl binary and no dependency. Only what Node's TLS
- * verification reads is written: version 3, serial, validity, names, the
- * key, basicConstraints for the authority and subjectAltName for a server.
- */
+/** Generates disposable TLS certificates in-process, without committed keys or an external binary. */
 import { generateKeyPairSync, randomBytes, sign, type KeyObject } from "node:crypto";
 import { isIP } from "node:net";
 
@@ -74,11 +65,7 @@ function pem(der: Buffer): string {
   return `-----BEGIN CERTIFICATE-----\n${lines.join("\n")}\n-----END CERTIFICATE-----\n`;
 }
 
-/**
- * A random positive serial in minimal DER: a zero first byte would make the
- * encoding non-minimal (or the value shorter), which BoringSSL rejects as
- * INVALID_INTEGER — about one certificate in 256 failed before this.
- */
+/** DER serials must be positive and minimally encoded; a leading zero can be rejected. */
 function serialNumber(): Buffer {
   const serial = randomBytes(12);
   serial[0] = (serial[0]! & 0x7f) | 0x01;
@@ -107,9 +94,7 @@ export interface TestServerCertificate {
 }
 
 export interface TestAuthority {
-  /** The authority's certificate, to trust. */
   caPem: string;
-  /** A server certificate for these names and IP addresses, signed by the authority. */
   issue(names: readonly string[]): TestServerCertificate;
 }
 
@@ -122,7 +107,6 @@ export function createTestAuthority(commonName = "Ave Test Root"): TestAuthority
     signer: authority.privateKey,
     extensions: [
       extension("2.5.29.19", true, sequence(TRUE)),
-      // keyCertSign and cRLSign.
       extension("2.5.29.15", true, tlv(0x03, Buffer.from([0x01, 0x06]))),
     ],
   });

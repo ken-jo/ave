@@ -1,16 +1,5 @@
-/**
- * Fail-closed validation of marketplace files (design §4, §5, §10.4).
- *
- * Two layers, one definition each:
- *   - shape: the JSON Schemas in `schemas/marketplace/`, compiled once with the
- *     host's AJV settings. Plugin authority fields resolve to the plugin
- *     manifest schema, so the descriptor cannot drift from `plugin.json`.
- *   - meaning: rules JSON Schema cannot state — uniqueness, version order,
- *     `latest`, kind-specific constraints, reserved names — written out here.
- *
- * An invalid index root rejects the whole commit; an invalid package entry is
- * dropped with a diagnostic and the rest of the source stays usable (§2.2).
- */
+/** Schemas check shape; semantic rules enforce uniqueness, ordering and reserved identities.
+ * Invalid roots reject the commit; invalid entries are dropped with diagnostics. */
 import type { ErrorObject, ValidateFunction } from "ajv";
 import manifestSchema from "../../../schemas/plugin-manifest.schema.json" with { type: "json" };
 import indexSchema from "../../../schemas/marketplace/index.schema.json" with { type: "json" };
@@ -42,32 +31,20 @@ import {
 import { parseVersionRange } from "./version-range.js";
 
 export interface CatalogDiagnostic {
-  /** `kind/name` when known, else the entry's position. */
   subject: string;
   message: string;
 }
 
-/**
- * A failure; `credential` is set when the reason is an identifier with a
- * credential's shape (§18.8), the detail the refusal carries.
- */
+/** Credential-shaped identifiers set credential so refusals can omit their unsafe text. */
 export type Validation<T> = { ok: true; value: T } | { ok: false; error: string; credential?: CredentialDetail };
 
-/** The refusal detail of a package identifier that has a credential's shape (§18.8). */
 export type CredentialDetail = MarketplaceErrorDetail<"SOURCE_INDEX_INVALID">;
 
-/** The identifier of a package a refusal names: its name, a version, or a component's name. */
 export type IdentifierPart = "name" | "version" | "component";
 
 const PART_TEXT: Readonly<Record<IdentifierPart, string>> = { name: "its name", version: "a version", component: "a component name" };
 
-/**
- * The refusal of `text`, `part` of a package, which has a credential's shape
- * (§18.8). A name holding a credential format's prefix at a boundary is in a
- * reserved namespace, whatever its body says: the refusal names the prefix
- * and the issuer it looks like, so the author knows what to change. A shape
- * with no prefix (an assignment, URL userinfo) is refused as one.
- */
+/** Credential prefixes reserve their namespace; other credential shapes are refused without echoing them. */
 export function credentialRefusal(part: IdentifierPart, text: string): { detail: CredentialDetail; message: string } {
   const reserved = reservedPrefixIn(text);
   if (reserved) {
@@ -81,7 +58,6 @@ export function credentialRefusal(part: IdentifierPart, text: string): { detail:
   return { detail: { reason }, message: `${PART_TEXT[part]} looks like a password or token` };
 }
 
-/** Every name the renderer can name a component of an agent plugin by. */
 function componentNames(components: AgentPluginComponents | undefined): string[] {
   if (!components) return [];
   return [
@@ -93,14 +69,7 @@ function componentNames(components: AgentPluginComponents | undefined): string[]
   ];
 }
 
-/**
- * The first identifier of a package that has a credential's shape, as the
- * one detector the scrubber uses (§18.8). The renderer gets every string
- * from main scrubbed and names a package, a version or a component back by
- * it, so an identifier the scrubber would change could never be named
- * again: it is refused here, where it enters, and egress scrubbing leaves
- * every identifier that passed unchanged.
- */
+/** Reject identifiers the egress scrubber would change, so admitted packages remain addressable. */
 function credentialIn(name: string, versions: readonly string[], components: ReadonlyArray<AgentPluginComponents | undefined>): { detail: CredentialDetail; message: string } | null {
   if (holdsCredential(name)) return credentialRefusal("name", name);
   const version = versions.find(holdsCredential);
@@ -110,9 +79,7 @@ function credentialIn(name: string, versions: readonly string[], components: Rea
   return null;
 }
 
-// Each schema names its own published URL; the ids are read from the files so
-// there is one copy of each (scripts/lib/plugin-host-protocol-mirror.mjs checks
-// it against the served path).
+// Read schema ids from their files so published URLs have one source of truth.
 const INDEX_ID = indexSchema.$id;
 const PACKAGE_ID = packageSchema.$id;
 const REVOCATIONS_ID = revocationsSchema.$id;
@@ -126,25 +93,14 @@ interface Validators {
   snapshot: ValidateFunction;
 }
 
-/** A cached snapshot's pin: a commit, or a folder source's `local-<sha256>` revision (§18.4.3). */
 const SNAPSHOT_PIN = { anyOf: [{ $ref: PACKAGE_ID + "#/definitions/commit" }, { type: "string", pattern: "^local-[0-9a-f]{64}$" }] };
 
 let compiled: Validators | null = null;
 
-/**
- * The one catalog format this app reads, carried inside `marketplace.json`
- * and `ave-package.json` as `schemaVersion` (the schemas pin it with
- * `const`). Strict rather than dispatched: the reader, the snapshot and the
- * install path have exactly one shape (`types.ts` types the field as this
- * literal), so a file at another version has nothing to be dispatched to and
- * would only reach code written for this one. A later format is a new value
- * here together with its own reader. Any other value is refused before the
- * schema runs, with a message that names both versions.
- */
+/** Only the current catalog schema is supported; reject other versions before schema validation. */
 const CATALOG_SCHEMA_VERSION = 2;
 
 function unsupportedSchemaVersion(document: unknown, file: string): string | null {
-  // A missing field is the schema's to report.
   if (!isRecord(document) || !Object.hasOwn(document, "schemaVersion")) return null;
   if (document.schemaVersion === CATALOG_SCHEMA_VERSION) return null;
   return `${file}: schemaVersion ${JSON.stringify(document.schemaVersion)} is not supported; this app reads schemaVersion ${CATALOG_SCHEMA_VERSION}`;
@@ -177,7 +133,7 @@ function validators(): Validators {
       properties: {
         formatVersion: { const: 2 },
         sourceId: { $ref: PACKAGE_ID + "#/definitions/sourceId" },
-        // A folder source's pin is its revision (§18.4.3); only a cached snapshot names one, never an index.
+        // Folder revisions are cache pins, never index commit values.
         commit: SNAPSHOT_PIN,
         fetchedAt: { type: "string", format: "date-time" },
         marketplace: {
@@ -190,7 +146,6 @@ function validators(): Validators {
           properties: {
             ...Object.fromEntries(Object.keys(indexSchema.definitions.indexPackage.properties).map((key) =>
               [key, { $ref: INDEX_ID + "#/definitions/indexPackage/properties/" + key }])),
-            // Direct sources can install a package from the repository root.
             path: { anyOf: [{ const: "" }, { $ref: PACKAGE_ID + "#/definitions/repoPath" }] },
             treeSha256: { type: "string", pattern: "^[0-9a-f]{64}$" },
             versions: {
@@ -234,8 +189,6 @@ function parse(text: string): Validation<unknown> {
     return { ok: false, error: `not valid JSON: ${(error as Error).message}` };
   }
 }
-
-// ─── meaning rules shared by index versions and descriptors ─────────────
 
 function pluginRules(authority: PluginAuthority, artifact: PluginArtifactPins, minAppVersion: string, hostProtocol: string | undefined, direct: boolean): string | null {
   if (authority.requires?.minAppVersion !== minAppVersion) {
@@ -283,24 +236,14 @@ function mcpRules(payload: Record<string, unknown>): string | null {
   return null;
 }
 
-// ─── index ──────────────────────────────────────────────────────────────
-
-/**
- * A plugin may not take the host's own package id: host alert kinds stage
- * the overlay source `overlay:host--<kind>`, which a plugin named `host`
- * would mint for its own kinds. Plugin load refuses the id as well.
- */
+/** Reserve host to prevent plugin alerts from impersonating host overlay sources. */
 function reservedPluginName(kind: string, name: string): string | null {
   return kind === "plugin" && name === ALERT_RESERVED_PACKAGE_ID
     ? `the plugin name ${ALERT_RESERVED_PACKAGE_ID} is reserved for the host`
     : null;
 }
 
-/**
- * A version at the all-zero commit is a legacy grant pin (design §16.3): a
- * plugin's release digest kept so existing installs keep their grant. It has
- * no tree, so it is yanked and pins nothing but that digest.
- */
+/** Legacy zero-commit pins retain a release digest only and are always yanked. */
 function legacyPinRule(kind: string, version: IndexVersionShape): string | null {
   if (version.commit !== NULL_OBJECT_ID) return null;
   if (kind !== "plugin") return "only a plugin version can be a legacy grant pin (the all-zero commit)";
@@ -356,7 +299,6 @@ function indexPackageRules(entry: IndexPackage): string | null {
 
 export interface IndexContext {
   sourceId: string;
-  /** The official index must name the official source id. */
   official: boolean;
 }
 
@@ -379,8 +321,7 @@ export function validateIndexText(text: string, context: IndexContext): Validati
 
   const diagnostics: CatalogDiagnostic[] = [];
   const candidates: IndexPackage[] = [];
-  // A broken entry still claims its name, since the author listed it twice.
-  // A path only becomes a claim after the entry passes both validation layers.
+  // Broken entries still claim names; paths become claims only after full validation.
   const byName = new Map<string, number>();
   const byPath = new Map<string, number>();
   const claim = (counts: Map<string, number>, key: string) => counts.set(key, (counts.get(key) ?? 0) + 1);
@@ -429,12 +370,8 @@ export function validateIndexText(text: string, context: IndexContext): Validati
   return { ok: true, value: { index: { ...root, packages }, diagnostics } };
 }
 
-// ─── descriptor ─────────────────────────────────────────────────────────
-
 export interface DescriptorContext {
-  /** The index entry that pointed here, when there is one; kind and name must match it. */
   expected?: { kind: string; name: string };
-  /** A direct source may omit `artifact.release.repo` (it defaults to the source repository). */
   direct: boolean;
 }
 
@@ -472,17 +409,9 @@ function validateDescriptorValue(document: unknown, context: DescriptorContext, 
   return { ok: true, value };
 }
 
-/** Stands in for the default tree rung, which at a repository root has no path to name. */
 const ROOT_TREE_STAND_IN = "tree";
 
-/**
- * A descriptor synthesized from a direct package's own file (design §8.2),
- * held to the same schema and rules as a written one; errors name `file`.
- * A plugin at the root of its repository has an empty `artifact`: its tree
- * rung is the default, and the schema's one-rung minimum cannot name the
- * root as a path, so that one field is checked with a stand-in and returned
- * empty.
- */
+/** Synthesized descriptors use normal validation; root tree artifacts need a temporary path stand-in. */
 export function validateSynthesizedDescriptor(document: PackageDescriptor, file: string): Validation<PackageDescriptor> {
   const artifact = document.kind === "plugin" ? (document.payload as { artifact?: unknown }).artifact : undefined;
   const rootTree = typeof artifact === "object" && artifact !== null && Object.keys(artifact).length === 0;
@@ -494,8 +423,6 @@ export function validateSynthesizedDescriptor(document: PackageDescriptor, file:
   if (!checked.ok || !rootTree) return checked;
   return { ok: true, value: { ...checked.value, payload: { ...checked.value.payload, artifact: {} } } };
 }
-
-// ─── revocations ────────────────────────────────────────────────────────
 
 export function validateRevocationsText(text: string): Validation<RevocationsFile> {
   const parsed = parse(text);
@@ -535,14 +462,7 @@ export function validateConditionalRevocationsText(text: string): Validation<Con
 }
 
 /** A same-pin sync may reuse only a complete, current and readable cache. */
-/**
- * A stored snapshot as it is served: its packages held to the identifier
- * admission a fresh read applies (§18.8). A snapshot written before that
- * rule, or at a commit a refresh does not rebuild, can still list a package
- * whose name, version or component name has a credential's shape; it is
- * left out here, with the diagnostic a fresh read gives, on every read
- * (offline ones included). The file, and its revocations, stay as stored.
- */
+/** Apply current identifier admission on every cached read, including offline; keep stored files unchanged. */
 export function admitSnapshotPackages(snapshot: SourceSnapshot): SourceSnapshot {
   const diagnostics: CatalogDiagnostic[] = [];
   const packages = snapshot.packages.filter((entry, position) => {

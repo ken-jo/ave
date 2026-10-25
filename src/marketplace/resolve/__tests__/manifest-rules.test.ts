@@ -3,7 +3,6 @@ import type { PluginAuthority } from "../../catalog/types.js";
 import { isMarketplaceError } from "../../errors.js";
 import { assertGitInstallManifest, expectedPluginOf, gitInstallManifestMismatches, PLUGIN_AUTHORITY_FIELDS, type ExpectedPlugin } from "../manifest-rules.js";
 
-/** An extension namespace Ave does not own: another vendor's data, never Ave fields. */
 const UNKNOWN_NAMESPACE = "xyz.example";
 
 const authority = (): PluginAuthority => ({
@@ -18,7 +17,6 @@ const authority = (): PluginAuthority => ({
 
 const expected = (): ExpectedPlugin => ({ name: "alpha", version: "1.2.0", minAppVersion: "0.12.0", authority: authority(), platforms: undefined, artifact: undefined });
 
-/** A plugin.json whose Ave block lists the authority keys in reverse order. */
 function manifest(patch: Record<string, unknown> = {}): Record<string, unknown> {
   const ave = Object.fromEntries(Object.entries(authority()).reverse());
   return {
@@ -117,7 +115,6 @@ describe("process-entry admission, declared half (§9.7 P4, decision 34)", () =>
     ...authority(),
     requires: { capabilities: ["llm.chat"], minAppVersion, hostProtocol: "3" },
   });
-  /** A descriptor that publishes a process entry the way admission requires. */
   const admitted = (patch: Partial<ExpectedPlugin> = {}): ExpectedPlugin => ({
     name: "alpha",
     version: "1.2.0",
@@ -161,7 +158,7 @@ describe("process-entry admission, declared half (§9.7 P4, decision 34)", () =>
   });
 
   it("is MANIFEST_MISMATCH with minAppVersion below the first release that serves host protocol 3", () => {
-    // Manifest and descriptor agree on 0.13.0, which runs a process entry, so the protocol floor is the only rule broken.
+    // Match descriptor and manifest floors so only the protocol floor fails.
     const below = admitted({ minAppVersion: "0.13.0", authority: processAuthority("0.13.0") });
     expect(gitInstallManifestMismatches(processManifest("0.13.0"), below)).toEqual([
       'minAppVersion in ave-package.json is "0.13.0"; host protocol 3 needs 0.14.0 or newer, the first release that serves it',
@@ -170,7 +167,7 @@ describe("process-entry admission, declared half (§9.7 P4, decision 34)", () =>
   });
 
   it("is MANIFEST_MISMATCH naming both floors with minAppVersion below the first release that runs a process entry", () => {
-    // Manifest and descriptor agree on 0.12.0, below both the protocol-3 floor and the process-entry floor.
+    // This version is below both process-entry and protocol floors.
     const below = admitted({ minAppVersion: "0.12.0", authority: processAuthority("0.12.0") });
     expect(gitInstallManifestMismatches(processManifest("0.12.0"), below)).toEqual([
       'minAppVersion in ave-package.json is "0.12.0"; host protocol 3 needs 0.14.0 or newer, the first release that serves it',

@@ -1,89 +1,35 @@
-/**
- * MCP protocol wire constants — the single authority (design §8).
- *
- * The `2026-07-28` revision is now FINAL (current). These values are pinned to
- * the published schema (`schema/2026-07-28/schema.ts`), not the pre-release
- * draft the first alignment slice was built against. Finalization moved the
- * spec-reserved error codes into the `-32020..-32099` partition (the draft used
- * `-32003`/`-32004`, which are implementation-defined range) and replaced
- * resource-not-found `-32002` with `-32602` (Invalid Params); `-32002` is
- * burned and must not be reused.
- *
- * Every module that speaks MCP wire (external client, plugin server, plugin
- * host, server projection) imports from here — the previous per-module copies
- * are exactly how the draft numbering outlived finalization.
- */
+/** Shared wire constants pin protocol error assignments; the obsolete -32002 value must not be reused. */
 
-/** The stateless protocol revision Ave speaks by default. */
 export const MCP_PROTOCOL_VERSION = "2026-07-28";
 
-/**
- * Dual-era exception only (design §0): the revision PROPOSED to an EXTERNAL
- * server that does not implement `server/discover`. `2025-03-26` is the newest
- * pre-final revision whose transport behavior this client implements
- * (single-endpoint Streamable HTTP + server-minted session echo; no
- * per-request version header, which arrived in `2025-06-18`). First-party
- * plugins never negotiate this.
- */
+/** External legacy negotiation uses only implemented transport revisions; plugin hosts never negotiate it. */
 export const MCP_LEGACY_PROTOCOL_VERSION = "2025-03-26";
 
-/**
- * Legacy revisions the dual-era lane can actually speak. A legacy server may
- * counter `initialize` with its own revision; anything outside this list is a
- * mutual incompatibility, not something to limp through.
- */
+/** Reject negotiated legacy revisions outside the implemented set. */
 export const MCP_SUPPORTED_LEGACY_VERSIONS: readonly string[] = [
   "2025-03-26",
   "2024-11-05",
 ];
 
-// ─── Reserved per-request `_meta` keys (`RequestMetaObject`) ───
 export const META_PROTOCOL_VERSION = "io.modelcontextprotocol/protocolVersion";
 export const META_CLIENT_INFO = "io.modelcontextprotocol/clientInfo";
 export const META_CLIENT_CAPABILITIES = "io.modelcontextprotocol/clientCapabilities";
-/** Reserved result-`_meta` key a server SHOULD stamp with its identity. */
 export const META_SERVER_INFO = "io.modelcontextprotocol/serverInfo";
 
-/**
- * Ave-reserved result-`_meta` key carrying a plugin tool's raw (non-text)
- * return value.
- *
- * MCP's content model is text-first, so a structured return rides `_meta`. It
- * is stated here with the rest of the wire vocabulary because THREE modules
- * spoke it from three private copies — the delegate that writes it, the host
- * that reads it, and the out-of-process arm that now carries it across a real
- * process boundary. A vendor key that only agrees by coincidence is the same
- * failure mode the per-module error-code copies had.
- */
+/** Shared metadata key preserves structured plugin results across transports. */
 export const RAW_RESULT_META = "ave/rawResult";
 
-/**
- * `_meta` key naming the host tool invocation a child's work belongs to.
- *
- * The host puts an opaque, per-call token on every `tools/call` it sends an
- * out-of-process plugin. The child carries the same token on each hostApi
- * request it makes for that call, including requests from work the handler
- * left running after it returned. The host runs the request in the
- * invocation's own async context, which holds the effect gate (foreground
- * approval or headless deny), the effect ledger and the invocation origin. The
- * host keeps that context resolvable after the call settles. A request without
- * the token runs outside any invocation (`plugin-hostapi-protocol.md` §3.3).
- */
+/** Opaque invocation tokens bind child host calls to host approval, origin and effect context.
+ * Keep context resolvable after tool completion for background work; missing tokens have no invocation. */
 export const INVOCATION_META = "ave/invocation";
 
-// ─── JSON-RPC 2.0 codes ───
 export const RPC_INVALID_PARAMS = -32602;
 export const RPC_METHOD_NOT_FOUND = -32601;
 export const RPC_INTERNAL_ERROR = -32603;
 
-/**
- * Resource not found rides `-32602` (Invalid Params) since `2026-07-28` —
- * same wire value as {@link RPC_INVALID_PARAMS}, its own name so call sites
- * say what they mean. The pre-final `-32002` is burned.
- */
+/** Resource-not-found uses Invalid Params (-32602); obsolete -32002 must never be reused. */
 export const RPC_RESOURCE_NOT_FOUND = -32602;
 
-// ─── MCP-reserved partition (`-32020..-32099`), final numbering ───
 export const RPC_HEADER_MISMATCH = -32020;
 export const RPC_MISSING_REQUIRED_CLIENT_CAPABILITY = -32021;
 export const RPC_UNSUPPORTED_PROTOCOL_VERSION = -32022;

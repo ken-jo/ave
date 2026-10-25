@@ -31,7 +31,6 @@ export interface McpOAuthSecrets {
   getSecret(key: string): string | null;
   setSecret(key: string, value: string): Promise<void>;
   deleteSecret(key: string): Promise<void>;
-  /** Whether a secret written now is encrypted at rest (the settings store's single answer). */
   canStoreEncrypted(): boolean;
 }
 
@@ -43,28 +42,18 @@ export interface McpOAuthDependencies {
 }
 
 export interface McpOAuthSessionOptions {
-  /**
-   * Settles when a session this one replaces under the SAME credential key has
-   * finished writing. The stored record is read only after it, so a refresh
-   * the old session had in flight (a rotated refresh token) is not lost.
-   */
+  /** Wait for same-key predecessor writes before loading rotated refresh tokens. */
   after?: Promise<void>;
-  /** Status to show until the stored record has been read. */
   initialStatus?: McpAuthStatus;
 }
 
 type ClientSource = "preregistered" | "metadata-document" | "dynamic";
 
-/**
- * Ave's OAuth Client ID Metadata Document, published by the web site from
- * `web/public/oauth/mcp-client.json`. The URL is the client_id itself, so it
- * must never move. It lists the RFC 8252 loopback IP redirect without a port.
- */
+/** Published client metadata URL is the stable client_id and must never move. */
 export const MCP_CLIENT_METADATA_DOCUMENT_URL = `${AVE_SERVICE_BASE_URL}/oauth/mcp-client.json`;
 
 interface Discovery {
   issuer: string;
-  /** Canonical RFC 8707 resource identifier sent on the wire. */
   resource: string;
   resourceMetadataUrl?: string;
   resourceMetadataFromChallenge: boolean;
@@ -98,10 +87,9 @@ const MESSAGES: Record<McpAuthErrorCode, string> = {
 const AUTH_FAILED = MESSAGES["mcp-auth-failed"];
 const AUTH_REQUIRED = MESSAGES["mcp-auth-required"];
 const MAX_AUTH_RESPONSE_BYTES = 1024 * 1024;
-/** Spec step-up guidance: retry "no more than a few times" per scope challenge. */
 const MAX_STEP_UP_ATTEMPTS = 2;
 
-/** A typed authorization failure whose message is a fixed string (never provider text). */
+/** Authorization failures use fixed messages, never provider-controlled text. */
 export class McpOAuthError extends Error {
   constructor(readonly code: McpAuthErrorCode) {
     super(MESSAGES[code]);
@@ -113,12 +101,11 @@ class McpOAuthBindingChangedError extends Error {
   constructor() { super(AUTH_REQUIRED); }
 }
 
-/** Internal: the server refused Ave's client metadata document; the caller may register instead. */
 class MetadataDocumentRejectedError extends Error {
   constructor(readonly issuer: string) { super(AUTH_FAILED); }
 }
 
-/** A bearer token response Ave can attach and schedule; anything else is refused before it is stored. */
+/** Validate token responses before storing or attaching them. */
 function validateTokens(tokens: OAuthTokens): void {
   if (tokens.token_type.toLowerCase() !== "bearer" || !/^[A-Za-z0-9._~+/-]+=*$/u.test(tokens.access_token) ||
     (tokens.expires_in !== undefined && (!Number.isSafeInteger(tokens.expires_in) || tokens.expires_in < 0))) {
@@ -145,7 +132,7 @@ function canonicalResource(url: URL): string {
   return url.pathname === "/" && !url.search ? url.origin : url.href;
 }
 
-/** SDK path-boundary containment, narrowed so a resource carrying a query only matches the exact endpoint. */
+/** Query-bearing resources match only the exact endpoint, not containing paths. */
 function resourceContainsEndpoint(resource: URL, endpoint: URL): boolean {
   return resource.href === endpoint.href ||
     (!resource.search && checkResourceAllowed({ requestedResource: endpoint, configuredResource: resource }));
@@ -155,28 +142,23 @@ function scopeSet(...values: Array<string | undefined>): string[] {
   return [...new Set(values.join(" ").split(/\s+/u).filter(Boolean))];
 }
 
-/** The fields that identify one credential record; any other config edit keeps the grant. */
+/** Only credential identity fields revoke grants; unrelated config edits retain them. */
 function credentialKeyInputs(config: McpHttpServerConfig): string {
   const serverUrl = secureUrl(config.url, config.allowPrivateNetworks === true).href;
   return JSON.stringify([config.id, serverUrl, config.oauth]);
 }
 
-/** Encrypted-store key for this endpoint's credentials; throws when the endpoint can never hold any. */
+/** Invalid OAuth targets cannot create credential keys. */
 function mcpOAuthCredentialKey(config: McpHttpServerConfig): string {
   return `mcp.oauth.${createHash("sha256").update(credentialKeyInputs(config)).digest("hex")}`;
 }
 
-/** Credential key, or undefined for an endpoint that is not a valid OAuth target (so it cannot have stored credentials). */
 export function tryMcpOAuthCredentialKey(config: McpHttpServerConfig): string | undefined {
   try { return mcpOAuthCredentialKey(config); }
   catch { return undefined; }
 }
 
-/**
- * Whether the configured registration can ever complete. A client ID goes with
- * no mode or a pre-registration mode; those modes need one; any malformed or
- * contradictory combination fails clearly instead of picking a mode silently.
- */
+/** Reject contradictory registration modes rather than silently selecting one. */
 function registrationBlock(config: McpHttpServerConfig): McpAuthErrorCode | undefined {
   const mode = config.oauth?.clientRegistration;
   const clientId = config.oauth?.clientId;
@@ -188,7 +170,6 @@ function registrationBlock(config: McpHttpServerConfig): McpAuthErrorCode | unde
     ? undefined : "mcp-auth-registration-unsupported";
 }
 
-/** Host-owned credentials and browser flow for one exact remote endpoint. */
 export class McpOAuthSession {
   static async clearStoredCredentials(config: McpHttpServerConfig, secrets: McpOAuthSecrets): Promise<void> {
     const key = tryMcpOAuthCredentialKey(config);
@@ -215,7 +196,6 @@ export class McpOAuthSession {
   private pendingWrite: Promise<void> = Promise.resolve();
   private credentialGeneration = 0;
   private challengeProbeAvailable = true;
-  /** Issuers that rejected the client metadata document in this session; flows there register instead. */
   private readonly metadataDocumentRejected = new Set<string>();
   private readonly ready: Promise<void>;
 
@@ -245,7 +225,6 @@ export class McpOAuthSession {
 
   getStatus(): McpAuthStatus { return this.status; }
 
-  /** The renderer-safe reason this session cannot authenticate, if any. */
   getBlockedCode(): McpAuthErrorCode | undefined { return this.blocked; }
 
   private loadStored(): void {
@@ -289,7 +268,7 @@ export class McpOAuthSession {
         this.status = "authenticated";
         this.challengeProbeAvailable = false;
       }
-    } catch { /* An invalid record requires a new interactive grant. */ }
+    } catch {  }
   }
 
   authenticate(): Promise<void> {
@@ -299,11 +278,7 @@ export class McpOAuthSession {
     return this.login;
   }
 
-  /**
-   * Retire this session for a successor that keeps the same credential key:
-   * let a refresh already in flight finish and persist its (possibly rotated)
-   * tokens, then dispose. The successor reads the record after this settles.
-   */
+  /** Let same-key refreshes finish and persist before disposal so the successor reads rotated tokens. */
   async handOff(): Promise<void> {
     for (;;) {
       const refresh = this.refresh;
@@ -404,8 +379,7 @@ export class McpOAuthSession {
     const resource = await discoverOAuthProtectedResourceMetadata(this.serverUrl, { resourceMetadataUrl, protocolVersion: MCP_PROTOCOL_VERSION }, this.authFetch);
     const resourceUrl = secureUrl(resource.resource, allowPrivate);
     const resourceId = canonicalResource(resourceUrl);
-    // RFC 9728 §3.3: metadata named by the resource's own challenge must describe exactly that resource.
-    // Otherwise it may name a containing resource path, but never an unrelated origin or sibling.
+    // Challenge metadata must match the exact resource; well-known metadata may describe a containing path.
     if (resourceMetadataFromChallenge
       ? resourceId !== this.endpointResource
       : !resourceContainsEndpoint(resourceUrl, new URL(this.serverUrl))) throw new McpOAuthError("mcp-auth-resource-mismatch");
@@ -446,16 +420,10 @@ export class McpOAuthSession {
       metadata, requireIssuerResponse, scope };
   }
 
-  /**
-   * The client for this interactive flow. A registered client is reused only
-   * when it already lists this flow's loopback redirect URI: the catcher binds
-   * a fresh port each time, and a strict authorization server rejects any
-   * redirect_uri the client did not register.
-   */
+  /** Reuse registration only if it covers this flow loopback redirect, whose port changes each time. */
   private async selectClient(discovery: Discovery, redirectUri: string): Promise<{ client: OAuthClientInformationFull; source: ClientSource }> {
     const mode = this.config.oauth?.clientRegistration;
-    // Spec order: a pre-registered client, then a Client ID Metadata Document when the server
-    // advertises it, then dynamic registration. registrationBlock() already vetted the combination.
+    // Prefer pre-registration, then advertised client metadata, then dynamic registration.
     const clientId = this.config.oauth?.clientId;
     if (clientId !== undefined) {
       return { source: "preregistered", client: { client_id: clientId, redirect_uris: [redirectUri], token_endpoint_auth_method: "none" } };
@@ -498,8 +466,7 @@ export class McpOAuthSession {
     try {
       await this.authorizeInteractively();
     } catch (error) {
-      // Registration mode unset and the server refused Ave's metadata document:
-      // run the flow once more with dynamic registration. An explicit mode stays strict.
+      // Only an unspecified mode may retry rejected client metadata through dynamic registration.
       if (!(error instanceof MetadataDocumentRejectedError)) throw error;
       this.metadataDocumentRejected.add(error.issuer);
       await this.authorizeInteractively();
@@ -544,8 +511,7 @@ export class McpOAuthSession {
       if (!opened.ok) throw new Error(AUTH_FAILED);
       this.assertActive();
       const params = await this.dependencies.redirectCatchers.wait(this.ownerKey, handle, TOOL_TIMEOUT_POLICY.approvalGateUserWaitMs);
-      // RFC 9207: state and issuer are checked before any part of the response, an error included,
-      // is acted on; a response that fails them is not from this flow's server.
+      // Verify state and issuer before acting on any callback, including errors.
       if (params.state !== state || (params.iss !== undefined && params.iss !== discovery.issuer) ||
         (discovery.requireIssuerResponse && !params.iss)) throw new Error(AUTH_FAILED);
       if (params.error === "invalid_client" || params.error === "unauthorized_client") {
@@ -558,7 +524,6 @@ export class McpOAuthSession {
       this.assertActive();
       // Refuse a malformed token response before it can displace a working grant.
       validateTokens(tokens);
-      // The grant belongs to this client; only now does it replace the stored binding.
       this.credentials = {
         serverUrl: this.serverUrl, issuer: discovery.issuer, resource: discovery.resource,
         resourceMetadataUrl: discovery.resourceMetadataUrl, resourceMetadataFromChallenge: discovery.resourceMetadataFromChallenge,
@@ -566,7 +531,6 @@ export class McpOAuthSession {
         grantedScope: this.credentials?.issuer === discovery.issuer ? this.credentials.grantedScope : undefined,
       };
       if (stepUp) {
-        // Count the attempt before accepting, so the new grant is not reported as still needing step-up.
         this.stepUpAttempts.set(stepUp, (this.stepUpAttempts.get(stepUp) ?? 0) + 1);
         if (this.pendingStepUp === stepUp) this.pendingStepUp = undefined;
       }
@@ -742,13 +706,8 @@ export class McpOAuthSession {
     this.challengeScope = challenge.scope;
   }
 
-  /**
-   * A 403 `insufficient_scope` keeps the working grant and marks the session
-   * as needing step-up; the explicit Authenticate action then requests the
-   * union of granted and challenged scopes. The browser never opens here. A
-   * challenge whose scope set has already been stepped up the maximum number
-   * of times is a permanent failure of that request, not another prompt.
-   */
+  /** Scope challenges preserve working grants and require explicit authentication for step-up.
+     * Repeated identical challenges are bounded and never open a browser automatically. */
   private captureStepUp(response: Response): void {
     const challenge = extractWWWAuthenticateParams(response);
     if (challenge.error !== "insufficient_scope" || !challenge.scope) return;

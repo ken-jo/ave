@@ -5,7 +5,6 @@ const UVX_TARGET = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?(?:\[[A-Za-z0-9._
 const BARE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/u;
 const IMAGE = /^[a-z0-9][a-z0-9._-]*(?::\d+)?(?:\/[a-z0-9][a-z0-9._-]*)*(?::(?!latest$)[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}|@sha256:[0-9a-f]{64})$/u;
 
-/** Indexes of validated registry, image and launcher-option literals in the complete argv. */
 export function portableLauncherLiteralIndexes(name: string, command: string, args: readonly string[]): readonly number[] {
   const refuse = (): never => { throw new Error(`mcpServers.${name} has an unpinned or unsupported launcher`); };
   if (command === "node" || command === "bun") {

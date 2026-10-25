@@ -27,45 +27,21 @@ import { t } from "../i18n/index.js";
 import { isLoopbackUrlHostname } from "../shared/loopback-url.js";
 const log = createLogger("mcp-governance");
 
-/**
- * The methods each {@link McpCapability} covers (design §3.6,
- * `governance-per-request`). `satisfies Record<McpCapability, string[]>` makes
- * this exhaustive: adding a capability to the enum forces listing its methods
- * here (build error otherwise), closing the enum↔gate SOT drift. Tasks methods
- * ride `tools` (they manage long-running `tools/call` work).
- */
+/** Exhaustive capability mapping makes new methods opt in; task management uses tools authority. */
 const CAPABILITY_METHODS = {
-  // `tasks/update` (client→server task input) has no sender yet — it joins
-  // this list alongside its implementation, like every other verb here.
   tools: ["tools/list", "tools/call", "tasks/get", "tasks/cancel"],
-  // `resources/subscribe`/`unsubscribe` were removed by the final `2026-07-28`
-  // revision (superseded by `subscriptions/listen`) and had no sender here —
-  // dropped, so the fail-closed default denies them like any unclassified verb.
   resources: ["resources/list", "resources/read", "resources/templates/list"],
   prompts: ["prompts/list", "prompts/get"],
 } satisfies Record<McpCapability, string[]>;
 
-/** Inverted method → capability lookup, derived from {@link CAPABILITY_METHODS}. */
 const REQUEST_METHOD_CAPABILITY: Record<string, McpCapability> = Object.fromEntries(
   Object.entries(CAPABILITY_METHODS).flatMap(([capability, methods]) =>
     methods.map((method) => [method, capability as McpCapability]),
   ),
 );
 
-/**
- * Protocol/control methods that exercise NO gated capability — discovery, the
- * dual-era handshake, liveness, and notifications. This is a CLOSED allowlist:
- * everything NOT here and NOT in {@link REQUEST_METHOD_CAPABILITY} is denied
- * (fail-closed), so a new capability verb a server invokes is denied until it is
- * explicitly classified — rather than sailing through ungated.
- */
-// Notifications are absent on purpose: this gate sits on `sendRequest` (and
-// the explicit pre-checks), while `sendNotification` never consults it — a
-// notification entry here is unreachable, the same dead-entry class the
-// removed `ping`/`resources/subscribe` verbs were.
-// `subscriptions/listen` exercises no gated capability itself (§6a.3): it only
-// opens the notification channel, and every notification-driven refresh
-// re-enters the gated `*/list` paths — the chokepoints don't move.
+/** Only classified capabilities and this closed control allow-list pass; unknown methods fail closed. */
+// Notification refreshes re-enter gated list methods; sendNotification does not use this request gate.
 const CONTROL_METHODS: ReadonlySet<string> = new Set([
   "server/discover",
   "initialize",
@@ -140,7 +116,6 @@ export class McpGovernance {
     }
   }
 
-  /** Start periodic policy refresh so IT-admin updates take effect. */
   startPolicyRefresh(onRevoked?: (revokedIds: string[]) => void | Promise<void>): void {
     if (this.refreshTimer) return;
     const interval = this.policy.globalRules.policyRefreshIntervalMs;
@@ -173,19 +148,12 @@ export class McpGovernance {
     }
   }
 
-  // ─── Layer 1: Server Install Validation ─────────────────────
-
-  /**
-   * Validate a server config against policy.
-   * Returns the layer that blocked the request when validation fails.
-   */
+  /** Return the specific policy layer refusing a server configuration. */
   validateServer(config: McpServerConfig): ValidationResult {
-    // L0: policy presence
     if (!this.policy) {
       return { valid: false, reason: t("be_mcpGovernance.policyNotLoaded"), layer: 0 };
     }
 
-    // L1-a: server approval state (deny-by-default)
     const approval = this.findApproval(config.id);
     if (!approval) {
       return { valid: false, reason: t("be_mcpGovernance.unapprovedServer", { id: config.id }), layer: 1 };
@@ -197,18 +165,15 @@ export class McpGovernance {
       return { valid: false, reason: t("be_mcpGovernance.pendingServer", { id: config.id }), layer: 1 };
     }
 
-    // L1-b: global server count limit
     const activeCount = this.policy.servers.filter((s) => s.status === "approved").length + this.runtimeApprovals.size;
     if (activeCount > this.policy.globalRules.maxServersTotal) {
       return { valid: false, reason: t("be_mcpGovernance.maxServersExceeded", { activeCount, maxServersTotal: this.policy.globalRules.maxServersTotal }), layer: 1 };
     }
 
-    // L1-c: transport validation
     if (config.transport !== approval.transport) {
       return { valid: false, reason: t("be_mcpGovernance.transportMismatch", { configTransport: config.transport, approvedTransport: approval.transport }), layer: 1 };
     }
 
-    // L1-d: stdio command validation
     if (config.transport === "stdio") {
       const cmdResult = this.validateStdioCommand(config, approval);
       if (!cmdResult.valid) return cmdResult;
@@ -216,7 +181,6 @@ export class McpGovernance {
       if (!apiKeyEnvResult.valid) return apiKeyEnvResult;
     }
 
-    // L1-e: HTTP / SSE / WebSocket URL validation
     if (
       config.transport === "http" ||
       config.transport === "sse" ||
@@ -225,24 +189,18 @@ export class McpGovernance {
       const urlResult = this.validateUrl(config, approval);
       if (!urlResult.valid) return urlResult;
 
-      // L1-f: Streamable HTTP only — enforce HTTPS except localhost/loopback.
-      //       Private-network IP checks are delegated to NetworkGuard (Tier A2).
+      // Require HTTPS except loopback; private-address approval is enforced separately.
       if (config.transport === "http") {
         const httpResult = this.validateHttpScheme(config.url);
         if (!httpResult.valid) return httpResult;
 
-        // L1-g: Streamable HTTP headers must not smuggle CRLF. Even though
-        //       admin governance is trusted, request-splitting via header
-        //       values with \r or \n is cheap to block here.
+        // Reject header CRLF before request splitting can cross the transport boundary.
         const headersResult = this.validateHeaders(config.headers);
         if (!headersResult.valid) return headersResult;
         const apiKeyHeaderResult = this.validateApiKeyHeader(config, approval);
         if (!apiKeyHeaderResult.valid) return apiKeyHeaderResult;
 
-        // L1-h: `allowPrivateNetworks` is a per-server escape hatch — it
-        //       must be authorised by admin policy, either globally or on
-        //       the matching approval. Otherwise any config file could
-        //       self-elevate out of NetworkGuard.
+        // Config cannot self-authorize private networks; global or server policy must opt in.
         if (config.allowPrivateNetworks) {
           const gateResult = this.validateAllowPrivateNetworks(approval);
           if (!gateResult.valid) return gateResult;
@@ -250,21 +208,13 @@ export class McpGovernance {
       }
     }
 
-    // L2: connection security validation
     const connResult = this.validateConnectionSecurity(config, approval);
     if (!connResult.valid) return connResult;
 
     return { valid: true };
   }
 
-  // ─── Layer 3: Tool Registration Validation ─────────────────────
-
-  /**
-   * Validate tool schemas an MCP server wants to register.
-   * - Enforce namespace: mcp_{prefix}_{toolName}
-   * - Prevent existing tool shadowing
-   * - Enforce max tool count
-   */
+  /** Require namespacing and count limits without shadowing registered or built-in tools. */
   validateToolRegistration(
     serverId: string,
     tools: McpToolSchema[],
@@ -275,32 +225,25 @@ export class McpGovernance {
       return { valid: false, reason: t("be_mcpGovernance.unapprovedServerToolRegistration", { serverId }), layer: 3 };
     }
 
-    // Capability gate: whether tools are allowed.
     if (!approval.allowedCapabilities.includes("tools")) {
       return { valid: false, reason: t("be_mcpGovernance.noToolRegistrationPermission", { serverId }), layer: 3 };
     }
 
-    // Max tool count.
     if (tools.length > approval.maxTools) {
       return { valid: false, reason: t("be_mcpGovernance.toolCountExceeded", { toolCount: tools.length, maxTools: approval.maxTools, serverId }), layer: 3 };
     }
 
-    // Namespace and shadowing validation.
     const requiredPrefix = `mcp_${approval.toolNamePrefix}_`;
     for (const tool of tools) {
-      // Namespace enforcement.
       const namespacedName = tool.name.startsWith(requiredPrefix)
         ? tool.name
         : `${requiredPrefix}${tool.name}`;
 
-      // Prevent existing tool shadowing.
       if (existingToolNames.has(namespacedName)) {
         return { valid: false, reason: t("be_mcpGovernance.toolNameConflict", { namespacedName }), layer: 3 };
       }
 
-      // Block builtin tool shadowing. Plugin and already-registered tool names
-      // are covered by the `existingToolNames` check above, which reads the live
-      // registry rather than a list that has to be kept in step with it.
+      // Compare against the live registry so plugin and dynamic tools cannot be shadowed.
       const baseNames = [
         "agent_list",
         "agent_spawn",
@@ -323,19 +266,7 @@ export class McpGovernance {
     return { valid: true };
   }
 
-  /**
-   * Per-request capability gate (milestone `governance-per-request`, design §3.6).
-   *
-   * Where {@link validateToolRegistration} gates ONCE at connect time on the
-   * static `allowedCapabilities` whitelist, this gates EVERY request on the
-   * capability that request actually exercises (a `tools/call` exercises
-   * `tools`, a `resources/read` exercises `resources`, …). Keeps the same
-   * deny-by-default + approved-server invariants: an unapproved server is denied,
-   * and a request exercising a capability the server was not approved for is
-   * denied — even if a prior registration slipped through. Protocol/control
-   * methods that exercise NO gated capability (`server/discover`,
-   * notifications) pass.
-   */
+  /** Recheck server approval and the exercised capability on every request, not just registration. */
   validateRequestCapability(
     serverId: string,
     method: string,
@@ -346,45 +277,18 @@ export class McpGovernance {
       return { valid: false, reason: t("be_mcpGovernance.unapprovedServerToolRegistration", { serverId }), layer: 3 };
     }
 
-    // Protocol/control methods exercise no gated capability.
     if (CONTROL_METHODS.has(method)) {
       return { valid: true };
     }
 
-    // MCP Apps `ui://` reads are the `io.modelcontextprotocol/ui` EXTENSION
-    // (gated by the Apps mechanism — `_meta.ui` + CSP), not the core `resources`
-    // capability. A tools-only server may legitimately return `_meta.ui` on a
-    // tool result and have the host fetch the `ui://` resource, so this read must
-    // NOT require `resources` (would break MCP Apps for every tools-only server).
-    //
-    // Decided by the SHARED predicate, not a local `startsWith`. Precisely, the question
-    // asked here is "is this URI in the Apps namespace?" — NOT "is this the Apps caller",
-    // which governance cannot see: it is handed a method, so a `resources/read` issued by
-    // `readDeclaredResource` (or its template sibling) for a listed `ui://` URI is
-    // exempted too. That residual is unreachable, and for a STRUCTURAL reason rather
-    // than a contingent one: `isUsableResourceUri` lists `ui:` in RESERVED_SCHEMES, so a
-    // `ui://` URI can never enter `state.resources` or `state.resourceTemplates` in the
-    // first place — no listed entry can ever have that scheme, whatever the capability
-    // state.
-    //
-    // An earlier version argued this from `discoverResources` returning early without
-    // the capability. True, but contingent: `startPolicyRefresh` can NARROW a live
-    // server's capabilities without disconnecting it, and the catalogue is cleared only
-    // on teardown — so previously-listed URIs would outlive the approval. A reviewer
-    // found that hole in the reasoning; the scheme argument is immune to it.
-    //
-    // The predicate is shared with the scheme check in `McpClient.readResource` because
-    // both turn on that same namespace answer and must not differ: a URI this exempts but
-    // the client refuses is a dead request; one the client would serve but this refuses
-    // falls through to needing `resources`, which breaks Apps on a tools-only server.
+    // Apps reads share the client URI predicate; core resource catalogs exclude ui schemes structurally.
     if (method === "resources/read" && isMcpAppUiUri(params?.uri)) {
       return { valid: true };
     }
 
     const required = REQUEST_METHOD_CAPABILITY[method];
     if (required === undefined) {
-      // Unknown, non-control method — deny (fail-closed). A new capability verb
-      // is denied until explicitly classified, never silently ungated.
+      // Unknown methods remain denied until explicitly classified.
       return {
         valid: false,
         reason: `MCP server '${serverId}' sent an unclassified method '${method}' (denied; not a control method and exercises no approved capability)`,
@@ -409,14 +313,10 @@ export class McpGovernance {
     return toolName.startsWith(prefix) ? toolName : `${prefix}${toolName}`;
   }
 
-  // ─── Queries ────────────────────────────────────────
-
-  /** Return approval information for a server. */
   getApproval(serverId: string): McpServerApproval | undefined {
     return this.findApproval(serverId);
   }
 
-  /** One admission rule for lookup, preparation, insertion and publication. */
   isRuntimeApprovalAdmitted(approval: McpServerApproval): boolean {
     if (this.policy.servers.some((entry) => entry.id === approval.id)) return true;
     if (!approval.bundled) return false;
@@ -426,19 +326,17 @@ export class McpGovernance {
       && entry.server === approval.bundled!.server && entry.fingerprint === approval.bundled!.fingerprint) ?? false;
   }
 
-  /** Promote an exact bundled fingerprint that the current policy lists. */
   policyFingerprintApproval(approval: McpServerApproval): McpServerApproval | null {
     if (!approval.bundled) return null;
     const candidate = { ...approval, provenance: "policy-fingerprint" as const };
     return this.isRuntimeApprovalAdmitted(candidate) ? candidate : null;
   }
 
-  /** Runtime approvals withdrawn by a policy reload, including reused clients. */
   inadmissibleRuntimeServerIds(): string[] {
     return [...this.runtimeApprovals].filter(([, approval]) => !this.isRuntimeApprovalAdmitted(approval)).map(([id]) => id);
   }
 
-  /** Register a host-owned, non-persistent approval for one active plugin generation. */
+  /** Runtime approval belongs to one host-owned generation and is never persisted. */
   registerRuntimeApproval(approval: McpServerApproval): void {
     if (!this.isRuntimeApprovalAdmitted(approval)) throw new Error("runtime approval not admitted by policy");
     if (this.policy.servers.some((entry) => entry.id === approval.id)) {
@@ -455,7 +353,6 @@ export class McpGovernance {
     this.runtimeApprovals.delete(serverId);
   }
 
-  /** Isolated governance view for hidden candidate discovery. */
   scopedRuntimeApproval(approval: McpServerApproval): McpGovernance {
     if (!this.isRuntimeApprovalAdmitted(approval)) throw new Error("runtime approval not admitted by policy");
     if (this.policy.servers.some((entry) => entry.id === approval.id)) {
@@ -466,7 +363,7 @@ export class McpGovernance {
     return new McpGovernance(this.policyPath, { policy: this.policy, runtimeApprovals: approvals });
   }
 
-  /** Atomically replace generation-owned approvals after preparation. */
+  /** Publish generation approvals atomically only after preparation. */
   replaceRuntimeApprovals(
     predecessorServerIds: Iterable<string>,
     approvals: readonly McpServerApproval[],
@@ -487,7 +384,6 @@ export class McpGovernance {
     this.runtimeApprovals = next;
   }
 
-  /** Validate and prebuild a runtime approval snapshot for atomic publication. */
   prepareRuntimeApprovals(
     predecessorServerIds: Iterable<string>,
     approvals: readonly McpServerApproval[],
@@ -525,8 +421,6 @@ export class McpGovernance {
     });
   }
 
-  // ─── Private Validation ──────────────────────────
-
   private findApproval(serverId: string): McpServerApproval | undefined {
     const managed = this.policy.servers.find((s) => s.id === serverId);
     if (managed) return managed;
@@ -539,7 +433,7 @@ export class McpGovernance {
       return { valid: false, reason: t("be_mcpGovernance.stdioCommandRequired"), layer: 1 };
     }
     const allowed = approval.allowedCommands ?? [];
-    // Empty allowedCommands → deny (deny-by-default)
+    // An empty allowed-command list denies every command.
     if (allowed.length === 0 || !allowed.includes(config.command)) {
       return {
         valid: false,
@@ -548,7 +442,6 @@ export class McpGovernance {
       };
     }
 
-    // Argument validation blocks known dangerous patterns.
     const dangerousArgs = ["--no-sandbox", "--disable-security", "eval(", "$(", "`"];
     for (const arg of config.args ?? []) {
       if (dangerousArgs.some((d) => arg.includes(d))) {
@@ -612,9 +505,7 @@ export class McpGovernance {
     }
     if (parsed.protocol === "https:") return { valid: true };
     if (parsed.protocol === "http:") {
-      // Shared with the marketplace provider gate, which asked the same
-      // question and answered it differently: a server on 127.0.0.2 is loopback
-      // and was refused here as needing HTTPS.
+      // Use the shared loopback predicate for every address in the loopback range.
       if (isLoopbackUrlHostname(parsed.hostname)) {
         return { valid: true };
       }
@@ -631,12 +522,7 @@ export class McpGovernance {
     };
   }
 
-  /**
-   * Reject header names/values containing CR (\r) or LF (\n). Prevents
-   * header-injection / request-splitting attacks even though admin governance
-   * is the primary trust boundary. Also rejects control characters that have
-   * no business in HTTP headers.
-   */
+  /** Reject header injection and invalid controls even when admin policy approved the server. */
   private validateHeaders(headers: Record<string, string> | undefined): ValidationResult {
     if (!headers) return { valid: true };
     for (const [name, value] of Object.entries(headers)) {
@@ -647,13 +533,9 @@ export class McpGovernance {
           layer: 1,
         };
       }
-      // Defense-in-depth: reject any other control character (U+0000..U+001F
-      // except horizontal tab U+0009) in header values.
       if (
         Array.from(value).some((ch) => {
           const cp = ch.charCodeAt(0);
-          // Reject U+0000..U+001F except horizontal tab (U+0009) and line
-          // feed (U+000A); CR/LF pairs are already rejected above.
           return cp <= 0x1f && cp !== 0x09 && cp !== 0x0a;
         })
       ) {
@@ -756,11 +638,7 @@ export class McpGovernance {
     return { valid: true };
   }
 
-  /**
-   * Enforce admin-policy gating for per-server `allowPrivateNetworks`. Either
-   * the global rule or the per-server approval must explicitly opt in — a
-   * self-elevating per-server config alone is insufficient.
-   */
+  /** Private-network config requires explicit global or matching-server policy approval. */
   private validateAllowPrivateNetworks(approval: McpServerApproval): ValidationResult {
     const globalOk = this.policy.globalRules.allowPrivateNetworks === true;
     const serverOk = approval.allowPrivateNetworks === true;
@@ -810,11 +688,7 @@ export class McpGovernance {
         return { valid: false, reason: t("be_mcpGovernance.oauthRequired", { serverId: config.id }), layer: 2 };
       }
       if (approval.requiredAuth === "mtls") {
-        // mTLS (client-certificate) auth is part of the requiredAuth union but
-        // has no client-cert validation implemented anywhere. Fail CLOSED: a
-        // server demanding mtls must never satisfy connection-security
-        // validation. Previously this case fell through to `valid: true`
-        // (fail-OPEN) because only api-key/sso/oauth were handled.
+        // Unsupported client-certificate authentication must fail closed, never satisfy connection security.
         return { valid: false, reason: t("be_mcpGovernance.mtlsUnsupported", { serverId: config.id }), layer: 2 };
       }
     }

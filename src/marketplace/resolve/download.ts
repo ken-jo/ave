@@ -1,15 +1,4 @@
-/**
- * Artifact downloads for the release and archive rungs (design §6.2, §7.4,
- * §18.2.3).
- *
- * Every request goes through the network gate over the pinned transport, so
- * policy, the catalog-supplied target rules (judged against the source whose
- * catalog named the URL) and the redirect rule apply to each hop, the
- * address checked is the address connected to, and `Authorization` never
- * follows a redirect to another origin. The body is read into memory under a byte
- * ceiling and a stall timeout; the ladder hashes the bytes before anything
- * else reads them.
- */
+/** Gate and pin every download hop; strip cross-origin credentials and bound body size and stalls. */
 import { MarketplaceError, isMarketplaceError } from "../errors.js";
 import type { CatalogSource, NetworkGate } from "../net/network-gate.js";
 import { stallGuarded } from "../net/stall-guard.js";
@@ -18,19 +7,14 @@ const DOWNLOAD_STALL_MS = 60_000;
 
 export interface DownloadOptions {
   gate: NetworkGate;
-  /** The source whose catalog named the URL. */
   catalog: CatalogSource;
   official: boolean;
   maxBytes: number;
   headers?: Record<string, string>;
   stallMs?: number;
   signal?: AbortSignal;
-  /**
-   * The source signs in with a token and none is stored: a 404 is how a
-   * private repository's host hides what it will not serve without one.
-   */
+  /** Token-authenticated sources without a stored token may receive a concealed-private 404. */
   tokenMissing?: boolean;
-  /** Each hop that answered past the gate's checks, the first URL and every redirect target. */
   onHop?: (hop: string) => void;
 }
 
@@ -46,7 +30,7 @@ function statusError(url: string, status: number, tokenMissing: boolean): Market
   return new MarketplaceError("SOURCE_UNREACHABLE", `${where} answered HTTP ${status}`, { detail: { reason: "http-status", host: where, status } });
 }
 
-/** The gated response for `url`; a non-2xx status becomes the matching error code. */
+/** Map non-success HTTP status to a marketplace error. */
 async function gatedGet(url: string, options: Omit<DownloadOptions, "maxBytes" | "stallMs">): Promise<Response> {
   const response = await options.gate.fetch(url, {
     catalog: options.catalog,
@@ -62,7 +46,6 @@ async function gatedGet(url: string, options: Omit<DownloadOptions, "maxBytes" |
   return response;
 }
 
-/** The whole body of `url`, at most `maxBytes`. */
 export async function downloadBounded(url: string, options: DownloadOptions): Promise<Buffer> {
   const response = await gatedGet(url, options);
   const declared = Number(response.headers.get("content-length") ?? "NaN");

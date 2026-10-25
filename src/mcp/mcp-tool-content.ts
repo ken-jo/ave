@@ -1,29 +1,11 @@
-/**
- * MCP tool-result content → the host's tool result.
- *
- * A `tools/call` result is a list of typed content blocks. Text blocks become
- * the tool output. Image blocks carry base64 pixels: rendering them as JSON
- * text would hand the model a wall of base64 that the tool-result budget then
- * truncates, so the image is lost twice. Instead each image block leaves a
- * short placeholder in the text, and the first one rides
- * {@link ToolResultImage} — the same sibling field `view_image` uses — after
- * going through the same isolated decoder, which validates the format and
- * bounds its size. Only one image travels per tool result because that field
- * is singular; later images are named in the text.
- *
- * Any other block carrying base64 bytes — audio, an image block whose MIME
- * type is not an image, an embedded resource's `blob` — is replaced by a short
- * note naming its type and size (`[audio/ogg, 123 KB omitted]`): the model
- * cannot use the encoding, and the tool-result budget would spend itself on
- * it. Text blocks, embedded text resources and resource links keep their text.
- */
+/** Decode at most one image into the model image field; text retains placeholders for omitted media.
+ * Encoded binary payloads never consume the text budget as base64. */
 import { IMAGE_PREPARATION_POLICY } from "../shared/image-preparation-policy.js";
 import { errorMessage } from "../shared/error-message.js";
 import { prepareImageBytes } from "../tools/image-preparation.js";
 import type { ToolResultImage } from "../tools/types.js";
 import type { McpContentImage } from "./types.js";
 
-/** One content block as an MCP server sends it; fields are untrusted. */
 type McpContentBlock = { type: string; text?: string; [key: string]: unknown };
 
 
@@ -40,7 +22,6 @@ function contentImage(block: McpContentBlock): McpContentImage | undefined {
   return { data, mimeType };
 }
 
-/** Bytes a base64 string decodes to, without decoding it. */
 function base64DecodedBytes(data: string): number {
   const padding = data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0;
   return Math.floor((data.length * 3) / 4) - padding;
@@ -54,11 +35,7 @@ function mimeTypeOf(value: unknown): string {
   return typeof value === "string" && value.length > 0 ? value : "application/octet-stream";
 }
 
-/**
- * The note that stands in for a block's base64 payload, or `undefined` when
- * the block carries none: `data` on the block itself (audio, a non-image
- * image block), or `blob` on an embedded resource.
- */
+/** Identify encoded binary payloads for omission notes without decoding them. */
 function omittedBinaryNote(block: McpContentBlock): string | undefined {
   if (typeof block.data === "string") {
     return `[${mimeTypeOf(block.mimeType)}, ${formatBytes(base64DecodedBytes(block.data))} omitted]`;
@@ -74,12 +51,7 @@ function omittedBinaryNote(block: McpContentBlock): string | undefined {
   return undefined;
 }
 
-/**
- * Render content blocks to text, lifting image blocks out. A malformed image
- * block (no data, or a non-image MIME type) is not an image; like any other
- * block with a base64 payload it becomes an omission note, and a block with
- * none keeps its JSON rendering.
- */
+/** Lift valid image blocks; other encoded payloads become explicit omission notes. */
 export function renderMcpContent(content: readonly McpContentBlock[]): RenderedMcpContent {
   const images: McpContentImage[] = [];
   const parts = content.map((block) => {
@@ -91,12 +63,7 @@ export function renderMcpContent(content: readonly McpContentBlock[]): RenderedM
   return { text: parts.join("\n"), images };
 }
 
-/**
- * Prepare the first lifted image for the model. Returns the image when it
- * decodes, plus a note for the text output whenever an image was not attached
- * (a rejected first image, or images beyond the first), so the model is told
- * what it is not seeing instead of the image silently vanishing.
- */
+/** Report rejected or extra images in text so media cannot disappear silently. */
 export async function prepareMcpContentImage(
   images: readonly McpContentImage[],
   signal?: AbortSignal,

@@ -17,7 +17,6 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-/** Detection over a fake machine: `versions` maps an executable path to its `--version` output. */
 function fakeDeps(versions: Record<string, string>) {
   return (findManagedGit: () => Promise<ManagedGitInstall | null>): GitDetectionDeps => ({
     platform: "linux",
@@ -84,7 +83,6 @@ describe("GitRuntimeService.install", () => {
     const progress: GitRuntimeProgress[] = [];
     const status = await service({ progress }).install();
     expect(status.lastInstallError).toMatchObject({ code: "GIT_RUNTIME_INSTALL_FAILED", detail: { reason: "downloading" } });
-    // The status crosses to the renderer: its message goes scrubbed.
     expect(status.lastInstallError!.message).toContain("no network in this test (via http://[REDACTED:CREDENTIALS]@proxy.corp:8080)");
     expect(progress[progress.length - 1]).toMatchObject({ phase: "failed", code: "GIT_RUNTIME_INSTALL_FAILED" });
     expect(status.managed.installed).toBe(false);

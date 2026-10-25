@@ -1,4 +1,3 @@
-/** Static component authority for a tree-delivered agent plugin. */
 import { sha256Hex } from "../../lib/hex-digest-equal.js";
 import { parseAgentFrontmatter } from "../../main/agent-profile-store.js";
 import { parseFrontmatter, parseFrontmatterBlock } from "../../main/skill-store.js";

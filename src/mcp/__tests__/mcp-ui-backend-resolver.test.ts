@@ -1,9 +1,4 @@
-/**
- * `resolveMcpUiBackend` — the ONE serverId→backend resolution the render IPC and the
- * `oncalltool` IPC share. Proves the loopback-FIRST-then-external order for BOTH the
- * `ui://` read and the tool call (one branch, both paths), and that every returned
- * backend member closes over the serverId (an app can never address another server).
- */
+/** Both card reads and calls resolve one backend bound to its server id, preferring owned loopbacks. */
 import { describe, it, expect, vi } from "vitest";
 import { resolveMcpUiBackend } from "../mcp-ui-backend-resolver.js";
 import type { McpUiResourceRead } from "../types.js";
@@ -39,12 +34,11 @@ describe("resolveMcpUiBackend — loopback-first then external", () => {
     const res = await backend.readUiResource("ui://acme-cards/hello.html");
     expect(res).toBe(LOOPBACK_READ);
     expect(s.loopback.readUiResource).toHaveBeenCalledWith("acme-cards", "ui://acme-cards/hello.html");
-    // External registry never consulted when the loopback owns the id.
     expect(s.mcpManager.readUiResource).not.toHaveBeenCalled();
   });
 
   it("falls back to the external mcpManager registry when no loopback host owns the id", async () => {
-    const s = sources([]); // no plugin loopback hosts running
+    const s = sources([]);
     const backend = resolveMcpUiBackend("github", s);
 
     const res = await backend.readUiResource("ui://github/pr.html");
@@ -83,7 +77,6 @@ describe("resolveMcpUiBackend — callTool takes the SAME loopback-first resolut
     expect(backend.resolveToolOwner("acme_open")).toBe("acme-cards");
     await expect(backend.callTool("acme_open", { id: 1 }, invocation)).resolves.toBe("loopback-result");
 
-    // Bound to the resolved serverId — the caller never passes one.
     expect(s.loopback.resolveToolOwner).toHaveBeenCalledWith("acme-cards", "acme_open");
     expect(s.loopback.callTool).toHaveBeenCalledWith(
       "acme-cards",
@@ -113,7 +106,6 @@ describe("resolveMcpUiBackend — callTool takes the SAME loopback-first resolut
     await backend.readUiResource("ui://acme-cards/x.html");
     await backend.callTool("acme_open", {}, invocation);
 
-    // A duplicated resolution rule would let these two diverge; they cannot here.
     expect(s.loopback.readUiResource).toHaveBeenCalledOnce();
     expect(s.loopback.callTool).toHaveBeenCalledOnce();
     expect(s.mcpManager.readUiResource).not.toHaveBeenCalled();

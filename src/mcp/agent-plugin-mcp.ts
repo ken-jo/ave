@@ -13,7 +13,6 @@ export interface AgentPluginMcpActivation {
   dataDir: string;
   activationId: string;
   generationId: string;
-  /** Each server's approval digest, by name (design §18.7.3, `agentPluginComponentDigests`). */
   approvalDigests: Readonly<Record<string, string | null>>;
 }
 
@@ -52,7 +51,6 @@ function resolveValue(value: string, activation: AgentPluginMcpActivation, label
   return resolved;
 }
 
-/** Turn sealed, symbolic descriptor authority into runtime-only server approvals. */
 export function resolveRuntimeMcp(
   staticServers: AgentPluginComponents["mcpServers"],
   activation: AgentPluginMcpActivation,

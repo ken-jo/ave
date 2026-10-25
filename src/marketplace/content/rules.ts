@@ -1,13 +1,5 @@
-/**
- * File rules for content packages (design §5.2, §5.4): what a package
- * directory of each content kind may hold, and how much of it.
- *
- * The descriptor (`ave-package.json`) sits in every package directory; it is
- * read at the version commit, never installed, and does not count toward the
- * limits. SVG is refused for every kind: rendered inline it is an active
- * document. Links, devices, submodules and paths that leave the directory are
- * refused by the export itself (`BareRepo.exportPath`).
- */
+/** Descriptors are excluded from installed payloads and size limits; SVG is active content and forbidden.
+ * Export rejects links, special files, submodules and escaping paths. */
 import type { PackageKind } from "../catalog/types.js";
 import { MarketplaceError } from "../errors.js";
 
@@ -22,11 +14,8 @@ interface ContentRule {
   maxBytes: number;
   maxFiles: number;
   extensions: readonly string[];
-  /** The extensions a path allows when they depend on where it sits; `extensions` otherwise. */
   extensionsAt?(path: string): readonly string[] | null;
-  /** Whether `path` (package-relative, `/`-separated) belongs in this kind's layout. */
   layout(path: string): boolean;
-  /** The layout, for a refusal message. */
   describe: string;
 }
 
@@ -34,14 +23,9 @@ const KB = 1024;
 const MB = 1024 * KB;
 const IMAGE = [".png", ".jpg", ".webp"] as const;
 const FONT_FILE = /^files\/[^/]+\.(?:woff2|woff|ttf|otf)$/u;
-/** Files named without an extension: a package's license and attribution. */
 const EXTENSIONLESS = new Set(["LICENSE", "NOTICE"]);
 const SKILL_TEXT = [".md", ".txt", ".json", ".yaml", ".yml"] as const;
-/**
- * The Agent Skills layout (agentskills.io): executable code in `scripts/`,
- * documentation in `references/`, templates and resources in `assets/`. A
- * script runs only through the shell tool, under its approval.
- */
+/** Skill scripts execute only through the shell tool and its approval gate. */
 const SKILL_SCRIPTS = [".py", ".js", ".mjs", ".cjs", ".sh", ".pin", ...SKILL_TEXT] as const;
 const SKILL_ASSETS = [...SKILL_TEXT, ...IMAGE, ".csv", ".tsv", ".pdf", ".hwp", ".hwpx", ".docx", ".xlsx", ".pptx"] as const;
 
@@ -113,10 +97,8 @@ export const CONTENT_RULES: Readonly<Record<ContentKind, ContentRule>> = Object.
   },
 });
 
-/** Bytes the descriptor may add to an export on top of the kind's limit (design §5.4). */
 export const DESCRIPTOR_ALLOWANCE_BYTES = 256 * KB;
 
-/** Why `path` may not be installed as part of a `kind` package, or null. The descriptor is never asked about. */
 export function contentFileProblem(kind: ContentKind, path: string): string | null {
   const rule = CONTENT_RULES[kind];
   const lower = path.toLowerCase();
@@ -130,11 +112,7 @@ export function contentFileProblem(kind: ContentKind, path: string): string | nu
   return null;
 }
 
-/**
- * Hold a package's `files` to the rules of `kind` (design §5.4): count, total
- * size and every path. The descriptor must already be out of the list.
- * CONTENT_RULE_VIOLATION names the first rule broken.
- */
+/** Enforce file count, size and layout after removing the descriptor from the payload. */
 export function checkContentFiles(kind: ContentKind, files: ReadonlyArray<{ path: string; data: Buffer }>): void {
   const rule = CONTENT_RULES[kind];
   if (files.length > rule.maxFiles) throw new MarketplaceError("CONTENT_RULE_VIOLATION", `a ${kind} package holds at most ${rule.maxFiles} files`);

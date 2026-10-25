@@ -1,29 +1,5 @@
-/**
- * The consent fingerprint (design §18.7.3): everything about a package that
- * the user agreed to when it was installed, as one typed record. An update
- * applies by itself only when its fingerprint equals the installed
- * **baseline**; any difference, a narrowing included, makes it
- * `needs-review`.
- *
- * | Kind | Fields |
- * |---|---|
- * | `plugin` | `minAppVersion`, `hostProtocol`, every authority field, `entryForm`, `contributionKinds`, `mcpServer:<localId>` and `hook:<localId>` (approval digests), `processTree` for a `process` entry |
- * | `agent-plugin` | `minAppVersion`, `hostProtocol`, `componentKinds`, `mcpServer:<name>`, `hook:<index>` (approval digests), `mcpAuth` |
- * | `mcp` | `mcpRuntime` (the resolved runtime spec) |
- * | `provider` | `minAppVersion`, `providerId`, `baseUrl` |
- * | `messaging-connection` | `minAppVersion`, `connection` |
- * | `skill`, `agent`, `theme`, `font`, `language` | `minAppVersion` |
- *
- * A field that cannot be computed is listed in `unknown`, and an unknown
- * field never equals anything: the first update needs review and stores a
- * complete baseline. A component whose approval digest is `null` (its
- * closure cannot be determined) is unknown the same way, every time.
- *
- * Two checkpoints compare against the baseline. The catalog
- * ({@link catalogDelta}) sees only what the index row carries; a field it
- * does not carry is *pending*, never equal. The staged bytes
- * ({@link stagedDelta}) see everything, before anything activates.
- */
+/** Every consent change, including narrowing, requires review; unknown fields never compare equal.
+ * Catalog checks leave unseen fields pending; staged-byte checks run before activation. */
 import { canonicalStringify } from "../../shared/canonical-json.js";
 import { agentPluginComponentDigests, changedPayloadFiles, extensionComponentDigests, payloadTreeSha256, type PayloadFile } from "../../plugins/contribution-approval-digest.js";
 import { resolvePluginContributionDeclarations } from "../../plugins/plugin-contributions.js";
@@ -38,11 +14,7 @@ export type { ConsentDelta };
 
 export { parseConsentFingerprint, type ConsentFingerprint };
 
-/**
- * Checkpoint two found a difference (§18.7.3): the staged update differs
- * from what the user accepted. Thrown before anything activates; the apply
- * pass records `needs-review`. A consent deferral, never a failure.
- */
+/** A staged consent difference defers to review before activation and never counts as failure. */
 export class UpdateNeedsReviewError extends Error {
   constructor(readonly packageName: string, readonly delta: ConsentDelta) {
     super(`${packageName}: the update differs from what was accepted (${delta.map((entry) => entry.field).join(", ")})`);
@@ -50,11 +22,7 @@ export class UpdateNeedsReviewError extends Error {
   }
 }
 
-/**
- * The checkpoint-two callback an automatic update hands an installer: it
- * sees the staged fingerprint before anything activates and throws
- * {@link UpdateNeedsReviewError} on any difference from `baseline`.
- */
+/** Compare staged bytes to the accepted baseline before any activation. */
 export function requireConsentEqual(packageName: string, baseline: ConsentFingerprint): (staged: ConsentFingerprint) => void {
   return (staged) => {
     const delta = stagedDelta(baseline, staged);
@@ -62,7 +30,6 @@ export function requireConsentEqual(packageName: string, baseline: ConsentFinger
   };
 }
 
-/** The authority fields of the fingerprint, by the authority key each reads. */
 const AUTHORITY_FIELDS = ["capabilities", "networkAccess", "hostSecrets", "pluginAccess", "auth", "dependencies", "sandbox"] as const;
 
 function json(value: unknown): ConsentJson {
@@ -82,11 +49,6 @@ function authorityFields(authority: PluginAuthority | null): Record<string, Cons
   return fields;
 }
 
-/**
- * An extension's fingerprint from its `plugin.json` document and payload
- * files: the bytes that install (the staged tree) or that are installed (the
- * receipt-covered tree).
- */
 export function pluginConsent(document: unknown, files: readonly PayloadFile[]): ConsentFingerprint {
   const manifest = flattenAgentPluginsManifest(document);
   const fields = authorityFields(manifestAuthority(document));
@@ -99,12 +61,11 @@ export function pluginConsent(document: unknown, files: readonly PayloadFile[]):
     fields[field] = component.approvalDigest;
     if (component.approvalDigest === null) unknown.push(field);
   }
-  // A `process` entry runs the package's own code with nothing in between: any file change is a change to what runs.
+  // Process entries run package code directly, so every file change changes executable authority.
   if (process) fields.processTree = payloadTreeSha256(files);
   return { kind: "plugin", fields, unknown: unknown.sort() };
 }
 
-/** The component kinds an agent plugin has, sorted. */
 function componentKinds(components: AgentPluginComponents): string[] {
   const kinds: string[] = [];
   if (components.skills.length > 0) kinds.push("skills");
@@ -116,7 +77,6 @@ function componentKinds(components: AgentPluginComponents): string[] {
   return kinds;
 }
 
-/** An agent plugin's fingerprint from its descriptor fields, verified components and files. */
 export function agentPluginConsent(input: {
   minAppVersion: string | null;
   hostProtocol: string | null;
@@ -143,17 +103,11 @@ export function agentPluginConsent(input: {
   return { kind: "agent-plugin", fields, unknown: unknown.sort() };
 }
 
-/** An MCP server package's fingerprint: its resolved runtime spec, whose package version is in its command. */
 export function mcpConsent(runtime: McpRuntimeSpec): ConsentFingerprint {
   return { kind: "mcp", fields: { mcpRuntime: json(runtime) }, unknown: [] };
 }
 
-/**
- * A data content package's fingerprint. `minAppVersion` comes from the
- * descriptor the package was installed from (null: not known, so unknown).
- * A provider's `provider.json` and a messaging connection's
- * `connection.json` are read from its files.
- */
+/** Missing retained descriptor fields make the content baseline unknown. */
 export function contentConsent(kind: Exclude<PackageKind, "plugin" | "agent-plugin" | "mcp">, minAppVersion: string | null, files: readonly PayloadFile[]): ConsentFingerprint {
   const fields: Record<string, ConsentJson> = { minAppVersion };
   const unknown: string[] = minAppVersion === null ? ["minAppVersion"] : [];
@@ -180,27 +134,18 @@ export function contentConsent(kind: Exclude<PackageKind, "plugin" | "agent-plug
   return { kind, fields, unknown: unknown.sort() };
 }
 
-/**
- * A fingerprint where every field is unknown: a baseline that cannot be
- * computed at all (the installed files are gone). The update needs review.
- */
+/** Unverifiable installed bytes produce an entirely unknown baseline requiring review. */
 export function unknownConsent(kind: PackageKind): ConsentFingerprint {
   return { kind, fields: {}, unknown: ["*"] };
 }
 
-/** Whether `field` is unknown in `print` (a `*` makes every field unknown). */
 function isUnknown(print: ConsentFingerprint, field: string): boolean {
   return print.unknown.includes("*") || print.unknown.includes(field);
 }
 
-/**
- * The fields the index row of a version carries (§2.2), as the update's
- * values, and the component names a catalog-visible inventory lists. Every
- * other field is pending at checkpoint one.
- */
+/** Catalog-visible values can establish differences; all other fields remain pending. */
 function catalogFields(kind: PackageKind, version: IndexVersion): { fields: Record<string, ConsentJson>; components: Set<string> | null } {
   if (kind === "plugin") {
-    // The index copies plugin.json's authority, and minAppVersion and hostProtocol with it.
     return { fields: version.authority ? authorityFields(version.authority) : { minAppVersion: version.minAppVersion }, components: null };
   }
   const fields: Record<string, ConsentJson> = { minAppVersion: version.minAppVersion };
@@ -218,18 +163,13 @@ function catalogFields(kind: PackageKind, version: IndexVersion): { fields: Reco
   return { fields, components: null };
 }
 
-/**
- * Checkpoint one (§18.7.3): the differences the catalog shows between the
- * baseline and `version`, without a download. An unknown baseline field is
- * a difference. An empty result means "no difference seen yet": the staged
- * bytes decide (checkpoint two).
- */
+/** No catalog difference means none seen yet; staged bytes still decide before activation. */
 export function catalogDelta(baseline: ConsentFingerprint, version: IndexVersion): ConsentDelta {
   const delta: ConsentDelta = [];
   if (baseline.unknown.includes("*")) {
     return [{ field: "*", checkpoint: "catalog", before: "unknown", after: null }];
   }
-  // An MCP server declares no authority: its command is its authority, and its version is in the command.
+  // An MCP command contains its version and is itself the consent authority.
   if (baseline.kind === "mcp") {
     return [{ field: "mcpRuntime", checkpoint: "catalog", before: isUnknown(baseline, "mcpRuntime") ? "unknown" : baseline.fields.mcpRuntime ?? null, after: { version: version.version } }];
   }
@@ -240,22 +180,17 @@ export function catalogDelta(baseline: ConsentFingerprint, version: IndexVersion
   }
   if (components) {
     const before = new Set(Object.keys(baseline.fields).filter((field) => field.startsWith("mcpServer:") || field.startsWith("hook:")));
-    // A component the catalog adds or removes is visible without its bytes.
     for (const field of components) if (!before.has(field)) delta.push({ field, checkpoint: "catalog", before: null, after: "added" });
     for (const field of before) if (!components.has(field)) delta.push({ field, checkpoint: "catalog", before: baseline.fields[field] ?? null, after: null });
   }
-  // A field the catalog does not carry but the baseline cannot vouch for is a difference already.
+  // Unknown baseline fields differ even when the catalog cannot expose them.
   for (const field of baseline.unknown) {
     if (!(field in fields) && !delta.some((entry) => entry.field === field)) delta.push({ field, checkpoint: "catalog", before: "unknown", after: null });
   }
   return delta;
 }
 
-/**
- * Checkpoint two (§18.7.3): every difference between the baseline and the
- * fingerprint computed from the staged bytes. Fields the catalog already
- * showed keep `checkpoint: "catalog"`.
- */
+/** Compare complete staged fingerprints while preserving catalog checkpoint attribution. */
 export function stagedDelta(baseline: ConsentFingerprint, staged: ConsentFingerprint, catalog: ConsentDelta = []): ConsentDelta {
   if (baseline.kind !== staged.kind) throw new Error(`consent of a ${baseline.kind} compared with a ${staged.kind}`);
   const seenAtCatalog = new Set(catalog.map((entry) => entry.field));
@@ -274,12 +209,7 @@ function isComponentField(field: string): boolean {
   return field.startsWith("mcpServer:") || field.startsWith("hook:");
 }
 
-/**
- * Attach to every changed approval digest the package paths whose bytes
- * differ between the installed and the staged payload (§18.7.3 "Cheap
- * review"). The same list serves every component: each one's digest covers
- * the whole tree.
- */
+/** Approval digests cover the whole tree, so each changed digest shares the changed-file list. */
 export function withChangedFiles(delta: ConsentDelta, installed: readonly PayloadFile[], staged: readonly PayloadFile[], declaring: ReadonlySet<string>): ConsentDelta {
   if (!delta.some((entry) => isComponentField(entry.field))) return delta;
   const changedFiles = changedPayloadFiles(installed, staged, declaring);
@@ -288,12 +218,7 @@ export function withChangedFiles(delta: ConsentDelta, installed: readonly Payloa
     : entry);
 }
 
-/**
- * Whether the review can be the one-row form "Only these non-code files
- * changed" with *Approve update*: the only differences are approval digests
- * of components present before and after, and no changed file is code. It
- * shortens the review; it never decides eligibility.
- */
+/** Data-only component changes can shorten review but never decide eligibility. */
 export function isCodeFreeChange(delta: ConsentDelta): boolean {
   return delta.length > 0 && delta.every((entry) => isComponentField(entry.field) && entry.changedFiles !== undefined && entry.changedFiles.code.length === 0);
 }

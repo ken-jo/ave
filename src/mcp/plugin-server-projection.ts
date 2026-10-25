@@ -1,41 +1,5 @@
-/**
- * Pure projection: an Ave normalized {@link PluginManifest} `Tool[]` → the
- * MCP `2026-07-28` RC server shapes a plugin-as-MCP-server exposes
- * (`server/discover`'s `DiscoverResult` and `tools/list`'s `Tool[]`).
- *
- * #885 v6 — the manifest tool object IS the wire shape (manifest == wire, Q5),
- * so the forward projection is near-identity. Its only jobs are:
- *  - project EVERY declared tool, whatever its surface. A server's `tools/list` is
- *    the server's tools; the spec's answer to "who may call this one" is the
- *    `_meta.ui.visibility` riding on each entry, not a hole in the list. Projecting
- *    an app-only tool is what gives it a §6.4 registry `Tool`, and therefore the
- *    ONLY thing that lets its card's call run under `inspectHostRisk` →
- *    reviewer/approval → audit like any other tool. (It was previously filtered out
- *    here, which left `["app"]` — the spec's own spelling for a card-serving tool —
- *    with no gate to run under, so the app arm had to deny it outright.) Keeping it
- *    OUT OF THE MODEL's tool list is a separate concern, enforced once at the model-
- *    exposure boundary (`ToolRegistry.getModelVisibleTools`), for both arms.
- *  - emit `_meta.ui.visibility` EXPLICITLY (SoT §2.2 "the wire projection always
- *    emits visibility explicitly") — the reverse projection
- *    (`plugin-tool-from-mcp.ts`) reads it straight back off the wire to materialize
- *    the registry `Tool`'s `modelVisible` bit.
- *  - construct `_meta` from a WHITELIST so no stray/removed proprietary key
- *    (category / version / writesToOwnSandbox / workerId / deprecation) can ride
- *    the wire — they simply have nowhere to come from.
- *
- * This module is intentionally PURE (no I/O, no host deps). The host still
- * DERIVES its own interop annotations elsewhere and never reads inbound
- * (untrusted) `annotations` — plugin-authored annotations are exactly the
- * self-claims Q4 removed (MCP "annotations untrusted", design §2.2).
- *
- * Key invariants:
- *  - `_meta` keys use the `ave/` prefix; per §8 any prefix whose second
- *    label is `mcp`/`modelcontextprotocol` is RESERVED for MCP.
- *  - `inputSchema` dialect moves to JSON Schema 2020-12 (a relabel — Ave plugin
- *    tool schemas use a 2020-12 subset, no `$ref` network deref).
- *  - `manifest.capabilities[]` (advisory kebab-case dependency tags) are
- *    Ave-internal and are NOT projected into MCP `ServerCapabilities`.
- */
+/** Project every normalized tool with explicit visibility and whitelisted metadata.
+ * Host-derived annotations and risk never come from plugin self-claims. */
 import type {
   PluginManifest,
   PluginToolOperationPolicy,
@@ -45,29 +9,15 @@ import { toolVisibility } from "../plugins/runtime/tool-visibility.js";
 
 import { MCP_PROTOCOL_VERSION } from "./protocol-constants.js";
 
-/** JSON Schema 2020-12 dialect URI (the default dialect for tool inputSchema). */
 const JSON_SCHEMA_2020_12 = "https://json-schema.org/draft/2020-12/schema";
 
-/**
- * `CacheableResult` fields (`ttlMs` + `cacheScope`, both REQUIRED since the
- * final `2026-07-28` schema) every plugin-server list/read/discover result
- * carries. A plugin's manifest — and therefore its discover/tools/resources
- * surfaces — is static for the server generation's lifetime, and a reload tears
- * the transport down with it, so a client honoring this TTL can never observe a
- * stale list across generations. `private`: plugin content is per-user; no
- * shared intermediary may cache it.
- */
+/** Generation-static catalogs use private caching; reload retires the transport before cached data can outlive it. */
 export const PLUGIN_RESULT_CACHE = {
   ttlMs: 3_600_000,
   cacheScope: "private",
 } as const satisfies { ttlMs: number; cacheScope: "public" | "private" };
 
-/**
- * An MCP `Tool` projected from one normalized `Tool`. #885 v6 — `annotations` is
- * DROPPED (the host never projects plugin-authored ones) and `_meta` is narrowed
- * to exactly the standard visibility block + the signed Ave restriction keys
- * (`ave/pathFields`, `ave/operationPolicy`).
- */
+/** Projection excludes plugin annotations and carries only explicit visibility and signed restriction keys. */
 export interface McpToolProjection {
   name: string;
   title?: string;
@@ -88,7 +38,6 @@ export interface McpToolProjection {
   };
 }
 
-/** A `server/discover` `DiscoverResult` projected from a plugin manifest. */
 export interface McpDiscoverProjection {
   resultType: "complete";
   ttlMs: number;
@@ -102,20 +51,10 @@ export interface McpDiscoverProjection {
   instructions: string;
 }
 
-/**
- * Project ONE normalized `Tool` to the MCP wire shape. The tool object IS already
- * the wire shape (manifest == wire, Q5), so this is near-identity: it makes
- * `_meta.ui.visibility` explicit and builds `_meta` from a whitelist so no
- * stray/removed proprietary key can ride the wire. `outputSchema` (standard MCP)
- * is passed through verbatim when present.
- */
+// Read authority only from the owned metadata namespace.
 function toWireTool(tool: McpTool): McpToolProjection {
   const meta: McpToolProjection["_meta"] = { ui: { visibility: toolVisibility(tool) } };
-  // Read the SOLE Ave-proprietary manifest key, `ave/pathFields`. A manifest
-  // carrying `pathFields` under any other `_meta` key is rejected fail-closed by
-  // the manifest schema (`_meta` is `additionalProperties:false`), so it never
-  // reaches this projection: it fails to load as a reinstall-fixable
-  // manifest-validation error.
+  // Reject misplaced authority at schema admission rather than silently erasing its constraints.
   const pathFields = tool._meta?.["ave/pathFields"];
   if (pathFields !== undefined) {
     meta["ave/pathFields"] = pathFields;
@@ -135,42 +74,20 @@ function toWireTool(tool: McpTool): McpToolProjection {
   };
 }
 
-/**
- * Project the manifest's declared tools to MCP `Tool[]` — ALL of them, each
- * carrying its explicit `_meta.ui.visibility`.
- *
- * No surface filter: `tools/list` is the server's tool list, and the host learns a
- * tool's audience from the visibility it carries, not from its absence. The
- * app-only entries this now emits (a card's `*_ui_*` helpers, the auth trio) become
- * registry `Tool`s — which is precisely how they acquire a risk classifier, an
- * approval gate and an audit row. They stay invisible to the LLM because the model-
- * exposure boundary subtracts them there (`ToolRegistry.getModelVisibleTools`), not
- * because they were withheld from the wire.
- */
+/** Keep app-only tools registered for governance; visibility removes them only at model exposure. */
 export function manifestToolsToMcpTools(manifest: PluginManifest): McpToolProjection[] {
   return (manifest.tools ?? []).map((t) => toWireTool(t));
 }
 
-/**
- * Project a plugin manifest to a `server/discover` `DiscoverResult`. Capability
- * flags are derived from what the plugin actually contributes (tools present →
- * `tools`; UI extension → the MCP Apps extension). `manifest.capabilities[]`
- * is NOT projected — it is Ave-internal dependency metadata, not MCP
- * `ServerCapabilities` (§3.2).
- */
+/** Derive protocol capabilities from actual contributions, never internal dependency metadata. */
 export function manifestToDiscoverResult(manifest: PluginManifest): McpDiscoverProjection {
   const capabilities: McpDiscoverProjection["capabilities"] = {};
   if ((manifest.tools?.length ?? 0) > 0) {
-    // `listChanged: false` is the honest value: `PluginMcpServer` has no
-    // notification emitter and the loopback transport is request/response-only,
-    // so a `true` here advertised a notification that could never arrive. The
-    // list is static per server generation anyway (reload replaces the server).
+    // Static per-generation servers have no notification emitter, so listChanged must be false.
     capabilities.tools = { listChanged: false };
   }
   const extensions: Record<string, unknown> = {};
-  // Advertise the MCP Apps extension when the plugin ships EITHER a host-mounted
-  // sidebar panel (`ui[]`) OR a served `ui://` MCP App card (`uiResources[]`).
-  // The latter is what the loopback `resources/read` serving seam keys off.
+  // Panels or declared card resources require the Apps extension advertisement.
   if ((manifest.ui?.length ?? 0) > 0 || (manifest.uiResources?.length ?? 0) > 0) {
     extensions["io.modelcontextprotocol/ui"] = { mimeTypes: ["text/html;profile=mcp-app"] };
   }

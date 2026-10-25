@@ -1,11 +1,4 @@
-/**
- * Test fixture: a loopback git smart-HTTP server backed by `git http-backend`.
- *
- * Marketplace git calls refuse the file protocol, so tests reach local
- * repositories the way the app reaches real hosts — over HTTP, with protocol
- * v2, partial-clone filters and object-id fetches enabled on the served repos.
- * The server can demand a token, redirect, or hang, and records what it saw.
- */
+/** Serves real fixture repositories over HTTP; marketplace git forbids the file protocol. */
 import { execFileSync, spawn } from "node:child_process";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -22,22 +15,18 @@ interface SeenRequest {
 }
 
 export interface GitHttpServer {
-  /** `http://127.0.0.1:<port>/<name>` for a repository under the server root. */
   url(name: string): string;
   readonly origin: string;
   readonly seen: SeenRequest[];
-  /** Answer every request for `name` with a redirect to `location`. */
   redirect(name: string, location: string): void;
   /** Never answer requests for `name`; resolves when its first request arrives. */
   hang(name: string): Promise<void>;
-  /** Answer GET `path` with `body` (release assets, archives); `null` removes it. */
   file(path: string, body: Buffer | null, status?: number): void;
   close(): Promise<void>;
 }
 
 export interface GitHttpServerOptions {
   root: string;
-  /** Require HTTP Basic auth whose password equals this token. */
   token?: string;
 }
 
@@ -45,32 +34,20 @@ function hostGitEnv(): NodeJS.ProcessEnv {
   return { ...gitFixtureEnv(join(tmpdir(), `ave-git-http-${process.pid}`)), LC_ALL: "C" };
 }
 
-/**
- * Run the host git for fixture setup and inspection (outside the marketplace
- * contract), with an environment of its own: a git hook runs tests with
- * `GIT_DIR` set, which would otherwise point every call at the app's checkout.
- */
+/** Isolates fixture git from GIT_DIR inherited from a test hook. */
 export function hostGit(args: string[], cwd?: string): string {
   return execFileSync("git", args, { cwd, env: hostGitEnv(), encoding: "utf8" }).trim();
 }
 
 export interface FixtureRepo {
-  /** Bare repository served by the server. */
   bare: string;
-  /** Working clone used to author commits. */
   work: string;
   commit(files: Record<string, string | Buffer>, message: string): string;
-  /**
-   * Commit an exact tree built with plumbing, for entries a checkout cannot
-   * hold (case-only duplicates on macOS, symlinks, gitlinks). Replaces the
-   * working clone's index; returns the pushed commit.
-   */
+  /** Replaces the index using plumbing for entries a checkout cannot hold. */
   commitEntries(entries: ReadonlyArray<{ path: string; mode: string; content?: string; oid?: string }>, message: string): string;
-  /** Replace the served history with the working clone's (force push). */
   forcePush(): void;
 }
 
-/** Create `<root>/<name>` (bare, served) and a working clone to author commits in. */
 export function createFixtureRepo(root: string, name: string, branch = "main"): FixtureRepo {
   const bare = join(root, name);
   mkdirSync(dirname(bare), { recursive: true });
@@ -89,10 +66,7 @@ export function createFixtureRepo(root: string, name: string, branch = "main"): 
   return fixtureRepo(bare, work, branch);
 }
 
-/**
- * Copy a read-only seed made by createFixtureRepo, on the same branch.
- * Copies own their refs, index and objects; callers clean work and bare trees.
- */
+/** Copies own their refs, index and objects; callers clean both trees. */
 export function copyFixtureRepo(root: string, name: string, seed: FixtureRepo, options: { branch?: string; publishByCopy?: boolean } = {}): FixtureRepo {
   const branch = options.branch ?? "main";
   const expectedHead = `ref: refs/heads/${branch}`;
@@ -103,7 +77,6 @@ export function copyFixtureRepo(root: string, name: string, seed: FixtureRepo, o
   const work = mkdtempSync(join(tmpdir(), "ave-fixture-work-"));
   cpSync(seed.bare, bare, { recursive: true });
   cpSync(seed.work, work, { recursive: true });
-  // Copy publication addresses `bare` directly, so it never uses the seed's origin.
   if (!options.publishByCopy) hostGit(["remote", "set-url", "origin", bare], work);
   return fixtureRepo(bare, work, branch, options.publishByCopy);
 }
@@ -114,8 +87,7 @@ function fixtureRepo(bare: string, work: string, branch: string, publishByCopy =
       hostGit(["push", "--quiet", "origin", `HEAD:${branch}`], work);
       return;
     }
-    // Fixture publication needs the authored objects and ref, not a second
-    // transport process. Client HTTP transport still reads a real bare repo.
+    // Publish objects and refs directly; client transport still reads a real bare repository.
     cpSync(join(work, ".git", "objects"), join(bare, "objects"), { recursive: true, force: false });
     const ref = readFileSync(join(work, ".git", "refs", "heads", branch));
     for (const path of [join(bare, "refs", "heads", branch), join(work, ".git", "refs", "remotes", "origin", branch)]) {
@@ -163,10 +135,7 @@ function fixtureRepo(bare: string, work: string, branch: string, publishByCopy =
   };
 }
 
-/**
- * Async `rm`: Electron's `rmSync` refuses the read-only object files git writes on Windows.
- * Retries ride out the brief EBUSY a just-exited git child can leave on the work dir.
- */
+/** Async removal handles read-only objects on Windows; retries cover a child process releasing its workdir. */
 export async function removeFixtureRepo(repo: FixtureRepo): Promise<void> {
   await cleanupTmpDir(repo.work);
 }

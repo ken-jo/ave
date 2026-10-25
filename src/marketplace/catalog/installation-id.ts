@@ -1,11 +1,4 @@
-/**
- * `~/.ave/installation-id` (design §2): a random UUID that places this
- * installation in rollout buckets (§6.1 step 5). It never leaves the machine.
- *
- * The id carries no authority, so a file that is not a UUID is replaced with
- * a new one: the installation then falls into fresh buckets, exactly as a new
- * installation would. Any other read failure is thrown.
- */
+/** Local-only rollout UUID; invalid UUIDs are replaced, but other read errors propagate. */
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { isMissingPathError } from "../../lib/atomic-file.js";
@@ -31,7 +24,6 @@ async function load(filePath: string): Promise<InstallationIdLoad> {
   return { id, created: true, replacedInvalid };
 }
 
-/** Read the id, creating it on first use. Concurrent callers share one read. */
 export function loadInstallationId(filePath: string): Promise<InstallationIdLoad> {
   const existing = pending.get(filePath);
   if (existing) return existing;

@@ -48,7 +48,6 @@ describe("InstalledContentService", () => {
     expect(view.themes).toEqual([expect.objectContaining({ id: "harbor", previewUrl: `ave-content://${TOKEN}/theme/harbor/preview.webp`, pair: "harbor-dark", sourceId: "acme", version: "1.0.0" })]);
     expect(view.languages).toEqual([{ name: "french", locale: "fr", nativeName: "Français", englishName: "French", missingKeys: ["app.quit"], sourceId: "acme", version: "1.0.0" }]);
     expect(view.fonts[0]).toMatchObject({ family: "Harbor Sans", faces: [{ url: `ave-content://${TOKEN}/font/harbor-sans/files/Harbor%20Sans.woff2`, format: "woff2" }] });
-    // Faces are declared under the package alias; the family is the picker's label.
     expect(view.fonts[0]).toMatchObject({ family: "Harbor Sans" });
     expect(view.fonts[0]!.stack.startsWith('"ave-font-harbor-sans", ')).toBe(true);
     expect(view.broken).toEqual([{ kind: "theme", name: "tampered", problem: "the installed files changed after install" }]);

@@ -116,7 +116,6 @@ describe("server.json mapping (design §5.2)", () => {
     ["a required variable without value", { packages: [npmPackage({ environmentVariables: [{ name: "DB_URL", isRequired: true }] })] }, undefined, "required"],
     ["two secrets", { packages: [npmPackage({ environmentVariables: [{ name: "A_KEY", isSecret: true }, { name: "B_KEY", isSecret: true }] })] }, undefined, "more than one secret"],
     ["a reserved variable", { packages: [npmPackage({ environmentVariables: [{ name: "PATH", value: "/tmp" }] })] }, undefined, "not allowed"],
-    // Security review P2: every way the spec could run code the commit does not fix.
     ["npx runtime arguments", { packages: [npmPackage({ runtimeArguments: [{ type: "named", name: "--registry", value: "https://evil.example" }] })] }, undefined, "runtimeArguments"],
     ["uvx runtime arguments", { packages: [{ registryType: "pypi", identifier: "good", version: "1.0.0", transport: { type: "stdio" }, runtimeArguments: [{ type: "positional", value: "evilpkg" }] }] }, undefined, "runtimeArguments"],
     ["an npm registry variable", { packages: [npmPackage({ environmentVariables: [{ name: "npm_config_registry", value: "https://evil.example" }] })] }, undefined, "not allowed"],
@@ -309,7 +308,6 @@ describe("resolveMcpPackage", () => {
   });
 
   it("runs a package-local command from the exported server/ files", async () => {
-    // Real transport and archive export prove the executable mode in the zip.
     const resolved = await resolveFrom(
       {
         "mcp/notes/ave-package.json": descriptor({ server: { transport: "stdio", command: "server/run.sh", args: ["$PLUGIN_DIR/server/config.json"] } }),
@@ -323,7 +321,6 @@ describe("resolveMcpPackage", () => {
     expect(resolved.runtime).toEqual({ transport: "stdio", command: "$PLUGIN_DIR/server/run.sh", args: ["$PLUGIN_DIR/server/config.json"] });
     const zip = new AdmZip(resolved.packageFiles!.zipBuffer);
     expect(zip.getEntries().map((entry) => entry.entryName).sort()).toEqual(["server/config.json", "server/index.js", "server/run.sh"]);
-    // The zip carries each file's mode: the installer restores the execute bit from it.
     const modes = Object.fromEntries(zip.getEntries().map((entry) => [entry.entryName, (entry.attr >>> 16) & 0o777]));
     expect(modes).toEqual({ "server/config.json": 0o644, "server/index.js": 0o644, "server/run.sh": 0o755 });
     expect(resolved.packageFiles!.digest).toMatch(/^[0-9a-f]{64}$/u);

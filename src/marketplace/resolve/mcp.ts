@@ -1,34 +1,5 @@
-/**
- * MCP packages (design §5.2): a descriptor's `server` spec, or the official
- * MCP `server.json` next to it, becomes the host's MCP runtime spec. The
- * existing approval step shows that spec, and the existing MCP config
- * install registers it.
- *
- * `server.json` (schema 2025-12-11) maps like this; anything else is refused
- * rather than guessed:
- *
- *   npm    → npx [runtimeArguments] -y <identifier>@<version> [packageArguments]
- *   pypi   → uvx [runtimeArguments] <identifier>==<version> [packageArguments]
- *   oci    → docker run -i --rm [runtimeArguments] <identifier>[:<version>] [packageArguments]
- *   remote → streamable-http only
- *
- * Refused: sse, other registries or a non-default registry base URL (for
- * oci also an identifier that names a registry host other than docker.io),
- * a package whose transport is not stdio, `{variable}` templates, a required
- * argument or variable without a value, and more than one secret (the host
- * stores exactly one per server: `apiKeyEnv` or `apiKeyHeader`).
- *
- * The executed code is bound to the plan like a plugin's: npx and uvx
- * packages carry an exact version, and a docker image a tag other than
- * `latest` or a digest. Both spec sources pass the same launcher grammar
- * (`assertMcpRuntimePinned`): only the options listed there may come before
- * the package or image, so no option can pick another registry, add a
- * package, or widen the container; and no environment variable may steer a
- * launcher's registry, index, proxy, certificates or daemon. A descriptor's
- * own docker image may name any registry host, since the spec the approval
- * step shows is the full image reference. A package-local stdio command
- * (`server/…`) runs from files exported at the version's commit.
- */
+/** Convert only supported server specs; refuse ambiguous templates, registries, transports and multiple secrets.
+ * Launchers require pinned packages and restricted options; local commands use commit-bound server files. */
 import AdmZip from "adm-zip";
 import type { MarketplaceArtifactLimits } from "../../plugins/marketplace-artifact-limits.js";
 import type { McpRuntimeSpec } from "../../plugins/types.js";
@@ -49,17 +20,14 @@ export interface McpInstallPlan extends PackagePlan {
 
 export interface ResolvedMcpServer {
   plan: McpInstallPlan;
-  /** Where the spec came from. */
   from: "descriptor" | "server.json";
   /** Before `$PLUGIN_DIR`/`$DATA_DIR`/`$NODE` substitution; this is what the approval step shows. */
   runtime: McpRuntimeSpec;
-  /** The package's `server/` files for a package-local command, zipped for the MCP artifact store; null otherwise. */
   packageFiles: { zipBuffer: Buffer; digest: string } | null;
 }
 
 export interface McpResolveDeps extends RepositoryAccess {
   limits: Readonly<MarketplaceArtifactLimits>;
-  /** Scratch directory for the `server/` export; removed before resolve returns. */
   workRoot: string;
 }
 
@@ -67,25 +35,14 @@ const SERVER_JSON_LIMIT = 256 * 1024;
 const LAUNCHERS = new Set(["npx", "uvx", "docker"]);
 const TEMPLATE = /\{[^{}]+\}/u;
 const EXACT_SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/u;
-/** A PEP 440 version with no wildcard or range. */
 const EXACT_PYPI_VERSION = /^[0-9][0-9A-Za-z.!+_-]*$/u;
-/** `[@scope/]name@<exact semver>`: an npm registry name, never a URL, path or git spec. */
+/** Exact registry package versions only; URLs, paths and git specs are forbidden. */
 const NPX_TARGET = /^(?:@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*@\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/u;
-/** `name[extras]==<exact version>`. */
 const UVX_TARGET = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?(?:\[[A-Za-z0-9._,-]+\])?==[0-9][0-9A-Za-z.!+_-]*$/u;
 const UVX_COMMAND = /^[A-Za-z0-9][A-Za-z0-9._-]*$/u;
-/** `[host/]path` then `:tag` (not `latest`) or `@sha256:<digest>`. */
 const DOCKER_IMAGE = /^[a-z0-9][a-z0-9._-]*(?::\d+)?(?:\/[a-z0-9][a-z0-9._-]*)*(?::(?!latest$)[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}|@sha256:[0-9a-f]{64})$/u;
-/** Docker Hub, the oci entry of DEFAULT_REGISTRIES, under every name docker gives it. */
 const DOCKER_HUB_HOSTS = new Set(["docker.io", "index.docker.io", "registry-1.docker.io"]);
-/**
- * Environment a launcher reads to choose where code comes from or how it is
- * trusted: npm/pnpm/yarn/bun/corepack config, uv and pip indexes, docker's
- * daemon and credentials, node and python startup (python's output-encoding
- * switches stay allowed), the dynamic loader, the XDG config
- * home the launchers read their config from, proxies and CA bundles.
- * Matched case-insensitively (npm reads `npm_config_*` in any case).
- */
+/** Block environment overrides of registries, indexes, proxies, trust, startup and container daemons. */
 const DEFAULT_REGISTRIES: Record<string, string> = {
   npm: "https://registry.npmjs.org",
   pypi: "https://pypi.org",
@@ -220,7 +177,6 @@ function packageRuntime(pkg: Record<string, unknown>): McpRuntimeSpec {
   return spec;
 }
 
-/** The registry host an image reference names, or null for Docker Hub's short form (`user/app`, `app`). */
 function imageRegistryHost(image: string): string | null {
   const slash = image.indexOf("/");
   if (slash < 0) return null;
@@ -242,7 +198,6 @@ function remoteRuntime(remote: Record<string, unknown>): McpRuntimeSpec {
   return spec;
 }
 
-/** The runtime spec a `server.json` describes, for the selected package or remote. */
 export function runtimeFromServerJson(document: unknown, select: { package?: number; remote?: number } | undefined): McpRuntimeSpec {
   if (!isRecord(document)) throw refuse("server.json is not an object");
   const packages = Array.isArray(document.packages) ? document.packages : [];
@@ -264,7 +219,6 @@ export function runtimeFromServerJson(document: unknown, select: { package?: num
   return remoteRuntime(remote);
 }
 
-/** The descriptor's own spec (already schema-checked) as the host runtime spec. */
 function runtimeFromDescriptor(server: Record<string, unknown>): McpRuntimeSpec {
   if (server.transport === "stdio") {
     const spec: McpRuntimeSpec = { transport: "stdio", command: server.command as string };
@@ -280,7 +234,7 @@ function runtimeFromDescriptor(server: Record<string, unknown>): McpRuntimeSpec 
   return spec;
 }
 
-/** Options docker may take between `run` and the image; each keeps the container's default isolation or narrows it. */
+/** Pre-image options may retain or narrow isolation, never widen it. */
 function dockerOptionLength(args: readonly string[], index: number): number {
   const arg = args[index]!;
   if (["-i", "--interactive", "--rm", "--init", "-t", "--tty"].includes(arg)) return 1;
@@ -298,19 +252,8 @@ function dockerOptionLength(args: readonly string[], index: number): number {
   return 0;
 }
 
-/**
- * The launched code must be fixed by the commit, not by whatever a registry
- * serves later, and no option may change where it comes from:
- *
- *   npx    [-y | --yes]… <package>@<exact version> [args…]
- *   uvx    <package>==<exact version> [args…]
- *          --from <package>==<exact version> <command> [args…]
- *   docker run [-i -t --rm --init, -e NAME[=value], --network none|bridge]… <image>:<tag>|@sha256:… [args…]
- *
- * Everything after the package or image belongs to the server. The
- * environment may not name a launcher's registry, index, proxy, CA or
- * daemon variables, nor the api-key variable.
- */
+/** Pin launcher code and restrict options before the package or image; later arguments belong to the server.
+ * Environment overrides cannot redirect registry, proxy, trust or daemon configuration. */
 export function assertMcpRuntimePinned(name: string, spec: McpRuntimeSpec): void {
   if (spec.transport !== "stdio") return;
   const envNames = [...Object.keys(spec.env ?? {}), ...(spec.apiKeyEnv ? [spec.apiKeyEnv] : [])];
@@ -337,7 +280,6 @@ export function assertMcpRuntimePinned(name: string, spec: McpRuntimeSpec): void
   }
 }
 
-/** The image `docker run` starts under the grammar above; refuses anything else. */
 function dockerImageOf(name: string, args: readonly string[]): string {
   let index = args[0] === "run" ? 1 : -1;
   while (index > 0 && index < args.length && args[index]!.startsWith("-")) {
@@ -380,12 +322,10 @@ async function exportServerFiles(plan: McpInstallPlan, deps: McpResolveDeps): Pr
   }
 }
 
-/** Whether an MCP payload takes its spec from `server.json` rather than its own `server`. */
 export function mcpPayloadReadsServerJson(payload: Record<string, unknown>): boolean {
   return !isRecord(payload.server);
 }
 
-/** The parsed bytes of the `server.json` at `path`; CONTENT_RULE_VIOLATION when they are not strict JSON. */
 export function parseServerJson(path: string, bytes: Buffer): unknown {
   try {
     return parseStrictJson(bytes.toString("utf8"));
@@ -394,20 +334,13 @@ export function parseServerJson(path: string, bytes: Buffer): unknown {
   }
 }
 
-/** What an MCP package declares, before its package files are exported. */
 export interface DeclaredMcpServer {
   from: ResolvedMcpServer["from"];
   runtime: McpRuntimeSpec;
-  /** The package-relative command (`server/…`) the server runs from the package's own files; null for a launcher or http. */
   packageCommand: string | null;
 }
 
-/**
- * The runtime spec an MCP package declares, from the descriptor's own
- * `server` or from `serverJson` (the parsed `server.json`, which the caller
- * reads only when `mcpPayloadReadsServerJson` says so). Both pass the
- * launcher grammar. Install and the repository check share this.
- */
+/** Install and publication checks share launcher validation for descriptor and server.json specs. */
 export function declaredMcpServer(name: string, payload: Record<string, unknown>, serverJson: unknown): DeclaredMcpServer {
   let runtime: McpRuntimeSpec;
   let from: ResolvedMcpServer["from"];
@@ -419,12 +352,11 @@ export function declaredMcpServer(name: string, payload: Record<string, unknown>
     from = "server.json";
   }
   if (usesToken(runtime, "$PYTHON")) throw refuse(`MCP server ${name} uses $PYTHON; Ave provides no Python runtime (use uvx)`);
-  // A stdio command cannot hold it: validation allows only a launcher or a `server/` path there.
   if (runtime.transport !== "stdio" && JSON.stringify(runtime).includes("$DATA_DIR")) {
     throw refuse(`MCP server ${name}: $DATA_DIR is filled in only in a stdio server's arguments and environment`);
   }
   assertMcpRuntimePinned(name, runtime);
-  // Validation allows only `server/…` for a non-launcher command (design §5.2); it runs from the exported files.
+  // Non-launcher commands run only from exported server files.
   const packageCommand = runtime.transport === "stdio" && !LAUNCHERS.has(runtime.command) ? runtime.command : null;
   if (packageCommand === null && usesToken(runtime, "$PLUGIN_DIR")) {
     throw refuse(`MCP server ${name} refers to $PLUGIN_DIR but ships no package files`);
@@ -432,7 +364,6 @@ export function declaredMcpServer(name: string, payload: Record<string, unknown>
   return { from, runtime, packageCommand };
 }
 
-/** Resolve an MCP package at the plan's commits into the spec the approval step shows. */
 export async function resolveMcpPackage(plan: McpInstallPlan, deps: McpResolveDeps): Promise<ResolvedMcpServer> {
   const descriptor = await readDescriptorAtVersion(plan, deps);
   const payload = descriptor.payload;
@@ -454,22 +385,18 @@ export async function resolveMcpPackage(plan: McpInstallPlan, deps: McpResolveDe
   return { plan, from, runtime: { ...runtime, command: `$PLUGIN_DIR/${packageCommand}` }, packageFiles };
 }
 
-/** Where the MCP config the install registers points its tokens. */
 export interface McpServerDirs {
-  /** `$PLUGIN_DIR`: the installed `server/` files of this version, replaced on update. */
+  /** Installed package files are replaced on update. */
   installDir: string;
-  /** `$DATA_DIR`: the package's own data directory, kept across updates (design §5.2). */
+  /** Package data survives updates. */
   dataDir: string;
-  /** `$NODE`. */
   nodePath: string;
 }
 
-/** The MCP config to register, with `$PLUGIN_DIR`, `$DATA_DIR` and `$NODE` filled in. */
 export function mcpServerConfigFor(resolved: ResolvedMcpServer, dirs: McpServerDirs): McpServerConfig {
   return mcpRuntimeConfig(resolved.plan.name, resolved.runtime, dirs);
 }
 
-/** The MCP config for server `name` running `runtime`, tokens filled in. */
 export function mcpRuntimeConfig(name: string, runtime: McpRuntimeSpec, dirs: McpServerDirs): McpServerConfig {
   if (runtime.transport !== "stdio") return buildMcpServerConfig(name, { ...runtime });
   const values = { PLUGIN_DIR: dirs.installDir, DATA_DIR: dirs.dataDir, NODE: dirs.nodePath } as const;

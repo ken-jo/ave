@@ -1,13 +1,4 @@
-/**
- * Package identity across sources (design §15.1, §14).
- *
- * An installed package is identified by `(kind, name)` and bound to the
- * source it came from. The same name in another source is a different row,
- * never an update: installing it replaces the installed package only as an
- * explicit source switch, and updates are offered from the bound source
- * only. An install with no source binding (a local build, or a catalog
- * install from before this design) is replaced only by a switch as well.
- */
+/** Only the bound source offers updates; another source or an unbound install requires an explicit switch. */
 import { compareSemver } from "../../shared/semver-compare.js";
 import type { CatalogRow } from "../catalog/aggregate.js";
 import type { PackageKind } from "../catalog/types.js";
@@ -15,11 +6,7 @@ import { MarketplaceError } from "../errors.js";
 import { isSynthesizedVersion } from "../sources/direct-package.js";
 import type { PackagePlan } from "./descriptor.js";
 
-/**
- * Semver order, except that two versions a commit names (`0.0.0+g…`, design
- * §8.2) differ only in build metadata, which semver ignores: the pin only
- * moves to descendant commits, so a different one is newer.
- */
+/** Commit-version pins use distinct build metadata as newer because pins move only to descendants. */
 export function compareVersions(a: string, b: string): number {
   if (isSynthesizedVersion(a) && isSynthesizedVersion(b)) return a === b ? 0 : 1;
   return compareSemver(a, b);
@@ -28,19 +15,15 @@ export function compareVersions(a: string, b: string): number {
 export interface InstalledPackage {
   kind: PackageKind;
   name: string;
-  /** Null when the installed manifest cannot be read (a stale registry row). */
   version: string | null;
-  /** The bound source, or null when the install has none. */
   sourceId: string | null;
 }
 
 export type InstallAction =
   | { action: "install" }
-  /** Same source: `direction` compares the plan with the installed version; `repair` when that is unreadable. */
   | { action: "replace"; direction: "upgrade" | "reinstall" | "downgrade" | "repair"; from: string | null }
   | { action: "switch"; fromSource: string | null; from: string | null };
 
-/** What installing `plan` over `installed` is; another source without `switchSource` is PACKAGE_ID_CONFLICT. */
 export function classifyInstall(plan: Pick<PackagePlan, "kind" | "name" | "version"> & { sourceId: string | null }, installed: InstalledPackage | null, options: { switchSource?: boolean } = {}): InstallAction {
   if (!installed) return { action: "install" };
   if (installed.kind !== plan.kind || installed.name !== plan.name) {
@@ -65,17 +48,12 @@ export type UpdateState =
   | { state: "current" }
   | { state: "update"; row: CatalogRow; version: string }
   | { state: "upgrade_required"; minAppVersion: string }
-  /** The bound source still exists but no longer lists the package. */
   | { state: "not_listed" }
-  /** The bound source is gone (removed, or no snapshot yet). */
   | { state: "source_removed" }
-  /** No source binding: nothing can update it. */
+  /** Unbound installs cannot receive source updates. */
   | { state: "unbound" };
 
-/**
- * The update for an installed package: only its bound source's row counts,
- * whatever other sources list under the same name.
- */
+/** Same-named rows from other sources never update the bound install. */
 export function updateFor(installed: InstalledPackage & { version: string }, rows: readonly CatalogRow[], sources: ReadonlySet<string>): UpdateState {
   if (installed.sourceId === null) return { state: "unbound" };
   if (!sources.has(installed.sourceId)) return { state: "source_removed" };

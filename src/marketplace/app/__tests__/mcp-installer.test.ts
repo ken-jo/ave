@@ -1,8 +1,4 @@
-/**
- * The git marketplace's MCP installer (design §5.2, §8.1): it owns only the
- * servers it recorded, swaps files and config together, keeps `$DATA_DIR`
- * across updates, and restores the previous server when a step fails.
- */
+/** Verifies server ownership, atomic replacement, data retention and rollback. */
 import AdmZip from "adm-zip";
 import { mkdtempSync } from "node:fs";
 import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
@@ -16,7 +12,6 @@ import { McpInstaller, mcpInstallOrigins } from "../mcp-installer.js";
 
 const SNAPSHOT = "a".repeat(40);
 
-/** Set to make the next record writes fail, as a full disk would. */
 const recordWrites = vi.hoisted(() => ({ fail: false }));
 vi.mock("../../../main/storage/feature-namespace.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../main/storage/feature-namespace.js")>();
@@ -32,7 +27,6 @@ vi.mock("../../../main/storage/feature-namespace.js", async (importOriginal) => 
 class FakeManager {
   configs = new Map<string, McpServerConfig>();
   failNextAdd = false;
-  /** The next add saves the config but its connection fails with this message. */
   disconnectedNextAdd: string | null = null;
   blocked = new Set<string>();
   validateConfig(config: McpServerConfig) {
@@ -132,7 +126,6 @@ describe("McpInstaller", () => {
     const skipping = new McpInstaller({
       recordsPath: recordsPath(),
       dataRoot: join(home, "mcp-data"),
-      // An extractor that dropped the executable entry: the mode bits must not be applied to some other path.
       files: {
         installDirFor: () => installDir,
         extractZipWithCommit: async (_name, _zip, commit) => ({ result: await commit(installDir, ["server/README.md"]) }),

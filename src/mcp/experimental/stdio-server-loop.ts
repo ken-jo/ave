@@ -1,34 +1,10 @@
-/**
- * Experimental `StdioServerLoop` — the subprocess-side serving core of the
- * out-of-process plugin path (mcp-alignment-design.md §3.1,
- * `untrusted-stdio-isolation`).
- *
- * This is what runs INSIDE a spawned, sandboxed plugin process: it reads
- * newline-delimited JSON-RPC requests from an input stream (the subprocess's
- * stdin), dispatches each to a {@link PluginMcpServer}-shaped handler, and writes
- * the framed response to an output stream (stdout). The host side drives it via a
- * stdio transport (the untrusted arm of the hybrid topology), exactly as the
- * loopback transport drives the in-process server for first-party plugins — same
- * `PluginMcpServer`, same projection, different transport.
- *
- * Transport-agnostic above the framing: it takes plain Node streams, so it is
- * tested over in-memory paired streams without spawning a real process. The
- * subprocess spawner + OS sandbox (the Anthropic Sandbox Runtime — macOS
- * Seatbelt / Linux bwrap) + the signed
- * spawnable-artifact format are the REMAINING `untrusted-stdio-isolation` work
- * (the artifact format is the §6 open decision) and sit above this loop.
- *
- * Robustness: a handler that throws does not kill the loop — it emits a JSON-RPC
- * internal-error response for that request and keeps serving (a buggy tool must
- * not take the whole server down).
- */
+/** Dispatch newline-framed requests over streams; handler failures reply with internal errors without ending service. */
 import type { Readable, Writable } from "node:stream";
 import { frameMessage, StdioFrameDecoder } from "../stdio-framing.js";
 import { RPC_INTERNAL_ERROR } from "../protocol-constants.js";
 import type { JsonRpcId, JsonRpcRequest, JsonRpcResponse } from "../mcp-client.js";
 import { errorMessage } from "../../shared/error-message.js";
 
-/** What the loop dispatches each request to (a {@link PluginMcpServer} satisfies this). */
 export interface StdioRequestHandler {
   handle(request: JsonRpcRequest<JsonRpcId>): Promise<JsonRpcResponse<JsonRpcId>>;
 }
@@ -37,11 +13,7 @@ export class StdioServerLoop {
   private readonly decoder: StdioFrameDecoder;
   private started = false;
 
-  /**
-   * `maxLineBytes` bounds one request line. It is the caller's because the
-   * bound belongs to the channel this loop is mounted on, not to the loop: an
-   * overflow throws out of the input's `data` event, to whoever wrote it.
-   */
+  /** The mounting channel supplies its line cap; overflow propagates to the input writer. */
   constructor(
     private readonly input: Readable,
     private readonly output: Writable,
@@ -51,7 +23,6 @@ export class StdioServerLoop {
     this.decoder = new StdioFrameDecoder(maxLineBytes);
   }
 
-  /** Begin consuming framed requests from the input stream. */
   start(): void {
     if (this.started) {
       throw new Error("[stdio-server-loop] already started");
@@ -62,8 +33,6 @@ export class StdioServerLoop {
 
   private onData(chunk: Buffer): void {
     for (const message of this.decoder.push(chunk)) {
-      // Only requests (method + id) get a reply; notifications (method, no id)
-      // are fire-and-forget and a bare response is ignored.
       if (typeof message.method === "string" && message.id !== undefined) {
         void this.dispatch(message as unknown as JsonRpcRequest<JsonRpcId>);
       }

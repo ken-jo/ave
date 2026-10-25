@@ -1,7 +1,3 @@
-/**
- * The service endpoint (design §11): base resolution, the one-move rule, the
- * document's same-origin paths, the policy override, and announcements.
- */
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -31,7 +27,6 @@ const announcement = (id: number) => ({
   actions: [{ label: { en: "Open", ko: "열기" }, target: { kind: "url", url: "https://ave.agent-connector.ai/news" } }],
 });
 
-/** A fetch over a URL → JSON map; a missing URL answers 404, a number answers that status, a Response is returned as is. */
 function fakeFetch(routes: Record<string, unknown>) {
   return vi.fn(async (input: string | URL | Request) => {
     const url = String(input);
@@ -114,7 +109,6 @@ describe("readPolicyServiceBase", () => {
   it("throws on an ENOTDIR policy path instead of falling back to the public base", async () => {
     const parent = join(dir, "admin");
     writeFileSync(parent, "not a directory");
-    // The read error is the OS's: Windows reports a path through a file as ENOENT.
     await expect(readPolicyServiceBase(join(parent, "policy.json"))).rejects.toMatchObject({ code: process.platform === "win32" ? "ENOENT" : "ENOTDIR" });
   });
 
@@ -356,7 +350,6 @@ describe("ServiceClient", () => {
     service.ensureResolved();
     await vi.waitFor(() => expect(service.telemetryEndpoint()).toBe(`${OLD}/telemetry/events`));
 
-    // A policy that turns invalid mid-session reaches telemetry at the next revalidation, not only at restart.
     policy = async () => {
       throw new Error("policy service section is invalid");
     };
