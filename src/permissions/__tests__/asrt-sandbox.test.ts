@@ -1058,12 +1058,13 @@ describe("asrt-sandbox — proxyPortRange single SOT (install↔config consisten
     // The temp root the helper copy lives in is shared with sibling test files;
     // once it holds more entries than the Git-control scan may visit, the write
     // policy withdraws the root. The refusal must not depend on that.
-    const prevPlatform = Object.getOwnPropertyDescriptor(process, "platform");
-    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
-    const executable = buildSandboxConfig({ allowedDomains: [] }).windows!.srtWin!.path;
-    const root = dirname(dirname(executable));
-    const filler = mkdtempSync(join(root, "scan-budget-"));
+    const hostPlatform = process.platform;
+    let filler: string | undefined;
     try {
+      setProcessPlatform("win32");
+      const executable = buildSandboxConfig({ allowedDomains: [] }).windows!.srtWin!.path;
+      const root = dirname(dirname(executable));
+      filler = mkdtempSync(join(root, "scan-budget-"));
       for (let group = 0; group < 180; group += 1) {
         mkdirSync(join(filler, `g${group}`));
         for (let file = 0; file < 100; file += 1) writeFileSync(join(filler, `g${group}`, `f${file}`), "");
@@ -1073,8 +1074,8 @@ describe("asrt-sandbox — proxyPortRange single SOT (install↔config consisten
       expect(() => buildSandboxConfig({ allowWrite: [root] }))
         .toThrow("Windows filesystem grant overlaps a private helper image");
     } finally {
-      rmSync(filler, { recursive: true, force: true });
-      if (prevPlatform) Object.defineProperty(process, "platform", prevPlatform);
+      setProcessPlatform(hostPlatform);
+      if (filler !== undefined) rmSync(filler, { recursive: true, force: true });
     }
   });
 
