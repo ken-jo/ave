@@ -193,6 +193,9 @@ describe("PowerShell deny and ask rules meet every spelling of the command name"
     ["PowerShell(git push *)", "git.exe push --force"],
     ["PowerShell(git push *)", "C:\\Git\\bin\\git.exe push"],
     ["PowerShell(git push *)", "GIT.EXE push origin"],
+    // Win32 strips trailing dots from a program name.
+    ["PowerShell(git push *)", "git. push --force"],
+    ["PowerShell(git push *)", "git.exe. push --force"],
     ["PowerShell(remove-item *)", "Microsoft.PowerShell.Management\\Remove-Item x"],
   ])("deny %s refuses %s, sandboxed or not, over any allow", (deny, command) => {
     manager.setRules([{ pattern: "PowerShell(git *)", action: "allow" }, { pattern: "PowerShell(remove-item *)", action: "allow" }, { pattern: deny, action: "deny" }]);
@@ -280,6 +283,42 @@ describe("PowerShell -EncodedCommand", () => {
     expect(powershell(command, true)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
     expect(powershell(command, false)).toMatchObject({ decision: "ask", forceModal: true });
     expect(buildShellRuleApproval("powershell", command, dir, { allow: true, deny: true }).exactRule).toBeNull();
+  });
+
+  // Re-review round 4: the payload and the parameter boundaries are read on quote-aware words, so separators and line breaks inside a quoted value
+  // neither cut the payload short nor end the invocation early.
+  it.each(['"', "'"])("decodes a quoted payload split across lines (%s) in full", (quote) => {
+    const SCRIPT = "Get-Date; rm -rf /";
+    const encoded = encode(SCRIPT);
+    const command = `pwsh -enc ${quote}${encoded.slice(0, 8)}\n${encoded.slice(8)}${quote}`;
+    expect(buildShellRuleApproval("powershell", command, dir, { allow: true, deny: true }).decodedCommands).toEqual([SCRIPT]);
+    expect(powershell(command, true)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+  });
+
+  it.each([
+    '-WorkingDirectory "x;y"',
+    '-WorkingDirectory "a -c"',
+    '-ConfigurationName "q -File"',
+    "-WorkingDirectory 'x|y'",
+  ])("decodes the payload after a quoted earlier value (%s)", (earlier) => {
+    const command = `pwsh ${earlier} -enc ${encode(DESTRUCTIVE)}`;
+    expect(buildShellRuleApproval("powershell", command, dir, { allow: true, deny: true }).decodedCommands).toEqual([DESTRUCTIVE]);
+    expect(powershell(command, true)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+  });
+
+  it.each([
+    `pwsh -WorkingDirectory -c -enc ${encode("Get-Date")}`,
+    `pwsh -enc "${encode("Get-Date")}`,
+    `pwsh -WorkingDirectory 'x -enc ${encode("Get-Date")}`,
+  ])("treats an ambiguous boundary or unbalanced quoting as hidden code (%s)", (command) => {
+    manager.setRules([{ pattern: "PowerShell(pwsh *)", action: "allow" }]);
+    expect(powershell(command, true)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    expect(buildShellRuleApproval("powershell", command, dir, { allow: true, deny: true }).exactRule).toBeNull();
+  });
+
+  it("reads an encoded command nested in a quoted command line", () => {
+    const command = `cmd /c "pwsh -NoProfile -enc ${encode(DESTRUCTIVE)}"`;
+    expect(buildShellRuleApproval("powershell", command, dir, { allow: true, deny: true }).decodedCommands).toEqual([DESTRUCTIVE]);
   });
 
   it("does not read a -Command script's own -e argument as an encoded command", () => {
