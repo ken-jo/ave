@@ -2345,8 +2345,8 @@ describe("installer smoke and packaging discipline", () => {
 
     expect(packageJson.build?.electronLanguages).toEqual(["en-US"]);
     expect(packageFootprint).toContain('DEFAULT_PACKAGED_ELECTRON_LANGUAGES = Object.freeze(["en-US"])');
-    expect(packageFootprint).toContain("desktop app must package only the default Electron language");
-    expect(packageFootprint).toContain("ship UI languages as marketplace language packs");
+    expect(packageFootprint).toContain("desktop app must package only the default shell language");
+    expect(packageFootprint).toContain("UI catalogs are independent of browser locale files");
     expect(packageFootprint).not.toContain('["en-US", "ko"]');
     expect(packageFootprint).not.toContain('"ko.pak"');
     expect(packageFootprint).not.toContain('"ko.lproj"');
