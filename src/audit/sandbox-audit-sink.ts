@@ -68,12 +68,36 @@ function sinkPath(date = new Date()): string {
  * or surface the error. Production call-sites in `permission-manager.ts` wrap
  * this in a try/catch and log the error without blocking the tool execution.
  */
-export async function emitSandboxAudit(
+export function emitSandboxAudit(
   entry: SandboxAuditEntry | SandboxEgressDenyAuditEntry | SandboxEgressDecisionAuditEntry | SandboxEgressRouteAuditEntry,
 ): Promise<void> {
-  const path = sinkPath();
+  const write = appendSandboxAudit(sinkPath(), entry);
+  // Call sites fire this without awaiting so a slow disk never delays a tool.
+  // Track the write anyway, so whoever retires the audit directory can wait
+  // for it instead of racing a late mkdir/append.
+  const tracked: Promise<void> = write.then(() => undefined, () => undefined).finally(() => {
+    pendingSandboxAuditWrites.delete(tracked);
+  });
+  pendingSandboxAuditWrites.add(tracked);
+  return write;
+}
+
+const pendingSandboxAuditWrites = new Set<Promise<void>>();
+
+async function appendSandboxAudit(path: string, entry: object): Promise<void> {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   await appendFile(path, `${JSON.stringify(entry)}\n`, { mode: 0o600 });
+}
+
+/**
+ * Wait until every sandbox audit write started before or during this call has
+ * settled. Failures stay with the caller of {@link emitSandboxAudit}; this only
+ * waits. Lifecycle owners await it before removing the audit directory.
+ */
+export async function flushSandboxAudit(): Promise<void> {
+  while (pendingSandboxAuditWrites.size > 0) {
+    await Promise.all([...pendingSandboxAuditWrites]);
+  }
 }
 
 /**
