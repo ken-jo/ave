@@ -48,6 +48,8 @@ describe("mandatory sandbox control-file writes", () => {
   it.each([
     ".bashrc", ".zshrc", ".profile", ".bash_profile", ".zprofile", ".gitconfig",
     ".git", ".git/hooks", ".git/config", ".git/modules", ".vscode",
+    ".husky", ".githooks", ".claude/settings.json", ".claude/settings.local.json", ".claude/hooks", ".claude/commands",
+    ".idea/workspace.xml", ".pre-commit-config.yaml", ".envrc", "lefthook.yml",
   ])("protects missing %s in every writable root", (entry) => {
     const roots = [join(root, "project"), join(root, "temp")];
     const denies = buildMandatorySandboxWritePolicy(roots).denyWrite;

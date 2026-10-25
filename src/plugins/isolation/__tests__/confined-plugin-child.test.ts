@@ -4594,7 +4594,9 @@ function expectProtectedRootEntries(reportPath: string, root: string): void {
   expect(realpathSync(reportPath).startsWith(`${canonicalRoot}/`), "the inventory report polluted the measured root").toBe(false);
   expect(realpathSync(report.root), "the inventory came from another sandbox directory").toBe(canonicalRoot);
   const mandatory = buildMandatorySandboxWritePolicy([canonicalRoot]).denyWrite.map(entry => typeof entry === "string" ? entry : entry.path);
-  const names = [...new Set(mandatory.filter(path => dirname(path) === canonicalRoot).map(path => basename(path)))].sort();
+  // A nested deny target (`.claude/hooks`) makes the runtime create its top-level parent too.
+  const names = [...new Set(mandatory.filter(path => path.startsWith(`${canonicalRoot}/`))
+    .map(path => path.slice(canonicalRoot.length + 1).split("/")[0]!))].sort();
   const expected = process.platform === "linux" ? names.map(name => ({
     name,
     kind: mandatory.some(path => path.startsWith(join(canonicalRoot, name) + "/")) ? "directory" : "device",

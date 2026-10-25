@@ -83,7 +83,7 @@ function isRepositoryMarker(marker: string): boolean {
 }
 
 /** Nearest verified marker below home; uncertain discovery stays at cwd. */
-function projectRootFor(projectCwd: string): string {
+export function projectRootFor(projectCwd: string): string {
   const start = captureApprovalWorkingDirectory(projectCwd).path;
   let home: string;
   try {

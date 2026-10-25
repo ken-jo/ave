@@ -137,6 +137,8 @@ export type AddressPolicyFetchInit = RequestInit & {
 };
 
 type NetworkGuardFetchInit = RequestInit & NetworkGuardOptions & {
+  /** Host permission check on every actual destination, before transport. */
+  authorizeTarget?: (url: URL) => Promise<void>;
   /**
    * The transport this request runs on. REQUIRED, and deliberately without a
    * default.
@@ -564,6 +566,7 @@ export async function fetchPublicHttpResponse(
 ): Promise<Response> {
   const {
     fetchImpl,
+    authorizeTarget,
     allowPrivateNetworks = false,
     allowLoopback = false,
     allowCarrierGradeNat = false,
@@ -573,6 +576,7 @@ export async function fetchPublicHttpResponse(
     ...request
   } = init;
   return followRedirects(rawUrl, request, { maxRedirects, timeoutMs, signal }, async (url, requestInit) => {
+    await authorizeTarget?.(validateHttpUrl(url));
     await ensurePublicHttpUrl(url, { allowPrivateNetworks, allowLoopback, allowCarrierGradeNat });
     return fetchImpl(url, requestInit);
   });

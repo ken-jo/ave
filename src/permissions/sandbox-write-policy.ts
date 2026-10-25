@@ -10,13 +10,7 @@ import { userApprovalFilePath } from "./user-approval-store.js";
 import { getAdminPolicyPath, userPolicyPath } from "./policy-store.js";
 import { permissionsFilePath } from "./permissions-store.js";
 import { projectRulesDirectory } from "./rules/project-rule-files.js";
-import { canonicalizePathForMatch, caseFoldForMatch } from "./sensitive-paths.js";
-
-/** Control files remain unwritable even when their containing directory is granted. */
-const PROTECTED_ROOT_ENTRIES = [
-  ".bashrc", ".zshrc", ".profile", ".bash_profile", ".zprofile", ".gitconfig",
-  ".git", ".git/hooks", ".git/config", ".git/modules", ".vscode",
-] as const;
+import { PROTECTED_ROOT_ENTRIES, canonicalizePathForMatch, caseFoldForMatch } from "./sensitive-paths.js";
 
 /** Directory depth of nested repository discovery; the admitted root is depth zero. */
 export const SANDBOX_GIT_SCAN_DEPTH = 3;

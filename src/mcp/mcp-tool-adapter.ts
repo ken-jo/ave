@@ -98,6 +98,11 @@ export function mcpToolToTool(
   callTool: (name: string, args: Record<string, unknown>) => Promise<McpToolCallOutput>,
 ): Tool {
   const surfaces = toolSurfaces(schema);
+  const readOnlyHint = schema.annotations?.readOnlyHint;
+  const destructiveHint = schema.annotations?.destructiveHint;
+  // Discovery is an untrusted wire boundary even when its static type is known.
+  const hasValidHints = (readOnlyHint === undefined || typeof readOnlyHint === "boolean")
+    && (destructiveHint === undefined || typeof destructiveHint === "boolean");
   return createDynamicTool({
     name: namespacedName,
     description: schema.description,
@@ -105,6 +110,11 @@ export function mcpToolToTool(
     // Host-derived default-strict for foreign MCP peers — see file header.
     category: "network",
     mcpServerId: serverId,
+    mcpRuleIdentity: {
+      tool: schema.name,
+      nonDestructive: hasValidHints && destructiveHint !== true
+        && (readOnlyHint === true || destructiveHint === false),
+    },
     // MCP Apps `_meta.ui.visibility` ∋ "app" — the spec's gate on this server's
     // OWN app calling this tool (`oncalltool`). Materialized here, once.
     appInvokable: surfaces.includes("app"),
