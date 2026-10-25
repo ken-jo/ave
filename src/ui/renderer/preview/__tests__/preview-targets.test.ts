@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ChatEntry } from "../../../../lib/chat-stream-state.js";
 import type { Attachment } from "../../types/attachments.js";
+import { toolGroup } from "./support/tool-group.js";
 import { collectChatPreviewModel } from "../preview-targets.js";
 
 describe("collectChatPreviewModel", () => {
@@ -17,23 +18,17 @@ describe("collectChatPreviewModel", () => {
       },
     ];
     const entries: ChatEntry[] = [
-      {
-        kind: "tool_group",
-        groupId: "g1",
-        groupIds: ["g1"],
-        status: "done",
-        tools: [
-          {
-            toolUseId: "read-1",
-            name: "read_file",
-            displayOrder: 0,
-            status: "done",
-            category: "read",
-            input: { path: "C:\\workspace\\report.md" },
-            result: "# Report",
-          },
-        ],
-      },
+      toolGroup([
+        {
+          toolUseId: "read-1",
+          name: "read_file",
+          displayOrder: 0,
+          status: "done",
+          category: "read",
+          input: { path: "C:\\workspace\\report.md" },
+          result: "# Report",
+        },
+      ]),
     ];
 
     const model = collectChatPreviewModel({ entries, attachments });
@@ -62,30 +57,24 @@ describe("collectChatPreviewModel", () => {
 
   it("promotes path-bearing search hits to inline-text file previews (indexer)", () => {
     const entries: ChatEntry[] = [
-      {
-        kind: "tool_group",
-        groupId: "g1",
-        groupIds: ["g1"],
-        status: "done",
-        tools: [
-          {
-            toolUseId: "search-1",
-            name: "index_search",
-            displayOrder: 0,
-            status: "done",
-            source: "plugin",
-            pluginId: "local-indexer",
-            input: { query: "budget", mode: "hybrid", topK: 5 },
-            result: JSON.stringify({
-              hits: [
-                { chunkId: "c1", docId: "d1", docName: "plan.md", page: 3, path: "/docs/plan.md", snippet: "# Plan\n\nbudget" },
-                { chunkId: "c2", docId: "d2", docName: "notes.txt", path: "/docs/notes.txt", rawText: "plain notes" },
-                { chunkId: "c3", docId: "d3", docName: "no-path" },
-              ],
-            }),
-          },
-        ],
-      },
+      toolGroup([
+        {
+          toolUseId: "search-1",
+          name: "index_search",
+          displayOrder: 0,
+          status: "done",
+          source: "plugin",
+          pluginId: "local-indexer",
+          input: { query: "budget", mode: "hybrid", topK: 5 },
+          result: JSON.stringify({
+            hits: [
+              { chunkId: "c1", docId: "d1", docName: "plan.md", page: 3, path: "/docs/plan.md", snippet: "# Plan\n\nbudget" },
+              { chunkId: "c2", docId: "d2", docName: "notes.txt", path: "/docs/notes.txt", rawText: "plain notes" },
+              { chunkId: "c3", docId: "d3", docName: "no-path" },
+            ],
+          }),
+        },
+      ]),
     ];
 
     const model = collectChatPreviewModel({ entries, attachments: [] });
@@ -108,59 +97,53 @@ describe("collectChatPreviewModel", () => {
 
   it("collects render_html, write diffs, urls, json, and MCP app payloads", () => {
     const entries: ChatEntry[] = [
-      {
-        kind: "tool_group",
-        groupId: "g1",
-        groupIds: ["g1"],
-        status: "done",
-        tools: [
-          {
-            toolUseId: "html-1",
-            name: "render_html",
-            displayOrder: 0,
-            status: "done",
-            input: {},
-            result: JSON.stringify({ kind: "ave.render_html", title: "Dashboard", html: "<h1>Hi</h1>", height: 320 }),
+      toolGroup([
+        {
+          toolUseId: "html-1",
+          name: "render_html",
+          displayOrder: 0,
+          status: "done",
+          input: {},
+          result: JSON.stringify({ kind: "ave.render_html", title: "Dashboard", html: "<h1>Hi</h1>", height: 320 }),
+        },
+        {
+          toolUseId: "write-1",
+          name: "write_file",
+          displayOrder: 1,
+          status: "done",
+          category: "write",
+          input: { path: "C:\\workspace\\out.json" },
+          result: JSON.stringify({
+            kind: "ave.write_file",
+            path: "C:\\workspace\\out.json",
+            before: "{}",
+            after: "{\"ok\":true}",
+          }),
+        },
+        {
+          toolUseId: "web-1",
+          name: "web_fetch",
+          displayOrder: 2,
+          status: "done",
+          category: "network",
+          input: { url: "https://example.com/docs" },
+          result: "{\"status\":200}",
+        },
+        {
+          toolUseId: "app-1",
+          name: "mcp_app",
+          displayOrder: 3,
+          status: "done",
+          input: {},
+          result: "done",
+          uiPayload: {
+            serverId: "server-a",
+            resourceUri: "ui://server-a/card",
+            slot: "sidebar",
+            title: "Plugin Card",
           },
-          {
-            toolUseId: "write-1",
-            name: "write_file",
-            displayOrder: 1,
-            status: "done",
-            category: "write",
-            input: { path: "C:\\workspace\\out.json" },
-            result: JSON.stringify({
-              kind: "ave.write_file",
-              path: "C:\\workspace\\out.json",
-              before: "{}",
-              after: "{\"ok\":true}",
-            }),
-          },
-          {
-            toolUseId: "web-1",
-            name: "web_fetch",
-            displayOrder: 2,
-            status: "done",
-            category: "network",
-            input: { url: "https://example.com/docs" },
-            result: "{\"status\":200}",
-          },
-          {
-            toolUseId: "app-1",
-            name: "mcp_app",
-            displayOrder: 3,
-            status: "done",
-            input: {},
-            result: "done",
-            uiPayload: {
-              serverId: "server-a",
-              resourceUri: "ui://server-a/card",
-              slot: "sidebar",
-              title: "Plugin Card",
-            },
-          },
-        ],
-      },
+        },
+      ]),
     ];
 
     const model = collectChatPreviewModel({ entries, attachments: [] });
@@ -186,37 +169,31 @@ describe("collectChatPreviewModel", () => {
   it("promotes a repeated tool file entry to write when a later diff touches the same path", () => {
     const path = "C:\\workspace\\report.md";
     const entries: ChatEntry[] = [
-      {
-        kind: "tool_group",
-        groupId: "g1",
-        groupIds: ["g1"],
-        status: "done",
-        tools: [
-          {
-            toolUseId: "read-1",
-            name: "read_file",
-            displayOrder: 0,
-            status: "done",
-            category: "read",
-            input: { path },
-            result: "# Before",
-          },
-          {
-            toolUseId: "write-1",
-            name: "write_file",
-            displayOrder: 1,
-            status: "done",
-            category: "write",
-            input: { path },
-            result: JSON.stringify({
-              kind: "ave.write_file",
-              path,
-              before: "# Before\n",
-              after: "# After\n",
-            }),
-          },
-        ],
-      },
+      toolGroup([
+        {
+          toolUseId: "read-1",
+          name: "read_file",
+          displayOrder: 0,
+          status: "done",
+          category: "read",
+          input: { path },
+          result: "# Before",
+        },
+        {
+          toolUseId: "write-1",
+          name: "write_file",
+          displayOrder: 1,
+          status: "done",
+          category: "write",
+          input: { path },
+          result: JSON.stringify({
+            kind: "ave.write_file",
+            path,
+            before: "# Before\n",
+            after: "# After\n",
+          }),
+        },
+      ]),
     ];
 
     const model = collectChatPreviewModel({ entries, attachments: [] });
@@ -233,25 +210,19 @@ describe("collectChatPreviewModel", () => {
 
   it("captures a bare working-dir filename written by write_file into the session files list", () => {
     const entries: ChatEntry[] = [
-      {
-        kind: "tool_group",
-        groupId: "g-write",
-        groupIds: ["g-write"],
-        status: "done",
-        tools: [
-          {
-            toolUseId: "write-bare-1",
-            name: "write_file",
-            displayOrder: 0,
-            status: "done",
-            category: "write",
-            // A bare filename with NO directory separator — the shape the model produces when writing into the working directory by
-            // name.
-            input: { path: "2026-07-03.md", content: "# Notes" },
-            result: JSON.stringify({ kind: "ave.write_file", path: "2026-07-03.md" }),
-          },
-        ],
-      },
+      toolGroup([
+        {
+          toolUseId: "write-bare-1",
+          name: "write_file",
+          displayOrder: 0,
+          status: "done",
+          category: "write",
+          // A bare filename with NO directory separator — the shape the model produces when writing into the working directory by
+          // name.
+          input: { path: "2026-07-03.md", content: "# Notes" },
+          result: JSON.stringify({ kind: "ave.write_file", path: "2026-07-03.md" }),
+        },
+      ], "g-write"),
     ];
 
     const model = collectChatPreviewModel({ entries, attachments: [] });
@@ -277,25 +248,19 @@ describe("collectChatPreviewModel", () => {
 
   it("does not treat free-text tokens in a tool's content field as session files", () => {
     const entries: ChatEntry[] = [
-      {
-        kind: "tool_group",
-        groupId: "g-content",
-        groupIds: ["g-content"],
-        status: "done",
-        tools: [
-          {
-            toolUseId: "write-content-1",
-            name: "write_file",
-            displayOrder: 0,
-            status: "done",
-            category: "write",
-            // The `content` body mentions filename-like tokens; only the `path` key vouches for a real file, so the body must NOT leak
-            // entries.
-            input: { path: "report.md", content: "see index.ts and config.json" },
-            result: JSON.stringify({ kind: "ave.write_file", path: "report.md" }),
-          },
-        ],
-      },
+      toolGroup([
+        {
+          toolUseId: "write-content-1",
+          name: "write_file",
+          displayOrder: 0,
+          status: "done",
+          category: "write",
+          // The `content` body mentions filename-like tokens; only the `path` key vouches for a real file, so the body must NOT leak
+          // entries.
+          input: { path: "report.md", content: "see index.ts and config.json" },
+          result: JSON.stringify({ kind: "ave.write_file", path: "report.md" }),
+        },
+      ], "g-content"),
     ];
 
     const model = collectChatPreviewModel({ entries, attachments: [] });
@@ -308,28 +273,22 @@ describe("collectChatPreviewModel", () => {
 
   it("does not turn a glob pattern into a file target, but promotes its matches (diagnosis ③)", () => {
     const entries: ChatEntry[] = [
-      {
-        kind: "tool_group",
-        groupId: "g-glob",
-        groupIds: ["g-glob"],
-        status: "done",
-        tools: [
-          {
-            toolUseId: "glob-1",
-            name: "glob_files",
-            displayOrder: 0,
-            status: "done",
-            category: "read",
-            input: { pattern: "**/*architecture*.md", path: "/workspace" },
-            result: JSON.stringify({
-              path: "/workspace",
-              pattern: "**/*architecture*.md",
-              matches: ["/workspace/docs/architecture.md", "/workspace/docs/architecture-v4.md"],
-              truncated: false,
-            }),
-          },
-        ],
-      },
+      toolGroup([
+        {
+          toolUseId: "glob-1",
+          name: "glob_files",
+          displayOrder: 0,
+          status: "done",
+          category: "read",
+          input: { pattern: "**/*architecture*.md", path: "/workspace" },
+          result: JSON.stringify({
+            path: "/workspace",
+            pattern: "**/*architecture*.md",
+            matches: ["/workspace/docs/architecture.md", "/workspace/docs/architecture-v4.md"],
+            truncated: false,
+          }),
+        },
+      ], "g-glob"),
     ];
 
     const model = collectChatPreviewModel({ entries, attachments: [] });
