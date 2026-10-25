@@ -5,9 +5,8 @@ import { resolveShellFilesystemPath } from "../../shared/shell-filesystem-path.j
 import { resolveToolPathForPermission } from "../../shared/tool-path-resolution.js";
 import { expandLeadingTilde } from "../../shared/home-tilde.js";
 import { isPathWithin } from "../../plugins/plugin-storage-containment.js";
-import { caseFoldForMatch, foldCanonicalPathSeparators, isSensitivePath } from "../sensitive-paths.js";
+import { caseFoldForMatch, foldCanonicalPathSeparators, isSensitivePath, protectedControlEntryFor } from "../sensitive-paths.js";
 import { validateDirectoryAddition } from "../allowed-directories.js";
-import { protectedControlEntryFor } from "../sandbox-write-policy.js";
 import type { PermissionRule } from "../permission-manager.js";
 import { projectRootFor } from "./project-rule-files.js";
 import { formatRuleSpecifier, isRuleSpecifier, matchesMcpTool, matchesWebFetchHost, parseRuleSpecifier, type RuleSpecifier } from "./rule-specifier.js";

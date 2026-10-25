@@ -10,27 +10,7 @@ import { userApprovalFilePath } from "./user-approval-store.js";
 import { getAdminPolicyPath, userPolicyPath } from "./policy-store.js";
 import { permissionsFilePath } from "./permissions-store.js";
 import { projectRulesDirectory } from "./rules/project-rule-files.js";
-import { canonicalizePathForMatch, caseFoldForMatch } from "./sensitive-paths.js";
-
-/** Control files remain unwritable even when their containing directory is granted. */
-const PROTECTED_ROOT_ENTRIES = [
-  ".bashrc", ".zshrc", ".profile", ".bash_profile", ".zprofile", ".gitconfig",
-  ".git", ".git/hooks", ".git/config", ".git/modules", ".vscode",
-  ".husky", ".githooks", ".claude/settings.json", ".claude/settings.local.json", ".claude/hooks", ".claude/commands",
-  ".idea/workspace.xml", ".pre-commit-config.yaml", ".envrc", "lefthook.yml",
-] as const;
-
-/**
- * Host write tools floor the same control files wherever they appear in a
- * canonical path, inside or outside the project, folded like sensitive paths.
- */
-export function protectedControlEntryFor(path: string): string | undefined {
-  const segments = caseFoldForMatch(path).split("/").filter(Boolean);
-  return PROTECTED_ROOT_ENTRIES.find((entry) => {
-    const parts = entry.split("/");
-    return segments.some((_, index) => parts.every((part, offset) => segments[index + offset] === part));
-  });
-}
+import { PROTECTED_ROOT_ENTRIES, canonicalizePathForMatch, caseFoldForMatch } from "./sensitive-paths.js";
 
 /** Directory depth of nested repository discovery; the admitted root is depth zero. */
 export const SANDBOX_GIT_SCAN_DEPTH = 3;
