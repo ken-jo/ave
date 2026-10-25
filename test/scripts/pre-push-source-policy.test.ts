@@ -18,6 +18,9 @@ import {
   FULL_CHECK_GLOBAL_INPUT_FILES,
   isFullCheckGlobalInput,
   isMessageCatalogPath,
+  isTestHelperModule,
+  isTestOnlyDiff,
+  isTestSupportFile,
   AVE_APP_LOCK_SUITES,
   readMessageCatalogEntries,
   readMessageCatalogEntriesByPath,
@@ -54,6 +57,59 @@ describe("pre-push source parsing", () => {
       ["src/panel.ts", 'export const title = "other.title";'],
     ]));
     expect(sources.size).toBe(process.platform === "win32" ? 0 : 2);
+  });
+});
+
+describe("test-only diff policy", () => {
+  it.each([
+    "src/core/__tests__/route-engine.test.ts", "test/scripts/run-ci-suite.test.ts",
+    "test/fixtures/example/data.json", "src/core/__tests__/fixtures/data.json",
+  ])("accepts collected tests and fixture assets: %s", (path) => {
+    expect(isTestOnlyDiff([modified(path)])).toBe(true);
+    expect(isTestOnlyDiff([added(path)])).toBe(true);
+    expect(isTestOnlyDiff([deleted(path)])).toBe(true);
+  });
+
+  it.each([
+    ...FULL_CHECK_GLOBAL_INPUT_FILES, "config/ci-must-run-tests.json", "config/vitest.globalSetup.ts",
+    "scripts/run-ci-suite.mjs", ".github/workflows/ci.yml", "src/core/route-engine.ts",
+    "test/e2e/example.test.ts", "test/screenshots/example.test.ts", "test/ordinary-helper.ts",
+    "src/__tests__/support/git-diff-entry.ts", "src/core/__tests__/fixtures/helper.ts",
+    "src/core/__mocks__/client.ts", "scripts/hooks/pre-push-source-policy.mjs",
+    "src/main/fixtures/defaults.json", "src/core/fixtures/data.json",
+  ])("refuses global inputs, test helpers and non-test inputs: %s", (path) => {
+    expect(isTestOnlyDiff([modified(path)])).toBe(false);
+    expect(isTestOnlyDiff([modified("src/core/__tests__/route-engine.test.ts"), modified(path)])).toBe(false);
+  });
+
+  it("names every importable non-collected test-tree file a test helper module", () => {
+    for (const path of [
+      "src/__tests__/support/git-diff-entry.ts", "src/core/__tests__/helpers.ts", "src/core/__tests__/fixtures/helper.ts",
+      "src/core/__mocks__/client.ts", "test/ordinary-helper.ts", "test/scripts/fixtures/stub.mjs",
+      "src/__tests__/vitest-ave-home.ts",
+    ]) expect(isTestHelperModule(path), path).toBe(true);
+    for (const path of [
+      "src/core/__tests__/route-engine.test.ts", "test/fixtures/example/data.json", "src/core/route-engine.ts",
+      "scripts/run-ci-suite.mjs", "src/../test/ordinary-helper.ts", "src/main/fixtures/defaults.ts",
+    ]) expect(isTestHelperModule(path), path).toBe(false);
+    expect(isTestSupportFile("src/main/fixtures/defaults.json")).toBe(false);
+    expect(isTestSupportFile("src/core/__tests__/fixtures/data.json")).toBe(true);
+    expect(isTestSupportFile("test/fixtures/example/data.json")).toBe(true);
+  });
+
+  it("refuses mixed diffs, unsafe paths, mode changes and unresolved changes", () => {
+    expect(isTestOnlyDiff([modified("test/example.test.ts"), modified("src/core/route-engine.ts")])).toBe(false);
+    expect(isTestOnlyDiff([{ ...modified("test/example.test.ts"), newMode: "100755" }])).toBe(false);
+    expect(isTestOnlyDiff([modified("src/../test/example.test.ts")])).toBe(false);
+    expect(isTestOnlyDiff([])).toBe(false);
+    expect(isTestSupportFile("src/__tests__/support/ave-home-isolation-guard.ts")).toBe(false);
+  });
+
+  it("accepts executable fixtures while refusing symlinks and permission changes", () => {
+    const fixture = { ...modified("test/fixtures/runner.sh"), oldMode: "100755", newMode: "100755" };
+    expect(isTestOnlyDiff([fixture])).toBe(true);
+    expect(isTestOnlyDiff([{ ...fixture, newMode: "100644" }])).toBe(false);
+    expect(isTestOnlyDiff([{ ...fixture, oldMode: "120000", newMode: "120000" }])).toBe(false);
   });
 });
 
