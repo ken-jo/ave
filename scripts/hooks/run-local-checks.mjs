@@ -15,8 +15,10 @@
 // Stages: pre-commit | pre-push | manual. Bypass once with AVE_HOOKS_SKIP=1.
 //
 // Pre-push tiers (the log names the tier and why). Every pull request's CI
-// runs the full suite and the build, so a push runs them only on request; the
-// log line of every scoped tier says "full suite deferred to CI":
+// runs the build and the test scope scripts/run-ci-suite.mjs picks (full, or
+// affected tests only; a test-only diff is never run whole), so a push runs
+// the full suite only on request; the log line of every scoped tier says
+// "remaining tests and build deferred to CI, whose scope scripts/run-ci-suite.mjs picks":
 //   none          a new branch at a commit the remote's default or
 //                 integration/* branches already contain: no new commit
 //   docs-only     unconsumed documentation: document safety and policy checks
@@ -51,9 +53,10 @@
 //                 branch, a tag or other non-branch update, or a deletion:
 //                 typecheck gate, `bun run test`, `bun run build`,
 //                 `check:gate-core`
-// Set AVE_PREPUSH_FULL=1 to run the full tier for any push. Otherwise the full
-// suite and build of a scoped push run in the PR's CI, once at merge time on
-// the merged tree, and in the category PR's CI.
+// Set AVE_PREPUSH_FULL=1 to run the full tier for any push. Otherwise the build
+// of a scoped push runs in the PR's CI on the merged tree, and its test scope
+// there follows scripts/run-ci-suite.mjs (a test-only diff never runs the full
+// suite; a non-test-only category PR does).
 //
 // Host admission (pre-push-host-lock.mjs): a full run holds one exclusive
 // host-wide lock, so two full suites never share a machine; a fast or
@@ -64,7 +67,8 @@
 //
 // Multi-stage PRs: a sub-branch is cut from origin/integration/<category> and
 // merged into it by PR; the category branch reaches main through one PR whose
-// CI runs the full suite and build. A sub-branch push therefore runs only the
+// CI runs the full suite for non-test-only changes, and builds every source
+// change. A sub-branch push therefore runs only the
 // checks scoped to its own commits: a new branch is diffed against the
 // closest merge-base with a live default or integration/* tip on the remote
 // (findNewBranchBase), not only the default branch. A direct push TO an
@@ -1465,7 +1469,7 @@ if (stage === "pre-commit") {
       console.log(
         `[checks] related tests bounded: ${source} reaches ${related} test file(s); running its ${direct} direct importer(s) ` +
           `and ${keptLockSuites} lock suite(s) ` +
-          `(over ${RELATED_TEST_BOUND} related files in total; the category PR's CI runs the rest)`
+          `(over ${RELATED_TEST_BOUND} related files in total; CI selects the rest)`
       );
     }
     if (classification.documentationEntries.length > 0) {

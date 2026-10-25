@@ -102,12 +102,13 @@ describe("pre-push scoped tier log line", () => {
   it("names the tier, the reason and the deferral to CI", () => {
     const line = describeScopedTier({ tier: GLOBAL_INPUT_TIER, runs: "every lock suite", reason: "package.json is a global test or build input" });
     expect(line).toBe(
-      "[checks] tier=global-input pre-push: running every lock suite; full suite deferred to CI " +
+      "[checks] tier=global-input pre-push: running every lock suite; remaining tests and build deferred to CI, " +
+        "whose scope scripts/run-ci-suite.mjs picks " +
         "(package.json is a global test or build input; AVE_PREPUSH_FULL=1 runs the full checks)",
     );
   });
 
-  it("says the full suite is deferred to CI on every scoped tier's log line", () => {
+  it("says what is deferred to CI on every scoped tier's log line", () => {
     for (const tier of ["docs-only", "comment-only", "test-only"]) {
       const line = hook.slice(hook.indexOf(`[checks] tier=${tier} pre-push`)).split("\n").slice(0, 3).join("\n");
       expect(line).toContain("${FULL_SUITE_DEFERRED}");
