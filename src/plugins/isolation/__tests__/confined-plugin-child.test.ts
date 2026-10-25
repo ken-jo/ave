@@ -1,79 +1,7 @@
 import { canCreateSymlinks } from "../../../__tests__/support/symlink-capability.js";
-/**
- * The confinement half, against a REAL process.
- *
- * `out-of-process-plugin.test.ts` proves the protocol over paired streams and
- * proves nothing about isolation. This file spawns an actual child through the
- * actual production spawn — `spawnConfinedPluginChild`, the same allow paths,
- * the same environment, the same `grantMode` — and makes it try things.
- *
- * WHAT IS PROVEN HERE, and it is stated narrowly on purpose:
- *
- *  - The child cannot READ `~/.ave/secrets/`. That is the first assertion §7
- *    asks for, and it is real because the ASRT deny floor covers that path.
- *  - The child cannot WRITE the fixture paths outside its allow set. Write in
- *    ASRT IS an allow-jail, so this one is a jail assertion rather than a deny
- *    assertion. "Its allow set" is larger than what `spawnConfinedPluginChild`
- *    grants — `envelope.write` plus the throwaway sandbox HOME, which for the
- *    unwidened pilot the probe below uses is its own data directory and that
- *    HOME: the confinement primitive adds the plugin's own temp directory,
- *    which it also sets as the child's `TMPDIR`. So this proves the child
- *    cannot reach the fixture paths; it does NOT prove the jail is what the
- *    spawn granted and nothing else, and the next bullet is the case that
- *    says so out loud.
- *  - The child CAN write, durably, to a path the spawn granted no part of: its
- *    plugin's temp directory, which exists because the host created it before
- *    the spawn — and a second plugin's child cannot read what it left there.
- *    Asserted here — with the host reading the bytes back — because the routing
- *    SOT and the blueprint both said the write jail was exactly two paths, and
- *    a sentence with no case behind it is how a false one survives review.
- *    Measured on macOS/arm64 with the sandbox active; the assertion
- *    is written against `tmpdir()` rather than a literal so it asks the same
- *    question on whichever backend is underneath.
- *  - The child CAN read and write its own `pluginDataDir`. A confinement that
- *    also broke the plugin would be indistinguishable from one that worked, so
- *    the positive case is part of the proof.
- *  - Confinement is MANDATORY: with ASRT inactive the spawn throws and no child
- *    exists. There is no unconfined child to fall back to.
- *  - `electron` is UNREACHABLE in the child. §4 lists that as a gain of the
- *    boundary; it is also the reason a plugin that owns a window cannot be
- *    admitted, so it is asserted here rather than described. The bare require,
- *    the shipped package and BOTH ESM forms are covered separately, because
- *    they do not fail in the same place and an author who hits one reaches for
- *    the next.
- *
- * WHAT IS NOT PROVEN HERE, stated rather than implied:
- *
- *  - "Cannot read another plugin's data directory" is only true where the
- *    plugins live under a path the deny floor covers — in production the
- *    Electron userData dir, which the floor denies wholesale and which this
- *    spawn re-allows only for the roots in one plugin's own `envelope.read`.
- *    ASRT's read model is DENY-ONLY (`asrt-sandbox.ts` says so at length):
- *    `allowRead` re-allows inside a covering deny and is inert without one, so
- *    a path on no deny list stays readable. A test cannot write fixtures into
- *    the real userData dir, so the composition of the allow set is asserted
- *    separately and honestly as wiring rather than dressed up as a containment
- *    result.
- *  - EGRESS confinement. The macOS backend filters egress through a proxy
- *    rather than a namespace, so an internet probe would pass on an offline
- *    machine for the wrong reason. Loopback BIND is a separate question and it
- *    IS measured, at the bottom of this file: "a localhost probe proves
- *    something different on each platform" turned out to be the finding rather
- *    than the objection, because one plugin's admission depended on which
- *    thing each platform proves.
- *  - Native enforcement on a local machine whose backend cannot initialize.
- *    The live-backend cases require `asrtCanInitialize()` through
- *    `sandboxCasesRun()` (`sandbox-cases.ts`). Without
- *    `AVE_REQUIRE_SANDBOX_CASES=1`, an unavailable local backend returns before
- *    those cases measure anything. Envelope decisions and spawn refusal paths
- *    that precede wrapping still run without a native backend.
- *
- *    All relevant Linux and macOS CI jobs, including the whole-suite Linux
- *    job, set `AVE_REQUIRE_SANDBOX_CASES=1`, so an unavailable backend fails.
- *    Linux CI installs bubblewrap, socat and ripgrep, enables unprivileged user
- *    namespaces and proves the backend runs before these tests. The macOS
- *    backend needs no separate installation.
- */
+/** Exercise real confined spawns: secret denial, outside-write refusal, usable own data, private temp storage, mandatory wrapping, and unavailable desktop APIs.
+ * Read isolation needs a covering deny; allowed writes include the principal temp directory, and offline probes do not prove egress enforcement.
+ * Native cases may opt out locally when unavailable, but required CI backends must fail rather than skip. */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   accessSync,
@@ -105,8 +33,7 @@ import {
   resolvePluginWorkerRunRoot,
 } from "../../plugin-storage-layout.js";
 import { aveHome } from "../../../shared/ave-home.js";
-// Global setup builds this entry once with the shipped bundle boundary.
-// Every confinement case still spawns that real bundle through the real wrap.
+// Global setup builds this entry once with the shipped bundle boundary. Every confinement case still spawns that real bundle through the real wrap.
 import { repositoryRoot } from "./child-entry-bundle.js";
 import { pluginChildEntryPath } from "../../../__tests__/support/plugin-child-entry.js";
 import type { PluginHostApi, PluginManifest, PluginRuntimeContext, RuntimePlugin } from "../../types.js";
@@ -216,55 +143,34 @@ interface Fixture {
   readonly pluginRoot: string;
   readonly pluginDataDir: string;
   readonly outsideFile: string;
-  /**
-   * Stands in for what production passes as `context.hostRoot`: the app root,
-   * which is NOT the plugin's data directory and NOT inside its write jail.
-   * A case that passed the repository root here would assert the same denial
-   * against a directory the developer's own machine happens to own.
-   */
+  /** Stands in for what production passes as `context.hostRoot`: the app root, which is NOT the plugin's data directory and NOT inside its write
+   * jail. A case that passed the repository root here would assert the same denial against a directory the developer's own machine happens to own. */
   readonly hostRoot: string;
-  /**
-   * The basename a child writes into its plugin's temp directory, which the
-   * host then reads back and a second plugin's child is refused.
-   */
+  /** The basename a child writes into its plugin's temp directory, which the host then reads back and a second plugin's child is refused. */
   readonly ownTempName: string;
   readonly ungrantedTempDir: string;
   readonly ungrantedTempFile: string;
-  /** `<AVE_HOME>/certs/corp-ca.pem` — host-owned AND on the read-deny floor. */
+  /** `<AVE_HOME>/certs/corp-ca.pem`; host-owned AND on the read-deny floor. */
   readonly caFile: string;
   /** A directory the user approved, standing in for a chosen index root. */
   readonly userRoot: string;
   /** Its name-prefix sibling, which no grant covers. */
   readonly userRootSibling: string;
-  /**
-   * A chosen directory INSIDE the approved root that does not exist yet — the
-   * case that decides what "the declared path is not there" means.
-   */
+  /** A chosen directory INSIDE the approved root that does not exist yet; the case that decides what "the declared path is not there" means. */
   readonly pendingWorkspace: string;
-  /**
-   * `<AVE_HOME>/runtime` — where the `hostDirectory` row of the widened
-   * plugin's grant resolves. Host-owned, granted READ, and NOT on the deny
-   * floor, so nothing else in the derivation refuses a value naming it.
-   */
+  /** `<AVE_HOME>/runtime`; where the `hostDirectory` row of the widened plugin's grant resolves. Host-owned,
+   * granted READ, and NOT on the deny floor, so nothing else in the derivation refuses a value naming it. */
   readonly hostRuntimeDir: string;
-  /**
-   * A SECOND plugin's bundle directory, under the same install root as the
-   * first. It is the neighbour's equivalent of `<pluginRoot>/dist`: the module
-   * the next load imports into the main process on that plugin's behalf, and
-   * the bytes its own install receipt is taken over.
-   */
+  /** A SECOND plugin's bundle directory, under the same install root as the first. It is the neighbour's equivalent of `<pluginRoot>/dist`:
+   * the module the next load imports into the main process on that plugin's behalf, and the bytes its own install receipt is taken over. */
   readonly neighbourBundleDir: string;
 }
 
 let fixture: Fixture | undefined;
 let retainedSandbox = false;
 let previousAveHome: string | undefined;
-/**
- * ASRT reads this out of the HOST env when it builds the wrap and writes it as
- * `TMPDIR` ahead of the command, where the in-wrap assignment of the
- * principal's directory overrides it. One case points it at an absent path to
- * show the child never sees it, so it is restored the same way `AVE_HOME` is.
- */
+/** ASRT reads this out of the HOST env when it builds the wrap and writes it as `TMPDIR` ahead of the command, where the in-wrap assignment of the
+ * principal's directory overrides it. One case points it at an absent path to show the child never sees it, so it is restored the same way `AVE_HOME` is. */
 let previousSandboxTmpdir: string | undefined;
 
 function makeFixture(): Fixture {
@@ -303,10 +209,8 @@ function makeFixture(): Fixture {
   writeFileSync(join(resolvePluginHostStorageDir(pluginDataDir), "stored.json"), HOST_STORED_TEXT, "utf-8");
   const hostRoot = join(root, "app-root");
   mkdirSync(hostRoot, { recursive: true });
-  // The user's own workspace-root approvals, read back by the envelope
-  // derivation through `readPermissionSettings()`. Written as a file rather
-  // than stubbed because the ceiling on a user-chosen directory is exactly this
-  // list, and a stub would prove the test's copy of the rule.
+  // The user's own workspace-root approvals, read back by the envelope derivation through `readPermissionSettings()`. Written as a file
+  // rather than stubbed because the ceiling on a user-chosen directory is exactly this list, and a stub would prove the test's copy of the rule.
   writeFileSync(
     join(aveHome, "settings.json"),
     JSON.stringify({ permissions: { additionalDirectories: [userRoot] } }, null, 2),
@@ -339,16 +243,8 @@ interface InstalledPlugin {
   readonly pluginDataDir: string;
 }
 
-/**
- * Install another plugin beside the pilot, in the same fixture home.
- *
- * The fixture is shared rather than copied because everything that makes it a
- * fixture is plugin-independent: the deny floor is derived from `AVE_HOME`,
- * the secret it protects is one file, and the write-jail escape target is one
- * path outside it. What varies per plugin is two directories, which is what
- * this returns. A second `makeFixture` would be a second copy of the deny
- * floor's own premise, and the two would only have to disagree once.
- */
+/** Install another plugin beside the pilot, in the same fixture home. The fixture is shared rather than copied because everything that makes it a fixture is plugin-independent: the deny floor is derived from `AVE_HOME`, the secret it protects is one file,
+ * and the write-jail escape target is one path outside it. What varies per plugin is two directories, which is what this returns. A second `makeFixture` would be a second copy of the deny floor's own premise, and the two would only have to disagree once. */
 function installPlugin(fx: Fixture, pluginId: string): InstalledPlugin {
   const pluginRoot = join(fx.aveHome, "plugins", pluginId);
   const pluginDataDir = join(pluginRoot, "data");
@@ -372,26 +268,12 @@ function approveWorkspaceRoot(fx: Fixture, directory: string): void {
   );
 }
 
-/**
- * A child that reports what the sandbox let it do, as one JSON line on stdout.
- *
- * Written as the child's ENTRY MODULE and spawned by the production
- * `spawnConfinedPluginChild`, so the argv wrap, the allow paths, the deny floor
- * and the environment are the ones a real plugin child gets. Only the module it
- * runs differs — because the question here is what the confinement permits, not
- * what the protocol says.
- *
- * It reports on stdout, which is free here precisely because this probe is not
- * the protocol module: `plugin-child-main.ts` claims stdout for framing, and
- * this one does not run it.
- */
+/** A child that reports what the sandbox let it do, as one JSON line on stdout. Written as the child's ENTRY MODULE and spawned by the production `spawnConfinedPluginChild`, so the argv wrap, the allow paths, the deny floor and the environment are the ones a real plugin child gets. Only the
+ * module it runs differs; because the question here is what the confinement permits, not what the protocol says. It reports on stdout, which is free here precisely because this probe is not the protocol module: `plugin-child-main.ts` claims stdout for framing, and this one does not run it. */
 function writeProbeModule(fx: Fixture): string {
   const probePath = join(fx.root, "probe.mjs");
-  // The `electron` npm package's entry, in the shape that matters: it exports
-  // the PATH of the binary as a string. Planted from the host, inside the
-  // child's read carve-out, because the child could not create it and because
-  // the question it answers — "what if the plugin ships the package?" — is
-  // about what the entry EXPORTS, not about module resolution.
+  // The `electron` npm package's entry, in the shape that matters: it exports the PATH of the binary as a string. Planted from the host, inside the child's read carve-out,
+  // because the child could not create it and because the question it answers; "what if the plugin ships the package?"; is about what the entry EXPORTS, not about module resolution.
   const vendoredDir = join(fx.pluginRoot, "vendored-electron");
   mkdirSync(vendoredDir, { recursive: true });
   writeFileSync(
@@ -399,9 +281,8 @@ function writeProbeModule(fx: Fixture): string {
     "module.exports = '/path/to/an/Electron/binary';\n",
     "utf-8",
   );
-  // A module whose only content is the form an ESM plugin writes. Planted as a
-  // FILE rather than evaluated inline because a named import is resolved when
-  // the module is LINKED, and linking is the step whose failure is the answer.
+  // A module whose only content is the form an ESM plugin writes. Planted as a FILE rather than evaluated inline
+  // because a named import is resolved when the module is LINKED, and linking is the step whose failure is the answer.
   const namedImportPath = join(fx.pluginRoot, "named-electron-import.mjs");
   writeFileSync(
     namedImportPath,
@@ -510,11 +391,8 @@ interface ProbeModuleAttempt {
   readonly code?: string;
 }
 
-/**
- * A namespace produced by the ESM resolver, which is not the same object shape
- * a `require` returns: a CJS module reached this way carries its exports on
- * `default`, so the namespace and its `default` are reported separately.
- */
+/** A namespace produced by the ESM resolver, which is not the same object shape a `require` returns: a CJS module
+ * reached this way carries its exports on `default`, so the namespace and its `default` are reported separately. */
 interface ProbeNamespaceAttempt extends ProbeModuleAttempt {
   readonly defaultKeys?: readonly string[] | null;
   readonly defaultBrowserWindow?: string;
@@ -548,27 +426,14 @@ interface ProbeReport {
   readonly namedImportElectron: ProbeModuleAttempt;
 }
 
-/**
- * The envelope an UNWIDENED plugin gets: its own two directories and nothing
- * else, as `derivePluginChildEnvelope` produces without declared grants.
- */
-/**
- * The socket directory every confined child gets, in the BASE envelope.
- *
- * Named here so the expectations below say WHICH directory the extra entry is
- * rather than growing an unexplained third path. It carries no reach — it is
- * inside the plugin's own storage namespace, beside `data` — and it exists in
- * every envelope so the spawn can register it with the sandbox unconditionally.
- */
+/** The envelope an UNWIDENED plugin gets: its own two directories and nothing else, as `derivePluginChildEnvelope` produces without declared grants. The socket directory every confined child gets, in the BASE envelope. Named here so the expectations below say
+ * WHICH directory the extra entry is rather than growing an unexplained third path. It carries no reach; it is inside the plugin's own storage namespace, beside `data`; and it exists in every envelope so the spawn can register it with the sandbox unconditionally. */
 function socketDirOf(fx: Fixture): string {
   return resolvePluginSocketDir(fx.pluginDataDir);
 }
 
-/**
- * The other half of the same boundary: `run/` is where the HOST binds a control
- * socket for a worker this plugin asked for, and the child is the client. READ
- * only — the child connects, it does not create anything there.
- */
+/** The other half of the same boundary: `run/` is where the HOST binds a control socket for a worker this
+ * plugin asked for, and the child is the client. READ only; the child connects, it does not create anything there. */
 function workerRunRootOf(fx: Fixture): string {
   return resolvePluginWorkerRunRoot(fx.pluginDataDir);
 }
@@ -610,19 +475,8 @@ async function runProbe(
   });
 }
 
-/**
- * A SECOND confined child, from a second plugin, reading one absolute path.
- *
- * Spawned through the same production spawn, and through the same production
- * derivation, with a different `pluginRoot` and `pluginDataDir` — so the only
- * thing the two children share is what ASRT gives every wrap. The second
- * plugin has no declared filesystem grants, so its envelope is
- * its own two directories and the difference between the two children is
- * exactly those directories. That is the whole question: the routing SOT's
- * write jail is per-plugin, but the default write paths ASRT merges are not, so
- * a path on that list is reachable by both. This returns what the second child
- * got.
- */
+/** A SECOND confined child, from a second plugin, reading one absolute path. Spawned through the same production spawn, and through the same production derivation, with a different `pluginRoot` and `pluginDataDir`; so the only thing the two children share is what ASRT gives every wrap. The second plugin has no declared filesystem
+ * grants, so its envelope is its own two directories and the difference between the two children is exactly those directories. That is the whole question: the routing SOT's write jail is per-plugin, but the default write paths ASRT merges are not, so a path on that list is reachable by both. This returns what the second child got. */
 async function runCrossPluginReadProbe(
   fx: Fixture,
   reader: InstalledPlugin,
@@ -666,34 +520,8 @@ process.stdout.write("PROBE:" + JSON.stringify(attempt(() => readFileSync(${JSON
   });
 }
 
-/**
- * Does a confined child get to BIND a loopback TCP listener?
- *
- * The header above says network confinement is not proven here because "a
- * localhost probe would prove something different on each platform". That is
- * true, and it is the reason to run one rather than the reason to skip it: the
- * difference between the platforms IS the result, and a plugin admission turned
- * on it. `samplemail` was carried as a candidate on the assumption that its auth
- * library opens no socket outside the injected egress client. It does —
- * `acquireTokenInteractive` falls back to MSAL's own `LoopbackClient`, which
- * spins up an HTTP server to catch the `localhost` redirect — so what a child
- * can do with `listen()` decides whether that plugin can ever move.
- *
- * The two backends refuse in shapes that are not interchangeable:
- *
- *  - macOS. The Seatbelt profile emits `network-bind` only under ASRT's
- *    `allowLocalBinding`, which this app never sets. `listen()` fails.
- *  - Linux. The child always runs under `--unshare-net`, so `listen()`
- *    SUCCEEDS into a loopback nobody else is in. The failure moves from the
- *    bind to the connect, and in the real flow it moves to after the user has
- *    already typed a password.
- *
- * So this returns both halves — what the child saw, and what the HOST saw when
- * it tried to reach what the child claimed to have bound — and lets each
- * platform assert its own shape. Resolving on the PROBE line rather than on
- * `end` is deliberate: a child that really did bind is still listening, and
- * waiting for it to exit first would measure nothing.
- */
+/** Check both child bind and host connect: macOS denies loopback binding, while Linux may bind inside an unreachable network namespace.
+ * Resolve on the live probe response, not process exit, so a successful listener can still be tested. */
 async function runLoopbackBindProbe(
   fx: Fixture,
 ): Promise<{ child: { ok: boolean; port?: number; code?: string }; hostReach?: string }> {
@@ -744,8 +572,7 @@ setTimeout(() => process.exit(0), 4000).unref?.();
       },
     );
     if (!report.ok || report.port === undefined) return { child: report };
-    // The child says it is listening. Ask from OUT here, which is the only
-    // vantage point that can tell a bind apart from a reachable bind.
+    // The child says it is listening. Ask from OUT here, which is the only vantage point that can tell a bind apart from a reachable bind.
     const hostReach = await new Promise<string>((resolve) => {
       const socket = connect({ host: "127.0.0.1", port: report.port!, timeout: 2000 });
       socket.on("connect", () => {
@@ -771,12 +598,10 @@ beforeEach(() => {
   fixture = makeFixture();
   previousAveHome = process.env.AVE_HOME;
   previousSandboxTmpdir = process.env.CLAUDE_CODE_TMPDIR;
-  // The deny floor is derived from `aveHome()`, so pointing it at the fixture
-  // is what makes `<AVE_HOME>/secrets` a real denied path with a real file in
-  // it rather than an assertion about the developer's own home directory.
+  // The deny floor is derived from `aveHome()`, so pointing it at the fixture is what makes `<AVE_HOME>/secrets`
+  // a real denied path with a real file in it rather than an assertion about the developer's own home directory.
   process.env.AVE_HOME = fixture.aveHome;
-  // Every child here is a plugin child: it is wrapped only while
-  // plugin-worker confinement was requested at boot and ASRT is active.
+  // Every child here is a plugin child: it is wrapped only while plugin-worker confinement was requested at boot and ASRT is active.
   setPluginWorkerConfinementRequestedAtBoot(true);
 });
 
@@ -798,15 +623,8 @@ afterEach(async () => {
   fixture = undefined;
 });
 
-/**
- * What the host decided, before any of it reaches a kernel.
- *
- * These drive `derivePluginChildEnvelope` directly because the interesting
- * cases are REFUSALS, and a refusal has no child to probe. The approved-root
- * ceiling is read from the fixture's real `settings.json` through
- * `readPermissionSettings()`, so what is under test is the host's own notion of
- * "the user authorised this directory" rather than a copy of it.
- */
+/** What the host decided, before any of it reaches a kernel. These drive `derivePluginChildEnvelope` directly because the interesting cases are REFUSALS, and a refusal has no child to probe. The approved-root
+ * ceiling is read from the fixture's real `settings.json` through `readPermissionSettings()`, so what is under test is the host's own notion of "the user authorised this directory" rather than a copy of it. */
 describe("the host decides how far a plugin child reaches", () => {
   it("keeps empty and undeclared sandbox authority at the base envelope", () => {
     const fx = fixture!;
@@ -896,8 +714,7 @@ describe("the host decides how far a plugin child reaches", () => {
       join(fx.aveHome, "runtime"),
       join(fx.aveHome, "certs"),
     ]);
-    // Host directories contribute to READ only. Its config key is unset here;
-    // the case below also checks that another grant cannot turn it writable.
+    // Host directories contribute to READ only. Its config key is unset here; the case below also checks that another grant cannot turn it writable.
     expect(envelope.write).toEqual([fx.pluginDataDir, socketDirOf(fx)]);
   });
 
@@ -915,9 +732,8 @@ describe("the host decides how far a plugin child reaches", () => {
   });
 
   it("refuses a chosen directory no approved workspace root covers", () => {
-    // THE ESCALATION THIS EXISTS TO STOP. `config.set` is a member the plugin
-    // holds, so a widening that trusted the config value would let the plugin
-    // name its own envelope. The host names the KEY; the user names the ceiling.
+    // THE ESCALATION THIS EXISTS TO STOP. `config.set` is a member the plugin holds, so a widening that trusted the
+    // config value would let the plugin name its own envelope. The host names the KEY; the user names the ceiling.
     const fx = fixture!;
     expect(() =>
       derivePluginChildEnvelope({
@@ -944,10 +760,8 @@ describe("the host decides how far a plugin child reaches", () => {
   });
 
   it("refuses a sensitive path even when an approved root contains it", () => {
-    // `~/.ave` is not itself a sensitive path, so the approval flow accepts it
-    // as a workspace root — and `~/.ave/secrets` is on the read-deny floor
-    // that `allowRead` re-opens. Without this refusal the config key would be a
-    // way to hand the floor's own contents to a plugin child.
+    // `~/.ave` is not itself a sensitive path, so the approval flow accepts it as a workspace root; and `~/.ave/secrets` is on the read-deny
+    // floor that `allowRead` re-opens. Without this refusal the config key would be a way to hand the floor's own contents to a plugin child.
     const fx = fixture!;
     approveWorkspaceRoot(fx, fx.aveHome);
     expect(() =>
@@ -963,8 +777,7 @@ describe("the host decides how far a plugin child reaches", () => {
   });
 
   it("admits a chosen directory inside the plugin's own data dir with no approval", () => {
-    // It adds nothing the child did not already hold, so requiring an approval
-    // would refuse the plugin's own default location.
+    // It adds nothing the child did not already hold, so requiring an approval would refuse the plugin's own default location.
     const fx = fixture!;
     const inside = join(fx.pluginDataDir, "index");
     const chosen: string[] = [];
@@ -976,23 +789,19 @@ describe("the host decides how far a plugin child reaches", () => {
       configValue: (key) => (key === "indexStorageRoot" ? inside : undefined),
       onUserChosenDirectory: (path) => chosen.push(path),
     });
-    // Folded into the data directory the envelope already grants: no reach is
-    // added, and no root is left below `data/` for the plugin to re-point.
+    // Folded into the data directory the envelope already grants: no reach is added, and no root is left below `data/` for the plugin to re-point.
     expect(envelope.write).toEqual([fx.pluginDataDir, socketDirOf(fx)]);
     expect(envelope.read).not.toContain(inside);
     expect(chosen).toEqual([]);
   });
 
-  // Case folding follows `caseFoldForMatch`, which keys on the platform and not
-  // on a probe of the volume: macOS and Windows fold, Linux compares exactly.
-  // So on Linux `DATA/` is a sibling of `data/` — still under the bundles
-  // directory — and the host must refuse it rather than fold it.
+  // Case folding follows `caseFoldForMatch`, which keys on the platform and not on a probe of the volume: macOS and Windows fold, Linux
+  // compares exactly. So on Linux `DATA/` is a sibling of `data/`; still under the bundles directory; and the host must refuse it rather than fold it.
   const pathsFoldCase = process.platform === "darwin" || process.platform === "win32";
 
   it.runIf(pathsFoldCase)("folds a case-variant spelling of a directory inside data/ into data/, not into a root of its own", () => {
-    // The spelling the config holds was decided "inside" on the case-folded
-    // canonical form and used to reach the envelope verbatim, where a
-    // case-sensitive containment check took it for an independent root.
+    // The spelling the config holds was decided "inside" on the case-folded canonical form and used to
+    // reach the envelope verbatim, where a case-sensitive containment check took it for an independent root.
     const fx = fixture!;
     mkdirSync(join(fx.pluginDataDir, "work"), { recursive: true });
     const variant = join(dirname(fx.pluginDataDir), "DATA", "work");
@@ -1008,8 +817,7 @@ describe("the host decides how far a plugin child reaches", () => {
   });
 
   it.runIf(!pathsFoldCase)("refuses a case-variant sibling of data/ where paths compare exactly, since it sits in the bundles directory", () => {
-    // Without folding, `DATA/work` is not inside `data/`; taking it as its
-    // own root would open a write grant inside the plugin bundles directory.
+    // Without folding, `DATA/work` is not inside `data/`; taking it as its own root would open a write grant inside the plugin bundles directory.
     const fx = fixture!;
     mkdirSync(join(fx.pluginDataDir, "work"), { recursive: true });
     const variant = join(dirname(fx.pluginDataDir), "DATA", "work");
@@ -1034,8 +842,7 @@ describe("the host decides how far a plugin child reaches", () => {
         const pluginDataDir = join(pluginRoot, "data");
         const longWork = join(pluginDataDir, "workspace-directory-long-name");
         mkdirSync(longWork, { recursive: true });
-        // Verbatim: Node's argument quoting would hand cmd `\"` and the loop
-        // would echo its input untouched.
+        // Verbatim: Node's argument quoting would hand cmd `\"` and the loop would echo its input untouched.
         const result = spawnSync("cmd.exe", [`/d /s /c "for %I in ("${longWork}") do @echo %~sI"`], {
           encoding: "utf8",
           windowsVerbatimArguments: true,
@@ -1051,8 +858,7 @@ describe("the host decides how far a plugin child reaches", () => {
           configValue: (key) => (key === "indexStorageRoot" ? short : undefined),
         });
         expect(envelope.write).toEqual([pluginDataDir, resolvePluginSocketDir(pluginDataDir)]);
-        // The grant half asks the same question: the short spelling of a root
-        // below `data\` is `data\`, so a grant on it names `data\`.
+        // The grant half asks the same question: the short spelling of a root below `data\` is `data\`, so a grant on it names `data\`.
         expect(isGrantPathWithin(pluginDataDir, short)).toBe(true);
         expect(outermostContainingRoots([join(short, "segments"), short], [pluginDataDir, short])).toEqual([pluginDataDir]);
       } finally {
@@ -1062,9 +868,8 @@ describe("the host decides how far a plugin child reaches", () => {
   );
 
   it("never grants writing on the host-only storage directory, on any platform", () => {
-    // The Windows ACL holder is granted exactly `envelope.write` (plus the
-    // throwaway HOME), and an ACL grant inherits — so this is the grant scope
-    // there as much as the Seatbelt/bwrap allow-list elsewhere.
+    // The Windows ACL holder is granted exactly `envelope.write` (plus the throwaway HOME), and an ACL
+    // grant inherits; so this is the grant scope there as much as the Seatbelt/bwrap allow-list elsewhere.
     const fx = fixture!;
     const storage = resolvePluginHostStorageDir(fx.pluginDataDir);
     const derive = (chosen: string | undefined) => derivePluginChildEnvelope({
@@ -1084,15 +889,8 @@ describe("the host decides how far a plugin child reaches", () => {
   });
 
   it("refuses a chosen directory under the plugin's own immutable runtime root", () => {
-    // A `userChosenDirectory` grant carries WRITE. `pluginRoot` holds the
-    // bundle the next load imports and the bytes the install receipt is taken
-    // over, so admitting a value under it would hand the child a kernel-level
-    // write over its own code — the primitive the jail exists to remove rather
-    // than detect. The plugin reaches this with one `config.set` call: the
-    // runtime root is a member of the context it is handed. The refusal names
-    // the install root because that is the granularity the subtraction has:
-    // every plugin's bundle is excluded on the same argument, not just this
-    // plugin's own.
+    // A `userChosenDirectory` grant carries WRITE. `pluginRoot` holds the bundle the next load imports and the bytes the install receipt is taken over, so admitting a value under it would hand the child a kernel-level write over its own code; the primitive the jail exists to remove rather than
+    // detect. The plugin reaches this with one `config.set` call: the runtime root is a member of the context it is handed. The refusal names the install root because that is the granularity the subtraction has: every plugin's bundle is excluded on the same argument, not just this plugin's own.
     const fx = fixture!;
     expect(() =>
       derivePluginChildEnvelope({
@@ -1106,14 +904,8 @@ describe("the host decides how far a plugin child reaches", () => {
   });
 
   it("refuses that runtime root even when an approved workspace root covers it", () => {
-    // THE ARM THE TEST ABOVE DOES NOT REACH. That one leaves the runtime root
-    // outside every approved root, so the refusal it observes could come from
-    // the approval half alone. In the production layout `pluginDataDir` is a
-    // CHILD of `pluginRoot` (`~/.ave/plugins/<id>/data`), so a user who
-    // approves any workspace root at or above the install location pulls the
-    // runtime root back inside their own approvals — and an exclusion that
-    // lives only on the own-root half is then not an exclusion at all. The
-    // ceiling has two halves and the bundle has to be out of both.
+    // THE ARM THE TEST ABOVE DOES NOT REACH. That one leaves the runtime root outside every approved root, so the refusal it observes could come from the approval half alone. In the production layout `pluginDataDir` is a CHILD of `pluginRoot` (`~/.ave/plugins/<id>/data`), so a
+    // user who approves any workspace root at or above the install location pulls the runtime root back inside their own approvals; and an exclusion that lives only on the own-root half is then not an exclusion at all. The ceiling has two halves and the bundle has to be out of both.
     const fx = fixture!;
     approveWorkspaceRoot(fx, fx.root);
     expect(() =>
@@ -1128,13 +920,8 @@ describe("the host decides how far a plugin child reaches", () => {
   });
 
   it("refuses a chosen directory naming a declared read-only host root", () => {
-    // THE HALF THE OWN-ROOT SUBTRACTION DOES NOT REACH. A `hostDirectory` grant
-    // resolves under `~/.ave` and carries READ; a `userChosenDirectory` value
-    // carries WRITE. Both land in the SAME envelope, so a value naming the
-    // host root the declaration already granted turns the host's own READ decision
-    // into a write grant — and `~/.ave/runtime` is not on the deny floor, so
-    // nothing earlier in the derivation refuses it. What is under it is the
-    // interpreter this plugin's own worker is about to execute.
+    // THE HALF THE OWN-ROOT SUBTRACTION DOES NOT REACH. A `hostDirectory` grant resolves under `~/.ave` and carries READ; a `userChosenDirectory` value carries WRITE. Both land in the SAME envelope, so a value naming the host root the declaration
+    // already granted turns the host's own READ decision into a write grant; and `~/.ave/runtime` is not on the deny floor, so nothing earlier in the derivation refuses it. What is under it is the interpreter this plugin's own worker is about to execute.
     const fx = fixture!;
     approveWorkspaceRoot(fx, fx.root);
     expect(() =>
@@ -1150,15 +937,8 @@ describe("the host decides how far a plugin child reaches", () => {
   });
 
   it.skipIf(!canCreateSymlinks())("refuses a declared host root even when it links out of the host's home", () => {
-    // WHAT THE `~/.ave` SUBTRACTION ALONE DOES NOT REACH, and the reason the
-    // declared host directories are enumerated. A `hostDirectory` grant is a LEXICAL join onto
-    // `aveHome()`; the value it is compared against is canonical. Point the
-    // granted directory at another volume — the ordinary operational reason
-    // being that a multi-gigabyte interpreter tree does not belong on the boot
-    // disk — and the two forms stop agreeing, so a home-shaped subtraction
-    // stops covering the grant. Both spellings are asked because the plugin can
-    // write either: the target's own path, and the link's, which is the one
-    // that is byte-identical to what the declaration itself joins.
+    // WHAT THE `~/.ave` SUBTRACTION ALONE DOES NOT REACH, and the reason the declared host directories are enumerated. A `hostDirectory` grant is a LEXICAL join onto `aveHome()`; the value it is compared against is canonical. Point the granted directory at another volume; the ordinary operational reason being that a
+    // multi-gigabyte interpreter tree does not belong on the boot disk; and the two forms stop agreeing, so a home-shaped subtraction stops covering the grant. Both spellings are asked because the plugin can write either: the target's own path, and the link's, which is the one that is byte-identical to what the declaration itself joins.
     const fx = fixture!;
     const volume = join(fx.root, "volume");
     const movedRuntime = join(volume, "ave-runtime");
@@ -1183,12 +963,8 @@ describe("the host decides how far a plugin child reaches", () => {
   });
 
   it.skipIf(!canCreateSymlinks())("refuses a chosen directory under a bundle root that is itself a symlink", () => {
-    // The same divergence, on the other subtraction. The install-root entry is
-    // the LEXICAL parent of this plugin's bundle, which is the right way to
-    // name the directory every install lives in and the wrong way to name a
-    // bundle that resolves somewhere else — so the bundle root is named on its
-    // own line too. Without that line an approved root covering the real
-    // bundle admits a write over the module the next load imports.
+    // The same divergence, on the other subtraction. The install-root entry is the LEXICAL parent of this plugin's bundle, which is the right way to name the directory every install lives in and the wrong way to
+    // name a bundle that resolves somewhere else; so the bundle root is named on its own line too. Without that line an approved root covering the real bundle admits a write over the module the next load imports.
     const fx = fixture!;
     const elsewhere = join(fx.root, "bundles", WIDENED_PLUGIN_ID);
     mkdirSync(join(elsewhere, "dist"), { recursive: true, mode: 0o700 });
@@ -1209,13 +985,8 @@ describe("the host decides how far a plugin child reaches", () => {
   });
 
   it("refuses a chosen directory inside ANOTHER plugin's bundle", () => {
-    // The same argument the own-root subtraction rests on, applied to the
-    // party it was never applied to: a neighbour's `dist/` is the module the
-    // next load imports into the main process on that plugin's behalf, and the
-    // bytes its install receipt is taken over. One approval broad enough to
-    // cover this plugin's own data directory covers every sibling under the
-    // same install root, so the approval half admits it unless the install
-    // root is subtracted as a whole.
+    // The same argument the own-root subtraction rests on, applied to the party it was never applied to: a neighbour's `dist/` is the module the next load imports into the main process on that plugin's behalf, and the bytes its
+    // install receipt is taken over. One approval broad enough to cover this plugin's own data directory covers every sibling under the same install root, so the approval half admits it unless the install root is subtracted as a whole.
     const fx = fixture!;
     approveWorkspaceRoot(fx, fx.root);
     expect(() =>
@@ -1230,10 +1001,8 @@ describe("the host decides how far a plugin child reaches", () => {
   });
 
   it("still admits the plugin's own data dir when an approved root covers the host's home", () => {
-    // The over-refusal pin for the two subtractions above. `pluginDataDir` is
-    // under BOTH of them — under the install root and under `~/.ave` — so a
-    // subtraction asked before the data directory is admitted would refuse the
-    // plugin's own default index location and present that as containment.
+    // The over-refusal pin for the two subtractions above. `pluginDataDir` is under BOTH of them; under the install root and under `~/.ave`; so a
+    // subtraction asked before the data directory is admitted would refuse the plugin's own default index location and present that as containment.
     const fx = fixture!;
     approveWorkspaceRoot(fx, fx.aveHome);
     const inside = join(fx.pluginDataDir, "index");
@@ -1248,9 +1017,8 @@ describe("the host decides how far a plugin child reaches", () => {
   });
 
   it("still admits the plugin's own data dir when an approved root covers the runtime root", () => {
-    // The refusal above must not swallow the data directory, which is itself
-    // under `pluginRoot`. If it did, the fix would be a plugin that cannot
-    // write anywhere dressed as a containment result.
+    // The refusal above must not swallow the data directory, which is itself under `pluginRoot`. If
+    // it did, the fix would be a plugin that cannot write anywhere dressed as a containment result.
     const fx = fixture!;
     approveWorkspaceRoot(fx, fx.root);
     const inside = join(fx.pluginDataDir, "index");
@@ -1265,11 +1033,8 @@ describe("the host decides how far a plugin child reaches", () => {
   });
 
   it.skipIf(!canCreateSymlinks())("refuses a chosen directory that reaches out of the data dir through a symlink", () => {
-    // THE OTHER HALF OF THE SAME ESCALATION. The plugin writes its own data
-    // directory, so a containment test on spellings alone is one it can satisfy
-    // by planting the link and then naming it: the value reads as inside the
-    // ceiling and denotes a directory the user never approved. The comparison
-    // is canonical, so the link resolves before containment is asked.
+    // THE OTHER HALF OF THE SAME ESCALATION. The plugin writes its own data directory, so a containment test on spellings alone is one it can satisfy by planting the link and then
+    // naming it: the value reads as inside the ceiling and denotes a directory the user never approved. The comparison is canonical, so the link resolves before containment is asked.
     const fx = fixture!;
     const link = join(fx.pluginDataDir, "reaches-elsewhere");
     symlinkSync(fx.userRootSibling, link);
@@ -1285,10 +1050,8 @@ describe("the host decides how far a plugin child reaches", () => {
   });
 
   it.skipIf(!canCreateSymlinks())("still admits a symlink that stays inside the plugin's own data dir", () => {
-    // The canonical comparison must not refuse the legitimate case, or the
-    // fix would be a narrowing dressed as a containment result. Admitted means
-    // folded into `data/`: the envelope already grants it, and a root of its
-    // own below `data/` would be one the plugin can re-point after admission.
+    // The canonical comparison must not refuse the legitimate case, or the fix would be a narrowing dressed as a containment result. Admitted means
+    // folded into `data/`: the envelope already grants it, and a root of its own below `data/` would be one the plugin can re-point after admission.
     const fx = fixture!;
     const real = join(fx.pluginDataDir, "index-store");
     const link = join(fx.pluginDataDir, "index-link");
@@ -1331,8 +1094,7 @@ describe("the host decides how far a plugin child reaches", () => {
   });
 
   it("treats an unset and an empty key as no widening, not as the host's cwd", () => {
-    // `""` is the default several plugin config schemas ship for an unset
-    // string key, and `resolve("")` is the process working directory.
+    // `""` is the default several plugin config schemas ship for an unset string key, and `resolve("")` is the process working directory.
     const fx = fixture!;
     const envelope = derivePluginChildEnvelope({
       pluginId: WIDENED_PLUGIN_ID,
@@ -1347,12 +1109,8 @@ describe("the host decides how far a plugin child reaches", () => {
 
 describe("a plugin child is confined exactly as much as the host is", () => {
   it("starts unwrapped, and unmarked, while the host is not sandboxed", async () => {
-    // The host runs without the OS sandbox on every platform by default, and
-    // its own tools run plain there. A plugin child follows the same setting:
-    // it is spawned as given, and because nothing wrapped it nothing marks it
-    // confined — so the permission reviewer, which reads that marker, grants
-    // it no sandbox-based relaxation. The old rule here was to throw instead,
-    // which on Windows and Linux meant no plugin could start at all.
+    // The host runs without the OS sandbox on every platform by default, and its own tools run plain there. A plugin child follows the same setting: it is spawned as given, and because nothing wrapped it nothing
+    // marks it confined; so the permission reviewer, which reads that marker, grants it no sandbox-based relaxation. The old rule here was to throw instead, which on Windows and Linux meant no plugin could start at all.
     const fx = fixture!;
     expect(isAsrtSandboxActive()).toBe(false);
     const probePath = join(fx.root, "unsandboxed-start-probe.mjs");
@@ -1397,14 +1155,8 @@ setTimeout(() => process.exit(0), 2000).unref?.();
   });
 
   it.skipIf(!canCreateSymlinks())("throws rather than granting a root that is a dangling symlink", async () => {
-    // The containment answer for a path that does not resolve is the nearest
-    // existing ancestor plus the missing tail, which for a link planted inside
-    // the data dir is a path INSIDE the ceiling — correct, because that is
-    // where a write through it would land today. Where the link would point
-    // once its target exists is unknowable, so the grant must not be handed to
-    // a kernel: materialisation refuses it and the plugin does not load. Note
-    // what fails here is the spawn, ahead of the wrap — an ASRT-inactive
-    // harness reaches this first.
+    // The containment answer for a path that does not resolve is the nearest existing ancestor plus the missing tail, which for a link planted inside the data dir is a path INSIDE the ceiling; correct, because that is where a write through it would land today. Where
+    // the link would point once its target exists is unknowable, so the grant must not be handed to a kernel: materialisation refuses it and the plugin does not load. Note what fails here is the spawn, ahead of the wrap; an ASRT-inactive harness reaches this first.
     const fx = fixture!;
     const dangling = join(fx.pluginDataDir, "dangling");
     symlinkSync(join(fx.root, "target-that-does-not-exist"), dangling);
@@ -1420,14 +1172,8 @@ setTimeout(() => process.exit(0), 2000).unref?.();
   });
 
   it.skipIf(!canCreateSymlinks())("releases the throwaway sandbox HOME when a granted root cannot be created", async () => {
-    // The refusal above is the DOCUMENTED fail-closed path, so it is the one
-    // that must not leave anything behind. `createSandboxProcessHome()` runs
-    // first and only `releaseSandboxState()` removes what it made, so a
-    // materialisation pass placed ahead of the `try` leaked one `mkdtemp`
-    // directory per failed load — and `config.set` restarts the plugin, so a
-    // setting that keeps failing kept adding to the pile. Counted inside a
-    // private `TMPDIR` rather than against the machine's, so the assertion is
-    // about this spawn and not about whatever else the run has left in /tmp.
+    // The refusal above is the DOCUMENTED fail-closed path, so it is the one that must not leave anything behind. `createSandboxProcessHome()` runs first and only `releaseSandboxState()` removes what it made, so a materialisation pass placed ahead of the `try` leaked one `mkdtemp`
+    // directory per failed load; and `config.set` restarts the plugin, so a setting that keeps failing kept adding to the pile. Counted inside a private `TMPDIR` rather than against the machine's, so the assertion is about this spawn and not about whatever else the run has left in /tmp.
     const fx = fixture!;
     const dangling = join(fx.pluginDataDir, "dangling");
     symlinkSync(join(fx.root, "target-that-does-not-exist"), dangling);
@@ -1465,29 +1211,21 @@ describe("the confined child, against the real sandbox", () => {
 
       const report = await runProbe(fx);
 
-      // The assertion the whole exercise exists for. Not "we called
-      // spawnConfinedChild" — an actual `readFileSync` of an actual secret file
-      // that actually failed.
+      // The assertion the whole exercise exists for. Not "we called spawnConfinedChild"; an actual `readFileSync` of an actual secret file that actually failed.
       expect(report.readSecret.ok, JSON.stringify(report.readSecret)).toBe(false);
       expect(report.readSecret.value).toBeUndefined();
 
       // The write jail, in both directions.
       expect(report.writeOutside.ok, JSON.stringify(report.writeOutside)).toBe(false);
       expect(report.writeSecrets.ok, JSON.stringify(report.writeSecrets)).toBe(false);
-      // …and it stops at `pluginDataDir` rather than covering everything the
-      // child can reach: `pluginRoot` is READABLE, because the child loads its
-      // own code out of it, and NOT writable, because a plugin that could
-      // rewrite its runtime root could rewrite the bytes its own manifest hash
-      // was taken over. Read and write are separate grants; asserting only the
-      // paths that are denied to both would not show that.
+      // …and it stops at `pluginDataDir` rather than covering everything the child can reach: `pluginRoot` is READABLE, because the child loads its own code out of it, and NOT writable, because a plugin that
+      // could rewrite its runtime root could rewrite the bytes its own manifest hash was taken over. Read and write are separate grants; asserting only the paths that are denied to both would not show that.
       expect(report.readOwnCode.ok, JSON.stringify(report.readOwnCode)).toBe(true);
       expect(report.readOwnCode.value).toBe(PLUGIN_CODE_BYTES);
       expect(report.writeOwnCode.ok, JSON.stringify(report.writeOwnCode)).toBe(false);
       expect(existsSync(join(fx.pluginRoot, "smuggled.js"))).toBe(false);
-      // The host-only storage directory: no write, no new name, no link, no
-      // move in, and no replacing the directory itself (or putting a link
-      // beside it) — so no component of a storage path can be re-pointed
-      // between the host's check and its syscall.
+      // The host-only storage directory: no write, no new name, no link, no move in, and no replacing the directory itself (or
+      // putting a link beside it); so no component of a storage path can be re-pointed between the host's check and its syscall.
       for (const [op, attempt] of Object.entries(report.hostStorage)) {
         expect(attempt.ok, `${op}: ${JSON.stringify(attempt)}`).toBe(false);
       }
@@ -1497,37 +1235,15 @@ describe("the confined child, against the real sandbox", () => {
       expect(existsSync(`${hostStorageDir}-moved`)).toBe(false);
       expect(existsSync(join(fx.pluginRoot, "storage-link"))).toBe(false);
       expect(readFileSync(join(fx.pluginDataDir, "own-data.txt"), "utf-8")).toBe("the plugin's own bytes");
-      // The third answer, and the one a source census reads as success: HOME
-      // is SUBSTITUTED, so a plugin that roots its state at `homedir()` is
-      // neither denied nor durable. The write SUCCEEDS — and it lands in a
-      // throwaway that is neither the user's home nor any granted path of this
-      // plugin's, which `createSandboxProcessHome` removes when the child
-      // exits. Asserted because "it worked" is the reading that admits a
-      // plugin whose state silently resets on every start.
+      // The third answer, and the one a source census reads as success: HOME is SUBSTITUTED, so a plugin that roots its state at `homedir()` is neither denied nor durable. The write SUCCEEDS; and it lands in a throwaway that is neither
+      // the user's home nor any granted path of this plugin's, which `createSandboxProcessHome` removes when the child exits. Asserted because "it worked" is the reading that admits a plugin whose state silently resets on every start.
       expect(report.childHome).not.toBe(homedir());
       expect(report.childHome.startsWith(fx.pluginRoot)).toBe(false);
       expect(report.childHome.startsWith(fx.pluginDataDir)).toBe(false);
       expect(report.writeChildHome.ok, JSON.stringify(report.writeChildHome)).toBe(true);
 
-      // ── the FOURTH answer: outside both grants, and DURABLE ────────────
-      //
-      // The write jail is NOT what the spawn names. The temp directory is a
-      // third granted path, added by the confinement primitive rather than by
-      // this spawn — so this is a path in no grant this spawn made, that the
-      // child writes and the HOST then reads back. Asserted rather than
-      // described because "exactly two paths" survived two revisions of the
-      // routing SOT and the blueprint with no case able to contradict it.
-      //
-      // WHAT IT IS NOW. It used to be ASRT's own `/tmp/claude`, shared with
-      // every ASRT consumer on the machine, and then `~/.ave/sandbox/tmp`,
-      // shared by every confined child of this app — two plugins met in it, and
-      // the second one read the first one's bytes. It is now this PLUGIN'S
-      // directory under that root, set as `TMPDIR` inside the wrap, with the
-      // root itself read-denied: the channel the second child below used is
-      // closed, which the per-principal cases in "the sandbox temp
-      // directories" assert for every kind of confined process.
-      // Written against `tmpdir()` rather than a literal so it asks the same
-      // question whichever backend is underneath.
+      // The confinement primitive adds a durable per-plugin temp write root beyond the spawn's explicit envelope.
+      // Read-deny the shared parent so another plugin cannot read those bytes.
       const ownTemp = join(report.childTmpdir, fx.ownTempName);
       const ownTempDir = join(appOwnedSandboxTempRoot(), sandboxTempPrincipalDirName({ kind: "plugin", id: PLUGIN_ID }));
       expect(realpathSync(report.childTmpdir), "the child's TMPDIR is not its plugin's temp directory")
@@ -1536,13 +1252,11 @@ describe("the confined child, against the real sandbox", () => {
       expect(report.childTmpdir.startsWith(fx.pluginDataDir)).toBe(false);
       expect(report.childTmpdir.startsWith(report.childHome)).toBe(false);
       expect(report.writeChildTmpdir.ok, JSON.stringify(report.writeChildTmpdir)).toBe(true);
-      // Durable, which is what separates this outcome from the `homedir()`
-      // one: the bytes are still there, read from the unconfined host.
+      // Durable, which is what separates this outcome from the `homedir()` one: the bytes are still there, read from the unconfined host.
       expect(readFileSync(ownTemp, "utf-8")).toBe(OWN_TEMP_BYTES);
 
-      // …and that path is NOT shared. A second confined child, from a second
-      // plugin with its own `pluginRoot` and `pluginDataDir`, cannot read the
-      // first one's bytes, which the host just read above.
+      // …and that path is NOT shared. A second confined child, from a second plugin with its own
+      // `pluginRoot` and `pluginDataDir`, cannot read the first one's bytes, which the host just read above.
       const crossPluginRead = await runCrossPluginReadProbe(
         fx,
         installPlugin(fx, "a-second-confined-plugin"),
@@ -1551,9 +1265,8 @@ describe("the confined child, against the real sandbox", () => {
       expect(crossPluginRead.ok, JSON.stringify(crossPluginRead)).toBe(false);
       expect(crossPluginRead.value).toBeUndefined();
 
-      // An ordinary shared-temp path is not an implicit write grant. The host
-      // created both directory and file with writable permissions, so refusal
-      // cannot be explained by a missing parent or filesystem ownership.
+      // An ordinary shared-temp path is not an implicit write grant. The host created both directory and file
+      // with writable permissions, so refusal cannot be explained by a missing parent or filesystem ownership.
       const deniedWriteCode = process.platform === "linux" ? "EROFS" : "EPERM";
       expect(report.writeUngrantedTemp.ok, JSON.stringify(report.writeUngrantedTemp)).toBe(false);
       expect(report.writeUngrantedTemp.code).toBe(deniedWriteCode);
@@ -1566,10 +1279,8 @@ describe("the confined child, against the real sandbox", () => {
       expect(sharedTempRead.ok, JSON.stringify(sharedTempRead)).toBe(true);
       expect(sharedTempRead.value).toBe(SHARED_TEMP_BYTES);
 
-      // Do not create, reserve or replace a shared global path on the host.
-      // Probe its literal name with a unique file; a writable existing parent
-      // gives a policy-error control. Missing or inaccessible parents cannot
-      // establish that control; the independent ordinary-temp case above can.
+      // Do not create, reserve or replace a shared global path on the host. Probe its literal name with a unique file; a writable existing parent
+      // gives a policy-error control. Missing or inaccessible parents cannot establish that control; the independent ordinary-temp case above can.
       expect(report.writeLegacySharedTemp.ok, JSON.stringify(report.writeLegacySharedTemp)).toBe(false);
       let legacyParentWritable = false;
       try {
@@ -1581,10 +1292,8 @@ describe("the confined child, against the real sandbox", () => {
       if (legacyParentWritable) expect(report.writeLegacySharedTemp.code).toBe(deniedWriteCode);
       expect(existsSync(join(LEGACY_SHARED_TEMP_ROOT, fx.ownTempName))).toBe(false);
 
-      // Nothing the host DID NOT widen this plugin with is reachable — the
-      // corporate CA the deny floor covers, and a directory the user approved
-      // for the host's own tools. Asserted on the unwidened plugin so the
-      // widened case below is a difference rather than a claim.
+      // Nothing the host DID NOT widen this plugin with is reachable; the corporate CA the deny floor covers, and a directory the user
+      // approved for the host's own tools. Asserted on the unwidened plugin so the widened case below is a difference rather than a claim.
       expect(report.readCa.ok, JSON.stringify(report.readCa)).toBe(false);
       expect(report.writeUserRoot.ok, JSON.stringify(report.writeUserRoot)).toBe(false);
 
@@ -1596,45 +1305,29 @@ describe("the confined child, against the real sandbox", () => {
         "hello",
       );
 
-      // ── §4's "No Electron", as a measurement rather than a sentence ────
-      //
-      // This used to assert the environment variable alone, under a comment
-      // saying `electron` was unreachable — a control claimed in prose beside
-      // code that never checked it. The variable is the MECHANISM; these are
-      // the answers.
+      // This used to assert the environment variable alone, under a comment saying `electron` was unreachable — a
+      // control claimed in prose beside code that never checked it. The variable is the MECHANISM; these are the answers.
       expect(report.electronRunAsNode).toBe("1");
-      // The process is Electron: `process.execPath` is the Electron binary in
-      // production and, because this repository runs its own tests under that
-      // binary, here too. So this is not a Node-versus-Electron artifact of the
-      // runner — and the version being present while the API is not is the
-      // trap: a plugin gating on `process.versions.electron` gets YES and walks
-      // into the call below.
+      // The process is Electron: `process.execPath` is the Electron binary in production and, because this repository runs its own tests under that binary, here too. So this is not a
+      // Node-versus-Electron artifact of the runner; and the version being present while the API is not is the trap: a plugin gating on `process.versions.electron` gets YES and walks into the call below.
       expect(report.electronVersion).not.toBeNull();
       expect(report.requireElectron, JSON.stringify(report.requireElectron)).toMatchObject({
         ok: false,
         code: "MODULE_NOT_FOUND",
       });
-      // And shipping the package does not answer it: its entry exports the
-      // binary's PATH as a string, so `BrowserWindow` is `undefined` and any
-      // guard on it throws. Both halves are asserted because a plugin author
-      // hitting the first will try the second.
+      // And shipping the package does not answer it: its entry exports the binary's PATH as a string, so `BrowserWindow` is
+      // `undefined` and any guard on it throws. Both halves are asserted because a plugin author hitting the first will try the second.
       expect(
         report.requirePackagedElectron,
         JSON.stringify(report.requirePackagedElectron),
       ).toMatchObject({ ok: true, module: { kind: "string", browserWindow: "undefined" } });
-      // And the two ESM forms, which do NOT answer the way `require` does.
-      // Asserted separately rather than left to the require case, because the
-      // three differ in WHERE the plugin breaks and a note claiming one denial
-      // for all three would be describing something untrue: `import()`
-      // RESOLVES, to a namespace whose `BrowserWindow` is `undefined`, so an
-      // ESM plugin reading it off the namespace fails only when it calls…
+      // And the two ESM forms, which do NOT answer the way `require` does. Asserted separately rather than left to the require case, because the three differ in WHERE the plugin breaks and a note claiming one
+      // denial for all three would be describing something untrue: `import()` RESOLVES, to a namespace whose `BrowserWindow` is `undefined`, so an ESM plugin reading it off the namespace fails only when it calls…
       expect(report.importElectron, JSON.stringify(report.importElectron)).toMatchObject({
         ok: true,
         module: { kind: "object", browserWindow: "undefined" },
-        // …and the namespace's `default`, which is where a CJS module reached
-        // through the ESM resolver would carry the API, is an EMPTY object. This
-        // is the arm that would go red if the ESM path ever started handing back
-        // the real `electron`, which the namespace's own keys would not show.
+        // …and the namespace's `default`, which is where a CJS module reached through the ESM resolver would carry the API, is an EMPTY object. This
+        // is the arm that would go red if the ESM path ever started handing back the real `electron`, which the namespace's own keys would not show.
         defaultKeys: [],
         defaultBrowserWindow: "undefined",
       });
@@ -1648,17 +1341,8 @@ describe("the confined child, against the real sandbox", () => {
   );
 });
 
-/**
- * The widening, end to end: the declared authority decides, the derivation
- * resolves, the wrap grants, and the kernel is asked.
- *
- * The point of running the WHOLE chain rather than handing the spawn a
- * hand-built envelope is that the interesting claims are about the derivation's
- * output — that a `hostDirectory` row re-opens a path the deny floor closed,
- * that a `userChosenDirectory` row admits the user's directory and only it, and
- * that neither one turns a read grant into a write. A fixture envelope would
- * prove the wrap works and say nothing about what the host decided.
- */
+/** The widening, end to end: the declared authority decides, the derivation resolves, the wrap grants, and the kernel is asked. The point of running the WHOLE chain rather than handing the spawn a hand-built envelope is that the interesting claims are about the derivation's output;
+ * that a `hostDirectory` row re-opens a path the deny floor closed, that a `userChosenDirectory` row admits the user's directory and only it, and that neither one turns a read grant into a write. A fixture envelope would prove the wrap works and say nothing about what the host decided. */
 describe("a child the host widened reaches exactly what the host widened it with", () => {
   it.runIf(process.platform === "darwin" || process.platform === "linux")(
     "confines a new candidate to its declared trust anchor and approved directory",
@@ -1694,8 +1378,7 @@ describe("a child the host widened reaches exactly what the host widened it with
         sandbox: WIDENED_SANDBOX,
         pluginRoot: fx.pluginRoot,
         pluginDataDir: fx.pluginDataDir,
-        // The value is admitted because the fixture's settings file lists it
-        // as a user-approved workspace root.
+        // The value is admitted because the fixture's settings file lists it as a user-approved workspace root.
         configValue: (key) =>
           key === "indexStorageRoot"
             ? fx.userRoot
@@ -1713,25 +1396,16 @@ describe("a child the host widened reaches exactly what the host widened it with
       expect(report.writeUserRoot.ok, JSON.stringify(report.writeUserRoot)).toBe(true);
       expect(readFileSync(join(fx.userRoot, "index.bin"), "utf-8")).toBe("index");
 
-      // …and nothing beside them. The CA stays UNWRITABLE, and the honest
-      // attribution is that the write-deny floor takes precedence over
-      // `allowWrite` — so this holds even for a grant that mistakenly asked for
-      // write, which is why it is asserted here rather than assumed. That a
-      // `hostDirectory` grant is read-only is a property of the derivation
-      // and is proven above, against the envelope it returns.
+      // …and nothing beside them. The CA stays UNWRITABLE, and the honest attribution is that the write-deny floor takes precedence over `allowWrite`; so this holds even for a grant that mistakenly
+      // asked for write, which is why it is asserted here rather than assumed. That a `hostDirectory` grant is read-only is a property of the derivation and is proven above, against the envelope it returns.
       expect(report.writeCa.ok, JSON.stringify(report.writeCa)).toBe(false);
-      // The sibling shares the user root's name as a string prefix and is not
-      // inside it, which is the case a `startsWith` containment check admits.
+      // The sibling shares the user root's name as a string prefix and is not inside it, which is the case a `startsWith` containment check admits.
       expect(
         report.writeUserRootSibling.ok,
         JSON.stringify(report.writeUserRootSibling),
       ).toBe(false);
-      // A granted root that did not exist is CREATED by the spawn rather than
-      // dropped from the grant. Without that the child gets an envelope smaller
-      // than the host decided and is told nothing about it: here that surfaces
-      // as this `ENOENT`, and on Linux as an allow path ASRT skips out of the
-      // bwrap argv with a debug line. Neither raises, which is why the
-      // materialisation is asserted rather than assumed.
+      // A granted root that did not exist is CREATED by the spawn rather than dropped from the grant. Without that the child gets an envelope smaller than the host decided and is told nothing about it:
+      // here that surfaces as this `ENOENT`, and on Linux as an allow path ASRT skips out of the bwrap argv with a debug line. Neither raises, which is why the materialisation is asserted rather than assumed.
       expect(
         report.writePendingWorkspace.ok,
         JSON.stringify(report.writePendingWorkspace),
@@ -1746,17 +1420,8 @@ describe("a child the host widened reaches exactly what the host widened it with
   );
 });
 
-/**
- * The pilot's own tool, invoked out of process AND confined, through the
- * production factory.
- *
- * This is the claim the two stages make together, and neither of the other
- * suites makes it: `out-of-process-plugin.test.ts` runs the real protocol over
- * fake pipes, the probe above runs a real sandbox around a fake protocol, and
- * only here are both real at once. It is also the only test that exercises the
- * BUNDLED child entry — the stdout claim, the entry-module guard, and the ESM
- * bundle boundary are all things the TypeScript source cannot prove.
- */
+/** The pilot's own tool, invoked out of process AND confined, through the production factory. This is the claim the two stages make together, and neither of the other suites makes it: `out-of-process-plugin.test.ts` runs the real protocol over fake pipes, the probe above
+ * runs a real sandbox around a fake protocol, and only here are both real at once. It is also the only test that exercises the BUNDLED child entry; the stdout claim, the entry-module guard, and the ESM bundle boundary are all things the TypeScript source cannot prove. */
 describe("the pilot's tools, out of process and confined", () => {
   it.runIf(process.platform === "darwin" || process.platform === "linux")(
     "invokes a declared tool in a sandboxed child and returns the plugin's own value",
@@ -1766,8 +1431,7 @@ describe("the pilot's tools, out of process and confined", () => {
       const repoRoot = repositoryRoot();
       const childEntryPath = pluginChildEntryPath();
 
-      // The plugin lives inside the child's own read carve-out, which is where
-      // an installed plugin lives in production.
+      // The plugin lives inside the child's own read carve-out, which is where an installed plugin lives in production.
       const entryPath = join(fx.pluginRoot, "plugin.mjs");
       writeFileSync(
         entryPath,
@@ -1840,16 +1504,8 @@ export const createPlugin = async (context) => ({
   );
 });
 
-/**
- * The host protocol's process rules, and one golden conversation, against a
- * REAL confined child (plugin-hostapi-protocol.md §2.5, §9.4).
- *
- * `host-protocol-golden.test.ts` pins the frames over paired streams, which
- * proves nothing about the process: that the child leaves when the host does,
- * that nothing but protocol reaches its stdout, and that the bundle which ships
- * speaks the same conversation the in-memory runtime recorded. Those three
- * need the bundled entry running in its sandbox.
- */
+/** The host protocol's process rules, and one golden conversation, against a REAL confined child (plugin-hostapi-protocol.md §2.5, §9.4). `host-protocol-golden.test.ts` pins the frames over paired streams, which proves nothing about the
+ * process: that the child leaves when the host does, that nothing but protocol reaches its stdout, and that the bundle which ships speaks the same conversation the in-memory runtime recorded. Those three need the bundled entry running in its sandbox. */
 describe("the host protocol, spoken by a real confined child", () => {
   /** A complete plugin: its manifest, its entry and its recorded transcript. */
   const MEETING_GOLDEN = fileURLToPath(
@@ -1919,8 +1575,7 @@ describe("the host protocol, spoken by a real confined child", () => {
       const fx = fixture!;
       const plugin = installPlugin(fx, "meeting");
       const childEntryPath = pluginChildEntryPath();
-      // Copied into the plugin's own root, which is where an installed entry
-      // lives and what the child's read grant covers.
+      // Copied into the plugin's own root, which is where an installed entry lives and what the child's read grant covers.
       const entryPath = join(plugin.pluginRoot, "entry.mjs");
       copyFileSync(join(MEETING_GOLDEN, "entry.mjs"), entryPath);
       const manifest = flattenAgentPluginsManifest(
@@ -1930,8 +1585,7 @@ describe("the host protocol, spoken by a real confined child", () => {
       await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
       // The host the transcript was recorded against, neighbourhood included.
       const host = createRecordingHost();
-      // Observed for the resource record only (decision 41): the reference
-      // runtime's cost beside the Python smoke's.
+      // Observed for the resource record only (decision 41): the reference runtime's cost beside the Python smoke's.
       let spawnedAt = 0;
       let tree: Promise<TreeMeasurement> | undefined;
       const factory = createOutOfProcessPluginFactory({
@@ -1947,8 +1601,7 @@ describe("the host protocol, spoken by a real confined child", () => {
       const spawnToConstructMs = Math.round(performance.now() - spawnedAt);
       try {
         const exercised = await instance.handlers.exercise_host!();
-        // Pushed down the same pipe the next call travels, so the child has
-        // delivered every one of them before it runs `report_host`.
+        // Pushed down the same pipe the next call travels, so the child has delivered every one of them before it runs `report_host`.
         host.fireAll();
         const reported = await instance.handlers.report_host!();
         expect({ exercise_host: exercised, report_host: reported }).toEqual(
@@ -1979,9 +1632,8 @@ describe("the host protocol, spoken by a real confined child", () => {
       const { plugin, entryPath, manifest } = installOneToolPlugin(
         fx,
         "stdinprobe",
-        // A timer, as a plugin with a watcher or a poll loop holds one: without
-        // it the event loop drains when stdin ends and the child leaves whether
-        // or not it implements the rule, which would make this case prove nothing.
+        // A timer, as a plugin with a watcher or a poll loop holds one: without it the event loop drains when stdin
+        // ends and the child leaves whether or not it implements the rule, which would make this case prove nothing.
         `export const createPlugin = async () => {
   setInterval(() => undefined, 1_000);
   return { handlers: { speak: async () => "spoke" } };
@@ -1991,8 +1643,7 @@ describe("the host protocol, spoken by a real confined child", () => {
 
       await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
       let observed: ObservedPluginChild | undefined;
-      // The production factory's own spawn, observed after the wrap: the case
-      // ends the child's stdin and watches it exit, and touches nothing else.
+      // The production factory's own spawn, observed after the wrap: the case ends the child's stdin and watches it exit, and touches nothing else.
       const factory = createOutOfProcessPluginFactory({
         manifest,
         launch: { kind: "entry", entryPath },
@@ -2005,8 +1656,7 @@ describe("the host protocol, spoken by a real confined child", () => {
       try {
         await expect(instance.handlers.speak!()).resolves.toBe("spoke");
         expect(observed!.pid).toEqual(expect.any(Number));
-        // The host dying looks like this from the child: its stdin ends. No
-        // `stop`, no signal — a host that crashed sends neither.
+        // The host dying looks like this from the child: its stdin ends. No `stop`, no signal; a host that crashed sends neither.
         observed!.endInput();
         const outcome = await Promise.race([
           observed!.exited.then(() => "exited"),
@@ -2026,9 +1676,7 @@ describe("the host protocol, spoken by a real confined child", () => {
       if (!(await sandboxCasesRun())) return;
       const fx = fixture!;
       const childEntryPath = pluginChildEntryPath();
-      // Both ways a plugin reaches stdout, at import, in the factory and in a
-      // tool: a stray line anywhere joins the next frame's line and takes that
-      // frame with it.
+      // Both ways a plugin reaches stdout, at import, in the factory and in a tool: a stray line anywhere joins the next frame's line and takes that frame with it.
       const { plugin, entryPath, manifest } = installOneToolPlugin(
         fx,
         "stdoutprobe",
@@ -2051,8 +1699,7 @@ export const createPlugin = async () => {
 
       await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
       let stdout = "";
-      // The production factory's own spawn, observed after the wrap and before
-      // the protocol starts, so every byte the child writes is collected.
+      // The production factory's own spawn, observed after the wrap and before the protocol starts, so every byte the child writes is collected.
       const factory = createOutOfProcessPluginFactory({
         manifest,
         launch: { kind: "entry", entryPath },
@@ -2065,8 +1712,7 @@ export const createPlugin = async () => {
       });
       const instance = await factory(contextFor(fx, plugin, createValidationHost().api));
       try {
-        // Bounded: a stray line that swallowed the reply would otherwise hang
-        // the call until the case times out, and say nothing about why.
+        // Bounded: a stray line that swallowed the reply would otherwise hang the call until the case times out, and say nothing about why.
         const spoke = await Promise.race([
           instance.handlers.speak!(),
           new Promise((resolve) => setTimeout(() => resolve("no reply: a frame was lost"), 10_000)),
@@ -2088,16 +1734,8 @@ export const createPlugin = async () => {
   );
 });
 
-/**
- * The members §3.2 calls lossy or stateful, exercised by a REAL confined child.
- *
- * `host-api-service-members.test.ts` drives the same members across a real
- * dispatcher and a real child runtime over an in-memory channel, which proves
- * the marshalling and proves nothing about the jail. This proves both at once,
- * and it is the only place that can: the question "can the plugin reach the
- * secret it was not handed" has two answers — one from the gate and one from
- * the sandbox — and only a real process has both.
- */
+/** The members §3.2 calls lossy or stateful, exercised by a REAL confined child. `host-api-service-members.test.ts` drives the same members across a real dispatcher and a real child runtime over an in-memory channel, which proves the marshalling and
+ * proves nothing about the jail. This proves both at once, and it is the only place that can: the question "can the plugin reach the secret it was not handed" has two answers; one from the gate and one from the sandbox; and only a real process has both. */
 describe("the lossy and stateful members, across a real confined boundary", () => {
   it.runIf(process.platform === "darwin" || process.platform === "linux")(
     "hands over what the gate grants, refuses what it does not, and cannot be reached around",
@@ -2194,8 +1832,7 @@ export const createPlugin = async (context) => {
       const configValues = new Map<string, unknown>([["watched", "before"], ["workspace", fx.userRoot]]);
       const configListeners = new Set<(value: unknown) => void>();
       const hostApi = {
-        // The four-tier gate, standing in for its verdict: one key granted, one
-        // refused. The boundary's job is to carry the verdict, not to make it.
+        // The four-tier gate, standing in for its verdict: one key granted, one refused. The boundary's job is to carry the verdict, not to make it.
         getSecret: async (key: string) => (key === "granted" ? SECRET_TEXT : null),
         resolveApiKey: async () => ({
           ok: true as const,
@@ -2271,13 +1908,11 @@ export const createPlugin = async (context) => {
           denied: string | null;
           directRead: { ok: boolean; value?: string };
         };
-        // The value DOES cross. The gate is the control, and a plugin the gate
-        // granted holds the same string it would hold in-process.
+        // The value DOES cross. The gate is the control, and a plugin the gate granted holds the same string it would hold in-process.
         expect(credentials.granted).toBe(SECRET_TEXT);
         // …and one it did not is `null`, not a throw and not a stale value.
         expect(credentials.denied).toBeNull();
-        // The half isolation adds: the same process cannot reach around the
-        // gate to the file, so the gate's verdict is the ONLY way in.
+        // The half isolation adds: the same process cannot reach around the gate to the file, so the gate's verdict is the ONLY way in.
         expect(credentials.directRead.ok).toBe(false);
         expect(credentials.directRead.value).toBeUndefined();
 
@@ -2301,8 +1936,7 @@ export const createPlugin = async (context) => {
         };
         expect(fetched.status).toBe(207);
         expect(fetched.header).toBe("from-the-host");
-        // A NUL, a lone continuation byte and a 0xFF. A text codec replaces all
-        // three with U+FFFD and reports success.
+        // A NUL, a lone continuation byte and a 0xFF. A text codec replaces all three with U+FFFD and reports success.
         expect(fetched.bytes).toEqual([0x00, 0x80, 0xff, 0x41]);
 
         // ── spawnWorker ────────────────────────────────────────────────────
@@ -2312,8 +1946,7 @@ export const createPlugin = async (context) => {
         };
         expect(escape.ok).toBe(false);
         expect(escape.message).toMatch(/outside the plugin's own confinement/);
-        // Refused at the boundary, so the supervisor never saw it. A refusal
-        // that still spawned would be no refusal.
+        // Refused at the boundary, so the supervisor never saw it. A refusal that still spawned would be no refusal.
         expect(spawnWorker).not.toHaveBeenCalled();
 
         const spawned = (await instance.handlers.probe_worker_allowed!()) as {
@@ -2324,8 +1957,7 @@ export const createPlugin = async (context) => {
         expect(spawnWorker).toHaveBeenCalledTimes(1);
         expect(spawned.socketPath).toBe("/run/indexer.sock");
         expect(spawned.pid).toBe(31337);
-        // The plugin holds an id and two scalars behind four local methods —
-        // nothing that could be a `ChildProcess`.
+        // The plugin holds an id and two scalars behind four local methods; nothing that could be a `ChildProcess`.
         expect(spawned.fields).toEqual([
           "onExit",
           "onStderr",
@@ -2350,8 +1982,7 @@ export const createPlugin = async (context) => {
         await expect(instance.handlers.probe_config!()).resolves.toBe("before");
         configValues.set("watched", "after");
         for (const listener of configListeners) listener("after");
-        // The child answers `config.get` from a snapshot, so this is the whole
-        // difference between a current answer and a permanently stale one.
+        // The child answers `config.get` from a snapshot, so this is the whole difference between a current answer and a permanently stale one.
         await expect(instance.handlers.probe_config!()).resolves.toBe("after");
       } finally {
         await instance.stop?.();
@@ -2361,77 +1992,9 @@ export const createPlugin = async (context) => {
   );
 });
 
-/**
- * A CANDIDATE's members, driven through the production factory.
- *
- * The plugin modelled here is `meeting`, and the routing SOT REFUSES it. This
- * case is what produced that refusal and what keeps it honest: it drives the
- * members that plugin reaches against a real confined child and reports, in one
- * run, both what survives the move and what does not. Read as "evidence the
- * plugin is ready" it would be misread — a case that only ever exercised the
- * surviving members is exactly the measurement that admitted two plugins
- * wrongly, and the refusing assertions below are here so that shape cannot come
- * back.
- *
- * WHAT REFUSES IT, and each is independently sufficient:
- *
- *  - Its primary tool opens a floating recorder window through `electron`, and
- *    a confined child has no `electron` — the window handler below runs the
- *    plugin's own pre-flight guard and is denied. There is no wire form for
- *    `BrowserWindow`, `screen`, `session` or `ipcMain`, so this is not a
- *    marshalling gap but the boundary working as designed.
- *  - (No longer a refusal, recorded because it was one.) Its `createPlugin`
- *    sweeps `os.tmpdir()` unguarded — not behind a `try`, not deferred to a
- *    tool call, so it runs on every load — and the temp root ASRT substitutes
- *    did not exist on an ordinary machine, so the plugin would not have loaded
- *    at all. The host now creates the plugin's own temp directory before every
- *    spawn and sets it as `TMPDIR` inside the wrap, and the case below asserts
- *    the sweep succeeds.
- *  - The same activation body moves a session directory it once kept under
- *    `context.hostRoot` into `pluginDataDir`, per file and equally unguarded.
- *    `hostRoot` is outside the child's write jail, so on an install that still
- *    holds un-migrated files there the move throws where it used to succeed
- *    and takes activation down with it — the user's existing recordings
- *    stranded behind a plugin that will not start.
- *
- * THE POINT OF THE REST OF IT IS THE GATE. In one heap `hostApi.getSecret` was a
- * function `meeting` could simply not call: the secret gate lives in the same
- * process as the plugin, and `<AVE_HOME>/secrets/` is a `readFileSync` away.
- * Out of process it is the only entrance, so the interesting assertion is not
- * that a granted key crosses — it is all three answers side by side, from one
- * child inside one call: the granted key comes back as its value, the refused
- * key comes back as `null`, and the file itself comes back denied. Any two of
- * those without the third is a weaker claim than it reads as.
- *
- * `meeting` also runs FFmpeg, which it stages under its own `pluginDataDir`
- * and executes. That is a grandchild of a confined child, so one handler stages
- * an executable exactly where `ffmpegRuntime.ts` puts it, runs it, and makes it
- * try both directions of the jail — a confinement that ended at the first
- * `spawn()` would leave every assertion above true and worthless.
- *
- * The last two handlers drive the two of `meeting`'s CHANGED paths a test can
- * reach without a live egress fence. Each is asserted here rather than
- * described anywhere, because a boundary that CHANGES a plugin's behaviour is
- * the part most easily written down as a prediction and never checked:
- *
- *  - The legacy session move out of `<hostRoot>` — filesystem reach, which is
- *    the axis that takes the most away and the one whose two halves disagree.
- *    An un-migrated file is PLANTED from the host side first, so the handler
- *    runs the plugin's own `renameSync` out of that directory rather than a
- *    stand-in `mkdir` — the two land outside the same jail but they are
- *    different syscalls, and only one of them is the operation the plugin
- *    performs. The listing that precedes the move is load-bearing rather than
- *    setup: it is what makes the refusal a WRITE verdict instead of a child
- *    that found an empty directory, and it is the READ half of the same axis
- *    measured in the same call — a path outside the plugin's own directories
- *    and off the sandbox's deny floor stays readable.
- *  - The temp directory the child sees. `CLAUDE_CODE_TMPDIR` — what ASRT
- *    writes as the child's `TMPDIR` — is pointed at a path that does NOT
- *    exist, the state an ordinary machine was in with ASRT's `/tmp/claude`,
- *    and inside this child's own write jail so only absence could fail it. The
- *    child sees neither: its `TMPDIR` is its plugin's directory, assigned
- *    inside the wrap and created by the host, so its unguarded sweep succeeds.
- */
+/** Exercise recorder boundaries through the production factory: desktop APIs and legacy host-root moves must be refused, while private temp sweeps remain usable.
+ * Check granted secrets, refused secrets, and raw secret-file denial together, plus inherited confinement in spawned binaries.
+ * An outside-root listing must precede the real rename so the case measures write refusal rather than missing fixtures. */
 describe("a refused candidate's members, out of process and confined", () => {
   it.runIf(process.platform === "darwin" || process.platform === "linux")(
     "carries the gate's verdict both ways, and refuses the window its primary tool opens",
@@ -2441,11 +2004,8 @@ describe("a refused candidate's members, out of process and confined", () => {
       const plugin = installPlugin(fx, "meeting");
       const childEntryPath = pluginChildEntryPath();
 
-      // The un-migrated state the plugin's own guard requires before it will
-      // attempt the move at all, planted from the HOST side because a confined
-      // child could not have created it. Without this the handler below would
-      // exercise a `mkdir` the plugin never performs and report the same
-      // denial for a different reason.
+      // The un-migrated state the plugin's own guard requires before it will attempt the move at all, planted from the HOST side because a confined child could
+      // not have created it. Without this the handler below would exercise a `mkdir` the plugin never performs and report the same denial for a different reason.
       const legacyDir = join(fx.hostRoot, ".meeting-sessions");
       mkdirSync(legacyDir, { recursive: true });
       writeFileSync(join(legacyDir, "session-1.json"), LEGACY_SESSION_BYTES, "utf-8");
@@ -2578,27 +2138,18 @@ export const createPlugin = async (context) => {
         ["customSummaryFinalPrompt", "the original final prompt"],
         ["customSummaryIntermediatePrompt", "the original intermediate prompt"],
       ]);
-      /**
-       * Per-key listeners, because the host's own change bus is per-key.
-       *
-       * A single undifferentiated set would deliver every notification to
-       * every subscriber, and the assertion below — that the plugin's two
-       * prompt watchers each saw THEIR key's value — would pass no matter
-       * which key actually changed.
-       */
+      /** Per-key listeners, because the host's own change bus is per-key. A single undifferentiated set would deliver every notification to every
+       * subscriber, and the assertion below; that the plugin's two prompt watchers each saw THEIR key's value; would pass no matter which key actually changed. */
       const configListeners = new Map<string, Set<(value: unknown) => void>>();
       const changeConfig = (key: string, value: unknown): void => {
         if (value === undefined) configValues.delete(key);
         else configValues.set(key, value);
-        // `"*"` is the bus's every-key wildcard, which is what the factory's own
-        // snapshot re-push subscribes to.
+        // `"*"` is the bus's every-key wildcard, which is what the factory's own snapshot re-push subscribes to.
         for (const listener of configListeners.get(key) ?? []) listener(value);
         for (const listener of configListeners.get("*") ?? []) listener(value);
       };
       const hostApi = {
-        // The four-tier gate, standing in for its verdict. Both keys are ones
-        // `meeting` really declares under `hostSecrets.read`, so the shape of
-        // the question is the plugin's own.
+        // The four-tier gate, standing in for its verdict. Both keys are ones `meeting` really declares under `hostSecrets.read`, so the shape of the question is the plugin's own.
         getSecret: async (key: string) =>
           key === "llm.apiKey.openai" ? SECRET_TEXT : null,
         resolveApiKey: async () => ({
@@ -2661,13 +2212,8 @@ export const createPlugin = async (context) => {
         launch: { kind: "entry", entryPath },
         childEntryPath,
       });
-      // The temp root ASRT itself would hand the child: read out of the HOST
-      // env while it builds the wrap, and here one that does not exist, inside
-      // `pluginDataDir` so it is write-allowed and merely absent — `/tmp/claude`'s
-      // status on an ordinary machine, where the plugin's unguarded sweep of
-      // `tmpdir()` used to stop it loading. The child must not see it: its
-      // `TMPDIR` is its plugin's own directory, assigned inside the wrap after
-      // ASRT's, and created by the host before the spawn.
+      // The temp root ASRT itself would hand the child: read out of the HOST env while it builds the wrap, and here one that does not exist, inside `pluginDataDir` so it is write-allowed and merely absent; `/tmp/claude`'s status on an ordinary
+      // machine, where the plugin's unguarded sweep of `tmpdir()` used to stop it loading. The child must not see it: its `TMPDIR` is its plugin's own directory, assigned inside the wrap after ASRT's, and created by the host before the spawn.
       const absentSandboxTmp = join(plugin.pluginDataDir, "sandbox-tmp-that-is-absent");
       expect(existsSync(absentSandboxTmp)).toBe(false);
       process.env.CLAUDE_CODE_TMPDIR = absentSandboxTmp;
@@ -2676,9 +2222,8 @@ export const createPlugin = async (context) => {
         pluginId: "meeting",
         pluginSocketDir: resolvePluginSocketDir(plugin.pluginDataDir),
         pluginRoot: plugin.pluginRoot,
-        // The app root, as production passes it — a directory the child has no
-        // write grant for, which is what makes the legacy-migration case below
-        // an assertion rather than a coincidence.
+        // The app root, as production passes it; a directory the child has no write grant for,
+        // which is what makes the legacy-migration case below an assertion rather than a coincidence.
         hostRoot: fx.hostRoot,
         pluginDataDir: plugin.pluginDataDir,
         userHome: homedir(),
@@ -2696,8 +2241,7 @@ export const createPlugin = async (context) => {
           directRead: { ok: boolean; value?: string };
         };
         expect(credentials.granted).toBe(SECRET_TEXT);
-        // Refused is `null` — not a throw, and not a stale value from a key the
-        // gate did grant.
+        // Refused is `null`; not a throw, and not a stale value from a key the gate did grant.
         expect(credentials.denied).toBeNull();
         // …and the file the plugin used to be able to read instead.
         expect(credentials.directRead.ok).toBe(false);
@@ -2717,23 +2261,18 @@ export const createPlugin = async (context) => {
         expect(transcription.leaseId).toBe("lease_transcription_probe");
         expect(release).toHaveBeenCalledTimes(1);
         expect(transcription.status).toBe(200);
-        // A NUL, a lone continuation byte and a 0xFF: audio bytes no text codec
-        // survives, which is what the transcription upload actually carries.
+        // A NUL, a lone continuation byte and a 0xFF: audio bytes no text codec survives, which is what the transcription upload actually carries.
         expect(transcription.transcript).toEqual([0x00, 0x80, 0xff, 0x41]);
         expect(transcription.summary).toBe("three action items");
 
-        // ── config.onChange, on the two keys meeting really watches ────────
         // Nothing has changed yet, so the plugin has seen no notification.
         await expect(instance.handlers.meeting_prompts_probe!()).resolves.toEqual({});
         changeConfig("customSummaryFinalPrompt", "the edited final prompt");
         changeConfig("customSummaryIntermediatePrompt", undefined);
         await expect(instance.handlers.meeting_prompts_probe!()).resolves.toEqual({
           final: ["string", "the edited final prompt"],
-          // A cleared key reaches the plugin as `undefined` — the plugin tagged
-          // the type before anything could normalise it. That is the whole
-          // reason the wire wraps the value in a property instead of sending it
-          // bare: an absent property reads back as `undefined`, and this is the
-          // assertion that would go red if it started reading back as `null`.
+          // A cleared key reaches the plugin as `undefined`; the plugin tagged the type before anything could normalise it. That is the whole reason the wire wraps the value in a
+          // property instead of sending it bare: an absent property reads back as `undefined`, and this is the assertion that would go red if it started reading back as `null`.
           intermediate: ["undefined", null],
         });
 
@@ -2743,10 +2282,8 @@ export const createPlugin = async (context) => {
           code?: string;
           value?: string;
         };
-        // The guard fails at RESOLUTION, before it can even ask whether
-        // `BrowserWindow` is a constructor. Asserted by code so a future child
-        // that resolved `electron` to something inert would fail here loudly
-        // rather than by returning a shape the guard happens to reject.
+        // The guard fails at RESOLUTION, before it can even ask whether `BrowserWindow` is a constructor. Asserted by code so a future child
+        // that resolved `electron` to something inert would fail here loudly rather than by returning a shape the guard happens to reject.
         expect(window, JSON.stringify(window)).toMatchObject({
           ok: false,
           code: "MODULE_NOT_FOUND",
@@ -2761,10 +2298,8 @@ export const createPlugin = async (context) => {
         };
         expect(ffmpeg.started).toBe(true);
         expect(ffmpeg.status).toBe(0);
-        // It runs — and it inherits the jail in both directions, so the
-        // transcoder can neither read what the plugin that started it cannot
-        // nor write where the plugin cannot. A confinement that ended at the
-        // first `spawn()` would produce "LEAKED" and "wrote" here.
+        // It runs; and it inherits the jail in both directions, so the transcoder can neither read what the plugin that started it
+        // cannot nor write where the plugin cannot. A confinement that ended at the first `spawn()` would produce "LEAKED" and "wrote" here.
         expect(ffmpeg.stdout).toEqual(["staged-runtime-ran", "denied", "denied"]);
         expect(existsSync(fx.outsideFile)).toBe(false);
 
@@ -2775,23 +2310,17 @@ export const createPlugin = async (context) => {
           prepared: { ok: boolean; code?: string };
           migrate: { ok: boolean; code?: string };
         };
-        // The plugin still builds the path off `hostRoot`, and it arrives in
-        // the child unchanged…
+        // The plugin still builds the path off `hostRoot`, and it arrives in the child unchanged…
         expect(legacy.legacyDir).toBe(legacyDir);
-        // …the child can SEE the un-migrated file, so what follows is a WRITE
-        // denial and not a child that simply found nothing to move…
+        // …the child can SEE the un-migrated file, so what follows is a WRITE denial and not a child that simply found nothing to move…
         expect(legacy.listed.ok, JSON.stringify(legacy.listed)).toBe(true);
         expect(legacy.listed.value).toEqual(["session-1.json"]);
         // …its destination inside the jail is created without complaint…
         expect(legacy.prepared.ok, JSON.stringify(legacy.prepared)).toBe(true);
-        // …but the move itself fails closed. `hostRoot` is outside the
-        // child's write jail, and this is the same unguarded `renameSync` the
-        // plugin runs in its activation body — so on an install that still
-        // holds un-migrated files there, this denial is not a lost migration,
-        // it is a plugin that does not start.
+        // …but the move itself fails closed. `hostRoot` is outside the child's write jail, and this is the same unguarded `renameSync` the plugin runs in its
+        // activation body; so on an install that still holds un-migrated files there, this denial is not a lost migration, it is a plugin that does not start.
         expect(legacy.migrate.ok, JSON.stringify(legacy.migrate)).toBe(false);
-        // And nothing moved: the file is where it was, and none landed. A
-        // partially-completed migration would be worse than a refused one.
+        // And nothing moved: the file is where it was, and none landed. A partially-completed migration would be worse than a refused one.
         expect(readFileSync(join(legacyDir, "session-1.json"), "utf-8")).toBe(
           LEGACY_SESSION_BYTES,
         );
@@ -2806,17 +2335,14 @@ export const createPlugin = async (context) => {
           stage: { ok: boolean; code?: string };
           create: { ok: boolean; code?: string };
         };
-        // Neither the host's own temp directory nor the root ASRT was given:
-        // the plugin's directory, which the host created before the spawn.
+        // Neither the host's own temp directory nor the root ASRT was given: the plugin's directory, which the host created before the spawn.
         expect(realpathSync(temp.tmpdir)).toBe(
           realpathSync(join(appOwnedSandboxTempRoot(), sandboxTempPrincipalDirName({ kind: "plugin", id: "meeting" }))),
         );
         expect(temp.tmpdir).not.toBe(absentSandboxTmp);
         expect(existsSync(absentSandboxTmp)).toBe(false);
         expect(temp.tmpdir).not.toBe(tmpdir());
-        // So the sweep the plugin runs unguarded inside `createPlugin`, and its
-        // upload staging, both succeed: the directory exists and is the
-        // plugin's to write.
+        // So the sweep the plugin runs unguarded inside `createPlugin`, and its upload staging, both succeed: the directory exists and is the plugin's to write.
         expect(temp.sweep, JSON.stringify(temp.sweep)).toMatchObject({ ok: true });
         expect(temp.stage, JSON.stringify(temp.stage)).toMatchObject({ ok: true });
         expect(temp.create, JSON.stringify(temp.create)).toMatchObject({ ok: true });
@@ -2828,48 +2354,8 @@ export const createPlugin = async (context) => {
   );
 });
 
-/**
- * The loopback listener, which is an admission verdict rather than a curiosity.
- *
- * A plugin whose sign-in flow needs to CATCH a redirect needs a server, and a
- * server needs a bind. The admission record (`out-of-process-plugins.ts`
- * before §9.8 A1 retired its census) carried `samplemail` as a
- * candidate on the written assumption that its auth library opens no socket
- * outside the injected egress client; it does, and this is where that stops
- * being an assumption. The case is kept platform-split because the backends do
- * not refuse the same way, and flattening them into one expectation would hide
- * the half that matters: on Linux the bind SUCCEEDS and the flow still cannot
- * work, which is a strictly worse failure than being told no.
- */
-/**
- * Bind a Unix-domain socket inside a confined child and report what happened,
- * then — when the bind succeeded — try to reach it FROM THE HOST.
- *
- * The host half is the point. A child can say `listen()` returned, and a child
- * saying that is exactly what the loopback case above produces on Linux while
- * the socket sits in a namespace nobody else is in. Only an outside connect
- * distinguishes "bound" from "bound and reachable", which is the property a
- * plugin's spawned worker actually depends on.
- *
- * @param socketPath where to bind. Passed rather than derived so a case can aim
- * it at a directory the host did NOT register — the control that separates
- * "the registration did it" from "unix sockets are simply allowed".
- */
-/**
- * A plugin layout rooted somewhere SHORT, made for the Unix-socket cases only.
- *
- * The suite's own fixture lives under `tmpdir()`, which on macOS is
- * `/var/folders/<two>/<thirty-odd>/T/...` — and a socket path over
- * `sockaddr_un`'s 104 bytes fails `bind()` with `EINVAL`. That failure is real
- * (it is what {@link assertUnixSocketPathFits} now refuses up front) but it is
- * not the question these cases ask, and a case that hit it would report
- * "refused" for the wrong reason.
- *
- * `/private/tmp` rather than `/tmp`: on macOS the latter is a symlink to the
- * former, and the sandbox compares canonical paths — so an allow spelled `/tmp`
- * and a bind the kernel resolves to `/private/tmp` would not match, and the
- * miss would look exactly like the refusal the second case is about.
- */
+/** Authentication redirects need a listener reachable from the host; check bind and connect separately on each platform.
+ * For Unix sockets use a short canonical path so path-length limits or /tmp symlinks cannot cause a false confinement refusal. */
 interface ShortRootedPlugin {
   readonly root: string;
   readonly pluginRoot: string;
@@ -2888,20 +2374,8 @@ function makeShortRootedPlugin(): ShortRootedPlugin {
   return { root, pluginRoot, pluginDataDir, socketDir };
 }
 
-/**
- * Bind a Unix-domain socket inside a confined child and report what happened,
- * then — when the bind succeeded — try to reach it FROM THE HOST.
- *
- * The host half is the point. A child can say `listen()` returned, and a child
- * saying that is exactly what the loopback case below produces on Linux while
- * the socket sits in a namespace nobody else is in. Only an outside connect
- * distinguishes "bound" from "bound and reachable", which is the property a
- * plugin's spawned worker actually depends on.
- *
- * @param socketPath where to bind. Passed rather than derived so a case can aim
- * it at a directory the host did NOT register — the control that separates
- * "the registration did it" from "unix sockets are simply allowed".
- */
+/** Bind a Unix-domain socket inside a confined child and report what happened, then; when the bind succeeded; try to reach it FROM THE HOST. The host half is the point. A child can say `listen()` returned, and a child saying that is exactly what the loopback case below produces on Linux while the socket sits in a namespace nobody else is in. Only an
+ * outside connect distinguishes "bound" from "bound and reachable", which is the property a plugin's spawned worker actually depends on. @param socketPath where to bind. Passed rather than derived so a case can aim it at a directory the host did NOT register; the control that separates "the registration did it" from "unix sockets are simply allowed". */
 interface UnixProbeSession {
   request(operation: "bind" | "connect" | "reset", socketPath?: string): Promise<{ ok?: boolean; code?: string; servers?: number; sockets?: number }>;
   stop(): Promise<void>;
@@ -3062,9 +2536,8 @@ describe("a confined child and a Unix-domain socket", () => {
     mkdirSync(process.env.AVE_HOME, { recursive: true });
     await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
     retainedSandbox = true;
-    // beforeAll runs before the file's beforeEach, after the previous case's
-    // afterEach cleared the boot request: the retained child is a plugin
-    // child, wrapped only while plugin-worker confinement was requested.
+    // beforeAll runs before the file's beforeEach, after the previous case's afterEach cleared the boot
+    // request: the retained child is a plugin child, wrapped only while plugin-worker confinement was requested.
     setPluginWorkerConfinementRequestedAtBoot(true);
     session = await openUnixProbeSession(shortPlugin);
   });
@@ -3091,22 +2564,16 @@ describe("a confined child and a Unix-domain socket", () => {
     "binds in the directory the host registered, and the HOST reaches it",
     async () => {
       if (!(await sandboxCasesRun())) return;
-      // The same posture the loopback cases measure against: deny-by-default
-      // egress, no local binding. What changes the answer here is not a looser
-      // network policy — it is that this socket is a FILESYSTEM object in a
-      // directory the spawn registered before wrapping.
-      // Binding an operation target does not depend on a fresh process; the
-      // shared child retains this same kernel grant and is reset after each case.
+      // The same posture the loopback cases measure against: deny-by-default egress, no local binding. What changes the answer here is not a looser network policy; it is that this socket is a FILESYSTEM
+      // object in a directory the spawn registered before wrapping. Binding an operation target does not depend on a fresh process; the shared child retains this same kernel grant and is reset after each case.
       const { child, hostReach } = await runUnixBindProbe(
         session!,
         join(shortPlugin.socketDir, "probe.sock"),
       );
 
       expect(child.ok, JSON.stringify(child)).toBe(true);
-      // The half the child cannot assert about itself, and the half the whole
-      // capability exists for: a loopback TCP bind either fails (macOS) or
-      // succeeds into a namespace nobody else is in (Linux). This one is
-      // reachable from outside on both.
+      // The half the child cannot assert about itself, and the half the whole capability exists for: a loopback TCP bind
+      // either fails (macOS) or succeeds into a namespace nobody else is in (Linux). This one is reachable from outside on both.
       expect(hostReach).toBe("connected");
     },
     120_000,
@@ -3116,20 +2583,12 @@ describe("a confined child and a Unix-domain socket", () => {
     "connects to a worker socket the host bound in the plugin's run directory",
     async () => {
       if (!(await sandboxCasesRun())) return;
-      // The field failure this closes: local-indexer's worker bound its control
-      // socket successfully — an unconfined probe reached it — and the plugin's
-      // own confined child got `connect EPERM` on the same path, every boot, so
-      // the health check timed out at 30s and every one of that plugin's tools
-      // was refused for the rest of the session. `worker-spawn.ts` registers the
-      // directory so the WORKER may bind; nothing registered it for the client,
-      // because its header recorded an assumption — "the host connects from
-      // OUTSIDE the sandbox (unconstrained)" — that stopped being true when
-      // every plugin moved out of process.
+      // The field failure this closes: local-indexer's worker bound its control socket successfully; an unconfined probe reached it; and the plugin's own confined child got `connect EPERM` on the same path, every boot, so the health check timed out at 30s and every one of that plugin's tools was refused
+      // for the rest of the session. `worker-spawn.ts` registers the directory so the WORKER may bind; nothing registered it for the client, because its header recorded an assumption; "the host connects from OUTSIDE the sandbox (unconstrained)"; that stopped being true when every plugin moved out of process.
       const runDir = join(resolvePluginWorkerRunRoot(shortPlugin.pluginDataDir), "w");
       mkdirSync(runDir, { recursive: true, mode: 0o700 });
 
-      // This is another operation under the identical registered envelope;
-      // reset closes every socket before this case and after its result.
+      // This is another operation under the identical registered envelope; reset closes every socket before this case and after its result.
       const report = await runUnixConnectProbe(session!, join(runDir, "control.sock"));
 
       expect(report, JSON.stringify(report)).toEqual({ ok: true });
@@ -3141,19 +2600,8 @@ describe("a confined child and a Unix-domain socket", () => {
     "refuses a socket in a directory that is writable but NOT registered",
     async () => {
       if (!(await sandboxCasesRun())) return;
-      // `pluginDataDir` is in `envelope.write` — the child creates ordinary
-      // files there throughout this suite. So a refusal here cannot be about
-      // write permission, which is what makes it evidence that the Unix-socket
-      // ALLOW is a SEPARATE, directory-scoped grant rather than something the
-      // write jail implies.
-      //
-      // darwin only: the macOS rule is `(subpath <dir>)` and therefore has a
-      // place to miss. On Linux the seccomp re-permit is path-BLIND — it
-      // re-allows the AF_UNIX family for the whole child — so there is no
-      // second directory for this case to be about, and asserting a refusal
-      // there would be asserting something false.
-      // The existing child has never been granted this target. Reusing it
-      // holds the kernel policy fixed while the bind target changes.
+      // Changing only the bind directory distinguishes socket grants from write grants on macOS.
+      // Linux permits the socket family without path scope, so it cannot support the same refusal assertion.
       const { child } = await runUnixBindProbe(
         session!,
         join(shortPlugin.pluginDataDir, "unregistered.sock"),
@@ -3172,13 +2620,11 @@ describe("a confined child and a loopback TCP listener", () => {
     async () => {
       if (!(await sandboxCasesRun())) return;
       const fx = fixture!;
-      // The same posture every other confinement case here measures against,
-      // and the same one production boots: deny-by-default egress, and no
-      // `allowLocalBinding` — because nothing in this app ever sets it.
+      // The same posture every other confinement case here measures against, and the same one production
+      // boots: deny-by-default egress, and no `allowLocalBinding`; because nothing in this app ever sets it.
       await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
       const { child } = await runLoopbackBindProbe(fx);
-      // No `allowLocalBinding` anywhere in this app, so the Seatbelt profile
-      // emits no `network-bind` rule and `listen()` has nothing to match.
+      // No `allowLocalBinding` anywhere in this app, so the Seatbelt profile emits no `network-bind` rule and `listen()` has nothing to match.
       expect(child.ok).toBe(false);
       expect(child.code).toMatch(/EPERM|EACCES|EAFNOSUPPORT|EINVAL/);
     },
@@ -3192,35 +2638,18 @@ describe("a confined child and a loopback TCP listener", () => {
       const fx = fixture!;
       await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
       const { child, hostReach } = await runLoopbackBindProbe(fx);
-      // `--unshare-net` gives the child its own 127.0.0.1. Nothing refuses the
-      // bind because, inside that namespace, nothing is wrong with it.
+      // `--unshare-net` gives the child its own 127.0.0.1. Nothing refuses the bind because, inside that namespace, nothing is wrong with it.
       expect(child.ok).toBe(true);
       expect(typeof child.port).toBe("number");
-      // …and this is the assertion the child could not make about itself: the
-      // host, which is where a browser's redirect would come from, cannot
-      // reach the port the child is certain it is serving.
+      // …and this is the assertion the child could not make about itself: the host, which is where a
+      // browser's redirect would come from, cannot reach the port the child is certain it is serving.
       expect(hostReach).not.toBe("connected");
     },
     120_000,
   );
 });
 
-/**
- * `local-indexer`'s changed paths, through the real confined spawn.
- *
- * Modelled rather than run as the real build, for the same reason the recorder
- * above is: the real plugin starts a Python worker, and what is under test is
- * not whether Python runs but whether the three answers it now takes from the
- * host arrive, and whether the one it used to compute for itself is still
- * wrong in the way that motivated the change.
- *
- * The `homedir()` case is the one worth stating carefully. It asserts that the
- * child's own `homedir()` is NOT the user's — which is the sandbox working as
- * designed — and that `context.userHome` is. Only the pair is evidence: the
- * first alone would pass on a machine where the substitution silently stopped
- * happening, and the second alone would pass if the host had handed over the
- * throwaway.
- */
+/** Verify host-injected worker settings through real confinement; child homedir must differ from userHome while context.userHome retains the user's actual home. */
 describe("the indexer's host-supplied answers, out of process and confined", () => {
   it.runIf(process.platform === "darwin" || process.platform === "linux")(
     "hands over the real home, the real Ave root, and the drive lookup it no longer spawns for",
@@ -3316,11 +2745,9 @@ export default async function createPlugin(context) {
           contextAveHome: string;
           ownHomedir: string;
         };
-        // The substitution is real: what the child would have used as "the
-        // user's home" belongs to nobody.
+        // The substitution is real: what the child would have used as "the user's home" belongs to nobody.
         expect(homes.ownHomedir).not.toBe(homedir());
-        // …and what it is given instead is the one the host reads, which is
-        // also the one the sensitive-path deny floor is anchored to.
+        // …and what it is given instead is the one the host reads, which is also the one the sensitive-path deny floor is anchored to.
         expect(homes.contextUserHome).toBe(homedir());
         expect(homes.contextAveHome).toBe(aveHome());
 
@@ -3331,9 +2758,8 @@ export default async function createPlugin(context) {
         };
         expect(drive.ok).toBe(true);
         expect(drive.value).toBeNull();
-        // The control for that `null`: it is the host's answer, not the child
-        // quietly deciding for itself. Without this the same `null` could have
-        // come from a member that was never reached.
+        // The control for that `null`: it is the host's answer, not the child quietly deciding for
+        // itself. Without this the same `null` could have come from a member that was never reached.
         expect(askedFor).toEqual(["Z:"]);
       } finally {
         await instance.stop?.();
@@ -3343,18 +2769,8 @@ export default async function createPlugin(context) {
   );
 });
 
-/**
- * A `process` entry under the real wrap (docs/design/plugin-hostapi-protocol.md
- * §9.7 P3, decision 36). These prove the spawn path and the environment only —
- * a real non-JS interpreter is the cross-language smoke's job.
- *
- * The launch is `/usr/bin/env <declared pairs> PLUGIN_ROOT=… PLUGIN_DATA=…
- * <command> <args>`, run INSIDE the wrap; the wrapper ASRT spawns — `/bin/bash
- * -c` — sees only the safe host environment and the sandbox HOME. So a
- * variable that would make the wrapper itself run code is set too late to do
- * so, and anything it makes the plugin's own process run is confined.
- */
-/** The context the lifecycle hands a process plugin's factory, over the validation host. */
+/** A `process` entry under the real wrap (docs/design/plugin-hostapi-protocol.md §9.7 P3, decision 36). These prove the spawn path and the environment only; a real non-JS interpreter is the cross-language smoke's job. The launch is `/usr/bin/env <declared pairs> PLUGIN_ROOT=… PLUGIN_DATA=… <command> <args>`, run INSIDE the wrap;
+ * the wrapper ASRT spawns; `/bin/bash -c`; sees only the safe host environment and the sandbox HOME. So a variable that would make the wrapper itself run code is set too late to do so, and anything it makes the plugin's own process run is confined. The context the lifecycle hands a process plugin's factory, over the validation host. */
 function processContext(fx: Fixture, plugin: InstalledPlugin): PluginRuntimeContext {
   return {
     pluginId: plugin.pluginId,
@@ -3371,12 +2787,8 @@ function processContext(fx: Fixture, plugin: InstalledPlugin): PluginRuntimeCont
 }
 
 describe("a process entry, spawned under the real wrap", () => {
-  /**
-   * The executable the manifest names: a shell script that `exec`s this host's
-   * own binary, as Node, on a small protocol responder. It stands in for a
-   * plugin's own launcher, so the spawn and the environment are the production
-   * ones and only the program at the end differs.
-   */
+  /** The executable the manifest names: a shell script that `exec`s this host's own binary, as Node, on a small protocol responder. It
+   * stands in for a plugin's own launcher, so the spawn and the environment are the production ones and only the program at the end differs. */
   function installProcessPlugin(fx: Fixture): { plugin: InstalledPlugin; manifest: PluginManifest } {
     const plugin = installPlugin(fx, "processprobe");
     mkdirSync(join(plugin.pluginRoot, "bin"), { recursive: true });
@@ -3485,14 +2897,8 @@ process.stdin.on("end", () => process.exit(0));
     await child.waitForExit?.();
   }
 
-  /**
-   * The positive control: the same environment given to the wrap's own outer
-   * shell, `/bin/bash -c`, OUTSIDE any sandbox. It must run the fixture, or the
-   * sentinel's absence under the wrap would prove nothing; the control's
-   * sentinel is removed before the wrapped run. Its stdin is `/dev/null`:
-   * on a socket stdin, which is what a default Node pipe is, bash takes its
-   * rshd heuristic, sources `~/.bashrc` and skips `BASH_ENV`.
-   */
+  /** The positive control: the same environment given to the wrap's own outer shell, `/bin/bash -c`, OUTSIDE any sandbox. It must run the fixture, or the sentinel's absence under the wrap would prove nothing; the
+   * control's sentinel is removed before the wrapped run. Its stdin is `/dev/null`: on a socket stdin, which is what a default Node pipe is, bash takes its rshd heuristic, sources `~/.bashrc` and skips `BASH_ENV`. */
   function runOuterShellUnconfined(env: Record<string, string>, sentinel: string): void {
     execFileSync("/bin/bash", ["-c", "true"], {
       env: { ...env, PATH: "/usr/bin:/bin" },
@@ -3531,9 +2937,8 @@ process.stdin.on("end", () => process.exit(0));
     120_000,
   );
 
-  // Linux only. On macOS, System Integrity Protection strips DYLD_* from the
-  // environment of /bin/bash, which is the wrap's outer shell, so the positive
-  // control cannot run the library there and a green case would claim nothing.
+  // Linux only. On macOS, System Integrity Protection strips DYLD_* from the environment of /bin/bash, which is the
+  // wrap's outer shell, so the positive control cannot run the library there and a green case would claim nothing.
   it.runIf(process.platform === "linux")(
     "runs nothing before confinement from an LD_PRELOAD library (Linux, where the control loads it)",
     async () => {
@@ -3542,9 +2947,8 @@ process.stdin.on("end", () => process.exit(0));
       const plugin = installInertPlugin(fx);
       const sentinelDir = mkdtempSync(join(fx.root, "preload-sentinel-"));
       const sentinel = join(sentinelDir, "ran");
-      // A library whose constructor writes the sentinel, built in the plugin's
-      // own root. The C compiler is a precondition of this case, not optional:
-      // a machine without one fails here rather than passing unmeasured.
+      // A library whose constructor writes the sentinel, built in the plugin's own root. The C compiler is a
+      // precondition of this case, not optional: a machine without one fails here rather than passing unmeasured.
       const source = join(fx.root, "preload.c");
       const library = join(plugin.pluginRoot, "preload.so");
       writeFileSync(
@@ -3561,13 +2965,8 @@ process.stdin.on("end", () => process.exit(0));
     },
     120_000,
   );
-  // The host keeps resolving the data root — every storage handle and every
-  // spawn starts from it — so plugin-owned code that could swap it for a link
-  // would steer those. It still writes freely inside the root (the first step,
-  // which is also the proof the script ran under the wrap); it may not rename
-  // the root into another of its write roots, remove it, or so put a link in
-  // its place. macOS: the pinned-root deny (`pinWriteRoots`, asrt-sandbox.ts).
-  // Linux: every write root is a bubblewrap bind mount.
+  // The host keeps resolving the data root; every storage handle and every spawn starts from it; so plugin-owned code that could swap it for a link would steer those. It still writes freely inside the root (the first step, which is also the proof the
+  // script ran under the wrap); it may not rename the root into another of its write roots, remove it, or so put a link in its place. macOS: the pinned-root deny (`pinWriteRoots`, asrt-sandbox.ts). Linux: every write root is a bubblewrap bind mount.
   it.runIf(process.platform === "darwin" || process.platform === "linux")(
     "a plugin child cannot rename, remove or replace its own data root, while writing inside it",
     async () => {
@@ -3600,8 +2999,7 @@ process.stdin.on("end", () => process.exit(0));
     "a plugin worker cannot rename, remove or replace its plugin's data root, while writing inside it",
     async () => {
       if (!(await sandboxCasesRun())) return;
-      // A home short enough for the worker's control-socket path to fit
-      // `sun_path`; the fixture's lives deep under the OS temp directory.
+      // A home short enough for the worker's control-socket path to fit `sun_path`; the fixture's lives deep under the OS temp directory.
       const home = mkdtempSync(join("/tmp", "lvw-"));
       process.env.AVE_HOME = home;
       try {
@@ -3670,12 +3068,8 @@ process.stdin.on("end", () => process.exit(0));
   );
 });
 
-/**
- * Every line of a child's raw stdout that is not one JSON object ended by
- * 0x0A (decision 40). Read beside the decoder, never instead of it: the
- * decoder drops such a line by design and still yields the frame after it, so
- * counting decoded frames cannot see one.
- */
+/** Every line of a child's raw stdout that is not one JSON object ended by 0x0A (decision 40). Read beside the decoder, never
+ * instead of it: the decoder drops such a line by design and still yields the frame after it, so counting decoded frames cannot see one. */
 function rawStdoutViolations(stdout: Buffer): string[] {
   const text = stdout.toString("utf-8");
   const lines = text.split("\n");
@@ -3702,14 +3096,8 @@ interface TreeMeasurement {
   readonly samples: number;
 }
 
-/**
- * Sample the process tree rooted at `rootPid` — the spawned wrapper, as
- * `observeChild` reports it — every 50 ms, until `exited` settles. The first
- * sample completes synchronously before the caller can stop the child. Linux
- * reads only this tree through procfs; other platforms use the process table.
- * RSS is in KiB on both platforms. `process.resourceUsage()` is not used: it
- * reports the test runner.
- */
+/** Sample the process tree rooted at `rootPid`; the spawned wrapper, as `observeChild` reports it; every 50 ms, until `exited` settles. The first sample completes synchronously before the caller can
+ * stop the child. Linux reads only this tree through procfs; other platforms use the process table. RSS is in KiB on both platforms. `process.resourceUsage()` is not used: it reports the test runner. */
 function sampleProcessTree(rootPid: number, exited: Promise<unknown>): Promise<TreeMeasurement> {
   let peakKiB = 0;
   let samples = 0;
@@ -3821,13 +3209,8 @@ it.runIf(process.platform === "darwin" || process.platform === "linux")("reports
   );
 });
 
-/**
- * The cross-language smoke under the real wrap (§9.7 P5, §10.1): the Python
- * fixture installed where a plugin lives, with a v4 receipt at rung `release`
- * that the production integrity check verifies and P3's provenance gate
- * admits, run by the production factory under the live sandbox — with
- * `observeChild` as the cases' only view of the child.
- */
+/** The cross-language smoke under the real wrap (§9.7 P5, §10.1): the Python fixture installed where a plugin lives, with a v4 receipt at rung `release` that the production
+ * integrity check verifies and P3's provenance gate admits, run by the production factory under the live sandbox; with `observeChild` as the cases' only view of the child. */
 describe("the python smoke, confined by the production factory", () => {
   const PYTHON_SMOKE_ID = "python-smoke";
   /** Stands in for the pinned release zip's hash; the gate reads that it is pinned. */
@@ -3895,8 +3278,7 @@ describe("the python smoke, confined by the production factory", () => {
       receiptMs: Math.round(hashedAt - installedAt),
       integrityMs: Math.round(performance.now() - hashedAt),
     });
-    // All launcher bytes are covered before any child runs. Selecting an entry
-    // inside this same read-only root needs no extra filesystem authority.
+    // All launcher bytes are covered before any child runs. Selecting an entry inside this same read-only root needs no extra filesystem authority.
     return new Map(variants.map(({ preamble, command }) => [preamble, {
       fx,
       plugin,
@@ -3906,8 +3288,7 @@ describe("the python smoke, confined by the production factory", () => {
   }
 
   async function installPinnedPythonSmoke(launcherPreamble = ""): Promise<PinnedPythonFixture> {
-    // Provisioning keeps the existing test's cold-install budget. Reuse this
-    // one promise, including rejection, rather than rebuilding a missing fixture.
+    // Provisioning keeps the existing test's cold-install budget. Reuse this one promise, including rejection, rather than rebuilding a missing fixture.
     prepared ??= preparePinnedPythonFixtures();
     const pinned = (await prepared).get(launcherPreamble);
     if (!pinned) throw new Error("No prepared launcher matches the requested preamble");
@@ -3917,8 +3298,7 @@ describe("the python smoke, confined by the production factory", () => {
       verified: { installSource: "git", artifactSha256: ARTIFACT_SHA256, signerKeyId: null, rung: "release", sourceOrigin: "official" },
     });
     assertProcessEntryAdmitted(manifest, integrity.ok ? integrity.verified : undefined);
-    // Only writable state is reset. Receipt-covered payloads stay unchanged
-    // until all fresh child processes and their cases have finished.
+    // Only writable state is reset. Receipt-covered payloads stay unchanged until all fresh child processes and their cases have finished.
     for (const name of PLUGIN_RUNTIME_DIR_NAMES) rmSync(join(plugin.pluginRoot, name), { recursive: true, force: true });
     mkdirSync(plugin.pluginDataDir, { recursive: true, mode: 0o700 });
     process.env.AVE_HOME = fx.aveHome;
@@ -3938,8 +3318,7 @@ describe("the python smoke, confined by the production factory", () => {
   afterEach(async () => {
     for (const [run, state] of running) {
       try {
-        // The observed exit is terminal. EOF cases need no stop or signal;
-        // failure cleanup stops only a child whose exit was not observed.
+        // The observed exit is terminal. EOF cases need no stop or signal; failure cleanup stops only a child whose exit was not observed.
         if (!state.exited) await run.instance.stop!();
       } finally {
         await run.child.exited;
@@ -3971,8 +3350,7 @@ describe("the python smoke, confined by the production factory", () => {
     try {
       instance = await factory(processContext(fx, plugin));
     } catch (error) {
-      // Construction starts teardown asynchronously. Join the spawned child's
-      // terminal exit and sampler before a later case resets its runtime dirs.
+      // Construction starts teardown asynchronously. Join the spawned child's terminal exit and sampler before a later case resets its runtime dirs.
       const child = observed as ObservedPluginChild | undefined;
       await Promise.allSettled([child?.exited, tree]);
       throw error;
@@ -4049,16 +3427,14 @@ describe("the python smoke, confined by the production factory", () => {
       if (!(await sandboxCasesRun())) return;
       const { fx, plugin, manifest } = await installPinnedPythonSmoke();
       const run = await runObserved(fx, plugin, manifest);
-      // What a crashed host looks like to the child: stdin ends. No `stop`,
-      // no signal.
+      // What a crashed host looks like to the child: stdin ends. No `stop`, no signal.
       run.child.endInput();
       const outcome = await Promise.race([
         run.child.exited.then(() => "exited"),
         new Promise<string>((resolve) => setTimeout(() => resolve("still running"), 5_000)),
       ]);
-      // Only a child that failed the rule is terminated, and only after the
-      // failure is recorded; its stop hook may not answer either, so how the
-      // stop went is reported beside the failure rather than in place of it.
+      // Only a child that failed the rule is terminated, and only after the failure is recorded; its stop hook
+      // may not answer either, so how the stop went is reported beside the failure rather than in place of it.
       let stopped = "";
       if (outcome !== "exited") {
         stopped = await Promise.resolve(run.instance.stop!()).then(
@@ -4090,19 +3466,14 @@ describe("the python smoke, confined by the production factory", () => {
 });
 
 describe("the sandbox temp directories", () => {
-  // ASRT writes `TMPDIR=<shared root>` ahead of every wrapped command. Each
-  // confined process instead gets its principal's directory under that root —
-  // its plugin's, for a plugin child, worker or bundled hook; its own, for an
-  // MCP stdio server — set as `TMPDIR` inside the wrap, granted alone, with the
-  // root read-denied. ASRT reads are deny-only and `0o700` stops no process of
-  // the same user, so the grants are the whole of the isolation measured here.
+  // ASRT writes `TMPDIR=<shared root>` ahead of every wrapped command. Each confined process instead gets its principal's directory under that root; its plugin's, for a plugin child, worker or bundled hook; its own, for an MCP
+  // stdio server; set as `TMPDIR` inside the wrap, granted alone, with the root read-denied. ASRT reads are deny-only and `0o700` stops no process of the same user, so the grants are the whole of the isolation measured here.
   it.runIf(process.platform === "darwin" || process.platform === "linux")(
     "no principal reaches another's temp files: two plugin children, a worker, a bundled hook and an MCP stdio wrap",
     async () => {
       if (!(await sandboxCasesRun())) return;
       const fx = fixture!;
-      // Short, for the worker's control-socket path to fit `sun_path`; every
-      // principal runs under it, so all of them share one temp root.
+      // Short, for the worker's control-socket path to fit `sun_path`; every principal runs under it, so all of them share one temp root.
       const home = mkdtempSync(join("/tmp", "lvt-"));
       process.env.AVE_HOME = home;
       try {
@@ -4124,9 +3495,7 @@ describe("the sandbox temp directories", () => {
         expectOwnTemp(childB, b, "child-b");
         expectTempRefused(childB, "child-b", [tempTarget(a, "child-a")]);
 
-        // The positive control for the refusals: a worker of plugin B shares
-        // B's directory, so the same reads and writes that fail across
-        // principals succeed within one.
+        // The positive control for the refusals: a worker of plugin B shares B's directory, so the same reads and writes that fail across principals succeed within one.
         const workerB = await runTempProbe(fx, b, "worker-b", [tempTarget(b, "child-b"), tempTarget(a, "child-a")],
           async (probe) => {
             const worker = await spawnWorker({
@@ -4165,8 +3534,7 @@ describe("the sandbox temp directories", () => {
         expectOwnTemp(serverRun, server, "server");
         expectTempRefused(serverRun, "server", [tempTarget(a, "child-a"), tempTarget(hook, "hook")]);
 
-        // And back the other way: the first child, run again, reaches none of
-        // the principals that came after it.
+        // And back the other way: the first child, run again, reaches none of the principals that came after it.
         const again = await runTempProbe(fx, a, "child-a-again",
           [tempTarget(b, "child-b"), tempTarget(hook, "hook"), tempTarget(server, "server")],
           (probe) => runPluginChildToExit(pluginA, probe));
@@ -4186,8 +3554,7 @@ describe("the sandbox temp directories", () => {
       if (!(await sandboxCasesRun())) return;
       const fx = fixture!;
       await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
-      // A's HOME is kept for the whole case, so B and C try to read a file
-      // that is there; theirs are removed when they exit, as in production.
+      // A's HOME is kept for the whole case, so B and C try to read a file that is there; theirs are removed when they exit, as in production.
       const homeA = createSandboxProcessHome();
       const homeRoot = realpathSync(appOwnedSandboxHomeRoot());
       try {
@@ -4315,13 +3682,8 @@ interface TempProbeReport {
   readonly others: ReadonlyArray<{ readonly read: ProbeAttempt; readonly write: ProbeAttempt }>;
 }
 
-/**
- * Run one confined process that writes `<marker>` into its own `tmpdir()`,
- * reads and writes into each `other` directory, lists the shared root, and
- * leaves its report in its OWN temp directory — which the host reads from the
- * principal's directory, so a process whose `TMPDIR` named anything else
- * leaves no report where the host looks.
- */
+/** Run one confined process that writes `<marker>` into its own `tmpdir()`, reads and writes into each `other` directory, lists the shared root, and leaves its report
+ * in its OWN temp directory; which the host reads from the principal's directory, so a process whose `TMPDIR` named anything else leaves no report where the host looks. */
 async function runTempProbe(
   fx: Fixture,
   principal: SandboxTempPrincipal,
@@ -4367,8 +3729,7 @@ function expectOwnTemp(report: TempProbeReport, principal: SandboxTempPrincipal,
   expect(realpathSync(report.tmpdir), `${marker}: TMPDIR is not its principal's directory`).toBe(realpathSync(tempDirOf(principal)));
   expect(report.writeOwn.ok, `${marker}: ${JSON.stringify(report.writeOwn)}`).toBe(true);
   expect(readFileSync(join(tempDirOf(principal), marker), "utf-8")).toBe(marker);
-  // The shared root is read-denied: refused on macOS; on Linux it is an empty
-  // tmpfs with only this principal's directory bound back into it.
+  // The shared root is read-denied: refused on macOS; on Linux it is an empty tmpfs with only this principal's directory bound back into it.
   if (report.listRoot.ok) {
     expect(report.listRoot.value, `${marker}: listed other principals' directories`)
       .toEqual([sandboxTempPrincipalDirName(principal)]);
@@ -4395,12 +3756,8 @@ interface HomeProbeReport {
   readonly others: readonly ProbeAttempt[];
 }
 
-/**
- * Run one confined process that writes `<marker>` under its `$HOME`, reads it
- * back, reads each of `others`, and lists the HOME root. Its HOME is removed
- * when a plugin child or hook exits, so the report goes to its principal's
- * temp directory, which lasts.
- */
+/** Run one confined process that writes `<marker>` under its `$HOME`, reads it back, reads each of `others`, and lists the HOME
+ * root. Its HOME is removed when a plugin child or hook exits, so the report goes to its principal's temp directory, which lasts. */
 async function runHomeProbe(
   fx: Fixture,
   principal: SandboxTempPrincipal,
@@ -4441,8 +3798,7 @@ function expectOwnHome(report: HomeProbeReport, homeRoot: string, marker: string
   expect(dirname(report.home), `${marker}: HOME is not under the sandbox HOME root`).toBe(homeRoot);
   expect(report.writeOwn.ok, `${marker}: ${JSON.stringify(report.writeOwn)}`).toBe(true);
   expect(report.readOwn.value, `${marker}: ${JSON.stringify(report.readOwn)}`).toBe(marker);
-  // The root is read-denied: refused on macOS; on Linux an empty tmpfs with
-  // only this process's HOME bound back into it.
+  // The root is read-denied: refused on macOS; on Linux an empty tmpfs with only this process's HOME bound back into it.
   if (report.listRoot.ok) {
     expect(report.listRoot.value, `${marker}: listed other processes' HOMEs`).toEqual([basename(report.home)]);
   }
@@ -4474,10 +3830,7 @@ async function runPluginChildToExit(plugin: InstalledPlugin, entry: string): Pro
   });
 }
 
-/**
- * Run `probe` the way an MCP stdio server is run: `wrapBundledCommand`, then
- * spawn. A `home` the caller passes is the caller's to remove.
- */
+/** Run `probe` the way an MCP stdio server is run: `wrapBundledCommand`, then spawn. A `home` the caller passes is the caller's to remove. */
 async function runBundledWrapToExit(
   principal: SandboxTempPrincipal,
   probe: string,
@@ -4512,22 +3865,8 @@ async function runBundledWrapToExit(
   }
 }
 
-/**
- * What plugin-owned code tries against its own data root, as a shell script.
- * It writes inside the root, inventories what is there, renames the root into
- * `$ELSEWHERE` (another of its write roots), removes it if it is still there,
- * and, if the root is gone, puts a link to `$OUTSIDE` in its place. `$result`
- * is "<inside> <inventory-status> <node> <renamed> <remove-errno>"; `emit` reports it.
- * The complete inventory goes to `$ROOT_ENTRIES_REPORT`, outside the target root.
- *
- * The rename is the `rename` syscall through this test's own Node binary, not
- * `mv`: across two bind mounts GNU `mv` gets EXDEV and falls back to copy then
- * delete, so it measures the fallback rather than the rename. `<node>` is the
- * positive control — the binary ran under the wrap at all — so a rename that
- * failed because Node could not start does not read as a pinned root.
- * `ELECTRON_RUN_AS_NODE` makes the Electron binary the suite runs under act as
- * Node; plain Node ignores it.
- */
+/** Use the rename syscall, not a utility that may copy on EXDEV, to test pinned roots.
+ * Keep the inventory outside the target and a successful binary launch as the control; the runtime-as-node flag also works under the desktop test runner. */
 function rootSwapScript(preamble: string, emit: string): string {
   const node = `'${process.execPath.replace(/'/g, "'\\''")}'`;
   return "#!/bin/sh\n" + preamble

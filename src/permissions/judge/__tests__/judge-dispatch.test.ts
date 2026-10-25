@@ -880,8 +880,7 @@ describe("unavailable selected reviewer model through real dispatch lanes", () =
   });
 
   it("refuses a model-less stage on the unavailable reviewer even when a hook redacted its view", async () => {
-    // A redacted view makes the stage pass a tracing classifier, but without
-    // its own model that classifier is the unavailable reviewer's.
+    // A redacted view makes the stage pass a tracing classifier, but without its own model that classifier is the unavailable reviewer's.
     const reviewer = llm("low");
     const subject = makeSubject(reviewer.classifier);
     subject.manager.setReviewer({

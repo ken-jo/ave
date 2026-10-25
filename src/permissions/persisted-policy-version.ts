@@ -9,7 +9,7 @@ export interface PersistedPolicyVersion {
   readonly contentsDigest: string;
 }
 
-/** The exact written bytes and their parsed document must describe the same policy. */
+// The exact written bytes and their parsed document must describe the same policy.
 export function persistedPolicyVersionForContent(filePath: string, raw: string | Uint8Array): PersistedPolicyVersion {
   const text = typeof raw === "string" ? raw : Buffer.from(raw).toString("utf8");
   return Object.freeze({
@@ -19,7 +19,7 @@ export function persistedPolicyVersionForContent(filePath: string, raw: string |
   });
 }
 
-/** Absence and empty lock placeholders are versions; read and JSON errors are not. */
+// Absence and empty lock placeholders are versions; read and JSON errors are not.
 export function capturePersistedPolicyVersion(filePath: string): PersistedPolicyVersion | undefined {
   filePath = resolve(filePath);
   try {

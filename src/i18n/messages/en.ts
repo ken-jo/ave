@@ -1,15 +1,5 @@
-/**
- * English message catalog — the canonical key set for the whole app.
- *
- * Every other locale (see {@link ./ko}) must provide a translation for each
- * key here; missing keys fall back to this English text at runtime and are a
- * type error at build time. Keys are dot-namespaced by surface/component
- * (`settings.appearance.*`, `chatView.*`, …). Placeholders use single braces:
- * `"Hello {name}"`.
- *
- * This file is the seed; surface-specific keys are appended as each module is
- * migrated off hardcoded strings.
- */
+/** English message catalog; the canonical key set for the whole app. Every other locale (see {@link ./ko}) must provide a translation for each key here; missing keys fall back to this English text at runtime and are a type error at build time.
+ * Keys are dot-namespaced by surface/component (`settings.appearance.*`, `chatView.*`, …). Placeholders use single braces: `"Hello {name}"`. This file is the seed; surface-specific keys are appended as each module is migrated off hardcoded strings. */
 export const en = {
   "sandboxPolicy.quarantined": "Sandbox protected Git entries were moved to quarantine (not deleted):\n{moves}\nRestore each entry from the shown quarantine path to its original path after inspecting it.",
   "sandboxPolicy.quarantineFailed": "Sandbox quarantine failed for {path}: {reason}. No deletion was attempted. Already moved entries remain at:\n{moves}",
@@ -222,7 +212,6 @@ export const en = {
 
   "constants.reasoningEffortCustom": "Custom",
 
-  // ── Settings → Appearance → Language ──────────────────────────────
   "settings.appearance.language.title": "Language",
   "settings.appearance.language.description":
     "Choose the language used throughout the app. Changes apply immediately.",
@@ -247,7 +236,6 @@ export const en = {
   "mainDialog.cancelButton": "Cancel",
   "mainDialog.importConversationTitle": "Import conversation",
 
-  // ── E4 — Startup / global shortcuts settings tab ──────────────────
   "settingsContent.tabStartup": "Startup",
   "startupTab.title": "Startup & Shortcuts",
   "startupTab.description":
@@ -319,10 +307,6 @@ export const en = {
     "Ave could not register itself to launch at login on this system. Open Settings to try again.",
 } as const;
 
-/**
- * Union of the *seed* (hand-curated, common) translation keys. The full app
- * key space is `string` (see {@link ./index.MessageKey}) because per-surface
- * keys are merged in from generated fragments; this strict type just keeps the
- * Korean seed catalog ({@link ./ko}) in lockstep with the English seed.
- */
+/** Union of the *seed* (hand-curated, common) translation keys. The full app key space is `string` (see {@link ./index.MessageKey}) because per-surface
+ * keys are merged in from generated fragments; this strict type just keeps the Korean seed catalog ({@link ./ko}) in lockstep with the English seed. */
 export type SeedMessageKey = keyof typeof en;

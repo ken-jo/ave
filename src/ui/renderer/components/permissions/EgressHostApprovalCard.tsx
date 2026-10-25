@@ -1,15 +1,5 @@
-/**
- * The approval dock card for an `egress-host` ask: a sandboxed shell call
- * wants to connect to a host no grant covers. The person denies it once or
- * allows it for one of the scopes the host offered (Allow once, This
- * conversation, This workspace, Always). The answer is `allow-once` with the
- * picked scope, or `deny-once`; the host refuses any scope it did not offer.
- *
- * A workspace terminal tab's ask (`egressHost.terminalTabId`) is drawn in
- * that tab's banner (`TerminalEgressBanner`); this card draws it only when no
- * view of the tab is mounted, and then offers This tab in place of This
- * conversation, as the host does.
- */
+/** The approval dock card for an `egress-host` ask: a sandboxed shell call wants to connect to a host no grant covers. The person denies it once or allows it for one of the scopes the host offered (Allow once, This conversation, This workspace, Always). The answer is `allow-once` with the picked scope, or
+ * `deny-once`; the host refuses any scope it did not offer. A workspace terminal tab's ask (`egressHost.terminalTabId`) is drawn in that tab's banner (`TerminalEgressBanner`); this card draws it only when no view of the tab is mounted, and then offers This tab in place of This conversation, as the host does. */
 import type { ReactElement } from "react";
 import { Button } from "../../../../components/ui/button.js";
 import { useTranslation } from "../../../../i18n/react.js";
@@ -48,8 +38,7 @@ export function EgressHostApprovalCard({
   const payload = request.egressHost;
   const tool = TOOL_LABELS[request.toolName] ?? request.toolName;
   if (payload === undefined) {
-    // A request of this kind always carries its payload; one that does not
-    // can only be denied.
+    // A request of this kind always carries its payload; one that does not can only be denied.
     return (
       <div className="space-y-2 p-3 text-xs" data-testid="egress-approval-card" role="alert">
         <p className="text-destructive">{t("egressApprovalCard.invalid")}</p>

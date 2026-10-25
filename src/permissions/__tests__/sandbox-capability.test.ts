@@ -114,7 +114,7 @@ describe("sandbox-capability", () => {
   });
 });
 
-// ─── Active capability publish (boot ASRT-init path) ─────────────────────────
+// Active capability publish (boot ASRT-init path)
 
 describe("sandbox-capability — setActiveSandboxCapability publish", () => {
   afterEach(() => {
@@ -123,8 +123,7 @@ describe("sandbox-capability — setActiveSandboxCapability publish", () => {
   });
 
   it("publishes kind='asrt' (verified) so detectSandboxCapability + the reviewer strong-relaxation become reachable when the gate is ON", () => {
-    // Mirrors boot.ts: when the gate is ON and initializeAsrtSandbox succeeds,
-    // boot publishes the active capability to the SOT.
+    // Mirrors boot.ts: when the gate is ON and initializeAsrtSandbox succeeds, boot publishes the active capability to the SOT.
     setActiveSandboxCapability({
       kind: "asrt",
       confidence: "verified",
@@ -135,14 +134,12 @@ describe("sandbox-capability — setActiveSandboxCapability publish", () => {
     const cap = detectSandboxCapability();
     expect(cap.kind).toBe("asrt");
     expect(cap.confidence).toBe("verified");
-    // The 'asrt'-strong branch in isWeakSandbox is now reachable: a verified
-    // ASRT capability is NOT weak, so the reviewer's strong relaxation applies.
+    // The 'asrt'-strong branch in isWeakSandbox is now reachable: a verified ASRT capability is NOT weak, so the reviewer's strong relaxation applies.
     expect(isWeakSandbox(cap)).toBe(false);
   });
 
   it("falls back to kind='none' (verified) when no capability was published (gate OFF / Linux deps-missing)", () => {
-    // No setActiveSandboxCapability call — the SOT reports the absence of OS
-    // isolation, matching the default-OFF posture and the non-initialized paths.
+    // No setActiveSandboxCapability call — the SOT reports the absence of OS isolation, matching the default-OFF posture and the non-initialized paths.
     const cap = detectSandboxCapability();
     expect(cap.kind).toBe("none");
     expect(cap.confidence).toBe("verified");
@@ -206,7 +203,7 @@ describe("sandbox-capability — setActiveSandboxCapability publish", () => {
   });
 });
 
-// ─── SandboxKind union members ───────────────────────────────────────────────
+// SandboxKind union members
 
 describe("sandbox-capability — disposable substrate", () => {
   const substrate = { authority: "workload-broker" as const, id: "1".repeat(64) };
@@ -268,9 +265,7 @@ describe("sandbox-capability — disposable substrate", () => {
 
 describe("sandbox-capability — SandboxKind union members", () => {
   it("SandboxKind type includes 'asrt', 'partial' and 'fs-only' (compile-time check via assignment)", () => {
-    // If SandboxKind did not include these values, this block would fail
-    // to compile (caught by typecheck). Runtime assertion confirms the
-    // value round-trips through the type.
+    // If SandboxKind did not include these values, this block would fail to compile (caught by typecheck). Runtime assertion confirms the value round-trips through the type.
     const asrt: SandboxCapability = {
       kind: "asrt",
       confidence: "verified",
@@ -294,7 +289,7 @@ describe("sandbox-capability — SandboxKind union members", () => {
     expect(fsOnly.kind).toBe("fs-only");
   });
 
-  // ── isWeakSandbox (canonical) ──
+  // isWeakSandbox (canonical)
 
   it("isWeakSandbox returns true for kind='partial' (D5: partial evidence → weak)", () => {
     expect(
@@ -337,7 +332,7 @@ describe("sandbox-capability — SandboxKind union members", () => {
     ).toBe(false);
   });
 
-  // ── formatSandboxCapabilityForPrompt — new kind labels ────────────────────
+  // formatSandboxCapabilityForPrompt — new kind labels
 
   it("formatSandboxCapabilityForPrompt includes Korean label for kind='partial'", () => {
     const cap: SandboxCapability = {
@@ -379,7 +374,7 @@ describe("sandbox-capability — SandboxKind union members", () => {
   });
 });
 
-// ─── sandboxRelaxesCategory — per-category relaxation truth table ────────────
+// sandboxRelaxesCategory — per-category relaxation truth table
 
 describe("sandboxRelaxesCategory — per-category, confines-gated relaxation", () => {
   const ALL_CATEGORIES: ToolCategory[] = ["read", "write", "shell", "network", "meta"];
@@ -393,8 +388,7 @@ describe("sandboxRelaxesCategory — per-category, confines-gated relaxation", (
       reason: "ASRT (Seatbelt) active — fs+process+network contained",
       confines: { filesystem: true, process: true, network: true },
     };
-    // Behaviour invariant: isWeakSandbox is false AND every category relaxes —
-    // exactly today's all-or-nothing relax-all behaviour, so no mac/linux change.
+    // Behaviour invariant: isWeakSandbox is false AND every category relaxes — exactly today's all-or-nothing relax-all behaviour, so no mac/linux change.
     expect(isWeakSandbox(fullConfine)).toBe(false);
     for (const category of ALL_CATEGORIES) {
       expect(sandboxRelaxesCategory(fullConfine, category)).toBe(true);
@@ -471,9 +465,7 @@ describe("sandboxRelaxesCategory — per-category, confines-gated relaxation", (
   });
 
   it("no-confines (legacy) verified asrt relaxes ALL categories (back-compat)", () => {
-    // A verified non-none capability WITHOUT a declared confines field keeps the
-    // old all-or-nothing behaviour, so mac/linux-verified asrt published without
-    // confines (and existing fixtures) are unaffected.
+    // A verified non-none capability WITHOUT a declared confines field keeps the old all-or-nothing behaviour, so mac/linux-verified asrt published without confines (and existing fixtures) are unaffected.
     const legacy: SandboxCapability = {
       kind: "asrt",
       confidence: "verified",
@@ -487,7 +479,7 @@ describe("sandboxRelaxesCategory — per-category, confines-gated relaxation", (
   });
 });
 
-// ─── formatSandboxCapabilityForPrompt — confines surfacing ───────────────────
+// formatSandboxCapabilityForPrompt — confines surfacing
 
 describe("formatSandboxCapabilityForPrompt — per-dimension confines", () => {
   it("surfaces confines[net/fs/proc] for Windows partial ASRT so the LLM sees honest confinement", () => {
@@ -502,7 +494,6 @@ describe("formatSandboxCapabilityForPrompt — per-dimension confines", () => {
     expect(result).toContain("executionSandbox=asrt (verified, win32)");
     expect(result).toContain("confines[net:✓ fs:✓ proc:✗]");
   });
-
 
 describe("sandbox-capability — boot-sealed host shell plan", () => {
   const originalPlatform = process.platform;
@@ -632,7 +623,7 @@ describe("sandbox-capability — shell sandbox and plugin-worker confinement are
   });
 });
 
-// ─── Fixture snapshot: sandbox-eval-verdicts.json ────────────────────────────
+// Fixture snapshot: sandbox-eval-verdicts.json
 
 describe("sandbox-eval-verdicts fixture", () => {
   it("fixture file has all 6 expected cases (per-OS runner kinds replaced by 'asrt')", async () => {
@@ -678,8 +669,7 @@ describe("sandbox-capability — Windows MXC substrate", () => {
     bootProxyOnly();
     const plan = getHostShellExecutionPlan();
     expect(plan).toMatchObject({ mode: "asrt", substrate: "mxc", requiresExplicitUserApproval: false });
-    // The workspace terminal reads the process-wide capability, which must not
-    // inherit the containers' confinement.
+    // The workspace terminal reads the process-wide capability, which must not inherit the containers' confinement.
     expect(detectShellSandboxCapability().confines).toEqual({ filesystem: false, process: false, network: false });
     expect(isActiveSandboxShellContained()).toBe(false);
   });

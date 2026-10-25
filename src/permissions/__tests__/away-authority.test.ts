@@ -1,16 +1,4 @@
-/**
- * Away Authority — grant validation and per-call eligibility.
- *
- * These tests drive the answerer directly rather than through the gate,
- * because several of its conditions are not reachable through
- * `requestAndWait` today: the gate rejects a host-shell binding whose request
- * is not `toolCategory === "shell"` before the answerer is consulted, and the
- * one-shot choice contract already forces `durableApprovalRecordAllowed` to
- * false. Those checks exist so that a later change to either fact fails closed
- * here instead of silently handing the answerer a capability, and a guard that
- * no test can make fire is not a guard. The gate-level tests in
- * `approval-gate.test.ts` cover the injection point and the audit rows.
- */
+// Exercise answerer guards directly when gate validation makes them unreachable; future gate changes must still fail closed. Gate integration and audit coverage live in approval-gate.test.ts.
 import { describe, it, expect } from "vitest";
 import {
   AwayAuthority,
@@ -29,7 +17,7 @@ const CONVERSATION = "conv-away-1";
 const SCOPE_DIR = "/srv/away-scope";
 const IN_SCOPE_FILE = "/srv/away-scope/notes.md";
 const OUT_OF_SCOPE_FILE = "/srv/other-scope/notes.md";
-/** Matches the Layer 0 dot-ssh sensitive-path pattern on every platform. */
+// Matches the Layer 0 dot-ssh sensitive-path pattern on every platform.
 const SENSITIVE_DIR = "/srv/away-scope/.ssh/keys";
 const NOW = 1_700_000_000_000;
 const HOUR_MS = 60 * 60 * 1000;
@@ -47,13 +35,13 @@ function makeArmInput(
   };
 }
 
-/** A turn that is remote but not a paired platform: never away-answerable. */
+// A turn that is remote but not a paired platform: never away-answerable.
 const TAILNET_AUTHORITY: RemoteControllerAuthority = {
   kind: "tailnet-controller",
   actorId: "tailnet:actor",
 };
 
-/** The baseline every eligibility test flips exactly one field of. */
+// The baseline every eligibility test flips exactly one field of.
 function makeCandidate(
   overrides: Partial<AwayAuthorityCandidate> = {},
 ): AwayAuthorityCandidate {
@@ -90,19 +78,14 @@ describe("parseAwayAuthorityGrant", () => {
     expect(grant?.categories).toEqual(["read", "write"]);
     expect(grant?.expiresAt).toBe(NOW + HOUR_MS);
     expect(grant?.budget).toBe(5);
-    // The exact Layer 1 form, because that is what `isPathAllowed` compares
-    // against. Asserting the stored value rather than "it changed": on a
-    // case-sensitive POSIX host this input is already canonical, so a
-    // difference test would be vacuous there and only bite on win32/darwin.
+    // The exact Layer 1 form, because that is what `isPathAllowed` compares against. Asserting the stored value rather than "it changed": on a case-sensitive POSIX host this input is already canonical, so a difference test would be vacuous there and only bite on win32/darwin.
     expect(grant?.directories).toEqual([
       caseFoldForMatch(canonicalizePathForMatch(SCOPE_DIR)),
     ]);
   });
 
   it("canonicalizes the armed scope instead of storing what it was handed", () => {
-    // A `..` segment is collapsed by `pathResolve` on every platform, so an
-    // implementation that echoed the raw string fails this everywhere — which
-    // the assertion above cannot claim on its own.
+    // A `..` segment is collapsed by `pathResolve` on every platform, so an implementation that echoed the raw string fails this everywhere — which the assertion above cannot claim on its own.
     const grant = parseAwayAuthorityGrant(
       makeArmInput({ directories: [`${SCOPE_DIR}/nested/..`] }),
       NOW,
@@ -133,9 +116,7 @@ describe("parseAwayAuthorityGrant", () => {
     expect(grant?.directories).toEqual([]);
   });
 
-  // Each row names a gesture the desk may not make. A category outside the
-  // armable set is the security-critical one: `shell` and `network` are the two
-  // that would turn an armed read into arbitrary execution or exfiltration.
+  // Each row names a gesture the desk may not make. A category outside the armable set is the security-critical one: `shell` and `network` are the two that would turn an armed read into arbitrary execution or exfiltration.
   it.each<[string, Partial<AwayAuthorityArmInput>]>([
     ["shell is not armable", { categories: ["shell"] }],
     ["network is not armable", { categories: ["network"] }],
@@ -161,9 +142,7 @@ describe("parseAwayAuthorityGrant", () => {
   });
 
   it("arms the whole scope or none of it", () => {
-    // The sensitive entry is dropped by the sanitizer, which would otherwise
-    // leave a grant over the surviving subset — a scope the owner never agreed
-    // to, silently narrower than the one they were shown.
+    // The sensitive entry is dropped by the sanitizer, which would otherwise leave a grant over the surviving subset — a scope the owner never agreed to, silently narrower than the one they were shown.
     expect(
       parseAwayAuthorityGrant(
         makeArmInput({ directories: [SCOPE_DIR, SENSITIVE_DIR] }),
@@ -194,12 +173,7 @@ describe("AwayAuthority eligibility", () => {
   });
 
   it("refuses a read that names no path, which no directory can bound", () => {
-    // This used to be answered. The reasoning was that a read leaving the
-    // allowed directories arrives as `out-of-allowed-dir` and is refused
-    // above — true only of tools that touch the filesystem. `web_fetch` is
-    // `category: "read"` and escalates to `network` only for private hosts,
-    // so a read-only grant auto-approved arbitrary public egress: read the
-    // secret from an armed directory, then post it out, both answered.
+    // Pathless read tools can perform public egress; armed file reads must not combine with them to auto-approve exfiltration.
     expect(
       armed().consume(
         makeCandidate({ toolCategory: "read", targetFilePaths: [] }),
@@ -209,16 +183,14 @@ describe("AwayAuthority eligibility", () => {
   });
 
   it("refuses when any one of several paths leaves the armed scope", () => {
-    // `move_file` declares ["sourcePath", "destinationPath"]. Binding only
-    // the first would let an in-scope source carry the destination out.
+    // `move_file` declares ["sourcePath", "destinationPath"]. Binding only the first would let an in-scope source carry the destination out.
     expect(
       armed().consume(
         makeCandidate({ targetFilePaths: [IN_SCOPE_FILE, OUT_OF_SCOPE_FILE] }),
         NOW,
       ),
     ).toMatchObject({ answer: false, refusal: "target-out-of-scope" });
-    // Non-vacuous: the same call with both paths in scope is answered, so
-    // the refusal above is about the second path and not about plurality.
+    // Non-vacuous: the same call with both paths in scope is answered, so the refusal above is about the second path and not about plurality.
     expect(
       armed().consume(
         makeCandidate({ targetFilePaths: [IN_SCOPE_FILE, `${SCOPE_DIR}/second.md`] }),
@@ -228,8 +200,7 @@ describe("AwayAuthority eligibility", () => {
   });
 
   it("answers nothing at all before a desk gesture arms it", () => {
-    // The in-memory default. A fresh process is a disarmed process; there is
-    // no persisted grant for a restart to restore.
+    // The in-memory default. A fresh process is a disarmed process; there is no persisted grant for a restart to restore.
     const evaluation = new AwayAuthority().consume(makeCandidate(), NOW);
 
     expect(evaluation).toEqual({
@@ -240,9 +211,7 @@ describe("AwayAuthority eligibility", () => {
     expect(new AwayAuthority().snapshot()).toBeNull();
   });
 
-  // One row per eligibility condition. Every row is the eligible baseline with
-  // exactly one field flipped, so a row that stops failing is a condition that
-  // has stopped being load-bearing.
+  // One row per eligibility condition. Every row is the eligible baseline with exactly one field flipped, so a row that stops failing is a condition that has stopped being load-bearing.
   it.each<[string, Partial<AwayAuthorityCandidate>, string]>([
     [
       "a Tailnet turn is not a paired-platform turn",
@@ -379,8 +348,7 @@ describe("AwayAuthority eligibility", () => {
   });
 
   it("refuses a category the desk did not arm, even though it is armable", () => {
-    // Not "write is unarmable" — write is in the armable set. This is the grant
-    // saying it covers reads only.
+    // Not "write is unarmable" — write is in the armable set. This is the grant saying it covers reads only.
     const readOnly = armed({ categories: ["read"], directories: [SCOPE_DIR] });
 
     expect(readOnly.consume(makeCandidate({ toolCategory: "write" }), NOW))
@@ -392,8 +360,7 @@ describe("AwayAuthority eligibility", () => {
   it("reports refusals about an armed grant and stays quiet about the rest", () => {
     const authority = armed();
 
-    // Nobody's business: an ordinary desk approval, and a Tailnet turn. If
-    // these were reportable, every approval in the app would write a row.
+    // Nobody's business: an ordinary desk approval, and a Tailnet turn. If these were reportable, every approval in the app would write a row.
     expect(
       authority.consume(
         makeCandidate({ remoteControllerAuthority: undefined, remoteControllerOrigin: undefined }),
@@ -425,14 +392,12 @@ describe("AwayAuthority lifecycle", () => {
       answer: true,
       remaining: 1,
     });
-    // The answer that spends the last unit reports the exhaustion, because
-    // after it there is no grant left to report anything.
+    // The answer that spends the last unit reports the exhaustion, because after it there is no grant left to report anything.
     expect(authority.consume(makeCandidate(), NOW)).toEqual({
       answer: true,
       remaining: 0,
     });
-    // Not "0 remaining and still armed": the grant is gone, so a later ask is
-    // not this grant's business any more.
+    // Not "0 remaining and still armed": the grant is gone, so a later ask is not this grant's business any more.
     expect(authority.snapshot()).toBeNull();
     expect(authority.consume(makeCandidate(), NOW)).toMatchObject({
       refusal: "not-armed",
@@ -457,8 +422,7 @@ describe("AwayAuthority lifecycle", () => {
 
     expect(authority.retireAll()).toBe(true);
     expect(authority.snapshot()).toBeNull();
-    // A re-pair mints a fresh, perfectly current authority. The per-call check
-    // cannot tell it apart from the one the desk armed for; this is what does.
+    // A re-pair mints a fresh, perfectly current authority. The per-call check cannot tell it apart from the one the desk armed for; this is what does.
     expect(
       authority.consume(
         makeCandidate({ remoteControllerAuthority: makePlatformBridgeAuthority(true) }),

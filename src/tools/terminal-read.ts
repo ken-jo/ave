@@ -1,31 +1,5 @@
-/**
- * `terminal_read` LLM tool — read the command blocks of the user's terminal tabs.
- *
- * The workspace terminal records each command it runs as a block (command,
- * working directory, exit code, timing, plain-text output; see
- * main/terminal/terminal-blocks.ts). This tool is the agent's read path to
- * those records, so "why did my build fail?" can be answered from what the
- * user's terminal actually printed.
- *
- *   {} → inventory of both lanes with host-issued session identities.
- *   { lane, terminalSessionId, tabId?, blockId?, limit? } → exact session read.
- * A block ID belongs only to that lane and incarnation. Without tabId, the
- * bound/active logical tab is resolved under the existing window ownership.
- *
- * Results are framed `<terminal-output trust="untrusted-terminal-data">`
- * (fence-sanitizer.ts): command text and output are whatever programs printed,
- * so the model is told they are data, and no printed close tag can end the
- * frame. Errors are host-written and stay bare JSON.
- *
- * SCOPE. A session sees only the terminals of the app window that hosts it —
- * the window whose rail it can see them in. A sub-agent inherits its parent's
- * window (walking up through nested children); a routine, a work-board run
- * or any session no window hosts has no terminals and is refused.
- *
- * category="read": it reads host-owned records and nothing else — it cannot
- * write to a terminal or start a command. It still takes the ordinary read
- * path (no standing allow), because terminal output can hold private data.
- */
+/** Read host-issued terminal sessions and their lane-bound blocks only in the calling conversation's window; child sessions inherit scope and windowless runs are refused.
+ * Frame command/output records as sanitized untrusted data; this ordinary permission-checked read cannot type or spawn. */
 import { createDynamicTool, type Tool } from "./base.js";
 import { getWindowTerminalBlockTracker, getWindowTerminalBlockSession, listTerminalBlockTabs } from "../main/terminal/terminal-blocks.js";
 import { isTerminalLane, type TerminalSessionRef } from "../shared/terminal-session.js";
@@ -39,26 +13,17 @@ const DEFAULT_LIMIT = 5;
 const MAX_LIMIT = 20;
 /** Block summaries listed per tab when no tab is named. */
 const SUMMARIES_PER_TAB = 10;
-/**
- * Output characters returned per call across all blocks. A single block keeps
- * about 72K characters at most (64K head and tail plus its open line); this
- * keeps a 20-block read from flooding the turn.
- */
+/** Output characters returned per call across all blocks. A single block keeps about 72K characters
+ * at most (64K head and tail plus its open line); this keeps a 20-block read from flooding the turn. */
 const MAX_RESPONSE_OUTPUT_CHARS = 96 * 1024;
 
 export interface TerminalReadToolDeps extends SessionWindowScopeDeps {
-  /**
-   * The terminal a conversation reads when a call names none: the terminal its
-   * pane chat is bound to, else the one the user is looking at in the window.
-   * `sessionId` is the conversation the window hosts (a sub-agent's parent).
-   */
+  /** The terminal a conversation reads when a call names none: the terminal its pane chat is bound to, else the one
+   * the user is looking at in the window. `sessionId` is the conversation the window hosts (a sub-agent's parent). */
   defaultTerminalTabId?: (windowId: number, sessionId: string) => string | undefined;
 }
 
-/**
- * The app window whose terminals `sessionId` may read (session-window-scope.ts):
- * its own window, else its parent's when it is a running sub-agent, else none.
- */
+/** The app window whose terminals `sessionId` may read (session-window-scope.ts): its own window, else its parent's when it is a running sub-agent, else none. */
 export function resolveTerminalWindowId(
   sessionId: string | undefined,
   deps: SessionWindowScopeDeps,
@@ -74,13 +39,8 @@ export function terminalToolFailure(error: string, lane?: TerminalSessionRef["la
 /** The open tag of the fence every successful result is framed in. */
 const TERMINAL_OUTPUT_FENCE_OPEN = '<terminal-output trust="untrusted-terminal-data">';
 
-/**
- * Frame a result as untrusted terminal data. Everything in it — command text,
- * output, directories — is whatever programs printed, so no field may close
- * the frame: a forged `</terminal-output>` is neutralized in every string
- * before the JSON is built (afterwards, the inserted backslash could form an
- * invalid JSON escape such as `\ `).
- */
+/** Frame a result as untrusted terminal data. Everything in it; command text, output, directories; is whatever programs printed, so no field may close the frame: a
+ * forged `</terminal-output>` is neutralized in every string before the JSON is built (afterwards, the inserted backslash could form an invalid JSON escape such as `\ `). */
 export function fenceTerminalData(payload: unknown) {
   const notice = terminalSandboxWindowNotice();
   const record = payload !== null && typeof payload === "object" ? payload as Record<string, unknown> : undefined;
@@ -188,8 +148,7 @@ export function createTerminalReadTool(deps: TerminalReadToolDeps): Tool {
         return terminalToolFailure("targeted terminal_read requires lane and terminalSessionId; call terminal_read with no arguments to list sessions");
       }
 
-      // An explicit tabId wins; without one, blockId/limit read the terminal
-      // the user is looking at, when there is one.
+      // An explicit tabId wins; without one, blockId/limit read the terminal the user is looking at, when there is one.
       const tabId = (input.tabId as string | undefined) ?? activeTabId;
       if (tabId === undefined) {
         return terminalToolFailure("blockId and limit require tabId when no terminal is active; call terminal_read with no arguments to list terminals");

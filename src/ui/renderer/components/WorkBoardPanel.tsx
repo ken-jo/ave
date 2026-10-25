@@ -1685,6 +1685,22 @@ export function WorkBoardPanel({ api, project, focusItemId, onFocusConsumed }: W
     },
   ], [capReached, refresh]));
 
+  const renderColumn = (heading: string, columnItems: WorkItemResolved[], emptyLabel: string, testId: string) => (
+    <BoardColumn
+      heading={heading}
+      items={columnItems}
+      runState={runState}
+      emptyLabel={emptyLabel}
+      loading={loading}
+      onStart={onStart}
+      onComplete={onComplete}
+      onReopen={onReopen}
+      onRun={onRun}
+      onOpenDetail={onOpenDetail}
+      testId={testId}
+    />
+  );
+
   return (
     <>
       <div
@@ -1711,45 +1727,9 @@ export function WorkBoardPanel({ api, project, focusItemId, onFocusConsumed }: W
             onDismiss={onProposalDismiss}
           />
           <div className="grid min-h-0 gap-3 sm:grid-cols-3">
-            <BoardColumn
-              heading={t("workBoard.columnPlanned")}
-              items={planned}
-              runState={runState}
-              emptyLabel={t("workBoard.emptyPlanned")}
-              loading={loading}
-              onStart={onStart}
-              onComplete={onComplete}
-              onReopen={onReopen}
-              onRun={onRun}
-              onOpenDetail={onOpenDetail}
-              testId="work-board-column-planned"
-            />
-            <BoardColumn
-              heading={t("workBoard.columnInProgress")}
-              items={inProgress}
-              runState={runState}
-              emptyLabel={t("workBoard.emptyInProgress")}
-              loading={loading}
-              onStart={onStart}
-              onComplete={onComplete}
-              onReopen={onReopen}
-              onRun={onRun}
-              onOpenDetail={onOpenDetail}
-              testId="work-board-column-in-progress"
-            />
-            <BoardColumn
-              heading={t("workBoard.columnCompleted")}
-              items={completed}
-              runState={runState}
-              emptyLabel={t("workBoard.emptyCompleted")}
-              loading={loading}
-              onStart={onStart}
-              onComplete={onComplete}
-              onReopen={onReopen}
-              onRun={onRun}
-              onOpenDetail={onOpenDetail}
-              testId="work-board-column-completed"
-            />
+            {renderColumn(t("workBoard.columnPlanned"), planned, t("workBoard.emptyPlanned"), "work-board-column-planned")}
+            {renderColumn(t("workBoard.columnInProgress"), inProgress, t("workBoard.emptyInProgress"), "work-board-column-in-progress")}
+            {renderColumn(t("workBoard.columnCompleted"), completed, t("workBoard.emptyCompleted"), "work-board-column-completed")}
           </div>
           <div className="border-t pt-4">
             <ReportsSection api={api} project={project} />

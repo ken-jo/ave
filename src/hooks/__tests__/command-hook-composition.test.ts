@@ -1,13 +1,4 @@
-/**
- * #811 command-hooks milestone — composition + back-compat through the manager.
- *
- * Spec ref: docs/architecture/hook-runtime-expansion-design.md §4.3 / §9.
- *
- * Covers: the ScriptHookManager dispatching the UNIFIED registry (trusted `.sh`
- * + trusted config entries), deny precedence across origins, the rule that a
- * later allow can never upgrade an earlier deny, and that with no config the
- * behavior is identical to today.
- */
+// Trusted script and config hooks share deny precedence; later allows cannot upgrade a deny (docs/architecture/hook-runtime-expansion-design.md).
 import { describe, expect, it } from "vitest";
 import { resolve } from "node:path";
 import { ScriptHookManager } from "../script-hook-manager.js";
@@ -59,7 +50,6 @@ describe("#811 manager — unified registry dispatch", () => {
       [shHook("pre-allow.sh")],
       [configEntry({ id: "PreToolUse#0.0", command: ["python3", resolve(FIXTURE_ROOT, "cmd-policy.py")] })],
     );
-    // toolName contains "blocked" → the python config hook denies.
     const out = await m.runPreToolUse({ ...payload, toolName: "blocked_thing" }, shellOpts);
     expect(out.decision).toBe("deny");
     expect(out.reason).toContain("blocked_thing");
@@ -67,14 +57,13 @@ describe("#811 manager — unified registry dispatch", () => {
 
   it.skipIf(!HAS_PYTHON)("a later allow cannot upgrade an earlier deny", async () => {
     const m = new ScriptHookManager();
-    // Order: .sh deny (runs first), then config allow. Chain must stop at deny.
+    // Order:.sh deny (runs first), then config allow. Chain must stop at deny.
     m.setTrustedRegistry(
       [shHook("pre-deny.sh")],
       [configEntry({ id: "PreToolUse#0.0", command: ["python3", resolve(FIXTURE_ROOT, "cmd-policy.py")] })],
     );
     const out = await m.runPreToolUse(payload, shellOpts);
     expect(out.decision).toBe("deny");
-    // Only the first (denying) hook ran — the config allow never executed.
     expect(out.results).toHaveLength(1);
     expect(out.results[0].decision).toBe("deny");
   });
@@ -85,7 +74,6 @@ describe("#811 manager — unified registry dispatch", () => {
       [],
       [configEntry({ id: "PreToolUse#0.0", matcher: "^mcp__.*$", command: ["./never-runs.sh"] })],
     );
-    // fs_write does not match mcp__* → no matching hooks, allow with no results.
     const out = await m.runPreToolUse(payload);
     expect(out.decision).toBe("allow");
     expect(out.results).toEqual([]);

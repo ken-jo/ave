@@ -15,8 +15,7 @@ export function SandboxStatusBadge({
 }) {
   const { t } = useTranslation();
   const plan = capability?.shellExecutionPlan;
-  // No host snapshot means status is still unknown; platform potential and
-  // desired settings cannot stand in for the actual execution route.
+  // No host snapshot means status is still unknown; platform potential and desired settings cannot stand in for the actual execution route.
   if (!statusQueryFailed && (!plan || plan.sandboxed)) return null;
   const reasonText =
     plan?.fallbackReason === "platform-unsupported"

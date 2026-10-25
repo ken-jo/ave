@@ -22,8 +22,7 @@ function reviewer(decision: "allow" | "ask", mode: "auto" | "default" = "auto") 
 }
 
 describe("sandbox domain review", () => {
-  // A background (headless) request never reaches the requester: egress-ask
-  // denies it before asking (I5, owner 2026-10-16).
+  // A background (headless) request never reaches the requester: egress-ask denies it before asking (I5, owner 2026-10-16).
   it("escalates an ambiguous auto-reviewed request to the existing approval gate", async () => {
     const manager = reviewer("ask");
     const requestAndWait = vi.fn(async () => ({ requestId: "network-ask", choice: "deny-once" as const }));

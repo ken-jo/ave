@@ -1,13 +1,5 @@
-/**
- * Execute bodies of the agent browser tools (browser-tools.ts holds their
- * schemas and policy hooks). Loaded on the first browser tool call, so none
- * of this sits in the main process's initial bundle.
- *
- * Every execute re-resolves the tab within the calling conversation's window,
- * re-checks the page against the scope the call was authorized under
- * (TOCTOU), then runs the page action. Everything read from a page is framed
- * `<browser-content trust="untrusted-web-data">`.
- */
+// Lazy-loaded browser actions re-resolve tabs within the caller's window and recheck approved page scope at execution.
+// Frame every page read as untrusted web data.
 import type { ToolExecutionContext, ToolExecutionResult } from "./types.js";
 import { authorizedApprovalMemoryScope } from "./approval-memory-context.js";
 import { neutralizeFenceClose, neutralizeFenceOpen } from "../shared/fence-sanitizer.js";
@@ -51,7 +43,7 @@ function pageString(value: string, state: { truncated: boolean }): string {
   return `${safe.slice(0, BROWSER_PAGE_STRING_MAX_CHARS - 1)}…`;
 }
 
-/** Preserve valid JSON while dropping entries that cannot fit the result budget. */
+// Preserve valid JSON while bounding header entries.
 function boundedHeader(value: unknown, budget: number, state: { truncated: boolean }, depth = 0): string | undefined {
   if (depth > 20) {
     state.truncated = true;
@@ -80,11 +72,7 @@ function boundedHeader(value: unknown, budget: number, state: { truncated: boole
   return encoded.length <= budget ? encoded : undefined;
 }
 
-/**
- * Frame a result as untrusted web data. Every string is neutralized before
- * the JSON is built, and a page outline after it, so no page text can close
- * the frame (or open a fake second one).
- */
+// Neutralize all page strings before framing so content cannot close or forge a trust boundary.
 export function fenceBrowserContent(header: unknown, body?: string): string {
   const prefix = `${FENCE_OPEN}\n${t("be_browserTools.untrusted")}\n`;
   const suffix = "\n</browser-content>";
@@ -126,7 +114,6 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
   deps: BrowserToolDeps<G>,
   policy: BrowserToolPolicy<G>,
 ): BrowserToolExecutors {
-  /** Window, tab, and the signal that cancels the action — or why not. */
   const live = (
     input: BrowserToolInput,
     ctx: ToolExecutionContext,
@@ -159,10 +146,7 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
     return { ok: true, windowId: scope.windowId, resolved, signal: AbortSignal.any(signals) };
   };
 
-  /**
-   * TOCTOU: the page this call was approved for must still be the page the
-   * tab shows, in the concrete tab and document that supplied the approval.
-   */
+  // Recheck the exact approved tab and document to prevent page changes during approval.
   const unchangedSinceApproval = (
     ctx: ToolExecutionContext,
     resolved: ResolvedBrowserTab<G>,
@@ -237,7 +221,7 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
     finally { deps.tabs.releaseControl(target.resolved.tab.handle, lease.id); }
   });
 
-  /** A model-supplied URL: http(s) only, no embedded credentials. */
+  // Model URLs allow only HTTP(S) without embedded credentials.
   const validUrl = (value: unknown): { ok: true; url: string; origin: string } | { ok: false; result: ToolExecutionResult } => {
     if (typeof value !== "string" || value.length === 0) return { ok: false, result: failure("url must be an http:// or https:// URL") };
     const checked = validateExternalUrl(value);
@@ -251,7 +235,6 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
   const validRef = (input: BrowserToolInput): string | null =>
     typeof input.ref === "string" && REF_PATTERN.test(input.ref) ? null : "ref must be an element ref from browser_snapshot, like \"e12\"";
 
-  /** click / type / press_key: approved per page, re-checked, then acted. */
   const pageAction = (
     name: BrowserToolName,
     validate: (input: BrowserToolInput) => string | null,
@@ -462,8 +445,7 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
       const documentId = tab.documentId;
       const guest = tab.guest;
       const signal = AbortSignal.any([tab.actions.signal, ...(ctx.abortSignal ? [ctx.abortSignal] : [])]);
-      // The bound view starts blank. Navigation installs the origin guard before
-      // allowing the approved URL or any redirect to load.
+      // Install the origin guard before navigating the blank bound view or following redirects.
       const lease = deps.tabs.acquireControl(tab, actorOf(ctx, deps));
       try { return await run(async (actions) => {
         const fresh = deps.tabs.liveTabInWindow(outcome.tabId, scope.windowId);

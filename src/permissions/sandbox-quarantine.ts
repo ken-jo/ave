@@ -21,7 +21,7 @@ export interface SandboxQuarantine {
   notice(): string | undefined;
 }
 
-/** The policy denies this host-owned namespace even inside a writable root. */
+// The policy denies this host-owned namespace even inside a writable root.
 export function sandboxQuarantineRoot(): string {
   return namespace.dir;
 }
@@ -34,7 +34,7 @@ function entryAt(path: string): ReturnType<typeof lstatSync> | undefined {
   }
 }
 
-/** True only when the path, or a missing ancestor, no longer exists at all. */
+// True only when the path, or a missing ancestor, no longer exists at all.
 function vanished(path: string): boolean {
   try { lstatSync(path); return false; }
   catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT"; }
@@ -45,7 +45,7 @@ function sameEntry(path: string, identity: NonNullable<ReturnType<typeof lstatSy
   return current?.dev === identity.dev && current.ino === identity.ino;
 }
 
-/** Quarantine retains the original inode and never copies or deletes an entry. */
+// Quarantine retains the original inode and never copies or deletes an entry.
 export async function createSandboxQuarantine(commandId: string): Promise<SandboxQuarantine> {
   const existing = entryAt(namespace.dir);
   if (existing && (!existing.isDirectory() || existing.isSymbolicLink())) {
@@ -103,16 +103,14 @@ export async function createSandboxQuarantine(commandId: string): Promise<Sandbo
             || targetIdentity.dev !== slotIdentity.dev || targetIdentity.ino !== slotIdentity.ino) {
             throw new Error("Sandbox quarantine directory identity changed");
           }
-          // Resolve only the final entry names through pinned directory handles.
-          // A concurrent parent-path replacement cannot redirect either rename.
+          // Resolve only the final entry names through pinned directory handles. A concurrent parent-path replacement cannot redirect either rename.
           sourceEntry = `/proc/self/fd/${sourceDirectory}/${basename(original)}`;
           targetEntry = `/proc/self/fd/${targetDirectory}/${basename(quarantined)}`;
         }
         const identity = lstatSync(sourceEntry);
         if (entryAt(targetEntry)) throw new Error("Sandbox quarantine destination already exists");
         replaceStagedFile(sourceEntry, targetEntry);
-        // Record immediately: even a later identity failure must expose the
-        // restore location of every entry whose atomic rename already landed.
+        // Record immediately: even a later identity failure must expose the restore location of every entry whose atomic rename already landed.
         moved.push({ original, quarantined });
         if (!sameEntry(parent, parentIdentity) || !sameEntry(targetEntry, identity)) {
           throw new Error("Sandbox quarantine entry identity changed");
@@ -120,10 +118,7 @@ export async function createSandboxQuarantine(commandId: string): Promise<Sandbo
         log.warn(`Quarantined protected Git entry: ${JSON.stringify(original)} -> ${JSON.stringify(quarantined)}`);
       } catch (error) {
         const code = (error as NodeJS.ErrnoException).code;
-        // A concurrent writer in a shared root (another process's repository
-        // in TMPDIR) may remove the entry, or its parent, before the sweep
-        // reaches it. Nothing remains to contain; any other failure, a
-        // replaced parent included, still fails the cleanup.
+        // A concurrent writer in a shared root (another process's repository in TMPDIR) may remove the entry, or its parent, before the sweep reaches it. Nothing remains to contain; any other failure, a replaced parent included, still fails the cleanup.
         if (code === "ENOENT" && vanished(original)) {
           log.warn(`Protected Git entry disappeared before quarantine: ${JSON.stringify(original)}`);
           return;

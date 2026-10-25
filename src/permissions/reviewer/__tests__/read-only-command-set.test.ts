@@ -1,15 +1,4 @@
-/**
- * Which verbs classify `read` decides which shell calls run without asking, so
- * this set is where a widening either helps the user or opens a hole.
- *
- * `cd` is in it: it mutates nothing on disk, and it does not persist to the
- * next call. It is only safe there because the shell path policy now tracks
- * `cd` when resolving relative operands — without that, `cd` is precisely the
- * verb that makes a later operand mean something other than it appears to.
- *
- * `split` is NOT in it: with no flags at all it writes `xaa`, `xab`, … into the
- * working directory.
- */
+// cd is read-only only because path policy tracks its effect on later relative operands; split writes files and must not qualify.
 import { describe, expect, it } from "vitest";
 
 import { inspectBuiltinCommandRisk } from "../../__tests__/test-helpers.js";
@@ -36,8 +25,7 @@ describe("read-only command set", () => {
   });
 
   it("keeps a cd carrying a command substitution out of read", () => {
-    // The tokenizer fails these closed; asserting it here pins that `cd` did
-    // not acquire an exemption on the way into the set.
+    // The tokenizer fails these closed; asserting it here pins that `cd` did not acquire an exemption on the way into the set.
     expect(inspectBuiltinCommandRisk("cd $(cat /tmp/target) && ls")).toBe("shell");
   });
 
@@ -50,10 +38,7 @@ describe("read-only command set", () => {
 });
 
 describe("sed script file access", () => {
-  // The scanner returns the operand SPAN, not just a yes/no, because the shell
-  // path policy has to check the file sed will open. sed takes the filename
-  // from just after the command letter to end of line, so the space is optional
-  // and recovering the name by splitting on whitespace yielded `w/tmp/x`.
+  // The scanner returns the operand SPAN, not just a yes/no, because the shell path policy has to check the file sed will open. sed takes the filename from just after the command letter to end of line, so the space is optional and recovering the name by splitting on whitespace yielded `w/tmp/x`.
   it.each([
     ["w with no space", "w/tmp/outside/x.txt", ["/tmp/outside/x.txt"]],
     ["w with a space", "w /tmp/outside/x.txt", ["/tmp/outside/x.txt"]],
@@ -80,8 +65,7 @@ describe("sed script file access", () => {
   });
 
   it("reports execution it cannot read without inventing a command", () => {
-    // The `e` flag runs the pattern space AFTER substitution, and a bare `e`
-    // runs it as it stands. Neither text exists in the script.
+    // The `e` flag runs the pattern space AFTER substitution, and a bare `e` runs it as it stands. Neither text exists in the script.
     for (const script of ["s/a/b/e", "e", "s|a|b|e"]) {
       expect(inspectSedScriptFileAccess(script)).toEqual({
         hasWriteOrExec: true,

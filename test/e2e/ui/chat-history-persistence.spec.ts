@@ -1,11 +1,8 @@
 import { test, expect } from './fixtures.js';
 import { buildIsolatedElectronEnv, launchElectron } from './seeded-electron.js';
 
-/**
- * Chat history persistence — send a message, restart the app (reusing the
- * same isolated userData dir), and verify session/history is restored.
- * Skips gracefully if the chat input or a session affordance is missing.
- */
+/** Chat history persistence; send a message, restart the app (reusing the same isolated userData dir), and
+ * verify session/history is restored. Skips gracefully if the chat input or a session affordance is missing. */
 test('chat history persists across app restart, or skips cleanly', async ({
   app,
   mainWindow,
@@ -54,10 +51,8 @@ test('chat history persists across app restart, or skips cleanly', async ({
 
   try {
     const win2 = await app2.firstWindow();
-    // The app first loads a data: splash URL, then boots and replaces it
-    // with the real index.html. domcontentloaded fires on the splash where
-    // there is no #root — wait for the persistent main-toolbar testid
-    // instead, mirroring fixtures.mainWindow's bootstrap gate.
+    // The app first loads a data: splash URL, then boots and replaces it with the real index.html. domcontentloaded fires on the
+    // splash where there is no #root; wait for the persistent main-toolbar testid instead, mirroring fixtures.mainWindow's bootstrap gate.
     await win2.locator('[data-testid="main-toolbar"]').first().waitFor({
       state: 'visible',
       timeout: 60_000,

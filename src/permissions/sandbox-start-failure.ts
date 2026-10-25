@@ -1,18 +1,4 @@
-/**
- * Classify why the ASRT sandbox could not start, once, at the boot gate.
- *
- * ASRT reports a failed dependency check as English free text — "bubblewrap
- * (bwrap) not installed", "socat not executable at <path>" — which can carry
- * local paths and is not localized. Those strings stay in the main-process log
- * and in `SandboxBootOutcome.dependencyErrors`; every surface that tells the
- * user why the sandbox is unavailable renders the codes this returns instead.
- *
- * The patterns below are ASRT's own wording (sandbox-runtime
- * `linux-sandbox-utils.js` / `sandbox-manager.js`); the companion test reads
- * the installed package to catch an upstream rename. A message that matches
- * none of them is still a failed check, so it is reported as
- * `dependency-check-failed` rather than dropped.
- */
+// Dependency failures may contain local paths: keep raw wording in host logs and map user surfaces to codes. Unknown wording still fails as dependency-check-failed; drift tests pin package messages.
 import type { SandboxStartFailureCause } from "../shared/sandbox-capability-info.js";
 
 const LINUX_DEPENDENCY_PATTERNS: ReadonlyArray<readonly [RegExp, SandboxStartFailureCause]> = [
@@ -21,21 +7,13 @@ const LINUX_DEPENDENCY_PATTERNS: ReadonlyArray<readonly [RegExp, SandboxStartFai
   [/^ripgrep \(.*\) not found\b/, "missing-ripgrep"],
 ];
 
-/**
- * ASRT's `resolveSrtWin` wording when the bundled srt-win binary is not there
- * (`srt_win_not_found`): a packaging fault that reinstalling Ave repairs.
- */
+// ASRT's `resolveSrtWin` wording when the bundled srt-win binary is not there (`srt_win_not_found`): a packaging fault that reinstalling Ave repairs.
 const WINDOWS_BINARY_MISSING_PATTERNS: readonly RegExp[] = [
   /^no srt-win path configured\b/,
   /^windows\.srtWin\.path is set to '.*' but the file does not exist\b/,
 ];
 
-/**
- * The causes behind a failed dependency check, in first-seen order without
- * repeats. On Windows a missing srt-win binary is its own cause; every other
- * dependency error is the srt-win user or WFP state, which the one-time
- * administrator setup provisions.
- */
+// The causes behind a failed dependency check, in first-seen order without repeats. On Windows a missing srt-win binary is its own cause; every other dependency error is the srt-win user or WFP state, which the one-time administrator setup provisions.
 export function classifySandboxDependencyErrors(
   platform: NodeJS.Platform,
   errors: readonly string[],

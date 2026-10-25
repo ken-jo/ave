@@ -76,10 +76,8 @@ export const CURL_OPTION_TABLE: ShellOptionTable = {
   ],
 };
 
-// Source: GNU wget 1.21.4 manual, Invoking / Wgetrc Commands (doc/wget.texi).
-// File command aliases also checked against the same release's src/init.c.
-// -n takes the legacy negation letters; the documented multi-letter aliases
-// are exact flags, not individual boolean letters for cluster scanning.
+// Source: wget 1.21.4 doc/wget.texi and src/init.c define option roles and file-command aliases.
+// -n uses negation letters; multi-letter aliases are exact flags, never clusters.
 export const WGET_OPTION_TABLE: ShellOptionTable = {
   optionalData: [],
   flag: [
@@ -130,8 +128,7 @@ export const WGET_OPTION_TABLE: ShellOptionTable = {
   ],
 };
 
-// Names are normalized by removing hyphens/underscores and folding case.
-// Unlisted commands receive no exemption; additions require a role decision.
+// Normalize case, hyphens, and underscores; unlisted commands get no exemption without a role decision.
 export const WGETRC_COMMAND_TABLE = {
   path: [
     "ca_certificate", "ca_directory", "certificate", "dir_prefix", "egd_file", "input", "load_cookies",

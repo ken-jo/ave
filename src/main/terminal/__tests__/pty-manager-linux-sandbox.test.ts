@@ -1,18 +1,6 @@
 import { spawnTerminal, writeTerminal, resizeTerminal, typeTerminalCommand, verifyTerminalShell, getTerminalBlockTracker } from "../../../__tests__/support/terminal-agent-fixture.js";
-/**
- * The workspace terminal under the REAL Linux sandbox (bubblewrap through the
- * sandbox runtime, util-linux script as the shell's pty relay, node-pty):
- * what the user's keys and terminal_run do there. Unit tests stub every one
- * of those layers; the failures this file guards against only exist with all
- * of them present:
- *  - Ctrl-C used to reach the outer bubblewrap as SIGINT (the pty's
- *    foreground group) and end the whole terminal;
- *  - terminal_run found bubblewrap, not the shell, in the foreground and
- *    refused every sandboxed terminal.
- *
- * Linux only, and only where the sandbox can start (bubblewrap, socat,
- * ripgrep; AVE_REQUIRE_SANDBOX_CASES=1 turns a skip into a failure).
- */
+/** The workspace terminal under the REAL Linux sandbox (bubblewrap through the sandbox runtime, util-linux script as the shell's pty relay, node-pty): what the user's keys and terminal_run do there. Unit tests stub every one of those layers; the failures this file guards against only exist with all of them present: - Ctrl-C used to
+ * reach the outer bubblewrap as SIGINT (the pty's foreground group) and end the whole terminal; - terminal_run found bubblewrap, not the shell, in the foreground and refused every sandboxed terminal. Linux only, and only where the sandbox can start (bubblewrap, socat, ripgrep; AVE_REQUIRE_SANDBOX_CASES=1 turns a skip into a failure). */
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -100,9 +88,8 @@ async function startSandboxedShell(shellPath: string, tabId: string): Promise<Te
   try {
     await until(() => tracker.promptEndCount() > 0, 20_000);
     await until(() => tracker.promptState() === "ready" || tracker.promptState() === "not-found-handler");
-    // A system startup file may define a handler: the user has a prompt,
-    // while agent typing is refused. Check that refusal before removing the
-    // handler through the user's input path for the rest of these cases.
+    // A system startup file may define a handler: the user has a prompt, while agent typing is refused.
+    // Check that refusal before removing the handler through the user's input path for the rest of these cases.
     if (tracker.promptState() === "not-found-handler") {
       const blockId = tracker.nextBlockId();
       await expect(typeTerminalCommand(tabId, OWNER, "echo agent-must-not-run", tracker.currentCwd()!)).resolves.toMatchObject({
@@ -140,8 +127,7 @@ async function typeAndWait(tabId: string, tracker: TerminalBlockTracker, line: s
   const before = shown.get(tabId) ?? "";
   const prompts = tracker.promptEndCount();
   const typed = await typeTerminalCommand(tabId, OWNER, line, tracker.currentCwd()!);
-  // A refusal names what the terminal showed while typing, so a CI-only
-  // failure carries the shell's own bytes.
+  // A refusal names what the terminal showed while typing, so a CI-only failure carries the shell's own bytes.
   expect(typed, `${JSON.stringify(typed)}; prompt ends ${prompts} -> ${tracker.promptEndCount()}; edit line ${JSON.stringify(tracker.editLineText())}; `
     + `before typing ${JSON.stringify(before.slice(-1500))}; while typing ${JSON.stringify((shown.get(tabId) ?? "").slice(before.length))}`).toMatchObject({ ok: true });
   const id = (typed as { firstBlockId: number }).firstBlockId;
@@ -213,8 +199,7 @@ describe.runIf(process.platform === "linux")("workspace terminal under the Linux
       });
       expect(shown.get(tabId)).toContain(t("sandboxPolicy.terminalWindow"));
 
-      // Raw input reaches the original namespace. The write happens while a
-      // foreground process still withholds the next command-end marker.
+      // Raw input reaches the original namespace. The write happens while a foreground process still withholds the next command-end marker.
       await userRuns(tabId, tracker, "printf changed > later/.git/config && printf hook > later/.git/hooks/pre-commit && sleep 100");
       await until(() => readFileSync(join(marker, "config"), "utf8") === "changed");
       expect(readFileSync(join(marker, "hooks", "pre-commit"), "utf8")).toBe("hook");

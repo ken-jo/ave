@@ -1,7 +1,5 @@
 
 
-
-
 import { resolve as pathResolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { JsonlRecordFile } from "../../audit/jsonl-reader.js";
@@ -16,61 +14,30 @@ const log = createLogger("deferred-queue");
 
 export type DeferredEntryStatus = "pending" | "approved" | "rejected";
 
-/**
- * What resolving an entry with `"approved"` will actually GRANT.
- *
- * A deferred entry is raised on the headless path: the tool call has already
- * returned an error, its `tool_use_id` is consumed, and the turn has moved on
- * (the queue is a JSONL file that outlives the process). So approving one can
- * never re-drive the original call — there is no live turn to attach a result
- * to, and re-executing a write/shell tool outside its conversation would run a
- * side effect nobody is waiting for and nobody can abort.
- *
- * What approval CAN honestly mean is forward-looking: register the grant so the
- * next equivalent call succeeds without asking. That is only reconstructable
- * when the producer recorded a concrete target:
- *
- *   • `"directory"` — the out-of-allowed-dir lane. `path` is host-derived from
- *     `pickClosestParent`, never user-typed, so a confirmation line can name a
- *     concrete directory the host itself resolved.
- *   • absent — nothing reconstructable. The strict-mode reviewer lane defers on
- *     an exact (tool, args, source) tuple, and only a DLP-redacted
- *     `inputSummary` survives, so no grant can be rebuilt from the entry. The
- *     resolve path REFUSES `"approved"` for these rather than record an
- *     approval that grants nothing.
- */
+// Deferred calls have ended and must never be re-executed on approval. Grant only future calls from a recorded host-derived directory target; redacted exact-call summaries cannot reconstruct authority, so their approved resolutions must be refused.
 export type DeferredGrant = { kind: "directory"; path: string };
 
 export interface DeferredEntry {
   id: string;
   ts: string;
-  /**
-   * The conversation whose turn produced the entry. A deferred approval is a
-   * question put to the user, and a window now holds several conversations side
-   * by side, so it can only be asked in the tile that raised it. Absent when the
-   * invocation belonged to no conversation (local API, plugin panel); those
-   * entries are never asked and the queue dialog stays their only surface.
-   */
+  // The conversation whose turn produced the entry. A deferred approval is a question put to the user, and a window now holds several conversations side by side, so it can only be asked in the tile that raised it. Absent when the invocation belonged to no conversation (local API, plugin panel); those entries are never asked and the queue dialog stays their only surface.
   sessionId?: string;
   toolName: string;
   source: ToolSource;
   category: ToolCategory;
-  /** DLP-redacted finalInput summary (NOT the raw input). */
+  // DLP-redacted finalInput summary (NOT the raw input).
   inputSummary: string;
-  /** Captured policy/sandbox context for user review. */
+  // Captured policy/sandbox context for user review.
   evaluationContext?: PermissionEvaluationContext;
   verdict: RiskVerdict;
-  /**
-   * What an `"approved"` resolution grants. Absent ⇒ nothing is
-   * reconstructable and `"approved"` is refused — see {@link DeferredGrant}.
-   */
+  // What an `"approved"` resolution grants. Absent ⇒ nothing is reconstructable and `"approved"` is refused — see DeferredGrant.
   grant?: DeferredGrant;
   status: DeferredEntryStatus;
-  /** When status !== "pending", the resolution decision timestamp. */
+  // When status !== "pending", the resolution decision timestamp.
   resolvedAt?: string;
-  /** Grant breadth applied at resolution time, for entries that had a grant. */
+  // Grant breadth applied at resolution time, for entries that had a grant.
   resolvedScope?: DeferredGrantScope;
-  /** Free-form reason from the user (e.g. "approved after review"). */
+  // Free-form reason from the user (e.g. "approved after review").
   resolutionReason?: string;
 }
 
@@ -87,12 +54,7 @@ export class DeferredQueue {
   constructor(
     filePath?: string,
     onPendingChange?: (summary: { pending: number }) => void,
-    /**
-     * Fired once per newly appended entry, carrying the entry itself. The
-     * count-only `onPendingChange` above drives a badge; this one drives the
-     * ask, which needs the tool, the verdict, and the session to put the
-     * question in front of the right conversation.
-     */
+    // Fired once per newly appended entry, carrying the entry itself. The count-only `onPendingChange` above drives a badge; this one drives the ask, which needs the tool, the verdict, and the session to put the question in front of the right conversation.
     onEntryPending?: (entry: DeferredEntry) => void,
   ) {
     this.file = new JsonlRecordFile<DeferredEntry>(filePath ?? defaultPath(), {
@@ -112,12 +74,9 @@ export class DeferredQueue {
     this.entries = this.file.loadSync();
   }
 
-  /**
-   * Append a new pending entry. Returns the assigned id so callers
-   * can correlate with audit log records.
-   */
+  // Append a new pending entry. Returns the assigned id so callers can correlate with audit log records.
   async append(params: {
-    /** Conversation that raised this; omitted when there is none. */
+    // Conversation that raised this; omitted when there is none.
     sessionId?: string;
     toolName: string;
     source: ToolSource;
@@ -125,10 +84,7 @@ export class DeferredQueue {
     inputSummary: string;
     evaluationContext?: PermissionEvaluationContext;
     verdict: RiskVerdict;
-    /**
-     * Omit when the lane cannot reconstruct a grant. Omitting is not a
-     * formality — it makes `"approved"` unavailable for the entry.
-     */
+    // Omit when the lane cannot reconstruct a grant. Omitting is not a formality — it makes `"approved"` unavailable for the entry.
     grant?: DeferredGrant;
   }): Promise<string> {
     this.ensureLoaded();
@@ -150,31 +106,25 @@ export class DeferredQueue {
     return id;
   }
 
-  /**
-   * List pending entries (for IPC `ave:permissions:deferred-pending`).
-   * Resolved entries remain in the file but are NOT returned here.
-   */
+  // List pending entries (for IPC `ave:permissions:deferred-pending`). Resolved entries remain in the file but are NOT returned here.
   listPending(): DeferredEntry[] {
     this.ensureLoaded();
     return this.entries!.filter((e) => e.status === "pending");
   }
 
-  /** Total queue size (including resolved). For diagnostics. */
+  // Total queue size (including resolved). For diagnostics.
   size(): number {
     this.ensureLoaded();
     return this.entries!.length;
   }
 
-  /** Return a queue entry by id without mutating it. */
+  // Return a queue entry by id without mutating it.
   get(id: string): DeferredEntry | null {
     this.ensureLoaded();
     return this.entries!.find((entry) => entry.id === id) ?? null;
   }
 
-  /**
-   * Resolve a pending entry. Rewrites the file to persist the new
-   * status. Returns the resolved entry for caller's audit-write step.
-   */
+  // Resolve a pending entry. Rewrites the file to persist the new status. Returns the resolved entry for caller's audit-write step.
   async resolve(
     id: string,
     decision: "approved" | "rejected",
@@ -202,7 +152,7 @@ export class DeferredQueue {
     return next;
   }
 
-  /** Test helper. */
+  // Test helper.
   resetForTests(): void {
     this.entries = null;
   }

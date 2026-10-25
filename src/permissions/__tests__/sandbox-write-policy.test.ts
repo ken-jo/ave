@@ -46,8 +46,7 @@ describe("mandatory sandbox control-file writes", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  // The shared floor's own list, so a new entry cannot fall off the sandbox
-  // floor unnoticed; `.git/*` controls are covered by the Git tests below.
+  // The shared floor's own list, so a new entry cannot fall off the sandbox floor unnoticed; `.git/*` controls are covered by the Git tests below.
   it.each([".git", ...PROTECTED_ROOT_ENTRIES.filter(entry => !isSandboxGitMetadataEntry(entry))])("protects missing %s in every writable root", (entry) => {
     const roots = [join(root, "project"), join(root, "temp")];
     const denies = buildMandatorySandboxWritePolicy(roots).denyWrite;
@@ -415,8 +414,7 @@ describe("mandatory sandbox control-file writes", () => {
     const linuxPolicy = withPlatform("linux", () =>
       buildMandatorySandboxWritePolicy([root, checkout, external, independent]));
     expect(linuxPolicy.allowWrite).toEqual(linuxGrants);
-    // These targets are outside every retained writable grant, so the
-    // default read-only filesystem protects them without a deny mount.
+    // These targets are outside every retained writable grant, so the default read-only filesystem protects them without a deny mount.
     for (const directory of [gitDir, commonDir]) {
       expect(linuxGrants.some(grant => isGrantPathWithin(grant, directory))).toBe(false);
       expect(linuxPolicy.denyWrite).not.toContain(join(directory, "config"));

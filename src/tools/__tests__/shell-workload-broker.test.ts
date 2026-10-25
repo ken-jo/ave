@@ -192,10 +192,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-// A brokered shell sends its cwd to a Linux guest, but the tool binds and
-// consumes the grant on the host-resolved cwd, which equals the POSIX guest
-// path only on a POSIX host. Native Windows refuses the broker flags at parse
-// time, so cases that dispatch a guest cwd to the broker are Linux-only.
+// Broker grants bind host-resolved cwd; Windows rejects guest flags before dispatch, so guest-cwd cases require POSIX.
 const itPosixGuest = it.skipIf(process.platform === "win32");
 // Broker grants bind the guest path independently of the host's filesystem.
 const guestResolvedCwd = (guestPath: string) => posix.resolve(guestPath);
@@ -506,8 +503,7 @@ describe("brokered workload shell execution", () => {
         return {
           executionId: "exec_1",
           nextOffset: 9,
-          // shell.kill returns the full retained transcript. The shell manager
-          // removes the already-read five UTF-8 bytes before presentation.
+          // Kill returns the full transcript; presentation removes already-read UTF-8 bytes.
           output: "readydone",
           isError: false,
           truncated: false,
@@ -763,9 +759,7 @@ describe("brokered workload shell execution", () => {
     const binding = issueBrokerShellGrant({ command, cwd, background: true });
     const expiresAt = Date.parse(broker.capability.expiresAt);
     const now = vi.spyOn(Date, "now");
-    // Leave the full command deadline plus the expanded Docker identity and
-    // terminal cleanup allowance live at admission, then force expiry only
-    // for the disposal path under test.
+    // Admit with command and cleanup slack, then force expiry only during disposal.
     now.mockReturnValue(expiresAt - 60_000);
     broker.execute.mockResolvedValueOnce({
       output: "",

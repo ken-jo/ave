@@ -2,7 +2,7 @@ import { isValidSessionId } from "../shared/session-id.js";
 import { parseWorkBoardOriginSessionId } from "../shared/work-board-types.js";
 import { JudgeContractError } from "./judge/judge-contract.js";
 
-/** Resolve only host-recorded spawn ownership; call input never supplies ancestry. */
+// Resolve only host-recorded spawn ownership; call input never supplies ancestry.
 export function createRootSessionResolver(
   originSessionIdFor: (sessionId: string) => string | undefined,
 ): (sessionId: string) => string {

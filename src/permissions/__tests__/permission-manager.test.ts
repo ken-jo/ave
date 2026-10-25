@@ -1,6 +1,3 @@
-/**
- * PermissionManager unit tests — B1 persistence layer
- */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   PermissionManager,
@@ -21,8 +18,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
-// ─── Mock permissions-store ───────────────────────────
-// We mock the store module so tests don't touch the real filesystem.
+// Mock permissions-store We mock the store module so tests don't touch the real filesystem.
 
 const mockStore: { rules: Array<{ pattern: string; action: "allow" | "deny"; source?: string; tier?: "read" | "write" }>; mode: string } = {
   rules: [],
@@ -54,8 +50,6 @@ vi.mock("../permissions-store.js", () => ({
     return next;
   }),
 }));
-
-// ─── Tests ───────────────────────────────────────────
 
 describe("host shell rule policy epochs", () => {
   // No sandbox on this host, so only an exact allow rule can issue the proof.
@@ -145,7 +139,7 @@ describe("PermissionManager (B1 persistence)", () => {
       .toMatchObject({ decision: "ask", layer: 2 });
   });
 
-  // ── addAlwaysAllowedPersist ──────────────────────
+  // addAlwaysAllowedPersist
 
   it("addAlwaysAllowedPersist writes rule to the store and updates in-memory", async () => {
     await pm.addAlwaysAllowedPersist("my_tool");
@@ -156,7 +150,7 @@ describe("PermissionManager (B1 persistence)", () => {
     expect(result.reason).toBe("사용자 영구 승인");
     expect(result.layer).toBe(5);
 
-    // 영구: store에 rule이 추가됐는지 (P2: 수동 경로 default write-tier)
+    // 영구: store에 rule이 추가됐는지 (수동 경로 default write-tier)
     expect(mockStore.rules).toContainEqual({ pattern: "my_tool", action: "allow", tier: "write" });
   });
 
@@ -180,7 +174,7 @@ describe("PermissionManager (B1 persistence)", () => {
     expect(allowRules).toHaveLength(1);
   });
 
-  // ── addAlwaysDeniedPersist ───────────────────────
+  // addAlwaysDeniedPersist
 
   it("addAlwaysDeniedPersist writes deny rule and blocks execution", async () => {
     await pm.addAlwaysDeniedPersist("dangerous_tool");
@@ -210,7 +204,7 @@ describe("PermissionManager (B1 persistence)", () => {
     expect(denied.decision).toBe("deny");
   });
 
-  // ── loadRulesFromFile ────────────────────────────
+  // loadRulesFromFile
 
   it("loadRulesFromFile rehydrates allow rules into in-memory", async () => {
     // 파일에 규칙 사전 세팅
@@ -244,7 +238,7 @@ describe("PermissionManager (B1 persistence)", () => {
     expect(fresh.getMode()).toBe("strict");
   });
 
-  // ── concurrent writes serialize ──────────────────
+  // concurrent writes serialize
 
   it("concurrent addAlwaysAllowedPersist calls produce 2 rules, not 1", async () => {
     // 두 개의 다른 도구를 동시에 추가
@@ -260,7 +254,7 @@ describe("PermissionManager (B1 persistence)", () => {
     expect(bRule).toHaveLength(1);
   });
 
-  // ── removeRule ───────────────────────────────────
+  // removeRule
 
   it("removeRule removes in-memory and persisted rule", async () => {
     await pm.addAlwaysAllowedPersist("removable_tool");
@@ -275,7 +269,7 @@ describe("PermissionManager (B1 persistence)", () => {
     expect(result.layer).toBe(6);
   });
 
-  // ── listPersistedRules ───────────────────────────
+  // listPersistedRules
 
   it("listPersistedRules returns rules from store", async () => {
     await pm.addAlwaysAllowedPersist("listed_tool");
@@ -283,7 +277,7 @@ describe("PermissionManager (B1 persistence)", () => {
     expect(rules.some((r) => r.pattern === "listed_tool" && r.action === "allow")).toBe(true);
   });
 
-  // ── setModePersist ───────────────────────────────
+  // setModePersist
 
   it("setModePersist updates mode in-memory and in store", async () => {
     await pm.setModePersist("auto");
@@ -452,7 +446,6 @@ describe("PermissionManager (B1 persistence)", () => {
   });
 });
 
-
 describe("PermissionManager — Tailnet controller P1 policy", () => {
   const authority = Object.freeze({
     kind: "tailnet-controller" as const,
@@ -565,13 +558,7 @@ describe("PermissionManager — platform bridge remote policy", () => {
   });
 });
 describe("PermissionManager — overlay-trigger origin override", () => {
-  // Background: a user who once clicks "allow-always" on a write tool
-  // (e.g. task_add) effectively delegated all future calls to that
-  // tool. For the overlay trigger flow we want EVERY destructive
-  // call to ask again — the user explicitly said "한번 더 체크할 수
-  // 있도록". This guard wires a `overlayTriggerOrigin` parameter through
-  // the executor so it's checked here BEFORE allow-rules / always-
-  // allowed cache.
+  // Background: a user who once clicks "allow-always" on a write tool (e.g. task_add) effectively delegated all future calls to that tool. For the overlay trigger flow we want EVERY destructive call to ask again — the user explicitly said "한번 더 체크할 수 있도록". This guard wires a `overlayTriggerOrigin` parameter through the executor so it's checked here BEFORE allow-rules / always- allowed cache.
   let pm: PermissionManager;
 
   beforeEach(() => {
@@ -587,7 +574,6 @@ describe("PermissionManager — overlay-trigger origin override", () => {
 
   it("forces ASK on a write tool when overlay trigger origin is set, even if always-allowed", async () => {
     await pm.addAlwaysAllowedPersist("task_add");
-    // sanity: allow-always wins on a normal turn
     expect(
       pm.checkDetailed("task_add", "builtin", "write").decision,
     ).toBe("allow");
@@ -603,9 +589,7 @@ describe("PermissionManager — overlay-trigger origin override", () => {
   });
 
   it("forces ASK on shell tools too", () => {
-    // Permission policy — `shell` (formerly `dangerous`) is the 5-axis category for
-    // bash/script execution. The overlay-trigger override must force ask
-    // regardless of the user's allow-always cache.
+    // Overlay-triggered shell execution must ask despite remembered allows.
     const r = pm.checkDetailed(
       "rm_anything",
       "builtin",
@@ -645,8 +629,7 @@ describe("PermissionManager — overlay-trigger origin override", () => {
 
   it("ignores non-overlay originSource strings (forward-compat)", async () => {
     await pm.addAlwaysAllowedPersist("task_add");
-    // A future origin tag like "user-paste:x" must not trigger the
-    // override — only "overlay:*" does.
+    // A future origin tag like "user-paste:x" must not trigger the override — only "overlay:*" does.
     const r = pm.checkDetailed(
       "task_add",
       "builtin",
@@ -699,7 +682,6 @@ describe("PermissionManager — broadcastConfigChanged SOT (round-5 regression g
   it("removeRule fires broadcastConfigChanged when wired", async () => {
     const broadcast = vi.fn();
     pm.setBroadcastConfigChanged(broadcast);
-    // seed a rule so removeRule has something to remove
     await pm.addAlwaysAllowedPersist("read_file");
     broadcast.mockClear();
     await pm.removeRule("read_file", "allow");
@@ -707,9 +689,7 @@ describe("PermissionManager — broadcastConfigChanged SOT (round-5 regression g
   });
 
   it("mutations do not throw when broadcastConfigChanged is not wired (optional contract)", async () => {
-    // No setBroadcastConfigChanged call — the optional `?.` chain must
-    // silently skip rather than crash early-boot or test setups that
-    // don't need the renderer fan-out.
+    // No setBroadcastConfigChanged call — the optional `?.` chain must silently skip rather than crash early-boot or test setups that don't need the renderer fan-out.
     await expect(pm.addAlwaysAllowedPersist("a")).resolves.toBeUndefined();
     await expect(pm.addAlwaysDeniedPersist("b")).resolves.toBeUndefined();
     await expect(pm.removeRule("a", "allow")).resolves.toBeUndefined();
@@ -747,8 +727,7 @@ describe("PermissionManager — revoke controllers (cluster M1)", () => {
     const reason = (before as AbortSignal & { reason: unknown }).reason;
     expect((reason as Error).message).toContain("permission-revoked: test-reason");
 
-    // Next call yields a fresh, un-aborted controller — outstanding bearers
-    // released, future bearers re-resolve under the new policy.
+    // Next call yields a fresh, un-aborted controller — outstanding bearers released, future bearers re-resolve under the new policy.
     const after = pm.getPluginRevokeSignal("plugin-a");
     expect(after).not.toBe(before);
     expect(after.aborted).toBe(false);
@@ -782,13 +761,12 @@ describe("PermissionManager — revoke controllers (cluster M1)", () => {
   });
 
   it("revokePluginAccess on unknown plugin is a safe no-op", () => {
-    // No controller has been requested — revoke must not throw or create
-    // spurious entries that leak memory.
+    // No controller has been requested — revoke must not throw or create spurious entries that leak memory.
     expect(() => pm.revokePluginAccess("never-seen", "test")).not.toThrow();
   });
 });
 
-// ─── P2 graduated grant tier ─────────────────────────
+// graduated grant tier
 
 describe("P2 grant-tier helpers", () => {
   it("requiredTier maps read→read and every mutating category→write", () => {
@@ -839,13 +817,11 @@ describe("PermissionManager — P2 graduated grant tiers", () => {
     vi.clearAllMocks();
   });
 
-  // ── tier gate (in-session, layer-5 Map) ──────────────
+  // tier gate (in-session, layer-5 Map)
 
   it("read-tier grant allows a read invocation but ASKS on write/shell/network", async () => {
     await pm.addAlwaysAllowedPersist("dual_tool", "read");
 
-    // read invocation → covered (allow). read is allowed by policy anyway, but
-    // this confirms the grant does not downgrade it.
     expect(pm.checkDetailed("dual_tool", "builtin", "read").decision).toBe("allow");
 
     // write/shell/network invocations of the same pattern → NOT covered → ask.
@@ -867,26 +843,21 @@ describe("PermissionManager — P2 graduated grant tiers", () => {
   });
 
   it("grandfather — an untiered persisted allow rule defaults to write-tier (covers writes)", () => {
-    // A rule with no `tier` field (legacy / hand-edited) must preserve the
-    // pre-P2 all-or-nothing behaviour = write-tier coverage.
+    // A rule with no `tier` field (legacy / hand-edited) must preserve the pre-all-or-nothing behaviour = write-tier coverage.
     pm.setRules([{ pattern: "legacy_tool", action: "allow" }]);
     const r = pm.checkDetailed("legacy_tool", "builtin", "write");
     expect(r.decision).toBe("allow");
     expect(r.layer).toBe(3);
   });
 
-  // ── restart-shadow regression (layer-3 gate) ─────────
+  // restart-shadow regression (layer-3 gate)
 
   it("restart-shadow: a reloaded read-tier grant ASKS on write (layer-3 gate, not just layer-5)", async () => {
-    // Simulate a persisted read-tier grant, then a fresh app process reloading
-    // it. loadRulesFromFile hydrates the grant into BOTH this.rules (layer-3,
-    // checked first) AND alwaysAllowed (layer-5). If the tier gate lived only at
-    // layer-5, the layer-3 shadow would wrongly allow the write after restart.
+    // Simulate a persisted read-tier grant, then a fresh app process reloading it. loadRulesFromFile hydrates the grant into BOTH this.rules (layer-3, checked first) AND alwaysAllowed (layer-5). If the tier gate lived only at layer-5, the layer-3 shadow would wrongly allow the write after restart.
     mockStore.rules = [{ pattern: "reloaded_tool", action: "allow", tier: "read" }];
     const fresh = new PermissionManager("/tmp/test-tier-permissions.json");
     await fresh.loadRulesFromFile();
 
-    // read is covered (allowed by the reloaded grant / policy)…
     expect(fresh.checkDetailed("reloaded_tool", "builtin", "read").decision).toBe("allow");
     // …but the write invocation MUST ask — proving the layer-3 gate.
     const write = fresh.checkDetailed("reloaded_tool", "builtin", "write");
@@ -904,7 +875,7 @@ describe("PermissionManager — P2 graduated grant tiers", () => {
     expect(write.layer).toBe(3);
   });
 
-  // ── migration round-trip ─────────────────────────────
+  // migration round-trip
 
   it("migration round-trip — read grant persists tier:read and re-reads preserved", async () => {
     await pm.addAlwaysAllowedPersist("roundtrip_tool", "read");
@@ -922,14 +893,13 @@ describe("PermissionManager — P2 graduated grant tiers", () => {
     expect(fresh.checkDetailed("roundtrip_tool", "builtin", "write").decision).toBe("ask");
   });
 
-  // ── monotonic upgrade / no downgrade ─────────────────
+  // monotonic upgrade / no downgrade
 
   it("monotonic — read then write upgrades the grant to write-tier", async () => {
     await pm.addAlwaysAllowedPersist("upgrade_tool", "read");
     expect(pm.checkDetailed("upgrade_tool", "builtin", "write").decision).toBe("ask");
 
     await pm.addAlwaysAllowedPersist("upgrade_tool", "write");
-    // Now write is covered, and the persisted rule reflects the upgrade.
     expect(pm.checkDetailed("upgrade_tool", "builtin", "write").decision).toBe("allow");
     expect(mockStore.rules).toContainEqual({
       pattern: "upgrade_tool",
@@ -964,8 +934,7 @@ describe("PermissionManager — P2 graduated grant tiers", () => {
   });
 
   it("garbage persisted tier is grandfathered to write-tier on reload", async () => {
-    // A hand-edited file with an invalid tier must fail to write-tier (most
-    // permissive — preserves the saved grant), never silently to read.
+    // A hand-edited file with an invalid tier must fail to write-tier (most permissive — preserves the saved grant), never silently to read.
     mockStore.rules = [
       { pattern: "corrupt_tool", action: "allow", tier: "banana" as unknown as "read" },
     ];
@@ -974,15 +943,10 @@ describe("PermissionManager — P2 graduated grant tiers", () => {
     expect(fresh.checkDetailed("corrupt_tool", "builtin", "write").decision).toBe("allow");
   });
 
-  // ── MINOR-1: layer-3 glob + corrupt tier grandfathers to write ──────────────
+  // MINOR-1: layer-3 glob + corrupt tier grandfathers to write
 
   it("MINOR-1: glob allow rule with corrupt tier grandfathers to write at layer-3 (not ask)", () => {
-    // A hand-edited rule with an invalid tier string must NOT cause the gate to
-    // skip the glob and produce an ask. normalizeTier maps anything non-"read"
-    // to "write" (external-boundary grandfather), so the glob still fires and
-    // the write is allowed. Without this fix, `?? "write"` passes the raw
-    // garbage string into grantCovers whose TIER_RANK lookup yields undefined →
-    // the >= comparison is false → the glob is skipped → writes ask.
+    // A hand-edited rule with an invalid tier string must NOT cause the gate to skip the glob and produce an ask. normalizeTier maps anything non-"read" to "write" (external-boundary grandfather), so the glob still fires and the write is allowed. Without this fix, `?? "write"` passes the raw garbage string into grantCovers whose TIER_RANK lookup yields undefined → the >= comparison is false → the glob is skipped → writes ask.
     pm.setRules([{ pattern: "mem_*", action: "allow", tier: "banana" as unknown as "write" }]);
 
     const r = pm.checkDetailed("mem_tool", "builtin", "write");
@@ -990,17 +954,10 @@ describe("PermissionManager — P2 graduated grant tiers", () => {
     expect(r.layer).toBe(3);
   });
 
-  // ── MINOR-2: dup-hit tier reconciliation (boot-default shadow) ───────────
+  // MINOR-2: dup-hit tier reconciliation (boot-default shadow)
 
   it("MINOR-2: persisted read-tier grant matching an untiered boot default is not lost to dedup", async () => {
-    // Simulate the boot-default scenario: setRules pre-seeds an untiered allow
-    // rule (like web_search/web_fetch in conversation.ts), then loadRulesFromFile
-    // loads a user-persisted read-tier grant for the same pattern. Previously the
-    // dedup branch skipped the Map update entirely, leaving the Map empty — so
-    // layer-5 missed the pattern and layer-3's untiered surviving rule grandfathered
-    // to write, silently over-permitting writes relative to the user's intent.
-    // After the MINOR-2 fix, the surviving rule's tier AND the Map are reconciled
-    // to merged = maxTier(Map.get(undefined), normalizeTier("read")) = "read".
+    // Simulate the boot-default scenario: setRules pre-seeds an untiered allow rule (like web_search/web_fetch in conversation.ts), then loadRulesFromFile loads a user-persisted read-tier grant for the same pattern. Previously the dedup branch skipped the Map update entirely, leaving the Map empty — so layer-5 missed the pattern and layer-3's untiered surviving rule grandfathered to write, silently over-permitting writes relative to the user's intent. After the MINOR-2 fix, the surviving rule's tier AND the Map are reconciled to merged = maxTier(Map.get(undefined), normalizeTier("read")) = "read".
     pm.setRules([{ pattern: "boot_tool", action: "allow" }]); // untiered boot default
 
     mockStore.rules = [{ pattern: "boot_tool", action: "allow", tier: "read" }];
@@ -1012,13 +969,10 @@ describe("PermissionManager — P2 graduated grant tiers", () => {
     expect(pm.checkDetailed("boot_tool", "builtin", "write").decision).toBe("ask");
   });
 
-  // ── P1 post-guard composition (meta + write grant + override:ask) ─────────
+  // post-guard composition (meta + write grant + override:ask)
 
   it("post-guard composes with tier gate: meta write-grant → allow (dock grant honoured)", async () => {
-    // A write-tier grant covers meta (write ≥ requiredTier(meta)=write), so the
-    // layer produces allow. The post-guard used to re-elevate that to
-    // ask+forceModal even though the user had granted it on this exact tool;
-    // the grant is now honoured, so the tier gate is what decides here.
+    // Explicit write-tier grants cover meta; post-guard re-elevation must not nullify that consent.
     await pm.addAlwaysAllowedPersist("agent_spawn", "write");
     const r = pm.checkDetailed("agent_spawn", "builtin", "meta", null, {
       decisionOverride: "ask",
@@ -1028,8 +982,7 @@ describe("PermissionManager — P2 graduated grant tiers", () => {
   });
 
   it("a read-tier grant still does NOT cover a meta invocation", async () => {
-    // The tier gate is unchanged and still binding: honouring dock grants did
-    // not widen which grants cover which categories.
+    // The tier gate is unchanged and still binding: honouring dock grants did not widen which grants cover which categories.
     await pm.addAlwaysAllowedPersist("agent_spawn", "read");
     const r = pm.checkDetailed("agent_spawn", "builtin", "meta", null, {
       decisionOverride: "ask",
@@ -1040,10 +993,7 @@ describe("PermissionManager — P2 graduated grant tiers", () => {
   });
 });
 
-// ── #1493 prunePathGrantsUnderRoot + helpers ─────────────────────────────────
-// Real temp dirs so canonicalizePathForMatch (realpathSync) resolves the root
-// and the grant patterns' paths consistently. The store is still the module
-// mock above, so persistence stays in-memory.
+// prunePathGrantsUnderRoot + helpers Real temp dirs so canonicalizePathForMatch (realpathSync) resolves the root and the grant patterns' paths consistently. The store is still the module mock above, so persistence stays in-memory.
 describe("PermissionManager.prunePathGrantsUnderRoot (#1493)", () => {
   let pm: PermissionManager;
   let root: string;
@@ -1067,7 +1017,7 @@ describe("PermissionManager.prunePathGrantsUnderRoot (#1493)", () => {
     expect(mockStore.rules).toHaveLength(1);
 
     const pruned = await pm.prunePathGrantsUnderRoot(root);
-    // #1494 item-4 — returns the pruned grant tuples (count = length).
+    // item-4 — returns the pruned grant tuples (count = length).
     expect(pruned).toHaveLength(1);
     expect(pruned[0]).toMatchObject({
       pattern: `write_file:path:${under}`,
@@ -1094,9 +1044,7 @@ describe("PermissionManager.prunePathGrantsUnderRoot (#1493)", () => {
     expect(mockStore.rules).toEqual([]);
     expect(signal.aborted).toBe(false);
 
-    // Model a stale live snapshot surviving the failed post-disk phase. The
-    // retry's disk result is empty, so scope-based reconciliation must still
-    // remove both caches and fire the bearer revoke.
+    // Model a stale live snapshot surviving the failed post-disk phase. The retry's disk result is empty, so scope-based reconciliation must still remove both caches and fire the bearer revoke.
     const internals = pm as unknown as {
       rules: Array<{ pattern: string; action: "allow"; tier: "write" }>;
       alwaysAllowed: Map<string, "write">;
@@ -1143,31 +1091,18 @@ describe("PermissionManager.prunePathGrantsUnderRoot (#1493)", () => {
     ).decision).toBe("ask");
   });
 
-
-  // #1494 item-2 — the ORIGINAL #1493 bug was grant revival: a path-scoped tier
-  // grant under a removed root would silently re-authorize writes if the SAME
-  // root was later re-added. This walks the full lifecycle and asserts the grant
-  // stays revoked. Re-adding a root only writes to the read allow-list
-  // (additionalDirectories via workspace.pickRoot → addAllowedDirectoryPersist);
-  // NOTHING re-inserts a `rules[].tier` grant, so after prune the target must
-  // still ask. We simulate re-add as a pure no-op on the rule surface (its only
-  // effect is on the independent read-list, which this PermissionManager unit
-  // does not own) and confirm checkDetailed never revives the pruned grant.
+  // item-2 — the ORIGINAL bug was grant revival: a path-scoped tier grant under a removed root would silently re-authorize writes if the SAME root was later re-added. This walks the full lifecycle and asserts the grant stays revoked. Re-adding a root only writes to the read allow-list (additionalDirectories via workspace.pickRoot → addAllowedDirectoryPersist); NOTHING re-inserts a `rules[].tier` grant, so after prune the target must still ask. We simulate re-add as a pure no-op on the rule surface (its only effect is on the independent read-list, which this PermissionManager unit does not own) and confirm checkDetailed never revives the pruned grant.
   it("does not revive a pruned grant when the same root is re-added (regression)", async () => {
     const target = join(root, "src", "app.ts");
     const grantPattern = `write_file:path:${target}`;
-    // 1. Grant a write-tier path-scoped grant under the root.
     await pm.addAlwaysAllowedPersist(grantPattern, "write");
     expect(pm.checkDetailed(grantPattern, "builtin", "write").decision).toBe("allow");
-    // 2. Prune it (what workspace.removeRoot does).
     const pruned = await pm.prunePathGrantsUnderRoot(root);
     expect(pruned).toHaveLength(1);
     expect(pm.checkDetailed(grantPattern, "builtin", "write").decision).toBe("ask");
-    // 3. Re-add the SAME root. The re-add path touches only the read allow-list,
-    //    never the rule/grant surface — so there is no rule mutation to make here.
-    //    Re-hydrating from the (now-pruned) persisted file must not resurrect it.
+    // 3. Re-add the SAME root. The re-add path touches only the read allow-list, never the rule/grant surface — so there is no rule mutation to make here. Re-hydrating from the (now-pruned) persisted file must not resurrect it.
     await pm.loadRulesFromFile();
-    // 4. The previously-granted target STILL asks — the grant did not revive.
+    // Re-adding the root must not revive its revoked path grant.
     expect(pm.checkDetailed(grantPattern, "builtin", "write").decision).toBe("ask");
     expect(mockStore.rules.some((r) => r.pattern === grantPattern)).toBe(false);
   });
@@ -1182,8 +1117,7 @@ describe("PermissionManager.prunePathGrantsUnderRoot (#1493)", () => {
   });
 
   it("keeps a grant under a sibling root (no false path-prefix match)", async () => {
-    // `${root}-other` shares the `${root}` string prefix but is NOT a descendant
-    // — the separator-boundary guard must reject it.
+    // `${root}-other` shares the `${root}` string prefix but is NOT a descendant — the separator-boundary guard must reject it.
     const sibling = realpathSync.native(mkdtempSync(join(tmpdir(), "ave-prune-sibling-")));
     try {
       const underSibling = join(sibling, "file.md");
@@ -1227,11 +1161,7 @@ describe("PermissionManager.prunePathGrantsUnderRoot (#1493)", () => {
     expect(mockStore.rules).toHaveLength(1);
   });
 
-  // #1494 item-3 — Windows case-variant prune (end-to-end through the real prune
-  // with a manually-cased pattern string). On a case-insensitive filesystem
-  // (darwin/win32) a grant stored as an UPPER-cased path must still prune under a
-  // lower-cased root. On case-sensitive filesystems (linux) the cased path is a
-  // genuinely different path, so this scenario does not apply — skip there.
+  // item-3 — Windows case-variant prune (end-to-end through the real prune with a manually-cased pattern string). On a case-insensitive filesystem (darwin/win32) a grant stored as an UPPER-cased path must still prune under a lower-cased root. On case-sensitive filesystems (linux) the cased path is a genuinely different path, so this scenario does not apply — skip there.
   const caseInsensitiveFs = process.platform === "darwin" || process.platform === "win32";
   it.runIf(caseInsensitiveFs)(
     "prunes a case-variant grant path via the caseFoldForMatch branch",
@@ -1248,12 +1178,7 @@ describe("PermissionManager.prunePathGrantsUnderRoot (#1493)", () => {
     },
   );
 
-  // #1494 item-3 — symlinked-root prune. Grant stored under the REAL target while
-  // the root is removed via a symlink that points at it (or vice-versa). The
-  // dual-form canonical compare (realpathSync in canonicalizePathForMatch)
-  // resolves both to the same real path so the grant still prunes. Symlink
-  // creation needs privilege on Windows → skip gracefully if it throws (follows
-  // the workspace-preview.test.ts symlink precedent).
+  // item-3 — symlinked-root prune. Grant stored under the REAL target while the root is removed via a symlink that points at it (or vice-versa). The dual-form canonical compare (realpathSync in canonicalizePathForMatch) resolves both to the same real path so the grant still prunes. Symlink creation needs privilege on Windows → skip gracefully if it throws (follows the workspace-preview.test.ts symlink precedent).
   it("prunes a grant stored under the real target when the root is a symlink to it", async () => {
     const realRoot = realpathSync.native(mkdtempSync(join(tmpdir(), "ave-prune-realroot-")));
     const linkRoot = join(tmpdir(), `ave-prune-link-${Date.now()}`);
@@ -1272,8 +1197,7 @@ describe("PermissionManager.prunePathGrantsUnderRoot (#1493)", () => {
       // Grant is stored under the REAL target path…
       const underReal = join(realRoot, "sub", "note.md");
       await pm.addAlwaysAllowedPersist(`write_file:path:${underReal}`, "write");
-      // …but the root is removed via the SYMLINK path. canonicalizePathForMatch
-      // realpaths the link back to realRoot, so the descendant check matches.
+      // …but the root is removed via the SYMLINK path. canonicalizePathForMatch realpaths the link back to realRoot, so the descendant check matches.
       const pruned = await pm.prunePathGrantsUnderRoot(join(linkRoot, "sub", ".."));
       expect(pruned).toHaveLength(1);
       expect(mockStore.rules).toHaveLength(0);
@@ -1283,13 +1207,7 @@ describe("PermissionManager.prunePathGrantsUnderRoot (#1493)", () => {
     }
   });
 
-  // #1494 item-5 — raw-form branch of the dual-form compare must DECIDE the
-  // outcome, not just shadow the canonical branch. Scenario: a symlink INSIDE
-  // the root points outside it, and a grant was stored via the lexical
-  // (raw pathResolve) spelling under the root. canonicalizePathForMatch
-  // realpaths that grant OUT of the root (canonical compare → no match), but
-  // the grant was authorized under the root's spelling, so the raw lexical
-  // compare must still prune it.
+  // item-5 — raw-form branch of the dual-form compare must DECIDE the outcome, not just shadow the canonical branch. Scenario: a symlink INSIDE the root points outside it, and a grant was stored via the lexical (raw pathResolve) spelling under the root. canonicalizePathForMatch realpaths that grant OUT of the root (canonical compare → no match), but the grant was authorized under the root's spelling, so the raw lexical compare must still prune it.
   it("prunes a grant whose lexical path is under the root but realpaths outside it (raw branch)", async () => {
     const realRoot = realpathSync.native(mkdtempSync(join(tmpdir(), "ave-prune-rawroot-")));
     const outside = realpathSync.native(mkdtempSync(join(tmpdir(), "ave-prune-outside-")));
@@ -1307,8 +1225,7 @@ describe("PermissionManager.prunePathGrantsUnderRoot (#1493)", () => {
       return;
     }
     try {
-      // Grant stored in raw lexical form under the root, but "sub" realpaths
-      // to `outside` — the canonical compare alone would MISS this grant.
+      // Grant stored in raw lexical form under the root, but "sub" realpaths to `outside` — the canonical compare alone would MISS this grant.
       const lexicalUnderRoot = join(realRoot, "sub", "note.md");
       await pm.addAlwaysAllowedPersist(`write_file:path:${lexicalUnderRoot}`, "write");
       const pruned = await pm.prunePathGrantsUnderRoot(realRoot);
@@ -1368,14 +1285,11 @@ describe("path-grant prune helpers (#1493)", () => {
     expect(isStrictPathDescendant("/a/b", "/a/bc")).toBe(false); // sibling prefix
     expect(isStrictPathDescendant("/a/b/", "/a/b/c")).toBe(true); // trailing-slash root
     expect(isStrictPathDescendant("C:/a", "C:/a/b")).toBe(true);
-    // #1494 item-7 — backslash separators are normalized before the compare.
+    // item-7 — backslash separators are normalized before the compare.
     expect(isStrictPathDescendant("C:\\a", "C:\\a\\b")).toBe(true);
   });
 
-  // #1494 item-7 — the helper now folds case DEFENSIVELY (a caller that forgot
-  // to pre-case-fold can't leak a case-variant descendant). On darwin/win32 the
-  // fold makes a case-variant child match; on linux (case-sensitive) it stays a
-  // distinct path, which is the correct filesystem semantics.
+  // item-7 — the helper now folds case DEFENSIVELY (a caller that forgot to pre-case-fold can't leak a case-variant descendant). On darwin/win32 the fold makes a case-variant child match; on linux (case-sensitive) it stays a distinct path, which is the correct filesystem semantics.
   const caseFoldingFs = process.platform === "darwin" || process.platform === "win32";
   it("isStrictPathDescendant folds case defensively on case-insensitive FS", () => {
     if (caseFoldingFs) {

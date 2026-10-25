@@ -1,18 +1,4 @@
-/**
- * Executor → EffectLedger → shadow reconciliation effect shadow (Phases 1-2, observability).
- *
- * End-to-end proof of the host-owned read/write signal threading:
- *   - the executor binds a fresh per-invocation ledger around Step 6 (execute);
- *   - effects recorded by the in-invocation code (here, a fake plugin handler
- *     standing in for the hostApi closures) land on THAT ledger;
- *   - after execute() returns, an `effect-shadow` record is written to the
- *     AuditLogger (temp dir) with the host-OBSERVED `hasMutatingEffect`.
- *
- * The decisive scenario: a tool that DECLARES `read` but performs a host-observed
- * WRITE is recorded as `hasMutatingEffect:true` — exactly the divergence the
- * effect-boundary model exists to surface. This changes NO permission decision
- * (both tools execute identically); it only records the signal.
- */
+// Record host-observed effects independently of declared category without changing permission decisions.
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { mkdtempSync, readFileSync, readdirSync } from "node:fs";
@@ -34,11 +20,7 @@ import {
 } from "../../plugins/runtime/origin-chain.js";
 import { unavailableSecretEncryption } from "../../__tests__/support/host-runtime.js";
 
-/**
- * A plugin tool that DECLARES `read` but, in its handler, performs the given
- * host-mediated effects via `recordEffect` — exactly what the hostApi closures
- * do inside a real in-process plugin handler.
- */
+// Simulate hostApi effects from a plugin that declares read access.
 function makePluginTool(
   name: string,
   effects: Array<{ kind: ChokepointKind; effect: "read" | "write"; target?: string }>,
@@ -58,7 +40,6 @@ function makePluginTool(
   });
 }
 
-/** Rows of a given shadow `event` ("effect-shadow" | "risk-shadow") across all channels. */
 function shadowRows(auditDir: string, event: string): Array<Record<string, unknown>> {
   const files = readdirSync(auditDir).filter((f) => f.endsWith(".jsonl"));
   const rows: Array<Record<string, unknown>> = [];
@@ -106,7 +87,6 @@ describe("executor effect ledger — host-observed read/write shadow", () => {
       [{ id: "tu-ro", name: "ave-plugin-sampletool_readonly", input: {} }],
       { sessionId: "sess-ro", permissionContext: userPermissionContext() },
     );
-    // Success path omits `is_error` (only set when true).
     expect(results[0].is_error).toBeFalsy();
     expect(results[0].content).toBe("ok");
 
@@ -134,7 +114,6 @@ describe("executor effect ledger — host-observed read/write shadow", () => {
       [{ id: "tu-mut", name: "ave-plugin-sampletool_mutating", input: {} }],
       { sessionId: "sess-mut", permissionContext: userPermissionContext() },
     );
-    // Success path omits `is_error` (only set when true).
     expect(results[0].is_error).toBeFalsy();
     expect(results[0].content).toBe("ok");
 
@@ -142,7 +121,7 @@ describe("executor effect ledger — host-observed read/write shadow", () => {
     const rows = effectShadowRows(auditDir).filter((r) => r.toolName === "ave-plugin-sampletool_mutating");
     expect(rows).toHaveLength(1);
     expect(rows[0].hasMutatingEffect).toBe(true);
-    // The declared category stays "read" — the host caught the divergence.
+    // Preserve the declared category alongside the observed mutation.
     expect(rows[0].declaredCategory).toBe("read");
   });
 
@@ -155,8 +134,7 @@ describe("executor effect ledger — host-observed read/write shadow", () => {
       makePluginTool("ave-plugin-sampletool_readonly2", [{ kind: "config.get", effect: "read" }]),
     );
     const executor = newExecutor(registry);
-    // Run the mutating tool first, then the read-only tool. If the ledger leaked,
-    // the read-only invocation would inherit the prior write.
+    // A read-only invocation must not inherit the prior invocation's write.
     await executor.executeAll(
       [{ id: "tu-1", name: "ave-plugin-sampletool_mutating2", input: {} }],
       { sessionId: "sess-1", permissionContext: userPermissionContext() },
@@ -187,9 +165,7 @@ describe("executor effect ledger — host-observed read/write shadow", () => {
       isReadOnly: () => true,
       jsonSchema: { type: "object", properties: {} },
       execute: async () => {
-        // Stand in for ctx.callTool(M): the hostApi closure records a nested READ
-        // marker on the outer ledger, then re-enters the SAME executor for the
-        // inner mutating tool from within the wrapper's (outer) ledger scope.
+        // Re-enter the executor for an inner mutation within the outer ledger scope.
         recordEffect({ kind: "callTool", effect: "read", target: "ave-plugin-sampletool_inner_mut" });
         await executorRef.executeAll(
           [{ id: "tu-inner", name: "ave-plugin-sampletool_inner_mut", input: {} }],
@@ -208,16 +184,13 @@ describe("executor effect ledger — host-observed read/write shadow", () => {
     await auditLogger.flush();
     const wrapRows = effectShadowRows(auditDir).filter((r) => r.toolName === "ave-plugin-sampletool_wrapper");
     expect(wrapRows).toHaveLength(1);
-    // The wrapper's OWN ledger surfaces the delegated mutation via callTool-child —
-    // without this propagation a later read-recognition gate would treat the
-    // wrapper as a safe read (fail-permissive).
+    // Propagate delegated mutations to the wrapper ledger so read recognition cannot fail open.
     expect(wrapRows[0].hasMutatingEffect).toBe(true);
     expect(wrapRows[0].effects).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ kind: "callTool-child", effect: "write", target: "ave-plugin-sampletool_inner_mut" }),
       ]),
     );
-    // The inner tool's own shadow is also mutating.
     const innerRows = effectShadowRows(auditDir).filter((r) => r.toolName === "ave-plugin-sampletool_inner_mut");
     expect(innerRows[0].hasMutatingEffect).toBe(true);
   });
@@ -236,21 +209,14 @@ describe("executor effect ledger — host-observed read/write shadow", () => {
     const eff = effectShadowRows(auditDir).filter((r) => r.toolName === "ave-plugin-sampletool_corr");
     expect(cat).toHaveLength(1);
     expect(eff).toHaveLength(1);
-    // The id is present (non-empty) in BOTH emitted rows ...
     expect(typeof cat[0].correlationId).toBe("string");
     expect((cat[0].correlationId as string).length).toBeGreaterThan(0);
-    // ... and identical, so the pre-exec category shadow and the post-exec effect
-    // shadow JOIN on a single key.
+    // Join pre-execution category and post-execution effects by correlationId.
     expect(cat[0].correlationId).toBe(eff[0].correlationId);
   });
 
   it("a plugin tool that mutates ONLY via ctx.storage.writeJson ⇒ hasMutatingEffect:true (not a confirmed read)", async () => {
-    // Round-2 MAJOR regression — before the storage chokepoints were
-    // instrumented, a plugin tool whose only side effect was a real
-    // `storage.writeJson(...)` recorded `hostObservable:true, hasMutatingEffect:false`
-    // = a CONFIRMED host-observed read, a fail-open seed for the future
-    // read-recognition gate. This drives the REAL PluginStorage (not recordEffect)
-    // so the instrumentation living inside the storage methods is exercised.
+    // Exercise real storage instrumentation: an unrecorded write would seed a fail-open read classification.
     const storageDir = mkdtempSync(join(tmpdir(), "ave-eff-storage-"));
     try {
       const registry = new ToolRegistry();
@@ -264,9 +230,7 @@ describe("executor effect ledger — host-observed read/write shadow", () => {
           isReadOnly: () => true,
           jsonSchema: { type: "object", properties: {} },
           execute: async () => {
-            // The ambient per-invocation ledger (bound by the executor) attributes
-            // this storage write — the same AsyncLocalStorage mechanism the real
-            // hostApi closures rely on.
+            // The ambient invocation ledger must attribute real storage writes.
             const storage = createPluginStorage("ave-plugin-sampletool", storageDir, unavailableSecretEncryption);
             await storage.writeJson("data.json", { mutated: true });
             return { output: "ok", isError: false };
@@ -282,7 +246,6 @@ describe("executor effect ledger — host-observed read/write shadow", () => {
       await auditLogger.flush();
       const rows = effectShadowRows(auditDir).filter((r) => r.toolName === "ave-plugin-sampletool_storage_mut");
       expect(rows).toHaveLength(1);
-      // hostObservable:true is now HONEST — the storage mutation was recorded.
       expect(rows[0].hostObservable).toBe(true);
       expect(rows[0].hasMutatingEffect).toBe(true);
       expect(rows[0].effects).toEqual(
@@ -296,10 +259,7 @@ describe("executor effect ledger — host-observed read/write shadow", () => {
   });
 
   it("destructive clearAuthPartition-class chokepoint ⇒ hasMutatingEffect:true (not a confirmed read)", async () => {
-    // Companion to the storage regression — proves the other newly instrumented
-    // host-mediated mutating chokepoints flip the read/write bit too. Driven via
-    // recordChokepoint (the exact call the hostApi closure makes) since
-    // clearAuthPartition needs a live Electron session to drive end-to-end.
+    // Exercise host mutation chokepoints directly; clearAuthPartition otherwise requires a live session.
     const registry = new ToolRegistry();
     registry.register(
       createDynamicTool({
@@ -332,17 +292,8 @@ describe("executor effect ledger — host-observed read/write shadow", () => {
   });
 
   it("read-declared wrapper → REAL loopback invoker → mutating inner ⇒ outer hasMutatingEffect:true", async () => {
-    // Round-2 MINOR 1 — the existing wrapper test calls `executorRef.executeAll`
-    // DIRECTLY inside the wrapper's own (sync) async context, so it never
-    // exercises the production `ctx.callTool` → loopback invoker path: a fresh
-    // `runWithInvocationOrigin` async frame plus the indirection through the
-    // invoker ref. If THAT frame ever broke the AsyncLocalStorage chain, the inner
-    // `executeOne` would read `currentEffectLedger() === undefined`, the
-    // callTool-child propagation would silently no-op (fail-permissive), and the
-    // green directly-driven test would not catch it. This drives the real
-    // indirection and couples origin-chain + effect-ledger propagation: the inner
-    // tool asserts it still sees the propagated invocation origin AND the outer
-    // ledger surfaces the delegated mutation.
+    // The real loopback invoker must preserve both origin and ledger across its async frame.
+    // Lost ledger propagation would silently classify the wrapper as a safe read.
     let innerObservedOrigin: InvocationOrigin | undefined;
     const registry = new ToolRegistry();
     registry.register(
@@ -355,10 +306,7 @@ describe("executor effect ledger — host-observed read/write shadow", () => {
         isReadOnly: () => true,
         jsonSchema: { type: "object", properties: {} },
         execute: async () => {
-          // The SAME async chain carries BOTH the origin-chain frame and the
-          // effect-ledger frame — capturing the origin here couples the two: if
-          // the chain broke, this would be undefined AND the ledger propagation
-          // below would fail.
+          // Capture origin to verify the same async chain that carries the effect ledger.
           innerObservedOrigin = currentInvocationOrigin();
           recordEffect({ kind: "config.set", effect: "write", target: "k" });
           return { output: "inner-ok", isError: false };
@@ -368,9 +316,7 @@ describe("executor effect ledger — host-observed read/write shadow", () => {
 
     let executorRef!: ToolExecutor;
 
-    // Faithful reproduction of boot.ts `invokePluginTool`: the REAL loopback
-    // invoker enters a fresh `runWithInvocationOrigin` frame and re-enters the
-    // SAME executor via executeAll.
+    // Match the production loopback's fresh origin frame and executor re-entry.
     const invoker = async (
       toolName: string,
       payload: unknown,
@@ -387,9 +333,7 @@ describe("executor effect ledger — host-observed read/write shadow", () => {
       });
     };
 
-    // Faithful reproduction of a nested executor invocation: record the READ
-    // marker on the OUTER ledger, capture the parent origin, then delegate
-    // through the real invoker.
+    // Record on the outer ledger before delegating through the real invoker.
     const ctxCallTool = async (toolName: string, payload?: unknown): Promise<string> => {
       recordChokepoint("callTool", toolName);
       const parentOrigin = currentInvocationOrigin();
@@ -420,10 +364,7 @@ describe("executor effect ledger — host-observed read/write shadow", () => {
       { sessionId: "sess-wrap-real", permissionContext: userPermissionContext() },
     );
 
-    // Origin-chain propagation survived the real invoker frame ...
     expect(innerObservedOrigin).toBe("plugin");
-    // ... and so did effect-ledger propagation: the outer wrapper ledger surfaces
-    // the delegated mutation through the same intact async chain.
     await auditLogger.flush();
     const wrapRows = effectShadowRows(auditDir).filter((r) => r.toolName === "ave-plugin-sampletool_wrapper_real");
     expect(wrapRows).toHaveLength(1);
@@ -433,7 +374,6 @@ describe("executor effect ledger — host-observed read/write shadow", () => {
         expect.objectContaining({ kind: "callTool-child", effect: "write", target: "ave-plugin-sampletool_inner_mut_real" }),
       ]),
     );
-    // The inner tool's own shadow is mutating too.
     const innerRows = effectShadowRows(auditDir).filter((r) => r.toolName === "ave-plugin-sampletool_inner_mut_real");
     expect(innerRows[0].hasMutatingEffect).toBe(true);
   });
@@ -449,8 +389,7 @@ describe("executor effect ledger — host-observed read/write shadow", () => {
         category: "read",
         isReadOnly: () => true,
         jsonSchema: { type: "object", properties: {} },
-        // No recordEffect calls — an MCP tool runs out-of-process and never reaches
-        // the instrumented host closures, so its ledger is empty.
+        // Out-of-process tools cannot reach instrumented host closures, leaving their ledger empty.
         execute: async () => ({ output: "ok", isError: false }),
       }),
     );
@@ -461,9 +400,7 @@ describe("executor effect ledger — host-observed read/write shadow", () => {
     await auditLogger.flush();
     const rows = effectShadowRows(auditDir).filter((r) => r.toolName === "remote_mcp_tool");
     expect(rows).toHaveLength(1);
-    // An empty ledger alone is indistinguishable from a confirmed read; the
-    // hostObservable:false marker is what lets a later read-recognition gate fail
-    // CLOSED instead of auto-relaxing an unobservable MCP tool to read.
+    // An empty, unobservable ledger must fail closed instead of being recognized as a read.
     expect(rows[0].hostObservable).toBe(false);
     expect(rows[0].hasMutatingEffect).toBe(false);
     expect(rows[0].effects).toEqual([]);

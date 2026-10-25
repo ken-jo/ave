@@ -7,7 +7,7 @@ const GIT_METADATA_RULES = [
   `(deny file-write* (require-all ${GIT_MARKER_FILTER} (vnode-type REGULAR-FILE)))`,
 ].join("\n");
 
-/** Add typed entry protection that the runtime's subtree-deny API cannot express. */
+// Add typed entry protection that the runtime's subtree-deny API cannot express.
 export function hardenMacSandboxGitMetadata<T extends { readonly argv: string[]; readonly env: NodeJS.ProcessEnv }>(
   wrapped: T,
 ): T {
@@ -15,8 +15,7 @@ export function hardenMacSandboxGitMetadata<T extends { readonly argv: string[];
     throw new Error("macOS sandbox wrapper has an unexpected command shape");
   }
   const words = parseSandboxWrappedWords(wrapped.argv[2]!, "macOS sandbox wrapper");
-  // The pinned wrapper emits an env prefix followed by this exact executable.
-  // Search only argument values, never the profile or user command text.
+  // The pinned wrapper emits an env prefix followed by this exact executable. Search only argument values, never the profile or user command text.
   const executable = words.findIndex(word => word.value === "/usr/bin/sandbox-exec");
   if (executable < 0 || words[0]?.value !== "env" || words[executable + 1]?.value !== "-p") {
     throw new Error("macOS sandbox wrapper does not invoke the expected profile");

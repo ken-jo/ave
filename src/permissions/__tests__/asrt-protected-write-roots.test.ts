@@ -1,19 +1,5 @@
 import { TEST_COMMAND_ID, TEST_WORKER_EGRESS_OWNER } from "../../__tests__/support/egress-fixture.js";
-/**
- * No wrap is granted a write root, or a read grant, under the protected
- * read-deny floor.
- *
- * Bubblewrap grants a write by binding the host directory read-write over the
- * read deny's tmpfs mask, so on Linux such a root re-opens everything under it.
- * An `allowRead` entry re-allows inside a covering deny on both platforms.
- * Every wrap — the user's shell, plugin children and workers, bundled hooks,
- * MCP stdio servers, the terminal — reaches ASRT through
- * `buildPerCommandSandboxCustomConfig`, and the shared config through
- * `buildSandboxConfig`; the rule lives there so that no caller has to repeat it.
- * A wrap's own temp directory and HOME sit under the sandbox private roots,
- * which the floor restated with them does deny but which are not protected
- * floor: each wrap is granted its own directory there by design.
- */
+// Write and read grants must never reopen the protected deny floor. All wraps share this rule; private temp/HOME roots re-allow only their own process directory.
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
@@ -72,8 +58,7 @@ describe("the shared layer withholds grants under the protected floor", () => {
 
   function layout() {
     vi.stubEnv("HOME", root);
-    // os.homedir() reads USERPROFILE on Windows, so a HOME-only stub would
-    // leave the `.ssh` deny pointing at the real profile there.
+    // os.homedir reads USERPROFILE on Windows, so a HOME-only stub would leave the `.ssh` deny pointing at the real profile there.
     vi.stubEnv("USERPROFILE", root);
     vi.stubEnv("AVE_HOME", join(root, ".ave"));
     vi.stubEnv("XDG_CONFIG_HOME", join(root, "xdg"));
@@ -92,16 +77,13 @@ describe("the shared layer withholds grants under the protected floor", () => {
       join(root, ".ave", "mcp", "s", "sandbox"),
     ];
     for (const path of ordinaryRoots) mkdirSync(path, { recursive: true });
-    // The wrap's OWN private directories, under the private roots the floor it
-    // restates read-denies: they must survive the withholding.
+    // The wrap's OWN private directories, under the private roots the floor it restates read-denies: they must survive the withholding.
     const ownTemp = ensureSandboxTempPrincipalDir({ kind: "plugin", id: "p" }).dir;
     const ownHome = createSandboxProcessHome();
     return { protectedRoots, ordinaryRoots: [...ordinaryRoots, ownTemp, ownHome.path], ownHome };
   }
 
-  // The filesystem each wrap kind hands the wrap, by shape: the shell adds a
-  // whole-HOME read deny, plugin-owned code pins its roots, the terminal does
-  // neither.
+  // The filesystem each wrap kind hands the wrap, by shape: the shell adds a whole-HOME read deny, plugin-owned code pins its roots, the terminal does neither.
   const wrapShapes = {
     shell: (paths: string[]) => ({
       allowWrite: paths, allowRead: paths, denyRead: [...getDefaultSensitiveReadDenyPaths(), root],
@@ -168,9 +150,7 @@ describe("the shared layer withholds grants under the protected floor", () => {
   });
 
   it("keeps a read inside the floor only for the wrap that names it as its own pierce", () => {
-    // The builtin shell's saved-session grant and a plugin's `certs` host
-    // directory are the two legitimate reads under the floor, and each is
-    // opened only for the wrap whose composer asks for it.
+    // The builtin shell's saved-session grant and a plugin's `certs` host directory are the two legitimate reads under the floor, and each is opened only for the wrap whose composer asks for it.
     const { ownHome } = layout();
     const certs = join(root, ".ave", "certs");
     const sessions = getConfiguredSessionReadPolicy().allowRead;
@@ -211,11 +191,7 @@ describe("the shared layer withholds grants under the protected floor", () => {
   });
 
   it("every ASRT wrap and config change goes through the shared layer", () => {
-    // A wrap that handed ASRT its own custom config, or a config change that
-    // skipped `buildSandboxConfig`, would skip the rule. Every mention of the
-    // identifiers in code — a call, a destructured or bound alias — is listed
-    // and compared with the legitimate sites. The Linux runtime probe passes
-    // no per-command config and runs under the shared one.
+    // A wrap that handed ASRT its own custom config, or a config change that skipped `buildSandboxConfig`, would skip the rule. Every mention of the identifiers in code — a call, a destructured or bound alias — is listed and compared with the legitimate sites. The Linux runtime probe passes no per-command config and runs under the shared one.
     const sourceRoot = join(__dirname, "..", "..");
     const sites: string[] = [];
     const visit = (dir: string): void => {
@@ -247,12 +223,7 @@ describe("the shared layer withholds grants under the protected floor", () => {
   });
 });
 
-/**
- * Against the real sandbox, with the user data directory somewhere the host
- * guard's default-location globs do not reach — `--user-data-dir`, or
- * XDG_CONFIG_HOME on Linux — and a trusted custom deny. Runs on macOS and on
- * Linux with bubblewrap.
- */
+// Against the real sandbox, with the user data directory somewhere the host guard's default-location globs do not reach — `--user-data-dir`, or XDG_CONFIG_HOME on Linux — and a trusted custom deny. Runs on macOS and on Linux with bubblewrap.
 describe("the plugins root, refused to plugin-owned wraps", () => {
   let root: string;
   beforeAll(() => {
@@ -277,8 +248,7 @@ describe("the plugins root, refused to plugin-owned wraps", () => {
 
   it("adds every plugin-owned root to the wrap's read denies, spelled exactly on macOS so an allowed ancestor cannot re-emit it over the wrap's own", () => {
     const ave = join(root, ".ave");
-    // The plugins root, and the two roots of agent plugins: their data and
-    // their installed versions.
+    // The plugins root, and the two roots of agent plugins: their data and their installed versions.
     const roots = [join(ave, "plugins"), join(ave, "agent-plugin-data"), join(ave, "packages", "agent-plugin")];
     expect(denyFor("linux")).toEqual(roots);
     // The data root is the one the agent plugin runtimes write and uninstall removes.
@@ -332,11 +302,7 @@ describe.skipIf(hostPlatform === "win32")("a confined child cannot reach user da
     previousAveHome = process.env.AVE_HOME;
     process.env.AVE_HOME = join(root, ".ave");
     if (hostPlatform === "win32") {
-      // srt-win stamps each deny with an ACE on its parent too, and Windows
-      // propagates that change through the parent's whole tree. Under the real
-      // profile that is a walk of the user's entire home on every initialize,
-      // past srt-win's 60s stamp budget on a developer machine. A home the
-      // test owns keeps the same floor, as asrt-sandbox.test.ts does.
+      // srt-win stamps each deny with an ACE on its parent too, and Windows propagates that change through the parent's whole tree. Under the real profile that is a walk of the user's entire home on every initialize, past srt-win's 60s stamp budget on a developer machine. A home the test owns keeps the same floor, as asrt-sandbox.test.ts does.
       vi.stubEnv("USERPROFILE", join(root, "home"));
       vi.stubEnv("HOME", join(root, "home"));
       vi.mocked(userInfo).mockReturnValue({ ...userInfo(), homedir: join(root, "home") });
@@ -353,8 +319,7 @@ describe.skipIf(hostPlatform === "win32")("a confined child cannot reach user da
     writeFileSync(join(userData, "Cookies"), SECRET);
     writeFileSync(join(partitions, "cookie"), SECRET);
     await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true, userDataDir: userData, denyRead: [customDeny] });
-    // The confined-child and bundled wraps below serve extension processes,
-    // which are wrapped only while plugin-worker confinement was requested.
+    // The confined-child and bundled wraps below serve extension processes, which are wrapped only while plugin-worker confinement was requested.
     setPluginWorkerConfinementRequestedAtBoot(true);
   });
 
@@ -368,15 +333,7 @@ describe.skipIf(hostPlatform === "win32")("a confined child cannot reach user da
     rmSync(root, { recursive: true, force: true });
   });
 
-  /**
-   * A case that spawns a POSIX shell probe through a per-command wrap. Windows
-   * has none of these wraps: ASRT there takes no per-exec allowRead/allowWrite
-   * (wrapToolCommand refuses them), wrapBundledCommand is the macOS and Linux
-   * wrap, and a confined child runs under cmd, not /bin/sh. A Windows plugin
-   * child is confined by the holder-PID ACL grant instead, which
-   * adversarial-escapes.test.ts measures against the same kind of neighbour.
-   * The floor rules these cases rely on run everywhere, above.
-   */
+  // A case that spawns a POSIX shell probe through a per-command wrap. Windows has none of these wraps: ASRT there takes no per-exec allowRead/allowWrite (wrapToolCommand refuses them), wrapBundledCommand is the macOS and Linux wrap, and a confined child runs under cmd, not /bin/sh. A Windows plugin child is confined by the holder-PID ACL grant instead, which adversarial-escapes.test.ts measures against the same kind of neighbour. The floor rules these cases rely on run everywhere, above.
   const itPosixWrap = it.runIf(hostPlatform !== "win32");
 
   const probe = () => [
@@ -453,9 +410,7 @@ describe.skipIf(hostPlatform === "win32")("a confined child cannot reach user da
   });
 
   itPosixWrap("denies a trusted custom deny to a wrap that restates only the sensitive floor", async () => {
-    // A per-command deny replaces the shared one; the plugin child, workers,
-    // bundled hooks, MCP stdio and the terminal restate the sensitive floor
-    // alone, so the wrap has to add the custom denies itself.
+    // A per-command deny replaces the shared one; the plugin child, workers, bundled hooks, MCP stdio and the terminal restate the sensitive floor alone, so the wrap has to add the custom denies itself.
     if (!sandboxRuns) return;
     const { argv, env } = await wrapToolCommand(`cat ${join(customDeny, "s")}; echo probe-finished`, { commandId: TEST_COMMAND_ID,
       binShell: "/bin/sh",
@@ -500,13 +455,7 @@ describe.skipIf(hostPlatform === "win32")("a confined child cannot reach user da
     }
   });
 
-  /**
-   * Plugins live under `<AVE_HOME>/plugins`, and agent plugins keep their
-   * data under `<AVE_HOME>/agent-plugin-data` and their installed versions
-   * under `<AVE_HOME>/packages/agent-plugin`; the floor covers none of them.
-   * Every wrap of plugin-owned code is refused all three and re-allowed its
-   * own directories inside them (`PerCommandFilesystem.denyPluginsRoot`).
-   */
+  // Plugins live under `<AVE_HOME>/plugins`, and agent plugins keep their data under `<AVE_HOME>/agent-plugin-data` and their installed versions under `<AVE_HOME>/packages/agent-plugin`; the floor covers none of them. Every wrap of plugin-owned code is refused all three and re-allowed its own directories inside them (`PerCommandFilesystem.denyPluginsRoot`).
   function pluginsLayout() {
     const ave = join(root, ".ave");
     const plugins = join(ave, "plugins");
@@ -551,9 +500,7 @@ describe.skipIf(hostPlatform === "win32")("a confined child cannot reach user da
     expect(stdout, "the probe did not run to completion").toContain("probe-finished");
     expect(stdout).not.toContain(SECRET);
     expect(stdout).not.toContain("neighbour");
-    // The controls: its own directories are still its own, the data directory
-    // writable — on Linux a read re-allow of a directory holding it would
-    // otherwise have left it read-only.
+    // The controls: its own directories are still its own, the data directory writable — on Linux a read re-allow of a directory holding it would otherwise have left it read-only.
     for (const bytes of ownBytes) expect(stdout).toContain(bytes);
     expect(stdout).toContain("own-written");
     expect(readFileSync(join(ownData, "written"), "utf-8").trim()).toBe("own-written");
@@ -579,8 +526,7 @@ describe.skipIf(hostPlatform === "win32")("a confined child cannot reach user da
         label: "protected-write-roots",
         grantMode: "allow-list",
         tempPrincipal: { kind: "plugin", id: "own" },
-        // The shape of a plugin installed where its data lives: the root is
-        // read, the data directory inside it written.
+        // The shape of a plugin installed where its data lives: the root is read, the data directory inside it written.
         allowRead: [layout.own, layout.ownData, home.path],
         allowWrite: [layout.ownData, home.path],
         pinWriteRoots: true,
@@ -629,8 +575,7 @@ describe.skipIf(hostPlatform === "win32")("a confined child cannot reach user da
     const layout = pluginsLayout();
     const home = createSandboxProcessHome();
     try {
-      // The roots `agent-plugin-hook-runtime.ts` and `agent-plugin-mcp.ts`
-      // hand the wrap: the installed version it runs from, the data it writes.
+      // The roots `agent-plugin-hook-runtime.ts` and `agent-plugin-mcp.ts` hand the wrap: the installed version it runs from, the data it writes.
       const { argv, env } = await wrapBundledCommand({
         egressOwner: TEST_WORKER_EGRESS_OWNER,
         command: "/bin/sh",

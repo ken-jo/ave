@@ -16,17 +16,7 @@ export interface AskUserQuestionToolDeps {
   getGate: () => AskUserQuestionGate | undefined;
 }
 
-/**
- * Choice labels that name the input instead of an answer. Models reach for
- * these whenever the real answer cannot be enumerated, and the card then draws
- * a button reading "type here" that nobody can type into — the user's only way
- * out is to pick a label that means nothing. Such a label is dropped and the
- * question gets `allowFreeText` instead, which is the field it was asking for.
- *
- * The set stays this small on purpose: every entry names the act of entering
- * text, so none of them can be an answer a user meant to pick. Matched after
- * trimming and lower-casing.
- */
+// Replace labels that mean text entry with allowFreeText; keep the set limited to labels that cannot be real answers.
 export const FREE_TEXT_STAND_IN_LABELS: readonly string[] = [
   "입력",
   "직접 입력",
@@ -38,23 +28,10 @@ export const FREE_TEXT_STAND_IN_LABELS: readonly string[] = [
   "custom",
 ];
 
-/**
- * A choice is a chip on a card, and what a chip spends is columns, not
- * characters. The original cap was 20 *Korean* characters -- the width that
- * fills a chip in the language this was written for -- but counting characters
- * charges Latin labels the same 20 for half the ink, so ordinary options came
- * back rejected one character over and the model spent turns shortening prose
- * that already fit. Counting columns keeps the Korean ceiling exactly where it
- * was (20 characters, 40 columns) and gives every other script the same chip.
- */
+// Budget choice width in columns, preserving the 20-CJK-character ceiling.
 const MAX_CHOICE_WIDTH = 40;
 
-/**
- * Columns a choice occupies in a monospace-ish chip: two for the East Asian
- * Wide and Fullwidth ranges, one for everything else. This is the same rule a
- * terminal applies, and it is deliberately coarse -- a chip that wraps is fine,
- * a chip nobody can scan is not.
- */
+// Count East Asian wide/fullwidth characters as two columns and others as one.
 function choiceDisplayWidth(choice: string): number {
   let width = 0;
   for (const character of choice) {
@@ -143,13 +120,7 @@ export function createAskUserQuestionTool(deps: AskUserQuestionToolDeps): Tool {
       },
     },
     execute: async (rawInput, ctx) => {
-      // A headless turn builds a window like any other launch, so the card
-      // renders into a renderer nobody is watching and the gate sits on its
-      // five-minute timer until the host's tool ceiling cuts the call --
-      // minutes charged to the turn for a question asked of no one. There is
-      // no shape of input that changes that, so this answers ahead of
-      // validation, and it says what the model should do instead: the run is
-      // unattended, so the model is the one who decides.
+      // Refuse unattended questions before validation; an unwatched renderer cannot answer and would hold the gate until timeout.
       if (execTurnRequested(process.argv)) {
         return {
           output: JSON.stringify({
@@ -171,9 +142,7 @@ export function createAskUserQuestionTool(deps: AskUserQuestionToolDeps): Tool {
           isError: true,
         };
       }
-      // The card is routed to the conversation that asked it, so a call with no
-      // executing session has no surface to render on and must not open a gate
-      // only the timeout could close.
+      // Require a session identity so the card has an addressable conversation.
       if (typeof ctx.metadata?.sessionId !== "string" || ctx.metadata.sessionId.length === 0) {
         return {
           output: JSON.stringify({
@@ -239,9 +208,7 @@ export function createAskUserQuestionTool(deps: AskUserQuestionToolDeps): Tool {
             isError: true,
           };
         }
-        // Coerce a stand-in label into the field it was standing in for, then
-        // carry the surviving choices with their original positions so the
-        // recommend/alt badges still point at the chips the model meant.
+        // Preserve original choice positions when dropping placeholders so badges retain their intended targets.
         const keptChoices = (q.choices as string[])
           .map((choice, index) => ({ label: choice.trim(), index }))
           .filter((entry) => !FREE_TEXT_STAND_IN_SET.has(entry.label.toLowerCase()));
@@ -274,15 +241,11 @@ export function createAskUserQuestionTool(deps: AskUserQuestionToolDeps): Tool {
             isError: true,
           };
         }
-        // recommendedIndex: keep only when it points inside `filteredChoices`.
-        // 2개 이상 true 가 되어버리는 케이스는 schema 가 integer 하나만 받게 강제하므로
-        // 추가 dedup 불필요.
         const recIdxRaw = q.recommendedIndex;
         const recommendedIndex =
           typeof recIdxRaw === "number" && Number.isInteger(recIdxRaw)
             ? positionAfterCoercion.get(recIdxRaw)
             : undefined;
-        // altIndices: dedupe, drop the recommend slot, keep in-range only.
         const altIndices = (() => {
           if (!Array.isArray(q.altIndices)) return undefined;
           const seen = new Set<number>();
@@ -307,9 +270,7 @@ export function createAskUserQuestionTool(deps: AskUserQuestionToolDeps): Tool {
           typeof q.summaryHint === "string" && q.summaryHint.trim().length > 0
             ? q.summaryHint.trim()
             : undefined;
-        // Multi-select is only meaningful with at least one choice; otherwise
-        // the field has no surface to apply to. Emit `true` only when on so
-        // the absence is a clean undefined for downstream equality checks.
+        // Emit allowMultiple only for enabled questions with surviving choices; otherwise preserve undefined.
         const allowMultiple =
           q.allowMultiple === true && filteredChoices.length > 0 ? true : undefined;
         questions.push({
@@ -326,8 +287,7 @@ export function createAskUserQuestionTool(deps: AskUserQuestionToolDeps): Tool {
       const response = await gate.ask({
         questions,
         sessionId,
-        // Honor the user's 중단 button — without this the gate sits on its
-        // 5-minute timer regardless of the conversation loop's abort.
+        // Turn cancellation must release the gate rather than wait for its timeout.
         abortSignal: ctx.abortSignal,
       });
       return {

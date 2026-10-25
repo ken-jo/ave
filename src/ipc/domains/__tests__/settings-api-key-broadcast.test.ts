@@ -1,13 +1,5 @@
-/**
- * MAJOR-3 regression: all 4 secret-mutation handlers broadcast SETTINGS.updated
- * to all app windows so the reviewer tab auto-unlocks without a full reload:
- *   - ave:settings:set-api-key
- *   - ave:settings:delete-api-key
- *   - ave:settings:set-web-api-key
- *   - ave:settings:delete-web-api-key
- *   - ave:settings:marketplace:set-api-key
- *   - ave:settings:marketplace:delete-api-key
- */
+/** MAJOR-3 regression: all 4 secret-mutation handlers broadcast SETTINGS.updated to all app windows so the reviewer tab auto-unlocks without a full reload: -
+ * ave:settings:set-api-key - ave:settings:delete-api-key - ave:settings:set-web-api-key - ave:settings:delete-web-api-key - ave:settings:marketplace:set-api-key - ave:settings:marketplace:delete-api-key */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -30,8 +22,7 @@ vi.mock("../../../engine/llm/model-list.js", async (importOriginal) => ({
   listLlmModelsFromSettings: listLlmModelsFromSettingsMock,
 }));
 
-// Shared fixture (test-helpers.ts) — no senderFrame set, so validateSender's
-// `!frame` early-allow applies, same as this file's former inline `invoke`.
+// Shared fixture (test-helpers.ts); no senderFrame set, so validateSender's `!frame` early-allow applies, same as this file's former inline `invoke`.
 const invoke = makeAppIpcInvoker(handlers);
 
 function makeWindow() {
@@ -78,8 +69,7 @@ function makeDeps(appWindows: ReturnType<typeof makeWindow>[], vendorBaseUrl?: s
     },
     auditLogger: { log: vi.fn() },
     getAppWindows: vi.fn(() => appWindows),
-    // Main's Chromium-stack transport; the handler is expected to hand it to
-    // the engine rather than let the engine reach for ambient `fetch`.
+    // Main's Chromium-stack transport; the handler is expected to hand it to the engine rather than let the engine reach for ambient `fetch`.
     singleHopNetworkFetch: vi.fn() as unknown as typeof fetch,
   };
 }
@@ -260,8 +250,6 @@ describe("delete-api-key broadcast (MAJOR-3)", () => {
   });
 });
 
-// ─── MAJOR-3: set/delete-web-api-key broadcast ────────────────────────
-
 describe("set-web-api-key broadcast (MAJOR-3)", () => {
   it("broadcasts SETTINGS.updated to all app windows after storing the web key", async () => {
     const windows = [makeWindow(), makeWindow()];
@@ -299,8 +287,6 @@ describe("delete-web-api-key broadcast (MAJOR-3)", () => {
     }
   });
 });
-
-// ─── MAJOR-3: marketplace:set/delete-api-key broadcast ───────────────
 
 describe("marketplace provider preset runtime refresh", () => {
   it("refreshes both chat runtime providers after installing a provider preset", async () => {
@@ -982,9 +968,8 @@ describe("MAJOR-2: settings:update triggers rewireReviewerAgent on azure-foundry
     const windows: ReturnType<typeof makeWindow>[] = [];
     const rewire = vi.fn();
     const baseDeps = makeDeps(windows, undefined);
-    // Key-based mock (robust to call order — the handler reads several keys
-    // including E4's shortcuts/system). `llm` flips from null baseUrl to the new
-    // one once `patched` is set, reproducing the prev→new transition.
+    // Key-based mock (robust to call order; the handler reads several keys including E4's shortcuts/system).
+    // `llm` flips from null baseUrl to the new one once `patched` is set, reproducing the prev→new transition.
     let patched = false;
     const deps = {
       ...baseDeps,
@@ -1075,8 +1060,6 @@ describe("MAJOR-2: settings:update triggers rewireReviewerAgent on azure-foundry
   });
 });
 
-// ─── Minor-1 R2: broadcastSettingsSnapshot helper consolidation ───────────────
-
 describe("Minor-1: broadcastSettingsSnapshot helper — all mutation handlers call it", () => {
   it("set-api-key broadcasts snapshot via helper (not stale inline copy)", async () => {
     const win = makeWindow();
@@ -1157,8 +1140,7 @@ describe("Minor-1: broadcastSettingsSnapshot helper — all mutation handlers ca
       const { registerSettingsHandlers } = await import("../settings.js");
       registerSettingsHandlers(deps as never);
 
-      // The older update targets the lazy Korean catalog and stalls on its
-      // loader; the newer one targets the eager English catalog and lands first.
+      // The older update targets the lazy Korean catalog and stalls on its loader; the newer one targets the eager English catalog and lands first.
       const older = invoke("ave:settings:update", { appearance: { language: "ko" } });
       await koRequested;
       await expect(invoke("ave:settings:update", { appearance: { language: "en" } }))
@@ -1253,8 +1235,6 @@ describe("Minor-1: broadcastSettingsSnapshot helper — all mutation handlers ca
   });
 });
 
-// ─── Minor-4 R2: settings:update rejects non-string baseUrl ──────────────────
-
 describe("Minor-4: settings:update rejects non-string baseUrl", () => {
   it("returns invalid-foundry-endpoint when baseUrl is a number", async () => {
     const deps = makeDeps([]);
@@ -1298,8 +1278,6 @@ describe("Minor-4: settings:update rejects non-string baseUrl", () => {
     expect(deps.settingsService.patch).toHaveBeenCalled();
   });
 });
-
-// ─── LOW-2: settings:update validates vendors["azure-foundry"].baseUrl ────────
 
 describe("LOW-2: settings:update validates azure-foundry baseUrl at write time", () => {
   it("returns invalid-foundry-endpoint when baseUrl is HTTP (not HTTPS)", async () => {
@@ -1368,8 +1346,7 @@ describe("main-owned settings fields on ave:settings:update", () => {
   it.each([
     ["a2aRemote", "a2a-remote-settings-main-owned"],
     ["appliedMigrations", "applied-migrations-main-owned"],
-    // Where sandbox egress goes next: only the permissions upstreamProxySet
-    // channel (validated, credentials to the secret store) writes it.
+    // Where sandbox egress goes next: only the permissions upstreamProxySet channel (validated, credentials to the secret store) writes it.
     ["upstreamProxy", "upstream-proxy-settings-main-owned"],
   ])("refuses a patch that names %s and writes nothing", async (field, error) => {
     const deps = makeDeps([makeWindow()]);

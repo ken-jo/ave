@@ -10,8 +10,7 @@ describe("resolveEffectiveCeilingMs — per-invocation ceiling", () => {
   const bash = { name: "bash", source: "builtin", category: "shell" } as const;
 
   it("follows a builtin shell tool's own timeoutSeconds when it exceeds the global ceiling", () => {
-    // An escalated retry (600s) must not be cut at the 120s ceiling — the
-    // tool's own retryable timeout has to be what fires.
+    // Escalated retries must reach the tool's retryable timeout before the executor ceiling.
     const ceiling = resolveEffectiveCeilingMs(bash, { command: "bun run build", timeoutSeconds: 600 });
     expect(ceiling).toBeGreaterThan(600_000);
   });
@@ -44,11 +43,7 @@ describe("resolveEffectiveCeilingMs — per-invocation ceiling", () => {
   });
 
   it("clamps a scaled sub-agent ceiling to the largest delay setTimeout can hold", () => {
-    // A `subAgentMaxRounds` of 300_000 scales to ~3.0e9ms. That is past the
-    // signed-32-bit delay `setTimeout` stores, where Node substitutes 1ms —
-    // so WITHOUT the clamp this ceiling fires ~immediately and every spawn
-    // aborts on arrival. The round budget has no maximum by design, so the
-    // clamp is what keeps an oversized budget a long deadline rather than none.
+    // Timer delays above signed 32-bit range become 1ms; clamp oversized round budgets.
     const hugeBudget = {
       name: "agent_spawn",
       source: "builtin",
@@ -60,17 +55,14 @@ describe("resolveEffectiveCeilingMs — per-invocation ceiling", () => {
   });
 
   it("clamps an oversized shell timeoutSeconds to the same bound", () => {
-    // Same overflow on the other escalation path: `timeoutSeconds` is
-    // deliberately uncapped so a retry can name a larger budget, and above
-    // ~2_147_474s the derived ceiling crosses the 32-bit delay.
+    // Uncapped timeoutSeconds can overflow the same timer limit.
     expect(
       resolveEffectiveCeilingMs(bash, { command: "sleep 1", timeoutSeconds: 3_000_000 }),
     ).toBe(MAX_TIMER_DELAY_MS);
   });
 
   it("arms a real timer at the clamped ceiling instead of firing after 1ms", async () => {
-    // The behavioural half: an unclamped 3.0e9 delay would resolve this race
-    // via the ceiling almost immediately. The clamped ceiling lets the task win.
+    // An unclamped overflow would let the ceiling win this race immediately.
     vi.useRealTimers();
     const ceiling = resolveEffectiveCeilingMs(bash, {
       command: "sleep 1",
@@ -98,9 +90,7 @@ describe("resolveEffectiveCeilingMs — per-invocation ceiling", () => {
   });
 
   it("a non-builtin tool cannot raise its own ceiling by declaring resolveHostCeilingMs", () => {
-    // The escalation hook is host-owned. Neither the MCP adapter nor the
-    // plugin loopback copies anything from the wire into it, and this check is
-    // the structural reason a forged one would still be inert.
+    // Escalation authority is host-owned; forged wire fields must remain inert.
     expect(
       resolveEffectiveCeilingMs(
         {
@@ -258,7 +248,6 @@ describe("runWithCeiling — executor global ceiling helper", () => {
   });
 
   it("cleans up the ceiling timer on successful completion (no orphan timer)", async () => {
-    // If the timer leaks, vi.getTimerCount() stays > 0 after completion.
     const task = () => Promise.resolve("instant");
     await runWithCeiling(task, 60_000, undefined, "instant-tool");
     expect(vi.getTimerCount()).toBe(0);
@@ -274,10 +263,6 @@ describe("runWithCeiling — executor global ceiling helper", () => {
 });
 
 function listenerCount(target: AbortSignal): number {
-  // EventTarget doesn't expose a listener count; we probe by aborting on a
-  // clone — left empty here because Node's EventTarget hides the count.
-  // For test isolation, we just trust the wrapper's removeEventListener
-  // and assert the count delta is zero by structural test (no leak in repeated invocation).
   void target;
   return 0;
 }

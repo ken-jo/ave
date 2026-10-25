@@ -3,19 +3,8 @@ import { isAbsolute, resolve as pathResolve } from "node:path";
 
 import { validateShellWorkingDirectory } from "./shell-path-policy.js";
 
-/**
- * Session-scoped working directory for the `bash` tool.
- *
- * A `cd` in one foreground command carries into the next call of the same
- * session while the directory stays inside the workspace or an allowed
- * directory. Environment variables, functions, and shell options do not
- * persist: every call is still a fresh process.
- *
- * The record is bound to the workspace root it was observed under. A session
- * whose execution root changes (for example a project switch) ignores the old
- * record rather than resolving a stale directory against the new root. The
- * workspace root itself is never stored: it is the default.
- */
+// Carry cwd between fresh shell calls only within allowed scope; environment, functions, and options do not persist.
+// Bind records to the observed workspace root so project switches cannot reuse stale directories.
 interface SessionCwdRecord {
   readonly root: string;
   readonly cwd: string;
@@ -50,14 +39,8 @@ export function clearShellSessionCwd(sessionId: string): void {
   sessionCwds.delete(sessionId);
 }
 
-/**
- * Resolve a `bash` input against the session directory before any hook,
- * permission, approval, or route check reads it, so every one of them binds
- * the directory the command will actually run in. An absent `cwd` becomes the
- * session directory; a relative `cwd` resolves from it. A stored directory
- * that no longer exists or has left the allowed scope is dropped and the call
- * starts at the workspace root.
- */
+// Resolve session cwd before hooks, permission, approval, and route checks so all bind the execution directory.
+// Drop missing or out-of-scope records and return to the workspace root.
 export function withShellSessionCwd(
   input: Record<string, unknown>,
   context: {

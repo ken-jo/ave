@@ -97,13 +97,7 @@ function validatePart(value: unknown): { ok: true; part: A2APart } | {
   return { ok: true, part: structuredClone(value) as unknown as A2APart };
 }
 
-/**
- * Every way a send can be refused.
- *
- * Declared as a union rather than plain strings so {@link SEND_FAILURE_GUIDANCE}
- * has to cover all of them: adding a refusal without saying what to do about it
- * then fails to compile, instead of silently shipping a bare error token.
- */
+// A closed reason union requires guidance for every refusal at compile time.
 export type AgentSendFailureReason =
   | "recipient-unavailable"
   | "terminal-recipient"
@@ -115,16 +109,7 @@ export type AgentSendFailureReason =
   | "storage-failed"
   | "aborted";
 
-/**
- * What the caller should DO about a refusal.
- *
- * A bare `{"error":"recipient-unavailable"}` tells the model that something
- * failed but not what to try instead, which is how a refused send turns into a
- * guess — re-sending in a loop, or asking for a replacement sub-agent to be
- * spawned when the existing one is merely idle. `agent_guide` and `agent_spawn`
- * both attach guidance to their failures; this is the same treatment for the
- * one A2A tool that lacked it.
- */
+// Give actionable alternatives to prevent resend loops or unnecessary replacement agents.
 export const SEND_FAILURE_GUIDANCE: Readonly<Record<AgentSendFailureReason, string>> =
   Object.freeze({
     "recipient-unavailable":
@@ -162,21 +147,8 @@ export function createAgentSendTool(deps: AgentSendToolDeps): Tool {
     source: "builtin",
     category: "meta",
     decisionOverride: "always-allow-with-audit",
-    // Hidden at the root scope on purpose: execute() rejects every non-child
-    // caller (`spawnDepth !== 1`), so a root-visible schema would advertise a
-    // tool the parent can never successfully call — the model would try
-    // `agent_send(to: <child>)` and get a bare "unknown-sender". The sub-agent
-    // runner re-registers this tool `modelVisible: true` for children only
-    // (`buildChildDeps`), which is the one scope where it works. The parent's
-    // own outbound paths are separate tools: `agent_guide` addresses a child
-    // (delivered live to a running one, or queued in the durable parent
-    // directive mailbox for a suspended one), and `agent_spawn(resumeId=...)`
-    // continues a suspended child with new instructions.
-    //
-    // This grants no new authority. `agent_send` moves a message; it mutates no
-    // file and touches no network. Whatever the recipient does with the message
-    // re-enters this same permission pipeline at the recipient's own tool calls,
-    // which is where effects are gated.
+    // Only children can use agent_send; parents guide or resume through separate tools.
+    // Message delivery grants no effect authority: recipient tool calls retain their own permission gates.
     modelVisible: false,
     jsonSchema: {
       type: "object",

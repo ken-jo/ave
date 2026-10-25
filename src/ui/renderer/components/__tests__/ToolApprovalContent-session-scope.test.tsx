@@ -6,11 +6,7 @@ import { ToolApprovalContent } from "../ToolApprovalContent.js";
 import type { ApprovalRequest } from "../../types.js";
 import { TEST_IDS } from "../../../../shared/test-ids.js";
 
-/**
- * A browser scope is remembered for this app session only: the remember
- * button says so, records `scope: "session"`, and the scope line names the
- * origin and whose tabs it covers.
- */
+/** A browser scope is remembered for this app session only: the remember button says so, records `scope: "session"`, and the scope line names the origin and whose tabs it covers. */
 function browserRequest(tabOpener: "agent" | "user"): ApprovalRequest {
   return {
     id: `browser-click-${tabOpener}`,

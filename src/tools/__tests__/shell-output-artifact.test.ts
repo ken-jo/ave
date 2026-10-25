@@ -28,7 +28,6 @@ function setup() {
   dirs.push(dir);
   const memoryManager = new MemoryManager({ aveDir: dir });
   const history = new ConversationHistory();
-  // Exercise the actual session-owned lookup, without starting a model turn.
   const loop = Object.assign(Object.create(ConversationLoop.prototype) as ConversationLoop, {
     history, sessionId: SESSION, deps: { memoryManager },
   });
@@ -47,8 +46,7 @@ describe.skipIf(process.platform === "win32")("foreground shell artifact recover
   it("keeps shell execution alive when persisted capture references cannot be read", async () => {
     const { dir, memoryManager, shellContext } = setup();
     mkdirSync(join(dir, "sessions", `${SESSION}.jsonl`));
-    // Invalid on-disk storage must settle as unavailable before the factory is
-    // invoked from a child data event, where a thrown error would escape it.
+    // Settle invalid storage before child data events, where a thrown factory error would escape.
     const capture = memoryManager.startToolOutputCapture(SESSION, "unreadable-reference-probe");
     capture.append(Buffer.from("probe"));
     expect(await capture.finish()).toMatchObject({
@@ -290,7 +288,7 @@ describe.skipIf(process.platform === "win32")("foreground shell artifact recover
   });
 
   it("captures output when the process umask left the sessions root group-writable", async () => {
-    // Debian and Ubuntu logins use umask 0002, which a plain mkdir passes on.
+    // A plain mkdir inherits a permissive login umask.
     const dir = mkdtempSync(join(tmpdir(), "ave-shell-artifact-"));
     dirs.push(dir);
     mkdirSync(join(dir, "sessions"));
@@ -305,8 +303,7 @@ describe.skipIf(process.platform === "win32")("foreground shell artifact recover
   });
 
   it("still constructs when the sessions root is a link to another disk", () => {
-    // O_DIRECTORY|O_NOFOLLOW on a trailing link fails ENOTDIR, not ELOOP, and
-    // the constructor runs at boot with nothing to catch it.
+    // O_DIRECTORY|O_NOFOLLOW reports ENOTDIR for trailing symlinks; boot-time construction must handle it.
     const dir = mkdtempSync(join(tmpdir(), "ave-shell-artifact-"));
     dirs.push(dir);
     mkdirSync(join(dir, "elsewhere"));

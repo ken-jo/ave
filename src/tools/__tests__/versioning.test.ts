@@ -1,19 +1,3 @@
-/**
- * §6.4 Tool Versioning — ToolRegistry behaviour.
- *
- * Covers:
- *   - Registration with explicit versions
- *   - Duplicate (name, version) throws
- *   - Multi-version registration selects latest via semver compare
- *   - findByNameVersion pins a specific registered version
- *   - Default version "1.0.0" applied when spec omits it
- *   - unregisterByPlugin drops every version of that plugin's tools
- *
- * NOTE: the per-tool deprecation machinery (`deprecatedSince`/`replacedBy`
- * redirect + warn) was removed in #885 Phase R — no builtin ever produced it —
- * so the registry now selects the semver-latest version with no deprecation
- * filtering, and those tests were removed with the feature.
- */
 import { describe, it, expect } from "vitest";
 
 import { ToolRegistry } from "../registry.js";

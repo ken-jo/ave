@@ -1,19 +1,4 @@
-/**
- * `/permission audit` + top-level slash dispatcher tests.
- *
- * Spec ref: docs/architecture/permission-policy-design.md §3 Layer 7,
- * §3 Layer 8.
- *
- * Coverage:
- *   - parsePermissionAuditCommand: show / verify / --last variants.
- *   - parsePermissionModeCommand: durable flag + invalid mode.
- *   - parsePermissionHooksCommand: list / accept / disable.
- *   - dispatchPermissionSlash: trust-origin gate (user-keyboard vs other),
- *     leading-slash strip on plugin-emitted, built-in slash commands do not
- *     request permission modals.
- *   - readRecentAuditEntries: returns newest-first across files.
- *   - verifyAllAuditFiles: detects tamper + seal mismatch.
- */
+// Slash mutations require user-keyboard origin; audit reads cross day-files and verification detects tampering or seal mismatches (docs/architecture/permission-policy-design.md).
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -497,7 +482,6 @@ describe("verifyAllAuditFiles", () => {
     const secret = "bb".repeat(32);
     const sealStore = new MemorySecretStore();
 
-    // Original day with seal
     const original = buildChainedEntries(secret, [
       { decision: "allow", auditId: "orig", ts: "t1", trustOrigin: "user-keyboard", tool: "a" },
     ]);
@@ -505,8 +489,7 @@ describe("verifyAllAuditFiles", () => {
     writeFileSync(file, JSON.stringify(original[0]) + "\n");
     sealDayFromFile(secret, sealStore, file, "2026-05-09");
 
-    // Now replace the file content with a new (still chain-valid) line —
-    // chain check passes BUT seal mismatches.
+    // Now replace the file content with a new (still chain-valid) line — chain check passes BUT seal mismatches.
     const replacement = buildChainedEntries(secret, [
       { decision: "allow", auditId: "fake", ts: "t1", trustOrigin: "user-keyboard", tool: "a" },
     ]);

@@ -1,9 +1,4 @@
-/**
- * The boot gate's one classifier for why ASRT could not start. The permission
- * card names these causes ("unavailable: bubblewrap (bwrap) is missing"), so a
- * renamed ASRT message must fail here, not degrade silently to the generic
- * cause.
- */
+// Dependency wording changes must fail the classifier test before user-facing failure causes silently become generic.
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
@@ -31,11 +26,7 @@ function asrtSource(file: string): string {
   );
 }
 
-/**
- * The message a string or template literal in the runtime's source produces,
- * found by a fragment of its text, with every `${...}` filled by a sample path
- * — the string the classifier would actually receive.
- */
+// The message a string or template literal in the runtime's source produces, found by a fragment of its text, with every `${...}` filled by a sample path — the string the classifier would actually receive.
 function emitted(source: string, fragment: string): string {
   for (const match of source.matchAll(/'((?:[^'\\\n]|\\.)*)'|`((?:[^`\\]|\\.)*)`/g)) {
     const body = match[1] ?? match[2] ?? "";

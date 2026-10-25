@@ -1,14 +1,4 @@
-/**
- * Permission policy Phase 3 — VerdictCache unit tests.
- *
- * Coverage:
- *   - canonicalInputShape: shape ≠ literal (cache shared by shape)
- *   - lookup: miss-not-found / miss-expired / miss-stale / hit
- *   - store + lookup round-trip
- *   - invalidateMismatching drops only stale-context entries
- *   - HIGH verdicts are cached too
- *   - Persistence to file across instances
- */
+// Cache invalidation is selective by context; high-risk verdicts remain cacheable and valid cold-start rows survive.
 import { afterEach, describe, it, expect, beforeEach } from "vitest";
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { inspectFile } from "../../__tests__/test-helpers.js";
@@ -276,7 +266,6 @@ describe("VerdictCache lookup states", () => {
   });
 
   it("flush waits for the expired-entry rewrite", async () => {
-
     writeFileSync(path, expiredCacheLine() + "\n", "utf-8");
     cache = resources.makeVerdictCache(path);
 
@@ -390,7 +379,6 @@ describe("VerdictCache invalidateMismatching (selective by invalidationKey)", ()
     await cache.store({ ...LOOKUP, toolName: "ta" }, ctxA, { level: "low", reason: "a" });
     await cache.store({ ...LOOKUP, toolName: "tb" }, ctxB, { level: "low", reason: "b" });
 
-    // Now context becomes ctxA — only ta should remain.
     const dropped = await cache.invalidateMismatching(ctxA);
     expect(dropped).toBe(1);
 

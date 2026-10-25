@@ -1,8 +1,4 @@
-/**
- * Permission policy P4 Area B — script-hook runner tests.
- *
- * Spec ref: docs/architecture/permission-policy-design.md §3 Layer 6.
- */
+// (docs/architecture/permission-policy-design.md)
 import { describe, expect, it } from "vitest";
 import {
   parseHookStdout,
@@ -118,8 +114,6 @@ describe("Permission policy P4 runOneHookScript", () => {
   it("round-trips wire-shape stdin to the hook script", async () => {
     const r = await runOneHookScript(hookFixture("pre-roundtrip.sh"), samplePayload, shellIntegrationOptions);
     expect(r.decision).toBe("allow");
-    // Stdout includes received-payload echo; just confirm the JSON parsed
-    // without errors. The "reason" field comes from the {action,reason} part.
     expect(r.reason).toBe("roundtrip");
   });
 });
@@ -148,7 +142,6 @@ describe("Permission policy P4 runHookChain", () => {
       shellIntegrationOptions,
     );
     expect(r.decision).toBe("deny");
-    // Only first 2 hooks ran
     expect(r.results).toHaveLength(2);
     expect(r.reason).toContain("pre-deny.sh");
   });

@@ -1,8 +1,5 @@
 
 
-
-
-
 import type { RunModelSettings } from "../shared/run-model-settings.js";
 import { detectFromStream, type DetectorResult } from "../engine/checkpoint-detector.js";
 import { isLLMVendor, type GenericMessage, type TokenUsage, type TokenUsageByModel } from "../engine/llm/types.js";
@@ -29,19 +26,15 @@ export interface PostTurnHookContext {
 
   messages: GenericMessage[];
   input: string;
-  /** Provenance is supplied by runTurn; absence fails closed for capture. */
+  // Provenance is supplied by runTurn; absence fails closed for capture.
   inputOrigin?: ChatInputOrigin;
   memoryCaptureTaint?: readonly MemoryCaptureTaintReason[];
   output: string;
   toolCalls: Array<{ name: string; isError: boolean }>;
-  /**
-   * AI SDK-normalized turn usage from the provider stream. `inputTokens`
-   * includes cache for modern AI SDK providers; the audit step normalizes this
-   * to the `computeCost` provider contract before persisting.
-   */
+  // Provider input tokens include cache; audit normalizes them to the cost contract before persisting.
   tokenUsage?: TokenUsage;
   usageByModel?: TokenUsageByModel[];
-  /** Separate non-billable subscription telemetry; never enters price normalization. */
+  // Separate non-billable subscription telemetry; never enters price normalization.
   subscriptionUsage?: SubscriptionUsageTelemetry[];
   toolExposure?: {
     loadedToolCount: number;
@@ -59,20 +52,11 @@ export interface PostTurnHookContext {
     deferredLoadedRatio: number | null;
   };
   route: string;
-  /**
-   * Snapshot of the LLM vendor/model that actually served this turn —
-   * captured at runTurn entry so that post-turn audit attribution is
-   * stable even if the user mutates settings mid-flight (e.g. retry-effort
-   * temporarily patches thinking config and reverts in finally). The audit
-   * step uses these to emit `${provider}/${model}` for any token-bearing LLM
-   * turn, including `skill` routes that still execute through the LLM.
-   * Optional so non-token callers (command) can omit them.
-   */
+  // Snapshot the serving model at runTurn entry so live setting changes cannot alter audit attribution; token-bearing skill routes also use provider/model.
   vendorProvider?: string;
   vendorModel?: string;
-  /** What the turn's API route resolved about its model, for the audit row. */
   modelSettings?: RunModelSettings;
-  /** A natural completion is required before automatic capture is eligible. */
+  // A natural completion is required before automatic capture is eligible.
   stopReason?: string;
 }
 
@@ -82,42 +66,25 @@ export interface PostTurnHookChainDeps {
   idleScheduler?: IdleSchedulerService;
   settingsService?: SettingsService;
   memoryCaptureService?: AutomaticMemoryCaptureSubmitter;
-  /**
-   * Optional callback invoked when a [checkpoint] marker is detected.
-   * Caller (typically conversation-loop or IPC bridge) can trigger summary handling.
-   */
+  // Checkpoint callbacks let the caller trigger summary handling.
   onCheckpointSuggested?: (sessionId: string, cleanedOutput: string) => void;
 }
 
 export interface PostTurnHookResult {
   detector: DetectorResult;
-  /**
-   * Canonical message array that this hook persisted for transcript replay.
-   * It carries the marker-stripped assistant output.
-   */
+  // Canonical message array that this hook persisted for transcript replay. It carries the marker-stripped assistant output.
   messagesForPersistence: GenericMessage[];
 }
 
 export class PostTurnHookChain {
   constructor(private readonly deps: PostTurnHookChainDeps) {}
 
-
-
-
   async run(ctx: PostTurnHookContext): Promise<PostTurnHookResult> {
     let messagesForPersistence = ctx.messages;
 
+    // Stub old results only during compaction; post-turn rewriting changes the next request's prefix and defeats cache reuse.
 
-
-    // Old tool results are not stubbed here. Rewriting an earlier row after
-    // every turn changes the conversation prefix the next request repeats, so
-    // no provider could reuse it from cache. Stubbing happens only when the
-    // context is actually under pressure: the round loop's micro-compaction
-    // and the compaction itself.
-
-    // 2. Detect checkpoint/title markers.
-    //    Run before persistence so durable session history stores the same
-    //    cleaned assistant output that the caller and renderer receive.
+    // Strip markers before persistence so replay, callers and renderers receive the same output.
     let detector: DetectorResult = { cleanedText: ctx.output, newTitle: null, checkpointSuggested: false };
     try {
       detector = detectFromStream(ctx.output);
@@ -140,23 +107,19 @@ export class PostTurnHookChain {
           ? EMPTY_ASSISTANT_RESPONSE_TEXT
           : outputForHooks;
 
-    // 세션 영속화
     try {
       const baseMessages = ctx.messages;
       messagesForPersistence =
         outputForPersistence !== ctx.output
           ? replaceLastAssistantOutput(baseMessages, ctx.output, outputForPersistence)
           : baseMessages;
-      // saveSession owns JSONL stubbing + file-backed tool_result artifacts.
-      // caller (engine) 의 in-memory verbatim 은 변경 안 됨.
+      // saveSession owns JSONL stubbing and file-backed tool results; preserve the engine's in-memory verbatim messages.
       await this.deps.memoryManager?.saveSession(ctx.sessionId, messagesForPersistence);
     } catch (err) {
       log.warn("saveSession failed: %s", err);
     }
 
-    // Automatic capture is queued only after the durable session projection.
-    // It never consumes the assistant response: a separate model reviews the
-    // bounded user-authored input later, and the host remains the writer.
+    // Automatic capture is queued only after the durable session projection. It never consumes the assistant response: a separate model reviews the bounded user-authored input later, and the host remains the writer.
     try {
       if (ctx.inputOrigin) {
         this.deps.memoryCaptureService?.enqueueAutomatic({
@@ -174,9 +137,6 @@ export class PostTurnHookChain {
       log.warn("automatic memory capture enqueue failed: %s", err);
     }
 
-    // [title] marker handling — newTitle 가 detector 에서 추출되면
-    //    session metadata 에 저장. LLM-based title chaining 은 호출처가 없어
-    //    제거됨.
     try {
       if (this.deps.memoryManager && detector.newTitle) {
         const sessionMeta = this.deps.memoryManager.loadSessionMetadata(ctx.sessionId) ?? {};
@@ -190,11 +150,7 @@ export class PostTurnHookChain {
       log.warn("update-title failed: %s", err);
     }
 
-    // Audit Log
-    //    Emit `${provider}/${model}` for "llm" routes (usage-stats.parseRoute
-    //    splits on `/`); non-LLM routes (skill/command) keep the
-    //    classification verbatim. Snapshot fields on ctx win over live
-    //    settings — see PostTurnHookContext docs for the drift rationale.
+    // Audit token-bearing routes as provider/model; use the captured model rather than live settings.
     try {
       const llmSettings = this.deps.settingsService?.get("llm");
       const provider = ctx.vendorProvider ?? llmSettings?.provider;
@@ -228,7 +184,6 @@ export class PostTurnHookChain {
       log.warn("audit failed: %s", err);
     }
 
-    // 7. Idle poke.
     try {
       this.deps.idleScheduler?.signalConversation();
     } catch (err) {

@@ -1,26 +1,4 @@
-/**
- * Permission policy — Layer 6 hook runtime manager.
- *
- * Spec ref: docs/architecture/permission-policy-design.md §3 Layer 6 +
- * docs/architecture/hook-runtime-expansion-design.md §4 (#811).
- *
- * Holds the trusted hook registry at runtime and exposes
- * {@link runPreToolUse} / {@link runPostToolUse} / {@link runPermissionRequest}
- * — the three integration points the executor / approval-gate call into.
- *
- * The registry is the UNIFIED list (`hook-registry.ts`): trusted legacy `.sh`
- * hooks AND trusted declarative `hooks.json` `command` entries collapse into one
- * normalized shape, so dispatch is origin-agnostic. CRITICAL: only entries that
- * passed the TOFU trust gate ever land here — `setTrustedRegistry` is called by
- * the boot pipeline / `/permission hooks accept` AFTER quarantine resolves. An
- * untrusted or changed `hooks.json` contributes NOTHING to this registry.
- *
- * Composition rule (v1, deny precedence):
- *   - {@link runPreToolUse} returns `decision: "deny"` when *any* hook denied.
- *   - {@link runPreToolUse} returns `decision: "allow"` only when no hook denies.
- *     Caller MUST NOT promote this allow over an upstream deny.
- *   - `modify` is **NOT** supported in v1.
- */
+// Only TOFU-trusted entries enter the registry; untrusted config contributes nothing. Hook allows never override upstream denies, and mutation is unsupported (docs/architecture/permission-policy-design.md; docs/architecture/hook-runtime-expansion-design.md).
 import { HookMatcherError, type DiscoveredHook } from "./hook-discovery.js";
 import { lifecycleMatcherSubject } from "./hook-contract.js";
 import {
@@ -70,7 +48,6 @@ function externalHooksSuppressed(): HookDispatchResult {
 export interface HookDispatchResult {
   decision: "allow" | "deny";
   reason: string;
-  /** Per-hook results — for audit + observability. */
   results: ScriptHookInvocationResult[];
 }
 
@@ -107,25 +84,12 @@ export class ScriptHookManager {
     this.generationLeaseSources.set(prefix, acquireExact);
   }
 
-  /**
-   * Replace the trusted hook list with legacy `.sh` hooks only. Retained for
-   * back-compat with callers that don't (yet) carry config entries. Equivalent
-   * to `setTrustedRegistry(hooks, [])`.
-   */
+  // Legacy adapter for callers without config entries.
   setTrustedHooks(hooks: DiscoveredHook[]): void {
     this.setTrustedRegistry(hooks, []);
   }
 
-  /**
-   * Replace the trusted registry with the unified set: trusted `.sh` hooks
-   * (origin `sh`) + trusted declarative config entries (origin `config`).
-   * Called by the boot pipeline once the TOFU workflow resolves and by
-   * `/permission hooks accept` when trust state changes. The executor /
-   * approval-gate read from this snapshot for every tool call.
-   *
-   * SECURITY: callers MUST pass ONLY trusted entries. The manager never
-   * re-validates trust — it assumes the quarantine gate already ran.
-   */
+  // Callers must supply only trusted entries after quarantine resolves; the manager does not revalidate trust.
   setTrustedRegistry(shHooks: DiscoveredHook[], configEntries: HookConfigEntry[]): void {
     this.registry = buildHookRegistry(shHooks, configEntries);
     this.generation += 1;
@@ -164,8 +128,7 @@ export class ScriptHookManager {
         `${projection.owner.pluginId}\0${projection.owner.activationId}`),
     );
     generations.add(`${pluginId}\0${generationId}`);
-    // Only this generation's registries: publish applies them to the live map
-    // so another plugin published in between is kept.
+    // Only this generation's registries: publish applies them to the live map so another plugin published in between is kept.
     const replacements = new Map<string, readonly HookRegistryEntry[]>();
     for (const projection of projections) {
       if (!trust.isApproved(projection)) continue;
@@ -226,12 +189,10 @@ export class ScriptHookManager {
     return [...this.registry, ...[...this.pluginRegistries.values()].flat()];
   }
 
-  /** Registry entries for the given type. Used by tests + diagnostics. */
   hooksOfType(type: ScriptHookType): HookRegistryEntry[] {
     return this.snapshotRegistry().filter((e) => e.event === type);
   }
 
-  /** Total trusted entry count. */
   size(): number {
     return this.snapshotRegistry().length;
   }
@@ -240,12 +201,7 @@ export class ScriptHookManager {
     return String(this.generation);
   }
 
-  /**
-   * Dispatch all PreToolUse hooks. DLP-redacts top-level string fields
-   * and string array items in `input` before passing into hook stdin.
-   * Nested objects are passed as-is, so pathFields/category metadata must
-   * keep secret material out of nested tool arguments.
-   */
+  // Redact top-level strings and string arrays before stdin; callers must exclude nested secrets because nested objects are not walked.
   async runPreToolUse(
     payload: HookDispatchPayload,
     options?: RunOneHookOptions,
@@ -254,9 +210,7 @@ export class ScriptHookManager {
     return this.runForType("pre", payload, options);
   }
 
-  /** Dispatch all PostToolUse hooks. v1 outputs are *informational*
-   * (deny does NOT roll back the already-executed tool); the result
-   * surfaces in audit so reviewers see the after-the-fact concern. */
+  // Post-use denials are audit-only and cannot roll back execution.
   async runPostToolUse(
     payload: HookDispatchPayload,
     options?: RunOneHookOptions,
@@ -265,9 +219,7 @@ export class ScriptHookManager {
     return this.runForType("post", payload, options);
   }
 
-  /** Dispatch all PermissionRequest hooks. Hooks may deny what the
-   * approval-gate would have asked the user about — useful for SIEM
-   * "this user must NEVER approve writes outside repo X" policies. */
+  // Permission hooks may deny before interactive approval.
   async runPermissionRequest(
     payload: HookDispatchPayload,
     options?: RunOneHookOptions,
@@ -276,17 +228,7 @@ export class ScriptHookManager {
     return this.runForType("perm", payload, options);
   }
 
-  /**
-   * Dispatch all hooks registered for a NON-BLOCKING lifecycle event (#811
-   * milestone-2, design §5). OBSERVE-ONLY: the returned decision is recorded for
-   * audit but MUST NEVER affect control flow — a lifecycle hook's `deny` mirrors
-   * `PostToolUse` (informational), and a hook erroring / timing out must not
-   * break the turn. The matcher subject comes from `lifecycleMatcherSubject`
-   * and uses the same compiled matcher as `.sh` / tool-use hooks.
-   *
-   * Fail-soft: this method NEVER throws. A dispatch error collapses to an empty
-   * observe result so the caller can ignore it and continue.
-   */
+  // Lifecycle decisions are audit-only and must not affect control flow; dispatch errors return an empty result without throwing. Match subjects use the shared compiled matcher.
   async runLifecycleEvent(
     event: LifecycleHookEvent,
     sessionId: string,
@@ -295,10 +237,7 @@ export class ScriptHookManager {
     options?: RunOneHookOptions,
   ): Promise<HookDispatchResult> {
     if (!areExternalTurnHooksAllowed()) return externalHooksSuppressed();
-    // Misroute guard: the BLOCKING event must NEVER run through this observe-only
-    // path (it would swallow a deny and let a refused prompt through). Route it
-    // to {@link runUserPromptSubmit} instead. Fail closed — return a deny so a
-    // wiring bug refuses rather than silently allows.
+    // Routing a blocking prompt event here must fail closed; use runUserPromptSubmit so a denial cannot be swallowed.
     if (isBlockingLifecycleEvent(event)) {
       log.error(
         "runLifecycleEvent called for the BLOCKING %s event — use runUserPromptSubmit; failing closed (deny)",
@@ -328,14 +267,12 @@ export class ScriptHookManager {
         ...(event === "SessionStart" ? { sessionSource: payload.sessionSource ?? "startup" } : {}),
         ...(event === "Notification" ? { notificationType: payload.notificationType ?? "agent_completed" } : {}),
         ...(payload.toolName !== undefined ? { toolName: payload.toolName } : {}),
-        // DLP-redact free-text fields (§6.6): a tool error message can echo
-        // user/secret data. No tool inputs flow through lifecycle events.
+        // DLP-redact free-text fields: a tool error message can echo user/secret data. No tool inputs flow through lifecycle events.
         ...(payload.errorMessage !== undefined
           ? { errorMessage: redactForLLM(payload.errorMessage).redacted }
           : {}),
         ...(payload.durationMs !== undefined ? { durationMs: payload.durationMs } : {}),
-        // The finalized deny reason is free text (it can quote a path or an
-        // argument), so it is redacted like the other free-text fields.
+        // The finalized deny reason is free text (it can quote a path or an argument), so it is redacted like the other free-text fields.
         ...(payload.denyReason !== undefined
           ? {
             denyReason: {
@@ -363,10 +300,7 @@ export class ScriptHookManager {
           : {}),
         ...(payload.stopHookActive !== undefined ? { stopHookActive: payload.stopHookActive } : {}),
       };
-      // runHookChain stops at the first deny — but for a non-blocking event the
-      // decision is OBSERVE-ONLY, so the caller ignores it. (Chain-stop just
-      // avoids running later hooks once one already signaled deny — the audit
-      // captures every result up to that point, same as PostToolUse.)
+      // The first denial stops the chain for audit, but lifecycle callers must ignore its decision.
       const result = await this.runWithGenerationLeases(entries, (activeEntries) =>
         runHookChain(activeEntries.map(toRunnable), stdinPayload, this.executionOptions(options)));
       if (result.decision === "deny") {
@@ -374,8 +308,7 @@ export class ScriptHookManager {
       }
       return result;
     } catch (err) {
-      // Fail-soft: a lifecycle dispatch must NEVER break the turn. Log + return
-      // an empty observe result so the caller continues unaffected.
+      // Lifecycle dispatch failures must not break the turn.
       log.warn(
         "lifecycle hook dispatch for %s failed (non-blocking, ignored): %s",
         event,
@@ -385,28 +318,7 @@ export class ScriptHookManager {
     }
   }
 
-  /**
-   * Dispatch the ONE BLOCKING lifecycle event — `UserPromptSubmit` (#811
-   * milestone-2, design §5). Runs the matching trusted hooks via the
-   * deny-precedence chain and returns a decision the CALLER MUST RESPECT: on
-   * `deny` the caller refuses the turn before entering queryLoop.
-   *
-   * FAIL-CLOSED (security-sensitive, mirrors `PreToolUse`):
-   *   - a hook `deny` → deny (turn refused)
-   *   - timeout / nonzero-exit / bad-json / spawn-error → deny (runHookChain /
-   *     runOneHookScript already collapse all of these to a deny result)
-   *   - an UNEXPECTED throw inside this dispatch → deny (NOT allow). Unlike the
-   *     observe-only {@link runLifecycleEvent} which swallows-and-continues, this
-   *     blocking event must fail closed.
-   *
-   * BACK-COMPAT: when NO trusted hook matches, returns `allow` with an empty
-   * `results` so the caller proceeds byte-identically to today. This event has
-   * no matcher support: every trusted prompt hook runs on every prompt.
-   *
-   * DLP: `inputText` is DLP-redacted here (§6.6, via {@link redactForLLM}) before
-   * it reaches the hook stdin / env — exactly as the observe path redacts
-   * `errorMessage` and the tool path redacts `input`.
-   */
+  // Prompt denials and all hook or dispatch failures refuse the turn before queryLoop; no trusted hooks allows it. Run every trusted prompt hook without matcher filtering and DLP-redact input before stdin/env.
   async runUserPromptSubmit(
     sessionId: string,
     trustOrigin: HookTrustOrigin,
@@ -417,7 +329,7 @@ export class ScriptHookManager {
     try {
       const entries = this.snapshotRegistry().filter((entry) => entry.event === USER_PROMPT_SUBMIT_EVENT);
       if (entries.length === 0) {
-        // No trusted matching hook ⇒ ALLOW (back-compat: turn proceeds as today).
+        // No trusted hooks allows the prompt.
         return { decision: "allow", reason: "no matching UserPromptSubmit hooks", results: [] };
       }
       const stdinPayload: LifecycleHookStdin = {
@@ -425,22 +337,17 @@ export class ScriptHookManager {
         event: USER_PROMPT_SUBMIT_EVENT,
         sessionId,
         trustOrigin,
-        // DLP-redact the free-text prompt (§6.6) BEFORE it reaches the hook.
+        // Redact the prompt before exposing it to hooks.
         inputText: redactForLLM(payload.inputText).redacted,
         ...(payload.inputOrigin !== undefined ? { inputOrigin: payload.inputOrigin } : {}),
         ...(payload.route !== undefined ? { route: payload.route } : {}),
         ...(payload.classification !== undefined ? { classification: payload.classification } : {}),
       };
-      // Deny precedence: runHookChain stops at the first deny and returns it.
-      // All fail-closed cases (timeout/nonzero-exit/bad-json/spawn-error) are
-      // already collapsed to a deny RESULT by runOneHookScript, so the chain's
-      // returned decision is authoritative — the caller refuses on deny.
+      // The first denial, including timeout/exit/parse/spawn failures, is authoritative; callers must refuse the turn.
       return await this.runWithGenerationLeases(entries, (activeEntries) =>
         runHookChain(activeEntries.map(toRunnable), stdinPayload, this.executionOptions(options)));
     } catch (err) {
-      // FAIL-CLOSED: a blocking event must DENY (refuse the turn) on an
-      // unexpected dispatch error — NOT allow. (Contrast runLifecycleEvent,
-      // which is observe-only and swallows-then-allows.)
+      // Unexpected blocking dispatch errors must deny the turn.
       log.warn(
         "UserPromptSubmit hook dispatch failed (fail-closed → deny): %s",
         errorMessage(err),
@@ -458,8 +365,7 @@ export class ScriptHookManager {
     payload: HookDispatchPayload,
     options?: RunOneHookOptions,
   ): Promise<HookDispatchResult> {
-    // #811 — filter by event + matcher (the same matcher as `.sh` frontmatter).
-    // A config/`.sh` entry with no matcher runs for every tool.
+    // Absent matchers run for every tool.
     const registry = this.snapshotRegistry();
     const invalid = [...this.matcherGuards, ...registry].find((entry) => entry.event === type && entry.matcherError);
     if (invalid) return { decision: "deny", reason: invalid.matcherError!, results: [] };
@@ -475,7 +381,6 @@ export class ScriptHookManager {
     }
     const stdinPayload: ScriptHookStdin = {
       hookType: type,
-      // Closed-set surface: for tool-use hooks `event` equals `hookType`.
       event: type,
       toolName: payload.toolName,
       source: payload.source,
@@ -488,9 +393,7 @@ export class ScriptHookManager {
       ...(payload.toolOutput !== undefined ? { toolOutput: redactForLLM(payload.toolOutput).redacted } : {}),
       ...(payload.isError !== undefined ? { isError: payload.isError } : {}),
     };
-    // Each entry runs with its own timeout: config entries carry a per-entry
-    // (already-clamped) `timeoutMs`; `.sh` entries fall back to the default /
-    // caller-supplied option.
+    // Each config hook uses its own clamped timeout; scripts use the caller option or default.
     return this.runWithGenerationLeases(entries, (activeEntries) =>
       runHookChain(activeEntries.map(toRunnable), stdinPayload, this.executionOptions(options)));
   }
@@ -526,16 +429,8 @@ export class ScriptHookManager {
   }
 }
 
-/**
- * Normalize one registry entry into the runner's {@link RunnableHook} shape,
- * carrying its per-entry timeout when present (config entries) so each hook runs
- * on its own clamped budget.
- */
 function toRunnable(entry: HookRegistryEntry): RunnableHook {
   if (entry.source === "sh") {
-    // `.sh` entries carry NO per-entry timeout — they fall back to the
-    // caller-supplied option (e.g. the Windows shell-integration override) or
-    // the default, exactly as before this change.
     return runnableFromDiscovered(entry.discovered);
   }
   return {
@@ -547,8 +442,7 @@ function toRunnable(entry: HookRegistryEntry): RunnableHook {
     // For a config command, the forensic path is argv[0] (or the script arg).
     hookPath: entry.command[0],
     timeoutMs: entry.timeoutMs,
-    // A declarative `hooks.json` command — the runner falls back to hashing the
-    // verbatim argv for `commandIdentity` (no on-disk local-script sha exists).
+    // Config command identity hashes verbatim argv when no local script hash exists.
     source: "config",
     ...(entry.owner ? { pluginOwner: entry.owner } : {}),
     ...(entry.confinement ? { confinement: entry.confinement } : {}),
@@ -560,13 +454,7 @@ function pluginProjectionKey(projection: PreparedPluginHookProjection): string {
   return [owner.pluginId, owner.pluginVersion, owner.generationId, owner.localId, owner.fingerprint].join("|");
 }
 
-/**
- * Apply DLP redaction to every string-valued field of the `input`
- * object before it reaches the hook stdin. Numbers / booleans / nested
- * objects are passed through (the redactor only mutates strings).
- *
- * Exported for unit tests.
- */
+// Redact string values; numbers, booleans and nested objects pass through unchanged.
 export function dlpRedactInput(
   input: Record<string, unknown>,
 ): Record<string, unknown> {

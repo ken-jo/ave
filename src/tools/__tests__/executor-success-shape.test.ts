@@ -1,12 +1,4 @@
-/**
- * C1 gap-lock — ToolExecutor.executeOne success-shape contract.
- *
- * Locks the shape of a ToolResult produced by a successful tool call as it
- * exists today: a plain read-only success omits `is_error`/`uiPayload`/
- * `rawResult` and always carries a numeric `durationMs`; a tool that returns
- * `metadata.uiPayload` / `metadata.rawResult` has those propagated onto the
- * result (and `uiPayload` handed to the `onToolEnd` callback).
- */
+// Successful results omit absent error and payload keys while carrying numeric duration and propagating provided payloads.
 import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
@@ -218,7 +210,6 @@ describe("ToolExecutor.executeOne success shape", () => {
     expect(r.content).toBe("hello shape");
     expect(typeof r.durationMs).toBe("number");
     expect(r.durationMs).toBeGreaterThanOrEqual(0);
-    // Success omits these keys entirely (not just undefined values).
     expect(Object.prototype.hasOwnProperty.call(r, "is_error")).toBe(false);
     expect(Object.prototype.hasOwnProperty.call(r, "uiPayload")).toBe(false);
     expect(Object.prototype.hasOwnProperty.call(r, "rawResult")).toBe(false);
@@ -261,7 +252,6 @@ describe("ToolExecutor.executeOne success shape", () => {
     expect(r.rawResult).toEqual(rawResult);
     expect(onToolResult).toHaveBeenCalledExactlyOnceWith(r);
     expect(r.is_error).toBeUndefined();
-    // onToolEnd(name, content, isError, meta, uiPayload, durationMs)
     const call = onToolEnd.mock.calls.at(-1);
     expect(call?.[0]).toBe("shape_ui");
     expect(call?.[2]).toBe(false);

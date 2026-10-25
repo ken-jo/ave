@@ -1,21 +1,15 @@
 import { POWERSHELL_FILE_TYPES } from "./powershell-file-types.js";
 
-/** Shell executable identities used for hidden-code and floor inspection. */
+// Shell executable identities used for hidden-code and floor inspection.
 export const SHELLS = ["sh", "bash", "zsh", "dash", "ksh", "mksh", "yash", "fish", "csh", "tcsh", "pwsh", "powershell", "cmd", "busybox"];
-/**
- * Interpreters run code the matcher cannot read. Runners retain their own
- * complete prefixes so an explicit rule can name the intended invocation.
- */
+// Interpreters run code the matcher cannot read. Runners retain their own complete prefixes so an explicit rule can name the intended invocation.
 export const INTERPRETERS = [
   "python", "python2", "python3", "pypy", "pypy3", "ipython", "node", "nodejs", "deno", "bun", "tsx", "ts-node",
   "zx", "qjs", "perl", "ruby", "irb", "php", "lua", "luajit", "osascript", "Rscript", "R", "julia", "tclsh",
   "wish", "expect", "awk", "gawk", "mawk", "nawk", "jshell", "groovy", "scala", "racket", "guile", "elixir",
   "erl", "escript", "runghc", "swift", "sqlite3", "psql", "mysql", "dc", "gdb", "lldb",
 ];
-/**
- * Wrappers execute another command. Inspection follows that command while
- * allow-rule matching retains the complete wrapper argv.
- */
+// Wrappers execute another command. Inspection follows that command while allow-rule matching retains the complete wrapper argv.
 export const WRAPPERS = [
   "env", "xargs", "sudo", "doas", "su", "eval", "exec", "source", ".", "command", "builtin", "nohup",
   "timeout", "nice", "ionice", "time", "stdbuf", "chroot", "unshare", "nsenter", "setsid", "watch",
@@ -26,12 +20,9 @@ export const WRAPPERS = [
   // A multi-call binary runs whichever applet its first argument names.
   "busybox",
 ];
-/**
- * Wrappers that join their arguments into a string a shell runs
- * (`watch 'rm x'`, `parallel 'rm {}' ::: a`, `flock f -c 'rm x'`).
- */
+// Wrappers that join their arguments into a string a shell runs (`watch 'rm x'`, `parallel 'rm {}' ::: a`, `flock f -c 'rm x'`).
 export const STRING_JOINING_WRAPPERS = new Set(["watch", "parallel", "sg"]);
-/** Runner identities and literal prefixes that can introduce another command. */
+// Runner identities and literal prefixes that can introduce another command.
 export type RunnerCommandPrefix = string | readonly [verb: string, interpreter: string];
 export const RUNNER_COMMAND_PREFIXES: Readonly<Record<string, true | readonly RunnerCommandPrefix[]>> = {
   npx: true, bunx: true, pnpx: true, uvx: true, corepack: true,
@@ -44,7 +35,7 @@ export function runnerHasPrefix(prefixes: readonly RunnerCommandPrefix[], token:
   return token !== undefined && prefixes.some((prefix) => (typeof prefix === "string" ? prefix : prefix[0]) === token.toLowerCase());
 }
 
-/** Broad argv prefixes that cannot be suggested or saved as wildcard allows. */
+// Broad argv prefixes that cannot be suggested or saved as wildcard allows.
 export const BANNED_PREFIX_SUGGESTIONS: readonly (readonly string[])[] = [
   ["/bin/bash"],
   ["/bin/bash", "-c"],
@@ -141,7 +132,7 @@ export const INTERPRETER_SET = new Set(INTERPRETERS.map((name) => name.toLowerCa
 export const WRAPPER_SET = new Set(WRAPPERS.map((name) => name.toLowerCase()));
 export const RUNNER_SET = new Set(PACKAGE_RUNNERS);
 
-/** Canonical executable identity, including path and interpreter-version aliases. */
+// Canonical executable identity, including path and interpreter-version aliases.
 export function programName(token: string): string {
   const base = (token.split(/[\\/]/).pop() ?? token).toLowerCase();
   const name = base.replace(/\.exe$/i, "").replace(/^(python[23]?)\.\d+$/, "$1");
@@ -151,7 +142,7 @@ export function programName(token: string): string {
   return stem && (INTERPRETER_SET.has(stem) || SHELL_SET.has(stem)) ? stem : name;
 }
 
-/** Runner shims share the executable/script suffixes and retain versioned identity. */
+// Runner shims share the executable/script suffixes and retain versioned identity.
 export function runnerName(token: string): string {
   const base = (token.split(/[\\/]/).pop() ?? token).toLowerCase().replace(/[ .]+$/, "");
   const extension = /\.[^.]+$/.exec(base)?.[0] ?? "";
@@ -160,20 +151,20 @@ export function runnerName(token: string): string {
   return name.replace(/@[^@]+$/, "");
 }
 
-/** Program identities used by the argument-aware destructive floor below. */
+// Program identities used by the argument-aware destructive floor below.
 const DESTRUCTIVE_PROGRAMS = new Set(["rm", "shred", "srm", "wipefs", "dd", "mkfs", "newfs", "diskutil", "format"]);
-/** Programs whose ordinary file operands can irreversibly overwrite or remove data. */
+// Programs whose ordinary file operands can irreversibly overwrite or remove data.
 const OVERWRITING_PROGRAMS = new Set(["truncate", "unlink", "mv", "cp", "tee", "dropdb", "install"]);
-/** Ownership and mode changers: destructive when recursive or world-writable. */
+// Ownership and mode changers: destructive when recursive or world-writable.
 const PERMISSION_CHANGERS = new Set(["chmod", "chown", "chgrp"]);
 function isDestructiveProgram(program: string): boolean {
   return DESTRUCTIVE_PROGRAMS.has(program) || program.startsWith("mkfs.") || program.startsWith("newfs_");
 }
 
-/** `chmod -x file`: a leading mode removal reads like an option but is the mode operand. */
+// `chmod -x file`: a leading mode removal reads like an option but is the mode operand.
 const CHMOD_REMOVAL_MODE = /^[ugoa]*-[rwxXst]+$/;
 
-/** Options before `--` (GNU tools permute, so position does not matter); `undefined` is a dynamic word. */
+// Options before `--` (GNU tools permute, so position does not matter); `undefined` is a dynamic word.
 function optionWords(
   args: readonly (string | undefined)[],
   isOperand: (arg: string) => boolean = () => false,
@@ -202,7 +193,7 @@ function hasShortFlag(options: readonly (string | undefined)[], letters: string)
     && [...option.slice(1)].some((letter) => letters.includes(letter)));
 }
 
-/** GNU long options accept any unambiguous abbreviation (`--rec`, `--forc`). */
+// GNU long options accept any unambiguous abbreviation (`--rec`, `--forc`).
 function hasLongFlag(options: readonly (string | undefined)[], names: readonly string[]): boolean {
   return options.some((option) => {
     if (option === undefined || !option.startsWith("--") || option.length < 3) return false;
@@ -211,12 +202,7 @@ function hasLongFlag(options: readonly (string | undefined)[], names: readonly s
   });
 }
 
-/**
- * A mode that may make the target writable by everyone: `777`, `00777`,
- * `o+w`, `a=rwx`, `+w`, or a copy such as `o=u` whose source may hold `w`.
- * A mode this grammar cannot read counts as world-writable only where the
- * caller asks (refusing a stored rule); the floor never guesses.
- */
+// A mode that may make the target writable by everyone: `777`, `00777`, `o+w`, `a=rwx`, `+w`, or a copy such as `o=u` whose source may hold `w`. A mode this grammar cannot read counts as world-writable only where the caller asks (refusing a stored rule); the floor never guesses.
 function worldWritableMode(mode: string | undefined, unreadableIsWritable: boolean): boolean {
   if (mode === undefined) return unreadableIsWritable;
   if (/^[0-7]+$/.test(mode)) return mode.length > 5 || ["2", "3", "6", "7"].includes(mode[mode.length - 1]!);
@@ -228,12 +214,7 @@ function worldWritableMode(mode: string | undefined, unreadableIsWritable: boole
   });
 }
 
-/**
- * Argument-aware destructive floor for one static command: recursive or
- * forced deletion in any option order or spelling, recursive or world-writable
- * permission changes, raw disk writers and `find -delete`. A dynamic word in
- * an option position counts as the worst case.
- */
+// Argument-aware destructive floor for one static command: recursive or forced deletion in any option order or spelling, recursive or world-writable permission changes, raw disk writers and `find -delete`. A dynamic word in an option position counts as the worst case.
 export function isDestructiveShellArgv(argv: readonly (string | undefined)[]): boolean {
   const head = argv[0];
   if (head === undefined) return false;
@@ -257,12 +238,12 @@ export function isDestructiveShellArgv(argv: readonly (string | undefined)[]): b
   return false;
 }
 
-/** Irreversible commands retain per-call consent, regardless of allow rules. */
+// Irreversible commands retain per-call consent, regardless of allow rules.
 export function noReusableRuleReason(argv: readonly (string | undefined)[]): string | null {
   return isIrreversibleShellArgv(argv) ? "irreversible command" : null;
 }
 
-/** The first word after a tool's leading options (`git -C dir clean` → `clean`); options that take a value skip it. */
+// The first word after a tool's leading options (`git -C dir clean` → `clean`); options that take a value skip it.
 function verbIndex(argv: readonly (string | undefined)[], valued: ReadonlySet<string>): number {
   let index = 1;
   while (index < argv.length) {
@@ -277,7 +258,7 @@ const GIT_VALUED_OPTIONS = new Set(["-C", "-c", "--git-dir", "--work-tree", "--n
 const DOCKER_VALUED_OPTIONS = new Set(["-H", "--host", "--context", "-c", "--config", "-l", "--log-level"]);
 const KUBECTL_VALUED_OPTIONS = new Set(["-n", "--namespace", "--context", "--kubeconfig", "-s", "--server", "--cluster", "--user"]);
 
-/** Non-option words after the program, in order (`gh -R o/r repo delete` → `repo`, `delete`). */
+// Non-option words after the program, in order (`gh -R o/r repo delete` → `repo`, `delete`).
 function verbWords(argv: readonly (string | undefined)[], valued: ReadonlySet<string>): (string | undefined)[] {
   const words: (string | undefined)[] = [];
   for (let index = 1; index < argv.length; index += 1) {
@@ -291,7 +272,7 @@ function verbWords(argv: readonly (string | undefined)[], valued: ReadonlySet<st
   return words;
 }
 
-/** The value of `-X DELETE`, `-XDELETE`, `--method DELETE` or `--method=DELETE`; `undefined` when dynamic. */
+// The value of `-X DELETE`, `-XDELETE`, `--method DELETE` or `--method=DELETE`; `undefined` when dynamic.
 function httpMethods(argv: readonly (string | undefined)[]): (string | undefined)[] {
   const methods: (string | undefined)[] = [];
   argv.forEach((word, index) => {
@@ -306,12 +287,7 @@ function httpMethods(argv: readonly (string | undefined)[]): (string | undefined
 const GH_VALUED_OPTIONS = new Set(["-R", "--repo", "-X", "--method", "-H", "--header", "-f", "-F", "--field", "--raw-field", "--hostname", "--jq", "-q", "-t", "--template", "--input"]);
 const AWS_VALUED_OPTIONS = new Set(["--profile", "--region", "--endpoint-url", "--output", "--query"]);
 
-/**
- * Irreversible forms included in the per-call floor: they discard work or data the user
- * cannot get back (`git clean -f`, `git reset --hard`, `git checkout -- .`,
- * `git restore`, `git stash drop`, `docker … prune`, `kubectl delete`, `mv`,
- * `tee`, `truncate`, `unlink`). No allow rule covers them; each invocation needs user consent. A dynamic word counts as the worst case.
- */
+// Irreversible forms included in the per-call floor: they discard work or data the user cannot get back (`git clean -f`, `git reset --hard`, `git checkout --.`, `git restore`, `git stash drop`, `docker … prune`, `kubectl delete`, `mv`, `tee`, `truncate`, `unlink`). No allow rule covers them; each invocation needs user consent. A dynamic word counts as the worst case.
 function isIrreversibleShellArgv(argv: readonly (string | undefined)[]): boolean {
   const head = argv[0];
   if (head === undefined) return false;
@@ -342,9 +318,7 @@ function isIrreversibleShellArgv(argv: readonly (string | undefined)[]): boolean
       case "reset":
         return dynamic || hasLongFlag(options, ["hard", "merge", "keep"]);
       case "checkout": {
-        // `git checkout <name>` restores a file of that name as readily as it
-        // switches branch, so any operand counts. Only `-b <new> [<start>]`
-        // is storable; `git switch <branch>` is the reusable spelling.
+        // `git checkout <name>` restores a file of that name as readily as it switches branch, so any operand counts. Only `-b <new> [<start>]` is storable; `git switch <branch>` is the reusable spelling.
         const creates = hasShortFlag(options, "b") && !hasShortFlag(options, "B");
         return dynamic || delimited || hasShortFlag(options, "fpB") || hasLongFlag(options, ["force", "patch", "theirs", "ours", "pathspec-from-file"])
           || (creates ? operands.length > 2 : operands.length > 0);
@@ -357,8 +331,7 @@ function isIrreversibleShellArgv(argv: readonly (string | undefined)[]): boolean
         return operands[0] === undefined ? argv.length > at + 1 && dynamic : operands[0] === "drop" || operands[0] === "clear";
       case "gc":
         return dynamic || hasLongFlag(options, ["prune"]);
-      // Option-only forms (`git remote -v`, `git reflog`) read; a dynamic
-      // subcommand counts as the worst case.
+      // Option-only forms (`git remote -v`, `git reflog`) read; a dynamic subcommand counts as the worst case.
       case "reflog":
         if (operands.length === 0) return dynamic;
         return operands[0] === undefined || operands[0] === "expire" || operands[0] === "delete";
@@ -445,7 +418,7 @@ function isIrreversibleShellArgv(argv: readonly (string | undefined)[]): boolean
   return false;
 }
 
-/** The command a `find -exec` runs, up to its `;` or `+` terminator. */
+// The command a `find -exec` runs, up to its `;` or `+` terminator.
 function execArgv(args: readonly (string | undefined)[], start: number): (string | undefined)[] {
   const end = args.findIndex((arg, index) => index >= start && (arg === ";" || arg === "+"));
   return args.slice(start, end < 0 ? undefined : end);
@@ -453,7 +426,7 @@ function execArgv(args: readonly (string | undefined)[], start: number): (string
 
 export type RefusedPrefixReason = "destructive" | "empty" | "broad-prefix";
 
-/** An option leaves the command boundary unknown until a literal delimiter. */
+// An option leaves the command boundary unknown until a literal delimiter.
 export function literalCommandAfterPrefix(tokens: readonly (string | undefined)[], start: number): number | undefined {
   const token = tokens[start];
   if (token === undefined || token.length === 0) return undefined;
@@ -463,7 +436,7 @@ export function literalCommandAfterPrefix(tokens: readonly (string | undefined)[
   return command !== undefined && command.length > 0 && !command.startsWith("-") ? delimiter + 1 : undefined;
 }
 
-/** Exact rules may name a broad program; wildcard rules must name a bounded prefix. */
+// Exact rules may name a broad program; wildcard rules must name a bounded prefix.
 export function refusedShellPrefix(tokens: readonly string[], wildcard = true): RefusedPrefixReason | null {
   if (tokens.length === 0) return "empty";
   if (isDestructiveShellArgv(tokens) || noReusableRuleReason(tokens) !== null) return "destructive";

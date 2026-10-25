@@ -23,8 +23,7 @@ import { t } from "../../../../i18n/runtime.js";
 const mockPreset: RolePreset = { id: "default", name: "기본", systemPromptAdd: "", isDefault: true };
 const codingPreset: RolePreset = { id: "coding", name: "코딩", systemPromptAdd: "Code carefully." };
 
-// ThinkingButton (now part of the unified bar) reads its depth from the
-// renderer api on mount.
+// ThinkingButton (now part of the unified bar) reads its depth from the renderer api on mount.
 const getSettings = vi.fn();
 const updateSettings = vi.fn();
 const onSettingsUpdated = vi.fn(() => () => {});
@@ -61,11 +60,8 @@ const defaultStatusRow: InputStatusRow = {
   pendingApprovals: 0,
 };
 
-/**
- * The command menu is the OS's own; what the renderer owns is the payload it
- * hands main and what it runs when main names an id back. The persona rows
- * live in that payload now, so this is the bridge the persona tests drive.
- */
+/** The command menu is the OS's own; what the renderer owns is the payload it hands main and what it runs when
+ * main names an id back. The persona rows live in that payload now, so this is the bridge the persona tests drive. */
 function installNativeMenuMock() {
   const previous = (window as unknown as { ave?: unknown }).ave;
   let handler: ((action: DynamicNativeMenuAction) => void) | null = null;
@@ -105,8 +101,7 @@ const flattenItems = (items: NativeMenuItem[]): NativeMenuItem[] =>
 type BarProps = Parameters<typeof InputActionBar>[0];
 type RowProps = Parameters<typeof ComposerStatusRow>[0];
 
-// The dock draws the action row inside the box and the status row under it;
-// the tests render the same pair so every assertion keeps addressing one tree.
+// The dock draws the action row inside the box and the status row under it; the tests render the same pair so every assertion keeps addressing one tree.
 function renderBar(overrides: Partial<BarProps & RowProps> = {}) {
   const barProps: BarProps = {
     plugins: [],
@@ -178,8 +173,7 @@ describe("InputActionBar (unified bar)", () => {
     const attach = leading.querySelector("[data-testid='iab-attach-button']");
     expect(picker && attach).toBeTruthy();
     expect(picker!.compareDocumentPosition(attach!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    // The persona moved INTO the command menu; a second button beside it would
-    // split "what shapes the next message" across two controls again.
+    // The persona moved INTO the command menu; a second button beside it would split "what shapes the next message" across two controls again.
     expect(leading.querySelectorAll("button")).toHaveLength(2);
     // The ring is NO LONGER in the leading action cluster.
     expect(leading.querySelector("[data-testid='ring-slot']")).toBeNull();
@@ -192,8 +186,7 @@ describe("InputActionBar (unified bar)", () => {
     const send = trailing.querySelector("[data-testid='composer-send-button']");
     expect(help && send).toBeTruthy();
     expect(help!.compareDocumentPosition(send!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    // Reasoning/thinking is no longer in the trailing cluster — it is the
-    // status sub-row chip after the model cell (and opens the model card).
+    // Reasoning/thinking is no longer in the trailing cluster; it is the status sub-row chip after the model cell (and opens the model card).
     expect(trailing.querySelector("[data-testid='thinking-button']")).toBeNull();
     const statusRow = getByTestId("iab-status-row");
     expect(statusRow.querySelector("[data-testid='iab-status-reasoning']")).toBeTruthy();
@@ -230,8 +223,7 @@ describe("InputActionBar (unified bar)", () => {
     expect(onSend).toHaveBeenCalledTimes(1);
   });
 
-  // The turn control is ONE button, not a send button beside a cancel button.
-  // Which verb it carries is decided by the draft, not by `isBusy` alone.
+  // The turn control is ONE button, not a send button beside a cancel button. Which verb it carries is decided by the draft, not by `isBusy` alone.
   it("idle with an empty draft keeps a single disabled send button", () => {
     const { getByTestId, queryByTestId } = renderBar({
       isBusy: false,
@@ -241,18 +233,15 @@ describe("InputActionBar (unified bar)", () => {
     expect(queryByTestId("composer-cancel-button")).toBeNull();
     const send = getByTestId("composer-send-button") as HTMLButtonElement;
     expect(send.disabled).toBe(true);
-    // A disabled SOLID primary is a near-black disc at 50% opacity — the grey
-    // blob this redesign is replacing. With nothing to send the control goes
-    // quiet instead, matching the outline treatment of the leading cluster.
+    // A disabled SOLID primary is a near-black disc at 50% opacity; the grey blob this redesign is replacing.
+    // With nothing to send the control goes quiet instead, matching the outline treatment of the leading cluster.
     expect(send.className).toContain("bg-input-bar-subtle");
     expect(send.className).not.toContain("bg-primary");
   });
 
   it("goes quiet for a runtime block too, not just for an empty draft", () => {
-    // `isSendDisabled` also folds in the runtime blocks (no API key, runtime
-    // unavailable). The button cannot act in those states either, so it must
-    // not sit there as a disabled SOLID disc — the quiet treatment and the
-    // `disabled` attribute are driven by the same flag and cannot disagree.
+    // `isSendDisabled` also folds in the runtime blocks (no API key, runtime unavailable). The button cannot act in those states either, so it
+    // must not sit there as a disabled SOLID disc; the quiet treatment and the `disabled` attribute are driven by the same flag and cannot disagree.
     const { getByTestId } = renderBar({
       isBusy: false,
       hasDraft: true,
@@ -275,8 +264,7 @@ describe("InputActionBar (unified bar)", () => {
     });
     expect(queryByTestId("composer-send-button")).toBeNull();
     const stop = getByTestId("composer-cancel-button") as HTMLButtonElement;
-    // Stop stays clickable even though sending is blocked by the empty draft,
-    // and it is solid — it is the one thing the user can act on right now.
+    // Stop stays clickable even though sending is blocked by the empty draft, and it is solid; it is the one thing the user can act on right now.
     expect(stop.disabled).toBe(false);
     expect(stop.className).toContain("bg-primary");
     fireEvent.click(stop);
@@ -303,9 +291,8 @@ describe("InputActionBar (unified bar)", () => {
   it("the turn control carries no text label — icon plus accessible name only", () => {
     const { getByTestId } = renderBar({ hasDraft: true, isSendDisabled: false });
     const send = getByTestId("composer-send-button");
-    // The old markup shipped a "전송" span plus a ⏎ keycap whose background and
-    // text both resolved to `primary-foreground`, so the glyph read as an
-    // empty box. Nothing but the icon may live inside the button now.
+    // The old markup shipped a "전송" span plus a ⏎ keycap whose background and text both resolved to
+    // `primary-foreground`, so the glyph read as an empty box. Nothing but the icon may live inside the button now.
     expect(send.textContent?.trim()).toBe("");
     expect(send.querySelector("kbd")).toBeNull();
     expect(send.querySelector("svg")).not.toBeNull();
@@ -369,7 +356,6 @@ describe("InputActionBar (unified bar)", () => {
     }
   });
 
-  // ── Status sub-row ──────────────────────────────────────────────────────
   it("renders the status sub-row in reversed order: ring (left) before permission · model · dot", () => {
     const { getByTestId } = renderBar();
     const row = getByTestId("iab-status-row");
@@ -436,8 +422,7 @@ describe("InputActionBar (unified bar)", () => {
 
   it("draws no connection dot and no separator between the model chip and the reasoning bulb", () => {
     const { getByTestId } = renderBar();
-    // Model chip and bulb sit at the row's own gap: no "·" in between, and
-    // nothing at all after the bulb.
+    // Model chip and bulb sit at the row's own gap: no "·" in between, and nothing at all after the bulb.
     const model = getByTestId("iab-status-model");
     const bulb = getByTestId("iab-status-reasoning");
     expect(model.nextElementSibling).toBe(bulb);
@@ -448,7 +433,7 @@ describe("InputActionBar (unified bar)", () => {
     const { getByTestId } = renderBar({
       statusRow: { ...defaultStatusRow, permissionMode: "auto", pendingApprovals: 2 },
     });
-    // The count is its own button now — NOT appended to the permission label.
+    // The count is its own button now; NOT appended to the permission label.
     expect(getByTestId("iab-status-pending").textContent).toContain("2");
     expect(getByTestId("iab-status-permission").textContent).not.toContain("2");
     // …and it precedes the permission cell.
@@ -473,9 +458,8 @@ describe("InputActionBar (unified bar)", () => {
 });
 
 describe("status row with no connected provider", () => {
-  // Owner report: a fresh profile showed "gpt-5.4-mini" and Reasoning Medium
-  // in this row, and a picker with "OpenAI gpt-5.4-mini ✓", although no
-  // provider was connected. Main says "none"; the row must not invent a model.
+  // Owner report: a fresh profile showed "gpt-5.4-mini" and Reasoning Medium in this row, and a picker with
+  // "OpenAI gpt-5.4-mini ✓", although no provider was connected. Main says "none"; the row must not invent a model.
   const noProvider: InputStatusRow = {
     vendorModel: "",
     activeChatModel: { kind: "none", reason: "no-connected-provider" },
@@ -657,9 +641,8 @@ describe("model card (status-row model cell)", () => {
   });
 
   it("names the vendor in the card, where the status row no longer says it", async () => {
-    // The literal the catalogue holds for this vendor, not the same lookup the
-    // component makes — a derived expectation would agree with a wrong label.
-    // The suite renders in Korean (src/i18n/testing/vitest-ambient-intl.ts).
+    // The literal the catalogue holds for this vendor, not the same lookup the component makes; a derived
+    // expectation would agree with a wrong label. The suite renders in Korean (src/i18n/testing/vitest-ambient-intl.ts).
     const vendorLabel = "사용자 지정 (OpenAI 호환)";
     const { getByTestId, findByTestId } = renderBar({ onOpenModelSettings: vi.fn() });
     fireEvent.click(getByTestId("iab-status-model"));
@@ -679,9 +662,8 @@ describe("model card (status-row model cell)", () => {
   });
 
   it("colours the bulb by level, and draws no fill at all when off", async () => {
-    // Each permitted depth has its own yellow, and OFF is the absence of the
-    // fill layer rather than another colour — an unlit bulb has to be
-    // unmistakable, and any colour at level 0 reads as another depth.
+    // Each permitted depth has its own yellow, and OFF is the absence of the fill layer rather than
+    // another colour; an unlit bulb has to be unmistakable, and any colour at level 0 reads as another depth.
     const outputTokenLimit = Number.MAX_SAFE_INTEGER;
     const rungs = getLlmThinkingBudgetRungs(outputTokenLimit);
     const fillTokens = new Map(Array.from(
@@ -720,16 +702,13 @@ describe("model card (status-row model cell)", () => {
         expect(token).toBeDefined();
         const colour = fillTokens.get(token!);
         expect(colour).toBeTruthy();
-        // The fill is the FIRST layer, so the glyph's own lines draw over it.
-        // Painted on top, a solid colour swallows the bulb's outline and the
-        // control stops reading as a bulb at 12px.
+        // The fill is the FIRST layer, so the glyph's own lines draw over it. Painted on top, a solid colour swallows the bulb's outline and the control stops reading as a bulb at 12px.
         expect(layers[1]!.style.fill).toBe("");
         seen.add(colour!);
       }
       unmount();
     }
-    // Every canonical preset must render a distinct colour that exists in the
-    // stylesheet, even when that preset needs a larger output ceiling.
+    // Every canonical preset must render a distinct colour that exists in the stylesheet, even when that preset needs a larger output ceiling.
     expect(seen.size).toBe(rungs.length);
   });
 
@@ -738,8 +717,7 @@ describe("model card (status-row model cell)", () => {
     const { getByTestId, findByTestId, queryByTestId, unmount } = renderBar({ onOpenModelSettings, enableThinkingChat: true });
     const chip = getByTestId("iab-status-reasoning");
     expect(chip.getAttribute("data-level")).not.toBe("0");
-    // The level is drawn, not spelled: the gauge fill has to track the level,
-    // and the word must not come back as visible text beside it.
+    // The level is drawn, not spelled: the gauge fill has to track the level, and the word must not come back as visible text beside it.
     expect(getByTestId("iab-reasoning-gauge")).toBeTruthy();
     expect(chip.textContent).toBe("");
     expect(chip.getAttribute("aria-label")).toContain(":");
@@ -827,9 +805,8 @@ describe("model card (status-row model cell)", () => {
     // The plan's brand, never the runtime's own name.
     expect(checked[0]?.textContent).toContain("ChatGPT");
     expect(checked[0]?.textContent).not.toContain("Codex");
-    // The API model that happens to share the settings the API path still
-    // holds (vendor "openai-compatible", model "qwen3.8-27b-gguf") is listed
-    // as an alternative, not marked as the route the chat is actually on.
+    // The API model that happens to share the settings the API path still holds (vendor "openai-compatible",
+    // model "qwen3.8-27b-gguf") is listed as an alternative, not marked as the route the chat is actually on.
     expect(
       card
         .querySelector("[data-testid='model-quick-picker-option:openai-compatible:qwen3.8-27b-gguf']")
@@ -852,8 +829,7 @@ describe("model card (status-row model cell)", () => {
       return el;
     });
     expect(button.disabled).toBe(true);
-    // A disabled button never dispatches a click — nothing to guard against
-    // in the pick handler.
+    // A disabled button never dispatches a click; nothing to guard against in the pick handler.
     fireEvent.click(button);
     expect(updateSettings).not.toHaveBeenCalled();
     expect(subscriptionUseApiForChat).not.toHaveBeenCalled();
@@ -873,9 +849,8 @@ describe("model card (status-row model cell)", () => {
       return el;
     });
     const spans = option.querySelectorAll("span");
-    // The muted vendor column would otherwise be the only place the label
-    // appears, leaving the primary column visually empty — the label moves
-    // there instead when the runtime has no model of its own.
+    // The muted vendor column would otherwise be the only place the label appears, leaving the primary
+    // column visually empty; the label moves there instead when the runtime has no model of its own.
     expect(spans[0]?.textContent).toBe("");
     expect(spans[1]?.textContent).toBe("Kimi");
   });
