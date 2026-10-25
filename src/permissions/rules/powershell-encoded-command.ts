@@ -19,7 +19,7 @@ import { wrapperPrefixLength, type ShellCommandInput } from "./shell-prefix-poli
 import { INTERPRETER_SET, SHELL_SET, programName } from "./shell-prefix-values.js";
 import { analyzeShellForRules } from "./shell-rule-matcher.js";
 
-const ENCODED_PARAMETER_RE = /^[-\u2013\u2014\u2015/](?:e|ec|en|enc|enco|encod|encode|encoded|encodedc|encodedco|encodedcom|encodedcomm|encodedcomma|encodedcomman|encodedcommand)(?::([\s\S]*))?$/i;
+const ENCODED_PARAMETER_RE = /^(?:[-\u2013\u2014\u2015]+|\/)(?:e|ec|en|enc|enco|encod|encode|encoded|encodedc|encodedco|encodedcom|encodedcomm|encodedcomma|encodedcomman|encodedcommand)(?::([\s\S]*))?$/i;
 // A PowerShell name: a basename (any directory, `-Param:` prefix and .exe/.com/.cmd/.bat dropped) that starts with pwsh or powershell, so
 // pwsh-preview, powershell_ise and full paths count.
 function isPowerShellName(word: string): boolean {
@@ -28,7 +28,8 @@ function isPowerShellName(word: string): boolean {
   return base.startsWith("pwsh") || base.startsWith("powershell");
 }
 // The PowerShell parameters after which the rest of the line is a script and its arguments: -Command, -CommandWithArgs, -File, and prefixes.
-const POWERSHELL_SCRIPT_PARAMETER_RE = /^[-\u2013\u2014\u2015/](?:c|co|com|comm|comma|comman|command|commandwithargs|cwa|f|fi|fil|file)(?::.*)?$/i;
+const POWERSHELL_FILE_PARAMETER_RE = /^(?:[-\u2013\u2014\u2015]+|\/)(?:f|fi|fil|file)(?::.*)?$/i;
+const POWERSHELL_SCRIPT_PARAMETER_RE = /^(?:[-\u2013\u2014\u2015]+|\/)(?:c|co|com|comm|comma|comman|command|commandwithargs|cwa|f|fi|fil|file)(?::.*)?$/i;
 // PowerShell's call operators: the next word is the command.
 const CALL_OPERATORS = new Set(["&", "."]);
 
@@ -41,9 +42,11 @@ const MIN_TEXT = 8;
 const PRINTABLE_SHARE = 0.9;
 const MAX_DEPTH = 4;
 const MAX_DECODED_CHARS = 65_536;
-const MAX_CANDIDATES = 4_096;
+// The base64 characters the window scan may read in one input before it stops and fails closed.
+const MAX_SCAN_CHARS = 4_194_304;
+// The shortest run worth decoding (12 characters = 9 bytes).
+const MIN_RUN = 12;
 const MAX_RUN_PARTS = 64;
-const MAX_SCRIPTS = 8;
 
 export interface EncodedPowerShell {
   /** The decoded texts, in order (shown on the card, checked by the floors). */
@@ -52,12 +55,15 @@ export interface EncodedPowerShell {
   readonly hidden: boolean;
 }
 
+function isTextUnit(code: number): boolean {
+  return (code >= 0x20 && code <= 0x7e) || code === 0x09 || code === 0x0a || code === 0x0d;
+}
+
 function isText(text: string): boolean {
   if (text.length < MIN_TEXT) return false;
   let printable = 0;
   for (let index = 0; index < text.length; index += 1) {
-    const code = text.charCodeAt(index);
-    if ((code >= 0x20 && code <= 0x7e) || code === 0x09 || code === 0x0a || code === 0x0d) printable += 1;
+    if (isTextUnit(text.charCodeAt(index))) printable += 1;
   }
   return printable >= MIN_TEXT && printable / text.length >= PRINTABLE_SHARE;
 }
@@ -82,8 +88,8 @@ const INLINE_CODE_OPTIONS: Readonly<Record<string, RegExp>> = {
   python: /^-[A-Za-z]*[cm]$/, python2: /^-[A-Za-z]*[cm]$/, python3: /^-[A-Za-z]*[cm]$/, pypy: /^-[A-Za-z]*[cm]$/, pypy3: /^-[A-Za-z]*[cm]$/,
   node: /^(?:-[ep]|--eval|--print)$/, nodejs: /^(?:-[ep]|--eval|--print)$/, bun: /^(?:-[ep]|--eval|--print)$/, tsx: /^(?:-[ep]|--eval|--print)$/,
   deno: /^eval$/, perl: /^-[A-Za-z]*[eE]$/, ruby: /^-[A-Za-z]*e$/, php: /^-[A-Za-z]*r$/, lua: /^-[A-Za-z]*e$/, luajit: /^-[A-Za-z]*e$/,
-  pwsh: /^[-\u2013\u2014\u2015/](?:c|co|com|comm|comma|comman|command|f|fi|fil|file)$/i,
-  powershell: /^[-\u2013\u2014\u2015/](?:c|co|com|comm|comma|comman|command|f|fi|fil|file)$/i,
+  pwsh: POWERSHELL_SCRIPT_PARAMETER_RE,
+  powershell: POWERSHELL_SCRIPT_PARAMETER_RE,
   cmd: /^\/[ck]$/i,
 };
 // POSIX shells: a short-option cluster with `c` (`-c`, `-ec`).
@@ -91,27 +97,44 @@ const SHELL_INLINE_CODE = /^-[A-Za-z]*c[A-Za-z]*$/;
 const STDIN_PATH_RE = /^(?:\/dev\/stdin|\/dev\/fd\/0|\/proc\/self\/fd\/0)$/;
 const POWERSHELL_EVAL = new Set(["iex", "invoke-expression"]);
 
-/** True when a stage after `|` runs what it reads on stdin as code (rule 3 of the module comment). */
-function readsCodeFromStdin(stage: WordStage): boolean {
-  if (!stage.piped) return false;
-  if (stage.words.some((word) => word.text !== null && STDIN_PATH_RE.test(word.text))) return true;
+/** How a stage's program takes its code, read past wrappers and PowerShell's call operators: from stdin, from an inline code string (returned for
+ *  a recursive scan when it is shell code), or neither. */
+type StageCode = { kind: "stdin" } | { kind: "string"; code: string | null; dialect: ShellRuleDialect | null } | { kind: "none" };
+
+function stageCode(stage: WordStage): StageCode {
+  if (stage.words.some((word) => word.text !== null && STDIN_PATH_RE.test(word.text))) return { kind: "stdin" };
   let start = 0;
   while (start < stage.words.length && CALL_OPERATORS.has(stage.words[start]!.text ?? "")) start += 1;
-  const argv = stage.words.slice(start).map((word) => word.literal && word.text !== null ? word.text : undefined);
+  const words = stage.words.slice(start);
+  const argv = words.map((word) => word.literal && word.text !== null ? word.text : undefined);
   // A dynamic program name is not read as a shell: what it is fed is left to the other checks, as on any command.
-  if (argv.length === 0 || argv[0] === undefined) return false;
+  if (argv.length === 0 || argv[0] === undefined) return { kind: "none" };
   const wrapped = wrapperPrefixLength(argv);
   const head = argv[wrapped];
-  if (head === undefined) return false;
+  if (head === undefined) return { kind: "none" };
   const program = programName(head);
-  if (POWERSHELL_EVAL.has(program.replace(/^microsoft\.powershell\.utility\\/, ""))) return true;
-  if (!SHELL_SET.has(program) && !INTERPRETER_SET.has(program)) return false;
-  if (OPERAND_CODE_INTERPRETERS.has(program)) return false;
+  if (POWERSHELL_EVAL.has(program.replace(/^microsoft\.powershell\.utility\\/, ""))) return { kind: "stdin" };
+  if (!SHELL_SET.has(program) && !INTERPRETER_SET.has(program)) return { kind: "none" };
+  if (OPERAND_CODE_INTERPRETERS.has(program)) return { kind: "none" };
   // `xargs sh -c` appends what it reads to the shell's arguments.
-  if (argv.slice(0, wrapped).some((word) => word !== undefined && programName(word) === "xargs")) return true;
+  if (argv.slice(0, wrapped).some((word) => word !== undefined && programName(word) === "xargs")) return { kind: "stdin" };
   const inline = INLINE_CODE_OPTIONS[program] ?? (program === "fish" ? /^(?:-c|--command)$/ : SHELL_INLINE_CODE);
-  const args = argv.slice(wrapped + 1);
-  return !args.some((arg, index) => arg !== undefined && inline.test(arg) && args[index + 1] !== undefined && args[index + 1] !== "-");
+  const args = words.slice(wrapped + 1);
+  for (const [index, arg] of args.entries()) {
+    // `--` ends the options: a `-c` after it is a positional argument.
+    if (arg.literal && arg.text === "--" && !program.startsWith("pwsh") && !program.startsWith("powershell") && program !== "cmd") break;
+    if (!arg.literal || arg.text === null || !inline.test(arg.text)) continue;
+    const next = args[index + 1];
+    if (next === undefined || (next.literal && next.text === "-")) continue;
+    if (POWERSHELL_FILE_PARAMETER_RE.test(arg.text)) return { kind: "string", code: null, dialect: null };
+    // cmd and PowerShell run the rest of the line; a POSIX shell runs the one operand. Non-literal words keep their source text, so a dynamic
+    // program in the child is still seen as one.
+    const rest = program === "cmd" || program.startsWith("pwsh") || program.startsWith("powershell") ? args.slice(index + 1) : [next];
+    const code = rest.every((word) => word.text !== null) ? rest.map((word) => word.text).join(" ") : null;
+    const dialect: ShellRuleDialect | null = SHELL_SET.has(program) ? (program === "cmd" || program.startsWith("pwsh") || program.startsWith("powershell") ? "powershell" : "bash") : null;
+    return { kind: "string", code, dialect };
+  }
+  return { kind: "stdin" };
 }
 
 class Scanner {
@@ -119,8 +142,9 @@ class Scanner {
   private readonly decoded: string[] = [];
   hidden = false;
   private decodedChars = 0;
-  private candidates = 0;
+  private scanned = 0;
   private readonly seen = new Set<string>();
+  private readonly seenSources = new Set<string>();
 
   constructor(private readonly cwd: string | undefined) {}
 
@@ -135,40 +159,61 @@ class Scanner {
     for (const source of sources) this.runs(source, depth);
     for (const stage of words?.stages ?? []) {
       this.encodedFlags(stage);
-      if (readsCodeFromStdin(stage)) this.hidden = true;
+      const code = stageCode(stage);
+      if (stage.piped && code.kind === "stdin") this.hidden = true;
+      // A code string a shell will run gets the same rules, within the same bounds.
+      if (code.kind === "string" && code.code !== null && code.dialect !== null) this.scan(code.dialect, code.code, depth + 1);
     }
   }
 
   /** Every base64 run of `source`, and every window of a whitespace-broken run that could be one payload split into chunks: every part but the
-   *  last a whole number of base64 quads, as a wrapped or chunked payload is. */
+   *  last a whole number of base64 quads, as a wrapped or chunked payload is. The windows from one start share a prefix, so the longest is decoded
+   *  once and each shorter window is read as a prefix of its bytes; the longest window that is text is the one kept (a shorter one is contained
+   *  in it). */
   private runs(source: string, depth: number): void {
+    if (this.seenSources.has(source)) return;
+    this.seenSources.add(source);
     for (const match of source.matchAll(BASE64_RUN_RE)) {
-      const parts = match[0].split(/\s+/);
+      const parts = match[0].replace(/=+$/, "").split(/\s+/);
       for (let start = 0; start < parts.length; start += 1) {
-        this.candidate(parts[start]!, depth);
-        let joined = parts[start]!;
-        for (let end = start + 1; end < parts.length && end - start < MAX_RUN_PARTS; end += 1) {
-          if (parts[end - 1]!.length % 4 !== 0) break;
-          joined += parts[end]!;
-          this.candidate(joined, depth);
+        let last = start;
+        while (last + 1 < parts.length && last + 1 - start < MAX_RUN_PARTS && parts[last]!.length % 4 === 0) last += 1;
+        const window = parts.slice(start, last + 1).join("");
+        if (window.length < MIN_RUN) continue;
+        // Every bound fails closed: past the scan budget, as past the depth and decoded-byte bounds, the input is hidden.
+        this.scanned += window.length;
+        if (this.scanned > MAX_SCAN_CHARS) {
+          this.hidden = true;
+          return;
         }
+        const units = Buffer.from(window, "base64").toString("utf16le");
+        const printable = [0];
+        for (let index = 0; index < units.length; index += 1) printable.push(printable[index]! + (isTextUnit(units.charCodeAt(index)) ? 1 : 0));
+        const bom = units.charCodeAt(0) === 0xfeff ? 1 : 0;
+        let found: string | null = null;
+        let length = 0;
+        for (let end = start; end <= last; end += 1) {
+          length += parts[end]!.length;
+          if (length < MIN_RUN || length % 4 === 1) continue;
+          const bytes = Math.floor((length * 3) / 4);
+          if (bytes % 2 !== 0 || bytes < MIN_TEXT * 2) continue;
+          const count = bytes / 2;
+          const textLength = count - bom;
+          const text = printable[count]! - printable[bom]!;
+          if (textLength >= MIN_TEXT && text >= MIN_TEXT && text / textLength >= PRINTABLE_SHARE) found = units.slice(bom, count);
+        }
+        if (found !== null) this.accept(found, depth);
       }
     }
   }
 
-  private candidate(encoded: string, depth: number): void {
-    if (encoded.length < 12 || this.seen.has(encoded)) return;
-    this.seen.add(encoded);
-    // A work cap guards against a pathological input; reaching it stops scanning but is not itself a reason (the -e-flag rule and the raw-text scan
-    // still hold). Only the recursion-depth and decoded-byte bounds mean hidden.
-    if (this.candidates >= MAX_CANDIDATES) return;
-    this.candidates += 1;
-    const text = decodeBase64Text(encoded);
-    if (text === null) return;
+  private accept(text: string, depth: number): void {
+    if (this.seen.has(text)) return;
+    this.seen.add(text);
     this.hidden = true;
     this.decodedChars += text.length;
-    if (this.decodedChars > MAX_DECODED_CHARS) return;
-    if (this.decoded.length < MAX_SCRIPTS) this.decoded.push(text);
+    if (this.decodedChars > MAX_DECODED_CHARS) return; // already hidden: the text is not disclosed past the byte bound
+    this.decoded.push(text);
     // Decoded text is read the same way: a payload inside a payload is a payload.
     this.scan("powershell", text, depth + 1);
   }

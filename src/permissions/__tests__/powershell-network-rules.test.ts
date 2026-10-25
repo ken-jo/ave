@@ -11,6 +11,7 @@ import { buildShellRuleApproval, isWildcardShellRule, shellRuleCoversCommand } f
 import { _recordPowerShellLexesForTest, powerShellRuleShape } from "../rules/powershell-exfiltration.js";
 import { inspectEncodedPowerShell } from "../rules/powershell-encoded-command.js";
 import { validatePermissionRule } from "../rules/rule-files.js";
+import { encodeScript } from "./fixtures/encoded-command.js";
 
 let dir: string;
 let manager: PermissionManager;
@@ -227,7 +228,7 @@ describe("PowerShell deny and ask rules meet every spelling of the command name"
 
 // Security review of #223: an -EncodedCommand payload meets the same floors as plaintext -Command, and no allow rule covers it.
 describe("PowerShell -EncodedCommand", () => {
-  const encode = (script: string) => Buffer.from(script, "utf16le").toString("base64");
+  const encode = encodeScript;
   const DESTRUCTIVE = "rm -rf /";
 
   it.each(["powershell", "bash"] as const)("a destructive decoded payload hits the same forced modal as plaintext -Command (%s)", (dialect) => {
