@@ -694,7 +694,10 @@ describe("credential floor: recursive searches after cd", () => {
         expect(pm.checkDetailed("bash", "builtin", "shell", null, subject(command)), command)
           .toMatchObject({ decision: "ask", layer: 2, forceModal: true });
       }
-      expect(pm.checkDetailed("bash", "builtin", "shell", null, subject("cd src && rg y"))).toMatchObject({ decision: "allow" });
+      // Ordinary asks the OS floor confines do not stop the sandboxed lane.
+      for (const command of ["cd src && rg y", "git ls-files | xargs rg foo", "fd -e ts | xargs rg foo"]) {
+        expect(pm.checkDetailed("bash", "builtin", "shell", null, subject(command)), command).toMatchObject({ decision: "allow" });
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -767,9 +770,26 @@ describe("credential floor: cwd switches, whole-tree readers and && narrowing", 
   it.each<[string, Verdict]>([
     ["find ~ -type f | xargs cat", "floor"],
     ["du -a ~ | xargs cat", "floor"],
-    ["echo src | xargs grep -r x", "floor"],
-    ["ls | xargs rg x", "floor"],
     ["find src -type f | xargs cat", "clean"],
+    // A lister feeding a reader is modeled like `find`: its roots decide.
+    ["ls -R ~ | xargs cat", "floor"],
+    ["ls -a ~ | xargs cat", "floor"],
+    ["ls src | xargs cat", "clean"],
+    ["ls -R ~", "clean"],
+    // A recursive reader behind xargs: a store or home among the feeding
+    // stages' roots, or the directory they list, is a floor; static ordinary
+    // or unknown roots are an ordinary ask that the OS floor confines.
+    ["echo ~ | xargs grep -r x", "floor"],
+    ["find ~ | xargs rg x", "floor"],
+    ["printf '%s\\n' ~/.ssh | xargs rg x", "floor"],
+    ["cd ~ && git ls-files | xargs rg foo", "floor"],
+    ["cd \"$X\" && git ls-files | xargs rg foo", "floor"],
+    ["git ls-files | xargs rg foo ~", "floor"],
+    ["git ls-files | xargs rg foo", "ask"],
+    ["fd -e ts | xargs rg foo", "ask"],
+    ["echo src | xargs grep -r x", "ask"],
+    ["ls | xargs rg x", "ask"],
+    ["xargs rg foo < list.txt", "ask"],
     // A root list read from a file is not static: an ordinary ask, not the floor.
     ["tar -czf /tmp/x.tgz -T list.txt", "ask"],
     ["tar --files-from=list.txt -czf /tmp/x.tgz", "ask"],
@@ -790,6 +810,69 @@ describe("credential floor: cwd switches, whole-tree readers and && narrowing", 
     ["cd ~ && cd proj; grep -r x .", "floor"],
   ])("&& narrowing from ~/proj: %s -> %s", (command, expected) => {
     expect(verdict(command, join(homedir(), "proj"))).toBe(expected);
+  });
+});
+
+// A metadata lister (`ls`, `du`, `stat`) reads no file content, so a glob
+// whose expansion merely includes a protected directory is an ordinary ask
+// and the sandboxed lane leaves it to the OS floor. A glob whose literal
+// prefix is protected, and any content read, stay a floor. The fixture home
+// holds the protected directories the expansion must find on disk.
+describe("credential floor: metadata listing globs", () => {
+  let home: string;
+  beforeAll(() => {
+    home = realpathSync.native(mkdtempSync(join(tmpdir(), "ave-listing-home-")));
+    for (const directory of [
+      ["Library", "Application Support", "Google"], ["Library", "Application Support", "Code"],
+      ["Library", "Containers", "com.apple.Safari"], ["Library", "Containers", "com.apple.TextEdit"],
+      ["Library", "Keychains"], ["snap", "firefox"], ["snap", "code"],
+    ]) mkdirSync(join(home, ...directory), { recursive: true });
+    vi.stubEnv("HOME", home);
+  });
+  afterAll(() => {
+    vi.unstubAllEnvs();
+    rmSync(home, { recursive: true, force: true });
+  });
+  type Verdict = "floor" | "ask" | "clean";
+  function verdict(command: string): Verdict {
+    if (shellSensitivePathSignal(command, CWD) !== null) return "floor";
+    return shellScanOrdinaryAsk(command, CWD) !== null ? "ask" : "clean";
+  }
+
+  it.each<[string, Verdict]>([
+    ["du -sh ~/Library/Application\\ Support/*", "ask"],
+    ["ls ~/Library/Application\\ Support/*", "ask"],
+    ["ls ~/snap/*", "ask"],
+    ["ls ~/Library/Containers/*", "ask"],
+    ["stat ~/Library/*", "ask"],
+    ["sudo ls ~/Library/*", "ask"],
+    // Content reads and protected literal prefixes stay a floor.
+    ["cat ~/Library/Application\\ Support/*/Default/History", "floor"],
+    ["cat ~/snap/*/common/x", "floor"],
+    ["ls ~/Library/Application\\ Support/* | xargs cat", "floor"],
+    ["ls ~/.ssh/*", "floor"],
+    ["ls ~/Library/Keychains/*", "floor"],
+    ["ls ~/Library/Application\\ Support/Google/*", "floor"],
+  ])("%s -> %s", (command, expected) => {
+    expect(verdict(command)).toBe(expected);
+  });
+
+  it("asks without forceModal, and the sandboxed lane allows it", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ave-listing-pm-"));
+    try {
+      const pm = new PermissionManager(join(dir, "permissions.json"));
+      const subject = (command: string, runsSandboxed: boolean) => ({
+        ruleSubject: { kind: "shell" as const, dialect: "bash" as const, command, cwd: dir },
+        shellExecution: { runsSandboxed, sandboxAvailable: true },
+      });
+      const command = "ls ~/Library/Application\\ Support/*";
+      expect(pm.checkDetailed("bash", "builtin", "shell", null, subject(command, true))).toMatchObject({ decision: "allow" });
+      const plain = pm.checkDetailed("bash", "builtin", "shell", null, subject(command, false));
+      expect(plain.decision).toBe("ask");
+      expect(plain.forceModal).not.toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

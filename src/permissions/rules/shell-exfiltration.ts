@@ -746,6 +746,20 @@ interface ScanState {
   cdSuccess?: (string | undefined)[];
   /** The command is a pipeline stage whose output an `xargs` stage turns into arguments. */
   feedsXargs: boolean;
+  /** For an `xargs` pipeline stage, the stages before it, whose output becomes its arguments. */
+  xargsUpstream?: readonly ShellStatement[];
+  /**
+   * The command only lists names and metadata (`ls`, `du`, `stat`), so a glob
+   * whose expansion reaches a protected directory reads no store content.
+   */
+  metadataListing: boolean;
+  /**
+   * Ask reason for a read the scan cannot bound but the OS floor confines: a
+   * metadata listing glob that expands into a protected directory, or a
+   * recursive reader fed static, ordinary roots through `xargs`. Like
+   * {@link cdAsk} it keeps path checks canonical.
+   */
+  confinedAsk?: string;
   functions: { body: ShellStatement; version: number }[];
   dotglob: boolean;
   sensitive: string | null;
@@ -765,7 +779,7 @@ function createScanState(cwd: string | undefined, dotglob: boolean, spend?: Scan
   const state: ScanState = { cwds: [cwd], cwdUnknown: false, cwdVersion: 0, dirChanged: false,
     homeReassigned: HOME_REASSIGNMENT.test(command),
     cdRedirects: CD_REDIRECTION.test(command) || (process.env.CDPATH ?? "") !== "",
-    functions: [], feedsXargs: false, dotglob, sensitive: null, network: false, hidden: false,
+    functions: [], feedsXargs: false, metadataListing: false, dotglob, sensitive: null, network: false, hidden: false,
     match: createSensitivePathMatcher("read"), pathResults: new Map(), fallbackSteps: 0 };
   // zsh `autocd` turns any bare directory word into a `cd`.
   if (/auto_?cd/i.test(command)) markCwdUnknown(state, "autocd can change directory");
@@ -816,19 +830,52 @@ function checkGlob(glob: string, state: ScanState, braceExpansion = false): void
       const resultKey = (): string => `${state.ordinaryAsk ? "lexical" : "canonical"}:${braceExpansion ? "brace" : "literal"}:${cwd ?? ""}\0${candidate}`;
       if (state.pathResults.has(resultKey())) {
         state.sensitive = state.pathResults.get(resultKey()) ?? null;
-        continue;
+      } else {
+        try {
+          state.sensitive = state.ordinaryAsk ? lexicalPathHit(candidate, cwd, state, braceExpansion)
+            : sensitivePathHit(candidate, cwd, state.dotglob, state.match, state.spend);
+        } catch (error) {
+          if (!(error instanceof ShellScanBudgetError)) throw error;
+          state.ordinaryAsk = error.message;
+          state.sensitive = lexicalPathHit(candidate, cwd, state, braceExpansion);
+        }
+        state.pathResults.set(resultKey(), state.sensitive);
       }
-      try {
-        state.sensitive = state.ordinaryAsk ? lexicalPathHit(candidate, cwd, state, braceExpansion)
-          : sensitivePathHit(candidate, cwd, state.dotglob, state.match, state.spend);
-      } catch (error) {
-        if (!(error instanceof ShellScanBudgetError)) throw error;
-        state.ordinaryAsk = error.message;
-        state.sensitive = lexicalPathHit(candidate, cwd, state, braceExpansion);
-      }
-      state.pathResults.set(resultKey(), state.sensitive);
+      if (state.sensitive && state.metadataListing) confineListingGlob(candidate, cwd, state);
     }
   }
+}
+
+/** Hit reasons that say the glob could not be bounded at all; those stay a floor. */
+const UNBOUNDED_GLOB = "glob too broad to rule out a sensitive path";
+
+/**
+ * `ls ~/Library/Application\ Support/*` lists the names in a protected
+ * directory without reading a file. When only the expansion reaches the
+ * protected entry (its literal prefix does not), the hit becomes an ordinary
+ * ask, which the sandboxed lane leaves to the OS floor. A glob whose literal
+ * prefix is already protected (`ls ~/.ssh/*`) stays a floor.
+ */
+function confineListingGlob(candidate: string, cwd: string | undefined, state: ScanState): void {
+  if (!hasWildcard(candidate) || state.sensitive === UNBOUNDED_GLOB) return;
+  const absolute = isAbsolute(candidate) ? candidate : resolve(cwd ?? "/", candidate);
+  const segments = absolute.split(/[\\/]/);
+  const firstWild = segments.findIndex(hasWildcard);
+  const prefix = unescapeGlob(segments.slice(0, Math.max(firstWild, 0)).join("/")) || "/";
+  if (state.match(caseFoldForMatch(canonicalizePathForMatch(prefix)))) return;
+  state.confinedAsk ??= `listing glob expands into ${state.sensitive}`;
+  state.sensitive = null;
+}
+
+/** Programs that list names and metadata without reading file contents. */
+const METADATA_LISTERS = new Set(["ls", "gls", "du", "gdu", "stat", "gstat", "tree", "eza", "exa", "lsd"]);
+
+function isMetadataListing(cmd: ShellCommand, state: ScanState): boolean {
+  // A listing piped into `xargs` becomes the reader's arguments.
+  if (state.feedsXargs || cmd.words.length === 0) return false;
+  const argv = commandArgv(cmd);
+  const name = program(argv[Math.min(wrapperCommand(argv).index, argv.length - 1)])?.toLowerCase();
+  return name !== undefined && METADATA_LISTERS.has(name);
 }
 
 /** Runs `scan` once per shell home anchor, resolving the anchors only if the scan reads one. */
@@ -1033,6 +1080,13 @@ function fdShape(argv: Argv, feedsXargs: boolean): SearchShape {
   return { recursive: true, follow, ancestorFloor: exec >= 0 || feedsXargs, defaultRoot: true, roots: [...parsed.operands.slice(1), ...searchPaths] };
 }
 
+/** `ls` lists names; fed to `xargs` its entries (all of them with `-R`) become reads. */
+function lsShape(argv: Argv): SearchShape {
+  const parsed = parseOptions(argv, "ITw", ["color", "format", "sort", "time", "width", "tabsize", "hide", "ignore", "block-size", "indicator-style", "quoting-style", "time-style"]);
+  const follow = parsed.short.has("L") || parsed.long.has("dereference") ? "all" : parsed.short.has("H") ? "roots" : false;
+  return { recursive: true, follow, ancestorFloor: true, defaultRoot: true, roots: parsed.operands };
+}
+
 /** `du -a` lists names like `find`; fed to `xargs` its paths become reads. */
 function duShape(argv: Argv, feedsXargs: boolean): SearchShape {
   const parsed = parseOptions(argv, "BdtX", ["block-size", "max-depth", "threshold", "exclude", "exclude-from", "time-style"]);
@@ -1122,6 +1176,8 @@ function searchShape(argv: readonly (string | undefined)[], feedsXargs = false):
   if (name === "zip" || name === "cp" || name === "gcp" || name === "rsync" || name === "scp") return copyShape(argv, name);
   if (name === "fd" || name === "fdfind") return fdShape(argv, feedsXargs);
   if (name === "du" || name === "gdu") return duShape(argv, feedsXargs);
+  // A plain listing reads nothing; only its consumer can.
+  if ((name === "ls" || name === "gls") && feedsXargs) return lsShape(argv);
   return null;
 }
 
@@ -1167,10 +1223,17 @@ function scanRecursiveSearch(cmd: ShellCommand, state: ScanState): void {
   const argv = fullArgv.slice(offset);
   const shape = searchShape(argv, state.feedsXargs);
   if (!shape?.recursive) return;
-  if (shape.ancestorFloor && fullArgv.slice(0, offset).some((word) => word !== undefined && program(word) === "xargs")) {
-    // `xargs` appends roots from its input, which the scan cannot see.
-    state.sensitive = `recursive read of ${argv[0]} over roots supplied through xargs`;
-    return;
+  const viaXargs = shape.ancestorFloor && fullArgv.slice(0, offset).some((word) => word !== undefined && program(word) === "xargs");
+  if (viaXargs) {
+    // `xargs` appends roots from its input, which the scan cannot see. Roots
+    // the feeding stages name (or the directory they list) at or above a
+    // store are a floor; otherwise the OS floor confines the read and it asks.
+    const reach = xargsUpstreamReach(state);
+    if (reach) {
+      state.sensitive = `recursive read of ${argv[0]} over roots supplied through xargs from ${reach}`;
+      return;
+    }
+    state.confinedAsk ??= `recursive read of ${argv[0]} over roots supplied through xargs`;
   }
   if (shape.dynamicRoots) {
     state.ordinaryAsk ??= "recursive search root is not static";
@@ -1196,7 +1259,8 @@ function scanRecursiveSearch(cmd: ShellCommand, state: ScanState): void {
     }
   }
   if (roots.length === 0) {
-    if (!shape.defaultRoot) return;
+    // `xargs` supplies the roots, which were judged above.
+    if (!shape.defaultRoot || viaXargs) return;
     roots.push(".");
   }
   for (const root of roots) {
@@ -1213,6 +1277,47 @@ function scanRecursiveSearch(cmd: ShellCommand, state: ScanState): void {
       if (state.sensitive) return;
     }
   }
+}
+
+/**
+ * Where the stages feeding an `xargs` reader may take it: a static path word
+ * they name, or the directory they run in, at or above a protected entry. A
+ * word that is not static is unknown, which stays an ask. An unknown cwd is a
+ * floor, as for any relative recursive search after a non-static cd.
+ */
+function xargsUpstreamReach(state: ScanState): string | null {
+  if (state.cwdUnknown) return "a stage after a cd whose target is not static";
+  const cwds = state.cwds.filter((dir): dir is string => dir !== undefined);
+  const reaches = (absolute: string): string | null => {
+    const canonical = caseFoldForMatch(canonicalizePathForMatch(absolute));
+    const hit = state.match(canonical) ?? sensitiveLocationUnder(canonical);
+    return hit ? `${absolute} (reaches ${hit})` : null;
+  };
+  for (const cwd of cwds) {
+    const hit = reaches(cwd);
+    if (hit) return hit;
+  }
+  for (const stage of state.xargsUpstream ?? []) {
+    for (const cmd of commandsIn(stage)) {
+      for (const word of cmd.words.slice(1)) {
+        if (literalHead(word).startsWith("-")) continue;
+        let hit: string | null = null;
+        scanEachHome((home) => {
+          if (hit) return;
+          const glob = wordGlob(word, home);
+          if (glob === null || glob.includes(DYNAMIC_SEGMENT)) return;
+          const segments = glob.split(/[\\/]/);
+          const firstWild = segments.findIndex(hasWildcard);
+          const root = unescapeGlob((firstWild < 0 ? segments : segments.slice(0, firstWild)).join("/")) || (glob.startsWith("/") ? "/" : ".");
+          for (const base of isAbsolute(root) ? [undefined] : cwds) {
+            hit ??= reaches(isAbsolute(root) ? root : resolve(base!, root));
+          }
+        });
+        if (hit) return hit;
+      }
+    }
+  }
+  return null;
 }
 
 function searchRoot(absolute: string, shape: SearchShape, state: ScanState): void {
@@ -1475,6 +1580,8 @@ function scanStatement(statement: ShellStatement, state: ScanState): void {
     case "command": {
       // `env -C`, `git -C`, `make -C`, `tar -C`, `--prefix` … move this command alone.
       const restoreCwd = applyCommandCwdSwitch(statement, state);
+      const metadataListing = state.metadataListing;
+      state.metadataListing = isMetadataListing(statement, state);
       for (const word of statement.words) {
         const text = wordText(word);
         if (text === "--") break;
@@ -1507,6 +1614,7 @@ function scanStatement(statement: ShellStatement, state: ScanState): void {
         for (const part of redirect.data?.parts ?? []) if (part.kind === "substitution") scanStatement(part.body, state);
       }
       restoreCwd?.();
+      state.metadataListing = metadataListing;
       state.cdSuccess = undefined;
       if (statement.words.length > 0) trackDirectoryChange(statement, state);
       return;
@@ -1517,10 +1625,12 @@ function scanStatement(statement: ShellStatement, state: ScanState): void {
       if (stages.some(needsCodeTextScan)) for (const stage of stages) scanCodeOf(stage, state);
       // A stage whose output `xargs` turns into arguments hands its listing on as reads.
       statement.statements.forEach((child, index) => {
-        const feedsXargs = state.feedsXargs;
+        const { feedsXargs, xargsUpstream } = state;
         state.feedsXargs = statement.statements.slice(index + 1).some((later) => commandsIn(later).some(isXargsCommand));
+        state.xargsUpstream = commandsIn(child).some(isXargsCommand) ? statement.statements.slice(0, index) : undefined;
         scanStatement(child, state);
         state.feedsXargs = feedsXargs;
+        state.xargsUpstream = xargsUpstream;
       });
       state.cdSuccess = undefined;
       return;
@@ -1696,5 +1806,5 @@ export function shellSensitivePathSignal(input: ShellCommandInput, cwd?: string)
 /** Incomplete path inspection is an ordinary ask, never credential evidence. */
 export function shellScanOrdinaryAsk(input: ShellCommandInput, cwd?: string): string | null {
   const scan = scanCommand(asParsedShellCommand(input), cwd);
-  return scan.ordinaryAsk ?? scan.cdAsk ?? null;
+  return scan.ordinaryAsk ?? scan.cdAsk ?? scan.confinedAsk ?? null;
 }

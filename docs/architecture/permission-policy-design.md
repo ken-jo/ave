@@ -250,11 +250,20 @@ ordinary ask like a non-static `cd`. Whole-tree readers count as recursive
 searches whose root at or above a protected entry is a floor: `grep -r`/`rg`,
 archive creation (`tar c`/`r`/`u`, `zip -r`), recursive copies (`cp -r`/`-a`,
 `rsync -r`/`-a`, `scp -r`, remote operands excluded), and `find`, `fd` or
-`du -a` when every match is handed to a program (`-exec`, `fd -x`) or to an
-`xargs` stage. A plain `find`/`fd`/`du` still only lists names. A recursive
-reader behind `xargs` takes roots from its input, which the scan cannot see,
-so it is a floor; a root list read from a file (`tar -T`, `--files-from`) is an
-ordinary ask. A directory
+`du -a`, and `ls` (with or without `-R`) when every match is handed to a
+program (`-exec`, `fd -x`) or to an `xargs` stage. A plain `find`/`fd`/`du`/`ls`
+still only lists names. A recursive reader behind `xargs` takes roots from its
+input, which the scan cannot see: it is a floor when a feeding stage names a
+static path at or above a protected entry (`echo ~ | xargs grep -r x`), when
+the directory the stages run in is (`cd ~ && git ls-files | xargs rg foo`), or
+after a non-static cd; otherwise (`git ls-files | xargs rg foo`, roots from a
+file or a substitution) it is an ordinary ask that the sandboxed lane leaves to
+the OS floor. A root list read from a file (`tar -T`, `--files-from`) is an
+ordinary ask. A metadata lister (`ls`, `du`, `stat`, `tree`, `eza`/`exa`,
+`lsd`) reads no file content, so a glob whose expansion only reaches a
+protected directory (`ls ~/Library/Application\ Support/*`, `du -sh ~/Library/*`)
+is an ordinary ask too; a glob whose literal prefix is protected
+(`ls ~/.ssh/*`), a lister feeding `xargs`, and every content read stay a floor. A directory
 change whose target is not static is an ordinary ask: a variable, substitution,
 glob or `~user` target, `cd -` or a stack reference before the input changed
 directory, an `eval` whose text is not static or changes directory, a
