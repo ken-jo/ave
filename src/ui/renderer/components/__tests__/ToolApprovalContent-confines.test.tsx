@@ -3,9 +3,8 @@
 /** PR2 finding b; ToolApprovalContent confines honesty. The always-visible security-isolation summary must reflect per-dimension confines. Before the fix, the confines-BLIND `isWeakSandbox` printed a blanket "OS 격리 활성" for ANY verified non-none ASRT; so a write/shell tool on Windows (partial srt-win, process not confined)
  * wrongly read as fully isolated. Now a non-full confinement renders the partial-isolation qualifier with the per-dimension breakdown. Display-only; the relaxation control (sandboxRelaxesCategory) is untouched. Locale is pinned to Korean for renderer tests (vitest-ambient-intl.ts), so the assertions match the Korean catalog. */
 import "../../../../../test/renderer/setup.js";
-import { render } from "@testing-library/react";
 import { describe, it, expect } from "vitest";
-import { ToolApprovalContent } from "../ToolApprovalContent.js";
+import { renderApproval } from "./support/render-approval.js";
 import type { ApprovalRequest } from "../../types.js";
 
 function makeRequest(
@@ -26,9 +25,7 @@ function makeRequest(
 }
 
 function renderSandboxSummary(req: ApprovalRequest) {
-  const { container } = render(
-    <ToolApprovalContent conversationLabel="conversation" open request={req} onDecide={() => undefined} />,
-  );
+  const { container } = renderApproval(req, () => undefined);
   return {
     container,
     summary: container.querySelector<HTMLElement>(

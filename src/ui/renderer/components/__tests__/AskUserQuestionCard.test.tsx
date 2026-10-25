@@ -33,7 +33,26 @@ function makeRequest(overrides: Partial<AskUserQuestionRequest> = {}): AskUserQu
   };
 }
 
-// Single-question flow
+function renderQuestion(
+  api: ReturnType<typeof askUserQuestionApi>,
+  request: AskUserQuestionRequest,
+  onResolved: Parameters<typeof AskUserQuestionCard>[0]["onResolved"],
+) {
+  return render(<AskUserQuestionCard api={api as never} request={request} onResolved={onResolved} />);
+}
+
+function interact(action: () => void) {
+  return act(async () => { action(); });
+}
+
+function makeTwoQuestionRequest() {
+  return makeRequest({
+    questions: [
+      { question: "Q1", choices: ["A", "B"] },
+      { question: "Q2", choices: ["X", "Y"] },
+    ],
+  });
+}
 
 describe("AskUserQuestionCard — single question keyboard Enter", () => {
   it("calls respondAndClose exactly once and does NOT call goNext a second time", async () => {
@@ -50,16 +69,12 @@ describe("AskUserQuestionCard — single question keyboard Enter", () => {
     const onResolved = vi.fn();
     const request = makeRequest();
 
-    const { getByText } = render(
-      <AskUserQuestionCard api={api as never} request={request} onResolved={onResolved} />,
-    );
+    const { getByText } = renderQuestion(api, request, onResolved);
 
     // Focus the first choice button and press Enter.
     const btn = getByText("빨강").closest("button")!;
     btn.focus();
-    await act(async () => {
-      fireEvent.keyDown(btn, { key: "Enter" });
-    });
+    await interact(() => fireEvent.keyDown(btn, { key: "Enter" }));
 
     // respondAskUserQuestion called exactly once — no double-advance.
     expect(api.respondAskUserQuestion).toHaveBeenCalledTimes(1);
@@ -72,15 +87,11 @@ describe("AskUserQuestionCard — single question keyboard Enter", () => {
     const api = askUserQuestionApi();
     const request = makeRequest();
 
-    const { getByText } = render(
-      <AskUserQuestionCard api={api as never} request={request} onResolved={vi.fn()} />,
-    );
+    const { getByText } = renderQuestion(api, request, vi.fn());
 
     const btn = getByText("파랑").closest("button")!;
     btn.focus();
-    await act(async () => {
-      fireEvent.keyDown(btn, { key: " " });
-    });
+    await interact(() => fireEvent.keyDown(btn, { key: " " }));
 
     expect(api.respondAskUserQuestion).toHaveBeenCalledTimes(1);
     expect(api.respondAskUserQuestion).toHaveBeenCalledWith(
@@ -93,13 +104,9 @@ describe("AskUserQuestionCard — single question keyboard Enter", () => {
     const onResolved = vi.fn();
     const request = makeRequest();
 
-    const { getByTestId } = render(
-      <AskUserQuestionCard api={api as never} request={request} onResolved={onResolved} />,
-    );
+    const { getByTestId } = renderQuestion(api, request, onResolved);
 
-    await act(async () => {
-      fireEvent.keyDown(getByTestId("ask-user-question-card"), { key: "Escape" });
-    });
+    await interact(() => fireEvent.keyDown(getByTestId("ask-user-question-card"), { key: "Escape" }));
 
     expect(api.respondAskUserQuestion).toHaveBeenCalledWith(
       expect.objectContaining({ requestId: "req-1", dismissed: true }),
@@ -123,16 +130,12 @@ describe("AskUserQuestionCard — multi-step keyboard Enter (intermediate step)"
       ],
     });
 
-    const { getByText } = render(
-      <AskUserQuestionCard api={api as never} request={request} onResolved={onResolved} />,
-    );
+    const { getByText } = renderQuestion(api, request, onResolved);
 
     // Step 0: select choice "A" via Enter — should advance to step 1.
     const btnA = getByText("A").closest("button")!;
     btnA.focus();
-    await act(async () => {
-      fireEvent.keyDown(btnA, { key: "Enter" });
-    });
+    await interact(() => fireEvent.keyDown(btnA, { key: "Enter" }));
 
     // Still on step 1 (not submitted yet) — respondAskUserQuestion not called.
     expect(api.respondAskUserQuestion).not.toHaveBeenCalled();
@@ -145,39 +148,26 @@ describe("AskUserQuestionCard — multi-step keyboard Enter (intermediate step)"
   it("calls respondAndClose exactly once on the final step after all answers given", async () => {
     const api = askUserQuestionApi();
     const onResolved = vi.fn();
-    const request = makeRequest({
-      questions: [
-        { question: "Q1", choices: ["A", "B"] },
-        { question: "Q2", choices: ["X", "Y"] },
-      ],
-    });
+    const request = makeTwoQuestionRequest();
 
-    const { getByRole, getByText } = render(
-      <AskUserQuestionCard api={api as never} request={request} onResolved={onResolved} />,
-    );
+    const { getByRole, getByText } = renderQuestion(api, request, onResolved);
 
     // Step 0: press Enter on "A" → advance to step 1.
     const btnA = getByText("A").closest("button")!;
     btnA.focus();
-    await act(async () => {
-      fireEvent.keyDown(btnA, { key: "Enter" });
-    });
+    await interact(() => fireEvent.keyDown(btnA, { key: "Enter" }));
     expect(api.respondAskUserQuestion).not.toHaveBeenCalled();
 
     // Step 1: press Enter on "X" → advance to confirm step (step === total).
     const btnX = getByText("X").closest("button")!;
     btnX.focus();
-    await act(async () => {
-      fireEvent.keyDown(btnX, { key: "Enter" });
-    });
+    await interact(() => fireEvent.keyDown(btnX, { key: "Enter" }));
     // Confirm step reached, still not submitted.
     expect(api.respondAskUserQuestion).not.toHaveBeenCalled();
 
     // User clicks 보내기 on the confirm step.
     const submitBtn = getByRole("button", { name: "보내기" });
-    await act(async () => {
-      fireEvent.click(submitBtn);
-    });
+    await interact(() => fireEvent.click(submitBtn));
 
     expect(api.respondAskUserQuestion).toHaveBeenCalledTimes(1);
     expect(api.respondAskUserQuestion).toHaveBeenCalledWith(
@@ -191,29 +181,16 @@ describe("AskUserQuestionCard — multi-step keyboard Enter (intermediate step)"
   it("focuses the send button on the confirm step and submits with Enter", async () => {
     const api = askUserQuestionApi();
     const onResolved = vi.fn();
-    const request = makeRequest({
-      questions: [
-        { question: "Q1", choices: ["A", "B"] },
-        { question: "Q2", choices: ["X", "Y"] },
-      ],
-    });
+    const request = makeTwoQuestionRequest();
 
-    const { getByRole, getByText } = render(
-      <AskUserQuestionCard api={api as never} request={request} onResolved={onResolved} />,
-    );
+    const { getByRole, getByText } = renderQuestion(api, request, onResolved);
 
-    await act(async () => {
-      fireEvent.keyDown(getByText("A").closest("button")!, { key: "Enter" });
-    });
-    await act(async () => {
-      fireEvent.keyDown(getByText("X").closest("button")!, { key: "Enter" });
-    });
+    await interact(() => fireEvent.keyDown(getByText("A").closest("button")!, { key: "Enter" }));
+    await interact(() => fireEvent.keyDown(getByText("X").closest("button")!, { key: "Enter" }));
 
     const submitBtn = getByRole("button", { name: "보내기" });
     await waitFor(() => expect(document.activeElement).toBe(submitBtn));
-    await act(async () => {
-      fireEvent.keyDown(submitBtn, { key: "Enter" });
-    });
+    await interact(() => fireEvent.keyDown(submitBtn, { key: "Enter" }));
 
     expect(api.respondAskUserQuestion).toHaveBeenCalledTimes(1);
     expect(api.respondAskUserQuestion).toHaveBeenCalledWith(
@@ -234,15 +211,11 @@ describe("AskUserQuestionCard — answer modes", () => {
       questions: [{ question: "참석자", choices: ["알루우", "지수"] }],
     });
 
-    const { getByText, queryByTestId } = render(
-      <AskUserQuestionCard api={api as never} request={request} onResolved={vi.fn()} />,
-    );
+    const { getByText, queryByTestId } = renderQuestion(api, request, vi.fn());
 
     expect(queryByTestId("ask-freetext-input")).toBeNull();
 
-    await act(async () => {
-      fireEvent.click(getByText("알루우").closest("button")!);
-    });
+    await interact(() => fireEvent.click(getByText("알루우").closest("button")!));
     expect(api.respondAskUserQuestion).toHaveBeenCalledWith(
       expect.objectContaining({ answers: [{ choice: "알루우" }] }),
     );
@@ -261,19 +234,13 @@ describe("AskUserQuestionCard — answer modes", () => {
       ],
     });
 
-    const { getByTestId, getByPlaceholderText } = render(
-      <AskUserQuestionCard api={api as never} request={request} onResolved={vi.fn()} />,
-    );
+    const { getByTestId, getByPlaceholderText } = renderQuestion(api, request, vi.fn());
 
     const input = getByTestId("ask-freetext-input") as HTMLTextAreaElement;
     expect(getByPlaceholderText("숫자로")).toBe(input);
 
-    await act(async () => {
-      fireEvent.change(input, { target: { value: "10개" } });
-    });
-    await act(async () => {
-      fireEvent.keyDown(input, { key: "Enter" });
-    });
+    await interact(() => fireEvent.change(input, { target: { value: "10개" } }));
+    await interact(() => fireEvent.keyDown(input, { key: "Enter" }));
 
     expect(api.respondAskUserQuestion).toHaveBeenCalledWith(
       expect.objectContaining({ answers: [{ freeText: "10개" }] }),
@@ -288,23 +255,15 @@ describe("AskUserQuestionCard — answer modes", () => {
       ],
     });
 
-    const { getByTestId, getByRole } = render(
-      <AskUserQuestionCard api={api as never} request={request} onResolved={vi.fn()} />,
-    );
+    const { getByTestId, getByRole } = renderQuestion(api, request, vi.fn());
 
     const input = getByTestId("ask-freetext-input") as HTMLTextAreaElement;
-    await act(async () => {
-      fireEvent.change(input, { target: { value: "타임라인으로" } });
-    });
+    await interact(() => fireEvent.change(input, { target: { value: "타임라인으로" } }));
     // Shift+Enter is the newline, so it must not submit.
-    await act(async () => {
-      fireEvent.keyDown(input, { key: "Enter", shiftKey: true });
-    });
+    await interact(() => fireEvent.keyDown(input, { key: "Enter", shiftKey: true }));
     expect(api.respondAskUserQuestion).not.toHaveBeenCalled();
 
-    await act(async () => {
-      fireEvent.click(getByRole("button", { name: "보내기" }));
-    });
+    await interact(() => fireEvent.click(getByRole("button", { name: "보내기" })));
     expect(api.respondAskUserQuestion).toHaveBeenCalledWith(
       expect.objectContaining({ answers: [{ freeText: "타임라인으로" }] }),
     );
@@ -323,24 +282,16 @@ describe("AskUserQuestionCard — answer modes", () => {
       ],
     });
 
-    const { getByTestId, getByText, getByRole } = render(
-      <AskUserQuestionCard api={api as never} request={request} onResolved={vi.fn()} />,
-    );
+    const { getByTestId, getByText, getByRole } = renderQuestion(api, request, vi.fn());
 
-    await act(async () => {
-      fireEvent.click(getByText("AI").closest("button")!);
-    });
-    await act(async () => {
-      fireEvent.click(getByText("UX").closest("button")!);
-    });
+    await interact(() => fireEvent.click(getByText("AI").closest("button")!));
+    await interact(() => fireEvent.click(getByText("UX").closest("button")!));
     await act(async () => {
       fireEvent.change(getByTestId("ask-freetext-input"), {
         target: { value: "기타 도구" },
       });
     });
-    await act(async () => {
-      fireEvent.click(getByRole("button", { name: "보내기" }));
-    });
+    await interact(() => fireEvent.click(getByRole("button", { name: "보내기" })));
 
     expect(api.respondAskUserQuestion).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -359,38 +310,22 @@ describe("AskUserQuestionCard — answer modes", () => {
       ],
     });
 
-    const { getByTestId, getByText, getByRole } = render(
-      <AskUserQuestionCard api={api as never} request={request} onResolved={vi.fn()} />,
-    );
+    const { getByTestId, getByText, getByRole } = renderQuestion(api, request, vi.fn());
 
-    await act(async () => {
-      fireEvent.click(getByText("국내").closest("button")!);
-    });
-    await act(async () => {
-      fireEvent.click(getByRole("button", { name: "다음" }));
-    });
+    await interact(() => fireEvent.click(getByText("국내").closest("button")!));
+    await interact(() => fireEvent.click(getByRole("button", { name: "다음" })));
     const input = getByTestId("ask-freetext-input") as HTMLTextAreaElement;
-    await act(async () => {
-      fireEvent.change(input, { target: { value: "10개" } });
-    });
-    await act(async () => {
-      fireEvent.keyDown(input, { key: "Enter" });
-    });
-    await act(async () => {
-      fireEvent.click(getByText("UX").closest("button")!);
-    });
-    await act(async () => {
-      fireEvent.click(getByRole("button", { name: "검토" }));
-    });
+    await interact(() => fireEvent.change(input, { target: { value: "10개" } }));
+    await interact(() => fireEvent.keyDown(input, { key: "Enter" }));
+    await interact(() => fireEvent.click(getByText("UX").closest("button")!));
+    await interact(() => fireEvent.click(getByRole("button", { name: "검토" })));
 
     const review = getByTestId("ask-confirm-review");
     expect(review.textContent).toContain("선택: 국내");
     expect(review.textContent).toContain("입력: 10개");
     expect(review.textContent).toContain("선택: UX");
 
-    await act(async () => {
-      fireEvent.click(getByRole("button", { name: "보내기" }));
-    });
+    await interact(() => fireEvent.click(getByRole("button", { name: "보내기" })));
     expect(api.respondAskUserQuestion).toHaveBeenCalledWith(
       expect.objectContaining({
         answers: [{ choice: "국내" }, { freeText: "10개" }, { choice: "UX" }],
@@ -404,20 +339,14 @@ describe("AskUserQuestionCard — answer modes", () => {
       questions: [{ question: "어느 쪽?", choices: ["A", "B"], allowFreeText: true }],
     });
 
-    const { getByTestId, getByText } = render(
-      <AskUserQuestionCard api={api as never} request={request} onResolved={vi.fn()} />,
-    );
+    const { getByTestId, getByText } = renderQuestion(api, request, vi.fn());
 
     const first = getByText("A").closest("button")!;
     first.focus();
-    await act(async () => {
-      fireEvent.keyDown(first, { key: "ArrowDown" });
-    });
+    await interact(() => fireEvent.keyDown(first, { key: "ArrowDown" }));
     const second = getByText("B").closest("button")!;
     expect(document.activeElement).toBe(second);
-    await act(async () => {
-      fireEvent.keyDown(second, { key: "ArrowDown" });
-    });
+    await interact(() => fireEvent.keyDown(second, { key: "ArrowDown" }));
     expect(document.activeElement).toBe(getByTestId("ask-freetext-input"));
   });
 
@@ -430,34 +359,24 @@ describe("AskUserQuestionCard — answer modes", () => {
       ],
     });
 
-    const { getByTestId, getByText, queryByText } = render(
-      <AskUserQuestionCard api={api as never} request={request} onResolved={vi.fn()} />,
-    );
+    const { getByTestId, getByText, queryByText } = renderQuestion(api, request, vi.fn());
 
     expect(getByTestId("ask-keyboard-hint").textContent).toContain("답변 이동");
     expect(getByTestId("ask-keyboard-hint").textContent).toContain("질문 이동");
 
     const answerA = getByText("A").closest("button")!;
     answerA.focus();
-    await act(async () => {
-      fireEvent.keyDown(answerA, { key: "ArrowDown" });
-    });
+    await interact(() => fireEvent.keyDown(answerA, { key: "ArrowDown" }));
     expect(document.activeElement?.textContent).toContain("B");
     expect(queryByText("두 번째 질문")).toBeNull();
 
-    await act(async () => {
-      fireEvent.keyDown(document.activeElement!, { key: "ArrowUp" });
-    });
+    await interact(() => fireEvent.keyDown(document.activeElement!, { key: "ArrowUp" }));
     expect(document.activeElement?.textContent).toContain("A");
 
-    await act(async () => {
-      fireEvent.click(answerA);
-    });
+    await interact(() => fireEvent.click(answerA));
     const card = getByTestId("ask-user-question-card");
     card.focus();
-    await act(async () => {
-      fireEvent.keyDown(card, { key: "ArrowRight" });
-    });
+    await interact(() => fireEvent.keyDown(card, { key: "ArrowRight" }));
     expect(getByText("두 번째 질문")).toBeTruthy();
   });
 });
@@ -469,13 +388,9 @@ describe("AskUserQuestionCard — mouse click path (single question)", () => {
     const api = askUserQuestionApi();
     const request = makeRequest();
 
-    const { getByText } = render(
-      <AskUserQuestionCard api={api as never} request={request} onResolved={vi.fn()} />,
-    );
+    const { getByText } = renderQuestion(api, request, vi.fn());
 
-    await act(async () => {
-      fireEvent.click(getByText("초록").closest("button")!);
-    });
+    await interact(() => fireEvent.click(getByText("초록").closest("button")!));
 
     expect(api.respondAskUserQuestion).toHaveBeenCalledTimes(1);
     expect(api.respondAskUserQuestion).toHaveBeenCalledWith(
@@ -487,28 +402,21 @@ describe("AskUserQuestionCard — mouse click path (single question)", () => {
 describe("AskUserQuestionCard — 4-direction card-level arrow navigation", () => {
   it("ArrowLeft and ArrowRight navigate between questions from card surface", async () => {
     const api = askUserQuestionApi();
-    const request = makeRequest({
-      questions: [
-        { question: "Q1", choices: ["A", "B"] },
-        { question: "Q2", choices: ["X", "Y"] },
-      ],
-    });
+    const request = makeTwoQuestionRequest();
 
-    const { getByTestId, getByText, queryByText } = render(
-      <AskUserQuestionCard api={api as never} request={request} onResolved={vi.fn()} />,
-    );
+    const { getByTestId, getByText, queryByText } = renderQuestion(api, request, vi.fn());
 
-    await act(async () => { fireEvent.click(getByText("A").closest("button")!); });
+    await interact(() => fireEvent.click(getByText("A").closest("button")!));
 
     const card = getByTestId("ask-user-question-card");
     card.focus();
 
     // ArrowRight → should advance to Q2.
-    await act(async () => { fireEvent.keyDown(card, { key: "ArrowRight" }); });
+    await interact(() => fireEvent.keyDown(card, { key: "ArrowRight" }));
     expect(getByText("Q2")).toBeTruthy();
 
     // ArrowLeft → should go back to Q1.
-    await act(async () => { fireEvent.keyDown(card, { key: "ArrowLeft" }); });
+    await interact(() => fireEvent.keyDown(card, { key: "ArrowLeft" }));
     expect(getByText("Q1")).toBeTruthy();
     expect(queryByText("Q2")).toBeNull();
   });
@@ -521,15 +429,13 @@ describe("AskUserQuestionCard — 4-direction card-level arrow navigation", () =
       ],
     });
 
-    const { getByTestId } = render(
-      <AskUserQuestionCard api={api as never} request={request} onResolved={vi.fn()} />,
-    );
+    const { getByTestId } = renderQuestion(api, request, vi.fn());
 
     const card = getByTestId("ask-user-question-card");
     card.focus();
 
     // The page starts with answer 1 ("빨강") as the visible cursor, so ArrowDown from the card surface moves to answer 2 ("파랑").
-    await act(async () => { fireEvent.keyDown(card, { key: "ArrowDown" }); });
+    await interact(() => fireEvent.keyDown(card, { key: "ArrowDown" }));
 
     expect(document.activeElement).not.toBe(card);
     expect(document.activeElement?.tagName.toLowerCase()).toBe("button");
@@ -545,15 +451,13 @@ describe("AskUserQuestionCard — 4-direction card-level arrow navigation", () =
       ],
     });
 
-    const { getByTestId } = render(
-      <AskUserQuestionCard api={api as never} request={request} onResolved={vi.fn()} />,
-    );
+    const { getByTestId } = renderQuestion(api, request, vi.fn());
 
     const card = getByTestId("ask-user-question-card");
     card.focus();
 
     // ArrowUp from card → wraps focus to last choice ("초록", index 2).
-    await act(async () => { fireEvent.keyDown(card, { key: "ArrowUp" }); });
+    await interact(() => fireEvent.keyDown(card, { key: "ArrowUp" }));
 
     expect(document.activeElement).not.toBe(card);
     expect(document.activeElement?.tagName.toLowerCase()).toBe("button");
@@ -565,32 +469,25 @@ describe("AskUserQuestionCard — 4-direction card-level arrow navigation", () =
    * interfering. */
   it("ArrowDown navigates choices then ArrowRight advances question (4-dir together)", async () => {
     const api = askUserQuestionApi();
-    const request = makeRequest({
-      questions: [
-        { question: "Q1", choices: ["A", "B"] },
-        { question: "Q2", choices: ["X", "Y"] },
-      ],
-    });
+    const request = makeTwoQuestionRequest();
 
-    const { getByTestId, getByText, queryByText } = render(
-      <AskUserQuestionCard api={api as never} request={request} onResolved={vi.fn()} />,
-    );
+    const { getByTestId, getByText, queryByText } = renderQuestion(api, request, vi.fn());
 
     const card = getByTestId("ask-user-question-card");
     card.focus();
 
     // The page starts at "A", so ArrowDown from card surface moves to "B".
-    await act(async () => { fireEvent.keyDown(card, { key: "ArrowDown" }); });
+    await interact(() => fireEvent.keyDown(card, { key: "ArrowDown" }));
     expect(document.activeElement?.tagName.toLowerCase()).toBe("button");
     expect(document.activeElement?.textContent).toContain("B");
     // Still on Q1, not Q2.
     expect(queryByText("Q2")).toBeNull();
 
-    await act(async () => { fireEvent.click(getByText("A").closest("button")!); });
+    await interact(() => fireEvent.click(getByText("A").closest("button")!));
 
     // ArrowRight from card → should advance to Q2.
     card.focus();
-    await act(async () => { fireEvent.keyDown(card, { key: "ArrowRight" }); });
+    await interact(() => fireEvent.keyDown(card, { key: "ArrowRight" }));
     expect(getByText("Q2")).toBeTruthy();
   });
 });
@@ -602,32 +499,24 @@ describe("AskUserQuestionCard — ArrowDown suppressed on confirm step", () => {
    * ArrowDown must not move focus into prior question choices. */
   it("ArrowDown on card at confirm step does not move focus to a choice button", async () => {
     const api = askUserQuestionApi();
-    const request = makeRequest({
-      questions: [
-        { question: "Q1", choices: ["A", "B"] },
-        { question: "Q2", choices: ["X", "Y"] },
-      ],
-    });
+    const request = makeTwoQuestionRequest();
 
-    const { getByTestId, getByText } = render(
-      <AskUserQuestionCard api={api as never} request={request} onResolved={vi.fn()} />,
-    );
+    const { getByTestId, getByText } = renderQuestion(api, request, vi.fn());
 
     // Advance to confirm step via Enter on each question's first choice.
     const btnA = getByText("A").closest("button")!;
     btnA.focus();
-    await act(async () => { fireEvent.keyDown(btnA, { key: "Enter" }); });
+    await interact(() => fireEvent.keyDown(btnA, { key: "Enter" }));
 
     const btnX = getByText("X").closest("button")!;
     btnX.focus();
-    await act(async () => { fireEvent.keyDown(btnX, { key: "Enter" }); });
+    await interact(() => fireEvent.keyDown(btnX, { key: "Enter" }));
 
     // Confirm step is now visible (보내기 button).
     const card = getByTestId("ask-user-question-card");
     card.focus();
-    const focusBefore = document.activeElement;
 
-    await act(async () => { fireEvent.keyDown(card, { key: "ArrowDown" }); });
+    await interact(() => fireEvent.keyDown(card, { key: "ArrowDown" }));
 
     // Focus must NOT have jumped into a Q1/Q2 choice button (role="option").
     // On confirm step the QuestionForm is unmounted, so arrowNav ref is null
@@ -645,9 +534,7 @@ describe("AskUserQuestionCard — auto-focus on mount enables arrow nav", () => 
   it("focuses the first answer immediately when the request mounts", async () => {
     const api = askUserQuestionApi();
     const request = makeRequest();
-    const { getByText } = render(
-      <AskUserQuestionCard api={api as never} request={request} onResolved={vi.fn()} />,
-    );
+    const { getByText } = renderQuestion(api, request, vi.fn());
 
     await waitFor(() => expect(document.activeElement).toBe(getByText("빨강").closest("button")));
   });
@@ -660,12 +547,10 @@ describe("AskUserQuestionCard — auto-focus on mount enables arrow nav", () => 
       ],
     });
 
-    const { getByText } = render(
-      <AskUserQuestionCard api={api as never} request={request} onResolved={vi.fn()} />,
-    );
+    const { getByText } = renderQuestion(api, request, vi.fn());
 
     await waitFor(() => expect(document.activeElement).toBe(getByText("빨강").closest("button")));
-    await act(async () => { fireEvent.keyDown(document.activeElement!, { key: "ArrowDown" }); });
+    await interact(() => fireEvent.keyDown(document.activeElement!, { key: "ArrowDown" }));
 
     expect(document.activeElement?.textContent).toContain("파랑");
   });
@@ -679,18 +564,12 @@ describe("AskUserQuestionCard — auto-focus on mount enables arrow nav", () => 
       ],
     });
 
-    const { getByTestId, getByText } = render(
-      <AskUserQuestionCard api={api as never} request={request} onResolved={vi.fn()} />,
-    );
+    const { getByText } = renderQuestion(api, request, vi.fn());
 
-    await act(async () => {
-      fireEvent.keyDown(getByText("A").closest("button")!, { key: "Enter" });
-    });
+    await interact(() => fireEvent.keyDown(getByText("A").closest("button")!, { key: "Enter" }));
 
     await waitFor(() => expect(document.activeElement).toBe(getByText("X").closest("button")));
-    await act(async () => {
-      fireEvent.keyDown(document.activeElement!, { key: "ArrowDown" });
-    });
+    await interact(() => fireEvent.keyDown(document.activeElement!, { key: "ArrowDown" }));
 
     expect(document.activeElement?.textContent).toContain("Y");
   });
@@ -712,17 +591,15 @@ describe("AskUserQuestionCard — multi-select", () => {
       ],
     });
 
-    const { getByRole, getByText } = render(
-      <AskUserQuestionCard api={api as never} request={request} onResolved={onResolved} />,
-    );
+    const { getByRole, getByText } = renderQuestion(api, request, onResolved);
 
     expect(getByRole("listbox")).toHaveAttribute("aria-multiselectable", "true");
 
-    await act(async () => { fireEvent.click(getByText("AI").closest("button")!); });
+    await interact(() => fireEvent.click(getByText("AI").closest("button")!));
     // Multi-select must not auto-submit on single-question cards either.
     expect(api.respondAskUserQuestion).not.toHaveBeenCalled();
 
-    await act(async () => { fireEvent.click(getByText("UX").closest("button")!); });
+    await interact(() => fireEvent.click(getByText("UX").closest("button")!));
     expect(api.respondAskUserQuestion).not.toHaveBeenCalled();
 
     // Both AI and UX should be visually selected.
@@ -744,15 +621,13 @@ describe("AskUserQuestionCard — multi-select", () => {
       ],
     });
 
-    const { getByText, getByRole } = render(
-      <AskUserQuestionCard api={api as never} request={request} onResolved={onResolved} />,
-    );
+    const { getByText, getByRole } = renderQuestion(api, request, onResolved);
 
-    await act(async () => { fireEvent.click(getByText("AI").closest("button")!); });
-    await act(async () => { fireEvent.click(getByText("UX").closest("button")!); });
+    await interact(() => fireEvent.click(getByText("AI").closest("button")!));
+    await interact(() => fireEvent.click(getByText("UX").closest("button")!));
 
     const submit = getByRole("button", { name: "보내기" });
-    await act(async () => { fireEvent.click(submit); });
+    await interact(() => fireEvent.click(submit));
 
     expect(api.respondAskUserQuestion).toHaveBeenCalledTimes(1);
     expect(api.respondAskUserQuestion).toHaveBeenCalledWith(
@@ -775,19 +650,17 @@ describe("AskUserQuestionCard — multi-select", () => {
       ],
     });
 
-    const { getByText, getByRole } = render(
-      <AskUserQuestionCard api={api as never} request={request} onResolved={vi.fn()} />,
-    );
+    const { getByText, getByRole } = renderQuestion(api, request, vi.fn());
 
-    await act(async () => { fireEvent.click(getByText("AI").closest("button")!); });
-    await act(async () => { fireEvent.click(getByText("보안").closest("button")!); });
-    await act(async () => { fireEvent.click(getByText("AI").closest("button")!); });
+    await interact(() => fireEvent.click(getByText("AI").closest("button")!));
+    await interact(() => fireEvent.click(getByText("보안").closest("button")!));
+    await interact(() => fireEvent.click(getByText("AI").closest("button")!));
 
     expect(getByText("AI").closest("button")!.getAttribute("aria-selected")).toBe("false");
     expect(getByText("보안").closest("button")!.getAttribute("aria-selected")).toBe("true");
 
     const submit = getByRole("button", { name: "보내기" });
-    await act(async () => { fireEvent.click(submit); });
+    await interact(() => fireEvent.click(submit));
 
     expect(api.respondAskUserQuestion).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -809,13 +682,11 @@ describe("AskUserQuestionCard — multi-select", () => {
       ],
     });
 
-    const { getByText, queryByText } = render(
-      <AskUserQuestionCard api={api as never} request={request} onResolved={vi.fn()} />,
-    );
+    const { getByText, queryByText } = renderQuestion(api, request, vi.fn());
 
     const btnA = getByText("A").closest("button")!;
     btnA.focus();
-    await act(async () => { fireEvent.keyDown(btnA, { key: "Enter" }); });
+    await interact(() => fireEvent.keyDown(btnA, { key: "Enter" }));
 
     // Multi-select Enter must NOT auto-advance to Q2.
     expect(queryByText("Q2")).toBeNull();
@@ -838,19 +709,17 @@ describe("AskUserQuestionCard — 4-question pagination", () => {
       ],
     });
 
-    const { getByText, getByRole } = render(
-      <AskUserQuestionCard api={api as never} request={request} onResolved={vi.fn()} />,
-    );
+    const { getByText, getByRole } = renderQuestion(api, request, vi.fn());
 
     // Advance through each step via Enter on the only choice.
     for (const label of ["A", "B", "C", "D"]) {
       const btn = getByText(label).closest("button")!;
       btn.focus();
-      await act(async () => { fireEvent.keyDown(btn, { key: "Enter" }); });
+      await interact(() => fireEvent.keyDown(btn, { key: "Enter" }));
     }
 
     const submit = getByRole("button", { name: "보내기" });
-    await act(async () => { fireEvent.click(submit); });
+    await interact(() => fireEvent.click(submit));
 
     expect(api.respondAskUserQuestion).toHaveBeenCalledWith(
       expect.objectContaining({

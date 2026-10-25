@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import "../../../../../test/renderer/setup.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { ToolApprovalContent } from "../ToolApprovalContent.js";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { renderApproval } from "./support/render-approval.js";
 import type { ApprovalRequest } from "../../types.js";
 import { TEST_IDS } from "../../../../shared/test-ids.js";
 import { getLocale, setLocale, t } from "../../../../i18n/runtime.js";
@@ -28,7 +28,7 @@ describe("shell approval rule controls", () => {
     const record = vi.fn(() => new Promise((resolve) => { finishSave = resolve; }));
     const onDecide = vi.fn();
     vi.stubGlobal("ave", { userApproval: { record } });
-    render(<ToolApprovalContent conversationLabel="conversation" open request={shellRequest()} onDecide={onDecide} />);
+    renderApproval(shellRequest(), onDecide);
     expect(screen.getByTestId("approval-shell-outside-sandbox")).toHaveTextContent(t("toolApprovalDialog.shellOutsideSandbox"));
     expect(screen.getByTestId("approval-shell-rule-pattern")).toHaveValue("Bash(git status *)");
     expect(screen.getByTestId("approval-shell-rule-scope")).toHaveValue("project");
@@ -49,7 +49,7 @@ describe("shell approval rule controls", () => {
   ])("normalizes $name before saving and previews the saved rule", async ({ typed, saved }) => {
     const record = vi.fn().mockResolvedValue({ ok: true }); const onDecide = vi.fn();
     vi.stubGlobal("ave", { userApproval: { record } });
-    render(<ToolApprovalContent conversationLabel="conversation" open request={shellRequest()} onDecide={onDecide} />);
+    renderApproval(shellRequest(), onDecide);
     fireEvent.change(screen.getByTestId("approval-shell-rule-pattern"), { target: { value: typed } });
     expect(screen.getByTestId("approval-shell-rule-preview")).toHaveTextContent(t("toolApprovalDialog.shellRulePreview", { pattern: saved }));
     fireEvent.click(screen.getByTestId(TEST_IDS.allowAlwaysButton));
@@ -59,9 +59,9 @@ describe("shell approval rule controls", () => {
 
   it("names the directory a project rule will apply to", () => {
     vi.stubGlobal("ave", { userApproval: { record: vi.fn() } });
-    render(<ToolApprovalContent conversationLabel="conversation" open request={shellRequest({
+    renderApproval(shellRequest({
       shellRule: { suggestedPattern: "Bash(git status *)", projectCwd: "/workspace/project/packages/app", projectRoot: "/workspace/project", sessionAllowed: true, persistentAllowed: true },
-    })} onDecide={vi.fn()} />);
+    }), vi.fn());
     expect(screen.getByTestId("approval-shell-rule-scope-target")).toHaveTextContent(/^\/workspace\/project$/);
     fireEvent.change(screen.getByTestId("approval-shell-rule-scope"), { target: { value: "user" } });
     expect(screen.getByTestId("approval-shell-rule-scope-target")).toHaveTextContent(t("toolApprovalDialog.shellScopeUserHelp"));
@@ -69,7 +69,7 @@ describe("shell approval rule controls", () => {
 
   it("shows no preview for an already canonical rule", () => {
     vi.stubGlobal("ave", { userApproval: { record: vi.fn() } });
-    render(<ToolApprovalContent conversationLabel="conversation" open request={shellRequest()} onDecide={vi.fn()} />);
+    renderApproval(shellRequest(), vi.fn());
     expect(screen.queryByTestId("approval-shell-rule-preview")).toBeNull();
   });
 
@@ -79,7 +79,7 @@ describe("shell approval rule controls", () => {
   ])("keeps a rule that is $name flagged invalid", ({ typed }) => {
     const record = vi.fn();
     vi.stubGlobal("ave", { userApproval: { record } });
-    render(<ToolApprovalContent conversationLabel="conversation" open request={shellRequest()} onDecide={vi.fn()} />);
+    renderApproval(shellRequest(), vi.fn());
     fireEvent.change(screen.getByTestId("approval-shell-rule-pattern"), { target: { value: typed } });
     expect(screen.getAllByText(t("toolApprovalDialog.shellRuleInvalid")).length).toBeGreaterThan(0);
     expect(screen.queryByTestId("approval-shell-rule-preview")).toBeNull();
@@ -91,7 +91,7 @@ describe("shell approval rule controls", () => {
   it("saves a user deny rule before answering deny-once", async () => {
     const record = vi.fn().mockResolvedValue({ ok: true }); const onDecide = vi.fn();
     vi.stubGlobal("ave", { userApproval: { record } });
-    render(<ToolApprovalContent conversationLabel="conversation" open request={shellRequest()} onDecide={onDecide} />);
+    renderApproval(shellRequest(), onDecide);
     fireEvent.change(screen.getByTestId("approval-shell-rule-scope"), { target: { value: "user" } });
     fireEvent.click(screen.getByTestId("approval-deny-always"));
     await waitFor(() => expect(onDecide).toHaveBeenCalledWith("deny-once", undefined));
@@ -101,7 +101,7 @@ describe("shell approval rule controls", () => {
   it("uses exact session memory and responds only once", async () => {
     const record = vi.fn().mockResolvedValue({ ok: true }); const onDecide = vi.fn();
     vi.stubGlobal("ave", { userApproval: { record } });
-    render(<ToolApprovalContent conversationLabel="conversation" open request={shellRequest()} onDecide={onDecide} />);
+    renderApproval(shellRequest(), onDecide);
     fireEvent.click(screen.getByTestId("approval-allow-session"));
     await waitFor(() => expect(onDecide).toHaveBeenCalledWith("allow-once", undefined));
     expect(record).toHaveBeenCalledWith(expect.objectContaining({ scope: "session", decision: "allow" }));
@@ -110,14 +110,14 @@ describe("shell approval rule controls", () => {
 
   it("keeps a refused prefix session-eligible without offering always allow", () => {
     vi.stubGlobal("ave", { userApproval: { record: vi.fn() } });
-    render(<ToolApprovalContent conversationLabel="conversation" open request={shellRequest({ shellRule: { suggestedPattern: null, projectCwd: "/workspace/project", projectRoot: "/workspace/project", sessionAllowed: true, persistentAllowed: false } })} onDecide={vi.fn()} />);
+    renderApproval(shellRequest({ shellRule: { suggestedPattern: null, projectCwd: "/workspace/project", projectRoot: "/workspace/project", sessionAllowed: true, persistentAllowed: false } }), vi.fn());
     expect(screen.getByTestId(TEST_IDS.allowAlwaysButton)).toBeDisabled();
     expect(screen.getByTestId("approval-allow-session")).toBeEnabled();
   });
 
   it.each(["Bash(node *)", "Bash(sudo *)", "Bash(env *)", "Bash(bash *)"])("blocks edited refused allow prefix %s while retaining deny", (pattern) => {
     vi.stubGlobal("ave", { userApproval: { record: vi.fn() } });
-    render(<ToolApprovalContent conversationLabel="conversation" open request={shellRequest()} onDecide={vi.fn()} />);
+    renderApproval(shellRequest(), vi.fn());
     fireEvent.change(screen.getByTestId("approval-shell-rule-pattern"), { target: { value: pattern } });
     expect(screen.getByTestId(TEST_IDS.allowAlwaysButton)).toBeDisabled();
     expect(screen.getByTestId("approval-deny-always")).toBeEnabled();
@@ -126,7 +126,7 @@ describe("shell approval rule controls", () => {
 
   it("never widens a one-shot floor into session or persistent allow", () => {
     vi.stubGlobal("ave", { userApproval: { record: vi.fn() } });
-    render(<ToolApprovalContent conversationLabel="conversation" open request={shellRequest({ persistentAllowAllowed: false, allowedChoices: ["allow-once", "deny-once"], shellRule: { suggestedPattern: null, projectCwd: "/workspace/project", projectRoot: "/workspace/project", sessionAllowed: false, persistentAllowed: false } })} onDecide={vi.fn()} />);
+    renderApproval(shellRequest({ persistentAllowAllowed: false, allowedChoices: ["allow-once", "deny-once"], shellRule: { suggestedPattern: null, projectCwd: "/workspace/project", projectRoot: "/workspace/project", sessionAllowed: false, persistentAllowed: false } }), vi.fn());
     expect(screen.getByTestId(TEST_IDS.allowAlwaysButton)).toBeDisabled();
     expect(screen.queryByTestId("approval-allow-session")).toBeNull();
   });
@@ -134,7 +134,7 @@ describe("shell approval rule controls", () => {
   it("keeps the request pending and allows retry after a rejected rule save", async () => {
     const record = vi.fn().mockResolvedValueOnce({ ok: false, error: "invalid-rule" }).mockResolvedValueOnce({ ok: true }); const onDecide = vi.fn();
     vi.stubGlobal("ave", { userApproval: { record } });
-    render(<ToolApprovalContent conversationLabel="conversation" open request={shellRequest()} onDecide={onDecide} />);
+    renderApproval(shellRequest(), onDecide);
     fireEvent.click(screen.getByTestId(TEST_IDS.allowAlwaysButton));
     await waitFor(() => expect(screen.getByTestId("exact-decision-save-error")).toBeVisible());
     expect(onDecide).not.toHaveBeenCalled();
@@ -148,14 +148,14 @@ describe("shell approval rule controls", () => {
   ])("tells a $error apart in the dock", async ({ error, message, key }) => {
     const record = vi.fn().mockResolvedValue({ ok: false, error, message });
     vi.stubGlobal("ave", { userApproval: { record } });
-    render(<ToolApprovalContent conversationLabel="conversation" open request={shellRequest()} onDecide={vi.fn()} />);
+    renderApproval(shellRequest(), vi.fn());
     fireEvent.click(screen.getByTestId(TEST_IDS.allowAlwaysButton));
     await waitFor(() => expect(screen.getByTestId("exact-decision-save-error")).toHaveTextContent(`${t(key)} (${message})`));
   });
 
   it.each(["en", "ko"] as const)("localizes the editable rule controls in %s", (locale) => {
     setLocale(locale); vi.stubGlobal("ave", { userApproval: { record: vi.fn() } });
-    render(<ToolApprovalContent conversationLabel="conversation" open request={shellRequest()} onDecide={vi.fn()} />);
+    renderApproval(shellRequest(), vi.fn());
     expect(screen.getByLabelText(t("toolApprovalDialog.shellRulePattern"))).toBeVisible();
     expect(screen.getByTestId("approval-deny-always")).toHaveTextContent(t("toolApprovalDialog.shellDenyAlways"));
   });

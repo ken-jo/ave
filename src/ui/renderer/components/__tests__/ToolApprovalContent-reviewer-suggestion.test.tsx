@@ -3,6 +3,7 @@ import "../../../../../test/renderer/setup.js";
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { ToolApprovalContent } from "../ToolApprovalContent.js";
+import { renderApproval } from "./support/render-approval.js";
 import type { ReviewerSuggestion } from "../../hooks/use-permission-signals.js";
 import type { ApprovalRequest } from "../../types.js";
 
@@ -153,14 +154,7 @@ describe("ToolApprovalContent reviewer-suggestion band", () => {
   });
 
   it("draws nothing when the window is holding no suggestion", () => {
-    render(
-      <ToolApprovalContent
-        conversationLabel="conversation"
-        open
-        request={approvalRequest()}
-        onDecide={vi.fn()}
-      />,
-    );
+    renderApproval(approvalRequest(), vi.fn());
     expect(screen.queryByTestId("reviewer-suggestion-band")).toBeNull();
   });
 });
