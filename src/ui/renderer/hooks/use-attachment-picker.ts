@@ -37,10 +37,8 @@ export interface UseAttachmentPickerParams {
 /** Share of {@link PASTE_TEXT_MAX_CHARS} kept from the start of a clipped text. */
 const PASTE_CLIP_HEAD_SHARE = 0.25;
 
-/**
- * Bound a text bound for a pasted-text chip to {@link PASTE_TEXT_MAX_CHARS}:
- * its start and its end survive, joined by a line that says how much was cut.
- */
+/** Bound a text bound for a pasted-text chip to {@link PASTE_TEXT_MAX_CHARS}: its start and its end survive, joined by a
+ * line that says how much was cut. */
 export function clipPastedText(text: string): { text: string; clipped: boolean } {
   if (text.length <= PASTE_TEXT_MAX_CHARS) return { text, clipped: false };
   // Reserve room for the gap line so the result itself stays within the cap.
@@ -67,33 +65,16 @@ interface PickedFile {
 
 export interface UseAttachmentPickerResult {
   handleAttach: () => Promise<void>;
-  /**
-   * Attach files dropped on the composer. Hands the `File`s to the preload
-   * (which resolves and registers them with main in one step), redeems the
-   * one-shot token, and commits through the SAME path as the picker.
-   */
+  /** Attach files dropped on the composer. Hands the `File`s to the preload (which resolves and registers them with main in
+   * one step), redeems the one-shot token, and commits through the SAME path as the picker. */
   handleDropFiles: (files: FileList | readonly File[]) => Promise<void>;
-  /**
-   * Attach `text` as a pasted-text chip, as if the user had pasted it — the
-   * path for content another surface hands to the composer (a terminal
-   * block). Returns false when the attachment cap is already reached.
-   */
+  /** Attach `text` as a pasted-text chip, as if the user had pasted it — the path for content another surface hands to the
+   * composer (a terminal block). Returns false when the attachment cap is already reached. */
   attachPastedText: (text: string) => boolean;
 }
 
-/**
- * The latest committed attachment list, read synchronously.
- *
- * An updater passed to setAttachments does not run when it is called — only
- * when React renders, which inside flushSync is AFTER the callback returns.
- * (React's eager path runs it at once, but only while the component has no
- * update pending: it holds for a first attach and not reliably for the next.)
- * Deciding the cap inside the commit updater and reading the result in the
- * same callback therefore left the second attach's marker unwritten and its
- * chip orphaned. Reading here first, in its own flush, and committing after
- * is safe: nothing can run between two synchronous flushes, and an updater
- * that returns its input unchanged commits nothing.
- */
+/** Read committed attachments in a separate synchronous flush before deciding the cap; React may defer updater execution
+ * until after the callback returns. */
 function readCommittedAttachments(
   setAttachments: React.Dispatch<React.SetStateAction<Attachment[]>>,
 ): Attachment[] {
@@ -132,15 +113,8 @@ export function useAttachmentPicker({
   capabilityRef.current.filesEnabled = filesEnabled;
   capabilityRef.current.imageAttachmentLimits = imageAttachmentLimits;
 
-  // Attach picker — opens the native file dialog via window.ave.attach
-  // (attach lives ONLY on window.ave, not window.aveApi; see preload.ts
-  // contextBridge "ave" → attach). The disable gate (attachments cap /
-  // no-api-key) is applied by the InputActionBar attachDisabled prop, so this
-  // handler only runs when attaching is allowed.
-  //
-  // `commitFiles` is shared by the picker and the composer drop: both hand it
-  // files main has already authorized, and both need the same capability gates,
-  // the commit-time cap and the single-flushSync marker insert.
+  // Native attach uses window.ave, not aveApi; picker and drop share authorization, capability checks, commit-time caps and
+  // atomic marker insertion.
   const commitFiles = useCallback(async (files: readonly PickedFile[]) => {
     let unavailableAttachmentSkipped = false;
     let imageAttachmentLimitExceeded = false;
@@ -151,8 +125,8 @@ export function useAttachmentPicker({
     const candidates: Attachment[] = [];
     for (const f of files) {
       if ((f.isImage && !capabilityRef.current.imagesEnabled) || (!f.isImage && !capabilityRef.current.filesEnabled)) {
-        // The picker can return mixed selections. Do not allocate a marker
-        // number or read an image before its verified runtime capability gate.
+        // The picker can return mixed selections. Do not allocate a marker number or read an image before its verified runtime
+        // capability gate.
         console.warn("attachment type is not available for the active runtime", f.path);
         unavailableAttachmentSkipped = true;
         continue;
@@ -185,8 +159,8 @@ export function useAttachmentPicker({
           imageAttachmentLimitExceeded = true;
           continue;
         }
-        // The file dialog and image read are both asynchronous. Do not add an
-        // image selected under a previous runtime after capability changes.
+        // The file dialog and image read are both asynchronous. Do not add an image selected under a previous runtime after
+        // capability changes.
         if (!capabilityRef.current.imagesEnabled) {
           console.warn("image attachment capability changed before commit", f.path);
           unavailableAttachmentSkipped = true;
@@ -224,8 +198,8 @@ export function useAttachmentPicker({
       if (unavailableAttachmentSkipped) onAttachmentUnavailable?.();
       return;
     }
-    // The cap and the image budget are checked against the latest committed
-    // list, read just before the commit (see readCommittedAttachments).
+    // The cap and the image budget are checked against the latest committed list, read just before the commit (see
+    // readCommittedAttachments).
     const prev = readCommittedAttachments(setAttachments);
     const currentCandidates = candidates.filter((attachment) =>
       attachment.kind === "image"
@@ -280,8 +254,7 @@ export function useAttachmentPicker({
       else onAttachmentUnavailable?.();
     }
     if (unavailableAttachmentSkipped || capabilityChangedBeforeCommit) onAttachmentUnavailable?.();
-    // Return focus to the composer textarea so the user can keep typing
-    // immediately after the file dialog closes.
+    // Return focus to the composer textarea so the user can keep typing immediately after the file dialog closes.
     composerRef.current?.focus();
   }, [attachmentNCounter, composerRef, onAttachmentUnavailable, onImageAttachmentLimitExceeded, setAttachments, setQuestion]);
 
@@ -297,8 +270,8 @@ export function useAttachmentPicker({
   const handleDropFiles = useCallback(async (files: FileList | readonly File[]) => {
     const dropped = files.length;
     if (dropped === 0) return;
-    // Step 1 runs in the preload: it resolves OS-backed paths and registers
-    // them with main. This world never sees or sends a path string.
+    // Step 1 runs in the preload: it resolves OS-backed paths and registers them with main. This world never sees or sends a
+    // path string.
     const prepared = await window.aveDrop.prepareFileDrop(files);
     const refusedAtRegister = prepared.rejected?.length ?? (prepared.ok ? 0 : dropped);
     if (!prepared.ok) {
@@ -334,9 +307,8 @@ export function useAttachmentPicker({
       chars: text.length,
     };
     if (readCommittedAttachments(setAttachments).length >= ATTACH_MAX_COUNT) return false;
-    // Same atomic commit as the picker: the chip and its marker land in one
-    // flushSync, so Composer's marker-sync effect never sees one without the
-    // other. Nothing can run between the two synchronous flushes.
+    // Same atomic commit as the picker: the chip and its marker land in one flushSync, so Composer's marker-sync effect never
+    // sees one without the other. Nothing can run between the two synchronous flushes.
     const marker = `${buildMarkerText(attachment)} `;
     flushSync(() => {
       setAttachments((prev) => [...prev, attachment]);

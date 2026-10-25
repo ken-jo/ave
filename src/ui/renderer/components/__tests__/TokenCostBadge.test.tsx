@@ -1,12 +1,4 @@
-/**
- * TokenCostBadge — vendor-branch cost parity.
- *
- * Closes #854 — the badge previously re-implemented cache cost math inline
- * (claude → cache additive, others → cache ignored). After SoT consolidation
- * the badge calls `shared/pricing-data.ts:computeCost`, so this test mirrors
- * the vendor matrix in `engine/__tests__/usage-stats.test.ts` to detect
- * future drift via render-level assertions on the cost-mode label.
- */
+/** Render the shared pricing matrix to catch badge cost drift across cache-billing modes. */
 // @vitest-environment jsdom
 import "../../../../../test/renderer/setup.js";
 import { afterEach, describe, expect, it } from "vitest";
@@ -29,9 +21,8 @@ function renderInCostMode(props: Parameters<typeof TokenCostBadge>[0]) {
       <TokenCostBadge {...props} />
     </TooltipProvider>,
   );
-  // Badge defaults to "tokens" mode. `fireEvent.click` wraps in `act()` so
-  // React 18's state update flushes before the next assertion — a raw
-  // `button.click()` leaves the test querying the stale render.
+  // Badge defaults to "tokens" mode. `fireEvent.click` wraps in `act()` so React 18's state update flushes before the next
+  // assertion — a raw `button.click()` leaves the test querying the stale render.
   const btn = result.container.querySelector("button");
   if (btn) fireEvent.click(btn);
   return result;
@@ -93,8 +84,7 @@ describe("TokenCostBadge — cost parity with shared computeCost", () => {
 
     const costSpan = screen.getByText(/^≈ \$/);
     const numeric = Number((costSpan.textContent ?? "").replace(/[^0-9.]/g, ""));
-    // Tolerance = cents — `formatCost` rounds for display; we only need to
-    // detect formula drift, not float wobble.
+    // Tolerance = cents — `formatCost` rounds for display; we only need to detect formula drift, not float wobble.
     expect(numeric).toBeCloseTo(expected, 2);
   });
 
@@ -113,13 +103,12 @@ describe("TokenCostBadge — cost parity with shared computeCost", () => {
     expect(btn.getAttribute("aria-disabled")).toBe("true");
     fireEvent.click(btn);
     expect(screen.queryByText(/^≈ \$/)).toBeNull();
-    // The unknown-price state is stated in words (model-capability-catalog §6:
-    // "shown as unknown, never as $0") — the same wording the breakdown uses,
-    // not a "TBD"/"미정" placeholder that reads as a price still to come.
+    // The unknown-price state is stated in words (model-capability-catalog §6: "shown as unknown, never as $0") — the same
+    // wording the breakdown uses, not a "TBD"/"미정" placeholder that reads as a price still to come.
     expect(btn.textContent).toContain("가격 정보 없음");
     expect(btn.textContent).not.toMatch(/TBD|미정/);
-    // The label is longer than the placeholder was; in the action bar's flex
-    // row the chip keeps its width and one line instead of wrapping.
+    // The label is longer than the placeholder was; in the action bar's flex row the chip keeps its width and one line instead
+    // of wrapping.
     expect(btn.className).toMatch(/\bshrink-0\b/);
     expect(btn.className).toMatch(/\bwhitespace-nowrap\b/);
   });

@@ -1,20 +1,4 @@
-/**
- * Guided setup for Tailnet access.
- *
- * The full listener form asks seven questions, and six of them have exactly one
- * answer a first-time owner can give — which is why the surface that shipped
- * with it read as a configuration file with switches rather than as a way to
- * reach your own conversation from a phone. `guidedSetup` is that whole
- * configuration as one host-side operation, so once this desktop's Tailscale
- * answers "ready" there is nothing left to ask: the section reads as one
- * collapsed card in the same idiom as a model provider row — a state, the facts
- * the probe reported, and one button that connects.
- *
- * It is a separate component from {@link TailnetObserverSection} rather than a
- * mode inside it: that form stays exactly what it is, the thing a person who
- * wants to name every value reaches for, and this one owns the flow — including
- * the hand-off to the invitation control that lives in the surrounding tab.
- */
+/** Guided setup applies one host-owned configuration after readiness; advanced listener controls remain separate. */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { useTranslation } from "../../../i18n/react.js";
@@ -96,9 +80,8 @@ export function TailnetSetupCard({ api, onCreateInvitation, onSetupClosed }: Tai
   const [busy, setBusy] = useState(false);
   const [unavailable, setUnavailable] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Tailscale's own words for a failed Serve. The sentence for that code says
-  // its output is below, so losing it leaves a promise with nothing under it —
-  // and the certificate case is the one nobody can act on without it.
+  // Tailscale's own words for a failed Serve. The sentence for that code says its output is below, so losing it leaves a
+  // promise with nothing under it — and the certificate case is the one nobody can act on without it.
   const [errorOutput, setErrorOutput] = useState<string | null>(null);
   const [showSetup, setShowSetup] = useState(false);
   const [completed, setCompleted] = useState(false);
@@ -106,13 +89,12 @@ export function TailnetSetupCard({ api, onCreateInvitation, onSetupClosed }: Tai
   const [chosenPort, setChosenPort] = useState<number | null>(null);
   const [webOrigin, setWebOrigin] = useState<string | null>(null);
   const [admissionBusy, setAdmissionBusy] = useState(false);
-  // Kept apart from `error`, which belongs to the connect button: a refused
-  // admission must not replace the sentence explaining why Serve failed.
+  // Kept apart from `error`, which belongs to the connect button: a refused admission must not replace the sentence
+  // explaining why Serve failed.
   const [admissionError, setAdmissionError] = useState<string | null>(null);
   const { copied, copy: copyToClipboard } = useCopyFlash();
-  // Whether the reader has been shown a screen yet. The first snapshot decides
-  // between the setup card and the status card; every later one must not yank
-  // the reader out of what they are looking at.
+  // Whether the reader has been shown a screen yet. The first snapshot decides between the setup card and the status card;
+  // every later one must not yank the reader out of what they are looking at.
   const settledRef = useRef(false);
 
   const readSnapshot = useCallback(async (): Promise<TailnetObserverSnapshot | null> => {
@@ -151,9 +133,8 @@ export function TailnetSetupCard({ api, onCreateInvitation, onSetupClosed }: Tai
     setErrorOutput(null);
     const probed = await readSnapshot();
     if (probed === null || probed.environment.state !== "ready") {
-      // The re-read already put the sentence that says why on screen, and it
-      // says which way Tailscale is unusable — an error code on top of it would
-      // only repeat that in worse words.
+      // The re-read already put the sentence that says why on screen, and it says which way Tailscale is unusable — an error
+      // code on top of it would only repeat that in worse words.
       setBusy(false);
       return;
     }
@@ -167,16 +148,15 @@ export function TailnetSetupCard({ api, onCreateInvitation, onSetupClosed }: Tai
     } else {
       setError(result.error);
       setErrorOutput(result.output);
-      // Tailscale stopped being usable between this press's own probe and the
-      // command, so re-reading is what turns the card back into the sentence
-      // that says how.
+      // Tailscale stopped being usable between this press's own probe and the command, so re-reading is what turns the card back
+      // into the sentence that says how.
       if (result.error === "tailnet-guided-setup-not-ready") await readSnapshot();
     }
     setBusy(false);
   }, [api, busy, readSnapshot]);
 
-  // Two presses, one operation: which account is admitted is the host's answer,
-  // so the renderer sends only the direction and re-reads what the host decided.
+  // Two presses, one operation: which account is admitted is the host's answer, so the renderer sends only the direction and
+  // re-reads what the host decided.
   const setOwnDeviceAdmission = useCallback(async (enabled: boolean) => {
     if (admissionBusy) return;
     setAdmissionBusy(true);
@@ -187,9 +167,8 @@ export function TailnetSetupCard({ api, onCreateInvitation, onSetupClosed }: Tai
     setAdmissionBusy(false);
   }, [admissionBusy, api, readSnapshot]);
 
-  // The manual form is both the escape hatch beside the connect button and the
-  // one on the status card. Only the first of those can finish setup, so a save
-  // made from the status card refreshes the facts and leaves the form open.
+  // The manual form is both the escape hatch beside the connect button and the one on the status card. Only the first of
+  // those can finish setup, so a save made from the status card refreshes the facts and leaves the form open.
   const finishFromManualForm = useCallback(async () => {
     const next = await readSnapshot();
     if (!showSetup || !isConfigured(next)) return;

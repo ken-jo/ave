@@ -1,17 +1,5 @@
-/**
- * The Updates card in Settings → Marketplace → Maintenance (design §18.9):
- * whether packages update by themselves, when Ave checks, how the last
- * check ended, *Check now* and *Apply now*, the updates that need the user
- * with their actions, the recent automatic updates with *What changed*, and
- * the per-source and per-package switches (§18.7.2), and each package the
- * organization requires that is not installed, with why and what to do (§10.2).
- *
- * An update that needs consent installs only through its review (§15.6),
- * which *Review* and *Retry* open; an agent plugin's `approval-pending`
- * components are approved here, an extension's in its plugin settings.
- *
- * It reads `updates:status` once and then follows `marketplace:update-status`.
- */
+/** Consent-requiring updates open review; agent-component approvals stay here and extension approvals in plugin settings.
+ * Follow live status after the initial read. */
 import { useEffect, useReducer, useRef, useState } from "react";
 import { Button } from "../../../../components/ui/button.js";
 import { NativeSelect, NativeSelectOption } from "../../../../components/ui/native-select.js";
@@ -99,19 +87,8 @@ function rowId(key: PackageKeyView): string {
   return `${key.sourceId}:${key.kind}:${key.name}`;
 }
 
-/**
- * One Remove click's question (§10.2): which row, and the exact install the
- * row named then (`target`, by the id its view carried). The confirmation
- * removes that install and nothing else; `generation` tells this question
- * from every other, so a reply answers only the question that sent it.
- * `invalidated` once any status received since the click, before its
- * request was sent, named another install for the row, even if a later one
- * names this one again: the question then removes nothing. While its
- * request is out, such a status (its own removal, published first, among
- * them) only marks it `changedWhileSending`: the question says it is
- * removing until the reply says how that ended, and is invalidated only if
- * the request failed.
- */
+/** Bind removal confirmation to the exact install and question generation; status changes invalidate it, while in-flight
+ * changes wait for the reply before deciding. */
 type RemovalQuestion = {
   generation: number;
   rowId: string;
@@ -185,11 +162,8 @@ function toggled(set: ReadonlySet<string>, id: string): ReadonlySet<string> {
   return next;
 }
 
-/**
- * A source's or package's switch as a select: the default (and what it
- * gives), on, off. Locked by the organization, it shows what takes effect,
- * never the user's stored choice the policy overrides.
- */
+/** A source's or package's switch as a select: the default (and what it gives), on, off. Locked by the organization, it
+ * shows what takes effect, never the user's stored choice the policy overrides. */
 function SwitchSelect({ view, label, disabled, onChange, testId }: {
   view: AutoUpdateSwitchView;
   label: string;
@@ -217,12 +191,8 @@ function SwitchSelect({ view, label, disabled, onChange, testId }: {
   );
 }
 
-/**
- * An installed package's *Automatic updates* select (§18.9), wherever the
- * package is shown: it can be set before the package has an update. Shown
- * once the scheduler lists the package; a package from no listed source has
- * no switch.
- */
+/** An installed package's *Automatic updates* select (§18.9), wherever the package is shown: it can be set before the
+ * package has an update. Shown once the scheduler lists the package; a package from no listed source has no switch. */
 export function PackageAutoUpdate({ api, packageKey, displayName, onSwitch }: {
   api: Pick<GitMarketplaceApi, "updateStatus" | "onUpdateStatus">;
   packageKey: PackageKeyView;
@@ -390,11 +360,8 @@ export function UpdatesCard({ api, onReview, onShowSources, onSwitch, onOpenPlug
     await save({ scope: "source", id, value: "on" });
   };
 
-  /**
-   * Sync the source a required install comes from; a changed catalog
-   * re-reads the status. A sync that fails answers inside a successful
-   * reply, as the source's status: that is what the row shows.
-   */
+  /** Sync the source a required install comes from; a changed catalog re-reads the status. A sync that fails answers inside a
+   * successful reply, as the source's status: that is what the row shows. */
   const refreshSource = async (id: string) => {
     setRefreshing(id);
     setRefreshed(null);

@@ -1,8 +1,4 @@
-/**
- * The renderer's `types.ts` used to hand-mirror main-process types. These
- * assertions pin every re-export to the owner type so the two sides cannot
- * drift again: a divergence fails `check:typecheck-tests`, not a UI at runtime.
- */
+/** Keep renderer re-exports identical to their owning types so drift fails typechecking. */
 import { describe, expectTypeOf, it } from "vitest";
 import type {
   AppSettings,

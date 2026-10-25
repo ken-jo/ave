@@ -72,8 +72,7 @@ describe("AuditPanel", () => {
       render(<AuditPanel open onClose={() => {}} fetcher={fetcher} />);
     });
     const panel = screen.getByTestId("audit-panel");
-    // Fixed to the window it covered the tiles beside the Settings pane and
-    // the title bar, at a width that does not fit a tile at the floor.
+    // Audit content must stay within its settings pane rather than covering neighboring tiles or the title bar.
     expect(panel.className).not.toMatch(/\b(fixed|absolute)\b/);
     expect(panel.className).toContain("w-full");
     expect(panel.className).not.toMatch(/\bw-\[\d+px\]/);

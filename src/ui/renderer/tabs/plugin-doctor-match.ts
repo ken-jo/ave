@@ -8,15 +8,8 @@ import type {
 } from "../../../shared/git-marketplace.js";
 import type { PluginCardSummary } from "../types.js";
 
-/**
- * Plugin Doctor "repair" target resolution.
- *
- * Extracted from `PluginConfigTab.tsx` so the choice of which marketplace
- * package a repair reinstalls is unit-testable. A git marketplace installs a
- * plugin under its package name, so the installed plugin's id is that name.
- */
+/** Marketplace package names are installed plugin ids; repair resolves through the installed source. */
 
-/** Install key to use when refreshing cards after a repair. */
 export function getPluginDoctorInstallKey(plugin: PluginCardSummary): string {
   return plugin.installAliases?.[0] ?? plugin.id;
 }
@@ -84,12 +77,8 @@ export type PluginDoctorRepair =
   | { status: "unbound" }
   | { status: "failed"; message: string };
 
-/**
- * Reinstall the version on disk from the plugin's own source. The same
- * version carries the same authority, so the repair needs no update review
- * (design §15.6); an unreadable version installs the source's candidate, which
- * the plan classifies as a repair.
- */
+/** Reinstall the on-disk version from its bound source without update review; if unreadable, the plan classifies the source
+ * candidate as repair. */
 export async function repairPluginFromMarketplace(
   market: Pick<GitMarketplaceApi, "listCatalog" | "planInstall" | "executeInstall">,
   plugin: PluginCardSummary,

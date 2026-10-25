@@ -16,28 +16,12 @@ export interface DebouncedSave {
 }
 
 export interface DebouncedSaveOptions {
-  /**
-   * Persist a pending change when the owning surface unmounts. The default
-   * remains cancellation so callers must opt in when unmount is navigation
-   * rather than abandonment.
-   */
+  /** Persist a pending change when the owning surface unmounts. The default remains cancellation so callers must opt in when
+   * unmount is navigation rather than abandonment. */
   flushOnUnmount?: boolean;
 }
 
-/**
- * Trailing-edge debounced save. Returns a `{ schedule, cancel }` pair.
- *
- * Usage:
- *   const save = useDebouncedSave(() => void api.savePref(draft), 200);
- *   // call save.schedule() after every immediate-apply control change;
- *   // rapid bursts collapse to a single save invocation 200ms after
- *   // the most recent call. Call save.cancel() if a manual save fires
- *   // in the meantime so the same payload doesn't double-write.
- *
- * The save function is called via a ref so consumers can pass an inline
- * arrow without thrashing the debounce when the closure identity changes
- * every render. Only the most recent `saveFn` runs when the timer fires.
- */
+/** Read the latest saveFn through a ref; cancel pending debounce before manual Save to avoid writing twice. */
 export function useDebouncedSave(
   saveFn: () => void,
   ms = 200,

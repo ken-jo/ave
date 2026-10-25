@@ -4,12 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { MarqueeText } from "../MarqueeText.js";
 
-/**
- * jsdom never lays out, so `scrollWidth`/`clientWidth` are 0 by default. These
- * helpers force a chosen overflow ratio so we can exercise both code paths.
- * The component measures synchronously inside its effect (before the no-op
- * ResizeObserver polyfill observes), so the initial render reflects the stub.
- */
+/** Set synthetic overflow sizes because jsdom reports zero layout metrics; the effect measures before ResizeObserver runs. */
 function stubLayout(contentWidth: number, viewportWidth: number) {
   Object.defineProperty(HTMLElement.prototype, "scrollWidth", {
     configurable: true,

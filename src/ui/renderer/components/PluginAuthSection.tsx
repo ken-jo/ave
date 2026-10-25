@@ -33,11 +33,8 @@ export function PluginAuthSection({
   const [working, setWorking] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
 
-  // Clear stale `localError` when the auth status transitions externally
-  // (e.g. a `<pluginId>.auth.changed` event arrives after the user clicked
-
-
-  // badge, which contradicts the actual state.
+  // Clear stale `localError` when the auth status transitions externally (e.g. a `<pluginId>.auth.changed` event arrives
+  // after the user clicked badge, which contradicts the actual state.
   useEffect(() => {
     if (state.kind === "authed" && localError) setLocalError(null);
   }, [state.kind, localError]);
@@ -49,8 +46,7 @@ export function PluginAuthSection({
       await api.callPluginMethod(auth.loginTool, undefined, { userAction: true });
       onRefresh();
     } catch (err) {
-      // Generic user-facing copy + log raw error to the console for support
-      // triage. Avoids leaking IPC reject internals (e.g.
+      // Generic user-facing copy + log raw error to the console for support triage. Avoids leaking IPC reject internals (e.g.
       // "Method 'x' is not declared as a UI action for plugin 'y'") into the badge UI.
       console.error(`[plugin-auth] ${pluginId} loginTool ${auth.loginTool} failed`, err);
       setLocalError(t("pluginAuthSection.loginError"));

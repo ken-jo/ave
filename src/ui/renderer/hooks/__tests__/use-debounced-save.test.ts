@@ -41,8 +41,7 @@ describe("useDebouncedSave", () => {
       result.current.schedule();
     });
 
-    // The second + third schedules reset the timer; the saveFn should only
-    // fire 200ms after the last schedule call.
+    // The second + third schedules reset the timer; the saveFn should only fire 200ms after the last schedule call.
     expect(saveFn).not.toHaveBeenCalled();
     act(() => {
       vi.advanceTimersByTime(199);
@@ -97,7 +96,6 @@ describe("useDebouncedSave", () => {
       vi.advanceTimersByTime(100);
     });
 
-    // Re-render the hook with a new saveFn before the timer fires.
     rerender({ fn: secondSave });
 
     act(() => {
@@ -172,8 +170,7 @@ describe("useDebouncedSave", () => {
     });
     expect(saveFn).toHaveBeenCalledTimes(1);
 
-    // Advancing past the original debounce window does NOT fire again —
-    // flush cleared the timer.
+    // Advancing past the original debounce window does NOT fire again — flush cleared the timer.
     act(() => {
       vi.advanceTimersByTime(200);
     });

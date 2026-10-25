@@ -1,12 +1,4 @@
-
-
-
-
-
 import { t } from "../../../i18n/runtime.js";
-
-
-
 
 export type CompletionTrigger =
   | { kind: "keypress"; combo: "⌘+K" | "⌘+?" | "⌘+Enter" }
@@ -35,8 +27,6 @@ export interface TourStep {
    */
   keyHint?: string[];
 
-
-
   completionTrigger?: CompletionTrigger;
 }
 
@@ -49,20 +39,7 @@ export interface TourScenario {
   steps: TourStep[];
 }
 
-/**
- * `first-boot-essentials` — the canonical first-login tour.
- *
- * The tour walks the user through the host UI so they land with a full
- * mental model: the composer, the input action bar, the command palette,
- * recent chat history, the Settings/menu entry, and the model cell in the
- * composer's status row. Plugins no longer have a dedicated step — the
- * input-area relayout folded plugin views into the command palette
- * (SlashPicker), so the palette step (anchor `command-palette-toggle`)
- * already covers how the user reaches plugins. Each anchor is pinned to a
- * `data-tour-anchor=` attribute on a production DOM element so renderer
- * refactors break the tour visibly (test in
- * `__tests__/tour-anchors-trigger.test.tsx`).
- */
+/** Keep every tour selector backed by production data-tour-anchor markup and the live keyboard start path. */
 function buildFirstBootEssentials(): TourScenario {
   return {
     id: "first-boot-essentials",
@@ -114,21 +91,8 @@ function buildFirstBootEssentials(): TourScenario {
   };
 }
 
-/**
- * Registry — `SpotlightTour` consumes this map to resolve `scenarioId`
- * payloads received over `ave:tour:start`. New scenarios are added here;
- * the host-side store is unaware of the contents.
- *
- * Host tours only: every step anchors on host UI. An extension introduces
- * itself through its manifest's `onboarding` block (one `firstTask`, up to
- * five `highlights`), which the host proposes generically after this tour —
- * never through a scenario here. Plugin UI renders in a webview guest, so a
- * host tour could not reach a plugin panel's elements anyway.
- *
- * Each property is a getter so scenario objects (with their translated
- * strings) are built lazily at access time, ensuring t() reads the current
- * locale rather than the locale at module initialisation.
- */
+/** Host tours cannot reach plugin webview DOM; extensions use manifest onboarding. Lazy scenario getters resolve strings in
+ * the current locale. */
 export const DEFAULT_TOUR_SCENARIOS: Readonly<Record<string, TourScenario>> = Object.freeze(
   Object.defineProperties({} as Record<string, TourScenario>, {
     "first-boot-essentials": { get: buildFirstBootEssentials, enumerable: true, configurable: false },

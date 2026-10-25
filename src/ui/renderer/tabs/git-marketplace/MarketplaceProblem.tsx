@@ -1,17 +1,5 @@
-/**
- * Every refusal, warning and failure of the marketplace in one of three tones
- * (design §18.8):
- *   - policy: a lock and "Set by your organization", the rule and where it
- *     lives (in the sentence), and no way to continue;
- *   - warning: amber, the risk, *Continue* and *Cancel*; a failure that a
- *     confirmation resolves (`allowableWarning`) reads in this tone too, with
- *     the caller's *Allow…* in place of *Continue*;
- *   - error: red, what happened and what to do.
- * The sentence comes from `failureText`; main's English message is reachable
- * only through *Copy details*, scrubbed of credentials first: a refused
- * address or a git error can carry a password, a token or a credential
- * helper's answer.
- */
+/** Policy refusals offer no bypass; warnings require confirmation. Localize failure text and scrub credentials before
+ * exposing raw host messages through Copy details. */
 import { AlertCircle, AlertTriangle, Lock } from "lucide-react";
 import { Button } from "../../../../components/ui/button.js";
 import { useTranslation } from "../../../../i18n/react.js";

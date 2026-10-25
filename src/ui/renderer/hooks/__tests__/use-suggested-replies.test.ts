@@ -67,8 +67,7 @@ describe("useSuggestedReplies", () => {
   });
 
   it("new push after dismiss preserves dismissed flag (turn-scoped memory)", () => {
-    // Intra-turn re-push must honor the user's prior Escape. Only
-    // `clearDismissedReplies()` (called by Composer on send) or
+    // Intra-turn re-push must honor the user's prior Escape. Only `clearDismissedReplies()` (called by Composer on send) or
     // `acceptSuggestedReply()` releases the latch.
     const { result } = renderHook(() => useSuggestedReplies());
     act(() => { pushSuggestedReply("네"); });
@@ -107,8 +106,6 @@ describe("useSuggestedReplies", () => {
     expect(r2.current.text).toBe("네");
     expect(r1.current).toBe(r2.current); // identical reference
   });
-
-  // --- command-prefix filter + telemetry ---
 
   it("slash-command with arguments is filtered out (executable payload)", () => {
     const { result } = renderHook(() => useSuggestedReplies());

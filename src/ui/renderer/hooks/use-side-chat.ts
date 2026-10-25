@@ -1,39 +1,6 @@
-/**
- * use-side-chat — a LIGHTWEIGHT side-chat controller hook that renders through
- * the SAME shared TranscriptRenderer as the main chat.
- *
- * Deliberately NOT built on the heavy main-chat ChatContext (~40 fields,
- * checkpoint/compact/fork/star machinery). Side chat is a compact second session
- * in the workspace rail, so this hook keeps ONLY what a minimal transcript needs:
- * a local `entries: ChatEntry[]` list, a `send`, `newSession`, `loadSession`,
- * `isStreaming`, and `abort`.
- *
- * INPUT PARITY: `send` follows the main composer's rule for a send that lands
- * while a turn is running — a user gesture interrupts (abort, then send); the
- * end-of-turn queue drain does not. The queue itself, and the keys that feed it
- * (Enter, ⌘⏎, Esc), are the shared `useMessageQueue` hook, not this one.
- *
- * RENDER PARITY: the side channel already emits the full frame set
- * (`reasoning_delta` / `permission_review` / `tool_start` / `tool_end` /
- * `turn_summary` / `compact_notice` / `assistant_round` / `done`) via the shared
- * `runStreamedTurn`. This hook applies the main chat's frame reducer
- * (`applyTranscriptFrame` / `applyReasoningDelta` in `lib/chat-stream-state`)
- * so tool calls, thinking, and permission-review status cards render
- * identically to the main transcript.
- *
- * ISOLATION: it subscribes to the DEDICATED `api.sideChat.onStream` channel —
- * NEVER `onChatStream` — so main-chat frames can never leak into this transcript
- * (and vice versa). The stale-frame guard adopts a monotonic streamId only from
- * this view's matching prelude and drops superseded turns BEFORE any reducer
- * runs. View teardown retires pending work and cancels only its local request.
- *
- * Tool APPROVAL is NOT handled here: the side loop shares the host's global
- * ApprovalGate, which broadcasts on the app-global `ave:approval:request`
- * channel into the window's one queue (App.tsx `useApproval`). SideChatView
- * claims this loop's `sessionId` there and draws the card inside its own
- * panel. Only the informational `permission_review` STATUS card flows through
- * this transcript.
- */
+/** Side chat uses shared transcript reducers but subscribes only to its dedicated stream channel; adopt stream ids from
+ * matching preludes and drop stale frames before reduction. User sends interrupt, queue drains do not; approval requests
+ * remain in the global gate. */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { t } from "../../../i18n/runtime.js";
 import {
@@ -75,11 +42,8 @@ interface SideChatSendOptions {
   inputOrigin?: "queue-auto";
   /** The pane tab this chat is bound to (a pane's own chat), named on every turn. */
   surface?: ActiveWorkspaceSurface;
-  /**
-   * The conversation this side chat belongs to. Sent on every turn; the host
-   * records it once, on the turn that first gives the side chat a file, and the
-   * sidebar lists the row under that conversation.
-   */
+  /** The conversation this side chat belongs to. Sent on every turn; the host records it once, on the turn that first gives
+   * the side chat a file, and the sidebar lists the row under that conversation. */
   originSessionId?: string;
 }
 
@@ -91,10 +55,8 @@ export interface UseSideChat {
   send: (text: string, opts?: SideChatSendOptions) => Promise<void>;
   newSession: () => Promise<void>;
   loadSession: (sessionId: string) => Promise<void>;
-  /**
-   * Show a stored conversation without moving the host's side loop: a pane
-   * chat reopening on its pane's conversation. Its next turn moves the loop.
-   */
+  /** Show a stored conversation without moving the host's side loop: a pane chat reopening on its pane's conversation. Its
+   * next turn moves the loop. */
   restore: (sessionId: string, messages: SerializedHistoryMessage[]) => void;
   /** Show nothing and hold no session: the next turn starts a fresh one. */
   clear: () => void;
@@ -134,11 +96,11 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
   const activeSendRequestIdRef = useRef<string | null>(null);
   const activeUserEntryRef = useRef<ChatEntry | null>(null);
   const boundSendRequestIdRef = useRef<string | null>(null);
-  // Invoke replies can outlive the terminal frame. A deliberate stream reset
-  // supersedes their generation; refused replacements restore the prior one.
+  // Invoke replies can outlive the terminal frame. A deliberate stream reset supersedes their generation; refused
+  // replacements restore the prior one.
   const sendGenerationRef = useRef(0);
-  // Restoring an intent must never reuse a generation already issued to a
-  // different request whose reply may still be pending.
+  // Restoring an intent must never reuse a generation already issued to a different request whose reply may still be
+  // pending.
   const generationSequenceRef = useRef(0);
   const sessionChangeIntentRef = useRef<SessionChangeIntent | null>(null);
   const pendingSendRef = useRef<ReturnType<NonNullable<AveApi["sideChat"]>["send"]> | null>(null);
@@ -155,27 +117,17 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
     if (changed || acquired) onSessionBoundRef.current?.(next);
   }, []);
 
-  // Stream-accumulator refs — mirror the main hook so `assistant_round` / `done`
-  // can finalize the streamed body / thought exactly as the main transcript does.
+  // Stream-accumulator refs — mirror the main hook so `assistant_round` / `done` can finalize the streamed body / thought
+  // exactly as the main transcript does.
   const streamRef = useRef("");
   const thoughtRef = useRef("");
-  // Final assistant text is canonical at assistant_round(end_turn). Later deltas
-  // in the same stream are protocol tail noise, not a new response.
+  // Final assistant text is canonical at assistant_round(end_turn). Later deltas in the same stream are protocol tail noise,
+  // not a new response.
   const finalAssistantRoundClosedRef = useRef(false);
   const terminalStreamClosedRef = useRef(false);
 
-  // ── Isolation guard ──
-  // Guards the reducer against stale frames after abort / new-session: only the
-  // in-flight streamId is applied to the transcript. The main process allocates
-  // the streamId monotonically (`++nextSideStreamId`), so the renderer cannot
-  // know it at `send` time (the send invoke resolves only when the turn ENDS).
-  // Instead the matching user prelude ADOPTS its streamId here; any later frame
-  // whose streamId differs is from a superseded turn and is dropped.
-  // `send` / `abort` / `newSession` / `loadSession` re-arm `activeStreamIdRef`
-  // to null so the next turn's matching prelude adopts the new id. `done` and
-  // `error` deliberately do NOT: a frame's verdict has to read the same for
-  // every subscriber that asks about it during one dispatch, and the next
-  // `send` re-arms before another turn can exist.
+  // Adopt monotonic streamId only from a matching prelude; deliberate send/abort/session transitions re-arm the guard, while
+  // done/error must not change its dispatch-time verdict.
   const activeStreamIdRef = useRef<number | null>(null);
   const activeStreamSessionIdRef = useRef<string | null>(null);
   // Highest streamId ever adopted. Because main allocates ids monotonically, a
@@ -183,12 +135,7 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
   // turn's — after a re-arm we must adopt only a strictly-greater id so such a
   // straggler can never be mistaken for the new turn's first frame.
   const maxStreamIdRef = useRef<number>(-1);
-  // Mirror of `isStreaming` for the unmount teardown and for `send`'s
-  // interrupt check, neither of which can read the latest state directly. The
-  // mirror used to be assigned during RENDER, which left it stale for every
-  // reader that ran between a state change and the next commit — the window in
-  // which a send that should interrupt decides it has nothing to interrupt.
-  // `setStreaming` is the only writer of both, so they cannot diverge.
+  // Update isStreaming and its ref through the same setter so interrupt checks cannot observe pre-commit stale state.
   const isStreamingRef = useRef(false);
   const setStreaming = useCallback((next: boolean) => {
     isStreamingRef.current = next;
@@ -200,9 +147,8 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
     setIsStreaming(next);
   }, []);
 
-  // Empty the stream accumulators. Says nothing about which turn is current —
-  // frame handlers use this so that judging a frame stays a pure read of the
-  // guard (see `isCurrentTurnEvent`).
+  // Empty the stream accumulators. Says nothing about which turn is current — frame handlers use this so that judging a
+  // frame stays a pure read of the guard (see `isCurrentTurnEvent`).
   const resetStreamAccumulators = useCallback(() => {
     streamRef.current = "";
     thoughtRef.current = "";
@@ -224,9 +170,8 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
     boundSendRequestIdRef.current = null;
   }, [resetStreamAccumulators]);
 
-  // Hidden tabs remain mounted. Teardown retires pending continuations before
-  // cancelling this view's request, so delayed work cannot start an orphan turn.
-  // The lifetime does not follow api-identity churn.
+  // Hidden tabs remain mounted. Teardown retires pending continuations before cancelling this view's request, so delayed
+  // work cannot start an orphan turn. The lifetime does not follow api-identity churn.
   useEffect(() => {
     viewMountedRef.current = true;
     return () => {
@@ -242,20 +187,8 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resetStreamState]);
 
-  // The stale-frame rule, and the SINGLE place a turn's streamId is adopted.
-  // Returned from this hook so the shared message queue drains against the SAME
-  // verdict: a second, independent copy of this rule would let a superseded
-  // turn's trailing `done` (an aborted turn still emits one — `runStreamedTurn`
-  // sends `turn.completed` on every return) drain a queued row into a fresh
-  // send while the surviving turn is still running.
-  //
-  // Every subscriber on this channel asks about the same frame, one after the
-  // other, and they must get the same answer. Two things make that hold:
-  // recording a stream id is idempotent for a frame that has already been
-  // judged; and no FRAME HANDLER re-arms the guard
-  // (`done` resets the accumulators only) — the deliberate transitions do, and
-  // those never run inside a dispatch. Caching the answer by frame identity
-  // would NOT work: the context bridge hands each subscriber its own copy.
+  // Transcript and queue share one idempotent stale-frame verdict; never re-arm inside frame handlers or cache by frame
+  // identity because subscribers receive separate copies.
   const isCurrentTurnEvent = useCallback(
     (event: ChatStreamEvent): boolean => {
       if (!viewMountedRef.current) return false;
@@ -264,16 +197,16 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
         || event.sendRequestId !== activeSendRequestIdRef.current
         || typeof event.sessionId !== "string" || event.sessionId.trim().length === 0
       )) {
-        // A peer's prelude must not adopt its stream or let its tail settle
-        // this view's pending send. Remember the id when the guard re-arms.
+        // A peer's prelude must not adopt its stream or let its tail settle this view's pending send. Remember the id when the
+        // guard re-arms.
         if (typeof event.streamId === "number") {
           maxStreamIdRef.current = Math.max(maxStreamIdRef.current, event.streamId);
         }
         return false;
       }
       if (activeStreamIdRef.current === null) {
-        // A view mounted mid-turn may never have seen a peer's prelude. Its
-        // remaining frames cannot establish ownership of a pending local send.
+        // A view mounted mid-turn may never have seen a peer's prelude. Its remaining frames cannot establish ownership of a
+        // pending local send.
         if (!isStreamingRef.current || event.type !== "user_message") return false;
         if (!judgeStreamFrame(event, activeStreamIdRef, maxStreamIdRef)) return false;
         activeStreamSessionIdRef.current = event.sessionId!;
@@ -306,17 +239,17 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
           sessionChangeIntentRef.current = null;
           if (sessionIdRef.current !== null && sessionIdRef.current !== ev.sessionId
             && activeUserEntryRef.current !== null) {
-            // A peer can change the window-wide loop between this view's turns.
-            // Its accepted prelude must not relabel history from the old session.
+            // A peer can change the window-wide loop between this view's turns. Its accepted prelude must not relabel history from the
+            // old session.
             setEntries([activeUserEntryRef.current]);
           }
           recordSessionId(ev.sessionId, acquired);
         }
-        // The shared stream can reach another view whose own send is pending
-        // or idle. Only this request binds ownership; the user bubble is local.
+        // The shared stream can reach another view whose own send is pending or idle. Only this request binds ownership; the user
+        // bubble is local.
       } else if (ev.type === "llm_status") {
-        // A terminal frame has closed this stream. Do not let delayed provider
-        // status resurrect a dismissed placeholder after done, error, or abort.
+        // A terminal frame has closed this stream. Do not let delayed provider status resurrect a dismissed placeholder after
+        // done, error, or abort.
         if (!isStreamingRef.current || finalAssistantRoundClosedRef.current) return;
         const message = formatLlmStatusMessage(ev);
         if (!message) return;
@@ -350,9 +283,8 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
         setEntries((p) => applyTranscriptFrame(p, ev));
       } else if (ev.type === "error") {
         terminalStreamClosedRef.current = true;
-        // Read the accumulated thought HERE, not inside the updater: React runs
-        // the updater at flush time, by which point the synchronous
-        // `resetStreamAccumulators()` below has already emptied the ref.
+        // Read the accumulated thought HERE, not inside the updater: React runs the updater at flush time, by which point the
+        // synchronous `resetStreamAccumulators()` below has already emptied the ref.
         const thought = thoughtRef.current;
         setEntries((p) =>
           setAssistantError(
@@ -407,20 +339,8 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
   }, [api, resetStreamAccumulators, isCurrentTurnEvent, recordSessionId, setStreaming, t]);
 
   const abandonTurn = useCallback(() => {
-    // Abandon the turn BEFORE the round trip, not after it. The host settles the
-    // turn while this call is in flight, and an aborted turn still emits a
-    // trailing `done` — `runStreamedTurn` sends `turn.completed` on every
-    // return — so that frame lands DURING the await. Re-arming the guard
-    // afterwards left a window in which the frame still read as the current
-    // turn's, and the message queue drained a row into a new turn on top of the
-    // one the interrupt was about to start.
-    //
-    // The answer that was cut short keeps what it streamed and wears the
-    // interrupted badge, exactly as the main transcript marks a stopped turn; an
-    // answer that had not produced a byte yet is dropped rather than left as an
-    // empty bubble with a spinner. The thought is read here, not inside the
-    // updater, because the reset empties the ref synchronously while React
-    // flushes the updater later.
+    // Retire the stream before awaiting abort so its trailing done cannot drain onto the replacement turn; preserve partial
+    // answers with interrupted status and drop empty ones.
     const thought = thoughtRef.current;
     const sendRequestId = activeSendRequestIdRef.current;
     const streaming = isStreamingRef.current;
@@ -463,16 +383,8 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
   const abort = useCallback(async () => {
     if (!viewMountedRef.current || !api.sideChat) return;
     const { sendRequestId, generation } = abandonTurn();
-    // Awaited last: an interrupting send goes out immediately after this
-    // resolves, and the host refuses a send while its turn is still in flight.
-    //
-    // Reported, not thrown. By this point the interrupt is committed in the
-    // local UI — the composer cleared the draft before calling and the transcript
-    // already marks the answer stopped — so letting a transport failure escape
-    // would destroy the text the user typed and strand the host turn, still
-    // streaming into frames this hook now drops. The send goes out either way;
-    // if the host really is still busy it refuses that send with its own
-    // message.
+    // Await host abort before sending, but report transport errors instead of throwing after the draft was cleared; the
+    // following send can surface a busy-host refusal.
     try {
       if (sendRequestId !== null) {
         const res = await api.sideChat.abort(sendRequestId);
@@ -489,8 +401,8 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
       if (!viewMountedRef.current || !api.sideChat) return;
       if (!trimmed && !(opts?.attachments && opts.attachments.length > 0)) return;
       if (isStreamingRef.current && opts?.inputOrigin === "queue-auto" && pendingSendRef.current !== null) {
-        // Let the earlier invoke settle before snapshotting it for a queued
-        // replacement. Its refusal must not be lost and later restored as live.
+        // Let the earlier invoke settle before snapshotting it for a queued replacement. Its refusal must not be lost and later
+        // restored as live.
         const pendingGeneration = sendGenerationRef.current;
         await pendingSendRef.current.catch(() => undefined);
         if (pendingGeneration !== sendGenerationRef.current) return;
@@ -524,8 +436,8 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
         thought: thoughtRef.current,
         finalAssistantRoundClosed: finalAssistantRoundClosedRef.current,
       };
-      // Re-arm the stale-frame guard + clear accumulators: the next turn's
-      // matching prelude adopts its streamId (see activeStreamIdRef doc).
+      // Re-arm the stale-frame guard + clear accumulators: the next turn's matching prelude adopts its streamId (see
+      // activeStreamIdRef doc).
       resetStreamState();
       const sendGeneration = sendGenerationRef.current;
       const sendRequestId = crypto.randomUUID();
@@ -553,13 +465,10 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
         const result = await pendingSend;
         if (sendGeneration !== sendGenerationRef.current) return;
         if (!result.ok) {
-          // Execution failures also return this shape. A matching prelude proves
-          // this request started a turn, so its failure cannot revive the prior one.
+          // Execution failures also return this shape. A matching prelude proves this request started a turn, so its failure cannot
+          // revive the prior one.
           if (activeStreamIdRef.current !== null && terminalStreamClosedRef.current) return;
-          // Localized, not the raw code: this hook used to put the kebab-case string
-          // straight in the transcript, so a Korean user tripping a bound read
-          // `too-many-resource-attachments`. Main chat already resolves codes through
-          // the same map; side chat is the same transcript to the person reading it.
+          // Localize side-chat refusal codes through the same map as main chat.
           const thought = thoughtRef.current;
           const refusalMessage = formatIpcError(result.error, undefined);
           setEntries((p) =>
@@ -602,9 +511,8 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
         if (sendGeneration !== sendGenerationRef.current) return;
         // An owned terminal frame has already supplied the execution's outcome.
         if (activeStreamIdRef.current !== null && terminalStreamClosedRef.current) return;
-        // Left raw on purpose: this branch is a transport failure, not a handler code
-        // (the handler returns `{ ok: false, error }` above for those), so there is
-        // nothing to look up and the message is the only diagnostic.
+        // Left raw on purpose: this branch is a transport failure, not a handler code (the handler returns `{ ok: false, error }`
+        // above for those), so there is nothing to look up and the message is the only diagnostic.
         const thought = thoughtRef.current;
         setEntries((p) =>
           setAssistantError(
@@ -615,8 +523,8 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
           ),
         );
         setStreaming(false);
-        // Delivery is uncertain. Abandon this request so delayed frames cannot
-        // revive it as another turn after the transport failure.
+        // Delivery is uncertain. Abandon this request so delayed frames cannot revive it as another turn after the transport
+        // failure.
         resetStreamState();
       } finally {
         if (pendingSendRef.current === pendingSend) pendingSendRef.current = null;
@@ -657,8 +565,8 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
           return { historyReplaced };
         };
       }
-      // A pending send has not superseded this change until its prelude proves
-      // acceptance. Keep the shared candidate across mixed pending intents.
+      // A pending send has not superseded this change until its prelude proves acceptance. Keep the shared candidate across
+      // mixed pending intents.
       if ((generation !== sendGenerationRef.current && (!res.ok || sessionChangeIntentRef.current !== intent))
         || !viewMountedRef.current) return;
       if (res.ok) {
@@ -668,8 +576,8 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
       } else {
         const message = intent.refusalMessage ?? formatIpcError(res.error, undefined);
         if (intent.previous !== null) {
-          // A refused replacement never changed the host session. Preserve the
-          // earlier accepted change, even when its reply has already arrived.
+          // A refused replacement never changed the host session. Preserve the earlier accepted change, even when its reply has
+          // already arrived.
           const restored = restoreSessionIntent(intent.previous);
           if (intent.refusedSends?.length) {
             (restored.refusedSends ??= []).push(...intent.refusedSends);
@@ -722,9 +630,8 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
     setSessionId(null);
   }, [abandonTurn]);
 
-  // Per-turn provider-usage lookup keyed by turn-start index — same derivation
-  // as ChatView so the shared TranscriptRenderer's WorkGroup step-count /
-  // TurnActionBar cost badge show the SIDE loop's own token/cost totals.
+  // Per-turn provider-usage lookup keyed by turn-start index — same derivation as ChatView so the shared
+  // TranscriptRenderer's WorkGroup step-count / TurnActionBar cost badge show the SIDE loop's own token/cost totals.
   const turnSummaryByTurnStart = useMemo(() => {
     const map = new Map<number, TurnSummary>();
     let curTurnStart = -1;
@@ -781,9 +688,8 @@ function judgeStreamFrame(
   const streamId = typeof event.streamId === "number" ? event.streamId : null;
   if (streamId === null) return false;
   if (activeStreamId.current === null) {
-    // Between turns: adopt this frame's streamId ONLY if it is newer than any
-    // id we have already seen. A lower/equal id is a straggler from a finished
-    // turn and is dropped (never adopted as the "new" turn).
+    // Between turns: adopt this frame's streamId ONLY if it is newer than any id we have already seen. A lower/equal id is a
+    // straggler from a finished turn and is dropped (never adopted as the "new" turn).
     if (streamId <= maxStreamId.current) return false;
     activeStreamId.current = streamId;
     maxStreamId.current = streamId;
@@ -797,8 +703,8 @@ function visibleText(text: string): string {
   return text.trim().length > 0 ? text : "";
 }
 
-// Drop a trailing still-streaming assistant entry on abort so it doesn't hang
-// with a spinner (finalizeStreamingReasoning/Assistant then settle any thought).
+// Drop a trailing still-streaming assistant entry on abort so it doesn't hang with a spinner
+// (finalizeStreamingReasoning/Assistant then settle any thought).
 function dropPendingStreamingAssistant(entries: ChatEntry[]): ChatEntry[] {
   const last = entries[entries.length - 1];
   if (last && last.kind === "assistant" && last.streaming === true && last.text.length === 0) {

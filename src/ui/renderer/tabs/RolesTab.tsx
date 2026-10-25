@@ -16,10 +16,8 @@ import { formatIpcError } from "../format-ipc-error.js";
 
 const EMPTY_DRAFT: RolePreset = { id: "", name: "", systemPromptAdd: "" };
 
-/**
- * Stable anchor for the agent-context controls, so a link into Settings can
- * name this section rather than a scroll offset that moves with the page.
- */
+/** Stable anchor for the agent-context controls, so a link into Settings can name this section rather than a scroll offset
+ * that moves with the page. */
 const AGENTS_SECTION_ID = "settings-agents-md";
 
 export function RolesTab({ api }: { api: AveApi }) {
@@ -184,8 +182,8 @@ export function RolesTab({ api }: { api: AveApi }) {
     setSaving("agents");
     setError(null);
     try {
-      // Keep-latest moves authorship: the live doc is the packaged reference
-      // from then on, and the editor writes what the user owns.
+      // Keep-latest moves authorship: the live doc is the packaged reference from then on, and the editor writes what the user
+      // owns.
       if (keepLatest) {
         const result = await api.homeDocsUpdateCustom(customDraft);
         if (!result.ok) throw new Error(formatIpcError(result.error, undefined));
@@ -302,8 +300,8 @@ export function RolesTab({ api }: { api: AveApi }) {
     setSaving("home-docs-apply-merged");
     setError(null);
     try {
-      // The baseline is what this surface last loaded, so an edit that landed
-      // while the model was working is a conflict rather than a silent loss.
+      // The baseline is what this surface last loaded, so an edit that landed while the model was working is a conflict rather
+      // than a silent loss.
       const result = await api.homeDocsApplyMerged(keepLatest ? customBase : agentsBase);
       if (!result.ok) throw new Error(formatIpcError(result.error, undefined));
       setMerged(null);

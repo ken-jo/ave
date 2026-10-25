@@ -1,8 +1,3 @@
-/**
- * ToolGroupCard unit tests.
- *
- * ToolGroupCard is a pure-props component that renders tool execution groups.
- */
 import "../../../../test/renderer/setup.js";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, fireEvent, waitFor } from "@testing-library/react";
@@ -77,7 +72,6 @@ describe("ToolGroupCard", () => {
     expect(container).toBeTruthy();
   });
 
-  // Single tool → inline (no group header)
   it("single tool: renders tool name inline without group header", () => {
     const { container } = render(<ToolGroupCard group={makeGroup({ status: "done" })} />);
     expect(container.textContent).not.toContain("도구 사용 결과");
@@ -230,7 +224,6 @@ describe("ToolGroupCard", () => {
     expect(container.querySelector(".h-\\[6\\.9rem\\]")).not.toBeNull();
   });
 
-  // Multi-tool → group card
   it("multi-tool: shows '도구 사용 결과' header", () => {
     const { container } = render(<ToolGroupCard group={makeMultiGroup({ status: "done" })} />);
     expect(container.textContent).toContain("도구 사용 결과");
@@ -390,7 +383,6 @@ describe("ToolGroupCard", () => {
     expect(badges[1]?.textContent).toContain("⏱ 1.4s");
   });
 
-  // ─── CompactedToolResult rendering paths ────────────────────────────────
   it("single tool with stub result + sessionId → renders CompactedToolResult (펼치기 visible)", () => {
     const stubResult = "[tool_result stripped: tool=Read, origLen=5000]";
     vi.stubGlobal("aveApi", {
@@ -478,10 +470,7 @@ describe("ToolGroupCard", () => {
     expect(container.textContent).not.toContain("[펼치기]");
   });
 
-  // Regression: PR #299 introduced single-tool inline early-return that bypassed
-  // the HtmlPreview area for render_html, so single render_html calls rendered
-  // only the collapsible indicator with raw JSON. SingleToolInline must now also
-  // render the dedicated window launcher when the tool succeeds.
+  // Single-tool render_html results must retain the dedicated preview launcher.
   it("single render_html: renders an HTML window launcher", async () => {
     const openHtmlPreview = installHtmlPreviewWindowMock();
     const group = makeGroup({

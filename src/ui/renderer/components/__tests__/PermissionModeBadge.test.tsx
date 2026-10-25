@@ -10,10 +10,7 @@ beforeEach(() => {
 
 describe("PermissionModeBadge", () => {
   it("renders the explicit unknown mode prop without invoking a fetcher", async () => {
-    // Description aligned with setup: caller passes `mode="unknown"`
-    // explicitly, exercising the prop-override branch (no fetch / no
-    // subscribe). The original copy claimed "no mode override" which
-    // contradicted the `mode="unknown"` prop being supplied.
+    // An explicit unknown mode uses the prop override and must not fetch or subscribe.
     let component: ReturnType<typeof render>;
     await act(async () => {
       component = render(<PermissionModeBadge mode="unknown" />);
@@ -169,7 +166,6 @@ describe("PermissionModeBadge", () => {
       const badge = screen.getByTestId("permission-mode-badge");
       expect(badge.getAttribute("data-mode")).toBe("default");
     });
-    // Simulate /permission mode strict --durable being applied
     await act(async () => {
       capturedHandler!("strict");
     });

@@ -1,11 +1,6 @@
 // @vitest-environment jsdom
-/**
- * Conversation attribution on the surface that raises an approval: the modal
- * itself.
- *
- * Sub-agents and side chats block on approvals from conversations the user is
- * not looking at, so the modal must name the asking conversation.
- */
+/** Conversation attribution on the surface that raises an approval: the modal itself. Sub-agents and side chats block on
+ * approvals from conversations the user is not looking at, so the modal must name the asking conversation. */
 import "../../../../../test/renderer/setup.js";
 import { describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";

@@ -1,31 +1,4 @@
-/**
- * McpAppFullscreenPanel — the in-renderer surface for an MCP-app card that requested
- * (or was moved into) `fullscreen`.
- *
- * ─── Why in-renderer, not a separate window ───────────────────────────────────
- * `fullscreen` has no normative definition in the confirmed MCP Apps revision — that
- * revision defines only `inline` ("embedded within the host's content flow") and `pip`
- * ("floating overlay"). The draft that adds it describes the view as TAKING OVER the
- * full screen/window, which is a claim about how much surface the view occupies, not
- * about spawning a second one. Both the ext-apps SDK's own documented example and the
- * reference host realize it the same way: the app keeps its existing container and the
- * host swaps one CSS class on it, calling the transition an inline↔fullscreen panel
- * toggle. So this host presents `fullscreen` as a surface INSIDE the renderer that
- * takes over the app window's content area — the same shape `McpAppPipPanel` already
- * has for `pip`, one slot in the shared location store with one component subscribed
- * to it.
- *
- * ─── Why this remounts the card ───────────────────────────────────────────────
- * Same trade-off, and the same reasons, as `McpAppPipPanel`: an away surface rendered
- * by a DIFFERENT component means React mounts a fresh `<McpAppView>`, so the card gets
- * a fresh bridge + `<webview>` and app state does not survive the move. Preserving it
- * would need a single always-mounted overlay layer with anchor-tracked CSS-only
- * repositioning — a materially larger subsystem than this feature. Eyes open.
- *
- * Renders nothing when no card occupies the fullscreen slot. One McpAppView instance
- * per occupant, keyed by `cardId` so a DIFFERENT card claiming the slot is a clean
- * remount, never a payload swap on a stale instance.
- */
+/** Fullscreen changes presentation in this renderer while retaining the same mounted app container. */
 import { useCallback, useSyncExternalStore } from "react";
 import { Minimize2 } from "lucide-react";
 import { McpAppView } from "./McpAppView.js";
@@ -54,9 +27,8 @@ export function McpAppFullscreenPanel() {
     <div
       ref={occluderRef}
       data-testid="mcp-app-fullscreen-panel"
-      // Below `McpAppPipPanel`'s z-50: a card in pip and a DIFFERENT card in
-      // fullscreen can occupy their slots at the same time, and the floating overlay
-      // is the one that must stay on top of the surface that took over.
+      // Below `McpAppPipPanel`'s z-50: a card in pip and a DIFFERENT card in fullscreen can occupy their slots at the same time,
+      // and the floating overlay is the one that must stay on top of the surface that took over.
       className="fixed inset-0 z-40 flex flex-col overflow-hidden bg-background"
     >
       <div className="flex items-center justify-end border-b bg-muted/(--opacity-muted) px-1 py-1">

@@ -30,8 +30,8 @@ export function usePluginLifecycleRefresh({
     [pluginCards],
   );
 
-  // Refresh plugin views when an install completes in the main process, so
-  // new plugin entries appear without requiring an app restart.
+  // Refresh plugin views when an install completes in the main process, so new plugin entries appear without requiring an
+  // app restart.
   useEffect(() => {
     if (typeof api.onPluginInstallResult !== "function") return;
     const unsubscribe = api.onPluginInstallResult(({ success }) => {
@@ -71,10 +71,8 @@ export function usePluginLifecycleRefresh({
     return () => window.clearInterval(interval);
   }, [hasPreparingPlugin, refreshViews, refreshCards]);
 
-  // Same lifecycle for uninstall — PluginConfigTab and any other surface
-  // drive uninstall through the IPC handler which now broadcasts a result
-  // event. Without this subscription plugin entry state would stay stale
-  // until the app reloads.
+  // Same lifecycle for uninstall — PluginConfigTab and any other surface drive uninstall through the IPC handler which now
+  // broadcasts a result event. Without this subscription plugin entry state would stay stale until the app reloads.
   useEffect(() => {
     if (typeof api.onPluginUninstallResult !== "function") return;
     const unsubscribe = api.onPluginUninstallResult(({ success }) => {

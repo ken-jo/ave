@@ -2,11 +2,7 @@ import type { ChatEntry } from "../../../lib/chat-stream-state.js";
 
 type ToolGroupEntry = Extract<ChatEntry, { kind: "tool_group" }>;
 
-/**
- * Chat-entry revision helpers — pure content fingerprints used by ChatView to
- * decide when a rendered card must re-render. Extracted from ChatView.tsx (C14)
- * so they can be unit-tested directly. Byte-identical to the originals.
- */
+/** Content fingerprints decide when rendered chat cards need updating. */
 export function textRevision(text: string | undefined): string {
   if (!text) return "0:0";
   let hash = 0x811c9dc5;

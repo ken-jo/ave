@@ -12,24 +12,11 @@ import type { UserKeyboardIntentSnapshot } from "../../../../shared/chat-origin.
 import type { AveApi } from "../../types.js";
 import { deferred } from "../../../../../test/renderer/helpers.js";
 
-/**
- * The queue's end-of-turn drain, on a surface whose stream carries a turn id.
- *
- * `runStreamedTurn` emits `turn.completed` on every return, an aborted turn
- * included, so an interrupt produces a trailing `done` that arrives AFTER the
- * replacement turn has started. The drain that frame triggers sends with
- * `inputOrigin: "queue-auto"`, which deliberately does not interrupt — so it
- * would land on top of the live turn, two turns on one ConversationLoop.
- *
- * These tests wire the side chat's real hooks together the way SideChatView
- * does, and assert the drain follows the SURFACE's own stale-frame verdict.
- */
+/** Queue drains must follow the surface's stale-frame verdict; an aborted turn's late done must not drain onto its
+ * replacement turn. */
 
-/**
- * A side-chat preload double that supports SEVERAL subscribers on one channel —
- * the transcript and the queue both listen, and the single-slot double the
- * transcript's own suite uses would let the second overwrite the first.
- */
+/** A side-chat preload double that supports SEVERAL subscribers on one channel — the transcript and the queue both listen,
+ * and the single-slot double the transcript's own suite uses would let the second overwrite the first. */
 function makeApi(options: { reverseDispatch?: boolean } = {}) {
   const handlers = new Set<(e: ChatStreamEvent) => void>();
   const dispatch = (e: ChatStreamEvent) => {
@@ -82,11 +69,8 @@ function makeApi(options: { reverseDispatch?: boolean } = {}) {
         dispatch(e);
       });
     },
-    /**
-     * Queue a frame for the host to publish WHILE `abort` is in flight. That is
-     * the real timing of an interrupted turn's trailing `done`: the host settles
-     * the turn before the abort invoke resolves.
-     */
+    /** Queue a frame for the host to publish WHILE `abort` is in flight. That is the real timing of an interrupted turn's
+     * trailing `done`: the host settles the turn before the abort invoke resolves. */
     emitDuringAbort: (e: ChatStreamEvent) => {
       framesDuringAbort.push(e);
     },
@@ -136,7 +120,6 @@ function useSideSurface(api: AveApi) {
 
 type Surface = ReturnType<typeof useSideSurface>;
 
-/** Type the draft and press plain Enter — queues while a turn is running. */
 async function typeAndSubmit(result: { current: Surface }, text: string) {
   await act(async () => {
     result.current.setDraft(text);
@@ -208,17 +191,15 @@ describe("useMessageQueue end-of-turn drain (side chat)", () => {
     await typeAndSubmit(result, "later");
     expect(result.current.queue.messageQueueStore.getPending()).toHaveLength(1);
 
-    // The host settles the aborted turn BEFORE the abort invoke resolves, so its
-    // `turn.completed` lands in the middle of the interrupt — the exact timing
-    // the real app produces.
+    // The host settles the aborted turn BEFORE the abort invoke resolves, so its `turn.completed` lands in the middle of the
+    // interrupt — the exact timing the real app produces.
     emitDuringAbort({ type: "done", streamId: 1 });
     await act(async () => {
       await result.current.side.abort();
     });
     expect(spies.abort).toHaveBeenCalledTimes(1);
 
-    // The row is still the user's — no `queue-auto` send went out on top of the
-    // turn that replaces the aborted one.
+    // The row is still the user's — no `queue-auto` send went out on top of the turn that replaces the aborted one.
     expect(spies.send).toHaveBeenCalledTimes(1);
     expect(result.current.queue.messageQueueStore.getPending()).toHaveLength(1);
   });
@@ -275,9 +256,8 @@ describe("useMessageQueue end-of-turn drain (side chat)", () => {
   it("gives every subscriber the same verdict for one frame", async () => {
     const { api, emit, subscriberCount, acceptTurn } = makeApi();
     const { result } = renderHook(() => useSideSurface(api));
-    // The transcript and the queue are BOTH on the channel, each holding its own
-    // copy of the frame. Whoever asks second must not be told "superseded" about
-    // the very frame the first asker just accepted.
+    // The transcript and the queue are BOTH on the channel, each holding its own copy of the frame. Whoever asks second must
+    // not be told "superseded" about the very frame the first asker just accepted.
     expect(subscriberCount()).toBe(2);
 
     await act(async () => {

@@ -329,10 +329,7 @@ describe("useSettingsOrchestration", () => {
     expect(result.current.thinkingBudget).toBe(8_000);
   });
 
-  // (B) Vendor default-selection fix: the hook now initialises vendor to ""
-  // (empty string) instead of "claude", preventing a stale "claude" label
-  // from flashing in the UI before the settings load effect hydrates the
-  // persisted value. After hydration the vendor must match what was stored.
+  // Start with no selected provider so the pre-hydration UI cannot flash a stale default.
   it("initialises vendor to empty string before settings load (no stale 'claude' flash)", () => {
     const { api } = makeMockAveApi({ settings: makeSettingsWithVendor("openai") });
     // Pause getSettings so we can inspect the pre-hydration state.
@@ -392,9 +389,7 @@ describe("useSettingsOrchestration", () => {
   });
 
   it("queues a card's save behind an in-flight one instead of dropping it", async () => {
-    // A debounced llm save can be mid-flight when the user presses Save on a
-    // provider card. The credential save used to return false on the spot and
-    // say nothing, leaving the card looking committed with nothing written.
+    // Queue credential saves behind debounced tab saves instead of silently refusing them.
     let releaseFirstSave: (() => void) | undefined;
     const settings = makeSettings();
     const { api } = makeMockAveApi({ settings, hasApiKey: false });
@@ -455,8 +450,7 @@ describe("useSettingsOrchestration", () => {
     });
 
     expect(api.setApiKey).toHaveBeenCalledWith("claude", "sk-ant-1");
-    // No settings write at all: a fixed-endpoint vendor owns no field here,
-    // and `llm.provider` is not this call's to move.
+    // No settings write at all: a fixed-endpoint vendor owns no field here, and `llm.provider` is not this call's to move.
     expect(api.updateSettings).not.toHaveBeenCalled();
     expect(result.current.vendor).toBe("openai");
   });
@@ -510,9 +504,7 @@ describe("useSettingsOrchestration", () => {
         provider: "openai-compatible",
         marketplaceProviderPresetId: "future-router",
         vendors: {
-          // The preset's own slot, and NOT the block's `model` — that one is
-          // the generic custom-provider row's, and a preset writing it is how
-          // the two rows used to overwrite each other.
+          // Write the preset's own model slot; the vendor block belongs to the generic provider row.
           "openai-compatible": expect.objectContaining({
             presetModels: { "future-router": "" },
           }),
@@ -524,8 +516,7 @@ describe("useSettingsOrchestration", () => {
       .filter((call) => Boolean(call.llm?.vendors))
       .at(-1)?.llm?.vendors?.["openai-compatible"];
     expect(savedBlock).not.toHaveProperty("model");
-    // The preset's address is the registry's, never the generic row's block:
-    // writing it here is what used to revert the generic card's own endpoint.
+    // Read preset endpoints from the registry; never overwrite the generic row's stored endpoint.
     const presetSave = (api.updateSettings as ReturnType<typeof vi.fn>).mock.calls
       .map((call) => call[0] as { llm?: { vendors?: Record<string, { baseUrl?: string }> } })
       .filter((call) => Boolean(call.llm?.vendors))
@@ -575,15 +566,14 @@ describe("useSettingsOrchestration", () => {
       result.current.selectMarketplaceProviderPreset(futureRouter);
     });
     await waitFor(() => expect(result.current.vendor).toBe("openai-compatible"));
-    // Selecting a preset must not park the preset's address in the generic
-    // row's endpoint: that field is written back on every save.
+    // Selecting a preset must not park the preset's address in the generic row's endpoint: that field is written back on every
+    // save.
     expect(result.current.baseUrl).toBe("http://localhost:8001/v1");
 
     act(() => {
       result.current.clearMarketplaceProviderPreset();
     });
-    // And switching back restores the generic row's own endpoint rather than
-    // resetting it to defaults.
+    // And switching back restores the generic row's own endpoint rather than resetting it to defaults.
     await waitFor(() => expect(result.current.baseUrl).toBe("http://localhost:8001/v1"));
 
     await act(async () => {
@@ -712,10 +702,7 @@ describe("useSettingsOrchestration", () => {
   });
 
   it("keeps every openai-compatible row's model to itself", async () => {
-    // Three rows are reached through one vendor — the generic custom provider
-    // and two marketplace presets — and each has its own model. They used to
-    // share the block's single `model`, so choosing on one row silently
-    // rewrote the others.
+    // Keep model choices independent for rows sharing the same underlying vendor.
     const alpha = {
       providerId: "alpha-gw",
       label: "Alpha Gateway",
@@ -760,9 +747,8 @@ describe("useSettingsOrchestration", () => {
       }> } })
       .filter((call) => Boolean(call.llm?.vendors))
       .at(-1)?.llm?.vendors?.["openai-compatible"];
-    // Alpha's key ALONE — the stored map is merged on the main side, so this
-    // save cannot carry a stale copy of beta's model back over a newer one.
-    // The generic row's `model` is not written at all, so it survives too.
+    // Alpha's key ALONE — the stored map is merged on the main side, so this save cannot carry a stale copy of beta's model
+    // back over a newer one. The generic row's `model` is not written at all, so it survives too.
     expect(block?.presetModels).toEqual({ "alpha-gw": "alpha/chosen" });
     expect(block).not.toHaveProperty("model");
 

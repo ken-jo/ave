@@ -1,8 +1,3 @@
-/**
- * Sources, Add and the installs without a marketplace (design §15.4, §15.5,
- * §15.7, §8.1): what each origin may do, the add flow with git as its
- * blocking first step, and the pasted server.json that connects unbound.
- */
 // @vitest-environment jsdom
 import "../../../../../../test/renderer/setup.js";
 import { describe, expect, it, vi } from "vitest";
@@ -234,7 +229,6 @@ function addDialog(fake: ReturnType<typeof fakeMarketplace>, direct = false) {
   render(<AddSourceDialog api={api as unknown as Pick<AveApi, "gitMarketplace" | "gitRuntime" | "updateSettings">} open direct={direct} onClose={vi.fn()} onCommitted={vi.fn()} onAdded={onAdded} onShowSource={onShowSource} />);
   return { onAdded, onShowSource };
 }
-
 
 describe("AddSourceDialog", () => {
   it("previews what the repository holds before adding it under the chosen name", async () => {
@@ -707,7 +701,6 @@ describe("confirmations, badges and Allow… (§18.5)", () => {
     expect(await screen.findByText(/git\.corp\.example 로그인 정보가 암호화되지 않은 채 전송되어/)).toBeInTheDocument();
     fireEvent.click(screen.getByTestId("git-marketplace:sources:confirm"));
     await waitFor(() => expect(fake.market.acknowledgeSource).toHaveBeenCalledWith("corp", ["token-unencrypted"]));
-    // Then the token dialog itself.
     expect(await screen.findByPlaceholderText("액세스 토큰 붙여넣기")).toBeInTheDocument();
   });
 });

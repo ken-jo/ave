@@ -148,9 +148,8 @@ describe("useRoutineOverlay — onboarding proposal answers", () => {
     ["a section the named tab does not anchor", "plugin-config/llm-providers"],
     ["a path with a third segment", "plugin-config/plugin-config-installed/on"],
   ])("navigates nowhere for %s", async (_case, path) => {
-    // Manifest validation rejects these at load, so reaching one here means the
-    // declared destination is gone. Landing on the default tab instead would
-    // answer the user's "yes" with a page they did not agree to.
+    // Manifest validation rejects these at load, so reaching one here means the declared destination is gone. Landing on the
+    // default tab instead would answer the user's "yes" with a page they did not agree to.
     const s = setup();
     s.show(proposalItem({ kind: "settings", path }));
 

@@ -13,19 +13,7 @@ import {
 import { MOCK_DEFAULT_SETTINGS } from "../../../../test/renderer/mock-ave-api.js";
 import { TEST_IDS, testIdSelector } from "../../../shared/test-ids.js";
 
-/**
- * Visit history and the top-bar path, driven the way a user drives them:
- *
- * Labels are asserted in the harness's own locale (Korean) rather than
- * English — asserting the shipped catalogue text is what proves the path
- * renders a real translated label and not a raw key.
- *
- * sidebar clicks and the toolbar's own buttons.
- *
- * A unit test over the history stack would pass with the stack wired to
- * nothing, so every assertion here goes through the real producers and reads
- * the rendered path.
- */
+/** Assert real localized path labels through sidebar and toolbar actions; stack-only tests cannot verify routing. */
 /** Which pane the window is ON — the one the frame marks focused. */
 const focusedPaneId = (container: HTMLElement) =>
   container
@@ -38,8 +26,8 @@ const focusedPaneId = (container: HTMLElement) =>
 const path = (container: HTMLElement) =>
   container.querySelector('[data-testid="view-path-breadcrumb"]')?.textContent?.trim() ?? "";
 
-/** Click a control the way the user reaches it — by its test id, through the
- *  real handler — and let the resulting commit land before returning. */
+/** Click a control the way the user reaches it — by its test id, through the real handler — and let the resulting commit
+ * land before returning. */
 async function click(container: HTMLElement, testid: string) {
   const el = container.querySelector(`[data-testid="${testid}"]`) as HTMLButtonElement | null;
   expect(el, `missing [data-testid="${testid}"]`).not.toBeNull();
@@ -120,8 +108,7 @@ describe("App view history", () => {
     await waitFor(() => expect(path(container)).toContain("업무 보드"));
     await clickSidebarNavRow("features", "sidebar-routines");
     await waitFor(() => expect(path(container)).toContain("루틴"));
-    // Clicking the entry you are already on is common and must not stack up
-    // entries that appear to do nothing when replayed.
+    // Clicking the entry you are already on is common and must not stack up entries that appear to do nothing when replayed.
     await clickSidebarNavRow("features", "sidebar-routines");
     await clickSidebarNavRow("features", "sidebar-routines");
 
@@ -137,9 +124,8 @@ describe("App view history", () => {
     await waitFor(() => expect(path(container)).toContain("설정"));
     expect(path(container)).toContain("모델");
 
-    // The panel's own nav — the same control the user clicks. Radix's
-    // TabsTrigger switches on mousedown, not click, so a bare click would
-    // assert nothing here.
+    // The panel's own nav — the same control the user clicks. Radix's TabsTrigger switches on mousedown, not click, so a bare
+    // click would assert nothing here.
     await act(async () => {
       fireEvent.mouseDown(screen.getByRole("tab", { name: /권한/ }), { button: 0 });
     });
@@ -149,8 +135,8 @@ describe("App view history", () => {
     await click(container, "view-path-back");
     await waitFor(() => expect(path(container)).toContain("모델"));
 
-    // Re-enter a child page, then use the ancestor breadcrumb. The destination
-    // is Settings / Model, not the current child tab again.
+    // Re-enter a child page, then use the ancestor breadcrumb. The destination is Settings / Model, not the current child tab
+    // again.
     await act(async () => {
       fireEvent.mouseDown(screen.getByRole("tab", { name: /권한/ }), { button: 0 });
     });
@@ -173,9 +159,8 @@ describe("App view history", () => {
     const [first, second] = mountedTileIds(container);
     expect(focusedPaneId(container)).toBe(second);
 
-    // Back: Routines is open in the FIRST pane, so the step focuses that pane
-    // instead of drawing a second copy of it. No pane is added, and the second
-    // pane keeps the work board.
+    // Back: Routines is open in the FIRST pane, so the step focuses that pane instead of drawing a second copy of it. No pane
+    // is added, and the second pane keeps the work board.
     await click(container, "view-path-back");
     await waitFor(() => expect(path(container)).toContain("루틴"));
     expect(mountedTileIds(container)).toHaveLength(2);
@@ -189,9 +174,8 @@ describe("App view history", () => {
   });
 
   it("does not record the new pane's own conversation as a stop on the way", async () => {
-    // The gesture makes a pane and puts a view in it. If those landed as two
-    // location changes, the pane's blank conversation would sit in the history
-    // between them and one back would go nowhere the user had been.
+    // The gesture makes a pane and puts a view in it. If those landed as two location changes, the pane's blank conversation
+    // would sit in the history between them and one back would go nowhere the user had been.
     const { container } = await renderApp({ hasApiKey: true });
     await ready(container);
 
@@ -205,9 +189,8 @@ describe("App view history", () => {
   });
 
   it("follows a change of FOCUS, with no navigation at all", async () => {
-    // The path says where the window is, and the window is the focused pane.
-    // Clicking into a pane that holds a different location moves the window
-    // there — nothing navigated, and the path still has to agree.
+    // The path says where the window is, and the window is the focused pane. Clicking into a pane that holds a different
+    // location moves the window there — nothing navigated, and the path still has to agree.
     const { container } = await renderApp({ hasApiKey: true });
     await ready(container);
 
@@ -333,9 +316,8 @@ describe("App view history after a restored launch location", () => {
     const { container } = await renderApp({ hasApiKey: true, getSettings });
     await waitFor(() => expect(container.querySelector('[data-testid="view-path-nav"]')).not.toBeNull());
 
-    // The user acts while the launch location is still in flight. This is a
-    // deliberate step away from home, not the app settling into where it left
-    // off — losing it strands the user with a dead back button.
+    // The user acts while the launch location is still in flight. This is a deliberate step away from home, not the app
+    // settling into where it left off — losing it strands the user with a dead back button.
     await clickSidebarNavRow("features", "sidebar-routines");
     await waitFor(() => expect(path(container)).toContain("루틴"));
 
@@ -355,8 +337,8 @@ describe("App view history after a restored launch location", () => {
     const { container } = await renderApp({ hasApiKey: true, getSettings });
     await waitFor(() => expect(path(container)).toContain("대화"));
 
-    // Nobody navigated; the app simply arrived where it was left. A restart
-    // must not offer "back" to the home screen it passed through.
+    // Nobody navigated; the app simply arrived where it was left. A restart must not offer "back" to the home screen it passed
+    // through.
     await act(async () => {
       gate.resolve(settingsWithActiveView("work-board"));
     });
@@ -375,48 +357,24 @@ describe("App view history after a restored launch location", () => {
     await clickSidebarNavRow("features", "sidebar-routines");
     await waitFor(() => expect(path(container)).toContain("루틴"));
 
-    // The stored location arrives after the user has already chosen one. Being
-    // able to press back afterwards is not the same as not being moved: this
-    // used to land, and the step out of the user's page was undoable rather
-    // than absent.
+    // A late stored location must not move the user after navigation, even if that unwanted step would be undoable.
     await act(async () => {
       gate.resolve(settingsWithActiveView("work-board"));
     });
     await settle();
     expect(path(container)).toContain("루틴");
 
-    // What is behind them is their own step off the seed, not a launch
-    // location that never took effect.
+    // What is behind them is their own step off the seed, not a launch location that never took effect.
     await act(async () => {
       fireEvent.click(backButton(container));
     });
     await waitFor(() => expect(path(container)).toContain("대화"));
   });
 
-  /**
-   * The settings PAGE restores from its own read and is NOT discarded by a
-   * navigation here — choosing a view says nothing about which settings page
-   * you want. It raises the same restore count this history reads, though, and
-   * that count is shared between both halves: an increase means "one of them
-   * moved", never "the window moved".
-   *
-   * So the half nobody is looking at can raise the count while the location
-   * stays exactly where it was. That increase has to be SPENT where it lands.
-   * Surviving, it would be waiting for the next location change — the user's
-   * own step, taken while the history is still the untouched seed — and would
-   * be read as the launch location arriving, REPLACING the root rather than
-   * stacking on it and leaving a step from home with a dead back button.
-   *
-   * That the page half lands at all is asserted next door and by the
-   * reverse-order pair below. It is not re-asserted here, because the user
-   * never enters Settings in this test — and every UI route in names a page,
-   * `onOpenSettings` supplying its own `llm` default when the caller does not,
-   * so the restored page is replaced on the way in. What this pins is the
-   * other side of that wire: what the raised count must NOT do.
-   */
+  /** Consume restore-count changes even when the current location does not move; otherwise the next user step can replace
+   * history's root. */
   it("does not let the settings-page half turn the user's next step into the launch location", async () => {
-    // Held open so the whole exchange happens inside the restore window, which
-    // is the only place either half can land late.
+    // Held open so the whole exchange happens inside the restore window, which is the only place either half can land late.
     let released = false;
     const gates: Array<ReturnType<typeof deferred<unknown>>> = [];
     const stored = settingsWithActiveView("work-board", "permissions");
@@ -438,8 +396,8 @@ describe("App view history after a restored launch location", () => {
     await click(container, "sidebar-new-chat");
     expect(path(container)).toContain("대화");
 
-    // Released one commit at a time — over IPC these are separate round trips,
-    // and batching them never observes the page half on its own.
+    // Released one commit at a time — over IPC these are separate round trips, and batching them never observes the page half
+    // on its own.
     released = true;
     for (const gate of [...gates]) {
       await act(async () => {
@@ -448,13 +406,11 @@ describe("App view history after a restored launch location", () => {
     }
     await settle();
 
-    // Nothing moved: the view half was discarded, and a settings page is not a
-    // place while the user is not in Settings.
+    // Nothing moved: the view half was discarded, and a settings page is not a place while the user is not in Settings.
     expect(path(container)).toContain("대화");
 
-    // NOW the user takes their first real step, with the history still the
-    // untouched seed. It is a step, not an arrival — the count went up for a
-    // page they are not looking at.
+    // NOW the user takes their first real step, with the history still the untouched seed. It is a step, not an arrival — the
+    // count went up for a page they are not looking at.
     await clickSidebarNavRow("features", "sidebar-routines");
     await waitFor(() => expect(path(container)).toContain("루틴"));
     expect(backButton(container).disabled).toBe(false);
@@ -462,17 +418,7 @@ describe("App view history after a restored launch location", () => {
     await waitFor(() => expect(path(container)).toContain("대화"));
   });
 
-  /**
-   * The mirror of the test above: a restore that lands after the user has
-   * already been somewhere is a MOVE, not an arrival, and the root belongs to
-   * where they started. Only an untouched seed may be replaced.
-   *
-   * The page half is the only half that still lands here, because it has no
-   * discard of its own — choosing a settings page inside the restore window is
-   * overridden, a gap `useSettingsTab` owns. This does not assert that
-   * override is right; it asserts that while it happens, the step it makes is
-   * one the user can undo.
-   */
+  /** Only an untouched history seed may be replaced by restore; arrivals after user navigation must remain undoable steps. */
   it("stacks a settings-page restore that lands after the user has been somewhere", async () => {
     let released = false;
     const gates: Array<ReturnType<typeof deferred<unknown>>> = [];
@@ -488,8 +434,8 @@ describe("App view history after a restored launch location", () => {
     });
     await waitFor(() => expect(container.querySelector('[data-testid="view-path-nav"]')).not.toBeNull());
 
-    // A real step first, so the history is no longer the seed. This also
-    // discards the VIEW half, leaving the page half as the only late arrival.
+    // A real step first, so the history is no longer the seed. This also discards the VIEW half, leaving the page half as the
+    // only late arrival.
     await click(container, "sidebar-settings");
     await waitFor(() => expect(path(container)).toContain("모델"));
 
@@ -501,8 +447,7 @@ describe("App view history after a restored launch location", () => {
     }
     await waitFor(() => expect(path(container)).toContain("권한"));
 
-    // Moved off the page they opened, so back has to lead there — not be
-    // disabled because the restore claimed the root.
+    // Moved off the page they opened, so back has to lead there — not be disabled because the restore claimed the root.
     expect(backButton(container).disabled).toBe(false);
     await click(container, "view-path-back");
     await waitFor(() => expect(path(container)).toContain("모델"));

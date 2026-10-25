@@ -25,8 +25,8 @@ describe("MarketplaceAnnouncementBanner", () => {
     );
     const banner = screen.getByTestId("marketplace-announcement-banner");
     expect(banner).toHaveAttribute("data-level", "warning");
-    // Card fill is the opaque popover surface so chat content cannot bleed
-    // through the floating overlay; the level color rides on the border/text.
+    // Card fill is the opaque popover surface so chat content cannot bleed through the floating overlay; the level color rides
+    // on the border/text.
     expect(banner.className).toContain("bg-popover");
     expect(banner.className).toContain("border-warning/(--opacity-medium)");
     expect(banner.textContent).toContain("Scheduled maintenance");

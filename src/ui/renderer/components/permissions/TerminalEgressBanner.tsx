@@ -1,25 +1,6 @@
-/**
- * The banner a workspace terminal tab shows when its shell (or anything it
- * started) connects to a host no grant covers (design F): "<host>:<port>
- * blocked" with Deny and an allow per scope the host offered — Allow once
- * (this one connection), This tab (until the tab's shell exits), Always
- * (every workspace terminal); a local or unverified destination is offered
- * only Allow once and This tab, with the card's warning. Terminals have no
- * This workspace: every tab runs in the app's one default workspace.
- *
- * The connection is held while the banner is up. The host denies it after
- * 120 s without an answer, or at once when the tab closes, and then retires
- * the request, which takes its row down here.
- *
- * One row per pending destination: the host already folds every connection
- * from this tab to one destination into one request, and different
- * destinations stack, oldest first. The answer goes through the window's one
- * approval queue, as the dock's does.
- *
- * Keyboard: every action is a button in the tab order; Escape in a row
- * denies that row. Focus is not taken from the terminal when a row appears —
- * the person may be typing — and the region is announced politely instead.
- */
+/** Offer only host-authorized scopes; local/unverified destinations cannot be allowed permanently. The host holds
+ * connections for 120 s, denies on tab close, and folds same-destination requests; Escape denies without stealing terminal
+ * focus. */
 import type { KeyboardEvent, ReactElement } from "react";
 import { Button } from "../../../../components/ui/button.js";
 import { useTranslation } from "../../../../i18n/react.js";

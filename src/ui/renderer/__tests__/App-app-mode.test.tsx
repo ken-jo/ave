@@ -1,22 +1,3 @@
-/**
- * Behavior-lock tests for App workspace-mode (appMode) transitions.
- *
- * C13 pre-decomposition lock (C16 will move App shell wiring into hooks). These
- * capture the CURRENT observable behavior of the chat/work segmented control:
- * toggling persists the new mode via updateSettings({ system: { appMode } }) and
- * flips the segment's aria-pressed state. Default mode is "work".
- *
- * The routine-overlay IPC subscriptions are ALREADY covered and are NOT
- * duplicated here:
- *   - onRoutineFired → OverlayCard renders: test/renderer/routine-flow.test.tsx
- *     ("onRoutineFired renders the OverlayCard" and siblings).
- *   - onOverlayShow (plugin overlay) → card + primary action → handleAsk
- *     trigger-import: src/ui/renderer/__tests__/ChatView.test.tsx
- *     ("keeps overlay-import tool and final assistant output in the normal chat
- *     flow").
- *
- * Harness conventions copied from AppPluginAuth.test.tsx / ChatView.test.tsx.
- */
 import "../../../../test/renderer/setup.js";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { act, fireEvent, waitFor } from "@testing-library/react";

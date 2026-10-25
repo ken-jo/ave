@@ -21,42 +21,24 @@ import {
 export interface ComposerProjectSelectorProps {
   /** Currently active project — drives the trigger label. */
   activeProject?: ProjectIdentity;
-  /** Full known project list — the SAME source the sidebar's project group
-   *  renders from (App-level `workspaceProjects`), so this selector never
-   *  drifts from the sidebar's list. */
+  /** Full known project list — the SAME source the sidebar's project group renders from (App-level `workspaceProjects`), so
+   * this selector never drifts from the sidebar's list. */
   projects: ProjectIdentity[];
-  /** Switch the active project — the SAME handler wired to the sidebar's
-   *  project rows (`onNewChatForProject`), so selecting here behaves
-   *  identically to clicking a project in the sidebar. */
+  /** Switch the active project — the SAME handler wired to the sidebar's project rows (`onNewChatForProject`), so selecting
+   * here behaves identically to clicking a project in the sidebar. */
   onSelectProject: (project: { projectRoot?: string; projectName?: string }) => void | Promise<void>;
-  /** Re-fetch the workspace project list after a folder is added — the same
-   *  refresh App.tsx already exposes to the sidebar's context menu. */
+  /** Re-fetch the workspace project list after a folder is added — the same refresh App.tsx already exposes to the sidebar's
+   * context menu. */
   onRefreshProjects?: () => void | Promise<void>;
-  /** Surface a refused add — the same App-level toast the sidebar's project
-   *  context menu reports its own failures through. */
+  /** Surface a refused add — the same App-level toast the sidebar's project context menu reports its own failures through. */
   onProjectError?: ProjectErrorReporter;
-  /** Controls the dropdown's open state so the caller (ChatView) can
-   *  force-close it when the conversation stops being empty (first message
-   *  sent) and the trigger unmounts. */
+  /** Controls the dropdown's open state so the caller (ChatView) can force-close it when the conversation stops being empty
+   * (first message sent) and the trigger unmounts. */
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }
 
-/**
- * Empty-state composer project selector — a small "📁 <project name> ⌄"
- * trigger attached directly above the composer card, opening an UPWARD
- * dropdown (side="top") that lists known projects + "add new project".
- * The trigger sits in the same
- * reserved toast-zone the composer dock already carries (see
- * `composer-toast-dock`). The composer is bottom-docked, so the empty
- * conversation above it is where the panel has room.
- *
- * Data/actions are NOT reimplemented here — `projects` / `onSelectProject` /
- * `onRefreshProjects` are the exact same App-level state + handlers the
- * Sidebar's project rows and context menu already use, so switching or adding
- * a project from the composer is byte-identical in effect to doing it from
- * the sidebar (single SOT, no duplicated project-mutation logic).
- */
+/** Reuse App's project state and mutations; the bottom-docked composer opens its selector upward into available space. */
 export function ComposerProjectSelector({
   activeProject,
   projects,
@@ -78,8 +60,8 @@ export function ComposerProjectSelector({
   // internally (still used for tool/file access) — this is display-only.
   const hasRealSelection = Boolean(activeProject && activeProject.isDefault !== true);
   const label = hasRealSelection ? activeProject!.projectName : t("composerProjectSelector.selectProjectPlaceholder");
-  // The default binding is not a pickable list entry — the dropdown only
-  // offers real, user-added projects (+ "Add new project").
+  // The default binding is not a pickable list entry — the dropdown only offers real, user-added projects (+ "Add new
+  // project").
   const namedProjects = projects.filter((project) => project.isDefault !== true);
 
   const handleSelect = (project: ProjectIdentity) => {
@@ -222,8 +204,7 @@ export function ComposerProjectSelector({
             data-testid="composer-project-selector-add"
             disabled={busy}
             onSelect={(event) => {
-              // Keep the menu open across the async picker round trip — Radix
-              // closes on select by default, which would race the native
+              // Keep the menu open across the async picker round trip — Radix closes on select by default, which would race the native
               // dialog. We close explicitly once the flow resolves.
               event.preventDefault();
               void handleAddProject();

@@ -60,8 +60,8 @@ describe("useSidebarTab", () => {
     } as unknown as AveApi;
 
     const { result } = renderHook(() => useSidebarTab(api));
-    // Switch tabs before the mount-seed read resolves — state updates
-    // immediately, but the guarded write must not race the seed.
+    // Switch tabs before the mount-seed read resolves — state updates immediately, but the guarded write must not race the
+    // seed.
     act(() => result.current.setActiveTab("projects"));
     expect(result.current.activeTab).toBe("projects");
     expect(update).not.toHaveBeenCalled();

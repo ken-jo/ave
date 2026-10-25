@@ -52,8 +52,8 @@ function preset(
   providerId: string,
   label: string,
   baseUrl: string,
-  /** A preset that ships its own catalogue declares it; without a policy the
-   *  models are the endpoint's word and there are none until it answers. */
+  /** A preset that ships its own catalogue declares it; without a policy the models are the endpoint's word and there are
+   * none until it answers. */
   modelDiscoveryPolicy?: MarketplaceProviderModelDiscoveryPolicy,
 ): MarketplaceInstalledProviderPreset {
   return {
@@ -217,8 +217,8 @@ function profileApi(profile: Profile, rest: MockApi = {}) {
         publish();
         await Promise.resolve();
       });
-      // Separate acts, so the effects the broadcast queued are mounted before
-      // their requests are waited on — inside a single act they would not be.
+      // Separate acts, so the effects the broadcast queued are mounted before their requests are waited on — inside a single act
+      // they would not be.
       await settleModelListRequests();
     },
   };
@@ -308,11 +308,8 @@ function makeHooks(): TabHooks {
   };
 }
 
-/**
- * The tab under its real parent contract: the credential draft is owned above
- * it, so the harness holds it in state and hands the setter down. A `vi.fn()`
- * here would make every card look permanently empty.
- */
+/** The tab under its real parent contract: the credential draft is owned above it, so the harness holds it in state and
+ * hands the setter down. A `vi.fn()` here would make every card look permanently empty. */
 function TabHarness({
   api,
   props,
@@ -377,8 +374,7 @@ async function renderTab(api: MockApi, props: TabProps = {}) {
   return {
     ...result,
     hooks,
-    /** Move the props the parent owns — the ACTIVE provider above all — as an
-     *  explicit switch really does. */
+    /** Move the props the parent owns — the ACTIVE provider above all — as an explicit switch really does. */
     rerender: async (next: TabProps) => {
       current = { ...current, ...next };
       result.rerender(<TabHarness api={api} props={current} hooks={hooks} />);
@@ -413,9 +409,8 @@ async function chooserModelIds(): Promise<string[]> {
   });
 }
 
-/** The open chooser's row for this model id. The chosen model is mirrored
- *  into the collapsed trigger as well, so the id alone can land outside the
- *  list — only a match inside an option is the row. */
+/** The open chooser's row for this model id. The chosen model is mirrored into the collapsed trigger as well, so the id
+ * alone can land outside the list — only a match inside an option is the row. */
 function chooserOption(modelId: string): HTMLElement {
   const option = [...document.querySelectorAll(`[data-model-id="${modelId}"]`)]
     .map((node) => node.closest("[role='option']"))
@@ -698,9 +693,8 @@ describe("LlmTab provider cards", () => {
   });
 
   it("names no model on a first run with no provider connected", async () => {
-    // Owner report: an empty Model select above "Declares image support for
-    // gpt-5.4-mini on this provider". The id is the vendor default nobody
-    // picked, on a route with no credential behind it.
+    // Owner report: an empty Model select above "Declares image support for gpt-5.4-mini on this provider". The id is the
+    // vendor default nobody picked, on a route with no credential behind it.
     await renderTab(makeApi(), { vendor: "openai", model: "", hasKey: false });
     await waitFor(() => expect(screen.getByTestId(TEST_IDS.llmModelSelect))
       .toHaveTextContent(t("llmTab.modelPlaceholderNoProvider")));
@@ -924,8 +918,8 @@ describe("LlmTab provider cards", () => {
     { baseUrl: "https://gateway.invalid/v1", badge: false },
     { baseUrl: "https://api.openai.com/v1", badge: true },
   ])("matches a fallback row's tool badge under its saved endpoint like the engine: $baseUrl", async ({ baseUrl, badge }) => {
-    // provider.ts builds a fallback on the vendor block's saved baseUrl, and the
-    // adapter matches the catalog under that endpoint's identity.
+    // provider.ts builds a fallback on the vendor block's saved baseUrl, and the adapter matches the catalog under that
+    // endpoint's identity.
     const model = "text-embedding-3-small";
     const { api } = profileApi({ vendors: { openai: { model, baseUrl } } }, {
       hasApiKey: storedKeysFor("openai", "claude"),
@@ -1140,8 +1134,8 @@ describe("LlmTab provider cards", () => {
     const toggle = screen.getByTestId("llm-tab:connection:codex:toggle");
     fireEvent.click(toggle);
     const body = screen.getByTestId("llm-tab:connection:codex:detail");
-    // ONE row, opened on the method already in use — here the stored key — so
-    // the key form shows and the sign-in controls wait behind the other choice.
+    // ONE row, opened on the method already in use — here the stored key — so the key form shows and the sign-in controls wait
+    // behind the other choice.
     await waitFor(() => expect(screen.getByTestId("llm-tab:sign-in-method:codex:api"))
       .toHaveAttribute("aria-checked", "true"));
     const form = await screen.findByTestId("llm-tab:manual-section");
@@ -1220,8 +1214,8 @@ describe("LlmTab provider cards", () => {
 
 describe("LlmTab provider cards leave the chat route alone", () => {
   it("opens an added provider's card without switching what chat runs on", async () => {
-    // The live regression: picking a vendor from the add menu persisted
-    // `llm.provider`, so chat moved to a provider with no credential at all.
+    // The live regression: picking a vendor from the add menu persisted `llm.provider`, so chat moved to a provider with no
+    // credential at all.
     const api = makeApi({ hasApiKey: storedKeysFor("openai") });
     const { hooks } = await renderTab(api, { vendor: "openai", model: "" });
 
@@ -1246,9 +1240,8 @@ describe("LlmTab provider cards leave the chat route alone", () => {
   });
 
   it("offers no way to choose a provider on the card itself", async () => {
-    // Picking a model is the whole decision. A second control that also moved
-    // the route made "which provider answers" a question the screen asked
-    // twice, in two places that could disagree.
+    // Picking a model is the whole decision. A second control that also moved the route made "which provider answers" a
+    // question the screen asked twice, in two places that could disagree.
     const api = makeApi({ hasApiKey: storedKeysFor("openai", "claude") });
     await renderTab(api, { vendor: "openai", model: "" });
 
@@ -1273,8 +1266,8 @@ describe("LlmTab provider cards leave the chat route alone", () => {
       vendorId: "claude",
       apiKey: "sk-ant-new",
     }));
-    // A fixed-endpoint vendor owns no persisted field here, so no block is
-    // written — and saving a credential is not choosing who answers.
+    // A fixed-endpoint vendor owns no persisted field here, so no block is written — and saving a credential is not choosing
+    // who answers.
     expect(hooks.selectApiVendorModel).not.toHaveBeenCalled();
     expect(screen.getByTestId("llm-tab:connection-route:openai:api"))
       .toHaveAttribute("data-active", "true");
@@ -1295,8 +1288,7 @@ describe("LlmTab provider cards leave the chat route alone", () => {
     await waitFor(() => expect(screen.getByTestId("llm-tab:save-providers")).toBeEnabled());
     fireEvent.click(screen.getByTestId("llm-tab:save-providers"));
 
-    // Closing on a refusal would take away the very fields that have to be
-    // corrected, and say nothing about why.
+    // Closing on a refusal would take away the very fields that have to be corrected, and say nothing about why.
     await screen.findByTestId("llm-tab:connection-save-failed:claude");
     expect(screen.getByTestId("llm-api-key-input")).toHaveValue("sk-ant-new");
     expect(screen.getByTestId("llm-tab:connection:claude:toggle"))
@@ -1315,8 +1307,7 @@ describe("LlmTab provider cards leave the chat route alone", () => {
 
     expect(screen.getByTestId("llm-tab:connection:claude:toggle"))
       .toHaveAttribute("aria-expanded", "false");
-    // Cancelling is a decision: reopening the row must not bring the abandoned
-    // key back with it.
+    // Cancelling is a decision: reopening the row must not bring the abandoned key back with it.
     fireEvent.click(screen.getByTestId("llm-tab:connection:claude:toggle"));
     expect(screen.getByTestId("llm-api-key-input")).toHaveValue("");
   });
@@ -1345,8 +1336,8 @@ describe("LlmTab provider cards leave the chat route alone", () => {
     const generalRow = screen.getByTestId("llm-tab:connection:openai-compatible");
     expect(within(generalRow).getByTestId("llm-base-url-input")).toHaveValue(generic);
 
-    // Opening a second row leaves the first open: comparing two providers is a
-    // normal thing to do, and each keeps its own fields.
+    // Opening a second row leaves the first open: comparing two providers is a normal thing to do, and each keeps its own
+    // fields.
     fireEvent.click(screen.getByTestId("llm-tab:connection:ollama:toggle"));
     const ollamaRow = screen.getByTestId("llm-tab:connection:ollama");
     expect(within(ollamaRow).getByTestId("llm-base-url-input")).toHaveValue(selfHosted);
@@ -1360,8 +1351,7 @@ describe("LlmTab provider cards leave the chat route alone", () => {
     installSubscription([codexView()]);
     await renderTab(makeApi({ hasApiKey: storedKeysFor("openai") }), { vendor: "openai", model: "" });
 
-    // The runtime's own action is the single source for that route, and it is
-    // simply not on offer until the user is signed in.
+    // The runtime's own action is the single source for that route, and it is simply not on offer until the user is signed in.
     expect(screen.queryByTestId("subscription-provider:codex:use-for-chat")).toBeNull();
   });
 
@@ -1372,8 +1362,8 @@ describe("LlmTab provider cards leave the chat route alone", () => {
     await screen.findByTestId("llm-tab:connection:claude");
     fireEvent.click(screen.getByTestId("llm-tab:connection:claude:toggle"));
 
-    // Opening a card is reading, not choosing: the live-route badge stays where
-    // the route is, and the card that is merely open says nothing about it.
+    // Opening a card is reading, not choosing: the live-route badge stays where the route is, and the card that is merely open
+    // says nothing about it.
     expect(screen.getByTestId("llm-tab:connection-route:openai:api"))
       .toHaveAttribute("data-active", "true");
     expect(screen.getByTestId("llm-tab:connection-route:claude:api"))
@@ -1381,8 +1371,7 @@ describe("LlmTab provider cards leave the chat route alone", () => {
   });
 
   it("keeps the card on screen after its only credential is deleted", async () => {
-    // This row exists because of the stored key and nothing else, so removing
-    // the key used to remove the place a replacement could be entered.
+    // Removing a key must leave the row available for entering a replacement.
     const deleted = deferred<{ ok: true }>();
     const credentials = deferred<boolean>();
     const api = makeApi({
@@ -1745,16 +1734,16 @@ describe("LlmTab model chooser is the whole switch", () => {
     const { hooks } = await renderTab(api, { vendor: "openai", model: "" });
 
     const offered = await chooserModelIds();
-    // A curated vendor's bundled line is its catalogue, so a saved key is all
-    // it takes for its models to be choosable from another provider's row.
+    // A curated vendor's bundled line is its catalogue, so a saved key is all it takes for its models to be choosable from
+    // another provider's row.
     expect(offered).toContain("claude-sonnet-4-6");
     expect(offered).toContain("claude-opus-4-6");
     expect(chooserGroupText("claude-opus-4-6")).toMatch(/Claude/);
 
     pickChooserOption("claude-opus-4-6");
 
-    // Provider and model move together, in one write, with no Save button in
-    // the path — the same way the thinking controls persist.
+    // Provider and model move together, in one write, with no Save button in the path — the same way the thinking controls
+    // persist.
     await waitFor(() => expect(hooks.selectApiVendorModel)
       .toHaveBeenCalledWith("claude", "claude-opus-4-6"));
     expect(hooks.onImmediateChange).toHaveBeenCalled();
@@ -1785,8 +1774,7 @@ describe("LlmTab model chooser is the whole switch", () => {
 
     pickChooserOption("codex-mini");
 
-    // A subscription pick still goes through the runtime's own action: it is
-    // a sign-in-backed route, not an API credential.
+    // A subscription pick still goes through the runtime's own action: it is a sign-in-backed route, not an API credential.
     await waitFor(() => expect(useForChat).toHaveBeenCalledWith("codex", "codex-mini"));
   });
 
@@ -1808,8 +1796,8 @@ describe("LlmTab model chooser is the whole switch", () => {
       models: ["qwen-self-hosted"],
       fetchedAt: "2026-01-01T00:00:00.000Z",
     } satisfies LlmModelListResult));
-    // Connected runtime, models from the runtime, and no OpenAI key at all —
-    // so this row has no endpoint handshake of any kind behind it.
+    // Connected runtime, models from the runtime, and no OpenAI key at all — so this row has no endpoint handshake of any kind
+    // behind it.
     installSubscription(
       [codexView({
         status: {
@@ -1828,8 +1816,6 @@ describe("LlmTab model chooser is the whole switch", () => {
 
     await waitFor(() => expect(rowOrder()).toEqual(["codex", "openai-compatible"]));
 
-    // One verdict per row, never more — the invariant a live subscription would
-    // have to satisfy too, and the one the two surfaces used to break.
     await waitFor(() => {
       const verdicts = [...document.querySelectorAll("[data-provider-sync-status]")];
       expect(verdicts).toHaveLength(rowOrder().length);
@@ -1845,8 +1831,7 @@ describe("LlmTab model chooser is the whole switch", () => {
       expect(row.querySelectorAll("[data-testid$=':use-for-chat']")).toHaveLength(0);
     }
 
-    // A runtime-fed row has no endpoint to have synced, so it claims no sync
-    // outcome and names what it is offering instead...
+    // A runtime-fed row has no endpoint to have synced, so it claims no sync outcome and names what it is offering instead...
     const runtimeRow = screen.getByTestId("llm-tab:connection-subline:codex");
     expect(runtimeRow).toHaveAttribute("data-provider-sync-status", "none");
     expect(runtimeRow).toHaveTextContent("1");
@@ -1890,9 +1875,8 @@ describe("LlmTab model chooser is the whole switch", () => {
   });
 
   it("names a marketplace preset row by its card title as well", async () => {
-    // A preset is reached through the openai-compatible vendor, so its
-    // catalogue names itself the same untrustworthy way. The row the user
-    // installed is what the column says.
+    // A preset is reached through the openai-compatible vendor, so its catalogue names itself the same untrustworthy way. The
+    // row the user installed is what the column says.
     const gateway = preset("acme-gw", "Acme Gateway", "https://acme.example/v1");
     const { api } = profileApi({
       installedProviderPresets: [gateway],
@@ -1909,8 +1893,7 @@ describe("LlmTab model chooser is the whole switch", () => {
       },
     }, {
       hasApiKey: storedKeysFor("marketplace-provider:acme-gw"),
-      // The cached catalogue is what this reads; a fresh answer would only
-      // race it.
+      // The cached catalogue is what this reads; a fresh answer would only race it.
       listLlmModels: vi.fn(() => new Promise<LlmModelListResult>(() => {})),
     });
     await renderTab(api, {
@@ -1955,14 +1938,13 @@ describe("LlmTab model chooser is the whole switch", () => {
     });
 
     expect(await chooserModelIds()).toContain(ROUTED);
-    // The row offers its own saved model before any handshake, and the entry
-    // that names the sub-vendor arrives with the catalogue — so the column is
-    // read once that has landed.
+    // The row offers its own saved model before any handshake, and the entry that names the sub-vendor arrives with the
+    // catalogue — so the column is read once that has landed.
     await waitFor(() => expect(
       within(chooserOption(ROUTED)).getByTestId(`llm-tab:model-provider:${ROUTED}`).textContent,
     ).toBe("anthropic"));
-    // The group is still the row: the list is navigated by provider row, and
-    // only the leading column speaks for the individual model.
+    // The group is still the row: the list is navigated by provider row, and only the leading column speaks for the individual
+    // model.
     expect(chooserGroupText(ROUTED)).toMatch(/OpenRouter/i);
   });
 });
@@ -1978,16 +1960,13 @@ describe("LlmTab names each route's state on a row that has two", () => {
   const NOT_SET = /미설정|Not set/;
 
   it("says one thing about a provider reached two ways", async () => {
-    // The row is one provider reached two ways. Its sign-in is healthy and it
-    // holds no key; the row used to be drawn twice, and "connected" and "signed
-    // out" side by side described those two routes without saying so — which
-    // read as one row contradicting itself.
+    // Combine subscription and API routes in one provider row with one coherent verdict.
     installSubscription([codexView({ status: SIGNED_IN })], { refreshStatus: vi.fn() });
     await renderTab(makeApi(), { vendor: "claude", model: "claude-sonnet-4-6" });
 
     const card = await screen.findByTestId("llm-tab:connection:codex");
-    // ONE state word for the row, and it is the usable one: this provider can
-    // answer a turn, through the route the badges name.
+    // ONE state word for the row, and it is the usable one: this provider can answer a turn, through the route the badges
+    // name.
     const state = within(card).getByTestId("llm-tab:connection:codex:state");
     expect(state).toHaveTextContent(CONNECTED);
     expect(within(card).queryByText(SIGNED_OUT)).toBeNull();
@@ -1996,15 +1975,13 @@ describe("LlmTab names each route's state on a row that has two", () => {
       .toHaveTextContent(SUBSCRIPTION);
     expect(within(card).getByTestId("llm-tab:connection-route:codex:api"))
       .toHaveTextContent(API_KEY);
-    // ...and exactly one of each control the two cards used to duplicate.
     expect(card.querySelectorAll("[data-testid^='llm-tab:connection-refresh:']")).toHaveLength(1);
     expect(card.querySelectorAll("[data-testid^='llm-tab:connection:'][data-testid$=':state']")).toHaveLength(1);
   });
 
   it("holds the chevron column steady across rows that have no refresh", async () => {
-    // "Nothing lines up" was half the complaint. The chevron is a column, so a
-    // row with nothing to refresh still owes the list the width the refreshable
-    // rows take — otherwise the disclosure arrow moves as the eye goes down.
+    // "Nothing lines up" was half the complaint. The chevron is a column, so a row with nothing to refresh still owes the list
+    // the width the refreshable rows take — otherwise the disclosure arrow moves as the eye goes down.
     installSubscription([codexView()]);
     const api = genericRowApi(vi.fn().mockResolvedValue(FETCH_FAILED));
     await renderTab(api, { vendor: "openai-compatible", baseUrl: CUSTOM_ENDPOINT, model: "" });
@@ -2068,8 +2045,7 @@ describe("LlmTab names each route's state on a row that has two", () => {
     const state = within(card).getByTestId("llm-tab:connection:codex:state");
     expect(state).toHaveAttribute("data-state", "connected");
     expect(state).toHaveTextContent(CONNECTED);
-    // The claim that makes "connected" true: this provider is feeding the one
-    // chooser right now.
+    // The claim that makes "connected" true: this provider is feeding the one chooser right now.
     expect(await chooserModelIds()).toContain("codex-mini");
   });
 
@@ -2095,9 +2071,8 @@ describe("LlmTab names each route's state on a row that has two", () => {
   });
 
   it("says why a provider is missing from the picker without being opened", async () => {
-    // "Why is this one not in the chooser" is a question someone has while the
-    // row is folded, so answering it inside the body would put the answer
-    // exactly where it cannot be read.
+    // "Why is this one not in the chooser" is a question someone has while the row is folded, so answering it inside the body
+    // would put the answer exactly where it cannot be read.
     installSubscription([]);
     const api = genericRowApi(
       vi.fn(() => new Promise<LlmModelListResult>(() => {})),
@@ -2118,8 +2093,8 @@ describe("LlmTab names each route's state on a row that has two", () => {
     installSubscription([codexView()]);
     await renderTab(makeApi({
       hasApiKey: storedKeysFor("openai"),
-      // The key has to actually reach something: a stored key over a dead
-      // endpoint is "needs attention", and this test is about the healthy case.
+      // The key has to actually reach something: a stored key over a dead endpoint is "needs attention", and this test is about
+      // the healthy case.
       listLlmModels: vi.fn().mockResolvedValue({
         ok: true,
         vendor: "openai",
@@ -2133,12 +2108,10 @@ describe("LlmTab names each route's state on a row that has two", () => {
     });
 
     const card = await screen.findByTestId("llm-tab:connection:codex");
-    // A stored key that reaches its endpoint makes the provider usable, so
-    // that is what the row says.
+    // A stored key that reaches its endpoint makes the provider usable, so that is what the row says.
     await waitFor(() => expect(within(card).getByTestId("llm-tab:connection:codex:state"))
       .toHaveTextContent(CONNECTED));
-    // Which route is still unused is a question the expanded row answers, in
-    // the only place that can do anything about it.
+    // Which route is still unused is a question the expanded row answers, in the only place that can do anything about it.
     fireEvent.click(within(card).getByTestId("llm-tab:connection:codex:toggle"));
     fireEvent.click(await within(card).findByTestId("llm-tab:sign-in-method:codex:subscription"));
     expect(within(card).getByTestId("subscription-provider:codex:login-browser")).toBeInTheDocument();
@@ -2310,8 +2283,7 @@ describe("LlmTab asks how to sign in to a provider reached two ways", () => {
 });
 
 describe("LlmTab preset and generic custom provider are separate rows", () => {
-  // A preset that ships its own model list, so the row has something to offer
-  // before any endpoint has answered.
+  // A preset that ships its own model list, so the row has something to offer before any endpoint has answered.
   const acme = preset("acme-gw", "Acme Gateway", "https://acme.example/v1", "static");
   const GENERIC_ENDPOINT = "http://localhost:8001/v1";
 
@@ -2357,8 +2329,8 @@ describe("LlmTab preset and generic custom provider are separate rows", () => {
 
     await screen.findByTestId("llm-tab:connection:marketplace-provider:acme-gw");
     expect(await chooserModelIds()).toContain("acme-gw-default");
-    // Two presets are two providers reached through one vendor, so the name on
-    // the group has to be the preset's, not the vendor's.
+    // Two presets are two providers reached through one vendor, so the name on the group has to be the preset's, not the
+    // vendor's.
     expect(chooserGroupText("acme-gw-default")).toMatch(/Acme Gateway/);
 
     pickChooserOption("acme-gw-default");
@@ -2402,8 +2374,7 @@ describe("LlmTab preset and generic custom provider are separate rows", () => {
 
 describe("LlmTab chat-route availability", () => {
   it("asks Vertex for a project rather than a key it never stores", async () => {
-    // Vertex authenticates out of band, so the key question can never be
-    // satisfied on this card — it used to leave the row permanently unusable.
+    // Out-of-band authentication must not leave a provider blocked on an inapplicable key field.
     const withoutProject = makeApi({
       hasApiKey: storedKeysFor("claude"),
       getSettings: vi.fn().mockResolvedValue({
@@ -2441,8 +2412,8 @@ describe("LlmTab chat-route availability", () => {
 
     await waitFor(() =>
       expect(screen.queryByTestId("llm-tab:connection-blocked:vertex-ai")).toBeNull());
-    // With the project stored the row is choosable like any other — through
-    // the one chooser, with no second control of its own.
+    // With the project stored the row is choosable like any other — through the one chooser, with no second control of its
+    // own.
     expect(await chooserModelIds()).toContain("gemini-3.5-flash");
     expect(chooserGroupText("gemini-3.5-flash")).toMatch(/Vertex/i);
 
@@ -2493,17 +2464,13 @@ describe("LlmTab rows that are not the active one", () => {
     );
     await renderTab(api, { vendor: "claude", model: "claude-sonnet-4-6" });
 
-    // The card says why it is not in the list, rather than looking ready while
-    // the chooser silently omits it.
+    // The card says why it is not in the list, rather than looking ready while the chooser silently omits it.
     const note = await screen.findByTestId("llm-tab:connection-blocked:openai-compatible");
     expect(note.textContent?.trim()).not.toBe("");
     expect((await chooserModelIds()).every((id) => id.startsWith("claude"))).toBe(true);
   });
 
   it("reads each preset row's own stored model, never another row's", async () => {
-    // Every one of these rows is reached through the openai-compatible vendor.
-    // They used to share that block's single `model`, so the chooser showed the
-    // same id under all three names.
     const api = makeApi({
       hasApiKey: storedKeysFor(
         "claude",
@@ -2543,9 +2510,8 @@ describe("LlmTab rows that are not the active one", () => {
   });
 
   it("points at the model list after a save instead of switching to what was saved", async () => {
-    // The user's decision: saving a credential never moves the conversation,
-    // not even when the provider it is on cannot answer. What the save owes is
-    // the pointer to the one switch there is.
+    // The user's decision: saving a credential never moves the conversation, not even when the provider it is on cannot
+    // answer. What the save owes is the pointer to the one switch there is.
     const api = makeApi({ hasApiKey: storedKeysFor() });
     const { hooks } = await renderTab(api, { vendor: "openai", hasKey: false, model: "" });
 
@@ -2574,11 +2540,7 @@ describe("LlmTab asks only the rows that have a catalogue to give", () => {
   }
 
   it("asks a paired vendor's fixed endpoint, since a stored key makes it an API row too", async () => {
-    // OpenAI's `/models` is fixed and known, so a stored key is all it takes to
-    // ask — the card is the Codex runtime's AND a configured API route's, and
-    // the API half is entitled to its own catalogue. What must not happen is
-    // that call being reported on a card with no API route: see
-    // "keeps a subscription card free of a sync line…" above.
+    // Keyed API routes may fetch their model catalog; subscription-only rows must not claim an API sync.
     const api = makeApi({ hasApiKey: storedKeysFor("openai") });
     installSubscription([codexView()]);
     await renderTab(api, { vendor: "claude", model: "claude-sonnet-4-6", hasKey: false });
@@ -2602,15 +2564,15 @@ describe("LlmTab asks only the rows that have a catalogue to give", () => {
     await settleModelListRequests();
 
     expect(rowOrder()).toEqual(["codex"]);
-    // The row's line reports no sync outcome at all for a route it has not
-    // configured; it names what the signed-in runtime offers instead.
+    // The row's line reports no sync outcome at all for a route it has not configured; it names what the signed-in runtime
+    // offers instead.
     expect(screen.getByTestId("llm-tab:connection-subline:codex"))
       .toHaveAttribute("data-provider-sync-status", "none");
   });
 
   it("asks nothing of a vendor whose model list is curated here", async () => {
-    // Azure AI Foundry's endpoint is one deployment's address, not a catalogue,
-    // and its models are the bundled list — so there is nothing to ask it for.
+    // Azure AI Foundry's endpoint is one deployment's address, not a catalogue, and its models are the bundled list — so there
+    // is nothing to ask it for.
     const api = makeApi({
       hasApiKey: storedKeysFor("azure-foundry"),
       getSettings: vi.fn().mockResolvedValue({
@@ -2747,9 +2709,8 @@ describe("LlmTab says which kind of nothing a row has", () => {
   });
 
   it("says it on the ACTIVE row too, whose own catalogue came back empty", async () => {
-    // The row chat is running on is the one where an empty list matters most:
-    // with no model saved there is nothing to send, and "has not answered yet"
-    // would be the wrong account of an endpoint that answered with nothing.
+    // The row chat is running on is the one where an empty list matters most: with no model saved there is nothing to send,
+    // and "has not answered yet" would be the wrong account of an endpoint that answered with nothing.
     const api = genericRow(vi.fn(async () => ({
       ok: true,
       vendor: "openai-compatible",
@@ -2778,16 +2739,15 @@ describe("LlmTab says which kind of nothing a row has", () => {
         });
         await Promise.resolve();
       });
-      // Separate acts, so the effects the broadcast queued are mounted before
-      // their requests are waited on — inside one act they would not be.
+      // Separate acts, so the effects the broadcast queued are mounted before their requests are waited on — inside one act they
+      // would not be.
       await settleModelListRequests();
     })();
   }
 
   it("does not ask a failed endpoint again on a broadcast that changed nothing", async () => {
-    // Every settings write broadcasts one of these, and a fresh object identity
-    // each time re-ran every effect reading a row's endpoint — including the
-    // one that asks endpoints for their catalogues.
+    // Every settings write broadcasts one of these, and a fresh object identity each time re-ran every effect reading a row's
+    // endpoint — including the one that asks endpoints for their catalogues.
     const api = genericRow(vi.fn(async () => FETCH_FAILED));
     await renderTab(api, { vendor: "claude", model: "claude-sonnet-4-6" });
 
@@ -2877,9 +2837,8 @@ describe("LlmTab model lists are cached, not re-fetched", () => {
   }
 
   it("renders the cached catalogue without waiting on a request", async () => {
-    // A model list is a catalogue, not live data. A chooser that blanks itself
-    // until a network call returns is what this policy exists to remove: the
-    // request below never resolves, and the list is still there.
+    // A model list is a catalogue, not live data. A chooser that blanks itself until a network call returns is what this
+    // policy exists to remove: the request below never resolves, and the list is still there.
     const { api } = presetProfile({
       vendors: { "openai-compatible": { baseUrl: CUSTOM_ENDPOINT } },
       modelListCache: { [genericKey]: cacheEntry(CUSTOM_ENDPOINT, [CACHED_MODEL]) },
@@ -2924,8 +2883,8 @@ describe("LlmTab model lists are cached, not re-fetched", () => {
       hasApiKey: storedKeysFor("openai-compatible", GATEWAY_SECRET, "azure-foundry"),
       listLlmModels: answering([CACHED_MODEL]),
     });
-    // The marker is per launch and lives in the module, so a test crosses that
-    // boundary by forgetting it — which is the whole of what a restart does.
+    // The marker is per launch and lives in the module, so a test crosses that boundary by forgetting it — which is the whole
+    // of what a restart does.
     forgetModelListLaunchRefreshes();
     await renderTab(api, {
       vendor: "claude",
@@ -2935,8 +2894,7 @@ describe("LlmTab model lists are cached, not re-fetched", () => {
 
     await waitFor(() => expect(askedCount(api)).toBe(2));
     await settleModelListRequests();
-    // The two routed rows, once each — and never Foundry, whose list is
-    // curated here however its endpoint is configured.
+    // The two routed rows, once each — and never Foundry, whose list is curated here however its endpoint is configured.
     expect(askedAddresses(api).sort()).toEqual([CUSTOM_ENDPOINT, gateway.baseUrl].sort());
   });
 
@@ -2954,8 +2912,7 @@ describe("LlmTab model lists are cached, not re-fetched", () => {
 
     await broadcast({ "openai-compatible": { baseUrl: MOVED } });
 
-    // A different address is a different catalogue, and no cache entry names
-    // this one yet.
+    // A different address is a different catalogue, and no cache entry names this one yet.
     await waitFor(() => expect(askedCount(api)).toBe(2));
     expect((api.listLlmModels as Mock).mock.calls.at(-1)?.[0]).toMatchObject({ baseUrl: MOVED });
   });
@@ -2971,8 +2928,8 @@ describe("LlmTab model lists are cached, not re-fetched", () => {
     await renderTab(api, { vendor: "claude", model: "claude-sonnet-4-6" });
     await waitFor(() => expect(askedCount(api)).toBe(1));
 
-    // The same block with its keys written the other way round: identical
-    // settings, which a serialized comparison would have called news.
+    // The same block with its keys written the other way round: identical settings, which a serialized comparison would have
+    // called news.
     await broadcast({ "openai-compatible": { enableThinking: true, baseUrl: CUSTOM_ENDPOINT } });
 
     expect(askedCount(api)).toBe(1);
@@ -2997,9 +2954,8 @@ describe("LlmTab model lists are cached, not re-fetched", () => {
   });
 
   it("asks a fixed-endpoint vendor once when its card and the fallback chain both want it", async () => {
-    // A vendor with no endpoint of its own is asked whether it holds a key
-    // before anything is fetched, and its card and the fallback chain want the
-    // same catalogue. One list, one request, however many callers want it.
+    // A vendor with no endpoint of its own is asked whether it holds a key before anything is fetched, and its card and the
+    // fallback chain want the same catalogue. One list, one request, however many callers want it.
     const { api } = presetProfile({}, {
       hasApiKey: storedKeysFor("openai"),
       listLlmModels: answering(["gpt-from-the-endpoint"]),
@@ -3026,9 +2982,8 @@ describe("LlmTab model lists are cached, not re-fetched", () => {
   });
 
   it("asks a fixed-endpoint vendor once when its refresh is pressed twice in a row", async () => {
-    // Such a vendor is asked whether it holds a key before anything is
-    // fetched. A second press landing during that question is the same
-    // request, and the answer to the first is the answer to both.
+    // Such a vendor is asked whether it holds a key before anything is fetched. A second press landing during that question is
+    // the same request, and the answer to the first is the answer to both.
     const { api } = presetProfile({}, {
       hasApiKey: storedKeysFor("openai"),
       listLlmModels: answering(["gpt-from-the-endpoint"]),
@@ -3048,9 +3003,8 @@ describe("LlmTab model lists are cached, not re-fetched", () => {
   });
 
   it("shows no sync on a keyless row while the credential store is still answering", async () => {
-    // The in-flight claim is taken before the credential question, but the
-    // visible "syncing" state is not: a row with nothing stored makes no
-    // request, and must not look for a moment as if it had.
+    // The in-flight claim is taken before the credential question, but the visible "syncing" state is not: a row with nothing
+    // stored makes no request, and must not look for a moment as if it had.
     const { api } = presetProfile({}, {
       hasApiKey: vi.fn(() => new Promise<boolean>(() => {})),
     });
@@ -3086,9 +3040,8 @@ describe("LlmTab model lists are cached, not re-fetched", () => {
   });
 
   it("asks a row again once its credential is replaced", async () => {
-    // The cache key is built from vendor, address and scope — never from the
-    // credential — so a key stored over a broken one changes nothing the key
-    // can see, and the launch marker alone would hold the row on its failure.
+    // The cache key is built from vendor, address and scope — never from the credential — so a key stored over a broken one
+    // changes nothing the key can see, and the launch marker alone would hold the row on its failure.
     let answer: LlmModelListResult = FETCH_FAILED;
     const { api } = presetProfile({
       vendors: { "openai-compatible": { baseUrl: CUSTOM_ENDPOINT } },
@@ -3121,9 +3074,8 @@ describe("LlmTab model lists are cached, not re-fetched", () => {
   });
 
   it("lands a fetched list where the fallback chain reads it", async () => {
-    // The write went to `vendor\n<address>\n` and the read looked under
-    // `vendor\n\n`, so a vendor with an address of its own offered the
-    // fallback dropdown nothing however well its endpoint had answered.
+    // The write went to `vendor\n<address>\n` and the read looked under `vendor\n\n`, so a vendor with an address of its own
+    // offered the fallback dropdown nothing however well its endpoint had answered.
     const { api } = presetProfile({
       installedProviderIds: ["openrouter"],
     }, {
@@ -3150,9 +3102,8 @@ describe("LlmTab model lists are cached, not re-fetched", () => {
   });
 
   it("ignores a cache entry filed under an address the row no longer uses", async () => {
-    // An older build filed this vendor's catalogue under a different address.
-    // Binding the row to that entry left it reading a key nothing writes any
-    // more — an old catalogue with no way to refresh.
+    // An older build filed this vendor's catalogue under a different address. Binding the row to that entry left it reading a
+    // key nothing writes any more — an old catalogue with no way to refresh.
     const { api } = presetProfile({
       vendors: { "openai-compatible": { baseUrl: CUSTOM_ENDPOINT } },
       modelListCache: {
@@ -3214,9 +3165,8 @@ describe("LlmTab marketplace preset rows", () => {
 
   it("reports each preset's handshake on its own card", async () => {
     const api = makeApi({
-      // The launch refresh confirms the cached catalogue, so the endpoint
-      // answers here; a failure would leave the row on its cached list and say
-      // so, which is a different test.
+      // The launch refresh confirms the cached catalogue, so the endpoint answers here; a failure would leave the row on its
+      // cached list and say so, which is a different test.
       listLlmModels: vi.fn(async () => ({
         ok: true,
         vendor: "openai-compatible",
@@ -3241,8 +3191,8 @@ describe("LlmTab marketplace preset rows", () => {
       model: "",
       hasKey: false,
     });
-    // Acme's catalogue landed, so its row is already there; only Bolt is left
-    // to add — and the two must not share one set of facts.
+    // Acme's catalogue landed, so its row is already there; only Bolt is left to add — and the two must not share one set of
+    // facts.
     openMenu(screen.getByTestId("llm-tab:add-provider"));
     fireEvent.click(await screen.findByTestId("llm-tab:add-provider-item:marketplace-provider:bolt-gw"));
 
@@ -3272,8 +3222,8 @@ describe("LlmTab unsaved provider input", () => {
   });
 
   it("keeps a card with uncommitted input on screen and marks it when collapsed", async () => {
-    // Nothing was added and nothing is configured: this row exists only
-    // because the draft does — which is the part that survives a remount.
+    // Nothing was added and nothing is configured: this row exists only because the draft does — which is the part that
+    // survives a remount.
     await renderTab(makeApi(), {
       vendor: "claude",
       hasKey: false,
@@ -3318,8 +3268,7 @@ describe("LlmTab OpenAI model catalogue", () => {
 
     openMenu(screen.getByTestId(TEST_IDS.llmModelSelect));
     await screen.findByText("gpt-from-endpoint");
-    // The bundled catalogue is metadata, never the list: none of its ids may
-    // appear once the endpoint has answered.
+    // The bundled catalogue is metadata, never the list: none of its ids may appear once the endpoint has answered.
     expect(document.querySelector("[data-model-id=\"gpt-5.4\"]")).toBeNull();
     expect(document.querySelector("[data-model-id=\"o3\"]")).toBeNull();
   });
@@ -3348,9 +3297,7 @@ describe("LlmTab OpenAI model catalogue", () => {
     });
     await renderTab(api, { model: "" });
 
-    // ONE telling of the handshake per row: the sub-line names the endpoint it
-    // reached and what came back. The head used to carry a dot saying the same
-    // thing a second time, computed separately.
+    // Describe the endpoint and handshake outcome once per row.
     await waitFor(() => expect(screen.getByTestId("llm-tab:connection-subline:openai"))
       .toHaveAttribute("data-provider-sync-status", "ready"));
     const subline = screen.getByTestId("llm-tab:connection-subline:openai");
@@ -3368,8 +3315,8 @@ describe("LlmTab OpenAI model catalogue", () => {
   });
 
   it("says nothing anywhere while no handshake has been made", async () => {
-    // No key is stored, so nothing was asked. An unasked question has no
-    // answer to report — not on the card, and not under the chooser either.
+    // No key is stored, so nothing was asked. An unasked question has no answer to report — not on the card, and not under the
+    // chooser either.
     const api = makeApi();
     installSubscription([codexView({
       status: { runtime: "ready", connection: "connected", models: [] },
@@ -3383,15 +3330,7 @@ describe("LlmTab OpenAI model catalogue", () => {
       .toHaveAttribute("data-provider-sync-status", "none");
   });
 
-  /**
-   * The contradiction this consolidation exists to make impossible.
-   *
-   * OpenAI used to be drawn twice — a provider row and a subscription card —
-   * and each looked the handshake up under a key it built for itself. A
-   * signed-in OpenAI card read "sync failed" while the row read "4 models
-   * synced", at one instant, about one account. One row now, and one read
-   * behind it, so there is nowhere for a second answer to live.
-   */
+  /** Use one row and one handshake lookup so sign-in and catalog results cannot contradict duplicate surfaces. */
   it("gives one vendor one row and one sync verdict, wherever it is reached", async () => {
     const api = makeApi({ hasApiKey: storedKeysFor("openai") });
     installSubscription([codexView({
@@ -3437,8 +3376,8 @@ describe("LlmTab OpenAI model catalogue", () => {
     await waitFor(() => {
       expect(status).toHaveAttribute("data-provider-sync-status", "error");
     });
-    // A cached catalogue is still on offer, so the message must not read as
-    // "nothing to show" — the two failures are different states.
+    // A cached catalogue is still on offer, so the message must not read as "nothing to show" — the two failures are different
+    // states.
     expect(status.textContent).toMatch(/마지막으로 받은|last catalogue/);
   });
 
@@ -3480,9 +3419,8 @@ describe("LlmTab OpenAI model catalogue", () => {
   });
 
   it("gives a generic openai-compatible row its own endpoint field with the saved value", async () => {
-    // The live shape: the active provider is OpenAI, and the openai-compatible
-    // provider is configured with a custom endpoint of its own. Clicking its
-    // card must show THAT endpoint, without the active provider moving.
+    // The live shape: the active provider is OpenAI, and the openai-compatible provider is configured with a custom endpoint
+    // of its own. Clicking its card must show THAT endpoint, without the active provider moving.
     const api = makeApi({
       hasApiKey: storedKeysFor("openai", "openai-compatible"),
       getSettings: vi.fn().mockResolvedValue({
@@ -3539,8 +3477,8 @@ describe("LlmTab OpenAI model catalogue", () => {
   });
 
   it("keeps the generic endpoint field through an unrelated settings broadcast", async () => {
-    // A model-list sync persists its cache, which broadcasts settings. That
-    // broadcast must not rewrite which provider the form is editing.
+    // A model-list sync persists its cache, which broadcasts settings. That broadcast must not rewrite which provider the form
+    // is editing.
     const api = makeApi({
       hasApiKey: storedKeysFor("openai-compatible"),
       getSettings: settingsWithVendorBlocks({ "openai-compatible": { baseUrl: CUSTOM_ENDPOINT } }),
@@ -3614,8 +3552,8 @@ describe("LlmTab OpenAI model catalogue", () => {
     });
 
     await waitFor(() => expect(api.listLlmModels).toHaveBeenCalled());
-    // In flight and nothing stored: a started handshake is not a configured
-    // provider, so it must not draw a "connected" row of its own.
+    // In flight and nothing stored: a started handshake is not a configured provider, so it must not draw a "connected" row of
+    // its own.
     expect(rowOrder()).toEqual([]);
 
     await act(async () => {

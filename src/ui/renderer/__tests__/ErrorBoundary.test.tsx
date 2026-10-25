@@ -1,10 +1,3 @@
-/**
- * ErrorBoundary renderer test.
- *
- * Verifies:
- * 1. Throwing child renders fallback message.
- * 2. Reload button is present in error state.
- */
 import "../../../../test/renderer/setup.js";
 import { describe, it, expect, vi } from "vitest";
 import { render, fireEvent } from "@testing-library/react";
@@ -138,9 +131,8 @@ describe("ErrorBoundary", () => {
       return (
         <ErrorBoundary
           onReset={() => {
-            // Trigger BOTH a throw AND a state change. The boundary must
-            // catch the throw, log it, and still proceed to clear its
-            // own error state so the children get a chance to re-render.
+            // Trigger BOTH a throw AND a state change. The boundary must catch the throw, log it, and still proceed to clear its own
+            // error state so the children get a chance to re-render.
             setShouldThrow(false);
             throw new Error("onReset hook intentionally throws");
           }}
@@ -154,7 +146,6 @@ describe("ErrorBoundary", () => {
     fireEvent.click(getByText("다시 시도"));
     // Boundary cleared its state despite onReset throwing → children re-rendered
     expect(queryByTestId("recovered-child")).not.toBeNull();
-    // Verify the onReset throw was logged (forensic trail for the caller bug)
     const calls = consoleSpy.mock.calls.map((args) => String(args[0]));
     expect(calls.some((s) => s.includes("onReset hook threw"))).toBe(true);
     consoleSpy.mockRestore();

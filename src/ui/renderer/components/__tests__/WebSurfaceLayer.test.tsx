@@ -1,11 +1,5 @@
 // @vitest-environment jsdom
-/**
- * Browser tab pages live in one window-level layer and are laid over their
- * tab's slot. These pin the two properties the main-area panels rely on: a
- * slot may move without the guest being recreated (a recreated guest reloads
- * the page), and placement follows the slot — clipped, hidden, cut around
- * occluding cards, and out of the pointer's way during a drag.
- */
+/** Move slots without recreating guests; placement must clip, hide and avoid occluders while retaining page state. */
 import "../../../../../test/renderer/setup.js";
 import { act, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -250,7 +244,6 @@ describe("WebSurfaceLayer", () => {
     Object.defineProperty(document.documentElement, "clientWidth", { configurable: true, value: 1200 });
     Object.defineProperty(document.documentElement, "clientHeight", { configurable: true, value: 800 });
     stubBox(screen.getByTestId("web-surface-slot"), { left: 100, top: 50, width: 600, height: 400 });
-    // The pane clips the slot's top 30px away (scrolled or collapsed).
     stubBox(screen.getByTestId("clip"), { left: 100, top: 80, width: 600, height: 370 });
 
     act(() => { placeWebSurfaces(); });

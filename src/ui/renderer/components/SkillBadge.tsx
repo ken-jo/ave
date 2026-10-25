@@ -1,8 +1,3 @@
-/**
- * SkillBadge — small chip rendered inline in the chat at the call site of
- * the `skill_load` LLM tool. Visualizes "🎯 Skill loaded: <name>" with a
- * tooltip showing the description.
- */
 import { Sparkles } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../../components/ui/tooltip.js";
 import { useTranslation } from "../../../i18n/react.js";
@@ -12,11 +7,8 @@ export interface SkillBadgeProps {
   description: string;
 }
 
-/**
- * L2: cap rendered string length so a misbehaving (or malicious) skill
- * cannot blow up the badge's layout via a long name/description. The full
- * value is still available in the tooltip's title attribute fallback.
- */
+/** L2: cap rendered string length so a misbehaving (or malicious) skill cannot blow up the badge's layout via a long
+ * name/description. The full value is still available in the tooltip's title attribute fallback. */
 const DISPLAY_CAP = 80;
 function clip(value: string): string {
   return value.length > DISPLAY_CAP ? `${value.slice(0, DISPLAY_CAP)}…` : value;

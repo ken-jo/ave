@@ -68,7 +68,6 @@ function memorySearchSessions(api: AveApi, query: string, project: ProjectIdenti
   return opts ? api.memorySearchSessions(query, opts) : api.memorySearchSessions(query);
 }
 
-
 type MemoryCandidateApi = {
   memoryListCandidates?: (opts?: ReturnType<typeof memoryProjectOptions>) => Promise<Array<{
     id: string;
@@ -89,12 +88,7 @@ function memoryListCandidates(api: AveApi, project: ProjectIdentity | undefined)
   const opts = memoryProjectOptions(project);
   return opts ? listCandidates(opts) : listCandidates();
 }
-/**
- * Memory search hook.
- *
- * Debounces query (200 ms), fires IPC calls, guards post-unmount setState
- * with aliveRef pattern.
- */
+/** Memory search hook. Debounces query (200 ms), fires IPC calls, guards post-unmount setState with aliveRef pattern. */
 export function useMemorySearch(api: AveApi, project?: ProjectIdentity) {
   const [query, setQuery] = useState("");
   const [noteCatalog, setNoteCatalog] = useState<NoteResult[]>([]);

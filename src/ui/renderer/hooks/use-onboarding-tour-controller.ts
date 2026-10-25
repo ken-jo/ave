@@ -16,18 +16,8 @@ export interface UseOnboardingTourControllerResult {
   effectiveHasApiKey: boolean | null;
 }
 
-/**
- * Starts the optional first-boot SpotlightTour without placing any setup flow
- * in front of the workspace. Profile, provider, plugin, and runtime settings
- * remain directly available from Settings and their normal main-window views.
- *
- * Also owns the gate that plugin onboarding proposals wait behind. The gate is
- * this hook's because the tour is: it opens when the tour is finished, and for
- * a returning user it is already open at the moment the boot probe decides not
- * to run the tour at all. Asking the host for pending proposals is what stages
- * the first card; the host chooses which, and there is exactly one such request
- * per launch.
- */
+/** Request pending proposals once per launch after optional tour completion, or immediately when the boot probe skips the
+ * tour. */
 export function useOnboardingTourController(
   api: Api,
 ): UseOnboardingTourControllerResult {
@@ -66,14 +56,14 @@ export function useOnboardingTourController(
           settings.features?.onboardingCompleted === true ||
           hasSeenFirstBootTour(tourState)
         ) {
-          // Nothing to tour: the user has been here. Proposals are what is
-          // left of onboarding for them, so the gate is open on arrival.
+          // Nothing to tour: the user has been here. Proposals are what is left of onboarding for them, so the gate is open on
+          // arrival.
           setProposalGateOpen(true);
           return;
         }
 
-        // Preserve the existing-install guard: users who configured a provider
-        // before this tour was introduced are not sent through first-run help.
+        // Preserve the existing-install guard: users who configured a provider before this tour was introduced are not sent
+        // through first-run help.
         const activeKey = await api.hasApiKey().catch(() => false);
         const configuredKeys = activeKey
           ? [true]
@@ -82,9 +72,8 @@ export function useOnboardingTourController(
           );
         if (cancelled || configuredKeys.some(Boolean)) return;
 
-        // The IPC handler broadcasts before its invoke response resolves. Mark
-        // this first so a fast dismiss/complete callback cannot race past the
-        // one-time settings persistence below.
+        // The IPC handler broadcasts before its invoke response resolves. Mark this first so a fast dismiss/complete callback
+        // cannot race past the one-time settings persistence below.
         firstBootTourStartedRef.current = true;
         const started = await api.tour.start("first-boot-essentials");
         if (cancelled || !started.ok) firstBootTourStartedRef.current = false;
@@ -100,9 +89,8 @@ export function useOnboardingTourController(
   const finishFirstBootTour = useCallback((completed: boolean) => {
     if (!firstBootTourStartedRef.current || onboardingPersistedRef.current) return;
     onboardingPersistedRef.current = true;
-    // Only a COMPLETED tour opens the proposal gate. A user who dismissed the
-    // tour said they did not want to be walked through the app; the gate opens
-    // for them on the next launch, as a returning user.
+    // Only a COMPLETED tour opens the proposal gate. A user who dismissed the tour said they did not want to be walked through
+    // the app; the gate opens for them on the next launch, as a returning user.
     if (completed) setProposalGateOpen(true);
     void markOnboardingCompleted();
   }, [markOnboardingCompleted]);
@@ -119,8 +107,8 @@ export function useOnboardingTourController(
     if (!proposalGateOpen || proposalsRequestedRef.current) return;
     proposalsRequestedRef.current = true;
     void api.onboarding.listPending(locale).catch(() => {
-      // Onboarding proposals are optional guidance; a failed request leaves the
-      // workspace exactly as it is and the next launch asks again.
+      // Onboarding proposals are optional guidance; a failed request leaves the workspace exactly as it is and the next launch
+      // asks again.
     });
   }, [api, locale, proposalGateOpen]);
 

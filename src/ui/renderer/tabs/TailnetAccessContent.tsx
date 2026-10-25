@@ -48,13 +48,7 @@ function durationLabel(
   return value;
 }
 
-/**
- * Every failure code gets its own sentence.
- *
- * Three sentences used to cover the whole vocabulary, so "no conversation is
- * focused" and "the store could not be written" read identically and neither
- * told anyone what to do next.
- */
+/** Map each failure code to its actionable sentence. */
 function errorText(error: TailnetSharingErrorCode, t: (key: string) => string): string {
   switch (error) {
     case "user-keyboard-required":
@@ -74,11 +68,8 @@ function errorText(error: TailnetSharingErrorCode, t: (key: string) => string): 
   return t("tailnetAccessTab.operationFailed");
 }
 
-/**
- * Local-owner controls for the Tailnet pairing/share boundary. The renderer may
- * choose a fixed-duration preset and opaque pairing id only; main resolves the
- * current conversation and inserts fresh keyboard intent at the preload edge.
- */
+/** Local-owner controls for the Tailnet pairing/share boundary. The renderer may choose a fixed-duration preset and opaque
+ * pairing id only; main resolves the current conversation and inserts fresh keyboard intent at the preload edge. */
 export function TailnetAccessContent({ api, onCompleted }: TailnetAccessContentProps) {
   const { t } = useTranslation();
   const [snapshot, setSnapshot] = useState<TailnetSharingSnapshot | null>(null);
@@ -167,8 +158,8 @@ export function TailnetAccessContent({ api, onCompleted }: TailnetAccessContentP
         setFeedback({ tone: "error", text: errorText(result.error, t) });
         return;
       }
-      // This component state is the sole renderer home of the raw code. A
-      // snapshot/change event can never recreate it after unmount.
+      // This component state is the sole renderer home of the raw code. A snapshot/change event can never recreate it after
+      // unmount.
       setIssuedInvitation(result.invitation);
       setFeedback({ tone: "success", text: t("tailnetAccessTab.operationSucceeded") });
       await refresh();
@@ -257,9 +248,8 @@ export function TailnetAccessContent({ api, onCompleted }: TailnetAccessContentP
       ) : null}
 
       {disabled ? (
-        // Not the row's own title: this section sits INSIDE the row, and a
-        // heading that repeats its container names nothing the reader did not
-        // already have.
+        // Not the row's own title: this section sits INSIDE the row, and a heading that repeats its container names nothing the
+        // reader did not already have.
         <SettingsSection
           title={t("tailnetAccessTab.disabledTitle")}
           actions={<Button size="sm" variant="outline" onClick={() => void refresh()}>{t("tailnetAccessTab.refresh")}</Button>}
@@ -368,8 +358,7 @@ export function TailnetAccessContent({ api, onCompleted }: TailnetAccessContentP
                   value={sharePermission}
                   disabled={busy !== null}
                   onChange={(event) => {
-                    // The pending question was about a control grant; changing
-                    // the access level makes it a question about something else.
+                    // The pending question was about a control grant; changing the access level makes it a question about something else.
                     setControlShareToConfirm(null);
                     setSharePermission(event.target.value as TailnetSharePermission);
                   }}

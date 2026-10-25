@@ -12,13 +12,8 @@ interface SearchVisibility {
   streaming?: boolean;
 }
 
-/**
- * Unified search hook.
- *
- * Owns: Ctrl/Cmd+F open state, query + case toggle, current-conversation
- * match index list, and navigation callbacks. Global keydown listener
- * registers on mount / cleans up on unmount.
- */
+/** Unified search hook. Owns: Ctrl/Cmd+F open state, query + case toggle, current-conversation match index list, and
+ * navigation callbacks. Global keydown listener registers on mount / cleans up on unmount. */
 export function useSearch(
   entries: ChatEntry[],
   {
@@ -51,9 +46,8 @@ export function useSearch(
     entries.forEach((e, i) => {
       if (e.kind !== "user" && e.kind !== "assistant" && e.kind !== "reasoning") return;
       if (e.kind === "reasoning" && processingDisplayLevel === "tools") return;
-      // Active reasoning and the transient provider-status row intentionally
-      // render only through the WorkGroup header, which has no entry-index
-      // navigation target. Do not offer search results that cannot be focused.
+      // Active reasoning and the transient provider-status row intentionally render only through the WorkGroup header, which has
+      // no entry-index navigation target. Do not offer search results that cannot be focused.
       if (
         streaming
         && entryClassMap.get(i) === "intermediate"

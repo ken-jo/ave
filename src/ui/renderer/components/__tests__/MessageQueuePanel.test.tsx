@@ -50,10 +50,7 @@ describe("MessageQueuePanel keyboard navigation", () => {
 });
 
 describe("MessageQueuePanel colour contract", () => {
-  // `--accent` is a SURFACE token — a pale tint in every light bundle. Painting
-  // text or a border with it made the per-row inject action and the
-  // selected-row outline invisible against the panel. Foregrounds here must
-  // come from foreground tokens.
+  // Accent is a light surface tint; queue text and selected borders need foreground tokens.
   it("never paints a foreground or border with the accent surface token", async () => {
     const { store } = renderQueuePanel();
     const first = store.getItems()[0];

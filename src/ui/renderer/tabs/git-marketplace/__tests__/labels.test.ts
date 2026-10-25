@@ -169,8 +169,6 @@ describe("failure sentences (design §18.8)", () => {
   });
 });
 
-// ─── By source kind and token state (§18.8): only actions the user has there ───
-
 type SourceShape = Pick<SourceView, "origin" | "label" | "auth" | "tokenStored">;
 
 const SOURCE_SHAPES: readonly SourceShape[] = (["official", "managed", "custom", "direct"] as const).flatMap((origin) =>

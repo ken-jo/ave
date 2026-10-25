@@ -7,29 +7,26 @@ import { moonstoneBundle } from "../bundles/moonstone.js";
 // Every theme but Moonstone and Gallery is an installed package; these stand in for the ones used below.
 const INSTALLED_THEMES = ["midnight", "violet-light", "tokyo-night"].map((id) => ({ ...moonstoneBundle, id, name: id }));
 
-// `useTheme()` consumer that surfaces the effective bundleId as text so
-// the test can assert what the provider initialised with.
+// `useTheme()` consumer that surfaces the effective bundleId as text so the test can assert what the provider initialised
+// with.
 function Probe() {
   const { bundleId } = useTheme();
   return <span data-testid="bundle">{bundleId}</span>;
 }
 
 beforeEach(() => {
-  // Reset documentElement state between tests so attribute checks don't
-  // leak from one case into the next.
+  // Reset documentElement state between tests so attribute checks don't leak from one case into the next.
   document.documentElement.removeAttribute("data-theme-bundle");
   document.documentElement.removeAttribute("data-shell");
   document.documentElement.style.cssText = "";
-  // Clear any previous global injected by another test.
   delete (window as { __aveInitialTheme?: unknown }).__aveInitialTheme;
   setInstalledThemeBundles(INSTALLED_THEMES);
 });
 
 afterEach(() => {
   setInstalledThemeBundles([]);
-  // Each `render()` adds a fresh container to document.body; vitest doesn't
-  // auto-cleanup react-testing-library, so without this every test would
-  // see prior tests' DOM and `getByTestId` would throw "found multiple".
+  // Each `render()` adds a fresh container to document.body; vitest doesn't auto-cleanup react-testing-library, so without
+  // this every test would see prior tests' DOM and `getByTestId` would throw "found multiple".
   cleanup();
   delete (window as { __aveInitialTheme?: unknown }).__aveInitialTheme;
 });
@@ -92,8 +89,8 @@ describe("ThemeProvider — initial theme (race-window-zero)", () => {
       }),
       updateSettings: vi.fn(),
       notifyPluginTheme: vi.fn().mockResolvedValue(undefined),
-      // ThemeProvider subscribes to cross-window settings broadcasts to stay
-      // in sync with sibling BrowserWindows. The mock returns a no-op cleanup.
+      // ThemeProvider subscribes to cross-window settings broadcasts to stay in sync with sibling BrowserWindows. The mock
+      // returns a no-op cleanup.
       onSettingsUpdated: vi.fn(() => () => {}),
     };
     const { getByTestId } = render(

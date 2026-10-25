@@ -1,13 +1,3 @@
-/**
- * pluginIconFor — unit tests
- *
- * The function returns:
- *   - FALLBACK_ICON (Plug) synchronously when `icon` is undefined/absent.
- *   - A React.lazy wrapper for any non-empty `icon` string. The lazy wrapper
- *     resolves to the matching Lucide component, or to FALLBACK_ICON when the
- *     name is not found in the lucide-react namespace.
- *   - The same component reference on repeated calls (cache stability).
- */
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import { Suspense } from "react";
@@ -42,8 +32,8 @@ async function resolveIconName(name: string): Promise<unknown> {
 }
 
 describe("pluginIconFor", () => {
-  // The render-based iconText assertions below would otherwise leak DOM
-  // between cases — vitest doesn't auto-cleanup `render()` output.
+  // The render-based iconText assertions below would otherwise leak DOM between cases — vitest doesn't auto-cleanup
+  // `render()` output.
   afterEach(cleanup);
 
   it("returns the Plug fallback synchronously when icon is undefined", () => {
@@ -106,8 +96,7 @@ describe("pluginIconFor", () => {
     expect(screen.queryByTestId("fallback")).toBeNull();
   });
 
-  // ─── iconText path ─────────────────────────────────────────────────────
-  // iconText renders short text inline (no Lucide chunk load) and takes
+    // iconText renders short text inline (no Lucide chunk load) and takes
   // precedence over a sibling `icon` field so manifests can opt out of
   // Lucide lookup without leaving the icon field undefined.
 
@@ -152,9 +141,8 @@ describe("pluginIconFor", () => {
   });
 
   it("iconText cache is keyed separately from Lucide name cache", () => {
-    // Distinct text vs Lucide-name inputs should never collide, even when
-    // the strings happen to match (defensive — there is no Lucide icon
-    // named "AB" today but the contract should not depend on that).
+    // Distinct text vs Lucide-name inputs should never collide, even when the strings happen to match (defensive — there is no
+    // Lucide icon named "AB" today but the contract should not depend on that).
     const text = pluginIconFor({ iconText: "AB" });
     const lucide = pluginIconFor({ icon: "AB" });
     expect(text).not.toBe(lucide);
@@ -170,9 +158,8 @@ describe("pluginIconFor", () => {
     expect(isLazy(Icon)).toBe(true);
   });
 
-  // Defense-in-depth: if the host schema's maxLength: 4 is somehow bypassed
-  // (legacy install, dev-mode validator skip), the renderer must still cap
-  // the visible text to 4 chars rather than overflowing the avatar.
+  // Defense-in-depth: if the host schema's maxLength: 4 is somehow bypassed (legacy install, dev-mode validator skip), the
+  // renderer must still cap the visible text to 4 chars rather than overflowing the avatar.
   it("iconText is hard-truncated to 4 chars at the renderer", () => {
     const Icon = pluginIconFor({ iconText: "TOOLONG" });
     const { container } = render(<Icon className="h-7 w-7" />);

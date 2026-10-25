@@ -1,16 +1,4 @@
-/**
- * Issue #616 — tripleToHsl alpha-channel support.
- *
- * Bundle tokens are stored as bare HSL triples in the Tailwind format. The
- * format optionally includes an alpha component (`"H S% L% / A"` or
- * `"H S% L% / A%"`). The previous parser only accepted `"H S% L%"` and
- * silently returned the raw triple when alpha was present, which would
- * inject an unparseable string into plugin webview CSS (plugins consume
- * the rewrapped `hsl()` form, not raw triples).
- *
- * This test mints a synthetic ThemeBundle with one alpha-bearing token
- * and asserts the resolved plugin token is a valid `hsla()` value.
- */
+/** Alpha-bearing HSL triples must become valid hsla values for plugin CSS. */
 import { describe, it, expect } from "vitest";
 import { bundleToPluginTokens } from "../plugin-token-map.js";
 import { moonstoneBundle } from "../bundles/moonstone.js";

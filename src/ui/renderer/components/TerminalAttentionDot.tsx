@@ -1,13 +1,7 @@
 import { useTranslation } from "../../../i18n/react.js";
 
-/**
- * A terminal asked for attention (OSC 9 / 777) and has not been seen since.
- *
- * Deliberately not `PendingAnswerDot`: that one means "a card waits for your
- * answer" in the warning tone; this is a shell's notification, drawn in the
- * primary tone so the two never read as the same thing. The message the shell
- * sent is the tooltip.
- */
+/** Use primary tone for unread shell notifications and warning tone for pending answers; the shell message supplies the
+ * tooltip. */
 export function TerminalAttentionDot({ testId, message }: { testId: string; message: string }) {
   const { t } = useTranslation();
   const label = t("mainPanels.terminalUnread");

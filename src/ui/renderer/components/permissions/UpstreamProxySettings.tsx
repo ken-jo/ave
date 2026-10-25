@@ -1,17 +1,5 @@
-/**
- * Settings → Permissions → OS Tool Sandbox: where the sandbox egress proxy
- * sends allowed connections next (owner decision 2026-10-20). Off, Use
- * system settings (environment variables, else the OS proxy settings with
- * PAC) or a manual URL with a bypass list; the trusted "resolves names"
- * opt-in for a proxy on this computer; and a read-only line with the
- * effective upstream for https://example.com.
- *
- * The setting is main-owned: it is read and written only through the
- * permissions upstreamProxyGet / upstreamProxySet channels, and credential
- * values never come back to this page (only whether some are stored).
- * Changes apply to new connections at once: the route hook reads the live
- * setting and its cache is cleared on every write.
- */
+/** Main owns upstream proxy settings; the renderer receives credential-presence flags, never credentials. Changes affect
+ * new connections immediately. */
 import { useCallback, useEffect, useState, type ReactElement } from "react";
 import { Button } from "../../../../components/ui/button.js";
 import { Checkbox } from "../../../../components/ui/checkbox.js";
@@ -107,8 +95,8 @@ export function UpstreamProxySettings({ reader, writer }: UpstreamProxySettingsP
       }
       const next = (result as { view?: unknown }).view;
       if (isView(next)) adopt(next);
-      // Credentials bound to the previous proxy are removed by main; say so
-      // whatever was saved, so the person is not surprised by a 407 later.
+      // Credentials bound to the previous proxy are removed by main; say so whatever was saved, so the person is not surprised
+      // by a 407 later.
       if ((result as { credentialsRemoved?: unknown }).credentialsRemoved === true) {
         setNotice(translate("upstreamProxySettings.credentialsRemoved"));
       } else if (successNotice !== undefined) {

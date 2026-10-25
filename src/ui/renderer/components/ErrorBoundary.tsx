@@ -6,22 +6,11 @@ interface Props {
   children: ReactNode;
   /** Headline shown when the boundary triggers. */
   fallback?: string;
-  /**
-   * Identifier for the boundary's scope (e.g. "main-content", "plugin-grid").
-   * Logged with the error so multi-boundary apps can distinguish which
-   * region failed without rebuilding the React tree. Issue #736: when a
-   * single stale plugin manifest crashes the renderer, this lets us see
-   * WHICH boundary caught it.
-   */
+  /** Log the boundary scope with errors so multiple regions can be distinguished without rebuilding the tree. */
   boundaryName?: string;
-  /**
-   * Optional inline mode — when true, renders a compact one-line fallback
-   * suitable for embedding inside a larger UI (badges, status bars).
-   * Default is the full centered card.
-   */
+  /** Optional inline mode — when true, renders a compact one-line fallback suitable for embedding inside a larger UI (badges,
+   * status bars). Default is the full centered card. */
   compact?: boolean;
-
-
 
   onReset?: (error: Error | undefined) => void;
 }

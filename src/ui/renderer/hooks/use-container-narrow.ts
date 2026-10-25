@@ -16,33 +16,20 @@ export interface UseContainerNarrowResult {
  */
 export const MIN_DOCKED_TRANSCRIPT_WIDTH = 320;
 
-/**
- * Container width at/below which docking both the transcript and the side panel
- * is physically too tight — derived from the shared side-panel reserve plus a
- * transcript floor rather than a magic constant, so it tracks the panel SoT.
- * Chat mode's OS window reserves exactly `SIDE_PANEL_MIN_RESERVE` on top of its
- * base width to host the docked panel, so its container clears this threshold
- * and docks. Floating only happens in genuinely too-narrow containers (a
- * split tile, a hand-shrunk work-mode window).
- */
+/** Derive docking from panel reserve plus transcript floor so chat-mode reserved window space can dock without a spurious
+ * overlay. */
 export const DOCK_ENTER_WIDTH = SIDE_PANEL_MIN_RESERVE + MIN_DOCKED_TRANSCRIPT_WIDTH;
-/**
- * Every narrow threshold exits this much above where it enters, so a drag that
- * hovers on the boundary cannot flip-flop the layout.
- */
+/** Every narrow threshold exits this much above where it enters, so a drag that hovers on the boundary cannot flip-flop the
+ * layout. */
 const NARROW_DEAD_BAND_PX = 60;
 export const DOCK_EXIT_WIDTH = DOCK_ENTER_WIDTH + NARROW_DEAD_BAND_PX;
 
-/**
- * Settings panel width below which its sidebar + content master-detail is too
- * cramped and collapses to a two-depth stack (≈ Tailwind `sm`). Panel width,
- * not viewport: the inline Settings panel can be narrow on a wide display.
- */
+/** Settings panel width below which its sidebar + content master-detail is too cramped and collapses to a two-depth stack
+ * (≈ Tailwind `sm`). Panel width, not viewport: the inline Settings panel can be narrow on a wide display. */
 export const SETTINGS_NARROW_ENTER_WIDTH = 640;
 export const SETTINGS_NARROW_EXIT_WIDTH = SETTINGS_NARROW_ENTER_WIDTH + NARROW_DEAD_BAND_PX;
 
 type SidePanelLayoutMode = "docked" | "overlay";
-
 
 export interface SidePanelLayout {
   /**
@@ -59,15 +46,7 @@ export interface SidePanelLayout {
   max: number;
 }
 
-/**
- * How the side panel lays out inside a container `width` px across, and the
- * range its reserve (card plus insets) may take there. `narrow` is
- * {@link useContainerNarrow}'s hysteresis verdict, not a fresh comparison: the
- * two modes give the panel different ranges, so a mode that flipped on a
- * single threshold would jump the panel's width back and forth while a tile
- * gutter is dragged across it. An unmeasured container (Infinity) docks with
- * the pixel floors.
- */
+/** Use the shared hysteresis verdict for panel layout; unmeasured Infinity containers dock at pixel floors. */
 export function sidePanelLayout(width: number, narrow: boolean): SidePanelLayout {
   if (!Number.isFinite(width)) return { mode: "docked", min: SIDE_PANEL_MIN_RESERVE, max: Number.POSITIVE_INFINITY };
   if (!narrow) {
@@ -76,18 +55,8 @@ export function sidePanelLayout(width: number, narrow: boolean): SidePanelLayout
   return { mode: "overlay", min: Math.min(SIDE_PANEL_MIN_RESERVE, width), max: width };
 }
 
-/**
- * Observe an element's inline size and report it, plus whether it is "narrow"
- * — too narrow to hold both the side panel's and the transcript's pixel
- * floors — with hysteresis (enter < {@link DOCK_ENTER_WIDTH}, exit >=
- * {@link DOCK_EXIT_WIDTH}; 60px dead-band) so resizing near the boundary does
- * not flip-flop. ChatView lays its panel out through {@link sidePanelLayout}
- * from both; Settings reads `isNarrow` for its own layout.
- *
- * Observe the PARENT of whatever the answer lays out, so the answer never
- * changes what is measured. In jsdom (no ResizeObserver) the width stays
- * Infinity and `isNarrow` false — the pixel-floor layout unit tests expect.
- */
+/** Observe the parent so layout decisions cannot change their own measurement; use a 60px hysteresis band and treat missing
+ * ResizeObserver as unmeasured wide layout. */
 export function useContainerNarrow(
   ref: RefObject<HTMLElement | null>,
   { enter = DOCK_ENTER_WIDTH, exit = DOCK_EXIT_WIDTH }: { enter?: number; exit?: number } = {},

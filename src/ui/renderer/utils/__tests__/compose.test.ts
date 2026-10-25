@@ -126,8 +126,8 @@ describe("composeOutgoing", () => {
       .toBeGreaterThan(estimateOutgoingUserMessageTokens(raw, r.attachments));
   });
   it("preserves literal $ sequences in pasted text (no regex backreference mutation)", () => {
-    // String.prototype.replace's STRING form interprets `$&`, `$1`, `$$`,
-    // etc. as backreference tokens. Use a replacer function to bypass.
+    // String.prototype.replace's STRING form interprets `$&`, `$1`, `$$`, etc. as backreference tokens. Use a replacer
+    // function to bypass.
     const dollarPaste: PasteAttachment = {
       id: "p-dollar",
       n: 9,
@@ -153,8 +153,7 @@ describe("composeOutgoing", () => {
       lines: 5,
       chars: 14,
     };
-    // Marker in body has +99 lines (user edit) but parseMarkers + the
-    // expansion regex must still match.
+    // Marker in body has +99 lines (user edit) but parseMarkers + the expansion regex must still match.
     const r = composeOutgoing({
       raw: "before [Pasted text #7 +99 lines] after",
       activePreset: null,
@@ -181,16 +180,8 @@ describe("composeOutgoing", () => {
   });
 });
 
-/**
- * The load-bearing property of the whole `@` mention surface.
- *
- * Main bounds how much server-authored resource text one turn may carry by counting
- * fences in the content PARTS — it deliberately does not measure the user's own message
- * text, because a refusal there could not be explained to the person who typed it. So a
- * composer that put the fence in the body would not be shrinking that bound, it would be
- * removing it, and this is the file where that mistake would be made: the paste kind
- * three functions up does exactly the inline substitution a resource must not get.
- */
+/** Assert resource fences stay in content parts, never the user body, because only the parts are measured by main's
+ * resource bound. */
 describe("composeOutgoing — resource attachments", () => {
   const resource: ResourceAttachment = {
     id: "r5",

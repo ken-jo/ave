@@ -1,17 +1,9 @@
-/**
- * PricingOverridesSection — the control that replaces `AVE_PRICING_OVERRIDE`.
- *
- * The rules worth pinning are the ones a table editor gets wrong: a row the
- * store would silently drop must not be savable, a settings broadcast must not
- * wipe a half-typed row, and the whole table must go read-only when the
- * environment is the one supplying the rates.
- */
+/** Reject rows normalization would drop; preserve drafts across unchanged broadcasts and honor environment read-only mode. */
 import "../../../../../test/renderer/setup.js";
 import { describe, it, expect } from "vitest";
 import { fireEvent, render, waitFor } from "@testing-library/react";
 import { PricingOverridesSection } from "../PricingOverridesSection.js";
 import { installMockAveApi, MOCK_DEFAULT_SETTINGS } from "../../../../../test/renderer/mock-ave-api.js";
-
 
 const BASE_SETTINGS = {
   ...MOCK_DEFAULT_SETTINGS,
@@ -36,8 +28,8 @@ describe("PricingOverridesSection", () => {
       ]),
     });
     const { findByTestId, getByTestId } = render(<PricingOverridesSection />);
-    // Synchronous queries inside waitFor: an awaited findBy* there nests one
-    // polling timeout inside another and times out under load.
+    // Synchronous queries inside waitFor: an awaited findBy* there nests one polling timeout inside another and times out
+    // under load.
     await findByTestId("llm-pricing-override-model-0");
     await waitFor(() => {
       expect((getByTestId("llm-pricing-override-model-0") as HTMLInputElement).value).toBe("claude-sonnet-4-6");

@@ -13,10 +13,7 @@ import {
 } from "../../../../shared/mcp-app-bridge-contract.js";
 import { WebviewIpcTransport } from "../webview-ipc-transport.js";
 
-/**
- * A fake Electron <webview>: `send` is host→guest, and `emit` replays a guest→host
- * `ipc-message` event.
- */
+/** A fake Electron <webview>: `send` is host→guest, and `emit` replays a guest→host `ipc-message` event. */
 function makeWebview() {
   const listeners: Array<(event: Event) => void> = [];
   return {
@@ -64,9 +61,8 @@ describe("WebviewIpcTransport", () => {
   });
 
   it("buffers frames that arrive BEFORE start() and replays them", async () => {
-    // The relay preload announces sandbox-proxy-ready the moment the proxy document
-    // loads, which can beat AppBridge.connect(). Dropping it would deadlock the
-    // handshake: the host would never send the app HTML.
+    // The relay preload announces sandbox-proxy-ready the moment the proxy document loads, which can beat AppBridge.connect().
+    // Dropping it would deadlock the handshake: the host would never send the app HTML.
     const webview = makeWebview();
     const transport = new WebviewIpcTransport(webview);
     const seen: unknown[] = [];
@@ -126,12 +122,8 @@ describe("WebviewIpcTransport", () => {
 
 describe("MCP-App CSP (per-resource envelope, built in main)", () => {
   it("an UPSTREAM-typed CSP round-trips through buildMcpCspHeader into the right directives", () => {
-    // We re-declare the spec shape locally (ext-apps' .d.ts use extensionless imports
-    // that don't resolve under NodeNext). A one-directional `assignable-to` pin would
-    // NOT catch an optional-field RENAME (connectDomains → connectOrigins) — the exact
-    // bucket-name drift class that caused the original bug, since all fields are
-    // optional. So construct the value as the UPSTREAM type and feed it through our
-    // builder: if upstream renames a bucket, this stops routing and the assertion fails.
+    // Construct upstream-typed values and route them through the local builder; one-way assignability misses optional-field
+    // renames.
     const upstream: UpstreamMcpUiResourceCsp = {
       connectDomains: ["https://api.example.com"],
       resourceDomains: ["https://cdn.example.com"],

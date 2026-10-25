@@ -1,12 +1,4 @@
-/**
- * useChatState — remote-origin turn rendering scenarios.
- *
- * A turn submitted by an external surface (chat-platform bridge, Tailnet,
- * loopback) reaches this renderer only through the shared stream. The
- * `user_message` frame must materialize the user's row exactly like a local
- * turn's optimistic echo, and the following deltas must attach to the same
- * live transcript — while the renderer's own origins never double-bubble.
- */
+/** Remote user_message frames create a user row; renderer-origin turns must not echo twice. */
 import "../../../../../test/renderer/setup.js";
 import { describe, it, expect } from "vitest";
 import { act, renderHook } from "@testing-library/react";

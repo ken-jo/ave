@@ -10,8 +10,8 @@ import { useNotifySaved } from "../context/SavedToastContext.js";
 import { SettingsPageHeader, SettingsSection } from "../components/PageShell.js";
 import { useTranslation } from "../../../i18n/react.js";
 
-/* ─── webView preferredFlow options (relocated from AppearanceTab — it is
-      browsing behavior, so it belongs on the Web / Browsing tab) ─────────── */
+/** ─── webView preferredFlow options (relocated from AppearanceTab — it is browsing behavior, so it belongs on the Web /
+ * Browsing tab) ─────────── */
 type WebViewPreferredFlow = "in-app" | "system-browser";
 
 const WEBVIEW_OPTIONS: ReadonlyArray<{ value: WebViewPreferredFlow; label: string; hint: string }> = [

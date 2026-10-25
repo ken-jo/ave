@@ -1,16 +1,3 @@
-/**
- * Behavior-lock tests for ChatView's mid-turn message queue + ⌘K guide.
- *
- * C13 pre-decomposition lock (C15 will move these composer/keyboard flows into
- * hooks). Captured CURRENT behavior:
- *   - Enter while streaming enqueues (does NOT start a new chatSend); the queue
- *     drains on the stream `done` event via an auto-inject whose inputOrigin is
- *     "queue-auto" (the App handleAsk queue-auto branch, locked transitively).
- *   - ⌘K / Ctrl+K with non-empty composer text calls the guide IPC and clears
- *     the composer on success; empty text is a no-op.
- *
- * Harness conventions copied from ChatView.test.tsx.
- */
 import "../../../../test/renderer/setup.js";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { act, fireEvent, waitFor } from "@testing-library/react";
@@ -28,13 +15,11 @@ describe("ChatView message queue (enqueue while streaming → drains after)", ()
     const pendingSend = deferred<{ ok: true }>();
     const { container, api, emitChatStream } = await renderApp({
       hasApiKey: true,
-      // dev+e2e exposes the live message-queue store on window so the enqueue
-      // step can be asserted directly against store state.
+      // dev+e2e exposes the live message-queue store on window so the enqueue step can be asserted directly against store state.
       aveEnv: { isDev: true, isE2E: true },
     });
 
-    // First turn: keep chatSend pending so streaming stays true while we type
-    // the second message.
+    // First turn: keep chatSend pending so streaming stays true while we type the second message.
     api.chatSend.mockImplementationOnce(async () => pendingSend.promise);
     await submitChatMessage(container, "첫 질문");
     await waitFor(() => expect(api.chatSend).toHaveBeenCalledTimes(1));
@@ -133,8 +118,8 @@ describe("ChatView ⌘K guide", () => {
     fireEvent.change(textarea, { target: { value: "keep this draft" } });
     const dock = document.createElement("section");
     dock.dataset.testid = "approval-dock";
-    // The card that covers THIS composer lives in the composer's own surface;
-    // one in another surface is not its business (see blockingSurfaceCovers).
+    // The card that covers THIS composer lives in the composer's own surface; one in another surface is not its business (see
+    // blockingSurfaceCovers).
     textarea.closest("[data-approval-scope]")!.append(dock);
 
     try {

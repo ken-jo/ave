@@ -42,8 +42,8 @@ function installWorkspaceMock(pickRoot = vi.fn(async () => ({ ok: true, roots: [
   };
 }
 
-/** Radix DropdownMenu opens on pointerdown, so fire that before the click
- *  (mirrors ChatSidePanel.test.tsx's openLauncherMenu helper). */
+/** Radix DropdownMenu opens on pointerdown, so fire that before the click (mirrors ChatSidePanel.test.tsx's
+ * openLauncherMenu helper). */
 function openMenu(trigger: HTMLElement) {
   fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false });
   fireEvent.click(trigger);
@@ -55,11 +55,10 @@ describe("ComposerProjectSelector", () => {
     try {
       const { getByTestId } = render(<Harness activeProject={PROJECTS[0]} />);
       const trigger = getByTestId("composer-project-selector-trigger");
-      // PROJECTS[0] is the default/base-directory binding — never surfaced as
-      // a selected project name, even though it is a populated ProjectIdentity.
+      // PROJECTS[0] is the default/base-directory binding — never surfaced as a selected project name, even though it is a
+      // populated ProjectIdentity.
       expect(trigger.textContent).not.toContain("default");
-      // Test runtime defaults to the ko locale (see other tests' Korean
-      // strings in this codebase's suites) — "프로젝트 선택" is
+      // Test runtime defaults to the ko locale (see other tests' Korean strings in this codebase's suites) — "프로젝트 선택" is
       // composerProjectSelector.selectProjectPlaceholder's ko value.
       expect(trigger.textContent).toContain("프로젝트 선택");
       expect(trigger.getAttribute("data-selected")).toBe("false");
@@ -73,8 +72,7 @@ describe("ComposerProjectSelector", () => {
     try {
       const { getByTestId } = render(<Harness activeProject={undefined} />);
       const trigger = getByTestId("composer-project-selector-trigger");
-      // Test runtime defaults to the ko locale (see other tests' Korean
-      // strings in this codebase's suites) — "프로젝트 선택" is
+      // Test runtime defaults to the ko locale (see other tests' Korean strings in this codebase's suites) — "프로젝트 선택" is
       // composerProjectSelector.selectProjectPlaceholder's ko value.
       expect(trigger.textContent).toContain("프로젝트 선택");
       expect(trigger.getAttribute("data-selected")).toBe("false");

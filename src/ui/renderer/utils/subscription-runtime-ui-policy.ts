@@ -29,10 +29,8 @@ export interface SubscriptionRuntimeUiPolicy {
   readonly pendingProvider: SubscriptionRuntimeId | undefined;
   readonly imageAttachmentProvider: SubscriptionRuntimeId | undefined;
   readonly fileAttachmentProvider: SubscriptionRuntimeId | undefined;
-  /**
-   * Both status loading and a selected runtime without verified chat block all
-   * attachment ingress. API-key providers keep their established policy.
-   */
+  /** Both status loading and a selected runtime without verified chat block all attachment ingress. API-key providers keep
+   * their established policy. */
   readonly attachmentInputsReady: boolean;
   readonly imagesEnabled: boolean;
   readonly filesEnabled: boolean;
@@ -41,18 +39,13 @@ export interface SubscriptionRuntimeUiPolicy {
 export interface SubscriptionRuntimeUiPolicyInput {
   readonly activeSubscriptionRuntime: SubscriptionChatRuntimeSelection | null;
   readonly settingsLoaded: boolean;
-  /**
-   * Null while the active runtime's safe status request is in flight. A failed
-   * or malformed response is represented by the all-false shared default.
-   */
+  /** Null while the active runtime's safe status request is in flight. A failed or malformed response is represented by the
+   * all-false shared default. */
   readonly capabilities: SubscriptionRuntimeCapabilities | null;
 }
 
-/**
- * IPC responses are still an external boundary from the renderer's
- * perspective. Do not turn a truthy object, float, or malformed budget into
- * permission to send original bytes.
- */
+/** IPC responses are still an external boundary from the renderer's perspective. Do not turn a truthy object, float, or
+ * malformed budget into permission to send original bytes. */
 function safeImageAttachmentLimits(value: unknown): SubscriptionImageAttachmentLimits | null {
   if (!value || typeof value !== "object") return null;
   const limits = value as Partial<SubscriptionImageAttachmentLimits>;

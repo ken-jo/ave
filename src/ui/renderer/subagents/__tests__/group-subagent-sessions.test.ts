@@ -103,8 +103,8 @@ describe("groupSubAgentSessions", () => {
       spawn({ spawnId: "a2", title: "(sub-agent)", childSessionId: "ca", entries: [assistantEntry("a2")] }),
     ]);
     expect(grouped).toHaveLength(2);
-    // Group order follows the first appearance of each childSessionId (A then B),
-    // even though A's second segment appears after B.
+    // Group order follows the first appearance of each childSessionId (A then B), even though A's second segment appears after
+    // B.
     expect(grouped.map((g) => g.title)).toEqual(["A", "B"]);
     expect(grouped[0].entries.map((e) => (e.kind === "assistant" ? e.text : ""))).toEqual(["a1", "a2"]);
     expect(grouped[1].entries.map((e) => (e.kind === "assistant" ? e.text : ""))).toEqual(["b1"]);

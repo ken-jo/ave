@@ -1,6 +1,3 @@
-/**
- * E4 — accelerator-capture: KeyboardEvent → Electron accelerator string.
- */
 import { describe, expect, it } from "vitest";
 import { eventToAccelerator } from "../accelerator-capture.js";
 
