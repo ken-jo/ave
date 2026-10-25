@@ -226,19 +226,31 @@ function installDocumentReadGuard(root = DOCUMENT_ROOT) {
   const installed = Symbol.for("ave.documentConsumerGuard");
   if (globalThis[installed]) return;
   globalThis[installed] = true;
-  for (const name of ["readFileSync", "readFile", "createReadStream", "openSync", "open"]) {
+  // Callback APIs must report a refusal through their callback. A synchronous
+  // throw escapes callers such as webpack's input file system, which then never
+  // settles; the build drains its event loop and exits 0 without an export.
+  const guard = (name, assertAllowed) => {
     const original = fs[name];
     fs[name] = function (input, ...args) {
-      assertAllowedDocumentRead(input, root);
+      const callback = args.at(-1);
+      if (name.endsWith("Sync") || name === "createReadStream" || typeof callback !== "function") {
+        assertAllowed(input, root);
+        return original.call(this, input, ...args);
+      }
+      try {
+        assertAllowed(input, root);
+      } catch (error) {
+        process.nextTick(callback, error);
+        return undefined;
+      }
       return original.call(this, input, ...args);
     };
+  };
+  for (const name of ["readFileSync", "readFile", "createReadStream", "openSync", "open"]) {
+    guard(name, assertAllowedDocumentRead);
   }
   for (const name of ["copyFileSync", "copyFile", "cpSync", "cp"]) {
-    const original = fs[name];
-    fs[name] = function (input, ...args) {
-      assertAllowedDocumentCopy(input, root);
-      return original.call(this, input, ...args);
-    };
+    guard(name, assertAllowedDocumentCopy);
   }
   for (const name of ["readFile", "open", "copyFile", "cp"]) {
     const original = fsPromises[name];

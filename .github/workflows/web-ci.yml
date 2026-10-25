@@ -53,8 +53,9 @@ jobs:
             sleep 10
           done
           echo "::error::bun install failed after 3 attempts"; exit 1
-      # `next build` runs type-checking + lint + the static export, so it is the
-      # whole gate — a broken page, type error, or bad import fails here.
+      # `next build` runs type-checking + the static export (Next 16 no longer
+      # lints during build; web/ has no lint config), so it is the whole gate —
+      # a broken page, type error, or bad import fails here.
       - name: Build
         run: bun run build
       - name: Upload static export
