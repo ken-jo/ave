@@ -29,9 +29,9 @@ import { contextBridge, ipcRenderer } from "electron";
 import { CHANNELS } from "./contract/app-contract.js";
 import { readDockAssetArgs } from "./shared/floating-dock-args.js";
 
-// The window is sandboxed: this preload may require only `electron`, `events`,
-// `timers` and `url` (no `node:path`), so main resolves the asset URLs and
-// passes them as arguments (`floating-dock-args.ts`).
+// The window is sandboxed: this preload may require only `electron` (no
+// `node:path`), so main resolves the asset URLs and passes them as arguments
+// (`floating-dock-args.ts`).
 const assets = readDockAssetArgs(process.argv);
 
 /** One main-to-dock subscription, returning its own unsubscribe. */
