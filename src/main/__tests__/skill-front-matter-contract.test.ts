@@ -1,18 +1,4 @@
-/**
- * SKILL.md front matter against the host-owned component contract.
- *
- * The host used to read a skill header with a line-at-a-time parser that kept
- * `name` and `description` and discarded the other five fields
- * `$defs/skillComponent` declares — on both delivery paths. `triggers` in
- * particular was a field an author could write and nothing downstream would
- * ever see.
- *
- * This suite checks both delivery paths against the host schema: the fields
- * survive, the keyword hints reach the catalog and leave with the skill,
- * and the host's name rule is the schema's name rule — read out of the
- * committed snapshot rather than restated here, so a test cannot agree with a
- * host constant that has drifted from the schema.
- */
+// Read the committed schema to verify both skill delivery paths without duplicating host constants.
 import { describe, it, expect, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
@@ -31,11 +17,7 @@ import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
 const REPO_ROOT = resolvePath(fileURLToPath(new URL("../../..", import.meta.url)));
 
-/**
- * The host-owned skill package schema (design §5.6). Read as data:
- * the point of every assertion below is that the host constant equals what
- * this file says, so restating the pattern in the test would defeat it.
- */
+// Read the skill schema as data so a duplicated pattern cannot conceal contract drift.
 const skillComponent = (
   JSON.parse(
     readFileSync(join(REPO_ROOT, "schemas/skill-package.schema.json"), "utf8"),
@@ -64,10 +46,7 @@ const FULL_HEADER = [
   "Body text.",
 ].join("\n");
 
-/**
- * A plugin skill's local id is `[a-zA-Z_][a-zA-Z0-9_]*` (the selector
- * grammar), so the bundled copy of the header names itself `full_header`.
- */
+// A plugin skill's local id is `[a-zA-Z_][a-zA-Z0-9_]*` (the selector grammar), so the bundled copy of the header names itself `full_header`.
 const BUNDLED_HEADER = FULL_HEADER.replace("name: full-header", "name: full_header");
 
 function pluginGeneration(pluginId: string, skillMarkdown: string): ActivePluginGeneration {
@@ -96,7 +75,7 @@ function pluginGeneration(pluginId: string, skillMarkdown: string): ActivePlugin
   };
 }
 
-/** A generation contributing two skills, so one bad header can be contained. */
+// A generation contributing two skills, so one bad header can be contained.
 function twoSkillGeneration(
   pluginId: string,
   brokenMarkdown: string,
@@ -205,8 +184,7 @@ describe("skill front matter — a header that reads short, and one that does no
       const { fm } = parseFrontmatter(
         ["---", "name: hashed", "description: cost #1 priority", "---", "b"].join("\n"),
       );
-      // YAML is right and the value really is short — the point is that the
-      // loss is announced rather than silent.
+      // YAML is right and the value really is short — the point is that the loss is announced rather than silent.
       expect(fm.description).toBe("cost");
       const said = warn.mock.calls.map((call) => String(call[0])).join("\n");
       expect(said).toContain("description");
@@ -231,11 +209,7 @@ describe("skill front matter — a header that reads short, and one that does no
   });
 
   it("refuses exactly the header shapes the loading policy documents", () => {
-    // The migration note in docs/development/skill-loading-policy.md tells an
-    // author which headers stop loading and how to quote them. It is only
-    // useful if it is accurate, so the shapes are checked here rather than
-    // trusted — the first draft of that table claimed an unquoted `3:1`
-    // breaks, and it does not.
+    // Validate the migration table against actual parsing so it cannot misstate which headers require quoting.
     const header = (description: string) =>
       ["---", "name: probe", `description: ${description}`, "---", "b"].join("\n");
     for (const description of ["@mention first", "[draft] notes", "use when: deploying"]) {
@@ -348,26 +322,19 @@ describe("skill front matter — triggers reach the catalog and leave with the s
 
 describe("skill name rule — one charset, and it is the schema's", () => {
   it("the host's charset is the pattern the SDK schema carries", () => {
-    // Read, never restated: a literal here would pass against a host constant
-    // that had drifted away from the schema, which is the whole failure this
-    // guards.
+    // Read, never restated: a literal here would pass against a host constant that had drifted away from the schema, which is the whole failure this guards.
     expect(SKILL_NAME_ALLOWLIST.source).toBe(skillComponent.properties.name.pattern);
   });
 
   it("the host enforces no length of its own; the ceiling is an admission rule", () => {
-    // The schema bounds a name at 64 characters and the marketplace refuses a
-    // longer one at publication. The host does not re-police that: a name is
-    // the author's, and a long directory name is not a safety property. If
-    // this ever starts failing, the host has grown a length check that the
-    // schema's description says it does not have.
+    // Publication enforces name length; the host intentionally does not treat long names as a safety violation.
     const ceiling = skillComponent.properties.name.maxLength;
     expect(ceiling).toBeGreaterThan(0);
     expect(SKILL_NAME_ALLOWLIST.test("a".repeat((ceiling as number) + 1))).toBe(true);
   });
 
   it("the record carries exactly the fields the schema declares", () => {
-    // `allowed-tools` is camel-cased on the record because the hyphen is not
-    // addressable in TypeScript; every other name is carried verbatim.
+    // `allowed-tools` is camel-cased on the record because the hyphen is not addressable in TypeScript; every other name is carried verbatim.
     const parsed = parseFrontmatter(FULL_HEADER).fm;
     const declared = Object.keys(skillComponent.properties).map((field) =>
       field === "allowed-tools" ? "allowedTools" : field,

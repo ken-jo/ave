@@ -8,13 +8,7 @@ import { createLogger } from "../lib/logger.js";
 const log = createLogger("ave");
 let invalidEnvWarnedOnce = false;
 
-/**
- * Default cleanup window for the Electron `before-quit` chain.
- *
- * The single source of truth lives in `tool-timeout-policy.ts` under
- * `shutdownCleanupMs`. We re-export the constant here so existing callers
- * keep working without dragging the policy import into every consumer.
- */
+// Re-export the shared timeout-policy value for existing callers.
 export const DEFAULT_SHUTDOWN_CLEANUP_TIMEOUT_MS =
   TOOL_TIMEOUT_POLICY.shutdownCleanupMs;
 
@@ -23,28 +17,8 @@ export type ShutdownCleanupResult =
   | { status: "failed"; error: unknown }
   | { status: "timed-out" };
 
-/**
- * Resolve the cleanup timeout: what the environment forces, else what the user
- * saved in Settings, else the SOT default.
- *
- * The window is a Settings control (Startup → System behavior) because a
- * packaged-app user cannot set an environment variable, and a lever nobody can
- * reach is not a lever. `AVE_SHUTDOWN_CLEANUP_TIMEOUT_MS` still wins where a
- * launcher script or an MDM profile pins it — that precedence, and the parse
- * that decides whether the variable is saying anything at all, are the
- * registry's (ENV_BACKED_SETTINGS), so the notice the control shows the user is
- * derived from the rule applied here. The legacy `AVE_SHUTDOWN_TIMEOUT_MS`
- * alias reached its published removal date (2026-08-01) and is gone.
- *
- * `settingMs` is passed through the same normalization as the environment
- * value, so a profile carrying a nonsense timeout falls through to the default
- * rather than resolving to something the timer cannot arm.
- *
- * An env value that is set but unusable (non-numeric, ≤ 0, NaN) emits a
- * one-shot warn: without it the variable would silently stop deciding and the
- * saved setting would take over, which looks from the outside like the pin
- * being ignored.
- */
+// Environment overrides saved settings, then the policy default; normalize both sources identically. Warn once for an unusable environment value so an
+// invalid pin cannot silently defer to settings.
 export function resolveShutdownCleanupTimeoutMs(
   settingMs: number | undefined,
   env: NodeJS.ProcessEnv = process.env,
@@ -71,29 +45,11 @@ function warnOnceOnUnusableEnvValue(env: NodeJS.ProcessEnv): void {
   );
 }
 
-/**
- * Test-only: reset the one-shot warn latch so each test gets a clean
- * surface for env-validation assertions. Not exported from the module
- * barrel — direct import only inside `__tests__`.
- */
 export function __resetShutdownTimeoutWarnLatchesForTest(): void {
   invalidEnvWarnedOnce = false;
 }
 
-/**
- * Race the cleanup chain against a hard deadline.
- *
- * The cleanup receives an `AbortSignal` that fires when the deadline
- * elapses (or when cleanup itself rejects). Callers SHOULD honor it so
- * their work actually stops — otherwise the inner promise keeps running
- * invisibly while the caller proceeds to `forceKillManagedChildProcesses`
- * + `app.exit(0)`, racing the kill with any persistAll / plugin-data
- * writes still in flight.
- *
- * This mirrors the `runWithCeiling` pattern from `tools/executor-ceiling`
- * documented in CLAUDE.md `Tool Execution Timeout Policy` ("Promise.race
- * with AbortController" — not Promise.race alone).
- */
+// Abort cleanup on deadline or rejection; callers must honor cancellation so ongoing writes cannot race forced process exit.
 export async function runCleanupWithHardTimeout(
   cleanup: (signal: AbortSignal) => Promise<void> | void,
   timeoutMs: number,
@@ -118,8 +74,7 @@ export async function runCleanupWithHardTimeout(
   const result = await Promise.race([cleanupPromise, timeoutPromise]);
   if (timeout) clearTimeout(timeout);
   if (result.status !== "completed") {
-    // Abort on failure too so any partially-running sub-tasks tear down
-    // before the caller force-kills children.
+    // Abort on failure too so any partially-running sub-tasks tear down before the caller force-kills children.
     controller.abort();
   }
   return result;

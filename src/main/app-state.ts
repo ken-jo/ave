@@ -1,27 +1,11 @@
-/**
- * Main-process shared mutable state.
- *
- * `src/main.ts` (the Electron entry) historically held ~9 mutable
- * module-level bindings — the main/settings windows, the tray, the
- * `WindowManager`, the resolved `AppServices`, and a handful of boot/shutdown
- * flags — that were read and written across many top-level functions. When
- * those functions moved into cohesive `src/main/*` modules (commit C17) they
- * could no longer close over `main.ts` locals, so the shared bindings live
- * here behind small get/set accessors instead. This is a single source of
- * truth for cross-module runtime state; behaviour is identical to the previous
- * closed-over module locals.
- *
- * Accessors return live values (no snapshotting), matching the semantics of
- * reading the module-level `let` binding directly.
- */
+// Shared runtime accessors return live values, never snapshots.
 import type { BrowserWindow, Tray, WebContents } from "electron";
 import type { WindowManager } from "./window-manager.js";
 import type { AppServices } from "../boot.js";
 import { terminalOwnerWindowId } from "./terminal/pty-manager.js";
 import { bootInstallNoticeIsEmpty, type BootInstallNoticeView, type GitMarketplaceDeepLink } from "../shared/git-marketplace.js";
 
-// Main-window identity and mode-driven bounds manager. Created before
-// createWindow() so it is ready when the main window is registered.
+// Main-window identity and mode-driven bounds manager. Created before createWindow() so it is ready when the main window is registered.
 let windowManager: WindowManager | null = null;
 export function getWindowManager(): WindowManager | null {
   return windowManager;
@@ -30,28 +14,14 @@ export function setWindowManager(value: WindowManager | null): void {
   windowManager = value;
 }
 
-/**
- * Main app windows (each loads `index.html` with the full host preload).
- *
- * More than one may be open. Three views of the set:
- * - `getMainWindows()` — every live one, in open order. Broadcasts go here
- *   (never `BrowserWindow.getAllWindows()`, which also holds popups, auth and
- *   link viewers that render remote content).
- * - `getMainWindow()` — the one the user is in: the last focused live window.
- *   Point-to-point sends (menu actions, dialogs, notifications) target it.
- * - `getPrimaryMainWindow()` — the window that owns the app's primary
- *   conversation (`MAIN_CHAT_GROUP_ID` as-is). The first window opened claims
- *   it; when it is destroyed the role is free and the next window opened
- *   claims it. Every other window is `"secondary"` for its whole lifetime —
- *   closing the primary never reloads or re-roles another window, so open
- *   windows keep their tiles and running turns.
- */
+// Broadcast only to live main windows, never all windows, which includes remote-content viewers.
+// Target the last-focused window for point sends; primary closure never re-roles existing secondary windows.
 export type MainWindowRole = "primary" | "secondary";
 
 const mainWindows: BrowserWindow[] = [];
 let focusedMainWindowId: number | null = null;
 let primaryMainWindowId: number | null = null;
-/** Main window ids, least to most recently focused (opening counts as focus). */
+// Main window ids, least to most recently focused (opening counts as focus).
 const focusHistory: number[] = [];
 
 function recordFocus(id: number): void {
@@ -78,7 +48,7 @@ export function getPrimaryMainWindow(): BrowserWindow | null {
   return liveMainWindows().find((win) => win.id === primaryMainWindowId) ?? null;
 }
 
-/** The role the next opened main window gets. */
+// The role the next opened main window gets.
 export function nextMainWindowRole(): MainWindowRole {
   return getPrimaryMainWindow() === null ? "primary" : "secondary";
 }
@@ -110,47 +80,35 @@ export function markMainWindowFocused(win: BrowserWindow): void {
   if (mainWindows.includes(win)) recordFocus(win.id);
 }
 
-/** The live main window whose renderer is `contents`, or null. */
+// The live main window whose renderer is `contents`, or null.
 export function mainWindowForContents(contents: unknown): BrowserWindow | null {
   return liveMainWindows().find((win) => win.webContents === contents) ?? null;
 }
 
-/**
- * Whether `contents` is the renderer of a secondary main window. Chat groups
- * from such a renderer are scoped to that window; every other sender (the
- * primary window, auxiliary host surfaces) keeps the global ids.
- */
+// Whether `contents` is the renderer of a secondary main window. Chat groups from such a renderer are scoped to that window; every other sender (the
+// primary window, auxiliary host surfaces) keeps the global ids.
 export function isSecondaryMainWindowContents(contents: unknown): boolean {
   return liveMainWindows().some((win) => win.id !== primaryMainWindowId && win.webContents === contents);
 }
 
-/**
- * Which renderer shows a conversation. Installed by the chat IPC domain, which
- * owns the chat groups; it answers the renderer whose tile holds `sessionId`,
- * or null when no tile holds it.
- */
+// Which renderer shows a conversation. Installed by the chat IPC domain, which owns the chat groups; it answers the renderer whose tile holds
+// `sessionId`, or null when no tile holds it.
 type SessionContentsLookup = (sessionId: string) => WebContents | null;
 let sessionContentsLookup: SessionContentsLookup | null = null;
 export function setSessionContentsLookup(value: SessionContentsLookup | null): void {
   sessionContentsLookup = value;
 }
 
-/**
- * The live main window renderer whose tile shows `sessionId`, or null when no
- * open window shows it. Prompts about a session (approvals, ask-user
- * questions) go here first; boot falls back to the window in use.
- */
+// The live main window renderer whose tile shows `sessionId`, or null when no open window shows it. Prompts about a session (approvals, ask-user
+// questions) go here first; boot falls back to the window in use.
 export function findSessionMainWindowContents(sessionId: string | undefined): WebContents | null {
   if (sessionId === undefined) return null;
   const holder = sessionContentsLookup?.(sessionId) ?? null;
   return holder && !holder.isDestroyed() && mainWindowForContents(holder) ? holder : null;
 }
 
-/**
- * The live main window renderer that owns workspace terminal `tabId`, or null
- * when no shell runs under it or its window is gone. A terminal tab's egress
- * ask is drawn there, in the tab's banner, and nowhere else.
- */
+// The live main window renderer that owns workspace terminal `tabId`, or null when no shell runs under it or its window is gone. A terminal tab's egress
+// ask is drawn there, in the tab's banner, and nowhere else.
 export function findTerminalMainWindowContents(tabId: string): WebContents | null {
   const ownerWindowId = terminalOwnerWindowId(tabId);
   if (ownerWindowId === undefined || ownerWindowId === null) return null;
@@ -158,23 +116,20 @@ export function findTerminalMainWindowContents(tabId: string): WebContents | nul
   return owner && !owner.webContents.isDestroyed() ? owner.webContents : null;
 }
 
-/**
- * The renderer that last sent the side chat a turn. The side chat is one
- * conversation drawn in whichever window's panel the user typed it in; its
- * workspace tools (terminal_read, the browser tools) reach that window.
- */
+// The renderer that last sent the side chat a turn. The side chat is one conversation drawn in whichever window's panel the user typed it in; its
+// workspace tools (terminal_read, the browser tools) reach that window.
 let sideChatOwnerContents: WebContents | null = null;
 export function setSideChatOwnerContents(contents: WebContents | null): void {
   sideChatOwnerContents = contents;
 }
 
-/** The live main window the side chat was last driven from, or null. */
+// The live main window the side chat was last driven from, or null.
 export function sideChatOwnerWindow(): BrowserWindow | null {
   const owner = sideChatOwnerContents;
   return owner && !owner.isDestroyed() ? mainWindowForContents(owner) : null;
 }
 
-/** @internal test-only reset for isolated module-state tests. */
+// @internal test-only reset for isolated module-state tests.
 export function resetMainWindowsForTests(): void {
   mainWindows.length = 0;
   focusHistory.length = 0;
@@ -200,9 +155,7 @@ export function setServices(value: AppServices | null): void {
   services = value;
 }
 
-// Git marketplace deep link and boot-install notice (design §15.1):
-// held here until the Marketplace tab reads them, since either can arrive
-// before the tab is open.
+// Hold deep links and boot-install notices until the Marketplace tab opens.
 let pendingGitMarketplaceLink: GitMarketplaceDeepLink | null = null;
 export function setPendingGitMarketplaceLink(value: GitMarketplaceDeepLink): void {
   pendingGitMarketplaceLink = value;
@@ -213,20 +166,14 @@ export function takePendingGitMarketplaceLink(): GitMarketplaceDeepLink | null {
   return link;
 }
 
-/**
- * The git marketplace's lifetime (design §7.3), shared by everything of it
- * that reaches the renderer or starts work: the marketplace IPC domain, its
- * git runtime's progress and its deep links. Aborted once, by the
- * `git-marketplace-events` shutdown hook the marketplace domain registers;
- * the work in progress then finishes, and nothing after it is sent.
- */
+// One abortable lifetime covers marketplace IPC, progress, and deep links; shutdown stops publication after current work finishes.
 const marketplaceLifetime = new AbortController();
 export function getMarketplaceLifetime(): AbortController {
   return marketplaceLifetime;
 }
 
 let bootInstallNotice: BootInstallNoticeView | null = null;
-/** Set by the boot-install step; an empty notice clears it. */
+// Set by the boot-install step; an empty notice clears it.
 export function setBootInstallNotice(value: BootInstallNoticeView | null): void {
   bootInstallNotice = value && !bootInstallNoticeIsEmpty(value) ? value : null;
 }

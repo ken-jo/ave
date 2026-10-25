@@ -1,10 +1,3 @@
-/**
- * `handleAveUri` routes (design §16.2): a git marketplace link is held for
- * the marketplace tab and only opens its confirming UI; a link that arrives
- * before the services is kept whole for replay; the server-era slug and
- * mcp-login forms are refused; a plugin OAuth callback becomes a host event.
- * Surfacing a hidden window is `activateInlineSettings`'s job.
- */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const electronApp = vi.hoisted(() => ({ isPackaged: false }));

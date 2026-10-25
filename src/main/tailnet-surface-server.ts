@@ -1,14 +1,5 @@
 import type { SecretEncryption } from "../data/secret-document-store.js";
-/**
- * Main-process lifecycle for the dedicated Tailnet observer listener.
- *
- * The listener is off until the local owner turns it on, and it never mutates
- * tailnet policy or retains a Tailscale admin credential. It does read this
- * desktop's own Tailscale state, and — only when the owner approves the exact
- * command first — puts its own loopback port behind `tailscale serve`, because
- * asking a person to retype a name the CLI already knows is where the setup
- * silently went wrong.
- */
+// The owner must enable the listener and approve the exact serve command; never retain admin credentials or mutate tailnet policy.
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -65,7 +56,7 @@ export interface TailnetObserverServer {
   readonly port: number;
 }
 
-/** Every key the observer configuration is made of, in both of its sources. */
+// Every key the observer configuration is made of, in both of its sources.
 type TailnetObserverConfigKey =
   | "enabled"
   | "authorization"
@@ -75,13 +66,8 @@ type TailnetObserverConfigKey =
   | "webEnabled"
   | "webOrigin";
 
-/**
- * Where a key's effective value came from.
- *
- * Provenance is not decoration. A stale shell profile must not be able to
- * masquerade as the approved host-owned configuration, so every surface that
- * shows the effective config shows this beside it.
- */
+// Where a key's effective value came from. Provenance is not decoration. A stale shell profile must not be able to masquerade as the approved host-owned
+// configuration, so every surface that shows the effective config shows this beside it.
 type TailnetObserverConfigSource = "file" | "env-override" | "unset";
 
 type TailnetObserverConfigProvenance =
@@ -90,18 +76,11 @@ type TailnetObserverConfigProvenance =
 export interface TailnetObserverResolution {
   readonly config: TailnetObserverConfig | null;
   readonly provenance: TailnetObserverConfigProvenance;
-  /** Whether a host-owned configuration file contributed anything at all. */
+  // Whether a host-owned configuration file contributed anything at all.
   readonly fileConfigured: boolean;
 }
 
-/**
- * The host-owned observer configuration, `~/.ave/tailnet/observer.json`.
- *
- * Deliberately NOT part of the settings store. That pipeline is renderer-
- * writable by design, and the authorization boundary is precisely the value a
- * webpage must never be able to set — the property the env-only resolver was
- * protecting, kept intact by moving to a host-owned file instead of settings.
- */
+// Keep authorization in the host-owned namespace, never renderer-writable settings.
 export interface TailnetObserverConfigFile {
   readonly enabled?: boolean;
   readonly authorization?: TailnetAuthorization;
@@ -143,33 +122,20 @@ const BOOLEAN_FILE_KEYS = [
   "webEnabled",
 ] as const;
 
-/**
- * One layer of raw strings — the single vocabulary both sources are validated
- * in. The file is projected onto it rather than validated separately, so the
- * two sources cannot drift into two different notions of a valid port.
- */
+// One layer of raw strings — the single vocabulary both sources are validated in. The file is projected onto it rather than validated separately, so the
+// two sources cannot drift into two different notions of a valid port.
 type RawLayer = Partial<Record<TailnetObserverConfigKey, string>>;
 
 interface TailnetObserverServerDependencies {
   startServer: typeof startTailnetSurfaceServer;
-  /**
-   * How the host-owned configuration file is read. Injected by the lifecycle
-   * tests so their matrix stays an environment question and does not depend on
-   * whether the developer running them happens to have an observer configured.
-   */
+  // How the host-owned configuration file is read. Injected by the lifecycle tests so their matrix stays an environment question and does not depend on
+  // whether the developer running them happens to have an observer configured.
   readConfigFile: () => Promise<TailnetObserverConfigFile | null>;
-  /**
-   * How this desktop's own Tailscale state is read when a remote asks whether
-   * it is the owner's own device. Injected for the same reason as the config
-   * file: the question must not become "is Tailscale running on the machine
-   * the tests happen to run on".
-   */
+  // How this desktop's own Tailscale state is read when a remote asks whether it is the owner's own device. Injected for the same reason as the config
+  // file: the question must not become "is Tailscale running on the machine the tests happen to run on".
   probeEnvironment: () => Promise<TailscaleEnvironment>;
-  /**
-   * Where the own-device admission record is read from. Injected for the same
-   * reason as the two above: a test must not read — or write — the state of
-   * whoever happens to be running it.
-   */
+  // Where the own-device admission record is read from. Injected for the same reason as the two above: a test must not read — or write — the state of
+  // whoever happens to be running it.
   openTailnetNamespace: () => FeatureNamespaceHandle;
 }
 
@@ -178,26 +144,18 @@ export interface StartTailnetObserverServerOptions {
   readonly conversationSurfaceRuntime: ConversationSurfaceRuntime;
   readonly getCurrentConversationId: () => string;
   readonly isConversationBusy: () => boolean;
-  /** Present only in main-process composition; controller stays OFF without it. */
+  // Present only in main-process composition; controller stays OFF without it.
   readonly conversationCommandPort?: ConversationCommandPort;
-  /** Host-owned durable controller receipt store; injectable only for lifecycle tests. */
+  // Host-owned durable controller receipt store; injectable only for lifecycle tests.
   readonly tailnetControllerReceiptStore?: TailnetControllerReceiptStore;
-  /**
-   * Host-owned P2 pairing runtime. `null` explicitly means boot setup failed;
-   * the listener must not silently construct a distinct runtime for itself.
-   */
+  // Host-owned P2 pairing runtime. `null` explicitly means boot setup failed; the listener must not silently construct a distinct runtime for itself.
   readonly tailnetPairedSharingRuntime?: TailnetPairedSharingRuntime | null;
   readonly env?: NodeJS.ProcessEnv;
   readonly log?: (message: string) => void;
-  /**
-   * Where automatic own-device grants are recorded.
-   *
-   * The listener's log is a developer-facing stream; an admission that skipped
-   * the approval click belongs in the same audit log every other grant of this
-   * authority already lands in.
-   */
+  // Where automatic own-device grants are recorded. The listener's log is a developer-facing stream; an admission that skipped the approval click belongs
+  // in the same audit log every other grant of this authority already lands in.
   readonly auditLogger?: AuditLogger;
-  /** @internal deterministic lifecycle injection for tests. */
+  // @internal deterministic lifecycle injection for tests.
   readonly dependencies?: Partial<TailnetObserverServerDependencies>;
 }
 
@@ -210,12 +168,8 @@ function envLayer(env: NodeJS.ProcessEnv): RawLayer {
   return layer;
 }
 
-/**
- * Project the file onto the raw vocabulary. `false` becomes an ABSENT key
- * rather than `"0"`: every boolean below accepts `"1"` or absence and rejects
- * anything else, and a file saying "controller off" has to mean the same thing
- * as a file that never mentioned the controller.
- */
+// Project the file onto the raw vocabulary. `false` becomes an ABSENT key rather than `"0"`: every boolean below accepts `"1"` or absence and rejects
+// anything else, and a file saying "controller off" has to mean the same thing as a file that never mentioned the controller.
 function fileLayer(file: TailnetObserverConfigFile): RawLayer {
   const layer: RawLayer = {};
   for (const key of BOOLEAN_FILE_KEYS) {
@@ -229,12 +183,7 @@ function fileLayer(file: TailnetObserverConfigFile): RawLayer {
   return layer;
 }
 
-/**
- * Validate the file's shape before it reaches {@link fileLayer}.
- *
- * Fail-closed: a malformed file is an error the caller surfaces, never a
- * silently-ignored file that boots the observer on a half-applied config.
- */
+// Reject malformed files before fileLayer; never boot with silently ignored partial configuration.
 export function parseTailnetObserverConfigFile(raw: unknown): TailnetObserverConfigFile {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
     throw new Error("tailnet-observer-config-file-invalid");
@@ -280,19 +229,7 @@ function provenanceOf(file: RawLayer, env: RawLayer): TailnetObserverConfigProve
   return Object.freeze(provenance);
 }
 
-/**
- * Resolve the merged layers.
- *
- * Env wins per key over the host-owned file. A principal that can set the
- * environment already owns the process, so refusing the override would only
- * pretend otherwise; what it must not do is win *silently*, which is what the
- * returned provenance is for.
- *
- * OFF is side-effect free. ON requires an explicitly named authorization
- * boundary — a tailnet identity or an owned app-capability key — with no
- * implicit default, and the file it comes from is host-owned, so a webpage
- * cannot widen Tailnet policy by editing ordinary settings.
- */
+// Environment overrides file values with visible provenance; enabling requires an explicit authorization boundary, and disabled mode has no side effects.
 function resolveFromLayers(file: RawLayer, env: RawLayer): TailnetObserverResolution {
   const merged: RawLayer = { ...file, ...env };
   const provenance = provenanceOf(file, env);
@@ -313,10 +250,8 @@ function resolveFromLayers(file: RawLayer, env: RawLayer): TailnetObserverResolu
   if (rawPairedSharing !== undefined && rawPairedSharing !== "1") {
     throw new Error("tailnet-paired-sharing-enable-invalid");
   }
-  // The controller accepts remote commands that reach the user's agent, so it
-  // needs the pairing boundary for the same reason the web adapter does. Without
-  // this, enabling the controller alone leaves the share authorizer undefined —
-  // i.e. no pairing gate at all on the native routes.
+  // The controller accepts remote commands that reach the user's agent, so it needs the pairing boundary for the same reason the web adapter does. Without
+  // this, enabling the controller alone leaves the share authorizer undefined — i.e. no pairing gate at all on the native routes.
   if (rawController === "1" && rawPairedSharing !== "1") {
     throw new Error("tailnet-controller-requires-paired-sharing");
   }
@@ -349,20 +284,15 @@ function resolveFromLayers(file: RawLayer, env: RawLayer): TailnetObserverResolu
   };
 }
 
-/**
- * The environment layer on its own.
- *
- * {@link loadTailnetObserverConfig} is what production boots through; this is
- * the same resolution with no file underneath, for callers that hold only an
- * environment and for the contract tests that pin the env vocabulary.
- */
+// The environment layer on its own. {@link loadTailnetObserverConfig} is what production boots through; this is the same resolution with no file
+// underneath, for callers that hold only an environment and for the contract tests that pin the env vocabulary.
 export function resolveTailnetObserverConfig(
   env: NodeJS.ProcessEnv = process.env,
 ): TailnetObserverConfig | null {
   return resolveFromLayers({}, envLayer(env)).config;
 }
 
-/** Read the host-owned file, distinguishing "absent" from "unreadable". */
+// Read the host-owned file, distinguishing "absent" from "unreadable".
 export async function readTailnetObserverConfigFile(
   namespace: FeatureNamespaceHandle = openFeatureNamespace(TAILNET_FEATURE_NAMESPACE),
 ): Promise<TailnetObserverConfigFile | null> {
@@ -370,9 +300,8 @@ export async function readTailnetObserverConfigFile(
   try {
     text = await readFile(join(namespace.dir, TAILNET_OBSERVER_CONFIG_FILE), "utf8");
   } catch (err) {
-    // Absent is the default-OFF state and must stay side-effect free. Anything
-    // else is a configuration the host cannot read, which is not the same thing
-    // and must not resolve to "the user never enabled this".
+    // Absent is the default-OFF state and must stay side-effect free. Anything else is a configuration the host cannot read, which is not the same thing and
+    // must not resolve to "the user never enabled this".
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw new Error("tailnet-observer-config-file-unreadable");
   }
@@ -385,15 +314,7 @@ export async function readTailnetObserverConfigFile(
   return parseTailnetObserverConfigFile(parsed);
 }
 
-/**
- * Persist the host-owned configuration, after proving it resolves.
- *
- * The dry run is the point: a configuration that would make the next boot throw
- * must be refused at the moment it is proposed, while there is still a person
- * to tell. It runs with no environment layer, because the file has to stand on
- * its own — an override that happens to be set in this shell is not a reason to
- * persist a file that would fail without it.
- */
+// Validate a proposed file without environment overrides before persisting it so the next boot cannot inherit a hidden dependency.
 export async function writeTailnetObserverConfigFile(
   file: TailnetObserverConfigFile,
   namespace: FeatureNamespaceHandle = openFeatureNamespace(TAILNET_FEATURE_NAMESPACE),
@@ -402,13 +323,10 @@ export async function writeTailnetObserverConfigFile(
   await namespace.writeJson(TAILNET_OBSERVER_CONFIG_FILE, file);
 }
 
-/**
- * Resolve the observer configuration the way production boots it: the
- * host-owned file first, the environment as an override layer on top.
- */
+// Resolve the observer configuration the way production boots it: the host-owned file first, the environment as an override layer on top.
 export async function loadTailnetObserverConfig(options: {
   readonly env?: NodeJS.ProcessEnv;
-  /** @internal deterministic injection; production reads the host-owned file. */
+  // @internal deterministic injection; production reads the host-owned file.
   readonly readConfigFile?: () => Promise<TailnetObserverConfigFile | null>;
 } = {}): Promise<TailnetObserverResolution> {
   const read = options.readConfigFile ?? (() => readTailnetObserverConfigFile());
@@ -430,35 +348,23 @@ let stopped = false;
 
 let activeConfig: TailnetObserverConfig | null = null;
 let lastStartError: string | null = null;
-/**
- * What this process was composed with.
- *
- * Kept so a configuration saved from the Settings tab can be applied to the
- * running process. Without it the listener was a boot-once latch and every
- * change — including turning the feature on for the first time — waited for
- * the next launch, which is the step people did not know they had to take.
- */
+// Retain composition inputs so saved configuration can restart the listener without requiring an app relaunch.
 let compositionOptions: StartTailnetObserverServerOptions | null = null;
-/** Serializes restarts against each other; boot's own latch handles the first. */
+// Serializes restarts against each other; boot's own latch handles the first.
 let lifecycleChain: Promise<unknown> = Promise.resolve();
 
-/** The main-owned P2 runtime is intentionally never exposed to a remote surface. */
+// The main-owned P2 runtime is intentionally never exposed to a remote surface.
 export function getTailnetPairedSharingRuntime(): TailnetPairedSharingRuntime | null {
   return activePairedSharingRuntime;
 }
 
 export interface TailnetObserverRuntimeState {
-  /** The port the listener actually bound, or null when nothing is listening. */
+  // The port the listener actually bound, or null when nothing is listening.
   readonly listeningPort: number | null;
-  /** The configuration the running listener booted with. */
+  // The configuration the running listener booted with.
   readonly activeConfig: TailnetObserverConfig | null;
-  /**
-   * The kebab-case code of the last failed start.
-   *
-   * Boot logs this and continues, which is why "the observer is not up and I
-   * cannot tell why" used to require reading the main-process log. It is kept
-   * here so a diagnostics surface can answer the question in the app.
-   */
+  // The kebab-case code of the last failed start. Boot logs this and continues, which is why "the observer is not up and I cannot tell why" used to
+  // require reading the main-process log. It is kept here so a diagnostics surface can answer the question in the app.
   readonly lastStartError: string | null;
 }
 
@@ -470,14 +376,7 @@ export function getTailnetObserverRuntimeState(): TailnetObserverRuntimeState {
   });
 }
 
-/**
- * Bind a loopback port once and report which one was actually taken.
- *
- * `0` asks the OS for a free one; any other number asks whether that exact one
- * is available. `null` means the bind was refused — the same refusal the
- * listener itself would hit, learned before a configuration is written rather
- * than after the listener has already failed to come up.
- */
+// Probe the exact desired port before persisting; zero asks the OS for a free port and null reports bind refusal.
 function probeLoopbackBind(port: number): Promise<number | null> {
   return new Promise((resolve) => {
     const probe = createPortProbe();
@@ -490,27 +389,14 @@ function probeLoopbackBind(port: number): Promise<number | null> {
   });
 }
 
-/**
- * The loopback port the observer should be configured for.
- *
- * The listener binds one fixed port and has no fallback, so an occupied port is
- * a start failure with nothing on screen that would fix it. Preference order is
- * the port already chosen, then the shared default, then whatever the OS hands
- * out — and the caller persists the answer, because a port re-rolled at every
- * launch would move the target out from under Tailscale Serve each restart.
- *
- * A port free at probe time can be taken before the listener binds it. Holding
- * the probe socket open until then would occupy the very port being reserved,
- * so the race stays, and its outcome is the ordinary start error rather than a
- * silent second choice.
- */
+// Persist the selected port so restart cannot move the serve target.
+// Probe-to-bind races remain explicit start failures, never silent fallback to a different port.
 export async function chooseObserverPort(preferred: number | null): Promise<number | null> {
   const candidates = preferred === null || preferred === DEFAULT_TAILNET_OBSERVER_PORT
     ? [DEFAULT_TAILNET_OBSERVER_PORT]
     : [preferred, DEFAULT_TAILNET_OBSERVER_PORT];
   for (const candidate of candidates) {
-    // The bound port, not the candidate: they are the same for a fixed number,
-    // and reporting what was actually bound is what makes the `0` case mean
+    // The bound port, not the candidate: they are the same for a fixed number, and reporting what was actually bound is what makes the `0` case mean
     // "whatever the OS handed out" rather than the literal zero.
     const bound = await probeLoopbackBind(candidate);
     if (bound !== null) return bound;
@@ -530,26 +416,13 @@ function dependencies(
   };
 }
 
-/**
- * Which account, if any, this desktop admits without an approval click.
- *
- * The record holds the actor id rather than a raw login — the same opaque HMAC
- * the pairing store keys everything on — because the only two questions asked
- * of it are "is admission on" and "whose grant do I take back when it goes
- * off", and neither needs the account's name. `null` is the default and the
- * off state: the file may not exist at all.
- *
- * It is kept beside `observer.json` in the same `~/.ave/tailnet/` namespace
- * rather than inside it, because `guidedSetup` and `apply` rewrite that file
- * wholesale from a renderer-supplied view; a grant ledger living there would be
- * erased by the next press of Connect.
- */
+// Store only the admitted actor’s opaque HMAC ID in a separate ledger; renderer-driven config rewrites must not erase grants.
 interface TailnetOwnDeviceAdmissionRecord {
   readonly version: 1;
   readonly admittedActorId: TailnetShareActorId | null;
 }
 
-/** What an automatic admission did, for the audit log. */
+// What an automatic admission did, for the audit log.
 type TailnetOwnDeviceAdmissionAction = "granted" | "revoked";
 
 type TailnetOwnDeviceAdmissionAudit = (
@@ -558,13 +431,8 @@ type TailnetOwnDeviceAdmissionAudit = (
   pairingId: string,
 ) => void;
 
-/**
- * The account currently admitted, or null.
- *
- * A damaged record reads as `null`, which is the off state: an unreadable
- * policy must not admit anybody. It is not a fallback in the sense the repo
- * bans — there is no second code path here, only the absence of a grant.
- */
+// The account currently admitted, or null. A damaged record reads as `null`, which is the off state: an unreadable policy must not admit anybody. It is
+// not a fallback in the sense the repo bans — there is no second code path here, only the absence of a grant.
 async function readOwnDeviceAdmission(
   namespace: FeatureNamespaceHandle,
 ): Promise<TailnetShareActorId | null> {
@@ -573,15 +441,7 @@ async function readOwnDeviceAdmission(
   return isTailnetShareActorId(raw.admittedActorId) ? raw.admittedActorId : null;
 }
 
-/**
- * Point the admission at one account, taking back what the previous one got.
- *
- * Every state change the control can produce is this one call: turning it on
- * (`previous` null), turning it off (`next` null), and the desktop having
- * signed into a different Tailscale account since the grant was made (both
- * present and different). Revocation runs before the new grant is recorded, so
- * a failure part-way through leaves less access, never more.
- */
+// Revoke the previous account before recording the next grant so partial failure leaves less access.
 async function applyOwnDeviceAdmission(input: {
   readonly store: TailnetPairingShareStore;
   readonly namespace: FeatureNamespaceHandle;
@@ -591,9 +451,7 @@ async function applyOwnDeviceAdmission(input: {
 }): Promise<void> {
   const changed = input.previousActorId !== input.nextActorId;
   if (changed && input.previousActorId !== null) {
-    // `revokePairing` also revokes that pairing's live conversation shares, so
-    // the access really goes away rather than the desktop merely declining to
-    // hand out the next one.
+    // `revokePairing` also revokes that pairing's live conversation shares, so the access really goes away rather than the desktop merely declining to hand out the next one.
     const previous = input.store.currentPairing(input.previousActorId);
     if (previous !== null && await input.store.revokePairing(previous.id)) {
       input.audit("revoked", previous.actorFingerprint, previous.id);
@@ -607,33 +465,16 @@ async function applyOwnDeviceAdmission(input: {
     await input.namespace.writeJson(TAILNET_OWN_DEVICE_ADMISSION_FILE, record);
   }
   if (input.nextActorId === null) return;
-  // Exactly what a human approving this device on the desktop does — the same
-  // store call the owner service makes — so the setting cannot grow a second,
-  // wider idea of what approval means. A pairing already active answers false
-  // and is not audited twice.
+  // Exactly what a human approving this device on the desktop does — the same store call the owner service makes — so the setting cannot grow a second,
+  // wider idea of what approval means. A pairing already active answers false and is not audited twice.
   const pairing = input.store.currentPairing(input.nextActorId);
   if (pairing !== null && pairing.state === "pending" && await input.store.activatePairing(pairing.id)) {
     input.audit("granted", pairing.actorFingerprint, pairing.id);
   }
 }
 
-/**
- * What this desktop holds for one device, pairing its own without a code.
- *
- * Serve fills the login header from the tailnet, and the probe says which login
- * this desktop itself is signed in as. When they are the same account, carrying
- * a 56-character code from one of the owner's screens to another proves nothing
- * the tailnet has not already proved.
- *
- * Whether the approval click is skipped too is the owner's separate, off-by-
- * default choice, read here rather than captured at boot so the control takes
- * effect without restarting the listener out from under a live remote.
- *
- * Every path ends at the same read of the store, so the state the page is given
- * is the state the store is actually in — including for a device that is not
- * this desktop's own. That is what a code-redeemed pairing needs: it is already
- * recorded, and reporting it is what stops the page asking for a second code.
- */
+// The current tailnet login can pair its own device without a code; skipping approval remains a separate default-off choice read live.
+// Return the store’s actual state on every path so redeemed pairings do not request another code.
 async function resolveTailnetDeviceStatus(input: {
   readonly store: TailnetPairingShareStore;
   readonly namespace: FeatureNamespaceHandle;
@@ -643,15 +484,11 @@ async function resolveTailnetDeviceStatus(input: {
   readonly actorId: TailnetShareActorId;
 }): Promise<TailnetPairingDeviceStatus> {
   const environment = await input.probeEnvironment();
-  // Neither login is logged or echoed; this comparison is all they are read for.
-  // A probe that could not read one leaves `login` null, which matches nothing,
-  // and nothing is claimed for the requester — the correct answer, not a
-  // fallback: without the probe nothing has established whose device this is.
+  // Compare logins without logging or echoing them; an unreadable probe matches no identity and grants nothing.
   if (environment.login !== input.login) {
     return pairingDeviceStatus(input.store.currentPairing(input.actorId), false);
   }
-  // A pairing this actor already has is the answer; minting a second invitation
-  // on every five-second reload would spend the invitation budget and then be
+  // A pairing this actor already has is the answer; minting a second invitation on every five-second reload would spend the invitation budget and then be
   // refused by `claimInvitation` for being already paired.
   const existing = input.store.currentPairing(input.actorId);
   if (existing === null) {
@@ -661,14 +498,7 @@ async function resolveTailnetDeviceStatus(input: {
     }
   }
   const admitted = await readOwnDeviceAdmission(input.namespace);
-  // Admission on, and pointed at somebody: the request has already proved the
-  // caller is this desktop's current login, so an admission recorded against a
-  // different account is one made before the desktop changed accounts. Moving
-  // it takes the old account's grant back rather than leaving an automatic
-  // grant behind for an account that is no longer this desktop's.
-  //
-  // Off, or pointed at nobody: the pairing stays `pending` and the desktop
-  // still has to activate it, which is the behaviour with no setting at all.
+  // If the desktop account changed, revoke the old automatic grant before moving admission; disabled admission leaves pairing pending.
   if (admitted !== null) {
     await applyOwnDeviceAdmission({
       store: input.store,
@@ -681,7 +511,7 @@ async function resolveTailnetDeviceStatus(input: {
   return pairingDeviceStatus(input.store.currentPairing(input.actorId), true);
 }
 
-/** Project the store's pairing summary onto the listener's device vocabulary. */
+// Project the store's pairing summary onto the listener's device vocabulary.
 function pairingDeviceStatus(
   pairing: TailnetOwnerPairingSummary | null,
   ownDevice: boolean,
@@ -692,17 +522,7 @@ function pairingDeviceStatus(
   });
 }
 
-/**
- * Turn automatic admission of this desktop's own devices on or off.
- *
- * On: the account this desktop is signed in as right now is recorded, and a
- * device of that account already waiting for approval is approved on the spot.
- * A desktop whose Tailscale login cannot be read refuses rather than recording
- * an admission it could never match a request against.
- *
- * Off: the recorded account's pairing — and every conversation share hanging
- * off it — is revoked. Off does not mean "stop granting new ones".
- */
+// Enabling requires a readable current login and approves its pending device; disabling revokes both pairing and all dependent shares.
 export async function setTailnetOwnDeviceAdmission(
   enabled: boolean,
   overrides: {
@@ -736,18 +556,15 @@ export async function setTailnetOwnDeviceAdmission(
   });
 }
 
-/** Whether this desktop currently admits its own devices without approval. */
+// Whether this desktop currently admits its own devices without approval.
 export async function isTailnetOwnDeviceAdmissionEnabled(
   namespace: FeatureNamespaceHandle = openFeatureNamespace(TAILNET_FEATURE_NAMESPACE),
 ): Promise<boolean> {
   return await readOwnDeviceAdmission(namespace) !== null;
 }
 
-/**
- * Write automatic grants and revocations to the same audit log the IPC layer
- * uses, so a grant nobody clicked for is not the one event with no record. The
- * account appears only as the store's own opaque fingerprint — never a login.
- */
+// Write automatic grants and revocations to the same audit log the IPC layer uses, so a grant nobody clicked for is not the one event with no record.
+// The account appears only as the store's own opaque fingerprint — never a login.
 function ownDeviceAdmissionAudit(
   auditLogger: AuditLogger | undefined,
 ): TailnetOwnDeviceAdmissionAudit {
@@ -765,8 +582,7 @@ async function startForBoot(
   options: StartTailnetObserverServerOptions,
   generation: number,
 ): Promise<TailnetObserverServer | null> {
-  // This must run before listener construction. A disabled observer opens no
-  // port and starts no Tailnet-specific transport side effect.
+  // This must run before listener construction. A disabled observer opens no port and starts no Tailnet-specific transport side effect.
   const resolved = dependencies(options.dependencies);
   const { config } = await loadTailnetObserverConfig({
     ...(options.env === undefined ? {} : { env: options.env }),
@@ -838,7 +654,7 @@ async function startForBoot(
   return Object.freeze({ port: server.port });
 }
 
-/** Idempotently start the explicitly configured observer for this app boot. */
+// Idempotently start the explicitly configured observer for this app boot.
 export async function maybeStartTailnetObserverServer(
   options: StartTailnetObserverServerOptions,
 ): Promise<TailnetObserverServer | null> {
@@ -853,9 +669,8 @@ export async function maybeStartTailnetObserverServer(
 
   const attempt = ++startAttemptSequence;
   activeStartAttempt = attempt;
-  // Record why a start failed. Boot logs the throw and carries on, so without
-  // this the only account of a misconfigured observer is a main-process log
-  // line the user of a packaged app never sees.
+  // Record why a start failed. Boot logs the throw and carries on, so without this the only account of a misconfigured observer is a main-process log line
+  // the user of a packaged app never sees.
   const pending = startForBoot(options, lifecycleGeneration).then(
     (started) => {
       lastStartError = null;
@@ -877,14 +692,7 @@ export async function maybeStartTailnetObserverServer(
   }
 }
 
-/**
- * Bring the listener back up on the configuration that is saved right now.
- *
- * Stop, advance the lifecycle generation so a start still in flight cannot
- * install itself afterwards, then resolve and start again with the options this
- * process was composed with. The generation bump is what makes this safe to
- * call while a boot start is still resolving.
- */
+// Advance the lifecycle generation before restart so an earlier in-flight start cannot install stale configuration.
 async function restartOnce(): Promise<TailnetObserverServer | null> {
   if (stopped) throw new Error("tailnet-observer-stopped");
   const options = compositionOptions;
@@ -910,12 +718,8 @@ async function restartOnce(): Promise<TailnetObserverServer | null> {
   }
 }
 
-/**
- * Apply a saved configuration to the running process.
- *
- * Callers are the owner-facing configuration service; a restart is the whole
- * reason "takes effect the next time the app starts" is gone.
- */
+// Apply a saved configuration to the running process. Callers are the owner-facing configuration service; a restart is the whole reason "takes effect
+// the next time the app starts" is gone.
 export function restartTailnetObserverServer(): Promise<TailnetObserverServer | null> {
   const next = lifecycleChain.then(restartOnce, restartOnce);
   lifecycleChain = next.then(() => undefined, () => undefined);
@@ -943,7 +747,7 @@ function takeActiveServer(): TailnetSurfaceServer | null {
   return current;
 }
 
-/** Close live observer streams before the owning application runtime is disposed. */
+// Close live observer streams before the owning application runtime is disposed.
 export function stopTailnetObserverServer(): Promise<void> {
   if (stopPromise) return stopPromise;
   const pending = stopForShutdown();
@@ -954,7 +758,7 @@ export function stopTailnetObserverServer(): Promise<void> {
   return tracked;
 }
 
-/** @internal Test-only reset; production has one immutable boot snapshot. */
+// @internal Test-only reset; production has one immutable boot snapshot.
 export function resetTailnetObserverServerForTests(): void {
   if (process.env.NODE_ENV !== "test") {
     throw new Error("tailnet-observer-test-reset-outside-test");
@@ -971,28 +775,17 @@ export function resetTailnetObserverServerForTests(): void {
   lifecycleChain = Promise.resolve();
 }
 
-// ─── Tailscale environment ──────────────────────────────────────────────────
-
-/**
- * The macOS app keeps its CLI inside the bundle and does not put it on PATH,
- * so a PATH-only lookup reports "not installed" on the platform where it is
- * most often installed.
- */
+// The macOS app keeps its CLI inside the bundle and does not put it on PATH, so a PATH-only lookup reports "not installed" on the platform where it is most often installed.
 const MACOS_TAILSCALE_CLI = "/Applications/Tailscale.app/Contents/MacOS/Tailscale";
 const TAILSCALE_CLI_TIMEOUT_MS = 5_000;
 const TAILSCALE_CLI_MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
-/** How much CLI output is carried to the surface that shows it verbatim. */
+// How much CLI output is carried to the surface that shows it verbatim.
 const TAILSCALE_DETAIL_MAX_CHARS = 2_000;
 
 const execFileAsync = promisify(execFile);
 
-/**
- * How a Tailscale CLI invocation is run.
- *
- * Injected by the tests so their matrix is a question about what the CLI says,
- * not about whether the machine running them happens to have Tailscale
- * installed, logged in, and serving.
- */
+// How a Tailscale CLI invocation is run. Injected by the tests so their matrix is a question about what the CLI says, not about whether the machine
+// running them happens to have Tailscale installed, logged in, and serving.
 export type TailscaleCommandResult =
   | { readonly kind: "ran"; readonly code: number; readonly stdout: string; readonly stderr: string }
   | { readonly kind: "not-found" }
@@ -1003,7 +796,7 @@ export type TailscaleCommandRunner = (
   args: readonly string[],
 ) => Promise<TailscaleCommandResult>;
 
-/** The probe's own view plus the binary it spoke to, which never leaves main. */
+// The probe's own view plus the binary it spoke to, which never leaves main.
 export interface TailscaleEnvironment extends TailscaleEnvironmentView {
   readonly cliPath: string | null;
 }
@@ -1045,7 +838,7 @@ async function runTailscaleCommand(
   }
 }
 
-/** Trim CLI output to what a person can read, without rewording it. */
+// Trim CLI output to what a person can read, without rewording it.
 function cliDetail(...candidates: readonly string[]): string | null {
   for (const candidate of candidates) {
     const trimmed = candidate.trim();
@@ -1109,7 +902,7 @@ function loopbackProxyPort(proxy: string): number | null {
   return Number.isSafeInteger(port) && port > 0 && port <= 65_535 ? port : null;
 }
 
-/** What `tailscale serve status --json` says about the web handlers in place. */
+// What `tailscale serve status --json` says about the web handlers in place.
 function readServeStatus(raw: unknown): { configured: boolean; targetPort: number | null } {
   if (!isRecord(raw) || !isRecord(raw.Web)) return { configured: false, targetPort: null };
   let configured = false;
@@ -1126,14 +919,7 @@ function readServeStatus(raw: unknown): { configured: boolean; targetPort: numbe
   return { configured, targetPort: null };
 }
 
-/**
- * Read this desktop's own Tailscale state.
- *
- * Every outcome is a named state. There is no reading that invents a tailnet
- * name, a MagicDNS name, or a port when the CLI did not supply one — those are
- * exactly the values the old flow asked a person to retype, and a guess here
- * would fail later at the remote end with a bare 401.
- */
+// Return named observed states only; never invent account, DNS, or port values missing from CLI output.
 export async function probeTailscaleEnvironment(options: {
   readonly runCommand?: TailscaleCommandRunner;
   readonly platform?: NodeJS.Platform;
@@ -1178,9 +964,8 @@ export async function probeTailscaleEnvironment(options: {
     try {
       serveStatus = readServeStatus(JSON.parse(serve.stdout));
     } catch {
-      // Serve reports "nothing configured" as output this app cannot parse on
-      // some versions. That is not a reason to call the node unusable, and it
-      // stays visible: `serveConfigured` remains false until Serve says so.
+      // Serve reports "nothing configured" as output this app cannot parse on some versions. That is not a reason to call the node unusable, and it stays
+      // visible: `serveConfigured` remains false until Serve says so.
       serveStatus = { configured: false, targetPort: null };
     }
   }
@@ -1196,20 +981,15 @@ export async function probeTailscaleEnvironment(options: {
   });
 }
 
-/**
- * The origin a MagicDNS name implies.
- *
- * Derived, never typed: an origin that does not match the name Tailscale serves
- * fails as `403 same-origin-required` at the remote browser, with nothing on
- * the desktop saying why.
- */
+// The origin a MagicDNS name implies. Derived, never typed: an origin that does not match the name Tailscale serves fails as `403 same-origin-required`
+// at the remote browser, with nothing on the desktop saying why.
 export function tailnetWebOriginFor(dnsName: string | null): string | null {
   if (dnsName === null) return null;
   const origin = "https://" + dnsName;
   return isTailnetWebOrigin(origin) ? origin : null;
 }
 
-/** The argv `tailscale serve` is run with — the single source of the shown command. */
+// The argv `tailscale serve` is run with — the single source of the shown command.
 function tailscaleServeArgs(port: number): readonly string[] {
   return ["serve", "--bg", "--https=443", "http://127.0.0.1:" + port];
 }
@@ -1218,12 +998,8 @@ function shellWord(value: string): string {
   return /[\s"'\\]/.test(value) ? JSON.stringify(value) : value;
 }
 
-/**
- * The command, as text, for the confirmation step that shows it before it runs.
- *
- * Built from the same argv the run uses, so the sentence on screen cannot drift
- * from what actually executes.
- */
+// The command, as text, for the confirmation step that shows it before it runs. Built from the same argv the run uses, so the sentence on screen cannot
+// drift from what actually executes.
 export function tailscaleServeCommandText(cliPath: string, port: number): string {
   return [cliPath, ...tailscaleServeArgs(port)].map(shellWord).join(" ");
 }
@@ -1232,14 +1008,7 @@ export type TailscaleServeOutcome =
   | { readonly ok: true }
   | { readonly ok: false; readonly reason: "cli-not-found" | "command-failed"; readonly output: string | null };
 
-/**
- * Put a loopback port behind Tailscale Serve.
- *
- * Running a binary for the owner is a real capability, so the caller is
- * responsible for having shown this exact command and taken an approval first.
- * A failure returns what Tailscale printed rather than a classification of it:
- * the HTTPS-certificate case in particular needs Tailscale's own sentence.
- */
+// The caller must approve this exact serve command before execution; return provider diagnostics needed for repair.
 export async function configureTailscaleServe(options: {
   readonly cliPath: string;
   readonly port: number;
@@ -1278,13 +1047,8 @@ function parseFixedPort(value: string): number {
   return port;
 }
 
-/**
- * The raw-layer spelling of an authorization choice.
- *
- * The file and the environment are merged in one vocabulary of strings, so the
- * union has to survive a round trip through that vocabulary rather than get a
- * second, file-only representation the environment could not express.
- */
+// The raw-layer spelling of an authorization choice. The file and the environment are merged in one vocabulary of strings, so the union has to survive a
+// round trip through that vocabulary rather than get a second, file-only representation the environment could not express.
 function authorizationLayerValue(authorization: TailnetAuthorization): string {
   return authorization.kind === "tailnet-identity"
     ? "tailnet-identity"

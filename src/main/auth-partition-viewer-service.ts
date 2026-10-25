@@ -1,46 +1,5 @@
-/**
- * Auth-partition Viewer Service — opens a hardened BrowserWindow loading
- * an external URL inside a *plugin's* `persist:plugin-auth:<pluginId>`
- * partition so the page can reuse the AAD/OIDC session cookies that the
- * same plugin's `openAuthWindow` call already deposited.
- *
- * Use case: an auth-owning plugin authenticates once (writes session
- * cookies into `persist:plugin-auth:<that-plugin>`), then later, in
- * response to a `callTool` invocation from a consumer plugin, the same
- * auth-owning plugin calls `openAuthPartitionViewer(url)`. The viewer
- * opens in the auth-owning plugin's partition and the page's silent-SSO
- * completes without forcing a re-login.
- *
- * Differs from `link-window-service.openLinkWindow`:
- *   - Partition is owned by a single plugin (caller binding decided by
- *     `plugin-runtime.ts`'s per-plugin HostApi factory). Caller cannot
- *     name a different plugin's partition.
- *   - URL host must be in the caller's manifest `auth.partitionDomains`
- *     allow-list (suffix-match via `host-allow-list.ts`).
- *   - Navigation outside the allow-list is canceled in three places —
- *     `will-navigate` (renderer-initiated), `will-redirect` (server
- *     3xx), and `setWindowOpenHandler` always denies — so a phishing
- *     redirect from `webmail.example.com` to `attacker.example` cannot
- *     persuade the user to re-authenticate inside the partition.
- *   - Downloads from this session are canceled — the partition holds
- *     real auth cookies, and an attacker page should not be able to
- *     exfil cookies via a file with cookies attached or trick the user
- *     into running a dropped binary.
- *
- * Differs from `auth-window-service.openAuthWindow`:
- *   - No `completionUrlPatterns` — there is no "auth done" event; the
- *     window stays open until the user closes it. Returns `Promise<void>`
- *     resolved on close/load.
- *   - No `cookieHosts` — cookies are NEVER returned to plugin code. A
- *     plugin that needs cookies should call `openAuthWindow` instead.
- *
- * Security stance encoded in `BrowserWindow` options:
- *   - `nodeIntegration: false`, `contextIsolation: true`, `sandbox: true`,
- *     `webSecurity: true` — same-origin policy and isolation.
- *   - No `preload` — the rendered page must not see any host bridge.
- *   - `setMenu(null)` so OS-level shortcuts (e.g. Ctrl+Shift+I) opening
- *     DevTools require an explicit menu accelerator that isn't wired.
- */
+// Reuses the calling plugin’s auth partition without exposing cookies or a host bridge. Enforce manifest domains on navigation and redirects; deny
+// popups and downloads from the credential-bearing session.
 import { BrowserWindow, session as electronSession } from "electron";
 
 import {
@@ -59,27 +18,27 @@ export interface AuthPartitionViewerAuditEvent {
     | "open_auth_partition_viewer_navigation_denied"
     | "open_auth_partition_viewer_download_denied";
   pluginId: string;
-  /** `origin + pathname` only — query/fragment may carry tokens. */
+  // `origin + pathname` only — query/fragment may carry tokens.
   url: string;
-  /** Allow-list snapshot — useful when investigating a deny. */
+  // Allow-list snapshot — useful when investigating a deny.
   allowedHosts: string[];
-  /** Present on `_navigation_denied` — the host that triggered the deny. */
+  // Present on `_navigation_denied` — the host that triggered the deny.
   deniedHost?: string;
   timestamp: string;
 }
 
 export interface OpenAuthPartitionViewerOptions {
-  /** Caller plugin id. Used to compute the partition + audit. */
+  // Caller plugin id. Used to compute the partition + audit.
   pluginId: string;
-  /** Full URL to load. Must already pass the allow-list. */
+  // Full URL to load. Must already pass the allow-list.
   url: string;
-  /** Normalized allow-list (already validated via `normalizeAllowedHosts`). */
+  // Normalized allow-list (already validated via `normalizeAllowedHosts`).
   allowedHosts: string[];
-  /** Window chrome label. Default falls back to the URL hostname. */
+  // Window chrome label. Default falls back to the URL hostname.
   windowTitle?: string;
-  /** Parent BrowserWindow for OS-level Z-order. */
+  // Parent BrowserWindow for OS-level Z-order.
   parent?: BrowserWindow | null;
-  /** Audit sink — host log + future telemetry. */
+  // Audit sink — host log + future telemetry.
   audit?: (event: AuthPartitionViewerAuditEvent) => void;
 }
 
@@ -100,11 +59,8 @@ function safeUrlForLog(url: string): string {
   }
 }
 
-/**
- * Track per-session installs so we don't stack repeated `will-download`
- * listeners on the same partition across viewer reopens — Electron's
- * `session.on(...)` does not de-dupe listeners.
- */
+// Track per-session installs so we don't stack repeated `will-download` listeners on the same partition across viewer reopens — Electron's
+// `session.on(...)` does not de-dupe listeners.
 const installedSessions = new WeakSet<Electron.Session>();
 
 function trackViewer(partition: string, win: BrowserWindow): void {
@@ -120,11 +76,8 @@ function untrackViewer(partition: string, win: BrowserWindow): void {
   if (viewers?.size === 0) activeViewersByPartition.delete(partition);
 }
 
-/**
- * Destroy every viewer that can still write to a partition, then wait until
- * Electron confirms that its webContents are gone. Partition storage must not
- * be cleared before this barrier or a live page could immediately recreate it.
- */
+// Destroy every viewer that can still write to a partition, then wait until Electron confirms that its webContents are gone. Partition storage must not
+// be cleared before this barrier or a live page could immediately recreate it.
 async function closeAuthPartitionViewers(
   partition: string,
 ): Promise<void> {
@@ -146,8 +99,7 @@ async function closeAuthPartitionViewers(
         };
         win.once("closed", complete);
         try {
-          // destroy() is deliberate: a remote beforeunload handler must not be
-          // able to postpone Host-owned credential deletion.
+          // destroy() is deliberate: a remote beforeunload handler must not be able to postpone Host-owned credential deletion.
           win.destroy();
           if (win.isDestroyed()) complete();
         } catch (error) {
@@ -176,11 +128,7 @@ export async function withAuthPartitionViewersClosed<T>(
   }
 }
 
-/**
- * Install one-time session-level guards on the partition: deny every
- * download (the partition holds auth cookies) + the existing UA spoof +
- * permission-request denial.
- */
+// Install one-time session-level guards on the partition: deny every download (the partition holds auth cookies) + the existing UA spoof + permission-request denial.
 function ensurePartitionSessionGuards(
   partition: string,
   audit: ((e: AuthPartitionViewerAuditEvent) => void) | undefined,
@@ -203,14 +151,10 @@ function ensurePartitionSessionGuards(
   });
 }
 
-/**
- * Open the viewer. Resolves once the window has loaded or been closed —
- * we never expose the lifetime promise to the plugin.
- */
+// Open the viewer. Resolves once the window has loaded or been closed — we never expose the lifetime promise to the plugin.
 export async function openAuthPartitionViewer(
   opts: OpenAuthPartitionViewerOptions,
 ): Promise<void> {
-  // Validate URL + initial host (defense-in-depth — caller already gated).
   if (!urlMatchesAllowList(opts.url, opts.allowedHosts)) {
     throw new Error(
       `openAuthPartitionViewer: url host is not in the allow-list (got ${safeUrlForLog(opts.url)})`,
@@ -255,9 +199,8 @@ export async function openAuthPartitionViewer(
   win.setMenu(null);
   trackViewer(partition, win);
 
-  // setWindowOpenHandler always denies — viewer must not spawn popups
-  // (target=_blank, window.open). If the user really needs to open a
-  // link in another window, they can close the viewer and reopen.
+  // setWindowOpenHandler always denies — viewer must not spawn popups (target=_blank, window.open). If the user really needs to open a link in another
+  // window, they can close the viewer and reopen.
   win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
 
   const denyOutOfAllowList = (
@@ -270,7 +213,7 @@ export async function openAuthPartitionViewer(
     try {
       deniedHost = normalizeHost(new URL(urlBeingNavigatedTo).hostname);
     } catch {
-      /* leave empty */
+      // leave empty
     }
     opts.audit?.({
       type: "open_auth_partition_viewer_navigation_denied",
@@ -283,19 +226,13 @@ export async function openAuthPartitionViewer(
     return true;
   };
 
-  // `will-navigate` — renderer-initiated navigation (link clicks, JS
-  // `location.href = ...`). Same-document hash navigations are gated by
-  // `will-navigate-in-page` instead — auth flows don't depend on those
-  // so we leave them alone.
+  // `will-navigate` — renderer-initiated navigation (link clicks, JS `location.href = ...`). Same-document hash navigations are gated by
+  // `will-navigate-in-page` instead — auth flows don't depend on those so we leave them alone.
   win.webContents.on("will-navigate", (event, urlBeingNavigatedTo) => {
     denyOutOfAllowList(urlBeingNavigatedTo, event);
   });
 
-  // `will-redirect` — server-side 3xx during a load. AAD's silent SSO
-  // path is a chain of redirects through login.microsoftonline.com and
-  // ESTS endpoints; the allow-list must include each step, but a
-  // hijacked endpoint redirecting to an attacker domain is canceled
-  // here without ever loading.
+  // Validate every SSO redirect hop before loading it; an allowed endpoint must not redirect to an unlisted domain.
   win.webContents.on("will-redirect", (event, urlBeingRedirectedTo) => {
     denyOutOfAllowList(urlBeingRedirectedTo, event);
   });

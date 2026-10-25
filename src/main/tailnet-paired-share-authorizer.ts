@@ -1,11 +1,4 @@
-/**
- * Host-only identity and grant resolution for explicit Tailnet paired sharing.
- *
- * A Tailnet login never becomes a durable identifier directly. It is converted
- * to a domain-separated HMAC actor id using a secret loaded from OS-encrypted
- * storage by the main-process lifecycle. Pairing and sharing remain separate:
- * a resolved actor needs an active, scoped grant for the current conversation.
- */
+// Derive actor IDs with a domain-separated HMAC using an OS-encrypted secret; pairing still requires a separate scoped share.
 import { createHmac, randomBytes } from "node:crypto";
 import type { SecretStore } from "../audit/hmac-chain.js";
 import type {
@@ -22,7 +15,7 @@ import { isPositiveSafeInteger } from "../shared/safe-integer.js";
 
 export const TAILNET_PAIRED_SHARE_ACTOR_SECRET_NAME = "tailnet-paired-share-actor-v1.key";
 
-/** A remote-controller actor secret: 32 random bytes, stored base64url (43 chars, no padding). */
+// A remote-controller actor secret: 32 random bytes, stored base64url (43 chars, no padding).
 export const ACTOR_SECRET_BYTES = 32;
 export const ACTOR_SECRET_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const ACTOR_HMAC_DOMAIN = "ave/tailnet-paired-sharing/actor/v1\0";
@@ -50,9 +43,9 @@ export interface TailnetPairedShareAuthorization {
 }
 
 export interface TailnetPairedShareAuthorizer {
-  /** Host-only, opaque actor derivation; returns no raw login value. */
+  // Host-only, opaque actor derivation; returns no raw login value.
   actorIdFor(login: string): TailnetShareActorId | null;
-  /** Resolve the current owner-approved share for the current conversation. */
+  // Resolve the current owner-approved share for the current conversation.
   authorize(
     login: string,
     currentConversationId: string,
@@ -63,17 +56,13 @@ export interface TailnetPairedShareAuthorizer {
 
 export interface CreateTailnetPairedShareAuthorizerOptions {
   readonly store: TailnetPairedShareStore;
-  /** OS-encrypted, durable secret material supplied by main-process boot. */
+  // OS-encrypted, durable secret material supplied by main-process boot.
   readonly actorSecret: string;
-  /** The active owner conversation, re-read at every final-boundary check. */
+  // The active owner conversation, re-read at every final-boundary check.
   readonly getCurrentConversationId: () => string;
 }
 
-/**
- * Load or mint the domain-specific HMAC key. Production must pass a
- * SafeStorageSecretStore (not a plaintext file store); failure must prevent
- * paired sharing from starting.
- */
+// Load or mint the domain-specific HMAC key. Production must pass a SafeStorageSecretStore (not a plaintext file store); failure must prevent paired sharing from starting.
 export function ensureTailnetPairedShareActorSecret(secretStore: SecretStore): string {
   const existing = secretStore.read(TAILNET_PAIRED_SHARE_ACTOR_SECRET_NAME, 128);
   if (existing !== null) {

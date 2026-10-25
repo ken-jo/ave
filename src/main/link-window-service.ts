@@ -1,36 +1,5 @@
-/**
- * Link Window Service — §B3 light external-link viewer.
- *
- * Differs from `auth-window-service.ts` in two key ways:
- *   1. NO `cookieHosts` enforcement — this is a viewer for arbitrary external
- *      URLs (calendar webLinks, help docs, share-card preview, etc.), not an
- *      auth flow that needs to capture credentials.
- *   2. NO `completionUrlPatterns` — the user simply browses and closes the
- *      window when finished; there is no "completion event" to observe.
- *
- * Routing is decided by the caller (plugin-runtime) based on
- * `settings.webView.preferredFlow`:
- *   - `"in-app"`   → `openLinkWindow` opens a BrowserWindow.
- *   - `"system-browser"` → caller invokes `shell.openExternal` directly.
- *
- * Sandbox / security stance:
- *   - `nodeIntegration: false`, `contextIsolation: true`, `sandbox: true` —
- *     the rendered page cannot access Node or any host APIs.
- *   - `webSecurity: true` — same-origin policy enforced.
- *   - The window is parented to the main window so OS-level focus/Z-order
- *     follows expectation.
- *
- * Microsoft Entra ID (AAD) sign-in compatibility:
- *   - The default Electron user-agent ends in `Electron/<ver>`. Microsoft's
- *     AAD endpoint detects this token and skips the "Stay signed in?" (KMSI)
- *     prompt, so it never issues `ESTSAUTHPERSISTENT` and only `ESTSAUTH`
- *     (a session cookie) is set. The session cookie also gets dropped if the
- *     window closes before Electron's 30s/512-op cookie batch flushes to disk.
- *     Result: every reopen looks like "logged out, please log in again".
- *   - `buildPersistentBrowserUserAgent()` rewrites the UA to look like vanilla
- *     Edge so AAD treats this as a real browser; on `closed` we
- *     `cookies.flushStore()` to force the auth cookie to disk before teardown.
- */
+// External-link viewers expose no host APIs or captured cookies; the caller chooses in-app or system-browser routing. Use the persistent-browser user
+// agent and flush cookies on close so quick teardown does not lose authenticated sessions.
 import { BrowserWindow, session as electronSession, type WebContents } from "electron";
 import { existsSync } from "node:fs";
 import { registerWindowEventListeners } from "./window-event-listeners.js";
@@ -47,29 +16,13 @@ import { escapeHtml } from "../shared/escape-html.js";
 import { preloadPreferences } from "./preload-bundles.js";
 import { buildPersistentBrowserUserAgent } from "./browser-user-agent.js";
 
-/**
- * JSON for embedding inside a `<script>` block.
- *
- * `JSON.stringify` escapes for the JSON grammar, not for HTML parsing: it
- * leaves `<` alone, so a value containing `</script>` closes the block and
- * everything after it is parsed as markup. Escaping `<` (and `>` for symmetry)
- * as `\u003c` / `\u003e` keeps the value a single JS string literal no matter
- * what it contains, which makes the sink safe on its own rather than relying on
- * every caller to canonicalize first.
- */
-// Exported for direct testing — the HTML-safety of this escaping is the
-// security property that keeps the shell document injection-proof.
+// JSON escaping does not protect script tags; escape angle brackets so embedded text cannot close the script element.
+// Exported for direct testing — the HTML-safety of this escaping is the security property that keeps the shell document injection-proof.
 export function jsonForScriptBlock(value: string): string {
   return JSON.stringify(value).replace(/</g, "\\u003c").replace(/>/g, "\\u003e");
 }
 
-/**
- * The shell document. The title crosses two different sinks and is encoded
- * once per sink: HTML-escaped where the markup parser reads it (`<title>`),
- * and JSON-encoded where a script assigns it (`document.title`,
- * `textContent`) — those sinks take the string literally and would show
- * `&quot;` for a `"` that had been HTML-escaped first.
- */
+// Encode titles separately for HTML and script sinks; HTML entities would display literally in textContent.
 // Exported for direct testing of the two title sinks.
 export function buildLinkWindowShellHtml(opts: {
   url: string;
@@ -110,38 +63,20 @@ export function buildLinkWindowShellHtml(opts: {
 }
 
 export interface OpenLinkWindowOptions {
-  /** URL to load. MUST be `http(s):` — caller should validate before passing. */
+  // URL to load. MUST be `http(s):` — caller should validate before passing.
   url: string;
-  /** Window title. Defaults to "External Link". */
+  // Window title. Defaults to "External Link".
   windowTitle?: string;
-  /**
-   * Optional Electron session partition. When omitted, Electron's default
-   * session is used (which is fine for a generic viewer — there is no
-   * cross-plugin cookie exfiltration concern because no cookies are read
-   * back to plugin code).
-   */
+  // Optional Electron session partition. When omitted, Electron's default session is used (which is fine for a generic viewer — there is no cross-plugin
+  // cookie exfiltration concern because no cookies are read back to plugin code).
   persistPartition?: string;
-  /** Initial window width. Defaults to 1024. */
+  // Initial window width. Defaults to 1024.
   width?: number;
-  /** Initial window height. Defaults to 768. */
+  // Initial window height. Defaults to 768.
   height?: number;
 }
 
-/**
- * Apply the Edge-style UA + a deny-by-default permission gate to the
- * partition's session.
- *
- * Scope: session-level (`session.fromPartition(...).setUserAgent(...)`). The
- * UA persists for the lifetime of the partition, not just one window — that
- * is intentional, since the partition is dedicated to the external-link
- * viewer. Every navigation in this partition (any plugin's `openExternalUrl`,
- * any redirect chain) will emit the spoofed UA, which is precisely what AAD
- * needs to issue the persistent auth cookie.
- *
- * Permissions: persistent disk-stored partitions accumulate site permission
- * grants (notifications, geolocation, media) across reopens. We deny by
- * default so the viewer cannot silently grow privileges over time.
- */
+// The dedicated viewer partition shares persistent sign-in behavior; deny permissions by default so reopening cannot accumulate site privileges.
 export function applyPersistentBrowserUserAgent(persistPartition: string): void {
   const ses = electronSession.fromPartition(persistPartition);
   ses.setUserAgent(buildPersistentBrowserUserAgent());
@@ -150,20 +85,8 @@ export function applyPersistentBrowserUserAgent(persistPartition: string): void 
   });
 }
 
-/**
- * Force any AAD/Outlook auth cookies that landed during the login redirect
- * to disk before the partition's BrowserContext could batch them.
- *
- * Electron docs (Cookies API): writes are batched, flushed every 30 seconds
- * or 512 ops. If the user closes the window seconds after their auth redirect
- * lands, the cookies were never fsynced — next launch sees them missing and
- * AAD prompts again. `flushStore()` is cheap and idempotent.
- *
- * Failure is non-fatal — we surface a `console.warn` so a corrupt/locked
- * cookie store leaves a diagnostic breadcrumb (otherwise users see "must
- * re-login every time" with no signal pointing to the cause), but never
- * propagate the error since window teardown must always complete.
- */
+// Flush cookies before teardown because batched writes can lose a just-completed login.
+// Log flush failure without blocking window teardown.
 async function flushPartitionCookies(persistPartition: string): Promise<void> {
   try {
     await electronSession.fromPartition(persistPartition).cookies.flushStore();
@@ -193,15 +116,7 @@ export function attachLinkNavigationGuards(contents: WebContents): void {
   });
 }
 
-/**
- * Open a lightweight BrowserWindow that loads `url` and lets the user
- * close it when done. Returns once the window has finished loading (or
- * has been closed before load completed).
- *
- * The promise never rejects on user-initiated close — that is the normal
- * happy path. It only rejects if the URL fails to start loading (e.g.
- * malformed URL crash inside Electron).
- */
+// Resolve on load or normal user close; reject only failure to begin loading.
 export async function openLinkWindow(
   parent: BrowserWindow | null | undefined,
   opts: OpenLinkWindowOptions,
@@ -213,9 +128,7 @@ export async function openLinkWindow(
   const shellPreload = preloadPreferences("preload");
   const preloadExists = existsSync(shellPreload.preload);
   const shellTitle = opts.windowTitle ?? "External Link";
-  /* Frame settings mirror the main app window so traffic-light spacing
-     stays uniform on macOS and Win/Linux gets the same frameless shell
-     with our own titlebar buttons. */
+  // Frame settings mirror the main app window so traffic-light spacing stays uniform on macOS and Win/Linux gets the same frameless shell with our own titlebar buttons.
   const win = new BrowserWindow({
     parent: parent ?? undefined,
     width: opts.width ?? 1024,
@@ -223,18 +136,10 @@ export async function openLinkWindow(
     title: shellTitle,
     icon: resolveAppIconPath(),
     autoHideMenuBar: true,
-    // Frame settings sourced from the shared `getCommonChromeOptions()`
-    // helper so traffic-light spacing stays uniform across every Ave
-    // window. See `src/main/window-chrome.ts`.
+    // Frame settings sourced from the shared `getCommonChromeOptions()` helper so traffic-light spacing stays uniform across every Ave window. See `src/main/window-chrome.ts`.
     ...getCommonChromeOptions(),
     webPreferences: {
-      /* Shell loads a `data:` URL that hosts a sandboxed `<webview>` for
-         the external content. The webviewTag flag enables the embedded
-         viewer; the actual cross-origin loading and cookie persistence
-         happen inside the webview's own partition (passed through via
-         the shell-side JS that wires the webview's `partition=` attr).
-         The shell itself needs the normal preload bridge for titlebar IPC;
-         remote content remains isolated in the webview below. */
+      // The trusted shell needs titlebar IPC while remote content remains isolated in its own partitioned webview.
       webviewTag: true,
       nodeIntegration: false,
       contextIsolation: true,
@@ -272,9 +177,8 @@ export async function openLinkWindow(
     attachLinkNavigationGuards(contents);
   });
 
-  // Resolve when the page finishes loading or the user closes the window.
-  // We do NOT keep the promise pending for the lifetime of the window —
-  // plugins call `openExternalUrl` and forget about it.
+  // Resolve when the page finishes loading or the user closes the window. We do NOT keep the promise pending for the lifetime of the window — plugins call
+  // `openExternalUrl` and forget about it.
   return new Promise<void>((resolve, reject) => {
     let settled = false;
     const settle = (fn: () => void) => {
@@ -288,10 +192,8 @@ export async function openLinkWindow(
       settle(resolve);
     });
     win.once("closed", () => {
-      // Await the flush before resolving so an `app.quit()` that follows a
-      // user closing this window cannot tear the process down before the
-      // freshly-written auth cookies reach disk. Best-effort: errors are
-      // already swallowed-with-warn inside `flushPartitionCookies`.
+      // Await the flush before resolving so an `app.quit()` that follows a user closing this window cannot tear the process down before the freshly-written
+      // auth cookies reach disk. Best-effort: errors are already swallowed-with-warn inside `flushPartitionCookies`.
       const finish = () => settle(resolve);
       if (opts.persistPartition) {
         void flushPartitionCookies(opts.persistPartition).finally(finish);
@@ -300,8 +202,7 @@ export async function openLinkWindow(
       }
     });
     win.webContents.once("did-fail-load", (_e, code, desc) => {
-      // Negative codes that mean "navigation aborted because of a redirect /
-      // user action" are fine — only reject on hard load failures.
+      // Negative codes that mean "navigation aborted because of a redirect / user action" are fine — only reject on hard load failures.
       if (code === -3 /* ABORTED */) return;
       settle(() => reject(new Error(`link-window load failed (${code}): ${desc}`)));
     });

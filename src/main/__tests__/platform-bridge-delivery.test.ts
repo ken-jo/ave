@@ -85,8 +85,7 @@ describe("PlatformBridgeDeliveryAdapter", () => {
         busy: true,
         assistantText: "safe snapshot\u0000 text",
       }),
-      // A runtime cast models an accidental future field; this adapter must
-      // destructure only the public projection contract.
+      // A runtime cast models an accidental future field; this adapter must destructure only the public projection contract.
       ownerDetail: { path: "C:\\private\\secret.txt", token: "not-for-provider" },
     } as unknown as SharedConversationSnapshot);
     channel.enqueueEvent({
@@ -149,8 +148,7 @@ describe("PlatformBridgeDeliveryAdapter", () => {
       maxTextChars: 8,
     });
 
-    // The projection retains the TAIL of a long reply, so a head-bounded
-    // snapshot delivers its oldest retained words and drops the newest.
+    // The projection retains the TAIL of a long reply, so a head-bounded snapshot delivers its oldest retained words and drops the newest.
     const tail = adapter.openChannel("telegram:tail-chat", CONVERSATION_ID);
     tail.enqueueSnapshot(snapshot({ cursor: 1, assistantText: "oldest-middle-newest" }));
     // Six emoji are twelve UTF-16 units: a code-point bound would send all six.
@@ -284,8 +282,7 @@ describe("PlatformBridgeDeliveryAdapter", () => {
           cursor: incoming.cursor,
           message: incoming.message,
         }];
-        // Validation can read this array safely, but normalization must also be
-        // guarded because provider code is an extension boundary.
+        // Validation can read this array safely, but normalization must also be guarded because provider code is an extension boundary.
         return new Proxy(valid, {
           get(target, property, receiver) {
             if (property === "map") throw new Error("provider-map-failure");
@@ -321,8 +318,7 @@ describe("PlatformBridgeDeliveryAdapter", () => {
 
     firstSend.resolve();
     await channel.waitForIdle();
-    // This mock deliberately ignores its AbortSignal; queued turn status and
-    // overflowing text are still discarded for this one slow channel.
+    // This mock deliberately ignores its AbortSignal; queued turn status and overflowing text are still discarded for this one slow channel.
     expect(send).toHaveBeenCalledTimes(1);
     expect(adapter.channelCount()).toBe(0);
   });

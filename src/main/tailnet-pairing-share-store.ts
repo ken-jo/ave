@@ -1,11 +1,5 @@
-/**
- * Durable pairing and conversation-share state for Tailnet surfaces.
- *
- * Pairing is identification only. A paired Tailnet account gets no transcript
- * or control authority until the desktop owner creates a separate, bounded
- * share for one exact current conversation. The persisted state contains no
- * raw Tailnet login, invite code, or conversation id.
- */
+// Pairing identifies an account without granting transcript or control access; an exact current conversation needs a separate bounded share. Never
+// persist raw logins, invite codes, or conversation IDs.
 import { randomBytes as nodeRandomBytes, randomUUID as nodeRandomUuid } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -40,7 +34,7 @@ export type TailnetShareActorId = `tailnet:${string}`;
 
 export interface TailnetPairingInvitation {
   readonly id: string;
-  /** Raw high-entropy secret returned exactly once; it is never persisted. */
+  // Raw high-entropy secret returned exactly once; it is never persisted.
   readonly code: string;
   readonly expiresAt: number;
 }
@@ -58,7 +52,7 @@ export interface TailnetPairingShareAuthority {
 
 export interface TailnetOwnerPairingSummary {
   readonly id: string;
-  /** Opaque account fingerprint, not a raw Serve login. */
+  // Opaque account fingerprint, not a raw Serve login.
   readonly actorFingerprint: string;
   readonly state: "pending" | "active";
   readonly expiresAt: number | null;
@@ -141,13 +135,8 @@ function uuid(value: unknown): value is string {
   return typeof value === "string" && UUID_PATTERN.test(value);
 }
 
-/**
- * Whether a value is an actor id this store would accept.
- *
- * Exported because the own-device admission record persists one of these ids
- * and has to validate the bytes it reads back. A second pattern kept beside
- * that record would be a second opinion on what an actor id is.
- */
+// Whether a value is an actor id this store would accept. Exported because the own-device admission record persists one of these ids and has to validate
+// the bytes it reads back. A second pattern kept beside that record would be a second opinion on what an actor id is.
 export function isTailnetShareActorId(value: unknown): value is TailnetShareActorId {
   return typeof value === "string" && ACTOR_ID.test(value);
 }
@@ -444,10 +433,7 @@ class AsyncMutex {
   }
 }
 
-/**
- * Call open() before use. Corrupt state fails closed rather than becoming an
- * empty permission database.
- */
+// Call open() before use. Corrupt state fails closed rather than becoming an empty permission database.
 export class TailnetPairingShareStore {
   private readonly namespace: FeatureNamespaceHandle;
   private readonly fileName: string;
@@ -580,14 +566,7 @@ export class TailnetPairingShareStore {
     });
   }
 
-  /**
-   * The pairing this actor already holds, pending or active.
-   *
-   * The code-free owner path re-enters on every reload of the waiting page, and
-   * an approved pairing that has no share yet lands there too. Without this
-   * read each pass would mint another invitation and then fail the claim it
-   * had just paid for, spending the invitation budget on nothing.
-   */
+  // Reuse existing pending or active pairing on reload so waiting pages cannot spend invitation budget repeatedly.
   currentPairing(resolvedActorId: TailnetShareActorId): TailnetOwnerPairingSummary | null {
     if (!isTailnetShareActorId(resolvedActorId)) return null;
     const state = this.requireState();

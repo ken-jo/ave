@@ -1,19 +1,4 @@
-/**
- * WindowManager — the main window's identity and its mode-driven bounds.
- *
- * This used to manage detached child BrowserWindows and a magnetic snap-to-edge
- * system for them. Detach is a retired feature: every view renders inline, and MCP-app
- * cards reach `fullscreen` and `pip` through in-renderer surfaces (see
- * `shared/mcp-app-display-mode.ts`). Nothing spawns a child window any more, so the
- * child registry, the snap geometry, and the per-window bounds persistence went with
- * the feature they served.
- *
- * What remains is the animated resizes the workspace mode and the chat side panel ask
- * for. Several main windows may be open (`app-state.ts` owns which), so each resize
- * acts on the main window whose renderer asked — never on "the" main window — and
- * each window has its own tween. Auxiliary HTML-preview, link, and auth windows own
- * themselves and do not route through here.
- */
+// Resize the requesting main window with its own tween; auxiliary preview, link, and auth windows manage themselves.
 
 import { BrowserWindow, ipcMain, screen, type IpcMainInvokeEvent } from "electron";
 import { auditUnauthorized, UNAUTHORIZED_FRAME } from "../ipc-bridge.js";
@@ -27,7 +12,7 @@ import {
   computeWorkModeBounds,
 } from "./main-window-bounds.js";
 
-/** The live main window whose renderer sent `event`, or null for any other sender. */
+// The live main window whose renderer sent `event`, or null for any other sender.
 function senderMainWindow(event: IpcMainInvokeEvent): BrowserWindow | null {
   const win = BrowserWindow.fromWebContents(event.sender);
   if (!win || win.isDestroyed()) return null;
@@ -35,11 +20,8 @@ function senderMainWindow(event: IpcMainInvokeEvent): BrowserWindow | null {
 }
 
 export class WindowManager {
-  /**
-   * Active resize tween per window id. At most one tween runs per window — a new
-   * tween cancels that window's in-flight one so rapid chat↔work toggling does not
-   * overlap animations; the latest target always wins and lands exactly.
-   */
+  // Active resize tween per window id. At most one tween runs per window — a new tween cancels that window's in-flight one so rapid chat↔work toggling
+  // does not overlap animations; the latest target always wins and lands exactly.
   private readonly _resizeTweens = new Map<number, ReturnType<typeof setInterval>>();
 
   private cancelTween(windowId: number): void {
@@ -49,18 +31,7 @@ export class WindowManager {
     this._resizeTweens.delete(windowId);
   }
 
-  /**
-   * Smoothly animate a window to `target` bounds via a manual, cancellable
-   * tween. Electron's `setBounds(bounds, animate=true)` flag is macOS-ONLY —
-   * Windows/Linux ignore it and snap instantly. This interpolates x/y/width/
-   * height with an easeOutCubic curve on a ~60fps interval so the resize is
-   * smooth uniformly on every platform.
-   *
-   * Cancellation: the window's in-flight tween (`_resizeTweens`) is cleared before a new
-   * one starts, so rapid chat↔work toggling never overlaps animations — the
-   * latest target wins and still lands EXACTLY on `target` (the final step
-   * snaps to the precise integer bounds rather than an interpolated value).
-   */
+  // Native animate=true works only on macOS; use one cancellable per-window tween and snap to exact final bounds.
   animateBoundsTo(
     win: BrowserWindow,
     target: { x: number; y: number; width: number; height: number },
@@ -118,16 +89,8 @@ export class WindowManager {
     }, frameMs));
   }
 
-  // ── IPC registration ──────────────────────────────────────────────────────
-
   registerIpc(auditLogger: AuditLogger): void {
-    // Resize the sender's main window to match the active workspace mode.
-    //   work → centered 1243×768 (golden ratio, clamped to the work area), the focused
-    //          working canvas where inline views need room.
-    //   chat → the right-docked initial bounds (the same ones the window boots with),
-    //          computed from the primary work area.
-    // State-mutating channel — validateHostRendererSender (rejects plugin UI shells),
-    // mirroring the other host-only window IPCs.
+    // Resize only the requesting trusted host renderer’s main window; enforce the host sender guard on this mutating channel.
     ipcMain.handle(CHANNELS.window.resizeForMode, (event: IpcMainInvokeEvent, mode: unknown) => {
       if (!validateHostRendererSender(event)) {
         auditUnauthorized(auditLogger, CHANNELS.window.resizeForMode, event);
@@ -141,8 +104,7 @@ export class WindowManager {
 
       const { workArea } = screen.getPrimaryDisplay();
       if (mode === "work") {
-        // Manual easeOut tween (uniform on every platform). The native animate
-        // flag is macOS-only and is intentionally NOT passed anymore.
+        // Manual easeOut tween (uniform on every platform). The native animate flag is macOS-only and is intentionally NOT passed anymore.
         this.animateBoundsTo(main, computeWorkModeBounds(workArea));
       } else {
         this.animateBoundsTo(main, computeInitialMainWindowBounds(workArea));
@@ -150,9 +112,8 @@ export class WindowManager {
       return { ok: true };
     });
 
-    // Resize the sender's main window when the in-chat right-side work panel opens or
-    // closes. Work mode keeps the panel in normal flex layout and does not call
-    // this channel; this is only for chat mode's narrower OS window.
+    // Resize the sender's main window when the in-chat right-side work panel opens or closes. Work mode keeps the panel in normal flex layout and does not
+    // call this channel; this is only for chat mode's narrower OS window.
     ipcMain.handle(CHANNELS.window.resizeForSidePanel, (event: IpcMainInvokeEvent, open: unknown) => {
       if (!validateHostRendererSender(event)) {
         auditUnauthorized(auditLogger, CHANNELS.window.resizeForSidePanel, event);

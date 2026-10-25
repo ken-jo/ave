@@ -1,11 +1,5 @@
 // @vitest-environment jsdom
-/**
- * The floating dock's own chrome (header, border, activity line) copies four
- * theme colors. Main sends them on `ave:dock:theme`: the theme current when
- * the window opens, then every later one — another theme, or the same theme
- * updated in place. The window asks for nothing (the plugin `getTheme` guard
- * refuses it; see plugin-theme-replay.test.ts for the real handler).
- */
+// The dock receives its initial theme and later updates by IPC; the plugin getTheme guard refuses dock requests.
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { join } from "node:path";
@@ -16,7 +10,7 @@ import { recordValidatedTheme, resetLastThemePayloadForTests } from "../../share
 
 const { windows, rendererListeners, invoke } = vi.hoisted(() => ({
   windows: [] as Array<{ send: ReturnType<typeof vi.fn>; fire(event: string): void; args: string[]; attach(prefs: Record<string, unknown>, params: Record<string, string>): boolean; prefs: Record<string, unknown> }>,
-  /** The dock renderer's `ipcRenderer.on` listeners: what main's `webContents.send` reaches. */
+  // The dock renderer's `ipcRenderer.on` listeners: what main's `webContents.send` reaches.
   rendererListeners: new Map<string, Set<(event: unknown, payload: unknown) => void>>(),
   invoke: vi.fn(),
 }));
@@ -159,7 +153,7 @@ describe("the dock window paints the host theme main sends (real preload, host t
   const script = readFileSync(join(root, "floating-dock-window.js"), "utf8");
 
   let preloadBridge: unknown = null;
-  /** The dock window as it opens: its preload's bridge, then its script. */
+  // The dock window as it opens: its preload's bridge, then its script.
   async function openWindow(args: string[]) {
     document.documentElement.removeAttribute("style");
     document.body.innerHTML = html.slice(html.indexOf("<body"), html.lastIndexOf("</body>")).replace(/^<body[^>]*>/u, "").replace(/<script[\s\S]*?<\/script>/gu, "");
@@ -179,7 +173,7 @@ describe("the dock window paints the host theme main sends (real preload, host t
     w.aveDock = preloadBridge;
     new Function(script)();
   }
-  /** What the host renderer's theme notify does in main: validate into the cache, then broadcast (plugins.ts). */
+  // What the host renderer's theme notify does in main: validate into the cache, then broadcast (plugins.ts).
   function publish(theme: unknown) {
     const recorded = recordValidatedTheme(theme);
     if (!recorded.ok) throw new Error(recorded.error);
@@ -201,9 +195,8 @@ describe("the dock window paints the host theme main sends (real preload, host t
     publish({ bundleId: "moonstone", shell: "dark", tokens: NEXT.tokens });
     expect(bg()).toBe("hsl(210, 40%, 18%)");
     expect(invoke).not.toHaveBeenCalled();
-    // The asset URLs main resolved reach the bridge (the preload resolves nothing itself).
-    // The mocked asset paths become file URLs the platform's way: a rooted
-    // `/assets/...` path carries the current drive on Windows.
+    // The asset URLs main resolved reach the bridge (the preload resolves nothing itself). The mocked asset paths become file URLs the platform's way: a
+    // rooted `/assets/...` path carries the current drive on Windows.
     const bridge = (window as unknown as { aveDock: { pluginShellUrl: string; pluginPreloadUrl: string } }).aveDock;
     expect(bridge.pluginShellUrl).toBe(pathToFileURL("/assets/plugin-ui-shell.html").href);
     expect(bridge.pluginPreloadUrl).toBe(pathToFileURL("/assets/plugin-preload.cjs").href);

@@ -71,7 +71,6 @@ const HOST_TOOL: ToolSchema = {
   },
 };
 
-
 function fakeCodexClient(): CodexAppServerClient {
   return {
     getStatus: vi.fn(async () => CODEX_CONNECTED),
@@ -287,9 +286,8 @@ describe("SubscriptionRuntimeService", () => {
       acpRegistry: registry,
     });
 
-    // The caller holds this instance while status is still resolving. Stopping
-    // the singleton must make that retained reference terminal before the
-    // pending operation can reach verify/openTextSession.
+    // The caller holds this instance while status is still resolving. Stopping the singleton must make that retained reference terminal before the pending
+    // operation can reach verify/openTextSession.
     const opening = service.openTextSession({ kind: "subscription", provider: "kimi-code" });
     expect(registry.getStatus).toHaveBeenCalledOnce();
     const stopping = service.stop();
@@ -440,8 +438,7 @@ describe("SubscriptionRuntimeService", () => {
       verify: vi.fn(async () => KIMI_CONNECTED),
       setExecutable: vi.fn(async () => KIMI_CONNECTED),
       openTextSession: vi.fn(async () => {
-        // The first queued microtask lets trackSession add the wrapper. The
-        // second invalidates it before trackVerifiedSession resumes its await.
+        // The first queued microtask lets trackSession add the wrapper. The second invalidates it before trackVerifiedSession resumes its await.
         queueMicrotask(() => {
           queueMicrotask(() => {
             void service.chooseExecutable("kimi-code", "C:\\approved\\kimi.exe").then(markMutationDone);
@@ -577,7 +574,6 @@ describe("SubscriptionRuntimeService", () => {
         { fallbackSelection: parentSelection },
       );
       for await (const _event of staleProfileSession.streamTurn("Run the child task.")) {
-        // Drain the short fake turn so its selected model reaches startTurn.
       }
       await staleProfileSession.stop();
 
@@ -586,7 +582,6 @@ describe("SubscriptionRuntimeService", () => {
         { fallbackSelection: parentSelection },
       );
       for await (const _event of verifiedProfileSession.streamTurn("Run the child task.")) {
-        // Drain the short fake turn so its selected model reaches startTurn.
       }
       await verifiedProfileSession.stop();
 
@@ -603,7 +598,6 @@ describe("SubscriptionRuntimeService", () => {
       await service.stop();
     }
   });
-
 
   it("emits completed Codex usage as separate non-billable subscription telemetry", async () => {
     const verificationRuntime = {
@@ -773,8 +767,7 @@ describe("SubscriptionRuntimeService", () => {
       expect(onHostRequest).toBeTypeOf("function");
       if (!bridgeHandler || !onHostRequest) throw new Error("test-bridge-handler-missing");
 
-      // Do not await: this schedules the bridge emission, then the raw ACP
-      // host request arrives within the same event-loop turn.
+      // Do not await: this schedules the bridge emission, then the raw ACP host request arrives within the same event-loop turn.
       void bridgeHandler({
         id: "subscription_test_tool",
         name: HOST_TOOL.name,
@@ -1220,8 +1213,7 @@ describe("SubscriptionRuntimeService", () => {
       .toBe("subscription-runtime-incompatible");
     expect(subscriptionRuntimeErrorCode(new CodexAppServerError("codex-runtime-invalid-executable")))
       .toBe("subscription-runtime-unavailable");
-    // A found `claude` that is not Claude Code, or lacks what Ave passes, is the
-    // same "update it" state as a too-old `codex`.
+    // A found `claude` that is not Claude Code, or lacks what Ave passes, is the same "update it" state as a too-old `codex`.
     expect(subscriptionRuntimeErrorCode(new ClaudeCodeSubscriptionError("claude-code-runtime-incompatible")))
       .toBe("subscription-runtime-incompatible");
     expect(subscriptionRuntimeErrorCode(new ClaudeCodeSubscriptionError("claude-code-runtime-not-configured")))

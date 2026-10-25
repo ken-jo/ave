@@ -208,7 +208,7 @@ async function isPe(read: ReadRange, size: number, arch: SupportedArch): Promise
   return executableEntry;
 }
 
-/** Validate the native loader header and its bounded tables, never just a signature. */
+// Validate the native loader header and its bounded tables, never just a signature.
 export async function isNativeExecutableFile(
   handle: FileHandle,
   platform: NodeJS.Platform = process.platform,

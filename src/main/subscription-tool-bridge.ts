@@ -1,15 +1,4 @@
-/**
- * Main-owned bridge between a subscription runtime's tool protocol and the
- * normal Ave tool loop.  It intentionally knows only the tool schemas that
- * Ave already selected for the current round; it never receives a project
- * path, shell command, renderer object, or credential.
- *
- * Codex consumes `dynamicTools` directly. ACP runtimes consume the same
- * bounded set through a short-lived loopback MCP child. In both cases a tool
- * request becomes an ordinary `StreamEvent.tool_call` in the caller, so
- * ToolExecutor, PermissionManager, audit, plugins, and MCP policy remain the
- * sole execution authority.
- */
+// Expose only the selected round’s tool schemas; every invocation returns to the normal executor, permission, approval, and audit gates.
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { join } from "node:path";
@@ -40,22 +29,19 @@ type JsonValue = JsonPrimitive | JsonRecord | JsonValue[];
 type JsonRecord = { [key: string]: JsonValue };
 
 export interface SubscriptionHostToolCall {
-  /** Host-minted and safe for the normal Ave ToolExecutor use-id contract. */
+  // Host-minted and safe for the normal Ave ToolExecutor use-id contract.
   readonly id: string;
   readonly name: string;
   readonly input: Record<string, unknown>;
 }
 
-/**
- * The consumer must enqueue the normal engine tool call before resolving this
- * promise. Its text is returned only to the remote runtime; it is never shown
- * to the renderer as a tool result.
- */
+// The consumer must enqueue the normal engine tool call before resolving this promise. Its text is returned only to the remote runtime; it is never
+// shown to the renderer as a tool result.
 export type SubscriptionHostToolCallHandler = (
   call: SubscriptionHostToolCall,
 ) => Promise<string> | string;
 
-/** Structural ACP `session/new.mcpServers` configuration. */
+// Structural ACP `session/new.mcpServers` configuration.
 export interface SubscriptionToolBridgeMcpServerConfig {
   readonly name: string;
   readonly command: string;
@@ -64,9 +50,9 @@ export interface SubscriptionToolBridgeMcpServerConfig {
 }
 
 export interface SubscriptionToolBridgeMcpOptions {
-  /** Test seam; production runs the bundled standalone MCP stdio helper. */
+  // Test seam; production runs the bundled standalone MCP stdio helper.
   readonly command?: string;
-  /** Test seam; production points at the bundled standalone MCP helper. */
+  // Test seam; production points at the bundled standalone MCP helper.
   readonly args?: readonly string[];
 }
 
@@ -205,11 +191,8 @@ function unknownToolResponse(): JsonRecord {
   };
 }
 
-/**
- * A one-turn bridge. It accepts at most one host tool request because the
- * normal engine must execute that request and rebuild context/tool schemas
- * before the subscription runtime receives another model turn.
- */
+// A one-turn bridge. It accepts at most one host tool request because the normal engine must execute that request and rebuild context/tool schemas
+// before the subscription runtime receives another model turn.
 export class SubscriptionToolBridge {
   private readonly schemas: readonly ToolSchema[];
   private readonly schemasByRemoteName = new Map<string, BridgedToolSchema>();
@@ -246,12 +229,12 @@ export class SubscriptionToolBridge {
     this.schemas = Object.freeze(cloned);
   }
 
-  /** Safe copies suitable for Codex App Server `dynamicTools`. */
+  // Safe copies suitable for Codex App Server `dynamicTools`.
   get tools(): readonly ToolSchema[] {
     return this.schemas;
   }
 
-  /** Set only for the currently active service stream. */
+  // Set only for the currently active service stream.
   setHandler(handler: SubscriptionHostToolCallHandler | null): void {
     if (this.stopped) return;
     this.handler = handler;
@@ -288,11 +271,8 @@ export class SubscriptionToolBridge {
     }));
   }
 
-  /**
-   * Lazily host the tiny local endpoint used by the bundled ACP MCP child.
-   * The unguessable, session-scoped token is deliberately passed only to that
-   * child through its MCP env entry and is destroyed on `stop()`.
-   */
+  // Lazily host the tiny local endpoint used by the bundled ACP MCP child. The unguessable, session-scoped token is deliberately passed only to that child
+  // through its MCP env entry and is destroyed on `stop()`.
   async startMcpServer(
     options: SubscriptionToolBridgeMcpOptions = {},
   ): Promise<SubscriptionToolBridgeMcpServerConfig> {
@@ -360,8 +340,7 @@ export class SubscriptionToolBridge {
         callback();
       };
       const fail = () => finish(() => rejectListen(new Error("subscription-host-tool-server-failed")));
-      // A close can win before the listen callback without producing an error
-      // event. Rejecting here lets stop() await and clean the start safely.
+      // A close can win before the listen callback without producing an error event. Rejecting here lets stop() await and clean the start safely.
       const closeBeforeReady = () => finish(() => rejectListen(new Error("subscription-host-tool-unavailable")));
       server.once("error", fail);
       server.once("close", closeBeforeReady);
@@ -389,8 +368,7 @@ export class SubscriptionToolBridge {
         // Stop deliberately cancels an in-flight listener; never rethrow it.
       }
     }
-    // A listener can finish after the first close attempt. startMcpServerOnce
-    // normally closes it on the stopped recheck; retain this final guard.
+    // A listener can finish after the first close attempt. startMcpServerOnce normally closes it on the stopped recheck; retain this final guard.
     const lateServer = this.mcpServer;
     this.mcpServer = null;
     this.mcpConfig = null;
@@ -421,9 +399,8 @@ export class SubscriptionToolBridge {
     }
     try {
       const text = await this.invoke(body.name, body.arguments);
-      // The engine executes the accepted call and starts a fresh remote model
-      // round with the resulting tool_result. Returning an error prevents an
-      // external runtime from bypassing that round boundary locally.
+      // The engine executes the accepted call and starts a fresh remote model round with the resulting tool_result. Returning an error prevents an external
+      // runtime from bypassing that round boundary locally.
       writeJson(response, 200, {
         content: [{ type: "text", text }],
         isError: true,

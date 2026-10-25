@@ -24,8 +24,7 @@ it.runIf(process.platform !== "win32")("unblocks the FIFO synchronously on abort
   const delivering = handoff.deliver("exec true\n", { signal: gone.signal });
   try {
     gone.abort();
-    // Cancellation disposes the handoff in the same turn as abort. The
-    // pending open must be unblocked while its FIFO still has a pathname.
+    // Cancellation disposes the handoff in the same turn as abort. The pending open must be unblocked while its FIFO still has a pathname.
     const unblockedAtAbort = vi.mocked(openSync).mock.calls.some(([file, flags]) =>
       file === handoff.trampoline.args[0] && flags === (constants.O_RDONLY | constants.O_NONBLOCK),
     );

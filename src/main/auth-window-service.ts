@@ -1,19 +1,6 @@
 import { rememberPluginAuthPartition } from "./plugin-auth-partition-tracker.js";
 export { wirePluginAuthPartitionPersistence, seedPluginAuthPartitions, rememberPluginAuthPartition, getTrackedPluginAuthPartitions, forgetTrackedPluginAuthPartitions } from "./plugin-auth-partition-tracker.js";
-/**
- * Auth Window Service — collects cookies after an external portal interactive login.
- *
- * Exposed through `PluginHostApi.openAuthWindow`. Uses Electron's
- * `BrowserWindow` + `session.cookies` APIs to capture user login state
- * without a Selenium/webdriver dependency.
- *
- * Design principles:
- *  - The host owns the browser window lifecycle. Plugins never access
- *    `ipcMain` or `BrowserWindow` directly (§4.5 IPC scope principle).
- *  - Completion conditions (URL patterns) and cookie host allowlists are
- *    provided by the plugin at call time. The host does not know
- *    plugin-specific details (§1 principle: "NO plugin-specific code in host").
- */
+// The host owns login-window lifecycle; plugins supply completion patterns and cookie-domain allowlists.
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -46,12 +33,8 @@ const log = createLogger("auth-window");
 
 const requireFromHere = createRequire(import.meta.url);
 
-/**
- * Eruda devtools source — read once on demand and cached. Lets the auth shell
- * + the embedded webview both inline a working in-page console without the
- * webview having to fetch any external script (its CSP comes from the remote
- * server and would block <script src=...>).
- */
+// Eruda devtools source — read once on demand and cached. Lets the auth shell + the embedded webview both inline a working in-page console without the
+// webview having to fetch any external script (its CSP comes from the remote server and would block <script src=...>).
 let cachedErudaSource: string | null = null;
 function getErudaSource(): string | null {
   if (cachedErudaSource !== null) return cachedErudaSource;
@@ -75,103 +58,40 @@ export interface AuthCookie {
   path?: string;
   secure?: boolean;
   httpOnly?: boolean;
-  /** Unix seconds. Omitted for session cookies. */
+  // Unix seconds. Omitted for session cookies.
   expirationDate?: number;
 }
 
 export interface OpenAuthWindowOptions {
-  /** Initial load URL, usually the external portal SSO entry point. */
+  // Initial load URL, usually the external portal SSO entry point.
   url: string;
-  /**
-   * Login is considered complete when the current URL contains any of these substrings.
-   * Callers must choose precise patterns so still-in-SSO paths like `sso` are not matched.
-   */
+  // Login is considered complete when the current URL contains any of these substrings. Callers must choose precise patterns so still-in-SSO paths like `sso` are not matched.
   completionUrlPatterns: string[];
-  /**
-   * Domain suffixes for cookies to collect, e.g. `["sso.example.com", "portal.example.com"]`.
-   * Returned cookies must have `cookie.domain` ending in one of these suffixes.
-   * Concrete domains are supplied by the caller/plugin; host code does not hardcode corp domains.
-   */
+  // Domain suffixes for cookies to collect, e.g. `["sso.example.com", "portal.example.com"]`. Returned cookies must have `cookie.domain` ending in one of
+  // these suffixes. Concrete domains are supplied by the caller/plugin; host code does not hardcode corp domains.
   cookieHosts: string[];
-  /** Login timeout. Defaults to five minutes. */
+  // Login timeout. Defaults to five minutes.
   timeoutMs?: number;
-  /** Window title. Defaults to "Login". */
+  // Window title. Defaults to "Login".
   windowTitle?: string;
-  /**
-   * Opt-in result shape for OAuth-style callbacks where the plugin needs the
-   * final callback URL (for example a fragment token) in addition to cookies.
-   * Default preserves the legacy AuthCookie[] return contract.
-   */
+  // Opt-in result shape for OAuth-style callbacks where the plugin needs the final callback URL (for example a fragment token) in addition to cookies.
+  // Default preserves the legacy AuthCookie[] return contract.
   returnFinalUrl?: boolean;
-  /**
-   * Electron session partition. A `persist:` prefix makes it disk-persistent;
-   * otherwise it is in-memory.
-   *
-   * The default is not undefined; each call gets a fresh in-memory partition
-   * (`ephemeral-auth-<random>`) so the default session is never shared.
-   * To reuse cookie/session storage, pass the same partition explicitly.
-   *
-   * The plugin host also rejects values outside the
-   * `persist:plugin-auth:${encodeURIComponent(pluginId)}[:<sub>]` namespace;
-   * see plugin-runtime.
-   */
+  // Each default call uses a fresh in-memory partition; explicitly reuse a persistent plugin-scoped partition for session storage.
   persistPartition?: string;
-  /**
-   * Whether the BrowserWindow is shown. `true` (default) shows the auth
-   * window so the user can interact with the IdP page. `false` keeps the
-   * window invisible — the page still loads, navigates, and emits the
-   * `did-navigate` events that drive `completionUrlPatterns`/cookie
-   * harvest, but it is never raised. Used by plugin warmups that depend
-   * on residual IdP cookies in `persistPartition` to silent-SSO with no
-   * user input. Caller MUST pair `show: false` with a finite `timeoutMs`
-   * so a hidden challenge page cannot hang invisibly.
-   *
-   * Matches `OpenAuthWindowBaseOptions.show` in the public contract.
-   *
-   * @default true
-   */
+  // Hidden warmups still navigate and harvest cookies; require a finite timeout so a hidden challenge cannot hang indefinitely.
   show?: boolean;
-  /**
-   * Session-cookie vault mode. When `true`, the harvested cookie VALUES are
-   * withheld from the return: every returned cookie keeps its `name`/`domain`/
-   * `path` (so the plugin's existence and count checks still work) but its
-   * `value` is redacted to `""`. The real values remain only in the persistent
-   * `persistPartition`, from which `hostFetch` attaches them per request.
-   *
-   * For portals with no SSO/OAuth — where the session cookie IS the credential —
-   * this keeps that credential on the host. Pair with a persistent
-   * `persistPartition` and `networkAccess.authCookiePartition`.
-   *
-   * @default false (legacy: values are returned)
-   */
+  // Vault mode redacts returned values to empty strings while preserving cookie metadata; real values stay in the persistent partition for hostFetch.
   retainCookies?: boolean;
 }
 
 export interface OpenAuthWindowResult {
   cookies: AuthCookie[];
-  /**
-   * The URL that matched completionUrlPatterns. May contain a fragment token,
-   * so host code must never include this value in logs or error messages.
-   */
+  // The URL that matched completionUrlPatterns. May contain a fragment token, so host code must never include this value in logs or error messages.
   finalUrl: string;
 }
 
-
-/**
- * In-flight / open VISIBLE auth-window dedup registry.
- *
- * Keyed by `effectivePartition + "\u0000" + windowTitle` (the partition already
- * encodes the owning pluginId for `persist:plugin-auth:<id>` partitions; title
- * disambiguates a login window from a logout window on the same partition).
- * When a visible auth window for the same key is already open or its
- * open-promise is still in-flight, a second `openAuthWindow` call focuses the
- * existing window and awaits the existing promise instead of spawning a second
- * `BrowserWindow` — fixing a portal double-login-window (a webview `bootstrapAuth`
- * plus a host-triggered `loginTool` both firing).
- *
- * `show: false` silent warmups are intentionally EXCLUDED — they are invisible,
- * bounded, and may legitimately overlap a visible interactive login.
- */
+// Deduplicate visible windows by partition plus title; focus and await an existing request. Hidden bounded warmups remain independent.
 const inFlightVisibleAuthWindows = new Map<
   string,
   { window: BrowserWindow; promise: Promise<AuthCookie[] | OpenAuthWindowResult> }
@@ -181,20 +101,13 @@ function authWindowDedupKey(effectivePartition: string, windowTitle: string): st
   return `${effectivePartition}\u0000${windowTitle}`;
 }
 
-
 export function buildAuthWindowShellHtml(input: {
   title: string;
   url: string;
   partition: string;
-  /**
-   * Platform string. macOS hides the HTML titlebar controls/title text since
-   * the OS-rendered traffic lights (from `titleBarStyle: "hiddenInset"`)
-   * already cover minimize/maximize/close. On Win/Linux `frame: false` removes
-   * any native chrome, so the HTML buttons are required to allow window
-   * control. Defaults to current `process.platform` when omitted.
-   */
+  // macOS keeps native inset controls; Windows/Linux need HTML controls because the native frame is removed.
   platform?: NodeJS.Platform;
-  /** When true, inline eruda devtools script. */
+  // When true, inline eruda devtools script.
   devConsole?: boolean;
 }): string {
   const platform: NodeJS.Platform = input.platform ?? process.platform;
@@ -235,25 +148,12 @@ export function buildAuthWindowShellHtml(input: {
 function buildErudaInlineScript(): string {
   const src = getErudaSource();
   if (!src) return "";
-  // Wrap in a try/catch so a malformed eruda load can't break the shell.
-  // `__ave_eruda_booted` guards against double-init when the shell is
-  // re-rendered (HMR / future flows).
+  // Wrap in a try/catch so a malformed eruda load can't break the shell. `__ave_eruda_booted` guards against double-init when the shell is re-rendered (HMR / future flows).
   return `<script>${src}
 ;try{if(!window.__ave_eruda_booted){window.__ave_eruda_booted=true;eruda.init();}}catch(e){console.error("[ave] auth shell eruda init failed", e);}</script>`;
 }
 
-/**
- * Filter a cookie array to allowed hosts and serialize it as AuthCookie.
- * `allowedHosts` are normalized the same way as cookie domains so spelling
- * differences like ".example.com" vs "example.com" do not break matches.
- *
- * Matching is delegated to `host-allow-list.ts`, which declares itself the SoT
- * for this surface — see its header, which names `openAuthWindow.cookieHosts`
- * first. `normalizeHost` there already strips the leading-dot cookie-domain
- * artifact (that is what the helper was written for). The re-normalization
- * below is idempotent and keeps this exported helper safe for direct callers
- * that have not run their list through `normalizeAllowedHosts`.
- */
+// Use shared host matching and idempotent normalization so direct callers and cookie-domain spellings obey the same allowlist.
 export function filterCookiesByHost(cookies: Cookie[], allowedHosts: string[]): AuthCookie[] {
   return selectCookiesByHost(cookies, allowedHosts).map((c) => ({
     name: c.name,
@@ -266,11 +166,8 @@ export function filterCookiesByHost(cookies: Cookie[], allowedHosts: string[]): 
   }));
 }
 
-/**
- * The allow-list half of `filterCookiesByHost`, kept as Electron `Cookie`s with
- * every attribute intact (`hostOnly`, `sameSite`) for the write-back into the
- * partition, which the plugin-facing `AuthCookie` shape does not carry.
- */
+// The allow-list half of `filterCookiesByHost`, kept as Electron `Cookie`s with every attribute intact (`hostOnly`, `sameSite`) for the write-back into
+// the partition, which the plugin-facing `AuthCookie` shape does not carry.
 function selectCookiesByHost(cookies: Cookie[], allowedHosts: string[]): Cookie[] {
   const normalizedAllowed = allowedHosts
     .map(normalizeHost)
@@ -278,18 +175,13 @@ function selectCookiesByHost(cookies: Cookie[], allowedHosts: string[]): Cookie[
   if (normalizedAllowed.length === 0) return [];
   return cookies.filter((c) => {
     if (!c.domain) return false;
-    // Electron cookie domains may include a leading dot (".example.com");
-    // `urlHostMatchesAllowList` normalizes the probe host internally.
+    // Electron cookie domains may include a leading dot (".example.com"); `urlHostMatchesAllowList` normalizes the probe host internally.
     return urlHostMatchesAllowList(c.domain, normalizedAllowed);
   });
 }
 
-/**
- * Returns true when the URL's `origin + pathname` contains a completion pattern.
- * Query/hash are intentionally excluded so IdP parameters like RelayState,
- * continue, or returnTo cannot embed a destination URL and create a false
- * "complete" verdict while still on the IdP domain.
- */
+// Returns true when the URL's `origin + pathname` contains a completion pattern. Query/hash are intentionally excluded so IdP parameters like
+// RelayState, continue, or returnTo cannot embed a destination URL and create a false "complete" verdict while still on the IdP domain.
 export function isCompletionUrl(url: string, patterns: readonly string[]): boolean {
   const target = extractCompletionTarget(url);
   return patterns.some((p) => target.includes(p));
@@ -307,7 +199,7 @@ export function shouldGraceCollectClosedAuthWindow(input: {
   );
 }
 
-/** URL for host-visible diagnostics only; strips query/hash to avoid token leaks. */
+// URL for host-visible diagnostics only; strips query/hash to avoid token leaks.
 export function sanitizeUrlForLog(url: string): string {
   try {
     const parsed = new URL(url);
@@ -321,49 +213,18 @@ export function sanitizeUrlForLog(url: string): string {
   }
 }
 
-/**
- * Redact cookie VALUES for `retainCookies` mode: keep name/domain/path (so
- * existence and count checks work) but blank the value, which stays only in the
- * persistent partition. A no-op when `retain` is false.
- */
+// Redact cookie VALUES for `retainCookies` mode: keep name/domain/path (so existence and count checks work) but blank the value, which stays only in the
+// persistent partition. A no-op when `retain` is false.
 export function redactCookieValues(cookies: AuthCookie[], retain: boolean): AuthCookie[] {
   if (!retain) return cookies;
   return cookies.map((cookie) => ({ ...cookie, value: "" }));
 }
 
-/**
- * How long a re-set session cookie stays on disk (seconds).
- *
- * Chromium drops a cookie that has no `expirationDate` when the process exits,
- * `persist:` partition or not. In vault mode (`retainCookies`) the partition is
- * the ONLY place a harvested value lives, so a session cookie would die with
- * the process and the user would have to log in again on every launch.
- *
- * The bound only has to bridge the gap between two app runs — an evening, a
- * weekend, a holiday week. It does not extend trust: the upstream service still
- * decides whether the session is live (its rejection clears the plugin's
- * ledger), and while the app runs the plugin's keep-alive re-proves the session
- * far more often than this. A week keeps a session the service has long since
- * dropped from lingering on disk for months.
- */
+// Session cookies otherwise disappear at process exit even in persist partitions; bound retained expiry while upstream still controls session validity.
 export const RETAINED_SESSION_COOKIE_TTL_SECONDS = 7 * 24 * 60 * 60;
 
-/**
- * Re-set every harvested session cookie (no `expirationDate`) into the same
- * partition with a bounded expiry, then flush the store so the write reaches
- * disk before the window is torn down (writes are batched — see
- * `link-window-service.ts`). Cookies that already carry an expiry are the
- * upstream service's own decision and are left untouched.
- *
- * Every other attribute is preserved: a host-only cookie is written without a
- * `domain` so it stays host-only, and a Secure cookie is written against an
- * `https:` URL because Chromium refuses a Secure cookie from an insecure one.
- * The value never leaves the host — it is read from the partition and written
- * back into the same partition.
- *
- * Returns the number of cookies re-set. Failures propagate; the caller decides
- * what a login that succeeded but could not be made durable means.
- */
+// Retain only cookies without upstream expiry, preserve host-only and Secure attributes, and flush before teardown.
+// Values stay in the same host partition; persistence failures propagate to the caller.
 export async function retainSessionCookiesAcrossRestart(
   ses: Pick<Session, "cookies">,
   cookies: readonly Cookie[],
@@ -393,14 +254,7 @@ export async function retainSessionCookiesAcrossRestart(
   return targets.length;
 }
 
-/**
- * Result-shape selector for `openAuthWindow`. Pulled out as a pure function so the
- * `returnFinalUrl` contract can be exercised without spinning up a BrowserWindow;
- * inline, that branch had no test covering it.
- *
- * `retainCookies` redacts values BEFORE the shape is chosen, so both the bare
- * `AuthCookie[]` and the `{ cookies, finalUrl }` shapes withhold the value.
- */
+// Redact cookie values before choosing either result shape so finalUrl cannot bypass vault mode.
 export function buildAuthResult(
   cookies: AuthCookie[],
   finalUrl: string,
@@ -425,10 +279,7 @@ function extractCompletionTarget(url: string): string {
   }
 }
 
-/**
- * Open the target URL, wait until a completion pattern is reached, then collect cookies.
- * The window is always closed. Rejects if the user closes it early.
- */
+// Open the target URL, wait until a completion pattern is reached, then collect cookies. The window is always closed. Rejects if the user closes it early.
 export function openAuthWindow(
   parent: BrowserWindow,
   options: OpenAuthWindowOptions & { returnFinalUrl: true },
@@ -455,17 +306,15 @@ export async function openAuthWindow(
     retainCookies = false,
     show: showRequested = true,
   } = options;
-  // Silent warmups (show:false) MUST pair with an explicit timeoutMs so an
-  // invisible challenge page can't hang forever. Reject the combination
-  // early so the caller surface is unambiguous.
+  // Silent warmups (show:false) MUST pair with an explicit timeoutMs so an invisible challenge page can't hang forever. Reject the combination early so
+  // the caller surface is unambiguous.
   if (showRequested === false && options.timeoutMs === undefined) {
     throw new Error(
       "openAuthWindow: when show is false, timeoutMs is required (silent warmup must bound itself)",
     );
   }
 
-  // Validate timeoutMs; reject NaN, Infinity, negative, and excessive values.
-  // Default is five minutes; maximum is 30 minutes, matching the manifest schema cap.
+  // Validate timeoutMs; reject NaN, Infinity, negative, and excessive values. Default is five minutes; maximum is 30 minutes, matching the manifest schema cap.
   const DEFAULT_TIMEOUT_MS = 5 * 60_000;
   const MAX_TIMEOUT_MS = 30 * 60_000;
   const MIN_TIMEOUT_MS = 1_000;
@@ -484,9 +333,8 @@ export async function openAuthWindow(
     throw new Error("openAuthWindow: invalid url");
   }
 
-  // Drop empty/blank string entries. Any remaining empty string would make
-  // `isCompletionUrl` substring matching always true, incorrectly treating
-  // auth as complete and collecting cookies too early.
+  // Drop empty/blank string entries. Any remaining empty string would make `isCompletionUrl` substring matching always true, incorrectly treating auth as
+  // complete and collecting cookies too early.
   const normalizedCompletionPatterns = (
     Array.isArray(completionUrlPatterns) ? completionUrlPatterns : []
   )
@@ -497,18 +345,11 @@ export async function openAuthWindow(
     throw new Error("openAuthWindow: completionUrlPatterns must be a non-empty array of non-blank strings");
   }
 
-  // `cookieHosts` decides which cookies leave the host for plugin code, so it
-  // goes through the SAME validator as the sibling `partitionDomains` arm
-  // (`host-allow-list.ts` names both surfaces as governed by it). Without this
-  // a caller could declare `["com"]` or an `xn--*` homoglyph and blanket-match
-  // the partition's whole cookie jar. Validation is fail-fast — the throw
-  // happens before any BrowserWindow / partition is created.
+  // Validate cookieHosts with the shared viewer allowlist before creating any window or partition; reject broad suffixes and punycode spoofing.
   let normalizedCookieHosts: string[];
   try {
-    // `allowLoopback` — OAuth loopback redirects (RFC 8252 §7.3) legitimately
-    // declare `localhost`/`127.0.0.1` here, and loopback cookies cannot leave
-    // the machine, so admitting the literals does not widen the exfiltration
-    // surface the strict single-label rule guards.
+    // `allowLoopback` — OAuth loopback redirects (RFC 8252 §7.3) legitimately declare `localhost`/`127.0.0.1` here, and loopback cookies cannot leave the
+    // machine, so admitting the literals does not widen the exfiltration surface the strict single-label rule guards.
     normalizedCookieHosts = normalizeAllowedHosts(
       (Array.isArray(cookieHosts) ? cookieHosts : []).filter(
         (h): h is string => typeof h === "string",
@@ -524,20 +365,16 @@ export async function openAuthWindow(
     throw new Error("openAuthWindow: cookieHosts must be a non-empty array of non-blank strings");
   }
 
-  // When `persistPartition` is omitted, isolate the call with a fresh in-memory
-  // partition instead of Electron's default session. The plugin runtime already
-  // injects a per-plugin default, but this also protects direct service callers
-  // such as host-internal auth flows.
+  // When `persistPartition` is omitted, isolate the call with a fresh in-memory partition instead of Electron's default session. The plugin runtime
+  // already injects a per-plugin default, but this also protects direct service callers such as host-internal auth flows.
   const effectivePartition =
     persistPartition && persistPartition.length > 0
       ? persistPartition
       : `ephemeral-auth-${randomBytes(8).toString("hex")}`;
   rememberPluginAuthPartition(effectivePartition);
 
-  // Idempotency guard — a single visible auth window per (partition, title).
-  // Silent warmups (show:false) are never deduped: they are invisible and may
-  // overlap an interactive login. For visible calls, focus + await an already
-  // open/in-flight window instead of spawning a duplicate.
+  // Idempotency guard — a single visible auth window per (partition, title). Silent warmups (show:false) are never deduped: they are invisible and may
+  // overlap an interactive login. For visible calls, focus + await an already open/in-flight window instead of spawning a duplicate.
   const dedupKey = authWindowDedupKey(effectivePartition, windowTitle);
   const dedupEligible = showRequested !== false;
   if (dedupEligible) {
@@ -551,13 +388,11 @@ export async function openAuthWindow(
       existing.window.focus();
       return existing.promise;
     }
-    // Stale entry (window already destroyed but not yet cleaned up) — drop it
-    // so the fresh window below registers cleanly.
+    // Stale entry (window already destroyed but not yet cleaned up) — drop it so the fresh window below registers cleanly.
     if (existing) inFlightVisibleAuthWindows.delete(dedupKey);
   }
 
-  // Hardened webPreferences: this window loads an external portal in Chromium,
-  // so fully block the renderer ↔ Node boundary to reduce RCE surface. Remote
+  // Hardened webPreferences: this window loads an external portal in Chromium, so fully block the renderer ↔ Node boundary to reduce RCE surface. Remote
   // pages must not get Node APIs or permission to create other BrowserWindows.
   const authWindow = new BrowserWindow({
     parent,
@@ -567,16 +402,10 @@ export async function openAuthWindow(
     title: windowTitle,
     icon: resolveAppIconPath(),
     autoHideMenuBar: true,
-    // Frame settings sourced from the shared `getCommonChromeOptions()`
-    // helper so this window — when made visible — uses the same
-    // 36px CustomTitleBar slot + traffic-light position as the other
-    // Ave windows. See `src/main/window-chrome.ts`.
+    // Frame settings sourced from the shared `getCommonChromeOptions()` helper so this window — when made visible — uses the same 36px CustomTitleBar slot +
+    // traffic-light position as the other Ave windows. See `src/main/window-chrome.ts`.
     ...getCommonChromeOptions(),
-    // Hidden warmup BrowserWindow — page still loads + harvests cookies +
-    // emits navigation events; never rendered to the user. Electron's
-    // default `show: true` produces the popup-flash when callers want
-    // silent SSO; explicit `show: false` suppresses both the initial
-    // raise and any later focus/raise from web content.
+    // Explicit show:false suppresses initial display and later web-content focus while still permitting navigation and harvest.
     show: showRequested,
     webPreferences: {
       contextIsolation: true,
@@ -585,8 +414,7 @@ export async function openAuthWindow(
       ...preloadPreferences("preload"),
     },
   });
-  // Centering only matters for visible windows; skip the geometry math
-  // when the caller asked for a hidden warmup.
+  // Centering only matters for visible windows; skip the geometry math when the caller asked for a hidden warmup.
   if (showRequested) centerAuthWindowOnScreen(authWindow);
   if (typeof authWindow.setMenu === "function") authWindow.setMenu(null);
   markAsWindowControlOwned(authWindow.webContents);
@@ -594,12 +422,7 @@ export async function openAuthWindow(
 
   let authContents: WebContents | null = null;
 
-  // Restrict top-level navigation protocols to http/https. This blocks an
-  // external portal from redirecting or user-clicking into `file:`, `data:`,
-  // or custom schemes that could expose local files or abuse scheme handlers.
-  //
-  // `will-navigate` mainly catches user/script top-level navigation, while
-  // server-side 302 redirects arrive through `will-redirect`; guard both.
+  // Allow only HTTP(S) in both will-navigate and will-redirect; server redirects do not pass through the former.
   const isHttpUrl = (targetUrl: string): boolean => {
     try {
       const p = new URL(targetUrl).protocol;
@@ -608,12 +431,7 @@ export async function openAuthWindow(
       return false;
     }
   };
-  // Electron 24+ exposes the navigation URL on `details.url` (the typed event
-  // payload). The legacy second positional `url` argument is deprecated and is
-  // empty/undefined on Electron 41.x — relying on it silently
-  // `preventDefault()`'d every navigation, which is the bug that broke the
-  // /login/callback handoff for plugin auth windows. Read only from the
-  // canonical event payload.
+  // Read the canonical details.url; deprecated positional navigation arguments may be empty and would block valid login redirects.
   const attachAuthNavigationGuards = (contents: WebContents) => {
     contents.setWindowOpenHandler(() => ({ action: "deny" }));
     contents.on("will-navigate", (details) => {
@@ -624,8 +442,7 @@ export async function openAuthWindow(
     });
   };
 
-  // The host shell is local/data: and owns only the chrome. The external
-  // login page must be the single sandboxed webview below.
+  // The host shell is local/data: and owns only the chrome. The external login page must be the single sandboxed webview below.
   authWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   authWindow.webContents.on("will-attach-webview", (event, webPreferences, params) => {
     if (typeof params.src !== "string" || params.src !== url) {
@@ -645,20 +462,11 @@ export async function openAuthWindow(
     prefs.partition = effectivePartition;
   });
 
-  // Diagnostic instrumentation for issue #960. Record structured logs for every
-  // close path to identify the exact close trigger behind the silent-SSO warmup
-  // regression (window closing after about 39ms, likely a race). Track ms delta,
-  // URL, and reason. Diagnostic overhead is acceptable because auth windows are
-  // created once per explicit user action.
+  // Record close timing, URL, and reason to distinguish early external closes from navigation races.
   const createdAtMs = Date.now();
   const sinceCreated = (): number => Date.now() - createdAtMs;
   const sanitizedOpenUrl = sanitizeUrlForLog(url);
-  // `lastSeenUrl` is for diagnostics — updated from any nav signal (including
-  // `did-navigate-in-page` which fires on history.pushState/replaceState).
-  // `lastCommittedUrl` only updates on `did-navigate` (real top-level commit)
-  // — used as the trust gate for grace-collect. Page JS can spoof the former
-  // via `history.replaceState(...)`, but cannot fabricate a top-level
-  // navigation (security cycle-1 HIGH).
+  // Use committed top-level navigation for grace collection; page script can spoof diagnostic lastSeenUrl with history changes.
   let lastSeenUrl: string | null = null;
   let lastCommittedUrl: string | null = null;
   let webviewAttached = false;
@@ -700,11 +508,7 @@ export async function openAuthWindow(
       });
     }, timeoutMs);
 
-    // Vault mode keeps the harvested values only in the partition, and Chromium
-    // drops session cookies at exit — so they are made durable at harvest time.
-    // A failure here is logged, not fatal: the login itself succeeded and the
-    // values are live in the partition for this run; only the next launch will
-    // need a fresh login. Counts only — never a value.
+    // Retain session cookies at harvest; failure affects next-launch durability without invalidating the current login. Log counts only.
     const retainAcrossRestart = async (ses: Pick<Session, "cookies">, allCookies: Cookie[]) => {
       if (!retainCookies) return;
       const scoped = selectCookiesByHost(allCookies, normalizedCookieHosts);
@@ -733,10 +537,8 @@ export async function openAuthWindow(
       }
     };
 
-    // One harvest at a time. The attach-time probe, `did-navigate`,
-    // `did-navigate-in-page` and the ERR_ABORTED re-check can all fire on the
-    // same completion URL; the first harvest settles the promise, so the
-    // overlapping ones would only repeat the partition write-back.
+    // One harvest at a time. The attach-time probe, `did-navigate`, `did-navigate-in-page` and the ERR_ABORTED re-check can all fire on the same completion
+    // URL; the first harvest settles the promise, so the overlapping ones would only repeat the partition write-back.
     let harvesting = false;
     const checkAndCollect = async () => {
       if (settled || harvesting) return;
@@ -787,8 +589,7 @@ export async function openAuthWindow(
         void checkAndCollect();
       });
       contents.on("did-navigate-in-page", (_e, navUrl: string) => {
-        // history.pushState / replaceState — page-script controlled, NOT a
-        // committed navigation. Diagnostic only, not trusted for grace-collect.
+        // history.pushState / replaceState — page-script controlled, NOT a committed navigation. Diagnostic only, not trusted for grace-collect.
         trackNav(navUrl, "did-navigate-in-page", false);
         void checkAndCollect();
       });
@@ -814,11 +615,7 @@ export async function openAuthWindow(
           `[auth-window:webview-destroyed] elapsedMs=${sinceCreated()} lastSeenUrl=${lastSeenUrl ? sanitizeUrlForLog(lastSeenUrl) : "none"}`,
         );
       });
-      // Inject eruda into the sandboxed webview after each navigation so
-      // the in-page console survives the SPA's own client-side routes.
-      // The webview's CSP comes from the remote server and may forbid
-      // <script src=...>, but `executeJavaScript` runs in the page's main
-      // world and bypasses page-level CSP — that's the whole point here.
+      // Reinject the in-page console after navigation; executeJavaScript runs in the page main world and bypasses its CSP.
       if (isDevConsoleEnabled()) {
         const injectEruda = () => {
           const src = getErudaSource();
@@ -836,9 +633,8 @@ export async function openAuthWindow(
       }
       void checkAndCollect();
     });
-    // F12 / Cmd+Alt+I → open native Chromium DevTools on the webview. Eruda
-    // is fine for read-only inspection but native DevTools is needed for
-    // network panel / breakpoints when the login flow misbehaves.
+    // F12 / Cmd+Alt+I → open native Chromium DevTools on the webview. Eruda is fine for read-only inspection but native DevTools is needed for network panel
+    // / breakpoints when the login flow misbehaves.
     if (isDevConsoleEnabled()) {
       authWindow.webContents.on("before-input-event", (_event, input) => {
         const isF12 = input.key === "F12" && input.type === "keyDown";
@@ -856,14 +652,7 @@ export async function openAuthWindow(
       });
     }
 
-    // Fast-fail on navigation errors so we don't wait the full timeout for
-    // DNS / TLS / proxy / offline / renderer-crash scenarios. isMainFrame
-    // filters out third-party asset failures that shouldn't abort login.
-    //
-    // `ERR_ABORTED` (-3) is a common benign failure when a previous load is
-    // canceled during an SSO redirect chain. Rejecting immediately would break
-    // normal POST→302 redirects. Instead, check whether the current URL has
-    // already reached a completion pattern; otherwise ignore it.
+    // Fail real main-frame load errors promptly; ignore subresource failures and benign ERR_ABORTED redirects unless completion already matches.
     const ERR_ABORTED = -3;
     const failReject = (errorCode: number, errorDesc: string, validatedUrl: string) =>
       finish(() => {
@@ -887,12 +676,7 @@ export async function openAuthWindow(
         if (!authWindow.isDestroyed()) authWindow.close();
       });
 
-    // Read load-failure metadata from the canonical Electron 24+ event payload
-    // (`event.errorCode`, `event.errorDescription`, `event.validatedURL`,
-    // `event.isMainFrame`). The deprecated positional args arrive empty on
-    // Electron 41.x; reading them would silently turn every fail-load into a
-    // no-op (isMainFrame === undefined → early return) and we'd wait the full
-    // 5-minute timeout instead of fast-failing on real DNS/TLS errors.
+    // Read canonical event error fields; deprecated positional args can be empty and silently disable fast failure.
     type FailLoadEvent = {
       errorCode: number;
       errorDescription: string;
@@ -902,8 +686,7 @@ export async function openAuthWindow(
     const onFailLoad = (event: FailLoadEvent) => {
       if (!event.isMainFrame) return;
       if (event.errorCode === ERR_ABORTED) {
-        // Benign redirect/page-transition cancel. Re-check completion and
-        // resolve through cookie collection when possible; otherwise ignore it.
+        // Benign redirect/page-transition cancel. Re-check completion and resolve through cookie collection when possible; otherwise ignore it.
         void checkAndCollect();
         return;
       }
@@ -937,13 +720,7 @@ export async function openAuthWindow(
     authWindow.on("closed", () => {
       if (settled) return;
       clearTimeout(timer);
-      // Grace-collect (issue #960 fix): if the window closes too quickly because
-      // of a silent SSO race, but a webview attached and the *committed* navigation
-      // URL matches a completion pattern, try one more cookie fetch from the
-      // partition session. The server still validates cookies, so this is not a
-      // security bypass. Always use `lastCommittedUrl` (did-navigate top-level
-      // only); `lastSeenUrl` can be spoofed by page JS via history.pushState
-      // (security cycle-1 HIGH).
+      // On an early SSO close, retry partition cookies only after a committed top-level completion URL; history changes are not trusted.
       const lastUrlSanitized = lastSeenUrl ? sanitizeUrlForLog(lastSeenUrl) : null;
       const lastCommittedSanitized = lastCommittedUrl
         ? sanitizeUrlForLog(lastCommittedUrl)
@@ -1005,12 +782,6 @@ export async function openAuthWindow(
         return;
       }
       finish(() => {
-        // Issue #960 hint: webviewAttached=false + elapsedMs<100 means an
-        // external close before webview attach. Possible sources include
-        // window-control IPC, partition reuse cleanup, or a pending render-process
-        // crash. webviewAttached=true + lastSeenUrl mismatch points to page
-        // window.close() or a silent SSO race that checkAndCollect did not reach
-        // and grace path did not trigger because it was not a completion URL.
         log.warn(
           {
             phase: "close",
@@ -1055,8 +826,7 @@ export async function openAuthWindow(
     });
   });
 
-  // Register the visible window for dedup and clean up on settle / teardown so
-  // a later open finds either a live window to focus or no stale entry. Only
+  // Register the visible window for dedup and clean up on settle / teardown so a later open finds either a live window to focus or no stale entry. Only
   // remove our own entry (a fresh window for the same key may have replaced it).
   if (dedupEligible) {
     const clearOwnEntry = (): void => {
@@ -1064,11 +834,7 @@ export async function openAuthWindow(
       if (current?.window === authWindow) inFlightVisibleAuthWindows.delete(dedupKey);
     };
     inFlightVisibleAuthWindows.set(dedupKey, { window: authWindow, promise: authPromise });
-    // Cleanup is driven by window teardown, NOT by the promise: every settle
-    // path (resolve / reject / timeout) closes the window, so `closed` always
-    // fires. We deliberately do NOT chain `.finally(clearOwnEntry)` on
-    // `authPromise` — that would create an uncaught rejection on the derived
-    // promise whenever the auth flow rejects.
+    // Remove dedup entries on window teardown; chaining finally on authPromise would create an unhandled derived rejection.
     authWindow.on("closed", clearOwnEntry);
     authWindow.webContents.on("render-process-gone", clearOwnEntry);
   }
@@ -1076,8 +842,7 @@ export async function openAuthWindow(
   return authPromise;
 }
 
-// Auth windows are centered in the primary display work area. The previous
-// behavior followed the host parent position, which clipped auth windows when
+// Auth windows are centered in the primary display work area. The previous behavior followed the host parent position, which clipped auth windows when
 // the host was near a screen edge and forced users to move them manually.
 function centerAuthWindowOnScreen(authWindow: BrowserWindow): void {
   if (authWindow.isDestroyed()) return;
@@ -1089,25 +854,8 @@ function centerAuthWindowOnScreen(authWindow: BrowserWindow): void {
   );
 }
 
-/**
- * Wipe all credential state from a persist partition — cookies, storage,
- * cache, indexedDB, HTTP cache, auth cache, and the WebStorage stack.
- * Used after a plugin's user-triggered sign-out so that subsequent
- * `openAuthWindow` calls against the same partition cannot silently SSO
- * via residual IdP cookies the host Chromium still holds. Without this,
- * plugin "sign out" only clears the
- * plugin's in-memory + on-disk shadow state; the partition keeps the
- * federated session alive and re-login proceeds with no challenge.
- *
- * The plugin-runtime layer (`plugin-runtime.ts`) validates the partition
- * argument against the calling plugin's `persist:plugin-auth:<pluginId>`
- * allow-list before calling this service. Direct host callers are
- * responsible for their own scoping.
- *
- * The wipe runs in two passes: `clearStorageData()` for the broad
- * cookie/storage/cache surface, then `clearAuthCache()` for HTTP-auth
- * + NTLM/Kerberos credentials that `clearStorageData` does not touch.
- */
+// Sign-out must clear storage and separately clear HTTP/NTLM/Kerberos auth cache to prevent residual silent SSO.
+// Plugin callers are namespace-validated upstream; direct host callers must scope the partition themselves.
 export async function clearAuthPartition(partition: string): Promise<void> {
   if (typeof partition !== "string" || partition.length === 0) {
     throw new Error("clearAuthPartition: partition must be a non-empty string");

@@ -159,7 +159,6 @@ describe("readStartupLaunchState", () => {
   });
 });
 
-// ─── security M2 / critic M2: surface a login-item registration failure ──────
 describe("notifyStartupLaunchFailureIfNeeded", () => {
   function state(overrides: Partial<StartupLaunchState>): StartupLaunchState {
     return {
@@ -182,8 +181,7 @@ describe("notifyStartupLaunchFailureIfNeeded", () => {
   });
 
   it("routes the default notification through NotificationService (kind:system)", () => {
-    // Exercise the real default notifier (no injected `notify`) so the
-    // NotificationService wiring + i18n keys are covered end-to-end.
+    // Exercise the real default notifier (no injected `notify`) so the NotificationService wiring + i18n keys are covered end-to-end.
     notifyStartupLaunchFailureIfNeeded(
       { launchAtStartup: true, launchMinimized: false },
       state({ applied: false, reason: "platform-unsupported" }),

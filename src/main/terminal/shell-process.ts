@@ -1,43 +1,17 @@
-/**
- * What the operating system says about a terminal's foreground process: which
- * process holds the terminal for input, what program it is, and the directory
- * it is in. terminal_run checks this before it trusts the shell's own command
- * markers, because markers are text on the terminal's output stream and the
- * operating system's process table is not.
- *
- * The foreground process is the terminal's foreground process group (the
- * process that reads what is typed). At an idle prompt that group is the
- * shell itself, so the group id is the shell's pid.
- *
- * Sources, per platform:
- *  - Linux: `/proc/<pid>/stat` (controlling terminal, foreground group),
- *    `/proc/<pid>/comm` and the `/proc/<pid>/cwd` link.
- *  - macOS: `ps -o tty=,tpgid=` and `ps -o comm=` for the first two. The
- *    working directory of another process is exposed only through
- *    `proc_pidinfo(PROC_PIDVNODEPATHINFO)`, which Node cannot call without a
- *    native addon; `lsof -d cwd` is the stock, unprivileged reader of that
- *    same call, so it is used here.
- *  - Anything else: no reading, and callers refuse (they never assume).
- *
- * The sandboxed Linux terminal is read differently
- * ({@link readSandboxedShell}): bubblewrap starts the sandbox in a new session
- * (`--new-session`), so nothing inside it holds the pty node-pty opened, and
- * the shell runs on a pty of its own that util-linux `script` opens inside the
- * sandbox (terminal-inner-pty.ts). The shell is found by walking the process
- * tree down from the pty's process, and its foreground group is the one of
- * that inner pty.
- */
+// Verify shell markers against OS foreground process state before terminal_run trusts them.
+// On macOS, lsof reads cwd without a native addon; unsupported platforms fail closed.
+// Sandboxed Linux shells own an inner PTY, so discover the shell through the process tree rather than the outer foreground group.
 import { execFile } from "node:child_process";
 import { readdir, readFile, readlink, stat } from "node:fs/promises";
 import { basename } from "node:path";
 import { sameFileIdentity, type FileIdentity } from "../../lib/file-identity.js";
 
 interface TerminalForeground {
-  /** The foreground process group id: the shell's pid when the shell holds the terminal. */
+  // The foreground process group id: the shell's pid when the shell holds the terminal.
   readonly pid: number;
-  /** Program name of that process, without a login shell's leading `-`. */
+  // Program name of that process, without a login shell's leading `-`.
   readonly command: string;
-  /** Its working directory, as the operating system resolves it. */
+  // Its working directory, as the operating system resolves it.
   readonly cwd: string;
 }
 
@@ -60,7 +34,7 @@ function programName(raw: string): string {
   return basename(raw.trim()).replace(/^-/u, "");
 }
 
-/** Fields after the `(comm)` of `/proc/<pid>/stat`, which may itself hold spaces and parentheses. */
+// Fields after the `(comm)` of `/proc/<pid>/stat`, which may itself hold spaces and parentheses.
 async function linuxStat(pid: number): Promise<{ ttyNr: number; tpgid: number }> {
   const stat = await readFile(`/proc/${pid}/stat`, "utf-8");
   const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
@@ -101,11 +75,8 @@ async function readDarwin(ptyPid: number): Promise<TerminalForegroundReading> {
   return { ok: true, foreground: { pid: tpgid, command, cwd } };
 }
 
-/**
- * Read the foreground process of the terminal whose session leader (the
- * process spawned on it) is `ptyPid`. Never throws: an unreadable process
- * table is a reason, and the caller refuses.
- */
+// Read the foreground process of the terminal whose session leader (the process spawned on it) is `ptyPid`. Never throws: an unreadable process table is
+// a reason, and the caller refuses.
 export async function readTerminalForeground(ptyPid: number): Promise<TerminalForegroundReading> {
   try {
     if (process.platform === "linux") return await readLinux(ptyPid);
@@ -116,21 +87,21 @@ export async function readTerminalForeground(ptyPid: number): Promise<TerminalFo
   }
 }
 
-/** One process as `/proc/<pid>/stat` reports it (pids as the host sees them). */
+// One process as `/proc/<pid>/stat` reports it (pids as the host sees them).
 export interface ProcEntry {
   readonly pid: number;
   readonly ppid: number;
-  /** `comm`: the program name, at most 15 bytes. */
+  // `comm`: the program name, at most 15 bytes.
   readonly command: string;
   readonly pgrp: number;
   readonly session: number;
-  /** The controlling terminal's device number; 0 when the process has none. */
+  // The controlling terminal's device number; 0 when the process has none.
   readonly ttyNr: number;
-  /** The foreground process group of that terminal; -1 when there is none. */
+  // The foreground process group of that terminal; -1 when there is none.
   readonly tpgid: number;
 }
 
-/** Parse `/proc/<pid>/stat`; the `(comm)` field may itself hold spaces and parentheses. */
+// Parse `/proc/<pid>/stat`; the `(comm)` field may itself hold spaces and parentheses.
 export function parseProcStat(pid: number, text: string): ProcEntry {
   const open = text.indexOf("(");
   const close = text.lastIndexOf(")");
@@ -148,7 +119,7 @@ export function parseProcStat(pid: number, text: string): ProcEntry {
   };
 }
 
-/** Every process visible in `/proc` at one moment; a process that exits while it is read is left out. */
+// Every process visible in `/proc` at one moment; a process that exits while it is read is left out.
 async function readProcSnapshot(): Promise<ReadonlyMap<number, ProcEntry>> {
   const pids = (await readdir("/proc")).filter((name) => /^[0-9]+$/u.test(name)).map(Number);
   const entries = await Promise.all(pids.map(async (pid) => {
@@ -161,48 +132,31 @@ async function readProcSnapshot(): Promise<ReadonlyMap<number, ProcEntry>> {
   return new Map(entries.filter((entry): entry is ProcEntry => entry !== null).map((entry) => [entry.pid, entry]));
 }
 
-/**
- * The processes the sandbox wrap puts between the pty's process and the pty
- * relay, by program name: bubblewrap (the outer process and its pid-namespace
- * init), the sandbox runtime's `bash -c` script, and `apply-seccomp` (which
- * forks once more into its own pid namespace). The outer script also starts
- * proxy bridges, outside the inner reaper's namespace.
- */
+// Recognize only the fixed sandbox wrapper chain; outer proxy bridges live outside the inner reaper namespace.
 const SANDBOX_WRAPPERS: ReadonlySet<string> = new Set(["bwrap", "bash", "apply-seccomp"]);
-/** util-linux `script(1)`, which gives the shell its pty inside the sandbox. */
+// util-linux `script(1)`, which gives the shell its pty inside the sandbox.
 const INNER_PTY_RELAY = "script";
-/** Bound on the wrapper chain; the measured chain has five wrappers. */
+// Bound on the wrapper chain; the measured chain has five wrappers.
 const MAX_SANDBOX_WRAPPERS = 8;
 
 export type SandboxedShellChain =
   | {
       readonly ok: true;
-      /** The pty relay: one `script` process, or two for util-linux before 2.35, which forks itself once. */
+      // The pty relay: one `script` process, or two for util-linux before 2.35, which forks itself once.
       readonly relay: readonly ProcEntry[];
       readonly shell: ProcEntry;
-      /** Shell children and other processes sharing its terminal session or foreground group. */
+      // Shell children and other processes sharing its terminal session or foreground group.
       readonly busyProcesses: readonly ProcEntry[];
     }
   | {
       readonly ok: false;
       readonly reason: string;
-      /** The relay when the walk reached it (the shell may not have started yet). */
+      // The relay when the walk reached it (the shell may not have started yet).
       readonly relay: readonly ProcEntry[];
     };
 
-/**
- * Find the terminal's shell in a process snapshot, walking down from the
- * pty's process along the one chain the sandbox wrap builds:
- * `bwrap → bwrap → bash (+ socat) → apply-seccomp → apply-seccomp → script →
- * <shell>`. Every step must have exactly one child except the verified outer
- * bridge launcher (`bwrap → bwrap → bash`). Its side children are identified
- * by their parent and pid, never their program name. Shell descendants cannot
- * be reparented to that launcher: namespace orphans go to a reaper instead.
- * Every wrapper must be one of {@link SANDBOX_WRAPPERS}, and
- * the relay's one child must be the shell, by name. Nothing the shell starts
- * can appear above it, so a program in the terminal cannot pose as the shell
- * here; a nested shell is a child of the shell, not of the relay.
- */
+// Walk the fixed wrapper chain to the relay’s single shell child; permit side bridges only under the verified outer launcher.
+// Identify those children by parent and PID so terminal programs cannot impersonate wrappers or the shell.
 export function findSandboxedShell(
   snapshot: ReadonlyMap<number, ProcEntry>,
   ptyPid: number,
@@ -219,8 +173,7 @@ export function findSandboxedShell(
     const children = childrenOf(node.pid);
     let next = children;
     if (depth === 2 && node.command === "bash" && node.ppid === outerReaperPid) {
-      // Only this launcher has side bridges. Nothing under either reaper or
-      // a later wrapper is exempt, even if it adopts a bridge's program name.
+      // Only this launcher has side bridges. Nothing under either reaper or a later wrapper is exempt, even if it adopts a bridge's program name.
       const continuation = children.filter((child) => child.command === "apply-seccomp" || child.command === INNER_PTY_RELAY);
       if (continuation.length !== 1) return fail(`the sandbox bridge launcher has no unique continuation among ${children.map((child) => JSON.stringify(child.command)).join(", ")}`);
       const bridgePids = new Set(children.filter((child) => child.pid !== continuation[0]!.pid).map((child) => child.pid));
@@ -250,24 +203,21 @@ export function findSandboxedShell(
   return { ok: true, relay, shell, busyProcesses };
 }
 
-/** What the operating system says about a sandboxed Linux terminal's shell ({@link readSandboxedShell}). */
+// What the operating system says about a sandboxed Linux terminal's shell ({@link readSandboxedShell}).
 interface SandboxedShell {
-  /** The shell's pid, as the host sees it. */
+  // The shell's pid, as the host sees it.
   readonly pid: number;
-  /** Its pid in its own (innermost) pid namespace: what `$$` is inside the shell. */
+  // Its pid in its own (innermost) pid namespace: what `$$` is inside the shell.
   readonly nsPid: number;
   readonly command: string;
-  /** The foreground process group of the shell's own terminal, and that group leader's program when it is known. */
+  // The foreground process group of the shell's own terminal, and that group leader's program when it is known.
   readonly foreground: { readonly pgid: number; readonly command: string | null };
-  /** Shell children or other processes sharing its terminal session or foreground group. */
+  // Shell children or other processes sharing its terminal session or foreground group.
   readonly children: readonly { readonly pid: number; readonly command: string }[];
-  /** The shell's working directory as the link names it (for messages; not compared). */
+  // The shell's working directory as the link names it (for messages; not compared).
   readonly cwd: string;
-  /**
-   * Whether the shell's working directory is the very directory the reported
-   * path names on the host: same device and inode. False when that path does
-   * not exist outside the sandbox.
-   */
+  // Whether the shell's working directory is the very directory the reported path names on the host: same device and inode. False when that path does not
+  // exist outside the sandbox.
   readonly cwdIsReported: boolean;
 }
 
@@ -275,7 +225,7 @@ export type SandboxedShellReading =
   | { readonly ok: true; readonly shell: SandboxedShell }
   | { readonly ok: false; readonly reason: string };
 
-/** The last `NSpid` value in `/proc/<pid>/status`: the pid in the process's own namespace. */
+// The last `NSpid` value in `/proc/<pid>/status`: the pid in the process's own namespace.
 export function parseInnermostNsPid(status: string): number | null {
   const line = status.split("\n").find((entry) => entry.startsWith("NSpid:"));
   const last = line?.slice("NSpid:".length).trim().split(/\s+/u).at(-1);
@@ -291,16 +241,7 @@ async function directoryIdentity(path: string): Promise<FileIdentity | null> {
   }
 }
 
-/**
- * Read the shell of a sandboxed Linux terminal whose pty's process is
- * `ptyPid`: found by {@link findSandboxedShell}, with its namespace pid, its
- * terminal's foreground group, its children and whether its working
- * directory is the one at `reportedCwd` on the host. The directory is
- * compared by device and inode, not by path: the sandbox can mount a
- * directory of its own (a tmpfs over a read-denied one) at a path that also
- * exists on the host. Never throws: an unreadable process table is a reason,
- * and the caller refuses.
- */
+// Compare reported cwd by device/inode because sandbox mounts can reuse host path names; unreadable process state returns refusal.
 export async function readSandboxedShell(ptyPid: number, shellName: string, reportedCwd: string): Promise<SandboxedShellReading> {
   try {
     const snapshot = await readProcSnapshot();
@@ -315,8 +256,7 @@ export async function readSandboxedShell(ptyPid: number, shellName: string, repo
       readlink(`/proc/${shell.pid}/cwd`),
     ]);
     if (actual === null) return { ok: false, reason: "the operating system did not report the shell's directory" };
-    // The shell must still be the process the snapshot found (same parent,
-    // same program) once everything about it has been read.
+    // The shell must still be the process the snapshot found (same parent, same program) once everything about it has been read.
     const after = parseProcStat(shell.pid, await readFile(`/proc/${shell.pid}/stat`, "utf-8"));
     if (after.ppid !== shell.ppid || after.command !== shell.command || after.tpgid !== shell.tpgid) {
       return { ok: false, reason: "the terminal's shell changed while it was being checked" };
@@ -338,14 +278,7 @@ export async function readSandboxedShell(ptyPid: number, shellName: string, repo
   }
 }
 
-/**
- * Tell a sandboxed Linux terminal's pty relay that its outer terminal was
- * resized, so it copies the new size to the shell's pty (the relay is in
- * another session, so the kernel's own SIGWINCH never reaches it). Returns
- * false when the relay is not running yet: it reads the size when it starts.
- * SIGWINCH is ignored by default, so a signal that reached a reused pid would
- * do nothing.
- */
+// Forward resize to the inner relay’s separate session; before it starts, no signal is needed because it reads size at startup.
 export async function forwardResizeToSandboxedPtyRelay(ptyPid: number, shellName: string): Promise<boolean> {
   const chain = findSandboxedShell(await readProcSnapshot(), ptyPid, shellName);
   if (chain.relay.length === 0) return false;

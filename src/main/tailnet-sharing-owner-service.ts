@@ -1,11 +1,4 @@
-/**
- * Main-only local-owner facade for Tailnet pairing and conversation shares.
- *
- * Renderers never receive the durable store or a conversation id. This facade
- * chooses the active conversation at the moment a share is created, projects
- * only renderer-safe summaries, and keeps duration choices in the shared wire
- * contract rather than in a UI component.
- */
+// Choose the active conversation in main at share creation; renderers receive only safe summaries and no durable store.
 import {
   isTailnetInvitationDurationPreset,
   isTailnetShareDurationPreset,
@@ -51,15 +44,12 @@ export interface TailnetSharingOwnerService {
 
 export interface CreateTailnetSharingOwnerServiceOptions {
   readonly runtime: TailnetPairedSharingRuntime;
-  /** Read immediately before a mutation; a renderer can never choose this id. */
+  // Read immediately before a mutation; a renderer can never choose this id.
   readonly getCurrentConversationId: () => string;
 }
 
-/**
- * Keep local-owner mutation logic at one main-process boundary. The public
- * Tailnet listener receives only runtime.authorizer and store.claimInvitation;
- * it never receives this facade or a renderer payload.
- */
+// Keep local-owner mutation logic at one main-process boundary. The public Tailnet listener receives only runtime.authorizer and store.claimInvitation;
+// it never receives this facade or a renderer payload.
 export function createTailnetSharingOwnerService(
   options: CreateTailnetSharingOwnerServiceOptions,
 ): TailnetSharingOwnerService {

@@ -1,17 +1,4 @@
-/**
- * terminal_run's typing protocol against REAL interactive shells on a real
- * pseudo-terminal (node-pty): the line editor only exists on a tty, so a pipe
- * would not show any of this.
- *
- * A line editor can sit in a state no output shows — an ESC prefix waiting for
- * its next key, a Ctrl-X prefix, vi command mode. Text typed then is read as
- * editing keys and the shell runs something other than the approved line. The
- * protocol (pty-manager `typeLineAtPrompt`) resets with Ctrl-C, waits for the
- * fresh prompt, and pastes the line in bracketed-paste mode; it refuses a
- * prompt the user touched, and vi bindings. These tests drive the user's keys
- * and the shell, then read what the shell itself recorded as the command it
- * ran (its C marker).
- */
+// Real PTYs expose hidden line-editor states; reset, fresh-prompt, and bracketed-paste behavior cannot be tested with pipes.
 import { spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { closeSync, constants, existsSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, writeFileSync, writeSync } from "node:fs";
@@ -32,16 +19,16 @@ interface LiveShell {
   tracker: TerminalBlockTracker;
   home: string;
   output(): string;
-  /** Advance only the tracker's quiet-input clock; the PTY stays real. */
+  // Advance only the tracker's quiet-input clock; the PTY stays real.
   elapse(ms: number): void;
-  /** A key the user presses: the terminal records it, the shell reads it. */
+  // A key the user presses: the terminal records it, the shell reads it.
   press(keys: string): void;
-  /** The protocol under test. */
+  // The protocol under test.
   type(line: string): Promise<TypeTerminalCommandResult>;
 }
 
 const opened: Array<{ pty: nodePty.IPty; exited: Promise<void> }> = [];
-/** Every shell HOME, tracked from creation: a start that throws before the spawn still owns one. */
+// Every shell HOME, tracked from creation: a start that throws before the spawn still owns one.
 const homes: string[] = [];
 afterEach(async () => {
   for (const { pty, exited } of opened.splice(0)) {
@@ -72,19 +59,14 @@ function until(condition: () => boolean, timeoutMs = 8_000): Promise<void> {
   });
 }
 
-/**
- * Start `shellPath` on a pty with the shell integration. `notFoundProgram`
- * puts an Ubuntu-like command-not-found handler that calls it ahead of the
- * integration, where the system startup file would have defined it.
- */
+// Install a command-not-found handler before integration to match the ordering of system startup files.
 async function startShell(shellPath: string, options: { notFoundProgram?: string; startup?: string; profile?: string } = {}): Promise<LiveShell> {
   const home = realpathSync(mkdtempSync(join(tmpdir(), "ave-typing-")));
   homes.push(home);
   const { env } = installShellIntegration(home, shellPath, { nonce: NONCE, sandboxEnv: { HOME: home, XDG_CONFIG_HOME: join(home, "config") } });
   if (options.profile !== undefined) writeFileSync(join(home, ".zprofile"), options.profile);
-  // The host distro's command-not-found handler is removed (Ubuntu's
-  // /etc/bash.bashrc, read before this file, defines one for bash), so a case
-  // has one only when it installs it: the same on every host.
+  // The host distro's command-not-found handler is removed (Ubuntu's /etc/bash.bashrc, read before this file, defines one for bash), so a case has one
+  // only when it installs it: the same on every host.
   const rc = join(home, basename(shellPath) === "zsh" ? ".zshrc" : ".bash_profile");
   const removeDistroHandler = basename(shellPath) === "zsh"
     ? "unfunction command_not_found_handler 2>/dev/null\n"
@@ -106,8 +88,7 @@ async function startShell(shellPath: string, options: { notFoundProgram?: string
   opened.push({ pty, exited });
   try { await until(() => tracker.promptEndCount() > 0); }
   catch (cause) { throw new Error(`${basename(shellPath)} did not start: ${JSON.stringify(output.slice(-4096))}`, { cause }); }
-  // No user input has been recorded yet: the authenticated prompt is the
-  // readiness barrier, not an elapsed quiet-input window.
+  // No user input has been recorded yet: the authenticated prompt is the readiness barrier, not an elapsed quiet-input window.
   const shellName = basename(shellPath);
   return {
     pty,
@@ -128,8 +109,7 @@ async function startShell(shellPath: string, options: { notFoundProgram?: string
         write: (data) => pty.write(data),
         verify: async () => {
           let reading = await readTerminalForeground(pty.pid);
-          // Permit one real reread when the process-table command fails;
-          // semantic refusals and persistent unreadability still fail closed.
+          // Permit one real reread when the process-table command fails; semantic refusals and persistent unreadability still fail closed.
           if (!reread && !reading.ok && reading.reason ===
             "the terminal's process could not be read (Command failed: /bin/ps -axo ppid=)") {
             expect(tracker.nextBlockId()).toBe(nextBlockId);
@@ -148,7 +128,7 @@ async function startShell(shellPath: string, options: { notFoundProgram?: string
   };
 }
 
-/** The command text the shell recorded for the block typing produced. */
+// The command text the shell recorded for the block typing produced.
 async function ranCommand(shell: LiveShell, result: TypeTerminalCommandResult): Promise<string> {
   if (!result.ok) throw new Error(`not typed (${result.reason}): ${result.message}`);
   await until(() => shell.tracker.get(result.firstBlockId)?.status === "done"
@@ -156,7 +136,7 @@ async function ranCommand(shell: LiveShell, result: TypeTerminalCommandResult): 
   return shell.tracker.get(result.firstBlockId)!.command;
 }
 
-/** Hold a native command until the test has observed the event it needs. */
+// Hold a native command until the test has observed the event it needs.
 function createGate(home: string, name: string) {
   const path = join(home, name);
   expect(spawnSync("mkfifo", [path]).status).toBe(0);
@@ -173,8 +153,8 @@ function createGate(home: string, name: string) {
 
 const BASH = TERMINAL_TEST_MODERN_BASH;
 
-/** Each shell's way to print its prompt string expanded (which prints B). */
-/** Each shell's way to have pasted text rewritten, or not taken as a paste at all. */
+// Each shell's way to print its prompt string expanded (which prints B).
+// Each shell's way to have pasted text rewritten, or not taken as a paste at all.
 const SHELLS: Array<{ path: string | undefined; enableVi: string; expandPrompt: string; rewritePaste: string; removeNotFoundHandler: string }> = [
   {
     path: TERMINAL_TEST_ZSH,
@@ -219,11 +199,9 @@ for (const { path, enableVi, expandPrompt, rewritePaste, removeNotFoundHandler }
       const key = prefix === "\u001b" ? "^[" : "^X";
       const readlineKey = prefix === "\u001b" ? "\\e" : "\\C-x";
       const longerKey = prefix === "\u001b" ? "^[[200~" : "^X^X";
-      // The completion bell wakes the output wait after the native binding
-      // has written its evidence. Neither the bell nor the probe edits text.
+      // The completion bell wakes the output wait after the native binding has written its evidence. Neither the bell nor the probe edits text.
       const observe = ': > "$HOME/prefix-consumed"; printf "\\a"';
-      // The shorter binding keeps longer sequences, including bracketed
-      // paste. Its evidence, rather than a delay, proves it was consumed.
+      // The shorter binding keeps longer sequences, including bracketed paste. Its evidence, rather than a delay, proves it was consumed.
       const setup = state === "consumed"
         ? zsh
           ? `observe_prefix() { ${observe}; }; zle -N observe-prefix observe_prefix; bindkey '${key}' observe-prefix`
@@ -232,8 +210,7 @@ for (const { path, enableVi, expandPrompt, rewritePaste, removeNotFoundHandler }
       const shell = await startShell(path!, { startup: setup });
       const consumed = join(shell.home, "prefix-consumed");
       if (state === "pending") {
-        // An unbound shorter key has no ambiguous-binding timeout. Verify the
-        // native keymap so this case keeps the prefix pending until the reset.
+        // An unbound shorter key has no ambiguous-binding timeout. Verify the native keymap so this case keeps the prefix pending until the reset.
         const output = readFileSync(join(shell.home, "prefix-bindings"), "utf8");
         if (zsh) {
           const action = prefix === "\u001b" ? "bracketed-paste" : "exchange-point-and-mark";
@@ -250,8 +227,7 @@ for (const { path, enableVi, expandPrompt, rewritePaste, removeNotFoundHandler }
         await until(() => shell.tracker.promptState() === "command-running" && /\r?\nTYPEAHEAD_WAITING\r?\n/u.test(shell.output()));
         const beforeInput = shell.output().length;
         shell.press(prefix);
-        // The tty's echo proves the kernel received typeahead while the
-        // command was held, before the line editor can consume it.
+        // The tty's echo proves the kernel received typeahead while the command was held, before the line editor can consume it.
         await until(() => shell.output().slice(beforeInput).includes(prefix === "\u001b" ? "^[" : "^X"));
         gate.release();
         await ranCommand(shell, running);
@@ -279,8 +255,7 @@ for (const { path, enableVi, expandPrompt, rewritePaste, removeNotFoundHandler }
       try {
         const writeFd = openSync(release, constants.O_WRONLY | constants.O_NONBLOCK);
         try {
-          // Release only after the next real prompt, then observe completion.
-          // Elapsed time alone cannot prove that the stale marker arrived later.
+          // Release only after the next real prompt, then observe completion. Elapsed time alone cannot prove that the stale marker arrived later.
           shell.pty.write(`(read -r < '${release}'; ${expandPrompt}; printf '\\nBACKGROUND_DONE\\n') &\r`);
           await until(() => shell.tracker.promptEndCount() > ready);
           writeSync(writeFd, "\n");
@@ -320,8 +295,7 @@ for (const { path, enableVi, expandPrompt, rewritePaste, removeNotFoundHandler }
       // One column per character, so its length is its width.
       expect(prompt).toMatch(/^[ -~]+$/u);
       const line = "echo margin-reached";
-      // Prompt and line fill the row: bash readline and zsh ZLE then write a
-      // blank on the next row and return to its start (" " CR).
+      // Prompt and line fill the row: bash readline and zsh ZLE then write a blank on the next row and return to its start (" " CR).
       shell.pty.resize(prompt.length + line.length, 30);
       // Let the shell take the resize (and redraw) before typing.
       await new Promise((resolve) => setTimeout(resolve, 300));
@@ -353,8 +327,7 @@ for (const { path, enableVi, expandPrompt, rewritePaste, removeNotFoundHandler }
         expect(existsSync(ran)).toBe(true);
         rmSync(ran);
         await expect(shell.type("'x'=1")).resolves.toMatchObject({ ok: false, reason: "not-found-handler" });
-        // The user removes it for this terminal; then terminal_run types, and
-        // the same word runs nothing the rules did not see.
+        // The user removes it for this terminal; then terminal_run types, and the same word runs nothing the rules did not see.
         const removed = shell.tracker.promptEndCount();
         shell.pty.write(`${removeNotFoundHandler}\r`);
         await until(() => shell.tracker.promptEndCount() > removed);
@@ -402,8 +375,7 @@ for (const { path, enableVi, expandPrompt, rewritePaste, removeNotFoundHandler }
 describe.runIf(TERMINAL_TEST_ZSH !== undefined)("zsh startup", () => {
   it("starts without a system completion audit asking for input", async () => {
     const shell = await startShell(TERMINAL_TEST_ZSH!, { profile: [
-      // The global interactive startup file runs this before our .zshrc.
-      // A native audit of a writable completion directory must never block it.
+      // The global interactive startup file runs this before our .zshrc. A native audit of a writable completion directory must never block it.
       'mkdir -m 777 "$HOME/completions"',
       'printf "#compdef fixture\\n" > "$HOME/completions/_fixture"',
       'if [[ -z "$skip_global_compinit" ]]; then',

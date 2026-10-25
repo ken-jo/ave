@@ -1,20 +1,5 @@
 import { unavailableSecretEncryption } from "../../__tests__/support/host-runtime.js";
-/**
- * End-to-end egress coverage for the owner-driven Telegram bridge: a paired
- * inbound message must produce real outbound `sendMessage` calls.
- *
- * It exists to close a mocked-seam blind spot. `telegram-bridge-server.test.ts`
- * exercises the bridge against a mocked projection store, so the real chain
- * (shared timeline -> SharedConversationProjectionStore ->
- * PlatformBridgeDeliveryAdapter -> Telegram outbound transport) had no test
- * that drove it whole — the same class of gap described by the cautionary
- * comment near `isTailnetOpaqueId` in `conversation-command-port.ts`, where
- * each side passed against a mock of the other while the composed path failed.
- * Here the ONLY stubs are the Bot API wire itself (`getUpdates` via an
- * injected client, `sendMessage` via the injected outbound transport) and the
- * command port, which publishes turn events into the real timeline the same
- * way handleChatSend does.
- */
+// Drive the full timeline-to-outbound projection chain; only the command port and Bot API wire are simulated.
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -81,9 +66,8 @@ describe("telegram egress integration (real projection, real delivery)", () => {
       sendMessage: vi.fn(async () => ({ ok: true as const, value: { message_id: 1 } })),
     };
 
-    // Capture outbound wire sends. This is the transport the bridge is handed,
-    // not the ambient one: the delivery path takes its `fetch` as a required
-    // option now, so observing it means passing the very stub asserted on.
+    // Capture outbound wire sends. This is the transport the bridge is handed, not the ambient one: the delivery path takes its `fetch` as a required option
+    // now, so observing it means passing the very stub asserted on.
     const sentBodies: Array<Record<string, unknown>> = [];
     const wireFetch = vi.fn(async (_url: unknown, init?: { body?: unknown }) => {
       sentBodies.push(JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>);
@@ -92,12 +76,10 @@ describe("telegram egress integration (real projection, real delivery)", () => {
         json: async () => ({ ok: true }),
       } as unknown as Response;
     });
-    // The ambient stack is nobody's transport here: a path that regresses to
-    // it fails loudly instead of quietly reaching the machine's network.
+    // The ambient stack is nobody's transport here: a path that regresses to it fails loudly instead of quietly reaching the machine's network.
     forbidAmbientFetch();
 
-    // Command port stand-in that does what the real port does for a bridge
-    // turn: publish semantic events into the ONE timeline the projection reads.
+    // Command port stand-in that does what the real port does for a bridge turn: publish semantic events into the ONE timeline the projection reads.
     const submit = vi.fn(() => {
       const sink = createPlatformConversationEventSink(surface.timeline, {
         conversationId: BOUND_CONVERSATION,
@@ -140,13 +122,8 @@ describe("telegram egress integration (real projection, real delivery)", () => {
       },
     });
 
-    // The transport paces one chat at 1s per send, so the assistant text is
-    // typically the SECOND wire send. Wait until it has actually left (or the
-    // deadline passes) rather than counting sends: returning while a later
-    // paced send is still in flight would make teardown abort a healthy
-    // delivery and report a provider failure this test would then misread.
-    // The deadline is deliberately generous: a starved worker under a fully
-    // parallel suite stretches the paced hops, and success returns early.
+    // Wait for the actual assistant send, not a send count: per-chat pacing can leave control notices ahead of it.
+    // A generous deadline tolerates worker contention; early teardown would abort healthy delivery.
     const deadline = Date.now() + 45_000;
     const assistantTextSent = (): boolean =>
       sentBodies.some((body) => String(body.text ?? "").includes(ASSISTANT_TEXT));

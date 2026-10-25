@@ -55,11 +55,8 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-/**
- * The host script up to its native type: preferences, autoloading off and the
- * module imports. Scripts that run a slice of the host run it under the same
- * module rules, so they find the same cmdlets without a module-path search.
- */
+// The host script up to its native type: preferences, autoloading off and the module imports. Scripts that run a slice of the host run it under the same
+// module rules, so they find the same cmdlets without a module-path search.
 function hostModulePreamble(script: string): string {
   return script.slice(0, script.indexOf("Add-Type -TypeDefinition @'"));
 }
@@ -95,8 +92,7 @@ function posixFixture(): {
     const key = String(path);
     if (errors.has(key)) throw errors.get(key);
     const stat = await originalLstat(path);
-    // Only the fixture's external ancestors are normalized. Entries created
-    // by the fixture retain the real permissions that each test exercises.
+    // Only the fixture's external ancestors are normalized. Entries created by the fixture retain the real permissions that each test exercises.
     const normalized = externalAncestors.has(key)
       ? withMetadata(stat, { uid: 0, mode: (stat.mode & ~0o7777) | 0o755 })
       : stat;
@@ -583,12 +579,10 @@ describe("native access-rule admission", () => {
       };
       if (outcome === "different status") fixture.probe.desktopPackage = { status: "unavailable", reason: "mapping-not-found" };
       if (outcome === "different reason") fixture.probe.desktopPackage = { status: "unavailable", reason: "package-not-installed" };
-      // Both lookups start before either completes. Requests are serialized, so
-      // the second reaches the host only after the first reply is read.
+      // Both lookups start before either completes. Requests are serialized, so the second reaches the host only after the first reply is read.
       const second = assertCodexExecutableLocation(fixture.candidate);
       const results = Promise.allSettled([first, second]);
-      // The second admission inspects mocked paths in microtasks only, so it
-      // has built and queued its request before this macrotask turn.
+      // The second admission inspects mocked paths in microtasks only, so it has built and queued its request before this macrotask turn.
       await new Promise<void>((resolve) => { setImmediate(resolve); });
       pending[0]!();
       await vi.waitFor(() => { expect(pending).toHaveLength(2); });
@@ -663,8 +657,7 @@ describe("native access-rule admission", () => {
       failMapping: testCase.mapping === "failure", failMoniker: testCase.mapping === "moniker-failure",
       failPackage: testCase.installation === "failure",
     };
-    // Execute only the resolver from the encoded production probe. All registry
-    // and package commands are functions over fixture data; no host query runs.
+    // Execute only the resolver from the encoded production probe. All registry and package commands are functions over fixture data; no host query runs.
     const mockedScript = [
       hostModulePreamble(script),
       "$fixture = ConvertFrom-Json -InputObject $env:AVE_DESKTOP_PACKAGE_FIXTURE",
@@ -924,8 +917,7 @@ describe("native access-rule admission", () => {
     expect(script).toContain("GetSecurityInfo");
     expect(script).toContain("HKCU:\\Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\CurrentVersion\\AppContainer\\Mappings");
     expect(script).toContain("Get-AppxPackage -Name 'Claude' -ErrorAction Stop");
-    // No module-path search: autoloading is off before any cmdlet runs, and
-    // each module comes from the pinned PowerShell's own directory.
+    // No module-path search: autoloading is off before any cmdlet runs, and each module comes from the pinned PowerShell's own directory.
     expect(script.split("\n")[1]).toBe("$PSModuleAutoLoadingPreference = 'None'");
     const imports = script.split("\n").filter((line) => line.includes("Import-Module"));
     expect(imports.map((line) => /Import-Module -Name \(\$PSHOME \+ '\\Modules\\([^']+)'\)/.exec(line)?.[1])).toEqual([
@@ -935,8 +927,7 @@ describe("native access-rule admission", () => {
       String.raw`Microsoft.PowerShell.LocalAccounts\Microsoft.PowerShell.LocalAccounts.psd1`,
       String.raw`Appx\Appx.psd1`,
     ]);
-    // With autoloading off, every cmdlet the host calls must come from the
-    // engine itself or from a module it imports above.
+    // With autoloading off, every cmdlet the host calls must come from the engine itself or from a module it imports above.
     const powershell = script.replace(/@'\n[\s\S]*?\n'@/, "");
     const cmdlets = new Set(powershell.match(/\b[A-Z][A-Za-z]+-[A-Z][A-Za-z]+\b/g));
     const moduleOf: Record<string, string> = {
@@ -1241,8 +1232,7 @@ interface FakeAclHost {
   answer: (request: WindowsAclRequest) => void;
 }
 
-// Host children that read request lines and answer through `answer`. Only the
-// product's own ACL host talks to them; the transport seam stays empty.
+// Host children that read request lines and answer through `answer`. Only the product's own ACL host talks to them; the transport seam stays empty.
 function aclHostFixture(fixture: ReturnType<typeof windowsFixture>, configureFirst?: (host: FakeAclHost) => void): FakeAclHost[] {
   _setWindowsAclTransportForTest(undefined);
   const hosts: FakeAclHost[] = [];
@@ -1298,8 +1288,7 @@ describe("Windows ACL host", () => {
     await expect(assertCodexExecutableLocation(fixture.candidate)).resolves.toBeUndefined();
     expect(spawn).toHaveBeenCalledTimes(1);
     const [command, args, options] = vi.mocked(spawn).mock.calls[0]!;
-    // These equal the old per-probe execFile launch; its timeout and output
-    // bound now apply to each request instead of the process.
+    // These equal the old per-probe execFile launch; its timeout and output bound now apply to each request instead of the process.
     expect(command).toBe(String.raw`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`);
     expect(args).toEqual(["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", expect.any(String)]);
     expect(options).toEqual({

@@ -1,9 +1,4 @@
-/**
- * python-runtime.test.ts
- *
- * PythonRuntimeBootstrapper 단위 테스트.
- * node:fs/promises, node:child_process를 mock하여 실제 uv/Python 없이 검증.
- */
+// Filesystem and child processes are mocked; no Python installation is used.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { SpawnOptionsWithoutStdio } from "node:child_process";
@@ -14,7 +9,6 @@ import path from "node:path";
 import { gzipSync } from "node:zlib";
 import { configureHostResources } from "../host-resources.js";
 
-// ─── node:fs/promises mock ────────────────────────────────────────────────────
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
   return {
@@ -30,12 +24,9 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   };
 });
 
-// ─── node:child_process mock ──────────────────────────────────────────────────
 vi.mock("node:child_process", () => ({
   spawn: vi.fn(),
 }));
-
-// ─── helpers ──────────────────────────────────────────────────────────────────
 
 import * as fsMock from "node:fs/promises";
 import * as cpMock from "node:child_process";
@@ -61,10 +52,7 @@ function expectedRuntimePath(...segments: string[]): string {
   return normalizePathForAssert(path.join(aveRoot, "runtime", ...segments));
 }
 
-/**
- * 성공하는 spawn 프로세스 mock을 반환한다.
- * stdout으로 stdoutData를 방출한 뒤 exit 0.
- */
+// 성공하는 spawn 프로세스 mock을 반환한다. stdout으로 stdoutData를 방출한 뒤 exit 0.
 function makeSpawnMock(stdoutData = "ok\n", exitCode = 0) {
   const stdout = {
     on: vi.fn((event: string, cb: (chunk: Buffer) => void) => {
@@ -108,9 +96,7 @@ function makeSpawnMockWithStderr(stderrChunks: string[], stdoutData = "", exitCo
   return proc as unknown as ReturnType<typeof cpMock.spawn>;
 }
 
-/**
- * 실패하는 spawn mock (non-zero exit).
- */
+// 실패하는 spawn mock (non-zero exit).
 function makeSpawnFailMock(exitCode = 1, stderrMsg = "some error") {
   const stdout = {
     on: vi.fn((_event: string, _cb: unknown) => {}),
@@ -142,8 +128,6 @@ function setupPythonRuntimeSetupSpawns(): void {
     .mockReturnValueOnce(makeSpawnMock("3.12.3\n"));
 }
 
-// ─── 테스트 대상 import (mock 설정 이후) ──────────────────────────────────────
-// dynamic import를 사용하지 않고 상단에서 import → vi.mock hoisting에 의존
 import {
   buildPipSyncArgs,
   buildPipSyncFallbackArgs,
@@ -152,7 +136,6 @@ import {
 } from "../python-runtime.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
-// ─── BrowserWindow stub ───────────────────────────────────────────────────────
 function makeBrowserWindow() {
   return {
     webContents: {
@@ -189,8 +172,7 @@ describe("buildPipSyncArgs", () => {
 
 describe("uvProxyEnvFromPacResolutions", () => {
   it("says nothing when the OS routes every host directly", () => {
-    // The common machine. No variables is not "we gave up" — it is the
-    // configuration, stated.
+    // The common machine. No variables is not "we gave up" — it is the configuration, stated.
     expect(uvProxyEnvFromPacResolutions([
       ["https://pypi.org/simple/", "DIRECT"],
       ["https://files.pythonhosted.org/", "DIRECT"],
@@ -210,8 +192,7 @@ describe("uvProxyEnvFromPacResolutions", () => {
   });
 
   it("refuses to guess when two hosts route through different proxies", () => {
-    // `HTTP_PROXY` is one value for all hosts, so per-host routing cannot be
-    // expressed. Picking one would send the other host's traffic somewhere the
+    // `HTTP_PROXY` is one value for all hosts, so per-host routing cannot be expressed. Picking one would send the other host's traffic somewhere the
     // configuration did not choose.
     expect(uvProxyEnvFromPacResolutions([
       ["https://pypi.org/simple/", "PROXY one.example.com:8080"],
@@ -233,10 +214,8 @@ describe("uvProxyEnvFromPacResolutions", () => {
   });
 });
 
-// ─── 테스트 ───────────────────────────────────────────────────────────────────
-
 describe("PythonRuntimeBootstrapper", () => {
-  /** Real on-disk plugin roots created by registry-discovery cases. */
+  // Real on-disk plugin roots created by registry-discovery cases.
   const registryTempRoots: string[] = [];
 
   beforeEach(() => {
@@ -247,9 +226,8 @@ describe("PythonRuntimeBootstrapper", () => {
     vi.mocked(fsMock.rename).mockResolvedValue(undefined);
     vi.mocked(fsMock.chmod).mockResolvedValue(undefined);
     mockedReadFile.mockRejectedValue(Object.assign(new Error("ENOENT"), { code: "ENOENT" }));
-    // readdir default — repairLegacyUvBinaries calls readdir on uvRuntimeDir;
-    // most tests don't care, so default to ENOENT (no uv binaries) and let
-    // sweep tests override per-case.
+    // readdir default — repairLegacyUvBinaries calls readdir on uvRuntimeDir; most tests don't care, so default to ENOENT (no uv binaries) and let sweep
+    // tests override per-case.
     vi.mocked(fsMock.readdir).mockRejectedValue(
       Object.assign(new Error("ENOENT"), { code: "ENOENT" }),
     );
@@ -262,8 +240,6 @@ describe("PythonRuntimeBootstrapper", () => {
       await cleanupTmpDir(registryTempRoots.pop()!);
     }
   });
-
-  // ─── 1. .ready sentinel 존재 시 즉시 resolve ─────────────────────────────
 
   it(".ready sentinel이 존재하면 spawn 없이 즉시 resolve한다", async () => {
     // access → sentinel 존재 (resolve without error)
@@ -289,10 +265,8 @@ describe("PythonRuntimeBootstrapper", () => {
   });
 
   it("gives uv the machine's proxy and trust store, and gives the verifier neither", async () => {
-    // `uv` is the only child here that touches the network: it downloads a
-    // CPython build and the locked wheels. The import verifier runs entirely
-    // offline, so it gets no egress environment at all — the asymmetry is the
-    // point, and asserting it keeps a later edit from widening the grant.
+    // `uv` is the only child here that touches the network: it downloads a CPython build and the locked wheels. The import verifier runs entirely offline,
+    // so it gets no egress environment at all — the asymmetry is the point, and asserting it keeps a later edit from widening the grant.
     const manifestPath = "/installed/local-indexer/plugin.json";
     mockedAccess
       .mockRejectedValueOnce(Object.assign(new Error("ENOENT"), { code: "ENOENT" }))
@@ -336,8 +310,6 @@ describe("PythonRuntimeBootstrapper", () => {
     // Four probe URLs, resolved once for the whole provision.
     expect(resolveOsProxy).toHaveBeenCalledTimes(4);
   });
-
-  // ─── 2. .ready 부재 시 spawn 호출 ────────────────────────────────────────
 
   it(".ready sentinel이 없으면 uv spawn을 호출한다", async () => {
     const manifestPath = "/installed/local-indexer/plugin.json";
@@ -487,13 +459,7 @@ describe("PythonRuntimeBootstrapper", () => {
   });
 
   it("registry discovery uses host-managed Python lockfiles without document-indexer hardcoding", async () => {
-    // `resolveManifestPathsFromRegistry` drops registry rows whose
-    // manifestPath escapes the trust root (realpath containment under
-    // `dirname(registryPath)`), so this fixture uses a REAL on-disk tree in
-    // the canonical layout — `<pluginsRoot>/registry.json` plus
-    // `<pluginsRoot>/<id>/plugin.json`, which is what `resolvePluginPaths`
-    // produces. File CONTENT still comes from the `node:fs/promises` mock;
-    // only the trust check touches the real filesystem (`node:fs`).
+    // Use a real canonical registry/plugin directory tree for realpath containment; only file content is mocked.
     const pluginsRoot = mkdtempSync(path.join(tmpdir(), "ave-pyreg-"));
     registryTempRoots.push(pluginsRoot);
     const registryPath = path.join(pluginsRoot, "registry.json");
@@ -850,7 +816,7 @@ describe("PythonRuntimeBootstrapper", () => {
     }
   });
 
-  // ─── issue #713: uv cache co-located with venv (cross-volume hardlink fix) ─
+  // Keep the uv cache beside the venv so hardlinks do not cross volumes.
 
   describe("issue #713 — uv cache cross-volume hardlink fix", () => {
     function uvSpawnEnvs(): NodeJS.ProcessEnv[] {
@@ -936,8 +902,6 @@ describe("PythonRuntimeBootstrapper", () => {
     });
   });
 
-  // ─── 3. spawn non-zero exit → throws ─────────────────────────────────────
-
   it("uv spawn이 non-zero exit code를 반환하면 throws한다", async () => {
     mockedAccess
       .mockRejectedValueOnce(Object.assign(new Error("ENOENT"), { code: "ENOENT" })) // sentinel 없음
@@ -951,8 +915,6 @@ describe("PythonRuntimeBootstrapper", () => {
 
     await expect(bootstrapper.ensureReady(win)).rejects.toThrow();
   });
-
-  // ─── 4. 두 번째 ensureReady는 idempotent ─────────────────────────────────
 
   it("두 번째 ensureReady 호출은 .ready sentinel을 확인하고 즉시 resolve한다", async () => {
     // 두 번 모두 sentinel 존재
@@ -970,8 +932,6 @@ describe("PythonRuntimeBootstrapper", () => {
     expect(r1.pythonPath).toBe(r2.pythonPath);
     expect(r1.venvPath).toBe(r2.venvPath);
   });
-
-  // ─── 5. 플랫폼별 binary path 정확성 ─────────────────────────────────────
 
   describe("플랫폼별 uv binary path 결정", () => {
     const cases: Array<[string, string, string]> = [
@@ -1077,8 +1037,6 @@ describe("PythonRuntimeBootstrapper", () => {
     });
   });
 
-  // ─── issue #717: ~/.ave/runtime/* file permissions hardening ────────────
-
   describe("issue #717 — runtime file permission hardening (0o600)", () => {
     it("writeSentinel은 mode: 0o600으로 writeFile을 호출한다", async () => {
       setupPythonRuntimeSetupSpawns();
@@ -1176,8 +1134,7 @@ describe("PythonRuntimeBootstrapper", () => {
         // Binary was materialized by writeFileSync + chmodSync (real FS, not mocked).
         expect(existsSync(expectedUvBin)).toBe(true);
         const stat = require("node:fs").statSync(expectedUvBin);
-        // Mode bits: 0o700 = owner rwx only (no group/world read or execute).
-        // statSync.mode includes file type bits (0o100000 for regular file).
+        // Mode bits: 0o700 = owner rwx only (no group/world read or execute). statSync.mode includes file type bits (0o100000 for regular file).
         const permBits = stat.mode & 0o777;
         expect(permBits).toBe(0o700);
       } finally {
@@ -1188,9 +1145,8 @@ describe("PythonRuntimeBootstrapper", () => {
     });
 
     it("repairLegacyFileModes chmods existing .ready and setup.log to 0o600 on every boot", async () => {
-      // Pre-fix #717 follow-up: existing files created with default umask
-      // 0o644 stayed world-readable forever because mode-on-write only
-      // applies to NEW files. The boot-time chmod sweep migrates them.
+      // Pre-fix #717 follow-up: existing files created with default umask 0o644 stayed world-readable forever because mode-on-write only applies to NEW files.
+      // The boot-time chmod sweep migrates them.
       const chmodCalls: Array<{ target: string; mode: number }> = [];
       vi.mocked(fsMock.chmod).mockImplementation(async (target, mode) => {
         chmodCalls.push({ target: String(target), mode: Number(mode) });
@@ -1201,9 +1157,8 @@ describe("PythonRuntimeBootstrapper", () => {
       const bootstrapper = new PythonRuntimeBootstrapper();
       await bootstrapper.ensureReady(makeBrowserWindow());
 
-      // On non-Windows, sweep should have called chmod for both targets
-      // with mode 0o600. Skip assertion entirely on Windows where the
-      // production code early-returns from repairLegacyFileModes.
+      // On non-Windows, sweep should have called chmod for both targets with mode 0o600. Skip assertion entirely on Windows where the production code
+      // early-returns from repairLegacyFileModes.
       if (process.platform !== "win32") {
         const sentinelChmod = chmodCalls.find((c) => c.target.includes(".ready"));
         const logChmod = chmodCalls.find((c) => c.target.includes("setup.log"));
@@ -1230,10 +1185,8 @@ describe("PythonRuntimeBootstrapper", () => {
     });
 
     it("repairLegacyFileModes also chmods runtime parent dirs to 0o700 (Round 3 — directory mode migration)", async () => {
-      // Pre-Round-3: directories created by older installs at default 0o755
-      // were world-traversable (directory listing only, no content). The
-      // sweep now tightens AVE_RUNTIME_DIR / VENV_DIR / LOGS_DIR /
-      // UV_CACHE_DIR_PATH to 0o700 alongside the file targets.
+      // Pre-Round-3: directories created by older installs at default 0o755 were world-traversable (directory listing only, no content). The sweep now
+      // tightens AVE_RUNTIME_DIR / VENV_DIR / LOGS_DIR / UV_CACHE_DIR_PATH to 0o700 alongside the file targets.
       if (process.platform === "win32") return;
       const chmodCalls: Array<{ target: string; mode: number }> = [];
       vi.mocked(fsMock.chmod).mockImplementation(async (target, mode) => {
@@ -1254,20 +1207,14 @@ describe("PythonRuntimeBootstrapper", () => {
     });
 
     it("repairLegacyUvBinaries chmods all uv binaries under uvRuntimeDir to 0o700", async () => {
-      // Pre-Round-3: legacy materialized uv binaries lived at 0o755
-      // (world-read+exec). The sha-keyed path layout
-      // `<uvRuntimeDir>/<arch>/<sha>/uv` is enumerated and each chmod'd to
-      // 0o700.
+      // Pre-Round-3: legacy materialized uv binaries lived at 0o755 (world-read+exec). The sha-keyed path layout `<uvRuntimeDir>/<arch>/<sha>/uv` is
+      // enumerated and each chmod'd to 0o700.
       if (process.platform === "win32") return;
       const chmodCalls: Array<{ target: string; mode: number }> = [];
       vi.mocked(fsMock.chmod).mockImplementation(async (target, mode) => {
         chmodCalls.push({ target: String(target), mode: Number(mode) });
       });
-      // Simulate two arch dirs each with one sha-keyed binary.
-      // Cast through `unknown` rather than `as never` — readdir's overload
-      // union (string[] | Buffer[] | Dirent[]) makes vitest's mock typing
-      // awkward; the unknown cast preserves the "I'm narrowing the
-      // overload" intent without nuking the type system.
+      // Narrow readdir’s overloaded mock through unknown to retain type checking.
       vi.mocked(fsMock.readdir).mockImplementation((async (dirPath: string) => {
         const p = String(dirPath);
         if (p.endsWith("/runtime/uv")) return ["linux-arm64", "linux-x64"];
@@ -1288,8 +1235,7 @@ describe("PythonRuntimeBootstrapper", () => {
     });
 
     it("repairLegacyUvBinaries returns silently when uvRuntimeDir does not exist", async () => {
-      // Pre-first-install: no uv binaries yet. ENOENT on top-level readdir
-      // returns without logging.
+      // Pre-first-install: no uv binaries yet. ENOENT on top-level readdir returns without logging.
       if (process.platform === "win32") return;
       vi.mocked(fsMock.readdir).mockRejectedValue(
         Object.assign(new Error("ENOENT"), { code: "ENOENT" }),

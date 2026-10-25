@@ -1,32 +1,5 @@
-/**
- * Locate and qualify the user's own `codex` CLI.
- *
- * Ave ships no copy of the CLI. The app-server it talks to is the one the user
- * installed: the first `codex` found on PATH or in one of the official install
- * locations. The user never points Ave at the file; settings only reports
- * what was found. Before anything
- * relies on it, the binary must
- *
- *   1. be a native executable (a package-manager launcher script is followed
- *      to the native binary it would start; nothing is run through a shell or
- *      an interpreter),
- *   2. report a version at or above {@link CODEX_CLI_MINIMUM_VERSION},
- *   3. know every feature Ave disables at launch (`features list`), and
- *   4. generate an app-server protocol schema that contains every request,
- *      field and notification Ave uses (`app-server generate-json-schema`).
- *
- * Each failure has its own code so the settings card can say exactly what is
- * wrong; a probe that cannot run at all is a start failure, never a verdict.
- *
- * How the minimum version was chosen: published versions from 0.140.0 to
- * 0.163.0 (every minor, with both patches either side of each boundary) were
- * unpacked into an empty directory and checked twice — the generated schema
- * against `CODEX_PROTOCOL_REQUIREMENTS`, and an app-server started with Ave's
- * exact argv answering `initialize`. Versions
- * before 0.144.0 lack login fields Ave sends; versions before 0.152.0 refuse
- * to start because they do not know the `sleep_tool` feature Ave disables.
- * 0.152.0 is the oldest version that passes both.
- */
+// Discover the user-installed CLI and require a native executable, minimum version, disabled-feature support, and compatible protocol schema. Probe
+// startup failure is distinct from an incompatible binary; the minimum version must pass schema and exact-argv initialization checks.
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { constants as fsConstants, promises as fs } from "node:fs";
 import { homedir } from "node:os";
@@ -64,23 +37,23 @@ import {
 import { spawnCodexNative } from "./codex-native-spawn.js";
 
 export type CodexUserRuntimeErrorCode =
-  /** No `codex` was found. */
+  // No `codex` was found.
   | "codex-runtime-not-installed"
-  /** The first `codex` found is not a native executable Ave can run. */
+  // The first `codex` found is not a native executable Ave can run.
   | "codex-runtime-invalid-executable"
   | "codex-runtime-unsafe-location"
   | "codex-runtime-version-unsupported"
-  /** The version is new enough but the protocol or features Ave needs are missing. */
+  // The version is new enough but the protocol or features Ave needs are missing.
   | "codex-runtime-incompatible"
-  /** A probe could not run to completion; says nothing about compatibility. */
+  // A probe could not run to completion; says nothing about compatibility.
   | "codex-runtime-start-failed";
 
 export class CodexUserRuntimeError extends Error {
   constructor(
     readonly code: CodexUserRuntimeErrorCode,
-    /** The version the binary reported, when it got that far. */
+    // The version the binary reported, when it got that far.
     readonly version: string | null = null,
-    /** For `codex-runtime-incompatible`: each missing requirement. */
+    // For `codex-runtime-incompatible`: each missing requirement.
     readonly missing: readonly string[] = [],
   ) {
     super(code);
@@ -103,7 +76,7 @@ interface PlatformTarget {
   readonly targetTriple: string;
 }
 
-/** The per-platform packages the npm launcher selects, and their vendor triples. */
+// The per-platform packages the npm launcher selects, and their vendor triples.
 const LAUNCHER_PLATFORM_TARGETS: Partial<Record<NodeJS.Platform, Partial<Record<NodeJS.Architecture, PlatformTarget>>>> = {
   darwin: {
     x64: { packageName: "@openai/codex-darwin-x64", targetTriple: "x86_64-apple-darwin" },
@@ -121,12 +94,7 @@ const LAUNCHER_PLATFORM_TARGETS: Partial<Record<NodeJS.Platform, Partial<Record<
 
 export type CodexDiscoveryEnvironment = CliDiscoveryEnvironment;
 
-/**
- * Where a `codex` the user installed can be, most specific first: each
- * absolute PATH entry (the `codex` the user's own shell would run), then the
- * official install locations, which matter because an app started from the
- * desktop inherits a PATH without them. Relative PATH entries are skipped.
- */
+// Search absolute PATH entries before known install locations; desktop launches may omit those locations, and relative entries are untrusted.
 export function codexExecutableCandidates(discovery: CodexDiscoveryEnvironment): string[] {
   const { platform, env, homeDir } = discovery;
   const paths = cliPathApi(platform);
@@ -151,7 +119,7 @@ export function codexExecutableCandidates(discovery: CodexDiscoveryEnvironment):
   );
 }
 
-/** Routing hint only. Full native-format validation happens on the private copy. */
+// Routing hint only. Full native-format validation happens on the private copy.
 function isNativeExecutableHeader(header: Buffer, platform: NodeJS.Platform): boolean {
   if (header.length < 4) return false;
   if (platform === "win32") return header[0] === 0x4d && header[1] === 0x5a;
@@ -175,7 +143,7 @@ async function readHeader(path: string): Promise<Buffer> {
   }
 }
 
-/** The real path of `candidate` when it is a native executable file, else null. */
+// The real path of `candidate` when it is a native executable file, else null.
 async function nativeExecutableAt(candidate: string, platform: NodeJS.Platform): Promise<string | null> {
   let real: string;
   try {
@@ -210,11 +178,8 @@ async function isLauncherPackageRoot(root: string): Promise<boolean> {
   }
 }
 
-/**
- * The package root of an npm-installed launcher at `candidate`, if it is one:
- * on POSIX the `bin/codex.js` script the link points at, on Windows the
- * `codex.cmd` shim next to `node_modules`.
- */
+// The package root of an npm-installed launcher at `candidate`, if it is one: on POSIX the `bin/codex.js` script the link points at, on Windows the
+// `codex.cmd` shim next to `node_modules`.
 async function launcherPackageRoot(
   candidate: string,
   platform: NodeJS.Platform,
@@ -238,11 +203,8 @@ async function launcherPackageRoot(
   return await isLauncherPackageRoot(root) ? root : null;
 }
 
-/**
- * The native binary an npm launcher would start, found the way the launcher
- * looks for it: the platform package nested in or beside the launcher
- * package, or the launcher's own `vendor` directory.
- */
+// The native binary an npm launcher would start, found the way the launcher looks for it: the platform package nested in or beside the launcher package,
+// or the launcher's own `vendor` directory.
 async function launcherNativeExecutable(
   root: string,
   platform: NodeJS.Platform,
@@ -289,11 +251,8 @@ function invalidExecutable(message?: string): CodexUserRuntimeError {
   return error;
 }
 
-/**
- * Turn one path into the native `codex` binary it stands for. A missing path
- * is `null`; a present path that is neither a native executable nor an npm
- * launcher whose native binary is installed is an invalid executable.
- */
+// Turn one path into the native `codex` binary it stands for. A missing path is `null`; a present path that is neither a native executable nor an npm
+// launcher whose native binary is installed is an invalid executable.
 export async function resolveCodexNativeExecutable(
   candidate: string,
   platform: NodeJS.Platform = process.platform,
@@ -322,14 +281,14 @@ export async function resolveCodexNativeExecutable(
 
 const VERSION_PATTERN = /^codex-cli (\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]+)?\s*$/m;
 
-/** The `x.y.z[-pre]` version in `codex --version` output, or null. */
+// The `x.y.z[-pre]` version in `codex --version` output, or null.
 export function parseCodexVersion(output: string): string | null {
   const match = VERSION_PATTERN.exec(output);
   if (!match) return null;
   return `${Number(match[1])}.${Number(match[2])}.${Number(match[3])}${match[4] ?? ""}`;
 }
 
-/** Whether `version` is at least {@link CODEX_CLI_MINIMUM_VERSION}; a pre-release of the minimum is below it. */
+// Whether `version` is at least {@link CODEX_CLI_MINIMUM_VERSION}; a pre-release of the minimum is below it.
 export function meetsCodexMinimumVersion(version: string, minimum: string = CODEX_CLI_MINIMUM_VERSION): boolean {
   const parse = (value: string) => {
     const [core, prerelease] = value.split(/-(.*)/s, 2) as [string, string | undefined];
@@ -344,7 +303,7 @@ export function meetsCodexMinimumVersion(version: string, minimum: string = CODE
   return !found.prerelease || required.prerelease;
 }
 
-/** Disabled features the CLI's `features list` output does not name. */
+// Disabled features the CLI's `features list` output does not name.
 export function missingCodexFeatures(
   listing: string,
   required: readonly string[] = CODEX_DISABLED_FEATURES,
@@ -370,7 +329,7 @@ export type CodexProbeRunner = (
 
 type SpawnProbe = (command: string, args: readonly string[], options: SpawnOptions) => ChildProcess;
 
-/** Run one bounded, shell-free probe command; stderr is discarded, never parsed. */
+// Run one bounded, shell-free probe command; stderr is discarded, never parsed.
 function createCodexProbeRunner(
   spawn: SpawnProbe = (command, args, options) => spawnCodexNative(command, args, options, "codex-probe"),
 ): CodexProbeRunner {
@@ -424,9 +383,9 @@ function createCodexProbeRunner(
 }
 
 export interface CodexUserRuntimeLocatorOptions {
-  /** Ave's isolated account home; compatibility probes use a separate empty home. */
+  // Ave's isolated account home; compatibility probes use a separate empty home.
   readonly runtimeHome: string;
-  /** Existing private runtime child directory, created by the feature namespace. */
+  // Existing private runtime child directory, created by the feature namespace.
   readonly runtimeDirectory: string;
   readonly sqliteHome: string;
   readonly workspaceDir: string;
@@ -438,11 +397,8 @@ export interface CodexUserRuntimeLocatorOptions {
   readonly homeDir?: string;
 }
 
-/**
- * Finds the user's `codex` and qualifies a private copy once per content hash.
- * Changed bytes are probed again; a probe that could
- * not run is not remembered, so the next request tries again.
- */
+// Finds the user's `codex` and qualifies a private copy once per content hash. Changed bytes are probed again; a probe that could not run is not
+// remembered, so the next request tries again.
 export class CodexUserRuntimeLocator {
   private readonly run: CodexProbeRunner;
   private readonly platform: NodeJS.Platform;
@@ -463,12 +419,12 @@ export class CodexUserRuntimeLocator {
     this.homeDir = options.homeDir ?? homedir();
   }
 
-  /** The version the last probed binary reported, for the status projection. */
+  // The version the last probed binary reported, for the status projection.
   lastKnownVersion(): string | null {
     return this.lastVersion;
   }
 
-  /** Resolve, qualify and return the binary Ave should start. */
+  // Resolve, qualify and return the binary Ave should start.
   async resolve(): Promise<CodexResolvedRuntime> {
     if (this.disposed) throw startFailed();
     const executable = await this.locate();
@@ -512,7 +468,7 @@ export class CodexUserRuntimeLocator {
     }
   }
 
-  /** Release only this locator's copies after its transports have stopped. */
+  // Release only this locator's copies after its transports have stopped.
   async dispose(): Promise<void> {
     this.disposed = true;
     await Promise.allSettled(this.verdicts.values());

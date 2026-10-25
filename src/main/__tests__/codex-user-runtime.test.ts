@@ -22,9 +22,8 @@ import { createPrivateDirectories } from "../codex-executable-location.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
 const aclProbeMode = vi.hoisted(() => ({ real: false }));
-// Admission probes and ownership claims are counted apart: each private
-// directory or copy the runtime creates costs one claim by design, while
-// admission batching is what the probe bounds guard.
+// Admission probes and ownership claims are counted apart: each private directory or copy the runtime creates costs one claim by design, while admission
+// batching is what the probe bounds guard.
 const accessRuleProbes = vi.hoisted(() => ({ count: 0, claims: 0 }));
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
@@ -92,11 +91,8 @@ const TRIPLE: Record<string, string> = {
   "win32-x64": "x86_64-pc-windows-msvc",
 };
 
-/**
- * Lay out an npm global install: the launcher package with its script and
- * the platform package it selects. Returns the launcher a PATH lookup finds
- * and the native binary it stands for.
- */
+// Lay out an npm global install: the launcher package with its script and the platform package it selects. Returns the launcher a PATH lookup finds and
+// the native binary it stands for.
 function writeNpmInstall(root: string, layout: "nested" | "hoisted"): { launcher: string; native: string } {
   const key = `${HOST}-${process.arch}`;
   const modules = HOST === "win32" ? join(root, "npm", "node_modules") : join(root, "lib", "node_modules");
@@ -298,19 +294,17 @@ function scriptedRunner(script: ProbeScript, calls: string[][] = []): CodexProbe
   }) as CodexProbeRunner;
 }
 
-
 async function locatorHarness(input: {
   script?: ProbeScript;
   realProbes?: boolean;
   env?: (root: string) => NodeJS.ProcessEnv;
   calls?: string[][];
   run?: CodexProbeRunner;
-  /** Give the Windows fixture root its private access list before anything is created in it. */
+  // Give the Windows fixture root its private access list before anything is created in it.
   privateRoot?: boolean;
 } = {}) {
   const root = tempRoot();
-  // Children inherit the root's access list when they are created, as the
-  // product's private directories do under the Ave home.
+  // Children inherit the root's access list when they are created, as the product's private directories do under the Ave home.
   if (HOST === "win32" && input.privateRoot) normalizeFixtureAncestorPermissions(root);
   const dirs = Object.fromEntries(["home", "sqlite", "workspace", "temp"].map((name) => [name, join(root, name)]));
   const runtimeDirectory = join(dirs.home!, "runtime");
@@ -574,9 +568,8 @@ describe("CodexUserRuntimeLocator", () => {
     expect(calls).toHaveLength(6);
     // The unbatched admission used 54 probes for these three resolutions.
     if (HOST === "win32") expect(accessRuleProbes.count - before).toBeLessThanOrEqual(33);
-    // One claim for the harness directories; each of the three copies claims
-    // its directory and its files; each of the two qualifications claims its
-    // probe root and that root's four directories.
+    // One claim for the harness directories; each of the three copies claims its directory and its files; each of the two qualifications claims its probe
+    // root and that root's four directories.
     if (HOST === "win32") expect(accessRuleProbes.claims - claimsBefore).toBe(1 + 3 * 2 + 2 * 2);
   });
 
@@ -658,9 +651,8 @@ describe("CodexUserRuntimeLocator", () => {
     expect(calls).toHaveLength(6);
     // The unbatched companion path used 58 probes for these two resolutions.
     if (HOST === "win32") expect(accessRuleProbes.count - before).toBeLessThanOrEqual(30);
-    // One claim for the harness directories; each of the two copies claims its
-    // directory and both files together; each qualification claims its probe
-    // root and that root's four directories.
+    // One claim for the harness directories; each of the two copies claims its directory and both files together; each qualification claims its probe root
+    // and that root's four directories.
     if (HOST === "win32") expect(accessRuleProbes.claims - claimsBefore).toBe(1 + 2 * 2 + 2 * 2);
   });
 
@@ -710,9 +702,8 @@ describe("CodexUserRuntimeLocator", () => {
   );
 
   it("finds a CLI installed after it reported none, without being pointed at it", async () => {
-    // "Check again" on the settings card is just another resolve: the user
-    // installs the CLI and Ave finds it where the installer put it.
-    // Each platform's installer writes to its own official location.
+    // "Check again" on the settings card is just another resolve: the user installs the CLI and Ave finds it where the installer put it. Each platform's
+    // installer writes to its own official location.
     const { root, locator } = await locatorHarness({
       env: (base) => ({ PATH: join(base, "path-bin"), LOCALAPPDATA: join(base, "local-app-data") }),
     });
@@ -739,10 +730,8 @@ describe("CodexUserRuntimeLocator", () => {
   });
 
   it("runs real probes without a shell and reads their output", async () => {
-    // A system utility reports no CLI version, so a completed real probe
-    // yields an invalid-executable verdict rather than a start failure. On
-    // Windows the copy must start without sibling DLLs, which rules out the
-    // Electron test host and leaves the standalone Node it was launched from.
+    // A system utility reports no CLI version, so a completed real probe yields an invalid-executable verdict rather than a start failure. On Windows the
+    // copy must start without sibling DLLs, which rules out the Electron test host and leaves the standalone Node it was launched from.
     const { root, locator } = await locatorHarness({ realProbes: true });
     const native = join(mkdirAndReturn(join(root, "path-bin")), NATIVE_NAME);
     const standalone = process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath;

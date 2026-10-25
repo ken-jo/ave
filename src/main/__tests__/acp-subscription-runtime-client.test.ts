@@ -458,15 +458,13 @@ describe("AcpSubscriptionRuntimeClient security boundary", () => {
     }
   });
   it("rejects a Grok Build prerelease at the governed minimum", async () => {
-    // The version probe's own timeout rejects with the same code. With
-    // setTimeout faked it cannot fire, so only the version check can reject.
+    // The version probe's own timeout rejects with the same code. With setTimeout faked it cannot fire, so only the version check can reject.
     vi.useFakeTimers({ toFake: ["setTimeout"] });
     try {
       const { client, child, spawnCalls } = createLoginHarness("grok-build");
       const verification = client.verify();
 
-      // Answer the probe once it is running: output written before the spawn
-      // reaches no listener.
+      // Answer the probe once it is running: output written before the spawn reaches no listener.
       await vi.waitFor(() => expect(spawnCalls).toHaveLength(1));
       child.stdout.write("grok-build 0.2.116-alpha.1\n");
       child.emit("close", 0);
@@ -480,7 +478,6 @@ describe("AcpSubscriptionRuntimeClient security boundary", () => {
     }
   });
 
-
   it("reads configured status without executing the selected runtime", async () => {
     const { client, spawnCalls } = createLoginHarness();
 
@@ -489,7 +486,6 @@ describe("AcpSubscriptionRuntimeClient security boundary", () => {
     expect(status).toMatchObject({ runtime: "unverified", connection: "unknown" });
     expect(spawnCalls).toHaveLength(0);
   });
-
 
   it("keeps an allowlisted Kimi verification URL in main and opens it only after an explicit request", async () => {
     const { client, child } = createLoginHarness();
@@ -519,7 +515,6 @@ describe("AcpSubscriptionRuntimeClient security boundary", () => {
     expect(JSON.stringify(afterOpen)).not.toContain("auth.kimi.com");
     expect(JSON.stringify(afterOpen)).not.toContain("main-process-only");
   });
-
 
   it("accepts the official Grok Build device page without projecting its URL", async () => {
     const { client, child, spawnCalls } = createLoginHarness("grok-build");
@@ -661,9 +656,7 @@ describe("AcpSubscriptionRuntimeClient security boundary", () => {
       APPDATA: win32.join(win32.normalize(runtimeHome), "appdata"),
       LOCALAPPDATA: win32.join(win32.normalize(runtimeHome), "localappdata"),
     });
-    // Windows launch environments must not inherit a separate Unix-style
-    // home that could redirect third-party discovery outside the isolated
-    // provider directories.
+    // Windows launch environments must not inherit a separate Unix-style home that could redirect third-party discovery outside the isolated provider directories.
     expect(environment.HOME).toBeUndefined();
     for (const key of [
       "GROK_MANAGED_CONFIG",

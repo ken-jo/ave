@@ -1,11 +1,4 @@
-/**
- * Finding a sandboxed Linux terminal's shell in a process snapshot
- * (shell-process.ts `findSandboxedShell`). The chain below is the one
- * measured under bubblewrap 0.12 with the sandbox runtime's network bridges:
- *
- *   bwrap(538) → bwrap(540) → bash(541) [+ socat 542, 543] → apply-seccomp(544)
- *     → apply-seccomp(545) → script(546) → zsh(547)
- */
+// Measured sandbox chain: nested bwrap → bash/socat → apply-seccomp → script → interactive shell.
 import { describe, expect, it } from "vitest";
 import { findSandboxedShell, parseInnermostNsPid, parseProcStat, type ProcEntry } from "../shell-process.js";
 

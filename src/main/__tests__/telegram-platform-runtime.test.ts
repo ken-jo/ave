@@ -40,16 +40,7 @@ describe("Telegram platform actor secret", () => {
   });
 });
 
-/**
- * The other corruption, and the one that actually happens: the ciphertext is
- * intact and this machine simply cannot decrypt it any more — an OS keychain
- * reset, or the app data restored onto a different machine.
- *
- * These drive the real `SafeStorageSecretStore` over a real directory with a
- * `SafeStorageLike` whose `decryptString` throws. `MemorySecretStore` cannot
- * express this at all: it returns whatever was written, so a suite built on it
- * could never observe the rotation below.
- */
+// Use the real encrypted secret store with a throwing decryptor to model keychain reset or machine restore; an in-memory store cannot expose rotation.
 describe("actor key rotation", () => {
   let directories: string[] = [];
 
@@ -89,8 +80,7 @@ describe("actor key rotation", () => {
   it("mints a fresh secret when the stored one can no longer be decrypted", () => {
     const secrets = encryptedSecrets();
     const first = ensureTelegramPlatformActorSecret(secrets.store);
-    // Positive control: while the ciphertext is readable the key is stable, so
-    // the change below is the broken decryption and nothing else.
+    // Positive control: while the ciphertext is readable the key is stable, so the change below is the broken decryption and nothing else.
     expect(ensureTelegramPlatformActorSecret(secrets.store)).toBe(first);
 
     secrets.breakDecryption();
@@ -108,8 +98,7 @@ describe("actor key rotation", () => {
     const pairedActorDigest = before.digestFor(OWNER_ID);
     expect(pairedActorDigest).toMatch(/^[a-f0-9]{64}$/);
 
-    // Positive control: a second digester over the same readable key answers
-    // identically, which is what makes a persisted pairing usable at all.
+    // Positive control: a second digester over the same readable key answers identically, which is what makes a persisted pairing usable at all.
     const same = digesterOver(secrets.store);
     expect(same.actorKeyDigest).toBe(before.actorKeyDigest);
     expect(same.digestFor(OWNER_ID)).toBe(pairedActorDigest);

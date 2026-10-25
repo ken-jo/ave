@@ -1,21 +1,5 @@
-/**
- * Remote tool-approval cards for the paired Telegram surface.
- *
- * One coordinator owns the whole feature: which parked approvals may be
- * offered remotely (a single policy chokepoint), the opaque token→approval
- * mapping behind every inline-keyboard button, and the one handler a verified
- * button press reaches. The decision itself is NOT made here — a press is
- * relayed into the same `ApprovalGate.resolve` chokepoint the desktop dock's
- * IPC handler calls, under the same nonce/HMAC integrity and allowed-choice
- * checks, so there is no second resolution path to audit.
- *
- * Wire-safety contract, same as every other Telegram module: the card carries
- * only the coarse shared tool identifier and fixed host text — never
- * arguments, paths, reasons, or verdicts — and `callback_data` is an opaque
- * random token that maps to a pending approval only inside this process.
- * Nothing here logs a chat id, a message id, message text, or provider error
- * detail.
- */
+// Verified button presses resolve through the same ApprovalGate checks as desktop decisions. Cards contain fixed host text and coarse tool IDs only;
+// callback tokens map to pending approvals in memory.
 import { randomBytes } from "node:crypto";
 import {
   isHostApprovalTimeoutDecision,
@@ -30,22 +14,15 @@ import type {
 } from "./telegram-bot-api-client.js";
 import type { TelegramCallbackQueryEnvelope } from "./telegram-platform-adapter.js";
 
-/**
- * Active cards at once. An approval wait is a blocking, sequential state, so
- * more than a handful of live cards means something is wrong upstream; the
- * bound keeps a pathological producer from turning the bridge into a card
- * flood.
- */
+// Active cards at once. An approval wait is a blocking, sequential state, so more than a handful of live cards means something is wrong upstream; the
+// bound keeps a pathological producer from turning the bridge into a card flood.
 const MAX_ACTIVE_CARDS = 8;
 
-/** 128-bit random token, base64url: 22 chars, inside the opaque grammar. */
+// 128-bit random token, base64url: 22 chars, inside the opaque grammar.
 const CALLBACK_TOKEN_BYTES = 16;
 
-/**
- * Fixed host sentences, in the same deliberately unlocalized register as the
- * adapter's `OUTBOUND_STATUS_TEXT`. The tool identifier interpolated below is
- * validated against the one shared grammar before it may appear.
- */
+// Fixed host sentences, in the same deliberately unlocalized register as the adapter's `OUTBOUND_STATUS_TEXT`. The tool identifier interpolated below is
+// validated against the one shared grammar before it may appear.
 const CARD_TEXT = Object.freeze({
   prompt: (tool: string) =>
     `Ave: tool ${tool} is waiting for approval. This decides this run only.`,
@@ -59,11 +36,8 @@ const CARD_TEXT = Object.freeze({
   ackStale: "This approval is no longer active",
 });
 
-/**
- * The narrow slice of the approval gate this feature is allowed to touch:
- * observe what is parked, and answer through the one shared resolve
- * chokepoint as the `"platform-bridge"` answerer.
- */
+// The narrow slice of the approval gate this feature is allowed to touch: observe what is parked, and answer through the one shared resolve chokepoint
+// as the `"platform-bridge"` answerer.
 export interface TelegramRemoteApprovalGatePort {
   observePendingApprovals(observer: PendingApprovalObserver): () => void;
   resolve(
@@ -74,9 +48,9 @@ export interface TelegramRemoteApprovalGatePort {
 }
 
 export interface TelegramRemoteApprovalCoordinator {
-  /** The one entry for a verified inline-keyboard press from the poller. */
+  // The one entry for a verified inline-keyboard press from the poller.
   handleCallbackQuery(callback: TelegramCallbackQueryEnvelope): Promise<void>;
-  /** Detach from the gate and best-effort invalidate cards still showing buttons. */
+  // Detach from the gate and best-effort invalidate cards still showing buttons.
   dispose(): void;
 }
 
@@ -86,50 +60,30 @@ export interface CreateTelegramRemoteApprovalCoordinatorOptions {
     "sendDecisionCard" | "editMessageText" | "answerCallbackQuery"
   >;
   readonly gate: TelegramRemoteApprovalGatePort;
-  /**
-   * The egress fence, re-checked per card: the chat id of the CURRENT route
-   * bound to this conversation, or null when the approval's conversation is
-   * not the paired, shared, on-screen one. Null means no card is sent at all.
-   */
+  // The egress fence, re-checked per card: the chat id of the CURRENT route bound to this conversation, or null when the approval's conversation is not
+  // the paired, shared, on-screen one. Null means no card is sent at all.
   readonly routeChatIdForConversation: (conversationId: string) => string | null;
-  /**
-   * Same trust derivation as message inbound: the sender id digests to the
-   * currently paired owner. A press failing this is acknowledged (to clear the
-   * client spinner) and otherwise ignored without any distinguishable reply.
-   */
+  // Same trust derivation as message inbound: the sender id digests to the currently paired owner. A press failing this is acknowledged (to clear the
+  // client spinner) and otherwise ignored without any distinguishable reply.
   readonly isPairedOwner: (senderId: string) => boolean;
   readonly log?: (message: string) => void;
 }
 
-/**
- * What the single remote-approval policy offers for one parked approval, or
- * null for "not remotely decidable".
- */
+// What the single remote-approval policy offers for one parked approval, or null for "not remotely decidable".
 interface RemoteApprovalOffer {
   readonly conversationId: string;
   readonly toolIdentifier: string;
-  /** The ONLY choices a remote press can produce. */
+  // The ONLY choices a remote press can produce.
   readonly approveChoice: "allow-once";
   readonly denyChoice: "deny-once";
 }
 
-/**
- * THE policy chokepoint for remote approval. Every widening of what a phone
- * may decide — more request kinds, more scopes — is an edit to this function
- * and nowhere else.
- *
- * Scope is deliberately one-shot only: the offer's choices are the literal
- * `allow-once`/`deny-once`, so an `allow-session` or `allow-always` cannot be
- * expressed by a remote press even if a forged token reached the handler —
- * and the gate's own allowed-choice check backstops this on resolve.
- */
+// Remote approval is one-shot only; offer allow-once/deny-once and retain the gate’s allowed-choice validation.
 function remoteApprovalOffer(view: PendingApprovalView): RemoteApprovalOffer | null {
-  // Only an ordinary tool ask. Directory-scope grants, plugin agent actions,
-  // and rationale cards are desk-only decisions.
+  // Only an ordinary tool ask. Directory-scope grants, plugin agent actions, and rationale cards are desk-only decisions.
   if (view.category !== "tool") return null;
   if (view.kind !== undefined && view.kind !== "tool") return null;
-  // An approval with no conversation attribution cannot be fenced to the
-  // shared conversation, so it is not offered.
+  // An approval with no conversation attribution cannot be fenced to the shared conversation, so it is not offered.
   if (view.sessionId === undefined) return null;
   // Requests that constrain their answers must accept both one-shot choices.
   if (
@@ -156,14 +110,14 @@ interface RemoteApprovalCard {
   readonly requestId: string;
   readonly toolIdentifier: string;
   readonly chatId: string;
-  /** Echo material for the shared resolve chokepoint; never leaves the host. */
+  // Echo material for the shared resolve chokepoint; never leaves the host.
   readonly echoNonce: string;
   readonly echoHmac: string;
   readonly approveToken: string;
   readonly denyToken: string;
-  /** Learned from the send result; edits are impossible before it arrives. */
+  // Learned from the send result; edits are impossible before it arrives.
   messageId?: number;
-  /** Set at settlement; applied as soon as a message id exists. */
+  // Set at settlement; applied as soon as a message id exists.
   finalText?: string;
 }
 
@@ -208,8 +162,7 @@ export function createTelegramRemoteApprovalCoordinator(
   };
 
   const finalTextFor = (card: RemoteApprovalCard, decision: ApprovalDecision): string => {
-    // Read before the guard: its `decision is ApprovalDecision` predicate
-    // would otherwise narrow the negated branch to `never`.
+    // Read before the guard: its `decision is ApprovalDecision` predicate would otherwise narrow the negated branch to `never`.
     const approved = decision.choice.startsWith("allow");
     if (isHostApprovalTimeoutDecision(decision)) return CARD_TEXT.expired(card.toolIdentifier);
     return approved
@@ -253,8 +206,7 @@ export function createTelegramRemoteApprovalCoordinator(
         .sendDecisionCard(card.chatId, CARD_TEXT.prompt(card.toolIdentifier), buttons)
         .then((result) => {
           if (!result.ok) {
-            // An unsent card must not keep live tokens: a press can only
-            // arrive for a card that exists on the owner's screen.
+            // An unsent card must not keep live tokens: a press can only arrive for a card that exists on the owner's screen.
             cardsByRequest.delete(card.requestId);
             cardsByToken.delete(card.approveToken);
             cardsByToken.delete(card.denyToken);
@@ -291,11 +243,7 @@ export function createTelegramRemoteApprovalCoordinator(
 
   return Object.freeze({
     async handleCallbackQuery(callback: TelegramCallbackQueryEnvelope): Promise<void> {
-      // A press from anyone but the paired owner is acknowledged — the
-      // client spinner must clear — and otherwise ignored, with no text: a
-      // reply would confirm to a stranger that this bot fronts a live
-      // desktop. Same silence whether the token is real or not, so a
-      // stranger cannot probe which tokens exist.
+      // Acknowledge unpaired button presses silently, whether tokens exist or not, to clear the spinner without exposing a live desktop or token oracle.
       let paired: boolean;
       try {
         paired = options.isPairedOwner(callback.senderId);
@@ -308,15 +256,12 @@ export function createTelegramRemoteApprovalCoordinator(
       }
       const binding = cardsByToken.get(callback.data);
       if (binding === undefined) {
-        // Expired, already decided, or never minted: all one answer, so a
-        // late press after a local decision stays harmless and indistinct.
+        // Expired, already decided, or never minted: all one answer, so a late press after a local decision stays harmless and indistinct.
         await acknowledge(callback.callbackQueryId, CARD_TEXT.ackStale);
         return;
       }
-      // The SAME resolve chokepoint the desktop dock's IPC handler calls,
-      // with the gate's own echo material. Integrity, allowed-choice, and
-      // audit all happen in the gate; settlement re-enters this module only
-      // through the observer above, which edits the card.
+      // The SAME resolve chokepoint the desktop dock's IPC handler calls, with the gate's own echo material. Integrity, allowed-choice, and audit all happen
+      // in the gate; settlement re-enters this module only through the observer above, which edits the card.
       const decision = gate.resolve(
         binding.card.requestId,
         {
@@ -341,9 +286,7 @@ export function createTelegramRemoteApprovalCoordinator(
       if (disposed) return;
       disposed = true;
       unsubscribe();
-      // Buttons that can no longer reach a handler must not keep looking
-      // pressable. Best-effort and not awaited: teardown never blocks on a
-      // provider.
+      // Buttons that can no longer reach a handler must not keep looking pressable. Best-effort and not awaited: teardown never blocks on a provider.
       for (const card of [...cardsByRequest.values()]) {
         retireCard(card, CARD_TEXT.expired(card.toolIdentifier));
       }

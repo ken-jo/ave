@@ -205,8 +205,7 @@ describe("app-server argv", () => {
 });
 
 describe("isCodexAppServerRequestId", () => {
-  // Both Codex transports share this predicate. It is the only gate between a
-  // subprocess-supplied reverse-RPC id and code that echoes or forwards that id,
+  // Both Codex transports share this predicate. It is the only gate between a subprocess-supplied reverse-RPC id and code that echoes or forwards that id,
   // so the accepted set is pinned here rather than left to either call site.
   it("accepts integers and plain bounded strings", () => {
     expect(isCodexAppServerRequestId(0)).toBe(true);
@@ -590,8 +589,7 @@ describe("CodexConversationRuntime", () => {
         return;
       }
       if (message.method === "turn/start") {
-        // Notifications can arrive before the turn/start response. The client
-        // must correlate them to the pending active turn without losing deltas.
+        // Notifications can arrive before the turn/start response. The client must correlate them to the pending active turn without losing deltas.
         notify(current.child, "item/agentMessage/delta", {
           threadId: "thread-1",
           turnId: "turn-1",
@@ -883,8 +881,7 @@ describe("CodexConversationRuntime", () => {
       ],
     });
     await expect(harness.runtime.startTurn(payload)).resolves.toMatchObject({ status: "completed" });
-    // User bytes remain untouched; governed images may be re-encoded, so their
-    // contract is the decoded pixels and attachment order, not PNG compression.
+    // User bytes remain untouched; governed images may be re-encoded, so their contract is the decoded pixels and attachment order, not PNG compression.
     expect(stagedImages[0]).toEqual(Buffer.from(green, "base64"));
     const stagedPixels = [];
     for (const image of stagedImages) {

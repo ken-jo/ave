@@ -27,8 +27,7 @@ afterEach(async () => {
   expect(spawn).not.toHaveBeenCalled();
   vi.restoreAllMocks();
   vi.clearAllMocks();
-  // A test may leave its sealed read-only copy undiscarded; the async removal
-  // clears the Windows read-only attribute that the synchronous one refuses.
+  // A test may leave its sealed read-only copy undiscarded; the async removal clears the Windows read-only attribute that the synchronous one refuses.
   for (const root of roots.splice(0)) await cleanupTmpDir(root);
 });
 

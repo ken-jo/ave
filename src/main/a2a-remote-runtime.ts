@@ -23,7 +23,7 @@ export const a2aRemoteDataSecretKey = (bindingId: number, revisionId: number): s
 
 export interface A2ARemoteRuntime {
   readonly gates: Readonly<A2ARemoteGateSnapshot>;
-  /** One boot-owned single-flight coordinator shared by remote ingress/egress. */
+  // One boot-owned single-flight coordinator shared by remote ingress/egress.
   readonly agentActionApprover: AgentActionApprover;
   execute(input: Readonly<A2ARemoteExecuteInput>): Promise<A2ARemoteClientResult>;
   getTaskProjection(handle: string, ownerId: string): Promise<A2ARemoteTaskProjection | null>;
@@ -74,8 +74,7 @@ function runLifecycleSweep(
         try {
           audit?.(failureCode);
         } catch {
-          // Cleanup and expiry are fail-open by contract; diagnostics must not
-          // turn their failure into a boot or unhandled-rejection failure.
+          // Cleanup and expiry are fail-open by contract; diagnostics must not turn their failure into a boot or unhandled-rejection failure.
         }
       },
     );
@@ -87,11 +86,8 @@ const scheduleReceiverSweep: A2AReceiverSweepScheduler = (sweep) => {
   return () => clearInterval(timer);
 };
 
-/**
- * Starts one boot sweep and one recurring sweep, and returns an idempotent
- * shutdown disposer. Kept as a small seam so timer ownership is provable
- * without opening a listener in unit tests.
- */
+// Starts one boot sweep and one recurring sweep, and returns an idempotent shutdown disposer. Kept as a small seam so timer ownership is provable
+// without opening a listener in unit tests.
 export function createA2AReceiverExpiryLifecycle(
   store: A2AReceiverExpiryStore,
   audit?: (code: string) => void,

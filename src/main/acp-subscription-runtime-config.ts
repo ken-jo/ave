@@ -1,11 +1,4 @@
-/**
- * Main-owned configuration for explicitly approved ACP runtime executables.
- *
- * A configured executable is an execution grant, not a renderer setting. The
- * renderer never supplies a path; only the native file picker result reaches
- * this store. Paths are not credentials, but feature-namespace storage still
- * gives them the normal 0700 directory / 0600 atomic-write protection.
- */
+// Executable paths are execution grants accepted only from the native picker, never from renderer input.
 import { constants as fsConstants, promises as fs } from "node:fs";
 import { isAbsolute, join, resolve, win32 } from "node:path";
 import { mainDir } from "./main-paths.js";
@@ -34,26 +27,18 @@ const MCP_SERVER_NAME = /^[A-Za-z][A-Za-z0-9_-]*$/u;
 const MCP_SERVER_ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/u;
 const RESERVED_MCP_ENV_NAMES = new Set(["__proto__", "constructor", "prototype"]);
 
-/** Increment when changing a native-runtime policy that must not reuse old homes. */
+// Increment when changing a native-runtime policy that must not reuse old homes.
 export const ACP_SUBSCRIPTION_RUNTIME_POLICY_VERSION = 8;
 const NATIVE_POLICY_MARKER = `# ave-acp-native-policy-v${ACP_SUBSCRIPTION_RUNTIME_POLICY_VERSION}`;
 const EMPTY_ACP_SUBSCRIPTION_MCP_SERVERS: readonly AcpSubscriptionMcpServerConfig[] = Object.freeze([]);
 export const GROK_BUILD_REQUIRED_MINIMUM_VERSION = "0.2.116";
 export const GROK_BUILD_GOVERNED_AGENT_FILE_NAME = "ave-governed-chat.md";
-/**
- * A nonempty MCP-classified entry makes Grok Build 0.2.116 strip native
- * default tools while retaining MCP schemas registered after session creation.
- * It is deliberately a sentinel, not a static Ave tool schema: bridge tools
- * are selected dynamically for each governed turn.
- */
+// A nonempty MCP-classified entry makes Grok Build 0.2.116 strip native default tools while retaining MCP schemas registered after session creation. It
+// is deliberately a sentinel, not a static Ave tool schema: bridge tools are selected dynamically for each governed turn.
 export const GROK_BUILD_MCP_TOOLSET_SENTINEL = "mcp__ave-host-tools__workspace_read";
 
-
-/**
- * One source of truth for Grok's ACP and native agent-profile policies.
- * It intentionally does not select a model: account entitlement and Grok's
- * own catalog remain authoritative, while the Ave tool boundary is fixed.
- */
+// One source of truth for Grok's ACP and native agent-profile policies. It intentionally does not select a model: account entitlement and Grok's own
+// catalog remain authoritative, while the Ave tool boundary is fixed.
 export const GROK_BUILD_GOVERNED_AGENT_PROFILE = Object.freeze({
   name: "ave-governed-chat",
   description: "Ave governed subscription chat; use only the supplied Ave MCP bridge.",
@@ -69,7 +54,7 @@ export const GROK_BUILD_GOVERNED_AGENT_PROFILE = Object.freeze({
   skills: Object.freeze([] as const),
 });
 
-/** Absolute app-owned path passed through GROK_AGENT, never renderer input. */
+// Absolute app-owned path passed through GROK_AGENT, never renderer input.
 export function grokBuildGovernedAgentDefinitionPath(
   runtimeHome: string,
   platform: NodeJS.Platform = process.platform,
@@ -98,15 +83,7 @@ const GROK_NATIVE_AGENT_PROFILE = [
   "",
 ].join("\n");
 
-
-/**
- * The one stdio MCP server Ave may hand to an ACP subscription runtime.
- *
- * This descriptor is main-process-only: it is never persisted, exposed through
- * IPC, or accepted from a renderer/session prompt. The validator copies only
- * these four fields so a third-party ACP runtime cannot gain arbitrary launch
- * options such as a cwd, transport URL, inherited environment, or extra server.
- */
+// Accept one main-owned stdio descriptor with exactly four validated fields; never persist it or accept launch options from renderer input.
 export interface AcpSubscriptionMcpServerConfig {
   readonly name: string;
   readonly command: string;
@@ -177,13 +154,7 @@ function validatedMcpEnvironment(value: unknown): Readonly<Record<string, string
   return Object.freeze(env);
 }
 
-/**
- * Validate and copy the sole Ave-owned ACP MCP launch descriptor.
- *
- * Callers outside the main-process assembly cannot inject an additional
- * server or a broader ACP launch shape: unknown fields and non-stdio inputs
- * are rejected instead of being forwarded to `session/new`.
- */
+// Accept only the host-owned stdio MCP launch shape; reject extra servers and unknown fields before session/new.
 export function validateAcpSubscriptionMcpServerConfig(
   value: unknown,
 ): AcpSubscriptionMcpServerConfig {
@@ -207,11 +178,8 @@ export function validateAcpSubscriptionMcpServerConfig(
   return Object.freeze({ name, command, args, env });
 }
 
-/**
- * Accept zero or exactly one Ave-owned descriptor for an ACP session. A
- * per-session bridge is intentionally explicit, so an ACP runtime can never
- * inherit user/global MCP configuration or add a second launch target.
- */
+// Accept zero or exactly one Ave-owned descriptor for an ACP session. A per-session bridge is intentionally explicit, so an ACP runtime can never
+// inherit user/global MCP configuration or add a second launch target.
 export function validateAcpSubscriptionMcpServerConfigs(
   value: unknown,
 ): readonly AcpSubscriptionMcpServerConfig[] {
@@ -233,7 +201,7 @@ export interface AcpSubscriptionRuntimeDirectoryNames {
   readonly runtimeTempDir: string;
 }
 
-/** Static directory names; renderer input can never influence any path segment. */
+// Static directory names; renderer input can never influence any path segment.
 export function acpSubscriptionRuntimeDirectoryNames(
   provider: AcpSubscriptionProviderId,
 ): AcpSubscriptionRuntimeDirectoryNames {
@@ -249,7 +217,7 @@ type AcpSubscriptionRuntimePolicyErrorCode =
   | "acp-runtime-policy-invalid-home"
   | "acp-runtime-policy-unverified";
 
-/** Stable local-policy failure only; no third-party runtime output is exposed. */
+// Stable local-policy failure only; no third-party runtime output is exposed.
 class AcpSubscriptionRuntimePolicyError extends Error {
   constructor(readonly code: AcpSubscriptionRuntimePolicyErrorCode) {
     super(code);
@@ -308,30 +276,20 @@ auto_install = false
 
 const GROK_PRE_TOOL_POLICY_ENTRYPOINT = "subscription-grok-tool-policy-hook.js";
 
-/** Quote one absolute executable/script path for the runtime's native shell. */
+// Quote one absolute executable/script path for the runtime's native shell.
 function shellQuote(value: string): string {
   if (process.platform === "win32") return `"${value.replace(/"/g, '""')}"`;
   return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
-/**
- * Grok executes config hooks through a shell, so both host-owned paths must
- * remain quoted. `ELECTRON_RUN_AS_NODE` is supplied by the hook entry itself
- * rather than inherited from the third-party ACP process.
- */
+// Grok executes config hooks through a shell, so both host-owned paths must remain quoted. `ELECTRON_RUN_AS_NODE` is supplied by the hook entry itself
+// rather than inherited from the third-party ACP process.
 function grokPreToolPolicyCommand(): string {
   return `${shellQuote(process.execPath)} ${shellQuote(join(mainDir, GROK_PRE_TOOL_POLICY_ENTRYPOINT))}`;
 }
 
-// The isolated v8 home is created solely for this policy and ACP `session/new`
-// receives zero or exactly one validated Ave-owned stdio descriptor. The full
-// policy is pinned in GROK_HOME/config.toml, while requirements.toml contains
-// only vendor-supported immutable clamps for precedence over remote settings.
-// Grok's
-// native permission taxonomy cannot express a deny-by-default policy with an
-// MCP exception, so the canonical PreToolUse gate denies every actual tool
-// name except the exact Ave MCP namespace before the provider executes it.
-// The lowercase permission filters are an additional vendor-native backstop.
+// Use a fresh isolated home and at most one validated MCP descriptor.
+// Canonical PreToolUse denies every tool outside the exact host namespace; native permission filters add a backstop.
 const GROK_NATIVE_CONFIG = `${NATIVE_POLICY_MARKER}
 [ui]
 permission_mode = "ask"
@@ -398,11 +356,8 @@ rules = [
 hooks = [{ type = "command", command = ${JSON.stringify(grokPreToolPolicyCommand())}, timeout = 10, env = { ELECTRON_RUN_AS_NODE = "1" }]
 `;
 
-/**
- * Only keys documented as immutable requirements clamps belong here. The full
- * local policy remains in config.toml so unrecognized deep-merged values can
- * never make a runtime reject its entire policy file.
- */
+// Only keys documented as immutable requirements clamps belong here. The full local policy remains in config.toml so unrecognized deep-merged values can
+// never make a runtime reject its entire policy file.
 const GROK_NATIVE_REQUIREMENTS = `${NATIVE_POLICY_MARKER}
 [managed_mcps]
 enabled = false
@@ -426,13 +381,7 @@ write_file = false
 voice_mode = false
 `;
 
-/**
- * A Grok hook crash is vendor-defined fail-open. Refuse to launch a real ACP
- * runtime if the app-owned bundled entrypoint is not present as a regular
- * file. Unit tests import TypeScript sources directly, before esbuild emits
- * the sibling JavaScript entrypoint, so packaging presence is proven by the
- * build gate rather than this source-mode test path.
- */
+// Hook crashes fail open, so require the bundled hook entrypoint before launching a real runtime; source-mode tests defer presence checks to the build gate.
 async function assertGrokPreToolPolicyEntrypoint(): Promise<void> {
   if (process.env.NODE_ENV === "test") return;
   try {
@@ -446,14 +395,7 @@ async function assertGrokPreToolPolicyEntrypoint(): Promise<void> {
 
 let nativePolicyWriteTail: Promise<void> = Promise.resolve();
 
-/**
- * Materialize the vendor-native policy before any login or ACP process starts.
- * A policy-versioned home is created fresh. The policy files are exact
- * canonical bodies: credentials live in the runtime's separate credential
- * storage, so a modified config is never merged or trusted on a later launch.
- * A policy upgrade therefore requires a fresh login rather than carrying a
- * prior runtime's MCP, plugin, or permission configuration forward.
- */
+// Write exact canonical policy before login or launch; never merge modified policy. A policy-version change requires fresh credentials.
 export async function ensureAcpSubscriptionNativePolicy(
   provider: AcpSubscriptionProviderId,
   runtimeHome: string,
@@ -488,7 +430,6 @@ async function ensureNativePolicy(
     await writeFileAtomicAtPath(filePath, policy);
   }
 }
-
 
 function isVerifiedNativePolicy(
   provider: AcpSubscriptionProviderId,
@@ -531,12 +472,8 @@ async function assertIsolatedRuntimeHome(runtimeHome: string): Promise<void> {
 
 async function readExistingPolicyFile(filePath: string): Promise<string | null> {
   try {
-    // Bind the link check, size check, and contents to one descriptor.
-    // Checking metadata by path and then reopening it leaves a path-swap
-    // window for a different policy file to reach the runtime.
-    // Node exposes descriptor no-follow only on POSIX. Windows uses a
-    // post-open lstat to reject an observed file-link/reparse replacement;
-    // the app-owned runtime home additionally prevents untrusted writes.
+    // Bind metadata and contents to one descriptor to prevent path swaps.
+    // POSIX uses no-follow; Windows checks post-open links and relies on the host-owned runtime home against untrusted writes.
     const noFollow = process.platform === "win32" ? 0 : fsConstants.O_NOFOLLOW;
     if (typeof noFollow !== "number") {
       throw new AcpSubscriptionRuntimePolicyError("acp-runtime-policy-unverified");

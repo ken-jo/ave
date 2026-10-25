@@ -1,11 +1,4 @@
-/**
- * External-link webContents registry.
- *
- * Link-window webviews are host-created viewers for arbitrary http(s) pages.
- * They have their own scoped navigation policy in `link-window-service.ts`.
- * The global webview guard in `main.ts` must skip only these explicitly
- * registered contents so unrelated webviews cannot gain broad http(s) access.
- */
+// Only registered external-link webContents bypass the global webview guard; scoped navigation guards remain responsible.
 import type { WebContents } from "electron";
 
 const linkOwnedIds = new Set<number>();
