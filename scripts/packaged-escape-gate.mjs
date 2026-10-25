@@ -175,7 +175,7 @@ async function measureControl(executable, scratch) {
   const args = prepareElectronLaunchArgs([`--user-data-dir=${userDataDir}`], env, { profileName: "Ave" });
   if (process.platform === "linux") args.push("--disable-gpu", "--no-sandbox", "--password-store=gnome-libsecret");
   // A build signed with an identity the login keychain has never seen asks the
-  // user for keychain access the first time `safeStorage` runs, and that
+  // user for keychain access the first time Electron's secret storage runs, and that
   // prompt holds the main process until someone answers. The mock keychain is
   // Chromium's own test switch for exactly this; the measurement is about the
   // main process's API, not about the keychain.

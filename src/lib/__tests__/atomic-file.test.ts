@@ -5,11 +5,12 @@ import {
   readdirSync,
   renameSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type TestContext } from "vitest";
 
 import {
   PRIVATE_DIR_MODE,
@@ -17,6 +18,7 @@ import {
   isCommittedAtomicWriteError,
   isMissingPathError,
   replaceUtf8FileAtomicSyncIf,
+  writeUtf8FileAtomic,
   writeUtf8FileAtomicSync,
 } from "../atomic-file.js";
 import {
@@ -29,6 +31,23 @@ import {
 import { retryOnTransientFsLock } from "../transient-fs-lock-retry.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
+/** Runs once just before a staging file is opened, with its path. */
+const staging = vi.hoisted(() => ({ beforeOpen: undefined as ((path: string) => void) | undefined }));
+const atStaging = (path: unknown) => {
+  if (!String(path).endsWith(".tmp") || !staging.beforeOpen) return;
+  const run = staging.beforeOpen;
+  staging.beforeOpen = undefined;
+  run(String(path));
+};
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return { ...actual, openSync: (...args: Parameters<typeof actual.openSync>) => { atStaging(args[0]); return actual.openSync(...args); } };
+});
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...actual, open: (...args: Parameters<typeof actual.open>) => { atStaging(args[0]); return actual.open(...args); } };
+});
+
 let dir: string;
 
 beforeEach(() => {
@@ -36,6 +55,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  staging.beforeOpen = undefined;
   await cleanupTmpDir(dir);
 });
 
@@ -63,6 +83,28 @@ describe("writeUtf8FileAtomicSync", () => {
       expect(statSync(target).mode & 0o777).toBe(0o600);
     }
   });
+
+  for (const [kind, write] of [
+    ["sync", async (path: string, content: string) => { writeUtf8FileAtomicSync(path, content); }],
+    ["async", writeUtf8FileAtomic],
+  ] as const) {
+    it(`refuses a link planted at the staging path instead of writing through it (${kind})`, async (ctx: TestContext) => {
+      const outside = join(dir, "outside.txt");
+      const target = join(dir, "settings.json");
+      writeFileSync(outside, "user\n");
+      writeFileSync(target, "old");
+      try { symlinkSync(outside, join(dir, "probe")); } catch { ctx.skip(); }
+      let planted: string | undefined;
+      staging.beforeOpen = (path) => {
+        symlinkSync(outside, path);
+        planted = path;
+      };
+      await expect(write(target, "staged\n")).rejects.toMatchObject({ code: "EEXIST" });
+      expect(planted?.startsWith(join(dir, ".settings.json."))).toBe(true);
+      expect(readFileSync(outside, "utf8")).toBe("user\n");
+      expect(readFileSync(target, "utf8")).toBe("old");
+    });
+  }
 
   it("keeps the destination intact when a final replacement precondition fails", () => {
     const target = join(dir, "AGENTS.md");

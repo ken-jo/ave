@@ -91,7 +91,7 @@ vi.mock("../../permissions/asrt-sandbox.js", async () => {
     cleanupAsrtSandboxAfterCommand: () => cleanupMock(),
     // The real naming and launcher; only the directory's creation is skipped,
     // because the real one would make it under this file's AVE_HOME.
-    ensureSandboxTempPrincipalDir: (principal: { kind: "plugin" | "mcp"; id: string }) => ({
+    ensureSandboxTempPrincipalDir: (principal: import("../../permissions/asrt-sandbox.js").SandboxTempPrincipal) => ({
       dir: join(SANDBOX_TEMP_ROOT, actual.sandboxTempPrincipalDirName(principal)),
       root: SANDBOX_TEMP_ROOT,
     }),

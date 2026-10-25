@@ -29,6 +29,22 @@ afterEach(async () => {
 });
 
 describe("wireHookSystem permission hook policy", () => {
+  it("refuses an enrolled command when host shell admission was not wired", async () => {
+    writeExecutableHook(hooksDir, "pre-allowed.sh", "#!/bin/sh\nexit 0");
+    const result = await wireHookSystem({
+      hooksDir,
+      lockfilePath: join(hooksDir, ".lockfile.json"),
+      disabledDir: join(hooksDir, ".disabled"),
+      promptDispatcher: { prompt: async (diffs: HookDiff[]) =>
+        diffs.map((diff) => ({ fileName: diff.hook.fileName, trust: true })) },
+    });
+    const decision = await result.manager.runPreToolUse({ toolName: "read_file", source: "builtin", category: "read",
+      input: {}, sessionId: "boot-policy", trustOrigin: "user-keyboard" });
+    expect(decision.decision).toBe("deny");
+    expect(decision.reason).toContain("hook command policy is not wired");
+    expect(decision.results[0].rawStdout).toBe("");
+  });
+
   it("returns a manager + trust result on empty directory", async () => {
     const result = await wireHookSystem({
       hooksDir,

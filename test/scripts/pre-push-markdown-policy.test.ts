@@ -2,6 +2,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
+import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -10,6 +11,7 @@ import {
 } from "../../scripts/hooks/pre-push-markdown-policy.mjs";
 import { checkPushedDocumentation } from "../../scripts/hooks/pre-push-document-safety.mjs";
 import { packagedDocumentInputs } from "../../scripts/lib/document-consumer-guard.mjs";
+import { COMMAND_LINE_BUDGET_CHARS, splitArgumentsWithinBudget } from "../../scripts/hooks/spawn-command.mjs";
 import { gitFixtureEnv } from "../../src/__tests__/support/git-fixture-env.mjs";
 // Git writes loose objects read-only, and Electron's synchronous recursive removal
 // refuses read-only files on Windows; the async removal clears the attribute.
@@ -417,7 +419,32 @@ describe("documentation impact policy", () => {
   it("removes hook Git context before full and targeted test runners", () => {
     const hook = readFileSync(resolve(root, "scripts/hooks/run-local-checks.mjs"), "utf8");
     expect(hook).toContain('scriptName === "test" ? withoutGitContext() : process.env');
-    expect(hook).toContain('"run", ...vitestArgs], dir, withoutGitContext()');
+    // Every targeted and related Vitest run goes through runVitestChunks; no
+    // `run(` call spawns test:vitest itself, so no path can bypass the
+    // stripped environment the chunk helper passes.
+    expect(hook).not.toMatch(/\brun\([^\n]*"test:vitest"/u);
+    const stripped = Object.freeze({ STRIPPED: "1" });
+    const runs: { args: string[]; env: unknown }[] = [];
+    const targeted = runInNewContext(
+      `${hook.slice(hook.indexOf("function runAppTargetedVitestChecks("), hook.indexOf("// lockSuites:"))}; ({ runAppTargetedVitestChecks, runVitestWithReport })`,
+      {
+        commands: { bun: "bun" }, available: () => "bun", hasPackageScript: () => true, hasFile: () => true,
+        runAppTypecheckGate: () => {}, ensureAppTestRuntimeAbi: () => {}, ensureWindowsJobLauncher: () => {},
+        join, tmpdir, mkdtempSync, rmSync, console: { log: () => {} }, splitArgumentsWithinBudget,
+        readJsonFile: () => ({ numTotalTests: 1, numPassedTests: 1 }),
+        withoutGitContext: () => stripped,
+        run: (_command: string, args: string[], _dir: string, env: unknown = process.env) => { runs.push({ args, env }); },
+      },
+    );
+    // Over the budget, so every check below spans several chunks.
+    const files = Array.from({ length: 800 }, (_, index) => `src/feature/__tests__/generated-${String(index).padStart(4, "0")}.test.ts`);
+    expect(files.reduce((total, file) => total + file.length + 5, 0)).toBeGreaterThan(COMMAND_LINE_BUDGET_CHARS * 2);
+    targeted.runAppTargetedVitestChecks("/fixture", files);
+    targeted.runVitestWithReport("bun", "/fixture", ["related", "--run", ...files.map((file) => `./${file}`)], "zero tests");
+    const vitestRuns = runs.filter(({ args }) => args.includes("test:vitest"));
+    expect(vitestRuns.filter(({ args }) => args.includes("related")).length).toBeGreaterThan(1);
+    expect(vitestRuns.filter(({ args }) => !args.includes("related")).length).toBeGreaterThan(1);
+    for (const { env } of vitestRuns) expect(env).toBe(stripped);
     const source = {
       PATH: process.env.PATH,
       GIT_DIR: "/sentinel/.git",

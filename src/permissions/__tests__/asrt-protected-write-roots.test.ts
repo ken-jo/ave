@@ -186,6 +186,30 @@ describe("the shared layer withholds grants under the protected floor", () => {
     ownHome.cleanup();
   });
 
+  it.each(["darwin", "linux"] as const)("on %s, only an exact regular hook file pierces its protected directory", (platform) => {
+    setProcessPlatform(platform);
+    const { ownHome } = layout();
+    try {
+      const hooks = join(root, ".config", "ave", "hooks");
+      mkdirSync(hooks, { recursive: true });
+      const script = join(hooks, "read-probe.cjs");
+      const secret = join(root, ".ssh", "work", "private.cjs");
+      writeFileSync(script, "process.exitCode = 0");
+      writeFileSync(secret, SECRET);
+      const grants = [script, hooks, secret];
+      const readFor = (floorPierces?: string[]) => buildPerCommandSandboxCustomConfig({
+        allowRead: grants, denyRead: getDefaultSensitiveReadDenyPaths(), floorPierces,
+      })?.filesystem?.allowRead;
+      expect(readFor()).toEqual([]);
+      expect(readFor([script])).toEqual([script]);
+      for (const refused of [hooks, secret, join(hooks, "missing.cjs")]) {
+        expect(() => readFor([refused])).toThrow(/not a read the host lets re-open/);
+      }
+    } finally {
+      ownHome.cleanup();
+    }
+  });
+
   it("every ASRT wrap and config change goes through the shared layer", () => {
     // A wrap that handed ASRT its own custom config, or a config change that
     // skipped `buildSandboxConfig`, would skip the rule. Every mention of the

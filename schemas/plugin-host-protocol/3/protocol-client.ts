@@ -12,24 +12,21 @@
  */
 
 export type AlertSlotDeclaration =
-  | (
-      | {
-          kind: "text";
-          maxLength: number;
-          optional?: boolean;
-        }
-      | {
-          kind: "list";
-          maxItems: number;
-          maxLength: number;
-          optional?: boolean;
-        }
-      | {
-          kind: "ref";
-          optional?: boolean;
-        }
-    )
-  | undefined;
+  | {
+      kind: "text";
+      maxLength: number;
+      optional?: boolean;
+    }
+  | {
+      kind: "list";
+      maxItems: number;
+      maxLength: number;
+      optional?: boolean;
+    }
+  | {
+      kind: "ref";
+      optional?: boolean;
+    };
 export type AlertVisibility = "user-visible" | "summary-only" | "silent";
 export type ConfigInheritDeclaration =
   | {
@@ -904,7 +901,7 @@ export interface HostRaiseAlertParams {
     kind: string;
     priority?: "low" | "normal" | "high";
     slots?: {
-      [k: string]: (string | string[]) | undefined;
+      [k: string]: string | string[] | undefined;
     };
     ttlMs?: number;
     visibility?: AlertVisibility;

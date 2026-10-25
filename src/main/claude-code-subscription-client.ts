@@ -32,7 +32,7 @@ import {
 } from "./user-cli-discovery.js";
 
 import { pinClaudeCodeExecutable, type ClaudeCodeExecutable } from "./claude-code-executable.js";
-import { assertCodexLocations, CodexExecutableLocationError, type CodexLocationRequest } from "./codex-executable-location.js";
+import { assertCodexLocations, CodexExecutableLocationError, createPrivateTempDirectory, type CodexLocationRequest } from "./codex-executable-location.js";
 
 const PROBE_TIMEOUT_MS = 15_000;
 const LOGIN_TIMEOUT_MS = 15 * 60_000;
@@ -640,7 +640,7 @@ export class ClaudeCodeSubscriptionClient {
     // could not run, timed out or was cancelled rejects instead and is retried.
     this.lastVersion = null;
     await validateClaudeCodeRuntimeDirectories([this.runtimeTempDir], artifact.routeKind);
-    const probeHome = await fs.mkdtemp(join(this.runtimeTempDir, "probe-"));
+    const probeHome = await createPrivateTempDirectory(join(this.runtimeTempDir, "probe-"));
     try {
       const probe = async (args: readonly string[]): Promise<string> => {
         const output = await this.runCaptured(executable, args, PROBE_TIMEOUT_MS, { anyExitCode: true, probeHome });

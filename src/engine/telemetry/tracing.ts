@@ -11,7 +11,8 @@
  * so an unconfigured run never evaluates them: default-off has to be free,
  * not merely inert.
  */
-import { trace, type Tracer } from "@opentelemetry/api";
+import { context as otelContext, trace, type Tracer } from "@opentelemetry/api";
+import type { ReadableSpan, SpanExporter } from "@opentelemetry/sdk-trace";
 import { appendFileSync } from "node:fs";
 import { createLogger } from "../../lib/logger.js";
 import type { TurnDecisionEvent } from "../turn/types.js";
@@ -114,31 +115,11 @@ function hrTimeToMs(time: readonly [number, number]): number {
  * module would be a second place to keep the line shape in step with the
  * benchmark reader.
  */
-function createFileSpanExporter(path: string): {
-  export(spans: readonly unknown[], done: (result: { code: number; error?: Error }) => void): void;
-  shutdown(): Promise<void>;
-  forceFlush(): Promise<void>;
-} {
-  const writeSpans = (spans: readonly unknown[]): void => {
+function createFileSpanExporter(path: string): SpanExporter {
+  const writeSpans = (spans: readonly ReadableSpan[]): void => {
     if (spans.length === 0) return;
     const lines = spans
-      .map((raw) => {
-        const span = raw as {
-          spanContext(): { traceId: string; spanId: string };
-          parentSpanContext?: { spanId: string };
-          name: string;
-          kind: number;
-          startTime: readonly [number, number];
-          endTime: readonly [number, number];
-          duration: readonly [number, number];
-          attributes: Record<string, unknown>;
-          events: ReadonlyArray<{
-            name: string;
-            time: readonly [number, number];
-            attributes?: Record<string, unknown>;
-          }>;
-          status: { code: number; message?: string };
-        };
+      .map((span) => {
         const context = span.spanContext();
         const line: ExportedSpanLine = {
           traceId: context.traceId,
@@ -167,6 +148,8 @@ function createFileSpanExporter(path: string): {
     export(spans, done) {
       try {
         writeSpans(spans);
+        // ExportResultCode.SUCCESS / FAILED: the enum lives in
+        // @opentelemetry/core, which a value import would load eagerly.
         done({ code: 0 });
       } catch (err) {
         done({ code: 1, error: err as Error });
@@ -192,9 +175,10 @@ function offHandle(): TracingHandle {
 /**
  * Register a tracer provider for `spec` and hand the AI SDK the same tracer.
  *
- * `provider.register()` also installs the AsyncLocalStorage context manager,
- * which is what makes the AI SDK's `invoke_agent` / `step` / `chat` spans land
- * under the turn span instead of at the root.
+ * The AsyncLocalStorage context manager is installed alongside the provider:
+ * it is what makes the AI SDK's `invoke_agent` / `step` / `chat` spans land
+ * under the turn span instead of at the root. (SDK 3.x removed
+ * `NodeTracerProvider#register()`, which used to install it.)
  */
 export async function configureTracing(
   spec: TelemetrySpec,
@@ -202,28 +186,29 @@ export async function configureTracing(
 ): Promise<TracingHandle> {
   if ("error" in spec || spec.kind === "off") return offHandle();
 
-  const [{ BatchSpanProcessor, NodeTracerProvider }, { resourceFromAttributes }] =
-    await Promise.all([
-      import("@opentelemetry/sdk-trace-node"),
-      import("@opentelemetry/resources"),
-    ]);
+  const [
+    { BatchSpanProcessor, TracerProvider },
+    { resourceFromAttributes },
+    { AsyncLocalStorageContextManager },
+  ] = await Promise.all([
+    import("@opentelemetry/sdk-trace"),
+    import("@opentelemetry/resources"),
+    import("@opentelemetry/context-async-hooks"),
+  ]);
   const exporter = spec.kind === "file"
     ? createFileSpanExporter(spec.path)
     : new (await import("@opentelemetry/exporter-trace-otlp-http")).OTLPTraceExporter({
         url: spec.url,
       });
-  const provider = new NodeTracerProvider({
+  const provider = new TracerProvider({
     resource: resourceFromAttributes({
       "service.name": "ave",
       "service.version": appVersion,
     }),
-    spanProcessors: [
-      new BatchSpanProcessor(
-        exporter as ConstructorParameters<typeof BatchSpanProcessor>[0],
-      ),
-    ],
+    spanProcessors: [new BatchSpanProcessor({ exporter })],
   });
-  provider.register();
+  trace.setGlobalTracerProvider(provider);
+  otelContext.setGlobalContextManager(new AsyncLocalStorageContextManager().enable());
 
   const tracer = provider.getTracer("ave");
   const [{ registerTelemetry }, { OpenTelemetry }] = await Promise.all([

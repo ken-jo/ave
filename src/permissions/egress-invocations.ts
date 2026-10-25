@@ -64,16 +64,20 @@ export interface TerminalEgressOwner {
 type WorkerEgressRole = "plugin-child" | "worker" | "hook" | "mcp-server";
 
 /**
- * Plugin-owned code: a plugin child, a delegated worker, a bundled hook or a
- * bundled MCP stdio server. All of them are non-interactive, which is what
+ * A plugin child, a delegated worker, a hook (bundled or the user's own) or
+ * an MCP stdio server. All of them are non-interactive, which is what
  * the later ask callback needs to know.
  */
 export interface WorkerEgressOwner {
   readonly kind: "worker";
   readonly role: WorkerEgressRole;
-  /** The owning plugin; undefined only for an MCP server no plugin bundles. */
+  /**
+   * The owning plugin; undefined for an MCP server no plugin bundles or a user
+   * hook. Without a plugin there is no extension allowlist: such a process may
+   * reach the model endpoints only (`workerEgressAllowedDomains`).
+   */
   readonly pluginId: string | undefined;
-  /** The worker's own id (role "worker") or the MCP server's id (role "mcp-server"). */
+  /** The worker's id, the MCP server's id, or a user hook's hashed id. */
   readonly instanceId?: string;
 }
 

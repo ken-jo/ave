@@ -55,6 +55,15 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
+/**
+ * The host script up to its native type: preferences, autoloading off and the
+ * module imports. Scripts that run a slice of the host run it under the same
+ * module rules, so they find the same cmdlets without a module-path search.
+ */
+function hostModulePreamble(script: string): string {
+  return script.slice(0, script.indexOf("Add-Type -TypeDefinition @'"));
+}
+
 function withMetadata(stat: Stats, metadata: Partial<Stats>): Stats {
   return Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, metadata) as Stats;
 }
@@ -634,12 +643,17 @@ describe("native access-rule admission", () => {
     { label: "short package SID", sid: "S-1-15-2-10-20-30-40-50-60", expected: "malformed-sid" },
     { label: "extra sub-authority", sid: "S-1-15-2-10-20-30-40-50-60-70-80", expected: "malformed-sid" },
     { label: "capability mapping", sid: PACKAGE_CAPABILITY_SID, expected: "malformed-sid" },
+    { label: "package module unavailable", appxModule: "absent", expected: "resolution-failed" },
   ])("resolves package principals read-only using command mocks: $label", async (testCase) => {
     const fixture = windowsFixture();
     await assertCodexExecutableLocation(fixture.candidate);
     const [, { command, args }] = aclRequest.mock.calls[0]!;
     const script = Buffer.from(args[4]!, "base64").toString("utf16le");
-    const resolver = script.slice(script.indexOf("$desktopPackageIdentity ="), script.lastIndexOf("$result = [PSCustomObject]@{ currentSid ="));
+    const fullResolver = script.slice(script.indexOf("$desktopPackageIdentity ="), script.lastIndexOf("$result = [PSCustomObject]@{ currentSid ="));
+    // An absent Appx module must reach the same deterministic outcome as a failed query.
+    const resolver = testCase.appxModule === "absent"
+      ? fullResolver.replace(String.raw`Appx\Appx.psd1`, String.raw`Appx\Absent.psd1`) : fullResolver;
+    expect(resolver.includes(String.raw`Appx\Absent.psd1`)).toBe(testCase.appxModule === "absent");
     const mapping = { PSPath: "fixture-mapping", PSChildName: testCase.sid ?? PACKAGE_SID,
       Moniker: testCase.moniker ?? "cLaUdE_pzs8sxrjxfjjc" };
     const input = {
@@ -652,7 +666,7 @@ describe("native access-rule admission", () => {
     // Execute only the resolver from the encoded production probe. All registry
     // and package commands are functions over fixture data; no host query runs.
     const mockedScript = [
-      "$ErrorActionPreference = 'Stop'",
+      hostModulePreamble(script),
       "$fixture = ConvertFrom-Json -InputObject $env:AVE_DESKTOP_PACKAGE_FIXTURE",
       // The decoded request line, as the host reads it.
       "$request = ConvertFrom-Json -InputObject $env:AVE_ACL_REQUEST_FIXTURE",
@@ -801,7 +815,7 @@ describe("native access-rule admission", () => {
     const script = Buffer.from(args[4]!, "base64").toString("utf16le");
     const resolver = script.slice(script.indexOf("$capCandidates ="), script.indexOf("$desktopPackageIdentity ="));
     const query = [
-      "$ErrorActionPreference = 'Stop'",
+      hostModulePreamble(script),
       "$currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value",
       `$candidates = @(${kind === "empty" ? "" : kind === "single" ? `'${CAP_SID}'` : `$currentSid, '${CAP_SID}'`})`,
       // The request line, decoded as the host decodes it.
@@ -910,7 +924,30 @@ describe("native access-rule admission", () => {
     expect(script).toContain("GetSecurityInfo");
     expect(script).toContain("HKCU:\\Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\CurrentVersion\\AppContainer\\Mappings");
     expect(script).toContain("Get-AppxPackage -Name 'Claude' -ErrorAction Stop");
-    expect(script).not.toMatch(/Set-Acl|Set-ItemProperty|New-LocalUser|Start-Process|-AllUsers/);
+    // No module-path search: autoloading is off before any cmdlet runs, and
+    // each module comes from the pinned PowerShell's own directory.
+    expect(script.split("\n")[1]).toBe("$PSModuleAutoLoadingPreference = 'None'");
+    const imports = script.split("\n").filter((line) => line.includes("Import-Module"));
+    expect(imports.map((line) => /Import-Module -Name \(\$PSHOME \+ '\\Modules\\([^']+)'\)/.exec(line)?.[1])).toEqual([
+      String.raw`Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1`,
+      String.raw`Microsoft.PowerShell.Management\Microsoft.PowerShell.Management.psd1`,
+      String.raw`Microsoft.PowerShell.LocalAccounts\Microsoft.PowerShell.LocalAccounts.psd1`,
+      String.raw`Microsoft.PowerShell.LocalAccounts\Microsoft.PowerShell.LocalAccounts.psd1`,
+      String.raw`Appx\Appx.psd1`,
+    ]);
+    // With autoloading off, every cmdlet the host calls must come from the
+    // engine itself or from a module it imports above.
+    const powershell = script.replace(/@'\n[\s\S]*?\n'@/, "");
+    const cmdlets = new Set(powershell.match(/\b[A-Z][A-Za-z]+-[A-Z][A-Za-z]+\b/g));
+    const moduleOf: Record<string, string> = {
+      "Import-Module": "Core", "ForEach-Object": "Core", "Where-Object": "Core",
+      "ConvertFrom-Json": "Utility", "ConvertTo-Json": "Utility", "Select-Object": "Utility", "Add-Type": "Utility", "Add-Member": "Utility",
+      "Get-ChildItem": "Management", "Get-ItemProperty": "Management",
+      "Get-LocalUser": "LocalAccounts", "Get-LocalGroup": "LocalAccounts", "Get-LocalGroupMember": "LocalAccounts",
+      "Get-AppxPackage": "Appx",
+    };
+    expect([...cmdlets].sort()).toEqual(Object.keys(moduleOf).sort());
+    expect(script).not.toMatch(/Set-Acl|Get-Acl|Set-ItemProperty|New-LocalUser|Start-Process|-AllUsers/);
     expect(script).not.toContain(fixture.candidate);
     // The bounds that were execFile options now bound each host request.
     expect(limits).toEqual({ timeoutMs: TOOL_TIMEOUT_POLICY.windowsAclRequestMs, maxBytes: 256 * 1024 });
@@ -1279,7 +1316,7 @@ describe("Windows ACL host", () => {
     // Path data travels only in the request line, ASCII-escaped against the host's input code page.
     const [line] = hosts[0]!.lines;
     expect(line).not.toMatch(/[^\x00-\x7e]/);
-    expect(Object.keys(JSON.parse(line!))).toEqual(["id", "paths", "capSids", "skipPackage"]);
+    expect(Object.keys(JSON.parse(line!))).toEqual(["id", "paths", "capSids", "skipPackage", "setOwner"]);
     expect(hosts[0]!.requests[0]!.paths).toEqual(["C:\\", String.raw`C:\Tools`, fixture.candidate]);
     expect(hosts[0]!.child.unref).toHaveBeenCalled();
     expect(hosts[0]!.child.kill).not.toHaveBeenCalled();

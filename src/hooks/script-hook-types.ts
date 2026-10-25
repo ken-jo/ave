@@ -24,7 +24,9 @@
  *   }
  *
  * Failure semantics:
- *   - exit code !=0 → deny  (fail-safe)
+ *   - exit 0 with no output → successful no-op
+ *   - exit 2 → deny with stderr feedback
+ *   - other nonzero exit → failure / deny (fail-safe)
  *   - timeout >5s    → deny  (configurable via setting)
  *   - stdout JSON parse failure → deny
  *
@@ -168,6 +170,10 @@ export interface ToolHookStdin extends HookDispatchPayload {
  * non-blocking events.
  */
 export interface LifecycleEventPayload {
+  /** How the session entered the current conversation. */
+  sessionSource?: "startup" | "resume" | "clear";
+  /** Notification category; turn completion uses agent_completed. */
+  notificationType?: string;
   /** PostToolUseFailure — the failing tool's name. */
   toolName?: string;
   /** PostToolUseFailure — tool error message (DLP-redacted before dispatch). */
@@ -183,7 +189,8 @@ export interface LifecycleEventPayload {
   stopReason?: string;
   /** Stop — number of tool calls in the turn. */
   toolCount?: number;
-  /** PreCompact — `"auto-compact"` (threshold) | `"manual"`. */
+  /** PreCompact / PostCompact — `"auto-compact"` (threshold) | `"manual"`;
+   * SessionEnd — why the session ended. */
   reason?: string;
   /** PreCompact — pre-compaction token estimate. */
   tokenEstimate?: number;
@@ -199,6 +206,8 @@ export interface LifecycleEventPayload {
   agentType?: string;
   /** Notification — the message body shown to the user. */
   message?: string;
+  /** Stop / SubagentStop — true while a previous stop hook block is continuing the run. */
+  stopHookActive?: boolean;
 }
 
 /**
@@ -235,12 +244,14 @@ export interface LifecycleHookStdin extends LifecycleEventPayload, Partial<UserP
 }
 
 /**
- * Wire-shape parsed from a hook script's stdout. v1 enum is "allow" |
- * "deny" only (hook-signing follow-up introduces "modify" once signing is in place).
+ * Normalized result of supported stdout decision forms. The public command
+ * protocol is documented in docs/guides/user-hooks.md; mutation is unsupported.
  */
 export interface ScriptHookStdout {
   action: "allow" | "deny";
   reason: string;
+  /** Structured `decision: "block"` without `continue: false`; a deliberate block, not a failure. */
+  block?: true;
 }
 
 /**
@@ -269,6 +280,12 @@ export interface ScriptHookInvocationResult {
   timedOut: boolean;
   /** Wall-clock execution time in ms. */
   durationMs: number;
+  /**
+   * Set only for a deliberate block — exit 2 (its stderr) or structured
+   * `decision: "block"` (its reason) — never for a failure. Stop and
+   * SubagentStop feed it back to the model to continue the run.
+   */
+  blockFeedback?: string;
   /**
    * Origin discriminant — a legacy `.sh` hook vs a declarative `hooks.json`
    * `command` entry. Surfaced by the runner from the {@link RunnableHook} so the
