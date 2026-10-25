@@ -1494,6 +1494,16 @@ describe("LlmTab grouped model search", () => {
       option.querySelector("[data-model-id]")?.getAttribute("data-model-id"))).toEqual(models);
   });
 
+  it("groups OpenRouter ~vendor latest aliases with the vendor and keeps their model IDs", async () => {
+    const models = ["deepseek/deepseek-chat", "~deepseek/deepseek-chat-latest"];
+    const { list } = await openSearchCatalogue(false, [], undefined, models.map((id) => ({ id })));
+    const provider = within(list).getByRole("group", { name: getVendorOption("openrouter").label });
+    expect(within(provider).queryByRole("group", { name: "~Deepseek" })).not.toBeInTheDocument();
+    const group = within(provider).getByRole("group", { name: "DeepSeek" });
+    expect(within(group).getAllByRole("option").map((option) =>
+      option.querySelector("[data-model-id]")?.getAttribute("data-model-id"))).toEqual(models);
+  });
+
   it.each([
     ["fireworks", ["accounts/fireworks/models/first", "accounts/fireworks/models/second"]],
     ["together", ["Qwen/model-one", "meta-llama/model-two"]],

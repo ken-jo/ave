@@ -686,6 +686,7 @@ function ModelSelectItemContent({
   const isRouter = entry?.tags?.router === true;
   const isLocal = entry?.tags?.local === true;
   const isReasoning = reasoning?.supported === true;
+  const noTools = toolCall?.supported === false;
   // Provider is the leading column now, so it is NOT repeated in the trailing facts; those are the numbers that differ between models.
   const facts = factsOverride ? [factsOverride] : [
     entry?.contextLength !== undefined
@@ -709,18 +710,6 @@ function ModelSelectItemContent({
           </span>
         )}
         <span className="min-w-0 flex-1 truncate">{option}</span>
-        {toolCall?.supported === false && (
-          <Badge
-            variant="outline"
-            className="h-4 shrink-0 px-1 text-[9px]"
-            data-testid={`llm-tab:model-no-tools:${option}`}
-            role="note"
-            title={t("llmTab.modelNoToolsHelp")}
-            aria-label={t("llmTab.modelNoToolsHelp")}
-          >
-            {t("llmTab.modelNoToolsBadge")}
-          </Badge>
-        )}
         {reasoningUnstatedVendor !== undefined && (
           <Badge
             variant="outline"
@@ -734,7 +723,7 @@ function ModelSelectItemContent({
           </Badge>
         )}
       </span>
-      {(isFree || isRouter || isLocal || vision === true || isReasoning || facts.length > 0) && (
+      {(isFree || isRouter || isLocal || vision === true || isReasoning || noTools || facts.length > 0) && (
         <span className="flex min-w-0 flex-wrap items-center gap-1 [[data-slot=select-value]_&]:hidden">
           {isFree && (
             <Badge variant="secondary" className="h-4 shrink-0 px-1 text-[9px] uppercase">
@@ -767,6 +756,18 @@ function ModelSelectItemContent({
               data-testid={`llm-tab:model-reasoning:${option}`}
             >
               {t("llmTab.modelReasoningBadge")}
+            </Badge>
+          )}
+          {noTools && (
+            <Badge
+              variant="outline"
+              className="h-4 shrink-0 px-1 text-[9px] uppercase"
+              data-testid={`llm-tab:model-no-tools:${option}`}
+              role="note"
+              title={t("llmTab.modelNoToolsHelp")}
+              aria-label={t("llmTab.modelNoToolsHelp")}
+            >
+              {t("llmTab.modelNoToolsBadge")}
             </Badge>
           )}
           {facts.length > 0 && (
@@ -884,7 +885,8 @@ function upstreamModelProvider(
     return { id: "", label: providerLabel };
   }
   const slash = modelId.indexOf("/");
-  const id = slash > 0 ? modelId.slice(0, slash) : "";
+  // OpenRouter's `~vendor/...-latest` aliases belong in the vendor's own group.
+  const id = slash > 0 ? modelId.slice(0, slash).replace(/^~/, "") : "";
   const vendorId = id === "anthropic" ? "claude" : id === "google" ? "gemini" : id;
   const readableId = id.replace(/[-_]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
   return {
