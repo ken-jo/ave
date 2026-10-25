@@ -114,8 +114,8 @@ test.describe("Sandbox approval flow", () => {
     await expect(approveBtn).toBeEnabled();
 
     // The obsolete scope selector is replaced by three explicit decisions.
-    await expect(page.getByTestId(TEST_IDS.denyButton)).toHaveText(t("toolApprovalDialog.denyOnce"));
-    await expect(page.getByTestId(TEST_IDS.allowSessionButton)).toHaveText(t("toolApprovalDialog.allowAlways"));
+    await expect(page.getByTestId(TEST_IDS.denyButton)).toHaveText(t("toolApprovalDialog.decisionDeny"));
+    await expect(page.getByTestId(TEST_IDS.allowSessionButton)).toHaveText(t("toolApprovalDialog.decisionAllowSession"));
     await expect(page.getByTestId(TEST_IDS.approveButton)).toHaveText(t("toolApprovalDialog.allowOnce"));
   });
 

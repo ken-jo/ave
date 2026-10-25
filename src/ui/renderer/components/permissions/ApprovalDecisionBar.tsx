@@ -1,5 +1,5 @@
 /** The one decision row every approval card draws (owner 2026-10-25, unified approval card): Deny ▾ | Allow for session ▾ | Allow once. A dropdown item selects a remembering choice (Always deny; Allow for session, Always allow in this project, Always allow everywhere); the button beside it then names that choice and commits it, and "Edit rule" appears above the row for a choice that saves a rule. Allow once commits at once. The card decides what each choice means for its approval type (see `approval-decision.ts`); the host checks every answer again. */
-import { useCallback, useEffect, useState, type ButtonHTMLAttributes, type ReactElement, type Ref } from "react";
+import { useCallback, useEffect, useId, useState, type ButtonHTMLAttributes, type ReactElement, type Ref } from "react";
 import { ChevronDown } from "lucide-react";
 import { Button } from "../../../../components/ui/button.js";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "../../../../components/ui/dropdown-menu.js";
@@ -40,13 +40,13 @@ export function useApprovalDecisionState(requestId: string | null): ApprovalDeci
 }
 
 /** The choice each of the three buttons commits now: Deny or the selected Always deny; the selected allow or the first one offered; Allow once. */
-export function slotChoices(model: ApprovalDecisionModel, selected: RememberingChoice | null): readonly [ApprovalCardChoice, RememberingChoice | null, ApprovalCardChoice] {
+function slotChoices(model: ApprovalDecisionModel, selected: RememberingChoice | null): readonly [ApprovalCardChoice, RememberingChoice | null, ApprovalCardChoice] {
   const allow = selected !== null && selected !== "deny-always" ? selected : defaultAllowChoice(model);
   return [selected === "deny-always" ? "deny-always" : "deny-once", allow, "allow-once"];
 }
 
 /** The rule text a commit carries: the edited text when the person changed the rule, else none (the host saves the rule it derived). Null when the selected choice needs a written rule and has none yet. */
-export function editedRuleFor(model: ApprovalDecisionModel, state: Pick<ApprovalDecisionState, "selected" | "draft">, choice: ApprovalCardChoice): string | undefined | null {
+function editedRuleFor(model: ApprovalDecisionModel, state: Pick<ApprovalDecisionState, "selected" | "draft">, choice: ApprovalCardChoice): string | undefined | null {
   if (choice === "deny-once" || choice === "allow-once") return undefined;
   const option = model.options[choice];
   const missing = option.needsEdit ? null : undefined;
@@ -101,10 +101,13 @@ export function ApprovalDecisionBar({
   stackWhenNarrow?: boolean;
 }): ReactElement {
   const { t } = useTranslation();
+  // A terminal banner draws one row per ask, so the editor's label pairs with its own input.
+  const inputId = useId();
   const [denyChoice, allowChoice] = slotChoices(model, state.selected);
   const selectedOption = state.selected === null ? null : model.options[state.selected];
   const editing = selectedOption?.editing ?? null;
-  const showEdit = selectedOption !== null && editing !== null;
+  // The row above the buttons appears once a choice is selected: what it saves, and Edit rule where the rule can be edited.
+  const showEdit = selectedOption !== null && (editing !== null || selectedOption.rule !== null);
   const editorOpen = editing === "inline" && (state.draft !== null || selectedOption?.needsEdit === true);
   const draftText = state.draft ?? selectedOption?.rule ?? "";
   const warnWildcard = model.warnsOnWildcardAllow && state.selected !== null && state.selected !== "deny-always" &&
@@ -180,9 +183,9 @@ export function ApprovalDecisionBar({
           </div>
           {editorOpen ? (
             <div className="min-w-0 space-y-1">
-              <label className="block text-[11px] text-muted-foreground" htmlFor="approval-rule-input">{t("toolApprovalDialog.editRuleLabel")}</label>
+              <label className="block text-[11px] text-muted-foreground" htmlFor={inputId}>{t("toolApprovalDialog.editRuleLabel")}</label>
               <Input
-                id="approval-rule-input"
+                id={inputId}
                 className="h-7 font-mono text-xs"
                 value={draftText}
                 disabled={lockAll}

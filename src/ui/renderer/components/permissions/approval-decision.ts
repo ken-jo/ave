@@ -19,9 +19,9 @@ export type RememberingChoice = Exclude<ApprovalCardChoice, "deny-once" | "allow
 export const ALLOW_MENU_CHOICES = ["allow-session", "allow-project", "allow-everywhere"] as const satisfies readonly RememberingChoice[];
 
 /** How "Edit rule" edits a selected choice's rule: in the card (a rule the host checks against the card's grammar), in Settings (an exact tool approval), or not at all. */
-export type RuleEditing = "inline" | "settings" | null;
+type RuleEditing = "inline" | "settings" | null;
 
-export interface DecisionOption {
+interface DecisionOption {
   readonly offered: boolean;
   /** i18n key of why the choice is not offered; null when it is. */
   readonly reasonKey: string | null;
@@ -94,7 +94,7 @@ export function networkDecisionModel(payload: EgressPayload, sessionId: string |
   const sessionScope: EgressGrantScope = terminal ? "tab" : "session";
   const scoped = (choice: RememberingChoice, scope: EgressGrantScope, holdsRule: boolean, labelKey = label(choice)): DecisionOption =>
     payload.scopes.includes(scope)
-      ? offered(rule, ruleEditing(holdsRule), labelKey)
+      ? offered(ruleEditing(holdsRule) === null ? null : rule, ruleEditing(holdsRule), labelKey)
       : refused(payload.network === "public" ? "toolApprovalDialog.networkScopeNotOffered" : "toolApprovalDialog.networkLocalScopeNotOffered", labelKey);
   return {
     variant: "network",
