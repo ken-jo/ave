@@ -1607,6 +1607,50 @@ review is advisory, never a merge gate. Documentation-only mirrors under `docs/k
 are excluded from naming-process gates because they preserve historical source
 text; production paths remain covered.
 
+### Windows object ownership
+
+An elevated Windows token usually has `BUILTIN\Administrators` (`S-1-5-32-544`)
+as its default owner, so a file or directory the app creates is owned by that
+group rather than by the user. Admission (`assertCodexLocations` in
+`src/main/codex-executable-location.ts`) treats owners in two ways:
+
+1. **Inside a private root, every component must be owned by the current
+   user.** A private root is a directory admitted as `private-directory`: the
+   subscription runtime directories, and the `executable-`, `artifact-` and
+   `probe-` directories and copies made in them. Ownership there is
+   established only through `claimPrivateOwnership`, and through
+   `createPrivateObjects`, `createPrivateDirectories`,
+   `createPrivateDirectory` and `createPrivateTempDirectory`, which create
+   objects and then claim them. A claim asks the resident ACL host to read
+   each owner on the path object itself, without following a reparse point:
+   - an object the user already owns is kept, without asking for
+     `WRITE_OWNER`;
+   - an object owned by `S-1-5-32-544` is given to the user, on a handle that
+     re-reads the owner before it sets it;
+   - an object with any other owner refuses its request, and nothing in that
+     request changes. A claim is sent in requests of at most 128 paths and
+     24,576 characters of JSON-encoded paths. When it spans several requests,
+     the ones already answered keep the owners they set. A refusal still fails
+     the whole claim.
+   The reply must then show the user as every object's owner. When a claim
+   fails, a creating helper removes what it made. The ephemeral `executable-`,
+   `artifact-` and `probe-` directories are created and claimed per run. The
+   ten persistent `subscription-runtimes` directories are claimed every time
+   the subscription service starts. One that an earlier elevated run left
+   owned by `S-1-5-32-544` becomes the user's again; one owned by another
+   account refuses start and is left as it is.
+2. **Outside a private root, the owner must be the current user or a trusted
+   system principal.** This covers a private root's ancestors (among them
+   `AVE_HOME` and `subscription-runtimes`, which `mkdir` creates and nothing
+   claims) and an executable's location. The trusted principals are SYSTEM
+   (`S-1-5-18`), `S-1-5-32-544` and TrustedInstaller. Admission also accepts
+   the sandbox principals and capability SIDs it identifies. This does not
+   depend on the token's default owner. Write access there is judged by the
+   access entries, not by the owner.
+
+Any other owner is refused. A change to either rule changes the security
+contract for both.
+
 ## Documentation Language Policy
 
 English is the canonical default for app docs, generated examples, comments,
