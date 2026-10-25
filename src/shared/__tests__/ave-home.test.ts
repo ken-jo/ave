@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, rmdirSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { ensureAveHomePrivate, aveHome, win32SystemBinary, readWindowsDirectoryDacls, setAveHomePrivacyAtBoot, assertAveHomePrivacyForConfinement, _resetAveHomePrivacyForTest, type WindowsDirectoryDacl, type WindowsAccessRule } from "../ave-home.js";
 import { useTempPaths } from "../../__tests__/test-helpers.js";
@@ -199,6 +199,80 @@ describe("ensureAveHomePrivate", () => {
       extraPrincipals: [expect.objectContaining({ sid: "S-1-1-0", account: expect.any(String) })] });
     setAveHomePrivacyAtBoot(result);
     expect(() => assertAveHomePrivacyForConfinement()).toThrow(path);
+  });
+  it("refuses a link and an unaccepted owner before the permission command writes", () => {
+    vi.stubEnv("SystemRoot", "C:\\Windows");
+    vi.mocked(execFileSync).mockReturnValueOnce(JSON.stringify([descriptor("C:\\home")]));
+    readWindowsDirectoryDacls(["C:\\home"], true);
+    const args = vi.mocked(execFileSync).mock.calls.at(-1)![1] as readonly string[];
+    const command = args.at(-1)!;
+    const write = command.indexOf("& $icacls");
+    expect(write).toBeGreaterThan(-1);
+    expect(command.indexOf("[System.IO.FileAttributes]::ReparsePoint")).toBeLessThan(write);
+    expect(command.indexOf("'Directory is owned by another account'")).toBeLessThan(write);
+    // The same owner rule as isOwnerOnlyDacl.
+    expect(command).toContain("$owner -ne $sid -and -not ($elevated -and $owner -eq 'S-1-5-32-544')");
+    expect(command.slice(write, command.indexOf("\n", write))).toContain("'/L'");
+  });
+  it("reports the first refused path and touches none inside it", () => {
+    const dir = home();
+    const result = ensureAveHomePrivate(dir, { platform: "win32", readDacls: (paths) => [
+      { path: paths[0]!, category: "reparse-point", error: "Directory is a link or junction" },
+      { path: paths[1]!, category: "reparse-point", error: "An enclosing directory was refused" },
+    ] });
+    expect(result).toMatchObject({ enforcement: "none", failedPath: dir, category: "reparse-point" });
+  });
+
+  /** Owner and access entries of a real directory, read on that directory itself. */
+  function sddl(path: string): string {
+    return execFileSync(win32SystemBinary("WindowsPowerShell/v1.0/powershell"), [
+      "-NoProfile", "-NonInteractive", "-Command",
+      "[System.IO.Directory]::GetAccessControl($env:AVE_TEST_TARGET).GetSecurityDescriptorSddlForm('Owner, Access')",
+    ], { env: { ...process.env, AVE_TEST_TARGET: path }, encoding: "utf-8", windowsHide: true }).trim();
+  }
+  it.runIf(process.platform === "win32").each(["home", "secrets"])("refuses a %s junction and leaves its target's DACL unchanged", (which) => {
+    const dir = home();
+    const target = join(dirname(dir), "target");
+    mkdirSync(target);
+    const link = which === "home" ? dir : join(dir, "secrets");
+    if (which === "secrets") expect(ensureAveHomePrivate(dir)).toMatchObject({ enforcement: "win32-dacl" });
+    if (which === "secrets") rmdirSync(link);
+    symlinkSync(target, link, "junction");
+    try {
+      const before = sddl(target);
+      const result = ensureAveHomePrivate(dir);
+      expect(result).toMatchObject({ enforcement: "none", failedPath: link, category: "reparse-point" });
+      expect(sddl(target)).toBe(before);
+      expect(existsSync(join(target, "secrets"))).toBe(false);
+    } finally {
+      rmdirSync(link);
+    }
+  });
+  it.runIf(process.platform === "win32")("refuses an existing home owned by another account and leaves its DACL unchanged", () => {
+    const dir = home();
+    mkdirSync(dir);
+    execFileSync(win32SystemBinary("icacls"), [dir, "/setowner", "*S-1-5-18", "/q"], { encoding: "utf-8", windowsHide: true });
+    const before = sddl(dir);
+    const result = ensureAveHomePrivate(dir);
+    expect(result).toMatchObject({ enforcement: "none", failedPath: dir, category: "invalid-owner-grant", reason: "Directory is owned by another account" });
+    expect(sddl(dir)).toBe(before);
+    expect(existsSync(join(dir, "secrets"))).toBe(false);
+  });
+  it.runIf(process.platform === "win32")("changes a link itself, not its target, when the permission command runs with /L", () => {
+    // The race the refusal above cannot close: a link swapped in after the check.
+    const dir = home();
+    const target = join(dirname(dir), "target");
+    mkdirSync(target);
+    symlinkSync(target, dir, "junction");
+    try {
+      const before = sddl(target);
+      const sid = execFileSync(win32SystemBinary("WindowsPowerShell/v1.0/powershell"), ["-NoProfile", "-NonInteractive", "-Command",
+        "[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value"], { encoding: "utf-8", windowsHide: true }).trim();
+      execFileSync(win32SystemBinary("icacls"), [dir, "/inheritance:r", "/grant:r", `*${sid}:(OI)(CI)F`, "/L", "/q"], { encoding: "utf-8", windowsHide: true });
+      expect(sddl(target)).toBe(before);
+    } finally {
+      rmdirSync(dir);
+    }
   });
   it.runIf(process.platform === "win32").each(["ordinary", "curly’quote", "'; Write-Output x; '"])("protects and reads back a real directory named %s", (name) => {
     const dir = join(home(), name);

@@ -1544,6 +1544,7 @@ export function PermissionsTab({
                     "read-back-failed": t("permissionsTab.homePrivacyReadBackFailed"),
                     "not-protected": t("permissionsTab.homePrivacyNotProtected"),
                     "invalid-owner-grant": t("permissionsTab.homePrivacyInvalidOwnerGrant"),
+                    "reparse-point": t("permissionsTab.homePrivacyReparsePoint"),
                     "extra-principals": t("permissionsTab.homePrivacyExtraPrincipals", {
                       principals: (windowsStatus.homePrivacyError.extraPrincipals ?? []).map(({ sid, account }) => account ? `${sid} (${account})` : sid).join(", "),
                     }),
