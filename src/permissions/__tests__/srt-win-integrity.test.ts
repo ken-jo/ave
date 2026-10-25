@@ -1,6 +1,6 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, win32 } from "node:path";
@@ -261,7 +261,11 @@ describe("Windows helper integrity", () => {
     expect(output.trim()).toBe("private-image-protected");
   });
 
-  it("names every module its PowerShell steps use", async () => {
+  /**
+   * The two PowerShell steps as `prepareSrtWinExecutable` sends them, captured
+   * on any host: the stale-copy sweep, then the private-directory step.
+   */
+  async function captureScripts(): Promise<string[]> {
     const scripts: string[] = [];
     vi.resetModules();
     vi.doMock("node:os", async (importOriginal) => ({ ...await importOriginal<typeof import("node:os")>(), type: () => "Windows_NT" }));
@@ -269,13 +273,18 @@ describe("Windows helper integrity", () => {
       ...await importOriginal<typeof import("node:child_process")>(),
       execFileSync: (_command: string, args: readonly string[], options: { env: Record<string, string> }) => {
         scripts.push(Buffer.from(args.at(-1)!, "base64").toString("utf16le"));
-        // Stand in for the private-directory step, which creates the empty image.
+        // Stand in for the private-directory step, which creates the directory
+        // and the empty image itself: nothing may exist at its path before.
         const directory = options.env.AVE_SRT_PRIVATE_DIRECTORY;
-        if (directory) writeFileSync(join(directory, "srt-win.exe"), "");
+        if (directory) {
+          expect(existsSync(directory)).toBe(false);
+          mkdirSync(directory);
+          writeFileSync(join(directory, "srt-win.exe"), "");
+        }
         return Buffer.alloc(0);
       },
     }));
-    vi.stubEnv("SystemRoot", "C:\\Windows");
+    vi.stubEnv("SystemRoot", process.env.SystemRoot ?? "C:\\Windows");
     try {
       const integrity = await import("../srt-win-integrity.js");
       directories.push(dirname(integrity.prepareSrtWinExecutable(fixture().source)));
@@ -284,8 +293,12 @@ describe("Windows helper integrity", () => {
       vi.doUnmock("node:child_process");
       vi.resetModules();
     }
-    // The stale-copy sweep, then the private-directory step.
     expect(scripts).toHaveLength(2);
+    return scripts;
+  }
+
+  it("names every module its PowerShell steps use", async () => {
+    const scripts = await captureScripts();
     const modules: Record<string, string> = {
       "Import-Module": "Core", "Where-Object": "Core",
       "New-Object": "Utility", "ConvertTo-Json": "Utility", "ConvertFrom-Json": "Utility",
@@ -301,6 +314,60 @@ describe("Windows helper integrity", () => {
       for (const cmdlet of cmdlets) expect(modules, cmdlet).toHaveProperty([cmdlet]);
     }
   });
+
+  it("creates the private copy with its final descriptor and never changes an existing object's", async () => {
+    const [, script] = await captureScripts();
+    // No step sets an owner or a DACL on a path: only new descriptors get an owner.
+    expect(script).not.toMatch(/SetAccessControl\(/);
+    expect(script.match(/\$\w+\.SetOwner\(/g)).toEqual(["$security.SetOwner(", "$fileSecurity.SetOwner("]);
+    // Anything already at the path refuses creation, before the create call.
+    const refusal = script!.indexOf("throw 'Private directory already exists'");
+    expect(refusal).toBeGreaterThan(-1);
+    expect(refusal).toBeLessThan(script!.indexOf("[System.IO.Directory]::CreateDirectory($directory, $security)"));
+    expect(script).toContain("[System.IO.FileMode]::CreateNew");
+    expect(script).toContain("$fileSecurity)");
+    expect(script).toContain("$stream.GetAccessControl().GetOwner(");
+  });
+
+  // Run the captured step against a path that already holds something: it must
+  // refuse, and leave that object's owner and DACL exactly as they were.
+  it.runIf(process.platform === "win32").each(["Administrators-owned directory", "SYSTEM-owned directory", "junction"])(
+    "refuses a private path that is already a %s and changes nothing",
+    async (kind) => {
+      const [, script] = await captureScripts();
+      const parent = mkdtempSync(join(tmpdir(), "ave-srt-existing-"));
+      directories.push(parent);
+      const icacls = win32.join(process.env.SystemRoot!, "System32", "icacls.exe");
+      const target = join(parent, "target");
+      mkdirSync(target);
+      execFileSync(icacls, [target, "/setowner", kind === "Administrators-owned directory" ? "*S-1-5-32-544" : "*S-1-5-18", "/q"],
+        { windowsHide: true, stdio: "pipe" });
+      const path = kind === "junction" ? join(parent, "link") : target;
+      if (kind === "junction") symlinkSync(target, path, "junction");
+      const descriptor = () => execFileSync(win32.join(process.env.SystemRoot!, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), [
+        "-NoProfile", "-NonInteractive", "-Command",
+        "[System.IO.Directory]::GetAccessControl($env:AVE_TEST_TARGET).GetSecurityDescriptorSddlForm('Owner, Access')",
+      ], { env: { ...process.env, AVE_TEST_TARGET: target }, windowsHide: true, encoding: "utf8", stdio: "pipe" }).trim();
+      const before = descriptor();
+      try {
+        const run = spawnSync(win32.join(process.env.SystemRoot!, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), [
+          "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script!, "utf16le").toString("base64"),
+        ], {
+          env: { SystemRoot: process.env.SystemRoot, AVE_SRT_OWNER_PID: String(process.pid), AVE_SRT_PRIVATE_DIRECTORY: path },
+          windowsHide: true, encoding: "utf8", timeout: TOOL_TIMEOUT_POLICY.shellDefaultMs,
+        });
+        expect(run.status, run.stderr).not.toBe(0);
+        expect(run.stderr).toContain("Private directory already exists");
+        expect(descriptor()).toBe(before);
+        expect(existsSync(path)).toBe(true);
+        expect(existsSync(join(target, "srt-win.exe"))).toBe(false);
+        expect(existsSync(join(target, "owner.json"))).toBe(false);
+      } finally {
+        // Remove the link itself first, so the recursive cleanup never walks it.
+        if (kind === "junction") rmdirSync(path);
+      }
+    },
+  );
 
   it("revalidates a cached image and the source instead of trusting a previous check", () => {
     const { source, bytes } = fixture();

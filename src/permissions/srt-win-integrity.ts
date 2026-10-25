@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { lstatSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
+import { lstatSync, mkdirSync, readFileSync, rmdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir, type } from "node:os";
 import { basename, join, win32 } from "node:path";
 
@@ -34,41 +34,55 @@ const POWERSHELL_PROLOGUE = [
 
 // Objects the host creates are owned by the current user, set when they are
 // created (docs/architecture/architecture.md, "Windows object ownership"). An
-// elevated token's default owner is usually BUILTIN\Administrators. This one
-// PowerShell step protects the directory, then creates the empty image and the
-// owner marker inside it, and makes the token user the owner of all three. An
-// owner that is already the token user is kept, BUILTIN\Administrators is
-// replaced, and any other owner throws without a change. Each owner is then
-// read back. The image's bytes are written only after this step.
-// This path is synchronous, so it cannot use the resident ACL host. Any
-// failure throws, and the caller removes the directory.
+// elevated token's default owner is usually BUILTIN\Administrators, so this one
+// PowerShell step creates the directory and both files with their final
+// security descriptors: owner the token user, a protected DACL, full control
+// for the user and read/execute for the runner and consent identities. It
+// never changes the owner or DACL of an object that already exists. The name
+// is random and unpublished until this step creates it, and anything already
+// at that path, a link included, refuses creation. `CreateDirectory` returns an
+// existing directory without applying the descriptor, so that check comes
+// first; the descriptor is then read back without trusting the create call.
+// Each file is opened `CreateNew` with its own descriptor, and its owner is
+// read on that same handle. The image's bytes are written only after this
+// step. This path is synchronous, so it cannot use the resident ACL host. Any
+// failure after creation removes what the step made, then throws.
 const PRIVATE_DIRECTORY_SCRIPT = [
   ...POWERSHELL_PROLOGUE,
-  "if (([System.IO.File]::GetAttributes($env:AVE_SRT_PRIVATE_DIRECTORY) -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Private directory is a link' }",
+  "$directory = $env:AVE_SRT_PRIVATE_DIRECTORY",
   "$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User",
-  "$acl = [System.IO.Directory]::GetAccessControl($env:AVE_SRT_PRIVATE_DIRECTORY)",
-  "$current = $acl.GetOwner([System.Security.Principal.SecurityIdentifier])",
-  "if ($current -ne $sid) { if ($current.Value -ne 'S-1-5-32-544') { throw 'Private directory has another owner' }; $acl.SetOwner($sid) }",
-  "$acl.SetAccessRuleProtection($true, $false)",
-  "foreach ($existing in @($acl.Access)) { $acl.RemoveAccessRuleSpecific($existing) }",
-  "$rule = New-Object System.Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')",
-  "$acl.AddAccessRule($rule)",
+  "$reparse = [System.IO.FileAttributes]::ReparsePoint",
   "$readers = @('S-1-5-18', 'S-1-5-32-544', 'S-1-5-32-545')",
-  "foreach ($id in $readers) { $principal = New-Object System.Security.Principal.SecurityIdentifier($id); $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($principal, 'ReadAndExecute', 'ContainerInherit,ObjectInherit', 'None', 'Allow'))) }",
-  "[System.IO.Directory]::SetAccessControl($env:AVE_SRT_PRIVATE_DIRECTORY, $acl)",
-  "$check = [System.IO.Directory]::GetAccessControl($env:AVE_SRT_PRIVATE_DIRECTORY)",
+  // GetAttributes reads the entry itself, so a dangling link counts as present.
+  "$present = $true; try { $null = [System.IO.File]::GetAttributes($directory) } catch [System.IO.FileNotFoundException], [System.IO.DirectoryNotFoundException] { $present = $false }",
+  "if ($present) { throw 'Private directory already exists' }",
+  "$security = New-Object System.Security.AccessControl.DirectorySecurity",
+  "$security.SetOwner($sid)",
+  "$security.SetAccessRuleProtection($true, $false)",
+  "$security.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')))",
+  "foreach ($id in $readers) { $security.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule((New-Object System.Security.Principal.SecurityIdentifier($id)), 'ReadAndExecute', 'ContainerInherit,ObjectInherit', 'None', 'Allow'))) }",
+  "$null = [System.IO.Directory]::CreateDirectory($directory, $security)",
+  // From here on the directory is this step's own: a failure removes what it made.
+  "try {",
+  "$attributes = [System.IO.File]::GetAttributes($directory)",
+  "if (($attributes -band $reparse) -ne 0 -or ($attributes -band [System.IO.FileAttributes]::Directory) -eq 0) { throw 'Private directory is not a plain directory' }",
+  "$check = [System.IO.Directory]::GetAccessControl($directory)",
   "if ($check.GetOwner([System.Security.Principal.SecurityIdentifier]) -ne $sid) { throw 'Private directory owner mismatch' }",
   "if (!$check.AreAccessRulesProtected) { throw 'Private directory grants are inherited' }",
   "$modification = [System.Security.AccessControl.FileSystemRights]'Write,Delete,DeleteSubdirectoriesAndFiles,ChangePermissions,TakeOwnership'",
   "foreach ($entry in $check.Access) { $id = $entry.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]); if ($entry.AccessControlType -ne 'Allow' -or ($id -ne $sid -and ($id.Value -notin $readers -or ($entry.FileSystemRights -band $modification) -ne 0))) { throw 'Private directory modification grants are not exclusive' } }",
   "$rx = [System.Security.AccessControl.FileSystemRights]::ReadAndExecute",
   "foreach ($id in $readers) { $grants = @($check.Access | Where-Object { $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value -eq $id }); if ($grants.Count -ne 1 -or ($grants[0].FileSystemRights -band $rx) -ne $rx) { throw 'Private directory read and execute grant is missing' } }",
-  "$image = [System.IO.Path]::Combine($env:AVE_SRT_PRIVATE_DIRECTORY, 'srt-win.exe')",
-  "[System.IO.File]::Open($image, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None).Dispose()",
+  "$fileSecurity = New-Object System.Security.AccessControl.FileSecurity",
+  "$fileSecurity.SetOwner($sid)",
+  "$fileSecurity.SetAccessRuleProtection($true, $false)",
+  "$fileSecurity.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', 'None', 'None', 'Allow')))",
+  "foreach ($id in $readers) { $fileSecurity.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule((New-Object System.Security.Principal.SecurityIdentifier($id)), 'ReadAndExecute', 'None', 'None', 'Allow'))) }",
   "$owner = [System.Diagnostics.Process]::GetProcessById([int]$env:AVE_SRT_OWNER_PID)",
   "$marker = @{ pid = [int]$env:AVE_SRT_OWNER_PID; started = $owner.StartTime.ToUniversalTime().Ticks.ToString() } | ConvertTo-Json -Compress",
-  "[System.IO.File]::WriteAllText([System.IO.Path]::Combine($env:AVE_SRT_PRIVATE_DIRECTORY, 'owner.json'), $marker)",
-  "foreach ($name in @('srt-win.exe', 'owner.json')) { $file = [System.IO.Path]::Combine($env:AVE_SRT_PRIVATE_DIRECTORY, $name); $fileAcl = [System.IO.File]::GetAccessControl($file); $current = $fileAcl.GetOwner([System.Security.Principal.SecurityIdentifier]); if ($current -ne $sid) { if ($current.Value -ne 'S-1-5-32-544') { throw 'Private file has another owner' }; $fileAcl.SetOwner($sid); [System.IO.File]::SetAccessControl($file, $fileAcl) }; if ([System.IO.File]::GetAccessControl($file).GetOwner([System.Security.Principal.SecurityIdentifier]) -ne $sid) { throw 'Private file owner mismatch' } }",
+  "$contents = @{ 'srt-win.exe' = [byte[]]@(); 'owner.json' = (New-Object System.Text.UTF8Encoding($false)).GetBytes($marker) }",
+  "foreach ($name in @('srt-win.exe', 'owner.json')) { $stream = New-Object System.IO.FileStream([System.IO.Path]::Combine($directory, $name), [System.IO.FileMode]::CreateNew, [System.Security.AccessControl.FileSystemRights]'Write, ReadPermissions', [System.IO.FileShare]::None, 4096, [System.IO.FileOptions]::None, $fileSecurity); try { $bytes = $contents[$name]; $stream.Write($bytes, 0, $bytes.Length); if ($stream.GetAccessControl().GetOwner([System.Security.Principal.SecurityIdentifier]) -ne $sid) { throw 'Private file owner mismatch' } } finally { $stream.Dispose() } }",
+  "} catch { foreach ($name in @('srt-win.exe', 'owner.json')) { $file = [System.IO.Path]::Combine($directory, $name); if ([System.IO.File]::Exists($file)) { [System.IO.File]::Delete($file) } }; [System.IO.Directory]::Delete($directory, $false); throw }",
 ].join("; ");
 const PRIVATE_DIRECTORY_COMMAND = Buffer.from(PRIVATE_DIRECTORY_SCRIPT, "utf16le").toString("base64");
 
@@ -178,22 +192,31 @@ export function prepareSrtWinExecutable(source: string, arch = getSrtWinArchitec
     assertSrtWinDigest(readHelper(cached.executable), arch);
     return cached.executable;
   }
-  const directory = mkdtempSync(join(tmpdir(), "ave-srt-win-"));
+  // A fresh, unpublished name: on Windows the protecting step creates it, and
+  // anything already at the path refuses creation.
+  const directory = join(tmpdir(), `ave-srt-win-${randomBytes(16).toString("hex")}`);
+  // A refused creation leaves nothing of ours: the step removes what it made,
+  // and whatever was already at the path is not ours to delete.
+  let created = false;
   try {
     const executable = join(directory, "srt-win.exe");
-    // POSIX modes do not enforce a Windows boundary. Set a protected DACL before
-    // writing any executable bytes; this operation needs no elevation. On
-    // Windows that step also creates the empty image, owned by the current
-    // user, so the bytes go into the file it made.
+    // POSIX modes do not enforce a Windows boundary. On Windows the directory
+    // and the empty image are created with their protected DACL and the
+    // current user as owner before any executable byte exists; this needs no
+    // elevation, and the bytes go into the file that step made.
     const windows = type() === "Windows_NT";
     if (windows) runDirectoryCommand(PRIVATE_DIRECTORY_COMMAND, { AVE_SRT_PRIVATE_DIRECTORY: directory });
+    else mkdirSync(directory, { mode: 0o700 });
+    created = true;
     // Write the bytes that were hashed, rather than re-opening the source to copy.
     writeFileSync(executable, bytes, windows ? { flag: "r+" } : { flag: "wx", mode: 0o700 });
     assertSrtWinDigest(readHelper(executable), arch);
     copies.set(key, { directory, executable, arch });
     return executable;
   } catch (error) {
-    rmSync(directory, { recursive: true, force: true });
+    if (created) {
+      try { removePrivateCopy(directory); } catch { /* A leftover copy is the stale-copy sweep's. */ }
+    }
     if (error instanceof SrtWinIntegrityError) throw error;
     throw new SrtWinIntegrityError("srt-win-integrity-mismatch", { cause: error });
   }
@@ -211,8 +234,25 @@ export function assertSrtWinSpawnIntegrity(executable: string): void {
   assertSrtWinDigest(readHelper(executable), copy.arch);
 }
 
+/**
+ * Remove a private copy without recursing. The copy holds only the image and
+ * its owner marker; a link found at the path is removed itself, never followed,
+ * so a swapped-in junction cannot steer a recursive delete into its target.
+ */
+function removePrivateCopy(directory: string): void {
+  const entry = lstatSync(directory, { throwIfNoEntry: false });
+  if (entry === undefined) return;
+  if (entry.isSymbolicLink()) {
+    // A Windows directory link (junction or symlink) is removed with rmdir.
+    if (process.platform === "win32") rmdirSync(directory); else unlinkSync(directory);
+    return;
+  }
+  for (const name of ["srt-win.exe", "owner.json"]) rmSync(join(directory, name), { force: true });
+  rmdirSync(directory);
+}
+
 process.once("exit", () => {
   for (const { directory } of copies.values()) {
-    try { rmSync(directory, { recursive: true, force: true }); } catch { /* An active helper may still hold the image. */ }
+    try { removePrivateCopy(directory); } catch { /* An active helper may still hold the image. */ }
   }
 });
