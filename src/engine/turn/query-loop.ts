@@ -1,3 +1,8 @@
+import {
+  DEFAULT_SUBSCRIPTION_REASONING_SPEED,
+  subscriptionReasoningSpeedEffort,
+  subscriptionRuntimeDescriptor,
+} from "../../shared/subscription-runtime.js";
 import type { ToolOutputCapture } from "../../shared/tool-output-artifact.js";
 import { appendRequestOnlyText } from "./request-only-text.js";
 import { randomUUID } from "node:crypto";
@@ -150,7 +155,18 @@ export async function queryLoop(
     const apiRound = subscriptionRuntime || effectiveOutput === undefined
       ? undefined
       : apiRoundLlmSettings(activeBlock, effectiveOutput, llmSettings.streamSmoothing, runtimeContextBudget);
-    const roundLlmSettings = apiRound ?? { streamSmoothing: llmSettings.streamSmoothing, enableThinking: false };
+    // A subscription runtime on Ave's own request path takes the user's speed; the others own their reasoning.
+    const subscriptionSpeed = subscriptionRuntime
+      && subscriptionRuntimeDescriptor(subscriptionRuntime.provider).offersReasoningSpeed === true
+      ? llmSettings.subscriptionReasoningSpeed ?? DEFAULT_SUBSCRIPTION_REASONING_SPEED
+      : undefined;
+    const roundLlmSettings = apiRound ?? (subscriptionSpeed === undefined
+      ? { streamSmoothing: llmSettings.streamSmoothing, enableThinking: false }
+      : {
+          streamSmoothing: llmSettings.streamSmoothing,
+          enableThinking: true,
+          reasoningEffort: subscriptionReasoningSpeedEffort(subscriptionSpeed),
+        });
     // Subscription max-token responses remain partial until native assistant-prefill support is verified.
     const supportsLengthContinuation = subscriptionRuntime === undefined
       && vendorSupportsLengthContinuation(llmSettings.provider);

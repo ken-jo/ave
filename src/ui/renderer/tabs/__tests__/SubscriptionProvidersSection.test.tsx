@@ -460,3 +460,85 @@ describe("subscription account and credential disclosure", () => {
     expect(screen.queryByTestId("subscription-provider:codex:billing-disclosure")).toBeNull();
   });
 });
+
+describe("SubscriptionAuthControls for ChatGPT plan usage", () => {
+  const planView = (status: SubscriptionProviderStatus): SubscriptionProviderView => {
+    const descriptor = subscriptionRuntimeDescriptor("chatgpt-plan");
+    return {
+      descriptor: {
+        id: "chatgpt-plan",
+        label: descriptor.label,
+        planName: descriptor.planName,
+        cliName: descriptor.cliName,
+        executable: descriptor.executable,
+        description: "",
+        loginMethods: descriptor.loginMethods,
+        supportsLogout: descriptor.supportsManagedLogout,
+      },
+      status,
+    };
+  };
+
+  it("offers Continue with ChatGPT and explains plan billing, with no runtime picker", () => {
+    const beginLogin = vi.fn();
+    renderProviders([planView({ runtime: "ready", connection: "signed-out" })], {
+      beginLogin,
+      configureRuntime: vi.fn(),
+      forgetRuntime: vi.fn(),
+    });
+    const login = screen.getByTestId("subscription-provider:chatgpt-plan:login-browser");
+    expect(login).toHaveTextContent("Continue with ChatGPT");
+    expect(screen.queryByTestId("subscription-provider:chatgpt-plan:login-device-code")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("subscription-provider:chatgpt-plan:configure-runtime")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("subscription-provider:chatgpt-plan:change-runtime")).not.toBeInTheDocument();
+    expect(screen.getByTestId("subscription-provider:chatgpt-plan:billing-disclosure")).toHaveTextContent(/separate from API-key charges/);
+    fireEvent.click(login);
+    expect(beginLogin).toHaveBeenCalledWith("chatgpt-plan", "browser");
+  });
+
+  it("shows the plan in use with Manage usage once signed in", () => {
+    const manageUsage = vi.fn();
+    const logout = vi.fn();
+    renderProviders([planView({ runtime: "ready", connection: "connected", capabilities: runtimeCapabilities({ images: false }) })], {
+      manageUsage,
+      logout,
+    });
+    expect(screen.getByTestId("subscription-provider:chatgpt-plan:plan-in-use")).toHaveTextContent("Using ChatGPT plan");
+    fireEvent.click(screen.getByTestId("subscription-provider:chatgpt-plan:manage-usage"));
+    expect(manageUsage).toHaveBeenCalledWith("chatgpt-plan");
+    fireEvent.click(screen.getByTestId("subscription-provider:chatgpt-plan:logout"));
+    expect(logout).toHaveBeenCalledWith("chatgpt-plan");
+  });
+
+  it("welcomes the first plan sign-in once, and Got it dismisses it", () => {
+    const acknowledgeNotice = vi.fn();
+    renderProviders([planView({
+      runtime: "ready", connection: "connected", capabilities: runtimeCapabilities({ images: false }), notice: "welcome",
+    })], { acknowledgeNotice });
+    const dialog = screen.getByTestId("subscription-provider:chatgpt-plan:welcome");
+    expect(dialog).toHaveTextContent("You're using your ChatGPT plan");
+    fireEvent.click(screen.getByTestId("subscription-provider:chatgpt-plan:welcome-got-it"));
+    expect(acknowledgeNotice).toHaveBeenCalledWith("chatgpt-plan");
+  });
+
+  it.each([
+    ["revocation-unconfirmed", /disconnect Ave in ChatGPT settings/],
+    ["reconnect-required", /sign in again/],
+    ["plan-usage-disabled", /allow plan usage/],
+    ["declined", /not allowed in the browser/],
+    ["account-mismatch", /different ChatGPT account or workspace/],
+    ["state-mismatch", /did not belong to this attempt/],
+  ] as const)("explains the %s notice and lets it be dismissed", (notice, text) => {
+    const acknowledgeNotice = vi.fn();
+    renderProviders([planView({ runtime: "ready", connection: "signed-out", notice })], { acknowledgeNotice, beginLogin: vi.fn() });
+    expect(screen.getByTestId("subscription-provider:chatgpt-plan:notice")).toHaveTextContent(text);
+    fireEvent.click(screen.getByTestId("subscription-provider:chatgpt-plan:notice-dismiss"));
+    expect(acknowledgeNotice).toHaveBeenCalledWith("chatgpt-plan");
+  });
+
+  it("says plainly when plan sign-in is not configured", () => {
+    renderProviders([planView({ runtime: "not-configured", connection: "unknown" })], { beginLogin: vi.fn() });
+    expect(screen.getByTestId("subscription-provider:chatgpt-plan:not-configured")).toBeInTheDocument();
+    expect(screen.queryByTestId("subscription-provider:chatgpt-plan:login-browser")).not.toBeInTheDocument();
+  });
+});

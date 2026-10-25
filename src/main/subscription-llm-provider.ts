@@ -19,6 +19,7 @@ import {
 import { rejectedToolNameFromError } from "../engine/llm/rejected-tool-schema.js";
 import {
   normalizeSubscriptionUsageTelemetry,
+  openAiLoginTypeOfRuntime,
   type SubscriptionChatRuntimeSelection,
   type SubscriptionImageAttachmentLimits,
 } from "../shared/subscription-runtime.js";
@@ -42,20 +43,24 @@ import {
   DEFAULT_SUBSCRIPTION_IMAGE_ATTACHMENT_LIMITS,
   normalizeSubscriptionImageAttachment,
   normalizeSubscriptionPromptAttachment,
+  SUBSCRIPTION_ATTACHMENT_INPUT_REJECTED,
+  SUBSCRIPTION_ATTACHMENT_INPUT_TOO_LARGE,
+  SUBSCRIPTION_ATTACHMENT_UNAVAILABLE,
   SubscriptionAttachmentTransportError,
+  subscriptionAttachmentTransportFailure,
   type SubscriptionPromptAttachment,
 } from "./subscription-attachment-input.js";
 import { SubscriptionToolBridge } from "./subscription-tool-bridge.js";
 import { projectSubscriptionImageHistory } from "./subscription-image-history.js";
 import { projectedSubscriptionTransportDiagnosticsFromError } from "./subscription-transport-error-diagnostics.js";
+import { ChatGptPlanTransport } from "./chatgpt-plan/transport.js";
 
 const MAX_SERIALIZED_INPUT_BYTES = 700 * 1024;
 const MAX_ACP_SERIALIZED_INPUT_BYTES = 512 * 1024;
 
 // User and governed tool images cross this boundary as strict native attachments. Normal Ave files keep their existing path-marker plus governed
 // read-tool flow; a generic raw file payload never gains an unreviewed upload path here.
-export const SUBSCRIPTION_ATTACHMENT_INPUT_REJECTED = "subscription-attachments-not-supported";
-export const SUBSCRIPTION_ATTACHMENT_INPUT_TOO_LARGE = "subscription-attachment-too-large";
+export { SUBSCRIPTION_ATTACHMENT_INPUT_REJECTED, SUBSCRIPTION_ATTACHMENT_INPUT_TOO_LARGE };
 
 export class SubscriptionAttachmentInputRejectedError extends Error {
   readonly code = SUBSCRIPTION_ATTACHMENT_INPUT_REJECTED;
@@ -79,8 +84,6 @@ class SubscriptionInputTooLargeError extends Error {
 type ErrorStreamEvent = Extract<StreamEvent, { type: "error" }>;
 // Fixed renderer-safe response for every rejected boundary or runtime fault.
 const SUBSCRIPTION_CHAT_UNAVAILABLE = "Subscription runtime could not complete. Verify the connected runtime and try again.";
-const SUBSCRIPTION_ATTACHMENT_UNAVAILABLE = "The selected subscription runtime cannot send this attachment.";
-const SUBSCRIPTION_ATTACHMENT_TOO_LARGE = "The selected subscription runtime cannot send an attachment this large.";
 
 export interface SubscriptionLlmProviderOptions {
   // A settings-normalized selection; it is never an API-key vendor config.
@@ -91,7 +94,7 @@ export interface SubscriptionLlmProviderOptions {
   readonly openExternal?: SubscriptionOpenExternal;
   // Main-test seam; production resolves the process singleton.
   readonly service?: Pick<SubscriptionRuntimeService, "openTextSession">
-    & Partial<Pick<SubscriptionRuntimeService, "listModels">>;
+    & Partial<Pick<SubscriptionRuntimeService, "listModels" | "requireChatGptPlan">>;
   // Optional redacted audit hook forwarded only at singleton creation.
   readonly runtimeServiceOptions?: GetSubscriptionRuntimeServiceOptions;
 }
@@ -158,26 +161,7 @@ function subscriptionFailure(
   failure: unknown,
   tools: readonly { name: string }[] | undefined,
 ): ErrorStreamEvent {
-  if (failure instanceof SubscriptionAttachmentTransportError) {
-    const tooLarge = failure.code === "subscription-attachment-too-large";
-    return {
-      type: "error",
-      error: tooLarge ? SUBSCRIPTION_ATTACHMENT_TOO_LARGE : SUBSCRIPTION_ATTACHMENT_UNAVAILABLE,
-      classification: tooLarge
-        ? SUBSCRIPTION_ATTACHMENT_INPUT_TOO_LARGE
-        : SUBSCRIPTION_ATTACHMENT_INPUT_REJECTED,
-      providerError: {
-        origin: "unknown",
-        statusCode: 400,
-        providerCode: tooLarge
-          ? SUBSCRIPTION_ATTACHMENT_INPUT_TOO_LARGE
-          : SUBSCRIPTION_ATTACHMENT_INPUT_REJECTED,
-        messagePreview: tooLarge
-          ? "subscription attachment input too large"
-          : "subscription attachment input rejected",
-      },
-    };
-  }
+  if (failure instanceof SubscriptionAttachmentTransportError) return subscriptionAttachmentTransportFailure(failure);
 
   if (failure instanceof SubscriptionAttachmentInputRejectedError) {
     return {
@@ -644,12 +628,40 @@ export class SubscriptionLlmProvider implements LLMProvider {
 export function createSubscriptionLlmProvider(
   options: SubscriptionLlmProviderOptions,
 ): SubscriptionLlmProvider | OpenAiProvider {
-  const transport = new SubscriptionLlmProvider(options);
-  return transport.subscriptionRuntime.provider === "codex"
-    ? createOpenAiProvider({
+  const loginType = openAiLoginTypeOfRuntime(options.selection.provider);
+  switch (loginType) {
+    case "chatgpt-plan": {
+      // Plan usage never opens a CLI text session; it is the OpenAI Responses wire with the session's token.
+      // There is no runtime default model; a selection without one is not configured, and nothing falls back to an API key.
+      if (!options.selection.model) throw new Error("subscription-chat-unavailable");
+      const selection = { ...immutableSelection(options.selection), provider: "chatgpt-plan" as const };
+      return createOpenAiProvider({
+        kind: "chatgpt-plan",
+        selection,
+        transport: new ChatGptPlanTransport(selection, async () => {
+          const service = options.service?.requireChatGptPlan
+            ? options.service
+            : options.openExternal
+              ? await getSubscriptionRuntimeService(options.openExternal, options.runtimeServiceOptions)
+              : undefined;
+          if (!service?.requireChatGptPlan) throw new Error("subscription-runtime-opener-missing");
+          return service.requireChatGptPlan();
+        }),
+      });
+    }
+    case "codex-cli": {
+      const transport = new SubscriptionLlmProvider(options);
+      return createOpenAiProvider({
         kind: "codex-subscription",
         selection: { ...transport.subscriptionRuntime, provider: "codex" },
         transport,
-      })
-    : transport;
+      });
+    }
+    case null:
+      return new SubscriptionLlmProvider(options);
+    default: {
+      const unhandled: never = loginType;
+      throw new Error(`unhandled OpenAI login type: ${String(unhandled)}`);
+    }
+  }
 }

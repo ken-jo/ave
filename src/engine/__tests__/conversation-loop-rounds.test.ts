@@ -193,6 +193,33 @@ describe("ConversationLoop queryLoop", () => {
     });
   });
 
+  it.each([
+    { speed: undefined, effort: "medium" },
+    { speed: "instant" as const, effort: "none" },
+    { speed: "high" as const, effort: "high" },
+  ])("asks a plan-usage turn for the chosen speed's effort ($speed), never the API-key budget", async ({ speed, effort }) => {
+    const provider = new SubscriptionRecordingPromptProvider([
+      [{ type: "text_delta", text: "ok" }, { type: "message_complete", stopReason: "end_turn" }],
+    ], "chatgpt-plan");
+    const settings = {
+      ...fakeLlmSettings(),
+      activeChatRuntime: { kind: "subscription" as const, provider: "chatgpt-plan" as const, model: "gpt-6.1-sol" },
+      ...(speed === undefined ? {} : { subscriptionReasoningSpeed: speed }),
+    };
+    settings.vendors.openai.enableThinking = false;
+    settings.vendors.openai.thinkingBudgetTokens = 32_000;
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
+      settingsService: { get: () => settings, getSecret: () => "test-key" },
+      disableSessionPersistence: true,
+    }));
+    (loop as { provider: LLMProvider | null }).provider = provider;
+
+    await loop.runTurn("hello", undefined, undefined, { inputOrigin: "user-keyboard" });
+
+    expect(provider.params[0]).toMatchObject({ enableThinking: true, reasoningEffort: effort });
+    expect(provider.params[0]).not.toHaveProperty("thinkingBudgetTokens");
+  });
+
   it("persists persona prompt identity on the user message for retry replay", async () => {
     const toolRegistry = new ToolRegistry();
     const provider = new FakeProvider(endTurnScript("ok"));

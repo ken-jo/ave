@@ -99,9 +99,12 @@ import { normalizeShutdownCleanupTimeoutMs } from "../shared/tool-timeout-policy
 import { normalizePricingOverrides } from "../shared/pricing-overrides.js";
 import {
   MAX_SUBSCRIPTION_RUNTIME_MODEL_ID_LENGTH,
+  DEFAULT_SUBSCRIPTION_REASONING_SPEED,
+  isSubscriptionReasoningSpeed,
   isSubscriptionRuntimeId,
   subscriptionRuntimeDescriptor,
   type ActiveChatRuntime,
+  type SubscriptionReasoningSpeed,
 } from "../shared/subscription-runtime.js";
 import { DEFAULT_SETTINGS } from "./settings-defaults.js";
 import type {
@@ -166,6 +169,11 @@ function normalizePinnedModels(input: unknown): string[] {
 /** Auto or absent enables refresh; off disables it. */
 function normalizeModelCatalogRefresh(input: unknown): "auto" | "off" {
   return input === "off" ? "off" : "auto";
+}
+
+/** A stored speed outside the menu (hand-edited, or from a newer build) reads as the default, never as an effort. */
+function normalizeSubscriptionReasoningSpeed(input: unknown): SubscriptionReasoningSpeed {
+  return isSubscriptionReasoningSpeed(input) ? input : DEFAULT_SUBSCRIPTION_REASONING_SPEED;
 }
 
 export function normalizeActiveChatRuntime(input: unknown): ActiveChatRuntime {
@@ -640,6 +648,9 @@ export function mergeLlmPatch(
       "pinnedModels" in partial ? partial.pinnedModels : base.pinnedModels,
     ),
     modelCatalogRefresh: normalizeModelCatalogRefresh(partial.modelCatalogRefresh ?? base.modelCatalogRefresh),
+    subscriptionReasoningSpeed: normalizeSubscriptionReasoningSpeed(
+      partial.subscriptionReasoningSpeed ?? base.subscriptionReasoningSpeed,
+    ),
     // Only accepted explicit selection clears retired-provider state; coercion does not authorize the default.
     ...(base.retiredProvider && !isProviderSelectionAccepted
       ? { retiredProvider: base.retiredProvider }
@@ -768,6 +779,7 @@ export function pruneLazyLlmVendorBlocks(
     pricingOverrides: normalizePricingOverrides(llm.pricingOverrides),
     pinnedModels: normalizePinnedModels(llm.pinnedModels),
     modelCatalogRefresh: normalizeModelCatalogRefresh(llm.modelCatalogRefresh),
+    subscriptionReasoningSpeed: normalizeSubscriptionReasoningSpeed(llm.subscriptionReasoningSpeed),
   };
   if (marketplaceProviderPresetId) {
     prunedLlm.marketplaceProviderPresetId = marketplaceProviderPresetId;

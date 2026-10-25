@@ -933,6 +933,27 @@ describe("common subscription runtime IPC", () => {
     expect(runtime.verify).toHaveBeenCalledTimes(1);
   });
 
+  it("selects ChatGPT plan usage only with a listed model, since it has no default", async () => {
+    const deps = makeDeps();
+    runtime.listModels.mockResolvedValue({
+      status: readyStatus("chatgpt-plan"),
+      models: [{ id: "gpt-6.1-sol", displayName: "GPT-6.1 Sol", isDefault: false }],
+    });
+    const { registerSettingsHandlers } = await import("../settings.js");
+    registerSettingsHandlers(deps as never);
+
+    expect(await invoke("ave:settings:subscription:use-for-chat", "chatgpt-plan")).toMatchObject({
+      ok: false,
+      error: "subscription-chat-unavailable",
+    });
+    expect(runtime.verify).not.toHaveBeenCalled();
+    expect(deps.settingsService.patch).not.toHaveBeenCalled();
+    expect(await invoke("ave:settings:subscription:use-for-chat", "chatgpt-plan", "gpt-6.1-sol")).toMatchObject({ ok: true });
+    expect(deps.settingsService.patch).toHaveBeenCalledWith({
+      llm: { activeChatRuntime: { kind: "subscription", provider: "chatgpt-plan", model: "gpt-6.1-sol" } },
+    });
+  });
+
   it("keeps legacy Codex and ACP callers on the same central service", async () => {
     const deps = makeDeps();
     const { registerSettingsHandlers } = await import("../settings.js");
