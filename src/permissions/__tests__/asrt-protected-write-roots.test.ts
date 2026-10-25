@@ -37,6 +37,10 @@ import {
   wrapToolCommand,
 } from "../asrt-sandbox.js";
 import { spawnConfinedChild } from "../confined-child.js";
+import {
+  __resetSandboxRequestedAtBootForTest,
+  setPluginWorkerConfinementRequestedAtBoot,
+} from "../sandbox-capability.js";
 import { createSandboxProcessHome } from "../sandbox-process-home.js";
 import { bundledWrappedEnv, wrapBundledCommand } from "../../sandbox/wrap-bundled-command.js";
 import { getConfiguredSessionReadPolicy } from "../sensitive-paths.js";
@@ -236,7 +240,6 @@ describe("the shared layer withholds grants under the protected floor", () => {
     expect(sites.sort()).toEqual([
       "permissions/asrt-sandbox.ts: updateConfig(buildSandboxConfig(withWorkerUnixSockets(_baseTrustedSettings)));",
       "permissions/asrt-sandbox.ts: updateConfig(buildSandboxConfig(withWorkerUnixSockets(_baseTrustedSettings,socketDir)));",
-      "permissions/asrt-sandbox.ts: updateConfig(buildSandboxConfig(withWorkerUnixSockets(trustedSettings)));",
       "permissions/asrt-sandbox.ts: wrapWithSandboxArgv(ASRT_LINUX_RUNTIME_PROBE_COMMAND,undefined,undefined,abortController.signal,process.cwd(),{commandId:invocation.token,denyUnixSockets:true});",
       "permissions/asrt-sandbox.ts: wrapWithSandboxArgv(command,options.binShell,customConfig,options.abortSignal,undefined,{commandId:options.commandId,denyUnixSockets:options.denyUnixSockets});",
       "permissions/asrt-sandbox.ts: wrapWithSandboxArgv(command,options.binShell,customConfig,options.abortSignal,undefined,{...wrapOptions,commandId:options.commandId,denyUnixSockets:options.denyUnixSockets});",
@@ -309,7 +312,8 @@ describe("the plugins root, refused to plugin-owned wraps", () => {
   });
 });
 
-describe("a confined child cannot reach user data through a grant", () => {
+// These live probes require POSIX shells and per-process filesystem isolation.
+describe.skipIf(hostPlatform === "win32")("a confined child cannot reach user data through a grant", () => {
   let root: string;
   let userData: string;
   let partitions: string;
@@ -349,9 +353,13 @@ describe("a confined child cannot reach user data through a grant", () => {
     writeFileSync(join(userData, "Cookies"), SECRET);
     writeFileSync(join(partitions, "cookie"), SECRET);
     await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true, userDataDir: userData, denyRead: [customDeny] });
+    // The confined-child and bundled wraps below serve extension processes,
+    // which are wrapped only while plugin-worker confinement was requested.
+    setPluginWorkerConfinementRequestedAtBoot(true);
   });
 
   afterAll(async () => {
+    __resetSandboxRequestedAtBootForTest();
     if (isAsrtSandboxActive()) await resetAsrtSandbox();
     if (!sandboxRuns) return;
     if (previousAveHome === undefined) delete process.env.AVE_HOME;

@@ -15,6 +15,7 @@ import type { ListedEgressGrant, RevocableEgressGrant } from "../../../../shared
 import { formatDateTime } from "../../../../shared/format-time.js";
 import { formatIpcError } from "../../format-ipc-error.js";
 import { isIpcErrorResult } from "../../types.js";
+import { terminalTabLabel } from "../../preview/terminal-tab-labels.js";
 
 interface EgressGrantsListProps {
   /** Override fetcher for tests. Defaults to window.ave.permission.egressGrantsList. */
@@ -42,6 +43,19 @@ function grantKey(grant: ListedEgressGrant): string {
   return `${grant.scope}\n${owner}\n${grant.host}\n${grant.port}\n${grant.network ?? "public"}`;
 }
 
+function failureMessage(result: unknown): string | undefined {
+  if (isIpcErrorResult(result)) return formatIpcError(result.error, result.message);
+  if (result !== null && typeof result === "object" && (result as { ok?: unknown }).ok === false) {
+    const failed = result as { message?: unknown; error?: unknown };
+    return formatIpcError(
+      typeof failed.error === "string" ? failed.error : undefined,
+      typeof failed.message === "string" ? failed.message : undefined,
+    );
+  }
+  return undefined;
+}
+
+
 function revokeTarget(grant: ListedEgressGrant): RevocableEgressGrant {
   const destination = {
     host: grant.host,
@@ -56,18 +70,6 @@ function revokeTarget(grant: ListedEgressGrant): RevocableEgressGrant {
     origin: grant.origin,
     ...(grant.workspaceRoot === undefined ? {} : { workspaceRoot: grant.workspaceRoot }),
   };
-}
-
-function failureMessage(result: unknown): string | undefined {
-  if (isIpcErrorResult(result)) return formatIpcError(result.error, result.message);
-  if (result !== null && typeof result === "object" && (result as { ok?: unknown }).ok === false) {
-    const failed = result as { message?: unknown; error?: unknown };
-    return formatIpcError(
-      typeof failed.error === "string" ? failed.error : undefined,
-      typeof failed.message === "string" ? failed.message : undefined,
-    );
-  }
-  return undefined;
 }
 
 export function EgressGrantsList({ fetcher, revoker }: EgressGrantsListProps): ReactElement {
@@ -90,6 +92,7 @@ export function EgressGrantsList({ fetcher, revoker }: EgressGrantsListProps): R
         setError(translate("permissionsTab.networkGrantsLoadFailed"));
       }
     } catch {
+      // A thrown fetch carries no user-facing message; its text stays out of the UI.
       setError(translate("permissionsTab.networkGrantsLoadFailed"));
     } finally {
       setBusy(false);
@@ -100,9 +103,9 @@ export function EgressGrantsList({ fetcher, revoker }: EgressGrantsListProps): R
     setBusy(true);
     setError(null);
     try {
-      const result = await (revoker ?? ((grant: ListedEgressGrant) =>
-        window.ave.permission.egressGrantRevoke(revokeTarget(grant))))(grant);
+      const result = await (revoker ?? ((g: ListedEgressGrant) => window.ave!.permission!.egressGrantRevoke(revokeTarget(g))))(grant);
       const failed = failureMessage(result);
+      // A refused revoke stays on screen with the grant still listed.
       if (failed !== undefined) { setError(failed); return; }
       await refresh();
     } catch {
@@ -155,7 +158,7 @@ export function EgressGrantsList({ fetcher, revoker }: EgressGrantsListProps): R
                         })
                       : grant.scope === "tab"
                         ? translate("permissionsTab.networkGrantScopeTab", {
-                            tab: translate("permissionsTab.networkGrantTabElsewhere"),
+                            tab: terminalTabLabel(grant.tabId) ?? translate("permissionsTab.networkGrantTabElsewhere"),
                             time: formatDateTime(grant.grantedAt),
                           })
                         : translate("permissionsTab.networkGrantScopeWorkspace", {

@@ -191,8 +191,8 @@ async function startShell(grantOwnTty: boolean): Promise<Shell> {
   const ownTty = ownPtySlavePath(pty);
   const filesystem = { allowWrite: [workDir], denyRead: [], denyWrite: getDefaultSensitiveWriteDenyPaths() };
   const { argv, env } = grantOwnTty
-    ? await wrapTerminalCommand("exec /bin/zsh -f -i", { filesystem, ownTty, commandId: TEST_COMMAND_ID })
-    : await wrapWorkerCommand("exec /bin/zsh -f -i", { filesystem, commandId: TEST_COMMAND_ID });
+    ? await wrapTerminalCommand("exec /bin/zsh -f -i", { commandId: TEST_COMMAND_ID, filesystem, ownTty })
+    : await wrapWorkerCommand("exec /bin/zsh -f -i", { commandId: TEST_COMMAND_ID, filesystem });
   const childEnv: Record<string, string> = { PATH: "/usr/bin:/bin", HOME: workDir, TERM: "xterm-256color", PS1: "%# " };
   for (const [key, value] of Object.entries(env)) {
     if (value !== undefined && (/PROXY$/i.test(key) || key === "SANDBOX_RUNTIME" || key === "TMPDIR")) childEnv[key] = value;

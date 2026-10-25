@@ -17,9 +17,12 @@ import type {
 } from "../../shared/sandbox-capability-info.js";
 
 export interface SandboxGateInputs {
-  /** `features.osToolSandbox` — the Settings toggle; on by default on macOS/Linux, gated off on Windows. */
+  /** `features.osToolSandbox` OR `features.pluginWorkerConfinement` — a Settings
+   *  toggle of either scope; the shell scope is on by default on macOS/Linux and
+   *  gated off on Windows, the worker scope off by default everywhere. */
   settingOn: boolean;
-  /** `AVE_SANDBOX_ENABLED=1` — the deliberate, fail-closed env override. */
+  /** `AVE_SANDBOX_ENABLED=1` OR `AVE_PLUGIN_WORKER_CONFINEMENT=1` — the
+   *  deliberate, fail-closed env override of either scope. */
   explicitEnv: boolean;
   /** `process.platform` at boot. */
   platform: NodeJS.Platform;

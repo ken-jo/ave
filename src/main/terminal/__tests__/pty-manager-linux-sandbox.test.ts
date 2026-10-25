@@ -21,7 +21,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { isAsrtSandboxActive, resetAsrtSandbox, useAppOwnedSandboxTempRoot } from "../../../permissions/asrt-sandbox.js";
 import { initializeRequiredSandbox, shouldSkipNativeSandboxTests } from "../../../__tests__/support/native-sandbox.js";
-import { __resetActiveSandboxCapabilityForTest, setActiveSandboxCapability } from "../../../permissions/sandbox-capability.js";
+import { __resetActiveSandboxCapabilityForTest, setActiveSandboxCapability, setShellSandboxRequestedAtBoot } from "../../../permissions/sandbox-capability.js";
 import { requireSandboxCases } from "../../../plugins/isolation/__tests__/sandbox-cases.js";
 import { waitForTerminal } from "../../../__tests__/support/terminal-markers.js";
 import {
@@ -76,6 +76,7 @@ afterEach(async () => {
   __resetTerminalsForTest();
   if (isAsrtSandboxActive()) await resetAsrtSandbox();
   __resetActiveSandboxCapabilityForTest();
+  setShellSandboxRequestedAtBoot(false);
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
   await cleanupTmpDir(root);
@@ -83,6 +84,7 @@ afterEach(async () => {
 
 async function startSandboxedShell(shellPath: string, tabId: string): Promise<TerminalBlockTracker> {
   useAppOwnedSandboxTempRoot();
+  setShellSandboxRequestedAtBoot(true);
   await initializeRequiredSandbox({ allowedDomains: [], strictAllowlist: true });
   setActiveSandboxCapability({
     kind: "asrt",

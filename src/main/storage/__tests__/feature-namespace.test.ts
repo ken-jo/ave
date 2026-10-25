@@ -1,3 +1,4 @@
+import { canCreateSymlinks } from "../../../__tests__/support/symlink-capability.js";
 /**
  * feature-namespace SOT helper tests.
  *
@@ -106,7 +107,7 @@ describe("feature-namespace", () => {
     expect(entries).toEqual(["config.json"]);
   });
 
-  it("does not write through a symlink planted at the staging path", async () => {
+  it.skipIf(!canCreateSymlinks())("does not write through a symlink planted at the staging path", async () => {
     // The staging name was a FIXED `${target}.tmp`. Anything that could predict
     // the target could therefore plant that path first, and `fs.writeFile`
     // follows a symlink: the payload landed at the planter's destination and

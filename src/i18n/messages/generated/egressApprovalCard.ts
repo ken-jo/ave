@@ -1,6 +1,5 @@
 // i18n fragment. Source: src/ui/renderer/components/permissions/EgressHostApprovalCard.tsx.
 export const en = {
-  "egressApprovalCard.storeUnreadable": "Saved domain permissions could not be read. Check the permission files and try again.",
   "egressApprovalCard.dockTitle": "Approve Network Access",
   "egressApprovalCard.title": "Allow this network connection?",
   "egressApprovalCard.body": "A sandboxed {tool} command wants to connect to a host that is not allowed yet:",
@@ -10,8 +9,8 @@ export const en = {
   "egressApprovalCard.allowConversation": "This conversation",
   "egressApprovalCard.allowTab": "This tab",
   "egressApprovalCard.allowWorkspace": "This workspace",
-  "egressApprovalCard.allowAlways": "Always for this domain",
-  "egressApprovalCard.revokeHint": "Always applies to this domain and port for future sandboxed commands.",
+  "egressApprovalCard.allowAlways": "Always",
+  "egressApprovalCard.revokeHint": "Always applies to this domain and port for future sandboxed commands; revoke it in Settings → Permissions → Network.",
   "egressApprovalCard.revokeHintTerminal": "Always grants can be revoked in Settings → Permissions → Network.",
   "egressApprovalCard.invalid": "This network request is incomplete and can only be denied.",
   "egressApprovalCard.localWarning": "This is this computer or a private network (local services, intranet hosts, routers). An allow here lasts for this command only.",
@@ -23,7 +22,6 @@ export const en = {
   "egressApprovalCard.unverifiedWarningTab": "Your network's proxy server looks up this name, so Ave could not check where it leads. An allow here lasts at most until this tab's shell exits (the tab closes, or the shell exits and restarts).",
 } as const;
 export const ko: Record<keyof typeof en, string> = {
-  "egressApprovalCard.storeUnreadable": "저장된 도메인 권한을 읽을 수 없습니다. 권한 파일을 확인하고 다시 시도하세요.",
   "egressApprovalCard.dockTitle": "네트워크 접근 승인",
   "egressApprovalCard.title": "이 네트워크 연결을 허용할까요?",
   "egressApprovalCard.body": "샌드박스 안의 {tool} 명령이 아직 허용되지 않은 호스트에 연결하려고 합니다:",
@@ -33,8 +31,8 @@ export const ko: Record<keyof typeof en, string> = {
   "egressApprovalCard.allowConversation": "이 대화에서 허용",
   "egressApprovalCard.allowTab": "이 탭에서 허용",
   "egressApprovalCard.allowWorkspace": "이 워크스페이스에서 허용",
-  "egressApprovalCard.allowAlways": "이 도메인 항상 허용",
-  "egressApprovalCard.revokeHint": "항상 허용은 이후 샌드박스 명령에서도 이 도메인과 포트에 적용됩니다.",
+  "egressApprovalCard.allowAlways": "항상 허용",
+  "egressApprovalCard.revokeHint": "항상 허용은 이후 샌드박스 명령에서도 이 도메인과 포트에 적용되며, 설정 → 권한 → 네트워크에서 취소할 수 있습니다.",
   "egressApprovalCard.revokeHintTerminal": "항상 허용은 설정 → 권한 → 네트워크에서 취소할 수 있습니다.",
   "egressApprovalCard.invalid": "이 네트워크 요청은 정보가 빠져 있어 거절만 할 수 있습니다.",
   "egressApprovalCard.localWarning": "이 컴퓨터 또는 사설 네트워크(로컬 서비스, 내부망 호스트, 공유기)입니다. 여기서 허용해도 이 명령에서만 유지됩니다.",

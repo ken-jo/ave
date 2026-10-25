@@ -24,7 +24,8 @@ describe("JVM proxy agent resource", () => {
     expect(buildSandboxConfig({}).javaAgentJarPath).toBe(
       process.platform === "win32" ? undefined : path,
     );
-    expect(await getJavaProxyAgentJarPathAsync(path)).toBe(path);
+    // ASRT 0.0.79 resolves the jar asynchronously; the sync form is gone.
+    await expect(getJavaProxyAgentJarPathAsync(path)).resolves.toBe(path);
   });
 
   it("passes the physical archive sidecar path to the external JVM", async () => {

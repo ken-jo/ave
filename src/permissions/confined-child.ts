@@ -21,6 +21,7 @@
  * paths only; the floor is not theirs to forget.
  */
 import { spawn, type ChildProcess, type StdioOptions } from "node:child_process";
+import { assertSrtWinSpawnIntegrity } from "./srt-win-integrity.js";
 import { existsSync } from "node:fs";
 import { extname, join } from "node:path";
 import type { Readable, Writable } from "node:stream";
@@ -29,7 +30,8 @@ import {
   ensureSandboxTempPrincipalDir,
   getDefaultSensitiveReadDenyPaths,
   getDefaultSensitiveWriteDenyPaths,
-  isAsrtSandboxActive,
+  isPluginWorkerConfinementActive,
+  assertExtensionStartAllowed,
   sandboxTempEnvLaunch,
   wrapWorkerCommand,
   type SandboxTempPrincipal,
@@ -250,7 +252,7 @@ export interface ConfinedChildSpec {
 }
 
 /**
- * The wrap a spawn actually applied — never the `features.osToolSandbox`
+ * The wrap a spawn actually applied — never the `features.pluginWorkerConfinement`
  * setting. A child spawned unwrapped is `unconfined` whatever the setting
  * says, because "confined" is a claim about this process, and only the wrap
  * makes it true. One value per substrate ASRT wraps with.
@@ -296,6 +298,7 @@ export async function spawnConfinedChild(spec: ConfinedChildSpec): Promise<Confi
   try {
     spec.assertStillValid?.();
     assertManagedChildProcessAdmissionOpen(spec.label);
+    if (confinement !== "unconfined") assertSrtWinSpawnIntegrity(executable);
     child = spawn(executable, args, {
       stdio,
       shell: false,
@@ -420,7 +423,7 @@ function windowsRelayLaunch(spec: ConfinedChildSpec): {
 /**
  * The substrate ASRT wraps with on this platform. Asked only on the wrapped
  * path; a platform ASRT does not wrap on is an internal contract violation,
- * because `isAsrtSandboxActive()` reported a live sandbox there.
+ * because `isPluginWorkerConfinementActive()` reported a live sandbox there.
  */
 function wrapConfinement(label: string): Exclude<SpawnConfinement, "unconfined"> {
   switch (process.platform) {
@@ -450,7 +453,8 @@ async function resolveSpawnLine(
   relayRequest?: RelayRequest;
   egress?: EgressInvocation;
 }> {
-  if (!isAsrtSandboxActive()) {
+  assertExtensionStartAllowed();
+  if (!isPluginWorkerConfinementActive()) {
     return { executable: spec.command, args: [...spec.args], wrappedEnv: {}, confinement: "unconfined" };
   }
   const confinement = wrapConfinement(spec.label);

@@ -24,6 +24,8 @@ import type { HostShellExecutionPlanAuditProjection } from "../permissions/host-
  */
 
 /** What the sandbox confines, by platform. `network` is false where egress is not contained. */
+import type { AveHomePrincipal, AveHomePrivacyFailureCategory } from "./ave-home.js";
+
 export interface SandboxConfinement {
   filesystem: boolean;
   process: boolean;
@@ -36,12 +38,13 @@ export interface SandboxConfinement {
  * `ready` is the single boolean the UI gates on: ASRT's dedicated
  * `srt-sandbox` user is provisioned (`userState === "ready"`) AND the WFP
  * filter set is installed (`wfpState === "installed"`). Until both hold, the
- * sandbox cannot confine filesystem/network access and boot keeps
- * `isAsrtSandboxActive()` false.
+ * helper cannot confine extension filesystem/network access. Windows shell
+ * commands may independently use MXC while the runtime provides their proxy.
  *
  * `applicable` is false on every non-win32 platform — the renderer renders the
  * macOS/Linux capability copy instead of the Windows consent flow. The state
- * fields are `null` there (no Windows backend to query).
+ * fields are `null` there (no Windows backend to query), and when a missing
+ * helper prevents observing the Windows provisioned state.
  *
  * `instructions` is the VERBATIM ASRT `windowsInstallInstructions(...)` text.
  * Empty string when not applicable.
@@ -49,9 +52,9 @@ export interface SandboxConfinement {
 export interface SandboxWindowsStatusInfo {
   /** True only on win32. Non-win32 → false, with null state fields. */
   applicable: boolean;
-  /** `absent` | `incomplete` | `ready`, or null off-win32. */
+  /** `absent` | `incomplete` | `ready`, or null when not observed. */
   userState: "absent" | "incomplete" | "ready" | null;
-  /** `absent` | `installed` | `cannot-read`, or null off-win32. */
+  /** `absent` | `installed` | `cannot-read`, or null when not observed. */
   wfpState: "absent" | "installed" | "cannot-read" | null;
   /**
    * True when the sandbox user is ready and WFP is either directly observed as
@@ -59,6 +62,15 @@ export interface SandboxWindowsStatusInfo {
    * Always false off-win32.
    */
   ready: boolean;
+  /** Expected helper resolution failure; never a readiness or provisioning claim. */
+  helperError?: "srt-win-not-found" | "srt-win-integrity-mismatch";
+  /** Confinement is refused until this private directory verifies at restart. */
+  homePrivacyError?: {
+    approvedForSession?: boolean;
+    path: string;
+    category: AveHomePrivacyFailureCategory;
+    extraPrincipals?: AveHomePrincipal[];
+  };
   /** Verbatim ASRT install instructions. Empty off-win32. */
   instructions: string;
 }
@@ -112,15 +124,166 @@ export type SandboxGateAction = "skip" | "activate" | "degrade" | "abort";
 
 /** Stable machine reason for the branch the boot gate took. */
 export type SandboxGateReason =
+  | "degrade-ave-home-privacy-failed"
   | "gate-off"
   | "deps-present"
+  /** Windows: srt-win not installed, ASRT runs as the proxy for agent shells in MXC containers. */
+  | "activate-windows-mxc-proxy-only"
   | "degrade-windows-not-installed"
+  /** Windows: the sandbox passed its startup check but failed to start (the cause is in `dependencyErrors`). */
+  | "degrade-windows-init-failed"
   | "degrade-default-cannot-activate"
   | "abort-explicit-cannot-activate"
   | "degrade-linux-runtime-probe-failed"
   | "abort-linux-runtime-probe-failed"
   | "degrade-macos-runtime-probe-failed"
   | "abort-macos-runtime-probe-failed";
+
+/**
+ * Why a requested sandbox did not start, as a stable code the renderer can
+ * localize. ASRT's own dependency messages are English free text that can carry
+ * local paths, so they stay in the main-process log; boot classifies them once
+ * ({@link SandboxBootOutcome.causes}) and every surface renders the code.
+ * - `missing-bwrap` / `missing-socat` / `missing-ripgrep`: a Linux dependency
+ *   is not installed or not executable.
+ * - `dependency-check-failed`: the dependency check failed for a reason ASRT
+ *   did not name as one of the above (for example running as root).
+ * - `windows-setup-incomplete`: the srt-win sandbox user or WFP filters are
+ *   not ready — the one-time administrator setup has not completed.
+ * - `windows-sandbox-missing`: the bundled srt-win binary is not where the
+ *   installation put it — a packaging fault that reinstalling Ave repairs, not
+ *   something the administrator setup can fix.
+ * - `windows-sandbox-integrity-failed`: the bundled helper failed verification;
+ *   repair or reinstall the application before starting it again.
+ * - `linux-runtime-probe-failed`: the dependencies are present but the bwrap
+ *   runtime probe failed (for example user namespaces are disabled).
+ * - `init-failed`: ASRT failed to start for any other reason.
+ */
+export type SandboxStartFailureCause =
+  | "ave-home-privacy-failed"
+  | "missing-bwrap"
+  | "missing-socat"
+  | "missing-ripgrep"
+  | "dependency-check-failed"
+  | "windows-setup-incomplete"
+  | "windows-sandbox-missing"
+  | "windows-sandbox-integrity-failed"
+  | "linux-runtime-probe-failed"
+  | "init-failed";
+
+/**
+ * Why the shell sandbox is requested for this session but host shells still
+ * run without it: a start failure, a platform without a sandbox, a Windows
+ * sandbox that is active but cannot contain one-shot shells, or
+ * (`shell-not-contained`) an active sandbox that cannot contain shells at all,
+ * in which case shell commands are blocked rather than run.
+ */
+export type ShellSandboxUnavailableCause =
+  | SandboxStartFailureCause
+  | "platform-unsupported"
+  | "windows-shell-not-contained"
+  | "shell-not-contained";
+
+/**
+ * The shell sandbox as the chat input's permission card shows it.
+ * - `on`: requested, and host shells run inside the sandbox this session.
+ * - `off`: not requested, and nothing is waiting for a restart.
+ * - `unavailable`: requested this session, but shells run without it;
+ *   `causes` says why.
+ * - `pending-on` / `pending-off`: the setting changed after startup. The
+ *   sandbox is initialized once at boot, so the change applies on the next
+ *   start and this session keeps the state it booted with. Turning off a
+ *   sandbox that never contained shells this session is plain `off`.
+ * - `unsupported`: this platform has no OS sandbox.
+ * - `unknown`: the boot gate has not run in this process, so nothing about
+ *   effectiveness can be claimed.
+ * - `error`: the host's observations contradicted each other (see
+ *   {@link describeShellSandboxStatus}); the snapshot reports the fault on this
+ *   row only, so the rest of the sandbox snapshot still loads.
+ */
+type ShellSandboxState =
+  | "on"
+  | "off"
+  | "unavailable"
+  | "pending-on"
+  | "pending-off"
+  | "unsupported"
+  | "unknown"
+  | "error";
+
+/** The shell-scope status the sandboxCapability snapshot carries for the permission card. */
+export interface ShellSandboxStatusInfo {
+  readonly state: ShellSandboxState;
+  /** The stored `features.osToolSandbox` value — what the checkbox writes. */
+  readonly setting: boolean;
+  /** `AVE_SANDBOX_ENABLED=1` turns the shell sandbox on for this run whatever is stored. */
+  readonly envForced: boolean;
+  /** Non-empty exactly when `state` is `unavailable` or `unsupported`. */
+  readonly causes: readonly ShellSandboxUnavailableCause[];
+}
+
+/** What {@link describeShellSandboxStatus} reads. Every field is host-observed. */
+export interface ShellSandboxStatusInput {
+  /** The platform can run an OS sandbox at all (`SandboxCapabilityInfo.available`). */
+  readonly platformSupported: boolean;
+  readonly setting: boolean;
+  readonly envForced: boolean;
+  /** The shell intent sealed at boot (`isShellSandboxRequestedAtBoot`). */
+  readonly requestedAtBoot: boolean;
+  readonly boot: SandboxBootOutcomeView | null;
+  /** The route the host shell execution plan selects for a default shell. */
+  readonly shellPlanMode: "asrt" | "plain" | "blocked";
+  /** That plan's fallback reason. */
+  readonly shellPlanFallback:
+    | "none"
+    | "disabled-by-setting"
+    | "platform-unsupported"
+    | "windows-partial-shell-acl-unsafe"
+    | "requested-sandbox-unavailable"
+    | "active-sandbox-not-shell-contained";
+}
+
+/**
+ * Decide the shell sandbox state from what the host observed. The one place
+ * that decides it: the IPC snapshot calls it, the renderer only renders the
+ * result. Throws on a combination the boot and plan contracts rule out, so a
+ * drift between them fails here rather than showing a made-up state.
+ */
+export function describeShellSandboxStatus(input: ShellSandboxStatusInput): ShellSandboxStatusInfo {
+  const base = { setting: input.setting, envForced: input.envForced };
+  if (!input.platformSupported) {
+    return { ...base, state: "unsupported", causes: ["platform-unsupported"] };
+  }
+  const requestedNow = input.setting || input.envForced;
+  if (input.boot === null) return { ...base, state: "unknown", causes: [] };
+  // The gate runs once per process, so a setting changed after boot is a
+  // restart away from taking effect, whatever the plan says now.
+  if (requestedNow && !input.requestedAtBoot) return { ...base, state: "pending-on", causes: [] };
+  if (!requestedNow && input.requestedAtBoot) {
+    // Pending only when a restart changes something for shells: a sandbox
+    // that never contained them (a degraded boot, Windows Plan B) is already
+    // off for shells, and saying it "stays on" would be false.
+    return { ...base, state: input.shellPlanMode === "asrt" ? "pending-off" : "off", causes: [] };
+  }
+  if (!requestedNow) return { ...base, state: "off", causes: [] };
+  if (input.shellPlanMode === "asrt") return { ...base, state: "on", causes: [] };
+  if (input.boot.action === "degrade" || input.boot.action === "abort") {
+    if (input.boot.causes.length === 0) {
+      throw new Error(`describeShellSandboxStatus: boot ${input.boot.action} (${input.boot.reason}) recorded no cause`);
+    }
+    return { ...base, state: "unavailable", causes: [...input.boot.causes] };
+  }
+  if (input.shellPlanFallback === "windows-partial-shell-acl-unsafe") {
+    return { ...base, state: "unavailable", causes: ["windows-shell-not-contained"] };
+  }
+  if (input.shellPlanFallback === "active-sandbox-not-shell-contained") {
+    return { ...base, state: "unavailable", causes: ["shell-not-contained"] };
+  }
+  throw new Error(
+    `describeShellSandboxStatus: shell sandbox requested at boot, gate ${input.boot.action}, ` +
+      `but the shell plan is ${input.shellPlanMode}/${input.shellPlanFallback}`,
+  );
+}
 
 /**
  * What the sandbox gate actually decided for THIS process, sealed at boot.
@@ -144,6 +307,109 @@ export interface SandboxBootOutcome {
    * did not fail on dependencies.
    */
   readonly dependencyErrors: readonly string[];
+  /**
+   * The same failure as stable codes, classified once at the gate. Non-empty
+   * exactly when `action` is `degrade` or `abort`.
+   */
+  readonly causes: readonly SandboxStartFailureCause[];
+}
+
+/**
+ * The boot outcome as the renderer receives it: everything but the raw
+ * dependency messages. Those are ASRT's English free text and can carry local
+ * paths (a binary location, the user name), so they stay in the main-process
+ * log; `causes` carries the same failure as codes the renderer can localize.
+ */
+export type SandboxBootOutcomeView = Omit<SandboxBootOutcome, "dependencyErrors">;
+
+/** Project a sealed boot outcome onto what crosses into the renderer. */
+export function sandboxBootOutcomeView(outcome: SandboxBootOutcome): SandboxBootOutcomeView {
+  return {
+    action: outcome.action,
+    reason: outcome.reason,
+    onSignal: outcome.onSignal,
+    causes: [...outcome.causes],
+  };
+}
+
+/**
+ * How strongly the egress proxy knows which invocation opened a connection.
+ *
+ * - `kernel-channel`: the OS pins each confined process to its own proxy
+ *   listener, so the port a connection arrives on names the invocation
+ *   (Windows MXC per-container WFP; `egress-invocation-listener.ts`). A
+ *   process cannot present another invocation's identity.
+ * - `shared`: confined processes share one proxy endpoint and the identity is
+ *   a label the client presents (ASRT's proxy username). Attribution, not a
+ *   boundary between concurrent invocations.
+ */
+export type EgressIdentityStrength = "kernel-channel" | "shared";
+
+/**
+ * The scopes an egress grant can be given. A shell tool call's ladder is
+ * once, conversation, workspace, always; a workspace terminal tab's is once,
+ * tab, workspace, always (`tab` takes the place of `conversation`: a terminal
+ * belongs to no conversation, design F).
+ */
+export type EgressGrantScope = "once" | "conversation" | "tab" | "workspace" | "always";
+
+/**
+ * The widest egress-grant scope an identity strength can carry. With a shared
+ * identity another invocation of the same session can present the id a grant
+ * was given to, so a grant must not outlive the conversation it was given in.
+ * The egress ask (proxy-egress PR 4) caps the scopes it offers with this.
+ */
+export function maxEgressGrantScope(strength: EgressIdentityStrength): EgressGrantScope {
+  return strength === "kernel-channel" ? "always" : "conversation";
+}
+
+/** Why Microsoft Execution Containers cannot carry agent shells on this host (`mxc-windows.ts`). */
+export type SandboxMxcUnavailableReason =
+  | "not-windows"
+  | "unsupported-arch"
+  | "binary-missing"
+  | "probe-failed"
+  | "tier-unsupported"
+  | "request-rejected"
+  /** The shipped launcher's sha256 is not the pinned one (`mxc-launcher-pins.json`). */
+  | "launcher-mismatch"
+  /** Windows PowerShell 5.1 did not start inside a real container on this host. */
+  | "powershell-start-failed"
+  /**
+   * It failed to initialize its UI subsystem (`STATUS_DLL_INIT_FAILED`), which
+   * a non-interactive session (a service, SSH) causes: whether it starts for the
+   * signed-in user is unverified, so MXC is not claimed.
+   */
+  | "unverified-session";
+
+/**
+ * Windows only: which substrate carries each kind of process this boot, and
+ * how strongly their egress is attributed. Sealed at boot, like the gate.
+ */
+export interface SandboxWindowsSubstrateInfo {
+  /**
+   * Whether MXC can confine agent shells here, with the stable reason when
+   * not. `checking`: the boot-path checks passed and the PowerShell start
+   * probe is still running; shells use the non-MXC route until it settles.
+   */
+  readonly mxc:
+    | { readonly state: "available" }
+    | { readonly state: "checking" }
+    | { readonly state: "unavailable"; readonly reason: SandboxMxcUnavailableReason };
+  /** `major.minor.build.ubr` of the host, for the reason text; null if unread. */
+  readonly windowsBuild: string | null;
+  /** Whether srt-win (the one-time administrator install) was ready at boot. */
+  readonly srtWinReady: boolean;
+  /**
+   * Bash/PowerShell tool commands: each in its own MXC container (`mxc`), or —
+   * with srt-win active and no MXC — as an ordinary process after a per-command
+   * approval (`approved-host`), or without the sandbox at all (`none`).
+   */
+  readonly shells: "mxc" | "approved-host" | "none";
+  /** Plugin processes: under srt-win's shared account, or not confined. */
+  readonly extensions: "srt-win" | "none";
+  readonly shellEgressIdentity: EgressIdentityStrength;
+  readonly extensionEgressIdentity: EgressIdentityStrength;
 }
 
 /** Runtime snapshot returned to the renderer for startup/runtime honesty. */
@@ -160,8 +426,10 @@ export interface SandboxRuntimeCapabilityInfo {
 export interface SandboxCapabilityInfo {
   /** Host-issued default shell route, distinct from the platform potential. */
   shellExecutionPlan?: HostShellExecutionPlanAuditProjection;
+  homePrivacyError?: SandboxWindowsStatusInfo["homePrivacyError"];
   platform: NodeJS.Platform;
-  /** Whether the user setting (or env escape-hatch) currently has the sandbox enabled. */
+  /** Whether the shell sandbox setting (`features.osToolSandbox`, or its env
+   *  escape-hatch `AVE_SANDBOX_ENABLED=1`) is currently enabled. */
   enabled: boolean;
   /** Whether THIS PLATFORM can confine tools (its potential), independent of
    * whether a runner is currently registered — so the toggle can be shown
@@ -174,14 +442,26 @@ export interface SandboxCapabilityInfo {
   reason: string;
   /** Human-readable reason for this platform's potential capability. */
   potentialReason?: string;
-  /** Last runtime SOT snapshot for the current process. */
+  /** What host SHELLS run under in this process (the shell sandbox scope). */
   runtime?: SandboxRuntimeCapabilityInfo;
+  /** What EXTENSION processes run under in this process (the plugin-worker
+   *  confinement scope). ASRT is one runtime, so either scope can be active
+   *  while the other reports none. */
+  workerRuntime?: SandboxRuntimeCapabilityInfo;
   /**
    * What the boot gate decided for this process. `null` when boot has not run
    * the gate (tests, or a host that never called sandbox init) — absence is not
    * "off", so the renderer must not render it as such.
    */
-  boot?: SandboxBootOutcome | null;
+  boot?: SandboxBootOutcomeView | null;
+  /**
+   * Windows: which substrate carries shells and extensions this boot, and how
+   * strongly their egress is attributed. `null` off Windows, and on Windows
+   * when boot never ran the gate.
+   */
+  windowsSubstrate?: SandboxWindowsSubstrateInfo | null;
+  /** The shell sandbox as the chat input's permission card shows it. */
+  shell: ShellSandboxStatusInfo;
   /** What the sandbox actually confines on this platform when active. */
   confines: SandboxConfinement;
 }
@@ -225,35 +505,4 @@ export function sandboxConfinementForPlatform(
   // Generic partial profile for any future non-Windows partial backend:
   // filesystem + network may be present, but process isolation is not claimed.
   return { filesystem: true, process: false, network: true };
-}
-
-/**
- * How strongly the egress proxy knows which invocation opened a connection.
- *
- * - `kernel-channel`: the OS pins each confined process to its own proxy
- *   listener, so the port a connection arrives on names the invocation
- *   (per-invocation listeners on macOS/Linux). A
- *   process cannot present another invocation's identity.
- * - `shared`: confined processes share one proxy endpoint and the identity is
- *   a label the client presents (ASRT's proxy username). Attribution, not a
- *   boundary between concurrent invocations.
- */
-export type EgressIdentityStrength = "kernel-channel" | "shared";
-
-/**
- * The scopes an egress grant can be given. A shell tool call's ladder is
- * once, conversation, workspace, always; a workspace terminal tab's is once,
- * tab, workspace, always (`tab` takes the place of `conversation`: a terminal
- * belongs to no conversation).
- */
-export type EgressGrantScope = "once" | "conversation" | "tab" | "workspace" | "always";
-
-/**
- * The widest egress-grant scope an identity strength can carry. With a shared
- * identity another invocation of the same session can present the id a grant
- * was given to, so a grant must not outlive the conversation it was given in.
- * The egress ask caps the scopes it offers with this.
- */
-export function maxEgressGrantScope(strength: EgressIdentityStrength): EgressGrantScope {
-  return strength === "kernel-channel" ? "always" : "conversation";
 }

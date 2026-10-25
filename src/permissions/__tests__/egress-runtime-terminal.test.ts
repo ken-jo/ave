@@ -21,7 +21,7 @@ function terminal(tabId = TAB): EgressInvocation {
 function runtime() {
   const wc = { send: vi.fn(), isDestroyed: () => false };
   const gate = new ApprovalGate(wc as never, undefined, 5_000, { log: vi.fn() } as never);
-  const callback = createEgressAskRuntimeCallback({ approvalGate: gate });
+  const callback = createEgressAskRuntimeCallback({ approvalGate: gate, shellAskEnabled: () => true });
   const cards = () => sentApprovalCards<ApprovalRequest>(wc);
   const cardSent = async (count: number) => {
     await vi.waitFor(() => expect(cards()).toHaveLength(count));
@@ -32,7 +32,7 @@ function runtime() {
       requestId: card.id, nonce: card.nonce, hmac: card.hmac,
       choice: scope === "deny" ? "deny-once" : "allow-once",
       ...(scope === "deny" ? {} : { egressScope: scope }),
-    });
+    }, wc as never);
   };
   return { callback, cards, cardSent, answer };
 }

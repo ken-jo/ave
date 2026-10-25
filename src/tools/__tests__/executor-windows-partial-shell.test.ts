@@ -32,7 +32,7 @@ import {
   __resetActiveSandboxCapabilityForTest,
   __resetSandboxRequestedAtBootForTest,
   setActiveSandboxCapability,
-  setSandboxRequestedAtBoot,
+  setShellSandboxRequestedAtBoot,
 } from "../../permissions/sandbox-capability.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { __resetShellResolverCache } from "../../lib/shell-resolver.js";
@@ -77,7 +77,7 @@ function dynamicShellProbe(execute: (ctx: import("../types.js").ToolExecutionCon
 
 function fullDarwinAsrt(): void {
   setProcessPlatform("darwin");
-  setSandboxRequestedAtBoot(true);
+  setShellSandboxRequestedAtBoot(true);
   setActiveSandboxCapability({
     kind: "asrt",
     confidence: "verified",
@@ -89,7 +89,7 @@ function fullDarwinAsrt(): void {
 function explicitlySandboxOff(platform: "darwin" | "linux" | "win32"): void {
   setProcessPlatform(platform);
   __resetActiveSandboxCapabilityForTest();
-  setSandboxRequestedAtBoot(false);
+  setShellSandboxRequestedAtBoot(false);
 }
 function gateResolving(
   choice: "allow-once" | "deny-once",
@@ -192,7 +192,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     expect(send).not.toHaveBeenCalled();
   });
 
-  it.each(["remote"])("rejects %s host requests before a prerequisite directory prompt", async (origin) => {
+  it.each(["headless", "remote"])("rejects %s host requests before a prerequisite directory prompt", async (origin) => {
     fullDarwinAsrt();
     const executed = vi.fn();
     const registry = new ToolRegistry();
@@ -205,6 +205,24 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     expect(result[0].content.toLowerCase()).toMatch(/headless|remote controller|remote-controller/);
     expect(send).not.toHaveBeenCalled();
     expect(executed).not.toHaveBeenCalled();
+  });
+
+  // I5 (owner 2026-10-16): with nobody to answer, an explicit host request is
+  // denied and audited, even when a rule would allow it in the foreground.
+  it("denies and audits a headless explicit host request despite an ordinary allow", async () => {
+    fullDarwinAsrt();
+    const audit = recordingAuditLogger();
+    const executed = vi.fn();
+    const registry = new ToolRegistry();
+    registry.register(shellProbe(executed));
+    const { gate, send } = gateResolving("allow-once", audit.auditLogger);
+    const executor = new ToolExecutor(registry, undefined, pmReturning({ decision: "allow", reason: "ordinary allow", layer: 3 }), undefined, gate, undefined, audit.auditLogger);
+    const result = await executor.executeAll([{ id: "headless-host", name: "bash", input: { command: "echo host", executionMode: "host", justification: "Use the host environment" } }], { permissionContext: permissionContext({ headless: true }) });
+    expect(result[0].is_error).toBe(true);
+    expect(result[0].content).toMatch(/headless/i);
+    expect(send).not.toHaveBeenCalled();
+    expect(executed).not.toHaveBeenCalled();
+    expect(audit.permissionEntries.some((entry) => entry.decision === "deny" && JSON.stringify(entry).includes("headless invocation blocked"))).toBe(true);
   });
 
   it("returns a recoverable tool error for malformed explicit host input", async () => {
@@ -262,6 +280,46 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     expect(reviewerInput?.approvalCacheKey).toContain(
       "host-shell-execution-plan-cache/v4:",
     );
+  });
+
+  // OWNER ITEM (explicit-host card semantics): main gave the Windows Plan B
+  // shell a one-shot explicit modal that bypassed the foreground reviewer and
+  // durable memory ("bypasses foreground reviewer and durable memory with a
+  // one-shot explicit modal"); #90 sends it through the normal reviewer and a
+  // card that may offer rules. No dated owner decision picks one; this follows #90.
+  it("reviews a Plan B shell in the foreground lane and raises an unlocked card on a high verdict", async () => {
+    partialWindowsAsrt();
+    const execute = vi.fn();
+    const registry = new ToolRegistry();
+    registry.register(shellProbe(execute));
+    const pm = pmReturning({
+      decision: "ask",
+      reason: "reviewer handles this",
+      layer: 6,
+      reviewer: { route: "foreground-auto" },
+    });
+    pm.setReviewer({ classifier: {} as never, cache: {} as never, deferredQueue: {} as never });
+    pm.dispatchReviewer = vi.fn(async () => ({
+      verdict: { level: "high" as const, reason: "ambiguous host effect" },
+      cacheReason: "miss-not-found" as const,
+      outcome: "fresh" as const,
+    })) as never;
+    const requestAndWait = vi.fn(async (request: { id: string }) => ({
+      requestId: request.id,
+      choice: "deny-once" as const,
+    }));
+    const result = await new ToolExecutor(registry, undefined, pm, undefined, { requestAndWait } as never).executeAll(
+      [{ id: "partial-shell-review", name: "bash", input: { command: "echo no-run" } }],
+      { sessionId: "partial-shell", permissionContext: permissionContext() },
+    );
+
+    expect(pm.dispatchReviewer).toHaveBeenCalledTimes(1);
+    expect(requestAndWait).toHaveBeenCalledTimes(1);
+    const request = requestAndWait.mock.calls[0]?.[0] as { allowedChoices?: string[]; executionPlan?: { fallbackReason: string; requiresExplicitUserApproval: boolean } };
+    expect(request.allowedChoices).toBeUndefined();
+    expect(request.executionPlan).toMatchObject({ fallbackReason: "windows-partial-shell-acl-unsafe", requiresExplicitUserApproval: true });
+    expect(execute).not.toHaveBeenCalled();
+    expect(result[0]?.is_error).toBe(true);
   });
 
   it("passes the same sealed none-plan to an allow-once shell invocation", async () => {
@@ -549,60 +607,102 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     expect(result[0]?.is_error).toBe(true);
   });
 
+  // Design I3 (owner 2026-10-16): a requested-but-unavailable sandbox warns
+  // and continues under the normal rules — reviewer, approval memory and allow
+  // decisions included — exactly like sandbox-off, while the sealed plan keeps
+  // `requested-sandbox-unavailable` so the card, result and audit can say so.
   it.each(["darwin", "linux", "win32"] as const)(
-    "mints and consumes a generic one-shot permit for requested-unavailable %s shells",
+    "routes requested-unavailable %s shells through the normal reviewer lane with the fallback recorded",
     async (platform) => {
       requestedSandboxUnavailable(platform);
       let observedPlan: import("../../permissions/host-shell-execution-plan.js").HostShellExecutionPlan | undefined;
-      let permitConsumed = false;
-      const registry = new ToolRegistry();
-      registry.register(shellProbe((ctx) => {
+      const execute = vi.fn((ctx: import("../types.js").ToolExecutionContext) => {
         observedPlan = ctx.hostShellExecutionPlan;
-        if (observedPlan === undefined) return;
-        permitConsumed = consumeHostShellExecutionPermit({
-          permit: ctx.hostShellExecutionPermit,
-          plan: observedPlan,
-          toolName: "bash",
-          toolUseId:
-            typeof ctx.metadata.toolUseId === "string"
-              ? ctx.metadata.toolUseId
-              : undefined,
-          command: "echo one-shot",
-          requestedCwd: undefined,
-          executionCwd: ctx.cwd,
-          resolvedCwd: resolveHostShellWorkingDirectory(ctx.cwd, undefined),
-          timeoutSeconds: TOOL_TIMEOUT_POLICY.shellDefaultMs / 1000,
-        executionMode: "default",
-        justification: undefined,
-        runInBackground: false,
-          allowedDirectories: canonicalizeHostShellAllowedDirectories(
-            ctx.extraAllowedDirectories,
-          ),
-        });
-      }));
-      const { gate, send } = gateResolving("allow-once");
+      });
+      const registry = new ToolRegistry();
+      registry.register(shellProbe(execute));
+      const pm = pmReturning({
+        decision: "ask",
+        reason: "reviewer handles this",
+        layer: 6,
+        reviewer: { route: "foreground-auto" },
+      });
+      pm.setReviewer({ classifier: {} as never, cache: {} as never, deferredQueue: {} as never });
+      let reviewerInput: import("../../permissions/permission-manager.js").ReviewerDispatchInput | undefined;
+      pm.dispatchReviewer = vi.fn(async (_toolName, input) => {
+        reviewerInput = input;
+        return {
+          verdict: { level: "low" as const, reason: "reviewed uncontained shell" },
+          cacheReason: "miss-not-found" as const,
+          outcome: "fresh" as const,
+        };
+      }) as never;
+      const requestAndWait = vi.fn();
       const result = await new ToolExecutor(
         registry,
         undefined,
-        pmReturning({ decision: "ask", reason: "plain shell requires consent", layer: 6 }),
+        pm,
         undefined,
-        gate,
+        { requestAndWait } as never,
       ).executeAll(
-        [{ id: `requested-unavailable-allow-${platform}`, name: "bash", input: { command: "echo one-shot" } }],
-        { sessionId: `requested-unavailable-allow-${platform}`, permissionContext: permissionContext() },
+        [{ id: `requested-unavailable-${platform}`, name: "bash", input: { command: "echo reviewed" } }],
+        { sessionId: `requested-unavailable-${platform}`, permissionContext: permissionContext() },
       );
 
-      const cards = sentApprovalCards<ApprovalRequest>({ send } as never);
-      expect(cards).toHaveLength(1);
-      const rendererApproval = cards[0]!;
-      expect(rendererApproval.requireExplicit).toBe(true);
-      expect(permitConsumed).toBe(true);
+      expect(pm.dispatchReviewer).toHaveBeenCalledTimes(1);
+      expect(requestAndWait).not.toHaveBeenCalled();
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(execute.mock.calls[0]?.[0].hostShellExecutionPermit).toBeUndefined();
+      expect(reviewerInput?.hostShellExecutionPlan).toBe(observedPlan);
       expect(observedPlan).toMatchObject({
         platform,
         requestedSandbox: true,
         mode: "plain",
         fallbackReason: "requested-sandbox-unavailable",
-        requiresExplicitUserApproval: true,
+        requiresExplicitUserApproval: false,
+        capability: {
+          kind: "none",
+          confines: { filesystem: false, process: false, network: false },
+        },
+      });
+      expect(result[0]?.is_error).toBeUndefined();
+      expect(result[0]?.executionPlan).toMatchObject({ fallbackReason: "requested-sandbox-unavailable" });
+    },
+  );
+
+  // Design I3 (owner 2026-10-16): an unavailable requested sandbox runs under
+  // the normal rules with no one-shot permit. #90 expected a permit here.
+  it.each(["darwin", "linux", "win32"] as const)(
+    "runs requested-unavailable %s shells on an ordinary allow without a card or permit",
+    async (platform) => {
+      requestedSandboxUnavailable(platform);
+      let observedPlan: import("../../permissions/host-shell-execution-plan.js").HostShellExecutionPlan | undefined;
+      let observedPermit: unknown = "unset";
+      const registry = new ToolRegistry();
+      registry.register(shellProbe((ctx) => {
+        observedPlan = ctx.hostShellExecutionPlan;
+        observedPermit = ctx.hostShellExecutionPermit;
+      }));
+      const { gate, send } = gateResolving("deny-once");
+      const result = await new ToolExecutor(
+        registry,
+        undefined,
+        pmReturning({ decision: "allow", reason: "allow mode", layer: 6 }),
+        undefined,
+        gate,
+      ).executeAll(
+        [{ id: `requested-unavailable-allow-${platform}`, name: "bash", input: { command: "echo normal-rules" } }],
+        { sessionId: `requested-unavailable-allow-${platform}`, permissionContext: permissionContext() },
+      );
+
+      expect(sentApprovalCards<ApprovalRequest>({ send } as never)).toHaveLength(0);
+      expect(observedPermit).toBeUndefined();
+      expect(observedPlan).toMatchObject({
+        platform,
+        requestedSandbox: true,
+        mode: "plain",
+        fallbackReason: "requested-sandbox-unavailable",
+        requiresExplicitUserApproval: false,
       });
       expect(result[0]?.is_error).toBeUndefined();
     },

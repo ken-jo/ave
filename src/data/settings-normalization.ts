@@ -77,6 +77,12 @@ import {
 } from "../shared/marketplace-package-assets.js";
 import { projectRootKey } from "../shared/project-identity.js";
 import { clampLogRetentionDays } from "../shared/log-retention.js";
+import {
+  DEFAULT_UPSTREAM_PROXY,
+  UPSTREAM_PROXY_MODES,
+  type UpstreamProxyMode,
+  type UpstreamProxySettings,
+} from "../shared/upstream-proxy.js";
 import { isSemver, isTwoMinorReleasesBehind } from "../shared/semver-compare.js";
 import { SOURCE_ID_RE } from "../marketplace/sources/official.js";
 import { normalizeSkippedPluginUpdateKey } from "../shared/skipped-plugin-updates.js";
@@ -1453,6 +1459,27 @@ export function normalizeDiagnostics(input: unknown): DiagnosticsSettings {
 }
 
 /**
+ * Coerce the stored `upstreamProxy` block. A field of the wrong type falls
+ * back to its default; a manual URL that carries a user name or password
+ * (hand-edited file) loses them, since credentials live only in the secret
+ * store; over-long strings are dropped rather than truncated.
+ */
+export function normalizeUpstreamProxy(input: unknown): UpstreamProxySettings {
+  const result: UpstreamProxySettings = { ...DEFAULT_UPSTREAM_PROXY };
+  if (!input || typeof input !== "object" || Array.isArray(input)) return result;
+  const obj = input as Record<string, unknown>;
+  if (typeof obj.mode === "string" && (UPSTREAM_PROXY_MODES as readonly string[]).includes(obj.mode)) {
+    result.mode = obj.mode as UpstreamProxyMode;
+  }
+  if (typeof obj.manualUrl === "string" && obj.manualUrl.length <= 2048) {
+    result.manualUrl = obj.manualUrl.trim().replace(/^([a-z][a-z0-9+.-]*:\/\/)?[^/?#@]*@/iu, "$1");
+  }
+  if (typeof obj.bypass === "string" && obj.bypass.length <= 8192) result.bypass = obj.bypass;
+  if (typeof obj.resolvesNames === "boolean") result.resolvesNames = obj.resolvesNames;
+  return result;
+}
+
+/**
  * Telemetry + crash-reporting block, normalized at both store boundaries.
  *
  * This block was a blind spread on BOTH sides — the disk read and the patch —
@@ -1683,6 +1710,12 @@ export function normalizeFeatureFlags(input: unknown): FeatureFlags {
   }
   if (typeof obj.osToolSandbox === "boolean") {
     result.osToolSandbox = obj.osToolSandbox;
+  }
+  if (typeof obj.pluginWorkerConfinement === "boolean") {
+    result.pluginWorkerConfinement = obj.pluginWorkerConfinement;
+  }
+  if (typeof obj.shellEgressAsk === "boolean") {
+    result.shellEgressAsk = obj.shellEgressAsk;
   }
   return result;
 }

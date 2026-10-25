@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "../../../i18n/react.js";
 import { t } from "../../../i18n/runtime.js";
 import { useSandboxCapability } from "../hooks/use-sandbox-capability.js";
-import { EgressGrantsList } from "../components/permissions/EgressGrantsList.js";
 import { SandboxStatusBadge } from "../components/SandboxStatusBadge.js";
 import { Badge } from "../../../components/ui/badge.js";
 import { Button } from "../../../components/ui/button.js";
@@ -38,6 +37,8 @@ import type {
   ScopedPermissionRuleError,
 } from "../types.js";
 import type {
+  SandboxCapabilityInfo,
+  SandboxMxcUnavailableReason,
   SandboxWindowsStatusInfo,
 } from "../../../shared/sandbox-capability-info.js";
 import {
@@ -51,6 +52,9 @@ import {
 import { PERMISSION_REVIEWER_FRAMEWORK } from "../../../shared/permission-reviewer-framework.js";
 import { AuditPanel } from "../components/permissions/AuditPanel.js";
 import { PermissionJudgeContent } from "../components/permissions/PermissionJudgeContent.js";
+import { EgressDenialsList } from "../components/permissions/EgressDenialsList.js";
+import { EgressGrantsList } from "../components/permissions/EgressGrantsList.js";
+import { UpstreamProxySettings } from "../components/permissions/UpstreamProxySettings.js";
 import { EnvForcedNotice, useEnvForcedSettings } from "../components/EnvForcedNotice.js";
 import { SettingsPageHeader, SettingsSection } from "../components/PageShell.js";
 import { getApi } from "../api-client.js";
@@ -98,6 +102,8 @@ const WINDOWS_INSTALL_FAILURE_COPY: Record<string, () => string> = {
   install_config_conflict: () => t("permissionsTab.osSandboxWindowsInstallFailedConfigConflict"),
   install_ambient_failed: () => t("permissionsTab.osSandboxWindowsInstallFailedAmbient"),
   srt_win_not_found: () => t("permissionsTab.osSandboxWindowsInstallFailedHelperMissing"),
+  "srt-win-not-found": () => t("permissionsTab.osSandboxWindowsInstallFailedHelperMissing"),
+  "srt-win-integrity-mismatch": () => t("permissionsTab.osSandboxWindowsHelperIntegrityError"),
   unexpected: () => t("permissionsTab.osSandboxWindowsInstallFailedUnexpected"),
 };
 
@@ -112,6 +118,16 @@ const WINDOWS_WFP_STATE_LABEL: Record<string, () => string> = {
   installed: () => t("permissionsTab.osSandboxWindowsWfpStateInstalled"),
   "cannot-read": () => t("permissionsTab.osSandboxWindowsWfpStateCannotRead"),
 };
+
+/**
+ * Boot degraded because the bundled Windows helper is missing or failed its
+ * integrity check. An env opt-in leaves the toggles off, so the helper status
+ * and notice key on this as well as on the toggles, agreeing with the banner.
+ */
+function bootReportsWindowsHelperFailure(boot: SandboxCapabilityInfo["boot"] | undefined): boolean {
+  return (boot?.action === "degrade" || boot?.action === "abort") &&
+    boot.causes.some((cause) => cause === "windows-sandbox-missing" || cause === "windows-sandbox-integrity-failed");
+}
 
 function windowsStateLabel(labels: Record<string, () => string>, value: unknown): string {
   return typeof value === "string" && Object.hasOwn(labels, value)
@@ -182,6 +198,19 @@ function describeWindowsInstallResult(result: unknown): WindowsInstallOutcomeVie
       return UNEXPECTED_WINDOWS_INSTALL_VIEW();
   }
 }
+
+/** Settings text for each reason MXC cannot carry agent shells (`mxc-windows.ts`). */
+const MXC_UNAVAILABLE_REASON_KEY = {
+  "not-windows": "permissionsTab.osSandboxWindowsMxcReasonNotWindows",
+  "unsupported-arch": "permissionsTab.osSandboxWindowsMxcReasonUnsupportedArch",
+  "binary-missing": "permissionsTab.osSandboxWindowsMxcReasonBinaryMissing",
+  "probe-failed": "permissionsTab.osSandboxWindowsMxcReasonProbeFailed",
+  "tier-unsupported": "permissionsTab.osSandboxWindowsMxcReasonTierUnsupported",
+  "request-rejected": "permissionsTab.osSandboxWindowsMxcReasonRequestRejected",
+  "launcher-mismatch": "permissionsTab.osSandboxWindowsMxcReasonLauncherMismatch",
+  "powershell-start-failed": "permissionsTab.osSandboxWindowsMxcReasonPowershellStartFailed",
+  "unverified-session": "permissionsTab.osSandboxWindowsMxcReasonUnverifiedSession",
+} as const satisfies Record<SandboxMxcUnavailableReason, string>;
 
 const WINDOWS_INSTALL_OUTCOME_TONE: Record<WindowsInstallOutcomeView["tone"], string> = {
   success: "border-success/(--opacity-medium) bg-success/(--opacity-faint) text-success",
@@ -389,6 +418,11 @@ export function PermissionsTab({
   // usable — what was missing was saying so.
   const envForcedPaths = useEnvForcedSettings();
   const [sandboxBusy, setSandboxBusy] = useState(false);
+  // Plugin-worker confinement: its own setting, so the shell toggle above
+  // never confines workers and this one never confines shells.
+  // `AVE_PLUGIN_WORKER_CONFINEMENT=1` is OR-ed with it at boot.
+  const [workerConfinementEnabled, setWorkerConfinementEnabled] = useState(false);
+  const [workerConfinementBusy, setWorkerConfinementBusy] = useState(false);
   // Windows srt-win repair flow (the OS sandbox is normally provisioned at
   // app-install time; this panel is the re-provision/repair fallback).
   // `windowsStatus` holds the latest readiness snapshot once the user opts in on
@@ -455,6 +489,8 @@ export function PermissionsTab({
       setReviewer(reviewerRes.settings);
       const osSandboxOn = settingsRes.features?.osToolSandbox ?? false;
       setSandboxEnabled(osSandboxOn);
+      const workerConfinementOn = settingsRes.features?.pluginWorkerConfinement ?? false;
+      setWorkerConfinementEnabled(workerConfinementOn);
       // Mirrors the store default (ON) for a settings file written before the
       // flag existed — normalization stamps it on the next write.
       setAdjudicationEnabled(settingsRes.features?.subAgentParentAdjudication ?? true);
@@ -475,16 +511,23 @@ export function PermissionsTab({
   useEffect(() => { void fetchAll(); }, [fetchAll]);
 
   useEffect(() => {
-    if (sandboxCapability?.platform !== "win32" || !sandboxEnabled) {
+    // On win32 with either setting ON (or a reported home-privacy / helper
+    // failure), surface the consent/setup state so the panel persists across
+    // navigations until ready. Extension provisioning is separate from MXC
+    // shell readiness.
+    const windowsSetupRelevant = sandboxEnabled || workerConfinementEnabled ||
+      sandboxCapability?.homePrivacyError !== undefined || bootReportsWindowsHelperFailure(sandboxCapability?.boot);
+    if (sandboxCapability?.platform !== "win32" || !windowsSetupRelevant) {
       setWindowsStatus(null);
       return;
     }
     let cancelled = false;
     void window.ave.permission.sandboxWindowsStatus().then((status) => {
+      if (status.instructions) console.warn("[ave] permissions: Windows setup diagnostics:", status.instructions);
       if (!cancelled) setWindowsStatus(status);
     }).catch(() => { /* The explicit setup action reports repair errors. */ });
     return () => { cancelled = true; };
-  }, [sandboxCapability?.platform, sandboxEnabled]);
+  }, [sandboxCapability?.platform, sandboxCapability?.homePrivacyError, sandboxCapability?.boot, sandboxEnabled, workerConfinementEnabled]);
 
   const fetchApprovals = useCallback(async () => {
     if (!window.ave?.userApproval) return;
@@ -779,27 +822,61 @@ export function PermissionsTab({
     }
   };
 
-  const handleSandboxToggle = async () => {
-    if (sandboxBusy) return;
-    const next = !sandboxEnabled;
-    setSandboxBusy(true);
-    setSandboxEnabled(next);
-    // Clear any stale install outcome whenever the toggle moves.
+  // One write path for both confinement scopes. Each scope writes ONLY its own
+  // setting: the shell toggle writes `osToolSandbox`, the worker toggle writes
+  // `pluginWorkerConfinement`, and neither reads or changes the other's value
+  // beyond deciding whether the Windows setup panel stays open.
+  const toggleConfinementScope = async (scope: "shell" | "pluginWorkers") => {
+    const isShell = scope === "shell";
+    if (isShell ? sandboxBusy : workerConfinementBusy) return;
+    const setEnabled = isShell ? setSandboxEnabled : setWorkerConfinementEnabled;
+    const setBusy = isShell ? setSandboxBusy : setWorkerConfinementBusy;
+    const next = !(isShell ? sandboxEnabled : workerConfinementEnabled);
+    const label = isShell ? "OS sandbox toggle" : "plugin-worker confinement toggle";
+    setBusy(true);
+    setEnabled(next);
+    // Clear any stale install outcome whenever a toggle moves.
     setWindowsInstallOutcome(null);
     try {
-      const res = await getApi().updateSettings({ features: { osToolSandbox: next } });
+      const res = await getApi().updateSettings({
+        features: isShell ? { osToolSandbox: next } : { pluginWorkerConfinement: next },
+      });
       if (isIpcErrorResult(res)) {
-        setSandboxEnabled(!next);
-        showBanner("error", ipcFailureText("OS sandbox toggle", res, t("permissionsTab.osSandboxToggleFailed")));
+        setEnabled(!next);
+        showBanner("error", ipcFailureText(label, res, t(isShell
+          ? "permissionsTab.osSandboxToggleFailed"
+          : "permissionsTab.workerConfinementToggleFailed")));
         return;
       }
       // Re-read capability so the activation note reflects the new state.
       await refreshSandboxCapability();
     } catch (e) {
-      setSandboxEnabled(!next);
-      showBanner("error", t("permissionsTab.osSandboxToggleError", { message: thrownErrorText("OS sandbox toggle", e) }));
+      setEnabled(!next);
+      showBanner("error", t(isShell
+        ? "permissionsTab.osSandboxToggleError"
+        : "permissionsTab.workerConfinementToggleError", { message: thrownErrorText(label, e) }));
     } finally {
-      setSandboxBusy(false);
+      setBusy(false);
+    }
+  };
+  const handleSandboxToggle = () => toggleConfinementScope("shell");
+  const handleWorkerConfinementToggle = () => toggleConfinementScope("pluginWorkers");
+  const [privacyApprovalBusy, setPrivacyApprovalBusy] = useState(false);
+  const handlePrivacyApproval = async () => {
+    if (privacyApprovalBusy) return;
+    setPrivacyApprovalBusy(true);
+    try {
+      const result = await window.ave.permission.approveExtensionsWithoutIsolation();
+      if (!result.ok) {
+        showBanner("error", t("permissionsTab.homePrivacyApprovalFailed"));
+        return;
+      }
+      setWindowsStatus(await window.ave.permission.sandboxWindowsStatus());
+    } catch (error) {
+      showBanner("error", t("permissionsTab.homePrivacyApprovalFailed"));
+      console.warn("[ave] extension isolation session approval failed:", errorMessage(error));
+    } finally {
+      setPrivacyApprovalBusy(false);
     }
   };
 
@@ -958,8 +1035,17 @@ export function PermissionsTab({
   // distinct from "restart to apply", which is what an unchanged gate would
   // mean. A gate that never ran (`null`) is NOT reported as either.
   const sandboxBoot = sandboxCapability?.boot ?? null;
+  // The host could not reconcile its own shell sandbox observations. Only the
+  // shell row reports it; the rest of the panel still renders the snapshot.
+  // The toggle stays usable: turning the setting off is what clears it.
+  const shellStatusError = sandboxCapability?.shell?.state === "error";
   const sandboxDegraded =
     sandboxBoot !== null && (sandboxBoot.action === "degrade" || sandboxBoot.action === "abort");
+  const windowsHelperRequested =
+    sandboxEnabled || workerConfinementEnabled || bootReportsWindowsHelperFailure(sandboxBoot);
+  // Windows: which substrate carries shells and extensions this session.
+  // Shown whenever boot recorded one, so an unavailable MXC is never silent.
+  const windowsSubstrate = sandboxCapability?.windowsSubstrate ?? null;
 
   return (
     <div className="pr-1">
@@ -1261,24 +1347,59 @@ export function PermissionsTab({
           description={t("permissionsTab.osSandboxDescription")}
         >
           <SandboxStatusBadge capability={sandboxCapability} statusQueryFailed={sandboxStatusQueryFailed} onRetry={() => { void refreshSandboxCapability(); }} />
-          <div className="flex items-center gap-3">
+          <div className="flex items-start gap-3">
             <Checkbox
               checked={sandboxEnabled}
               data-testid="os-sandbox-toggle"
               aria-label={t("permissionsTab.osSandboxCheckboxAriaLabel")}
               disabled={sandboxBusy || !(sandboxCapability?.available ?? false)}
-              className="size-5"
+              className="mt-0.5 size-5"
               onCheckedChange={() => void handleSandboxToggle()}
             />
-            <span className="text-sm">
-              {sandboxEnabled ? t("permissionsTab.osSandboxEnabled") : t("permissionsTab.osSandboxDisabled")}
-            </span>
+            <div className="min-w-0 space-y-0.5">
+              <p className="text-sm">
+                {t("permissionsTab.osSandboxShellLabel")}
+                {" — "}
+                {sandboxEnabled ? t("permissionsTab.osSandboxEnabled") : t("permissionsTab.osSandboxDisabled")}
+              </p>
+              <p className="text-[11px] text-muted-foreground">{t("permissionsTab.osSandboxShellHint")}</p>
+              {shellStatusError ? (
+                <p role="alert" data-testid="os-sandbox-shell-status-error" className="text-[11px] text-destructive">
+                  {t("permissionsTab.osSandboxShellStatusError")}
+                </p>
+              ) : null}
+            </div>
           </div>
           <EnvForcedNotice
             settingsPath="features.osToolSandbox"
             forcedPaths={envForcedPaths}
             messageKey="permissionsTab.osSandboxEnvForced"
             testId="os-sandbox-forced"
+            className="mt-2"
+          />
+          <div className="mt-3 flex items-start gap-3">
+            <Checkbox
+              checked={workerConfinementEnabled}
+              data-testid="worker-confinement-toggle"
+              aria-label={t("permissionsTab.workerConfinementCheckboxAriaLabel")}
+              disabled={workerConfinementBusy || !(sandboxCapability?.available ?? false)}
+              className="mt-0.5 size-5"
+              onCheckedChange={() => void handleWorkerConfinementToggle()}
+            />
+            <div className="min-w-0 space-y-0.5">
+              <p className="text-sm">
+                {t("permissionsTab.workerConfinementLabel")}
+                {" — "}
+                {workerConfinementEnabled ? t("permissionsTab.osSandboxEnabled") : t("permissionsTab.osSandboxDisabled")}
+              </p>
+              <p className="text-[11px] text-muted-foreground">{t("permissionsTab.workerConfinementHint")}</p>
+            </div>
+          </div>
+          <EnvForcedNotice
+            settingsPath="features.pluginWorkerConfinement"
+            forcedPaths={envForcedPaths}
+            messageKey="permissionsTab.workerConfinementEnvForced"
+            testId="worker-confinement-forced"
             className="mt-2"
           />
           {sandboxCapability && !sandboxCapability.available ? (
@@ -1312,6 +1433,11 @@ export function PermissionsTab({
                   {t("permissionsTab.osSandboxRuntimeReason", { reason: sandboxKindText(sandboxCapability.runtime?.kind) })}
                 </p>
               ) : null}
+              {sandboxCapability.workerRuntime ? (
+                <p data-testid="worker-confinement-runtime-reason">
+                  {t("permissionsTab.workerConfinementRuntimeReason", { reason: sandboxKindText(sandboxCapability.workerRuntime.kind) })}
+                </p>
+              ) : null}
             </div>
           ) : null}
           {sandboxDegraded && sandboxBoot ? (
@@ -1321,17 +1447,66 @@ export function PermissionsTab({
             >
               <p className="font-medium">{t("permissionsTab.osSandboxBootDegradedHeading")}</p>
               <p>{t("permissionsTab.osSandboxBootDegradedBody")}</p>
-              {sandboxBoot.dependencyErrors.length > 0 ? (
+              {sandboxBoot.causes.length > 0 ? (
                 <p
                   data-testid="os-sandbox-boot-degraded-detail"
                   className="whitespace-pre-line font-mono text-foreground"
                 >
-                  {t("permissionsTab.osSandboxDiagnosticHint")}
+                  {sandboxBoot.causes.includes("windows-sandbox-integrity-failed")
+                    ? t("permissionsTab.osSandboxWindowsHelperIntegrityError")
+                    : sandboxBoot.causes.includes("windows-sandbox-missing")
+                    ? t("inputActionBar.sandboxCauseWindowsSandboxMissing")
+                    : sandboxBoot.reason === "degrade-windows-init-failed"
+                    ? t("permissionsTab.osSandboxInitFailedHint")
+                    : t("permissionsTab.osSandboxDiagnosticHint")}
                 </p>
               ) : null}
               <p className="italic">
                 {t("permissionsTab.osSandboxBootDegradedReason", { reason: ipcErrorCode(sandboxBoot.reason) ?? "unknown" })}
               </p>
+            </div>
+          ) : null}
+          {windowsSubstrate ? (
+            <div
+              data-testid="os-sandbox-windows-substrate"
+              data-shells={windowsSubstrate.shells}
+              data-extensions={windowsSubstrate.extensions}
+              data-mxc={windowsSubstrate.mxc.state}
+              className="space-y-1 rounded-md border bg-muted/(--opacity-light) px-3 py-2 text-[11px] text-muted-foreground"
+            >
+              <p className="font-medium text-foreground">{t("permissionsTab.osSandboxWindowsSubstrateHeading")}</p>
+              <p data-testid="os-sandbox-windows-substrate-shells">
+                {windowsSubstrate.shells === "mxc"
+                  ? t("permissionsTab.osSandboxWindowsShellsMxc")
+                  : windowsSubstrate.mxc.state === "checking" && windowsSubstrate.shells === "approved-host"
+                    ? t("permissionsTab.osSandboxWindowsShellsChecking")
+                    : windowsSubstrate.shells === "approved-host"
+                      ? t("permissionsTab.osSandboxWindowsShellsApprovedHost")
+                      : t("permissionsTab.osSandboxWindowsShellsNone")}
+              </p>
+              {windowsSubstrate.shells === "mxc" ? (
+                <p data-testid="os-sandbox-windows-bash-note">{t("permissionsTab.osSandboxWindowsBashNote")}</p>
+              ) : null}
+              {windowsSubstrate.mxc.state === "unavailable" ? (
+                <p data-testid="os-sandbox-windows-mxc-reason" data-reason={windowsSubstrate.mxc.reason}>
+                  {t("permissionsTab.osSandboxWindowsMxcUnavailable", {
+                    reason: t(MXC_UNAVAILABLE_REASON_KEY[windowsSubstrate.mxc.reason]),
+                    build: windowsSubstrate.windowsBuild ?? "?",
+                  })}
+                </p>
+              ) : windowsSubstrate.mxc.state === "available" && windowsSubstrate.shells === "none" ? (
+                <p data-testid="os-sandbox-windows-mxc-unused">
+                  {t("permissionsTab.osSandboxWindowsMxcUnused", { build: windowsSubstrate.windowsBuild ?? "?" })}
+                </p>
+              ) : null}
+              <p data-testid="os-sandbox-windows-substrate-extensions">
+                {windowsSubstrate.extensions === "srt-win"
+                  ? t("permissionsTab.osSandboxWindowsExtensionsSrtWin")
+                  : t("permissionsTab.osSandboxWindowsExtensionsNone")}
+              </p>
+              {windowsSubstrate.extensionEgressIdentity === "shared" && windowsSubstrate.extensions === "srt-win" ? (
+                <p data-testid="os-sandbox-windows-shared-identity">{t("permissionsTab.osSandboxWindowsSharedIdentity")}</p>
+              ) : null}
             </div>
           ) : null}
           {/* ── Windows srt-win consent flow ── */}
@@ -1358,8 +1533,50 @@ export function PermissionsTab({
                 : t("permissionsTab.osSandboxWindowsInstallRefreshing")}
             </p>
           ) : null}
-          {sandboxEnabled && windowsStatus?.applicable && !windowsStatus.ready ? (
-            windowsStatus.userState !== "absent" ||
+          {(windowsHelperRequested || windowsStatus?.homePrivacyError) && windowsStatus?.applicable && !windowsStatus.ready ? (
+            windowsStatus.homePrivacyError ? (
+              <div
+                data-testid="os-sandbox-windows-home-privacy-error"
+                role="alert"
+                className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-[11px] text-warning"
+              >
+                {t("permissionsTab.osSandboxWindowsHomePrivacyError", {
+                  path: windowsStatus.homePrivacyError.path,
+                  reason: {
+                    "directory-failed": t("permissionsTab.homePrivacyDirectoryFailed"),
+                    "system-root-missing": t("permissionsTab.homePrivacySystemRootMissing"),
+                    "identity-failed": t("permissionsTab.homePrivacyIdentityFailed"),
+                    "icacls-failed": t("permissionsTab.homePrivacyIcaclsFailed"),
+                    "read-back-failed": t("permissionsTab.homePrivacyReadBackFailed"),
+                    "not-protected": t("permissionsTab.homePrivacyNotProtected"),
+                    "invalid-owner-grant": t("permissionsTab.homePrivacyInvalidOwnerGrant"),
+                    "reparse-point": t("permissionsTab.homePrivacyReparsePoint"),
+                    "extra-principals": t("permissionsTab.homePrivacyExtraPrincipals", {
+                      principals: (windowsStatus.homePrivacyError.extraPrincipals ?? []).map(({ sid, account }) => account ? `${sid} (${account})` : sid).join(", "),
+                    }),
+                  }[windowsStatus.homePrivacyError.category],
+                })}
+                {windowsStatus.homePrivacyError.approvedForSession ? (
+                  <p>{t("permissionsTab.homePrivacyApprovedForSession")}</p>
+                ) : (
+                  <Button type="button" size="sm" variant="default" disabled={privacyApprovalBusy}
+                    onClick={() => void handlePrivacyApproval()}>
+                    {t("permissionsTab.homePrivacyApproveForSession")}
+                  </Button>
+                )}
+              </div>
+            ) : windowsStatus.helperError ? (
+              <p
+                data-testid="os-sandbox-windows-helper-unavailable"
+                data-error-code={windowsStatus.helperError}
+                role="status"
+                className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-[11px] text-warning"
+              >
+                {windowsStatus.helperError === "srt-win-integrity-mismatch"
+                  ? t("permissionsTab.osSandboxWindowsHelperIntegrityError")
+                  : t("permissionsTab.osSandboxWindowsInstallFailedHelperMissing")}
+              </p>
+            ) : windowsStatus.userState !== "absent" ||
             windowsStatus.wfpState !== "absent" ? (
               // Install partially ran or status cannot be fully read. Show the
               // localized setup guidance and keep the explicit retry action
@@ -1410,14 +1627,17 @@ export function PermissionsTab({
               </div>
             )
           ) : null}
+          <UpstreamProxySettings />
         </SettingsSection>
 
+        {/* ── Network: what the sandbox proxy refused ── */}
         <SettingsSection
           data-settings-section="permissions-network"
           title={t("permissionsTab.networkTitle")}
           description={t("permissionsTab.networkDescription")}
         >
           <EgressGrantsList />
+          <EgressDenialsList />
         </SettingsSection>
 
         {/* ── Sub-agent parent adjudication (tier 2 of the approval chain) ── */}

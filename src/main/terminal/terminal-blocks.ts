@@ -18,8 +18,9 @@
  *   A;<n>  prompt start      B;<n>  command input start
  *   C[;cmdline_url=…];<n>    command output start (command text percent-encoded)
  *   D[;<exit>];<n>           command finished
+ *   E;Line=<encoded buffer>;B=<token>;<n>  current editor buffer (host only)
  *   P;Cwd=<encoded path>;<n> the working directory (zsh and bash also report
- *                            Keys=, Paste=, B= and Pid=: see shell-integration.ts)
+ *                            Keys=, Paste=, Edit=, B= and Pid=: see shell-integration.ts)
  *
  * A marker counts only when its last field is this terminal's nonce (see
  * shell-integration.ts): anything a command prints reaches the same stream,
@@ -188,6 +189,8 @@ interface StringEscape {
   payload: string;
   /** Past {@link MAX_OSC_PAYLOAD_CHARS}: discarded at its terminator. */
   overflow: boolean;
+  /** An oversized editor report is never replayed, even before its nonce is known. */
+  hidden: boolean;
   /** The previous character was ESC (a possible ST). */
   sawEsc: boolean;
 }
@@ -334,6 +337,10 @@ export class TerminalBlockTracker {
    * marker, or null when it reported none.
    */
   private shellPid: number | null = null;
+  private editLineQuerySupported = false;
+  private editLinePromptReady = false;
+  private editLineReports = 0;
+  private currentEditLineReport: { readonly generation: number; readonly line: string } | null = null;
   /** Called after authenticated markers, user input, and exit (see {@link subscribe}). */
   private readonly listeners = new Set<() => void>();
 
@@ -422,6 +429,21 @@ export class TerminalBlockTracker {
     return this.echo.carriageReturnPending() && text.endsWith(" ") ? text.slice(0, -1) : text;
   }
 
+  /** Whether the current authenticated prompt attested its private editor query binding. */
+  supportsEditLineQuery(): boolean {
+    return this.editLineQuerySupported && this.editLinePromptReady && this.phase === "input" && !this.exited;
+  }
+
+  /** The latest authenticated buffer report, invalidated by prompt changes or user input. */
+  editLineReport(): { readonly generation: number; readonly line: string } | null {
+    return this.currentEditLineReport === null ? null : { ...this.currentEditLineReport };
+  }
+
+  /** Accepted report count; invalidation never resets this generation. */
+  editLineReportGeneration(): number {
+    return this.editLineReports;
+  }
+
   /** The pid the shell reported for itself (`$$`) at its last prompt, or null. */
   reportedShellPid(): number | null {
     return this.shellPid;
@@ -465,7 +487,7 @@ export class TerminalBlockTracker {
    *
    * Returns the text to show and replay for this chunk: the chunk itself,
    * with an incomplete OSC held back until it completes and each
-   * authenticated marker reduced to `OSC 133;<letter>` (`P` dropped), so the
+   * authenticated marker reduced to `OSC 133;<letter>` (`P` and `E` dropped), so the
    * nonce never reaches the renderer or the scrollback ring.
    */
   recordOutput(chunk: string): string {
@@ -493,12 +515,12 @@ export class TerminalBlockTracker {
         case "esc":
           if (ch === "]") {
             // Held: the display gets it once it is known not to be a marker.
-            this.esc = { state: "string", osc: true, payload: "", overflow: false, sawEsc: false };
+            this.esc = { state: "string", osc: true, payload: "", overflow: false, hidden: false, sawEsc: false };
             break;
           }
           this.display += `\u001b${ch}`;
           if (ch === "P" || ch === "_" || ch === "^" || ch === "X") {
-            this.esc = { state: "string", osc: false, payload: "", overflow: false, sawEsc: false };
+            this.esc = { state: "string", osc: false, payload: "", overflow: false, hidden: false, sawEsc: false };
           } else if (ch === "[") {
             this.esc = { state: "csi" };
           } else if (ch === "(" || ch === ")" || ch === "*" || ch === "+" || ch === "#" || ch === "%") {
@@ -545,19 +567,22 @@ export class TerminalBlockTracker {
 
   /**
    * Keep an OSC payload character, or stop keeping once it is over the bound.
-   * A string that is not kept streams straight to the display.
+   * A string that is not kept streams straight to the display, except an
+   * oversized editor report, which must never expose private payloads.
    */
   private addToString(esc: StringEscape, ch: string): void {
     if (!esc.osc || esc.overflow) {
-      this.display += ch;
+      if (!esc.hidden) this.display += ch;
       return;
     }
     if (esc.payload.length >= MAX_OSC_PAYLOAD_CHARS) {
       // No marker is this long (the scripts bound what they encode), so this
       // is not one: it is discarded whole when its terminator arrives and the
-      // text around it is unaffected. The view gets it as it was.
+      // text around it is unaffected. Only editor reports stay private: their
+      // final nonce cannot be known without retaining the whole payload.
       esc.overflow = true;
-      this.display += `\u001b]${esc.payload}${ch}`;
+      esc.hidden = esc.payload.startsWith("133;E;") || esc.payload === "133;E";
+      if (!esc.hidden) this.display += `\u001b]${esc.payload}${ch}`;
       esc.payload = "";
       return;
     }
@@ -567,13 +592,13 @@ export class TerminalBlockTracker {
   private finishString(esc: StringEscape, terminator: string, flush: () => void): void {
     this.esc = { state: "text" };
     if (!esc.osc || esc.overflow) {
-      this.display += terminator;
+      if (!esc.hidden) this.display += terminator;
       return;
     }
     const marker = this.handleOsc(esc.payload, flush);
     if (marker === null) {
       this.display += `\u001b]${esc.payload}${terminator}`;
-    } else if (marker !== "P") {
+    } else if (marker !== "P" && marker !== "E") {
       // The view only needs the letter (PtyTerminalView re-lists on A/C/D).
       this.display += `\u001b]133;${marker}\u0007`;
     }
@@ -589,6 +614,7 @@ export class TerminalBlockTracker {
    */
   recordInput(data: string): void {
     if (!TERMINAL_REPLY.test(data)) {
+      this.currentEditLineReport = null;
       this.userInputs++;
       this.lastInputAt = this.now();
       this.notify();
@@ -611,6 +637,9 @@ export class TerminalBlockTracker {
 
   /** The shell exited: close the running block without an exit code. */
   recordExit(): void {
+    this.currentEditLineReport = null;
+    this.editLineQuerySupported = false;
+    this.editLinePromptReady = false;
     this.exited = true;
     if (this.open) this.closeOpen(null);
     this.phase = "idle";
@@ -650,7 +679,17 @@ export class TerminalBlockTracker {
     if (fields.length < 2 || fields[fields.length - 1] !== this.nonce) return null;
     const [marker = "", ...params] = fields.slice(0, -1);
     if (!/^[A-Z]$/u.test(marker)) return null;
+    if (marker === "E") {
+      this.handleEditLineReport(params, flush);
+      // Recognition protects private payloads even when their proof is stale
+      // or malformed; only the report handler decides whether to accept it.
+      return "E";
+    }
     flush();
+    if (["P", "A", "C", "D"].includes(marker)) {
+      this.currentEditLineReport = null;
+      this.editLinePromptReady = false;
+    }
     if (!this.integrated) {
       // The first marker ends the fallback for good. A heuristic block that is
       // still running was split on a guess; close it rather than mix sources.
@@ -659,6 +698,8 @@ export class TerminalBlockTracker {
     }
     switch (marker) {
       case "P": {
+        const edit = params.filter((p) => p.startsWith("Edit="));
+        this.editLineQuerySupported = edit.length === 1 && edit[0] === "Edit=1";
         const cwd = params.find((p) => p.startsWith("Cwd="));
         if (cwd !== undefined && cwd.length > "Cwd=".length) {
           this.cwd = decodePercentEncoded(cwd.slice("Cwd=".length));
@@ -713,6 +754,27 @@ export class TerminalBlockTracker {
     return marker;
   }
 
+  /** Accept only a complete, current editor-buffer acknowledgement. */
+  private handleEditLineReport(params: readonly string[], flush: () => void): string | null {
+    if (!this.editLineQuerySupported || !this.editLinePromptReady || this.phase !== "input" || this.exited || this.promptEndToken === null) return null;
+    if (params.length !== 2) return null;
+    const lines = params.filter((p) => p.startsWith("Line="));
+    const tokens = params.filter((p) => p.startsWith("B="));
+    if (lines.length !== 1 || tokens.length !== 1 || tokens[0] !== `B=${this.promptEndToken}`) return null;
+    const encodedLine = lines[0]!.slice("Line=".length);
+    if (/[\u0000-\u001f\u007f]/u.test(encodedLine)) return null;
+    let line: string;
+    try {
+      line = decodeURIComponent(encodedLine);
+    } catch {
+      return null;
+    }
+    flush();
+    this.currentEditLineReport = { generation: ++this.editLineReports, line };
+    this.notify();
+    return "E";
+  }
+
   /**
    * B, the end of the prompt text. Accepted only with the current prompt's
    * token and only while that prompt is up: the first B after A ends the
@@ -724,6 +786,10 @@ export class TerminalBlockTracker {
     if (fields.length !== 2 || this.promptEndToken === null || fields[1] !== this.promptEndToken) return null;
     if (this.phase !== "prompt" && this.phase !== "input") return null;
     flush();
+    // A same-prompt redisplay leaves the editor buffer unchanged. Query
+    // callbacks may force that redisplay after emitting their report.
+    if (this.phase !== "input") this.currentEditLineReport = null;
+    this.editLinePromptReady = true;
     if (this.phase === "prompt") {
       this.sawPromptEnd = true;
       this.promptEnds++;

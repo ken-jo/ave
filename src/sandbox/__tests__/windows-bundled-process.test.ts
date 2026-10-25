@@ -8,6 +8,7 @@ import { EventEmitter } from "node:events";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { TEST_WORKER_EGRESS_OWNER } from "../../__tests__/support/egress-fixture.js";
 
 const SANDBOX_HOME = "C:\\sandbox\\home-1";
 const homeCleanup = vi.fn();
@@ -58,7 +59,6 @@ function spawnedAs(child: unknown, confinement = "windows-srt") {
 }
 
 const input = {
-  egressOwner: { kind: "worker", role: "hook", pluginId: "fixture-plugin" } as const,
   label: "hook:alpha",
   command: "node",
   args: ["hook.js"],
@@ -66,6 +66,7 @@ const input = {
   cwd: "C:\\p\\gen",
   allowRead: ["C:\\p\\gen"],
   allowWrite: ["C:\\p\\data"],
+  egressOwner: TEST_WORKER_EGRESS_OWNER,
 };
 
 describe("spawnWindowsBundledProcess", () => {

@@ -1,5 +1,6 @@
 export const en = {
   "shellExecution.blocked": "Shell execution is unavailable under the current execution plan.",
+  "shellExecution.sandboxUnavailable": "The OS sandbox is turned on but unavailable, so shell commands run without it under the normal permission rules.",
   "shellExecution.location": "Execution location: current host ({platform}).",
   "shellExecution.temporaryHome": "Shell HOME and configuration: temporary for each command; the user's login profile is not loaded.",
   "shellExecution.hostHome": "Shell HOME: host home with a filtered, non-login environment.",
@@ -9,9 +10,10 @@ export const en = {
   "shellExecution.confinement": "OS confinement: filesystem={filesystem}, process={process}, network={network}.",
   "shellExecution.confinementUnspecified": "Individual OS confinement dimensions are not recorded by this plan.",
   "shellExecution.defaultRoute": "This describes the default shell route. A call's final execution plan determines its actual environment.",
-  "shellExecution.hostRequest": "For a supported command requiring host execution, request executionMode=host with a justification. Each call requires native desktop allow-once approval and is unavailable to headless or remote controllers. This does not override sensitive-path or command denials.",
+  "shellExecution.hostRequest": "For a supported command requiring host execution, request executionMode=host with a justification. A call runs without asking only when one of the user's allow rules matches the command; otherwise it requires native desktop allow-once approval. It is unavailable to headless or remote controllers and does not override sensitive-path, credential-upload or command denials.",
   "shellExecution.noInteractiveApproval": "Interactive host-execution approval is unavailable in headless execution.",
   "shellExecution.pipelineStatus": "A pipeline's successful final command does not prove earlier commands succeeded. Preserve diagnostic output and verify the requested operation before reporting success.",
+  "shellExecution.mxcBashUnavailable": "Bash is not available in this sandbox: each command runs in a Windows container where Git Bash cannot start. Use the PowerShell tool. Run a command in Git Bash only with executionMode \"host\" and a justification, after the user's approval.",
   "shellExecution.hostWarning": "This command will run once as the current user without the OS sandbox.",
   "shellExecution.justification": "Why host execution is requested",
   "shellExecution.cwd": "Working directory: {path}",
@@ -19,6 +21,7 @@ export const en = {
 
 export const ko = {
   "shellExecution.blocked": "현재 실행 계획에서는 셸을 실행할 수 없습니다.",
+  "shellExecution.sandboxUnavailable": "OS 샌드박스가 켜져 있지만 사용할 수 없어, 셸 명령이 샌드박스 없이 일반 권한 규칙에 따라 실행됩니다.",
   "shellExecution.location": "실행 위치: 현재 호스트({platform}).",
   "shellExecution.temporaryHome": "셸 HOME과 설정: 명령마다 임시 공간을 사용하며 사용자 로그인 프로필은 읽지 않습니다.",
   "shellExecution.hostHome": "셸 HOME: 호스트 홈을 사용하며 환경변수를 선별하고 로그인 프로필은 읽지 않습니다.",
@@ -28,9 +31,10 @@ export const ko = {
   "shellExecution.confinement": "OS 제한: 파일={filesystem}, 프로세스={process}, 네트워크={network}.",
   "shellExecution.confinementUnspecified": "이 실행 계획에는 OS 제한의 개별 범위가 기록되어 있지 않습니다.",
   "shellExecution.defaultRoute": "기본 셸 실행 경로에 대한 설명입니다. 각 호출의 최종 실행 계획이 실제 환경을 결정합니다.",
-  "shellExecution.hostRequest": "호스트 실행이 필요한 지원 명령은 executionMode=host와 justification으로 요청하세요. 매번 데스크톱에서 한 번 허용해야 하며 헤드리스나 원격 제어에서는 요청할 수 없습니다. 민감 경로나 금지 명령의 차단은 해제되지 않습니다.",
+  "shellExecution.hostRequest": "호스트 실행이 필요한 지원 명령은 executionMode=host와 justification으로 요청하세요. 사용자의 허용 규칙이 명령과 일치할 때만 묻지 않고 실행되며, 그렇지 않으면 매번 데스크톱에서 한 번 허용해야 합니다. 헤드리스나 원격 제어에서는 요청할 수 없고, 민감 경로·자격 증명 업로드·금지 명령의 차단은 해제되지 않습니다.",
   "shellExecution.noInteractiveApproval": "헤드리스 실행에서는 대화형 호스트 실행 승인을 받을 수 없습니다.",
   "shellExecution.pipelineStatus": "파이프의 마지막 명령이 성공해도 앞선 명령의 성공을 뜻하지 않습니다. 진단 출력을 보존하고 요청한 작업의 결과를 확인한 뒤 성공을 보고하세요.",
+  "shellExecution.mxcBashUnavailable": "이 샌드박스에서는 Bash 를 쓸 수 없습니다: 명령마다 Git Bash 가 시작될 수 없는 Windows 컨테이너에서 실행됩니다. PowerShell 도구를 사용하세요. Git Bash 실행은 executionMode \"host\" 와 사유를 붙여, 사용자 승인 후에만 가능합니다.",
   "shellExecution.hostWarning": "이 명령은 현재 사용자 계정으로 OS 샌드박스 없이 한 번 실행됩니다.",
   "shellExecution.justification": "호스트 실행을 요청하는 이유",
   "shellExecution.cwd": "작업 경로: {path}",

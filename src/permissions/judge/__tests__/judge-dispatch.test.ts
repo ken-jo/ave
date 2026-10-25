@@ -12,7 +12,7 @@ import {
   __resetActiveSandboxCapabilityForTest,
   __resetSandboxRequestedAtBootForTest,
   setActiveSandboxCapability,
-  setSandboxRequestedAtBoot,
+  setShellSandboxRequestedAtBoot,
 } from "../../sandbox-capability.js";
 import { dispatchReviewerForHeadless, dispatchReviewerForInteractiveAuto } from "../../../tools/pipeline/reviewer-dispatch.js";
 import { ToolExecutor } from "../../../tools/executor.js";
@@ -438,7 +438,7 @@ describe("configured judge dispatch lanes", () => {
 
   it.each(["foreground", "headless"] as const)("rejects a stale external allow after confinement changes in %s", async (lane) => {
     const subject = makeSubject();
-    setSandboxRequestedAtBoot(true);
+    setShellSandboxRequestedAtBoot(true);
     setActiveSandboxCapability({
       kind: "asrt", confidence: "verified", platform: "linux", reason: "filesystem confined",
       confines: { filesystem: true, process: true, network: true },

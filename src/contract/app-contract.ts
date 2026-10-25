@@ -904,6 +904,7 @@ export const CHANNEL_GESTURE: Record<string, "required" | "none"> = {
   [PERMISSIONS.userApprovalRecord]: "required",
   [PERMISSIONS.userApprovalRevoke]: "required",
   [PERMISSIONS.sandboxWindowsInstall]: "required",
+  [PERMISSIONS.approveExtensionsWithoutIsolation]: "required",
   // Local-owner Tailnet sharing: all mutations are host-renderer-only and
   // require a current keyboard intent. The snapshot and change hint carry no
   // externally callable mutation capability, so they are deliberately omitted.

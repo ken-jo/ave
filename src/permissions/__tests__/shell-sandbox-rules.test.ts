@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PermissionManager } from "../permission-manager.js";
 import { ApprovalGate, type ApprovalRequest } from "../approval-gate.js";
-import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, getHostShellExecutionPlan, setActiveSandboxCapability, setSandboxRequestedAtBoot } from "../sandbox-capability.js";
+import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, getHostShellExecutionPlan, setActiveSandboxCapability, setShellSandboxRequestedAtBoot } from "../sandbox-capability.js";
 import { approvalCacheKeyIdentity, canonicalStringify, captureApprovalWorkingDirectory, lookupApproval, recordApproval, __resetSessionStoreForTest } from "../user-approval-store.js";
 import { runWithToolExecutionCwd } from "../../tools/execution-context.js";
 import { ToolExecutor } from "../../tools/executor.js";
@@ -24,7 +24,7 @@ beforeEach(() => {
   vi.stubEnv("USERPROFILE", home);
   vi.stubEnv("AVE_HOME", join(dir, "state"));
   manager = new PermissionManager(join(dir, "permissions.json"));
-  setSandboxRequestedAtBoot(true);
+  setShellSandboxRequestedAtBoot(true);
   setActiveSandboxCapability({ kind: "asrt", confidence: "verified", platform: process.platform, reason: "fixture full shell containment", confines: { filesystem: true, process: true, network: true } });
 });
 afterEach(() => {
@@ -92,7 +92,7 @@ describe("shell confinement and escape rules", () => {
   });
 });
 
-function executorWithDock() {
+function executorWithDock(options: { executionMode?: "host" | "sandbox"; headless?: boolean } = {}) {
   const registry = new ToolRegistry();
   registry.register(new BashTool());
   const requests: ApprovalRequest[] = [];
@@ -104,9 +104,13 @@ function executorWithDock() {
   });
   gate = new ApprovalGate({ isDestroyed: () => false, send } as never);
   const executor = new ToolExecutor(registry, undefined, manager, undefined, gate);
-  const input = { command: "printf ready", executionMode: "host" as const, justification: "Read the host environment" };
-  const run = () => runWithToolExecutionCwd(dir, () => executor.executeAll([{ id: "retry", name: "bash", input }], { sessionId: "conversation", permissionContext: userPermissionContext() }));
-  return { run, requests, input };
+  const executionMode = options.executionMode ?? "host";
+  const input = executionMode === "host"
+    ? { command: "printf ready", executionMode, justification: "Read the host environment" }
+    : { command: "printf ready" };
+  const permissionContext = options.headless === true ? { ...userPermissionContext(), headless: true } : userPermissionContext();
+  const run = () => runWithToolExecutionCwd(dir, () => executor.executeAll([{ id: "retry", name: "bash", input }], { sessionId: "conversation", permissionContext }));
+  return { run, requests, input, send };
 }
 
 describe("plain-shell invocation authorization", () => {
@@ -122,7 +126,10 @@ describe("plain-shell invocation authorization", () => {
     expect(await lookupApproval("bash", args, "builtin", request.trustOrigin, identity, dir, "conversation")).not.toBeNull();
     expect((await run())[0]).toMatchObject({ content: "ready" });
     expect(requests).toHaveLength(2);
-    expect(requests[0]?.shellRule).toMatchObject({ sessionAllowed: false, persistentAllowed: true });
+    // An explicit host request without a rule goes to the card unreviewed
+    // (I3, owner 2026-10-16), and an unreviewed shell is high, so the card
+    // offers no rule. OWNER ITEM (explicit-host card semantics): #90 offered one.
+    expect(requests[0]?.shellRule).toMatchObject({ sessionAllowed: false, persistentAllowed: false });
     expect(requests[0]).not.toHaveProperty("shellExecution");
     expect(requests.every((request) => request.executionPlan?.mode === "plain")).toBe(true);
     expect(getHostShellExecutionPlan().mode).toBe(planBefore.mode);
@@ -136,13 +143,14 @@ describe("plain-shell invocation authorization", () => {
     expect(requests).toEqual([]);
   });
 
-  it("suggests an effective exact escape rule while the sandbox is unavailable", async () => {
+  it("asks for an explicit host request while the sandbox is unavailable, until an exact rule approves it", async () => {
     __resetActiveSandboxCapabilityForTest();
     const { run, requests } = executorWithDock();
     expect((await run())[0]).toMatchObject({ content: "ready" });
-    expect(requests[0]?.shellRule).toMatchObject({ suggestedPattern: "Bash(printf ready)", sessionAllowed: false, persistentAllowed: true });
+    // OWNER ITEM (explicit-host card semantics): #90 suggested the rule on this card.
+    expect(requests[0]?.shellRule).toMatchObject({ sessionAllowed: false, persistentAllowed: false });
     expect(requests[0]).not.toHaveProperty("shellExecution");
-    await manager.addRulePersist({ pattern: requests[0]!.shellRule!.suggestedPattern!, action: "allow" }, { kind: "user" });
+    await manager.addRulePersist({ pattern: "Bash(printf ready)", action: "allow" }, { kind: "user" });
     expect((await run())[0]).toMatchObject({ content: "ready" });
     expect(requests).toHaveLength(1);
   });
@@ -155,17 +163,57 @@ describe("plain-shell invocation authorization", () => {
     expect(requests).toEqual([]);
   });
 
-  it.each([["low", 0], ["high", 1]] as const)("reviews a plain call at %s before deciding (%s prompts)", async (level, prompts) => {
+  function lowReviewer() {
     manager.setMode("auto");
     manager.setInteractiveAutoApprove("medium");
-    const classifier = { classify: vi.fn(async () => ({ level, reason: level === "high" ? "ambiguous host effect" : "bounded host effect" })) };
+    const classifier = { classify: vi.fn(async (): Promise<{ level: "low" | "high"; reason: string }> => ({ level: "low", reason: "bounded host effect" })) };
     const cache = new VerdictCache(join(dir, "review-cache.jsonl"));
     manager.setReviewer({ classifier, cache, deferredQueue: new DeferredQueue(join(dir, "deferred.jsonl")) });
+    return { classifier, cache };
+  }
+
+  // I3 (owner 2026-10-16) sends an unavailable sandbox to the normal rules,
+  // reviewer included.
+  it.each([["low", 0], ["high", 1]] as const)("reviews a plain call at %s while the sandbox is unavailable (%s prompts)", async (level, prompts) => {
+    setActiveSandboxCapability({ kind: "none", confidence: "verified", platform: process.platform, reason: "fixture sandbox unavailable" });
+    const { classifier, cache } = lowReviewer();
+    classifier.classify.mockImplementation(async () => ({ level, reason: level === "high" ? "ambiguous host effect" : "bounded host effect" }));
     try {
-      const { run, requests } = executorWithDock();
+      const { run, requests } = executorWithDock({ executionMode: "sandbox" });
       expect((await run())[0]).toMatchObject({ content: "ready" });
       expect(classifier.classify).toHaveBeenCalledOnce();
       expect(requests).toHaveLength(prompts);
+      expect(requests.every((request) => request.executionPlan?.mode === "plain")).toBe(true);
+    } finally { await cache.flush(); }
+  });
+
+  // I3: an explicit host request runs on a matching allow rule, otherwise it
+  // asks with the host-execution warning. A low reviewer verdict is no rule.
+  it("does not let a low reviewer verdict stand in for the card on an explicit host request", async () => {
+    const { classifier, cache } = lowReviewer();
+    try {
+      const { run, requests } = executorWithDock();
+      expect((await run())[0]).toMatchObject({ content: "ready" });
+      expect(classifier.classify).not.toHaveBeenCalled();
+      expect(requests).toHaveLength(1);
+      expect(requests[0]?.executionPlan).toMatchObject({ mode: "plain", executionRequest: "host", requiresExplicitUserApproval: true });
+    } finally { await cache.flush(); }
+  });
+
+  // I5 (owner 2026-10-16): with nobody to answer, an explicit host request is
+  // denied, with or without a matching rule, and no card is raised.
+  it.each([false, true])("denies a headless explicit host request without asking (matching rule %s)", async (withRule) => {
+    if (withRule) manager.setRules([{ pattern: "Bash(printf ready)", action: "allow" }]);
+    const { classifier, cache } = lowReviewer();
+    try {
+      const { run, requests, send } = executorWithDock({ headless: true });
+      const [result] = await run();
+      expect(result).toMatchObject({ is_error: true });
+      expect(result?.content).toMatch(/headless/i);
+      expect(result?.content).not.toContain("ready\n");
+      expect(requests).toEqual([]);
+      expect(send).not.toHaveBeenCalledWith("ave:approval:request", expect.anything());
+      expect(classifier.classify).not.toHaveBeenCalled();
     } finally { await cache.flush(); }
   });
 });

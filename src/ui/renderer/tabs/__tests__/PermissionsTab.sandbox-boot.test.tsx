@@ -22,8 +22,9 @@ vi.mock("../../../../components/ui/scroll-area.js", () => ({
 
 import { buildHostShellExecutionPlan, getHostShellExecutionPlanAuditProjection } from "../../../../permissions/host-shell-execution-plan.js";
 import { PermissionsTab } from "../PermissionsTab.js";
+import { t } from "../../../../i18n/index.js";
 
-function installApi(boot: unknown, sandboxOn = true) {
+function installApi(boot: unknown, sandboxOn = true, shell: unknown = undefined) {
   const ave = {
     permission: {
       egressGrantsList: vi.fn(async () => ({ ok: true as const, grants: [] })),
@@ -77,6 +78,7 @@ function installApi(boot: unknown, sandboxOn = true) {
           platform: "win32", requestedSandbox: sandboxOn,
           activeCapability: { kind: "none", confidence: "verified", platform: "win32", reason: "fixture" },
         })),
+        ...(shell === undefined ? {} : { shell }),
         confines: { filesystem: true, process: false, network: true },
       })),
       sandboxWindowsStatus: vi.fn(async () => ({
@@ -112,8 +114,8 @@ function installApi(boot: unknown, sandboxOn = true) {
     },
   };
   (globalThis as unknown as { window: typeof window }).window.ave = ave as never;
-  installMockAveApi({ settings: { features: { osToolSandbox: sandboxOn } } });
-  return ave;
+  const api = installMockAveApi({ settings: { features: { osToolSandbox: sandboxOn } } });
+  return Object.assign(ave, { aveApi: api });
 }
 
 async function renderTab(): Promise<void> {
@@ -133,12 +135,22 @@ describe("PermissionsTab — boot sandbox outcome notice", () => {
     delete (window as unknown as { ave?: unknown }).ave;
   });
 
+  it.each([
+    ["windows-sandbox-missing", "inputActionBar.sandboxCauseWindowsSandboxMissing"],
+    ["windows-sandbox-integrity-failed", "permissionsTab.osSandboxWindowsHelperIntegrityError"],
+  ])("shows the repair notice for boot cause %s", async (cause, key) => {
+    installApi({ action: "degrade", reason: "degrade-windows-not-installed", onSignal: "default-settings", causes: [cause] });
+    await renderTab();
+    expect(screen.getByTestId("os-sandbox-boot-degraded-detail")).toHaveTextContent(t(key));
+    expect(document.body.textContent).not.toContain(t("inputActionBar.sandboxCauseWindowsSetupIncomplete"));
+  });
+
   it("says the sandbox did not start and directs dependency diagnostics to the log", async () => {
     installApi({
       action: "degrade",
       reason: "degrade-windows-not-installed",
       onSignal: "default-settings",
-      dependencyErrors: ["Sandbox user is not provisioned (user=true, cred=false)."],
+      causes: ["windows-setup-incomplete"],
     });
     await renderTab();
 
@@ -150,12 +162,27 @@ describe("PermissionsTab — boot sandbox outcome notice", () => {
     expect(screen.getByTestId("sandbox-off-status")).toHaveTextContent("샌드박스 꺼짐");
   });
 
+  it("tells a Windows start failure apart from a missing install, without the raw cause", async () => {
+    installApi({
+      action: "degrade",
+      reason: "degrade-windows-init-failed",
+      onSignal: "default-settings",
+      causes: ["init-failed"],
+    });
+    await renderTab();
+
+    const detail = screen.getByTestId("os-sandbox-boot-degraded-detail");
+    expect(detail).toHaveTextContent("시작 점검은 통과");
+    expect(detail).not.toHaveTextContent("진단에 실패");
+    expect(document.body.textContent).not.toContain("S-1-5-21");
+  });
+
   it("reports an abort the same way — the user is equally unprotected either way", async () => {
     installApi({
       action: "abort",
       reason: "abort-explicit-cannot-activate",
       onSignal: "explicit-env",
-      dependencyErrors: ["missing bwrap"],
+      causes: ["missing-bwrap"],
     });
     await renderTab();
 
@@ -167,7 +194,7 @@ describe("PermissionsTab — boot sandbox outcome notice", () => {
       action: "activate",
       reason: "deps-present",
       onSignal: "default-settings",
-      dependencyErrors: [],
+      causes: [],
     });
     await renderTab();
 
@@ -176,7 +203,7 @@ describe("PermissionsTab — boot sandbox outcome notice", () => {
 
   it("keeps the off indicator visible when disabled in settings", async () => {
     installApi(
-      { action: "skip", reason: "gate-off", onSignal: "off", dependencyErrors: [] },
+      { action: "skip", reason: "gate-off", onSignal: "off", causes: [] },
       false,
     );
     await renderTab();
@@ -208,5 +235,31 @@ describe("PermissionsTab — boot sandbox outcome notice", () => {
     fireEvent.click(screen.getByRole("button", { name: "상태 다시 확인" }));
     await waitFor(() => expect(screen.getByTestId("sandbox-off-status")).toHaveTextContent("설정에서 비활성화됨"));
     expect(screen.queryByTestId("sandbox-status-query-failed")).toBeNull();
+  });
+
+  it("reports a host status fault on the shell row only, and still loads every other section", async () => {
+    const ave = installApi(
+      { action: "activate", reason: "deps-present", onSignal: "default-settings", causes: [] },
+      true,
+      { state: "error", setting: true, envForced: false, causes: [] },
+    );
+    await renderTab();
+
+    expect(screen.getByTestId("os-sandbox-shell-status-error")).toHaveTextContent("호스트 오류");
+    // Turning the setting off clears the fault, so the toggle stays usable.
+    expect(screen.getByTestId("os-sandbox-toggle")).not.toBeDisabled();
+    // The rest of the snapshot and the sections loaded beside it still render.
+    expect(screen.getByTestId("worker-confinement-toggle")).not.toBeDisabled();
+    expect(screen.getByTestId("os-sandbox-runtime-reason")).toBeInTheDocument();
+    expect(ave.permission.listScopedRules).toHaveBeenCalled();
+    expect(ave.permission.dirDispatch).toHaveBeenCalledWith("list");
+    expect(screen.queryByText("데이터를 불러오지 못했습니다.")).toBeNull();
+
+    await act(async () => {
+      screen.getByTestId("os-sandbox-toggle").click();
+    });
+    await waitFor(() =>
+      expect(ave.aveApi.updateSettings).toHaveBeenCalledWith({ features: { osToolSandbox: false } }),
+    );
   });
 });

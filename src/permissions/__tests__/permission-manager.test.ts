@@ -11,7 +11,10 @@ import {
   extractGrantPath,
   extractGrantPaths,
   isStrictPathDescendant,
+  consumeIssuedShellAllowRuleDecision,
+  isIssuedShellAllowRuleDecision,
 } from "../permission-manager.js";
+import { buildHostShellExecutionPlan } from "../host-shell-execution-plan.js";
 import { updatePermissionsFile } from "../permissions-store.js";
 import { mkdtempSync, realpathSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -53,6 +56,63 @@ vi.mock("../permissions-store.js", () => ({
 }));
 
 // ─── Tests ───────────────────────────────────────────
+
+describe("host shell rule policy epochs", () => {
+  // No sandbox on this host, so only an exact allow rule can issue the proof.
+  const hostPlan = buildHostShellExecutionPlan({
+    platform: process.platform, requestedSandbox: false, executionMode: "host",
+    activeCapability: { kind: "none", confidence: "verified", platform: process.platform, reason: "fixture" },
+  });
+  const subject = { toolName: "bash", dialect: "bash", command: "echo epoch", cwd: tmpdir() } as const;
+  const mutations: [string, (manager: PermissionManager) => void | Promise<void>][] = [
+    ["rules", (manager) => manager.setRules([])],
+    ["mode", (manager) => manager.setMode("strict")],
+    ["persisted mode", (manager) => manager.setModePersist("strict")],
+    ["tool mode", (manager) => manager.setToolModeOverride("bash", "strict")],
+    ["cleared tool mode", (manager) => manager.clearToolModeOverride("bash")],
+    ["published tool modes", (manager) => manager.prepareToolModeOverrides(["bash"], []).publish()],
+    ["interactive review settings", (manager) => manager.setInteractiveAutoApprove("medium")],
+    ["path settings", (manager) => manager.setBlockReadsOutsideWorkingDirectories(true)],
+    ["rule reload", (manager) => manager.loadRulesFromFile()],
+    ["allow removal", (manager) => manager.removeRule("Bash(echo epoch)", "allow")],
+    ["deny addition", (manager) => manager.addAlwaysDeniedPersist("bash")],
+  ];
+
+  beforeEach(() => {
+    mockStore.rules = [];
+    mockStore.mode = "default";
+    _mockLock = Promise.resolve();
+  });
+
+  it.each(mutations)("revokes an outstanding rule proof when %s changes", async (_name, mutate) => {
+    const manager = new PermissionManager(join(tmpdir(), "host-epoch-permissions.json"));
+    manager.setRules([{ pattern: "Bash(echo epoch)", action: "allow" }]);
+    manager.setToolModeOverride("bash", "auto");
+    const decision = manager.checkDetailed("bash", "builtin", "shell", null, {
+      ruleSubject: { kind: "shell", dialect: subject.dialect, command: subject.command, cwd: subject.cwd },
+      hostShellExecutionPlan: hostPlan,
+    });
+    expect(isIssuedShellAllowRuleDecision(decision, manager)).toBe(true);
+    const epoch = manager.getPolicyEpoch();
+    await mutate(manager);
+    expect(manager.getPolicyEpoch()).not.toBe(epoch);
+    expect(isIssuedShellAllowRuleDecision(decision, manager)).toBe(false);
+    expect(consumeIssuedShellAllowRuleDecision(decision, subject, manager)).toBeUndefined();
+  });
+
+  it("invalidates a proof as soon as a deny becomes live, before its write settles", async () => {
+    const manager = new PermissionManager(join(tmpdir(), "host-epoch-deny.json"));
+    manager.setRules([{ pattern: "Bash(echo epoch)", action: "allow" }]);
+    const decision = manager.checkDetailed("bash", "builtin", "shell", null, {
+      ruleSubject: { kind: "shell", dialect: subject.dialect, command: subject.command, cwd: subject.cwd },
+      hostShellExecutionPlan: hostPlan,
+    });
+    expect(isIssuedShellAllowRuleDecision(decision, manager)).toBe(true);
+    const pending = manager.addAlwaysDeniedPersist("bash");
+    expect(consumeIssuedShellAllowRuleDecision(decision, subject, manager)).toBeUndefined();
+    await pending;
+  });
+});
 
 describe("PermissionManager (B1 persistence)", () => {
   let pm: PermissionManager;

@@ -25,7 +25,7 @@ describe("domain grant management boundary", () => {
     const auditLogger = { log: vi.fn() };
     const gate = new ApprovalGate(wc as never, undefined, 5_000, auditLogger as never);
     registerPermissionsHandlers({ conversationLoop: { permissionManager: undefined }, approvalGate: gate, auditLogger, settingsService: { get: () => undefined } } as never);
-    const ask = createEgressAskRuntimeCallback({ approvalGate: gate });
+    const ask = createEgressAskRuntimeCallback({ approvalGate: gate, shellAskEnabled: () => true });
     const owner = { kind: "shell" as const, toolName: "bash" as const, toolUseId: undefined, context: { sessionId: "domain-session", workspaceRoot: home, approvalSurface: "interactive" as const } };
     const first = openEgressInvocation(owner);
     const second = openEgressInvocation(owner);

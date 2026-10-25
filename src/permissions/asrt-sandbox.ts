@@ -4,12 +4,14 @@
 
 
 import { spawn } from "node:child_process";
+import { prepareSrtWinExecutable, srtWinPrivateDirectories, getSrtWinArchitecture } from "./srt-win-integrity.js";
 import { noteConfinedProcessesMayRun } from "../lib/confined-process-phase.js";
 import { chmodSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
+import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { policyHomeAnchors } from "../shared/policy-home.js";
-import { aveHome } from "../shared/ave-home.js";
+import { isHomeAnchor, policyHomeAnchors } from "../shared/policy-home.js";
+import { aveHome, assertAveHomePrivacyForConfinement, getAveHomePrivacyFailure, areExtensionsWithoutIsolationApproved } from "../shared/ave-home.js";
 import { agentPluginDataRoot } from "../marketplace/content/agent-plugin-data.js";
 import { testSandboxPrivateBase } from "../shared/ave-home-test-guard.js";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
@@ -30,6 +32,10 @@ import { buildMandatorySandboxWritePolicy, isGrantPathWithin, restrictSandboxGit
 export { isGrantPathWithin } from "./sandbox-write-policy.js";
 import { egressInvocationOwner, onEgressInvocationReleased, openEgressInvocation } from "./egress-invocations.js";
 import { asrtInvocationListenersSupported, noteAsrtUnixSocketPolicy } from "./egress-identity.js";
+import {
+  isPluginWorkerConfinementRequestedAtBoot,
+  isShellSandboxRequestedAtBoot,
+} from "./sandbox-capability.js";
 import { defaultHooksDir } from "../hooks/hook-discovery.js";
 
 import type {
@@ -40,6 +46,7 @@ import type {
   WindowsConfig,
   WindowsBinShell,
   SandboxAskCallback,
+  ParentProxyRouter,
 } from "@anthropic-ai/sandbox-runtime";
 
 const log = createLogger("asrt-sandbox");
@@ -121,8 +128,13 @@ export function getVendoredSrtWinExePath(): string {
     "@anthropic-ai/sandbox-runtime/package.json",
   );
   const root = rewriteAsarPathToUnpacked(dirname(packageJson));
-  const arch = process.arch === "arm64" ? "arm64" : "x64";
+  const arch = getSrtWinArchitecture();
   return join(root, "vendor", "srt-win", arch, "srt-win.exe");
+}
+
+/** The verified private execution image; the package path is never executed. */
+export function getVerifiedSrtWinExePath(): string {
+  return prepareSrtWinExecutable(getVendoredSrtWinExePath());
 }
 
 /** ASRT's vendored seccomp arch directories (`getVendorArchitecture`); ia32 and others have none. */
@@ -229,16 +241,17 @@ export function getVendoredJavaProxyAgentJarPath(): string {
  * plugin/project config set any of these flags. Network is deny-by-default: an
  * empty `allowedDomains` means the sandboxed process has no network egress.
  *
- * The shared allowlist is empty at boot. The host callback distinguishes shell
- * grants from each worker's declared policy using its private proxy listener.
+ * NOTE on `allowedDomains`: boot leaves it EMPTY and `strictAllowlist` off,
+ * so every connection reaches the egress ask callback (`egress-ask.ts`), which
+ * decides per connection by who opened it: a plugin worker against its own
+ * extension's declared domains, a shell against its grants or an ask. A domain
+ * placed here would be reachable by every sandboxed process without asking.
  */
 export interface TrustedSandboxSettings {
   /**
-   * The SHARED, ENFORCED egress allow-list. Empty/omitted ⇒ no network egress
-   * (deny-by-default). Set this to the manifest UNION (+ trusted baseline) so
-   * `filterNetworkRequest` allows exactly those domains. With
-   * `strictAllowlist: true` any host not on this list is hard-denied with no
-   * askCb fallthrough. See {@link computeUnionAllowedDomains}.
+   * Domains every sandboxed process may reach without the ask callback. Boot
+   * passes none (see the note above); with `strictAllowlist: true` any other
+   * host is hard-denied before the callback is consulted.
    */
   readonly allowedDomains?: readonly string[];
   /** Domains explicitly denied (takes precedence over allow). */
@@ -275,7 +288,7 @@ export interface TrustedSandboxSettings {
   };
   /**
    * Upstream HTTP/HTTPS proxy the sandbox's egress proxy should chain through
-   * for outbound connections (corporate-proxy passthrough). TRUSTED-ONLY.
+   * for outbound connections (chaining through an upstream proxy). TRUSTED-ONLY.
    *
    * SECURITY (parentProxy is passed explicitly):
    * ASRT's `resolveParentProxy` (parent-proxy.js:46) does
@@ -288,15 +301,37 @@ export interface TrustedSandboxSettings {
    * `network.parentProxy.http`/`.https` explicitly:
    *   - default (this field omitted): empty strings ⇒ ASRT connects directly
    *     and does NOT chain through the host proxy (the secure floor);
-   *   - present: only the explicit, trusted corporate-proxy URLs below are
+   *   - present: only the explicit, trusted upstream-proxy URLs below are
    *     used -- never the ambient host env.
    * This field is the ONLY way to opt a sandbox into a parent proxy.
    */
-  readonly corporateProxy?: {
+  readonly upstreamProxy?: {
     readonly http?: string;
     readonly https?: string;
     readonly noProxy?: string;
+    /**
+     * Trust an upstream proxy that runs on this host (cntlm, px, …) to
+     * resolve names this host cannot. Off (the default), such a name is
+     * refused, with a reason saying so: a proxy on this host resolves the
+     * name itself after Ave's check and could connect back to this host (DNS
+     * rebinding). On, the name is forwarded like to a remote upstream and
+     * treated as unverified (at most This conversation) — accepting that
+     * residual risk. A remote upstream always gets that treatment; names this
+     * host resolves are pinned either way. TRUSTED-ONLY, like the URLs.
+     */
+    readonly resolvesNames?: boolean;
   };
+  /**
+   * The per-destination route hook (carried ASRT patch part 4,
+   * `SandboxManager.setParentProxyRouter`). TRUSTED-ONLY. When present it
+   * replaces {@link upstreamProxy} for routing: ASRT asks it once per
+   * destination decision and dials over the answered routes in order. Boot
+   * passes the router built from the main-owned `upstreamProxy` setting
+   * (`src/permissions/upstream-proxy.ts`); the static `parentProxy` stays
+   * the explicit-empty floor, so the ambient environment is never inherited
+   * by ASRT itself.
+   */
+  readonly upstreamRouter?: ParentProxyRouter;
   /**
    * Windows-only sandbox settings (srt-win network backend). TRUSTED-ONLY —
    * the proxy port range must agree with what the install flow WFP-permits.
@@ -309,6 +344,15 @@ export interface TrustedSandboxSettings {
    */
   readonly windows?: {
     readonly proxyPortRange?: readonly [number, number];
+    /**
+     * Run only the proxy on Windows: srt-win's account, WFP fence and session
+     * ACLs are neither required nor touched, and every srt-win wrap refuses
+     * (the carried ASRT patch, part 6). Set by boot only where Microsoft
+     * Execution Containers carry the agent shells and srt-win is not ready
+     * (`mxc-windows.ts`); plugin processes then have no confinement substrate
+     * and {@link isPluginWorkerConfinementActive} reports false.
+     */
+    readonly externalConfinement?: boolean;
   };
   /**
    * The REAL Electron `app.getPath("userData")` for this process, threaded in
@@ -524,6 +568,16 @@ export function closeEgressConnections(tokens: readonly string[], host: string, 
   return loadedSandboxManagerForRelease?.closeInvocationConnections(tokens, host, port) ?? 0;
 }
 
+/**
+ * Close every connection the proxy allowed, for every invocation: when the
+ * upstream proxy setting changes, a tunnel opened through the old upstream
+ * (or direct, before one was required) must not outlive it, as a revoked
+ * grant's connections do not. Returns how many were closed.
+ */
+export function closeAllEgressConnections(): number {
+  return loadedSandboxManagerForRelease?.closeAllInvocationConnections() ?? 0;
+}
+
 /** Retained after initialization so revocation can close connections synchronously. */
 let loadedSandboxManagerForRelease: Awaited<ReturnType<typeof loadSandboxManager>> | undefined;
 interface PendingGitCleanup {
@@ -592,12 +646,25 @@ onEgressInvocationReleased((token, { processGroup }) => {
  */
 
 /**
- * The trusted settings last applied via {@link initializeAsrtSandbox} /
- * {@link updateAsrtSandboxConfig}. Remembered so worker-UDS register/unregister
+ * The trusted settings last applied via {@link initializeAsrtSandbox}.
+ * Remembered so worker-UDS register/unregister
  * can rebuild the SHARED config additively (the manifest egress union, denyRead
  * floor, weakening flags, etc. are preserved). Undefined before the first init.
  */
 let _baseTrustedSettings: TrustedSandboxSettings | undefined;
+
+/** The shared loopback range that confined extension processes can reach. */
+export function getWindowsProxyPortRange(): readonly [number, number] {
+  return _baseTrustedSettings?.windows?.proxyPortRange ?? DEFAULT_WINDOWS_PROXY_PORT_RANGE;
+}
+
+/**
+ * Paths granted on Windows outside the session config, by
+ * {@link grantWindowsWorkerFilesystemAccess}, with how many live grants hold
+ * each. A per-exec deny beneath one must still reach srt-win
+ * ({@link windowsDenyTargets}).
+ */
+const _windowsLiveGrants = new Map<string, number>();
 
 /**
  * Live host-allocated socket DIRECTORIES currently registered for UDS access
@@ -702,8 +769,9 @@ export function assertPerExecFilesystemSupported(
  * each ancestor D of the denied path, after those allows, and the last
  * matching rule wins. A deny on `W/<marker>` therefore makes `(literal W)`
  * unremovable and unreplaceable while every other entry inside W stays
- * writable. ASRT 0.0.80 offers no per-command literal rule of its own, so the
- * root is pinned through this one.
+ * writable. ASRT 0.0.80 offers no per-command literal rule of its own (its
+ * `{ path, literal: true }` entry only stops a name being read as a glob; the
+ * entry is still a subpath grant), so the root is pinned through this one.
  *
  * macOS only. Under bubblewrap each write root is its own bind mount: the
  * child's `rmdir` or `rename` of it fails with EBUSY, so the marker is not
@@ -811,8 +879,10 @@ function pluginOwnedReadRoots(): string[] {
  * What a Windows filesystem grant is given instead of the path a plugin named.
  * `srt-win acl grant` canonicalises the path it is handed — it follows a
  * junction or symlink in any component and stamps its `(OI)(CI)` ACE on the
- * TARGET (measured on ASRT 0.0.80: a grant on `data\link` landed on the
- * directory the junction named). A path below an envelope root passes through
+ * TARGET (measured on ASRT 0.0.76; through ASRT 0.0.80 the srt-win source
+ * changes only in merging a batch's duplicate targets, #656: a grant on
+ * `data\link` landed on the directory the junction named). A path
+ * below an envelope root passes through
  * directories the plugin's own process can replace with a junction between any
  * check and the grant, so no lstat walk closes it. What the outermost root
  * rests on depends on which root it is. `data/` and `sockets/` are directories
@@ -899,17 +969,28 @@ export function buildPerCommandSandboxCustomConfig(
   // A per-command deny REPLACES the shared one, so the trusted custom denies
   // are restated here once for every wrap rather than by each composer.
   let hiddenSeccompHelper: string | undefined;
+  // What the wrap may be granted on Windows: per-exec grants are refused
+  // there (see above), so the session's and the live worker grants.
+  const windowsGrants = [
+    ...(filesystem.allowRead ?? _baseTrustedSettings?.allowRead ?? []),
+    ...(filesystem.allowWrite ?? _baseTrustedSettings?.allowWrite ?? []),
+    ..._windowsLiveGrants.keys(),
+  ];
   if (filesystem.denyRead !== undefined) {
     const pluginRoots = filesystem.denyPluginsRoot === true ? ensurePluginOwnedReadRoots() : [];
     const denyRead = [...new Set([...filesystem.denyRead, ...pluginRoots, ...(_baseTrustedSettings?.denyRead ?? [])])];
     hiddenSeccompHelper = seccompHelperHiddenBy(denyRead);
-    fs.denyRead = asrtReadDenyPaths(
-      denyRead,
-      // The plugin roots are spelled exactly for the reason the private roots
-      // are: a wrap whose reads include an ancestor of one (a worker's or a
-      // bundled process's host temp directory, above a test `AVE_HOME`) would
-      // otherwise lose its own plugin directories to the re-emitted deny.
-      [...appOwnedSandboxPrivateRoots(), ...pluginRoots],
+    fs.denyRead = windowsDenyTargets(
+      asrtReadDenyPaths(
+        denyRead,
+        // The plugin roots are spelled exactly for the reason the private roots
+        // are: a wrap whose reads include an ancestor of one (a worker's or a
+        // bundled process's host temp directory, above a test `AVE_HOME`) would
+        // otherwise lose its own plugin directories to the re-emitted deny.
+        [...appOwnedSandboxPrivateRoots(), ...pluginRoots],
+      ),
+      _baseTrustedSettings?.userDataDir,
+      windowsGrants,
     );
   }
   const sensitiveDenyWrite = getDefaultSensitiveWriteDenyPaths(_baseTrustedSettings?.userDataDir);
@@ -935,13 +1016,17 @@ export function buildPerCommandSandboxCustomConfig(
     log.warn(notice);
   }
   {
-    fs.denyWrite = [...new Set([
-      ...sensitiveDenyWrite,
-      ...mandatory.denyWrite,
-      ...(filesystem.denyWrite ?? []),
-      ...(_baseTrustedSettings?.denyWrite ?? []),
-      ...(filesystem.pinWriteRoots === true ? pinnedWriteRootDenies(filesystem.allowWrite ?? []) : []),
-    ])];
+    fs.denyWrite = windowsDenyTargets(
+      [...new Set([
+        ...sensitiveDenyWrite,
+        ...mandatory.denyWrite,
+        ...(filesystem.denyWrite ?? []),
+        ...(_baseTrustedSettings?.denyWrite ?? []),
+        ...(filesystem.pinWriteRoots === true ? pinnedWriteRootDenies(filesystem.allowWrite ?? []) : []),
+      ])],
+      _baseTrustedSettings?.userDataDir,
+      windowsGrants,
+    );
   }
   if (filesystem.allowRead !== undefined || hiddenSeccompHelper !== undefined) {
     // A per-command allowRead REPLACES the shared one, so a wrap that only
@@ -1139,10 +1224,47 @@ async function loadSandboxManager() {
  * only on a successful `initialize`; stays `false` after {@link resetAsrtSandbox}.
  */
 let active = false;
+/** Set with `active` when boot initialized ASRT as the Windows proxy only. */
+let windowsExternalConfinement = false;
 
-/** Host-tool spawn gate. True once {@link initializeAsrtSandbox} succeeds. */
+/**
+ * Whether the ASRT runtime is initialized in this process. ASRT activates when
+ * the shell sandbox OR plugin-worker confinement was requested, so this alone
+ * does not say a given substrate is confined: a spawn path asks
+ * {@link isShellSandboxActive} or {@link isPluginWorkerConfinementActive}. The
+ * raw state is for the runtime's own plumbing (wrap self-gates, the shared
+ * network config refresh) and for paths that serve both kinds.
+ */
 export function isAsrtSandboxActive(): boolean {
   return active;
+}
+
+/**
+ * Host-shell spawn gate (bash / powershell tools, the workspace terminal):
+ * ASRT is active AND the shell sandbox (`features.osToolSandbox`) was
+ * requested at boot.
+ */
+export function isShellSandboxActive(): boolean {
+  return active && isShellSandboxRequestedAtBoot();
+}
+
+/**
+ * Extension confinement status: ASRT is active AND plugin-worker
+ * confinement (`features.pluginWorkerConfinement`) was requested at boot. The
+ * shell sandbox setting never decides this.
+ */
+export function isPluginWorkerConfinementActive(): boolean {
+  if (getAveHomePrivacyFailure() !== undefined) return false;
+  return active && isPluginWorkerConfinementRequestedAtBoot() && !windowsExternalConfinement;
+}
+
+/** Refuse extension starts until private storage or session approval is established. */
+export function assertExtensionStartAllowed(): void {
+  // Intentionally gated by the boot request: a user who turned isolation off is not asked.
+  if (process.platform === "win32" && isPluginWorkerConfinementRequestedAtBoot()) {
+    if (areExtensionsWithoutIsolationApproved()) return;
+    assertAveHomePrivacyForConfinement();
+  }
 }
 
 /**
@@ -1314,6 +1436,15 @@ function getProtectedReadDenyPaths(
 }
 
 /**
+ * The protected read-deny floor, for a confinement layer that ranks its own
+ * lists (Windows MXC, `mxc-windows.ts` `rankMxcFilesystem`): a grant beneath
+ * one of these is dropped there, as ASRT drops it on every platform.
+ */
+export function getProtectedReadDenyFloor(): readonly string[] {
+  return getProtectedReadDenyPaths();
+}
+
+/**
  * The protected read deny covering `path`, if any. A plugin's chosen directory
  * is refused when one does: its read half would re-allow the deny on every
  * platform, and on Linux its write half would too.
@@ -1453,27 +1584,151 @@ function sensitiveDenyHomes(): string[] {
   return policyHomeAnchors();
 }
 
-function getDefaultSensitiveDenyPaths(userDataDir: string | undefined, readablePrimarySessionRoot?: string): string[] {
-  const homes = sensitiveDenyHomes();
-  const ave = aveHome();
-  const aveHomes = [ave, ...homes.map((home) => join(home, ".ave"))];
-  // Electron userData dir — exact path when provided by a trusted caller;
-  // otherwise derived from each home and platform layout, without a
-  // desktop runtime import — safe for any non-renderer context.
-  // FIX 1 (security MINOR): Linux base honors XDG_CONFIG_HOME, mirroring
-  // Electron's own resolution: `process.env.XDG_CONFIG_HOME || ~/.config`.
-  const electronUserData = userDataDir !== undefined
-    ? [process.platform === "win32" ? userDataDir.replace(/[/\\]+$/, "") + sep : userDataDir]
-    : homes.map((home) =>
+/**
+ * The Electron userData dirs to deny: the exact dir when a trusted caller
+ * provides it; otherwise derived from each policy home and the platform
+ * layout, without a desktop runtime import — safe for any non-renderer
+ * context. On win32 each carries its trailing separator so srt-win never
+ * materializes the deny as an empty file.
+ */
+function electronUserDataDirs(userDataDir: string | undefined, homes: readonly string[]): string[] {
+  if (userDataDir !== undefined) {
+    return [process.platform === "win32" ? userDataDir.replace(/[/\\]+$/, "") + sep : userDataDir];
+  }
+  return homes.map((home) =>
     (process.platform === "darwin"
       ? join(home, "Library", "Application Support", "Ave")
       : process.platform === "win32"
         ? join(home, "AppData", "Roaming", "Ave") + sep
         : join(
-            // Linux: mirror Electron's XDG_CONFIG_HOME resolution.
+            // Linux: honor XDG_CONFIG_HOME, mirroring Electron's own resolution.
             process.env.XDG_CONFIG_HOME ?? join(home, ".config"),
             "Ave",
           )));
+}
+
+const POSIX_CRON_DENIES = [
+  "/usr/lib/cron/tabs", // macOS user crontab spool
+  "/var/spool/cron/crontabs", // Linux (Debian/Ubuntu) user crontab spool
+  "/var/spool/cron", // Linux (RHEL/Fedora) user crontab spool
+  "/etc/cron.d", // system cron drop-in dir
+] as const;
+const POSIX_ASRT_TEMP_DENIES = ["/tmp/claude", "/private/tmp/claude"] as const;
+
+/** The directories among the write-persistence denies (see getDefaultSensitiveWriteDenyPaths). */
+function writePersistenceDirectories(homes: readonly string[]): string[] {
+  return [
+    ...(process.platform === "win32" ? srtWinPrivateDirectories() : []),
+    ...homes.flatMap((home) => [
+      join(home, ".config"),
+      join(home, "Library", "LaunchAgents"),
+      join(home, ".npm", "_logs"),
+      join(home, ".claude", "debug"),
+    ]),
+    dirname(dirname(getVendoredSrtWinExePath())),
+  ];
+}
+
+/**
+ * The Windows user profile, or undefined when it cannot be resolved. A drive
+ * root or other non-home value is rejected: treating `C:\` as the profile
+ * would prune every deny on the drive that no grant overlaps.
+ */
+function windowsProfileHome(): string | undefined {
+  let home: string;
+  try {
+    home = homedir();
+  } catch {
+    return undefined;
+  }
+  return isHomeAnchor(home, process.platform) ? home : undefined;
+}
+
+/**
+ * The deny lists as `srt-win acl stamp` must receive them. srt-win creates a
+ * deny target that does not exist yet, so the deny lands on the exact path:
+ * an empty FILE, unless the path ends in a separator, then a directory. So on
+ * Windows:
+ *   - a directory row gets its trailing `\`. Without it `~/.ave/keys`,
+ *     `~/.config` or `~/.claude/debug` became 0-byte files (measured on
+ *     Windows 26300), and every later `mkdir` of them failed;
+ *   - a POSIX-rooted row (`/etc/shadow`, `/tmp/claude`, …) is dropped. It
+ *     resolves against the current drive, and srt-win materialized
+ *     `C:\etc\shadow`, `C:\var\spool\cron`, `C:\tmp\claude` and the like;
+ *   - a row in the user profile disjoint from every grant is dropped. The sandbox
+ *     user has no rights in the profile (its DACL is SYSTEM, Administrators
+ *     and the user), so such a deny takes nothing away. It made `acl stamp`
+ *     time out: srt-win also puts an inheritable `(D;OICI;FILE_DELETE_CHILD)`
+ *     on the row's parent, and Windows walks the parent's whole subtree to
+ *     apply it, once per row. Measured on Windows 26300: 25 ms under a small
+ *     folder, 5.2 s under a 75 000-entry one, 404 s (and 318 s to restore)
+ *     under the profile. A row outside the profile stays: other drives
+ *     commonly let Authenticated Users in. A grant that covers the profile
+ *     itself keeps every row, and the stamp is slow again. A worker's grant
+ *     comes after the session stamp, so an overlapping row reaches srt-win as
+ *     a per-exec deny of the worker's wrap, which restates the floor. Ancestor
+ *     denies must keep their original priority: a child write grant must still
+ *     be downgraded by the runtime's deny ranking before stamp targets narrow.
+ * Other platforms get the list unchanged.
+ * A marked `{ path, literal: true }` entry is kept as it is on every platform:
+ * it names one exact path, so no row of it is dropped.
+ */
+function windowsDenyTargets<T extends FilesystemPathEntry>(
+  entries: readonly T[],
+  userDataDir: string | undefined,
+  grants: readonly FilesystemPathEntry[],
+): (T | string)[] {
+  if (process.platform !== "win32") return [...entries];
+  const literals = entries.filter((entry) => typeof entry !== "string");
+  const paths = entries.filter((entry): entry is T & string => typeof entry === "string");
+  const homes = sensitiveDenyHomes();
+  // Only the OS profile has the DACL that makes a disjoint deny redundant; a
+  // HOME elsewhere keeps every row. An unresolved profile drops nothing.
+  const profile = windowsProfileHome();
+  // Match runtime home expansion before judging whether a deny is disjoint.
+  const expandedGrants = grants.map((entry) => typeof entry === "string" ? entry : entry.path).map((grant) => profile === undefined ? grant
+    : grant === "~" ? profile
+      : /^~[\\/]/.test(grant) ? profile + grant.slice(1) : grant);
+  const aveHomes = [aveHome(), ...homes.map((home) => join(home, ".ave"))];
+  const directories = new Set(
+    [
+      ...SENSITIVE_PATH_ENTRIES.filter((entry) => entry.kind === "dir" && entry.anchor !== "root").flatMap((entry) =>
+        (entry.anchor === "ave-home" ? aveHomes : homes).map((home) => join(home, ...entry.segments)),
+      ),
+      ...electronUserDataDirs(userDataDir, homes).map((path) => path.replace(/[\\/]+$/, "")),
+      ...writePersistenceDirectories(homes),
+    ].map(caseFoldForMatch),
+  );
+  const posixRooted = new Set<string>([
+    ...SENSITIVE_PATH_ENTRIES.filter((entry) => entry.anchor === "root").map((entry) => "/" + entry.segments.join("/")),
+    ...POSIX_CRON_DENIES,
+    ...POSIX_ASRT_TEMP_DENIES,
+  ]);
+  return paths
+    .filter((path) => !posixRooted.has(path))
+    .filter((path) => {
+      try {
+        // Use admission's canonical identity, including links and native aliases.
+        // Patterns and unresolved short names cannot prove disjointness.
+        if ([path, ...expandedGrants].some((candidate) => /[\0*?\[\]%]|~\d+(?:\.|[\\/]|$)/
+          .test(candidate.replace(/^\\\\\?\\/, "")))) return true;
+        return profile === undefined || !isGrantPathWithin(profile, path)
+          || expandedGrants.some((grant) => isGrantPathWithin(grant, path) || isGrantPathWithin(path, grant));
+      } catch {
+        // An unproven identity must never remove a deny.
+        return true;
+      }
+    })
+    .map((path): T | string => (!/[\\/]$/.test(path) && directories.has(caseFoldForMatch(path)) ? `${path}\\` : path))
+    .concat(literals);
+}
+
+function getDefaultSensitiveDenyPaths(userDataDir: string | undefined, readablePrimarySessionRoot?: string): string[] {
+  const homes = sensitiveDenyHomes();
+  const ave = aveHome();
+  const aveHomes = [ave, ...homes.map((home) => join(home, ".ave"))];
+  // Electron userData dir — see electronUserDataDirs.
+  const electronUserData = electronUserDataDirs(userDataDir, homes);
   const raw = [
     // ── The sensitive-path table, projected to literal absolute paths ──
     // Projected from the single authority, SENSITIVE_PATH_ENTRIES in
@@ -1492,8 +1747,8 @@ function getDefaultSensitiveDenyPaths(userDataDir: string | undefined, readableP
         case "root":
           // POSIX-rooted (`/etc/…`). Kept literal rather than `join`ed so the
           // string stays a seatbelt/bwrap subpath on the platforms that have
-          // it; on win32 it names nothing and ASRT skips it (No-Fallback: a
-          // path that does not exist is harmless to list).
+          // it. On win32 srt-win would create it on the current drive, so
+          // windowsDenyTargets drops it at the ASRT boundary.
           paths = ["/" + entry.segments.join("/")];
           break;
         default: {
@@ -1509,7 +1764,10 @@ function getDefaultSensitiveDenyPaths(userDataDir: string | undefined, readableP
       return paths.filter((path) => {
         if (readablePrimarySessionRoot === undefined || entry.anchor !== "ave-home" || entry.access !== "read-only") return true;
         return caseFoldForMatch(canonicalizePathForMatch(path)) !== caseFoldForMatch(readablePrimarySessionRoot);
-      }).map((path) => process.platform === "win32" && entry.kind === "dir" ? path + sep : path);
+      }).map((path) => process.platform === "win32" && entry.kind === "dir" && entry.anchor !== "root"
+        // A POSIX-rooted row never reaches srt-win (windowsDenyTargets drops it by
+        // its exact spelling), so it keeps that spelling.
+        ? path + sep : path);
     }),
     // Operator-selected external keys can live inside a granted workspace.
     // Keep the same frozen literal targets as the in-process host guard.
@@ -1599,13 +1857,11 @@ export function getDefaultSensitiveWriteDenyPaths(userDataDir = _baseTrustedSett
     join(home, "Library", "LaunchAgents") + (process.platform === "win32" ? sep : ""),
   ]);
   const writePersistence = [
+    ...(process.platform === "win32" ? srtWinPrivateDirectories() : []),
     ...homeWritePersistence,
     // ── User crontab spool + system cron drop-ins (a crontab edit re-executes
     //    outside the sandbox) ──
-    "/usr/lib/cron/tabs", // macOS user crontab spool
-    "/var/spool/cron/crontabs", // Linux (Debian/Ubuntu) user crontab spool
-    "/var/spool/cron", // Linux (RHEL/Fedora) user crontab spool
-    "/etc/cron.d", // system cron drop-in dir
+    ...POSIX_CRON_DENIES,
     // ── ASRT vendored srt-win backend dir (re-exec vector) ──
     // A sandboxed process must never be able to WRITE/overwrite the broker binary
     // it is itself spawned through. 0.0.67's explicit srt-win path closes the
@@ -1641,6 +1897,8 @@ export function getDefaultSensitiveWriteDenyPaths(userDataDir = _baseTrustedSett
  * part of the module's runtime API — boot uses {@link initializeAsrtSandbox}.
  */
 export function buildSandboxConfig(trustedSettings: TrustedSandboxSettings): SandboxRuntimeConfig {
+  const srtWinPath = process.platform === "win32" && trustedSettings.windows?.externalConfinement !== true
+    ? getVerifiedSrtWinExePath() : undefined;
   const network: NetworkConfig = {
     // Deny-by-default — empty allow-list ⇒ no network egress.
     allowedDomains: [...(trustedSettings.allowedDomains ?? [])],
@@ -1670,17 +1928,18 @@ export function buildSandboxConfig(trustedSettings: TrustedSandboxSettings): San
     // `{ http: '', https: '' }`, NOT `{}`.
     //
     // We therefore always set http/https explicitly:
-    //   - default (no trusted corporateProxy): empty strings ⇒ direct-connect,
+    //   - default (no trusted upstreamProxy): empty strings ⇒ direct-connect,
     //     the secure floor — ASRT never inherits the ambient host proxy;
-    //   - present: only the explicit, trusted corporate-proxy URLs are used.
+    //   - present: only the explicit, trusted upstream-proxy URLs are used.
     // `noProxy` carries no inheritance hazard (its only effect is to BYPASS the
     // proxy, never to add egress), so it is set only when explicitly supplied.
     parentProxy: {
-      http: trustedSettings.corporateProxy?.http ?? "",
-      https: trustedSettings.corporateProxy?.https ?? "",
-      ...(trustedSettings.corporateProxy?.noProxy !== undefined
-        ? { noProxy: trustedSettings.corporateProxy.noProxy }
+      http: trustedSettings.upstreamProxy?.http ?? "",
+      https: trustedSettings.upstreamProxy?.https ?? "",
+      ...(trustedSettings.upstreamProxy?.noProxy !== undefined
+        ? { noProxy: trustedSettings.upstreamProxy.noProxy }
         : {}),
+      ...(trustedSettings.upstreamProxy?.resolvesNames === true ? { resolvesNames: true } : {}),
     },
   };
 
@@ -1721,13 +1980,23 @@ export function buildSandboxConfig(trustedSettings: TrustedSandboxSettings): San
     }
   }
   const sharedFloor = getProtectedReadDenyPaths(trustedSettings.userDataDir, trustedSettings.denyRead);
+  const allowWrite = writeRootsOutsideReadDenies(mandatory.allowWrite, sharedFloor);
+  const allowRead =
+    trustedSettings.allowRead !== undefined ? readGrantsOutsideReadDenies(trustedSettings.allowRead, sharedFloor, []) : undefined;
+  if (srtWinPath !== undefined) assertPrivateHelperGrants(allowRead ?? [], allowWrite);
+  // The caller's own spellings stay in the grant set: the mandatory policy
+  // resolves `~` against the real home, while ASRT expands it against the
+  // profile, and a deny overlapping either one must be kept.
+  const windowsGrants = [...allowWrite, ...(trustedSettings.allowWrite ?? []), ...(allowRead ?? [])];
   const filesystem: FilesystemConfig = {
-    denyRead: asrtReadDenyPaths(denyReadUnion, appOwnedSandboxPrivateRoots()),
-    allowWrite: writeRootsOutsideReadDenies(mandatory.allowWrite, sharedFloor),
-    denyWrite: denyWriteUnion,
-    ...(trustedSettings.allowRead !== undefined
-      ? { allowRead: readGrantsOutsideReadDenies(trustedSettings.allowRead, sharedFloor, []) }
-      : {}),
+    denyRead: windowsDenyTargets(
+      asrtReadDenyPaths(denyReadUnion, appOwnedSandboxPrivateRoots()),
+      trustedSettings.userDataDir,
+      windowsGrants,
+    ),
+    allowWrite,
+    denyWrite: windowsDenyTargets(denyWriteUnion, trustedSettings.userDataDir, windowsGrants),
+    ...(allowRead !== undefined ? { allowRead } : {}),
   };
 
   // Windows-only: pin the egress proxy bind range so it matches the WFP permit
@@ -1736,9 +2005,14 @@ export function buildSandboxConfig(trustedSettings: TrustedSandboxSettings): San
   // config and the WFP rule never desync. Inert on mac/linux — ASRT ignores the
   // `windows` section off Windows, but we only emit it on win32 to keep the
   // config minimal and the non-Windows config shape unchanged.
-  const windows: WindowsConfig | undefined =
+  // Part 6 of the carried ASRT patch reads `externalConfinement`; the
+  // package's own WindowsConfig type does not declare it.
+  const windows: (WindowsConfig & { externalConfinement?: "embedder" }) | undefined =
     process.platform === "win32"
       ? {
+          ...(trustedSettings.windows?.externalConfinement === true
+            ? { externalConfinement: "embedder" as const }
+            : {}),
           proxyPortRange: [
             ...(trustedSettings.windows?.proxyPortRange ??
               DEFAULT_WINDOWS_PROXY_PORT_RANGE),
@@ -1747,7 +2021,7 @@ export function buildSandboxConfig(trustedSettings: TrustedSandboxSettings): San
           // resolution. Supply the explicit SoT path so SandboxManager.initialize
           // (+ wrapWithSandboxArgv + the in-initialize dependency check) can spawn
           // the backend instead of throwing. See getVendoredSrtWinExePath.
-          srtWin: { path: getVendoredSrtWinExePath() },
+          ...(srtWinPath !== undefined ? { srtWin: { path: srtWinPath } } : {}),
         }
       : undefined;
   // Linux-only: pin the helper bwrap execs to the one path each wrap is
@@ -1874,6 +2148,7 @@ function executeAsrtRuntimeProbe(
       // here; this probe never falls back to a plain host shell command.
       child = spawn(executable, args, {
         cwd: process.cwd(),
+        windowsHide: true,
         env: wrapped.env,
         shell: false,
         stdio: "ignore",
@@ -2010,23 +2285,49 @@ async function discardFailedAsrtInitialization(
 }
 
 /**
- * Initialize the host-owned sandbox and publish activity only after a native
- * wrapper executes successfully. An empty shared network allowlist routes
- * unknown destinations to the invocation-aware host approval callback.
+ * Initialize the ASRT {@link SandboxManager} singleton from TRUSTED settings.
+ *
+ * Builds the config from trusted settings (network `allowedDomains` is the
+ * empty `allowedDomains`, non-strict; the WEAKENING flags come from trusted
+ * host/user settings ONLY — see {@link TrustedSandboxSettings})
+ * and calls `initialize`, which starts ASRT's proxy/helper machinery and
+ * assigns the SHARED `config` that `filterNetworkRequest` enforces against.
+ * Initializes once per process; a second call throws. Activity is published
+ * only after a native wrapper executes successfully.
+ *
+ * NETWORK: boot initializes non-strict with an empty `allowedDomains` and
+ * passes the egress ask callback (`egress-runtime.ts`), so the callback is the
+ * one gate for every connection. In ASRT 0.0.80 the order is `deniedDomains`,
+ * `allowedDomains`, the strict deny (off), the per-command lists (unused: they
+ * are keyed by the forgeable proxy username), then the callback. Each wrap
+ * also gets its own proxy listener (the carried patch's
+ * `openInvocationListener`), and the callback trusts only an identity that
+ * listener vouches for on macOS and Linux.
+ *
+ * @param askCb  The egress ask callback. It must resolve to the literal
+ *               `true` to allow: ASRT 0.0.80 denies every other value, truthy
+ *               ones included, and reads `{ allow: false, reason }` as a deny
+ *               with that reason. Its second argument carries the
+ *               invocation's `attributionKey` and how it was learned
+ *               (`identity`); see test/scripts/asrt-patched-symbols.test.ts.
+ * @param enableLogMonitor  Forwarded to ASRT (violation log monitor). Default
+ *                          off to avoid surprising background activity.
  */
 export async function initializeAsrtSandbox(
   trustedSettings: TrustedSandboxSettings,
   askCb?: SandboxAskCallback,
   enableLogMonitor = false,
 ): Promise<void> {
+  if (trustedSettings.windows?.externalConfinement !== true) {
+    assertAveHomePrivacyForConfinement();
+  }
   // Idempotency guard. The boot gate must decide exactly once;
   // a double-initialize means two boot paths raced or a runtime channel tried
   // to re-seal the sandbox with a different config. Fail loud rather than
-  // silently overwriting the live config — use updateAsrtSandboxConfig to
-  // change a live config.
+  // silently overwriting the live config.
   if (active) {
     throw new Error(
-      "initializeAsrtSandbox: already active — refusing to re-initialize (use updateAsrtSandboxConfig to change a live config)",
+      "initializeAsrtSandbox: already active — refusing to re-initialize",
     );
   }
   const SandboxManager = await loadSandboxManager();
@@ -2040,8 +2341,11 @@ export async function initializeAsrtSandbox(
   const config = buildSandboxConfig(withWorkerUnixSockets(trustedSettings));
   assertNoLocalBinding(config);
   noteAsrtUnixSocketPolicy(config.network.allowAllUnixSockets === true);
-  await SandboxManager.initialize(config, askCb, enableLogMonitor);
+  // Installed before the proxy starts, so no connection is routed without
+  // it; reset() (including a failed initialization's) clears it.
+  SandboxManager.setParentProxyRouter(trustedSettings.upstreamRouter);
   try {
+    await SandboxManager.initialize(config, askCb, enableLogMonitor);
     // A host may reject a configured profile even when every dependency exists.
     // Publish activity only after a real confined workload starts.
     await verifyAsrtRuntime(SandboxManager);
@@ -2049,6 +2353,8 @@ export async function initializeAsrtSandbox(
     await discardFailedAsrtInitialization(SandboxManager);
     throw error;
   }
+  windowsExternalConfinement =
+    process.platform === "win32" && trustedSettings.windows?.externalConfinement === true;
   loadedSandboxManagerForRelease = SandboxManager;
   active = true;
 }
@@ -2073,12 +2379,20 @@ export async function initializeAsrtSandbox(
 export async function checkAsrtDependencies(): Promise<{
   errors: string[];
   warnings: string[];
+  dependencyFailure?: unknown;
 }> {
   if (process.platform === "win32") {
     const mod = await import("@anthropic-ai/sandbox-runtime");
-    return mod.checkWindowsDependenciesAsync({
-      srtWin: mod.resolveSrtWin({ path: getVendoredSrtWinExePath() }),
-    });
+    // A missing bundled binary is a failed check, not a boot crash: ASRT's own
+    // implicit-resolve path reports it the same way, and the gate turns it
+    // into `windows-sandbox-missing` (sandbox-start-failure.ts).
+    let srtWin: ReturnType<typeof mod.resolveSrtWin>;
+    try {
+      srtWin = mod.resolveSrtWin({ path: getVerifiedSrtWinExePath() });
+    } catch (error) {
+      return { errors: [errorMessage(error)], warnings: [], dependencyFailure: error };
+    }
+    return mod.checkWindowsDependenciesAsync({ srtWin });
   }
   const SandboxManager = await loadSandboxManager();
   return SandboxManager.checkDependenciesAsync();
@@ -2107,8 +2421,8 @@ export async function wrapToolCommand(
   // ahead of any environment the spawning caller supplies. Idempotent.
   useAppOwnedSandboxTempRoot();
   assertPerExecFilesystemSupported(options.filesystem, "wrapToolCommand");
-  const SandboxManager = await loadSandboxManager();
   assertCommandId("wrapToolCommand", options.commandId);
+  const SandboxManager = await loadSandboxManager();
   await openEgressListener(SandboxManager, "wrapToolCommand", options.commandId);
   const notices: string[] = [];
   let gitControlSnapshot: SandboxGitControlSnapshot | undefined;
@@ -2347,9 +2661,28 @@ export function useAppOwnedSandboxTempRoot(): string {
  * listener. The host callback applies that invocation's owning plugin policy;
  * workers never inherit a shell grant or another plugin's declared domains.
  *
- * Host-connected workers register their control-socket directory through
- * {@link registerWorkerUnixSocketDir} before wrapping. That shared worker
- * allowance is overridden by a host shell's per-invocation denyUnixSockets.
+ * EGRESS: workers do NOT carry a per-command egress override — the
+ * `allowedDomains`/`deniedDomains` channel is INERT per command
+ * (`filterNetworkRequest` reads the SHARED config, not `customConfig`).
+ * Worker egress is decided by the egress ask callback, attributed through the
+ * worker's own proxy listener: the worker reaches its own extension's
+ * declared domains and the configured model endpoints, and is denied
+ * everything else without a prompt (workers are non-interactive).
+ *
+ * UDS CONTROL CHANNEL: a worker the HOST connects INBOUND to (an HTTP worker)
+ * needs a Unix-domain-socket control channel — loopback TCP is unreachable
+ * through Linux's bwrap `--unshare-net` namespace. The per-command channel
+ * here ONLY carries the filesystem jail, whose `allowWrite` includes the
+ * worker's host-allocated socketDir → that becomes the Linux `--bind <dir>
+ * <dir>` mount (host-visible from both namespaces) and, on macOS, the writable
+ * region where the socket file may be created. The Unix-socket ALLOW config
+ * (macOS `allowUnixSockets` / Linux `allowAllUnixSockets`) is INERT per-command
+ * in current ASRT — it MUST live on the SHARED config and is managed by
+ * {@link registerWorkerUnixSocketDir} (see the WORKER UDS header). The
+ * {@link spawnWorker} primitive (worker-spawn.ts) drives both: it registers the
+ * socketDir on the shared config, then wraps with the FS jail here. That
+ * shared worker allowance is overridden by a host shell's per-invocation
+ * `denyUnixSockets`.
  */
 export async function wrapWorkerCommand(
   command: string,
@@ -2382,6 +2715,7 @@ async function wrapLongLivedCommand(
   options: AttributedWrapOptions,
   wrapOptions: { readonly ttys: readonly string[] } | undefined,
 ): Promise<SandboxWrapResult> {
+  assertAveHomePrivacyForConfinement();
   const invocation = egressInvocationOwner(options.commandId);
   // Self-enforcing gate — same rationale as wrapToolCommand.
   if (!isAsrtSandboxActive()) {
@@ -2392,8 +2726,8 @@ async function wrapLongLivedCommand(
   // ahead of any environment the spawning caller supplies. Idempotent.
   useAppOwnedSandboxTempRoot();
   assertPerExecFilesystemSupported(options.filesystem, caller);
-  const SandboxManager = await loadSandboxManager();
   assertCommandId(caller, options.commandId);
+  const SandboxManager = await loadSandboxManager();
   await openEgressListener(SandboxManager, caller, options.commandId);
   const notices: string[] = [];
   let gitControlSnapshot: SandboxGitControlSnapshot | undefined;
@@ -2412,34 +2746,6 @@ async function wrapLongLivedCommand(
   const result = applySandboxFilesystemPolicy(wrapped, customConfig?.filesystem, () => SandboxManager.cleanupAfterCommand());
   return trackBareRepositoryCleanup({ ...result, ...(gitControlSnapshot ? { gitControlSnapshot } : {}), ...(customConfig?.filesystem ? { filesystemPolicy: customConfig.filesystem } : {}), ...(notices.length ? { notices: Object.freeze(notices) } : {}) }, options.commandId, cleanupBare,
     () => invocation !== undefined && egressInvocationOwner(options.commandId) === undefined);
-}
-
-/**
- * Merge validated domain lists and an optional trusted baseline, preserving
- * first-seen order. The host uses this utility while composing worker policy;
- * its result is not an implicit shell allowlist. Shell boot policy stays empty.
- */
-export function computeUnionAllowedDomains(
-  manifestAllowLists: readonly (readonly string[])[],
-  trustedBaseline: readonly string[] = [],
-): string[] {
-  const seen = new Set<string>();
-  const union: string[] = [];
-  for (const domain of trustedBaseline) {
-    if (typeof domain === "string" && domain.length > 0 && !seen.has(domain)) {
-      seen.add(domain);
-      union.push(domain);
-    }
-  }
-  for (const list of manifestAllowLists) {
-    for (const domain of list) {
-      if (typeof domain === "string" && domain.length > 0 && !seen.has(domain)) {
-        seen.add(domain);
-        union.push(domain);
-      }
-    }
-  }
-  return union;
 }
 
 /**
@@ -2552,23 +2858,6 @@ export function computeDynamicEndpointHosts(
 }
 
 /**
- * Replace the live ASRT config (TRUSTED settings only). Pass-through to
- * `SandboxManager.updateConfig`. Remembers these as the new base settings so a
- * subsequent worker-UDS register/unregister rebuilds additively, and re-applies
- * the CURRENTLY-registered worker UDS dirs onto the new base (a live config
- * refresh must not drop a running worker's control-socket allowance).
- */
-export async function updateAsrtSandboxConfig(
-  trustedSettings: TrustedSandboxSettings,
-): Promise<void> {
-  const SandboxManager = await loadSandboxManager();
-  _baseTrustedSettings = trustedSettings;
-  SandboxManager.updateConfig(
-    buildSandboxConfig(withWorkerUnixSockets(trustedSettings)),
-  );
-}
-
-/**
  * Register a host-allocated worker control-socket DIRECTORY for UDS access and
  * push the rebuilt SHARED config (worker-confinement PR D-1). The per-command
  * `customConfig.network.allowUnixSockets` is INERT in current ASRT (see the
@@ -2678,6 +2967,7 @@ export async function grantWindowsWorkerFilesystemAccess(opts: {
   readonly allowRead?: readonly string[];
   readonly allowWrite?: readonly string[];
 }): Promise<WindowsWorkerFilesystemGrant> {
+  assertAveHomePrivacyForConfinement();
   if (!active || _baseTrustedSettings === undefined) {
     throw new Error(
       "grantWindowsWorkerFilesystemAccess: ASRT sandbox is not active (initialize at boot first)",
@@ -2694,7 +2984,7 @@ export async function grantWindowsWorkerFilesystemAccess(opts: {
     resolveSrtWin,
   } = await import("@anthropic-ai/sandbox-runtime");
 
-  const srtWin = resolveSrtWin({ path: getVendoredSrtWinExePath() });
+  const srtWin = resolveSrtWin({ path: getVerifiedSrtWinExePath() });
   const user = getWindowsSandboxUserStatus({ srtWin });
   const sandboxUserSid = user.sid;
   if (!user.provisioned || !user.credPresent || sandboxUserSid === undefined) {
@@ -2713,6 +3003,8 @@ export async function grantWindowsWorkerFilesystemAccess(opts: {
     ])),
   ];
 
+  assertPrivateHelperGrants(allowRead, allowWrite);
+
   if (allowRead.length > 0 || allowWrite.length > 0) {
     try {
       grantWindowsAcl({
@@ -2728,6 +3020,8 @@ export async function grantWindowsWorkerFilesystemAccess(opts: {
     }
   }
 
+  for (const path of allowRead) _windowsLiveGrants.set(path, (_windowsLiveGrants.get(path) ?? 0) + 1);
+
   let released = false;
   return {
     allowRead,
@@ -2735,12 +3029,28 @@ export async function grantWindowsWorkerFilesystemAccess(opts: {
     release: () => {
       if (released) return;
       released = true;
+      for (const path of allowRead) {
+        const held = (_windowsLiveGrants.get(path) ?? 0) - 1;
+        if (held > 0) _windowsLiveGrants.set(path, held);
+        else _windowsLiveGrants.delete(path);
+      }
       // Capture srtWin in the closure — the release may run long after the
       // dynamic import scope has gone; it still needs the explicit spawn
       // descriptor (0.0.67 has no implicit vendored fallback).
       revokeWindowsAcl({ sandboxUserSid, holderPid: opts.holderPid, srtWin });
     },
   };
+}
+
+function assertPrivateHelperGrants(read: readonly string[], write: readonly string[]): void {
+  // Direct grants would override the image's DACL. A writable ancestor could
+  // replace the whole directory using its delete-child right, even though the
+  // image itself does not inherit the ancestor's permissions.
+  if (srtWinPrivateDirectories().some((directory) =>
+    read.some((path) => isGrantPathWithin(directory, path)) ||
+    write.some((path) => isGrantPathWithin(directory, path) || isGrantPathWithin(path, directory)))) {
+    throw new Error("Windows filesystem grant overlaps a private helper image");
+  }
 }
 
 /**
@@ -2763,6 +3073,7 @@ export async function resetAsrtSandbox(): Promise<void> {
   // still owns bare-layout cleanup even if the runtime is reset first.
   active = false;
   loadedSandboxManagerForRelease = undefined;
+  windowsExternalConfinement = false;
   // worker-confinement PR D-1: drop the remembered base settings + live worker
   // UDS dirs so a fresh init starts from a clean slate (no stale socket allow).
   _baseTrustedSettings = undefined;
@@ -2789,6 +3100,17 @@ export async function isAsrtSandboxSupported(): Promise<boolean> {
 }
 
 
+/**
+ * Append the sandbox violations ASRT recorded under `commandId` to a command's
+ * output, as a `<sandbox_violations>` block (ASRT's
+ * `annotateStderrWithSandboxFailures`), so the model reads why a host or path
+ * failed instead of a bare connection error. Returns the text unchanged when
+ * nothing was recorded. A proxy deny line names `host:port` and the reason;
+ * ASRT has already reduced a refused URL's query string to `?…`.
+ *
+ * Host notices (write narrowing, quarantine) are appended to the same text,
+ * and a protected-`.git` failure gets the host-approval hint.
+ */
 export async function annotateWithSandboxViolations(
   commandId: string,
   text: string,

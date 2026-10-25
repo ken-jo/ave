@@ -15,7 +15,7 @@ import { ApprovalGate, type ApprovalRequest } from "../approval-gate.js";
 import { isAsrtSandboxActive, resetAsrtSandbox, useAppOwnedSandboxTempRoot } from "../asrt-sandbox.js";
 import { liveEgressInvocationCount } from "../egress-invocations.js";
 import { createEgressAskRuntimeCallback, listEgressGrants, revokeEgressGrant, setWorkerEgressAllowlists } from "../egress-runtime.js";
-import { __resetActiveSandboxCapabilityForTest, setActiveSandboxCapability } from "../sandbox-capability.js";
+import { __resetActiveSandboxCapabilityForTest, setActiveSandboxCapability, setShellSandboxRequestedAtBoot } from "../sandbox-capability.js";
 
 const TAB_ID = "terminal:0a1b2c3d-3";
 const OWNER_WINDOW_ID = 1;
@@ -62,8 +62,10 @@ describe.skipIf(shouldSkipNativeSandboxTests())("terminal background egress thro
     // Even a host present in both worker sources must still ask in the terminal.
     setWorkerEgressAllowlists({ byExtension: new Map([["fixture-plugin", ["127.0.0.1"]]]), modelEndpointHosts: ["127.0.0.1"] });
     useAppOwnedSandboxTempRoot();
-    callback = vi.fn(createEgressAskRuntimeCallback({ approvalGate: gate }));
+    callback = vi.fn(createEgressAskRuntimeCallback({ approvalGate: gate, shellAskEnabled: () => true }));
     await initializeRequiredSandbox({ allowedDomains: [] }, callback);
+    // The terminal reads the shell scope, which the boot gate seals.
+    setShellSandboxRequestedAtBoot(true);
     setActiveSandboxCapability({
       kind: "asrt", confidence: "verified", platform: process.platform,
       reason: "native integration fixture", confines: { filesystem: true, process: true, network: true },
@@ -82,6 +84,7 @@ describe.skipIf(shouldSkipNativeSandboxTests())("terminal background egress thro
       setWorkerEgressAllowlists({ byExtension: new Map(), modelEndpointHosts: [] });
       if (isAsrtSandboxActive()) await resetAsrtSandbox();
       __resetActiveSandboxCapabilityForTest();
+      setShellSandboxRequestedAtBoot(false);
       if (server) {
         server.closeAllConnections();
         await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
@@ -126,7 +129,7 @@ describe.skipIf(shouldSkipNativeSandboxTests())("terminal background egress thro
       requestId: card.id, nonce: card.nonce, hmac: card.hmac,
       choice: scope === "deny" ? "deny-once" : "allow-once",
       ...(scope === "deny" ? {} : { egressScope: scope }),
-    });
+    }, wc as never);
   }
 
   async function completed(tracker: TerminalBlockTracker, blockId: number): Promise<ReturnType<TerminalBlockTracker["get"]>> {

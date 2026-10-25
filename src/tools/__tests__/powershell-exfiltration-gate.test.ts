@@ -27,7 +27,7 @@ vi.mock("../shell-tools.js", async (importOriginal) => {
 });
 
 import { PermissionManager } from "../../permissions/permission-manager.js";
-import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, setActiveSandboxCapability, setSandboxRequestedAtBoot } from "../../permissions/sandbox-capability.js";
+import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, setActiveSandboxCapability, setShellSandboxRequestedAtBoot } from "../../permissions/sandbox-capability.js";
 import { runWithToolExecutionCwd } from "../execution-context.js";
 import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
@@ -44,7 +44,7 @@ afterEach(() => {
 
 async function run(toolName: "bash" | "powershell", command: string, savedGrant?: string, runsSandboxed = false) {
   __resetActiveSandboxCapabilityForTest();
-  setSandboxRequestedAtBoot(runsSandboxed);
+  setShellSandboxRequestedAtBoot(runsSandboxed);
   if (runsSandboxed) setActiveSandboxCapability({ kind: "asrt", confidence: "verified", platform: process.platform, reason: "Controlled shell containment", confines: { filesystem: true, process: true, network: true } });
   const pm = new PermissionManager(join(dir, "permissions.json"));
   pm.setMode("allow");

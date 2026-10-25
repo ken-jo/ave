@@ -8,7 +8,7 @@ The general setup is in [Getting started](./getting-started.md). This page cover
 
 | Tool | Version | Check |
 |---|---|---|
-| Node.js | `>=22.4` (from `package.json` `engines`) | `node -v` |
+| Node.js | `>=22.12` (from `package.json` `engines`) | `node -v` |
 | Bun | Current release | `bun -v` |
 | Git | Any recent release | `git --version` |
 
@@ -32,6 +32,8 @@ CI installs with `bun install --frozen-lockfile`. If a local build works but CI 
 Plugins are not taken from sibling checkouts. Install them from a marketplace, or for a local build use Settings, Plugin Config, Developer Tools, "Install from local folder", and select the folder that contains `plugin.json`. See [Local plugin development](./local-plugin-development.md).
 
 Success: the log shows `boot: ready (N tools, N plugins, N mcp)` and the window opens.
+
+With the OS sandbox on, agent shell commands run in Microsoft Execution Containers when the launcher is present. Installers include it; a source checkout stages it once with `node scripts/fetch-mxc.mjs --arch x64` (or `arm64`). Without it, Settings → Permissions reports `binary-missing` and shells use the approved host route. See the architecture document, "Windows agent shells in Microsoft Execution Containers".
 
 ## 3. What the Windows launcher sets
 

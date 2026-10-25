@@ -36,6 +36,8 @@ import type { SideChatRuntime } from "./components/SideChatView.js";
 import { SURFACE_KIND_OF_VIEW, VIEW_OF_SURFACE_KIND, useMainSurfaces } from "./preview/main-surfaces.js";
 import { SurfaceMovesContext, activateSideTab, getSideTabsSink, isMovableTabKind, type SurfaceDragPayload, type SurfaceMoves } from "./preview/surface-moves.js";
 import { latestUnreadTerminal, markTerminalRead, useTerminalAttentionWatcher } from "./preview/terminal-attention.js";
+import { surfaceMountLocation, useSurfaceMountRevision } from "./preview/surface-mounts.js";
+import { approvalsForDocks } from "./components/permissions/TerminalEgressBanner.js";
 import { forgetActiveSurface, showActiveSurface, subscribeSurfaceClosed, updateActiveSurface, useReportActiveSurface, type ActiveSurface } from "./preview/active-surface.js";
 import { registerBrowserTabHost } from "./preview/agent-browser-bridge.js";
 import { attachToComposer } from "./preview/composer-targets.js";
@@ -797,16 +799,27 @@ export function App() {
   // lane cannot disagree about who is waiting.
   const deferredSessionIds = useDeferredSessionIds(api.permission);
   const [overlayQueue, setOverlayQueue] = useState<readonly OverlayItem[]>([]);
+  // A workspace terminal's egress ask is drawn in that tab's banner while a
+  // view of the tab is mounted; with none mounted (another side-panel tab is
+  // in front) it is the lane's, like any ask no surface draws, so it can still
+  // be answered before its 120 s run out.
+  const surfaceMountRevision = useSurfaceMountRevision();
+  const dockApprovals = useMemo(
+    () => approvalsForDocks(approvalQueue, (tabId) => surfaceMountLocation(tabId) !== null),
+    // The revision is what makes `surfaceMountLocation` worth re-reading.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [approvalQueue, surfaceMountRevision],
+  );
   // A pane's own chat is no tile; the claim it holds is how the window knows it draws its cards.
   const approvalClaimsVersion = useSyncExternalStore(approvalClaims.subscribe, approvalClaims.readVersion, approvalClaims.readVersion);
   const pendingAnswers = useMemo(() => selectPendingAnswers({
-    approvals: approvalQueue,
+    approvals: dockApprovals,
     tiles: tileSessions,
     deferredSessionIds,
     overlayCards: overlayQueue,
     sessions,
     isClaimed: (sessionId) => approvalClaims.ownerOf(sessionId) !== null,
-  }), [approvalQueue, tileSessions, deferredSessionIds, overlayQueue, sessions, approvalClaims, approvalClaimsVersion]);
+  }), [dockApprovals, tileSessions, deferredSessionIds, overlayQueue, sessions, approvalClaims, approvalClaimsVersion]);
   const laneApprovalHead = pendingAnswers.unattributed[0] ?? null;
   // Cards waiting in the dedicated Suggestions conversation — its row's count.
   const suggestionsPendingCount = useMemo(

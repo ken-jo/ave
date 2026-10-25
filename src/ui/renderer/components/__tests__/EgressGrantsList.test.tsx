@@ -146,7 +146,7 @@ describe("EgressGrantsList", () => {
   it("shows a store it cannot read as an error, not as an empty list", async () => {
     render(<EgressGrantsList fetcher={async () => ({ ok: false, error: "egress-grant-store-unreadable", message: "bad file" })} />);
     const error = await screen.findByTestId("egress-grants-error");
-    expect(error.textContent).toContain("Saved domain permissions could not be read");
+    expect(error.textContent).toContain("The saved network grants could not be read");
     expect(screen.queryByTestId("egress-grants-empty")).toBeNull();
   });
 

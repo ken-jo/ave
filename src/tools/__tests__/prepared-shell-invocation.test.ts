@@ -1,9 +1,14 @@
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildHostShellExecutionPlan } from "../../permissions/host-shell-execution-plan.js";
+import * as filesystem from "node:fs";
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return { ...actual, mkdtempSync: vi.fn(actual.mkdtempSync) };
+});
 import * as resolver from "../../lib/shell-resolver.js";
 import * as homeOwner from "../../permissions/sandbox-process-home.js";
 import { bindPreparedShellExecutableReadPaths, preparedShellExecutableReadPaths, claimPreparedShellInvocation, disposePreparedShellInvocation, matchesPreparedShellInvocation, prepareShellInvocation, preparedSandboxBootstrap, preparedSandboxEnvironment, preparedShellCommand, preparedShellFacts, transferPreparedShellInvocation, type PreparedShellInvocation } from "../prepared-shell-invocation.js";
@@ -27,7 +32,7 @@ function fixture(command = "printf '%s\\0' \"$HOME\" \"$TMPDIR\" \"$PWD\" \"$HTT
   return { cwd, identity, handle };
 }
 
-it.each(["linux", "darwin", "win32"] as const)("preserves the temporary directory collision guard on %s", (platform) => {
+it.each(["linux", "darwin", "win32"] as const)("allocates a private temporary directory beside an existing profile temp on %s", (platform) => {
   const home = mkdtempSync(join(tmpdir(), "shell-prepared-collision-")); roots.push(home);
   mkdirSync(join(home, "tmp"));
   const cleanup = vi.fn();
@@ -42,13 +47,20 @@ it.each(["linux", "darwin", "win32"] as const)("preserves the temporary director
   const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform")!;
   try {
     Object.defineProperty(process, "platform", { value: platform });
-    if (platform === "win32") {
-      handles.push(prepareShellInvocation(identity));
-      expect(cleanup).not.toHaveBeenCalled();
-    } else {
-      expect(() => prepareShellInvocation(identity)).toThrow(expect.objectContaining({ code: "EEXIST" }));
-      expect(cleanup).toHaveBeenCalledOnce();
-    }
+    const handle = prepareShellInvocation(identity);
+    handles.push(handle);
+    const prepared = preparedShellCommand(handle);
+    expect(dirname(prepared.environment.TMPDIR!)).toBe(home);
+    expect(prepared.environment.TMPDIR).not.toBe(join(home, "tmp"));
+    expect(existsSync(prepared.environment.TMPDIR!)).toBe(true);
+    expect(prepared.environment.TEMP).toBe(prepared.environment.TMPDIR);
+    expect(prepared.environment.TMP).toBe(prepared.environment.TMPDIR);
+    expect(cleanup).not.toHaveBeenCalled();
+    vi.mocked(filesystem.mkdtempSync).mockImplementationOnce(() => {
+      throw Object.assign(new Error("Private temporary directory allocation failed"), { code: "EEXIST" });
+    });
+    expect(() => prepareShellInvocation(identity)).toThrow(expect.objectContaining({ code: "EEXIST" }));
+    expect(cleanup).toHaveBeenCalledOnce();
   } finally {
     Object.defineProperty(process, "platform", originalPlatform);
   }
@@ -123,7 +135,7 @@ describe.skipIf(process.platform === "win32")("prepared shell facts and resource
     const prepared = preparedShellCommand(handle);
     expect(prepared.homePath).toBeDefined();
     expect(prepared.environment.HOME).toBe(prepared.homePath);
-    expect(prepared.environment.TMPDIR).toBe(join(prepared.homePath!, "tmp"));
+    expect(dirname(prepared.environment.TMPDIR!)).toBe(prepared.homePath);
     expect(statSync(prepared.environment.TMPDIR!).mode & 0o777).toBe(0o700);
     const childEnv = preparedSandboxEnvironment(handle, { ...process.env, TMPDIR: "/late-wrapper-temp", HTTPS_PROXY: "http://proxy.invalid:1234", SSL_CERT_FILE: "/late-certificate.pem" });
     const result = spawnSync(prepared.shell.cmd, prepared.shell.shellArgs(preparedSandboxBootstrap(handle)), { cwd, env: childEnv, timeout: 3000 });

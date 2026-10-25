@@ -20,6 +20,15 @@ export type HostShellExecutionRequest = "default" | "host";
 
 export type HostShellExecutionMode = "asrt" | "plain" | "blocked";
 
+/**
+ * What confines a sandboxed (`mode: "asrt"`) shell child: the ASRT wrap
+ * (Seatbelt, bubblewrap), or — on Windows hosts that offer it — a Microsoft
+ * Execution Containers container per command (`mxc-windows.ts`), whose
+ * network reaches only the invocation's own proxy port. `none` for every
+ * other mode.
+ */
+type HostShellSubstrate = "asrt" | "mxc" | "none";
+
 /** Machine-readable, host-owned fallback state. Never derive authority from UI text. */
 export type HostShellFallbackReason =
   | "none"
@@ -40,10 +49,18 @@ export interface HostShellExecutionPlan {
   readonly mode: HostShellExecutionMode;
   /** True only for the confined route this invocation will actually use. */
   readonly sandboxed: boolean;
+  /** What confines the child when `mode` is `asrt`; `none` otherwise. */
+  readonly substrate: HostShellSubstrate;
   /** Honest capability of the child selected by this plan. */
   readonly capability: SandboxCapability;
   readonly fallbackReason: HostShellFallbackReason;
-  /** True whenever this plain shell requires a fresh one-shot approval. */
+  /**
+   * True whenever this plain shell needs a per-invocation host authorization
+   * before spawn: an explicit unsandboxed request (a matching allow rule or a
+   * fresh allow-once approval) or the Windows partial-ASRT Plan B (allow-once
+   * only). A requested-but-unavailable sandbox is not one of them: it follows
+   * the normal rules and only records its `fallbackReason`.
+   */
   readonly requiresExplicitUserApproval: boolean;
   /** Stable identity for audit/cache consumers; contains no command or raw path. */
   readonly identity: string;
@@ -65,6 +82,7 @@ export interface HostShellExecutionPlanAuditProjection {
   readonly mode: HostShellExecutionMode;
   /** True only for the confined route this invocation will actually use. */
   readonly sandboxed: boolean;
+  readonly substrate: HostShellSubstrate;
   readonly fallbackReason: HostShellFallbackReason;
   readonly requiresExplicitUserApproval: boolean;
   readonly capability: Readonly<{
@@ -103,6 +121,7 @@ export function getHostShellExecutionPlanAuditProjection(
     executionRequest: plan.executionRequest,
     mode: plan.mode,
     sandboxed: plan.sandboxed,
+    substrate: plan.substrate,
     fallbackReason: plan.fallbackReason,
     requiresExplicitUserApproval: plan.requiresExplicitUserApproval,
     capability: Object.freeze({
@@ -161,6 +180,7 @@ export function getHostShellExecutionPlanCacheIdentity(
     identity: projection.identity,
     mode: projection.mode,
     sandboxed: projection.sandboxed,
+    substrate: projection.substrate,
     platform: projection.platform,
     requestedSandbox: projection.requestedSandbox,
     executionRequest: projection.executionRequest,
@@ -212,8 +232,18 @@ export function buildHostShellExecutionPlan(input: {
   platform: NodeJS.Platform;
   requestedSandbox: boolean;
   activeCapability: SandboxCapability;
+  /**
+   * What would confine a sandboxed child: `mxc` only when the host's MXC
+   * route is live and `activeCapability` is that route's capability.
+   * Defaults to the ASRT wrap.
+   */
+  shellSubstrate?: "asrt" | "mxc";
   executionMode?: HostShellExecutionRequest;
 }): HostShellExecutionPlan {
+  const shellSubstrate = input.shellSubstrate ?? "asrt";
+  if (shellSubstrate === "mxc" && input.platform !== "win32") {
+    throw new Error("The MXC shell substrate exists only on Windows");
+  }
   const executionRequest = input.executionMode ?? "default";
   if (executionRequest !== "default" && executionRequest !== "host") {
     throw new Error("Invalid host shell execution request");
@@ -228,6 +258,7 @@ export function buildHostShellExecutionPlan(input: {
       executionRequest,
       mode: "plain" as const,
       sandboxed: false,
+      substrate: "none" as const,
       capability: noneCapability(input.platform, "Explicit host execution runs as the current user without OS confinement."),
       fallbackReason: "none" as const,
       requiresExplicitUserApproval: true,
@@ -246,6 +277,7 @@ export function buildHostShellExecutionPlan(input: {
       executionRequest,
       mode: "plain" as const,
       sandboxed: false,
+      substrate: "none" as const,
       capability: noneCapability(input.platform, "The OS shell sandbox is disabled for this host."),
       fallbackReason,
       requiresExplicitUserApproval: false,
@@ -253,9 +285,14 @@ export function buildHostShellExecutionPlan(input: {
     });
   }
 
-  // A requested sandbox that is unavailable yields an honest plain child on
-  // every platform. It must carry an opaque, exact-action allow-once permit;
-  // explicit sandbox-off remains the normal plain-shell policy path below.
+  // A requested sandbox that is unavailable (missing bwrap/socat, start
+  // failure) yields an honest plain child on every platform. Like the
+  // reference hosts (Claude Code, Codex), it warns and continues under the
+  // normal permission rules — the same policy path as explicit sandbox-off,
+  // floor and deny rules included — so it needs no one-shot permit. The
+  // fallback reason stays on the plan so the approval card, the tool result
+  // and audit can say the sandbox was unavailable (design I3, owner
+  // 2026-10-16).
   if (requestedSandbox && input.activeCapability.kind === "none") {
     const fallbackReason: HostShellFallbackReason = "requested-sandbox-unavailable";
     const capability = noneCapability(
@@ -269,9 +306,10 @@ export function buildHostShellExecutionPlan(input: {
       executionRequest,
       mode: "plain" as const,
       sandboxed: false,
+      substrate: "none" as const,
       capability,
       fallbackReason,
-      requiresExplicitUserApproval: true,
+      requiresExplicitUserApproval: false,
       identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + input.platform + ":" + fallbackReason,
     });
   }
@@ -285,10 +323,11 @@ export function buildHostShellExecutionPlan(input: {
       executionRequest,
       mode: "asrt" as const,
       sandboxed: true,
+      substrate: shellSubstrate,
       capability,
       fallbackReason: "none" as const,
       requiresExplicitUserApproval: false,
-      identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + input.platform + ":asrt",
+      identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + input.platform + ":" + shellSubstrate,
     });
   }
 
@@ -311,6 +350,7 @@ export function buildHostShellExecutionPlan(input: {
       executionRequest,
       mode: "plain" as const,
       sandboxed: false,
+      substrate: "none" as const,
       capability,
       fallbackReason,
       requiresExplicitUserApproval: true,
@@ -334,6 +374,7 @@ export function buildHostShellExecutionPlan(input: {
     executionRequest,
     mode: "blocked" as const,
     sandboxed: false,
+    substrate: "none" as const,
     capability,
     fallbackReason,
     requiresExplicitUserApproval: false,
@@ -343,8 +384,9 @@ export function buildHostShellExecutionPlan(input: {
 
 
 /**
- * Host-owned hard gate for explicit host requests and requested-sandbox
- * fallbacks. Every such plain child needs the same opaque allow-once permit.
+ * Host-owned hard gate for explicit host requests and the Windows partial-ASRT
+ * Plan B. Every such plain child needs the same opaque one-shot permit; only an
+ * explicit host request may also receive it from a matching allow rule.
  */
 export function requiresExplicitHostShellApproval(plan: HostShellExecutionPlan): boolean {
   return plan.mode === "plain" &&

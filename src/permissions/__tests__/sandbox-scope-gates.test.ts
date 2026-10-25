@@ -1,0 +1,190 @@
+/**
+ * The shell sandbox (`features.osToolSandbox`) and plugin-worker confinement
+ * (`features.pluginWorkerConfinement`) are separate scopes over one ASRT
+ * runtime. ASRT activates when either is requested; each spawn path asks its
+ * own scope's gate, so turning one setting on never confines the other kind of
+ * process.
+ */
+import { EventEmitter } from "node:events";
+import { readdirSync, readFileSync } from "node:fs";
+import { join, relative, sep } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
+
+import {
+  initializeAsrtSandbox,
+  isAsrtSandboxActive,
+  isPluginWorkerConfinementActive,
+  isShellSandboxActive,
+  resetAsrtSandbox,
+} from "../asrt-sandbox.js";
+import {
+  __resetSandboxRequestedAtBootForTest,
+  setPluginWorkerConfinementRequestedAtBoot,
+  setShellSandboxRequestedAtBoot,
+} from "../sandbox-capability.js";
+
+const ORIGINAL_PLATFORM = process.platform;
+const CONFIGURED_LINUX_BWRAP_COMMAND =
+  "/configured/asrt/bwrap --new-session --die-with-parent --unshare-pid --unshare-user --cap-drop ALL --ro-bind / / --proc /proc -- /bin/bash -c true";
+const probeMocks = vi.hoisted(() => ({
+  wrapWithSandboxArgv: vi.fn(),
+  spawn: vi.fn(),
+}));
+
+// Gate state only: these tests do not claim OS confinement.
+vi.mock("@anthropic-ai/sandbox-runtime", () => ({ SandboxManager: {
+  setParentProxyRouter: () => undefined,
+  initialize: async () => undefined,
+  wrapWithSandboxArgv: probeMocks.wrapWithSandboxArgv,
+  // The runtime probe runs through an attributed egress listener, as shells do.
+  openInvocationListener: async () => undefined,
+  closeInvocationListener: () => undefined,
+  updateConfig: () => undefined,
+  reset: async () => undefined,
+  cleanupAfterCommand: () => undefined,
+} }));
+
+vi.mock("node:child_process", () => ({ spawn: probeMocks.spawn }));
+
+afterEach(async () => {
+  try {
+    if (isAsrtSandboxActive()) await resetAsrtSandbox();
+  } finally {
+    __resetSandboxRequestedAtBootForTest();
+    setProcessPlatform(ORIGINAL_PLATFORM);
+    vi.clearAllMocks();
+  }
+});
+
+describe("scoped sandbox gates", () => {
+  beforeEach(() => {
+    setProcessPlatform("linux");
+    probeMocks.wrapWithSandboxArgv.mockResolvedValue({
+      argv: ["/bin/bash", "-c", CONFIGURED_LINUX_BWRAP_COMMAND],
+      env: {},
+    });
+    probeMocks.spawn.mockImplementation(() => {
+      const child = Object.assign(new EventEmitter(), { kill: vi.fn(() => true) });
+      // Match the asynchronous close after the adapter registers its listeners.
+      queueMicrotask(() => child.emit("close", 0, null));
+      return child;
+    });
+  });
+
+  it.each([
+    { shell: false, workers: false },
+    { shell: true, workers: false },
+    { shell: false, workers: true },
+    { shell: true, workers: true },
+  ])("with ASRT active, shell=$shell workers=$workers gates only the requested scopes", async ({ shell, workers }) => {
+    setShellSandboxRequestedAtBoot(shell);
+    setPluginWorkerConfinementRequestedAtBoot(workers);
+    await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
+
+    expect(isAsrtSandboxActive()).toBe(true);
+    expect(isShellSandboxActive()).toBe(shell);
+    expect(isPluginWorkerConfinementActive()).toBe(workers);
+    expect(probeMocks.wrapWithSandboxArgv).toHaveBeenCalledExactlyOnceWith(
+      "true", undefined, undefined, expect.any(AbortSignal), process.cwd(),
+      { commandId: expect.any(String), denyUnixSockets: true },
+    );
+    expect(probeMocks.spawn).toHaveBeenCalledExactlyOnceWith(
+      "/bin/bash", ["-c", CONFIGURED_LINUX_BWRAP_COMMAND], expect.objectContaining({ shell: false }),
+    );
+  });
+
+  it("neither scope is active while ASRT is not initialized, whatever was requested", () => {
+    setShellSandboxRequestedAtBoot(true);
+    setPluginWorkerConfinementRequestedAtBoot(true);
+
+    expect(isAsrtSandboxActive()).toBe(false);
+    expect(isShellSandboxActive()).toBe(false);
+    expect(isPluginWorkerConfinementActive()).toBe(false);
+  });
+});
+
+describe("each spawn path reads only its own scope's gate", () => {
+  const srcRoot = join(__dirname, "..", "..");
+  const source = (relative: string): string => readFileSync(join(srcRoot, relative), "utf8");
+
+  // Extension processes: plugin workers, plugin children, plugin hooks, MCP
+  // stdio servers, and the surfaces that tell the user whether hooks run
+  // confined.
+  const workerPaths = [
+    "permissions/worker-spawn.ts",
+    "permissions/confined-child.ts",
+    "plugins/isolation/out-of-process-plugin.ts",
+    "mcp/mcp-client.ts",
+    "hooks/script-hook-runner.ts",
+    "ipc/domains/plugin-studio.ts",
+    "marketplace/app/service.ts",
+  ];
+  // Host shells outside the execution plan (the plan itself reads
+  // `detectShellSandboxCapability`).
+  const shellPaths = ["main/terminal/pty-manager.ts"];
+
+  it.each(workerPaths)("%s gates on plugin-worker confinement, never the raw or shell gate", (file) => {
+    const text = source(file);
+    expect(text).toMatch(/\bisPluginWorkerConfinementActive\(\)/);
+    expect(text).not.toMatch(/\bisAsrtSandboxActive\b/);
+    expect(text).not.toMatch(/\bisShellSandboxActive\b/);
+  });
+
+  it("hooks/script-hook-runner.ts takes a user hook's sandbox from the host-shell plan", () => {
+    // A user hook runs the user's own command: its scope is the host shell,
+    // read through the plan it was admitted under (or the live plan), while a
+    // bundled hook keeps the worker gate checked above.
+    const text = source("hooks/script-hook-runner.ts");
+    expect(text).toMatch(/confinement\s*\?\s*isPluginWorkerConfinementActive\(\)\s*:\s*\(admittedPlan \?\? getHostShellExecutionPlan\(\)\)\.mode === "asrt"/);
+  });
+
+  it.each(shellPaths)("%s gates on the shell sandbox, never the raw or worker gate", (file) => {
+    const text = source(file);
+    expect(text).toMatch(/\bisShellSandboxActive\(\)/);
+    expect(text).not.toMatch(/\bisAsrtSandboxActive\b/);
+    expect(text).not.toMatch(/\bisPluginWorkerConfinementActive\b/);
+  });
+
+  it("no source outside the ASRT runtime and its boot steps reads the raw gate", () => {
+    // The inverse of the allow-lists above: a NEW spawn path that reaches for
+    // the raw state would confine (or not) by the wrong scope.
+    const allowed = new Set([
+      "permissions/asrt-sandbox.ts",
+      "boot/steps/marketplace-setup.ts",
+      "boot/steps/sandbox-init.ts",
+    ]);
+    const offenders: string[] = [];
+    const walk = (dir: string): void => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) {
+          if (entry.name !== "__tests__") walk(full);
+          continue;
+        }
+        if (!/\.(ts|tsx|mts)$/.test(entry.name)) continue;
+        const rel = relative(srcRoot, full).split(sep).join("/");
+        if (allowed.has(rel)) continue;
+        const code = readFileSync(full, "utf8").split("\n").filter((line) => {
+          const trimmed = line.trim();
+          return !trimmed.startsWith("//") && !trimmed.startsWith("*") && !trimmed.startsWith("/*");
+        });
+        if (code.some((line) => /\bisAsrtSandboxActive\b/.test(line))) offenders.push(rel);
+      }
+    };
+    walk(srcRoot);
+    expect(offenders).toEqual([]);
+  });
+
+  it("the host-shell plan reads the shell-scoped capability and the shell seal", () => {
+    const text = source("permissions/sandbox-capability.ts");
+    const plan = text.slice(text.indexOf("export function getHostShellExecutionPlan"));
+    const body = plan.slice(0, plan.indexOf("\n}\n"));
+    expect(body).toContain("requestedSandbox: isShellSandboxRequestedAtBoot()");
+    // MXC's per-command capability (Windows) or else the shell-scoped one;
+    // never the process-wide or worker capability.
+    expect(body).toContain("activeCapability: mxc ?? detectShellSandboxCapability()");
+    expect(body).toContain("const mxc = detectMxcShellCapability();");
+  });
+});

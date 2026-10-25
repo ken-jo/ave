@@ -1,3 +1,4 @@
+import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
 /**
  * Plugin storage layout — the security boundary inside a plugin root.
  *
@@ -771,7 +772,7 @@ describe("carryPluginSocketDirs", () => {
       },
     );
 
-    it("empties every other root's discard when one root's discard name is a link", async () => {
+    it.skipIf(!canCreateSymlinks())("empties every other root's discard when one root's discard name is a link", async () => {
       const linked = join(root, "linked");
       const plain = join(root, "plain");
       const outside = join(root, "outside");

@@ -19,10 +19,24 @@ import {
   markPluginWorkerWrapped,
   sandboxRelaxesCategory,
   setActiveSandboxCapability,
-  setSandboxRequestedAtBoot,
+  setShellSandboxRequestedAtBoot,
+  setPluginWorkerConfinementRequestedAtBoot,
+  isShellSandboxRequestedAtBoot,
+  isPluginWorkerConfinementRequestedAtBoot,
+  detectShellSandboxCapability,
   unmarkPluginWorkerWrapped,
+  setWindowsSandboxSubstrate,
+  getWindowsSandboxSubstrate,
+  detectMxcShellCapability,
+  detectPluginWorkerSandboxCapability,
+  __resetWindowsSandboxSubstrateForTest,
   type SandboxCapability,
 } from "../sandbox-capability.js";
+import {
+  mxcShellCapability,
+  planWindowsSandbox,
+  windowsProxyOnlyCapability,
+} from "../../boot/steps/windows-sandbox-plan.js";
 import type { ToolCategory } from "../../tools/types.js";
 
 describe("sandbox-capability", () => {
@@ -105,6 +119,7 @@ describe("sandbox-capability", () => {
 describe("sandbox-capability — setActiveSandboxCapability publish", () => {
   afterEach(() => {
     __resetActiveSandboxCapabilityForTest();
+    __resetSandboxRequestedAtBootForTest();
   });
 
   it("publishes kind='asrt' (verified) so detectSandboxCapability + the reviewer strong-relaxation become reachable when the gate is ON", () => {
@@ -135,6 +150,7 @@ describe("sandbox-capability — setActiveSandboxCapability publish", () => {
   });
 
   it("keeps generic Windows filesystem containment separate from plugin-effect containment", () => {
+    setShellSandboxRequestedAtBoot(true);
     setActiveSandboxCapability({
       kind: "asrt",
       confidence: "verified",
@@ -499,7 +515,7 @@ describe("sandbox-capability — boot-sealed host shell plan", () => {
 
   it("reports Windows requested partial host shells as effective none to the reviewer", () => {
     setProcessPlatform("win32");
-    setSandboxRequestedAtBoot(true);
+    setShellSandboxRequestedAtBoot(true);
     setActiveSandboxCapability({
       kind: "asrt",
       confidence: "verified",
@@ -526,12 +542,67 @@ describe("sandbox-capability — boot-sealed host shell plan", () => {
 
   it("does not turn explicit sandbox-off into the Windows one-shot fallback", () => {
     setProcessPlatform("win32");
-    setSandboxRequestedAtBoot(false);
+    setShellSandboxRequestedAtBoot(false);
 
     const plan = getHostShellExecutionPlan();
     expect(plan.mode).toBe("plain");
     expect(plan.fallbackReason).toBe("disabled-by-setting");
     expect(plan.requiresExplicitUserApproval).toBe(false);
+  });
+});
+
+describe("sandbox-capability — shell sandbox and plugin-worker confinement are separate scopes", () => {
+  const originalPlatform = process.platform;
+  const fullAsrt = (platform: NodeJS.Platform): SandboxCapability => ({
+    kind: "asrt",
+    confidence: "verified",
+    platform,
+    reason: "ASRT active",
+    confines: { filesystem: true, process: true, network: true },
+  });
+
+  afterEach(() => {
+    __resetActiveSandboxCapabilityForTest();
+    __resetSandboxRequestedAtBootForTest();
+    setProcessPlatform(originalPlatform);
+  });
+
+  it("worker confinement alone (ASRT active for workers) leaves host shells unsandboxed", () => {
+    setProcessPlatform("linux");
+    setPluginWorkerConfinementRequestedAtBoot(true);
+    setActiveSandboxCapability(fullAsrt("linux"));
+
+    expect(isShellSandboxRequestedAtBoot()).toBe(false);
+    expect(detectShellSandboxCapability().kind).toBe("none");
+    expect(isActiveSandboxShellContained()).toBe(false);
+    expect(isActiveSandboxFilesystemContained()).toBe(false);
+    const plan = getHostShellExecutionPlan();
+    expect(plan).toMatchObject({ mode: "plain", requestedSandbox: false, fallbackReason: "disabled-by-setting" });
+    expect(plan.requiresExplicitUserApproval).toBe(false);
+    expect(resolveReviewerSandboxCapability("builtin", "bash").kind).toBe("none");
+    // ASRT itself is live: a wrapped worker still reports the real capability.
+    expect(detectSandboxCapability().kind).toBe("asrt");
+  });
+
+  it("the shell sandbox alone sandboxes host shells and does not request worker confinement", () => {
+    setProcessPlatform("linux");
+    setShellSandboxRequestedAtBoot(true);
+    setActiveSandboxCapability(fullAsrt("linux"));
+
+    expect(isPluginWorkerConfinementRequestedAtBoot()).toBe(false);
+    expect(detectShellSandboxCapability().kind).toBe("asrt");
+    expect(isActiveSandboxShellContained()).toBe(true);
+    expect(getHostShellExecutionPlan()).toMatchObject({ mode: "asrt", requestedSandbox: true });
+    expect(resolveReviewerSandboxCapability("builtin", "bash").kind).toBe("asrt");
+  });
+
+  it("each seal changes only its own scope", () => {
+    setPluginWorkerConfinementRequestedAtBoot(true);
+    expect(isShellSandboxRequestedAtBoot()).toBe(false);
+    setShellSandboxRequestedAtBoot(true);
+    setPluginWorkerConfinementRequestedAtBoot(false);
+    expect(isShellSandboxRequestedAtBoot()).toBe(true);
+    expect(isPluginWorkerConfinementRequestedAtBoot()).toBe(false);
   });
 });
 
@@ -576,5 +647,89 @@ describe("sandbox-eval-verdicts fixture", () => {
     expect(fixture["kind=partial + risky tool"]).toEqual({ rule: "medium", llm: "low", final: "medium" });
     expect(fixture["kind=fs-only + high-risk write"]).toEqual({ rule: "high", llm: "medium", final: "high" });
     expect(fixture["weak context + benign tool"]).toEqual({ rule: "medium", llm: "low", final: "medium" });
+  });
+});
+
+describe("sandbox-capability — Windows MXC substrate", () => {
+  const hostPlatform = process.platform;
+  afterEach(() => {
+    __resetActiveSandboxCapabilityForTest();
+    __resetSandboxRequestedAtBootForTest();
+    __resetWindowsSandboxSubstrateForTest();
+    setProcessPlatform(hostPlatform);
+  });
+
+  function bootProxyOnly(): void {
+    setProcessPlatform("win32");
+    setShellSandboxRequestedAtBoot(true);
+    setPluginWorkerConfinementRequestedAtBoot(true);
+    const plan = planWindowsSandbox({
+      shellRequested: true,
+      workerRequested: true,
+      mxc: { state: "available" },
+      windowsBuild: "10.0.26300.9711",
+      srtWinReady: false,
+    });
+    setActiveSandboxCapability(windowsProxyOnlyCapability());
+    setWindowsSandboxSubstrate(plan.substrate, mxcShellCapability());
+  }
+
+  it("issues MXC shell plans while the process-wide capability confines nothing", () => {
+    bootProxyOnly();
+    const plan = getHostShellExecutionPlan();
+    expect(plan).toMatchObject({ mode: "asrt", substrate: "mxc", requiresExplicitUserApproval: false });
+    // The workspace terminal reads the process-wide capability, which must not
+    // inherit the containers' confinement.
+    expect(detectShellSandboxCapability().confines).toEqual({ filesystem: false, process: false, network: false });
+    expect(isActiveSandboxShellContained()).toBe(false);
+  });
+
+  it("reports extensions unconfined when ASRT runs only as the containers' proxy", () => {
+    bootProxyOnly();
+    expect(detectPluginWorkerSandboxCapability().kind).toBe("none");
+    expect(getWindowsSandboxSubstrate()).toMatchObject({ shells: "mxc", extensions: "none" });
+  });
+
+  it("drops the MXC route once the ASRT runtime (the containers' proxy) is gone", () => {
+    bootProxyOnly();
+    expect(detectMxcShellCapability()).toBeDefined();
+    __resetActiveSandboxCapabilityForTest();
+    expect(detectMxcShellCapability()).toBeUndefined();
+    expect(getHostShellExecutionPlan().substrate).not.toBe("mxc");
+  });
+
+  it("rejects a substrate record that contradicts its MXC capability", () => {
+    const { substrate } = planWindowsSandbox({
+      shellRequested: true,
+      workerRequested: false,
+      mxc: { state: "unavailable", reason: "tier-unsupported" },
+      windowsBuild: null,
+      srtWinReady: true,
+    });
+    expect(() => setWindowsSandboxSubstrate(substrate, mxcShellCapability())).toThrow(/needs shells/);
+    expect(() => setWindowsSandboxSubstrate({ ...substrate, shells: "mxc" })).toThrow(/no MXC shell capability/);
+  });
+
+  it("keeps the srt-win plan when MXC is unavailable: approved host route, no MXC substrate", () => {
+    setProcessPlatform("win32");
+    setShellSandboxRequestedAtBoot(true);
+    setActiveSandboxCapability({
+      kind: "asrt",
+      confidence: "verified",
+      platform: "win32",
+      reason: "srt-win",
+      confines: { filesystem: true, process: false, network: true },
+    });
+    const { substrate } = planWindowsSandbox({
+      shellRequested: true,
+      workerRequested: false,
+      mxc: { state: "unavailable", reason: "request-rejected" },
+      windowsBuild: "10.0.22631.1",
+      srtWinReady: true,
+    });
+    setWindowsSandboxSubstrate(substrate);
+    const plan = getHostShellExecutionPlan();
+    expect(plan.substrate).toBe("none");
+    expect(plan.requiresExplicitUserApproval).toBe(true);
   });
 });

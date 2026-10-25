@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
+import { useVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-privacy.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import {
   initializeAsrtSandbox,
@@ -7,6 +8,8 @@ import {
   resetAsrtSandbox,
   unregisterWorkerUnixSocketDir,
 } from "../asrt-sandbox.js";
+
+useVerifiedAveHomePrivacy();
 
 // Config ownership only: the probe gets a valid wrapper and a successful child
 // lifecycle. Runtime confinement and probe failures have separate coverage.
@@ -17,6 +20,7 @@ const manager = vi.hoisted(() => ({
   closeListener: vi.fn(),
 }));
 vi.mock("@anthropic-ai/sandbox-runtime", () => ({ SandboxManager: {
+  setParentProxyRouter: () => undefined,
   initialize: async (config: typeof manager.config) => { manager.config = config; },
   updateConfig: (config: typeof manager.config) => { manager.update(config); manager.config = config; },
   reset: async () => { manager.config = undefined; },

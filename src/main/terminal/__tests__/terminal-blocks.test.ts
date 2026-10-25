@@ -397,6 +397,176 @@ describe("TerminalBlockTracker — fallback without markers", () => {
   });
 });
 
+describe("authenticated editor-buffer reports", () => {
+  const prompt = (fields = "Edit=1"): string => `${mark(`P;Cwd=/work;Keys=emacs;Paste=1;${fields}`)}${mark("A")}% ${mark("B")}`;
+  const report = (line: string): string => mark(`E;Line=${encodeURIComponent(line)};B=${PROMPT_TOKEN}`);
+
+  it("accepts fresh empty and exact buffer reports without changing the displayed echo", () => {
+    const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
+    expect(tracker.supportsEditLineQuery()).toBe(false);
+    expect(tracker.editLineReport()).toBeNull();
+    tracker.recordOutput(prompt());
+    expect(tracker.supportsEditLineQuery()).toBe(true);
+    tracker.recordOutput(report(""));
+    expect(tracker.editLineReport()).toEqual({ generation: 1, line: "" });
+    tracker.recordOutput("echo shown");
+    tracker.recordOutput(report("echo 'actual;100% 한 😀'"));
+    expect(tracker.editLineText()).toBe("echo shown");
+    expect(tracker.editLineReport()).toEqual({ generation: 2, line: "echo 'actual;100% 한 😀'" });
+    expect(tracker.editLineReportGeneration()).toBe(2);
+  });
+
+  it("requires a single current authenticated Edit capability", () => {
+    for (const fields of ["", "Edit=0", "Edit=true", "Edit=1;Edit=1", "Edit=0;Edit=1"]) {
+      const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
+      tracker.recordOutput(prompt(fields));
+      expect(tracker.supportsEditLineQuery()).toBe(false);
+      expect(tracker.recordOutput(report("x"))).toBe("");
+      expect(tracker.editLineReportGeneration()).toBe(0);
+    }
+    const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
+    tracker.recordOutput(prompt());
+    tracker.recordOutput(osc(`133;P;Edit=0;B=${PROMPT_TOKEN};wrong-nonce`));
+    expect(tracker.supportsEditLineQuery()).toBe(true);
+    tracker.recordOutput(prompt("Edit=0"));
+    expect(tracker.supportsEditLineQuery()).toBe(false);
+  });
+
+  it("rejects a bad nonce, stale token, wrong phase, duplicate or missing fields and invalid encoding", () => {
+    for (const fields of [
+      `E;Line=x;B=${PROMPT_TOKEN};wrong-nonce`,
+      `E;Line=x;B=aaaaaaaaaaaaaaaa;${NONCE}`,
+      `E;Line=x;Line=y;B=${PROMPT_TOKEN};${NONCE}`,
+      `E;Line=x;B=${PROMPT_TOKEN};B=${PROMPT_TOKEN};${NONCE}`,
+      `E;Line=x;${NONCE}`,
+      `E;B=${PROMPT_TOKEN};${NONCE}`,
+      `E;Line=x;B=${PROMPT_TOKEN};Extra=1;${NONCE}`,
+      ...["%", "%zz", "%0", "%FF", "%ED%A0%80", "raw\ncontrol"].map((line) => `E;Line=${line};B=${PROMPT_TOKEN};${NONCE}`),
+    ]) {
+      const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
+      tracker.recordOutput(prompt());
+      let notifications = 0;
+      tracker.subscribe(() => { notifications++; });
+      const untrusted = osc(`133;${fields}`);
+      expect(tracker.recordOutput(untrusted)).toBe(fields.endsWith(`;${NONCE}`) ? "" : untrusted);
+      expect(tracker.editLineReport()).toBeNull();
+      expect(tracker.editLineReportGeneration()).toBe(0);
+      expect(notifications).toBe(0);
+    }
+    for (const phase of ["", mark("D;0"), mark("A"), mark("C;cmdline_url=echo"), mark("P;Cwd=/work;Edit=1")]) {
+      const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
+      if (phase !== "") tracker.recordOutput(prompt() + phase);
+      expect(tracker.recordOutput(report("x"))).toBe("");
+      expect(tracker.editLineReport()).toBeNull();
+    }
+  });
+
+  it("advertises queries only after the current B while the authenticated prompt remains in input phase", () => {
+    const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
+    tracker.recordOutput(mark("P;Cwd=/work;Edit=1"));
+    expect(tracker.supportsEditLineQuery()).toBe(false);
+    tracker.recordOutput(mark("A"));
+    expect(tracker.supportsEditLineQuery()).toBe(false);
+    tracker.recordOutput(mark("B"));
+    expect(tracker.supportsEditLineQuery()).toBe(true);
+    tracker.recordOutput(mark("C;cmdline_url=echo"));
+    expect(tracker.supportsEditLineQuery()).toBe(false);
+    tracker.recordOutput(mark("D;0"));
+    expect(tracker.supportsEditLineQuery()).toBe(false);
+    tracker.recordOutput(prompt());
+    expect(tracker.supportsEditLineQuery()).toBe(true);
+    tracker.recordExit();
+    expect(tracker.supportsEditLineQuery()).toBe(false);
+  });
+
+  it("hides stale authenticated reports while leaving unauthenticated reports as ordinary output", () => {
+    const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
+    tracker.recordOutput(prompt());
+    const stale = report("private stale buffer");
+    const newToken = "aa".repeat(16);
+    tracker.recordOutput(`${mark(`P;Cwd=/work;Edit=1;B=${newToken}`)}${mark("A")}${osc(`133;B;${newToken}`)}`);
+    expect(tracker.recordOutput(stale)).toBe("");
+    expect(tracker.editLineReport()).toBeNull();
+    expect(tracker.editLineReportGeneration()).toBe(0);
+    const unauthenticated = osc(`133;E;Line=ordinary;B=${newToken};wrong-nonce`);
+    expect(tracker.recordOutput(unauthenticated)).toBe(unauthenticated);
+  });
+
+  it("invalidates reports on new prompts, user input and exit without resetting generation", () => {
+    for (const invalidate of [
+      (tracker: TerminalBlockTracker) => tracker.recordOutput(mark("P;Cwd=/work;Edit=1")),
+      (tracker: TerminalBlockTracker) => tracker.recordOutput(mark("A")),
+      (tracker: TerminalBlockTracker) => tracker.recordOutput(mark("C;cmdline_url=echo")),
+      (tracker: TerminalBlockTracker) => tracker.recordOutput(mark("D;0")),
+      (tracker: TerminalBlockTracker) => tracker.recordInput("\u001b"),
+      (tracker: TerminalBlockTracker) => tracker.recordExit(),
+    ]) {
+      const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
+      tracker.recordOutput(prompt() + report("old"));
+      invalidate(tracker);
+      expect(tracker.editLineReport()).toBeNull();
+      expect(tracker.editLineReportGeneration()).toBe(1);
+    }
+    const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
+    tracker.recordOutput(prompt() + report("old"));
+    tracker.recordInput("\u001b[I");
+    expect(tracker.editLineReport()).toEqual({ generation: 1, line: "old" });
+    tracker.recordOutput(prompt() + report("new"));
+    expect(tracker.editLineReport()).toEqual({ generation: 2, line: "new" });
+  });
+
+  it("preserves actual-buffer proof across a same-token prompt redisplay after the query callback", () => {
+    const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
+    tracker.recordOutput(prompt() + "echo actual" + report("echo actual"));
+    tracker.recordOutput(mark("B") + "echo actual");
+    expect(tracker.editLineReport()).toEqual({ generation: 1, line: "echo actual" });
+    expect(tracker.editLineText()).toBe("echo actual");
+    expect(tracker.promptEndCount()).toBe(1);
+    tracker.recordInput("x");
+    tracker.recordOutput(mark("B") + "echo actualx");
+    expect(tracker.editLineReport()).toBeNull();
+    tracker.recordOutput(prompt() + mark("B"));
+    expect(tracker.editLineReport()).toBeNull();
+  });
+
+  it("hides complete and split reports from renderer replay and blocks, and notifies host subscribers", () => {
+    for (const size of [1, 3, 1000]) {
+      const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
+      tracker.recordOutput(prompt());
+      let reports = 0;
+      tracker.subscribe(() => { if (tracker.editLineReport() !== null) reports++; });
+      const stream = mark(`E;Line=${encodeURIComponent("private report ; 한")};B=${PROMPT_TOKEN}`, size === 3 ? "st" : "bel");
+      let display = "";
+      for (let i = 0; i < stream.length; i += size) display += tracker.recordOutput(stream.slice(i, i + size));
+      expect(display).toBe("");
+      expect(reports).toBe(1);
+      tracker.recordOutput(`${mark("C;cmdline_url=echo")}visible${mark("D;0")}`);
+      expect(tracker.recent(1)[0]).toMatchObject({ command: "echo", output: "visible" });
+      expect(JSON.stringify(tracker.recent(1))).not.toContain("private report");
+    }
+  });
+
+  it("discards split oversized editor reports privately and recovers within the OSC payload bound", () => {
+    for (const size of [1, 127, 100_000]) {
+      for (const nonce of [NONCE, "wrong-nonce"]) {
+        const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
+        tracker.recordOutput(prompt());
+        let notifications = 0;
+        tracker.subscribe(() => { notifications++; });
+        const stream = `before${osc(`133;E;Line=${"private".repeat(10_000)};B=${PROMPT_TOKEN};${nonce}`, "st")}after`;
+        let display = "";
+        for (let i = 0; i < stream.length; i += size) display += tracker.recordOutput(stream.slice(i, i + size));
+        expect(display).toBe("beforeafter");
+        expect(tracker.editLineReport()).toBeNull();
+        expect(tracker.editLineReportGeneration()).toBe(0);
+        expect(notifications).toBe(0);
+        tracker.recordOutput(report("valid"));
+        expect(tracker.editLineReport()).toEqual({ generation: 1, line: "valid" });
+      }
+    }
+  });
+});
+
 describe("decodePercentEncoded", () => {
   it("decodes byte escapes as UTF-8 and keeps literal characters and malformed escapes", () => {
     expect(decodePercentEncoded("a%3Bb%25")).toBe("a;b%");

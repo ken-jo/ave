@@ -5,7 +5,7 @@ import { createDesktopNetworkFetch } from "./steps/desktop-network-fetch.js";
 import { prepareDesktopRelease } from "./steps/desktop-release.js";
 import { adaptPowerMonitor } from "../main/idle-scheduler.js";
 import { getAppWindows } from "../main/main-window.js";
-import { isAppShutdownStarted, findSessionMainWindowContents, getMainWindows, mainWindowForContents } from "../main/app-state.js";
+import { isAppShutdownStarted, findSessionMainWindowContents, findTerminalMainWindowContents, getMainWindows, mainWindowForContents } from "../main/app-state.js";
 import { isAppUpdateInstallRequested } from "../main/app-update-install-intent.js";
 import { unregisterAllGlobalShortcuts } from "../main/global-shortcuts.js";
 import { openAuthWindow, clearAuthPartition } from "../main/auth-window-service.js";
@@ -35,6 +35,7 @@ export function createDesktopBootHost(projectRoot: string): BootHost {
       getAppWindows,
       getFocusedWindow: () => BrowserWindow.getFocusedWindow(),
       findSessionSurface: findSessionMainWindowContents,
+      findTerminalSurface: findTerminalMainWindowContents,
       getAuthPartition: (partition) => session.fromPartition(partition),
       openAuthWindowService: openAuthWindow,
       openLinkWindowService: openLinkWindow,

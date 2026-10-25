@@ -131,6 +131,64 @@ describe("env-surface scan", () => {
 
     expect(scanEnvReads(dir).size).toBe(0);
   });
+
+  it("finds both halves of a host-to-child protocol variable", () => {
+    // The shape that let AVE_DACL_SYSTEM_ROOT pass unclassified: the host only
+    // writes it into a spawn's env, and only the embedded child script reads it.
+    write("child.ts", `
+      const TARGET_ENV = "AVE_INTERPOLATED_TARGET";
+      const SCRIPT = [
+        "$request = ConvertFrom-Json $env:AVE_PS_READ",
+        "$braced = \${env:AVE_PS_BRACED}",
+        "$x = [Environment]::GetEnvironmentVariable('AVE_DOTNET_READ', 'Process')",
+        \`$t = [Environment]::GetEnvironmentVariable('\${TARGET_ENV}', 'Process')\`,
+      ].join("; ");
+      const SHELL = 'printf "%s" "$AVE_POSIX_READ"';
+      execFileSync("child", [SCRIPT, SHELL], { env: { ...process.env, AVE_ENV_WRITE_ONLY: "1", "AVE_QUOTED_WRITE": "2" } });
+    `);
+    // A quoted computed key, in a file with no dynamic or interpolated lookup.
+    write("computed.ts", `
+      spawn("child", [], { env: { ["AVE_COMPUTED_WRITE"]: "1", [ 'AVE_COMPUTED_SPACED' ] : "2" } });
+    `);
+
+    expect([...scanEnvReads(dir).keys()].sort()).toEqual([
+      "AVE_COMPUTED_SPACED",
+      "AVE_COMPUTED_WRITE",
+      "AVE_DOTNET_READ",
+      "AVE_ENV_WRITE_ONLY",
+      "AVE_INTERPOLATED_TARGET",
+      "AVE_POSIX_READ",
+      "AVE_PS_BRACED",
+      "AVE_PS_READ",
+      "AVE_QUOTED_WRITE",
+    ]);
+  });
+
+  it("does not take a constant's annotation, ternary or interpolation for a protocol variable", () => {
+    write("constants.ts", `
+      export const AVE_ANNOTATED: string = "x";
+      let AVE_LET_ANNOTATED: number;
+      const label = flag ? AVE_TERNARY_BRANCH : other;
+      const svg = \`<path d="\${AVE_LOGO_PATH}" />\`;
+      const extension = extensions[AVE_EXTENSION_NAMESPACE];
+    `);
+
+    expect(scanEnvReads(dir).size).toBe(0);
+  });
+
+  it("does not count a child-protocol fixture a test sets for its own child", () => {
+    mkdirSync(join(dir, "__tests__"));
+    writeFileSync(
+      join(dir, "__tests__", "child.test.ts"),
+      `
+        const script = "$x = $env:AVE_TEST_CHILD_READ";
+        spawn("pwsh", [script], { env: { AVE_TEST_CHILD_WRITE: "1" } });
+      `,
+      "utf-8",
+    );
+
+    expect(scanEnvReads(dir).size).toBe(0);
+  });
 });
 
 describe("renderer settings-path scan", () => {

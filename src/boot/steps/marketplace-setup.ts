@@ -13,6 +13,7 @@ import { PluginMarketplaceService } from "../../plugins/marketplace.js";
 import { activeHostApiVendor, createRefreshActiveLlmWildcard } from "./refresh-active-llm-wildcard.js";
 import { createLogger } from "../../lib/logger.js";
 import type { BootContext } from "../context.js";
+import type { WorkerEgressAllowlists } from "../../permissions/egress-runtime.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { aveHome } from "../../shared/ave-home.js";
 
@@ -104,53 +105,51 @@ export async function setupMarketplace(ctx: BootContext): Promise<void> {
   });
   refreshActiveLlmWildcard();
 
-  // Refresh the callback-owned plugin/model destinations. Shell grants remain
-  // independent of this union; egress-runtime owns destination policy.
-  const buildSandboxUnionDomains = async (): Promise<string[]> => {
-    const { computeUnionAllowedDomains, normalizeUnionForAsrt, computeDynamicEndpointHosts } =
-      await import("../../permissions/asrt-sandbox.js");
-    const manifestAllowLists = pluginRuntime
-      .listPluginIds()
-      .map((id) => pluginRuntime.getPluginManifest(id)?.networkAccess?.allowedDomains ?? []);
-    const dynamicEndpointHosts = computeDynamicEndpointHosts(settingsService.getAll());
-    const { setWorkerEgressAllowlists } = await import("../../permissions/egress-runtime.js");
-    setWorkerEgressAllowlists({
-      byExtension: new Map(pluginRuntime.listPluginIds().map((id) => [id, pluginRuntime.getPluginManifest(id)?.networkAccess?.allowedDomains ?? []])),
-      modelEndpointHosts: dynamicEndpointHosts,
-    });
-    return normalizeUnionForAsrt(
-      computeUnionAllowedDomains([...manifestAllowLists, dynamicEndpointHosts], []),
-    );
+  // ── Worker egress allowlists + refresh ───────────────────────────────────
+  // What each plugin worker may reach through the sandbox proxy: its own
+  // extension's manifest `networkAccess.allowedDomains` plus the host-resolved
+  // model endpoints (user-configured vendor baseUrls a worker actually reaches,
+  // e.g. local-indexer's Azure OpenAI resource). The egress ask callback reads
+  // this per connection, so one extension's domains never reach another
+  // extension's worker or a shell (invariant I4); ASRT's own allowedDomains
+  // stays empty.
+  const buildWorkerEgressAllowlists = async (): Promise<WorkerEgressAllowlists> => {
+    const { computeDynamicEndpointHosts } = await import("../../permissions/asrt-sandbox.js");
+    return {
+      byExtension: new Map(
+        pluginRuntime
+          .listPluginIds()
+          .map((id) => [id, pluginRuntime.getPluginManifest(id)?.networkAccess?.allowedDomains ?? []] as const),
+      ),
+      modelEndpointHosts: computeDynamicEndpointHosts(settingsService.getAll()),
+    };
   };
 
-  // Endpoint changes replace callback-owned worker destinations before the next
-  // proxy decision. Keep every connection on the callback, including after refresh.
+  // Recomputes the worker allowlists: at boot, after plugins load (before any
+  // worker starts), and from the settings / chat IPC handlers when a model
+  // endpoint changes, so a reconfigured endpoint applies without a restart.
+  // GATED: a no-op when ASRT is not active (gate off, deps missing, Windows not
+  // ready), since no sandboxed process exists to reach anything.
   const refreshSandboxNetworkConfig = (): Promise<void> =>
     (async () => {
-      const {
-        isAsrtSandboxActive,
-        updateAsrtSandboxConfig,
-      } = await import(
-        "../../permissions/asrt-sandbox.js"
-      );
+      const [{ isAsrtSandboxActive }, { setWorkerEgressAllowlists }] = await Promise.all([
+        import("../../permissions/asrt-sandbox.js"),
+        import("../../permissions/egress-runtime.js"),
+      ]);
       if (!isAsrtSandboxActive()) return;
-      const allowedDomains = await buildSandboxUnionDomains();
-      // The shared allowlist stays empty so it cannot bypass invocation policy.
-      await updateAsrtSandboxConfig({
-        allowedDomains: [],
-        strictAllowlist: false,
-        userDataDir: ctx.host.userDataPath,
-      });
+      const allowlists = await buildWorkerEgressAllowlists();
+      setWorkerEgressAllowlists(allowlists);
       log.info(
-        "boot: ASRT network config live-refreshed (%d union domains)",
-        allowedDomains.length,
+        "boot: worker egress allowlists refreshed (%d extensions, %d model endpoints)",
+        allowlists.byExtension.size,
+        allowlists.modelEndpointHosts.length,
       );
     })().catch((err) => {
-      // Degrade loudly rather than throw: a failed refresh only keeps the
-      // enforced allow-list NARROWER than declared (deny-by-default stands),
-      // and the boot-path awaiter must not brick startup over it.
+      // Degrade loudly rather than throw: a failed refresh keeps the previous
+      // allowlists (deny-by-default stands for anything new), and the
+      // boot-path awaiter must not brick startup over it.
       log.warn(
-        "boot: ASRT network config live-refresh failed: %s",
+        "boot: worker egress allowlist refresh failed: %s",
         errorMessage(err),
       );
     });
@@ -158,6 +157,6 @@ export async function setupMarketplace(ctx: BootContext): Promise<void> {
   ctx.pluginMarketplace = pluginMarketplace;
   ctx.refreshActiveLlmWildcard = refreshActiveLlmWildcard;
   ctx.disposeRefreshActiveLlmWildcard = disposeRefreshActiveLlmWildcard;
-  ctx.buildSandboxUnionDomains = buildSandboxUnionDomains;
+  ctx.buildWorkerEgressAllowlists = buildWorkerEgressAllowlists;
   ctx.refreshSandboxNetworkConfig = refreshSandboxNetworkConfig;
 }

@@ -19,6 +19,7 @@ import { DEFAULT_PROCESSING_DISPLAY_LEVEL } from "../shared/processing-display-l
 import { DEFAULT_SIDEBAR_TAB } from "../shared/sidebar-tab.js";
 import { normalizeSettingsTab } from "../shared/settings-tabs.js";
 import { LOG_RETENTION_DAYS } from "../shared/log-retention.js";
+import { DEFAULT_UPSTREAM_PROXY } from "../shared/upstream-proxy.js";
 import type { AppSettings } from "./settings-store.js";
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -95,6 +96,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
     auditRotationMaxBytes: 10 * 1024 * 1024, // 10 MB
     auditRetentionDays: 30,
   },
+  // Owner decision 2026-10-20: the sandbox egress proxy follows the
+  // environment and the OS proxy settings unless Settings says otherwise.
+  upstreamProxy: { ...DEFAULT_UPSTREAM_PROXY },
   diagnostics: {
     // Raw crash-dump binaries excluded by default — metadata-only in the bundle.
     includeCrashDumps: false,
@@ -220,5 +224,17 @@ export const DEFAULT_SETTINGS: AppSettings = {
     // Settings activation degrades visibly when unavailable; explicit
     // AVE_SANDBOX_ENABLED=1 activation stays fail-closed on macOS/Linux.
     osToolSandbox: process.platform === "darwin" || process.platform === "linux",
+    // Plugin-worker confinement: plugin workers, out-of-process plugin
+    // children, plugin script hooks and external MCP stdio servers run under
+    // ASRT exactly when this is on, whatever the shell sandbox above says.
+    // Its own setting (owner 2026-10-16) so that the shell sandbox default can
+    // be on without confining workers whose manifests under-declare the
+    // domains they reach. OFF everywhere; `loadSettings` derives it from a
+    // stored `osToolSandbox: true` when a file predates the split.
+    pluginWorkerConfinement: false,
+    // Shell egress asks: a sandboxed shell's connection to a host no grant
+    // covers asks the person (denied when nobody can answer). Off denies such
+    // connections outright. On with the proxy-egress ask (design B, PR 4).
+    shellEgressAsk: true,
   },
 };

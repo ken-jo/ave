@@ -1,7 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import * as asrtSandbox from "../asrt-sandbox.js";
+import * as srtWinIntegrity from "../srt-win-integrity.js";
+import { classifySandboxDependencyErrors } from "../sandbox-start-failure.js";
+import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
+import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
 import {
   grantAsrtWindowsBackendAcl,
@@ -13,7 +19,7 @@ import {
   resolveAsrtWindowsReady,
 } from "../asrt-windows-support.js";
 
-// ASRT 0.0.76: readAsrtWindowsStatus reads BOTH the sandbox-user and WFP state
+// ASRT 0.0.80: readAsrtWindowsStatus reads BOTH the sandbox-user and WFP state
 // from a SINGLE `srt-win status` spawn (checkWindowsSandboxStatusAsync). Override
 // only that one export; everything else (resolveSrtWin, WindowsSandboxError, …)
 // stays real so the DI-based install tests are unaffected.
@@ -401,7 +407,7 @@ describe("asrt-windows-support adapter", () => {
   });
 
   it("returns timed-out for an install_timeout WindowsSandboxError (UAC left open)", async () => {
-    // ASRT 0.0.76 installWindowsSandboxAsync throws WindowsSandboxError with code
+    // ASRT 0.0.80 installWindowsSandboxAsync throws WindowsSandboxError with code
     // 'install_timeout' when the self-elevating subprocess is killed by the 120s
     // spawn timeout with the UAC consent dialog still open. The adapter must
     // surface that distinctly (not as a generic failure), and must NOT run the
@@ -612,7 +618,7 @@ describe("asrt-windows-support adapter", () => {
     expect(source).not.toContain("'--allow-write'");
   });
 
-  it("reads user + WFP from the single checkWindowsSandboxStatusAsync spawn (ASRT 0.0.76)", async () => {
+  it("reads user + WFP from the single checkWindowsSandboxStatusAsync spawn (ASRT 0.0.80)", async () => {
     const ORIGINAL_PLATFORM = process.platform;
     Object.defineProperty(process, "platform", { value: "win32", configurable: true });
     // On a real Windows host the install cases above already reach
@@ -656,7 +662,143 @@ describe("asrt-windows-support adapter", () => {
     }
   });
 
-  it("normalizes the ASRT 0.0.76 ready sandbox-user shape", () => {
+  it.each([
+    ["srt-win-not-found", "windows-sandbox-missing"],
+    ["srt-win-integrity-mismatch", "windows-sandbox-integrity-failed"],
+  ] as const)("keeps %s from preparation through the boot dependency boundary", async (code, expected) => {
+    const originalPlatform = process.platform;
+    const cause = new srtWinIntegrity.SrtWinIntegrityError(code);
+    const wrapped = new Error("Preparation failed", { cause });
+    const prepare = vi.spyOn(srtWinIntegrity, "prepareSrtWinExecutable").mockImplementation(() => { throw wrapped; });
+    const mod = await import("@anthropic-ai/sandbox-runtime");
+    const resolver = vi.spyOn(mod, "resolveSrtWin");
+    setProcessPlatform("win32");
+    try {
+      const deps = await asrtSandbox.checkAsrtDependencies();
+      expect(deps.dependencyFailure).toBe(wrapped);
+      expect(classifySandboxDependencyErrors("win32", deps.errors, deps.dependencyFailure)).toEqual([expected]);
+      expect(resolver).not.toHaveBeenCalled();
+    } finally {
+      prepare.mockRestore();
+      resolver.mockRestore();
+      setProcessPlatform(originalPlatform);
+    }
+  });
+
+  it("reports a missing helper without probing provisioned state, and observes restoration on the next read", async () => {
+    const originalPlatform = process.platform;
+    const originalBytes = readFileSync(asrtSandbox.getVendoredSrtWinExePath());
+    const dir = mkdtempSync(join(tmpdir(), "ave-helper-status-"));
+    const helperPath = join(dir, "srt-win.exe");
+    const path = vi.spyOn(asrtSandbox, "getVendoredSrtWinExePath").mockReturnValue(helperPath);
+    setProcessPlatform("win32");
+    checkWindowsSandboxStatusAsyncMock.mockReset();
+    checkWindowsSandboxStatusAsyncMock.mockResolvedValue({ user: READY_USER, wfp: { state: "installed" } });
+    try {
+      const missing = await readAsrtWindowsStatus();
+      expect(missing).toMatchObject({
+        applicable: true, userState: null, wfpState: null, ready: false,
+        helperError: "srt-win-not-found",
+      });
+      expect(JSON.stringify(missing)).not.toContain(helperPath);
+      expect(checkWindowsSandboxStatusAsyncMock).not.toHaveBeenCalled();
+
+      // The resolver is real; only the status subprocess is replaced. No
+      // executable is launched by this lifecycle test.
+      writeFileSync(helperPath, originalBytes);
+      const restored = await readAsrtWindowsStatus();
+      expect(restored).toMatchObject({ applicable: true, userState: "ready", wfpState: "installed", ready: true });
+      expect(restored.helperError).toBeUndefined();
+      expect(checkWindowsSandboxStatusAsyncMock).toHaveBeenCalledExactlyOnceWith({
+        srtWin: { exe: expect.stringContaining("srt-win.exe"), prependArgs: ["--srt-win"] },
+      });
+
+      unlinkSync(helperPath);
+      expect(await readAsrtWindowsStatus()).toMatchObject({ ready: false, helperError: "srt-win-not-found" });
+      expect(checkWindowsSandboxStatusAsyncMock).toHaveBeenCalledTimes(1);
+    } finally {
+      path.mockRestore();
+      setProcessPlatform(originalPlatform);
+      checkWindowsSandboxStatusAsyncMock.mockReset();
+      await cleanupTmpDir(dir);
+    }
+  });
+
+  it.each(["bitflip", "same-size garbage"])("reports %s as an integrity failure without probing readiness", async (kind) => {
+    const originalPlatform = process.platform;
+    const bytes = readFileSync(asrtSandbox.getVendoredSrtWinExePath());
+    const dir = mkdtempSync(join(tmpdir(), "ave-helper-tamper-"));
+    const helperPath = join(dir, "srt-win.exe");
+    if (kind === "bitflip") bytes[0x20] ^= 1;
+    else bytes.fill(0x41);
+    writeFileSync(helperPath, bytes);
+    const path = vi.spyOn(asrtSandbox, "getVendoredSrtWinExePath").mockReturnValue(helperPath);
+    setProcessPlatform("win32");
+    checkWindowsSandboxStatusAsyncMock.mockReset();
+    try {
+      expect(await readAsrtWindowsStatus()).toMatchObject({
+        applicable: true, ready: false, userState: null, wfpState: null,
+        helperError: "srt-win-integrity-mismatch",
+      });
+      expect(checkWindowsSandboxStatusAsyncMock).not.toHaveBeenCalled();
+    } finally {
+      path.mockRestore();
+      setProcessPlatform(originalPlatform);
+      await cleanupTmpDir(dir);
+    }
+  });
+
+  it("classifies a missing helper configuration but rethrows unrelated resolver and status failures", async () => {
+    const originalPlatform = process.platform;
+    setProcessPlatform("win32");
+    const mod = await import("@anthropic-ai/sandbox-runtime");
+    const resolveSrtWin = mod.resolveSrtWin;
+    const resolver = vi.spyOn(mod, "resolveSrtWin");
+    checkWindowsSandboxStatusAsyncMock.mockReset();
+    try {
+      // Exercise malformed configuration from an untyped runtime caller.
+      resolver.mockImplementationOnce(() => Reflect.apply(resolveSrtWin, undefined, [{}]));
+      expect(await readAsrtWindowsStatus()).toMatchObject({ ready: false, helperError: "srt-win-not-found" });
+      expect(checkWindowsSandboxStatusAsyncMock).not.toHaveBeenCalled();
+
+      for (const error of [
+        new Error("resolver invariant failed"),
+        Object.assign(new Error("foreign error"), { code: "srt_win_not_found" }),
+        new mod.WindowsSandboxError("spawn_failed", "configured helper cannot start"),
+      ]) {
+        resolver.mockImplementationOnce(() => { throw error; });
+        await expect(readAsrtWindowsStatus()).rejects.toBe(error);
+      }
+
+      resolver.mockReturnValueOnce({ exe: "configured-helper.exe", prependArgs: ["srt-win"] });
+      const statusError = new mod.WindowsSandboxError("srt_win_bad_json", "invalid helper response");
+      checkWindowsSandboxStatusAsyncMock.mockRejectedValueOnce(statusError);
+      await expect(readAsrtWindowsStatus()).rejects.toBe(statusError);
+    } finally {
+      resolver.mockRestore();
+      setProcessPlatform(originalPlatform);
+      checkWindowsSandboxStatusAsyncMock.mockReset();
+    }
+  });
+
+  it("does not resolve or probe a Windows helper on another platform", async () => {
+    const originalPlatform = process.platform;
+    const path = vi.spyOn(asrtSandbox, "getVendoredSrtWinExePath");
+    checkWindowsSandboxStatusAsyncMock.mockReset();
+    setProcessPlatform("linux");
+    try {
+      expect(await readAsrtWindowsStatus()).toEqual({
+        applicable: false, userState: null, wfpState: null, ready: false, instructions: "",
+      });
+      expect(path).not.toHaveBeenCalled();
+      expect(checkWindowsSandboxStatusAsyncMock).not.toHaveBeenCalled();
+    } finally {
+      path.mockRestore();
+      setProcessPlatform(originalPlatform);
+    }
+  });
+
+  it("normalizes the ASRT 0.0.80 ready sandbox-user shape", () => {
     expect(
       normalizeAsrtWindowsUserState({
         provisioned: true,

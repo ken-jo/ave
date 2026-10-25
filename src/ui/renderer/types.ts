@@ -1,8 +1,8 @@
-import type { ListedEgressGrant, RevocableEgressGrant } from "../../shared/egress-grant-scopes.js";
 import type { RewindMode, RewindResult } from "../../shared/code-rewind.js";
 // Types extracted from src/renderer.tsx.
 // Pure type declarations — no React runtime, no hook state, no side effects.
 
+import type { UpstreamProxyPatch, UpstreamProxyView } from "../../shared/upstream-proxy.js";
 import type { PluginUiExtensionView } from "../../plugin-ui-host.js";
 import type {
   AgentInstallResultPayload,
@@ -85,6 +85,8 @@ import type {
   SandboxWindowsStatusInfo,
   SandboxWindowsInstallResult,
 } from "../../shared/sandbox-capability-info.js";
+import type { EgressDenialRow } from "../../shared/egress-denials.js";
+import type { ListedEgressGrant, RevocableEgressGrant } from "../../shared/egress-grant-scopes.js";
 
 // Re-export MCP types for renderer-side consumers (type-only, no main-process runtime)
 export type { McpAuthErrorCode, McpServerConfig, McpServerConfigDto, McpServerState };
@@ -1593,8 +1595,29 @@ export type AvePermissionApi = {
   sandboxCapability: () => Promise<SandboxCapabilityInfo>;
   /** Read-only: Windows srt-win install readiness (group + WFP + verbatim instructions). */
   sandboxWindowsStatus: () => Promise<SandboxWindowsStatusInfo>;
-  egressGrantsList: () => Promise<{ ok: true; grants: readonly ListedEgressGrant[] } | IpcErrorResult>;
-  egressGrantRevoke: (grant: RevocableEgressGrant) => Promise<{ ok: true } | IpcErrorResult>;
+  /**
+   * Read-only: the connections the sandbox proxy refused in the last 24 h,
+   * newest first, each with the tool call, terminal tab or plugin process
+   * that opened it ("unattributed" when no live invocation held its key).
+   */
+  egressDenialsRecent: () => Promise<EgressDenialRow[] | IpcErrorResult>;
+  /** Read-only: the shell egress grants that outlive a call (conversation, terminal tab, workspace, always). */
+  egressGrantsList: () => Promise<
+    | { ok: true; grants: ListedEgressGrant[] }
+    | { ok: false; error: string; message: string }
+    | IpcErrorResult
+  >;
+  /** Read-only: the upstream proxy setting (no credential values) and the effective upstream for https://example.com. */
+  upstreamProxyGet: () => Promise<UpstreamProxyView | IpcErrorResult>;
+  /** MUTATING: change the upstream proxy setting; resolves to the new view or a refusal. */
+  upstreamProxySet: (patch: UpstreamProxyPatch) => Promise<
+    /** `credentialsRemoved`: the stored credentials belonged to the previous proxy and were removed. */
+    | { ok: true; view: UpstreamProxyView; credentialsRemoved?: true }
+    | { ok: false; error: string; message: string }
+    | IpcErrorResult
+  >;
+  /** MUTATING: revoke one shell egress grant. */
+  egressGrantRevoke: (grant: RevocableEgressGrant) => Promise<{ ok: boolean; error?: string; message?: string } | IpcErrorResult>;
   /**
    * MUTATING: trigger the one-time Windows srt-win install (one self-elevating
    * UAC prompt). The ONLY user-consented privilege-escalation entry point —
@@ -1605,6 +1628,7 @@ export type AvePermissionApi = {
    * user activation lapses after ~5 s, and main reads status itself.
    */
   sandboxWindowsInstall: () => Promise<SandboxWindowsInstallResult | IpcErrorResult>;
+  approveExtensionsWithoutIsolation: () => Promise<{ ok: true } | IpcErrorResult>;
   /** Subscribe to default-mode repeated-approval hints for LLM permission review. */
   onReviewSuggestion: (cb: (payload: PermissionReviewSuggestionPayload) => void) => () => void;
   /** Permission policy — `/permission reviewer ...` slash dispatch. */

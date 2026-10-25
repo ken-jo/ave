@@ -163,7 +163,10 @@ function fixtureRepo(bare: string, work: string, branch: string, publishByCopy =
   };
 }
 
-/** Async `rm`: Electron's `rmSync` refuses the read-only object files git writes on Windows. */
+/**
+ * Async `rm`: Electron's `rmSync` refuses the read-only object files git writes on Windows.
+ * Retries ride out the brief EBUSY a just-exited git child can leave on the work dir.
+ */
 export async function removeFixtureRepo(repo: FixtureRepo): Promise<void> {
   await cleanupTmpDir(repo.work);
 }

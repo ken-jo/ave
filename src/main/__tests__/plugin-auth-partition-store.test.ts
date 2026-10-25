@@ -43,6 +43,14 @@ describe("readPersistedPluginAuthPartitions", () => {
     expect(result).toBeNull();
   });
 
+  it("returns null for the empty placeholder the Windows sandbox creates", async () => {
+    const dir = join(tmpHome, "plugins");
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "auth-partitions.json"), "", "utf8");
+    await expect(readPersistedPluginAuthPartitions()).resolves.toBeNull();
+    await expect(deletePersistedPluginAuthPartitions("com.example.plugin")).resolves.toBeUndefined();
+  });
+
   it("throws on corrupt JSON", async () => {
     const dir = join(tmpHome, "plugins");
     await mkdir(dir, { recursive: true });

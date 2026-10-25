@@ -32,6 +32,11 @@ function capability({
     confines,
     shellExecutionPlan: getHostShellExecutionPlanAuditProjection(plan),
     runtime: { available: active, kind: active ? (platform === "win32" ? "partial" : "full") : "none", reason: "" },
+    shell: plan.mode === "asrt"
+      ? { state: "on", setting: requestedSandbox, envForced: false, causes: [] }
+      : requestedSandbox
+        ? { state: "unavailable", setting: true, envForced: false, causes: ["shell-not-contained"] }
+        : { state: "off", setting: false, envForced: false, causes: [] },
   };
 }
 

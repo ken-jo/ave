@@ -123,7 +123,7 @@ describe.skipIf(shouldSkipNativeSandboxTests())("native invocation proxy identit
     const first = openEgressInvocation({ kind: "shell", toolName: "bash", toolUseId: "first", context: TEST_SHELL_EGRESS_CONTEXT });
     const second = openEgressInvocation({ kind: "shell", toolName: "bash", toolUseId: "second", context: TEST_SHELL_EGRESS_CONTEXT });
     try {
-      await initializeRequiredSandbox({ allowedDomains: [], strictAllowlist: false, corporateProxy: { http: route, https: route } }, async ({ host }, context) => {
+      await initializeRequiredSandbox({ allowedDomains: [], strictAllowlist: false, upstreamProxy: { http: route, https: route } }, async ({ host }, context) => {
         asked.push({ host, context });
         return true;
       });

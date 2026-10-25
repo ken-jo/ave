@@ -93,7 +93,7 @@ export function workerEgressAllowedDomains(pluginId: string | undefined): readon
 export interface EgressAskRuntimeDeps {
   readonly approvalGate: Pick<ApprovalGate, "requestAndWait">;
   /** `features.shellEgressAsk`. */
-  readonly shellAskEnabled?: () => boolean;
+  readonly shellAskEnabled: () => boolean;
   readonly permissionManager?: PermissionManager;
 }
 
@@ -101,13 +101,16 @@ export interface EgressAskRuntimeDeps {
 export function createEgressAskRuntimeCallback(deps: EgressAskRuntimeDeps): SandboxAskCallback {
   const requester = createApprovalGateEgressRequester(deps.approvalGate, deps.permissionManager);
   return createEgressAskCallback({
+    // OWNER ITEM: ip2 caps shell egress grants at once/always; owner 2026-10-16 offers
+    // once/conversation/workspace/always (Windows shared frontend capped at
+    // once/conversation, 2026-10-19). This follows ip2 until the owner picks.
     shellGrantScopes: ["once", "always"],
     identityStrength: egressIdentityStrength,
     ownerOf: egressInvocationOwner,
     abortSignalOf: egressInvocationAbortSignal,
     workerAllowedDomains: workerEgressAllowedDomains,
     grants: egressGrantStore(),
-    shellAskEnabled: deps.shellAskEnabled ?? (() => true),
+    shellAskEnabled: deps.shellAskEnabled,
     requester: () => requester,
     audit: (entry) => {
       emitSandboxAudit(entry).catch((error: unknown) => {

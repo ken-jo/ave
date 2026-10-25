@@ -1,3 +1,4 @@
+import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
 import { chmod, lstat, link, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
@@ -71,7 +72,7 @@ describe("complete binary copy", () => {
     }
   });
 
-  it("admits ancestor aliases while rejecting a source leaf link", async () => {
+  it.skipIf(!canCreateSymlinks())("admits ancestor aliases while rejecting a source leaf link", async () => {
     await mkdir(join(root, "real"));
     await writeFile(join(root, "real", "input"), bytes);
     await symlink(join(root, "real"), join(root, "alias"));
@@ -83,8 +84,9 @@ describe("complete binary copy", () => {
 });
 
 describe("authority and exclusive destinations", () => {
-  it("preserves every existing destination type", async () => {
-    for (const kind of ["file", "empty-directory", "nonempty-directory", "dangling-link"]) {
+  for (const kind of ["file", "empty-directory", "nonempty-directory", "dangling-link"]) {
+    // Only a dangling link requires unprivileged symlink creation.
+    it.skipIf(kind === "dangling-link" && !canCreateSymlinks())(`preserves an existing ${kind} destination`, async () => {
       const target = join(root, kind);
       if (kind === "file") await writeFile(target, "foreign");
       else if (kind === "dangling-link") await symlink(join(root, "missing"), target);
@@ -103,8 +105,8 @@ describe("authority and exclusive destinations", () => {
         expect((await lstat(target)).ino).toBe(before.ino);
       }
       if (kind === "nonempty-directory") expect(await readFile(join(target, "foreign"), "utf8")).toBe("keep");
-    }
-  });
+    });
+  }
 
   it("lets exactly one of two simultaneous creators keep its complete output", async () => {
     const results = await Promise.all([1, 2].map(() => copyPath({ sourcePath: source, destinationPath: destination }, context)));
@@ -135,10 +137,14 @@ describe("authority and exclusive destinations", () => {
     await absent(destination);
   });
 
-  it("rejects hardlinks and nested links without changing their targets", async () => {
+  it("rejects hardlinks without changing their targets", async () => {
     await link(source, join(root, "hardlink"));
     expect(await copyPath({ sourcePath: source, destinationPath: destination }, context)).toMatchObject({ ok: false, code: "unsupported-entry", cleanup: "not-created" });
     await rm(join(root, "hardlink"));
+    expect(await readFile(source)).toEqual(bytes);
+  });
+
+  it.skipIf(!canCreateSymlinks())("rejects nested links without changing their targets", async () => {
     source = join(root, "tree");
     await mkdir(source);
     await symlink(join(root, "source.bin"), join(source, "linked"));
@@ -224,7 +230,7 @@ describe("owned rollback and settlement", () => {
     expect(await readFile(join(destination, "foreign"), "utf8")).toBe("preserve");
   });
 
-  it("preserves substituted files and roots without traversing a replacement link", async () => {
+  it.skipIf(!canCreateSymlinks())("preserves substituted files and roots without traversing a replacement link", async () => {
     const moved = join(root, "moved");
     const result = await transfer(async ({ sink }) => {
       await sink.file("owned", chunks(bytes), { expectedBytes: bytes.length, ownerExecutable: false });

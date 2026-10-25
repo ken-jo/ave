@@ -290,7 +290,8 @@ describe("foreground rationale contract", () => {
     expect(requestedOn).toMatchObject({
       requestedSandbox: true,
       fallbackReason: "requested-sandbox-unavailable",
-      requiresExplicitUserApproval: true,
+      // Design I3: normal rules apply; the fallback reason keeps it distinct.
+      requiresExplicitUserApproval: false,
     });
     expect(requestedOff).toMatchObject({
       requestedSandbox: false,

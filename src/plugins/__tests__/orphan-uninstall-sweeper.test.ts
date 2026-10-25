@@ -1,3 +1,4 @@
+import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
@@ -38,7 +39,7 @@ describe("sweepOrphanUninstallDirs", () => {
     },
   );
 
-  it("removes a linked tombstone entry as a link, leaving its target", async () => {
+  it.skipIf(!canCreateSymlinks())("removes a linked tombstone entry as a link, leaving its target", async () => {
     const outside = join(pluginsRoot, "outside");
     await mkdir(outside);
     await writeFile(join(outside, "keep"), "keep");
@@ -53,7 +54,7 @@ describe("sweepOrphanUninstallDirs", () => {
 
   // Judged by the entry itself, not by what it points at: a link to an
   // outside file is unlinked, and the file is never touched.
-  it("removes a tombstone entry that links to an outside file, leaving the file", async () => {
+  it.skipIf(!canCreateSymlinks())("removes a tombstone entry that links to an outside file, leaving the file", async () => {
     const outside = join(pluginsRoot, "outside.txt");
     await writeFile(outside, "keep");
     await mkdir(tombstoneDir, { recursive: true });
