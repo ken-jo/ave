@@ -307,6 +307,31 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     expect(result[0]?.is_error).toBe(true);
   });
 
+  // The positive half of D2 for Plan B: an exact rule runs it with no card and no reviewer, on the policy-lane permit.
+  it.each(["default", "allow"] as const)("runs a Plan B shell on its exact Bash(<command>) rule in %s mode without a card", async (mode) => {
+    partialWindowsAsrt();
+    let observedPermit: unknown;
+    const execute = vi.fn((ctx: import("../types.js").ToolExecutionContext) => { observedPermit = ctx.hostShellExecutionPermit; });
+    const registry = new ToolRegistry();
+    registry.register(shellProbe(execute));
+    const pm = new PermissionManager("/tmp/nonexistent-windows-partial-plan-b-rule.json");
+    pm.setMode(mode);
+    pm.setRules([{ pattern: "Bash(echo no-run)", action: "allow" }]);
+    pm.setReviewer({ classifier: {} as never, cache: {} as never, deferredQueue: {} as never });
+    pm.dispatchReviewer = vi.fn() as never;
+    const requestAndWait = vi.fn();
+    const result = await new ToolExecutor(registry, undefined, pm, undefined, { requestAndWait } as never).executeAll(
+      [{ id: "partial-shell-exact-rule", name: "bash", input: { command: "echo no-run" } }],
+      { sessionId: "partial-shell", permissionContext: permissionContext() },
+    );
+
+    expect(pm.dispatchReviewer).not.toHaveBeenCalled();
+    expect(requestAndWait).not.toHaveBeenCalled();
+    expect(execute).toHaveBeenCalledOnce();
+    expect(observedPermit).toBeDefined();
+    expect(result[0]?.is_error).toBeUndefined();
+  });
+
   it("passes the same sealed none-plan to an allow-once shell invocation", async () => {
     partialWindowsAsrt();
     const audit = recordingAuditLogger();

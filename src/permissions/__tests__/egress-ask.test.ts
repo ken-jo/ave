@@ -749,10 +749,12 @@ describe("egress ask callback — shell calls", () => {
     expect(asked).toHaveLength(2);
   });
 
-  it("offers no This project when the call's working directory is not an absolute path", async () => {
+  // A relative working directory is a host contract violation: the connection is denied and audited, never asked with a narrower card.
+  it("denies and audits a call whose working directory is not an absolute path", async () => {
     owners.set(SHELL_TOKEN, { ...interactiveShell, context: { ...interactiveShell.context, workspaceRoot: "relative/dir" } });
-    await callback()({ host: "pypi.org", port: 443 }, listener(SHELL_TOKEN));
-    expect(asked[0]?.scopes).toEqual(["once", "session", "always"]);
+    expect(await callback()({ host: "pypi.org", port: 443 }, listener(SHELL_TOKEN))).not.toBe(true);
+    expect(asked).toEqual([]);
+    expect(audit).toEqual([expect.objectContaining({ decision: "deny" })]);
   });
 
   it("Always covers every workspace and persists", async () => {
