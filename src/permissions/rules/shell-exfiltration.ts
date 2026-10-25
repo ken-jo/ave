@@ -1133,6 +1133,14 @@ function trackDirectoryChange(cmd: ShellCommand, state: ScanState): void {
     break;
   }
   const name = words[0] === undefined ? undefined : staticShellWord(words[0]);
+  if (name === "eval") {
+    // `eval` runs its text in this shell, so a directory change inside it persists.
+    const code = words.slice(1).map((word) => staticShellWord(word));
+    if (code.some((text) => text === undefined || /(?:^|[^\w./-])(?:cd|chdir|pushd|popd)(?![\w.-])/.test(text))) {
+      markCwdUnknown(state, "eval may change directory");
+    }
+    return;
+  }
   if (name !== "cd" && name !== "chdir" && name !== "pushd" && name !== "popd") return;
   const operands: ShellWord[] = [];
   let delimited = false;

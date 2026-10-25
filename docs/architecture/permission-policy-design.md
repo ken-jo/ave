@@ -239,8 +239,11 @@ same input may leave in force. A change is never assumed to fail or to be
 undone by a subshell, so each earlier directory stays a candidate. A directory
 change whose target is not static is an ordinary ask: a variable, substitution,
 glob or `~user` target, `cd -` or a stack reference before the input changed
-directory, a reassigned `HOME`, or `CDPATH`/`cdable_vars`/`autocd`. A later
-relative recursive search is then a floor, because its root cannot be ruled out.
+directory, an `eval` whose text is not static or changes directory, a
+reassigned `HOME`, or `CDPATH`/`cdable_vars`/`autocd`. The ordinary ask does
+not stop the sandboxed automatic lane, whose OS floor still confines reads. A
+later relative recursive search is a floor in every lane, because its root
+cannot be ruled out.
 
 Ordinary asks remain rememberable under the existing approval-scope and risk
 requirements. A parser refusal cannot establish a `Bash(...)` allow-rule match,

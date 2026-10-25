@@ -552,6 +552,8 @@ describe("credential floor: recursive searches after cd", () => {
     "f() { rg x; }; cd ~; f",
     "cd ~/.config && cat gh/hosts.yml",
     "cd ~/.kube && cat config",
+    "time cd ~ && grep -r x .",
+    "\\cd ~ && rg x",
   ])("floors %s", (command) => {
     expect(shellSensitivePathSignal(command, CWD)).not.toBeNull();
   });
@@ -565,6 +567,8 @@ describe("credential floor: recursive searches after cd", () => {
     "popd; rg y",
     "HOME=/x; cd && rg y",
     "CDPATH=~ cd projects && rg y",
+    "eval cd ~; rg y",
+    "eval \"cd $D\" && grep -r y .",
   ])("floors a relative search after the non-static cd in %s", (command) => {
     expect(shellSensitivePathSignal(command, CWD)).toMatch(/cd whose target is not static/);
     expect(shellScanOrdinaryAsk(command, CWD)).not.toBeNull();
@@ -585,6 +589,8 @@ describe("credential floor: recursive searches after cd", () => {
     "cd \"$X\" && grep -r y /tmp/abs",
     "pushd ~/projects/x && rg y && popd",
     "cd ~/projects/x && cd - && rg y src",
+    "time cd src && rg y",
+    "eval echo ok; rg y",
   ])("leaves the ordinary search %s alone", (command) => {
     expect(shellSensitivePathSignal(command, CWD)).toBeNull();
   });
