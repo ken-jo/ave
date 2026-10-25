@@ -80,6 +80,27 @@ describe.skipIf(process.platform !== "win32")("Windows administrative policy tru
     expect(denyWrite).not.toContain(admin);
   });
 
+  it("keeps a machine write deny that contains a grant beneath the root", async () => {
+    const blocked = join(process.env.ProgramData!, "blocked");
+    const child = join(blocked, "child");
+    await mkdir(child, { recursive: true });
+    const config = buildSandboxConfig({ allowedDomains: [], allowWrite: [child], denyWrite: [blocked] });
+    expect(config.filesystem.allowWrite).toContain(child);
+    expect(config.filesystem.denyWrite.map((entry) => typeof entry === "string" ? entry : entry.path)).toContain(blocked);
+  });
+
+  it("refuses a write pattern whose literal base contains a machine root", () => {
+    const pattern = join(root, "*");
+    expect(() => buildSandboxConfig({ allowedDomains: [], allowWrite: [pattern] }))
+      .toThrow(`Windows write grant ${pattern} contains machine root ${process.env.ProgramData!}`);
+  });
+
+  it("refuses a recursive write pattern rooted at a machine root", () => {
+    const pattern = join(process.env.ProgramData!, "**");
+    expect(() => buildSandboxConfig({ allowedDomains: [], allowWrite: [pattern] }))
+      .toThrow(`Windows write grant ${pattern} contains machine root ${process.env.ProgramData!}`);
+  });
+
   it("refuses a write grant equal to a machine root", () => {
     const machine = process.env.ProgramData!;
     expect(() => buildSandboxConfig({ allowedDomains: [], allowWrite: [machine] }))

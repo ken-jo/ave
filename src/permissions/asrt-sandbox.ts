@@ -985,15 +985,19 @@ function windowsMachineRoots(): string[] {
 function assertWindowsMachineRootWriteGrants(grants: readonly string[]): void {
   if (process.platform !== "win32") return;
   for (const grant of grants) {
+    // srt-win expands `*`/`?` grants when it stamps, so refuse a pattern whose literal base already reaches a machine root. A trailing `**` also matches the base itself.
+    const wildcard = grant.search(/[*?]/);
+    const base = wildcard === -1 ? grant : /[\\/]$/.test(grant.slice(0, wildcard)) ? grant.slice(0, wildcard) : dirname(grant.slice(0, wildcard));
     for (const root of windowsMachineRoots()) {
-      if (isGrantPathWithin(grant, root)) {
+      if (!isGrantPathWithin(base, root)) continue;
+      if (wildcard === -1 || !isGrantPathWithin(root, base) || grant.slice(wildcard).includes("**")) {
         throw new Error(`Windows write grant ${grant} contains machine root ${root}`);
       }
     }
   }
 }
 
-// Windows stamping creates missing deny targets and changes parent DACLs. Write denies under a machine root are omitted unless a grant strictly beneath that root contains them: ordinary ACLs already deny Users writes there. Read denies are never omitted for this; one srt-win cannot stamp fails init. POSIX rows and profile rows disjoint from grants are omitted. Worker wraps restate overlapping denies.
+// Windows stamping creates missing deny targets and changes parent DACLs. Write denies under a machine root are omitted unless they overlap a grant strictly beneath that root: ordinary ACLs already deny Users writes there. Read denies are never omitted for this; one srt-win cannot stamp fails init. POSIX rows and profile rows disjoint from grants are omitted. Worker wraps restate overlapping denies.
 function windowsDenyTargets<T extends FilesystemPathEntry>(
   entries: readonly T[],
   userDataDir: string | undefined,
@@ -1014,7 +1018,7 @@ function windowsDenyTargets<T extends FilesystemPathEntry>(
       if ([path, ...expandedGrants, ...machineRoots].some((candidate) => /[\0*?\[\]%]|~\d+(?:\.|[\\/]|$)/
         .test(candidate.replace(/^\\\\\?\\/, "")))) return true;
       return !machineRoots.some((root) => isGrantPathWithin(root, path)
-        && !expandedGrants.some((grant) => isGrantPathWithin(grant, path) && !isGrantPathWithin(grant, root)));
+        && !expandedGrants.some((grant) => (isGrantPathWithin(grant, path) || isGrantPathWithin(path, grant)) && !isGrantPathWithin(grant, root)));
     } catch {
       // An unproven identity must never remove a deny.
       return true;

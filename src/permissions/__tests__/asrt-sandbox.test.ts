@@ -18,7 +18,7 @@ import { lookup as lookupAll } from "node:dns/promises";
 import { setDestinationResolverForTesting } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-manager.js";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { basename, dirname, join, parse, sep } from "node:path";
+import { basename, dirname, join, parse, resolve, sep } from "node:path";
 import { shellQuote } from "../../lib/shell-resolver.js";
 import { gitFixtureEnv } from "../../__tests__/support/git-fixture-env.mjs";
 import { initializeRequiredSandbox, shouldSkipNativeSandboxTests } from "../../__tests__/support/native-sandbox.js";
@@ -1332,7 +1332,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     ["normalized descendants", "C:\\Users\\tester", "C:\\Users\\tester\\work", "C:\\Users\\tester\\work\\nested\\..\\locked", true],
     ["normalized escapes", "C:\\Users\\tester", "C:\\Users\\tester\\work", "C:\\Users\\tester\\work\\..\\locked", false],
     ["sibling boundaries", "C:\\Users\\tester", "C:\\Users\\tester\\work", "C:\\Users\\tester\\work-neighbor\\locked", false],
-    ["drive roots", "C:\\Users\\tester", "C:\\", "C:\\Users\\tester\\locked", true],
+    ["drive roots", "Z:\\Users\\tester", "Z:\\", "Z:\\Users\\tester\\locked", true],
     ["profile roots", "C:\\Users\\tester", "C:\\Users\\tester\\", "C:\\Users\\tester\\locked", true],
     ["network paths", "\\\\server\\profiles\\tester", "//SERVER/profiles/tester/work/", "\\\\server\\profiles\\tester\\work\\locked", true],
     ["network share boundaries", "\\\\server\\profiles\\tester", "\\\\server\\profiles\\tester\\work", "\\\\server\\profiles\\tester\\work-neighbor\\locked", false],
@@ -1340,6 +1340,12 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     const prevTestHome = process.env.AVE_ASRT_TEST_HOME;
     process.env.AVE_ASRT_TEST_HOME = profile;
     setProcessPlatform("win32");
+    const nativeRealpath = realpathSync.native;
+    // A `C:\` grant now contains machine roots, so the drive-root row uses a synthetic, uninstalled drive.
+    const realpath = vi.spyOn(realpathSync, "native").mockImplementation(((path) => {
+      const candidate = resolve(String(path));
+      return /^Z:\\/i.test(candidate) ? candidate : nativeRealpath(path);
+    }) as typeof realpathSync.native);
     try {
       const config = buildSandboxConfig({
         allowedDomains: [],
@@ -1350,6 +1356,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
       expect(bare(config.filesystem.denyRead).includes(target)).toBe(kept);
       expect(bare(config.filesystem.denyWrite).includes(target)).toBe(kept);
     } finally {
+      realpath.mockRestore();
       setProcessPlatform(ORIGINAL_PLATFORM_FOR_DENY_TEST);
       if (prevTestHome === undefined) delete process.env.AVE_ASRT_TEST_HOME;
       else process.env.AVE_ASRT_TEST_HOME = prevTestHome;
