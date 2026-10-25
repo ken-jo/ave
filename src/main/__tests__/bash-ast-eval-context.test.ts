@@ -1,3 +1,4 @@
+import { allowedCommandCase, deniedCommandCase } from "./support/bash-validation-cases.js";
 import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import { useBashStructuralFixture } from "../../__tests__/support/bash-structural.js";
@@ -14,10 +15,7 @@ describe("structural execution and data roles", () => {
     "printf '%s\\n' 'eval $x\\n'",
     "command printf '%s' \"eval helper\"",
     "python3 - <<'PY'\n# eval helper\nprint('done')\nPY"
-  ])("preserves literal data without assigning shell execution: %s", (command) => {
-    const result = validate(command);
-    expect(result.decision).toBe("allow");
-  });
+  ])("preserves literal data without assigning shell execution: %s", allowedCommandCase(validate));
 
   it.each([
     "eval payload",
@@ -36,21 +34,13 @@ describe("structural execution and data roles", () => {
     "cat <<'A' <<B\ndata\nA\n# $(eval payload)\nB",
     "bash <<< 'eval payload'",
     "printf x\\ # literal; eval payload"
-  ])("refuses actual eval execution: %s", (command) => {
-    const result = validate(command);
-    expect(result.decision).toBe("deny");
-    expect(result.patternId).toBe("eval-untrusted");
-  });
+  ])("refuses actual eval execution: %s", deniedCommandCase(validate, "eval-untrusted"));
 
   it.each([
     "printf '%s' 'eval payload' | bash -s",
     "printf '%s' 'eval payload' | sh",
     "cat <<'SH' | command sh\neval payload\nSH"
-  ])("refuses an opaque shell program from a stream: %s", (command) => {
-    const result = validate(command);
-    expect(result.decision).toBe("deny");
-    expect(result.patternId).toBe("subst-pipe-shell");
-  });
+  ])("refuses an opaque shell program from a stream: %s", deniedCommandCase(validate, "subst-pipe-shell"));
 
   it.each([
     "printf -v 'a[$(eval \"printf proof\")]' '%s' x",
@@ -58,27 +48,17 @@ describe("structural execution and data roles", () => {
     "cat <<'SH'\n# eval helper",
     "( # eval helper\nprintf done",
     "{ # eval helper\nprintf done"
-  ])("refuses unresolved state or incomplete syntax: %s", (command) => {
-    const result = validate(command);
-    expect(result.decision).toBe("deny");
-    expect(result.patternId).toBe("shell-analysis");
-  });
+  ])("refuses unresolved state or incomplete syntax: %s", deniedCommandCase(validate, "shell-analysis"));
 
   it.each([
     "printf '%s' 'eval payload' | unknown_consumer",
     "unknown_consumer 'eval payload'",
     "cat <<SH\n# eval helper\nSH"
-  ])("keeps argument and heredoc data distinct from commands: %s", (command) => {
-    const result = validate(command);
-    expect(result.decision).toBe("allow");
-  });
+  ])("keeps argument and heredoc data distinct from commands: %s", allowedCommandCase(validate));
 
   it.each([
     "printf '%s' 'eval payload' > script; bash script"
-  ])("leaves child script content to its separate execution boundary: %s", (command) => {
-    const result = validate(command);
-    expect(result.decision).toBe("allow");
-  });
+  ])("leaves child script content to its separate execution boundary: %s", allowedCommandCase(validate));
 
   it.skipIf(process.platform === "win32").each([
     ["printf '%s' 'eval payload'", "eval payload"],
