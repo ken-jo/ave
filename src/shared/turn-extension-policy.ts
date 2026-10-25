@@ -13,6 +13,8 @@ import type { RemoteControllerAuthority } from "./chat-origin.js";
 export interface TurnExtensionPolicy {
   /** Whether trusted extension hooks may execute for the current turn. */
   readonly allowExternalHooks: boolean;
+  /** Host-owned unattended turn state, preserved across lifecycle callbacks. */
+  readonly headless?: boolean;
 }
 
 const DEFAULT_TURN_EXTENSION_POLICY: TurnExtensionPolicy = Object.freeze({
@@ -32,10 +34,11 @@ export const turnExtensionPolicyContext = new AsyncLocalStorage<TurnExtensionPol
 /** Derive policy only from a host-minted authority, never an input-origin string. */
 export function resolveTurnExtensionPolicy(
   authority: RemoteControllerAuthority | undefined,
+  headless = false,
 ): TurnExtensionPolicy {
   return authority !== undefined
     ? REMOTE_CONTROLLER_EXTENSION_POLICY
-    : DEFAULT_TURN_EXTENSION_POLICY;
+    : headless ? { ...DEFAULT_TURN_EXTENSION_POLICY, headless: true } : DEFAULT_TURN_EXTENSION_POLICY;
 }
 
 /** Defaults to allow outside a controlled remote turn for full back-compatibility. */

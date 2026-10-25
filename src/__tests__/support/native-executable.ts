@@ -1,11 +1,14 @@
 import type * as ChildProcessModule from "node:child_process";
+import { windowsPowerShellEnv } from "../../shared/windows-powershell-env.js";
 import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
-import { chmodSync, mkdirSync, mkdtempSync, promises as fs, realpathSync, type Stats, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, promises as fs, realpathSync, type Stats, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, win32 } from "node:path";
 import { tmpdir } from "node:os";
 import { vi } from "vitest";
 import type { CodexExecutableArtifact } from "../../main/codex-executable-artifact.js";
+// Import-free at runtime, so the mocked process module's factory may load it.
+import { WindowsAclHost, WindowsAclHostError, _setWindowsAclTransportForTest, type WindowsAclTransport } from "../../main/windows-acl-host.js";
 
 const readLstat = fs.lstat.bind(fs);
 const fixtureAncestors = new Set<string>();
@@ -97,12 +100,13 @@ export function normalizeFixtureAncestorPermissions(root: string): void {
     if (!insideTemp || insideTemp === ".." || insideTemp.startsWith(`..${win32.sep}`) || isAbsolute(insideTemp)) {
       throw new Error("Private fixture must be inside the test temporary directory");
     }
+    // Only the access list changes: the fixture root is an ancestor of the
+    // private directories, which the product's own helper makes and owns.
     const script = [
       "$ErrorActionPreference = 'Stop'",
       "$ProgressPreference = 'SilentlyContinue'",
       "$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User",
       "$acl = [System.Security.AccessControl.DirectorySecurity]::new()",
-      "$acl.SetOwner($sid)",
       "$acl.SetAccessRuleProtection($true, $false)",
       "$rule = [System.Security.AccessControl.FileSystemAccessRule]::new($sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')",
       "$acl.AddAccessRule($rule)",
@@ -110,7 +114,7 @@ export function normalizeFixtureAncestorPermissions(root: string): void {
     ].join("\n");
     execFileSync(win32.join(process.env.SystemRoot!, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
       ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
-      { windowsHide: true, env: { ...process.env, AVE_PRIVATE_FIXTURE: fixtureRoot } });
+      { windowsHide: true, env: windowsPowerShellEnv({ ...process.env, AVE_PRIVATE_FIXTURE: fixtureRoot }) });
     return;
   }
   vi.spyOn(fs, "lstat").mockImplementation((async (...args: Parameters<typeof fs.lstat>) => {
@@ -122,101 +126,128 @@ export function normalizeFixtureAncestorPermissions(root: string): void {
 
 /**
  * Wait budget for steps gated on a native location check. On Windows each
- * check runs a PowerShell ACL probe that alone takes most of a second, so the
- * one-second `vi.waitFor` default races it; elsewhere the default stands.
+ * check is a PowerShell ACL host request, and a host start alone takes over a
+ * second, so the one-second `vi.waitFor` default races it; elsewhere the
+ * default stands.
  */
 export const NATIVE_LOCATION_WAIT = { timeout: process.platform === "win32" ? 15_000 : 1_000 } as const;
 
 /**
  * Test budget for the few Windows tests that admit a whole fixture through
- * serial ACL probes: about 65 PowerShell probes at ~0.6 s each, ~40 s with
- * the machine idle, which parallel load pushes past the 45-second default.
+ * serial ACL requests: about 65 requests, each a full ACL read in the shared
+ * PowerShell host, which parallel load can push past the 45-second default.
  * The tests assert admission outcomes, not speed.
  */
 export const NATIVE_PROBE_HEAVY_TEST = process.platform === "win32" ? { timeout: 240_000 } : {};
 
-/** Windows counterpart: the real ACL probe runs, then fixture ancestors read as owner-only. */
-export function maskFixtureAncestorAcl(actual: typeof ChildProcessModule): typeof ChildProcessModule {
-  if (process.platform !== "win32") return actual;
-  const execFile = ((...args: unknown[]) => {
-    const [file, argv, options, callback] = args as [string, string[], ChildProcessModule.ExecFileOptions, Function];
-    if (typeof options?.env?.AVE_EXECUTABLE_ACL_PATHS !== "string" || typeof callback !== "function") {
-      return (actual.execFile as (...rest: unknown[]) => ChildProcessModule.ChildProcess)(...args);
-    }
-    return actual.execFile(file, argv, options, (error, stdout, stderr) => {
-      if (error) return callback(error, stdout, stderr);
-      let masked: string;
+/**
+ * Route the product's ACL requests through `transport`. The product reads the
+ * seam per request, so tests install it once, from their process-module mock.
+ */
+export function installFixtureAclTransport(transport: WindowsAclTransport): void {
+  _setWindowsAclTransportForTest(transport);
+}
+
+/** The ACL host behind the installed masking transport; tests read it to tell reuse from a fresh start. */
+export const fixtureAclHost: { current?: WindowsAclHost } = {};
+
+/**
+ * Request-level counterpart of the old probe rewrite: a real ACL host answers,
+ * then fixture ancestors read as owner-only. It spawns through the process
+ * module it is given, so a test's own spawn mocks never see the host.
+ */
+export function maskFixtureAncestorAclTransport(spawn: typeof ChildProcessModule.spawn): WindowsAclTransport {
+  const host = new WindowsAclHost((command, args, options) => spawn(command, args, options));
+  fixtureAclHost.current = host;
+  return {
+    async request(request, launch, limits) {
+      const reply = await host.request(request, launch, limits);
       try {
         // Only strict ancestors are rewritten; the fixture root and its tree keep their real ACLs.
-        const result = JSON.parse(String(stdout).replace(/^﻿/, "")) as { currentSid: string; paths: { path: string }[] };
+        const envelope = JSON.parse(reply.replace(/^﻿/, "")) as { id: unknown; result: { currentSid: string; paths: { path: string }[] } };
+        const { result } = envelope;
         result.paths = result.paths.map((path) => fixtureAncestors.has(windowsPathKey(path.path))
           ? { ...path, owner: result.currentSid, daclPresent: true, entries: [{ sid: result.currentSid, mask: 0x1f01ff, flags: 0, type: 0 }] }
           : path);
-        masked = JSON.stringify(result);
+        return JSON.stringify(envelope);
       } catch {
-        masked = stdout as string;
+        return reply;
       }
-      callback(error, masked, stderr);
-    });
-  }) as typeof actual.execFile;
-  return { ...actual, execFile };
+    },
+    discard: () => host.discard(),
+  };
+}
+
+/** Windows counterpart: the real ACL host runs, then fixture ancestors read as owner-only. */
+export function maskFixtureAncestorAcl(actual: typeof ChildProcessModule): typeof ChildProcessModule {
+  if (process.platform !== "win32") return actual;
+  installFixtureAclTransport(maskFixtureAncestorAclTransport(actual.spawn));
+  return actual;
+}
+
+/** Request-level fake: each request opens its paths and answers owner-only access rules. */
+export function fakeFixtureAclTransport(execFile: typeof ChildProcessModule.execFile): WindowsAclTransport {
+  return {
+    async request(request) {
+      try {
+        // The native probe opens the path object itself, including reparse points.
+        for (const path of request.paths) await readLstat(path);
+        fixtureCurrentSid ??= new Promise<string>((resolveSid, reject) => {
+          execFile(win32.join(process.env.SystemRoot!, "System32", "whoami.exe"), ["/user", "/fo", "csv", "/nh"], {
+            windowsHide: true,
+            encoding: "utf8",
+          }, (error, stdout) => {
+            if (error) return reject(error);
+            const sid = /\bS-1-(?:\d+-)*\d+\b/.exec(stdout)?.[0];
+            if (!sid) return reject(new Error("Current account SID is unavailable"));
+            resolveSid(sid);
+          });
+        }).catch((error: unknown) => {
+          fixtureCurrentSid = undefined;
+          throw error;
+        });
+        const currentSid = await fixtureCurrentSid;
+        return JSON.stringify({
+          id: request.id,
+          result: {
+            currentSid,
+            paths: request.paths.map((path) => ({
+              path, owner: currentSid, daclPresent: true,
+              entries: [{ sid: currentSid, mask: 0x1f01ff, flags: 0, type: 0 }],
+            })),
+            // No desktop-package exemption: fixtures are owner-only.
+            desktopPackage: request.skipPackage ? { status: "skipped" } : { status: "unavailable", reason: "mapping-not-found" },
+            // Fixture objects are the current account's own, so a claim keeps each owner.
+            ...request.setOwner ? { claims: request.paths.map((path) => ({ path, previousOwner: currentSid, outcome: "kept" })) } : {},
+          },
+        });
+      } catch (cause) {
+        // A failed path open ends the host, rather than reporting a spawn ENOENT.
+        throw new WindowsAclHostError(String(cause));
+      }
+    },
+    discard() {},
+  };
 }
 
 /** Locator tests need existing path objects, while access-policy tests keep real probes. */
 export function fakeFixtureAcl(actual: typeof ChildProcessModule): typeof ChildProcessModule {
   if (process.platform !== "win32") return actual;
-  const execFile = ((...args: unknown[]) => {
-    const [file, argv, options, callback] = args as [string, string[], ChildProcessModule.ExecFileOptions, Function];
-    const pathsJson = options?.env?.AVE_EXECUTABLE_ACL_PATHS;
-    if (typeof pathsJson !== "string" || typeof callback !== "function") {
-      return (actual.execFile as (...rest: unknown[]) => ChildProcessModule.ChildProcess)(...args);
-    }
-    const child = new actual.ChildProcess();
-    const respond = async (): Promise<string> => {
-      const paths = JSON.parse(pathsJson) as string[];
-      // The native probe opens the path object itself, including reparse points.
-      for (const path of paths) await readLstat(path);
-      fixtureCurrentSid ??= new Promise<string>((resolveSid, reject) => {
-        actual.execFile(win32.join(process.env.SystemRoot!, "System32", "whoami.exe"), ["/user", "/fo", "csv", "/nh"], {
-          windowsHide: true,
-          encoding: "utf8",
-        }, (error, stdout) => {
-          if (error) return reject(error);
-          const sid = /\bS-1-(?:\d+-)*\d+\b/.exec(stdout)?.[0];
-          if (!sid) return reject(new Error("Current account SID is unavailable"));
-          resolveSid(sid);
-        });
-      }).catch((error: unknown) => {
-        fixtureCurrentSid = undefined;
-        throw error;
-      });
-      const currentSid = await fixtureCurrentSid;
-      return JSON.stringify({
-        currentSid,
-        paths: paths.map((path) => ({
-          path, owner: currentSid, daclPresent: true,
-          entries: [{ sid: currentSid, mask: 0x1f01ff, flags: 0, type: 0 }],
-        })),
-        // No desktop-package exemption: fixtures are owner-only.
-        desktopPackage: options.env?.AVE_ACL_DESKTOP_PACKAGE === "skip"
-          ? { status: "skipped" } : { status: "unavailable", reason: "mapping-not-found" },
-      });
-    };
-    void respond().then(
-      (stdout) => callback(null, stdout, ""),
-      // A failed path open terminates the probe process, rather than reporting a spawn ENOENT.
-      (cause: unknown) => callback(Object.assign(new Error(String(cause)), { code: 1, cmd: [file, ...argv].join(" ") }), "", String(cause)),
-    );
-    return child;
-  }) as typeof actual.execFile;
-  return { ...actual, execFile };
+  installFixtureAclTransport(fakeFixtureAclTransport(actual.execFile));
+  return actual;
 }
 
-export function codexExecutableArtifactFixture(home: string): CodexExecutableArtifact {
-  const parent = join(home, "runtime");
-  mkdirSync(parent, { recursive: true, mode: 0o700 });
-  const directory = mkdtempSync(join(parent, "artifact-"));
+/** A private artifact made as the product makes one: through its ownership helpers. */
+export async function codexExecutableArtifactFixture(home: string): Promise<CodexExecutableArtifact> {
+  // Loaded here: this module is also loaded from a mocked process module's factory.
+  const { createPrivateDirectory, createPrivateObjects, createPrivateTempDirectory } = await import("../../main/codex-executable-location.js");
+  const parent = await createPrivateDirectory(join(home, "runtime"));
+  const directory = await createPrivateTempDirectory(join(parent, "artifact-"));
   const bytes = nativeExecutableBytes();
-  const executable = writeNativeExecutable(join(directory, process.platform === "win32" ? "codex.exe" : "codex"), bytes, 0o500);
+  const executable = await createPrivateObjects(async (created) => {
+    const path = writeNativeExecutable(join(directory, process.platform === "win32" ? "codex.exe" : "codex"), bytes, 0o500);
+    created.push(path);
+    return path;
+  });
   return { executable, contentHash: createHash("sha256").update(bytes).digest("hex"), companion: null };
 }

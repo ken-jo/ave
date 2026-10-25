@@ -54,10 +54,22 @@ function fakeFile(path: string): string {
   return header.machine === EM.x64 ? "ELF 64-bit LSB shared object, x86-64" : "ELF 64-bit LSB shared object, ARM aarch64";
 }
 
+/**
+ * Writes a fixture file with Electron's asar redirection off, as the audit
+ * reads them. Under Electron (the unit-test runner) `fs` takes `app.asar` for
+ * an archive, and since Electron 45 writing the placeholder there throws
+ * `Invalid package` instead of creating a plain file.
+ */
 function write(path: string, content: Buffer | string, mode = 0o644): void {
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, content);
-  chmodSync(path, mode);
+  const previous = process.noAsar;
+  process.noAsar = true;
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, content);
+    chmodSync(path, mode);
+  } finally {
+    process.noAsar = previous;
+  }
 }
 
 /** A linux-unpacked tree whose every native binary is `arch`. */

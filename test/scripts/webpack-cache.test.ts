@@ -178,7 +178,7 @@ describe("build cache", () => {
     const workflow = parse(readFileSync(resolve(".github/workflows/ci.yml"), "utf8")) as {
       jobs: Record<string, { steps: Array<{ id?: string; run?: string; env?: Record<string, string>; with?: Record<string, string> }> }>;
     };
-    const steps = workflow.jobs["build-and-test"]!.steps;
+    const steps = workflow.jobs.build!.steps;
     const cache = steps.find((step) => step.id === "webpack-cache");
     expect(cache?.with?.path).toBe("ave/.cache/webpack");
     const key = cache?.with?.key ?? "";

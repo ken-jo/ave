@@ -357,6 +357,9 @@ export function wireReviewerAgent(deps: WireReviewerDeps): WireReviewerResult {
     // only the documented external boundary is caught.
     let adapter: LlmReviewerProvider | undefined;
     try {
+      if (!effectiveSettings.model.trim()) {
+        throw new ReviewerProviderUnconfiguredError("Permission reviewer model not configured.");
+      }
       adapter = resolveReviewerAdapter(effectiveSettings.provider, deps);
     } catch (err) {
       // Discriminate the two failure classes resolveReviewerAdapter can

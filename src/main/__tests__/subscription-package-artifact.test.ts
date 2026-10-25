@@ -6,15 +6,27 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { normalizeFixtureAncestorPermissions } from "../../__tests__/support/native-executable.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
+import { createPrivateDirectory } from "../codex-executable-location.js";
 import { copySubscriptionPackageArtifact, type SubscriptionPackageArtifact } from "../subscription-package-artifact.js";
 
 const accessRuleProbes = vi.hoisted(() => ({ count: 0 }));
 vi.mock("node:child_process", async (importOriginal) => {
-  const actual = (await import("../../__tests__/support/native-executable.js")).maskFixtureAncestorAcl(await importOriginal());
-  // Counts the access-rule probes: the Windows ACL query or the macOS metadata listing.
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  const { installFixtureAclTransport, maskFixtureAncestorAclTransport } = await import("../../__tests__/support/native-executable.js");
+  // Counts the access-rule probes: the Windows ACL host request or the macOS metadata listing.
+  if (process.platform === "win32") {
+    const masked = maskFixtureAncestorAclTransport(actual.spawn);
+    installFixtureAclTransport({
+      request: (...args) => {
+        accessRuleProbes.count++;
+        return masked.request(...args);
+      },
+      discard: () => masked.discard(),
+    });
+  }
   const execFile = ((...args: unknown[]) => {
-    const [file, , options] = args as [string, unknown, { env?: NodeJS.ProcessEnv } | undefined];
-    if (typeof options?.env?.AVE_EXECUTABLE_ACL_PATHS === "string" || file === "/bin/ls") accessRuleProbes.count++;
+    const [file] = args as [string];
+    if (file === "/bin/ls") accessRuleProbes.count++;
     return (actual.execFile as (...rest: unknown[]) => unknown)(...args);
   }) as typeof actual.execFile;
   return { ...actual, execFile };
@@ -37,15 +49,14 @@ function writePackage(root: string, name: string, files: Record<string, string>,
   return root;
 }
 
-function createFixture(source = "console.log('snapshot');\n", metadata: Record<string, unknown> = {}, filename = "cli.cjs") {
+async function createFixture(source = "console.log('snapshot');\n", metadata: Record<string, unknown> = {}, filename = "cli.cjs") {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "ave-package-artifact-")));
   roots.push(root);
   normalizeFixtureAncestorPermissions(root);
   const modules = join(root, "installed", "node_modules");
   const packageRoot = writePackage(join(modules, "fixture-entry"), "fixture-entry", { [filename]: source }, metadata);
   const script = join(packageRoot, filename);
-  const artifactDirectory = join(root, "private");
-  mkdirSync(artifactDirectory, { mode: 0o700 });
+  const artifactDirectory = await createPrivateDirectory(join(root, "private"));
   return { root, modules, packageRoot, script, artifactDirectory };
 }
 
@@ -66,7 +77,7 @@ function replaceSealedFile(path: string, content: string): void {
 
 describe("sealed subscription package artifacts", () => {
   it.each(["module-guard.cjs", "module-guard.mjs"])("includes %s in the pinned artifact verification", async (guard) => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const artifact = await copySubscriptionPackageArtifact(fixture.packageRoot, fixture.script, fixture.artifactDirectory);
     replaceSealedFile(join(fixture.artifactDirectory, guard), "throw Error('changed guard');");
     await expect(artifact.verify()).rejects.toThrow("Subscription package artifact changed");
@@ -76,7 +87,7 @@ describe("sealed subscription package artifacts", () => {
     const source = kind === "require"
       ? "try { require('evil'); throw Error('escaped'); } catch (e) { if (e.code !== 'MODULE_NOT_FOUND') throw e; } console.log('confined');"
       : "import('evil').then(() => { throw Error('escaped'); }, e => { if (e.code !== 'MODULE_NOT_FOUND') throw e; console.log('confined'); });";
-    const fixture = createFixture(source);
+    const fixture = await createFixture(source);
     writePackage(join(fixture.root, "node_modules", "evil"), "evil", { "index.cjs": "throw Error('outside-loaded');" });
     const artifact = await copySubscriptionPackageArtifact(fixture.packageRoot, fixture.script, fixture.artifactDirectory);
     const result = runArtifact(artifact, fixture.root);
@@ -85,7 +96,7 @@ describe("sealed subscription package artifacts", () => {
   });
 
   it("keeps built-ins and caught missing optional native dependencies usable", async () => {
-    const fixture = createFixture("require('fs'); require('node:path'); try { require('optional-native'); } catch {} console.log('running');");
+    const fixture = await createFixture("require('fs'); require('node:path'); try { require('optional-native'); } catch {} console.log('running');");
     const artifact = await copySubscriptionPackageArtifact(fixture.packageRoot, fixture.script, fixture.artifactDirectory);
     const result = runArtifact(artifact, fixture.root);
     expect(result.status, result.stderr).toBe(0);
@@ -93,7 +104,7 @@ describe("sealed subscription package artifacts", () => {
   });
 
   it("resolves a dependency vendored inside the package root in both module systems", async () => {
-    const fixture = createFixture("console.log(require('vendored')); import('vendored').then(m => console.log(m.default));",
+    const fixture = await createFixture("console.log(require('vendored')); import('vendored').then(m => console.log(m.default));",
       { dependencies: { vendored: "1" } });
     writePackage(join(fixture.packageRoot, "node_modules", "vendored"), "vendored", { "index.cjs": "module.exports = 'inside';" });
     const artifact = await copySubscriptionPackageArtifact(fixture.packageRoot, fixture.script, fixture.artifactDirectory);
@@ -103,7 +114,7 @@ describe("sealed subscription package artifacts", () => {
   });
 
   it("executes the private entry snapshot after the installed script is replaced following host verification", async () => {
-    const fixture = fixtureForSnapshot();
+    const fixture = await fixtureForSnapshot();
     const artifact = await copySubscriptionPackageArtifact(fixture.packageRoot, fixture.script, fixture.artifactDirectory);
     expect(artifact.args.slice(0, 2)).toEqual(["--no-global-search-paths", "--import"]);
     expect(artifact.args[5]).not.toBe(fixture.script);
@@ -119,7 +130,7 @@ describe("sealed subscription package artifacts", () => {
   });
 
   it("rejects private entry bytes changed after host verification at module load", async () => {
-    const fixture = fixtureForSnapshot();
+    const fixture = await fixtureForSnapshot();
     const artifact = await copySubscriptionPackageArtifact(fixture.packageRoot, fixture.script, fixture.artifactDirectory);
     await artifact.verify();
     replaceSealedFile(artifact.args[5]!, "console.log('private-replaced');\n");
@@ -130,7 +141,7 @@ describe("sealed subscription package artifacts", () => {
   });
 
   it("rejects private dependency bytes changed after host verification at module load", async () => {
-    const fixture = fixtureWithDependency();
+    const fixture = await fixtureWithDependency();
     const artifact = await copySubscriptionPackageArtifact(fixture.packageRoot, fixture.script, fixture.artifactDirectory);
     await artifact.verify();
     const dependency = join(dirname(dirname(artifact.args[5]!)), "fixture-dep", "index.cjs");
@@ -142,7 +153,7 @@ describe("sealed subscription package artifacts", () => {
   });
 
   it("rejects dependency resolution metadata changed after host verification even when the redirect target was copied", async () => {
-    const fixture = fixtureWithDependency();
+    const fixture = await fixtureWithDependency();
     writeFileSync(join(fixture.modules, "fixture-dep", "redirected.cjs"), "module.exports = 'redirected-marker';\n", { mode: 0o600 });
     const artifact = await copySubscriptionPackageArtifact(fixture.packageRoot, fixture.script, fixture.artifactDirectory);
     const privateDependency = join(dirname(dirname(artifact.args[5]!)), "fixture-dep");
@@ -158,7 +169,7 @@ describe("sealed subscription package artifacts", () => {
   });
 
   it("retains hoisted and nested dependency layouts while closing cyclic declarations", async () => {
-    const fixture = createFixture("console.log(require('fixture-dep'));\n", { dependencies: { "fixture-dep": "1" } });
+    const fixture = await createFixture("console.log(require('fixture-dep'));\n", { dependencies: { "fixture-dep": "1" } });
     const dependency = writePackage(join(fixture.modules, "fixture-dep"), "fixture-dep", {
       "index.cjs": "module.exports = 'hoisted:' + require('fixture-nested');\n",
     }, { dependencies: { "fixture-nested": "1", "fixture-entry": "1" } });
@@ -175,19 +186,18 @@ describe("sealed subscription package artifacts", () => {
   });
 
   it("changes its identity and rejects the old proof when a declared external dependency changes", async () => {
-    const fixture = fixtureWithDependency();
+    const fixture = await fixtureWithDependency();
     const artifact = await copySubscriptionPackageArtifact(fixture.packageRoot, fixture.script, fixture.artifactDirectory);
     writeFileSync(join(fixture.modules, "fixture-dep", "index.cjs"), "module.exports = 'updated';\n");
     await expect(artifact.verify()).rejects.toThrow("Subscription executable changed");
-    const nextDirectory = join(fixture.root, "next-private");
-    mkdirSync(nextDirectory, { mode: 0o700 });
+    const nextDirectory = await createPrivateDirectory(join(fixture.root, "next-private"));
     const next = await copySubscriptionPackageArtifact(fixture.packageRoot, fixture.script, nextDirectory);
     expect(next.identity).not.toBe(artifact.identity);
     expect(runArtifact(next, fixture.root).stdout).toBe("updated\n");
   });
 
   it.each(["require", "esm"] as const)("rejects an absolute %s import outside the snapshot", async (kind) => {
-    const fixture = fixtureForSnapshot();
+    const fixture = await fixtureForSnapshot();
     const outside = join(fixture.root, kind === "esm" ? "outside.mjs" : "outside.cjs");
     writeFileSync(outside, "console.log('outside-executed');\n", { mode: 0o600 });
     const source = kind === "esm" ? `import ${JSON.stringify(outside)};\n` : `require(${JSON.stringify(outside)});\n`;
@@ -201,7 +211,7 @@ describe("sealed subscription package artifacts", () => {
   });
 
   it.each(["NODE_PATH", "ancestor"] as const)("refuses undeclared code available through %s", async (source) => {
-    const fixture = createFixture("console.log(require('fixture-undeclared'));\n");
+    const fixture = await createFixture("console.log(require('fixture-undeclared'));\n");
     const modules = source === "NODE_PATH" ? join(fixture.root, "search-modules") : join(fixture.root, "node_modules");
     writePackage(join(modules, "fixture-undeclared"), "fixture-undeclared", { "index.cjs": "module.exports = 'outside-executed';\n" });
     const artifact = await copySubscriptionPackageArtifact(fixture.packageRoot, fixture.script, fixture.artifactDirectory);
@@ -212,7 +222,7 @@ describe("sealed subscription package artifacts", () => {
   });
 
   it("excludes undeclared nested dependencies from the snapshot and refuses to require them", async () => {
-    const fixture = createFixture("console.log(require('fixture-undeclared'));\n");
+    const fixture = await createFixture("console.log(require('fixture-undeclared'));\n");
     writePackage(join(fixture.packageRoot, "node_modules", "fixture-undeclared"), "fixture-undeclared", {
       "index.cjs": "module.exports = 'undeclared-marker';\n",
     });
@@ -227,13 +237,13 @@ describe("sealed subscription package artifacts", () => {
   });
 
   it("fails closed when a required dependency is missing", async () => {
-    const fixture = createFixture("console.log('unreachable');\n", { dependencies: { "fixture-missing": "1" } });
+    const fixture = await createFixture("console.log('unreachable');\n", { dependencies: { "fixture-missing": "1" } });
     await expect(copySubscriptionPackageArtifact(fixture.packageRoot, fixture.script, fixture.artifactDirectory))
       .rejects.toThrow("Subscription package dependency is unavailable");
   });
 
   it("allows absent optional and optional peer dependencies", async () => {
-    const fixture = createFixture("console.log('optional-absent');\n", {
+    const fixture = await createFixture("console.log('optional-absent');\n", {
       optionalDependencies: { "fixture-optional": "1" },
       peerDependencies: { "fixture-peer": "1" },
       peerDependenciesMeta: { "fixture-peer": { optional: true } },
@@ -245,7 +255,7 @@ describe("sealed subscription package artifacts", () => {
   });
 
   it.skipIf(process.platform === "win32")("rejects a package link to code outside its declared closure", async () => {
-    const fixture = fixtureForSnapshot();
+    const fixture = await fixtureForSnapshot();
     const outside = join(fixture.root, "outside.cjs");
     writeFileSync(outside, "module.exports = 'outside';\n", { mode: 0o600 });
     symlinkSync(outside, join(fixture.packageRoot, "linked.cjs"));
@@ -256,7 +266,7 @@ describe("sealed subscription package artifacts", () => {
   it.runIf(process.platform === "win32" || process.platform === "darwin")("admits each verify through one access-rule probe regardless of file count", async () => {
     const counts: number[] = [];
     for (const size of [1, 8]) {
-      const fixture = fixtureForSnapshot();
+      const fixture = await fixtureForSnapshot();
       writePackage(fixture.packageRoot, "fixture-entry", Object.fromEntries(Array.from({ length: size }, (_, index) =>
         [join("lib", `part-${index}`, "index.cjs"), `module.exports = ${index};
 `])));
@@ -269,10 +279,10 @@ describe("sealed subscription package artifacts", () => {
   });
 });
 
-function fixtureForSnapshot() { return createFixture(); }
+async function fixtureForSnapshot() { return await createFixture(); }
 
-function fixtureWithDependency() {
-  const result = createFixture("console.log(require('fixture-dep'));\n", { dependencies: { "fixture-dep": "1" } });
+async function fixtureWithDependency() {
+  const result = await createFixture("console.log(require('fixture-dep'));\n", { dependencies: { "fixture-dep": "1" } });
   writePackage(join(result.modules, "fixture-dep"), "fixture-dep", { "index.cjs": "module.exports = 'dependency';\n" });
   return result;
 }

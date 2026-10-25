@@ -7,6 +7,7 @@
  * boundary.
  */
 import { join } from "node:path";
+import { claimPrivateOwnership } from "./codex-executable-location.js";
 import type { StreamEvent, ToolSchema } from "../engine/llm/types.js";
 import {
   ACP_SUBSCRIPTION_PROVIDER_IDS,
@@ -58,6 +59,7 @@ import {
   type CodexConversationTokenUsage,
 } from "./codex-conversation-runtime.js";
 import { SubscriptionToolBridge } from "./subscription-tool-bridge.js";
+import { catalogChatModelIds } from "../shared/model-catalog/vendor-models.js";
 import {
   AcpSubscriptionRuntimeClient,
   AcpSubscriptionRuntimeError,
@@ -427,6 +429,12 @@ export interface SubscriptionRuntimeServiceCreateOptions {
     options: ConstructorParameters<typeof ClaudeCodeConversationRuntime>[0],
   ) => ClaudeCodeConversationRuntime;
   readonly audit?: SubscriptionRuntimeAuditSink;
+  /**
+   * Test seam for a namespace whose directories do not exist. Production
+   * claims every runtime directory for the current account (see
+   * {@link claimPrivateOwnership}).
+   */
+  readonly claimRuntimeDirectories?: (paths: readonly string[]) => Promise<void>;
 }
 
 export interface GetSubscriptionRuntimeServiceOptions {
@@ -1123,9 +1131,19 @@ export class SubscriptionRuntimeService {
       namespace.childDir(claudeDirs.workspaceDir),
       namespace.childDir(claudeDirs.runtimeTempDir),
     ]);
+    const codexRuntimeDirectory = await namespace.childDir("codex-v3-home/runtime");
+    // These directories persist across launches. Claiming them on every start
+    // returns one an earlier elevated run left owned by Administrators to the
+    // current account, instead of refusing it from then on. One owned by any
+    // other account is refused unchanged, so start fails rather than adopt a
+    // directory someone else made.
+    await (options.claimRuntimeDirectories ?? claimPrivateOwnership)([
+      codexHome, codexRuntimeDirectory, codexSqlite, loginWorkspace, loginTemp, textWorkspace, textTemp,
+      claudeHome, claudeWorkspace, claudeTemp,
+    ]);
     const codexRuntimeLocator: CodexRuntimeLocator = options.codexRuntimeLocator ?? new CodexUserRuntimeLocator({
       runtimeHome: codexHome,
-      runtimeDirectory: await namespace.childDir("codex-v3-home/runtime"),
+      runtimeDirectory: codexRuntimeDirectory,
       sqliteHome: codexSqlite,
       workspaceDir: loginWorkspace,
       runtimeTempDir: loginTemp,
@@ -1342,6 +1360,14 @@ export class SubscriptionRuntimeService {
   }> {
     this.assertRunning();
     return this.withStableErrors(async () => {
+      if (isClaudeCodeSubscriptionProviderId(runtimeId)) {
+        // Model choices come from the catalog. No choice keeps the CLI's
+        // own default; account availability is enforced by the runtime.
+        return {
+          status: await this.getStatus(runtimeId),
+          models: catalogChatModelIds("claude").map((id) => ({ id, displayName: id, isDefault: false })),
+        };
+      }
       if (runtimeId !== "codex") return { status: await this.getStatus(runtimeId), models: [] };
       const result = await this.codexClient.listModels();
       return {
@@ -1390,13 +1416,13 @@ export class SubscriptionRuntimeService {
 
     let effectiveSelection = safeSelection;
     if (
-      safeSelection.provider === "codex"
+      (safeSelection.provider === "codex" || isClaudeCodeSubscriptionProviderId(safeSelection.provider))
       && (safeSelection.model !== undefined || safeFallbackSelection !== undefined)
     ) {
       // Persisted selections and transient sub-agent overrides bypass the
       // renderer IPC. Re-enumerate against the current subscription-scoped
       // catalog before forwarding either model ID.
-      const catalog = await this.listModels("codex");
+      const catalog = await this.listModels(safeSelection.provider);
       this.assertSafetyEpoch(effectiveSelection.provider, safetyEpoch);
       if (!catalog.status.capabilities.chat) {
         throw new SubscriptionRuntimeServiceError("subscription-chat-unavailable");
@@ -1435,6 +1461,7 @@ export class SubscriptionRuntimeService {
             workspaceDir: paths.workspaceDir,
             runtimeTempDir: paths.runtimeTempDir,
             bridge,
+            ...(effectiveSelection.model !== undefined ? { model: effectiveSelection.model } : {}),
           });
           return await this.trackVerifiedSession(runtime, safetyEpoch);
         }

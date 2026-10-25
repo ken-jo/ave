@@ -3429,7 +3429,7 @@ blocks may not.
   and certificate checks (`servername`, `:131`). Its trust store is
   `tls.getCACertificates("default")` plus `tls.getCACertificates("system")`,
   so a company root installed in the OS store keeps working (§9.2). Electron
-  44 ships Node 24.20.0, which has both. Each redirect hop is a new
+  44.9.3 ships Node 24.22.0, which has both. Each redirect hop is a new
   connection with its own lookup and checks.
 - **Proxies on the transports Ave owns are trusted beyond their socket.**
   When PAC routes a download or a git http(s) connection through an http(s)

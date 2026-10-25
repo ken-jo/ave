@@ -39,7 +39,7 @@ import {
 } from "./lib/electron-launch-options.mjs";
 import { findPackagedExecutable } from "./lib/packaged-executable-selection.mjs";
 import { packagedEscapeGateEnvironment } from "./lib/packaged-escape-gate-environment.mjs";
-import { cleanupOwnedWindowsProtocolHandler } from "./lib/windows-protocol-cleanup.mjs";
+import { assertNoWindowsProtocolClaim } from "./lib/windows-protocol-cleanup.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const FIXTURE = join(root, "src", "plugins", "isolation", "__tests__", "fixtures", "adversarial");
@@ -175,7 +175,7 @@ async function measureControl(executable, scratch) {
   const args = prepareElectronLaunchArgs([`--user-data-dir=${userDataDir}`], env, { profileName: "Ave" });
   if (process.platform === "linux") args.push("--disable-gpu", "--no-sandbox", "--password-store=gnome-libsecret");
   // A build signed with an identity the login keychain has never seen asks the
-  // user for keychain access the first time `safeStorage` runs, and that
+  // user for keychain access the first time Electron's secret storage runs, and that
   // prompt holds the main process until someone answers. The mock keychain is
   // Chromium's own test switch for exactly this; the measurement is about the
   // main process's API, not about the keychain.
@@ -191,9 +191,9 @@ async function measureControl(executable, scratch) {
     return reported;
   } finally {
     await app.close();
-    // The full application claims `ave://` in HKCU for this executable on
-    // Windows; remove exactly that claim so the host is left as it was.
-    cleanupOwnedWindowsProtocolHandler(executable);
+    // An isolated launch (temporary AVE_HOME and --user-data-dir) must not
+    // claim `ave://` in HKCU; prove it, and undo a claim if one appears.
+    assertNoWindowsProtocolClaim(executable);
   }
 }
 

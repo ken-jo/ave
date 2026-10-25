@@ -15,8 +15,10 @@
 // Stages: pre-commit | pre-push | manual. Bypass once with AVE_HOOKS_SKIP=1.
 //
 // Pre-push tiers (the log names the tier and why). Every pull request's CI
-// runs the full suite and the build, so a push runs them only on request; the
-// log line of every scoped tier says "full suite deferred to CI":
+// runs the build and the test scope scripts/run-ci-suite.mjs picks (full, or
+// affected tests only; a test-only diff is never run whole), so a push runs
+// the full suite only on request; the log line of every scoped tier says
+// "remaining tests and build deferred to CI, whose scope scripts/run-ci-suite.mjs picks":
 //   none          a new branch at a commit the remote's default or
 //                 integration/* branches already contain: no new commit
 //   docs-only     unconsumed documentation: document safety and policy checks
@@ -51,9 +53,10 @@
 //                 branch, a tag or other non-branch update, or a deletion:
 //                 typecheck gate, `bun run test`, `bun run build`,
 //                 `check:gate-core`
-// Set AVE_PREPUSH_FULL=1 to run the full tier for any push. Otherwise the full
-// suite and build of a scoped push run in the PR's CI, once at merge time on
-// the merged tree, and in the category PR's CI.
+// Set AVE_PREPUSH_FULL=1 to run the full tier for any push. Otherwise the build
+// of a scoped push runs in the PR's CI on the merged tree, and its test scope
+// there follows scripts/run-ci-suite.mjs (a test-only diff never runs the full
+// suite; a non-test-only category PR does).
 //
 // Host admission (pre-push-host-lock.mjs): a full run holds one exclusive
 // host-wide lock, so two full suites never share a machine; a fast or
@@ -64,7 +67,8 @@
 //
 // Multi-stage PRs: a sub-branch is cut from origin/integration/<category> and
 // merged into it by PR; the category branch reaches main through one PR whose
-// CI runs the full suite and build. A sub-branch push therefore runs only the
+// CI runs the full suite for non-test-only changes, and builds every source
+// change. A sub-branch push therefore runs only the
 // checks scoped to its own commits: a new branch is diffed against the
 // closest merge-base with a live default or integration/* tip on the remote
 // (findNewBranchBase), not only the default branch. A direct push TO an
@@ -105,7 +109,7 @@ import { withElectronNativeRebuildLock } from "../lib/electron-native-modules.mj
 import { ensureElectronAbiBetterSqlite3 } from "./node-native-abi.mjs";
 import { readJsonFile } from "../lib/knip-baseline.mjs";
 import { findTlsBypass, isTlsBypassScanTarget } from "../lib/tls-bypass-patterns.mjs";
-import { runCommand, spawnSyncPortable as spawnSync } from "./spawn-command.mjs";
+import { runCommand, splitArgumentsWithinBudget, spawnSyncPortable as spawnSync } from "./spawn-command.mjs";
 import {
   APP_TYPECHECK_GATE_SCRIPTS,
   getMissingPackageScripts,
@@ -1101,27 +1105,52 @@ function runAppTargetedVitestChecks(dir, testFiles, supportTestFiles = []) {
   ensureAppTestRuntimeAbi(dir);
   ensureWindowsJobLauncher(dir);
   const vitestArgs = targetTestFiles.map((file) => `./${file}`);
-  run(bun, ["run", "test:vitest", "--", "run", ...vitestArgs], dir, withoutGitContext());
+  runVitestChunks(bun, dir, vitestArgs, (chunk) => ["run", "test:vitest", "--", "run", ...chunk]);
 }
 
+// vitestArgs is the command (`run` or `related`), its flags, then the file
+// arguments; the file arguments may span several Vitest runs (runVitestChunks),
+// each with its own JSON report, and the zero-test check applies to their sum.
 function runVitestWithReport(bun, dir, vitestArgs, emptyMessage) {
+  const [mode, ...rest] = vitestArgs;
+  const flags = rest.filter((arg) => arg.startsWith("--"));
+  const files = rest.filter((arg) => !arg.startsWith("--"));
   const reportDirectory = mkdtempSync(join(tmpdir(), "ave-related-check-"));
-  const reportPath = join(reportDirectory, "report.json");
+  // Fixed-width names: every chunk's command line is measured with its own path.
+  const reportPath = (index) => join(reportDirectory, `report-${String(index).padStart(4, "0")}.json`);
   try {
-    run(
-      bun,
-      ["run", "test:vitest", "--", ...vitestArgs.slice(0, 1), "--reporter=default", "--reporter=json", `--outputFile=${reportPath}`, ...vitestArgs.slice(1)],
-      dir,
-      withoutGitContext()
-    );
-    const report = readJsonFile(reportPath);
-    if (!Number.isSafeInteger(report.numTotalTests) || report.numTotalTests <= 0 ||
-        !Number.isSafeInteger(report.numPassedTests) || report.numPassedTests <= 0) {
-      throw new Error(emptyMessage);
+    const chunks = runVitestChunks(bun, dir, files, (chunk, index) =>
+      ["run", "test:vitest", "--", mode, "--reporter=default", "--reporter=json", `--outputFile=${reportPath(index)}`, ...flags, ...chunk]);
+    let total = 0;
+    let passed = 0;
+    for (const index of chunks.keys()) {
+      const report = readJsonFile(reportPath(index));
+      if (!Number.isSafeInteger(report.numTotalTests) || !Number.isSafeInteger(report.numPassedTests)) {
+        throw new Error(emptyMessage);
+      }
+      total += report.numTotalTests;
+      passed += report.numPassedTests;
     }
+    if (total <= 0 || passed <= 0) throw new Error(emptyMessage);
   } finally {
     rmSync(reportDirectory, { recursive: true, force: true });
   }
+}
+
+// Runs `bun <buildArgs(chunk, index)>` once per chunk of fileArgs that fits the
+// command-line budget (splitArgumentsWithinBudget): the chunks together carry
+// exactly fileArgs, and the first failing chunk fails the check. A file list
+// over the budget used to reach Windows as one spawn and fail with
+// ENAMETOOLONG. Returns the chunks.
+function runVitestChunks(bun, dir, fileArgs, buildArgs) {
+  const chunks = splitArgumentsWithinBudget(bun, fileArgs, buildArgs);
+  for (const [index, chunk] of chunks.entries()) {
+    if (chunks.length > 1) {
+      console.log(`[checks] Vitest chunk ${index + 1}/${chunks.length}: ${chunk.length} of ${fileArgs.length} file argument(s)`);
+    }
+    run(bun, buildArgs(chunk, index), dir, withoutGitContext());
+  }
+  return chunks;
 }
 
 // lockSuites: the suites whose trigger paths changed. relatedSelection: the
@@ -1161,7 +1190,7 @@ function runAppFastSourceChecksHoldingSlot(dir, bun, lockSuites, testFiles, rela
   const direct = [...new Set([...lockSuites, ...testFiles])];
   const directArgs = direct.map((file) => `./${file}`);
   if (directArgs.length > 0) {
-    run(bun, ["run", "test:vitest", "--", "run", ...directArgs], dir, withoutGitContext());
+    runVitestChunks(bun, dir, directArgs, (chunk) => ["run", "test:vitest", "--", "run", ...chunk]);
   }
   if (relatedSelection.sources.length === 0) return;
   if (relatedSelection.narrowed.length === 0) {
@@ -1189,19 +1218,27 @@ function runAppFastSourceChecksHoldingSlot(dir, bun, lockSuites, testFiles, rela
 function getFastSourceRelatedSelection(dir, relatedFiles, consumerModules = []) {
   const discovered = [...relatedFiles, ...consumerModules];
   if (discovered.length === 0) return { tests: [], narrowed: [], sources: [], untestedConsumers: [], untestedModules: [] };
-  const result = spawnSync(commands.node, [join(dir, "scripts/hooks/pre-push-related-tests.mjs"), ...discovered], {
-    cwd: dir,
-    env: withoutGitContext(),
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-    maxBuffer: 16 * 1024 * 1024,
-  });
-  if (result.error || result.status !== 0) return { reason: "related test discovery failed" };
-  let coverage;
-  try {
-    coverage = JSON.parse(result.stdout);
-  } catch {
-    return { reason: "related test discovery returned an invalid report" };
+  // Discovery is per source, so the chunks' reports concatenate to the report
+  // of one spawn over every source.
+  const discoveryScript = join(dir, "scripts/hooks/pre-push-related-tests.mjs");
+  const coverage = [];
+  for (const chunk of splitArgumentsWithinBudget(commands.node, discovered, (sources) => [discoveryScript, ...sources])) {
+    const result = spawnSync(commands.node, [discoveryScript, ...chunk], {
+      cwd: dir,
+      env: withoutGitContext(),
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    if (result.error || result.status !== 0) return { reason: "related test discovery failed" };
+    let report;
+    try {
+      report = JSON.parse(result.stdout);
+    } catch {
+      return { reason: "related test discovery returned an invalid report" };
+    }
+    if (!Array.isArray(report)) return { reason: "related test coverage could not be resolved" };
+    coverage.push(...report);
   }
   // Every source may have no related test here; the report's shape and paths
   // are still validated.
@@ -1432,7 +1469,7 @@ if (stage === "pre-commit") {
       console.log(
         `[checks] related tests bounded: ${source} reaches ${related} test file(s); running its ${direct} direct importer(s) ` +
           `and ${keptLockSuites} lock suite(s) ` +
-          `(over ${RELATED_TEST_BOUND} related files in total; the category PR's CI runs the rest)`
+          `(over ${RELATED_TEST_BOUND} related files in total; CI selects the rest)`
       );
     }
     if (classification.documentationEntries.length > 0) {

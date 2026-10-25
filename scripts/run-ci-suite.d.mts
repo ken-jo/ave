@@ -25,9 +25,13 @@ export declare function selectCiTests(input: {
 export declare function runsRepoCodeOutOfProcess(text: string): boolean;
 export declare function testRunsRepoCodeOutOfProcess(testPath: string, readText: (path: string) => string | null): boolean;
 export declare function runsCoverage(eventName: string | undefined): boolean;
-export declare function ciSuiteArguments(plan: CiSuitePlan, coverage: boolean): string[];
+export const FULL_RUN_SHARDS: number;
+export declare function ciShardCount(plan: CiSuitePlan, coverage: boolean): number;
+export declare function parseCiShard(value: string | undefined): string | null;
+export declare function readPlanFile(text: string): CiSuitePlan;
+export declare function ciSuiteArguments(plan: CiSuitePlan, coverage: boolean, shard?: string | null): string[];
 export declare function isCategoryMergeToMain(headRef: string | undefined, baseRef: string | undefined): boolean;
 export declare function planCiSuite(
   eventName: string | undefined,
-  refs?: { headRef?: string; baseRef?: string },
+  refs?: { headRef?: string; baseRef?: string; ref?: string; before?: string },
 ): CiSuitePlan;

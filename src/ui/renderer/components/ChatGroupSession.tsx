@@ -1,9 +1,10 @@
+import type { RewindMode } from "../../../shared/code-rewind.js";
 import type { ActiveChatModel } from "../../../shared/active-chat-model.js";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
 import { parkComposerDraft, takeComposerDraft } from "../state/composer-draft-store.js";
 import type { ResolvedOutputTokenLimit, RouteInputModalities } from "../../../shared/context-budget.js";
 import type { ModelPricingRoute } from "../../../shared/model-pricing.js";
-import { PanelRightClose, PanelRightOpen } from "lucide-react";
+import { GalleryVerticalEnd, PanelRightClose, PanelRightOpen } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../../components/ui/tooltip.js";
 import { TEST_IDS } from "../../../shared/test-ids.js";
@@ -201,6 +202,8 @@ export interface ChatGroupSessionProps {
     currentSessionId: string;
   }) => ReactNode;
   panelOpen: boolean;
+  thumbnailOpen: boolean;
+  onThumbnailOpenChange: (open: boolean) => void;
   /** Is this the tile the window is focused on? It adopts cards no tile holds. */
   focused: boolean;
   /**
@@ -231,7 +234,7 @@ export interface ChatGroupSessionProps {
  */
 export function ChatGroupSession({
   chatGroupId, api: windowApi, registry, env, children, panelOpen, focused, hidden,
-  paneHidden, onSidePanelOpenChange,
+  paneHidden, onSidePanelOpenChange, thumbnailOpen, onThumbnailOpenChange,
 }: ChatGroupSessionProps) {
   const { t } = useTranslation();
 
@@ -300,11 +303,12 @@ export function ChatGroupSession({
   // it. `shown` is combined here with what only the tile knows — whether its
   // panel is open and its conversation drawn — before the window reads it.
   const [sideChatSurface, setSideChatSurface] = useState<SideChatSurface | null>(null);
+  const [columnsVisibility, setColumnsVisibility] = useState({ thumbnailHiddenForWidth: false, panelHiddenForWidth: false });
   const sideChat = useMemo<SideChatSurface | null>(
     () => (sideChatSurface === null
       ? null
-      : { ...sideChatSurface, shown: sideChatSurface.shown && panelOpen && !hidden }),
-    [sideChatSurface, panelOpen, hidden],
+      : { ...sideChatSurface, shown: sideChatSurface.shown && panelOpen && !columnsVisibility.panelHiddenForWidth && !hidden }),
+    [sideChatSurface, panelOpen, columnsVisibility.panelHiddenForWidth, hidden],
   );
   const ownedChildSessionIds = useMemo(
     () => new Set(
@@ -533,15 +537,15 @@ export function ChatGroupSession({
     await sessionFork(target.messageId, entryIdx, truncateToEntry);
   }, [entries, sessionFork, truncateToEntry]);
 
-  // Rewind: the message's own input goes back to the composer and everything
-  // from it onward is discarded, in this session.
+  // Conversation rewind returns the message's own input to the composer and
+  // discards everything from it onward. Code-only keeps the transcript intact.
   //
   // The host is asked FIRST and hands back the input to restore. It owns that
   // text because the transcript entry only ever held a flattened rendering of
   // the row — and it is the host that knows when a row cannot be handed back
   // whole (an image it cannot re-stage, a resource fence that must not be
   // folded into the user's own body), in which case nothing is cut at all.
-  const handleReturnHere = useCallback(async (entryIdx: number): Promise<{ ok: boolean }> => {
+  const handleReturnHere = useCallback(async (entryIdx: number, mode: RewindMode = "conversation"): Promise<{ ok: boolean }> => {
     const entry = entries[entryIdx];
     if (entry?.kind !== "user") return { ok: false };
     if (entry.messageId === undefined) {
@@ -550,15 +554,18 @@ export function ChatGroupSession({
       }));
       return { ok: false };
     }
-    const res = await api.chatRewindTo(entry.messageId);
+    const res = await api.chatRewindTo(entry.messageId, mode);
     if (!res.ok) {
       // The wire code is a kebab-case token; formatIpcError owns turning it
       // into a sentence, the same as every other refusal surfaced here.
       appendSystemEntry(
-        t("chatView.returnHereFailed", { error: formatIpcError(res.error, undefined) }),
+        t("chatView.returnHereFailed", { error: res.error === "code-restore-conflict"
+          ? t("codeRewind.conflict", { files: (res.conflictingFiles ?? []).join("\n") })
+          : formatIpcError(res.error, undefined) }),
       );
       return { ok: false };
     }
+    if (mode === "code") return { ok: true };
     // The bubble goes too: its text is in the composer now, and leaving it in
     // the transcript would read as a message that is still part of the thread.
     truncateToEntry(entryIdx - 1);
@@ -894,33 +901,55 @@ export function ChatGroupSession({
     [t, currentSessionId, env, handleImportAndLoad],
   );
 
-  // The one control this pane owns as a TILE rather than as content: the work
-  // panel is the conversation's, so it opens from the conversation's own frame.
-  const panelLabel = panelOpen ? t("chatPreviewRail.close") : t("chatPreviewRail.open");
+  // Each column belongs to this conversation and opens from its own frame.
+  const panelVisible = panelOpen && !columnsVisibility.panelHiddenForWidth;
+  const panelLabel = columnsVisibility.panelHiddenForWidth ? t("chatPreviewRail.hiddenForWidth")
+    : panelVisible ? t("chatPreviewRail.close") : t("chatPreviewRail.open");
   // The side chat holds a card the user cannot see from here — the panel is
   // closed, or another tab is up. The window decided that; the toggle only
   // carries the dot, because opening the panel is how the user reaches it.
   const sideChatPendingAnswer =
     sideChat !== null && env.pendingAnswers.sideChatSessionIds.has(sideChat.sessionId);
+  const thumbnailVisible = thumbnailOpen && !columnsVisibility.thumbnailHiddenForWidth;
+  const thumbnailLabel = t(columnsVisibility.thumbnailHiddenForWidth ? "chatThumbnails.hiddenForWidth"
+    : thumbnailVisible ? "chatThumbnails.close" : "chatThumbnails.open");
   const trailing = (
+    <>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button variant="ghost" size="icon" className={`${HEADER_BUTTON_CLASS} aria-disabled:cursor-not-allowed`}
+          onClick={() => {
+            if (!columnsVisibility.thumbnailHiddenForWidth) onThumbnailOpenChange(!thumbnailOpen);
+          }} title={thumbnailLabel}
+          aria-disabled={columnsVisibility.thumbnailHiddenForWidth}
+          aria-label={thumbnailLabel} aria-pressed={thumbnailVisible} data-testid={TEST_IDS.paneThumbnailToggle}>
+          <GalleryVerticalEnd className="h-4 w-4" />
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom">{thumbnailLabel}</TooltipContent>
+    </Tooltip>
     <Tooltip>
       <TooltipTrigger asChild>
         <Button
           variant="ghost"
           size="icon"
-          className={`relative ${HEADER_BUTTON_CLASS}`}
-          onClick={() => onSidePanelOpenChange(!panelOpen)}
+          className={`relative ${HEADER_BUTTON_CLASS} aria-disabled:cursor-not-allowed`}
+          onClick={() => {
+            if (!columnsVisibility.panelHiddenForWidth) onSidePanelOpenChange(!panelOpen);
+          }}
           title={panelLabel}
           aria-label={panelLabel}
-          aria-pressed={panelOpen}
+          aria-pressed={panelVisible}
+          aria-disabled={columnsVisibility.panelHiddenForWidth}
           data-testid={TEST_IDS.panePanelToggle}
         >
-          {panelOpen ? <PanelRightClose className="h-4 w-4" /> : <PanelRightOpen className="h-4 w-4" />}
+          {panelVisible ? <PanelRightClose className="h-4 w-4" /> : <PanelRightOpen className="h-4 w-4" />}
           {sideChatPendingAnswer ? <PendingAnswerDot testId="pane-panel-toggle-pending-answer" /> : null}
         </Button>
       </TooltipTrigger>
       <TooltipContent side="bottom">{panelLabel}</TooltipContent>
     </Tooltip>
+    </>
   );
 
   const chatContextValue = useMemo<ChatContextValue>(() => ({
@@ -996,6 +1025,8 @@ export function ChatGroupSession({
         onSlashPickerOpenChange={env.onSlashPickerOpenChange}
         statusBar={tileStatusBar}
         onAttachmentWarning={handleAttachmentWarning}
+        thumbnailOpen={thumbnailOpen}
+        onColumnsVisibilityChange={setColumnsVisibility}
         sidePanelOpen={panelOpen}
         onSidePanelOpenChange={onSidePanelOpenChange}
         sideChatOpenRequest={env.sideChatOpenRequest?.chatGroupId === chatGroupId

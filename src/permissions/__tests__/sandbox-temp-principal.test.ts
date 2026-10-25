@@ -68,6 +68,9 @@ describe("a principal's temp directory name", () => {
   it("is the kind and the lowercase hex of the id, one name per id whatever it holds", () => {
     expect(sandboxTempPrincipalDirName({ kind: "plugin", id: "a/b" })).toBe("plugin-612f62");
     expect(sandboxTempPrincipalDirName({ kind: "mcp", id: ".." })).toBe("mcp-2e2e");
+    expect(sandboxTempPrincipalDirName({ kind: "hook", id: "same" })).toBe("hook-73616d65");
+    expect(sandboxTempPrincipalDirName({ kind: "hook", id: "same" }))
+      .not.toBe(sandboxTempPrincipalDirName({ kind: "plugin", id: "same" }));
     // Case-insensitive filesystems: two ids that differ only in case keep two names.
     expect(sandboxTempPrincipalDirName({ kind: "plugin", id: "A" }))
       .not.toBe(sandboxTempPrincipalDirName({ kind: "plugin", id: "a" }));

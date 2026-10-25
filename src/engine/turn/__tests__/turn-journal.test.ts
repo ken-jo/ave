@@ -293,7 +293,12 @@ describe("parallel result append cost", () => {
         handle.appendFile = async (...appendArgs) => {
           const [data, options] = appendArgs;
           const encoding = typeof options === "string" ? options : options?.encoding;
-          const payload = typeof data === "string" ? Buffer.from(data, encoding ?? "utf8") : Buffer.from(data);
+          if (typeof data !== "string" && !ArrayBuffer.isView(data)) {
+            throw new TypeError("Expected transcript text or bytes");
+          }
+          const payload = typeof data === "string"
+            ? Buffer.from(data, encoding ?? "utf8")
+            : Buffer.from(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
           await appendFile(...appendArgs);
           const write = { payload, durable: false };
           writes.push(write);

@@ -19,14 +19,14 @@ describe("agent-plugin component authority", () => {
   const withHook = (handler: Record<string, unknown>, event = "PreToolUse") => [
     ...packageFiles(),
     data("server/hook.js", "process.stdout.write('{}')"),
-    data("ai.agent-connector.ave/hooks.json", JSON.stringify({ version: 1, hooks: { [event]: [{ matcher: "read_*", hooks: [handler] }] } })),
+    data("ai.agent-connector.ave/hooks.json", JSON.stringify({ version: 1, hooks: { [event]: [{ matcher: "^read_.*$", hooks: [handler] }] } })),
   ];
 
   it("derives a hook digest from symbolic argv, env, timeout, and referenced code", () => {
     const files = withHook({ type: "command", command: ["node", "${PLUGIN_ROOT}/server/hook.js", "${PLUGIN_DATA}/state.json", "literal with spaces"],
       env: { STATE: "${PLUGIN_DATA}/state.json" }, timeoutMs: 1200 });
     const [hook] = deriveAgentPluginComponents(files).hooks;
-    expect(hook).toMatchObject({ event: "pre", matcher: "read_*", timeoutMs: 1200,
+    expect(hook).toMatchObject({ event: "pre", matcher: "^read_.*$", timeoutMs: 1200,
       command: ["node", "${PLUGIN_ROOT}/server/hook.js", "${PLUGIN_DATA}/state.json", "literal with spaces"],
       env: { STATE: "${PLUGIN_DATA}/state.json" } });
     const changed = deriveAgentPluginComponents(files.map((file) => file.path === "server/hook.js" ? data(file.path, "changed") : file));

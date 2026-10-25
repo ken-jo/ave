@@ -1,5 +1,5 @@
 /** Neutral async deadline boundary with a linked AbortController. */
-export type AbortableDeadlineTerminationReason =
+type AbortableDeadlineTerminationReason =
   | "deadline"
   | "caller-abort"
   | "error";

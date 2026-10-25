@@ -388,19 +388,6 @@ export class McpOAuthSession {
     return outcome.value;
   }) as typeof fetch;
 
-  /**
-   * Token-endpoint fetch that carries the canonical RFC 8707 resource. The SDK
-   * serializes a `URL` (which always gains a trailing slash for an origin), so
-   * the resource is set on the form body here instead.
-   */
-  private tokenFetch(resource: string): typeof fetch {
-    return (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-      if (!(init?.body instanceof URLSearchParams)) throw new Error(AUTH_FAILED);
-      init.body.set("resource", resource);
-      return this.authFetch(input, init);
-    }) as typeof fetch;
-  }
-
   private async discover(interactive = false): Promise<Discovery> {
     const allowPrivate = this.config.allowPrivateNetworks === true;
     let resourceMetadataUrl: URL | undefined;
@@ -544,8 +531,7 @@ export class McpOAuthSession {
       this.assertActive();
       const state = randomBytes(32).toString("base64url");
       const authorization = await startAuthorization(discovery.issuer, { metadata: discovery.metadata, clientInformation: client,
-        redirectUrl: catcher.redirectUri, state, scope: discovery.scope });
-      authorization.authorizationUrl.searchParams.set("resource", discovery.resource);
+        redirectUrl: catcher.redirectUri, state, scope: discovery.scope, resource: discovery.resource });
       await ensurePublicHttpUrl(authorization.authorizationUrl.href, {
         allowPrivateNetworks: this.config.allowPrivateNetworks === true,
         allowLoopback: this.config.allowPrivateNetworks === true,
@@ -568,7 +554,7 @@ export class McpOAuthSession {
       if (!params.code || params.error !== undefined) throw new Error(AUTH_FAILED);
       const tokens = await exchangeAuthorization(discovery.issuer, { metadata: discovery.metadata, clientInformation: client,
         authorizationCode: params.code, codeVerifier: authorization.codeVerifier, redirectUri: catcher.redirectUri,
-        fetchFn: this.tokenFetch(discovery.resource) });
+        resource: discovery.resource, fetchFn: this.authFetch });
       this.assertActive();
       // Refuse a malformed token response before it can displace a working grant.
       validateTokens(tokens);
@@ -639,7 +625,7 @@ export class McpOAuthSession {
       credentials.resourceMetadataUrl = discovery.resourceMetadataUrl;
       credentials.resourceMetadataFromChallenge = discovery.resourceMetadataFromChallenge;
       const tokens = await refreshAuthorization(discovery.issuer, { metadata: discovery.metadata, clientInformation: credentials.client,
-        refreshToken, fetchFn: this.tokenFetch(discovery.resource) });
+        refreshToken, resource: discovery.resource, fetchFn: this.authFetch });
       if (!isCurrent()) return Boolean(this.credentials?.tokens);
       const accepted = this.acceptTokens(tokens);
       acceptedGeneration = this.credentialGeneration;

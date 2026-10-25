@@ -6,6 +6,7 @@
  * crashing.
  */
 import { vi, type Mock } from "vitest";
+import type { RewindMode, RewindResult } from "../../src/shared/code-rewind.js";
 import { MAIN_CHAT_GROUP_ID } from "../../src/contract/app-contract.js";
 import { fakeLlmSettings } from "../../src/shared/__tests__/fake-llm-settings.js";
 import { resolveActiveChatModel, type ActiveChatModelSettings } from "../../src/shared/active-chat-model.js";
@@ -21,7 +22,7 @@ import type { SessionFamily, SessionListKindFilter } from "../../src/shared/sess
 import { terminalSessionFixture } from "../../src/__tests__/support/terminal-session-fixtures.js";
 import { browserControlFixture } from "../../src/__tests__/support/browser-control-fixture.js";
 import type { TerminalDataEvent, TerminalRef, TerminalSessionRef } from "../../src/shared/terminal-session.js";
-import type { BrowserTabControlState } from "../../src/shared/browser-surface.js";
+import type { BrowserTabControlState, SessionTabBindingsState } from "../../src/shared/browser-surface.js";
 
 export type MockAveApi = Record<string, Mock>;
 
@@ -244,7 +245,9 @@ function makeTerminalDouble() {
 function makeBrowserTabsDouble() {
   const opListeners = new Set<(request: unknown) => void>();
   const controlListeners = new Set<(state: BrowserTabControlState) => void>();
+  const bindingListeners = new Set<(state: SessionTabBindingsState) => void>();
   let state: BrowserTabControlState = { revision: 0, tabs: [] };
+  let bindingState: SessionTabBindingsState = { revision: 0, bindings: [] };
   return {
     bindTab: vi.fn(async () => ({ ok: true as const })),
     stop: vi.fn(async () => ({ ok: true as const })),
@@ -253,6 +256,11 @@ function makeBrowserTabsDouble() {
     pausePopup: vi.fn(async () => ({ ok: true as const })),
     resumePopup: vi.fn(async () => ({ ok: true as const })),
     getState: vi.fn(async () => state),
+    getSessionBindings: vi.fn(async () => bindingState),
+    onSessionBindingsChanged: vi.fn((listener: (state: SessionTabBindingsState) => void) => {
+      bindingListeners.add(listener);
+      return () => { bindingListeners.delete(listener); };
+    }),
     onTabOp: vi.fn((listener: (request: unknown) => void) => {
       opListeners.add(listener);
       return () => { opListeners.delete(listener); };
@@ -269,6 +277,10 @@ function makeBrowserTabsDouble() {
     emitBrowserControl: (agentControlledTabIds: string[]) => {
       state = browserControlFixture(agentControlledTabIds, "agent-active", state.revision + 1);
       for (const listener of [...controlListeners]) listener(state);
+    },
+    emitSessionBindingsChanged: (bindings: SessionTabBindingsState["bindings"]) => {
+      bindingState = { revision: bindingState.revision + 1, bindings };
+      for (const listener of [...bindingListeners]) listener(bindingState);
     },
   };
 }
@@ -647,7 +659,8 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
     // Main hands back the input to restore, resolved from the row it cut, so
     // the double resolves it from the seeded history the same way rather than
     // returning an empty string the composer would silently accept.
-    chatRewindTo: vi.fn(async (messageId: string) => {
+    chatRewindTo: vi.fn(async (messageId: string, mode?: RewindMode): Promise<RewindResult> => {
+      if (mode === "code") return { ok: true, text: "" };
       const resolved = await history;
       const row = withSeededMessageIds(resolved.messages).find(
         (m): m is Record<string, unknown> =>

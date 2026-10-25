@@ -23,6 +23,7 @@
 //   - restarts electron when dist/src/main/main.js changes (debounced)
 
 import { spawn, spawnSync } from "node:child_process";
+import { windowsPowerShellEnv } from "./lib/windows-powershell-env.mjs";
 import { createHash } from "node:crypto";
 import { existsSync, watch, copyFileSync, mkdirSync, readFileSync } from "node:fs";
 import { waitForAllFirstBuilds } from "./lib/dev-watcher-gate.mjs";
@@ -104,7 +105,7 @@ function cleanupStaleWindowsDevProcesses(userDataDir) {
     const result = spawnSync(
       "powershell.exe",
       ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
-      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env: windowsPowerShellEnv() },
     );
     // PowerShell 자체 실패 (spawn 에러 / 비정상 exit) 는 stderr 만 찍히고
     // status != 0 으로 떨어진다. 기존엔 stdout+stderr 를 합쳐 "killed=N"
@@ -155,7 +156,7 @@ function pruneDuplicateMainElectronProcesses(userDataDir, keepPid) {
     const result = spawnSync(
       "powershell.exe",
       ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
-      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env: windowsPowerShellEnv() },
     );
     // stale-cleanup 과 같은 이유로 status / error 우선 검사 — PS 가 stderr
     // 로 에러 메시지를 뱉었을 때 "pruned (<error>)" 로 거짓 양성 로깅되는
@@ -559,11 +560,6 @@ function launchElectron() {
       // Ensure pino logger selects pino-pretty in dev runs. NODE_ENV=production
       // gates JSON output; dev runs use "development" so colorized text is used.
       NODE_ENV: process.env.NODE_ENV ?? "development",
-      // The launcher already passes --no-sandbox via shared Windows-safe flags
-      // for the foreground dev process; mirror that into the ave:// protocol
-      // command we register so OS-launched second instances can also boot on
-      // corp/VDI machines whose Chromium sandbox init fails without the flag.
-      AVE_WIN_NO_SANDBOX: process.env.AVE_WIN_NO_SANDBOX,
     };
     return prepareElectronLaunchEnv(e);
   })();
