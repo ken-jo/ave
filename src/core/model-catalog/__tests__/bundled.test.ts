@@ -1,14 +1,4 @@
-/**
- * Boot's catalog install, without the test setup's copy.
- *
- * Every test worker installs the bundled snapshot in a setup file
- * (`src/__tests__/vitest-model-catalog.ts`), which would hide a boot that
- * resolved a model before installing one. This file empties the process's
- * catalog first, so it sees what a fresh process sees: a read throws, boot's
- * own install step (the dynamic import and verification the main bundle
- * ships) makes it answer, and `bootstrapCoreServices` runs that step before
- * the first service it constructs.
- */
+/** Clear the test-installed catalog so missing boot installation cannot pass unnoticed. */
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -49,7 +39,6 @@ describe("boot's model catalog install", () => {
     const body = source.slice(source.indexOf("export async function bootstrapCoreServices"));
     const install = body.indexOf("await installBootModelCatalog();");
     expect(install).toBeGreaterThan(0);
-    // Everything before it is the log sink, which resolves no model.
     const firstConstruction = body.search(/\bnew [A-Z]\w*\(/);
     expect(firstConstruction).toBeGreaterThan(install);
     expect(body.slice(0, install)).not.toMatch(/settingsService|resolve\w*ContextWindow|activeModelCatalog/);

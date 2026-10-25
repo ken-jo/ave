@@ -1,9 +1,4 @@
-/**
- * Regression guard for standard edit shortcuts in the application menu.
- *
- * These are main-process menu wiring guarantees, so source inspection is
- * intentional: the application-menu builders live in `src/main/app-menu.ts`.
- */
+/** Source inspection avoids importing the main-process menu builders. */
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 

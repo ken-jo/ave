@@ -19,7 +19,7 @@ describe("stripUntrustedTags", () => {
   });
 
   it("preserves user-content that happens to contain XML-like strings", () => {
-    // 사용자 컨텐츠 안의 일반 XML/HTML 흔적은 건드리지 않음 (less aggressive).
+    // Preserve ordinary XML and HTML within user content.
     const input =
       "- 본문: <untrusted-body><tag>example</tag></untrusted-body>";
     expect(stripUntrustedTags(input)).toBe("- 본문: <tag>example</tag>");
@@ -51,8 +51,7 @@ describe("stripUntrustedTags", () => {
   });
 
   it("is case-sensitive (XML convention) — does not strip uppercase variants", () => {
-    // wrapUntrusted 는 항상 lowercase 만 생성. 대문자 변형은 사용자 content 일
-    // 가능성이 높으므로 보존.
+    // Only lowercase tags are host-generated; preserve uppercase user content.
     const input = "<UNTRUSTED-TITLE>x</UNTRUSTED-TITLE>";
     expect(stripUntrustedTags(input)).toBe(input);
   });

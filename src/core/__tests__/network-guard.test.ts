@@ -1,9 +1,3 @@
-/**
- * NetworkGuard (Tier A2) unit tests.
- *
- * No live HTTP or DNS is performed. `dns.lookup` is stubbed via
- * `vi.mock` and `fetch` (for the redirect test) via `vi.stubGlobal`.
- */
 import {
   describe,
   it,
@@ -13,7 +7,6 @@ import {
   afterEach,
 } from "vitest";
 
-// ─── dns mock — configurable per test via `lookupMock` ──────────────
 type LookupResult = { address: string; family: number };
 
 const lookupMock = vi.fn<
@@ -26,7 +19,6 @@ vi.mock("node:dns", () => ({
   },
 }));
 
-// Module must be imported AFTER the mock.
 import {
   isGloballyRoutableAddress,
   NetworkGuardError,
@@ -141,7 +133,6 @@ describe("ensurePublicHttpUrl — IP literal blocking", () => {
   });
 
   it("rejects a host that resolves to a private IPv4 (DNS-based bypass)", async () => {
-    // Attacker-controlled domain returns 10.0.0.5 via DNS.
     lookupMock.mockResolvedValueOnce([{ address: "10.0.0.5", family: 4 }]);
     await expect(
       ensurePublicHttpUrl("https://evil.example.com/"),
@@ -295,7 +286,6 @@ describe("ensurePublicHttpUrl — IPv6", () => {
   });
 
   it("accepts a public IPv6 literal without calling DNS", async () => {
-    // 2606:4700:4700::1111 is a Cloudflare public resolver — literal only.
     const url = await ensurePublicHttpUrl("http://[2606:4700:4700::1111]/");
     expect(url.hostname).toBe("[2606:4700:4700::1111]");
     expect(lookupMock).not.toHaveBeenCalled();
@@ -310,12 +300,7 @@ describe("ensurePublicHttpUrl — IPv6", () => {
 });
 
 describe("isGloballyRoutableAddress — the IANA special-purpose registry", () => {
-  // These ranges were reachable before the transport's classifier and the
-  // guard's were merged: the guard knew RFC1918 and little else, so a
-  // redirect or a DNS answer landing on multicast, on reserved space, or on
-  // documentation address space passed as "public". None of them can carry an
-  // HTTP conversation with a host on the internet, which is what makes them
-  // useful to an attacker steering a request and useless to a real caller.
+  // Non-public ranges cannot be legitimate public HTTP destinations, including multicast, reserved, and documentation space.
   it.each([
     ["0.0.0.0", "this network"],
     ["192.0.0.1", "IETF protocol assignments"],
@@ -361,10 +346,7 @@ describe("isGloballyRoutableAddress — the IANA special-purpose registry", () =
     expect(isGloballyRoutableAddress("2606:4700:4700::1111")).toBe(true);
   });
 
-  // The old IPv6 test was textual — `lower === "::1"`, `startsWith("fc")` —
-  // and an address is not obliged to arrive in its compressed form. A DNS
-  // answer is not normalised the way a URL literal is, so the fully expanded
-  // loopback address reached the guard as written and read as public.
+  // DNS may return expanded IPv6 spellings; classification must not depend on URL normalization.
   it("recognises the expanded form of an address, not just the compressed one", () => {
     expect(isGloballyRoutableAddress("0:0:0:0:0:0:0:1")).toBe(false);
     expect(isGloballyRoutableAddress("fe80:0:0:0:0:0:0:1")).toBe(false);
@@ -377,10 +359,7 @@ describe("isGloballyRoutableAddress — the IANA special-purpose registry", () =
 });
 
 describe("ensurePublicHttpUrl — reserved space is not reachable by opting in", () => {
-  // `allowPrivateNetworks` names the user's own LAN, which is a destination
-  // with a legitimate yes. It must not double as a key to every block the
-  // registry lists, or one option would quietly widen the guard from "reach
-  // my network" to "reach anything".
+  // Private-network consent must not allow every reserved address range.
   it.each(["224.0.0.1", "240.0.0.1", "192.0.2.1"])(
     "keeps %s blocked even with private network access enabled",
     async (address) => {
@@ -425,14 +404,7 @@ describe("ensurePublicHttpUrl — syntactic rejects", () => {
   });
 });
 
-/**
- * The ambient `fetch`, as these tests require it to be: unreachable.
- *
- * The guard takes its transport as a required argument and must never touch
- * the global. Stubbing the global with the SAME mock the test injects would
- * hide a regression back to the ambient stack — the call counts would match
- * either way. A throwing stub makes that regression fail instead of pass.
- */
+/** Keep ambient fetch throwing so transport-injection regressions cannot pass through the same mock. */
 const ambientFetchIsOffLimits = (() => {
   throw new Error("network-guard reached the ambient fetch; it must use fetchImpl");
 }) as unknown as typeof fetch;
@@ -487,14 +459,10 @@ describe("fetchPublicHttpResponse (mocked fetch)", () => {
     expect(resp.status).toBe(200);
     expect(await resp.text()).toBe("final");
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    // Both hops should have triggered DNS validation.
     expect(lookupMock).toHaveBeenCalledTimes(2);
   });
 
-  // The guard's per-hop re-validation is only real if it survives the transport
-  // swap: a host caller runs on an injected Chromium-stack fetch, and that
-  // transport returns the 3xx instead of chasing it. Both properties are
-  // measured here against the injected implementation, not the ambient one.
+  // Injected transports must return redirects for per-hop validation before another request.
   it("re-validates every hop of a redirect chain served by an injected transport", async () => {
     lookupMock.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
     const ambient = vi.fn();
@@ -517,8 +485,6 @@ describe("fetchPublicHttpResponse (mocked fetch)", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(lookupMock).toHaveBeenCalledTimes(2);
     expect(ambient).not.toHaveBeenCalled();
-    // Every hop is asked for manually so the guard, not the transport, decides
-    // whether the next request happens.
     for (const call of fetchMock.mock.calls) {
       expect((call[1] as RequestInit).redirect).toBe("manual");
     }
@@ -554,8 +520,6 @@ describe("fetchPublicHttpResponse (mocked fetch)", () => {
   });
 
   it("rejects a redirect that points to a private IP", async () => {
-    // First hop resolves public, second hop is http://10.0.0.1/ → blocked
-    // before fetch is called.
     lookupMock.mockResolvedValueOnce([
       { address: "93.184.216.34", family: 4 },
     ]);
@@ -572,8 +536,6 @@ describe("fetchPublicHttpResponse (mocked fetch)", () => {
         fetchImpl: fetchMock as unknown as typeof fetch,
       }),
     ).rejects.toThrowError(/non-public/);
-    // fetch ran exactly once (the first hop); the second hop was blocked
-    // by ensurePublicHttpUrl before any network call.
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 

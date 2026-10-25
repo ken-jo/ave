@@ -1,29 +1,12 @@
-/**
- * Custom slash commands — markdown files a person keeps as reusable prompts.
- *
- * `<project>/.ave/commands/<name>.md` and `<ave home>/commands/<name>.md`
- * each define `/<name>`. The body is the prompt; `$ARGUMENTS` (and `{args}`,
- * the placeholder package prompts use) is replaced with whatever followed the
- * command. Frontmatter `description` labels it in the slash picker and
- * `argument-hint` describes its arguments.
- *
- * Precedence: built-in commands are decided by the caller before this module
- * is asked; between the two directories the project wins, because it is the
- * narrower scope. Reading is confined to each directory: a symlink whose
- * realpath leaves it is skipped, as is anything that is not a regular file or
- * exceeds the size cap. Both directories are read-only here; nothing creates
- * them.
- */
+/** Project commands override user commands; built-ins resolve first. Read only contained regular files within the size cap. */
 import { open, readdir, realpath } from "node:fs/promises";
 import { join, sep } from "node:path";
 import { aveHome } from "../shared/ave-home.js";
 import type { CustomCommandEntry, CustomCommandScope } from "../shared/custom-command.js";
 import { parseFrontmatterBlock, unquoteFrontmatterValue } from "../main/skill-store.js";
 
-/** A command file larger than this is not read. */
 export const CUSTOM_COMMAND_MAX_BYTES = 32 * 1024;
 
-/** File basenames that define a command; anything else in the directory is ignored. */
 const COMMAND_NAME = /^[a-z0-9][a-z0-9_-]{0,63}$/u;
 
 interface CustomCommandDefinition extends CustomCommandEntry {
@@ -87,7 +70,6 @@ async function commandNames(dir: string): Promise<string[]> {
   }
 }
 
-/** Every custom command visible from `projectRoot`, project entries first, sorted by name within each scope. */
 export async function listCustomCommands(projectRoot: string | undefined): Promise<CustomCommandEntry[]> {
   const seen = new Set<string>();
   const entries: CustomCommandEntry[] = [];
@@ -105,7 +87,6 @@ export async function listCustomCommands(projectRoot: string | undefined): Promi
   return entries;
 }
 
-/** The command `/<name>` resolves to, or `null` when no readable file defines it. */
 export async function loadCustomCommand(
   name: string,
   projectRoot: string | undefined,
@@ -119,11 +100,7 @@ export async function loadCustomCommand(
   return null;
 }
 
-/**
- * Insert the arguments into a command body. Both `$ARGUMENTS` and `{args}`
- * are placeholders. A body with neither still receives non-empty arguments,
- * appended on their own line, so what the person typed is never dropped.
- */
+/** Replace both argument placeholders; append nonempty arguments when no placeholder exists. */
 export function expandCustomCommand(body: string, args: string): string {
   const hasPlaceholder = body.includes("$ARGUMENTS") || body.includes("{args}");
   if (!hasPlaceholder) return args ? `${body}\n\nARGUMENTS: ${args}` : body;

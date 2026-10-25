@@ -23,11 +23,7 @@ async function hasDirectoryAncestor(filePath: string): Promise<boolean> {
   }
 }
 
-/**
- * A failed policy read or stat is absence only when ENOENT is confirmed by
- * inspecting the entry and its missing ancestors. Dangling links and inconclusive
- * probes remain unreadable so each reader can apply its own conservative outcome.
- */
+/** Only confirmed absence counts as missing policy; dangling links and inconclusive probes remain unreadable. */
 export async function isAdminPolicyFileAbsent(
   filePath: string,
   readError: unknown,
@@ -39,7 +35,7 @@ export async function isAdminPolicyFileAbsent(
     return false;
   } catch (error: unknown) {
     if ((error as NodeJS.ErrnoException | null | undefined)?.code !== "ENOENT") return false;
-    // The host can report ENOENT rather than ENOTDIR for a non-directory parent.
+    // ENOENT can also mean a non-directory parent.
     return await hasDirectoryAncestor(filePath);
   }
 }

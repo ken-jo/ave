@@ -483,8 +483,7 @@ describe("Studio drafts and package projections", () => {
     expect(stageLocalAgentPlugin(fromZip.files).contentSha256).toBe(fromZip.treeDigest);
   });
 
-  // A Windows file system has no executable mode bit, so a package directory
-  // written there cannot carry the hook's executable flag back to the reader.
+  // Windows cannot preserve executable mode bits on exported package directories.
   it.skipIf(process.platform === "win32")("keeps executable hook bytes and their digest through an exported package directory", async () => {
     const { projected, fromZip } = await executableHookExport();
     const directory = join(root, "executable-hook");

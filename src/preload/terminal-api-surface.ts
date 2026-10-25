@@ -2,7 +2,6 @@ import { ipcRenderer } from "electron";
 import { CHANNELS } from "../contract/app-contract.js";
 import { parseTerminalDataEvent, parseTerminalExitEvent, type TerminalApi } from "../shared/terminal-session.js";
 
-/** One typed terminal contract for the private preload and the renderer. */
 export function buildTerminalApiSurface(): TerminalApi {
   return {
     spawn: (payload) => ipcRenderer.invoke(CHANNELS.terminal.spawn, payload),

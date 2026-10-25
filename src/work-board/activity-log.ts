@@ -1,24 +1,10 @@
-/**
- * Append-only work-flow activity log.
- *
- * One JSON event per line in `activity.jsonl` under the work-board feature
- * namespace. Every board mutation appends an event; report generation reads the
- * log back to understand the work flow. Reads/writes go through the injected
- * {@link WorkBoardStorage} seam (the host feature namespace) — no raw `fs`, no
- * fallback paths.
- */
+/** Route append-only activity through feature storage, never raw filesystem or fallback paths. */
 import type { WorkBoardStorage } from "./storage.js";
 import { parseJsonlLines } from "../audit/jsonl-reader.js";
 
-/** Relative path (under the feature dir) of the activity log. */
 export const ACTIVITY_FILE = "activity.jsonl";
 
-/**
- * One work-flow event. `kind` mirrors the board lifecycle verbs. `from`/`to`
- * carry the status transition when `kind === "transitioned"`.
- */
 export interface ActivityEvent {
-  /** ISO-8601 timestamp. Filled in by `appendActivity` when omitted. */
   ts: string;
   kind:
     | "created"
@@ -27,7 +13,6 @@ export interface ActivityEvent {
     | "reopened"
     | "transitioned"
     | "deleted"
-    // Agent-orchestration run verbs (WorkBoardEngine plan→approve→execute).
     | "run-planned"
     | "run-executed"
     | "run-denied"
@@ -38,22 +23,13 @@ export interface ActivityEvent {
   to?: string;
 }
 
-/**
- * Narrow slice of the storage seam the activity log depends on. `readText`
- * returns the full file; `write` replaces it (JSONL has no native append in the
- * storage API, so we read-modify-write the trailing line). `exists` gates the
- * first read.
- */
+/** Storage has no native append; use exists plus read-modify-write for JSONL. */
 export type ActivityStorage = Pick<
   WorkBoardStorage,
   "readText" | "write" | "exists"
 >;
 
-/**
- * Append one event to the log. `ts` defaults to now when the caller omits it.
- * Read-modify-write because the storage API exposes no native append; the log
- * is bounded by the board size (one line per mutation) so this stays cheap.
- */
+/** Omitted event timestamps use now; the storage API requires read-modify-write. */
 export async function appendActivity(
   storage: ActivityStorage,
   event: Omit<ActivityEvent, "ts"> & { ts?: string },
@@ -63,20 +39,14 @@ export async function appendActivity(
     ts: event.ts ?? new Date().toISOString(),
   };
   const line = JSON.stringify(full) + "\n";
-  // First write: file absent → start fresh. `exists` is the storage contract's
-  // "has this been written" signal, not a fallback for a failed read.
+  // Only confirmed storage absence starts a new log; failed reads are not first-run signals.
   const prior = (await storage.exists(ACTIVITY_FILE))
     ? await storage.readText(ACTIVITY_FILE)
     : "";
   await storage.write(ACTIVITY_FILE, prior + line);
 }
 
-/**
- * Read events back, newest entries last (file order). When `sinceIso` is given,
- * only events with `ts >= sinceIso` are returned. Malformed lines are skipped
- * — the log is internal but a partially-flushed final line must not abort a
- * report.
- */
+/** Keep file order and skip malformed or torn lines so partial writes cannot abort reports. */
 export async function readActivity(
   storage: ActivityStorage,
   sinceIso?: string,

@@ -1,13 +1,4 @@
-/**
- * Host report generation contract — daily + weekly.
- *
- * Verifies: empty board / empty week short-circuit with NO LLM call; a
- * populated board calls the LLM once, persists markdown under reports/, and
- * appends a one-line memory summary; an LLM failure propagates (No-Fallback);
- * and generate(kind) dispatches correctly. Storage + store + LLM are in-memory
- * fakes; `now()` is injected, and the host zone is pinned, so the report
- * windows are deterministic.
- */
+/** Short-circuit empty report windows without model calls; persist real output and propagate generation failures. */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { createWorkBoardReporter } from "../work-report.js";
 import { MEMORY_FILE } from "../work-memory.js";
@@ -18,12 +9,8 @@ import type {
   WorkItemResolved,
 } from "../../shared/work-board-types.js";
 
-// 2026-06-16T03:00:00Z == 12:00 in Seoul, Tue → local day "2026-06-16".
 const NOW = Date.parse("2026-06-16T03:00:00.000Z");
-// These windows are host-local now, so the fixture instants below only mean what
-// their comments say once the host zone is pinned. Node re-reads `TZ` on
-// assignment. Asia/Seoul is chosen because the fixtures were written against
-// it, not because the code knows about it.
+// Pin the fixture zone so stored instants retain their intended civil-day meaning.
 let previousTz: string | undefined;
 beforeEach(() => {
   previousTz = process.env.TZ;
@@ -50,7 +37,6 @@ function item(
   return { ...base, status_resolved: status_resolved ?? base.status };
 }
 
-/** Full in-memory WorkBoardStorage. */
 function memStorage(): WorkBoardStorage & { files: Record<string, string> } {
   const files: Record<string, string> = {};
   return {
@@ -105,7 +91,6 @@ describe("work-report — daily", () => {
     expect(r).toMatchObject({ status: "ok", kind: "daily", period: "2026-06-16", markdown: "# 리포트\n내용" });
     expect(calls).toHaveLength(1);
     expect(storage.files["reports/daily/2026-06-16.md"]).toBe("# 리포트\n내용");
-    // Self-improvement: a one-line summary was appended to MEMORY.md.
     expect(storage.files[MEMORY_FILE]).toContain("2026-06-16:");
   });
 
@@ -146,7 +131,6 @@ describe("work-report — daily", () => {
 describe("work-report — weekly", () => {
   it("no activity this week → empty envelope, no LLM call", async () => {
     const { callLlm, calls } = llmRecorder();
-    // Item created long ago + no completion this week → nothing in the window.
     const old = item({ id: 1, created_at: "2026-01-01T00:00:00.000Z", updated_at: "2026-01-01T00:00:00.000Z" });
     const reporter = createWorkBoardReporter({ store: okListReader([old]), storage: memStorage(), callLlm, now: () => NOW });
     const r = await reporter.generateWeekly();
@@ -217,12 +201,7 @@ describe("work-report — dispatch", () => {
 });
 
 describe("work-report — day labels follow the host calendar", () => {
-  /**
-   * `due_at` is an absolute instant. Both labels used to take its UTC prefix,
-   * which names the day the user picked only when the host is at or behind
-   * UTC. These run the SAME stored instant through two hosts on opposite sides
-   * of UTC and demand the picked day back both times.
-   */
+  /** Project stored due instants through host-local calendars on both sides of UTC; UTC prefixes can name the wrong day. */
   function runInZone(zone: string, dueAt: string): Promise<string> {
     process.env.TZ = zone;
     const { callLlm, calls } = llmRecorder();
@@ -236,14 +215,9 @@ describe("work-report — day labels follow the host calendar", () => {
   }
 
   it("prints the picked day in the (due …) label, east and west of UTC", async () => {
-    // Local midnight on the 16th in Seoul, i.e. what the picker stamps there.
-    // Its UTC prefix is the 15th, which is what the old label printed.
     expect(await runInZone("Asia/Seoul", "2026-06-15T15:00:00.000Z"))
       .toContain("(due 2026-06-16)");
 
-    // Local midnight on the 16th in Los Angeles. Here the UTC prefix happens to
-    // agree, so this half would pass either way — it is the control that shows
-    // the Seoul assertion is about the projection and not about the fixture.
     expect(await runInZone("America/Los_Angeles", "2026-06-16T07:00:00.000Z"))
       .toContain("(due 2026-06-16)");
   });
@@ -259,9 +233,6 @@ describe("work-report — day labels follow the host calendar", () => {
     });
     await reporter.generateWeekly();
 
-    // Tue 2026-06-16 in Seoul sits in the Sunday-anchored week 14th-20th. The
-    // bounds are local midnights, so their UTC prefixes are the 13th and the
-    // 20th — a week that starts a day early and ends a day late.
     expect(calls[0]?.prompt).toContain("(2026-06-14 ~ 2026-06-20)");
   });
 });

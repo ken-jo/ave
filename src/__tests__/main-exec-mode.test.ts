@@ -1,23 +1,4 @@
-/**
- * Structural guards for the headless `--exec` wiring.
- *
- * `main.ts` registers Electron listeners and runs the early-boot environment at
- * module load, so it cannot be imported in a unit test; the branch it owns is
- * asserted by source inspection, the same way the single-instance gate is.
- *
- * Two properties are structural rather than behavioural:
- *
- *  - The branch must quit with `app.quit()`. `app.exit()` skips the `before-quit`
- *    handler, and that handler's `runAppShutdownCleanup` is what flushes the
- *    session transcript and the audit log a headless run just produced. The
- *    exit code itself is applied by a `will-quit` handler with `app.exit()`,
- *    because Electron's `quit()` ends the process with 0 regardless of
- *    `process.exitCode`.
- *  - `logger.ts` must send its console output to stderr in exec mode. The logger
- *    is constructed from `process.argv` at import time and its console stream is
- *    module-private, so there is no runtime seam to observe; what can be
- *    asserted is that the decision is wired to the one predicate that makes it.
- */
+/** Source inspection avoids entry-point side effects. app.quit() must flush transcripts and audit logs; exec console output must use stderr. */
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -33,7 +14,6 @@ const windowSource = readFileSync(resolve(process.cwd(), "src/main/main-window.t
 const bootSource = readFileSync(resolve(process.cwd(), "src/boot.ts"), "utf-8")
   .replace(/\r\n/g, "\n");
 
-/** Body of the `if (execRequest !== null) { ... }` branch in `main()`. */
 function extractExecBranch(text: string): string | null {
   const opener = text.match(/if\s*\(\s*execRequest\s*!==\s*null\s*\)\s*\{/);
   if (!opener || opener.index === undefined) return null;
@@ -65,8 +45,7 @@ describe("main.ts — headless exec branch", () => {
   });
 
   it("hands every run the one workspace authorization resolver, which owns the broker cwd rule", () => {
-    // The resolver decides both the CLI pre-check and the session authorizer,
-    // so a broker-bound guest cwd cannot pass one and be re-rooted by the other.
+    // CLI prechecks and session authorization must agree on broker-bound guest roots.
     expect(mainSource).toMatch(
       /isAuthorizedProjectRoot:\s*isAuthorizedWorkspaceProjectRoot,/,
     );
@@ -114,10 +93,7 @@ describe("main.ts — headless exec branch", () => {
   });
 
   it("drains the shutdown hooks before the guards that can return early", () => {
-    // The hooks replaced a set of `prependOnceListener`s, which fired ahead of
-    // this handler and on every quit — including one that arrives while boot is
-    // still running, where `getServices()` is still null and the guards below
-    // return without starting the ordered cleanup.
+    // Early quit can arrive before services exist; cleanup hooks must respect boot ordering.
     const handler = mainSource.indexOf('app.on("before-quit"');
     expect(handler).toBeGreaterThanOrEqual(0);
     const body = mainSource.slice(handler, mainSource.indexOf("\n});", handler));
@@ -158,9 +134,7 @@ describe("main.ts — headless exec branch", () => {
       'const bootLaunch = execRequest === null ? "interactive" : "headless";',
     );
     expect(mainSource).toContain('createWindow({ headless: bootLaunch === "headless" });');
-    // Both consumers read the derived const. Re-testing `execRequest` at
-    // either site would let the window and the services disagree about which
-    // kind of run this is.
+    // Both consumers must use the same derived execution-mode value.
     expect(mainSource).toContain(
       "bootstrap(projectRoot, getMainWindow(), () => getMainWindow(), bootLaunch)",
     );
@@ -170,8 +144,7 @@ describe("main.ts — headless exec branch", () => {
     const lockBranch = mainSource.match(/if \(!gotSingleInstanceLock\) \{[\s\S]*?\n\} else \{/);
     expect(lockBranch, "could not locate the single-instance branch").not.toBeNull();
     expect(lockBranch![0]).toContain("EXEC_LOCKED_EXIT_CODE");
-    // Synchronous on purpose: the branch hard-exits right after, and
-    // `process.stderr` is asynchronous on a macOS pipe.
+    // Use synchronous stderr because the next branch hard-exits and macOS pipes are asynchronous.
     expect(lockBranch![0]).toMatch(/writeSync\(\s*2,/);
   });
 
@@ -200,8 +173,6 @@ describe("main-window.ts — headless creation allocates no window", () => {
     expect(start).toBeGreaterThanOrEqual(0);
     const body = windowSource.slice(start);
     const guard = body.indexOf("if (options.headless) return null;");
-    // The host preload comes from the preload table, and its built file is
-    // checked before any window exists.
     const preload = body.indexOf('preloadPreferences("preload")');
     const assetCheck = body.indexOf("existsSync(hostPreload.preload)");
     const window = body.indexOf("new BrowserWindow(");
@@ -213,7 +184,6 @@ describe("main-window.ts — headless creation allocates no window", () => {
 });
 
 describe("boot.ts — a headless run reports nobody at the desk", () => {
-  /** Body of the `isDeskAttended` closure, so a match elsewhere cannot stand in. */
   function deskAttendedBody(): string {
     const start = bootSource.indexOf("isDeskAttended: () => {");
     expect(start, "isDeskAttended closure not found in boot.ts").toBeGreaterThan(-1);
@@ -224,9 +194,7 @@ describe("boot.ts — a headless run reports nobody at the desk", () => {
 
   it("answers no from the launch mode before consulting the window", () => {
     const body = deskAttendedBody();
-    // Window visibility is a proxy that reports whatever the boot window
-    // happens to be doing. It read `true` while a bootstrap splash was up, and
-    // `second-instance` / `activate` can still reveal that window mid-run.
+    // Splash visibility and later window activation do not establish desk attendance.
     expect(body.indexOf("if (headless) return false;")).toBeGreaterThan(-1);
     expect(body.indexOf("if (headless) return false;")).toBeLessThan(
       body.indexOf("getMainWindow()"),
@@ -234,9 +202,7 @@ describe("boot.ts — a headless run reports nobody at the desk", () => {
   });
 
   it("still asks the window when a launch has an operator", () => {
-    // The guard must narrow the headless case only — an interactive launch
-    // that drops to `false` would route every tier-3 escalation of a running
-    // app into the deferred queue instead of asking the user.
+    // Only headless runs may defer escalation; interactive launches must still ask the user.
     expect(deskAttendedBody()).toContain("win.isVisible() && !win.isMinimized()");
   });
 });

@@ -1,10 +1,4 @@
 import { createAlertMigrationPorts } from "../../__tests__/support/alert-migration.js";
-/**
- * The raise pipeline end to end: one result code per step, in order; windows
- * charged only on acceptance; the card, the cue, the audit row and the event
- * after it; and the identity lifecycle across withdrawal, the user's answer,
- * expiry, uninstall and a restart.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -479,7 +473,6 @@ describe("open and closed identities", () => {
       .toEqual({ status: "refreshed", alertId: first.alertId });
     expect(h.shown.at(-1)?.summary).toBe("Reply to: Budget v2");
     expect(h.fired).toHaveLength(cues);
-    // The cooldown runs from the first raise, not the refresh.
     h.clock.now += MINUTE + 1;
     expect((await h.service.raise("fixturemail", reply("mail-2"))).status).toBe("raised");
 
@@ -739,7 +732,6 @@ describe("withdrawal and uninstall", () => {
     expect(sharedSettings.kinds["fixturemail:reply"]).toEqual({
       enabled: true, osNotification: false, visibility: "user-visible", seenByUser: false,
     });
-    // A kind the reinstall brings is a fresh install's: its declared default.
     expect(sharedSettings.kinds["fixturemail:latecomer"]!.enabled).toBe(true);
   });
 

@@ -1,7 +1,3 @@
-/**
- * Tests for S2 sandbox audit sink.
- * Issue: #691 PR-A4
- */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -69,7 +65,6 @@ describe("emitSandboxAudit", () => {
 
     const raw = await readFile(sandboxAuditSinkPath(), "utf8");
     const lines = raw.trim().split("\n").filter(Boolean);
-    // All 10 must land; order not guaranteed under concurrency
     expect(lines).toHaveLength(10);
     expect(lines.every((l) => { try { JSON.parse(l); return true; } catch { return false; } })).toBe(true);
   });
@@ -101,9 +96,7 @@ describe("emitSandboxAudit", () => {
   it("sandboxAuditSinkPath returns daily-rotated path under AVE_HOME/audit/", () => {
     const path = sandboxAuditSinkPath();
     expect(path).toContain(TEST_HOME);
-    // Must be under the audit/ subdirectory, not at the root
     expect(path.replace(/\\/g, "/")).toContain("/audit/");
-    // Must match the daily-rotate pattern: YYYY-MM-DD.sandbox.jsonl
     expect(path).toMatch(/\d{4}-\d{2}-\d{2}\.sandbox\.jsonl$/);
   });
 });

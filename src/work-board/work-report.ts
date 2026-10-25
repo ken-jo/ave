@@ -1,23 +1,4 @@
-/**
- * Work Board reports (the "reporting" surface) — host-native daily + weekly.
- *
- * The board is a first-class host domain (architecture.md §10.0.3), so the HOST
- * generates the personal work reports the legacy board plugin used to: it gathers
- * the board state + the period's activity-log events + the learned work-flow
- * memory, builds an English-first prompt, calls the host one-shot LLM
- * (`ConversationLoop.generateText` via `createCallLlm`), persists the markdown
- * under the work-board report namespace (project reports live under
- * `reports/projects/<project-key>/{daily,weekly}/`), and appends a bounded
- * one-line summary to work memory (the self-improvement loop).
- *
- * No-Fallback: an LLM failure surfaces (the report IS the deliverable, so a
- * canned-text stub would silently hide a provider outage). An empty board /
- * empty period short-circuits to an `empty` envelope with NO LLM call.
- *
- * "Today" / "this week" are host-local calendar boundaries (see ./schedule.ts). All
- * time inputs flow through an injectable `now()` so report windows are
- * deterministically testable.
- */
+/** Use host-local report windows; skip empty periods without model calls and propagate generation failures. Persist real reports before adding a bounded memory summary. */
 import {
   appendMemory,
   renderWorkContext,
@@ -35,42 +16,31 @@ import type {
   WorkItemListFilter,
 } from "../shared/work-board-types.js";
 
-/** Host one-shot LLM caller — shape of `createCallLlm(conversationLoop)`. */
 export interface CallLlm {
   (prompt: string, opts?: { maxTokens?: number; systemPrompt?: string }): Promise<string>;
 }
 
-/** Narrow board reader the reports need (satisfied by WorkBoardStore). */
 export interface ReportBoardReader {
   list(filter?: WorkItemListFilter): Promise<WorkItemListResult>;
 }
 
-/** Storage slice for writing report markdown (write auto-creates parents). */
 export type ReportStorage = Pick<WorkBoardStorage, "write" | "mkdir">;
 
-/** Report kind — re-aliased from the renderer-safe wire SOT (single source). */
 export type ReportKind = WorkBoardReportKind;
 
-/**
- * Reporter return — `ok` carries the markdown + period; `empty` skips the LLM.
- * The `error` variant is added at the IPC boundary, not here (the reporter
- * surfaces LLM failures by throwing — No-Fallback).
- */
+/** The reporter throws generation errors; only IPC wraps them into error envelopes. */
 export type ReportResult =
   | { status: "ok"; kind: ReportKind; period: string; markdown: string }
   | { status: "empty"; kind: ReportKind; period: string; reason: string };
 
 export interface DailyReportInput {
-  /** Override the target day (`YYYY-MM-DD`, host-local). Default: today. */
   date?: string;
   projectRoot?: string;
   includeUnscoped?: boolean;
 }
 
 export interface WeeklyReportInput {
-  /** Override the target ISO week (`YYYY-Www`). Default: the current local week. */
   weekIso?: string;
-  /** Sunday-week offset relative to now (0 = this week, -1 = last week). */
   weekOffset?: number;
   projectRoot?: string;
   includeUnscoped?: boolean;
@@ -78,7 +48,6 @@ export interface WeeklyReportInput {
 
 type ReportProjectOptions = Pick<DailyReportInput, "projectRoot" | "includeUnscoped">;
 
-/** Host event emitted after a report is generated (slim notification pointer). */
 export const REPORT_GENERATED_EVENT = "work_board.report.generated";
 
 const DAILY_DIR = "reports/daily";
@@ -93,13 +62,11 @@ const WEEKLY_PROMPT_SUFFIX =
   "## Wins / ## Issues / ## Next Week / ## Support Needed / ## Metrics. " +
   "In the Metrics section, summarize completed, newly created, and overdue counts.";
 
-/** Dependencies for the reporter. One storage handle backs memory/activity/report. */
 export interface WorkBoardReporterDeps {
   store: ReportBoardReader;
   storage: WorkBoardStorage;
   callLlm: CallLlm;
   emit?: (type: string, data?: unknown) => void;
-  /** Injectable clock for deterministic tests. Defaults to `Date.now`. */
   now?: () => number;
 }
 
@@ -110,10 +77,7 @@ export interface WorkBoardReporter {
 }
 
 function lineFor(item: WorkItemResolved): string {
-  // `due_at` is an absolute instant, so its first ten characters are the UTC
-  // day, not the day the user picked. Those differ for most of the day in any
-  // zone ahead of UTC: an item due on the 16th is stored as 15T15:00Z in Seoul
-  // and this line called it the 15th.
+  // Project due instants through the host calendar; UTC prefixes can name the previous picked day.
   const due = item.due_at ? ` (due ${localDateKey(new Date(item.due_at))})` : "";
   return `- [${item.priority}] #${item.id} ${item.title}${due}`;
 }
@@ -134,11 +98,6 @@ function reportDir(kind: ReportKind, projectRoot: string | undefined): string {
   return `${PROJECT_REPORTS_DIR}/${key}/${kind}`;
 }
 
-/**
- * Construct the reporter. The storage handle is sliced internally into the
- * memory / activity / report seams so callers pass exactly one
- * work-board-namespaced storage.
- */
 export function createWorkBoardReporter(deps: WorkBoardReporterDeps): WorkBoardReporter {
   const { store, storage, callLlm } = deps;
   const memory: MemoryStorage = storage;
@@ -150,8 +109,7 @@ export function createWorkBoardReporter(deps: WorkBoardReporterDeps): WorkBoardR
     const listed = await store.list(input?.projectRoot
       ? { projectRoot: input.projectRoot, includeUnscoped: input.includeUnscoped === true }
       : undefined);
-    // Discriminated envelope: a non-ok list means the board is unreadable — the
-    // report cannot be built, so the callers below treat [] as "empty".
+    // Non-ok board lists are unreadable; callers currently project them to an empty report.
     return listed.status === "ok" ? listed.items : [];
   }
 
@@ -219,10 +177,7 @@ export function createWorkBoardReporter(deps: WorkBoardReporterDeps): WorkBoardR
   }
 
   async function generateWeekly(input?: WeeklyReportInput): Promise<ReportResult> {
-    // Validate a caller-supplied week label BEFORE it is interpolated into the
-    // report file path — a `../`-bearing weekIso would otherwise escape the
-    // work-board namespace on write. (Daily's date is regex-validated by
-    // localDayBounds; weekly needs the same guard.)
+    // Validate week labels before path interpolation to prevent traversal, matching the daily date guard.
     if (input?.weekIso !== undefined && !/^\d{4}-W\d{2}$/.test(input.weekIso)) {
       return {
         status: "empty",
@@ -259,9 +214,7 @@ export function createWorkBoardReporter(deps: WorkBoardReporterDeps): WorkBoardR
     const workContext = await renderWorkContext(memory, 40, projectOptions);
     const prompt =
       [
-        // Same reason as `lineFor`: these bounds are local midnights, so their UTC
-        // prefix names the wrong day. `end` is the exclusive next-week midnight,
-        // so the last day IN the week is one millisecond before it.
+        // Project local bounds to day labels; subtract one millisecond from exclusive end for the final included day.
         `# ${period} Weekly Report Input (${localDateKey(start)} ~ ${localDateKey(new Date(end.getTime() - 1))})`,
         workContext,
         bucket("Completed This Week", completedThisWeek),

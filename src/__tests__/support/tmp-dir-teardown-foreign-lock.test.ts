@@ -1,21 +1,4 @@
-/**
- * The teardown helper against a REAL Windows lock, not an injected error code.
- *
- * `artifact-store-test-helpers.test.ts` already proves the retry rule by
- * mocking `rm` to reject. What it cannot show is that the rule is aimed at the
- * condition that actually occurs:
- *
- *   - a handle THIS process holds never produces the `EPERM` refusal, so "we
- *     forgot to await a write" cannot be the cause of the reported failures;
- *   - a foreign lock must prevent deletion for as long as it is held, even
- *     when the caller supplies a retry budget. The lock must outlive that
- *     budget rather than expire while a synchronous removal is waiting.
- *
- * The lock is taken by a separate process with `FileShare.None`, which is what
- * a scanner does and what Node's `fs` never does. Windows-only by nature: the
- * failure mode does not exist on the other platforms, so there is nothing to
- * assert there.
- */
+/** A foreign process holds a non-share-delete Windows handle beyond the retry budget. */
 import { describe, it, expect } from "vitest";
 import { windowsPowerShellEnv } from "../../shared/windows-powershell-env.js";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -36,7 +19,6 @@ import { cleanupTmpDir } from "./tmp-dir-teardown.js";
 
 const isWindows = process.platform === "win32";
 
-/** A scratch tree shaped like the audit fixtures: a file a few levels down. */
 function makeTree(): { dir: string; file: string } {
   const dir = mkdtempSync(join(tmpdir(), "ave-teardown-lock-"));
   const inner = join(dir, ".ave", "audit");
@@ -46,7 +28,6 @@ function makeTree(): { dir: string; file: string } {
   return { dir, file };
 }
 
-/** Stop the lock owner and wait until its non-share-delete handle is gone. */
 async function stopForeignLock(child: ChildProcess): Promise<void> {
   if (child.exitCode !== null || child.signalCode !== null) return;
   const exited = once(child, "exit");
@@ -54,11 +35,7 @@ async function stopForeignLock(child: ChildProcess): Promise<void> {
   await exited;
 }
 
-/**
- * Hold `file` from another process without sharing delete. Wait for its ready
- * message before probing access: polling with openSync can itself prevent the
- * child from acquiring its exclusive handle.
- */
+/** Wait for the lock owner's ready message; polling openSync can block its exclusive open. */
 async function holdForeignLock(file: string, holdMs?: number): Promise<ChildProcess> {
   const child = spawn(
     "powershell.exe",
@@ -71,8 +48,7 @@ async function holdForeignLock(file: string, holdMs?: number): Promise<ChildProc
         + (holdMs === undefined ? "$null=[Console]::In.ReadLine()" : `Start-Sleep -Milliseconds ${holdMs}`)
         + " } finally { $f.Dispose() }",
     ],
-    // With no duration the parent owns the lock lifetime, including while
-    // synchronous removal blocks its event loop. Teardown stops the owner.
+    // The parent owns lock lifetime even while synchronous removal blocks its event loop.
     { stdio: ["pipe", "pipe", "pipe"], env: windowsPowerShellEnv() },
   );
   let stderr = "";
@@ -111,7 +87,6 @@ describe.skipIf(!isWindows)("scratch-directory teardown under a foreign lock", (
     let child: ChildProcess | undefined;
     try {
       child = await holdForeignLock(file);
-      // Intentional behavior probe; fixture teardown stays in the finally block.
       expect(() =>
         rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }),
       ).toThrow(/EPERM|EBUSY|EACCES/);
@@ -128,8 +103,6 @@ describe.skipIf(!isWindows)("scratch-directory teardown under a foreign lock", (
 
   it("succeeds through the retry ladder once the lock clears", async () => {
     const { dir, file } = makeTree();
-    // Long enough to outlast what the old teardown could wait for, short
-    // enough to sit inside the ladder's budget.
     let child: ChildProcess | undefined;
     try {
       child = await holdForeignLock(file, 800);
@@ -142,18 +115,12 @@ describe.skipIf(!isWindows)("scratch-directory teardown under a foreign lock", (
   });
 
   it("is never the EPERM signature when the open handle is this process's own", async () => {
-    // Node opens with FILE_SHARE_DELETE, so our own descriptor cannot produce
-    // the refusal above. It can still leave the parent momentarily non-empty —
-    // that is a DIFFERENT, retryable code, and one the old teardown's
-    // `maxRetries` did cover. The distinction is the whole diagnosis: an
-    // unawaited write of ours would have to show up as that code, not as EPERM,
-    // so awaiting harder was never going to fix the reported failures.
+    // Node opens with FILE_SHARE_DELETE; its own handles cannot reproduce a foreign EPERM lock.
     const { dir, file } = makeTree();
     const fd = openSync(file, "a");
     let code: string | undefined;
     try {
       try {
-        // Intentional behavior probe; fixture teardown stays in the finally block.
         rmSync(dir, { recursive: true, force: true });
       } catch (err) {
         code = (err as NodeJS.ErrnoException).code;

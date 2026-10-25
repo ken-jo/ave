@@ -1,32 +1,4 @@
-/**
- * Application Logger — pino-based structured logging for Ave main process.
- *
- * Usage:
- *   import { createLogger } from "../lib/logger.js";
- *   const log = createLogger("module-name");
- *   log.info({ key: value }, "Human-readable message");
- *
- * Format selection (evaluated at module load time):
- * - Production: NODE_ENV=production OR AVE_LOG_FORMAT=json OR isPackagedElectron
- *   (Electron runtime with process.defaultApp absent) → JSON line output
- * - Otherwise (dev / unpackaged Electron / CI): pino-pretty colorized text
- * - Unpackaged test (NODE_ENV=test or VITEST): delegates to console.* so vitest spies work
- * - AVE_LOG_FORMAT=json forces JSON regardless of NODE_ENV (useful in CI pipelines)
- * - Do NOT use for auditable security events — use AuditLogger instead (§4.5.5)
- *
- * File sink (production log file, #1499 PR-0):
- * - The console stream above is ALWAYS present. A SECOND destination — a
- *   rotating file at `~/.ave/logs/ave-<date>.log` — is attached at BOOT via
- *   {@link initFileLogSink} (not at module load: the log path depends on
- *   `aveHome()` + a 0o700 directory that must be created after app start).
- * - pino loggers are immutable after construction, so the logger is built over
- *   a {@link https://getpino.io | multistream} that already contains a MUTABLE
- *   file-stream placeholder (a no-op until `initFileLogSink` wires the real
- *   SonicBoom destination). This keeps the boot order unchanged and the logger
- *   a single module-level singleton.
- * - Dev (unpackaged) does NOT write a file by default — `initFileLogSink` is
- *   only called by boot on a packaged/production signal (or `AVE_LOG_FILE=1`).
- */
+/** Use AuditLogger for security events; attach ordinary file logging at boot through a mutable stream target. */
 import pino from "pino";
 import prettyStream from "pino-pretty";
 import { createLogFileSink, type LogFileSink, type LogFileSinkOptions } from "./log-file-sink.js";
@@ -37,74 +9,30 @@ const isPackagedElectron = isPackagedElectronProcess(process);
 const isTest = !isPackagedElectron
   && (process.env.VITEST !== undefined || process.env.NODE_ENV === "test");
 const isProduction = process.env.NODE_ENV === "production";
-// process.defaultApp is set to `true` by the Electron runtime when the app is
-// launched unpackaged (i.e. `electron dist/src/main/main.js`). In a packaged build
-// the property is absent (undefined). In vitest/plain Node.js it is also
-// absent, but those paths are guarded by isTest.
-// Precedence (highest to lowest):
-//   1. AVE_LOG_FORMAT=json  → always JSON
-//   2. NODE_ENV=production   → JSON
-//   3. packaged Electron     → JSON
-//   4. default               → pino-pretty (safe for any unpackaged dev run)
-//
-// Note: scripts/run-electron.mjs sets NODE_ENV=development for `bun run start`;
-// production builds rely on the packaged signal rather than NODE_ENV, since
-// packaged Electron does not set NODE_ENV=production automatically.
-// "Packaged" is dev-flags' answer (`isPackagedElectronProcess`), asked here
-// from process facts because this module loads before boot seeds
-// `setIsPackaged(app.isPackaged)`; a packaged binary with AVE_DEV=1, VITEST,
-// or NODE_ENV=test in its environment is still packaged. Electron-hosted
-// Vitest sets process.defaultApp and therefore retains the console path.
+// Derive packaged status from runtime facts before boot; packaged builds must ignore user-controlled test and development flags.
 const useJsonFormat =
   process.env.AVE_LOG_FORMAT === "json" || isProduction || isPackagedElectron;
 
-/**
- * Mutable file-sink target. Starts as `null` (no file). {@link initFileLogSink}
- * sets it to a live {@link LogFileSink}. The multistream file stream (below)
- * delegates every write here, so attaching a file sink at boot needs no logger
- * re-construction.
- */
+/** The mutable file target permits boot attachment without reconstructing the logger. */
 let fileSink: LogFileSink | null = null;
 
 const LOG_LEVEL = process.env.LOG_LEVEL ?? ((isProduction || isPackagedElectron) ? "info" : "debug");
 
-/**
- * A headless one-shot run (`--exec`) owns stdout: it writes one JSON event per
- * line there and a reader parses every line. A log line on the same descriptor
- * is not noise, it is a parse error, so the console destination moves to stderr
- * for the whole process. Decided from argv here rather than at boot because the
- * logger is constructed when this module is first imported, which is before any
- * host service exists to be asked.
- */
+/** One-shot execution owns stdout for JSON events; choose stderr from argv at import time before host services exist. */
 const execHeadless = execModeRequested(process.argv);
 
-/**
- * The console destination — pino-pretty (colorized text) for dev/unpackaged,
- * or raw pino JSON to stdout for production/packaged/CI: the first stream of
- * the non-test multistream.
- */
 function createConsoleStream(): NodeJS.WritableStream {
   return useJsonFormat
     ? (execHeadless ? process.stderr : process.stdout)
-    : // pino-pretty as a STREAM (not a worker transport) so it can coexist with
-      // the file stream inside a single pino.multistream. Worker transports are
-      // avoided here because they resolve a separate worker entry file, which
-      // breaks in a packaged app.asar.
+    : // Use a pretty-print stream rather than a worker transport whose entry cannot resolve inside packaged archives.
       prettyStream({
         colorize: true,
         translateTime: "SYS:HH:MM:ss.l",
         ignore: "pid,hostname",
-        // Its default destination is stdout, which a headless run has claimed.
         ...(execHeadless ? { destination: process.stderr } : {}),
       });
 }
 
-/**
- * Exported for testing — the pino transport config chosen at module load. In
- * pretty (dev) mode this remains the pino-pretty transport descriptor so the
- * existing logger-format test assertions stay valid; the multistream file sink
- * is layered on separately via {@link initFileLogSink}.
- */
 export const transport = !isTest && !useJsonFormat
   ? {
       target: "pino-pretty",
@@ -116,35 +44,13 @@ export const transport = !isTest && !useJsonFormat
     }
   : undefined;
 
-/**
- * The file multistream stream: forwards every serialized log line to the
- * current {@link fileSink}, or drops it when no sink is attached (dev default).
- * A plain `{ write }` object satisfies pino.multistream's stream contract.
- */
 const fileStream = {
   write(chunk: string): void {
     fileSink?.write(chunk);
   },
 };
 
-/**
- * Redaction paths for the pino logger. Defense-in-depth for the #1499 file
- * sink: pino output is now PERSISTED to `~/.ave/logs/`, so any structured
- * field that a call site accidentally attaches carrying a credential would
- * otherwise land on disk in cleartext. These paths censor the common secret
- * key names both at the top level (`{ apiKey }`) and one level deep
- * (`*.apiKey`, e.g. `{ provider: { token } }`). This does NOT replace the
- * AuditLogger's own DLP — it is a blanket guard on the general app logger.
- * `censor: "[redacted]"` keeps the key present (so the shape is still
- * debuggable) while removing the value.
- *
- * DEPTH LIMIT: these paths only reach one level of nesting (`*.apiKey`), not
- * `*.*.apiKey` or deeper. A secret nested two or more levels down (e.g.
- * `{ config: { provider: { token } } }`) is NOT masked by this list. Call
- * sites must not log deeply-nested objects that may carry a credential —
- * this redact list is a blanket safety net for shallow shapes, not a
- * substitute for not logging secrets in the first place.
- */
+/** Redact credentials at top level and one level deep only; callers must never log deeper secret-bearing objects. */
 const REDACT_PATHS = [
   "*.apiKey",
   "*.token",
@@ -159,39 +65,20 @@ const REDACT_PATHS = [
 ];
 const redact = { paths: REDACT_PATHS, censor: "[redacted]" };
 
-/**
- * In test mode, keep the original single-transport logger untouched (tests
- * spy on console via `createLogger`, and the multistream would change the
- * pretty-print behaviour the format tests assert). In non-test mode, build the
- * logger over a multistream: [console, file]. The file stream is a no-op until
- * {@link initFileLogSink} wires a real sink at boot, so console behaviour is
- * identical to before while the file sink is dormant.
- */
+/** Test mode uses console-spy-compatible output; production multistream keeps a dormant file target until boot. */
 export const logger = isTest
-  // The same fd 1 as pino's default destination, written synchronously: an
-  // asynchronous destination registers a process-exit flush hook, and under
-  // the renderer suites' VM pool that hook outlives the file's context and
-  // throws when it fires there.
+  // Write test output synchronously so process-exit hooks cannot outlive renderer VM contexts.
   ? pino({ level: LOG_LEVEL, redact, transport }, pino.destination({ fd: 1, sync: true }))
   : pino(
       { level: LOG_LEVEL, redact },
       pino.multistream([
-        // Built only here: pino-pretty opens an asynchronous stdout destination
-        // with a process-exit flush hook, which test mode never uses.
+        // Create async pretty output only outside test mode to avoid stale exit hooks.
         { stream: createConsoleStream(), level: LOG_LEVEL as pino.Level },
         { stream: fileStream as NodeJS.WritableStream, level: LOG_LEVEL as pino.Level },
       ]),
     );
 
-/**
- * Attach (or replace) the production file log sink. Called ONCE at boot when a
- * packaged/production signal is present (see boot/services.ts). Idempotent-ish:
- * a second call destroys the previous sink first. Any failure is swallowed and
- * returns `false` — a broken log file must never brick boot (logging is
- * best-effort; the console stream keeps working regardless).
- *
- * @returns the created sink, or `null` if the sink could not be created.
- */
+/** Destroy any previous sink before attaching another; return null on failure so logging cannot block boot. */
 export function initFileLogSink(options: LogFileSinkOptions = {}): LogFileSink | null {
   try {
     if (fileSink) {
@@ -206,7 +93,6 @@ export function initFileLogSink(options: LogFileSinkOptions = {}): LogFileSink |
   }
 }
 
-/** Flush + close the file sink (call on app shutdown). No-op if none attached. */
 export function closeFileLogSink(): void {
   if (fileSink) {
     fileSink.destroy();
@@ -214,23 +100,10 @@ export function closeFileLogSink(): void {
   }
 }
 
-/**
- * Create a child logger scoped to a named module.
- *
- * In unpackaged test environments (VITEST / NODE_ENV=test) the returned logger
- * proxies calls to console.warn/error/info so existing vitest
- * spyOn(console, 'warn') assertions continue to work. Packaged Electron always
- * keeps the production logger even when user-controlled test env is present.
- * The prefix `[module]` is prepended to match the pre-pino
- * console.log("[module] msg") pattern tests relied on.
- *
- * In production / development, returns a real pino child logger with
- * structured JSON output.
- */
+/** Use console proxies only in unpackaged tests; packaged runs retain structured production logging. */
 export function createLogger(module: string): pino.Logger {
   if (isTest) {
     const prefix = `[${module}]`;
-    // Produce a pino-compatible shape that delegates to console
     const consoleFn = (level: "warn" | "error" | "info" | "debug") =>
       (objOrMsg: unknown, ...args: unknown[]) => {
         const fn =
@@ -240,11 +113,9 @@ export function createLogger(module: string): pino.Logger {
               ? console.error
               : console.log;
         if (typeof objOrMsg === "object" && objOrMsg !== null && !(objOrMsg instanceof Error)) {
-          // pino(obj, msg) form — print msg with prefix, include obj as context
           const msg = typeof args[0] === "string" ? args[0] : "";
           fn(`${prefix} ${msg}`, objOrMsg, ...args.slice(1));
         } else if (typeof objOrMsg === "string") {
-          // pino(msg, ...args) form
           fn(`${prefix} ${objOrMsg}`, ...args);
         } else {
           fn(prefix, objOrMsg, ...args);

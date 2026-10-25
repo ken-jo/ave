@@ -1,13 +1,4 @@
-/**
- * Regression for the equal-size in-place mutation window in the stable secret
- * reader. A hostile writer that rewrites the same number of bytes through an
- * independent descriptor leaves device, inode, file type, and size unchanged,
- * so metadata identity alone cannot see it. Only the bytes can.
- *
- * `node:fs` is passed through unchanged except for `readSync`, which the test
- * wraps to run the real read and then perform the in-place mutation, giving a
- * deterministic stand-in for a writer that lands inside the read window.
- */
+/** Equal-size in-place mutation preserves inode metadata; wrap real reads to mutate bytes inside the stable-read window. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 let onReadSync: (() => void) | null = null;
@@ -58,7 +49,6 @@ function documentBytes(sealed: string): string {
   }, null, 2)}\n`;
 }
 
-/** Overwrites the file through an independent descriptor without truncating. */
 function overwriteInPlace(path: string, content: string): void {
   const fd = openSync(path, "r+");
   try {
@@ -102,8 +92,7 @@ describe("stable secret read against equal-size in-place mutation", () => {
     const store = new SecretDocumentStore({ path, policy: "packaged", encryption });
     let mutations = 0;
     onReadSync = () => {
-      // Flip the on-disk bytes after every read pass, so no attempt can observe
-      // a document that stayed still for the whole of its own read window.
+      // Mutate after every read so no attempt can mistake changing bytes for a stable document.
       mutations += 1;
       overwriteInPlace(path, mutations % 2 === 1 ? hostile : honest);
     };
@@ -122,8 +111,6 @@ describe("stable secret read against equal-size in-place mutation", () => {
       overwriteInPlace(path, hostile);
     };
 
-    // The first attempt saw honest bytes that no longer describe the file; it
-    // must not be trusted. The retry reads the settled hostile document.
     expect(store.get("api")).toBe("hostile-swap");
     expect(readFileSync(path, "utf-8")).toBe(hostile);
   });

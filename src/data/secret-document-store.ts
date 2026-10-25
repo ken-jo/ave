@@ -91,11 +91,7 @@ function openSecretFileNoFollow(path: string): number {
   return openSync(path, constants.O_RDONLY | noFollow);
 }
 
-/**
- * Reads exactly `size` bytes from absolute file offsets, leaving the descriptor
- * position untouched so the same window can be read again for verification.
- * A short read returns the shorter buffer; the caller treats that as instability.
- */
+/** Read absolute offsets without moving the descriptor; short reads indicate instability. */
 function readWholeDescriptor(fd: number, size: number): Buffer {
   const buffer = Buffer.allocUnsafe(size);
   let filled = 0;
@@ -107,10 +103,7 @@ function readWholeDescriptor(fd: number, size: number): Buffer {
   return buffer;
 }
 
-/**
- * Digest of secret-document bytes, used only for equality against another
- * digest of the same window. Never logged, surfaced, or compared to a constant.
- */
+/** Compare byte digests only with the same window; never log or expose them. */
 function contentDigest(bytes: Buffer): Buffer {
   return createHash("sha256").update(bytes).digest();
 }
@@ -135,9 +128,7 @@ function readStableSecretFile(path: string): string {
       if (!isSameRegularFile(before, opened)) continue;
       const size = Number(opened.size);
       const bytes = readWholeDescriptor(fd, size);
-      // Trust is anchored to the bytes in hand: re-read the same window and
-      // require an identical digest. `fstat` identity cannot see an equal-size
-      // in-place mutation, so the content check — not the metadata — decides.
+      // Reread and compare content digests because equal-size in-place mutation defeats metadata identity.
       const readDigest = contentDigest(bytes);
       const verifyDigest = contentDigest(readWholeDescriptor(fd, size));
       const afterHandle = fstatSync(fd, { bigint: true });
@@ -390,7 +381,6 @@ export interface SecretDocumentStoreOptions {
   path: string;
   policy: SecretPolicy;
   encryption: SecretEncryption;
-  /** Runs synchronously after an atomic replacement, before lock release. */
   onCommittedSecretsChanged?: (keys: readonly string[], before: SecretDocumentIdentity | null, after: SecretDocumentIdentity) => void;
   platform?: NodeJS.Platform;
   runtime?: Partial<SecretStoreRuntime>;
@@ -418,7 +408,6 @@ export class SecretDocumentStore {
     this.onCommittedSecretsChanged = options.onCommittedSecretsChanged;
   }
 
-  /** Null means no document; malformed or regressed content is rejected above this layer. */
   identity(): SecretDocumentIdentity | null {
     if (this.runtime.read !== DEFAULT_RUNTIME.read || this.runtime.exists !== DEFAULT_RUNTIME.exists) {
       return this.readIdentity();
@@ -426,8 +415,7 @@ export class SecretDocumentStore {
     const stamp = this.statStamp();
     if (this.cachedIdentity?.stamp === stamp) return this.cachedIdentity.identity;
     const identity = this.readIdentity();
-    // The stable reader verifies bytes and path identity. Do not cache a
-    // sample across a metadata transition that happened while it read.
+    // Do not reuse samples across metadata changes observed by the stable reader.
     const after = this.statStamp();
     if (after === stamp) this.cachedIdentity = { stamp, identity };
     return identity;
@@ -453,7 +441,6 @@ export class SecretDocumentStore {
     return { fingerprint: documentFingerprint(raw), mutation: state.document.mutation ?? null };
   }
 
-  /** Stored presence and backend availability, without authenticating or decrypting a value. */
   has(key: string): boolean {
     validateSecretKey(key);
     const state = this.readState(false);
@@ -504,7 +491,6 @@ export class SecretDocumentStore {
     }, { forceWrite: true, forceChangedKeys: [key] });
   }
 
-  /** Resolves `false`, without writing, when `key` is absent (like `move`). */
   async delete(key: string): Promise<boolean> {
     validateSecretKey(key);
     return this.mutate(false, (document) => {
@@ -532,11 +518,7 @@ export class SecretDocumentStore {
     });
   }
 
-  /**
-   * Move the entry stored under `from` to `to` in one write, as stored — the
-   * value is never decrypted. An entry already under `to` wins and `from` is
-   * dropped. Resolves `false`, without writing, when `from` is absent.
-   */
+  /** Move stored ciphertext without decryption; the destination wins, and absent sources cause no write. */
   async move(from: string, to: string): Promise<boolean> {
     validateSecretKey(from);
     validateSecretKey(to);
@@ -604,13 +586,7 @@ export class SecretDocumentStore {
     }
   }
 
-  /**
-   * Whether this machine can actually hold a secret encrypted at rest.
-   *
-   * A product surface that offers to store a user credential needs this
-   * *before* it writes anything, so it can decline instead of failing with a
-   * storage error after the fact.
-   */
+  /** Check encrypted-at-rest availability before offering credential storage. */
   canStoreEncrypted(): boolean {
     return this.isEncryptionUsable();
   }
@@ -647,8 +623,7 @@ export class SecretDocumentStore {
 
   private assertCompatibleDocument(state: StoredState): void {
     this.assertCompatibleBackend(state);
-    // Authenticate the entire external-key document before a read or mutation,
-    // so an incorrect key cannot replace or delete unreadable credentials.
+    // Authenticate the whole document before reads or mutations so wrong keys cannot destroy unreadable credentials.
     if (this.externalKey) {
       for (const entry of Object.values(state.document.entries)) {
         if (!this.isEncryptionUsable()) throw new SecretEncryptionUnavailableError();

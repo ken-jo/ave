@@ -1,17 +1,4 @@
-/**
- * HMAC chain integrity tests.
- *
- * Spec ref: docs/architecture/permission-policy-design.md §3 Layer 7.
- *
- * Coverage:
- *   1. Round-trip: build chain → verify → ok.
- *   2. Tamper detection: mutate one line → verifyChain reports first
- *      broken index.
- *   3. Daily seal write/verify lifecycle.
- *   4. Secret persistence — ensureAuditSecret idempotence.
- *   5. File-secret-store mode bits.
- *   6. Genesis marker handling.
- */
+/** HMAC chains follow docs/architecture/permission-policy-design.md, Layer 7. */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { spawnSync } from "node:child_process";
 import {
@@ -130,9 +117,7 @@ describe("FileSecretStore", () => {
   });
 
   it("stages the secret under the shared atomic writer's hidden name, with the file mode it declares", () => {
-    // The secret store kept its own temp+fsync+rename copy that never retried a
-    // Windows transient lock; it now writes through `writeUtf8FileAtomicSync`,
-    // whose staging name is `.<name>.<pid>.<uuid>.tmp` and never survives.
+    // Atomic secret writes must leave no random staging files behind.
     const dir = join(workDir, "secrets");
     const store = new FileSecretStore(dir);
     store.write("audit-hmac.key", "value");
@@ -144,10 +129,7 @@ describe("FileSecretStore", () => {
 });
 
 describe("readStableRegularFileUtf8", () => {
-  // An unprivileged Windows process cannot create a file symlink (EPERM) but
-  // can create a directory junction, which lstat reports as a link; Windows
-  // opens without O_NOFOLLOW, so there the lstat/fstat check is the refusal.
-  // POSIX keeps the file symlink and adds the same directory link.
+  // Windows uses junctions and identity checks without O_NOFOLLOW; POSIX also exercises file symlinks.
   it.each(process.platform === "win32" ? ["directory link"] : ["file symlink", "directory link"])(
     "refuses a %s path — the check the journal and the secret store share",
     (linkKind) => {
@@ -156,14 +138,11 @@ describe("readStableRegularFileUtf8", () => {
     if (linkKind === "file symlink") {
       symlinkSync(target, join(workDir, "link.txt"));
     } else {
-      // A junction on Windows; the type is ignored on POSIX. Its target stays
-      // inside workDir, so a teardown that followed it deletes nothing else.
+      // Keep junction targets inside the fixture root so cleanup cannot delete unrelated files.
       mkdirSync(join(workDir, "real-dir"));
       symlinkSync(join(workDir, "real-dir"), join(workDir, "link.txt"), "junction");
     }
-    // O_NOFOLLOW refuses the open itself (ELOOP); the identity check behind it
-    // is the second line of defence for a swap after the open, and the only
-    // one on Windows.
+    // O_NOFOLLOW rejects links at open; identity checks also catch later swaps and protect Windows.
     expect(() => readStableRegularFileUtf8(join(workDir, "link.txt"), 1024, "fixture"))
       .toThrow(/ELOOP|fixture path is not a stable regular file/);
     expect(readStableRegularFileUtf8(target, 1024, "fixture")).toBe("real");
@@ -319,7 +298,6 @@ describe("computeLineHmac + verifyLineHmac", () => {
     const secret = "00".repeat(32);
     const line = '{"decision":"allow"}';
     const hash = computeLineHmac(secret, line);
-    // Mutate one hex char
     const tampered = (hash[0] === "0" ? "1" : "0") + hash.slice(1);
     expect(verifyLineHmac(secret, line, tampered)).toBe(false);
   });
@@ -360,11 +338,6 @@ describe("buildChainedEntries", () => {
 });
 
 describe("verifyChain", () => {
-  /**
-   * Build a 12-entry fixture so the tampered-mid-line test has plenty
-   * of context. ≥10 entries with one mid-line tampered (per hard
-   * rules).
-   */
   function buildFixture(secret: string, n = 12): { entries: Array<Record<string, unknown>>; lines: string[] } {
     const raw = Array.from({ length: n }, (_, i) => ({
       decision: i % 2 === 0 ? "allow" : "deny",
@@ -386,7 +359,6 @@ describe("verifyChain", () => {
   it("detects a tampered MIDDLE line at that row's entry hash", () => {
     const secret = "bb".repeat(32);
     const { lines } = buildFixture(secret, 12);
-    // Tamper line 5 — flip a string field
     const obj = JSON.parse(lines[5]) as { tool: string };
     obj.tool = "TAMPERED";
     lines[5] = JSON.stringify(obj);
@@ -402,7 +374,6 @@ describe("verifyChain", () => {
     const secret = "bb".repeat(32);
     const { lines } = buildFixture(secret, 12);
     const obj = JSON.parse(lines[0]) as { prevHash: string };
-    // Replace prevHash with a wrong one
     obj.prevHash = computeLineHmac(secret, "wrong-genesis");
     lines[0] = JSON.stringify(obj);
     const result = verifyChain(secret, lines);
@@ -509,7 +480,6 @@ describe("daily seal lifecycle", () => {
     writeFileSync(filePath, lines.join("\n") + "\n");
     sealDayFromFile(secret, store, filePath, date);
 
-    // Tamper line 1
     const obj = JSON.parse(lines[1]) as { decision: string };
     obj.decision = "allow";
     lines[1] = JSON.stringify(obj);
@@ -553,9 +523,7 @@ describe("daily seal lifecycle", () => {
   });
 
   it("seal verification works end-to-end with a fresh secret rotation", () => {
-    // Simulating "rotate the keychain secret" — the old seal becomes
-    // unverifiable, which is the *desired* property: a stolen file
-    // cannot be re-sealed without the new secret.
+    // Rotating the secret must invalidate old seals; stolen files cannot be resealed without the new key.
     const oldSecret = "11".repeat(32);
     const newSecret = "22".repeat(32);
     const store = new MemorySecretStore();
@@ -563,8 +531,6 @@ describe("daily seal lifecycle", () => {
     const entries = buildChainedEntries(oldSecret, [{ decision: "allow", n: 1 }]);
     writeFileSync(filePath, JSON.stringify(entries[0]) + "\n");
     sealDayFromFile(oldSecret, store, filePath, "2026-05-09");
-    // Rotation — store the new secret. The old seal stays in store
-    // but verification under the new secret fails.
     const result = verifyDailySeal(newSecret, store, filePath, "2026-05-09");
     expect(result.ok).toBe(false);
   });

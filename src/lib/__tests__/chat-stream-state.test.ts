@@ -401,8 +401,6 @@ describe("chat-stream-state", () => {
     expect(entries[2]).toMatchObject({
       kind: "ask_user_answer",
       sourceToolUseId: "ask-1",
-      // Each half is labelled: a picked chip and a typed sentence read as
-      // different kinds of answer rather than one longer selection.
       rows: [
         { label: "범위", value: "선택: IT/경제" },
         { label: "개수", value: "입력: 10개" },
@@ -478,12 +476,8 @@ describe("chat-stream-state", () => {
   });
 
   it("preserves assistant entry with empty text on tool-only turn (no placeholder)", () => {
-    // Tool-only turn: assistant streamed marker-only text (stripped to "") but
-    // a tool_group sibling exists.  finalizeStreamingAssistant must keep the
-    // entry with text "" rather than splicing it out — and must NOT inject the
-    // user-visible placeholder.
+    // Keep marker-only assistant rows beside tool groups without injecting an empty-response placeholder.
     let entries: ChatEntry[] = appendUserEntry([], "작업 실행");
-    // Simulate a marker-only delta that was accumulated during streaming
     entries = upsertStreamingAssistant(entries, "<title>임시</title>");
     entries = applyToolStart(entries, {
       groupId: "round-1",
@@ -498,19 +492,15 @@ describe("chat-stream-state", () => {
       result: "file.ts",
       isError: false,
     });
-    // overrideText "" simulates detectFromStream stripping markers to empty
     entries = finalizeStreamingAssistant(entries, "", { phase: "work", overrideText: "" });
 
     const assistantEntry = entries.find((e) => e.kind === "assistant");
     expect(assistantEntry).toBeDefined();
     expect(assistantEntry).toMatchObject({ kind: "assistant", text: "", streaming: false });
-    // Must NOT contain EMPTY_ASSISTANT_RESPONSE_TEXT placeholder
     expect((assistantEntry as Extract<ChatEntry, { kind: "assistant" }>).text).toBe("");
   });
 
   it("splices assistant entry on truly empty turn with no tool_group or checkpoint siblings", () => {
-    // Assistant had a streaming entry (marker-only delta) but no tool siblings.
-    // finalizeStreamingAssistant should splice it out entirely.
     let entries: ChatEntry[] = appendUserEntry([], "질문");
     entries = upsertStreamingAssistant(entries, "<title>임시</title>");
     entries = finalizeStreamingAssistant(entries, "", { overrideText: "" });
@@ -693,12 +683,7 @@ describe("setAssistantError — Issue #911 systemNotice option", () => {
   });
 });
 
-/**
- * The optimistic user bubble exists so a send feels immediate. When the send is
- * REFUSED, main recorded no turn — so leaving the bubble shows the user a message that
- * exists only in this renderer: absent from the session file, gone on reload, and
- * indistinguishable from one that was actually sent.
- */
+/** Remove rejected optimistic bubbles because main persisted no turn. */
 describe("markTurnAssistantInterrupted — the turn the abort cut short", () => {
   const answered = (text: string): ChatEntry[] => [
     { kind: "user", text: "q" },
@@ -768,15 +753,13 @@ describe("dropOptimisticUserEntry", () => {
   });
 
   it("leaves the transcript alone when the last entry is not that bubble", () => {
-    // A stream frame for a PREVIOUS turn can land between the append and the rejection.
-    // Dropping whatever is last would delete an assistant's answer instead.
+    // Match the optimistic bubble by identity; delayed frames may make another entry last.
     const withAssistant: ChatEntry[] = [
       { kind: "user", text: "refused turn" },
       { kind: "assistant", text: "still streaming" },
     ];
     expect(dropOptimisticUserEntry(withAssistant, "refused turn")).toEqual(withAssistant);
 
-    // And a different user bubble is somebody else's content, not ours to remove.
     const otherUser: ChatEntry[] = [{ kind: "user", text: "a different message" }];
     expect(dropOptimisticUserEntry(otherUser, "refused turn")).toEqual(otherUser);
 
@@ -784,12 +767,7 @@ describe("dropOptimisticUserEntry", () => {
   });
 });
 
-/**
- * `user_message` normalization — every turn announces its input on the one
- * stream; this single chokepoint decides whether the desktop transcript still
- * needs a row for it. External-surface turns (bridge/Tailnet/loopback) do;
- * origins this surface echoed optimistically at send time must not duplicate.
- */
+/** Append externally originated user messages, but reconcile locally echoed inputs without duplicates. */
 describe("applyUserMessageFrame", () => {
   it("appends a user row carrying its external origin for a bridge turn", () => {
     const entries: ChatEntry[] = [{ kind: "assistant", text: "earlier reply" }];
@@ -829,8 +807,6 @@ describe("applyUserMessageFrame", () => {
   });
 
   it("appends the row for a turn the host submitted itself", () => {
-    // A session goal reviving: the host started the turn, so no bubble was
-    // echoed here and the announced row is the only one this transcript gets.
     const next = applyUserMessageFrame([], {
       text: "Continuing the goal 2/50",
       origin: "agent-message",
@@ -842,8 +818,6 @@ describe("applyUserMessageFrame", () => {
   });
 
   it("still adds no row for an agent-message turn that is not host-submitted", () => {
-    // The sub-agent parent wake shares the origin but presents its input as a
-    // report; adding a plain bubble there would double it.
     const entries: ChatEntry[] = [{ kind: "user", text: "already echoed" }];
     expect(applyUserMessageFrame(entries, {
       text: "child report",
@@ -873,12 +847,7 @@ describe("applyUserMessageFrame", () => {
   });
 
   it("leaves the mid-turn bubbles that merely lack an id alone", () => {
-    // The control group for binding by marker instead of by inference. A
-    // drained guide and a child's report are user bubbles the host announced
-    // separately; neither is waiting for this turn's identity, and each sits
-    // ahead of the echo in the transcript. Binding to "the first user entry
-    // without an id" would hand this turn's row id to one of them, and every
-    // action that names a row would then act on the wrong message.
+    // Bind only the marked pending echo; earlier unbound guide or child-report rows belong to different messages.
     const entries: ChatEntry[] = appendUserEntry(
       [
         { kind: "user", text: "queued guide", injectHint: "queue" },
@@ -899,10 +868,7 @@ describe("applyUserMessageFrame", () => {
   });
 
   it("claims nothing in a transcript whose rows were rebuilt from disk", () => {
-    // A reloaded session's bubbles carry the ids they were saved with, and a
-    // session written before ids existed carries none — but neither is an
-    // optimistic echo, so a turn announced from another surface must not
-    // rewrite one of them.
+    // Reloaded rows are never pending echoes, even when older saved rows have no ids.
     const entries: ChatEntry[] = [
       { kind: "user", text: "a row from a legacy session file" },
     ];
@@ -921,8 +887,6 @@ describe("applyUserMessageFrame", () => {
     const bound = applyUserMessageFrame(entries, {
       text: "sent once", origin: "user-keyboard", messageId: "row-1",
     });
-    // A second frame for the same turn (a resubscribe replay) finds no pending
-    // echo, so it cannot overwrite the identity already bound.
     const again = applyUserMessageFrame(bound, {
       text: "sent once", origin: "user-keyboard", messageId: "row-2",
     });
@@ -945,7 +909,6 @@ describe("applyUserMessageFrame", () => {
 describe("transcript frame reducer (shared by the main and the side chat)", () => {
   const frame = (f: Partial<ChatStreamEvent> & { type: ChatStreamEvent["type"] }): ChatStreamEvent =>
     f as ChatStreamEvent;
-  /** The provider-status placeholder the main chat shows while retrying. */
   const pendingStatus = (): ChatEntry => ({
     kind: "assistant",
     text: `${t("useChatState.llmStatusAttemptFirst")} (2/5)`,
@@ -1121,8 +1084,6 @@ describe("reasoning duration", () => {
       let entries: ChatEntry[] = upsertStreamingReasoning([{ kind: "user", text: "q" }], "a");
       now.mockReturnValue(4_000);
       entries = upsertStreamingReasoning(entries, "a longer thought");
-      // Finalization waits for the answer that streams after the thinking
-      // (assistant_round / done); those 9.5 s were not spent thinking.
       now.mockReturnValue(13_500);
       entries = finalizeStreamingReasoning(entries, "");
       const reasoning = entries.find((e) => e.kind === "reasoning");

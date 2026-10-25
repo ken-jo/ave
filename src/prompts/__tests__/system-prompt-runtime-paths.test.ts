@@ -4,8 +4,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { makeSystemPromptBuilder } from "./test-helpers.js";
 import { verifyAveScratchDir } from "../../shared/ave-scratch.js";
 
-// The scratch directory is a boot-time artifact; the default here is "absent"
-// so the two store paths can be asserted exactly, and one case flips it on.
 vi.mock("../../shared/ave-scratch.js", () => ({
   verifyAveScratchDir: vi.fn(() => ({ ok: false, path: "", reason: "absent in test" })),
 }));
@@ -24,8 +22,6 @@ afterEach(() => {
 
 describe("Operational session paths in the model context", () => {
   it("provides the default absolute store without requiring a session identity", () => {
-    // The default is `<home>/.ave`; a scratch home stands in for the
-    // person's, which a test process may not resolve.
     const home = join(tmpdir(), "session-path-default-home");
     vi.stubEnv("HOME", home);
     vi.stubEnv("USERPROFILE", home);
@@ -44,8 +40,7 @@ describe("Operational session paths in the model context", () => {
   });
 
   it("offers the scratch directory only while the host verifies it as app-owned", () => {
-    // Keep the runner's isolated AVE_HOME: clearing it would resolve the
-    // application home to the person's real ~/.ave, which the test guard refuses.
+    // Preserve isolated AVE_HOME; clearing it would resolve the real application home.
     const scratch = join(tmpdir(), "ave-scratch-verified");
     vi.mocked(verifyAveScratchDir).mockReturnValue({ ok: true, path: scratch });
 

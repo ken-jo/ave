@@ -1,14 +1,4 @@
-/**
- * The alerts service: the one writer of `settings.alerts` and the host side
- * of `raiseAlert` / `withdrawAlert`.
- *
- * A raise runs the pipeline in order, each step producing exactly one result
- * — grant, shape, predecessor, the user's toggle, open or closed identity,
- * cooldown, rate — and only an accepted alert is rendered, staged, notified,
- * audited and announced. Windows (cooldown, rate, refresh budget) are charged
- * only after acceptance. The card, the OS notification and the conversation
- * an accept starts belong to the host; the plugin supplies typed slot values.
- */
+/** Only accepted raises charge budgets and deliver host-owned cards, notifications, audit records, and events. */
 import type {
   AlertInput,
   AlertKindDeclaration,
@@ -45,42 +35,33 @@ import { formatPluginNotificationTitle, resolvePluginDisplayName } from "../shar
 
 const log = createLogger("alerts");
 
-/** How often open alerts are checked for the end of their lifetime. */
 const EXPIRY_SWEEP_MS = 60_000;
 
 export type AlertWithdrawReason = "withdrawn" | "expired" | "evicted" | AlertCardClosedReason;
 
 export interface AlertsServiceDeps {
   migration: AlertMigrationPorts;
-  /** The `alerts` feature namespace directory. */
   dir: () => string;
   settings: {
     get(): AlertSettings;
     set(next: AlertSettings): Promise<void>;
   };
-  /** Plugin ids installed when the service first runs; they predate it. */
+  /** Plugins present on first service boot count as existing installs. */
   installedPluginIds: () => Promise<readonly string[]>;
   appVersion: string;
   locale: () => string;
-  /** Whether the plugin a kind inherits from still owns the user's choice. */
   predecessorBlocks: (pluginId: string, sourceHint: string) => Promise<boolean>;
   overlay: {
-    /**
-     * Stage or refresh a card in the window, when there is one. The service
-     * keeps every staged card, so a window that appears later pulls them.
-     */
+    /** Retain staged cards for windows that appear later. */
     show(card: AlertCard): void;
     dismiss(cardId: string): void;
   };
   notifications: {
-    /** Whether a cue fired now without bypassing the focus gate would be an in-app toast. */
     isFocusGateActive(): boolean;
     fire(opts: { kind: "alert"; title: string; body: string; bypassFocusGate?: boolean; sticky?: boolean }): void;
   };
-  /** The host event bus. */
   emit: (type: "alert.raised" | "alert.withdrawn", payload: Record<string, unknown>) => void;
   audit: (entry: AuditEntry) => void;
-  /** Invalidate the renderer's kind list after registration or a settings write. */
   kindsChanged?: () => void;
   now?: () => number;
 }
@@ -95,7 +76,6 @@ function isPriority(value: unknown): value is AlertPriority {
   return value === "low" || value === "normal" || value === "high";
 }
 
-/** The overlay item id of an alert's card. */
 function cardId(alertId: string): string {
   return `alert:${alertId}`;
 }
@@ -110,7 +90,6 @@ export class AlertsService {
   private readonly lastFired = new Map<string, number>();
   private readonly rate = new TriggerConversationRateLimiter(ALERT_RATE_WINDOW_MS, ALERT_RATE_MAX_CALLS);
   private readonly denyThrottle = new TriggerDenyAuditThrottle();
-  /** Rendered cards of open user-visible alerts, for a window that appears or reloads later. */
   private readonly cards = new Map<string, AlertCard>();
   private readonly now: () => number;
   private secret: Buffer | null = null;
@@ -124,11 +103,7 @@ export class AlertsService {
     this.now = deps.now ?? Date.now;
   }
 
-  /**
-   * Load the install secret, the identity tables and the registration ledger,
-   * once. Every other entry point waits for it, so a plugin that registers or
-   * raises while it runs is served after it.
-   */
+  /** Every registration and raise must await the one-time identity and ledger load. */
   load(): Promise<void> {
     this.loading ??= (async () => {
       this.secret = await loadInstallSecret(this.deps.dir());
@@ -143,7 +118,6 @@ export class AlertsService {
     return this.loading;
   }
 
-  /** Check lifetimes once a minute; stops with {@link stop}. */
   start(): void {
     if (this.sweepTimer !== null) return;
     this.sweepTimer = setInterval(() => this.sweep(), EXPIRY_SWEEP_MS);
@@ -155,16 +129,11 @@ export class AlertsService {
     this.sweepTimer = null;
   }
 
-  /**
-   * One registration of a plugin — every start, whether from install, update
-   * or load. Writes the missing entries of its declared kinds and escalates
-   * entries whose declared visibility went up.
-   */
   register(pluginId: string, manifest: Pick<PluginManifest, "alerts" | "configInherits" | "name">, isReady: () => boolean = () => true): Promise<void> {
     return this.prepareRegistration(pluginId, manifest, isReady).publish();
   }
 
-  /** Keep candidate grants, choices and inheritance private until publication. */
+  /** Keep candidate grants, choices, and inheritance private until publication. */
   prepareRegistration(pluginId: string, manifest: Pick<PluginManifest, "alerts" | "configInherits" | "name">, isReady: () => boolean = () => true): {
     publish(): Promise<void>;
     unpublish(): void;
@@ -206,12 +175,10 @@ export class AlertsService {
     return result;
   }
 
-  /** Retry pending inheritance when records, installed state, or host kinds change. */
   reconcileMigration(): Promise<void> {
     return this.mutate(async () => { await this.loaded(); await this.migration.run(); });
   }
 
-  /** Host kinds are registered before the Work Board scanner can raise them. */
   registerHostKinds(): Promise<void> {
     return this.register(ALERT_HOST_PLUGIN_ID, {
       alerts: { reasoning: translate("en", "be_alerts.reasoning"), kinds: [...HOST_ALERT_KINDS] },
@@ -250,7 +217,7 @@ export class AlertsService {
     return rows.flat();
   }
 
-  /** Calling setKind, including an empty patch, acknowledges the current declaration and clears its flags. */
+  /** Even an empty settings patch acknowledges the current declaration and clears flags. */
   async setKind(kindKey: unknown, patch: unknown): Promise<SetAlertKindResult> {
     if (!isAlertKindKey(kindKey) || !isAlertKindPatch(patch)) return { ok: false, error: "invalid-arguments" };
     const [pluginId, kindId] = kindKey.split(":") as [string, string];
@@ -261,7 +228,7 @@ export class AlertsService {
     if (!kind) return { ok: false, error: "kind-not-registered" };
     if (patch.osNotification === true && !kind.osNotification) return { ok: false, error: "invalid-arguments" };
     const result = await this.mutate(async (): Promise<SetAlertKindResult> => {
-      // An uninstall or update while this call waited must not consent to a stale declaration.
+      // Recheck the declaration after waiting so uninstall or update cannot consent to stale data.
       if (this.registrations.get(pluginId) !== pending) return { ok: false, error: "kind-not-registered" };
       const settings = this.deps.settings.get();
       const existing = settings.kinds[kindKey]!;
@@ -312,7 +279,7 @@ export class AlertsService {
       return { status: "blocked_by_predecessor", pluginId: predecessor.pluginId };
     }
 
-    // A feed may revoke the caller while predecessor lookup is pending.
+    // Recheck revocation after asynchronous predecessor lookup.
     if (this.revokedPlugins.has(pluginId)) return { status: "kind_not_granted", kind: kind.id };
     const settings = this.deps.settings.get();
     const choice = settings.kinds[alertKindKey(pluginId, kind.id)];
@@ -338,8 +305,7 @@ export class AlertsService {
         this.auditSuppressed(pluginId, kind.id, "rate_limited");
         return { status: "rate_limited" };
       }
-      // The identity keeps the level it opened at: a card-less alert gains no
-      // card by being raised again. A card lost to a restart is drawn again.
+      // Refresh preserves opening visibility; redraw restart-lost cards without promoting cardless alerts.
       if (open.visibility === "user-visible") this.stageCard(pluginId, registration.pluginLabel, kind.id, alertId, rendered, priority, now);
       return { status: "refreshed", alertId };
     }
@@ -358,7 +324,6 @@ export class AlertsService {
       return { status: "rate_limited" };
     }
 
-    // Accepted: charge the windows, then deliver.
     this.lastFired.set(cooldownKey, now);
     this.rate.record(pluginId, now);
     const evicted = this.store.add({
@@ -387,20 +352,18 @@ export class AlertsService {
     return { status: "raised", alertId, delivered: { card, osNotification: cues.os, toast: cues.toast } };
   }
 
-  /** Withdraw the caller's own open alert; `false` when none is open for `(kind, key)`. */
   async withdraw(pluginId: string, kindId: string, key: string): Promise<boolean> {
     await this.loaded();
     if (typeof kindId !== "string" || typeof key !== "string" || !ALERT_KEY_RE.test(key)) return false;
     const alertId = alertIdFor(this.requireSecret(), pluginId, kindId, key);
-    // The id is keyed by the caller's own plugin id, so another plugin's
-    // alert is not something it can name.
+    // Caller-keyed ids prevent naming another plugin's alert.
     const open = this.store.remove(alertId);
     if (!open) return false;
     this.finish(open, "withdrawn");
     return true;
   }
 
-  /** The user accepted or dismissed a card: its identity is closed for the rest of its lifetime. */
+  /** User answers close an identity for the remainder of its lifetime. */
   cardClosed(alertId: string, reason: AlertCardClosedReason): boolean {
     const open = this.store.close(alertId);
     if (!open) return false;
@@ -409,12 +372,11 @@ export class AlertsService {
     return true;
   }
 
-  /** Every staged card, for a window that appeared or reloaded after the alert was raised. */
   listOpen(): AlertCard[] {
     return [...this.cards.values()];
   }
 
-  /** Revocation withdraws cards without forgetting the installed plugin's choices. */
+  /** Revocation withdraws cards but preserves installed choices. */
   setRevokedPlugins(pluginIds: readonly string[]): void {
     this.revokedPlugins = new Set(pluginIds);
     for (const pluginId of this.revokedPlugins) {
@@ -423,7 +385,7 @@ export class AlertsService {
     this.deps.kindsChanged?.();
   }
 
-  /** An uninstalled plugin's cards go; its choices stay, marked absent, until they age out. */
+  /** Uninstall removes cards while retaining choices until expiry. */
   async pluginUninstalled(pluginId: string): Promise<void> {
     await this.mutate(async () => {
       await this.loaded();
@@ -438,12 +400,10 @@ export class AlertsService {
     this.deps.kindsChanged?.();
   }
 
-  /** End every open alert past its lifetime. */
   sweep(): void {
     for (const open of this.store.expire(this.now())) this.finish(open, "expired");
   }
 
-  /** Resolves once every queued write has settled. */
   async flush(): Promise<void> {
     await this.mutations;
     await this.store.flush();
@@ -480,19 +440,11 @@ export class AlertsService {
     try {
       this.deps.overlay.show(item);
     } catch (err) {
-      // The accepted card remains queued for the next window snapshot.
       log.warn(`alert card delivery failed: ${errorMessage(err)}`);
     }
   }
 
-  /**
-   * One cue at most, after the alert is accepted and staged. The OS
-   * notification needs the kind to declare one, its toggle and the master
-   * switch on, a priority above `low`, and no focused window unless the kind
-   * bypasses the focus gate. Otherwise a `summary-only` kind — which has no
-   * card — is heard as an in-app toast while a window has focus; a `high`
-   * toast stays until the user dismisses it.
-   */
+  /** Gate OS notifications on declared capability, consent, priority, and focus. Focused summary-only alerts use toasts; high-priority toasts persist. */
   private notify(
     pluginId: string,
     pluginDisplayName: string,
@@ -530,7 +482,6 @@ export class AlertsService {
     return { toast, os };
   }
 
-  /** An open alert left without the user: its card goes and the bus hears why. */
   private finish(open: OpenAlert, reason: Exclude<AlertWithdrawReason, AlertCardClosedReason>): void {
     if (this.cards.delete(open.alertId)) {
       try {
@@ -559,7 +510,7 @@ export class AlertsService {
     });
   }
 
-  /** The audit log must not turn an answered raise into a failed one. */
+  /** Audit failure must not turn an answered raise into a failed one. */
   private writeAudit(entry: AuditEntry): void {
     try {
       this.deps.audit(entry);

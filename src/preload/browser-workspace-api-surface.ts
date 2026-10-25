@@ -37,7 +37,7 @@ const factor = (value: unknown): value is { factor: number } => {
     && Number.isFinite(data.factor) && data.factor >= 0.5 && data.factor <= 3;
 };
 
-/** Host-only browser chrome returns validated snapshots, never raw IPC objects. */
+/** Return validated host-only browser snapshots, never raw IPC objects. */
 export function buildBrowserWorkspaceApiSurface(): BrowserWorkspaceApi {
   return {
     getState: async () => result(await ipcRenderer.invoke(CHANNELS.browserWorkspace.getState), state),

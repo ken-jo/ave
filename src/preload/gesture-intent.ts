@@ -1,14 +1,4 @@
-// gesture-intent.ts — the SINGLE shared home of the user-keyboard gesture-intent
-// token machinery (#1409 + #1411 C11).
-//
-// SECURITY-SENSITIVE: this is the trust gate for mutating IPC. Both preload
-// surfaces import from HERE so there is exactly ONE `userKeyboardIntentTokens`
-// map: the public surface MINTS tokens (`captureUserKeyboardIntent`) and
-// CONSUMES them (`consumeUserKeyboardIntent`, from chatSend); the internal
-// surface reports live activation (`ipcUserKeyboardIntent`) on the gesture-gated
-// permission/policy/sandbox-install calls. If the two surfaces owned separate
-// maps the gate would silently break, so the map + all helpers are defined
-// exactly once, here.
+// Both surfaces must share one gesture-token map so minting, reporting, and consumption enforce the same intent.
 import { randomUUID } from "node:crypto";
 import type {
   UserKeyboardIntent,

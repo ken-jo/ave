@@ -49,7 +49,6 @@ describe("headless direct entry", () => {
     vi.doMock("../main/main-paths.js", () => ({ projectRoot: root }));
     vi.doMock("../headless-host.js", () => {
       observed.push({ ...process.env });
-      // Importing the host runs nothing; the entry starts it exactly once.
       return { runHeadlessHost: () => { runs.push({ ...process.env }); } };
     });
 

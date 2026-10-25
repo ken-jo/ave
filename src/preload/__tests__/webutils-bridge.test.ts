@@ -13,10 +13,7 @@ vi.mock("electron", () => ({
 import { CHANNELS } from "../../contract/app-contract.js";
 import { prepareFileDrop, resolveDroppedPaths } from "../webutils-bridge.js";
 
-// A dropped `File` cannot cross IPC, so `webUtils.getPathForFile` must be called
-// here in preload. These tests pin the two invariants the drop trust flow needs:
-// (1) real paths flow through in drop order, (2) non-file drags (which resolve to
-// "") are dropped so no empty candidate reaches the main-side dropPrepare gate.
+// Resolve real File objects in preload, preserving drop order and excluding empty paths before IPC.
 describe("resolveDroppedPaths (webUtils preload bridge, #1458)", () => {
   it("resolves dropped files to their real paths in drop order", () => {
     getPathForFileMock.mockReset();
@@ -37,7 +34,6 @@ describe("resolveDroppedPaths (webUtils preload bridge, #1458)", () => {
       .mockReturnValueOnce("") // text/url drag — no backing file
       .mockReturnValueOnce("/Users/me/real");
     const files = [{ name: "x" }, { name: "y" }] as unknown as File[];
-    // The "" candidate is dropped; only the real path survives.
     expect(resolveDroppedPaths(files)).toEqual(["/Users/me/real"]);
   });
 
@@ -48,8 +44,7 @@ describe("resolveDroppedPaths (webUtils preload bridge, #1458)", () => {
   });
 });
 
-// Composer drop: the main world hands over File objects and never a path. Only
-// OS-backed files (non-empty getPathForFile) are registered, in one preload step.
+// Accept File objects only; register OS-backed paths in the same preload step.
 describe("prepareFileDrop (composer drop registration)", () => {
   it("registers only the resolved paths with main and returns its answer", async () => {
     getPathForFileMock.mockReset();

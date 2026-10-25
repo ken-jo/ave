@@ -1,15 +1,5 @@
-/**
- * #237 Option B — Plugin Preload Bridge Security Tests
- *
- * Verifies that the plugin webview preload (plugin-preload.ts) exposes ONLY
- * the narrow `window.avePlugin` bridge and does NOT leak any host-level APIs
- * (`window.aveApi`, `window.aveHost`, `window.ave`).
- *
- * We load the preload once and capture its contextBridge registrations.
- */
+/** The plugin preload must expose only the narrow bridge, never host-level APIs. */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-
-// ─── Capture contextBridge registrations ─────────────────────────────────────
 
 const exposed = new Map<string, unknown>();
 const mockInvoke = vi.fn();
@@ -21,14 +11,7 @@ function setMainFrame(value: boolean): void {
   Object.defineProperty(process, "isMainFrame", { configurable: true, value });
 }
 
-// Plugin preload uses NAMED imports
-// (`import { contextBridge, ipcRenderer } from "electron"`) so esbuild
-// bundles them as `require("electron").contextBridge` directly — no
-// `__toESM` wrapper, no `.default` indirection. The mock therefore exposes
-// `contextBridge` and `ipcRenderer` as named exports.
-// Named exports only — no `default` wrapper. A regression to the old
-// `import electron from "electron"` default-import pattern will fail here
-// because the mock no longer supplies a `.default` object.
+// Named-only mock exports catch accidental default imports.
 vi.mock("electron", () => {
   const contextBridge = {
     exposeInMainWorld: (key: string, value: unknown) => {
@@ -46,9 +29,8 @@ vi.mock("electron", () => {
   };
 });
 
-// Load the preload module once — top-level code executes once per module instance.
 beforeAll(async () => {
-  // This Node-based unit test emulates Electron's top-level preload frame.
+  // Emulate the top preload frame; child frames must not receive this bridge.
   setMainFrame(true);
   await import("../plugin-preload.js");
 });
@@ -67,8 +49,6 @@ beforeEach(() => {
   mockRemoveListener.mockReset();
   vi.unstubAllGlobals();
 });
-
-// ─── Positive / negative contract tests ───────────────────────────────────────
 
 describe("plugin-preload bridge", () => {
   it("exposes window.avePlugin with calls, one-shot grants, and events", () => {
@@ -119,8 +99,7 @@ describe("plugin-preload bridge", () => {
   });
 
   it("callTool invokes ave:plugin:call-tool IPC channel without pluginId arg", async () => {
-    // pluginId is now resolved by main from event.sender.id, NOT supplied
-    // by the renderer — the bridge MUST NOT pass it.
+    // Main resolves plugin identity from the sender; the renderer must not supply it.
     const bridge = exposed.get("avePlugin") as { callTool: (name: string, args?: unknown) => Promise<unknown> };
     mockInvoke.mockResolvedValueOnce({ ok: true, result: "pong" });
 
@@ -191,14 +170,11 @@ describe("plugin-preload bridge", () => {
       "my.custom.event",
       { foo: "bar" },
     );
-    // Lock the Promise<void> contract — emitEvent success resolves to undefined,
-    // not the host's `{ok:true}` envelope.
+    // Successful fire-and-forget calls resolve to undefined rather than the host envelope.
     expect(value).toBeUndefined();
   });
 
   it("callTool resolves to undefined when host returns { ok: true } with no result field", async () => {
-    // Symmetric to emitEvent — a fire-and-forget tool that succeeds with no
-    // payload should resolve to undefined, not the envelope.
     const bridge = exposed.get("avePlugin") as { callTool: (name: string, args?: unknown) => Promise<unknown> };
     mockInvoke.mockResolvedValueOnce({ ok: true });
 
@@ -232,8 +208,7 @@ describe("plugin-preload bridge", () => {
     await expect(bridge.getEntryUrl()).rejects.toThrow(/unauthorized-frame/);
   });
 
-  // register-before-attach (#447): main now returns "not-registered" instead of
-  // the old "registration-timeout" sentinel. Shell never retries — it just throws.
+  // An unregistered webview fails immediately; the shell must not retry.
   it("getEntryUrl surfaces the not-registered error verbatim", async () => {
     const bridge = exposed.get("avePlugin") as { getEntryUrl: () => Promise<string> };
     mockInvoke.mockResolvedValueOnce({ ok: false, error: "not-registered" });
@@ -257,8 +232,7 @@ describe("plugin-preload bridge", () => {
   });
 
   it("getTheme returns null on cold-boot when host has not broadcast yet", async () => {
-    // Pre-paint must tolerate `theme: null` so the shell falls back to
-    // its own initial paint rather than blocking the entry import.
+    // A null theme must not block entry import.
     const bridge = exposed.get("avePlugin") as { getTheme: () => Promise<unknown> };
     mockInvoke.mockResolvedValueOnce({ ok: true, theme: null });
 
@@ -307,9 +281,7 @@ describe("plugin-preload bridge", () => {
   });
 
   it("does not expose the bridge or IPC listener in a child frame", async () => {
-    // A session `frame` preload can execute in a plugin-controlled iframe.
-    // Reload the module under Electron's child-frame signal and require a
-    // fail-closed result rather than merely relying on main-side sender checks.
+    // Reload as a child frame to verify bridge installation fails closed.
     exposed.clear();
     vi.resetModules();
     setMainFrame(false);

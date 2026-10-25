@@ -1,11 +1,4 @@
-/**
- * Narrow host-renderer bridge for arming the desk-armed away answerer.
- *
- * A leaf like the other owner surfaces: plugin frames and public/external
- * surfaces do not receive it. Both mutations mint their own live keyboard
- * intent here rather than accepting one from the caller, so a renderer cannot
- * replay or fabricate the gesture that arms an answerer.
- */
+/** Expose only to host renderers and mint live keyboard intent locally; callers cannot supply or replay it. */
 import { ipcRenderer } from "electron";
 import { CHANNELS } from "../contract/app-contract.js";
 import {
@@ -40,7 +33,6 @@ async function invokeMutation(
   }
 }
 
-/** Build the private `window.aveApi.awayAuthority` namespace. */
 export function buildAwayAuthorityApiSurface(): AwayAuthorityOwnerApi {
   return Object.freeze({
     async status(): Promise<AwayAuthorityStatusResult> {
@@ -63,9 +55,7 @@ export function buildAwayAuthorityApiSurface(): AwayAuthorityOwnerApi {
       return invokeMutation(CHANNELS.awayAuthority.arm, {
         chatGroupId: input.chatGroupId,
         mode: input.mode,
-        // Rebuilt rather than forwarded: the array crosses a context bridge and
-        // main's shape guard demands exact keys, so a caller's exotic array
-        // subclass or extra properties must not travel with it.
+        // Rebuild context-bridged arrays so subclasses and extra keys cannot bypass main's exact shape guard.
         directories: [...input.directories],
         duration: input.duration,
         budget: input.budget,

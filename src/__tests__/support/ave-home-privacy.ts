@@ -1,6 +1,5 @@
 import { afterEach, beforeEach } from "vitest";
 
-/** Synthetic verified boot evidence; descriptor enforcement has its own tests. */
 export function useVerifiedAveHomePrivacy(): void {
   beforeEach(async () => {
     const { aveHome, setAveHomePrivacyAtBoot } = await import("../../shared/ave-home.js");

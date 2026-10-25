@@ -1,8 +1,4 @@
-/**
- * Run-transcript persistence contract: appends accumulate to a per-run JSONL
- * file, survive a "restart" (a fresh reader over the same storage), and each
- * run id is an independent file (re-run never overwrites a prior run).
- */
+/** Persist each run independently and append without overwriting earlier runs; fresh readers must recover all events. */
 import { describe, it, expect } from "vitest";
 import {
   createRunTranscript,
@@ -27,7 +23,6 @@ describe("run-transcript", () => {
     expect(events).toHaveLength(4);
     expect(events.map((e) => e.kind)).toEqual(["turn", "plan", "turn", "output"]);
     expect(events[1]).toMatchObject({ kind: "plan", text: "the plan" });
-    // Each event carries an ISO timestamp.
     expect(events[0].ts).toBe(new Date(NOW).toISOString());
   });
 
@@ -40,7 +35,6 @@ describe("run-transcript", () => {
       text: "before restart",
     });
 
-    // "Restart": the in-memory file persists; a brand-new read sees it.
     const after = await readRunTranscript(storage, 7, "run-X");
     expect(after).toHaveLength(1);
     expect(after[0].text).toBe("before restart");
@@ -59,7 +53,6 @@ describe("run-transcript", () => {
 
   it("rejects a traversal-bearing runId (path-escape guard)", async () => {
     const storage = memTranscriptStorage();
-    // Plant a file the traversal would target, then prove it is NOT read.
     storage.files["../secret.jsonl"] = JSON.stringify({ ts: "x", phase: "done", kind: "output", text: "leak" }) + "\n";
     expect(await readRunTranscript(storage, 1, "../../secret")).toEqual([]);
     expect(await readRunTranscript(storage, 1, "..")).toEqual([]);
@@ -69,7 +62,6 @@ describe("run-transcript", () => {
     const storage = memTranscriptStorage();
     expect(await readRunTranscript(storage, 99, "nope")).toEqual([]);
 
-    // A valid line followed by a partially-flushed line.
     storage.files[runTranscriptPath(1, "torn")] =
       JSON.stringify({ ts: "x", phase: "done", kind: "output", text: "ok" }) + "\n{ partial";
     const events = await readRunTranscript(storage, 1, "torn");

@@ -1,11 +1,6 @@
-/**
- * D6 — ave:feedback:submit IPC handler tests.
- * Covers sender validation + audit write format.
- */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { foreignFrameEvent, hostFrameEvent } from "./test-helpers.js";
 
-// Capture registered handlers by channel name.
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 
 vi.mock("electron", () => ({
@@ -18,14 +13,11 @@ vi.mock("electron", () => ({
   dialog: {},
 }));
 
-// Mock AuditLogger
 const auditLog = vi.fn();
 
-// Mock StarredStore
 const starredList = vi.fn(() => [] as unknown[]);
 const starredAdd = vi.fn(() => ({ id: "x", sessionId: "s1", messageIndex: 0, role: "assistant", text: "", starredAt: new Date().toISOString() }));
 
-// Mock FeedbackStore
 const feedbackAdd = vi.fn(() => ({ id: "fb1", sessionId: "s1", messageIndex: 0, rating: "down", timestamp: new Date().toISOString() }));
 
 function makeServices(overrides: Record<string, unknown> = {}) {
@@ -82,7 +74,7 @@ describe("ave:feedback:submit", () => {
     const handler = handlers.get("ave:feedback:submit")!;
     const result = await handler(hostFrameEvent(), { sessionId: "sess-42", messageIndex: 3, rating: "up" });
     expect(result).toEqual({ ok: true });
-    // Audit log must NOT contain reason text — only stripped aggregate line
+    // Audit records must exclude feedback reason text.
     expect(auditLog).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: "sess-42",
       input: "feedback:up:sess-42:3",
@@ -95,14 +87,12 @@ describe("ave:feedback:submit", () => {
     const handler = handlers.get("ave:feedback:submit")!;
     const result = await handler(hostFrameEvent(), { sessionId: "sess-42", messageIndex: 5, rating: "down", reason: "not helpful" });
     expect(result).toEqual({ ok: true });
-    // FeedbackStore gets the reason
     expect(feedbackAdd).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: "sess-42",
       messageIndex: 5,
       rating: "down",
       reason: "not helpful",
     }));
-    // Audit log gets stripped line — no reason text
     expect(auditLog).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: "sess-42",
       input: "feedback:down:sess-42:5",
@@ -116,7 +106,6 @@ describe("ave:feedback:submit", () => {
     const longReason = "x".repeat(300);
     await handler(hostFrameEvent(), { sessionId: "s", messageIndex: 0, rating: "down", reason: longReason });
     expect(feedbackAdd).toHaveBeenCalledWith(expect.objectContaining({ reason: longReason }));
-    // Audit log still has no reason
     const auditInput: string = (auditLog.mock.calls[0][0] as { input: string }).input;
     expect(auditInput).not.toContain("x");
   });
@@ -147,6 +136,3 @@ describe("ave:feedback:submit", () => {
     expect(result).toMatchObject({ ok: false, error: "invalid-args" });
   });
 });
-
-// PR 3c: ave:samplemail:* IPC 채널 제거 — samplemail 플러그인이 자체 인증 소유.
-// 관련 IPC 통합 테스트도 함께 제거됨.
