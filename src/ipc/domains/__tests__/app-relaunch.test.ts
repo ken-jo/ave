@@ -7,6 +7,13 @@ import { withPluginInstallLock } from "../../../plugins/install-lifecycle.js";
 import { registerAppHandlers } from "../app.js";
 import type { IpcDeps } from "../../types.js";
 import { setAppRelaunchRequested } from "../../../main/app-relaunch-state.js";
+import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { folderService, type FolderServiceHarness } from "../../../marketplace/__tests__/fixtures/folder-service.js";
+import { nodeFolders, writeFolderFiles } from "../../../marketplace/__tests__/fixtures/folder-fs.js";
+import { descriptorText, jsonText } from "../../../marketplace/__tests__/fixtures/package-files.js";
+import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 
 vi.mock("electron", () => ({ ipcMain: { handle: vi.fn() } }));
 
@@ -15,6 +22,7 @@ const auditLogger = { log: vi.fn() };
 const relaunchApp = vi.fn();
 const intent = { intent: { inputOrigin: "user-keyboard", userActivation: true } };
 let mainEvent: IpcMainInvokeEvent;
+let marketplace: FolderServiceHarness | undefined;
 
 beforeEach(() => {
   clearAppUpdateInstallRequested();
@@ -26,13 +34,137 @@ beforeEach(() => {
   vi.spyOn(ipcMain, "handle").mockImplementation((channel, handler) => { handlers.set(channel, handler); });
   registerAppHandlers({ auditLogger, relaunchApp, getMainWindow: () => ({ webContents: mainEvent.sender, isDestroyed: () => false }) } as unknown as IpcDeps);
 });
-afterEach(() => { clearAppUpdateInstallRequested(); setAppRelaunchRequested(false); vi.restoreAllMocks(); handlers.clear(); });
+afterEach(async () => {
+  clearAppUpdateInstallRequested();
+  setAppRelaunchRequested(false);
+  vi.restoreAllMocks();
+  handlers.clear();
+  if (marketplace) {
+    marketplace.service.close();
+    await cleanupTmpDir(marketplace.root);
+    marketplace = undefined;
+  }
+});
 
 function invoke(event = mainEvent, payload: unknown = intent) {
   return handlers.get(CHANNELS.app.relaunch)!(event, payload);
 }
 
+async function languageInstall() {
+  const root = mkdtempSync(join(tmpdir(), "ave-relaunch-marketplace-"));
+  const folder = join(root, "source");
+  writeFolderFiles(folder, {
+    "marketplace.json": jsonText({ schemaVersion: 2, name: "languages", displayName: "Languages", packages: [{ kind: "language", name: "french", path: "french" }] }),
+    "french/ave-package.json": descriptorText("language", "french", "1.0.0", { locale: "fr", entry: "language.json", messages: "messages.json" }),
+    "french/language.json": jsonText({ locale: "fr", nativeName: "Français", englishName: "French" }),
+    "french/messages.json": jsonText({}),
+  });
+  marketplace = await folderService({ root, home: root, folders: nodeFolders() });
+  const preview = await marketplace.service.previewSource({ input: folder, auth: "none" });
+  if (preview.type === "confirm") throw new Error("Unexpected source confirmation");
+  await marketplace.service.addSource({ previewId: preview.previewId });
+  const plan = await marketplace.service.planInstall({ sourceId: "languages", kind: "language", name: "french" });
+  return { harness: marketplace, planId: plan.planId, written: join(root, "language-installed") };
+}
+
+async function unboundMcpInstall() {
+  const root = mkdtempSync(join(tmpdir(), "ave-relaunch-marketplace-"));
+  marketplace = await folderService({ root, home: root, folders: nodeFolders() });
+  const preview = marketplace.service.previewDirectMcp({
+    serverJson: jsonText({ name: "io.example/weather", version: "0.3.0", remotes: [{ type: "streamable-http", url: "https://weather.example/mcp" }] }),
+  });
+  return { harness: marketplace, planId: preview.planId, written: join(root, "mcp-installed") };
+}
+
 describe("app relaunch boundary", () => {
+  it("refuses a language pack without writing after relaunch is accepted", async () => {
+    const { harness, planId, written } = await languageInstall();
+    const install = vi.spyOn(harness.installers.content, "install").mockImplementation(async () => {
+      writeFileSync(written, "installed");
+      return { action: { action: "install" } };
+    });
+    expect(invoke()).toEqual({ ok: true });
+    await expect(harness.service.executeInstall(planId)).rejects.toMatchObject({ code: "relaunch-in-progress" });
+    expect(install).not.toHaveBeenCalled();
+    expect(existsSync(written)).toBe(false);
+  });
+
+  it("refuses relaunch while a language pack install is held mid-flight", async () => {
+    const { harness, planId, written } = await languageInstall();
+    let entered!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    vi.spyOn(harness.installers.content, "install").mockImplementation(async () => {
+      entered();
+      await held;
+      writeFileSync(written, "installed");
+      return { action: { action: "install" } };
+    });
+    const pending = harness.service.executeInstall(planId);
+    await started;
+    try {
+      expect(invoke()).toEqual({ ok: false, error: "plugin-install-in-progress" });
+      expect(relaunchApp).not.toHaveBeenCalled();
+      expect(existsSync(written)).toBe(false);
+    } finally {
+      release();
+      await pending;
+    }
+    expect(existsSync(written)).toBe(true);
+    expect(invoke()).toEqual({ ok: true });
+  });
+
+  it("registers a language pack install before yielding to relaunch", async () => {
+    const { harness, planId } = await languageInstall();
+    const pending = harness.service.executeInstall(planId);
+    try {
+      expect(invoke()).toEqual({ ok: false, error: "plugin-install-in-progress" });
+      expect(relaunchApp).not.toHaveBeenCalled();
+    } finally {
+      await pending;
+    }
+    expect(invoke()).toEqual({ ok: true });
+  });
+
+  it("refuses an unbound MCP install without writing after relaunch is accepted", async () => {
+    const { harness, planId, written } = await unboundMcpInstall();
+    const install = vi.spyOn(harness.installers.mcp, "installUnbound").mockImplementation(async () => {
+      writeFileSync(written, "installed");
+      return { connectionWarning: null };
+    });
+    expect(invoke()).toEqual({ ok: true });
+    await expect(harness.service.executeInstall(planId)).rejects.toMatchObject({ code: "relaunch-in-progress" });
+    expect(install).not.toHaveBeenCalled();
+    expect(existsSync(written)).toBe(false);
+  });
+
+  it("refuses relaunch while an unbound MCP install is held mid-flight", async () => {
+    const { harness, planId, written } = await unboundMcpInstall();
+    let entered!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    vi.spyOn(harness.installers.mcp, "installUnbound").mockImplementation(async () => {
+      entered();
+      await held;
+      writeFileSync(written, "installed");
+      return { connectionWarning: null };
+    });
+    const pending = harness.service.executeInstall(planId);
+    await started;
+    try {
+      expect(invoke()).toEqual({ ok: false, error: "plugin-install-in-progress" });
+      expect(relaunchApp).not.toHaveBeenCalled();
+      expect(existsSync(written)).toBe(false);
+    } finally {
+      release();
+      await pending;
+    }
+    expect(existsSync(written)).toBe(true);
+    expect(invoke()).toEqual({ ok: true });
+  });
+
   it("refuses an unrelated local window with hand-written intent", () => {
     const event = hostFrameEvent();
     Object.assign(event.senderFrame!, { url: "file:///tmp/unrelated.html" });

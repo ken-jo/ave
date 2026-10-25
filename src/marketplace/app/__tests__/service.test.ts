@@ -35,6 +35,8 @@ import type { RetiredPluginConfigRecord } from "../../../shared/alerts-types.js"
 import type { InstallerPorts, PluginInstallerPort, TokenStore } from "../ports.js";
 import type { RevocationFeed } from "../revocations.js";
 import { MarketplaceService } from "../service.js";
+import { hasMarketplaceInstallInFlight } from "../install-lifecycle.js";
+import { setAppRelaunchRequested } from "../../../main/app-relaunch-state.js";
 import { marketplaceEvents, startMarketplaceBackground, type BackgroundService } from "../background.js";
 import { emptyUpdateHistory, type UpdateHistory } from "../../updates/history.js";
 import type { SyncProgressView } from "../../../shared/git-marketplace.js";
@@ -334,6 +336,7 @@ describe("MarketplaceService", () => {
   }
 
   afterEach(async () => {
+    setAppRelaunchRequested(false);
     _resetAveHomePrivacyForTest();
     __resetSandboxRequestedAtBootForTest();
     setProcessPlatform(ORIGINAL_PLATFORM);
@@ -407,6 +410,45 @@ describe("MarketplaceService", () => {
     expect(preview.type).toBe("marketplace");
     return service.addSource({ previewId: previewIdOf(preview) });
   }
+
+  it("refuses boot installs before legacy migration while relaunch is reserved", async () => {
+    const applied = await AppliedDefaults.open(join(root, "packages", "default-installs.json"));
+    setAppRelaunchRequested(true);
+    await expect(service.applyBootInstalls([], applied)).rejects.toMatchObject({ code: "relaunch-in-progress" });
+    expect(legacyRuns).toEqual([]);
+    expect(contentReports).toEqual([]);
+    expect(existsSync(join(root, "packages", "legacy-migration.json"))).toBe(false);
+    expect(hasMarketplaceInstallInFlight()).toBe(false);
+  });
+
+  it("registers boot installs before yielding and releases the reservation on completion", async () => {
+    const applied = await AppliedDefaults.open(join(root, "packages", "default-installs.json"));
+    const pending = service.applyBootInstalls([], applied);
+    try {
+      expect(hasMarketplaceInstallInFlight()).toBe(true);
+    } finally {
+      await pending;
+    }
+    expect(hasMarketplaceInstallInFlight()).toBe(false);
+  });
+
+  it("refuses automatic updates before reading installed state while relaunch is reserved", async () => {
+    setAppRelaunchRequested(true);
+    await expect(service.applyUpdate({ key: { sourceId: "acme-tools", kind: "language", name: "french" }, from: "1.0.0", to: "2.0.0", switchSource: false }, () => true)).rejects.toMatchObject({ code: "relaunch-in-progress" });
+    expect(feedCalls).toBe(0);
+    expect(store.list()).toEqual([]);
+    expect(hasMarketplaceInstallInFlight()).toBe(false);
+  });
+
+  it("registers automatic updates before yielding and releases superseded work", async () => {
+    const pending = service.applyUpdate({ key: { sourceId: "acme-tools", kind: "language", name: "french" }, from: "1.0.0", to: "2.0.0", switchSource: false }, () => true);
+    try {
+      expect(hasMarketplaceInstallInFlight()).toBe(true);
+    } finally {
+      await expect(pending).resolves.toEqual({ state: "superseded" });
+    }
+    expect(hasMarketplaceInstallInFlight()).toBe(false);
+  });
 
   it("returns an install plan while home privacy refuses extension starts", async () => {
     const { url } = market();

@@ -7,7 +7,7 @@ import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized } fro
 import type { IpcDeps } from "../types.js";
 import { hasUserKeyboardIntent } from "../../shared/chat-origin.js";
 import type { AppRelaunchError, AppRelaunchResult } from "../../shared/app-relaunch.js";
-import { hasExclusivePluginLifecycleMutation, hasPluginInstallInFlight } from "../../plugins/install-lifecycle.js";
+import { hasMarketplaceInstallInFlight } from "../../marketplace/app/install-lifecycle.js";
 import { isAppUpdateInstallRequested } from "../../main/app-update-install-intent.js";
 import { isAppRelaunchRequested, setAppRelaunchRequested } from "../../main/app-relaunch-state.js";
 
@@ -28,7 +28,7 @@ export function registerAppHandlers(deps: IpcDeps): void {
     const intent = payload && typeof payload === "object" && "intent" in payload ? payload.intent : undefined;
     if (!hasUserKeyboardIntent(intent)) return refuse("user-keyboard-required");
     if (isAppRelaunchRequested()) return refuse("relaunch-in-progress");
-    if (hasPluginInstallInFlight() || hasExclusivePluginLifecycleMutation()) return refuse("plugin-install-in-progress");
+    if (hasMarketplaceInstallInFlight()) return refuse("plugin-install-in-progress");
     if (isAppUpdateInstallRequested()) return refuse("update-install-in-progress");
     if (!deps.relaunchApp) return refuse("relaunch-unsupported");
     setAppRelaunchRequested(true);
