@@ -174,8 +174,9 @@ describe("ensureAveHomePrivate", () => {
   });
   it.runIf(process.platform === "win32").each(["home", "secrets", "file", "directory"])("reports retained explicit extra entries on the real %s DACL", (target) => {
     const dir = home();
-    // The whole result is compared so a refusal shows its category and reason.
-    expect(ensureAveHomePrivate(dir)).toMatchObject({ enforcement: "win32-dacl" });
+    // The message carries the whole result, so a refusal shows its category and reason.
+    const protectedHome = ensureAveHomePrivate(dir);
+    expect(protectedHome, JSON.stringify(protectedHome)).toMatchObject({ enforcement: "win32-dacl" });
     const path = target === "home" ? dir : target === "secrets" ? join(dir, "secrets") : join(dir, "secrets", target);
     if (target === "file") writeFileSync(path, "private");
     if (target === "directory") mkdirSync(path);
@@ -190,7 +191,7 @@ describe("ensureAveHomePrivate", () => {
     const dir = join(home(), name);
     const before = vi.mocked(execFileSync).mock.calls.length;
     const result = ensureAveHomePrivate(dir);
-    expect(result).toMatchObject({ enforcement: "win32-dacl" });
+    expect(result, JSON.stringify(result)).toMatchObject({ enforcement: "win32-dacl" });
     expect(vi.mocked(execFileSync).mock.calls.slice(before)).toHaveLength(1);
     const descriptors = readWindowsDirectoryDacls([dir, join(dir, "secrets")]);
     console.info(`Verified relocated private directory DACL JSON: ${JSON.stringify(descriptors)}`);

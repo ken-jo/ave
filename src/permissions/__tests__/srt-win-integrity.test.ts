@@ -130,7 +130,8 @@ describe("Windows helper integrity", () => {
         "$ErrorActionPreference = 'Stop'",
         "$handle = [System.IO.File]::Open($env:AVE_SRT_TEST_IMAGE, 'Open', 'Read', 'Read')",
         "$p = [System.Diagnostics.Process]::GetCurrentProcess()",
-        "@{ pid = $p.Id; started = $p.StartTime.ToUniversalTime().Ticks.ToString() } | ConvertTo-Json -Compress",
+        // Built without ConvertTo-Json: autoloading its module in this minimal environment took tens of seconds on the hosted runner.
+        "[Console]::Out.WriteLine('{\"pid\":' + $p.Id + ',\"started\":\"' + $p.StartTime.ToUniversalTime().Ticks.ToString() + '\"}')",
         "try { [Console]::ReadLine() | Out-Null } finally { $handle.Dispose() }",
       ].join("; ");
       const child = spawn(win32.join(process.env.SystemRoot!, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), [
