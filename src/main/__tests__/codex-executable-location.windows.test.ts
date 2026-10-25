@@ -218,6 +218,8 @@ it.runIf(process.platform === "win32")("replaces inherited foreign access when c
   const directory = realpathSync(mkdtempSync(join(parent, "runtime-")));
   const [before] = readWindowsDirectoryDacls([directory]);
   expect(before.rules).toContainEqual(expect.objectContaining({ sid: "S-1-5-32-545", isInherited: true }));
+  expect(before.error).toBeUndefined();
+  expect(before.elevated).toBeTypeOf("boolean");
   if (!before.elevated) context.skip("An elevated token is required to create the Administrators-owned private directory fixture");
   setOwner(directory, "S-1-5-32-544");
   expect(readWindowsDirectoryDacls([directory])[0].ownerSid).toBe("S-1-5-32-544");

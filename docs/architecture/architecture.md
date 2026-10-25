@@ -2142,12 +2142,16 @@ with its own owner rule:
   Windows sandbox on profile children; removed SIDs are reported in boot diagnostics.
   Creation failures, links or junctions, non-directory paths, and unaccepted
   owners remain refusals before the write, and nothing inside a refused directory
-  is touched. The write rechecks attributes and ownership on a handle opened with
-  `NtOpenFile`'s `OBJ_DONT_REPARSE` and `FILE_OPEN_FOR_BACKUP_INTENT`, relative to a
-  parent handle opened with normal link traversal. The leaf handle excludes delete
-  sharing and receives the DACL write, so a leaf link swap cannot redirect it;
-  reparse points in enclosing components remain accepted. An already owner-only,
-  protected DACL skips writer compilation and replacement, including after creation.
+  is touched. The home leaf is opened once with `NtCreateFile`'s
+  `OBJ_DONT_REPARSE` and `FILE_OPEN_FOR_BACKUP_INTENT`, relative to a parent
+  handle opened with normal link traversal. Its handle excludes delete sharing
+  and stays open across all three targets; both children are opened or created
+  relative to it with the same leaf-reparse refusal. Attributes, ownership and
+  DACLs are read on those handles, including the fast-path decision and read-back.
+  Reparse points in enclosing components remain accepted. An already owner-only,
+  protected DACL skips replacement, including after creation. Repair and ownership
+  claims share an object-only `NtSetSecurityObject` write: the protected OI|CI
+  grant remains inheritable by new children without propagating to existing ones.
   Read-back and `isOwnerOnlyDacl` verification still fail closed if protection
   did not take effect. The immediate children of `secrets/` are scanned read-only;
   their foreign explicit allow entries remain reported and are never removed.

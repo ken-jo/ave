@@ -103,9 +103,83 @@ export function readWindowsDirectoryDacls(paths: readonly string[], protect = fa
     $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent();
     $sid = $identity.User.Value;
     $elevated = ([System.Security.Principal.WindowsPrincipal]::new($identity)).IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator);
-    function Read-Dacl($path, $child) {
+    if ($request.protect) {
+      Add-Type -TypeDefinition @'
+${WINDOWS_OWNER_CLAIM_SOURCE}
+public static class HomeDirectoryDacl {
+  [StructLayout(LayoutKind.Sequential)]
+  private struct UnicodeString { public ushort Length, MaximumLength; public IntPtr Buffer; }
+  [StructLayout(LayoutKind.Sequential)]
+  private struct ObjectAttributes { public uint Length; public IntPtr Root, Name; public uint Attributes; public IntPtr Descriptor, Quality; }
+  [StructLayout(LayoutKind.Sequential)]
+  private struct IoStatus { public IntPtr Status, Information; }
+  [DllImport("ntdll.dll")]
+  private static extern int NtCreateFile(out SafeFileHandle handle, uint access, ref ObjectAttributes attributes, out IoStatus status, IntPtr allocation, uint fileAttributes, uint share, uint disposition, uint options, IntPtr ea, uint eaLength);
+  public static SafeFileHandle OpenHome(string path, SecurityIdentifier user) {
+    string fullPath = System.IO.Path.GetFullPath(path);
+    string parentPath = System.IO.Path.GetDirectoryName(fullPath);
+    string leaf = System.IO.Path.GetFileName(fullPath);
+    if (String.IsNullOrEmpty(parentPath) || String.IsNullOrEmpty(leaf)) throw new InvalidOperationException("Directory path is invalid");
+    using (SafeFileHandle parent = WindowsOwnerClaim.CreateFile(parentPath, 0x00100001, 7, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero)) {
+      if (parent.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error(), "Directory parent handle could not be opened");
+      return OpenRelative(parent, leaf, user, true);
+    }
+  }
+  public static SafeFileHandle OpenRelative(SafeFileHandle parent, string leaf, SecurityIdentifier user, bool create) {
+    if (String.IsNullOrEmpty(leaf) || leaf == "." || leaf == ".." || leaf.IndexOfAny(new char[] { '\\\\', '/', ':' }) >= 0) throw new InvalidOperationException("Directory leaf is invalid");
+    IntPtr buffer = Marshal.StringToHGlobalUni(leaf);
+    IntPtr memory = IntPtr.Zero;
+    var security = GCHandle.Alloc(WindowsOwnerClaim.Descriptor(user, true, true), GCHandleType.Pinned);
+    try {
+      var name = new UnicodeString { Length = checked((ushort)(leaf.Length * 2)), MaximumLength = checked((ushort)(leaf.Length * 2 + 2)), Buffer = buffer };
+      memory = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(UnicodeString)));
+      Marshal.StructureToPtr(name, memory, false);
+      var attributes = new ObjectAttributes { Length = (uint)Marshal.SizeOf(typeof(ObjectAttributes)), Root = parent.DangerousGetHandle(), Name = memory, Attributes = 0x1040, Descriptor = security.AddrOfPinnedObject() };
+      SafeFileHandle handle;
+      IoStatus io;
+      int status = NtCreateFile(out handle, 0x02000000, ref attributes, out io, IntPtr.Zero, 0x10, 3, create ? 3u : 1u, 0x00004001, IntPtr.Zero, 0);
+      if (status < 0) {
+        if (handle != null) handle.Dispose();
+        if (status == unchecked((int)0xC000050B)) throw new InvalidOperationException("Directory is a link or junction");
+        if (status == unchecked((int)0xC0000103)) throw new InvalidOperationException("Path is not a directory");
+        throw new Win32Exception((int)WindowsOwnerClaim.RtlNtStatusToDosError(status), "Directory permission handle could not be opened");
+      }
+      return handle;
+    } finally {
+      security.Free();
+      if (memory != IntPtr.Zero) Marshal.FreeHGlobal(memory);
+      Marshal.FreeHGlobal(buffer);
+      GC.KeepAlive(parent);
+    }
+  }
+  public static DirectorySecurity Read(SafeFileHandle handle) {
+    long attributes;
+    if (!WindowsOwnerClaim.GetFileInformationByHandleEx(handle, 9, out attributes, 8)) throw new Win32Exception(Marshal.GetLastWin32Error(), "Directory attributes could not be read on the permission handle");
+    if ((attributes & 0x400) != 0) throw new InvalidOperationException("Directory is a link or junction");
+    if ((attributes & 0x10) == 0) throw new InvalidOperationException("Path is not a directory");
+    var security = new DirectorySecurity();
+    security.SetSecurityDescriptorBinaryForm(WindowsOwnerClaim.ReadDescriptor(handle));
+    return security;
+  }
+  public static string[] Reapply(SafeFileHandle handle, SecurityIdentifier user, bool elevated) {
+    var previous = Read(handle);
+    string ownerSid = previous.GetOwner(typeof(SecurityIdentifier)).Value;
+    if (ownerSid != user.Value && !(elevated && ownerSid == "S-1-5-32-544")) throw new InvalidOperationException("Directory is owned by another account");
+    var removed = new System.Collections.Generic.SortedSet<string>(StringComparer.Ordinal);
+    foreach (FileSystemAccessRule rule in previous.GetAccessRules(true, true, typeof(SecurityIdentifier))) {
+      if (rule.IdentityReference.Value != user.Value) removed.Add(rule.IdentityReference.Value);
+    }
+    WindowsOwnerClaim.Write(handle, user, true, false);
+    var principals = new string[removed.Count];
+    removed.CopyTo(principals);
+    return principals;
+  }
+}
+'@;
+    }
+    function Read-Dacl($path, $child, $handle = $null) {
       try {
-        $acl = Get-Acl -LiteralPath $path;
+        $acl = if ($null -ne $handle) { [HomeDirectoryDacl]::Read($handle) } else { Get-Acl -LiteralPath $path };
         $rules = @($acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]) | ForEach-Object {
           $principal = @{ sid = $_.IdentityReference.Value; accessControlType = [int]$_.AccessControlType;
             fileSystemRights = [int]$_.FileSystemRights; inheritanceFlags = [int]$_.InheritanceFlags;
@@ -116,168 +190,51 @@ export function readWindowsDirectoryDacls(paths: readonly string[], protect = fa
         @{ path = $path; currentUserSid = $sid; elevated = $elevated;
           ownerSid = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value;
           protected = $acl.AreAccessRulesProtected; child = $child; rules = $rules }
-      } catch { @{ path = $path; error = $_.Exception.Message } }
+      } catch { @{ path = $path; error = $_.Exception.GetBaseException().Message } }
     }
     $refused = $null;
-    $results = @(foreach ($path in $request.paths) {
-      # Each later path lies inside the first: once one is refused, none is touched.
-      if ($null -ne $refused) { @{ path = $path; category = $refused; error = 'An enclosing directory was refused' }; continue }
-      if ($request.protect) {
-        # GetAttributes reads the entry itself, never a link's target.
-        $attributes = $null;
-        try { $attributes = [System.IO.File]::GetAttributes($path) } catch [System.IO.FileNotFoundException], [System.IO.DirectoryNotFoundException] {}
-        if ($null -eq $attributes) {
-          # Explicit ownership avoids the token's default group owner and its inherited grants.
-          try {
-            $security = [System.Security.AccessControl.DirectorySecurity]::new();
-            $security.SetOwner($identity.User);
-            $security.SetAccessRuleProtection($true, $false);
-            $security.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($identity.User, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow'));
-            [System.IO.Directory]::CreateDirectory($path, $security) | Out-Null;
-            $attributes = [System.IO.File]::GetAttributes($path);
-          } catch { $refused = 'directory-failed'; @{ path = $path; category = $refused; error = $_.Exception.Message }; continue }
-        }
-        if (($attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
-          $refused = 'reparse-point'; @{ path = $path; category = $refused; error = 'Directory is a link or junction' }; continue
-        }
-        if (($attributes -band [System.IO.FileAttributes]::Directory) -eq 0) {
-          $refused = 'directory-failed'; @{ path = $path; category = $refused; error = 'Path is not a directory' }; continue
-        }
-        $readBack = Read-Dacl $path $false;
-        if ($readBack.error) {
-          $refused = 'read-back-failed'; $readBack.category = $refused; $readBack; continue
-        }
-        $owner = $readBack.ownerSid;
-        if ($path -eq $request.claimableRuntimeRoot -and -not $elevated -and $owner -eq 'S-1-5-32-544') {
-          try {
-            Add-Type -TypeDefinition @'
-${WINDOWS_OWNER_CLAIM_SOURCE}
-'@;
-            [WindowsOwnerClaim]::ClaimFromAdministrators($path, $identity.User, $true);
-            $owner = $sid;
-            $readBack = Read-Dacl $path $false;
-          } catch {
-            $refused = 'owner-claim-failed'; @{ path = $path; category = $refused; error = ('Directory "' + $path + '" is owned by Administrators and could not be claimed. Run Ave once elevated or fix the directory owner. ' + $_.Exception.Message) }; continue
-          }
-        }
-        if ($owner -ne $sid -and -not ($elevated -and $owner -eq 'S-1-5-32-544')) {
-          $refused = 'invalid-owner-grant'; @{ path = $path; category = $refused; error = 'Directory is owned by another account' }; continue
-        }
-        $rule = $readBack.rules | Select-Object -First 1;
-        if ($readBack.protected -and $readBack.rules.Count -eq 1 -and $rule.sid -eq $sid -and
-            $rule.accessControlType -eq 0 -and $rule.fileSystemRights -eq 2032127 -and
-            $rule.inheritanceFlags -eq 3 -and $rule.propagationFlags -eq 0 -and $rule.isInherited -eq $false) {
-          $readBack; continue
-        }
+    $homeHandle = $null;
+    try {
+      $results = @(foreach ($path in $request.paths) {
+        if ($null -ne $refused) { @{ path = $path; category = $refused; error = 'An enclosing directory was refused' }; continue }
+        if (-not $request.protect) { Read-Dacl $path $false; continue }
+        $handle = $null;
         try {
-          if (-not ('HomeDirectoryDacl' -as [type])) {
-            Add-Type -TypeDefinition @'
-using System;
-using System.Collections.Generic;
-using System.ComponentModel;
-using System.IO;
-using System.Runtime.InteropServices;
-using System.Security.AccessControl;
-using System.Security.Principal;
-using Microsoft.Win32.SafeHandles;
-public static class HomeDirectoryDacl {
-  [StructLayout(LayoutKind.Sequential)]
-  private struct UnicodeString { public ushort Length, MaximumLength; public IntPtr Buffer; }
-  [StructLayout(LayoutKind.Sequential)]
-  private struct ObjectAttributes { public uint Length; public IntPtr Root, Name; public uint Attributes; public IntPtr Descriptor, Quality; }
-  [StructLayout(LayoutKind.Sequential)]
-  private struct IoStatus { public IntPtr Status, Information; }
-  [StructLayout(LayoutKind.Sequential)]
-  private struct DirectoryInformation {
-    public long AllocationSize, EndOfFile;
-    public uint Links;
-    [MarshalAs(UnmanagedType.U1)] public bool DeletePending;
-    [MarshalAs(UnmanagedType.U1)] public bool Directory;
-  }
-  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-  private static extern SafeFileHandle CreateFile(string path, uint access, uint share, IntPtr security, uint creation, uint flags, IntPtr template);
-  [DllImport("ntdll.dll")]
-  private static extern int NtOpenFile(out SafeFileHandle handle, uint access, ref ObjectAttributes attributes, out IoStatus status, uint share, uint options);
-  [DllImport("ntdll.dll")]
-  private static extern uint RtlNtStatusToDosError(int status);
-  [DllImport("kernel32.dll", SetLastError = true)]
-  private static extern bool GetFileInformationByHandleEx(SafeFileHandle handle, int infoClass, out DirectoryInformation information, uint size);
-  [DllImport("advapi32.dll")]
-  private static extern uint GetSecurityInfo(SafeFileHandle handle, int type, uint info, out IntPtr owner, out IntPtr group, out IntPtr dacl, out IntPtr sacl, out IntPtr descriptor);
-  [DllImport("advapi32.dll")]
-  private static extern uint GetSecurityDescriptorLength(IntPtr descriptor);
-  [DllImport("advapi32.dll")]
-  private static extern uint SetSecurityInfo(SafeFileHandle handle, int type, uint info, IntPtr owner, IntPtr group, IntPtr dacl, IntPtr sacl);
-  [DllImport("kernel32.dll")]
-  private static extern IntPtr LocalFree(IntPtr memory);
-  private static SafeFileHandle OpenPermissions(string path) {
-    string fullPath = Path.GetFullPath(path);
-    string parentPath = Path.GetDirectoryName(fullPath);
-    string leaf = Path.GetFileName(fullPath);
-    if (String.IsNullOrEmpty(parentPath) || String.IsNullOrEmpty(leaf)) throw new InvalidOperationException("Directory path is invalid");
-    using (SafeFileHandle parent = CreateFile(parentPath, 0x00100001, 7, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero)) {
-      if (parent.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error(), "Directory parent handle could not be opened");
-      IntPtr buffer = Marshal.StringToHGlobalUni(leaf);
-      IntPtr memory = IntPtr.Zero;
-      try {
-        var name = new UnicodeString { Length = checked((ushort)(leaf.Length * 2)), MaximumLength = checked((ushort)(leaf.Length * 2 + 2)), Buffer = buffer };
-        memory = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(UnicodeString)));
-        Marshal.StructureToPtr(name, memory, false);
-        var attributes = new ObjectAttributes { Length = (uint)Marshal.SizeOf(typeof(ObjectAttributes)), Root = parent.DangerousGetHandle(), Name = memory, Attributes = 0x1040 };
-        SafeFileHandle handle;
-        IoStatus io;
-        int status = NtOpenFile(out handle, 0x00040000 | 0x00020000, ref attributes, out io, 3, 0x00004000);
-        if (status < 0) {
-          if (handle != null) handle.Dispose();
-          if (status == unchecked((int)0xC000050B)) throw new InvalidOperationException("Directory is a link or junction");
-          throw new Win32Exception((int)RtlNtStatusToDosError(status), "Directory permission handle could not be opened");
-        }
-        return handle;
-      } finally {
-        if (memory != IntPtr.Zero) Marshal.FreeHGlobal(memory);
-        Marshal.FreeHGlobal(buffer);
-      }
-    }
-  }
-  public static string[] Reapply(string path, SecurityIdentifier user, bool elevated) {
-    // Only the leaf refuses reparse traversal; its handle pins the directory through the write.
-    using (SafeFileHandle handle = OpenPermissions(path)) {
-      DirectoryInformation information;
-      if (!GetFileInformationByHandleEx(handle, 1, out information, (uint)Marshal.SizeOf(typeof(DirectoryInformation)))) throw new Win32Exception(Marshal.GetLastWin32Error(), "Directory attributes could not be read on the permission handle");
-      if (!information.Directory) throw new InvalidOperationException("Path is not a directory");
-      IntPtr owner, group, dacl, sacl, descriptor;
-      uint result = GetSecurityInfo(handle, 1, 5, out owner, out group, out dacl, out sacl, out descriptor);
-      if (result != 0) throw new Win32Exception((int)result, "Directory permissions could not be read on the permission handle");
-      var removed = new HashSet<string>(StringComparer.Ordinal);
-      try {
-        string ownerSid = new SecurityIdentifier(owner).Value;
-        if (ownerSid != user.Value && !(elevated && ownerSid == "S-1-5-32-544")) throw new InvalidOperationException("Directory is owned by another account");
-        byte[] bytes = new byte[GetSecurityDescriptorLength(descriptor)];
-        Marshal.Copy(descriptor, bytes, 0, bytes.Length);
-        var previous = new RawSecurityDescriptor(bytes, 0);
-        if (previous.DiscretionaryAcl != null) foreach (GenericAce ace in previous.DiscretionaryAcl) {
-          var known = ace as KnownAce;
-          if (known != null && known.SecurityIdentifier != user) removed.Add(known.SecurityIdentifier.Value);
-        }
-      } finally { LocalFree(descriptor); }
-      var replacement = new RawSecurityDescriptor("D:P(A;OICI;FA;;;" + user.Value + ")").DiscretionaryAcl;
-      byte[] acl = new byte[replacement.BinaryLength];
-      replacement.GetBinaryForm(acl, 0);
-      var pinned = GCHandle.Alloc(acl, GCHandleType.Pinned);
-      try {
-        result = SetSecurityInfo(handle, 1, 0x80000004, IntPtr.Zero, IntPtr.Zero, pinned.AddrOfPinnedObject(), IntPtr.Zero);
-        if (result != 0) throw new Win32Exception((int)result, "Directory permissions could not be replaced on the permission handle");
-      } finally { pinned.Free(); }
-      var principals = new string[removed.Count];
-      removed.CopyTo(principals);
-      Array.Sort(principals, StringComparer.Ordinal);
-      return principals;
-    }
-  }
-}
-'@;
+          if ($null -eq $homeHandle) {
+            $homeHandle = [HomeDirectoryDacl]::OpenHome($path, $identity.User);
+            $handle = $homeHandle;
+          } else {
+            if ([System.IO.Path]::GetDirectoryName($path) -ne [System.IO.Path]::GetFullPath($request.paths[0])) { throw 'Directory is outside the pinned home' }
+            $handle = [HomeDirectoryDacl]::OpenRelative($homeHandle, [System.IO.Path]::GetFileName($path), $identity.User, $true);
           }
-          $removed = @([HomeDirectoryDacl]::Reapply($path, $identity.User, $elevated));
+          $readBack = Read-Dacl $path $false $handle;
+          if ($readBack.error) {
+            $refused = 'read-back-failed'; $readBack.category = $refused; $readBack; continue
+          }
+          $owner = $readBack.ownerSid;
+          if ($path -eq $request.claimableRuntimeRoot -and -not $elevated -and $owner -eq 'S-1-5-32-544') {
+            try {
+              [WindowsOwnerClaim]::ClaimFromAdministrators($handle, $identity.User, $true);
+              $readBack = Read-Dacl $path $false $handle;
+              if ($readBack.error) { throw $readBack.error }
+              $owner = $readBack.ownerSid;
+            } catch {
+              $refused = 'owner-claim-failed'; @{ path = $path; category = $refused; error = ('Directory "' + $path + '" is owned by Administrators and could not be claimed. Run Ave once elevated or fix the directory owner. ' + $_.Exception.GetBaseException().Message) }; continue
+            }
+          }
+          if ($owner -ne $sid -and -not ($elevated -and $owner -eq 'S-1-5-32-544')) {
+            $refused = 'invalid-owner-grant'; @{ path = $path; category = $refused; error = 'Directory is owned by another account' }; continue
+          }
+          $rule = $readBack.rules | Select-Object -First 1;
+          if ($readBack.protected -and $readBack.rules.Count -eq 1 -and $rule.sid -eq $sid -and
+              $rule.accessControlType -eq 0 -and $rule.fileSystemRights -eq 2032127 -and
+              $rule.inheritanceFlags -eq 3 -and $rule.propagationFlags -eq 0 -and $rule.isInherited -eq $false) {
+            $readBack; continue
+          }
+          $removed = @([HomeDirectoryDacl]::Reapply($handle, $identity.User, $elevated));
+          $readBack = Read-Dacl $path $false $handle;
+          if ($removed.Count -gt 0) { $readBack.removedPrincipals = @($removed) }
+          $readBack;
         } catch {
           $message = $_.Exception.GetBaseException().Message;
           $refused = switch ($message) {
@@ -286,22 +243,17 @@ public static class HomeDirectoryDacl {
             'Directory is owned by another account' { 'invalid-owner-grant' }
             default { 'icacls-failed' }
           };
-          @{ path = $path; category = $refused; error = $message }; continue
-        }
-        $readBack = Read-Dacl $path $false;
-        if ($removed.Count -gt 0) { $readBack.removedPrincipals = @($removed) }
-        $readBack;
-        continue
+          @{ path = $path; category = $refused; error = $message };
+        } finally { if ($null -ne $handle -and $handle -ne $homeHandle) { $handle.Dispose() } }
+      });
+      if ($null -eq $refused -and $request.paths.Count -gt 1 -and (Test-Path -LiteralPath $request.paths[1])) {
+        try {
+          # Read immediate secrets children without changing their ACLs.
+          $results += @(Get-ChildItem -LiteralPath $request.paths[1] -Force | ForEach-Object { Read-Dacl $_.FullName $true });
+        } catch { $results += @{ path = $request.paths[1]; error = $_.Exception.Message } }
       }
-      Read-Dacl $path $false
-    });
-    if ($null -eq $refused -and $request.paths.Count -gt 1 -and (Test-Path -LiteralPath $request.paths[1])) {
-      try {
-        # Immediate children only; deeper entries inherit from the verified, protected secrets/ DACL.
-        $results += @(Get-ChildItem -LiteralPath $request.paths[1] -Force | ForEach-Object { Read-Dacl $_.FullName $true });
-      } catch { $results += @{ path = $request.paths[1]; error = $_.Exception.Message } }
-    }
-    ConvertTo-Json -InputObject @($results) -Depth 5 -Compress`,
+      ConvertTo-Json -InputObject @($results) -Depth 5 -Compress
+    } finally { if ($null -ne $homeHandle) { $homeHandle.Dispose() } }`,
   ], { encoding: "utf-8", windowsHide: true, env: windowsPowerShellEnv({ ...process.env,
     AVE_DACL_REQUEST: JSON.stringify({ paths, protect, claimableRuntimeRoot }) }) });
   const results: unknown = JSON.parse(output);
@@ -310,7 +262,6 @@ public static class HomeDirectoryDacl {
   }
   return results;
 }
-
 function isOwnerOnlyDacl(descriptor: WindowsDirectoryDacl, sid: string): boolean {
   // Allow an existing elevated administrator owner, but never group Allow entries; new homes belong to the token user.
   const ownerValid = descriptor.ownerSid === sid ||
