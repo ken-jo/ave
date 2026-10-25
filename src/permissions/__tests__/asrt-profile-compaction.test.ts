@@ -25,7 +25,7 @@ import {
   resetAsrtSandbox,
   wrapWorkerCommand,
 } from "../asrt-sandbox.js";
-import { asrtCanInitialize, expandFoldedPathFilter, profileOfWrappedArgv, profileRules } from "./test-helpers.js";
+import { asrtCanInitialize, expandFoldedPathFilter, pathFilter, profileOfWrappedArgv, profileRules } from "./test-helpers.js";
 
 const darwin = process.platform === "darwin";
 /** Names that are regex syntax, case, spacing, non-ASCII and a newline. */
@@ -33,7 +33,6 @@ const NAMES = [
   "plain", "plainx", "a.b", "a+b", "a[1]", "a*", "a(b)|c", "sp ace", "ünï", "new\nline",
   "q?", "$x", "^y", "{z}", "back\\slash", "Mixed",
 ];
-const filterOf = (kind: "subpath" | "literal", path: string): string => `(${kind} ${JSON.stringify(path)})`;
 const deny = (operations: string, filters: Iterable<string>): string =>
   `(version 1)(allow default)(deny ${operations}\n${[...filters].map((filter) => `  ${filter}`).join("\n")})`;
 
@@ -65,20 +64,20 @@ afterAll(() => {
 describe("folded path filters", () => {
   it("fold siblings into one regex and leave lone and unfoldable filters as they were", () => {
     const folded = compactPathFilters(new Set([
-      filterOf("subpath", "/a/b/one"),
-      filterOf("subpath", "/a/b/two"),
-      filterOf("literal", "/a/b/one"),
-      filterOf("subpath", "/a/c/lone"),
-      filterOf("subpath", "/a/b/../x"),
-      filterOf("subpath", "/"),
+      pathFilter("subpath", "/a/b/one"),
+      pathFilter("subpath", "/a/b/two"),
+      pathFilter("literal", "/a/b/one"),
+      pathFilter("subpath", "/a/c/lone"),
+      pathFilter("subpath", "/a/b/../x"),
+      pathFilter("subpath", "/"),
       '(regex #"^/z(/.*)?$")',
       "(require-all (subpath \"/a\") (vnode-type DIRECTORY))",
     ]));
     expect([...folded].sort()).toEqual([
-      filterOf("literal", "/a/b/one"),
-      filterOf("subpath", "/a/c/lone"),
-      filterOf("subpath", "/a/b/../x"),
-      filterOf("subpath", "/"),
+      pathFilter("literal", "/a/b/one"),
+      pathFilter("subpath", "/a/c/lone"),
+      pathFilter("subpath", "/a/b/../x"),
+      pathFilter("subpath", "/"),
       '(regex #"^/z(/.*)?$")',
       "(require-all (subpath \"/a\") (vnode-type DIRECTORY))",
       `(regex ${JSON.stringify("^/a/b/(one|two)(/.*)?$")})`,
@@ -87,11 +86,11 @@ describe("folded path filters", () => {
 
   it("split a parent's names across regexes that each fit an SBPL string", () => {
     const names = Array.from({ length: 120 }, (_, index) => `name-${String(index).padStart(3, "0")}-${"x".repeat(12)}`);
-    const folded = compactPathFilters(new Set(names.map((name) => filterOf("subpath", `/parent/${name}`))));
+    const folded = compactPathFilters(new Set(names.map((name) => pathFilter("subpath", `/parent/${name}`))));
     expect(folded.length).toBeGreaterThan(1);
     for (const filter of folded) expect(Buffer.byteLength(filter)).toBeLessThanOrEqual(900 + "(regex )".length + 2);
     expect(folded.flatMap((filter) => expandFoldedPathFilter(filter)!).sort())
-      .toEqual(names.map((name) => filterOf("subpath", `/parent/${name}`)).sort());
+      .toEqual(names.map((name) => pathFilter("subpath", `/parent/${name}`)).sort());
   });
 
   it.runIf(darwin)("deny exactly the reads the separate subpath and literal filters deny", () => {
@@ -113,8 +112,8 @@ describe("folded path filters", () => {
         probes.push(file);
       }
       if (index % 4 !== 3) {
-        subpaths.add(filterOf("subpath", join(dirs, name)));
-        literals.add(filterOf("literal", join(files, name)));
+        subpaths.add(pathFilter("subpath", join(dirs, name)));
+        literals.add(pathFilter("literal", join(files, name)));
       }
     });
     const separate = new Set([...subpaths, ...literals]);
@@ -137,7 +136,7 @@ describe("folded path filters", () => {
       const dir = join(root, `create-${variant}`);
       mkdirSync(dir);
       const probes = NAMES.flatMap((name) => [join(dir, name), join(dir, `${name}x`), join(dir, name.toUpperCase())]);
-      const filters = new Set(NAMES.filter((_, index) => index % 4 !== 3).map((name) => filterOf("literal", join(dir, name))));
+      const filters = new Set(NAMES.filter((_, index) => index % 4 !== 3).map((name) => pathFilter("literal", join(dir, name))));
       if (variant === "separate") for (const filter of filters) separate.add(filter);
       const profile = deny("file-write-create", variant === "separate" ? filters : compactPathFilters(filters));
       const create = 'for p do if /usr/bin/touch -- "$p" 2>/dev/null; then echo 1; /bin/rm -f -- "$p"; else echo 0; fi; done';

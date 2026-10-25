@@ -175,7 +175,8 @@ export function inspectBuiltinCommandRisk(command: string) {
   return inspectHostRisk({ source: "builtin", finalInput: { command } });
 }
 
-const pathFilter = (kind: "subpath" | "literal", path: string): string => `(${kind} ${JSON.stringify(path)})`;
+/** A Seatbelt `subpath` or `literal` filter, spelled as the ASRT profile spells it. */
+export const pathFilter = (kind: "subpath" | "literal", path: string): string => `(${kind} ${JSON.stringify(path)})`;
 
 /** The path a folded regex filter names, one per alternative; undefined for any other regex. */
 export function expandFoldedPathFilter(filter: string): string[] | undefined {
