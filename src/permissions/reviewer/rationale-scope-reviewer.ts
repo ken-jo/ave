@@ -51,20 +51,7 @@ const ALIGNMENTS = new Set<Exclude<ReviewerScopeAlignment, "unknown">>([
 ]);
 const MAX_SCOPE_REVIEW_OUTPUT_CHARS = 4_096;
 
-/**
- * Reduce a model-authored string to inert plain text.
- *
- * Everything a reviewer LLM returns is untrusted: the prompt it answered
- * carried data the calling agent could influence, so its free-text fields are
- * downstream of that influence. The order matters — markup and control
- * characters come out first, so markdown stripping cannot be evaded by an
- * embedded tag, a backtick, or a bidi override, and DLP masking runs last so
- * it sees the final text rather than a form that hid a secret behind markup.
- *
- * Exported because the parent adjudicator consumes model prose on the same
- * terms. A second copy of this that drifted would be a hole in whichever
- * reviewer fell behind.
- */
+// Reviewer prose is untrusted; strip markup/control characters before DLP so tags, backticks and bidi overrides cannot conceal secrets. Share this sanitizer with parent adjudication.
 export function sanitizeUntrustedReviewerText(
   value: string,
   maxLength: number,
@@ -137,11 +124,7 @@ function parseScopeReview(text: unknown): ParsedScopeReview | null {
   };
 }
 
-/**
- * Ticket-only LLM scope reviewer. It intentionally owns no VerdictCache or
- * approval-memory dependency, so base cache lookup/write and Store B reuse are
- * impossible on this path.
- */
+// Ticket-only LLM scope reviewer. It intentionally owns no VerdictCache or approval-memory dependency, so base cache lookup/write and Store B reuse are impossible on this path.
 export class LlmRationaleScopeReviewer implements RationaleScopeReviewer {
   constructor(
     private readonly provider: LlmReviewerProvider,

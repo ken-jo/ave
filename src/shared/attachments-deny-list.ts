@@ -15,5 +15,3 @@ export const DENY_EXTENSIONS = [
   "sh",
   "ps1",
 ] as const;
-
-export type DenyExtension = (typeof DENY_EXTENSIONS)[number];

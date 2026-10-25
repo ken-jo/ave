@@ -803,8 +803,7 @@ describe("execution router", () => {
   });
 
   it("selects the host route for a requested-but-unavailable sandbox and keeps its fallback reason", () => {
-    // Design I3: an unavailable sandbox warns and continues under the normal
-    // permission rules; the route records why it is uncontained.
+    // Design I3: an unavailable sandbox warns and continues under the normal permission rules; the route records why it is uncontained.
     const fallback = issuedUnavailableFallback();
     expect(buildExecutionPlan({
       legacyPlan: fallback,

@@ -28,12 +28,7 @@ export function createAgentListTool(deps: AgentListToolDeps): Tool {
         mode: agent.mode,
       }));
 
-      // THIS conversation's existing sub-agents, alongside the profile
-      // definitions. Observed failure without it: told to "continue the
-      // agents", the model called agent_list looking for them, got only
-      // profile definitions back, and spawned FRESH agents — discarding the
-      // suspended children's context. The list is the natural place to answer
-      // the question the model was actually asking.
+      // Include this conversation's persisted children so continuation preserves their context.
       const originSessionId = typeof ctx.metadata?.sessionId === "string"
         ? ctx.metadata.sessionId
         : "";
@@ -45,17 +40,7 @@ export function createAgentListTool(deps: AgentListToolDeps): Tool {
         title: entry.title,
         resumeId: entry.childSessionId,
         taskState: entry.taskState ?? "unrecorded",
-        // Resumability comes from the runner's own resume-gate predicates:
-        // only INPUT_REQUIRED is accepted there, so only INPUT_REQUIRED may
-        // be advertised here. SUBMITTED/WORKING/unrecorded children were
-        // interrupted mid-run — the model still benefits from seeing they
-        // existed (start fresh if that work is needed again), but a resume
-        // attempt on them is a guaranteed permanent rejection.
-        //
-        // The resume-axis counters are the second half of that same gate: a
-        // child that spent its resume budget stays INPUT_REQUIRED forever, so
-        // reading the state alone would advertise a resume that is likewise a
-        // guaranteed permanent rejection — one wasted parent round each time.
+        // Advertise resume only for INPUT_REQUIRED children with remaining resume budget; other listed states cannot resume.
         resumable: isResumableSubAgentTaskState(entry.taskState)
           && !runner?.isResumeExhausted(entry.childSessionId),
       }));

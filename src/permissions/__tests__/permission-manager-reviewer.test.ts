@@ -1,6 +1,3 @@
-/**
- * Permission policy Phase 3 — PermissionManager.dispatchReviewer + setReviewer wiring.
- */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { tmpdir } from "node:os";
 import {
@@ -56,11 +53,7 @@ function makeManager(): {
   return { pm, cache, queue, classifier };
 }
 
-
-/**
- * Tier-2 parent-adjudication policy is inert for these cases; every reviewer
- * settings literal reuses the shipped default so the block stays one value.
- */
+// Tier-2 parent-adjudication policy is inert for these cases; every reviewer settings literal reuses the shipped default so the block stays one value.
 const PARENT_ADJUDICATION = {
   maxVerdict: "medium",
   timeoutMs: 30_000,
@@ -227,8 +220,7 @@ describe("PermissionManager.dispatchReviewer", () => {
       trustOrigin: "user-keyboard" as const,
     };
 
-    // No process-global active capability is published: the reviewer must still
-    // receive the invocation's sealed full-ASRT plan, not recompute `none`.
+    // No process-global active capability is published: the reviewer must still receive the invocation's sealed full-ASRT plan, not recompute `none`.
     const first = await pm.dispatchReviewer("bash", {
       ...base,
       hostShellExecutionPlan: fullPlan,
@@ -687,16 +679,14 @@ describe("PermissionManager.dispatchReviewer", () => {
   });
 });
 
-// ─── MAJOR-1 R2: abortSignal end-to-end dispatchReviewer → LlmRiskClassifier ──
+// MAJOR-1 R2: abortSignal end-to-end dispatchReviewer → LlmRiskClassifier
 
 describe("MAJOR-1 R2: dispatchReviewer threads abortSignal to LlmRiskClassifier.classifyWithTrace", () => {
   it("calls LlmRiskClassifier.classifyWithTrace with the supplied abortSignal", async () => {
     const { pm } = makeManager();
     const ac = new AbortController();
 
-    // Stub an LlmRiskClassifier-shaped classifier with a spy on classify.
-    // We can't easily import LlmRiskClassifier here without a provider, so we
-    // subclass to a minimal stand-in that records the opts argument.
+    // Stub an LlmRiskClassifier-shaped classifier with a spy on classify. We can't easily import LlmRiskClassifier here without a provider, so we subclass to a minimal stand-in that records the opts argument.
     let capturedOpts: { abortSignal?: AbortSignal } | undefined;
     const { LlmRiskClassifier } = await import("../reviewer/risk-classifier.js");
     const { LlmReviewerProvider } = {} as never; // type only
@@ -782,12 +772,7 @@ describe("MAJOR-1 R2: dispatchReviewer threads abortSignal to LlmRiskClassifier.
 
 describe("#664 flood guard — degraded rule reviewer does not over-defer headless sandbox writes", () => {
   it("headless plugin sandbox write under llm-degraded-to-rule → LOW, no deferred-queue entry", async () => {
-    // Fresh install: default reviewer mode "llm" but no LLM provider configured.
-    // wireReviewerAgent degrades to the rule classifier. A headless plugin
-    // writing to its OWN sandbox (writesToOwnSandbox auto-LOW rule, #664 P1)
-    // must classify LOW and must NOT land on the deferred queue under the
-    // default headless defer policy ("high" — only HIGH defers). This pins the
-    // #664 fresh-install flood guard for the new llm-default + degrade path.
+    // Without configured credentials, model review degrades to rules; host-proven own-data writes must still classify LOW rather than defer.
     const { wireReviewerAgent } = await import("../../boot/steps/reviewer-wiring.js");
     const { detectSandboxCapability } = await import("../sandbox-capability.js");
     const { realpathSync } = await import("node:fs");
@@ -795,8 +780,7 @@ describe("#664 flood guard — degraded rule reviewer does not over-defer headle
     const pm = new PermissionManager(tmpFile("permissions.json"));
     const wiring = wireReviewerAgent({
       permissionManager: pm,
-      // Degrades to the rule classifier — no adapter is built and nothing is
-      // ever fetched, so the transport is the tripwire.
+      // Degrades to the rule classifier — no adapter is built and nothing is ever fetched, so the transport is the tripwire.
       networkFetch: unusedNetworkFetch,
       readSettings: () => ({
         mode: "llm",
@@ -805,8 +789,7 @@ describe("#664 flood guard — degraded rule reviewer does not over-defer headle
         parentAdjudication: PARENT_ADJUDICATION,
       }),
       readActiveLlm: () => ({ provider: "openai", model: "gpt-4o-mini" }),
-      // Factory present (boot contract honored) but the user has not
-      // configured an API key → provider unconfigured → degrade to rule.
+      // Factory present (boot contract honored) but the user has not configured an API key → provider unconfigured → degrade to rule.
       streamProviderFor: () => null,
       verdictCachePath: tmpFile("flood-cache.jsonl"),
       deferredQueuePath: tmpFile("flood-queue.jsonl"),
@@ -830,7 +813,7 @@ describe("#664 flood guard — degraded rule reviewer does not over-defer headle
         executionCwd: process.cwd(),
         sensitivePathsAdjacent: [],
         trustOrigin: "plugin-emitted",
-        // #885 v6 — auto-LOW keys solely on the host-computed ownerPluginSandboxRoot.
+        // v6 — auto-LOW keys solely on the host-computed ownerPluginSandboxRoot.
         ownerPluginSandboxRoot: sandboxRoot,
         sandboxCapability: detectSandboxCapability(),
       },

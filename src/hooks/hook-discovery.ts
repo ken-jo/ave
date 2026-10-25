@@ -1,30 +1,4 @@
-/**
- * Permission policy — Layer 6 hook discovery + trust lockfile.
- *
- * Spec ref: docs/architecture/permission-policy-design.md §3 Layer 6
- * "Boot-time hash check + explicit trust registration".
- *
- * Discovers individual `pre-*.sh`, `post-*.sh`, `perm-*.sh` files under
- * `~/.config/ave/hooks/`. Computes sha256 hashes and compares against
- * `~/.config/ave/hooks/.lockfile.json` to surface the boot-time trust diff:
- *
- *   - **fresh install** (no lockfile, hooks present) → all hooks treated
- *     as `new`.
- *   - **post-install change** → hooks whose hash drifted from the
- *     lockfile show up as `changed`.
- *   - **new hook added** → hashes that aren't in the lockfile show up
- *     as `new`.
- *   - **hook removed** → entries in the lockfile that no longer exist
- *     on disk show up as `removed`.
- *
- * On explicit trust (`/permission hooks accept <name>`) → lockfile rewritten
- * with the current hashes. On reject/quarantine → the offending file is moved
- * to a `.disabled/` subfolder so it won't run on subsequent boots.
- *
- * **Atomic cutover (CLAUDE.md No-Fallback):** if `~/.config/ave/hooks/`
- * does not exist, boot creates an empty directory and emits no warn —
- * v1 user-decision is "ship empty" (spec §11 v2.1). No lockfile bootstrap.
- */
+// Hook hashes require explicit acceptance; new or changed hooks stay quarantined in .disabled. Fresh installs ship an empty protected directory without bootstrapping trust (docs/architecture/permission-policy-design.md).
 import {
   existsSync,
   mkdirSync,
@@ -45,22 +19,12 @@ import { clearHookDisableCause, disabledHookOriginalName, readHookDisableCause, 
 const log = createLogger("hook-discovery");
 
 export interface DiscoveredHook {
-  /** Absolute path to the .sh file. */
   path: string;
-  /** Filename relative to the hooks directory. */
   fileName: string;
-  /** Parsed hook type from filename prefix. */
   hookType: ScriptHookType;
-  /** sha256 of file contents (hex). */
   sha256: string;
-  /** Bytes (for diagnostics). */
   size: number;
-  /**
-   * Optional tool-name matcher (#811 hooks-on-mcp-calls). Parsed from a
-   * `# ave-hook-matcher: <matcher>` frontmatter line; when present the hook runs
-   * ONLY for tool calls whose name matches it (e.g. `mcp_.*` for every MCP
-   * tool, `^mcp_hr_` for one server). Absent ⇒ runs for every tool (unchanged).
-   */
+  // Optional header matcher restricts tool names; absence matches all.
   matcher?: string;
 }
 
@@ -69,53 +33,39 @@ export type LockfileTrustState = "new" | "changed" | "trusted" | "removed";
 export interface LockfileEntry {
   fileName: string;
   sha256: string;
-  /** ISO timestamp when first accepted by user. */
+  // ISO timestamp when first accepted by user.
   acceptedAt: string;
 }
 
 export interface LockfileShape {
-  /** Schema version — bump when shape changes. */
+  // Bump when the persisted shape changes.
   schemaVersion: 1;
-  /** Last update timestamp. */
   updatedAt: string;
-  /** Per-hook trusted entries. */
   hooks: LockfileEntry[];
 }
 
 export interface HookDiff {
   hook: DiscoveredHook;
   state: LockfileTrustState;
-  /** Last-known hash from lockfile (only set for `changed` / `removed`). */
+  // Last-known hash from lockfile (only set for `changed` / `removed`).
   previousSha256?: string;
 }
 
-/**
- * Default hooks directory. Per spec §3 Layer 6 v1 the directory lives
- * outside `~/.ave/` so a compromised Ave process cannot mutate it.
- */
+// Keep hooks outside the app home so a compromised app cannot mutate its own trust root.
 export function defaultHooksDir(): string {
   return pathResolve(homedir(), ".config", "ave", "hooks");
 }
 
-/** Default lockfile path inside the hooks directory. */
 export function defaultLockfilePath(): string {
   return pathResolve(defaultHooksDir(), ".lockfile.json");
 }
 
-/**
- * Default disabled subfolder. Hooks rejected by the trust-registration
- * workflow are relocated here so they survive on disk for inspection but do
- * not run.
- */
+// Rejected hooks remain inspectable in .disabled and cannot run.
 export function defaultDisabledDir(): string {
   return pathResolve(defaultHooksDir(), ".disabled");
 }
 
-/**
- * Ensure the hooks directory exists with mode 0o700. v1 boot calls this
- * unconditionally — the directory is the supply-chain root and must be
- * present before discovery runs.
- */
+// Discovery requires the supply-chain root to exist with mode 0o700.
 export function ensureHooksDirectory(dir: string = defaultHooksDir()): void {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
 }
@@ -129,7 +79,6 @@ function hookTypeFromName(fileName: string): ScriptHookType | null {
   return null;
 }
 
-/** Parse the optional `# ave-hook-matcher: <matcher>` frontmatter directive. */
 function parseMatcher(buf: Buffer): string | undefined {
   // Only scan the first 1KB (the directive must be in the header comment block).
   const head = buf.subarray(0, 1024).toString("utf-8");
@@ -146,7 +95,7 @@ function sha256OfFile(path: string): { sha256: string; size: number; matcher?: s
   };
 }
 
-/** Matchers made only of these characters are exact names, split on `|` or `,`. */
+// Matchers made only of these characters are exact names, split on `|` or `,`.
 const EXACT_MATCHER = /^[A-Za-z0-9_\- ,|]+$/u;
 
 const HOOK_MATCHER_PATTERN_MAX = 256;
@@ -159,7 +108,7 @@ export class HookMatcherError extends Error {
   }
 }
 
-/** Bound backtracking without changing the regular expression engine. */
+// Bound backtracking without changing the regular expression engine.
 function validateMatcherRepetition(pattern: string): void {
   let inClass = false;
   let groupDepth = 0;
@@ -204,12 +153,7 @@ function validateMatcherRepetition(pattern: string): void {
   }
 }
 
-/**
- * Why a matcher cannot load, or undefined when it is usable. Matchers follow the
- * public matcher contract: an exact
- * name list, or else a JavaScript regular expression. An invalid regular
- * expression must refuse the hook rather than silently match nothing.
- */
+// Reject invalid matchers instead of silently matching nothing; exact name lists and regular expressions share this contract.
 export function hookMatcherError(matcher: string | undefined): string | undefined {
   try {
     compileHookMatcher(matcher);
@@ -220,15 +164,7 @@ export function hookMatcherError(matcher: string | undefined): string | undefine
   }
 }
 
-/**
- * Does a hook apply to a subject (a tool name, or a lifecycle event's value)?
- * No matcher, `""` or `*` matches everything. A matcher of only letters, digits,
- * `_`, `-`, spaces, `,` and `|` is a list of exact names (`Edit|Write`,
- * `Edit, Write`). Anything else is an unanchored regular expression
- * (`mcp__.*`, `^Notebook`). Loading rejects invalid regular expressions through
- * {@link hookMatcherError}. Length and repetition bounds apply before dispatch.
- * Registries compile it once when built, outside dispatch.
- */
+// Absent, empty or * matchers match all; simple name lists match exactly, other patterns are unanchored regex. Enforce length and repetition bounds before dispatch and compile once per registry.
 export function compileHookMatcher(matcher: string | undefined): (subject: string) => boolean {
   if (matcher !== undefined && matcher.length > HOOK_MATCHER_PATTERN_MAX) {
     throw new HookMatcherError(`matcher exceeds ${HOOK_MATCHER_PATTERN_MAX} characters`);
@@ -257,13 +193,7 @@ export function compileHookMatcher(matcher: string | undefined): (subject: strin
   };
 }
 
-/**
- * Discover all valid hook scripts under `dir`. Files that don't match
- * the `pre-* | post-* | perm-*` naming convention are silently
- * skipped (they may be README, .gitignore, the lockfile itself, etc.).
- *
- * The `.disabled/` subfolder is NEVER walked.
- */
+// Ignore non-hook filenames and never walk .disabled.
 export function discoverHooks(dir: string = defaultHooksDir(), includeDisabledCopies = false): DiscoveredHook[] {
   if (!existsSync(dir)) return [];
   let entries: string[];
@@ -300,16 +230,12 @@ export function discoverHooks(dir: string = defaultHooksDir(), includeDisabledCo
     }
     out.push({ path, fileName, hookType, sha256: h.sha256, size: h.size, matcher: h.matcher });
   }
-  // Stable order — alphabetical by fileName so list/review surfaces show
-  // the same order every time.
+  // Alphabetical discovery keeps review order stable.
   out.sort((a, b) => a.fileName.localeCompare(b.fileName));
   return out;
 }
 
-/**
- * Read the lockfile. Missing file → null (treat all hooks as "new").
- * Malformed → null + warn (atomic cutover: do NOT silently allow).
- */
+// Missing or malformed lockfiles trust nothing; malformed files also warn.
 export function readLockfile(path: string = defaultLockfilePath()): LockfileShape | null {
   if (!existsSync(path)) return null;
   try {
@@ -326,12 +252,7 @@ export function readLockfile(path: string = defaultLockfilePath()): LockfileShap
   }
 }
 
-/**
- * Diff discovered hooks against the lockfile. The `removed` state is
- * informational — entries the lockfile knew about but are no longer on
- * disk. Caller may surface this in a review surface for transparency but does
- * NOT need user action (the file is already gone).
- */
+// Removed hooks are informational and require no user action.
 export function diffAgainstLockfile(
   discovered: DiscoveredHook[],
   lockfile: LockfileShape | null,
@@ -353,13 +274,11 @@ export function diffAgainstLockfile(
     }
     out.push({ hook, state: "trusted" });
   }
-  // Removed entries — present in lockfile but not on disk.
   const seen = new Set(discovered.map((d) => d.fileName));
   if (lockfile) {
     for (const e of lockfile.hooks) {
       if (!seen.has(e.fileName)) {
         out.push({
-          // Synthetic DiscoveredHook for symmetry — caller treats `state="removed"` as informational.
           hook: {
             path: "",
             fileName: e.fileName,
@@ -376,14 +295,7 @@ export function diffAgainstLockfile(
   return out;
 }
 
-/**
- * Persist a new lockfile reflecting the *current* set of trusted hooks.
- * Atomic write under `withFileLock` so concurrent boots don't corrupt.
- *
- * `acceptedHooks` is the subset of discovered hooks explicitly trusted by
- * user-keyboard command. Untrusted hooks should NOT appear here; the caller
- * should have already moved them to `.disabled/`.
- */
+// Persist only explicitly trusted hooks; quarantine others first. Atomic writes under withFileLock prevent concurrent boot corruption.
 export async function persistLockfile(
   acceptedHooks: DiscoveredHook[],
   lockfilePath: string = defaultLockfilePath(),
@@ -409,11 +321,7 @@ export async function persistLockfile(
   return next;
 }
 
-/**
- * Move a hook into `.disabled/`, recording why it must not run. Collisions keep
- * separate copies and separate cause records; only explicit user disables may
- * clear matcher guards. A failed cause write leaves an unmarked, fail-closed file.
- */
+// Move a hook into `.disabled/`, recording why it must not run. Collisions keep separate copies and separate cause records; only explicit user disables may clear matcher guards. A failed cause write leaves an unmarked, fail-closed file.
 export function disableHook(
   hook: DiscoveredHook,
   disabledDir: string = defaultDisabledDir(),
@@ -440,11 +348,7 @@ export function disableHook(
   return dest;
 }
 
-/**
- * Convenience: build a fileName→acceptedAt map from a lockfile so
- * subsequent persist calls preserve the original `acceptedAt` for
- * trusted-and-still-trusted hooks.
- */
+// Preserve original acceptedAt timestamps when rewriting trust records.
 export function buildAcceptedAtMap(lockfile: LockfileShape | null): Map<string, string> {
   const out = new Map<string, string>();
   if (lockfile) {

@@ -3,15 +3,7 @@ import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
 import { MAX_WALK_UP } from "./sensitive-paths.js";
 import { parseSandboxWrappedWords, quoteSandboxWrappedWord } from "./sandbox-wrapped-command.js";
 
-/**
- * Only the option forms emitted by the pinned Linux wrapper are understood.
- * ASRT 0.0.80 adds `--disable-userns` when no seccomp helper is in the chain
- * (as with `allowAllUnixSockets`, which a registered worker socket turns on)
- * and bubblewrap is 0.8 or later and not setuid; `--cap-add CAP_SETFCAP` is
- * emitted for a uid-0 caller that uses the helper. Every option ASRT's
- * `linux-sandbox-utils.js` can put before `--` must be listed here, or every
- * wrap that carries it is refused.
- */
+// Accept only option forms emitted by the pinned wrapper; every pre-command option needs an explicit parser entry or the wrap must be refused.
 const BWRAP_OPTION_ARITY = {
   "--new-session": 0,
   "--die-with-parent": 0,
@@ -30,10 +22,10 @@ const BWRAP_OPTION_ARITY = {
   "--proc": 1,
 } as const;
 
-/** Root-process exit is a cleanup boundary only while its descendants stay isolated. */
+// Root-process exit is a cleanup boundary only while its descendants stay isolated.
 const BWRAP_LIFETIME_OPTIONS = ["--new-session", "--die-with-parent", "--unshare-pid"] as const;
 
-/** Resolve symlinked prefixes, including when the mount target does not exist yet. */
+// Resolve symlinked prefixes, including when the mount target does not exist yet.
 function mountIdentity(target: string): string {
   const path = resolve(target);
   let ancestor = path;
@@ -61,18 +53,18 @@ function mountIdentity(target: string): string {
   throw new Error("Linux sandbox wrapper cannot establish mount identity");
 }
 
-/** The two lists of the wrap's own filesystem section that decide a re-allow. */
+// The two lists of the wrap's own filesystem section that decide a re-allow.
 export interface LinuxWrapFilesystem {
-  /** The wrap's read re-allows, as handed to ASRT. */
+  // The wrap's read re-allows, as handed to ASRT.
   readonly allowRead?: readonly string[];
-  /** The wrap's write denies, as handed to ASRT. */
+  // The wrap's write denies, as handed to ASRT.
   readonly denyWrite?: readonly string[];
 }
 
 interface WrapperOption {
   readonly option: string;
   readonly operands: readonly string[];
-  /** Mount identity of the target, for the mount options only. */
+  // Mount identity of the target, for the mount options only.
   readonly identity?: string;
 }
 
@@ -81,7 +73,7 @@ interface BwrapCapabilityState {
   allCapabilitiesDropped: boolean;
 }
 
-/** Permit only the capability mapping sequence emitted by the pinned helper. */
+// Permit only the capability mapping sequence emitted by the pinned helper.
 function assertBwrapCapabilityOption(option: string, operands: readonly string[], state: BwrapCapabilityState): void {
   if (option === "--unshare-user") state.unsharedUserNamespace = true;
   if (option === "--cap-drop" && operands[0] === "ALL") state.allCapabilitiesDropped = true;
@@ -98,20 +90,7 @@ function isAtOrUnder(path: string, ancestor: string): boolean {
   return path === ancestor || path.startsWith(ancestor === "/" ? "/" : `${ancestor}/`);
 }
 
-/**
- * Put back what a read re-allow shadows.
- *
- * ASRT masks a read-denied directory with a tmpfs and then, inside it, binds
- * the write roots back first and the read re-allows after them. When a
- * re-allow names a directory that HOLDS a write root — a plugin child reading
- * its own root with its data directory inside — the read-only bind of the
- * parent lands on top of the child's writable bind, and the data directory
- * becomes read-only. Every mount made inside the re-allowed directory since
- * the last mount at or above it is therefore made again right after it, in
- * order, so the subtree ends as it was before the re-allow covered it. A write
- * bind under one of the wrap's write denies is not put back: there the deny's
- * own read-only bind, emitted later, is the answer ASRT intends.
- */
+// Replay mounts shadowed by a later parent read re-allow, preserving order; never restore a writable bind beneath a write deny.
 function replayShadowedMounts(options: readonly WrapperOption[], filesystem: LinuxWrapFilesystem): WrapperOption[] {
   const reallows = new Set((filesystem.allowRead ?? []).map((path) => mountIdentity(path)));
   const writeDenies = (filesystem.denyWrite ?? []).map((path) => mountIdentity(path));
@@ -138,7 +117,7 @@ function replayShadowedMounts(options: readonly WrapperOption[], filesystem: Lin
   return out;
 }
 
-/** {@link replayShadowedMounts} over the wrapper's command line; the line itself when nothing was shadowed. */
+// replayShadowedMounts over the wrapper's command line; the line itself when nothing was shadowed.
 function replayShadowedWrap(command: string, filesystem: LinuxWrapFilesystem): string {
   if ((filesystem.allowRead ?? []).length === 0) return command;
   const words = parseSandboxWrappedWords(command, "Linux sandbox wrapper");
@@ -174,17 +153,7 @@ function replayShadowedWrap(command: string, filesystem: LinuxWrapFilesystem): s
   return `${command.slice(0, words[1]!.start)}${optionText} ${command.slice(words[index]!.start)}`;
 }
 
-/**
- * A read-denied directory is a writable tmpfs in the Linux wrapper. Its
- * write-deny bind is skipped because the host directory is hidden, leaving the
- * child able to create files in that tmpfs. Remount a mask only when it is the
- * final mount at its exact target. A later write bind at that same target is an
- * intentional grant; a nested bind is a separate mount and stays writable.
- *
- * Before that, a write root a read re-allow of its parent shadowed is bound
- * again ({@link replayShadowedMounts}), when the wrap's own `filesystem` is
- * known.
- */
+// A read-denied directory is a writable tmpfs in the Linux wrapper. Its write-deny bind is skipped because the host directory is hidden, leaving the child able to create files in that tmpfs. Remount a mask only when it is the final mount at its exact target. A later write bind at that same target is an intentional grant; a nested bind is a separate mount and stays writable. Before that, a write root a read re-allow of its parent shadowed is bound again (replayShadowedMounts), when the wrap's own `filesystem` is known.
 export function hardenLinuxSandboxWrap<T extends { readonly argv: string[]; readonly env: NodeJS.ProcessEnv }>(
   wrapped: T,
   filesystem: LinuxWrapFilesystem = {},

@@ -147,7 +147,7 @@ interface StoredInvalidRoutine extends InvalidRoutine {
   readonly raw: unknown;
 }
 
-export interface RoutinesFile {
+interface RoutinesFile {
   version: 2;
   routines: RoutineRecord[];
   // Held-back records, written back unchanged after the valid ones.

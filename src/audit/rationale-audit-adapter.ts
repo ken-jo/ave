@@ -29,9 +29,9 @@ import { timingSafeEqualHexDigest } from "../lib/hex-digest-equal.js";
 import { hasExactKeys, isPlainRecord } from "../shared/is-record.js";
 import { utcDateKey } from "../shared/local-date.js";
 
-export const RATIONALE_AUDIT_SCHEMA_VERSION = 1 as const;
-export const RATIONALE_AUDIT_MAX_DAILY_BYTES = 64 * 1024 * 1024;
-export const RATIONALE_AUDIT_MAX_DAILY_LINES = 100_000;
+const RATIONALE_AUDIT_SCHEMA_VERSION = 1 as const;
+const RATIONALE_AUDIT_MAX_DAILY_BYTES = 64 * 1024 * 1024;
+const RATIONALE_AUDIT_MAX_DAILY_LINES = 100_000;
 const RATIONALE_AUDIT_MAX_LINE_BYTES = 64 * 1024;
 const KEY_DOMAIN = "ave:rationale-audit:v1";
 const CHECKPOINT_KEY_DOMAIN = "ave:rationale-audit:checkpoint:v2";

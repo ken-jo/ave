@@ -10,8 +10,8 @@ import { AuditLogger } from "../../audit/audit-logger.js";
 import { openFeatureNamespace } from "../../main/storage/feature-namespace.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { createDynamicTool } from "../../tools/base.js";
-import { InputClassifier } from "../../core/input-classifier.js";
-import { RouteEngine } from "../../core/route-engine.js";
+import { makeSubagentLoopDeps, patchLoopProvider } from "./support/subagent-loop-fixtures.js";
+import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
 import {
   SubAgentRunner,
   exactToolScope,
@@ -20,7 +20,6 @@ import {
 import { ParentDirectiveMailbox } from "../parent-directive-mailbox.js";
 import type { LLMProvider, StreamEvent, StreamTurnParams,
 } from "../llm/types.js";
-import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
 import { createAgentSpawnTool } from "../../tools/agent-spawn.js";
 import { createAgentSendTool } from "../../tools/agent-send.js";
 import type { AgentSpawnEvent } from "../../shared/subagent-events.js";
@@ -82,54 +81,25 @@ class AbortAwareBlockingProvider implements LLMProvider {
 }
 
 function buildLoopDeps(toolRegistry: ToolRegistry) {
-  const inputClassifier = new InputClassifier();
-  const routeEngine = new RouteEngine();
   const auditLogger = new AuditLogger();
   loopAuditLoggers.push(auditLogger);
-  return {
-    settingsService: {
-      get: () => fakeLlmSettings(),
-      getSecret: () => "test-key",
-    },
-    systemPromptBuilder: {
-      build: () => "system",
-      setToolScope: () => undefined,
-      setOriginSource: () => undefined,
-      setActiveSessionId: () => undefined,
-      // Child runs require a separate prompt builder rather than sharing parent state.
-      createIsolated: () => ({
-        build: () => "system",
-        setToolScope: () => undefined,
-        setOriginSource: () => undefined,
-        setActiveSessionId: () => undefined,
-      }),
-    },
-    inputClassifier,
-    routeEngine,
-    toolRegistry,
-    auditLogger,
-    memoryManager: {
-      saveSession: () => Promise.resolve(),
-      listSessions: () => [],
-    },
-  } as unknown as ConstructorParameters<typeof ConversationLoop>[0];
+  return makeSubagentLoopDeps(toolRegistry, { auditLogger });
 }
 
 function patchProvider(provider: LLMProvider) {
-  const hasProviderSpy = vi
-    .spyOn(ConversationLoop.prototype as unknown as { hasProvider: () => boolean }, "hasProvider",
-    )
-    .mockReturnValue(true);
-  const refreshProviderSpy = vi
-    .spyOn(ConversationLoop.prototype as unknown as { refreshProvider: () => void }, "refreshProvider",
-    )
-    .mockImplementation(function (this: ConversationLoop) {
-      (this as { provider: LLMProvider | null }).provider = provider;
-    });
+  const { hasProviderSpy, refreshProviderSpy } = patchLoopProvider(provider);
   return () => {
     hasProviderSpy.mockRestore();
     refreshProviderSpy.mockRestore();
   };
+}
+
+function makeRunner(toolRegistry: ToolRegistry, subStore: MemoryManager) {
+  return new SubAgentRunner({
+    parentDeps: buildLoopDeps(toolRegistry),
+    toolRegistry,
+    subAgentMemoryManager: subStore,
+  });
 }
 
 function noopTool(name: string) {
@@ -224,11 +194,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     const toolRegistry = new ToolRegistry();
     toolRegistry.register(noopTool("noop"));
     const subStore = makeSubStore();
-    const runner = new SubAgentRunner({
-      parentDeps: buildLoopDeps(toolRegistry),
-      toolRegistry,
-      subAgentMemoryManager: subStore,
-    });
+    const runner = makeRunner(toolRegistry, subStore);
 
     let restore = patchProvider(waitingSpawnProvider());
     const spawn = await runner.spawn({
@@ -532,11 +498,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
   it("returns the missing-transcript code when an owned child has no persisted messages", async () => {
     const toolRegistry = new ToolRegistry();
     const subStore = makeSubStore();
-    const runner = new SubAgentRunner({
-      parentDeps: buildLoopDeps(toolRegistry),
-      toolRegistry,
-      subAgentMemoryManager: subStore,
-    });
+    const runner = makeRunner(toolRegistry, subStore);
     const originSessionId = "092d865f-192a-48ae-8603-8a838c39d4dc";
     const childSessionId = "sub-6e7c039b-1ae80cfb-d8c8-4a02-806d-4f4d2872a62d";
     await subStore.saveSessionMetadata(childSessionId, { sessionKind: "subagent", originSessionId });
@@ -552,11 +514,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     const toolRegistry = new ToolRegistry();
     toolRegistry.register(noopTool("noop"));
     const subStore = makeSubStore();
-    const runner = new SubAgentRunner({
-      parentDeps: buildLoopDeps(toolRegistry),
-      toolRegistry,
-      subAgentMemoryManager: subStore,
-    });
+    const runner = makeRunner(toolRegistry, subStore);
     const restore = patchProvider(waitingSpawnProvider());
     try {
       const result = await runner.spawn({
@@ -657,11 +615,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     const toolRegistry = new ToolRegistry();
     toolRegistry.register(noopTool("noop"));
     const subStore = makeSubStore();
-    const runner = new SubAgentRunner({
-      parentDeps: buildLoopDeps(toolRegistry),
-      toolRegistry,
-      subAgentMemoryManager: subStore,
-    });
+    const runner = makeRunner(toolRegistry, subStore);
     const provider = new AbortAwareBlockingProvider();
     const restore = patchProvider(provider);
     try {
@@ -799,11 +753,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     const toolRegistry = new ToolRegistry();
     toolRegistry.register(noopTool("noop"));
     const subStore = makeSubStore();
-    const runner = new SubAgentRunner({
-      parentDeps: buildLoopDeps(toolRegistry),
-      toolRegistry,
-      subAgentMemoryManager: subStore,
-    });
+    const runner = makeRunner(toolRegistry, subStore);
 
     const spawnProvider = new ScriptedProvider([
       [
@@ -933,11 +883,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       }),
     );
     const subStore = makeSubStore();
-    const runner = new SubAgentRunner({
-      parentDeps: buildLoopDeps(toolRegistry),
-      toolRegistry,
-      subAgentMemoryManager: subStore,
-    });
+    const runner = makeRunner(toolRegistry, subStore);
 
     let restore = patchProvider(waitingSpawnProvider());
     const spawn = await runner.spawn({
@@ -976,11 +922,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     const toolRegistry = new ToolRegistry();
     toolRegistry.register(noopTool("orig_tool"));
     const subStore = makeSubStore();
-    const runner = new SubAgentRunner({
-      parentDeps: buildLoopDeps(toolRegistry),
-      toolRegistry,
-      subAgentMemoryManager: subStore,
-    });
+    const runner = makeRunner(toolRegistry, subStore);
 
     let restore = patchProvider(waitingSpawnProvider());
     const spawn = await runner.spawn({
@@ -1029,11 +971,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       }),
     );
     const subStore = makeSubStore();
-    const runner = new SubAgentRunner({
-      parentDeps: buildLoopDeps(toolRegistry),
-      toolRegistry,
-      subAgentMemoryManager: subStore,
-    });
+    const runner = makeRunner(toolRegistry, subStore);
 
     let restore = patchProvider(waitingSpawnProvider());
     const spawn = await runner.spawn({
@@ -1083,11 +1021,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     const toolRegistry = new ToolRegistry();
     toolRegistry.register(noopTool("noop"));
     const subStore = makeSubStore();
-    const runner = new SubAgentRunner({
-      parentDeps: buildLoopDeps(toolRegistry),
-      toolRegistry,
-      subAgentMemoryManager: subStore,
-    });
+    const runner = makeRunner(toolRegistry, subStore);
 
     const restore = patchProvider(waitingSpawnProvider());
     const spawn = await runner.spawn({
@@ -1130,11 +1064,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     const toolRegistry = new ToolRegistry();
     toolRegistry.register(noopTool("noop"));
     const subStore = makeSubStore();
-    const runner = new SubAgentRunner({
-      parentDeps: buildLoopDeps(toolRegistry),
-      toolRegistry,
-      subAgentMemoryManager: subStore,
-    });
+    const runner = makeRunner(toolRegistry, subStore);
     const originalRunTurn = ConversationLoop.prototype.runTurn;
     const restore = patchProvider(cleanSpawnProvider());
     const runTurnSpy = vi
@@ -1186,11 +1116,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
   it("resolves same-origin peers and atomically reserves one question wait per active sender", async () => {
     const toolRegistry = new ToolRegistry();
     const subStore = makeSubStore();
-    const runner = new SubAgentRunner({
-      parentDeps: buildLoopDeps(toolRegistry),
-      toolRegistry,
-      subAgentMemoryManager: subStore,
-    });
+    const runner = makeRunner(toolRegistry, subStore);
     const originSessionId = "5ab183b7-6d7e-41b4-83ee-d927e6f0a265";
     const senderChildSessionId = "sub-489dea8f-03ff43a1-33a7-48a2-87b9-bc70f76ed0d5";
     const recipientChildSessionId = "sub-eea1ef20-b91b2ca0-bf65-4c09-88ec-b9ea9dc3f76f";
@@ -1720,11 +1646,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     const toolRegistry = new ToolRegistry();
     toolRegistry.register(noopTool("noop"));
     const subStore = makeSubStore();
-    const runner = new SubAgentRunner({
-      parentDeps: buildLoopDeps(toolRegistry),
-      toolRegistry,
-      subAgentMemoryManager: subStore,
-    });
+    const runner = makeRunner(toolRegistry, subStore);
 
     let restore = patchProvider(waitingSpawnProvider());
     const spawn = await runner.spawn({
@@ -1912,11 +1834,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     const toolRegistry = new ToolRegistry();
     toolRegistry.register(noopTool("noop"));
     const subStore = makeSubStore();
-    const runner = new SubAgentRunner({
-      parentDeps: buildLoopDeps(toolRegistry),
-      toolRegistry,
-      subAgentMemoryManager: subStore,
-    });
+    const runner = makeRunner(toolRegistry, subStore);
 
     let restore = patchProvider(waitingSpawnProvider());
     const spawn = await runner.spawn({
@@ -2037,11 +1955,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     const toolRegistry = new ToolRegistry();
     toolRegistry.register(noopTool("noop"));
     const subStore = makeSubStore();
-    const runner = new SubAgentRunner({
-      parentDeps: buildLoopDeps(toolRegistry),
-      toolRegistry,
-      subAgentMemoryManager: subStore,
-    });
+    const runner = makeRunner(toolRegistry, subStore);
 
     const restore = patchProvider(waitingSpawnProvider());
     const spawn = await runner.spawn({
@@ -2079,11 +1993,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     const toolRegistry = new ToolRegistry();
     toolRegistry.register(noopTool("noop"));
     const subStore = makeSubStore();
-    const runner = new SubAgentRunner({
-      parentDeps: buildLoopDeps(toolRegistry),
-      toolRegistry,
-      subAgentMemoryManager: subStore,
-    });
+    const runner = makeRunner(toolRegistry, subStore);
 
     let restore = patchProvider(waitingSpawnProvider());
     const spawn = await runner.spawn({
@@ -2379,11 +2289,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     const toolRegistry = new ToolRegistry();
     toolRegistry.register(noopTool("noop"));
     const subStore = makeSubStore();
-    const runner = new SubAgentRunner({
-      parentDeps: buildLoopDeps(toolRegistry),
-      toolRegistry,
-      subAgentMemoryManager: subStore,
-    });
+    const runner = makeRunner(toolRegistry, subStore);
 
     const originalRunTurn = ConversationLoop.prototype.runTurn;
     const restore = patchProvider(cleanSpawnProvider());
@@ -2432,11 +2338,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     const toolRegistry = new ToolRegistry();
     toolRegistry.register(noopTool("noop"));
     const subStore = makeSubStore();
-    const runner = new SubAgentRunner({
-      parentDeps: buildLoopDeps(toolRegistry),
-      toolRegistry,
-      subAgentMemoryManager: subStore,
-    });
+    const runner = makeRunner(toolRegistry, subStore);
 
     let restore = patchProvider(waitingSpawnProvider());
     const spawn = await runner.spawn({
@@ -2506,11 +2408,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     const toolRegistry = new ToolRegistry();
     toolRegistry.register(noopTool("noop"));
     const subStore = makeSubStore();
-    const runner = new SubAgentRunner({
-      parentDeps: buildLoopDeps(toolRegistry),
-      toolRegistry,
-      subAgentMemoryManager: subStore,
-    });
+    const runner = makeRunner(toolRegistry, subStore);
 
     let restore = patchProvider(waitingSpawnProvider());
     const spawn = await runner.spawn({
@@ -2794,11 +2692,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     const toolRegistry = new ToolRegistry();
     toolRegistry.register(noopTool("noop"));
     const subStore = makeSubStore();
-    const runner = new SubAgentRunner({
-      parentDeps: buildLoopDeps(toolRegistry),
-      toolRegistry,
-      subAgentMemoryManager: subStore,
-    });
+    const runner = makeRunner(toolRegistry, subStore);
 
     let restore = patchProvider(waitingSpawnProvider());
     const spawn = await runner.spawn({
@@ -2880,11 +2774,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     const toolRegistry = new ToolRegistry();
     toolRegistry.register(noopTool("noop"));
     const subStore = makeSubStore();
-    const runner = new SubAgentRunner({
-      parentDeps: buildLoopDeps(toolRegistry),
-      toolRegistry,
-      subAgentMemoryManager: subStore,
-    });
+    const runner = makeRunner(toolRegistry, subStore);
 
     let restore = patchProvider(waitingSpawnProvider());
     const spawn = await runner.spawn({
@@ -3025,11 +2915,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     const toolRegistry = new ToolRegistry();
     toolRegistry.register(noopTool("noop"));
     const subStore = makeSubStore();
-    const runner = new SubAgentRunner({
-      parentDeps: buildLoopDeps(toolRegistry),
-      toolRegistry,
-      subAgentMemoryManager: subStore,
-    });
+    const runner = makeRunner(toolRegistry, subStore);
 
     const spawnProvider = new ScriptedProvider([
       [
@@ -3097,11 +2983,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     const toolRegistry = new ToolRegistry();
     toolRegistry.register(noopTool("noop"));
     const subStore = makeSubStore();
-    const runner = new SubAgentRunner({
-      parentDeps: buildLoopDeps(toolRegistry),
-      toolRegistry,
-      subAgentMemoryManager: subStore,
-    });
+    const runner = makeRunner(toolRegistry, subStore);
     await subStore.saveSessionMetadata("sub-e3b0c442-43badc19-3d7b-48b6-878e-1bca49295211", {
       sessionKind: "main",
       sourceTools: ["noop"],
@@ -3115,11 +2997,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     const toolRegistry = new ToolRegistry();
     toolRegistry.register(noopTool("noop"));
     const subStore = makeSubStore();
-    const runner = new SubAgentRunner({
-      parentDeps: buildLoopDeps(toolRegistry),
-      toolRegistry,
-      subAgentMemoryManager: subStore,
-    });
+    const runner = makeRunner(toolRegistry, subStore);
     const resumed = await runner.resume("sub-e3b0c442-1290299c-2a39-42ea-8bf7-ae2f8e44adc7", "continue", "x");
     expect(resumed.ok).toBe(false);
     expect(resumed.error).toMatch(/no session metadata/i);
@@ -3129,11 +3007,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     const toolRegistry = new ToolRegistry();
     toolRegistry.register(noopTool("noop"));
     const subStore = makeSubStore();
-    const runner = new SubAgentRunner({
-      parentDeps: buildLoopDeps(toolRegistry),
-      toolRegistry,
-      subAgentMemoryManager: subStore,
-    });
+    const runner = makeRunner(toolRegistry, subStore);
     const resumed = await runner.resume("bad::id//with:sep", "continue", "x");
     expect(resumed.ok).toBe(false);
     expect(resumed.error).toMatch(/invalid resumeId/i);
@@ -3146,11 +3020,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     const toolRegistry = new ToolRegistry();
     toolRegistry.register(noopTool("noop"));
     const subStore = makeSubStore();
-    const runner = new SubAgentRunner({
-      parentDeps: buildLoopDeps(toolRegistry),
-      toolRegistry,
-      subAgentMemoryManager: subStore,
-    });
+    const runner = makeRunner(toolRegistry, subStore);
 
     const originA = "1b9342d9-1e35-4d3e-8b6c-c5e977eb2105";
     const tagA = createHash("sha256").update(originA).digest("hex").slice(0, 8);
@@ -3220,11 +3090,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     const toolRegistry = new ToolRegistry();
     toolRegistry.register(noopTool("noop"));
     const subStore = makeSubStore();
-    const runner = new SubAgentRunner({
-      parentDeps: buildLoopDeps(toolRegistry),
-      toolRegistry,
-      subAgentMemoryManager: subStore,
-    });
+    const runner = makeRunner(toolRegistry, subStore);
 
     const callerOrigin = "1b9342d9-1e35-4d3e-8b6c-c5e977eb2105";
     const tag = createHash("sha256")
@@ -3272,11 +3138,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     const toolRegistry = new ToolRegistry();
     toolRegistry.register(noopTool("noop"));
     const subStore = makeSubStore();
-    const runner = new SubAgentRunner({
-      parentDeps: buildLoopDeps(toolRegistry),
-      toolRegistry,
-      subAgentMemoryManager: subStore,
-    });
+    const runner = makeRunner(toolRegistry, subStore);
 
     // Originless spawns still require a tagged, regex-valid child session ID.
     let restore = patchProvider(waitingSpawnProvider());
@@ -3336,11 +3198,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     const toolRegistry = new ToolRegistry();
     toolRegistry.register(noopTool("noop"));
     const subStore = makeSubStore();
-    const runner = new SubAgentRunner({
-      parentDeps: buildLoopDeps(toolRegistry),
-      toolRegistry,
-      subAgentMemoryManager: subStore,
-    });
+    const runner = makeRunner(toolRegistry, subStore);
 
     // Empty frozen scope indicates corruption outside the wire path and must fail closed.
     const { createNamespacedSessionId } = await import("../../shared/dlp-safe-id.js");

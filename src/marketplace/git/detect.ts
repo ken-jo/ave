@@ -1,17 +1,5 @@
-/**
- * Which git the marketplace runs (design §9.1).
- *
- *   system  — the first usable git on PATH, then the well-known install
- *             locations; must be at least {@link MIN_GIT_VERSION}.
- *   managed — the Ave-downloaded copy (§9.2), present and smoke-tested.
- *   auto    — system if usable, else managed if present, else "missing".
- *             A system git that is too old is reported, and auto moves on.
- *
- * On macOS `/usr/bin/git` is a shim that opens the Command Line Tools
- * installer when the tools are absent. Detection asks `xcode-select -p`
- * first and treats a missing toolchain as "no git there", so probing never
- * pops a dialog.
- */
+/** Which git the marketplace runs (design §9.1). system; the first usable git on PATH, then the well-known install locations; must be at least {@link MIN_GIT_VERSION}. managed; the Ave-downloaded copy (§9.2), present and smoke-tested. auto; system if usable, else managed if present, else
+ * "missing". A system git that is too old is reported, and auto moves on. On macOS `/usr/bin/git` is a shim that opens the Command Line Tools installer when the tools are absent. Detection asks `xcode-select -p` first and treats a missing toolchain as "no git there", so probing never pops a dialog. */
 import { execFile } from "node:child_process";
 import { constants } from "node:fs";
 import { access } from "node:fs/promises";

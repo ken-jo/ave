@@ -1,27 +1,4 @@
-/**
- * agent-action-requester.ts — §8 plugin approval caller + issuer registry
- *
- * Thin wrapper around ApprovalGate.requestAndWait() for plugin clients that
- * need a host-signed approval verdict.
- *
- * Responsibility split:
- *   - Caller (plugin): supplies toolName, args, reason, source, sourcePluginId, scope.
- *   - This module: builds a minimal ApprovalRequest (id, createdAt, category/kind),
- *     records issuer plugin id + scope in the ApprovalIssuerRegistry, carries
- *     that issuer metadata into ApprovalGate audit provenance, and delegates to
- *     ApprovalGate which mints nonce + HMAC.
- *   - Plugin MUST NOT compute nonce/HMAC — those are gate-internal confused-deputy fields.
- *
- * Returns only a one-shot ApprovalChoice so callers don't need to unwrap
- * ApprovalDecision (nonce/hmac fields are verification artefacts, not outputs).
- * Agent-action requests do not have a durable decision consumer, so injected
- * or legacy gates cannot upgrade them to a persistent grant.
- *
- * Security: ApprovalIssuerRegistry records
- * (requestId -> { issuerPluginId, scope }) at request time. The respond path
- * verifies sender plugin id and the host-approved scope grant. Violations throw
- * without downgrade.
- */
+// Only the gate mints nonce/HMAC; callers receive one-shot choices and cannot create persistent grants. Record issuer and scope at request time, then verify both on response; violations throw without downgrade.
 
 import { randomUUID } from "node:crypto";
 import type { ApprovalGate } from "./approval-gate.js";
@@ -33,33 +10,19 @@ export interface AgentApprovalInput {
   reason: string;
   source: "plugin";
   sourcePluginId: string;
-  /** Approval action scope — must be listed in the issuer's approved grant. */
+  // Approval action scope — must be listed in the issuer's approved grant.
   scope: string;
 }
 
-/** Per-request issuer metadata recorded at requestAgentApproval() time. */
+// Per-request issuer metadata recorded at requestAgentApproval time.
 interface IssuerEntry {
   issuerPluginId: string;
   scope: string;
-  /** Wall-clock ms at which this entry was recorded — used by `purgeStalerThan`. */
+  // Wall-clock ms at which this entry was recorded — used by `purgeStalerThan`.
   recordedAt: number;
 }
 
-/**
- * ApprovalIssuerRegistry — maps pending approval request IDs to their issuer.
- *
- * Lifecycle:
- *   - `record(requestId, pluginId, scope)` — called before gate.requestAndWait().
- *   - `consume(requestId)` — called in the respond path; returns entry and removes it.
- *     Returns null if no entry (already consumed or never issued).
- *
- * The registry is intentionally a plain Map (no LRU cap) because
- * ApprovalGate already enforces a 5-minute timeout per request, after which
- * it removes the pending entry and resolves deny-once. The issuer registry
- * entry survives until `consume()` is called by the respond path; timed-out
- * requests whose `consume()` is never called are cleaned up by
- * `purgeStalerThan()` which the gate timeout callback should trigger.
- */
+// Record issuer/scope before requesting; consume once on response and purge stale unanswered entries after gate timeout.
 export class ApprovalIssuerRegistry {
   private readonly entries = new Map<string, IssuerEntry>();
 
@@ -71,10 +34,7 @@ export class ApprovalIssuerRegistry {
     });
   }
 
-  /**
-   * Retrieve and remove the issuer entry for `requestId`.
-   * Returns null if the entry was never recorded or already consumed.
-   */
+  // Retrieve and remove the issuer entry for `requestId`. Returns null if the entry was never recorded or already consumed.
   consume(requestId: string): IssuerEntry | null {
     const entry = this.entries.get(requestId);
     if (!entry) return null;
@@ -82,31 +42,17 @@ export class ApprovalIssuerRegistry {
     return entry;
   }
 
-  /**
-   * Explicit deletion (no-op if absent). Used by `requestAgentApproval`'s
-   * try-finally to prune the entry when the gate throws — without this the
-   * entry would leak until `purgeStalerThan` runs.
-   */
+  // Explicit deletion (no-op if absent). Used by `requestAgentApproval`'s try-finally to prune the entry when the gate throws — without this the entry would leak until `purgeStalerThan` runs.
   delete(requestId: string): void {
     this.entries.delete(requestId);
   }
 
-  /**
-   * Non-destructive lookup — returns the entry if present, undefined otherwise.
-   * Does NOT remove the entry (unlike `consume`). Intended for testing and
-   * diagnostic code paths only; production code should use `consume`.
-   */
+  // Non-destructive lookup — returns the entry if present, undefined otherwise. Does NOT remove the entry (unlike `consume`). Intended for testing and diagnostic code paths only; production code should use `consume`.
   peek(requestId: string): IssuerEntry | undefined {
     return this.entries.get(requestId);
   }
 
-  /**
-   * Remove all entries older than `maxAgeMs` milliseconds from `now`.
-   * Called by the gate timeout path to prevent unbounded growth when
-   * the respond path is never reached (e.g. renderer crash).
-   *
-   * Returns the count of purged entries.
-   */
+  // Remove all entries older than `maxAgeMs` milliseconds from `now`. Called by the gate timeout path to prevent unbounded growth when the respond path is never reached (e.g. renderer crash). Returns the count of purged entries.
   purgeStalerThan(maxAgeMs: number, now: number = Date.now()): number {
     const cutoff = now - maxAgeMs;
     let purged = 0;
@@ -124,12 +70,7 @@ export class ApprovalIssuerRegistry {
   }
 }
 
-/**
- * Verify that a plugin is allowed to issue an approval request for `scope`.
- *
- * This check must run on the request path, not only on respond(), because
- * requestAgentApproval returns the user's choice directly to plugin code.
- */
+// Verify that a plugin is allowed to issue an approval request for `scope`. This check must run on the request path, not only on respond, because requestAgentApproval returns the user's choice directly to plugin code.
 export function verifyApprovalRequestScope(
   issuerPluginId: string,
   scope: string,
@@ -143,30 +84,7 @@ export function verifyApprovalRequestScope(
   );
 }
 
-/**
- * **Internal helper.** Plugin code MUST call `hostApi.agentApproval.request()`
- * — `requestAgentApproval` is the host-side wiring that the HostApi factory
- * binds to. Direct callers must hold the live `ApprovalGate` and shared
- * `ApprovalIssuerRegistry` references and are expected to be host-internal
- * code paths only.
- *
- * Request approval via the §8 ApprovalGate on behalf of a plugin.
- *
- * Records the (requestId → issuerPluginId, scope) mapping in the
- * provided registry BEFORE calling the gate, so the respond path can
- * verify origin + scope without a race.
- *
- * The gate generates nonce + HMAC internally (confused-deputy defense).
- * On timeout the gate returns deny-once. Any non-one-shot response is clamped
- * fail-closed to deny-once. If `gate.requestAndWait` throws,
- * the registry entry recorded above is removed in the `finally` block so
- * a thrown gate cannot leak issuer entries (AC1.4).
- *
- * @param gate     - The live ApprovalGate instance (injected by the IPC layer).
- * @param registry - Shared ApprovalIssuerRegistry for origin tracking.
- * @param input    - Approval request metadata from the plugin.
- * @returns        - The user's ApprovalChoice.
- */
+// Host-internal only; plugins use hostApi.agentApproval.request. Record issuer/scope before asking to avoid response races; only the gate mints nonce/HMAC. Timeout or non-one-shot choices deny, and thrown gates remove the issuer entry in finally.
 export async function requestAgentApproval(
   gate: ApprovalGate,
   input: AgentApprovalInput,
@@ -177,8 +95,7 @@ export async function requestAgentApproval(
   }
   const requestId = randomUUID();
 
-  // Record issuer BEFORE gate.requestAndWait() so the respond path
-  // always sees the entry regardless of how fast the user responds.
+  // Record issuer BEFORE gate.requestAndWait so the respond path always sees the entry regardless of how fast the user responds.
   registry.record(requestId, input.sourcePluginId, input.scope);
 
   let settled = false;
@@ -201,31 +118,12 @@ export async function requestAgentApproval(
     settled = true;
     return decision.choice === "allow-once" ? "allow-once" : "deny-once";
   } finally {
-    // On gate throw (settled=false) we must purge the entry we just
-    // recorded, otherwise a subsequent malicious respond() with the same
-    // id (replay or guessed UUID) could see a leaked issuer mapping.
-    // On normal resolve we leave the entry — the respond path consumes it.
+    // On gate throw (settled=false) we must purge the entry we just recorded, otherwise a subsequent malicious respond with the same id (replay or guessed UUID) could see a leaked issuer mapping. On normal resolve we leave the entry — the respond path consumes it.
     if (!settled) registry.delete(requestId);
   }
 }
 
-/**
- * Verify that `responderPluginId` is authorized to respond to `requestId`.
- *
- * Checks:
- *   (a) entry exists in registry (request was issued by this process)
- *   (b) responderPluginId == entry.issuerPluginId
- *   (c) entry.scope is listed in allowedScopes (issuer's approved grant)
- *
- * Throws `ApprovalOriginError` on any violation.
- * Consumes the entry from the registry on success.
- *
- * @param registry          - Shared ApprovalIssuerRegistry.
- * @param requestId         - The approval request ID being responded to.
- * @param responderPluginId - Plugin id of the IPC caller.
- * @param allowedScopes     - agentApprovalScopes from the host-approved grant.
- * @returns                 - The consumed IssuerEntry (for audit logging).
- */
+// Verify that `responderPluginId` is authorized to respond to `requestId`. Checks: (a) entry exists in registry (request was issued by this process) (b) responderPluginId == entry.issuerPluginId (c) entry.scope is listed in allowedScopes (issuer's approved grant) Throws `ApprovalOriginError` on any violation. Consumes the entry from the registry on success. @param registry - Shared ApprovalIssuerRegistry. @param requestId - The approval request ID being responded to. @param responderPluginId - Plugin id of the IPC caller. @param allowedScopes - agentApprovalScopes from the host-approved grant. @returns - The consumed IssuerEntry (for audit logging).
 export function verifyApprovalResponder(
   registry: ApprovalIssuerRegistry,
   requestId: string,
@@ -264,7 +162,7 @@ export function verifyApprovalResponder(
   return entry;
 }
 
-/** Thrown by verifyApprovalResponder on any origin/scope violation. */
+// Thrown by verifyApprovalResponder on any origin/scope violation.
 export class ApprovalOriginError extends Error {
   readonly code: "unknown-request" | "cross-plugin-hijack" | "scope-not-allowed";
   constructor(message: string, code: ApprovalOriginError["code"]) {

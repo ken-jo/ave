@@ -2,24 +2,8 @@ import type { BootHost } from "./host-runtime.js";
 import type { AppServices, PaneChatLoops } from "./types.js";
 import type { HostFetchTransport } from "../main/host-fetch-guard.js";
 import type { WorkerEgressAllowlists } from "../permissions/egress-runtime.js";
-/**
- * BootContext — the accumulator threaded through the boot pipeline (C18).
- *
- * `bootstrap()` builds a staged context from its inputs, then hands it to the
- * ordered boot steps under `src/boot/steps/*`. Each step READS the services
- * built by prior steps and WRITES its own outputs back onto the same object.
- * `assembleAppServices(ctx)` reads the fully-populated context at the end to
- * build the returned {@link AppServices} literal.
- *
- * The context deliberately holds BOTH the fields that survive into AppServices
- * and the boot-only locals a later step needs (deploymentGuard, marketplace
- * fetcher, the mutable IPC-bridge disposers, late-binding refs, …). Fields are
- * declared required unless they are genuinely optional in a successful boot
- * (`pythonPath`, the signed-artifact stores, the due-soon timer, release-prep
- * handles) so step bodies can read them without non-null noise; the accumulator
- * pattern initialises them progressively, then an exhaustive own-property gate
- * proves every producer ran before assembly (see {@link createBootContext}).
- */
+/** Boot steps progressively populate one context with services and boot-only dependencies.
+ * An exhaustive own-property gate proves required producers ran before assembly. */
 import type { BrowserWindow } from "electron";
 import type { AveHomeDocUpgradeMarker } from "../main/seed-ave-home-docs.js";
 import type { PythonRuntimeBootstrapper } from "../main/python-runtime.js";
@@ -103,12 +87,8 @@ export class BootContext {
   declare readonly mainWindow: BrowserWindow | null;
   declare readonly getMainWindow: () => BrowserWindow | null;
 
-  // ── Tracing (configureTracing) ─────────────────────────────────────────────
-  /**
-   * Always present, disabled unless `AVE_TELEMETRY` names a sink. Held on the
-   * context so post-boot can flush it on quit and the conversation wiring can
-   * hand its tracer to the loops.
-   */
+  // Always present, disabled unless `AVE_TELEMETRY` names a sink. Held on the context so
+  // post-boot can flush it on quit and the conversation wiring can hand its tracer to the loops.
   declare tracing: TracingHandle;
 
   // ── Network fetch surface (setupNetworkFetch) ──────────────────────────────
@@ -174,7 +154,6 @@ export class BootContext {
   // ── Marketplace (setupMarketplace) ─────────────────────────────────────────
   declare pluginMarketplace: PluginMarketplaceService;
   declare refreshActiveLlmWildcard: () => void;
-  /** Cancels the active-LLM wildcard restart debounce during host shutdown. */
   declare disposeRefreshActiveLlmWildcard: () => void;
   declare refreshSandboxNetworkConfig: () => Promise<void>;
   declare buildWorkerEgressAllowlists: () => Promise<WorkerEgressAllowlists>;
@@ -186,17 +165,13 @@ export class BootContext {
     selection: SubscriptionChatRuntimeSelection,
     fallbackSelection?: SubscriptionChatRuntimeSelection,
   ) => LLMProvider | null;
-  /**
-   * MCP-app `ui/update-model-context` slots. ONE instance, two consumers, and that is the
-   * whole design: the gated IPC WRITES a card's slot, and the SystemPromptBuilder source
-   * READS the active session's slots at turn build. Nothing pushes.
-   */
+  /** Gated IPC writes card context slots; prompt construction reads them at turn build, with no push-triggered turns. */
   declare mcpAppModelContext: McpAppModelContextStore;
   declare rationaleScopeReviewer: RationaleScopeReviewer;
   declare approvalSentenceSelector: ApprovalSentenceSelector;
-  /** Tier 2 of the sub-agent approval chain; replaced on every reviewer re-wire. */
+  /** Replaced on every reviewer rewire. */
   declare parentAdjudicator: ParentAdjudicator;
-  /** The same stage on the parent session's own chat model, when policy asks for it. */
+  /** Uses the parent chat model when policy selects it. */
   declare parentSessionAdjudicator: ParentAdjudicator;
   declare rationaleHostService: RationaleHostService | undefined;
   declare rewireReviewerAgent: () => void;
@@ -216,19 +191,14 @@ export class BootContext {
   declare routineEngine: RoutineEngine;
   declare postTurnHookChain: PostTurnHookChain;
   declare conversationLoop: ConversationLoop;
-  /** Side-chat (workspace rail) — 2nd loop with isolated `~/.ave/side-chat/` store. */
+  /** Side-chat (workspace rail); 2nd loop with isolated `~/.ave/side-chat/` store. */
   declare sideChatConversationLoop: ConversationLoop;
-  /** The pane chats' own loops — see IpcDeps. */
   declare paneChatLoops: PaneChatLoops;
-  /** The side-chat store — the conversation list reads it beside the main one. */
+  /** The side-chat store; the conversation list reads it beside the main one. */
   declare sideChatMemoryManager: MemoryManager;
-  /** Resolves the loop behind one tiled chat group — see IpcDeps. */
   declare resolveChatGroupLoop: (chatGroupId: string) => ConversationLoop;
-  /** Releases that loop when the tile closes — see IpcDeps. */
   declare releaseChatGroupLoop: (chatGroupId: string) => void;
-  /** The loop holding one session, or none — see IpcDeps. */
   declare findLoopBySessionId: (sessionId: string) => ConversationLoop | undefined;
-  /** The loop behind an already-open chat group, or none — see IpcDeps. */
   declare findChatGroupLoop: (chatGroupId: string) => ConversationLoop | undefined;
   declare preferenceRefreshService: PreferenceRefreshService;
   declare agentsDocMergeService: AgentsDocMergeService;
@@ -237,18 +207,14 @@ export class BootContext {
   declare workBoardEngine: WorkBoardEngine;
   declare workBoardReporter: WorkBoardReporter;
 
-  // ── Plugin IPC bridges (mutable disposers) ─────────────────────────────────
-  /** Disposes every main window's plugin event bridge. */
+  // Dispose every main window's plugin event bridge.
   declare disposePluginEventBridge: () => void;
-  /** Bridges plugin events to one more main window (several may be open). */
   declare addPluginEventBridgeWindow: (win: BrowserWindow | null) => void;
-  /** Re-registers every open window's bridge after the plugin event set changed. */
   declare refreshPluginEventBridges: () => void;
 
-  // ── MCP ────────────────────────────────────────────────────────────────────
   declare mcpGovernance: McpGovernance;
   declare mcpManager: McpManager;
-  /** Owns each plugin's loopback MCP host — the loopback-first arm of the render IPC's `ui://` resolver. */
+  /** Owns each plugin's loopback MCP host; the loopback-first arm of the render IPC's `ui://` resolver. */
   declare pluginLoopbackManager: PluginLoopbackManager;
 
   // ── Starred / feedback ─────────────────────────────────────────────────────
@@ -380,11 +346,7 @@ declare const READY_BOOT_CONTEXT: unique symbol;
 export type ReadyBootContext = BootContext & { readonly [READY_BOOT_CONTEXT]: true;
 };
 
-/**
- * Convert the mutable boot accumulator into the only context assembly accepts.
- * Own-property checks distinguish a step that explicitly produced `undefined`
- * (valid for optional services) from a step that never produced its field.
- */
+/** Own-property checks distinguish explicitly produced undefined from a producer that never ran. */
 export function assertBootContextReady(ctx: BootContext,
 ): asserts ctx is ReadyBootContext {
   const missing = BOOT_CONTEXT_FIELDS.filter((field) => !Object.hasOwn(ctx, field),
@@ -394,12 +356,7 @@ export function assertBootContextReady(ctx: BootContext,
   }
 }
 
-/**
- * Build the typed accumulator from the immediately-available inputs. Remaining
- * fields are declared staged slots and become own properties only when their
- * producing step assigns them. {@link assertBootContextReady} validates that
- * every producer ran before the context crosses into service assembly.
- */
+/** Staged fields become own properties only when their producer assigns them; assert readiness before assembly. */
 export function createBootContext(inputs: BootContextInputs): BootContext {
   return new BootContext(inputs);
 }

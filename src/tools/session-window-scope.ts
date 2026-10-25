@@ -1,11 +1,5 @@
-/**
- * Which app window a conversation's workspace tools (terminal_read, the
- * browser tools) may reach: its own window when a window hosts it, else its
- * parent's when it is a running sub-agent (walking up through nested
- * children), else none. Never a default — an unresolved session reaches
- * nothing, so a routine, a work-board run or any session no window hosts gets
- * no terminals and no browser.
- */
+/** Which app window a conversation's workspace tools (terminal_read, the browser tools) may reach: its own window when a window hosts it, else its parent's when it is a running sub-agent (walking
+ * up through nested children), else none. Never a default; an unresolved session reaches nothing, so a routine, a work-board run or any session no window hosts gets no terminals and no browser. */
 
 /** Nested sub-agent levels walked to find the conversation a child belongs to. */
 const MAX_SCOPE_DEPTH = 8;

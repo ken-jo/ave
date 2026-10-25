@@ -20,7 +20,7 @@ export interface TailnetWebSessionAuthorization {
   readonly expiresAt: number;
 }
 
-export interface TailnetWebIssuedSession extends TailnetWebSessionAuthorization {
+interface TailnetWebIssuedSession extends TailnetWebSessionAuthorization {
   /** HttpOnly cookie value; never retained in the store. */
   readonly cookieToken: string;
   /** Page-local CSRF value; never retained in the store. */

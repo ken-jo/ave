@@ -1,7 +1,7 @@
 import type { ChatEntry } from "../../../lib/chat-stream-state.js";
 import { isRecord } from "../../../shared/is-record.js";
 
-export type FileDiffTool = "edit_file" | "multi_edit" | "write_file";
+type FileDiffTool = "edit_file" | "multi_edit" | "write_file";
 
 export interface FileEditHunk {
   oldText: string;

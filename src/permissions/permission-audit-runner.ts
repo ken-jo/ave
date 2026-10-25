@@ -1,21 +1,4 @@
-/**
- * `/permission audit` runtime helpers.
- *
- * Spec ref: docs/architecture/permission-policy-design.md §3 Layer 7,
- * §3 Layer 8 (slash subcommand `/permission audit show|verify`).
- *
- * Two operations:
- *
- *   show   — surface the last N entries from the permission audit log so
- *            the renderer's `AuditPanel` can render them. Read-only,
- *            no chain verification.
- *   verify — recompute the chain across one or more day-files, report
- *            the first broken line on failure.
- *
- * The functions take the audit dir + secret as parameters (not from
- * a singleton) so unit tests can run in a tmpdir without IPC
- * scaffolding.
- */
+// Audit show is read-only without chain verification; verify recomputes chains across day-files and reports the first failure (docs/architecture/permission-policy-design.md).
 import {
   closeSync,
   existsSync,
@@ -73,11 +56,7 @@ function readLastNonEmptyLines(filePath: string, limit: number): string[] {
     .slice(-limit);
 }
 
-/**
- * Return the most recent N audit entries across all `.permission-audit.jsonl`
- * files in the audit directory. Files are processed in date-sorted
- * order; the tail of the newest file appears first in the result.
- */
+// Return the most recent N audit entries across all `.permission-audit.jsonl` files in the audit directory. Files are processed in date-sorted order; the tail of the newest file appears first in the result.
 export function readRecentAuditEntries(
   auditDir: string,
   limit: number,
@@ -108,23 +87,14 @@ export function readRecentAuditEntries(
   return out;
 }
 
-/**
- * Per-file chain verification result. Verification iterates through
- * every `.permission-audit.jsonl` file in the audit directory; each file gets
- * its own genesis-anchored chain because rotations create fresh
- * files.
- */
+// Per-file chain verification result. Verification iterates through every `.permission-audit.jsonl` file in the audit directory; each file gets its own genesis-anchored chain because rotations create fresh files.
 export interface DayVerifyResult {
   file: string;
   totalLines: number;
   result:
     | { ok: true }
     | { ok: false; firstBrokenLineIndex: number; reason: string };
-  /**
-   * Daily seal verification — present only when a seal exists for
-   * the file's date. `null` when no seal is stored (uninitialized chain or
-   * day not yet sealed).
-   */
+  // Daily seal verification — present only when a seal exists for the file's date. `null` when no seal is stored (uninitialized chain or day not yet sealed).
   sealMatch: boolean | null;
 }
 
@@ -133,14 +103,11 @@ export interface VerifyAllAuditResult {
   totalEntries: number;
   intact: boolean;
   perDay: DayVerifyResult[];
-  /** First broken file (for prompt error messaging). */
+  // First broken file (for prompt error messaging).
   firstBrokenFile?: string;
 }
 
-/**
- * Verify every `.permission-audit.jsonl` file in the audit directory. Returns a
- * structured report for the renderer's "verify" tile.
- */
+// Verify every `.permission-audit.jsonl` file in the audit directory. Returns a structured report for the renderer's "verify" tile.
 export function verifyAllAuditFiles(
   auditDir: string,
   secret: string,
@@ -190,10 +157,7 @@ export function verifyAllAuditFiles(
   };
 }
 
-/**
- * Return total bytes occupied by `.permission-audit.jsonl` files — used by the
- * renderer's panel header ("12 files / 1.2 MB").
- */
+// Return total bytes occupied by `.permission-audit.jsonl` files — used by the renderer's panel header ("12 files / 1.2 MB").
 export function summarizeAuditDir(auditDir: string): { files: number; bytes: number } {
   if (!existsSync(auditDir)) return { files: 0, bytes: 0 };
   const files = readdirSync(auditDir).filter((f) => f.endsWith(".permission-audit.jsonl"));

@@ -17,7 +17,7 @@ export type HookCommandAuthorizer = (
   cwd: string,
 ) => Promise<{ decision: "allow" | "deny"; reason: string; plan?: HostShellExecutionPlan; assertAllowed?: () => void }>;
 
-/** Trusted user scripts still pass the host's shell rules and interactive approval. */
+// Trusted user scripts still pass the host's shell rules and interactive approval.
 export function createHookCommandAuthorizer(deps: {
   permissionManager: Pick<PermissionManager, "ensureProjectRulesLoaded" | "checkDetailed">;
   approvalGate: Pick<ApprovalGate, "requestAndWait">;
@@ -31,8 +31,7 @@ export function createHookCommandAuthorizer(deps: {
       projectRulesCwd: cwd,
       headless: turnExtensionPolicyContext.getStore()?.headless === true,
     } as const;
-    // Matched as a plain host shell: wildcard allows apply only on a
-    // sandbox-capable host, as for the bash tool.
+    // Matched as a plain host shell: wildcard allows apply only on a sandbox-capable host, as for the bash tool.
     const check = () => deps.permissionManager.checkDetailed("bash", "builtin", "shell", undefined, {
       ...context,
       shellExecution: { runsSandboxed: false, sandboxAvailable: getHostShellExecutionPlan().sandboxed },

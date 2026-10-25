@@ -70,13 +70,7 @@ export interface RationaleUiAuditProjection {
   terminalReason: RationaleTerminalReason | null;
   suggestion: string | null;
   modalFallbackRequired: boolean;
-  /**
-   * Reviewer auto-approve provenance. `true` only on the fresh + aligned +
-   * non-high reviewer terminal that skips the user modal; `false` for every
-   * user-driven allow-once and every modal-fallback projection. Forensics use
-   * this (with scopeAlignment/initialVerdict/reevaluatedVerdict, already
-   * carried above) to distinguish reviewer-auto from user-allow.
-   */
+  // Mark only fresh, aligned, non-high reviewer terminals as auto-approved; user/modal decisions retain false provenance.
   autoApproved: boolean;
 }
 
@@ -113,13 +107,8 @@ const PROJECTION_TERMINAL_REASONS: readonly RationaleTerminalReason[] = [
 ];
 
 function sanitizeProjectionDisplayText(value: string, maxLength: number): string {
-  // The renderer display contract rejects angle brackets outright. The
-  // generic sanitizer removes balanced HTML-like tags, but a lone bracket
-  // would otherwise survive projection validation and make the later
-  // projection-to-display conversion throw after the ticket is user_pending.
-  // normalizeRationaleApprovalDisplayText removes Cc/Cf directional and
-  // formatting characters both before and after home-path redaction, so every
-  // validated projection is convertible while forged rows remain fail-closed.
+  // Reject angle brackets and normalize controls before and after redaction so valid projections always convert to display.
+  // Forged projections must fail closed before a stranded user_pending ticket can remain.
   const sanitized = sanitizeDisplayText(value, 4_096)
     .replace(/[<>]/gu, " ");
   return normalizeRationaleApprovalDisplayText(
@@ -242,10 +231,7 @@ export function validateRationaleUiAuditProjection(
         value.modalFallbackRequired === false &&
         isSanitizedProjectionText(value.suggestion, RATIONALE_DISPLAY_CAPS.suggestionLength);
       if (!readyOk) return false;
-      // autoApproved=true is a POSITIVE terminal: it requires the reviewer to
-      // have judged the sealed action in-scope (aligned) and not intrinsically
-      // dangerous (reevaluatedVerdict <= medium), and the ticket to have reached
-      // the one-shot allowed_once terminal. Everything else is autoApproved=false.
+      // autoApproved requires aligned, non-high review and the one-shot allowed_once terminal; otherwise it must be false.
       if (value.autoApproved) {
         return value.scopeAlignment === "aligned" &&
           value.terminalReason === "allowed-once" &&
@@ -420,25 +406,15 @@ export function createRationaleUiAuditProjection(input: {
   }, "RationaleUiAuditProjection");
 }
 
-/**
- * Derive the only rationale payload that may cross into the renderer.
- *
- * The full projection remains the host/audit record and deliberately keeps
- * replay-sensitive bindings such as ticket, anchor, and action digests. The
- * display contract contains only bounded explanatory facts, and is rebuilt
- * through its strict parser so an invalid projection never widens the modal
- * surface.
- */
+// Renderer payloads contain bounded explanatory facts only; keep replay-sensitive ticket, anchor, and action bindings host-side.
+// Rebuild through the strict display parser so invalid projections cannot widen the modal surface.
 export function createRationaleApprovalDisplayFromProjection(
   projection: RationaleUiAuditProjection,
 ): RationaleApprovalDisplay {
   if (!validateRationaleUiAuditProjection(projection)) {
     throw new TypeError("invalid rationale UI/audit projection");
   }
-  // validateRationaleUiAuditProjection proves this dynamically, but the
-  // audit projection's static status type is intentionally broader because
-  // audit records also model pre-terminal lifecycle states. Keep the narrow
-  // renderer contract explicit rather than relying on an unchecked cast.
+  // Keep renderer status narrowed explicitly; audit types also permit pre-terminal states.
   const rationaleStatus = projection.rationaleStatus;
   if (rationaleStatus !== "ready" && rationaleStatus !== "failed") {
     throw new TypeError("projection has no renderer-safe rationale status");
@@ -488,7 +464,7 @@ export const RATIONALE_SECURITY_SUFFIX = Object.freeze([
   "tool-end-emit",
 ] as const);
 
-export type RationaleSecuritySuffixStep = (typeof RATIONALE_SECURITY_SUFFIX)[number];
+type RationaleSecuritySuffixStep = (typeof RATIONALE_SECURITY_SUFFIX)[number];
 
 export interface SealedRationaleResumeRequest {
   contractVersion: typeof RATIONALE_CONTROL_CONTRACT_VERSION;

@@ -2,13 +2,7 @@ import { statSync } from "node:fs";
 import { isAbsolute, posix } from "node:path";
 import { canonicalPowerShellName, POWERSHELL_COMMAND_POLICIES, PowerShellAnalysisBudget } from "./powershell-command-policy.js";
 
-/**
- * Associated types: https://support.microsoft.com/en-us/outlook/blocked-attachments-in-outlook
- * and native catalogue extensions from https://lolbas-project.github.io/ (2026-10-15).
- * Document/media/data rows: https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/MIME_types/Common_types
- * Unknown types stay opaque. Document rows describe the supported inert default action;
- * explicit execution and same-input file provenance retain their own launcher boundary.
- */
+// Unknown file types stay opaque; inert default actions never authorize explicit execution or same-input file provenance.
 export { POWERSHELL_FILE_TYPES } from "./powershell-file-types.js";
 import { POWERSHELL_FILE_TYPES } from "./powershell-file-types.js";
 
@@ -16,7 +10,7 @@ interface MaterializedFile {
   catalogue?: string;
 }
 
-/** Monotone facts: uncertainty, overwrites and scope changes never erase provenance. */
+// Monotone facts: uncertainty, overwrites and scope changes never erase provenance.
 export class PowerShellFileProvenance {
   private readonly paths = new Map<string, MaterializedFile>();
   private readonly leaves = new Map<string, MaterializedFile>();
@@ -57,7 +51,7 @@ export class PowerShellFileProvenance {
     return /[\\/]$/.test(text) || /^(?:\.{1,2}|[a-z]:[\\/])$/i.test(text);
   }
 
-  /** A pre-call directory observation cannot survive possible filesystem effects. */
+  // A pre-call directory observation cannot survive possible filesystem effects.
   isExistingDirectory(text: string): boolean {
     this.budget.spend(1, text.length);
     if (this.revision !== 0 || /^(?:~|[\\/]{2})/.test(text) || /^[\\/]{2}/.test(this.cwd ?? "")
@@ -115,13 +109,13 @@ export class PowerShellFileProvenance {
     return undefined;
   }
 
-  /** Unknown argv supplies no write paths, but cannot prove a later script untouched. */
+  // Unknown argv supplies no write paths, but cannot prove a later script untouched.
   observeOpaqueEffects(): void {
     this.budget.spend();
     if (!this.opaqueEffects) { this.opaqueEffects = true; this.revision += 1; }
   }
 
-  /** Script discovery need not name its executable inputs. */
+  // Script discovery need not name its executable inputs.
   hasExecutableWrites(): boolean {
     this.budget.spend();
     if (this.opaque || this.unknownLeaves) return true;
@@ -129,7 +123,7 @@ export class PowerShellFileProvenance {
     return false;
   }
 
-  /** Unresolved writes constrain execution checks; ordinary data lookups stay precise. */
+  // Unresolved writes constrain execution checks; ordinary data lookups stay precise.
   executionTarget(text: string): MaterializedFile | undefined {
     return this.lookup(text) ?? (this.opaque || this.unknownLeaves || (this.opaqueEffects && this.fileType(text) === "script") ? {} : undefined);
   }

@@ -61,11 +61,7 @@ describe("agent_send host boundary", () => {
     const tool = createAgentSendTool({ getRuntime: () => runtime });
     const mainRegistry = new ToolRegistry();
     mainRegistry.register(tool);
-    // `agent_send` is hidden at the root scope: execute() rejects every
-    // non-child caller (spawnDepth !== 1), so a root-visible schema would
-    // advertise a tool the parent can never successfully call. The sub-agent
-    // runner re-registers it visible for children (`buildChildDeps`); a parent
-    // replies to a suspended child via agent_spawn(resumeId=...) instead.
+    // Only children can call agent_send; parents resume suspended children via agent_spawn(resumeId=...).
     expect(mainRegistry.getToolSchemas().map((schema) => schema.name)).not.toContain("agent_send");
 
     const result = await tool.execute({

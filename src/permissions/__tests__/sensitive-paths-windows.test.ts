@@ -1,12 +1,4 @@
-/**
- * Windows credential stores in the sensitive-path table.
- *
- * The rows hang off the user home like `~/.ssh`, so their projections reach
- * both the host guard (`**\/AppData/…` globs) and the OS sandbox floor. They
- * match case-insensitively on every platform: Windows paths are
- * case-insensitive, and a PowerShell command scanned on a POSIX host must not
- * slip past by spelling `appdata\roaming` in lower case.
- */
+// Credential-store paths match case-insensitively even when scanned on a POSIX host; both host and sandbox projections must deny them.
 import { describe, expect, it } from "vitest";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -50,7 +42,7 @@ const WINDOWS_SECRETS: string[] = [
   `c:/users/owner/appdata/local/google/chrome/user data/default/login data`,
 ];
 
-/** Windows forms of stores the POSIX rows already cover (one source of truth). */
+// Windows forms of stores the POSIX rows already cover (one source of truth).
 const ALREADY_COVERED: string[] = [
   `${PROFILE}/.ssh/id_rsa`,
   `${PROFILE}/.aws/credentials`,

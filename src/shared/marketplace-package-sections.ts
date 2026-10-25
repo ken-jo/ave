@@ -34,7 +34,7 @@ export interface MarketplacePackageSectionDefinition {
 const PACKAGE_VOCABULARY_KINDS = { plugin: "extension", "agent-plugin": "plugin" } as const;
 const CODE_PACKAGE_SECTION_LABELS = { extension: "Extensions", plugin: "Plugins" } as const;
 
-export const MARKETPLACE_PACKAGE_TYPE_LABELS: Readonly<Record<MarketplacePackageType, string>> =
+const MARKETPLACE_PACKAGE_TYPE_LABELS: Readonly<Record<MarketplacePackageType, string>> =
   Object.freeze({
     plugin: CODE_PACKAGE_SECTION_LABELS[packageVocabularyKind("plugin")],
     mcp: "MCP",

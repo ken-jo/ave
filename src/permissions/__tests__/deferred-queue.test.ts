@@ -107,7 +107,6 @@ describe("DeferredQueue", () => {
   });
 
   it("emits pending-count updates on append and resolve", async () => {
-
     const onPendingChange = vi.fn();
     const q = new DeferredQueue(tmpQueuePath(), onPendingChange);
     const id = await q.append(SAMPLE);

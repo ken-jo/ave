@@ -135,8 +135,7 @@ describe.skipIf(process.platform !== "win32")("home policy with an absent HOME",
     expect(buildSafeChildEnv()).not.toHaveProperty("HOME");
   });
 
-  // Confined shells read the host home; its sensitive entries stay denied
-  // from the USERPROFILE anchor when HOME is absent.
+  // Confined shells read the host home; its sensitive entries stay denied from the USERPROFILE anchor when HOME is absent.
   it("keeps home-anchored sensitive reads denied without changing child HOME", () => {
     const policy = getBuiltinShellReadPolicy([], getPolicyHome());
     expect(policy.denyRead).not.toContain(home);
@@ -336,7 +335,7 @@ describe.skipIf(process.platform !== "win32")("independent profile anchors", () 
     home = mkdtempSync(join(tmpdir(), "ave-profile-anchors-"));
     profile = join(home, "profile");
     vi.mocked(userInfo).mockReturnValue({ homedir: profile, username: "test-account", uid: 1000, gid: 1000, shell: "/bin/sh" });
-    // As on a real host, os.homedir() is USERPROFILE.
+    // As on a real host, os.homedir is USERPROFILE.
     vi.mocked(homedir).mockReturnValue(profile);
     vi.stubEnv("HOME", join(home, "shell"));
     vi.stubEnv("USERPROFILE", profile);

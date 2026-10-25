@@ -1,24 +1,4 @@
-/**
- * hostapi-effect-completeness.test.ts
- *
- * The lever that ENDS the per-method whack-a-mole. The host asserts
- * `hostObservable:true` for every in-process plugin tool, so EVERY
- * function-valued hostApi method a plugin can call must be classified in the
- * effect SOT — otherwise a mutation reached through an unmapped method records
- * an empty ledger and surfaces as a confirmed READ (a fail-open seed for the
- * future read-recognition gate).
- *
- * This test constructs the REAL hostApi object via the production
- * `createHostApi` factory (captured from `initPluginRuntime`), recursively
- * collects every function-valued leaf method PATH, and asserts each is present
- * in {@link HOSTAPI_EFFECT_BY_PATH}. It fails on ANY unmapped method — including
- * a future-added one — so structural coverage is enforced mechanically rather
- * than rediscovered round-by-round in review.
- *
- * It also pins the runtime backstop: the recording wrapper records a
- * fail-closed `unclassifiedHostApiMethod` WRITE for an unmapped path, and is a
- * PURE side-effect (it never alters the wrapped method's behavior).
- */
+// Every real host API function must appear in the effect table; unmapped methods record a fail-closed write without changing call behavior.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const harness = vi.hoisted(() => ({
@@ -26,8 +6,7 @@ const harness = vi.hoisted(() => ({
   readPluginRegistry: vi.fn(async () => ({ version: 1, plugins: [] })),
   appPrependOnceListener: vi.fn(),
   runtime: {
-    // boot installs each loaded plugin's partition policy before starting any
-    // of them, so the double needs the cheap half of startAll too.
+    // boot installs each loaded plugin's partition policy before starting any of them, so the double needs the cheap half of startAll too.
     load: vi.fn(async () => {}),
     startAll: vi.fn(async () => {}),
     listToolNames: vi.fn(() => [] as string[]),
@@ -122,17 +101,14 @@ describe("hostApi effect classification — STRUCTURAL completeness", () => {
     const nonPlainNamespaces: string[] = [];
     collectFunctionPaths(hostApi, "", paths, nonPlainNamespaces);
 
-    // Sanity: enumeration actually found the surface (guards against a refactor
-    // that hides methods behind non-enumerable props and silently passes).
+    // Sanity: enumeration actually found the surface (guards against a refactor that hides methods behind non-enumerable props and silently passes).
     expect(paths.length).toBeGreaterThan(20);
     expect(paths).toContain("storage.writeJson");
     expect(paths).toContain("agentApproval.request");
     expect(paths).toContain("callLlm");
     expect(paths).toContain("openAuthPartitionViewer");
 
-    // The wrapper only INSTRUMENTS plain namespaces; a non-plain namespace would
-    // pass the path check below yet be left uninstrumented by the wrapper. Assert
-    // there are none so the test and the wrapper agree on the traversal surface.
+    // The wrapper only INSTRUMENTS plain namespaces; a non-plain namespace would pass the path check below yet be left uninstrumented by the wrapper. Assert there are none so the test and the wrapper agree on the traversal surface.
     expect(
       nonPlainNamespaces,
       `Non-plain hostApi namespace(s) the recording wrapper would NOT instrument — make them plain objects or instrument explicitly: ${nonPlainNamespaces.join(", ")}`,
@@ -147,8 +123,7 @@ describe("hostApi effect classification — STRUCTURAL completeness", () => {
 
   it("a non-plain namespace is FLAGGED by the shared predicate (wrapper/test traversal alignment)", () => {
     class CustomProtoNamespace {
-      // class field → an OWN-enumerable function property, but the prototype is
-      // CustomProtoNamespace.prototype (NOT Object.prototype) → non-plain.
+      // class field → an OWN-enumerable function property, but the prototype is CustomProtoNamespace.prototype (NOT Object.prototype) → non-plain.
       doMutation = (): string => "mutated";
     }
     const fauxHostApi = {
@@ -161,11 +136,9 @@ describe("hostApi effect classification — STRUCTURAL completeness", () => {
 
     // Its method IS enumerated (so a path-only completeness check would pass)…
     expect(paths).toContain("ns.doMutation");
-    // …but it is ALSO flagged as a non-plain namespace, which the completeness
-    // assertion rejects — closing the wrapper/test traversal asymmetry.
+    // …but it is ALSO flagged as a non-plain namespace, which the completeness assertion rejects — closing the wrapper/test traversal asymmetry.
     expect(nonPlainNamespaces).toEqual(["ns"]);
-    // And the wrapper confirms the gap it guards: the non-plain namespace is
-    // copied through verbatim (NOT instrumented).
+    // And the wrapper confirms the gap it guards: the non-plain namespace is copied through verbatim (NOT instrumented).
     expect(instrumentEffectsByPath(fauxHostApi).ns).toBe(fauxHostApi.ns);
   });
 
@@ -177,8 +150,7 @@ describe("hostApi effect classification — STRUCTURAL completeness", () => {
     );
     const ledger: EffectLedger = createEffectLedger("cid-known");
     await runWithEffectLedger(ledger, async () => {
-      // A pure read method records read; a write method records write — both via
-      // the structural wrapper, no manual recordChokepoint at the call-site.
+      // A pure read method records read; a write method records write — both via the structural wrapper, no manual recordChokepoint at the call-site.
       hostApi.getInstalledPluginIds();
       await hostApi.openExternalUrl("https://example.com");
     });

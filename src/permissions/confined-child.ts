@@ -1,25 +1,4 @@
-/**
- * Spawn a child process confined by ASRT.
- *
- * Extracted from `worker-spawn.ts`, where the identical sequence — wrap the
- * argv, mark the process as genuinely wrapped, check managed-child admission,
- * spawn with the composed environment, register the child — was written twice,
- * once for Windows and once for POSIX. Only two things actually differed
- * between them, and both are parameters here.
- *
- * A separate module rather than another export from `worker-spawn.ts`: that
- * file is dominated by the Python worker's Unix-socket control channel, which
- * has nothing to do with confinement. A JS plugin child will need this and
- * must not import a module whose subject is the Python worker's socket.
- *
- * THE DENY FLOOR IS OWNED HERE, and that is the point of the extraction.
- * In ASRT a per-command `denyRead`/`denyWrite` REPLACES the shared boot floor
- * rather than adding to it — an empty-but-present array is not nullish — so a
- * caller that omits it silently hands the child back read of `~/.ave/secrets`,
- * `~/.ssh`, `~/.aws`. Six call sites restate that floor today and each one is
- * correct, but nothing tells the seventh. Callers of this primitive pass allow
- * paths only; the floor is not theirs to forget.
- */
+// Per-command deny arrays replace the shared boot floor, even when empty; this primitive always restates it so children cannot regain secret reads. Callers provide allow paths only.
 import { spawn, type ChildProcess, type StdioOptions } from "node:child_process";
 import { assertSrtWinSpawnIntegrity } from "./srt-win-integrity.js";
 import { existsSync } from "node:fs";
@@ -56,50 +35,18 @@ import {
 
 const log = createLogger("confined-child");
 
-/**
- * Where the confined child runtime's entry lives: the reference runtime a
- * plugin child runs, and the stdio relay a Windows sandboxed process runs
- * through.
- *
- * Resolved from `mainDir`, NOT from this module's own `import.meta.url`: the
- * main process is an esbuild bundle with code splitting, so this file executes
- * from `main.js` or from a hashed `chunks/*.js` and has no fixed relationship
- * to any emitted sibling. `main-paths.ts` is the one place that answers "where
- * are the runtime assets", and `plugin-child-main` is registered as its own
- * esbuild entry point so an actual file exists there to run.
- */
+// Where the confined child runtime's entry lives: the reference runtime a plugin child runs, and the stdio relay a Windows sandboxed process runs through. Resolved from `mainDir`, NOT from this module's own `import.meta.url`: the main process is an esbuild bundle with code splitting, so this file executes from `main.js` or from a hashed `chunks/*.js` and has no fixed relationship to any emitted sibling. `main-paths.ts` is the one place that answers "where are the runtime assets", and `plugin-child-main` is registered as its own esbuild entry point so an actual file exists there to run.
 export function resolvePluginChildEntryPath(): string {
   return join(mainDir, "plugin-child-main.js");
 }
 
-/** How long a relayed Windows process has to start and announce its listener. */
+// How long a relayed Windows process has to start and announce its listener.
 const WINDOWS_RELAY_CONNECT_TIMEOUT_MS = 30_000;
 
-/**
- * Node's symlink-preserving flags, for the host's own runtime on the Windows
- * sandboxed launch and for any Node program a relay starts. Node otherwise
- * `realpath`s a module path in JavaScript, which `lstat`s every ancestor
- * directory, and the `srt-sandbox` account may not list the user-profile
- * directories above `<AVE_HOME>` (measured: `EPERM: lstat` on the first one,
- * with the plugin's own grant held). What they give up is resolving symlinks
- * inside the program's own tree: a symlinked file loads under its link's path,
- * and dependencies reached through links (pnpm's layout) resolve from the
- * link's location.
- */
+// Node's symlink-preserving flags, for the host's own runtime on the Windows sandboxed launch and for any Node program a relay starts. Node otherwise `realpath`s a module path in JavaScript, which `lstat`s every ancestor directory, and the `srt-sandbox` account may not list the user-profile directories above `<AVE_HOME>` (measured: `EPERM: lstat` on the first one, with the plugin's own grant held). What they give up is resolving symlinks inside the program's own tree: a symlinked file loads under its link's path, and dependencies reached through links (pnpm's layout) resolve from the link's location.
 export const NODE_PRESERVE_SYMLINK_FLAGS = ["--preserve-symlinks", "--preserve-symlinks-main"] as const;
 
-/**
- * The environment a srt-win target is meant to have, as it must be handed
- * over: the caller's base and extra environment, without what srt-win itself
- * sets for the target and must keep — `PATH`, `PATHEXT`, its proxy and CA
- * trust overlay ({@link isSandboxWrapperEnvKey}) and the `GIT_CONFIG_*` set it
- * composes — without `TMPDIR` (ASRT drops it on Windows on purpose), without
- * `ELECTRON_RUN_AS_NODE` (only a command line can carry it), and without
- * `USERNAME`, which srt-win sets to the account the process actually runs as.
- * srt-win delivers none of the spawn environment to the target (measured), so
- * whatever is returned here travels by another route: the reference runtime's
- * environment argument, or a relay request.
- */
+// Relay target env separately because sandbox spawn env is not forwarded. Exclude runtime-owned PATH/PATHEXT, proxy/CA and GIT_CONFIG_* overlays, TMPDIR, USERNAME and ELECTRON_RUN_AS_NODE; preserve the sandbox's own values.
 export function srtWinTargetEnv(
   baseEnv: NodeJS.ProcessEnv,
   extraEnv: Readonly<Record<string, string>>,
@@ -116,178 +63,61 @@ export function srtWinTargetEnv(
 
 const SRT_WIN_OWN_ENV = new Set(["path", "pathext", "tmpdir", "electron_run_as_node", "username"]);
 
-/**
- * How the child's filesystem access is granted.
- *
- * `allow-list` puts the paths in the ASRT command itself (macOS seatbelt,
- * Linux bwrap `--bind`). `deny-only` is Windows, where reachability is an ACL
- * question decided outside the wrap — a grant against a holder process the
- * caller owns for the process's lifetime (`windows-acl-grant-holder.ts`; a
- * worker in `worker-spawn.ts`, a plugin child in `spawnConfinedPluginChild`) —
- * so the wrap carries
- * the deny floor and nothing else: passing allow paths there would imply a
- * confinement the wrap does not perform.
- */
+// How the child's filesystem access is granted. `allow-list` puts the paths in the ASRT command itself (macOS seatbelt, Linux bwrap `--bind`). `deny-only` is Windows, where reachability is an ACL question decided outside the wrap — a grant against a holder process the caller owns for the process's lifetime (`windows-acl-grant-holder.ts`; a worker in `worker-spawn.ts`, a plugin child in `spawnConfinedPluginChild`) — so the wrap carries the deny floor and nothing else: passing allow paths there would imply a confinement the wrap does not perform.
 type ConfinementGrantMode = "allow-list" | "deny-only";
 
 export interface ConfinedChildSpec {
   readonly command: string;
   readonly args: readonly string[];
-  /** Used for the managed-child registration and in errors. */
+  // Used for the managed-child registration and in errors.
   readonly label: string;
-  /**
-   * Whose plugin-owned code this is, for egress attribution: while the sandbox
-   * is active the wrap carries an egress token (`egress-invocations.ts`) minted
-   * for this owner, and every proxy deny of the child is audited under it. The
-   * token lives as long as the child.
-   */
+  // Whose plugin-owned code this is, for egress attribution: while the sandbox is active the wrap carries an egress token (`egress-invocations.ts`) minted for this owner, and every proxy deny of the child is audited under it. The token lives as long as the child.
   readonly egressOwner: WorkerEgressOwner;
   readonly grantMode: ConfinementGrantMode;
-  /** Ignored under `deny-only`, where ACLs grant reachability instead. */
+  // Ignored under `deny-only`, where ACLs grant reachability instead.
   readonly allowRead?: readonly string[];
   readonly allowWrite?: readonly string[];
-  /**
-   * Whose temp directory the child gets: the plugin it belongs to. Required
-   * under `allow-list`, where the wrap grants that directory alone and sets
-   * the child's `TMPDIR` to it; ignored under `deny-only`, where the sandbox
-   * HOME's own `TEMP`/`TMP` is already per process
-   * (`sandbox-process-home.ts`).
-   */
+  // Whose temp directory the child gets: the plugin it belongs to. Required under `allow-list`, where the wrap grants that directory alone and sets the child's `TMPDIR` to it; ignored under `deny-only`, where the sandbox HOME's own `TEMP`/`TMP` is already per process (`sandbox-process-home.ts`).
   readonly tempPrincipal?: SandboxTempPrincipal;
-  /**
-   * The child may write INSIDE each write root but not unlink, rename or
-   * replace the root itself, its temp directory included. For a child whose
-   * write roots are directories the host created and keeps resolving — a
-   * plugin's data root above all — so that the child cannot `rmdir` one and
-   * leave a link in its place. Carried to the wrap as
-   * `PerCommandFilesystem.pinWriteRoots` (`asrt-sandbox.ts`), the one place
-   * every wrap of plugin-owned code pins its roots.
-   */
+  // The child may write INSIDE each write root but not unlink, rename or replace the root itself, its temp directory included. For a child whose write roots are directories the host created and keeps resolving — a plugin's data root above all — so that the child cannot `rmdir` one and leave a link in its place. Carried to the wrap as `PerCommandFilesystem.pinWriteRoots` (`asrt-sandbox.ts`), the one place every wrap of plugin-owned code pins its roots.
   readonly pinWriteRoots?: boolean;
-  /**
-   * The reads, among `allowRead`, this child may hold inside the protected
-   * read floor: a plugin's declared `hostDirectory` that pierces it. Carried
-   * to the wrap as `PerCommandFilesystem.floorPierces`; absent, none.
-   */
+  // The reads, among `allowRead`, this child may hold inside the protected read floor: a plugin's declared `hostDirectory` that pierces it. Carried to the wrap as `PerCommandFilesystem.floorPierces`; absent, none.
   readonly floorPierces?: readonly string[];
-  /**
-   * Refuse the child the plugins root beyond the protected floor, its own
-   * directories re-allowed through `allowRead`. Carried to the wrap as
-   * `PerCommandFilesystem.denyPluginsRoot` (`asrt-sandbox.ts`), which says why
-   * and why Windows refuses it: set only under `allow-list`.
-   */
+  // Refuse the child the plugins root beyond the protected floor, its own directories re-allowed through `allowRead`. Carried to the wrap as `PerCommandFilesystem.denyPluginsRoot` (`asrt-sandbox.ts`), which says why and why Windows refuses it: set only under `allow-list`.
   readonly denyPluginsRoot?: boolean;
-  /** Secret-stripped base environment the child starts from. */
+  // Secret-stripped base environment the child starts from.
   readonly baseEnv: NodeJS.ProcessEnv;
-  /** Overlaid last — the sandbox process HOME, which must win. */
+  // Overlaid last — the sandbox process HOME, which must win.
   readonly extraEnv?: Record<string, string>;
-  /**
-   * Checked before and after the wrap. Throw to abort.
-   *
-   * Windows uses this for holder-process liveness: the ACL grant is only real
-   * while the holder is alive, so a holder that died between the grant and the
-   * spawn would otherwise produce a child believed to be confined by a grant
-   * that no longer exists.
-   */
+  // Checked before and after the wrap. Throw to abort. Windows uses this for holder-process liveness: the ACL grant is only real while the holder is alive, so a holder that died between the grant and the spawn would otherwise produce a child believed to be confined by a grant that no longer exists.
   readonly assertStillValid?: () => void;
-  /**
-   * Called the instant the wrap succeeds, BEFORE the spawn.
-   *
-   * The wrap increments ASRT per-command state (the Linux active-sandbox count
-   * and proxy refcount). From that moment a later failure must decrement it,
-   * and only the caller knows how its own cleanup is arranged — so this is
-   * where the caller records that the wrap happened.
-   */
+  // Called the instant the wrap succeeds, BEFORE the spawn. The wrap increments ASRT per-command state (the Linux active-sandbox count and proxy refcount). From that moment a later failure must decrement it, and only the caller knows how its own cleanup is arranged — so this is where the caller records that the wrap happened.
   readonly onWrapped?: () => void;
-  /**
-   * The child's standard streams.
-   *
-   * Defaults to `["ignore", "pipe", "pipe"]`, so a caller with no use for
-   * stdin does not hand an idle descriptor into a confined process. Both
-   * callers pipe stdin today, for different reasons: the JS plugin child is a
-   * JSON-RPC server whose pipes the host owns, and the plugin worker's stdin is
-   * the host's liveness pipe (see `worker-spawn.ts`) — it carries no bytes and
-   * closes only when the host process is gone.
-   */
+  // The child's standard streams. Defaults to `["ignore", "pipe", "pipe"]`, so a caller with no use for stdin does not hand an idle descriptor into a confined process. Both callers pipe stdin today, for different reasons: the JS plugin child is a JSON-RPC server whose pipes the host owns, and the plugin worker's stdin is the host's liveness pipe (see `worker-spawn.ts`) — it carries no bytes and closes only when the host process is gone.
   readonly stdio?: StdioOptions;
-  /**
-   * `"cmd"`: under srt-win, run the command directly under
-   * `cmd.exe /d /v:off /s /c` — the plugin child's own launch, which speaks its
-   * protocol over a loopback channel of its own. The tokens are checked rather
-   * than escaped — see {@link buildCmdCommandLine}. Ignored elsewhere and on
-   * the unwrapped path.
-   *
-   * A Windows sandboxed spawn names this or {@link windowsStdio}; one that
-   * names neither is refused. srt-win's default inner shell, PowerShell, gives
-   * the target no stdin, none of the spawn environment and not even its exit
-   * code (measured: a target exiting 7 reported 1), and does not wait for a
-   * GUI-subsystem binary such as `electron.exe` at all — a child launched that
-   * way could not be told apart from one that worked.
-   */
+  // Windows direct children require exact cmd flags with delayed expansion off; checked tokens are not escaped. Refuse sandboxed spawns without this or a relay: the default inner shell loses stdin/env/exit status and may not wait for GUI children. Other platforms/unwrapped paths ignore this mode.
   readonly windowsShell?: "cmd";
-  /**
-   * Environment set ON the `"cmd"` command line, ahead of the command. srt-win
-   * gives the target the sandbox account's profile environment plus its own
-   * proxy overlay, never `baseEnv`/`extraEnv`, so a variable that must exist
-   * before the binary starts — `ELECTRON_RUN_AS_NODE` — can only arrive this
-   * way. Values are held to the same check as the tokens. Requires
-   * `windowsShell: "cmd"`.
-   */
+  // Environment set ON the `"cmd"` command line, ahead of the command. srt-win gives the target the sandbox account's profile environment plus its own proxy overlay, never `baseEnv`/`extraEnv`, so a variable that must exist before the binary starts — `ELECTRON_RUN_AS_NODE` — can only arrive this way. Values are held to the same check as the tokens. Requires `windowsShell: "cmd"`.
   readonly windowsCommandLineEnv?: Readonly<Record<string, string>>;
-  /**
-   * `"relay"`: under srt-win, run the command through the host's stdio relay
-   * (`child-loopback-link.ts`) rather than directly, so it gets a real stdin,
-   * its intended environment ({@link srtWinTargetEnv}, plus
-   * {@link NODE_PRESERVE_SYMLINK_FLAGS} in `NODE_OPTIONS` for a Node program)
-   * and its working directory — none of which srt-win delivers (measured:
-   * stdin at end-of-file within milliseconds, the spawn environment absent).
-   * The caller then uses the returned `stdin`/`stdout`, never the child's own.
-   * Requires piped stdin and stdout, and excludes `windowsShell` and
-   * `windowsCommandLineEnv`, which the relay's own launch sets. Ignored on
-   * macOS and Linux and on the unwrapped path, where the command runs as given.
-   */
+  // Use returned relay streams rather than child pipes to preserve stdin, env, cwd and runtime symlink flags. Require piped stdin/stdout and exclude direct shell/env options; other platforms/unwrapped paths keep the original command.
   readonly windowsStdio?: "relay";
-  /** The child's working directory; on the relay, the program's. */
+  // The child's working directory; on the relay, the program's.
   readonly cwd?: string;
 }
 
-/**
- * The wrap a spawn actually applied — never the `features.pluginWorkerConfinement`
- * setting. A child spawned unwrapped is `unconfined` whatever the setting
- * says, because "confined" is a claim about this process, and only the wrap
- * makes it true. One value per substrate ASRT wraps with.
- */
+// The wrap a spawn actually applied — never the `features.pluginWorkerConfinement` setting. A child spawned unwrapped is `unconfined` whatever the setting says, because "confined" is a claim about this process, and only the wrap makes it true. One value per substrate ASRT wraps with.
 export type SpawnConfinement = "macos-sandbox" | "linux-bubblewrap" | "windows-srt" | "unconfined";
 
-/** A spawned, registered child and the wrap it runs under. */
+// A spawned, registered child and the wrap it runs under.
 export interface ConfinedChildSpawn {
   readonly child: ChildProcess;
   readonly confinement: SpawnConfinement;
-  /**
-   * Where the caller writes the program's input and reads its output: the
-   * child's own pipes, except through the Windows relay, where they are the
-   * relay's (see {@link ConfinedChildSpec.windowsStdio}). `null` where the
-   * corresponding stdio entry is not a pipe.
-   */
+  // Where the caller writes the program's input and reads its output: the child's own pipes, except through the Windows relay, where they are the relay's (see ConfinedChildSpec.windowsStdio). `null` where the corresponding stdio entry is not a pipe.
   readonly stdin: Writable | null;
   readonly stdout: Readable | null;
 }
 
-/**
- * Spawn and register a child, wrapped when the host is sandboxed.
- *
- * A child is confined exactly as much as the host is — no more, no less. With
- * the OS sandbox active the command is wrapped by ASRT and the caller's
- * {@link ConfinedChildSpec.onWrapped} fires; with it inactive the command is
- * spawned as given, `onWrapped` does not fire, and no confinement marker is
- * left anywhere, so every reader of "is this child confined" answers no. The
- * host's own tools take the same two paths on the same setting; a child that
- * demanded a wrap the host itself does not run under would be asserting a
- * promise the host never made.
- *
- * Throws with the ASRT per-command state already incremented if the failure
- * happens after `onWrapped` fires; the caller's cleanup owns the decrement.
- */
+// Only active confinement wraps and marks a child; inactive spawn leaves no confinement marker. If failure follows onWrapped, caller cleanup owns the already-incremented runtime state.
 export async function spawnConfinedChild(spec: ConfinedChildSpec): Promise<ConfinedChildSpawn> {
   spec.assertStillValid?.();
   const stdio = spec.stdio ?? ["ignore", "pipe", "pipe"];
@@ -303,14 +133,10 @@ export async function spawnConfinedChild(spec: ConfinedChildSpec): Promise<Confi
       stdio,
       shell: false,
       windowsHide: true,
-      // A wrapped child starts its own process session, so the sandbox
-      // profile's refusal to read other processes' arguments and environment
-      // (the carried ASRT patch) covers this process group too: Seatbelt only
-      // refuses it across sessions.
+      // A wrapped child starts its own process session, so the sandbox profile's refusal to read other processes' arguments and environment (the carried ASRT patch) covers this process group too: Seatbelt only refuses it across sessions.
       ...(egress !== undefined && process.platform !== "win32" ? { detached: true } : {}),
       env: composeConfinedEnv(spec.baseEnv, wrappedEnv, spec.extraEnv ?? {}),
-      // On the relay the program's directory travels in its request; the relay
-      // itself needs none.
+      // On the relay the program's directory travels in its request; the relay itself needs none.
       ...(spec.cwd !== undefined && relayRequest === undefined ? { cwd: spec.cwd } : {}),
     });
   } catch (error) {
@@ -318,8 +144,7 @@ export async function spawnConfinedChild(spec: ConfinedChildSpec): Promise<Confi
     throw error;
   }
   if (egress !== undefined) {
-    // Detached (POSIX), the child leads its own process group: the sandbox
-    // keeps the ended invocation's listener port while that group lives.
+    // Detached (POSIX), the child leads its own process group: the sandbox keeps the ended invocation's listener port while that group lives.
     if (process.platform !== "win32" && child.pid !== undefined) egress.noteProcessGroup(child.pid);
     // The token outlives neither the process nor a spawn that never started.
     const running = child;
@@ -358,20 +183,8 @@ function assertRelayableSpec(spec: ConfinedChildSpec, stdio: StdioOptions): void
   }
 }
 
-/**
- * The relay's own launch and the request naming the program. The launch is
- * the reference runtime's, run as Node from `cmd.exe` with only host-owned
- * tokens on the line; the program, its arguments, its environment and its
- * directory go in the request, over the authenticated channel.
- */
-/**
- * The batch file a bare program name (`npx`) would mean to a Windows shell,
- * when the relay's own lookup — which, without a shell, tries the name with
- * `.com` and `.exe` only, directory by directory — would find no program by
- * it on `PATH`. Asked so that such a name is refused with the reason
- * ({@link batchFileRefusal}) rather than reported by the relay as not found.
- * `PATH` is the launch's own, which srt-win's overlay carries into the sandbox.
- */
+// The relay's own launch and the request naming the program. The launch is the reference runtime's, run as Node from `cmd.exe` with only host-owned tokens on the line; the program, its arguments, its environment and its directory go in the request, over the authenticated channel.
+// The batch file a bare program name (`npx`) would mean to a Windows shell, when the relay's own lookup — which, without a shell, tries the name with `.com` and `.exe` only, directory by directory — would find no program by it on `PATH`. Asked so that such a name is refused with the reason (batchFileRefusal) rather than reported by the relay as not found. `PATH` is the launch's own, which srt-win's overlay carries into the sandbox.
 function batchFileBehindBareName(command: string, env: NodeJS.ProcessEnv): string | undefined {
   if (/[\\/:]/.test(command) || extname(command) !== "") return undefined;
   const pathName = Object.keys(env).find((name) => name.toLowerCase() === "path");
@@ -403,8 +216,7 @@ function windowsRelayLaunch(spec: ConfinedChildSpec): {
     env,
     ...(spec.cwd !== undefined ? { cwd: spec.cwd } : {}),
   };
-  // Refused here, before anything is wrapped or spawned, rather than after the
-  // relay is already running with no request it could be sent.
+  // Refused here, before anything is wrapped or spawned, rather than after the relay is already running with no request it could be sent.
   assertRelayRequest(request);
   const batchFile = batchFileBehindBareName(spec.command, spec.baseEnv);
   if (batchFile !== undefined) throw batchFileRefusal(batchFile);
@@ -420,11 +232,7 @@ function windowsRelayLaunch(spec: ConfinedChildSpec): {
   };
 }
 
-/**
- * The substrate ASRT wraps with on this platform. Asked only on the wrapped
- * path; a platform ASRT does not wrap on is an internal contract violation,
- * because `isPluginWorkerConfinementActive()` reported a live sandbox there.
- */
+// The substrate ASRT wraps with on this platform. Asked only on the wrapped path; a platform ASRT does not wrap on is an internal contract violation, because `isPluginWorkerConfinementActive` reported a live sandbox there.
 function wrapConfinement(label: string): Exclude<SpawnConfinement, "unconfined"> {
   switch (process.platform) {
     case "darwin":
@@ -438,11 +246,7 @@ function wrapConfinement(label: string): Exclude<SpawnConfinement, "unconfined">
   }
 }
 
-/**
- * What actually gets spawned: the ASRT-wrapped argv while the sandbox is
- * active, the caller's own command otherwise. The two are one function so the
- * decision is made in one place and `onWrapped` cannot fire on the plain path.
- */
+// What actually gets spawned: the ASRT-wrapped argv while the sandbox is active, the caller's own command otherwise. The two are one function so the decision is made in one place and `onWrapped` cannot fire on the plain path.
 async function resolveSpawnLine(
   spec: ConfinedChildSpec,
 ): Promise<{
@@ -503,12 +307,7 @@ function requireTempPrincipal(spec: ConfinedChildSpec): SandboxTempPrincipal {
   return spec.tempPrincipal;
 }
 
-/**
- * The filesystem section of the ASRT command.
- *
- * The deny floor is restated unconditionally in BOTH modes, because a
- * per-command array replaces the shared one rather than extending it.
- */
+// The filesystem section of the ASRT command. The deny floor is restated unconditionally in BOTH modes, because a per-command array replaces the shared one rather than extending it.
 function buildFilesystemConfinement(spec: ConfinedChildSpec, temp: { dir: string } | undefined): {
   allowRead?: string[];
   allowWrite?: string[];
@@ -529,14 +328,7 @@ function buildFilesystemConfinement(spec: ConfinedChildSpec, temp: { dir: string
     return floor;
   }
   if (temp === undefined) throw new Error(`[confined-child] ${spec.label}: an allow-list confinement was built without its temp directory`);
-  // The temp directory is granted here for the same reason the deny floor is
-  // restated here: no caller should have to remember it, and one that forgot
-  // would produce a child whose `os.tmpdir()` names a directory it cannot
-  // write — a failure with no obvious cause, arriving inside whatever library
-  // wanted a temp file. It is the principal's OWN directory, read and write;
-  // the shared root above it is read-denied by the floor, with the sandbox
-  // HOME root beside it, and ASRT's reads are deny-only, so that deny is what
-  // keeps one plugin from reading another's temp files or HOME.
+  // The temp directory is granted here for the same reason the deny floor is restated here: no caller should have to remember it, and one that forgot would produce a child whose `os.tmpdir` names a directory it cannot write — a failure with no obvious cause, arriving inside whatever library wanted a temp file. It is the principal's OWN directory, read and write; the shared root above it is read-denied by the floor, with the sandbox HOME root beside it, and ASRT's reads are deny-only, so that deny is what keeps one plugin from reading another's temp files or HOME.
   return {
     allowRead: [temp.dir, ...(spec.allowRead ?? [])],
     allowWrite: [temp.dir, ...(spec.allowWrite ?? [])],
@@ -548,12 +340,7 @@ function buildFilesystemConfinement(spec: ConfinedChildSpec, temp: { dir: string
   };
 }
 
-/**
- * Assemble the command line ASRT will run.
- *
- * Every token is quoted so a path containing spaces or shell metacharacters
- * cannot mis-split: ASRT runs this through a shell on both platforms.
- */
+// Assemble the command line ASRT will run. Every token is quoted so a path containing spaces or shell metacharacters cannot mis-split: ASRT runs this through a shell on both platforms.
 function buildConfinedCommandLine(
   command: string,
   args: readonly string[],
@@ -577,32 +364,11 @@ function buildConfinedCommandLine(
   return { cmdline: [command, ...args].map((part) => shellQuote(part)).join(" ") };
 }
 
-/**
- * `cmd.exe` limits its command line to 8191 characters; this leaves room for
- * nothing else to be added to it.
- */
+// `cmd.exe` limits its command line to 8191 characters; this leaves room for nothing else to be added to it.
 const CMD_LINE_LIMIT = 8_000;
 const CMD_ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
-/**
- * The `"cmd"` rendering: `set "NAME=VALUE"&& "<command>" "<arg>" …`, run as
- * `cmd.exe /d /v:off /s /c <line>`.
- *
- * Every token is double-quoted, which makes `& | < > ^ ( )` literal, and
- * `/v:off` makes `!` literal whatever the registry says. What quoting cannot
- * neutralise is REFUSED rather than escaped: a `"` (it would end the quoting;
- * no Windows path contains one), a `%` (cmd expands `%NAME%` inside quotes
- * too), and CR, LF or NUL (a second command, or a truncated one). A trailing
- * run of backslashes is doubled so the target's MSVCRT argument parser does
- * not read the closing quote as escaped. Refusing fails the load with the
- * offending token named.
- *
- * Only host-owned tokens reach this line — `process.execPath`, the child
- * entry's path, Node's flags, a transport argument and base64url — because a
- * plugin's environment and a relayed program's everything travel elsewhere.
- * `"` cannot occur in a Windows path; `%` only through the install directory,
- * which the one-click per-machine installer puts under Program Files.
- */
+// Quote every cmd token and disable delayed expansion; refuse quotes, %, CR/LF and NUL rather than attempt unsafe escaping. Double trailing backslashes for the target argument parser. Only host-owned launch tokens reach this line; plugin env and relayed program args travel separately.
 function buildCmdCommandLine(
   label: string,
   command: string,
@@ -641,7 +407,7 @@ function assertCmdSafe(label: string, token: string): void {
   }
 }
 
-/** `cmd.exe` from the system root, never from `PATH`, with AutoRun and delayed expansion off. */
+// `cmd.exe` from the system root, never from `PATH`, with AutoRun and delayed expansion off.
 function cmdBinShell(label: string): { exe: string; args: string[] } {
   const root = process.env.SystemRoot ?? process.env.WINDIR;
   if (root === undefined || root.trim().length === 0) {
@@ -650,14 +416,7 @@ function cmdBinShell(label: string): { exe: string; args: string[] } {
   return { exe: `${root.replace(/[\\/]+$/, "")}\\System32\\cmd.exe`, args: ["/d", "/v:off", "/s", "/c"] };
 }
 
-/**
- * Compose the child's environment.
- *
- * Only the variables ASRT actually CHANGED are overlaid. Taking its whole
- * composed environment would drag in this process's own values under the guise
- * of proxy configuration, so it is diffed against a baseline composed from
- * `process.env` and only the differences carry over.
- */
+// Compose the child's environment. Only the variables ASRT actually CHANGED are overlaid. Taking its whole composed environment would drag in this process's own values under the guise of proxy configuration, so it is diffed against a baseline composed from `process.env` and only the differences carry over.
 function composeConfinedEnv(
   baseEnv: NodeJS.ProcessEnv,
   wrappedEnv: NodeJS.ProcessEnv,

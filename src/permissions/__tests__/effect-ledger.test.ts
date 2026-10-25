@@ -1,15 +1,4 @@
-/**
- * Per-invocation EffectLedger + AsyncLocalStorage threading tests.
- *
- * Pins the host-owned read/write signal that the effect-boundary model is built
- * on (host-classify completion, Phases 1-2 — OBSERVABILITY ONLY):
- *   (a) a read-only set of effects → hasMutatingEffect:false;
- *   (b) any write effect → hasMutatingEffect:true;
- *   (c) `runWithEffectLedger` binds the right ledger for the async chain;
- *   (d) nested scopes do NOT double-count onto the outer ledger;
- *   (e) `recordEffect` outside any scope is a silent no-op;
- *   (f) each invocation gets a distinct correlationId (no cross-invocation leak).
- */
+// Async-local ledgers isolate concurrent and nested calls; recording outside a scope is a no-op and never enforces permission.
 import { describe, it, expect } from "vitest";
 import {
   createEffectLedger,
@@ -133,9 +122,7 @@ describe("recordEffect — out of scope", () => {
 });
 
 describe("recordChokepoint — newly instrumented host-mediated mutating chokepoints", () => {
-  // Every host-mediated MUTATION chokepoint must classify as a write, else a
-  // plugin tool that mutates only through it would record hasMutatingEffect:false
-  // = a confirmed host-observed read (fail-open). The SOT pins the classification.
+  // Every host-mediated MUTATION chokepoint must classify as a write, else a plugin tool that mutates only through it would record hasMutatingEffect:false = a confirmed host-observed read (fail-open). The SOT pins the classification.
   const WRITE_CHOKEPOINTS = [
     "storageWrite",
     "storageRm",

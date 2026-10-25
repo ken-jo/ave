@@ -89,11 +89,11 @@ export interface WorkBoardEngineDeps {
   onRunComplete?: (info: { itemId: number; title: string; projectRoot?: string; projectName?: string }) => void | Promise<void>;
 }
 
-export interface RunItemOptions {
+interface RunItemOptions {
   agentName?: string;
 }
 
-export interface RunItemResult {
+interface RunItemResult {
   status: "completed" | "denied" | "not_found" | "error" | "already_running";
   output?: string;
   plan?: string;

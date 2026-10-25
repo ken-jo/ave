@@ -1,12 +1,5 @@
 import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
-/**
- * `PerCommandFilesystem.pinWriteRoots` — the one mechanism that keeps
- * plugin-owned code from removing or replacing the host-created roots it writes
- * into. Its own file because one of these cases is about the FIRST wrap of a
- * process: a principal's temp directory does not exist until the host creates
- * it for that wrap, and a pin computed from a root that is not there yet is
- * silently dropped.
- */
+// Pin newly created write roots before the first wrap; computing pins before creation silently drops them and permits replacement.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";

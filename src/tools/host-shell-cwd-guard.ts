@@ -9,10 +9,7 @@ export function hostShellWorkingDirectoryPrelude(
   dialect: "bash" | "powershell",
   platform: NodeJS.Platform,
 ): string | undefined {
-  // Native Windows shells do not expose a portable stat device/inode pair
-  // matching the host filesystem API. They still spawn with the bound physical
-  // realpath, but directory rename/replacement after the host check remains a
-  // platform limitation until a native child-side file-identity check exists.
+  // Windows binds physical cwd but lacks a matching child-side inode check; rename/replacement after host validation remains possible.
   if (platform !== "darwin" && platform !== "linux") return undefined;
   const statArgs = platform === "darwin" ? ["-f", "%d:%i", "."] : ["-L", "-c", "%d:%i", "--", "."];
   const expected = `${identity.dev}:${identity.ino}`;

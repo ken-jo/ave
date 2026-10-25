@@ -1,23 +1,7 @@
 import { spawnTerminal as spawnLane, writeTerminal as writeLane, resizeTerminal as resizeLane, ensureAgentTerminal, typeAgentTerminalCommand, terminalTabOwnerWindow } from "../pty-manager.js";
 import { spawnTerminal, writeTerminal, resizeTerminal, typeTerminalCommand, verifyTerminalShell, getTerminalBlockTracker } from "../../../__tests__/support/terminal-agent-fixture.js";
-/**
- * pty-manager unit tests (#1444). Stub ASRT (gate + wrap + cleanup) + the
- * sandbox-capability shell-containment gate + node-pty, and assert the
- * WIRING — they do NOT exercise the real Seatbelt/bwrap PTY allocation (that is
- * the macOS/Linux runtime QA, which the design flags as the primary unknown).
- *
- * Covered:
- *   - FAIL CLOSED: gate off / not-shell-contained → spawn refused, node-pty never
- *     loaded, ASRT never wrapped.
- *   - bad-request: empty tabId.
- *   - happy path (shell-contained): wrapWorkerCommand receives the RESTATED
- *     sensitive denyRead floor + a cwd-derived write jail; pty spawned with the
- *     wrapped argv; onData → ring + emit; input/resize forwarded; onExit emits +
- *     cleans up ASRT state.
- *   - idempotent replay: a second spawn for the same tab replays the ring, does
- *     NOT spawn a second shell.
- *   - kill / killAll tear down + decrement ASRT state.
- */
+/** Check terminal confinement wiring with mocked runtime and PTY boundaries, including fail-closed spawn and cleanup.
+ * These tests do not exercise native isolation or real PTY allocation. */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -29,7 +13,6 @@ import type { SandboxCleanupOutcome, SandboxWrapResult } from "../../../permissi
 import type { SandboxGitControlSnapshot } from "../../../permissions/sandbox-write-policy.js";
 import { egressInvocationAbortSignal, egressInvocationOwner } from "../../../permissions/egress-invocations.js";
 
-// ─── ASRT mock — gate + wrap controllable per test ──────────
 let gateActive = true;
 const nativePlatform = process.platform;
 let additionalProjectDirectories: string[] = [];
@@ -90,7 +73,6 @@ vi.mock("../../../workload/runtime.js", () => ({
   isActiveWorkloadBrokerCwd: () => false,
 }));
 
-// ─── macOS own-tty handoff — platform + fifo controllable per test ──
 let needsOwnTtyGrant = false;
 const deliverMock = vi.fn<(script: string, options?: { signal?: AbortSignal }) => Promise<void>>(() =>
   Promise.resolve(),
@@ -117,7 +99,6 @@ vi.mock("../terminal-tty-handoff.js", async () => {
   };
 });
 
-// ─── shell-containment gate ─────────────────────────────────
 let shellContained = true;
 let sandboxGeneration = "0";
 vi.mock("../../../permissions/sandbox-capability.js", () => ({
@@ -125,12 +106,10 @@ vi.mock("../../../permissions/sandbox-capability.js", () => ({
   getSandboxGeneration: () => sandboxGeneration,
 }));
 
-// ─── write-jail derivation (deterministic) ──────────────────
 vi.mock("../../../permissions/sandbox-write-jail.js", () => ({
   deriveSandboxWritePaths: (input: { allowedDirectories: readonly string[] }) => [...input.allowedDirectories],
 }));
 
-// ─── env sanitizer (identity-ish) ───────────────────────────
 vi.mock("../../../tools/safe-env.js", () => ({
   buildHostShellChildEnv: () => ({ HOME: process.env.HOME ?? "", PATH: "/usr/bin" }),
   buildSandboxedChildEnv: (env: NodeJS.ProcessEnv, extra: Record<string, string> = {}) => ({
@@ -140,8 +119,7 @@ vi.mock("../../../tools/safe-env.js", () => ({
   }),
 }));
 
-// Real directories, one per terminal, under a parent made per test: the
-// terminal creates its temp directory inside its HOME.
+// Real directories, one per terminal, under a parent made per test: the terminal creates its temp directory inside its HOME.
 let homeParent = "";
 let createdHomes: string[] = [];
 const sandboxHomeCleanupMock = vi.fn();
@@ -161,7 +139,6 @@ vi.mock("../../../lib/shell-resolver.js", () => ({
   shellQuote: (s: string) => s,
 }));
 
-// ─── node-pty mock ──────────────────────────────────────────
 type DataCb = (chunk: string) => void;
 type ExitCb = (e: { exitCode: number; signal?: number }) => void;
 class FakePty {
@@ -192,7 +169,6 @@ class FakePty {
     this.killed = true;
     this.killSignals.push(signal);
   }
-  // test helpers
   emitData(chunk: string) { this.dataCb?.(chunk); }
   emitExit(exitCode: number) { for (const cb of [...this.exitCbs]) cb({ exitCode }); }
 }
@@ -219,7 +195,6 @@ vi.mock("../shell-process.js", () => ({
   forwardResizeToSandboxedPtyRelay: (ptyPid: number, shellName: string) => forwardResizeMock(ptyPid, shellName),
 }));
 
-// ─── Linux inner pty — the relay check controllable per test ──
 const assertRelayMock = vi.fn(() => Promise.resolve());
 vi.mock("../terminal-inner-pty.js", async () => {
   const actual = await vi.importActual<typeof import("../terminal-inner-pty.js")>("../terminal-inner-pty.js");
@@ -230,7 +205,7 @@ vi.mock("node-pty", () => ({
   spawn: (cmd: string, args: string[], opts: unknown) => ptySpawnMock(cmd, args, opts),
 }));
 
-// Module under test — imported AFTER mocks.
+// Module under test; imported AFTER mocks.
 import {
   terminalOwnedBy,
   killTerminal,
@@ -244,28 +219,21 @@ import {
   __terminalSessionCountForTest,
   type TerminalEmit,
 } from "../pty-manager.js";
-// REAL canonicalizer (NOT mocked) — the module resolves the default terminal cwd
-// to `canonicalizePathForMatch(process.cwd())` (the workspace-root anchor) and
-// validates a renderer-supplied cwd against it, so the test computes the same.
+// REAL canonicalizer (NOT mocked); the module resolves the default terminal cwd to
+// `canonicalizePathForMatch(process.cwd())` (the workspace-root anchor) and validates a renderer-supplied cwd against it, so the test computes the same.
 import { canonicalizePathForMatch } from "../../../permissions/sensitive-paths.js";
 import { USER_INPUT_QUIET_MS, getWindowTerminalBlockTracker, listTerminalBlockTabs } from "../terminal-blocks.js";
 import { SHELL_INTEGRATION_NONCE_FILE, TERMINAL_EDIT_LINE_QUERY } from "../shell-integration.js";
 
-/**
- * The marker nonce a spawned terminal's startup file would read: the file in
- * its sandbox HOME (no shell runs here, so nothing deleted it). It is never
- * in the shell's environment.
- */
+/** The marker nonce a spawned terminal's startup file would read: the file in its sandbox
+ * HOME (no shell runs here, so nothing deleted it). It is never in the shell's environment. */
 function spawnedNonce(env: Record<string, string>): string {
   expect(Object.keys(env).some((key) => /NONCE/u.test(key))).toBe(false);
   return readFileSync(join(env.ZDOTDIR ?? env.HOME!, SHELL_INTEGRATION_NONCE_FILE), "utf-8");
 }
 
-/**
- * The workspace root the module anchors the write-jail to by default, in the
- * canonical form of the platform the cases run as. On a Windows host that is
- * the simulated Linux, which does not fold the drive letter.
- */
+/** The workspace root the module anchors the write-jail to by default, in the canonical form of the
+ * platform the cases run as. On a Windows host that is the simulated Linux, which does not fold the drive letter. */
 const ROOT = (() => {
   if (nativePlatform !== "win32") return canonicalizePathForMatch(process.cwd());
   Object.defineProperty(process, "platform", { value: "linux", configurable: true });
@@ -276,11 +244,8 @@ const ROOT = (() => {
   }
 })();
 
-/**
- * The bits a 0o700 mkdir leaves. Windows keeps no POSIX mode, so Node reports
- * 0o666 for the directory there; the real Windows agent lane refuses before it
- * makes a HOME (see the native Windows case below).
- */
+/** The bits a 0o700 mkdir leaves. Windows keeps no POSIX mode, so Node reports 0o666 for the directory
+ * there; the real Windows agent lane refuses before it makes a HOME (see the native Windows case below). */
 const OWNER_ONLY_DIR_MODE = nativePlatform === "win32" ? 0o666 : 0o700;
 
 let emitted: Array<{ event: string; payload: unknown }> = [];
@@ -393,13 +358,12 @@ describe("pty-manager happy path (fs-contained)", () => {
     // denyRead floor is RESTATED (per-command denyRead REPLACES the ASRT boot array).
     expect(options.filesystem.denyRead).toContain("/home/u/.ave/secrets");
     expect(options.filesystem.denyRead).toContain("/home/u/.ssh");
-    // denyWrite FLOOR is RESTATED (per-command denyWrite REPLACES the boot array) —
-    // shell-rc / ~/.ssh / ~/.config / LaunchAgents persistence vectors are denied.
+    // denyWrite FLOOR is RESTATED (per-command denyWrite REPLACES the boot array); shell-rc / ~/.ssh / ~/.config / LaunchAgents persistence vectors are denied.
     expect(options.filesystem.denyWrite).toContain("/home/u/.zshrc");
     expect(options.filesystem.denyWrite).toContain("/home/u/.ssh");
     expect(options.filesystem.denyWrite).toContain("/home/u/.config");
     expect(options.filesystem.denyWrite).toContain("/home/u/Library/LaunchAgents");
-    // write jail anchored on the WORKSPACE ROOT — NOT $HOME (cluster-review MAJOR).
+    // write jail anchored on the WORKSPACE ROOT; NOT $HOME (cluster-review MAJOR).
     expect(options.filesystem.allowWrite).toContain(ROOT);
     expect(options.filesystem.allowRead).toContain(ROOT);
     const [sandboxHome] = createdHomes;
@@ -432,8 +396,7 @@ describe("pty-manager happy path (fs-contained)", () => {
     const [command, options] = wrapWorkerCommandMock.mock.calls[0] as [string, { filesystem: { allowWrite: string[] } }];
     const [sandboxHome] = createdHomes;
     const temp = join(sandboxHome!, "tmp");
-    // ASRT writes its own `TMPDIR=` (the sandbox temp root) ahead of the
-    // command, so only an assignment inside the wrap reaches the shell.
+    // ASRT writes its own `TMPDIR=` (the sandbox temp root) ahead of the command, so only an assignment inside the wrap reaches the shell.
     expect(command).toBe(`exec /usr/bin/env TMPDIR=${temp} TMP=${temp} TEMP=${temp} /bin/sh -l -i`);
     expect(statSync(temp).isDirectory()).toBe(true);
     expect(statSync(temp).mode & 0o777).toBe(OWNER_ONLY_DIR_MODE);
@@ -655,8 +618,7 @@ describe("pty-manager lifecycle", () => {
     resizeTerminal("terminal:0000000a-1", 140, 50);
     expect(lastPty?.written).toEqual([]);
     expect(lastPty?.resized).toEqual([]);
-    // A spawn under the closing id does not attach to the dying shell, and no
-    // second PTY starts while it is alive: it waits for the exit.
+    // A spawn under the closing id does not attach to the dying shell, and no second PTY starts while it is alive: it waits for the exit.
     const closing = lastPty!;
     const next = spawnTerminal({ tabId: "terminal:0000000a-1" });
     await Promise.resolve();
@@ -1003,7 +965,7 @@ describe("pty-manager anti-DoS caps", () => {
   it("replaying an EXISTING tab at the cap is still allowed (does not count as new)", async () => {
     const MAX = 16;
     for (let i = 0; i < MAX; i++) await spawnTerminal({ tabId: `terminal:0000000a-${i + 100}` });
-    // Remount of an existing tab replays — must NOT be rejected by the cap.
+    // Remount of an existing tab replays; must NOT be rejected by the cap.
     const replay = await spawnTerminal({ tabId: "terminal:0000000a-100" });
     expect(replay.ok).toBe(true);
     if (replay.ok) expect(replay.replayed).toBe(true);
@@ -1145,8 +1107,7 @@ describe("pty-manager typing an approved agent command", () => {
       return `${mark("D;0")}${mark(`P;Cwd=/w${fields};Edit=1;B=${token}`)}${mark("A")}% \u001b]133;B;${token}\u0007`;
     };
     const pty = lastPty!;
-    // The shell: Ctrl-C at its prompt drops the line and draws a fresh prompt;
-    // a paste shows in the edit line (as `shows` renders it).
+    // The shell: Ctrl-C at its prompt drops the line and draws a fresh prompt; a paste shows in the edit line (as `shows` renders it).
     const shell = { shows: (line: string): string => line, reports: (line: string): string => line, acknowledges: (_line: string): boolean => true };
     let editorLine = "";
     const report = (line: string): void => pty.emitData(mark(`E;Line=${encodeURIComponent(line)};B=${token}`));
@@ -1387,9 +1348,7 @@ describe("pty-manager typing an approved agent command", () => {
     try {
       const { pty, prompt } = await zshTerminal(3);
       pty.emitData(prompt());
-      // bash 5.2 when the Ctrl-C arrives before readline waits for a key: the
-      // line is cleared and `^C` echoed after the prompt, and the fresh prompt
-      // comes with the next key.
+      // bash 5.2 when the Ctrl-C arrives before readline waits for a key: the line is cleared and `^C` echoed after the prompt, and the fresh prompt comes with the next key.
       const respond = pty.respond;
       let interruptPending = false;
       pty.respond = (data) => {
@@ -1684,8 +1643,7 @@ describe("pty-manager on macOS: the shell gets its own terminal and no other", (
     expect(handoffDisposeMock).toHaveBeenCalled();
     expect(__terminalSessionCountForTest()).toBe(1);
 
-    // Output reaches the view through the same session wiring, addressed to
-    // the window that spawned it, which alone owns the handed-off shell.
+    // Output reaches the view through the same session wiring, addressed to the window that spawned it, which alone owns the handed-off shell.
     lastPty!.emitData("hello");
     expect(emitted.some((e) => e.event === "data")).toBe(true);
     expect(emittedOwners).toEqual([1]);
@@ -1694,8 +1652,7 @@ describe("pty-manager on macOS: the shell gets its own terminal and no other", (
   });
 
   it("ends a stalled handoff when its window closes, so the restore of that id starts a new shell", async () => {
-    // The trampoline never takes its command: only an abort ends the wait
-    // (the real deliver would otherwise hold it for 10 s, past a restore's 5 s).
+    // The trampoline never takes its command: only an abort ends the wait (the real deliver would otherwise hold it for 10 s, past a restore's 5 s).
     let signalSeen: AbortSignal | undefined;
     deliverMock.mockImplementationOnce((_script, options) => {
       signalSeen = options?.signal;
@@ -1717,8 +1674,7 @@ describe("pty-manager on macOS: the shell gets its own terminal and no other", (
     expect(signalSeen?.aborted).toBe(true);
     expect(trampoline.killSignals).toEqual(["SIGKILL"]);
     trampoline.emitExit(137);
-    // The cancelled spawn released its wrap and HOME once; its trampoline's
-    // exit reported nothing to any window.
+    // The cancelled spawn released its wrap and HOME once; its trampoline's exit reported nothing to any window.
     expect(cleanupMock).toHaveBeenCalledTimes(1);
     expect(sandboxHomeCleanupMock).toHaveBeenCalledTimes(1);
     expect(emitted.some((e) => e.event === "exit")).toBe(false);

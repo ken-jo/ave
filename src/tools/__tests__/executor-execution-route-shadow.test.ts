@@ -158,9 +158,7 @@ describe("execution route shadow metadata", () => {
       const [result] = await executor.executeAll(
         [{ id: "tu-route-shadow", name: "bash", input: {
           command: "cat $UNRESOLVED_FILE",
-          // Both are valid under the existing shell contract. The shadow
-          // layer must use resolved cwd and preserve the seconds value rather
-          // than introducing a narrower millisecond safe-integer check.
+          // Preserve resolved cwd and valid timeout seconds without imposing a narrower millisecond bound.
           cwd: "",
           timeoutSeconds: Number.MAX_SAFE_INTEGER,
         } }],
@@ -367,7 +365,6 @@ describe("execution route shadow metadata", () => {
   it("strips a caller-supplied substrate on a host-routed call: no live guest means host grading", async () => {
     __resetActiveSandboxCapabilityForTest();
     setShellSandboxRequestedAtBoot(false);
-    // No operator container, no broker: the plain host shell route.
     const workspace = mkdtempSync(join(tmpdir(), "ave-execution-route-host-inherited-"));
     try {
       const { executor } = makeExecutor(workspace);

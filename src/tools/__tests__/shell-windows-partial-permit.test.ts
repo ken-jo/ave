@@ -73,10 +73,8 @@ describe("builtin shell — Windows partial Plan-B permit", () => {
     expect(result.output).toContain("was not issued by the host");
   });
 
-  // Design I3: a requested-but-unavailable sandbox follows the normal rules
-  // and needs no permit; the explicit host request is the remaining
-  // non-Windows one-shot route, and its spawn boundary still refuses a call
-  // that carries neither an allow-once receipt nor a rule-minted permit.
+  // Unavailable sandboxing follows normal permission rules without a permit.
+  // Explicit non-Windows host execution still requires an allow-once receipt or rule-minted permit.
   it.each(["darwin", "linux", "win32"] as const)(
     "rejects permit-less direct Bash/PowerShell calls for an explicit host request on %s",
     async (platform) => {

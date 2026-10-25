@@ -6,7 +6,7 @@ export interface ShellWorkingDirectoryIdentity {
   readonly ino: bigint;
 }
 
-/** Capture the physical directory, refusing missing paths and inconsistent observations. */
+// Capture the physical directory, refusing missing paths and inconsistent observations.
 export function captureShellWorkingDirectoryIdentity(
   cwd: string,
 ): ShellWorkingDirectoryIdentity | undefined {

@@ -6,11 +6,7 @@ import type {
   ScriptHookStdin,
 } from "./script-hook-types.js";
 
-/**
- * The feedback a Stop/SubagentStop chain asks the run to continue with, or
- * undefined. The chain stops at its first denial, so only that last result can
- * carry a deliberate block; failures never continue the run.
- */
+// The feedback a Stop/SubagentStop chain asks the run to continue with, or undefined. The chain stops at its first denial, so only that last result can carry a deliberate block; failures never continue the run.
 export function stopHookBlockFeedback(result: {
   decision: "allow" | "deny";
   results: readonly Pick<ScriptHookInvocationResult, "blockFeedback">[];
@@ -19,15 +15,13 @@ export function stopHookBlockFeedback(result: {
   return result.results.at(-1)?.blockFeedback;
 }
 
-/** Ave's compaction reason as the reference's `trigger` value. */
+// Ave's compaction reason as the reference's `trigger` value.
 function compactTrigger(reason: string | undefined): "manual" | "auto" | undefined {
   if (reason === undefined) return undefined;
   return reason === "manual" ? "manual" : "auto";
 }
 
-/**
- * Matcher subjects are event values, never session identifiers or free text.
- */
+// Matcher subjects are event values, never session identifiers or free text.
 export function lifecycleMatcherSubject(
   event: LifecycleHookEvent,
   _sessionId: string,
@@ -58,7 +52,7 @@ export function hookEventSupportsMatcher(event: HookEvent): boolean {
   return event !== "UserPromptSubmit" && event !== "Stop";
 }
 
-/** Public configuration keys; internal tool aliases remain stable for audit readers. */
+// Public configuration keys; internal tool aliases remain stable for audit readers.
 export const HOOK_EVENT_TYPES = {
   PreToolUse: "pre",
   PostToolUse: "post",
@@ -92,7 +86,7 @@ interface ToolJsonFields {
   tool_input: Record<string, unknown>;
 }
 
-/** Event-specific JSON fields. Unavailable optional data is omitted, never invented. */
+// Event-specific JSON fields. Unavailable optional data is omitted, never invented.
 interface HookJsonFields {
   PreToolUse: ToolJsonFields;
   PostToolUse: ToolJsonFields & { tool_response?: string; is_error?: boolean };
@@ -119,7 +113,7 @@ export type HookJsonInput = {
   } & HookJsonFields[Event];
 }[HookEventName];
 
-/** Adds the public envelope to the redacted legacy payload at the process boundary. */
+// Adds the public envelope to the redacted legacy payload at the process boundary.
 export function hookJsonInput(payload: ScriptHookStdin, cwd: string): HookJsonInput & ScriptHookStdin {
   const common = {
     ...payload,

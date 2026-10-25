@@ -1,14 +1,4 @@
-/**
- * Proxy-deny attribution against the real sandbox (macOS Seatbelt, Linux
- * bwrap): a host off the strict allow-list is refused by ASRT's proxy, and the
- * refusal reaches the audit row under the invocation that opened it — a Bash
- * tool call by its toolUseId, a plugin worker by its plugin and worker — and
- * the Bash output carries the `<sandbox_violations>` annotation.
- *
- * The policy is the shipped one: `strictAllowlist: true`, nothing allowed, no
- * ask callback. Nothing leaves the machine: the proxy refuses before any DNS
- * lookup or connection.
- */
+// Proxy refusals must reach the owning invocation's audit and shell annotation; an empty strict allowlist denies before DNS or any external connection.
 import { afterEach, describe, expect, it, type TestContext } from "vitest";
 import { existsSync, mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -34,11 +24,7 @@ import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 const CURL = "/usr/bin/curl";
 const nativePlatform = process.platform === "darwin" || process.platform === "linux";
 
-/**
- * Skip, with its reason, where ASRT cannot initialise or curl is absent; fail
- * instead where a confinement job asks for real sandbox cases
- * (AVE_REQUIRE_SANDBOX_CASES=1), so a green job is a measurement.
- */
+// Skip, with its reason, where ASRT cannot initialise or curl is absent; fail instead where a confinement job asks for real sandbox cases (AVE_REQUIRE_SANDBOX_CASES=1), so a green job is a measurement.
 async function requireNativeCase(context: TestContext): Promise<void> {
   if (!(await sandboxCasesRun())) context.skip("ASRT cannot initialize (sandbox dependencies missing)");
   if (!existsSync(CURL)) {
@@ -94,8 +80,7 @@ describe.runIf(nativePlatform)("proxy deny attribution (native)", () => {
 
   it("audits a plugin worker's refused host under the worker", async (context) => {
     await requireNativeCase(context);
-    // Plugin-worker confinement is its own boot setting; without it the child
-    // would run unconfined and reach the network.
+    // Plugin-worker confinement is its own boot setting; without it the child would run unconfined and reach the network.
     setPluginWorkerConfinementRequestedAtBoot(true);
     const rows = await startStrictSandboxWithMonitor();
     expect(isPluginWorkerConfinementActive()).toBe(true);

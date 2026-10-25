@@ -153,8 +153,7 @@ it.runIf(process.platform !== "win32")("makes the generated Linux secrets mask r
     const words = execFileSync("/bin/bash", ["-c", `set -- ${wrapped.argv[2]}; printf '%s\\n' "$@"`], {
       encoding: "utf8",
     }).trimEnd().split("\n");
-    // A nested deny may share its ancestor's mask. Check the final covering
-    // mount, so a later bind exposing secrets cannot satisfy this assertion.
+    // A nested deny may share its ancestor's mask. Check the final covering mount, so a later bind exposing secrets cannot satisfy this assertion.
     const coveringMask = finalMountCovering(words, mountedSecrets);
     expect(coveringMask?.[0]).toBe("--tmpfs");
     const covering = coveringMask?.[1];
@@ -191,8 +190,7 @@ it.runIf(process.platform !== "win32")("keeps a generated same-path workspace wr
   const generated = await wrapCommandWithSandboxLinux({
     command: "printf 'workspace command'",
     needsNetworkRestriction: false,
-    // Broad shell reads do not mask HOME. Keep an explicit mask here to test
-    // that a same-path write grant still replaces a configured read mask.
+    // Broad shell reads do not mask HOME. Keep an explicit mask here to test that a same-path write grant still replaces a configured read mask.
     readConfig: { denyOnly: [...read.denyRead, home], allowWithinDeny: [...read.allowRead] },
     writeConfig: { allowOnly: write, denyWithinAllow: [] },
     allowAllUnixSockets: true,
@@ -312,8 +310,7 @@ it.runIf(process.platform !== "win32")("refuses a mount whose alias identity can
   })).toThrow(/identity/);
 });
 
-// The hardener runs only on Linux and resolves bwrap targets as host paths;
-// on Win32 a rooted /tmp/example resolves onto a drive, which no bwrap sees.
+// The hardener runs only on Linux and resolves bwrap targets as host paths; on Win32 a rooted /tmp/example resolves onto a drive, which no bwrap sees.
 it.runIf(process.platform !== "win32")("remounts a mask that is the final mount at its target", () => {
   const command = `${BWRAP_PREFIX} --tmpfs /tmp/example --bind /tmp/example /tmp/example --tmpfs /tmp/example -- /bin/sh -c 'true'`;
   const wrapped = hardenLinuxSandboxWrap({ argv: ["/bin/bash", "-c", command], env: {} });
@@ -338,10 +335,7 @@ it.each(["--new-session", "--die-with-parent", "--unshare-pid"])(
   },
 );
 
-// ASRT 0.0.79 moves the mounts of a profile too long for one argument into a
-// file bwrap reads through `--args`, behind a `/bin/sh -c 'exec 3<…'` prefix.
-// The mounts are then not on the line to remount, so the wrap is refused rather
-// than run with its read-deny masks left writable.
+// ASRT 0.0.79 moves the mounts of a profile too long for one argument into a file bwrap reads through `--args`, behind a `/bin/sh -c 'exec 3<…'` prefix. The mounts are then not on the line to remount, so the wrap is refused rather than run with its read-deny masks left writable.
 it("refuses a wrapper that passes its mounts to bwrap through a file", () => {
   const viaArgsFile = [
     "/bin/sh", "-c", 'exec 3<"$1" && shift && exec "$@"', "srt-args", "/proc/self/fd/9",
@@ -364,12 +358,7 @@ it.each([
   })).toThrow(/unsupported/);
 });
 
-/**
- * A plugin installed where its data lives: the plugins root is read-denied, the
- * plugin's root is a read re-allow inside it, and its data directory — inside
- * that root — is a write root. ASRT binds the write first and the read re-allow
- * after it, so the read-only bind of the parent covers the writable one.
- */
+// A plugin installed where its data lives: the plugins root is read-denied, the plugin's root is a read re-allow inside it, and its data directory — inside that root — is a write root. ASRT binds the write first and the read re-allow after it, so the read-only bind of the parent covers the writable one.
 function pluginRootHoldingData() {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "ave-floor-plugin-")));
   temporaryRoots.push(root);
@@ -381,7 +370,7 @@ function pluginRootHoldingData() {
   return { plugins, pluginRoot, pluginData };
 }
 
-/** The last mount whose target is `path` or one of its ancestors: what the child sees there. */
+// The last mount whose target is `path` or one of its ancestors: what the child sees there.
 function finalMountCovering(words: readonly string[], path: string): readonly string[] | undefined {
   let found: readonly string[] | undefined;
   for (let index = 0; index < words.length && words[index] !== "--"; index++) {
@@ -410,8 +399,7 @@ it.runIf(process.platform !== "win32")(
       const parse = (command: string) => execFileSync("/bin/bash", ["-c", `set -- ${command}; printf '%s\\n' "$@"`], {
         encoding: "utf8",
       }).trimEnd().split("\n");
-      // What ASRT emits on its own: the parent's read-only bind is the last
-      // mount over the data directory.
+      // What ASRT emits on its own: the parent's read-only bind is the last mount over the data directory.
       const unhardened = parse(hardenLinuxSandboxWrap({ argv: ["/bin/bash", "-c", generated], env: {} }).argv[2]!);
       expect(finalMountCovering(unhardened, pluginData)).toEqual(["--ro-bind", pluginRoot, pluginRoot]);
       // Told which reads are re-allows, the hardener puts the write back on top.
@@ -452,7 +440,7 @@ it.runIf(process.platform !== "win32")("does not put back a write root that one 
   expect(notReallowed.argv[2]).not.toMatch(new RegExp(`'${pluginRoot}' '${pluginRoot}' '--bind'`));
 });
 
-/** A stand-in bubblewrap whose `--help` lists `--disable-userns`, as 0.8+ does. */
+// A stand-in bubblewrap whose `--help` lists `--disable-userns`, as 0.8+ does.
 function fakeBwrapWithDisableUserns(): string {
   const root = mkdtempSync(join(tmpdir(), "ave-fake-bwrap-"));
   temporaryRoots.push(root);
@@ -462,10 +450,7 @@ function fakeBwrapWithDisableUserns(): string {
   return bwrap;
 }
 
-// ASRT 0.0.80 (#588): with no seccomp helper in the chain, which is what
-// `allowAllUnixSockets` means and what a registered worker socket turns on,
-// bubblewrap 0.8+ is asked for `--disable-userns`. The hardener must accept
-// that wrap, or every wrap fails once a worker starts.
+// ASRT 0.0.80 : with no seccomp helper in the chain, which is what `allowAllUnixSockets` means and what a registered worker socket turns on, bubblewrap 0.8+ is asked for `--disable-userns`. The hardener must accept that wrap, or every wrap fails once a worker starts.
 it.runIf(process.platform !== "win32")("accepts the --disable-userns a socket-permitting wrap carries", async () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "ave-floor-userns-")));
   temporaryRoots.push(root);
@@ -555,26 +540,19 @@ it("accepts the --cap-add a uid-0 caller with the seccomp helper carries", () =>
   expect(() => hardenLinuxSandboxWrap({ argv: ["/bin/bash", "-c", command], env: {} })).not.toThrow();
 });
 
-/**
- * Every `'--option'` literal in the installed Linux wrapper, sorted into the
- * ones that reach bubblewrap's command line (each must be accepted by the
- * hardener) and the ones that do not. A bump that adds an option fails here
- * until it is placed, rather than on a Linux host once a wrap carries it.
- */
+// Every `'--option'` literal in the installed Linux wrapper, sorted into the ones that reach bubblewrap's command line (each must be accepted by the hardener) and the ones that do not. A bump that adds an option fails here until it is placed, rather than on a Linux host once a wrap carries it.
 it("knows every option the installed Linux wrapper can emit", () => {
   const source = readFileSync(
     createRequire(import.meta.url).resolve("@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js"),
     "utf8",
   );
   const literals = new Set([...source.matchAll(/'(--[a-z][a-z-]*)'/g)].map((match) => match[1]!));
-  // The extraction relies on ASRT's single-quoted literals. If a release
-  // changed its quote style the set would come back empty or partial, and the
-  // checks below would pass on nothing; 0.0.80 yields 26 distinct literals.
+  // The extraction relies on ASRT's single-quoted literals. If a release changed its quote style the set would come back empty or partial, and the checks below would pass on nothing; 0.0.80 yields 26 distinct literals.
   for (const known of ["--ro-bind", "--bind", "--tmpfs", "--unshare-net", "--disable-userns"]) {
     expect(literals.has(known), `extraction missed ${known}`).toBe(true);
   }
   expect(literals.size).toBeGreaterThanOrEqual(26);
-  /** Options on the bwrap command line, with sample operands. */
+  // Options on the bwrap command line, with sample operands.
   const emitted: Record<string, readonly string[]> = {
     "--new-session": [],
     "--die-with-parent": [],
@@ -592,7 +570,7 @@ it("knows every option the installed Linux wrapper can emit", () => {
     "--dev": ["/dev"],
     "--proc": ["/proc"],
   };
-  /** Not on the command line the hardener reads, or refused on purpose. */
+  // Not on the command line the hardener reads, or refused on purpose.
   const elsewhere = new Set([
     "--args", // mounts passed through a file: refused (see above)
     "--dev-bind", // the bwrap user-namespace probe, spawned on its own
@@ -643,7 +621,6 @@ it.runIf(process.platform === "linux")("shares newly created temp entries with t
   expect(third.status, third.stderr).toBe(0);
   expect(third.stdout).toBe("host update");
 });
-
 
 it.runIf(process.platform !== "win32")("accepts a generated namespace-limiting worker wrapper", async () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "ave-userns-option-")));

@@ -1,14 +1,4 @@
-/**
- * Boot step — reviewer agent + permission-manager broadcast wiring
- * (permission policy P4 Layer 5, extracted from boot.ts C18).
- *
- * Pushes the visibility deny rules onto the tool registry, builds the reviewer
- * LLM provider adapters (active-LLM following), wires + fires the reviewer agent
- * binding, and hooks the PermissionManager's broadcast callbacks (user-approval
- * memory hit + config-changed) plus the manifest-integrity violation audit/IPC
- * bridge. `rewireReviewerAgent` is stored on the context so settings/auth
- * changes can re-fire it.
- */
+/** Wire reviewer policy, permission broadcasts, and integrity reporting; retain rewireReviewerAgent for settings and authentication changes. */
 import { sendToWindow } from "../../ipc/safe-send.js";
 import { broadcastPermissionConfigChangedFromHost } from "../permission-config-broadcast.js";
 import { PERMISSIONS } from "../../shared/ipc-channels.js";
@@ -50,36 +40,22 @@ export function wireReviewerAndPermissions(ctx: BootContext): void {
     subscriptionProviderFactory,
   } = ctx;
 
-  // §6.3: PermissionManager — instance was constructed before
-  // initPluginRuntime so the resolveApiKey host wiring could
-  // see it. Now that toolRegistry is built, push the visibility deny
-  // rules across.
+  // Apply visibility deny rules after the registry exists; permission services must already exist for plugin construction.
   toolRegistry.setDenyRules(permissionManager.getVisibilityDenyRules());
 
-  // Permission policy P4 — Layer 5 reviewer agent wiring.
-  // Reads `permissions.reviewer` from `~/.ave/settings.json` and binds the
-  // classifier + cache + deferred queue onto the live PermissionManager so
-  // `dispatchReviewer()` routes HIGH verdicts into the deferred queue.
-  // For mode=llm, build an adapter over the host's existing
-  // VercelUnifiedProvider streaming surface — the reviewer needs only a
-  // one-shot complete() call shape.
+  // Bind the classifier, verdict cache, and deferred queue; streaming providers are adapted to one-shot review calls.
   const reviewerStreamProviderFor = (vendor: string, selectedModel?: string): LLMProvider | null => {
     const llmSettings = settingsService.get("llm");
     const activeChatRuntime = llmSettings.activeChatRuntime;
     if (selectedModel === undefined && activeChatRuntime?.kind === "subscription") {
-      // Treat the runtime id as part of the reviewer identity. This keeps
-      // verdict cache entries scoped to the authenticated transport and makes
-      // a stale active-LLM read fail closed rather than falling through to an
-      // API-key provider.
+      // Include authenticated transport in reviewer cache identity; stale subscription reads must not fall through to an API-key provider.
       if (vendor !== `subscription:${activeChatRuntime.provider}`) return null;
       return subscriptionProviderFactory(activeChatRuntime);
     }
 
-    // Parent-session adjudication uses this same factory, so an unresolved
-    // API selection cannot answer an approval through another host key.
+    // Parent-session adjudication uses this same factory, so an unresolved API selection cannot answer an approval through another host key.
     if (llmSettings.retiredProvider) return null;
 
-    // The reviewer identity (chat or selected model) names a canonical LLMVendor.
     const llmVendor = isLLMVendor(vendor) ? vendor : null;
     if (!llmVendor) return null;
     const block = getLlmVendorSettings(llmSettings.vendors, llmVendor);
@@ -161,7 +137,6 @@ export function wireReviewerAndPermissions(ctx: BootContext): void {
       ...(block.vertexLocation ? { vertexLocation: block.vertexLocation } : {}),
     };
   };
-  /** A user-selected model's route, shaped like the chat identity it replaces. */
   const selectedReviewerIdentity = (model: JudgeModelRef) => {
     const scope = selectedModelCacheScope(model);
     return {
@@ -200,21 +175,8 @@ export function wireReviewerAndPermissions(ctx: BootContext): void {
       } : {}),
     };
   };
-  /**
-   * The provider/model a parent session's own chat loop runs on, for tier 2's
-   * `model: "parent-session"` option.
-   *
-   * Built from the same settings the loop's own provider construction reads —
-   * the active chat runtime, or the configured vendor block — rather than from
-   * a live loop object, so it answers for a parent session whether or not that
-   * loop is the one currently running in this process. Resolved per ask, and
-   * `null` whenever the chat provider is unconfigured, which escalates that ask
-   * to the user rather than quietly answering it on another model.
-   *
-   * The session id is accepted and not yet consulted: no session carries its
-   * own provider/model today, and this is the seam a per-session identity would
-   * arrive on rather than at the gate's call site.
-   */
+  /** Resolve the parent chat identity per ask; missing configuration escalates to the user without substituting another model.
+   * Session IDs are reserved for future per-session identity; current settings apply globally. */
   const resolveParentSessionAdjudicationTarget = (
     _parentSessionId: string,
   ): ParentAdjudicationTarget | null => {
@@ -227,13 +189,7 @@ export function wireReviewerAndPermissions(ctx: BootContext): void {
     };
   };
   const rewireReviewerAgent = (): void => {
-    // Layer 1's read fence, re-read from `~/.ave/settings.json` on every
-    // re-wire. This runs at boot and again on `settings:update`, which is the
-    // only moment the value can have changed: the key has no UI, so it moves
-    // when someone edits the file, and a hand edit reaches the host through the
-    // same reload as every other permission setting. The setter bumps
-    // `policyGeneration`, so a change invalidates reviewer verdicts decided
-    // under the previous fence rather than letting them be replayed.
+    // Reapply the read fence on every settings rewire; its generation invalidates verdicts from the prior policy.
     permissionManager.setBlockReadsOutsideWorkingDirectories(
       readPermissionSettings().permissions.blockReadsOutsideWorkingDirectories,
     );
@@ -247,8 +203,7 @@ export function wireReviewerAndPermissions(ctx: BootContext): void {
     for (const issue of judgeSettings.issues) {
       log.warn({ issue }, "Permission judge configuration warning");
     }
-    // The reviewer model the user picked, resolved now and on every re-wire.
-    // Unset (null) follows the chat model: chat-model changes re-wire this.
+    // An unset reviewer model follows chat; resolve again whenever settings change.
     const selectedReviewerModel = judgeSettings.settings.model;
     const reviewerModelSelection = judgeSettings.modelRejected === true
       ? { label: "configured in Settings", available: false }
@@ -284,44 +239,25 @@ export function wireReviewerAndPermissions(ctx: BootContext): void {
     });
     ctx.rationaleScopeReviewer = reviewerResult.rationaleScopeReviewer;
     ctx.approvalSentenceSelector = reviewerResult.approvalSentenceSelector;
-    // Replaced on every re-wire, which is why the approval gate reaches it
-    // through an accessor rather than holding the instance: a gate that
-    // captured this at boot would still be asking the stand-in after a login
-    // healed the reviewer, and every ask would escalate for a reason that had
-    // stopped being true.
+    // Resolve through an accessor because rewiring replaces the adjudicator; captured instances would remain unavailable after login.
     ctx.parentAdjudicator = reviewerResult.parentAdjudicator;
     ctx.parentSessionAdjudicator = reviewerResult.parentSessionAdjudicator;
-    // A re-wire updates the runtime reviewer mode (notably the
-    // llm-degraded-to-rule → llm heal driven by login or settings:update).
-    // setReviewer itself does not broadcast, so an already-open PermissionsTab
-    // would keep showing a stale degrade banner. Push a config-changed event so
-    // its onConfigChanged subscription refetches reviewerDegradedToRule and the
-    // banner clears the moment a provider/key heals the reviewer.
+    // Broadcast configuration changes after rewiring so open settings views stop showing stale degradation.
     broadcastPermissionConfigChangedFromHost(ctx.host.desktop?.getAppWindows() ?? []);
   };
   rewireReviewerAgent();
 
-  // Wire the memory-hit auto-approve IPC broadcast once at boot.
-  // The broadcast fn is stable across rewires (always sends to the current mainWindow).
+  // Install one stable memory-hit broadcaster that resolves the current main window.
   permissionManager.setBroadcastUserApprovalHit((payload) => {
     sendToWindow(getMainWindow(), PERMISSIONS.userApprovalHit, payload, log);
   });
 
-  // PermissionManager is the architectural choke point for
-  // every persisted rule mutation (addAlwaysAllowedPersist /
-  // addAlwaysDeniedPersist / removeRule). Wiring the broadcast here means
-  // executor-side dialog approvals (always allow / always deny), slash
-  // `/permission rules add|remove`, and the IPC addRule/removeRule
-  // handlers all reach multi-window PermissionsTab — without each
-  // call site re-implementing the wiring.
+  // Broadcast rule changes at the manager chokepoint so dialog, slash, and IPC mutations all reach every window.
   permissionManager.setBroadcastConfigChanged(() => {
     broadcastPermissionConfigChangedFromHost(ctx.host.desktop?.getAppWindows() ?? []);
   });
 
-  // Manifest integrity proxy. Subscribes the audit logger so every read→write
-  // violation lands in `~/.ave/audit/` and pushes an IPC notification to the
-  // renderer. Uses the live mainWindow getter so cross-restart UI keeps
-  // receiving events.
+  // Audit integrity violations and notify through the live window getter so reloads do not strand events.
   bindManifestIntegrityAudit(bootAuditLogger);
   manifestIntegrityState.onViolation((pluginId, toolName, attempted) => {
     try {

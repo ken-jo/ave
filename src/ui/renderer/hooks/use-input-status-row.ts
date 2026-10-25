@@ -11,35 +11,13 @@ import {
 import { normalizeExecutionMode, type ExecutionModeDisplay } from "../../../shared/permission-mode.js";
 import type { ActiveChatModel } from "../../../shared/active-chat-model.js";
 
-/**
- * In-bar status sub-row data.
- *
- * The persistent model / permission cells that used to live in the window
- * StatusBar now render as a compact single line at the bottom of the unified
- * InputActionBar (the window StatusBar is notifications-only). This hook
- * resolves those fields from the same IPC the old StatusBar producers used —
- * `getSettings()` (+ `onSettingsUpdated`) for vendor/model and
- * `window.ave.permission` (`getMode` + `onModeChanged`) for the policy mode —
- * but returns plain values instead of upserting StatusBar items.
- *
- * Whether a chat model is configured at all is not a row cell any more: the
- * shell derives it from its own settings store (`useSettings` in App) and the
- * sidebar's Settings entry carries the alert when it is missing.
- *
- * Render-loop guard (the #1312 lesson): the effects depend only on the stable
- * `api` reference, never on caller-built closures. The subscription callbacks
- * mutate local `useState` with primitive values, so an identical re-resolve
- * settles to the same state and React bails out — no upsert→new-array→re-render
- * cycle is possible here.
- */
+/** Resolve composer model and permission status from settings and permission subscriptions; missing-model alerts belong to the sidebar.
+ * Depend only on stable API references and store primitives so repeated resolutions cannot create render loops. */
 export interface InputStatusRow {
   /** "OpenAI · gpt-5.4" style label (vendor · model), or vendor alone. */
   vendorModel: string;
-  /**
-   * Main's answer to which model chat is on; null until the first settings
-   * snapshot lands. `kind: "none"` means there is no model to name, and the
-   * row offers provider setup instead of a label.
-   */
+  /** Main's answer to which model chat is on; null until the first settings snapshot lands. `kind:
+   * "none"` means there is no model to name, and the row offers provider setup instead of a label. */
   activeChatModel: ActiveChatModel | null;
   /** Permission policy mode for per-mode text color + label. */
   permissionMode: ExecutionModeDisplay;
@@ -59,7 +37,7 @@ export function useInputStatusRow(api: AveApi): InputStatusRow {
   const { capability: sandboxCapability, statusQueryFailed: sandboxStatusQueryFailed, refresh: refreshSandboxStatus } =
     useSandboxCapability(api.permission, api.onSettingsUpdated);
 
-  // Vendor + model — mirrors use-status-bar-vendor.
+  // Vendor + model; mirrors use-status-bar-vendor.
   useEffect(() => {
     if (typeof api.getSettings !== "function") return;
     let cancelled = false;
@@ -68,8 +46,7 @@ export function useInputStatusRow(api: AveApi): InputStatusRow {
       if (cancelled) return;
       setActiveChatModel((current) =>
         JSON.stringify(current) === JSON.stringify(settings.activeChatModel) ? current : settings.activeChatModel);
-      // No connected provider: the vendor block still carries its default id,
-      // but nothing was chosen and nothing could answer, so nothing is named.
+      // No connected provider: the vendor block still carries its default id, but nothing was chosen and nothing could answer, so nothing is named.
       if (settings.activeChatModel.kind === "none" && settings.activeChatModel.reason === "no-connected-provider") {
         setVendorModel("");
         return;
@@ -78,8 +55,7 @@ export function useInputStatusRow(api: AveApi): InputStatusRow {
       if (activeRuntime?.kind === "subscription" && isSubscriptionRuntimeId(activeRuntime.provider)) {
         const model = typeof activeRuntime.model === "string" ? activeRuntime.model.trim() : "";
         const descriptor = subscriptionRuntimeDescriptor(activeRuntime.provider);
-        // A CLI with no chosen model runs its own default; say so rather than
-        // name a model Ave did not pick.
+        // A CLI with no chosen model runs its own default; say so rather than name a model Ave did not pick.
         const unchosen = descriptor.offersCliDefaultModel ? `${descriptor.planName} · ${t("llmTab.cliDefaultModel")}` : descriptor.planName;
         setVendorModel(model.length > 0 ? `${descriptor.planName} · ${model}` : unchosen);
         return;
@@ -91,7 +67,7 @@ export function useInputStatusRow(api: AveApi): InputStatusRow {
     };
 
     void api.getSettings().then(apply).catch(() => {
-      // Awareness-only — leave the prior value on transient read failure.
+      // Awareness-only; leave the prior value on transient read failure.
     });
 
     const unsubs: Array<() => void> = [];
@@ -104,7 +80,7 @@ export function useInputStatusRow(api: AveApi): InputStatusRow {
     };
   }, [api]);
 
-  // Permission mode + pending approvals — mirrors use-status-bar-permission.
+  // Permission mode + pending approvals; mirrors use-status-bar-permission.
   useEffect(() => {
     const perm = api.permission;
     if (!perm) return;

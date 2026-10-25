@@ -14,6 +14,12 @@ const web = resolve(root, "web");
 const pub = resolve(web, "public");
 const read = (path: string) => readFileSync(path, "utf8");
 const SITE = "https://ave.agent-connector.ai";
+/** The Worker config that serves the static export. */
+const workerConfig = () => JSON.parse(read(resolve(web, "wrangler.jsonc")).replace(/^\s*\/\/.*$/gmu, "")) as {
+  name: string;
+  assets: { directory: string };
+  routes: { pattern: string; custom_domain: boolean }[];
+};
 
 // The site's sources are read as text: they belong to the web package, not to
 // the app's TypeScript program.
@@ -94,19 +100,39 @@ describe("machine-readable files the app fetches", () => {
     const published = readdirSync(join(pub, "schemas/plugin-host-protocol")).filter((name) => name !== "mirror.json").sort();
     expect(published).toEqual([...new Set(manifest.copies.map((copy) => copy.protocol))].sort());
   });
+
+  it("serves every published schema at its $id under the schema identity origin", () => {
+    const schemaOrigin = /^const AVE_SCHEMA_ORIGIN = "([^"]+)";$/mu
+      .exec(read(resolve(root, "scripts/lib/plugin-host-protocol-mirror.mjs")))?.[1];
+    expect(schemaOrigin).toBeDefined();
+    const schemas = join(pub, "schemas");
+    const files = (readdirSync(schemas, { recursive: true }) as string[])
+      .map((name) => name.split("\\").join("/")).filter((name) => name.endsWith(".schema.json"));
+    expect(files.length).toBeGreaterThan(0);
+    for (const file of files) {
+      expect((JSON.parse(read(join(schemas, file))) as { $id?: string }).$id).toBe(`${schemaOrigin}/schemas/${file}`);
+    }
+    // The site may move; the schema origin must stay a route of the Worker serving /schemas/.
+    const served = workerConfig().routes.map((route) => route.pattern);
+    expect(served, "schema $ids must stay resolvable: the Worker that serves /schemas/ must keep the schema origin as a route")
+      .toContain(new URL(schemaOrigin!).host);
+  });
 });
 
 describe("hosting", () => {
   it("serves the static export at the canonical host from the ave-web Worker", () => {
-    const config = JSON.parse(read(resolve(web, "wrangler.jsonc")).replace(/^\s*\/\/.*$/gmu, "")) as {
-      name: string;
-      assets: { directory: string };
-      routes: { pattern: string; custom_domain: boolean }[];
-    };
+    const config = workerConfig();
     expect(config.name).toBe("ave-web");
     expect(config.assets.directory).toBe("./out");
     expect(config.routes).toEqual([{ pattern: new URL(SITE).host, custom_domain: true }]);
     expect(read(resolve(web, "lib/i18n.ts"))).toContain(`export const SITE_ORIGIN = "${SITE}";`);
+    // The web build scripts read that declaration instead of a second literal.
+    const buildScripts = readdirSync(resolve(root, "scripts/lib")).filter((name) => /^web-.*\.m?js$/u.test(name))
+      .map((name) => `scripts/lib/${name}`);
+    expect(buildScripts).toContain("scripts/lib/web-export.mjs");
+    for (const script of ["scripts/run-web-build.mjs", ...buildScripts]) {
+      expect(read(resolve(root, script)), script).not.toContain(SITE);
+    }
     expect(read(join(pub, "robots.txt"))).toContain(`Sitemap: ${SITE}/sitemap.xml`);
   });
 });

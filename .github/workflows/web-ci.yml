@@ -1,7 +1,8 @@
 name: Web CI
 
 # CI for the monorepo landing site under web/ (Next.js static export → Cloudflare
-# Pages). Runs only when web/ changes so it stays independent of the app CI.
+# Pages). Runs only when web/ or a file its build reads changes, so it stays
+# independent of the app CI.
 # This workflow is a secret-free build gate for PRs and pushes. Deployment is
 # owned by web-deploy.yml and its protected production environment.
 on:
@@ -9,10 +10,30 @@ on:
     branches: [main]
     paths:
       - 'web/**'
+      - 'CHANGELOG.md'
+      - 'scripts/run-web-build.mjs'
+      - 'scripts/lib/web-export.mjs'
+      - 'scripts/lib/document-consumer-guard.mjs'
+      - 'scripts/lib/document-consumer-node-options.mjs'
+      - 'scripts/lib/git-process-environment.mjs'
+      - 'scripts/hooks/pre-push-markdown-policy.mjs'
+      - 'scripts/hooks/documentation-references.json'
+      - 'src/shared/llm-vendor-defaults.ts'
+      - 'src/shared/model-host-policy.ts'
       - '.github/workflows/web-ci.yml'
   pull_request:
     paths:
       - 'web/**'
+      - 'CHANGELOG.md'
+      - 'scripts/run-web-build.mjs'
+      - 'scripts/lib/web-export.mjs'
+      - 'scripts/lib/document-consumer-guard.mjs'
+      - 'scripts/lib/document-consumer-node-options.mjs'
+      - 'scripts/lib/git-process-environment.mjs'
+      - 'scripts/hooks/pre-push-markdown-policy.mjs'
+      - 'scripts/hooks/documentation-references.json'
+      - 'src/shared/llm-vendor-defaults.ts'
+      - 'src/shared/model-host-policy.ts'
       - '.github/workflows/web-ci.yml'
 
 permissions:

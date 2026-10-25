@@ -1,7 +1,4 @@
-/**
- * Settings domain IPC handlers.
- * Covers: ave:settings:*, ave:shell:open-external, ave:telemetry:consent-answer
- */
+/** Settings domain IPC handlers. Covers: ave:settings:*, ave:shell:open-external, ave:telemetry:consent-answer */
 import { dialog, ipcMain, shell, type IpcMainInvokeEvent } from "electron";
 import { validateExternalUrl } from "../../shared/external-url.js";
 import { canonicalStringify } from "../../shared/canonical-json.js";
@@ -124,9 +121,8 @@ function acpStatusFromSubscription(
     pendingDeviceCode: status?.pendingDeviceCode ?? null,
     canOpenVerificationUrl: status?.canOpenVerificationUrl ?? false,
     version: status?.version ?? null,
-    // The legacy ACP status must remain a safe projection of the common
-    // runtime contract. Do not expose the ACP initialize payload here:
-    // the common status already reflects host-verified attachment/file flows.
+    // The legacy ACP status must remain a safe projection of the common runtime contract. Do not expose the
+    // ACP initialize payload here: the common status already reflects host-verified attachment/file flows.
     promptCapabilities: {
       image: status?.capabilities.images === true,
       embeddedContext: status?.capabilities.files === true,
@@ -238,17 +234,8 @@ function normalizeSubscriptionModel(value: unknown): string | undefined | null {
     : null;
 }
 
-/**
- * The settings shape the renderer sees. Authoritative remote route lineage
- * (`a2aRemote`) is main-only and never projected to the renderer. The upstream
- * proxy (`upstreamProxy`) crosses only through its own permissions channels;
- * every other stored field crosses as-is.
- *
- * `activeChatModel` is the one derived field. A vendor block always names a
- * model, so the stored settings cannot say whether chat has a model at all;
- * only main, which holds the secret store, can. Every renderer surface that
- * names the active model reads it from here.
- */
+/** The settings shape the renderer sees. Authoritative remote route lineage (`a2aRemote`) is main-only and never projected to the renderer. The upstream proxy (`upstreamProxy`) crosses only through its own permissions channels; every other stored field crosses as-is.
+ * `activeChatModel` is the one derived field. A vendor block always names a model, so the stored settings cannot say whether chat has a model at all; only main, which holds the secret store, can. Every renderer surface that names the active model reads it from here. */
 export type RendererSettingsSnapshot = Omit<AppSettings, "a2aRemote" | "upstreamProxy"> & {
   readonly activeChatModel: ActiveChatModel;
 };
@@ -262,34 +249,22 @@ export function rendererSettingsSnapshot(
   return { ...projected, activeChatModel: resolveMainActiveChatModel(settingsService) };
 }
 
-/** Shared by every handler that mutates settings and must re-broadcast the
- *  projected snapshot to all windows. */
+/** Shared by every handler that mutates settings and must re-broadcast the projected snapshot to all windows. */
 export async function broadcastSettingsSnapshot(
   deps: IpcDeps,
   shouldBroadcast: () => boolean = () => true,
 ): Promise<void> {
   const snapshot = deps.settingsService.getAll();
-  // Plugins, not just windows. `hostApi.getAppPreference` reads live settings
-  // in process, but an ISOLATED plugin answers it from a host-pushed snapshot
-  // that has to be re-pushed to stay true — this is the announcement that
-  // re-pushes it. Called BEFORE the locale await below and outside its
-  // staleness guard: that guard suppresses a superseded RENDERER snapshot, and
-  // suppressing the preference announcement instead of superseding it would
-  // drop the change rather than re-order it. `publishAppPreferenceChange`
-  // compares the allow-listed values itself, so calling it on every settings
-  // broadcast announces only the saves that moved one.
+  // Publish plugin preference snapshots before locale awaits and outside renderer staleness guards so concurrent saves cannot drop changes.
+  // The publisher compares allow-listed values before announcing.
   publishAppPreferenceChange(deps.settingsService);
   const snapshotSignature = canonicalStringify(snapshot);
-  // Keep the main-process UI locale in sync with the persisted language so
-  // dialogs/menus/notifications shown after a language switch use it too.
-  // Optional-chain `appearance` — a partial snapshot (e.g. a test double or a
-  // pre-migration settings file) must not crash the broadcast. setLocale
-  // coerces undefined to the English default.
+  // Keep the main-process UI locale in sync with the persisted language so dialogs/menus/notifications shown after a language switch use it too. Optional-chain
+  // `appearance`; a partial snapshot (e.g. a test double or a pre-migration settings file) must not crash the broadcast. setLocale coerces undefined to the English default.
   const nextLocale = normalizeLocale(snapshot.appearance?.language);
   const localeLoaded = await tryLoadLocaleMessages(nextLocale);
-  // Locale loading yields. Suppress stale snapshots (and their locale side
-  // effect) if any settings mutation or a caller-specific ownership hand-off
-  // occurred while it was in flight.
+  // Locale loading yields. Suppress stale snapshots (and their locale side effect) if any
+  // settings mutation or a caller-specific ownership hand-off occurred while it was in flight.
   if (
     !shouldBroadcast()
     || snapshotSignature !== canonicalStringify(deps.settingsService.getAll())
@@ -300,20 +275,14 @@ export async function broadcastSettingsSnapshot(
   broadcastToAppWindows(deps, SETTINGS.updated, rendererSettingsSnapshot(deps.settingsService, snapshot));
 }
 
-/**
- * Stable signature of the shortcut + startup-launch inputs so the
- * `settings.update` handler can detect when a patch actually changed them and
- * only then re-register the global shortcut / re-sync the OS login item. Mirrors
- * the `activeLlmIdentity` change-detection pattern used for reviewer rewiring.
- */
+/** Stable signature of the shortcut + startup-launch inputs so the `settings.update` handler can detect when a patch actually changed them and only
+ * then re-register the global shortcut / re-sync the OS login item. Mirrors the `activeLlmIdentity` change-detection pattern used for reviewer rewiring. */
 function shortcutStartupSignature(
   shortcuts: ShortcutSettings,
   system: { launchAtStartup?: boolean; launchMinimized?: boolean },
 ): string {
-  // NOTE: only the two launch-* fields of `system` are covered here on purpose —
-  // they are the sole `system` inputs the OS reconcilers (login item + hidden
-  // start) consume. Other `system` fields must NOT gate the shortcut/startup
-  // reconcile, so they are deliberately excluded from this signature.
+  // NOTE: only the two launch-* fields of `system` are covered here on purpose; they are the sole `system` inputs the OS reconcilers (login item +
+  // hidden start) consume. Other `system` fields must NOT gate the shortcut/startup reconcile, so they are deliberately excluded from this signature.
   return JSON.stringify({
     toggleWindow: shortcuts.toggleWindow,
     enabled: shortcuts.enabled,
@@ -322,15 +291,8 @@ function shortcutStartupSignature(
   });
 }
 
-/**
- * What the permission reviewer runs on, for re-wire detection: the active chat
- * route, plus — when the user selected a reviewer model
- * (`permissions.judge.model`) — whether that model is in its provider's
- * catalogue, and the route of that provider when it is not the chat one. A
- * synced catalogue can add or drop the selected model without the chat route
- * changing, whichever provider it is on. Each chain stage's own model is
- * tracked the same way, so a catalogue change re-evaluates a rejected chain.
- */
+/** What the permission reviewer runs on, for re-wire detection: the active chat route, plus; when the user selected a reviewer model (`permissions.judge.model`); whether that model is in its provider's catalogue, and the route of that provider when
+ * it is not the chat one. A synced catalogue can add or drop the selected model without the chat route changing, whichever provider it is on. Each chain stage's own model is tracked the same way, so a catalogue change re-evaluates a rejected chain. */
 function activeLlmIdentity(
   llm: LLMSettings,
   installedProviderPresets: MarketplaceSettings["installedProviderPresets"],
@@ -379,9 +341,8 @@ function sameLlmSettings(left: LLMSettings, right: LLMSettings): boolean {
 function refreshChatRuntimeProviders(
   deps: Pick<IpcDeps, "conversationLoop" | "sideChatConversationLoop" | "paneChatLoops">,
 ): void {
-  // Refresh each binding even if another one fails. ConversationLoop clears
-  // its provider before rebuilding, so this leaves no stale API-key transport
-  // live under a subscription selection.
+  // Refresh each binding even if another one fails. ConversationLoop clears its provider before
+  // rebuilding, so this leaves no stale API-key transport live under a subscription selection.
   let failed = false;
   let firstError: unknown;
   try {
@@ -400,14 +361,8 @@ function refreshChatRuntimeProviders(
   }
   if (failed) throw firstError;
 }
-/**
- * Install or remove marketplace provider presets and run every follow-up a
- * preset change needs (reviewer rewire, chat providers, wildcard, sandbox
- * endpoints, the settings broadcast), reporting a follow-up that fails as
- * `finishError` once `mutate` has saved. The settings IPC and the content store's
- * provider activation both go through here, so a preset
- * installed from a git package behaves exactly like one installed today.
- */
+/** Install or remove marketplace provider presets and run every follow-up a preset change needs (reviewer rewire, chat providers, wildcard, sandbox endpoints, the settings broadcast), reporting a follow-up that
+ * fails as `finishError` once `mutate` has saved. The settings IPC and the content store's provider activation both go through here, so a preset installed from a git package behaves exactly like one installed today. */
 export async function mutateMarketplaceProviderPresets(
   deps: IpcDeps,
   mutate: () => Promise<AppSettings>,
@@ -415,8 +370,7 @@ export async function mutateMarketplaceProviderPresets(
   const prevLlm = deps.settingsService.get("llm");
   const prevPresets = deps.settingsService.get("marketplace").installedProviderPresets;
   const result = await mutate();
-  // The settings are saved: whatever fails from here is reported, never
-  // thrown, so no caller undoes a write that already landed.
+  // The settings are saved: whatever fails from here is reported, never thrown, so no caller undoes a write that already landed.
   let finishError: { ok: false; error: string; message: string } | null;
   try {
     finishError = await finishProviderPresetMarketplaceMutation(deps, prevLlm, prevPresets);
@@ -429,14 +383,8 @@ export async function mutateMarketplaceProviderPresets(
 async function finishProviderPresetMarketplaceMutation(
   deps: IpcDeps,
   prevLlm: LLMSettings,
-  /**
-   * The preset registry as it stood BEFORE the mutation. A preset's address
-   * lives only in that registry, so reading the post-mutation list for both
-   * sides of the comparison makes an uninstalled preset's host absent from
-   * both — the signatures match, no refresh fires, and the host it used to
-   * reach stays inside the sandbox's allow-list until something unrelated
-   * refreshes it.
-   */
+  /** The preset registry as it stood BEFORE the mutation. A preset's address lives only in that registry, so reading the post-mutation list for both sides of the comparison makes an
+   * uninstalled preset's host absent from both; the signatures match, no refresh fires, and the host it used to reach stays inside the sandbox's allow-list until something unrelated refreshes it. */
   prevInstalledProviderPresets: MarketplaceSettings["installedProviderPresets"],
 ): Promise<{ ok: false; error: string; message: string } | null> {
   const newLlm = deps.settingsService.get("llm");
@@ -563,8 +511,7 @@ export interface SettingsHandlerHooks {
 export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerHooks): void {
   const { settingsService, conversationLoop, auditLogger } = deps;
   let activeChatRuntimeTransitionRevision = 0;
-  // Handler-start ownership prevents a slow verify/model lookup from applying
-  // an older subscription choice after a newer provider/API selection.
+  // Handler-start ownership prevents a slow verify/model lookup from applying an older subscription choice after a newer provider/API selection.
   let activeChatRuntimeSelectionIntentRevision = 0;
   const publishSubscriptionRuntimeStatusUpdated = (provider: SubscriptionRuntimeId): void => {
     const event: SubscriptionRuntimeStatusUpdatedEvent = {
@@ -667,11 +614,8 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       && left.provider === right.provider
       && left.model === right.model;
   };
-  /**
-   * Bind every execution consumer to the runtime in memory. Each step runs
-   * even when an earlier one fails: a restored selection stays authoritative,
-   * and a reviewer that cannot be rewired stays on its fail-closed path.
-   */
+  /** Bind every execution consumer to the runtime in memory. Each step runs even when an earlier one fails: a
+   * restored selection stays authoritative, and a reviewer that cannot be rewired stays on its fail-closed path. */
   const bindExecutionToSettings = (): void => {
     try {
       refreshChatRuntimeProviders(deps);
@@ -681,8 +625,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     try {
       deps.rewireReviewerAgent?.();
     } catch {
-      // Preserve the original selection error instead of masking it with a
-      // best-effort rewire error.
+      // Preserve the original selection error instead of masking it with a best-effort rewire error.
     }
     try {
       deps.refreshActiveLlmWildcard?.();
@@ -695,24 +638,18 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     failedActiveChatRuntime: LLMSettings["activeChatRuntime"],
     transitionRevision: number,
   ): Promise<{ runtime: LLMSettings["activeChatRuntime"] } | null> => {
-    // Only the request that still owns the active selection may undo it; a
-    // newer selection binds execution itself.
+    // Only the request that still owns the active selection may undo it; a newer selection binds execution itself.
     if (transitionRevision !== activeChatRuntimeTransitionRevision) return null;
-    // Memory is authoritative. A failed save has already put it back on the
-    // saved settings (SettingsService never runs on settings that are not on
-    // disk), which may be older than `previousActiveChatRuntime` when that
-    // one was unsaved too. When memory no longer holds the failed runtime,
-    // only the bindings made for it must go, with no write — so an unrelated
-    // LLM update is preserved too.
+    // Memory is authoritative. A failed save has already put it back on the saved settings (SettingsService never runs on settings that are not on disk), which may be older than
+    // `previousActiveChatRuntime` when that one was unsaved too. When memory no longer holds the failed runtime, only the bindings made for it must go, with no write; so an unrelated LLM update is preserved too.
     const current = settingsService.get("llm").activeChatRuntime;
     const restoredBySave = !sameActiveChatRuntime(current, failedActiveChatRuntime);
     const restoredRuntime = restoredBySave ? current : previousActiveChatRuntime;
     const persistRestoration = restoredBySave
       ? Promise.resolve()
       : settingsService.patch({ llm: { activeChatRuntime: previousActiveChatRuntime } });
-    // SettingsService mutates memory before its first await. Restore every
-    // executable binding in that same synchronous turn; waiting for disk here
-    // would leave the failed API/subscription provider reachable meanwhile.
+    // SettingsService mutates memory before its first await. Restore every executable binding in that same
+    // synchronous turn; waiting for disk here would leave the failed API/subscription provider reachable meanwhile.
     bindExecutionToSettings();
     const ownsRestoration = (): boolean => (
       transitionRevision === activeChatRuntimeTransitionRevision
@@ -721,9 +658,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     try {
       await persistRestoration;
     } catch {
-      // The restoring save failed as well, so memory is back on the settings
-      // on disk. Bind execution to them rather than to the runtime that could
-      // not be saved.
+      // The restoring save failed as well, so memory is back on the settings on disk. Bind execution to them rather than to the runtime that could not be saved.
       if (transitionRevision === activeChatRuntimeTransitionRevision) {
         bindExecutionToSettings();
         await broadcastSettingsSnapshot(deps, () => transitionRevision === activeChatRuntimeTransitionRevision);
@@ -746,9 +681,8 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       ? activeChatRuntime.provider
       : null;
     if (!sameActiveChatRuntime(previousLlm.activeChatRuntime, activeChatRuntime)) {
-      // A provider selection is an authentication-boundary change. Abort both
-      // interactive loops before exposing the new selection so a prior API
-      // tool round cannot issue another request after subscription activation.
+      // A provider selection is an authentication-boundary change. Abort both interactive loops before exposing
+      // the new selection so a prior API tool round cannot issue another request after subscription activation.
       const reason = new Error("active chat runtime changed");
       conversationLoop.abortCurrentTurn?.(reason);
       deps.sideChatConversationLoop?.abortCurrentTurn?.(reason);
@@ -762,17 +696,14 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     );
 
     try {
-      // SettingsService has synchronously applied the new active runtime at
-      // this point. Bind all execution consumers before awaiting disk so no
-      // API-key provider can be observed while subscription is active.
+      // SettingsService has synchronously applied the new active runtime at this point. Bind all execution
+      // consumers before awaiting disk so no API-key provider can be observed while subscription is active.
       refreshChatRuntimeProviders(deps);
       deps.rewireReviewerAgent?.();
       deps.refreshActiveLlmWildcard?.();
       await persistSelection;
     } catch {
-      // If a synchronous binding failed, wait for the in-flight write to settle
-      // before issuing the guarded restoration. This prevents an older write
-      // from racing the rollback on disk.
+      // If a synchronous binding failed, wait for the in-flight write to settle before issuing the guarded restoration. This prevents an older write from racing the rollback on disk.
       await persistSelection.catch(() => undefined);
       let restored: { runtime: LLMSettings["activeChatRuntime"] } | null = null;
       try {
@@ -782,21 +713,18 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
           transitionRevision,
         );
       } catch {
-        // The renderer must never be told that the new runtime became active
-        // when its exact persisted predecessor could not be restored.
+        // The renderer must never be told that the new runtime became active when its exact persisted predecessor could not be restored.
       }
-      // The runtime restored may be older than this switch's predecessor when
-      // that one failed to save too. The subscription mutation announces the
-      // provider that failed; announce the one restored.
+      // The runtime restored may be older than this switch's predecessor when that one failed to save
+      // too. The subscription mutation announces the provider that failed; announce the one restored.
       const restoredProvider = restored?.runtime?.kind === "subscription" ? restored.runtime.provider : null;
       if (restoredProvider && restoredProvider !== nextSubscriptionProvider) {
         publishSubscriptionRuntimeStatusUpdated(restoredProvider);
       }
       throw new SubscriptionRuntimeServiceError("subscription-operation-failed");
     }
-    // A newer multi-window selection may have persisted while this write
-    // awaited disk. It owns all following broadcast/status effects; its
-    // executable bindings were already applied synchronously by its own call.
+    // A newer multi-window selection may have persisted while this write awaited disk. It owns all following
+    // broadcast/status effects; its executable bindings were already applied synchronously by its own call.
     if (!ownsTransition()) return;
 
     await broadcastSettingsSnapshot(deps, ownsTransition);
@@ -839,13 +767,11 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     return legacyAcpActionResult(providerValue, result);
   };
 
-  // read-only — no sender guard needed
+  // read-only; no sender guard needed
   ipcMain.handle(CHANNELS.settings.get, () => rendererSettingsSnapshot(settingsService));
 
-  // Read-only, and presence only: the answer is a list of settings paths the
-  // environment is forcing ON, never the value of any variable. A control that
-  // showed the saved value alone would be describing a state the running app is
-  // not in, since every one of these gates resolves as `settings || env`.
+  // Read-only, and presence only: the answer is a list of settings paths the environment is forcing ON, never the value of any variable. A control that
+  // showed the saved value alone would be describing a state the running app is not in, since every one of these gates resolves as `settings || env`.
   ipcMain.handle(CHANNELS.settings.envForcedSettings, () => envForcedSettingsPaths());
 
   ipcMain.handle(CHANNELS.settings.update, async (e, partial) => {
@@ -853,20 +779,17 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     if (partial && typeof partial === "object" && Object.prototype.hasOwnProperty.call(partial, "a2aRemote")) {
       return { ok: false, error: "a2a-remote-settings-main-owned" };
     }
-    // Where the sandbox egress proxy sends allowed connections: written only
-    // through the permissions upstreamProxySet channel, which validates it and
-    // keeps credentials in the secret store.
+    // Where the sandbox egress proxy sends allowed connections: written only through the
+    // permissions upstreamProxySet channel, which validates it and keeps credentials in the secret store.
     if (partial && typeof partial === "object" && Object.prototype.hasOwnProperty.call(partial, "upstreamProxy")) {
       return { ok: false, error: "upstream-proxy-settings-main-owned" };
     }
-    // Readable in the renderer snapshot, written only by `loadSettings`: a
-    // patch naming it is refused whole, the same way as `a2aRemote`.
+    // Readable in the renderer snapshot, written only by `loadSettings`: a patch naming it is refused whole, the same way as `a2aRemote`.
     if (partial && typeof partial === "object" && Object.prototype.hasOwnProperty.call(partial, "appliedMigrations")) {
       return { ok: false, error: "applied-migrations-main-owned" };
     }
-    // The server marketplace's theme and language lists are read and emptied
-    // only by the first-boot migration (design §16.3); themes and languages
-    // are installed as packages now, so a patch naming either is refused whole.
+    // The server marketplace's theme and language lists are read and emptied only by the first-boot migration
+    // (design §16.3); themes and languages are installed as packages now, so a patch naming either is refused whole.
     const marketplacePatch = (partial as Record<string, unknown> | null | undefined)?.marketplace;
     if (
       marketplacePatch
@@ -899,8 +822,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
         error: "active-chat-runtime-requires-subscription-selection",
       };
     }
-    // LOW: validate vendors["azure-foundry"].baseUrl at write time so an invalid
-    // Foundry endpoint is rejected before it reaches the settings store.
+    // LOW: validate vendors["azure-foundry"].baseUrl at write time so an invalid Foundry endpoint is rejected before it reaches the settings store.
     const foundryVendorPatch = (llmPatch?.vendors as Record<string, unknown> | undefined)
       ?.["azure-foundry"] as Record<string, unknown> | undefined;
     if (foundryVendorPatch?.baseUrl !== undefined) {
@@ -917,17 +839,14 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
         return { ok: false, error: "invalid-foundry-endpoint", message: (err as Error).message };
       }
     }
-    // Reviewer LLM follows the active chat provider/model. Capture the
-    // active identity before patching so provider/model/baseUrl/Vertex changes
-    // can refresh reviewer wiring and cache scope immediately.
+    // Reviewer LLM follows the active chat provider/model. Capture the active identity before patching
+    // so provider/model/baseUrl/Vertex changes can refresh reviewer wiring and cache scope immediately.
     const prevLlm = settingsService.get("llm");
     const prevActiveLlmIdentity = activeLlmIdentity(prevLlm, settingsService.get("marketplace").installedProviderPresets);
-    // Legacy guard: still detect Foundry baseUrl changes even when
-    // the active provider is not Foundry, preserving the prior explicit rewire.
+    // Legacy guard: still detect Foundry baseUrl changes even when the active provider is not Foundry, preserving the prior explicit rewire.
     const prevBaseUrl = prevLlm.vendors?.["azure-foundry"]?.baseUrl ?? null;
-    // ASRT dynamic-endpoint union: capture EVERY vendor baseUrl so a change to
-    // any user-configured endpoint (e.g. the indexer's Azure OpenAI resource)
-    // triggers a sandbox network live-refresh, not just an active/Foundry change.
+    // ASRT dynamic-endpoint union: capture EVERY vendor baseUrl so a change to any user-configured endpoint (e.g.
+    // the indexer's Azure OpenAI resource) triggers a sandbox network live-refresh, not just an active/Foundry change.
     const prevVendorBaseUrlSig = llmRouteBaseUrlSignature(
       prevLlm,
       settingsService.get("marketplace").installedProviderPresets,
@@ -947,17 +866,11 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     }
     const persistSettings = settingsService.patch(partial);
     if (layoutPatch !== undefined) browserTabRegistry.trackBindingWrite(persistSettings);
-    // SettingsService applies its merge before awaiting disk persistence. Capture
-    // this request's exact LLM snapshot before another renderer can supersede it.
+    // SettingsService applies its merge before awaiting disk persistence. Capture this request's exact LLM snapshot before another renderer can supersede it.
     const appliedLlm = settingsService.get("llm");
     const result = await persistSettings;
-    // Reconcile the OS-level global shortcut + login item when the
-    // shortcut/startup fields actually changed. Defined as a
-    // closure and invoked on BOTH the success path AND the reviewer-rewire
-    // failure early-return: the shortcuts/system fields are already persisted by
-    // the `patch` above, so a subsequent rewire failure must NOT skip syncing
-    // the OS state to what is now on disk. Idempotent + gated by the signature,
-    // so calling it once per handler invocation is correct on either path.
+    // Reconcile the OS-level global shortcut + login item when the shortcut/startup fields actually changed. Defined as a closure and invoked on BOTH the success path AND the reviewer-rewire failure early-return: the shortcuts/system fields
+    // are already persisted by the `patch` above, so a subsequent rewire failure must NOT skip syncing the OS state to what is now on disk. Idempotent + gated by the signature, so calling it once per handler invocation is correct on either path.
     const marketplaceWritten = typeof partial === "object" && partial !== null && Object.prototype.hasOwnProperty.call(partial, "marketplace");
     // Contract (side-effect ordering): only that it runs AFTER `patch` commits.
     let reconciledShortcutStartup = false;
@@ -967,16 +880,13 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       const newShortcuts = settingsService.get("shortcuts");
       const newSystem = settingsService.get("system");
       if (shortcutStartupSignature(newShortcuts, newSystem) === prevShortcutStartupSig) return;
-      // Registration failure is surfaced inside reconcileGlobalShortcuts
-      // (No-Fallback: notified, not swallowed).
+      // Registration failure is surfaced inside reconcileGlobalShortcuts (No-Fallback: notified, not swallowed).
       reconcileGlobalShortcuts(newShortcuts);
       const launchInput = {
         launchAtStartup: newSystem.launchAtStartup ?? false,
         launchMinimized: newSystem.launchMinimized ?? false,
       };
-      // A login-item registration the OS did not apply is surfaced to the user,
-      // mirroring the shortcut-conflict path, instead of the `applied:false`
-      // result being silently dropped.
+      // A login-item registration the OS did not apply is surfaced to the user, mirroring the shortcut-conflict path, instead of the `applied:false` result being silently dropped.
       const launchState = reconcileStartupLaunch(launchInput);
       notifyStartupLaunchFailureIfNeeded(launchInput, launchState);
     };
@@ -992,26 +902,22 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
         deps.rewireReviewerAgent?.();
       } catch (err) {
         const message = errorMessage(err);
-        // A nested/parallel renderer mutation may have taken ownership while
-        // reviewer construction ran. Restore the full predecessor only when
-        // this request's captured snapshot is still current; otherwise a full
-        // replacement would discard the newer window's LLM settings.
+        // A nested/parallel renderer mutation may have taken ownership while reviewer construction ran. Restore the full predecessor only
+        // when this request's captured snapshot is still current; otherwise a full replacement would discard the newer window's LLM settings.
         let rollbackMessage: string | null = null;
         if (sameLlmSettings(settingsService.get("llm"), newLlm)) {
           try {
             await settingsService.replaceLlm(prevLlm);
           } catch (rollbackErr) {
-            // The restoring save failed, so memory is back on the new LLM
-            // settings, which are on disk. The refreshes below bind to them.
+            // The restoring save failed, so memory is back on the new LLM settings, which are on disk. The refreshes below bind to them.
             rollbackMessage = errorMessage(rollbackErr);
           }
           if (rollbackMessage === null) {
             try {
               deps.rewireReviewerAgent?.();
             } catch {
-              // The active LLM settings have been rolled back. Keep the IPC error
-              // focused on the original failing rewire; a second failure leaves the
-              // app on the same fail-closed reviewer path it had before the patch.
+              // The active LLM settings have been rolled back. Keep the IPC error focused on the original failing
+              // rewire; a second failure leaves the app on the same fail-closed reviewer path it had before the patch.
             }
           }
         }
@@ -1025,10 +931,8 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
         ) {
           void deps.refreshSandboxNetworkConfig?.();
         }
-        // The shortcuts/system fields were already persisted
-        // by `patch`; reconcile the OS state to disk even though the reviewer
-        // rewire failed, so a combined patch doesn't leave the accelerator /
-        // login item out of sync with what the user just saved.
+        // The shortcuts/system fields were already persisted by `patch`; reconcile the OS state to disk even though the reviewer
+        // rewire failed, so a combined patch doesn't leave the accelerator / login item out of sync with what the user just saved.
         reconcileShortcutStartupIfChanged();
         if (marketplaceWritten) hooks?.marketplaceSettingsChanged();
         await broadcastSettingsSnapshot(deps);
@@ -1040,13 +944,10 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       }
     }
     refreshChatRuntimeProviders(deps);
-    // #893 — vendor/baseUrl may have changed; re-sync the plugin wildcard so
-    // `hostApi.config.get("hostApiKey")` stays consistent with the active vendor.
+    // #893; vendor/baseUrl may have changed; re-sync the plugin wildcard so `hostApi.config.get("hostApiKey")` stays consistent with the active vendor.
     deps.refreshActiveLlmWildcard?.();
-    // ASRT dynamic-endpoint union: when any vendor baseUrl changed, recompute the
-    // shared strict-union and live-swap the ASRT network config so the new
-    // endpoint host is enforced/allowed (and the old one dropped) without a
-    // restart. No-op inside the closure when the sandbox gate is OFF.
+    // ASRT dynamic-endpoint union: when any vendor baseUrl changed, recompute the shared strict-union and live-swap the ASRT network config so
+    // the new endpoint host is enforced/allowed (and the old one dropped) without a restart. No-op inside the closure when the sandbox gate is OFF.
     if (
       llmRouteBaseUrlSignature(
         newLlm,
@@ -1055,8 +956,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     ) {
       void deps.refreshSandboxNetworkConfig?.();
     }
-    // Reconcile the OS-level global accelerator + login item to the newly
-    // persisted shortcut/startup fields (no-op when unchanged; see closure).
+    // Reconcile the OS-level global accelerator + login item to the newly persisted shortcut/startup fields (no-op when unchanged; see closure).
     reconcileShortcutStartupIfChanged();
     if (marketplaceWritten) hooks?.marketplaceSettingsChanged();
     await broadcastSettingsSnapshot(deps);
@@ -1120,19 +1020,18 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     refreshChatRuntimeProviders(deps);
     // Rewire the reviewer when the provider key changes so cacheScope refreshes.
     deps.rewireReviewerAgent?.();
-    // #893 — refresh plugin wildcard with the new key for the active vendor.
+    // #893; refresh plugin wildcard with the new key for the active vendor.
     deps.refreshActiveLlmWildcard?.();
     // Broadcast settings snapshot so reviewer tab can auto-unlock without a full reload.
     await broadcastSettingsSnapshot(deps);
     return { ok: true };
   });
 
-  // read-only — sender guard optional
+  // read-only; sender guard optional
   ipcMain.handle(CHANNELS.settings.hasApiKey, (_e, vendor?: string) => {
     const secretKey = llmSecretKeyForInput(deps, vendor);
     if (!secretKey) return false;
-    // A retired profile can still choose a provider with a saved key. Presence
-    // is enough for that settings chooser; the credential itself stays fenced.
+    // A retired profile can still choose a provider with a saved key. Presence is enough for that settings chooser; the credential itself stays fenced.
     if (settingsService.get("llm").retiredProvider) return settingsService.hasStoredSecret(secretKey);
     return settingsService.getSecret(secretKey) !== null;
   });
@@ -1151,7 +1050,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     refreshChatRuntimeProviders(deps);
     // Rewire the reviewer when the provider key is removed so cacheScope refreshes.
     deps.rewireReviewerAgent?.();
-    // #893 — refresh plugin wildcard so the now-missing key is cleared.
+    // #893; refresh plugin wildcard so the now-missing key is cleared.
     deps.refreshActiveLlmWildcard?.();
     await broadcastSettingsSnapshot(deps);
     return { ok: true };
@@ -1190,19 +1089,14 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       credentialScope,
       ...(modelDiscoveryPolicy ? { modelDiscoveryPolicy } : {}),
     }, {
-      // Main owns Electron, so main supplies the transport. On Node's `fetch`
-      // this request ignores the machine's proxy configuration and goes direct;
-      // `deps.singleHopNetworkFetch` is Chromium's stack, which follows it. It
-      // returns a 3xx rather than chasing it, so the SSRF guard still gets to
-      // re-validate every hop.
+      // Main owns Electron, so main supplies the transport. On Node's `fetch` this request ignores the machine's proxy configuration and goes direct;
+      // `deps.singleHopNetworkFetch` is Chromium's stack, which follows it. It returns a 3xx rather than chasing it, so the SSRF guard still gets to re-validate every hop.
       fetchImpl: deps.singleHopNetworkFetch,
     });
   });
 
-  // ─── Common subscription runtimes ───────────────────────────────────
-  // All providers pass through this host-only boundary. The renderer can name
-  // only a static provider id; executable paths, verification URLs, credentials,
-  // and raw runtime output remain main-owned.
+  // All providers pass through this host-only boundary. The renderer can name only a static provider
+  // id; executable paths, verification URLs, credentials, and raw runtime output remain main-owned.
   ipcMain.handle(CHANNELS.settings.subscriptionRuntimeStatus, async (e, providerValue: unknown) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, CHANNELS.settings.subscriptionRuntimeStatus, e);
@@ -1427,8 +1321,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
         return failure;
       }
       if (selectionIntentRevision !== activeChatRuntimeSelectionIntentRevision) {
-        // Another chat selection began while this runtime was verifying or
-        // listing models. It must not revive this older selection afterwards.
+        // Another chat selection began while this runtime was verifying or listing models. It must not revive this older selection afterwards.
         const failure: SubscriptionRuntimeActionResult = {
           ok: false,
           error: "subscription-operation-failed",
@@ -1474,9 +1367,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     }
   });
 
-  // ─── Legacy compatibility adapters ─────────────────────────────────
-  // Older renderer bundles retain these names, but never get a second client
-  // or a bypass around common safety verification and URL validation.
+  // Older renderer bundles retain these names, but never get a second client or a bypass around common safety verification and URL validation.
   const hostCodexSubscriptionHandler = (
     channel: string,
     action: string,
@@ -1581,7 +1472,6 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       return runtime.logout(provider);
     }),
   );
-  // ─── Shell external link ───────────────────────────
   ipcMain.handle(CHANNELS.shell.openExternal, async (e, url: unknown) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.shell.openExternal, e); return UNAUTHORIZED_FRAME; }
     const { shell } = await import("electron");
@@ -1595,7 +1485,6 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     }
   });
 
-  // ─── Web Search Keys ───────────────────────────
   ipcMain.handle(CHANNELS.settings.setWebApiKey, async (e, provider: string, apiKey: string) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.settings.setWebApiKey, e); return UNAUTHORIZED_FRAME; }
     await settingsService.setSecret(`web.apiKey.${provider}`, apiKey);
@@ -1603,7 +1492,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     return { ok: true };
   });
 
-  // read-only — sender guard optional
+  // read-only; sender guard optional
   ipcMain.handle(CHANNELS.settings.hasWebApiKey, (_e, provider: string) => {
     return settingsService.getSecret(`web.apiKey.${provider}`) !== null;
   });
@@ -1615,13 +1504,10 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     return { ok: true };
   });
 
-  // Read-only. The allowlist bounds `telemetry.endpoint`, which the renderer
-  // can already write — so it is shown, never set: a control the same party
-  // could widen is not a bound. Host names only, which is exactly what the
-  // endpoint field needs the user to know.
+  // Read-only. The allowlist bounds `telemetry.endpoint`, which the renderer can already write; so it is shown, never set: a
+  // control the same party could widen is not a bound. Host names only, which is exactly what the endpoint field needs the user to know.
   ipcMain.handle(CHANNELS.telemetry.allowedHosts, () => telemetryAllowedHosts());
 
-  // ─── Telemetry consent ────────────────────────
   ipcMain.handle(CHANNELS.telemetry.consentAnswer, async (e, accepted: boolean) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.telemetry.consentAnswer, e); return UNAUTHORIZED_FRAME; }
     await settingsService.patch({

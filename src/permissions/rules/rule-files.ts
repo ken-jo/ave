@@ -1,20 +1,4 @@
-/**
- * Persisted permission rule validation (issue #28, P1a), shared by the
- * user-global Store A file (`<ave home>/permissions.json`, extended in place to
- * hold specifier and `ask` rules) and the per-project rule files
- * (`project-rule-files.ts`).
- *
- * Corrupt data fails clearly: a file that does not parse, has the wrong shape,
- * or holds a rule outside the language throws
- * {@link PermissionRulesFileCorruptError}. Nothing is silently dropped, and the
- * writers refuse to overwrite a corrupt file (they read before they write).
- *
- * A stored broad wildcard is kept but inert instead. Files written before
- * prefix restrictions may hold one. It loads, is listed in Settings with its
- * {@link StoredRuleInvalidReason} and a working Remove, survives other writes
- * unchanged, and never matches ({@link storedRuleInvalidReason}). No rule is
- * migrated or rewritten, and a new one is still refused at save.
- */
+// Corrupt rule files throw and writers refuse to overwrite them; nothing is silently dropped. Stored broad wildcards remain visible/removable but inert, survive unrelated writes unchanged, and cannot be newly saved.
 import type { PermissionRule } from "../permission-manager.js";
 import {
   ENFORCED_RULE_KINDS,
@@ -27,13 +11,10 @@ import {
 import { refusedShellPrefix } from "./shell-prefix-values.js";
 import type { StoredRuleInvalidReason } from "../../shared/permissions-events.js";
 
-/** A broad allow wildcard is refused at save but retained inert when already stored. */
+// A broad allow wildcard is refused at save but retained inert when already stored.
 class BroadShellWildcardError extends RuleSpecifierError {}
 
-/**
- * The reason a stored rule is inert, or null for a rule in force. Decisions
- * skip such a rule and Settings lists it with this reason.
- */
+// The reason a stored rule is inert, or null for a rule in force. Decisions skip such a rule and Settings lists it with this reason.
 export function storedRuleInvalidReason(rule: { pattern: string; action: string; source?: string | undefined }): StoredRuleInvalidReason | null {
   if (rule.action !== "allow" || rule.source !== undefined || !isRuleSpecifier(rule.pattern)) return null;
   const spec = parseRuleSpecifier(rule.pattern);
@@ -42,7 +23,7 @@ export function storedRuleInvalidReason(rule: { pattern: string; action: string;
     : null;
 }
 
-/** Patterns of the inert rules a file already holds; a write may keep these and no others. */
+// Patterns of the inert rules a file already holds; a write may keep these and no others.
 export function inertRulePatterns(rules: readonly PermissionRule[] | undefined): ReadonlySet<string> {
   return new Set((rules ?? []).filter((rule) => storedRuleInvalidReason(rule) !== null).map((rule) => rule.pattern));
 }
@@ -57,12 +38,7 @@ export class PermissionRulesFileCorruptError extends Error {
 type PermissionRuleAction = PermissionRule["action"];
 const ACTIONS: ReadonlySet<string> = new Set(["allow", "deny", "ask"]);
 
-/**
- * Validate one rule for storage. Specifier rules must be in canonical spelling,
- * of an enforced kind, and — for allow — not a refused shell prefix. Legacy
- * glob rules keep their existing shape. Throws {@link RuleSpecifierError} for a
- * rule outside the language; callers that read files wrap it as corrupt.
- */
+// Validate one rule for storage. Specifier rules must be in canonical spelling, of an enforced kind, and — for allow — not a refused shell prefix. Legacy glob rules keep their existing shape. Throws RuleSpecifierError for a rule outside the language; callers that read files wrap it as corrupt.
 export function validatePermissionRule(rule: unknown): PermissionRule {
   if (!rule || typeof rule !== "object" || Array.isArray(rule)) throw new RuleSpecifierError(String(rule), "rule must be an object");
   const candidate = rule as Record<string, unknown>;
@@ -95,12 +71,7 @@ function assertStorableSpecifier(pattern: string, spec: RuleSpecifier, action: P
   }
 }
 
-/**
- * 1-based line where element `index` of the top-level `"rules"` array starts
- * in `text`, or undefined when it cannot be located. A small JSON scanner:
- * strings are skipped, depth is tracked, so a `"rules"` key nested elsewhere
- * or a comma inside a string is not miscounted.
- */
+// 1-based line where element `index` of the top-level `"rules"` array starts in `text`, or undefined when it cannot be located. A small JSON scanner: strings are skipped, depth is tracked, so a `"rules"` key nested elsewhere or a comma inside a string is not miscounted.
 function ruleLine(text: string, index: number): number | undefined {
   let depth = 0;
   let inRules = false;
@@ -140,23 +111,14 @@ function ruleLine(text: string, index: number): number | undefined {
   return undefined;
 }
 
-/**
- * Validate a file's rule list. A bad rule fails the whole file (nothing is
- * silently dropped); the error names the rule's position, its line in
- * `sourceText` when the caller read one, and the rule's pattern, so the user
- * can fix that one rule.
- */
+// Validate a file's rule list. A bad rule fails the whole file (nothing is silently dropped); the error names the rule's position, its line in `sourceText` when the caller read one, and the rule's pattern, so the user can fix that one rule.
 export function validateRuleList(
   filePath: string,
   rules: unknown,
   options: {
     specifiersOnly?: boolean;
     sourceText?: string;
-    /**
-     * Inert broad allow wildcards that may stay in the file:
-     * `"all"` when reading what is stored, or the patterns the file already
-     * held when writing, so a write keeps them but cannot add one.
-     */
+    // Inert broad allow wildcards that may stay in the file: `"all"` when reading what is stored, or the patterns the file already held when writing, so a write keeps them but cannot add one.
     keepInertWildcards?: "all" | ReadonlySet<string>;
   } = {},
 ): PermissionRule[] {
@@ -189,7 +151,7 @@ export function validateRuleList(
   });
 }
 
-/** "invalid JSON", with the line and column when the parser reports a location. */
+// "invalid JSON", with the line and column when the parser reports a location.
 export function invalidJsonDetail(error: unknown, text: string): string {
   const message = error instanceof Error ? error.message : "";
   const lineColumn = /line (\d+) column (\d+)/.exec(message);

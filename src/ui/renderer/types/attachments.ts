@@ -24,8 +24,6 @@ export const PATH_COLLAPSE_THRESHOLD = 10;
  * toast on attempt. */
 export { DENY_EXTENSIONS } from "../../../shared/attachments-deny-list.js";
 
-export type AttachmentKind = "image" | "file" | "paste" | "resource";
-
 export interface ImageAttachment {
   id: string;
   n: number;

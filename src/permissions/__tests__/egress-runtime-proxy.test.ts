@@ -47,7 +47,7 @@ function openShell(sessionId = randomUUID(), workspaceRoot = join(process.cwd(),
   return invocation;
 }
 
-/** All destination bytes terminate at this local endpoint. */
+// All destination bytes terminate at this local endpoint.
 async function localUpstream() {
   const received: string[] = [];
   const server = net.createServer((socket) => {
@@ -78,8 +78,7 @@ interface ObservedAsk {
 async function startRuntime(answerScope: () => EgressGrantScope = () => "conversation") {
   const upstream = await localUpstream();
   const observed: ObservedAsk[] = [];
-  // This controlled gate exercises production request conversion and grant
-  // storage. It does not stand in for a person's installed-app approval.
+  // This controlled gate exercises production request conversion and grant storage. It does not stand in for a person's installed-app approval.
   const requestAndWait = vi.fn(async (request: ApprovalRequestInput): Promise<ApprovalDecision> => ({
     requestId: request.id,
     choice: "allow-once",

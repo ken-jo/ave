@@ -128,7 +128,7 @@ describe("agent_spawn background routing", () => {
       status: "waiting",
       taskState: "TASK_STATE_INPUT_REQUIRED",
       suspension: expect.objectContaining({ reason: "question" }),
-      // Every frame names the conversation that spawned it — the tile showing it keeps it.
+      // Route each frame to the conversation that spawned it.
       parentSessionId: "parent-session",
     }));
     expect(emit.mock.calls.every(([event]) => (event as { parentSessionId?: string }).parentSessionId === "parent-session")).toBe(true);
@@ -225,11 +225,7 @@ describe("agent_spawn background routing", () => {
     expect(events.find((event) => event.type === "done")?.spawnId).toBe(spawnId);
   });
   it("dispatches the terminal renderer frame from the runner's completion step, not after the run resolves", async () => {
-    // The renderer frame used to leave from here — after `await run()` — while
-    // the runner had already published the terminal state that `agent_status`
-    // reads. The parent could answer from `done` in that gap while the panel
-    // still showed the run live. The frame now rides `onTerminal`, which the
-    // runner fires from the step that writes that state.
+    // Publish the terminal frame with the terminal state so polling cannot observe completion before the panel.
     const emit = vi.fn();
     const terminalFramesAtCompletion = { done: -1 };
     const result = {
@@ -253,7 +249,7 @@ describe("agent_spawn background routing", () => {
       terminalFramesAtCompletion.done = emit.mock.calls.filter(
         ([event]) => event.type === "done",
       ).length;
-      // The scheduling gap the parent used to be able to poll through.
+      // Allow polling during the scheduling gap.
       await new Promise((resolve) => setTimeout(resolve, 0));
       return result;
     });
@@ -267,9 +263,8 @@ describe("agent_spawn background routing", () => {
       instructions: "finish",
     }, parentContext())).resolves.toMatchObject({ isError: false });
 
-    // Announced by the completion step itself...
     expect(terminalFramesAtCompletion.done).toBe(1);
-    // ...and exactly once: the path that awaits the run adds no second frame.
+    // Awaiting the run must not emit a second terminal frame.
     expect(emit.mock.calls.filter(([event]) => event.type === "done")).toHaveLength(1);
     expect(emit.mock.calls.filter(([event]) => event.type === "error")).toHaveLength(0);
   });

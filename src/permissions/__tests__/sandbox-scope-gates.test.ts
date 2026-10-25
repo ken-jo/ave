@@ -1,10 +1,4 @@
-/**
- * The shell sandbox (`features.osToolSandbox`) and plugin-worker confinement
- * (`features.pluginWorkerConfinement`) are separate scopes over one ASRT
- * runtime. ASRT activates when either is requested; each spawn path asks its
- * own scope's gate, so turning one setting on never confines the other kind of
- * process.
- */
+// Shell and plugin-worker settings have separate gates over one runtime; activating either must never confine the other scope.
 import { EventEmitter } from "node:events";
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative, sep } from "node:path";
@@ -109,9 +103,7 @@ describe("each spawn path reads only its own scope's gate", () => {
   const srcRoot = join(__dirname, "..", "..");
   const source = (relative: string): string => readFileSync(join(srcRoot, relative), "utf8");
 
-  // Extension processes: plugin workers, plugin children, plugin hooks, MCP
-  // stdio servers, and the surfaces that tell the user whether hooks run
-  // confined.
+  // Extension processes: plugin workers, plugin children, plugin hooks, MCP stdio servers, and the surfaces that tell the user whether hooks run confined.
   const workerPaths = [
     "permissions/worker-spawn.ts",
     "permissions/confined-child.ts",
@@ -121,8 +113,7 @@ describe("each spawn path reads only its own scope's gate", () => {
     "ipc/domains/plugin-studio.ts",
     "marketplace/app/service.ts",
   ];
-  // Host shells outside the execution plan (the plan itself reads
-  // `detectShellSandboxCapability`).
+  // Host shells outside the execution plan (the plan itself reads `detectShellSandboxCapability`).
   const shellPaths = ["main/terminal/pty-manager.ts"];
 
   it.each(workerPaths)("%s gates on plugin-worker confinement, never the raw or shell gate", (file) => {
@@ -133,9 +124,7 @@ describe("each spawn path reads only its own scope's gate", () => {
   });
 
   it("hooks/script-hook-runner.ts takes a user hook's sandbox from the host-shell plan", () => {
-    // A user hook runs the user's own command: its scope is the host shell,
-    // read through the plan it was admitted under (or the live plan), while a
-    // bundled hook keeps the worker gate checked above.
+    // A user hook runs the user's own command: its scope is the host shell, read through the plan it was admitted under (or the live plan), while a bundled hook keeps the worker gate checked above.
     const text = source("hooks/script-hook-runner.ts");
     expect(text).toMatch(/confinement\s*\?\s*isPluginWorkerConfinementActive\(\)\s*:\s*\(admittedPlan \?\? getHostShellExecutionPlan\(\)\)\.mode === "asrt"/);
   });
@@ -148,8 +137,7 @@ describe("each spawn path reads only its own scope's gate", () => {
   });
 
   it("no source outside the ASRT runtime and its boot steps reads the raw gate", () => {
-    // The inverse of the allow-lists above: a NEW spawn path that reaches for
-    // the raw state would confine (or not) by the wrong scope.
+    // The inverse of the allow-lists above: a NEW spawn path that reaches for the raw state would confine (or not) by the wrong scope.
     const allowed = new Set([
       "permissions/asrt-sandbox.ts",
       "boot/steps/marketplace-setup.ts",
@@ -182,8 +170,7 @@ describe("each spawn path reads only its own scope's gate", () => {
     const plan = text.slice(text.indexOf("export function getHostShellExecutionPlan"));
     const body = plan.slice(0, plan.indexOf("\n}\n"));
     expect(body).toContain("requestedSandbox: isShellSandboxRequestedAtBoot()");
-    // MXC's per-command capability (Windows) or else the shell-scoped one;
-    // never the process-wide or worker capability.
+    // MXC's per-command capability (Windows) or else the shell-scoped one; never the process-wide or worker capability.
     expect(body).toContain("activeCapability: mxc ?? detectShellSandboxCapability()");
     expect(body).toContain("const mxc = detectMxcShellCapability();");
   });

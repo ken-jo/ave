@@ -129,8 +129,7 @@ describe("database CLI argument roles", () => {
     expect(policy("sqlite3 :memory: 'SELECT 1;'")).toBeNull();
   });
 
-  // NTFS forbids `:` in a file name, so no `:memory:` entry can be staged on
-  // win32 and the link these modes would follow cannot exist there.
+  // NTFS forbids colons in filenames, so a staged :memory: link cannot exist on Windows.
   it.skipIf(process.platform === "win32")("keeps memory database names as filenames in explicit file-loading modes", () => {
     symlinkSync(outside, join(cwd, ":memory:"), "junction");
     expect(policy("sqlite3 :memory: 'SELECT 1;'")).toBeNull();

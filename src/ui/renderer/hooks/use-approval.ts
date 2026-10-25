@@ -16,20 +16,8 @@ import { errorMessage } from "../../../shared/error-message.js";
 
 export type ApprovalDecisionExtras = Pick<ApprovalDecision, "elicitationContent" | "egressScope">;
 
-/**
- * Which surface draws the card for a session.
- *
- * The queue is the window's — one `ave:approval:request` subscription, one
- * FIFO — but a card belongs in the conversation that asked: a tile draws the
- * requests of its own session and of the sub-agents it spawned, a side chat
- * draws its own. Each surface CLAIMS the sessions it draws, and the window's
- * own dock is left with exactly the requests no surface claimed — a headless
- * routine's turn, a request that names no conversation at all.
- *
- * A claim is a predicate rather than a list because ownership is dynamic (a
- * tile's children come and go) and the surface already keeps that predicate
- * stable for its stream subscriptions.
- */
+/** One window FIFO routes each card to the surface claiming its session or children.
+ * Use live ownership predicates; the window dock receives only unclaimed requests. */
 export class ApprovalSurfaceClaims {
   private readonly owners = new Map<string, (sessionId: string) => boolean>();
   private readonly listeners = new Set<() => void>();
@@ -66,7 +54,7 @@ export class ApprovalSurfaceClaims {
     };
   };
 
-  /** Changes whenever a claim is added or released — what re-renders readers. */
+  /** Changes whenever a claim is added or released; what re-renders readers. */
   readVersion = (): number => this.version;
 
   private bump(): void {
@@ -90,32 +78,16 @@ export interface ApprovalQueueApi {
   claims: ApprovalSurfaceClaims;
 }
 
-/**
- * Approval queue hook.
- *
- * Owns: the window's FIFO of pending requests (via approvalQueueReducer), the
- * window.ave.approval.onRequest subscription, the one-time read of requests
- * parked before this renderer subscribed, the settlement reconciliation that
- * retires a card whose surface is no longer here to retire it, the
- * per-request in-flight guard on `decide`, and the claims register the
- * drawing surfaces attach to. A decided
- * request stays in the queue — and so on screen — until the host acknowledges
- * the answer, so every surfaced request is actionable exactly once.
- */
+/** Approval queue hook. Owns: the window's FIFO of pending requests (via approvalQueueReducer), the window.ave.approval.onRequest subscription, the one-time read of requests parked before this renderer subscribed, the settlement reconciliation that retires a card whose surface is
+ * no longer here to retire it, the per-request in-flight guard on `decide`, and the claims register the drawing surfaces attach to. A decided request stays in the queue; and so on screen; until the host acknowledges the answer, so every surfaced request is actionable exactly once. */
 export function useApproval(): ApprovalQueueApi {
   const [queue, setQueue] = useState<ApprovalRequest[]>([]);
   const queueRef = useRef<ApprovalRequest[]>([]);
-  // In-flight guard — one answer per request. A request leaves this set when
-  // it leaves the queue, never earlier: releasing it on `respond()` settling
-  // would let a click that lands before the drop commits answer it twice.
+  // In-flight guard; one answer per request. A request leaves this set when it leaves the queue, never earlier:
+  // releasing it on `respond()` settling would let a click that lands before the drop commits answer it twice.
   const inFlightRequestIdsRef = useRef<Set<string>>(new Set());
-  // Requests that stopped being answerable while the parked snapshot below
-  // was in flight — answered here, or announced settled by the host. That
-  // snapshot is this set's ONE reader: it was taken before either happened,
-  // so without the set it would draw a dead card. Once it has been reconciled
-  // nothing reads the set again, so it is emptied there and never filled
-  // again (`parkedReconciledRef`) — bounded by construction to what a single
-  // mount window can retire, however long the window then lives.
+  // Requests that stopped being answerable while the parked snapshot below was in flight; answered here, or announced settled by the host. That snapshot is this set's ONE reader: it was taken before either happened, so without the set it would draw
+  // a dead card. Once it has been reconciled nothing reads the set again, so it is emptied there and never filled again (`parkedReconciledRef`); bounded by construction to what a single mount window can retire, however long the window then lives.
   const retiredRequestIdsRef = useRef<Set<string>>(new Set());
   const parkedReconciledRef = useRef(false);
   const rememberRetiredUntilReconciled = useCallback((requestId: string) => {
@@ -125,13 +97,11 @@ export function useApproval(): ApprovalQueueApi {
     parkedReconciledRef.current = true;
     retiredRequestIdsRef.current.clear();
   }, []);
-  // Guard late setQueue from async `respond()` callbacks resolving after
-  // unmount.
+  // Guard late setQueue from async `respond()` callbacks resolving after unmount.
   const aliveRef = useRef(true);
   const claims = useMemo(() => new ApprovalSurfaceClaims(), []);
-  // A queued request becomes clickable as soon as its dock is committed.
-  // Synchronize the imperative queue ref before paint so a fast click cannot
-  // observe the previous (or empty) queue.
+  // A queued request becomes clickable as soon as its dock is committed. Synchronize the
+  // imperative queue ref before paint so a fast click cannot observe the previous (or empty) queue.
   useLayoutEffect(() => {
     queueRef.current = queue;
     for (const id of inFlightRequestIdsRef.current) {
@@ -141,14 +111,10 @@ export function useApproval(): ApprovalQueueApi {
 
   useEffect(() => {
     aliveRef.current = true;
-    // A remount asks the host for the parked set again, so the guard below has
-    // a reader again. Reset with `aliveRef`, not on its own: the two describe
-    // the same subscription's life.
+    // A remount asks the host for the parked set again, so the guard below has a reader again. Reset with `aliveRef`, not on its own: the two describe the same subscription's life.
     parkedReconciledRef.current = false;
-    // Surface preload init bugs explicitly. The approval queue is a
-    // load-bearing UX path; silently no-op'ing here when `window.ave` is
-    // missing makes the bug present as "tools never resolve" instead of
-    // "preload didn't run".
+    // Surface preload init bugs explicitly. The approval queue is a load-bearing UX path; silently no-op'ing here
+    // when `window.ave` is missing makes the bug present as "tools never resolve" instead of "preload didn't run".
     if (!window.ave) {
       console.error("[use-approval] window.ave is undefined — preload missing or failed to load");
       return () => {
@@ -159,11 +125,8 @@ export function useApproval(): ApprovalQueueApi {
       if (!aliveRef.current) return;
       setQueue((q) => approvalQueueReducer(q, { type: "push", req }));
     });
-    // The host settled a request. Every surface that could take the card down
-    // itself does so from the turn that asked; this covers the requests whose
-    // surface is gone — a closed tile, a tile a navigation let go of — where
-    // nothing renderer-side would ever learn the ask had been retired. An id
-    // whose answer is in flight is left to `decide`.
+    // The host settled a request. Every surface that could take the card down itself does so from the turn that asked; this covers the requests whose surface is gone; a
+    // closed tile, a tile a navigation let go of; where nothing renderer-side would ever learn the ask had been retired. An id whose answer is in flight is left to `decide`.
     const unsubSettled = window.ave.approval.onSettled((payload) => {
       if (!aliveRef.current) return;
       const requestId = payload?.requestId;
@@ -172,12 +135,8 @@ export function useApproval(): ApprovalQueueApi {
       if (inFlightRequestIdsRef.current.has(requestId)) return;
       setQueue((q) => approvalQueueReducer(q, { type: "drop", ids: [requestId] }));
     });
-    // Requests parked before this renderer subscribed — a reload mid-approval.
-    // Subscribed first, fetched second, so nothing can fall between the two;
-    // a request that arrived both ways is kept once. Parked requests were
-    // asked first, so they go ahead of anything that arrived meanwhile. One
-    // that retired while the snapshot was in flight — answered here, or
-    // announced settled by the host — is not a parked request any more.
+    // Requests parked before this renderer subscribed; a reload mid-approval. Subscribed first, fetched second, so nothing can fall between the two; a request that arrived both ways is kept once. Parked requests
+    // were asked first, so they go ahead of anything that arrived meanwhile. One that retired while the snapshot was in flight; answered here, or announced settled by the host; is not a parked request any more.
     void window.ave.approval.listPending().then(
       (parked) => {
         if (!aliveRef.current) return;
@@ -197,9 +156,8 @@ export function useApproval(): ApprovalQueueApi {
       },
       (err: unknown) => {
         console.warn("[use-approval] listPending failed:", errorMessage(err));
-        // Nothing will read the retired set now — the snapshot it guarded is
-        // never coming. Released here too, or a window whose one listPending
-        // failed would accumulate ids for the rest of its life.
+        // Nothing will read the retired set now; the snapshot it guarded is never coming. Released here
+        // too, or a window whose one listPending failed would accumulate ids for the rest of its life.
         finishParkedReconciliation();
       },
     );
@@ -210,25 +168,16 @@ export function useApproval(): ApprovalQueueApi {
     };
   }, [finishParkedReconciliation, rememberRetiredUntilReconciled]);
 
-  /**
-   * Forget requests the host has already settled without an answer from here
-   * — a turn that timed out or was cancelled while its ask was parked. A
-   * request whose answer is in flight is left to `decide`, which removes it
-   * once the host acknowledges.
-   */
+  /** Forget requests the host has already settled without an answer from here; a turn that timed out or was cancelled while
+   * its ask was parked. A request whose answer is in flight is left to `decide`, which removes it once the host acknowledges. */
   const dropSettled = useCallback((ids: readonly string[]) => {
     const settled = ids.filter((id) => !inFlightRequestIdsRef.current.has(id));
     if (settled.length === 0) return;
     setQueue((q) => approvalQueueReducer(q, { type: "drop", ids: settled }));
   }, []);
 
-  /**
-   * Answer one pending request.
-   *
-   * On `respond()` rejection we only log — we do NOT re-push the request.
-   * The main process may already have emitted a response (or the request is
-   * no longer actionable), and re-pushing causes a double-display bug.
-   */
+  /** Answer one pending request. On `respond()` rejection we only log; we do NOT re-push the request. The main process may
+   * already have emitted a response (or the request is no longer actionable), and re-pushing causes a double-display bug. */
   const decide = useCallback(
     async (
       requestId: string,
@@ -239,10 +188,8 @@ export function useApproval(): ApprovalQueueApi {
       if (inFlightRequestIdsRef.current.has(requestId)) return;
       const current = queueRef.current.find((req) => req.id === requestId);
       if (!current) return;
-      // Assert preload availability explicitly. If the user landed on this
-      // code path with no preload, the queue would never surface a request
-      // anyway; reaching here means the early-return safeguard exists in two
-      // places and one of them is stale.
+      // Assert preload availability explicitly. If the user landed on this code path with no preload, the queue would never
+      // surface a request anyway; reaching here means the early-return safeguard exists in two places and one of them is stale.
       if (!window.ave) {
         console.error("[use-approval] decide: window.ave is undefined — preload missing");
         return;
@@ -255,27 +202,23 @@ export function useApproval(): ApprovalQueueApi {
           requestId: current.id,
           choice,
           rememberPattern: pattern,
-          // Confused-deputy defense: echo nonce + HMAC verbatim so the main process can verify
-          // this response was bound to the original request (confused-
-          // deputy defense). Stale or cross-wired responses fail the check
-          // and are forcibly downgraded to deny-once.
+          // Confused-deputy defense: echo nonce + HMAC verbatim so the main process can verify this response was bound to the original
+          // request (confused- deputy defense). Stale or cross-wired responses fail the check and are forcibly downgraded to deny-once.
           nonce: current.nonce,
           hmac: current.hmac,
           ...(extras?.egressScope === undefined ? {} : { egressScope: extras.egressScope }),
           ...(extras && "elicitationContent" in extras
             ? { elicitationContent: extras.elicitationContent }
             : {}),
-          // The scope an egress-host allow lasts for; the host checks it
-          // against the scopes the card offered.
+          // The scope an egress-host allow lasts for; the host checks it against the scopes the card offered.
           ...(extras?.egressScope !== undefined ? { egressScope: extras.egressScope } : {}),
         });
       } catch (err) {
-        // Log only — do NOT re-push. See JSDoc above.
+        // Log only; do NOT re-push. See JSDoc above.
         console.warn("[ave] approval.respond failed:", errorMessage(err));
       } finally {
-        // Keep the decided request mounted until the IPC request settles. If a
-        // new request arrives meanwhile, showing it before this guard releases
-        // would make its click look successful while being ignored.
+        // Keep the decided request mounted until the IPC request settles. If a new request arrives
+        // meanwhile, showing it before this guard releases would make its click look successful while being ignored.
         if (aliveRef.current) {
           setQueue((q) => approvalQueueReducer(q, { type: "drop", ids: [requestId] }));
         } else {
@@ -291,15 +234,8 @@ export function useApproval(): ApprovalQueueApi {
 
 const NO_DEFERRED_SESSIONS: readonly string[] = Object.freeze([]);
 
-/**
- * The conversations the reviewer's deferred entries are waiting on.
- *
- * A deferred approval is a parked answer like any other, so the window has to
- * be able to mark its conversation's row. The list is read once and again on
- * every `onDeferredPending`, which is the host's word that the set changed;
- * the entries themselves stay in the panel that resolves them. Identity is
- * kept while the ids are unchanged so readers keyed on it do not re-derive.
- */
+/** The conversations the reviewer's deferred entries are waiting on. A deferred approval is a parked answer like any other, so the window has to be able to mark its conversation's row. The list is read once and again on
+ * every `onDeferredPending`, which is the host's word that the set changed; the entries themselves stay in the panel that resolves them. Identity is kept while the ids are unchanged so readers keyed on it do not re-derive. */
 export function useDeferredSessionIds(
   permission: {
     deferredList?: () => Promise<{ ok: true; pending: { sessionId?: string }[] } | { ok: false }>;
@@ -332,12 +268,8 @@ export function useDeferredSessionIds(
   return sessionIds;
 }
 
-/**
- * The window's approval queue plus the decisions only the window can host —
- * the exact-deny draft in Settings and the `/allow` sentence proposal. Every
- * drawing surface (tile, side chat, the focused pane's lane) reads this one
- * value, so a card is answered through the same path wherever it is shown.
- */
+/** The window's approval queue plus the decisions only the window can host; the exact-deny draft in Settings and the `/allow` sentence proposal. Every
+ * drawing surface (tile, side chat, the focused pane's lane) reads this one value, so a card is answered through the same path wherever it is shown. */
 export interface ApprovalSurfaceContextValue extends ApprovalQueueApi {
   /** Open the exact-deny editor in Settings for `request`. */
   openPermanentDeny: (request: ApprovalRequest, verdict: UserApprovalVerdict) => void;
@@ -345,12 +277,8 @@ export interface ApprovalSurfaceContextValue extends ApprovalQueueApi {
   lockedRequestId: string | null;
   /** `/allow <sentence>` proposal: the request it names and the choice to pre-select. */
   proposal: { requestId: string; choice: ApprovalChoice } | null;
-  /**
-   * The window's held reviewer suggestion, drawn as a band inside whichever
-   * card is up. It is one aggregate over a window of approvals, so it belongs
-   * to the surface value rather than to a request: every dock offers the same
-   * one, and acting on it in any card ends it in all of them.
-   */
+  /** The window's held reviewer suggestion, drawn as a band inside whichever card is up. It is one aggregate over a window of approvals, so it
+   * belongs to the surface value rather than to a request: every dock offers the same one, and acting on it in any card ends it in all of them. */
   reviewerSuggestion: ReviewerSuggestion | null;
 }
 
@@ -358,11 +286,8 @@ const ApprovalSurfaceContext = createContext<ApprovalSurfaceContextValue | null>
 
 export const ApprovalSurfaceProvider = ApprovalSurfaceContext.Provider;
 
-/**
- * The approval surface when one is provided, else null. For a view that also
- * renders outside the app shell (a terminal tab in a test fixture): it draws
- * no approval UI there, since nothing could answer it.
- */
+/** The approval surface when one is provided, else null. For a view that also renders outside the app
+ * shell (a terminal tab in a test fixture): it draws no approval UI there, since nothing could answer it. */
 export function useOptionalApprovalSurface(): ApprovalSurfaceContextValue | null {
   return useContext(ApprovalSurfaceContext);
 }
