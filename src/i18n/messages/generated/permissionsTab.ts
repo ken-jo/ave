@@ -301,6 +301,8 @@ export const en = {
   "permissionsTab.approvalsColScope": "Scope",
   "permissionsTab.scopePersistent": "Persistent",
   "permissionsTab.scopeSession": "Session",
+  "permissionsTab.scopeGlobal": "Everywhere",
+  "permissionsTab.scopeGlobalTarget": "Every project",
   "permissionsTab.revokeButton": "Remove",
 
   // Audit log section
@@ -649,6 +651,8 @@ export const ko: Record<keyof typeof en, string> = {
   "permissionsTab.approvalsColScope": "범위",
   "permissionsTab.scopePersistent": "지속",
   "permissionsTab.scopeSession": "세션",
+  "permissionsTab.scopeGlobal": "모든 곳",
+  "permissionsTab.scopeGlobalTarget": "모든 프로젝트",
   "permissionsTab.revokeButton": "삭제",
 
   "permissionsTab.auditLogTitle": "감사 로그",

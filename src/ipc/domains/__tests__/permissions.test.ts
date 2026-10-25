@@ -1441,6 +1441,37 @@ describe("CRITICAL-2: user-approval-record HIGH verdict IPC enforcement", () => 
     expect(result).toMatchObject({ ok: true });
   });
 
+  // Owner decision 2026-10-25: "Always allow everywhere" on an exact tool approval is a user-global record.
+  it("records a global exact allow with no project, and only where the host permits remembering", async () => {
+    await setup();
+    const result = await invoke(PERMISSIONS.userApprovalRecord, {
+      requestId: "req-global", args: '{"command":"ls"}', scope: "global", verdictAtApproval: "medium", nlJustification: null,
+    });
+    expect(result).toMatchObject({ ok: true });
+    const entry = recordApprovalMock.mock.calls[0]![3] as Record<string, unknown>;
+    expect(entry).toMatchObject({ decision: "allow", scope: "global" });
+    expect(entry).not.toHaveProperty("projectCwd");
+
+    recordApprovalMock.mockClear();
+    await setup({ persistentAllowAllowed: false });
+    const refused = await invoke(PERMISSIONS.userApprovalRecord, {
+      requestId: "req-global-refused", args: '{"command":"ls"}', scope: "global", verdictAtApproval: "medium", nlJustification: null,
+    });
+    expect(refused).toMatchObject({ ok: false });
+    expect(recordApprovalMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses a global allow for a session-only browser scope", async () => {
+    await setup({ snapshotApprovalCacheKey: undefined, snapshotApprovalMemory: {
+      kind: "key", key: "browser_click:origin-a",
+      scope: { kind: "browser-origin", origin: "https://a.example:443", tabOpener: "agent", tabId: "tab-1", documentId: 1 },
+    } });
+    const result = await invoke(PERMISSIONS.userApprovalRecord, {
+      requestId: "req-browser-global", args: '{"command":"ls"}', scope: "global", verdictAtApproval: "medium", nlJustification: null,
+    });
+    expect(result).toMatchObject({ ok: false, error: "session-only-scope" });
+  });
+
   it("records a persistent exact deny without turning it into a HIGH approval", async () => {
     await setup({ snapshotArgs: { command: "rm build.tmp" }, snapshotVerdict: "high" });
 

@@ -3,9 +3,11 @@
 import type { RiskLevel } from "./permission-review-status.js";
 
 
-/** Approval-scope literal. Hoisted from inline `"session" | "persistent"` unions so renderer types
+/** Approval-scope literal. `session`: the root conversation, in memory. `persistent`: this project folder (the request's working directory),
+ * on disk. `global`: every project, on disk (owner decision 2026-10-25, "Always allow everywhere" for exact tool approvals).
+ * Approval-scope literal. Hoisted from inline `"session" | "persistent"` unions so renderer types
  * (`ui/renderer/types.ts`) can share the same SOT as the IPC payload. Cross-cutting follow-up of #802. */
-export type UserApprovalScope = "session" | "persistent";
+export type UserApprovalScope = "session" | "persistent" | "global";
 
 export interface ScopedPermissionRuleError {
   filePath: string;

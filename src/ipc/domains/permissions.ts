@@ -1215,12 +1215,12 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     if (
       typeof args !== "string" ||
       (decision !== "allow" && decision !== "deny") ||
-      (scope !== "session" && scope !== "persistent") ||
+      (scope !== "session" && scope !== "persistent" && scope !== "global") ||
       (displayedVerdictAtApproval !== "low" && displayedVerdictAtApproval !== "medium" && displayedVerdictAtApproval !== "high")
     ) {
       return { ok: false, error: "invalid-payload", message: "user-approval record: invalid payload" };
     }
-    if (decision === "deny" && scope !== "persistent") {
+    if (decision === "deny" && scope === "session") {
       return { ok: false, error: "deny-requires-persistent-scope", message: "Exact deny decisions are managed persistently in Settings" };
     }
     // Server-side SOT lookup. If the approval already resolved/timed out or never existed, reject; we
@@ -1256,7 +1256,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     // the host-derived scope, not of the button that was pressed. (A persistent exact deny stays available from Settings; it only ever narrows.)
     if (
       decision === "allow" &&
-      scope === "persistent" &&
+      scope !== "session" &&
       snapshot.approvalMemory?.kind === "key" &&
       isSessionOnlyApprovalMemoryScope(snapshot.approvalMemory.scope)
     ) {
@@ -1272,7 +1272,9 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     if (scope === "session" && !snapshot.sessionId) {
       return { ok: false, error: "missing-session", message: "This request has no conversation session" };
     }
-    if (decision === "allow" && (!snapshot.persistentAllowAllowed || !snapshot.workingDirectoryIdentity)) {
+    // A project allow is bound to the request's working directory; a global one (owner 2026-10-25, "Always allow everywhere") applies in every project
+    // and needs none, but the live request must still permit remembering it.
+    if (decision === "allow" && (!snapshot.persistentAllowAllowed || (scope !== "global" && !snapshot.workingDirectoryIdentity))) {
       return { ok: false, error: verdictAtApproval === "high" ? "high-is-one-shot" : "one-shot-not-recordable", message: "This request requires a one-shot approval and cannot be recorded" };
     }
     try {
@@ -1293,7 +1295,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
         decision,
         scope,
         ...(scope === "session" ? { sessionId: snapshot.sessionId } : {}),
-        ...(snapshot.projectCwd === undefined ? {} : { projectCwd: snapshot.projectCwd }),
+        ...(snapshot.projectCwd === undefined || scope === "global" ? {} : { projectCwd: snapshot.projectCwd }),
         verdictAtApproval,
         nlJustification: typeof nlJustification === "string" ? nlJustification : null,
         trustOrigin: snapshot.trustOrigin,
