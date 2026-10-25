@@ -26,7 +26,7 @@ describe("waitForAllFirstBuilds", () => {
     await writeFile(a, "x");
     await writeFile(b, "y");
 
-    const since = Date.now() - 10_000; // safely in the past
+    const since = Date.now() - 10_000; // Avoid a timestamp race with the watcher baseline.
     const watchers = [
       { tag: "a", label: "Output A", output: a },
       { tag: "b", label: "Output B", output: b },
@@ -61,11 +61,9 @@ describe("waitForAllFirstBuilds", () => {
   it("rejects stale outputs with mtime < since (incremental output from prior session)", async () => {
     const a = join(workDir, "a.js");
     await writeFile(a, "stale");
-    // Backdate mtime to 10 seconds ago
     const past = new Date(Date.now() - 10_000);
     await utimes(a, past, past);
 
-    // Launcher starts NOW — stale file's mtime is older than this baseline
     const since = Date.now();
     const watchers = [{ tag: "a", label: "Output A", output: a }];
 
@@ -81,7 +79,6 @@ describe("waitForAllFirstBuilds", () => {
     const watchers = [{ tag: "a", label: "Output A", output: a }];
 
     const { log } = makeLog();
-    // Spawn the file 200ms in (within timeout)
     setTimeout(() => {
       void writeFile(a, "first build");
     }, 200);
@@ -102,16 +99,12 @@ describe("waitForAllFirstBuilds", () => {
     ];
 
     const { log, lines } = makeLog();
-    // a will succeed immediately; b and c will time out.
     await waitForAllFirstBuilds(watchers, since, log, { timeoutMs: 200, sleepMs: 50 });
 
     const startLine = lines.find((l) => l.includes("waiting for first build"));
     expect(startLine).toBeDefined();
-    // Insertion order: a b c
     expect(startLine).toMatch(/a b c/);
   });
-
-  // ─── readyPromise (stdout signal) path — for tailwindcss-style skip-write ─
 
   it("readyPromise resolves before timeout → reports OK", async () => {
     const watchers = [
@@ -140,10 +133,7 @@ describe("waitForAllFirstBuilds", () => {
   });
 
   it("readyPromise takes priority over stale output (gate signal switch)", async () => {
-    // Watcher carries BOTH a stale output AND a resolvable readyPromise —
-    // promise path must win. Without this, the original tailwindcss
-    // skip-write bug would return: mtime stays old, gate falls back to
-    // mtime, gate hangs. since = far future → mtime would never satisfy.
+    // Readiness must outrank stale output, including timestamps ahead of the baseline.
     const stale = join(workDir, "stale.css");
     await writeFile(stale, "x");
     const sinceFarFuture = Date.now() + 365 * 24 * 60 * 60 * 1000;

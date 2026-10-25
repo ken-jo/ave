@@ -1,14 +1,6 @@
 #!/usr/bin/env node
-// Standalone runner for the docs-site screenshot capture harness
-// (test/screenshots/capture.spec.ts). Not wired into package.json scripts
-// (out of the strict scope for this change) — invoke directly:
-//
-//   node scripts/capture-screenshots.mjs               # full matrix
-//   node scripts/capture-screenshots.mjs --grep chat    # filter by key substring
-//   node scripts/capture-screenshots.mjs --skip-build   # reuse an existing dist/
-//
-// Requires `bun install` to have been run in this worktree already (this
-// script does not install dependencies).
+// Invoke directly with --grep to filter or --skip-build to reuse dist/.
+// Dependencies must already be installed.
 
 import { runCommand } from "./hooks/spawn-command.mjs";
 import { existsSync } from "node:fs";

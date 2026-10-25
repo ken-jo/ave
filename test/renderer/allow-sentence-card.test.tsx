@@ -1,17 +1,4 @@
-/**
- * `/allow <sentence>` end to end through the real renderer — issue #1940.
- *
- * These drive the actual composer of the actual App: the text goes through
- * `useMessageQueue`'s submit path, `useApprovalSentence`'s interceptor, the
- * `window.ave.approval.selectSentence` bridge, and lands (or fails to land)
- * on the real approval card (`ToolApprovalContent`). Nothing here unit-tests
- * the parser.
- *
- * The property under test is the one the whole design rests on: **the sentence
- * fills the form and the button grants.** A `/allow` that reached `respond`
- * would be a grant channel, and every assertion below that checks
- * `approval.respond` was not called is checking exactly that.
- */
+// Drive approval sentences through the real composer and selector bridge before confirming a decision.
 import "./setup.js";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { act, waitFor } from "@testing-library/react";
@@ -23,10 +10,7 @@ import { TEST_IDS, testIdSelector } from "../../src/shared/test-ids.js";
 const TARGET = "/home/example/reports/q3.md";
 const PARENT = "/home/example/reports";
 
-/**
- * A directory approval raised by the focused pane's own turn, so its card is
- * the dock over that pane's composer — the composer `/allow` is typed into.
- */
+// Bind the directory request to the focused pane's turn so its composer owns the dock.
 function approvalRequest(overrides: Record<string, unknown> = {}) {
   return {
     id: "req-allow-1",
@@ -48,7 +32,6 @@ function approvalRequest(overrides: Record<string, unknown> = {}) {
   };
 }
 
-/** Render the app, raise a directory approval, and wait for the card. */
 async function appWithPendingApproval() {
   const app = await renderApp({ hasApiKey: true });
   await act(async () => {
@@ -89,13 +72,11 @@ describe("/allow — the sentence fills the form", () => {
 
     await submitChatMessage(app.container, "/allow 이 폴더는 앞으로 계속 열어도 돼");
 
-    // The host was asked with the pending request's id and the raw sentence.
     await waitFor(() => expect(ns.approval.selectSentence).toHaveBeenCalledTimes(1));
     expect(ns.approval.selectSentence.mock.calls[0][0]).toBe("req-allow-1");
     expect(ns.approval.selectSentence.mock.calls[0][1]).toContain("/allow");
 
-    // Focus moved onto the proposed button, and the target line moved with it
-    // — the user reads the parent directory before confirming it.
+    // Proposed focus and the visible grant target must move together before confirmation.
     await waitFor(() =>
       expect(choice(app.container, "allow-always")?.dataset.proposed).toBe("true"),
     );
@@ -106,11 +87,9 @@ describe("/allow — the sentence fills the form", () => {
       app.container.querySelector('[data-testid="approval-decision-target"]')?.textContent,
     ).toContain(PARENT);
 
-    // THE point: nothing has been decided. The card is still up.
     expect(ns.approval.respond).not.toHaveBeenCalled();
     expect(app.container.querySelector(testIdSelector(TEST_IDS.approvalDock))).toBeTruthy();
 
-    // Only the press decides.
     await act(async () => {
       choice(app.container, "allow-always")!.click();
     });
@@ -123,9 +102,7 @@ describe("/allow — the sentence fills the form", () => {
   });
 
   it("fills the lane card of a request that names no conversation — a host or plugin ask drawn in the focused pane", async () => {
-    // No turn is parked on such a request, so no composer dock draws it; the
-    // focused pane's lane does, and the sentence typed into that pane's
-    // composer addresses it the same way.
+    // Sessionless requests live in the pane lane; its composer can still address them.
     const app = await renderApp({ hasApiKey: true });
     const { sessionId: _own, ...unattributed } = approvalRequest({ id: "req-allow-host" });
     await act(async () => {
@@ -171,17 +148,12 @@ describe("/allow — the sentence fills the form", () => {
     await submitChatMessage(app.container, "/allow 한 번만 허용");
 
     await waitFor(() => expect(ns.approval.selectSentence).toHaveBeenCalledTimes(1));
-    // An approval sentence is a control gesture, not conversation. It must not
-    // reach the turn — and while an approval is pending the turn is suspended,
-    // so an un-intercepted `/allow` would sit in the mid-turn queue and be
-    // delivered to the model minutes later, out of context.
+    // Approval sentences are control gestures and must never enter the conversation or deferred turn queue.
     expect(app.api.chatSend).not.toHaveBeenCalled();
   });
 
   it("ignores a proposal for a scope this request does not offer", async () => {
-    // A remote-controller request is narrowed to one-shot or deny. A proposal
-    // naming `allow-always` is not approximated down to something adjacent —
-    // it is dropped, and the user is left on the narrowest button.
+    // Remote requests allow only one-shot or denial; reject wider proposals instead of approximating them.
     const app = await renderApp({ hasApiKey: true });
     await act(async () => {
       app.emitApproval(
@@ -254,13 +226,11 @@ describe("/allow — every failure is plain, and none of it is a grant", () => {
     await submitChatMessage(app.container, "/allow 허용해줘");
 
     await waitFor(() => expect(ns.approval.selectSentence).toHaveBeenCalledTimes(1));
-    // Nothing decided or proposed; the fail-closed Reject decision remains active.
     await waitFor(() => expect(ns.approval.respond).not.toHaveBeenCalled());
     expect(app.container.querySelector("[data-proposed]")).toBeNull();
     expect(choice(app.container, "deny-once")?.tabIndex).toBe(0);
     expect(choice(app.container, "allow-once")?.tabIndex).toBe(-1);
     expect(document.activeElement).toBe(choice(app.container, "deny-once"));
-    // The raw kebab code never reaches the user.
     expect(systemText(app.container)).not.toContain(code);
   });
 
@@ -272,8 +242,7 @@ describe("/allow — every failure is plain, and none of it is a grant", () => {
 
     await submitChatMessage(app.container, "/allow 그 폴더 허용해줘");
 
-    // No pending prompt ⇒ answered locally; the host is never asked, because
-    // there is no request id to ask about.
+    // Without a pending request id, answer locally without calling the host selector.
     await waitFor(() => expect(systemText(app.container)).toContain("/allow"));
     expect(ns.approval.selectSentence).not.toHaveBeenCalled();
     expect(ns.approval.respond).not.toHaveBeenCalled();
@@ -295,13 +264,11 @@ describe("/allow — every failure is plain, and none of it is a grant", () => {
     await submitChatMessage(app.container, "/allow 계속 허용");
     await waitFor(() => expect(ns.approval.selectSentence).toHaveBeenCalledTimes(1));
 
-    // The user answers the prompt by hand while the selector is still thinking.
     await act(async () => {
       choice(app.container, "deny-once")!.click();
     });
     await waitFor(() => expect(ns.approval.respond).toHaveBeenCalledTimes(1));
 
-    // The late proposal must not pre-select anything on whatever comes next.
     await act(async () => {
       release({ ok: true, requestId: "req-allow-1", choice: "allow-always" });
       await Promise.resolve();

@@ -16,17 +16,7 @@ function mergeDeep<T>(base: T, patch: DeepPartial<T>): T {
   return out as T;
 }
 
-/**
- * A complete renderer settings snapshot: the host defaults minus the main-only
- * `a2aRemote` block (exactly what `ave:settings:get` answers with), with deep
- * overrides applied. Renderer tests that used to hand-write a partial object
- * typed as the full snapshot start from this instead.
- *
- * `activeChatModel` is main's derived answer. Unless a test overrides it, the
- * fixture resolves it as main would for a route WITH a stored credential —
- * the state these tests were written against. A test about the no-provider
- * state passes `activeChatModel: { kind: "none", ... }` explicitly.
- */
+// Match the renderer settings response rather than main-only defaults; apply deep overrides.
 export function fakeAppSettings(overrides: DeepPartial<AppSettings> = {}): AppSettings {
   const { a2aRemote: _mainOnly, ...stored } = structuredClone(DEFAULT_SETTINGS);
   const { activeChatModel: activeOverride, ...storedOverrides } = overrides;

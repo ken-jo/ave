@@ -1,19 +1,9 @@
-/**
- * Checkpoint view-mode — component unit tests.
- *
- * Covers:
- *  1. ViewModeBanner: hidden when viewMode=null, shown when non-null, exit button fires onExit
- *  2. CheckpointDivider: action buttons visible/hidden based on compactNum + callbacks
- */
 import "./setup.js";
 import { describe, it, expect, vi } from "vitest";
 import { render, fireEvent } from "@testing-library/react";
 import { ViewModeBanner } from "../../src/ui/renderer/components/ViewModeBanner.js";
 import { CheckpointDivider } from "../../src/ui/renderer/components/TranscriptRenderer.js";
 
-/* ────────────────────────────────────────────────────────────────────────
- * ViewModeBanner
- * ──────────────────────────────────────────────────────────────────────── */
 describe("ViewModeBanner", () => {
   it("renders nothing when viewMode is null", () => {
     const { container } = render(<ViewModeBanner viewMode={null} onExit={vi.fn()} />);
@@ -38,9 +28,6 @@ describe("ViewModeBanner", () => {
   });
 });
 
-/* ────────────────────────────────────────────────────────────────────────
- * CheckpointDivider
- * ──────────────────────────────────────────────────────────────────────── */
 describe("CheckpointDivider", () => {
   it("renders without action buttons when compactNum is absent", () => {
     const { container } = render(

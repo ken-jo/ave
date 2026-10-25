@@ -1,12 +1,4 @@
-/**
- * The test runner's Ave home guard never reaches the app.
- *
- * `aveHome()` calls a seam (`src/shared/ave-home-test-guard.ts`) that does
- * nothing; only the test configuration resolves it to the guard. These build
- * the module the way the main bundle does, without that configuration, and
- * run it in a plain process that carries every variable a test process has:
- * an app started from such a shell must still resolve its home as usual.
- */
+// Test-only home guards must not reach production bundles, even with test variables set.
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -21,7 +13,6 @@ const scratch = mkdtempSync(join(tmpdir(), "ave-home-bundle-"));
 
 afterAll(() => rmSync(scratch, { recursive: true, force: true }));
 
-/** What the app reaches: `aveHome()` and the seam it calls, bundled as the main bundle is. */
 async function bundle(): Promise<string> {
   const result = await build({
     absWorkingDir: repo,
@@ -78,7 +69,6 @@ describe("the Ave home guard in a production bundle", () => {
       expect(result.status, result.stderr).toBe(0);
       expect(JSON.parse(result.stdout)).toEqual([join(home, ".ave"), false]);
     }
-    // And the per-run variables a test process exports change nothing either.
     const withRun = run({ VITEST: "1", AVE_TEST_RUN_HOME: join(scratch, "run"), AVE_TEST_SANDBOX_BASE: join(scratch, "sbx") });
     expect(withRun.status, withRun.stderr).toBe(0);
     expect(JSON.parse(withRun.stdout)).toEqual([join(home, ".ave"), false]);

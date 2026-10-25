@@ -1,12 +1,4 @@
-/**
- * Every pull request's CI runs the full suite and the build, so the pre-push
- * hook runs them only on request (AVE_PREPUSH_FULL=1, the manual stage, the
- * default or an integration branch, a tag, a deletion). The scoped tiers
- * (pre-push-tier.mjs) replace each former full escalation of a branch push:
- * scripts/** and .github/** run the tests that name them, global inputs take
- * the global-input tier, and a module no test imports runs its path-naming,
- * must-run and lock-suite tests.
- */
+// Exercise full-tier dispatch separately from scoped classification.
 import { execFileSync, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -39,7 +31,6 @@ const readTracked = (path: string) => {
     return null;
   }
 };
-// The tests that read workflow or gate files under .github/.
 const WORKFLOW_READERS = [
   "src/__tests__/packaging-discipline-source.test.ts",
   "test/scripts/git-inventory-gates.test.ts",
@@ -47,8 +38,7 @@ const WORKFLOW_READERS = [
   "test/scripts/run-ci-suite.test.ts",
 ];
 
-// Execute the hook's own dispatch expression: which stages and switches skip
-// the classifier and keep the full checks.
+// Execute the hook dispatch expression so stage and switch precedence cannot drift.
 function dispatch(stage: string, env: Record<string, string>) {
   const start = hook.indexOf("let classification =") + "let classification =".length;
   const end = hook.indexOf(";\n  if (classification.fastSource)", start);
@@ -59,8 +49,6 @@ function dispatch(stage: string, env: Record<string, string>) {
   });
 }
 
-// Execute the hook's own resolveScopedTier on this checkout, with related-test
-// discovery controlled.
 function resolveScoped(classification: Record<string, unknown>, related: Record<string, unknown>) {
   const start = hook.indexOf("function getScopedExtraTests(");
   const end = hook.indexOf("// The retired-name gate", start);

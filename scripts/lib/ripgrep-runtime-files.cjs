@@ -1,12 +1,7 @@
 const { accessSync, constants: fsConstants, readFileSync, statSync } = require("node:fs");
 const { join } = require("node:path");
 
-/**
- * Release target -> the package that carries its ripgrep binary. The same
- * table lives in src/tools/ripgrep-executable.ts, which resolves the binary at
- * runtime; a lock suite keeps the two equal and checks every entry against
- * the lockfile's os/cpu selection.
- */
+// Packaging and runtime target tables must agree with dependency CPU and OS selection.
 const RIPGREP_PLATFORM_PACKAGES = Object.freeze({
   "darwin-x64": "@vscode/ripgrep-darwin-x64",
   "darwin-arm64": "@vscode/ripgrep-darwin-arm64",
@@ -31,7 +26,6 @@ const RIPGREP_LICENSE_NOTICES = Object.freeze([
   "VSCODE-RIPGREP-LICENSE",
 ]);
 
-/** Require the packed target's own ripgrep binary in the unpacked node_modules tree. */
 function assertRipgrepRuntimeFiles(nodeModules, platform, arch) {
   const target = `${platform}-${arch}`;
   const packageName = RIPGREP_PLATFORM_PACKAGES[target];

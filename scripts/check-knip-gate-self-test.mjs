@@ -73,10 +73,7 @@ try {
     );
   }
 
-  // The other direction. A gate that only rejects additions lets the debt
-  // figure freeze: removing unused code passes while the baseline keeps
-  // claiming it is still there. Proven by execution, not by reading the
-  // branch — the fixture below has a baseline entry whose file is gone.
+  // Reject baseline entries whose files no longer exist.
   writeFileSync(join(fixtureRoot, "knip-baseline.json"), `${JSON.stringify({
     schemaVersion: 1,
     knipVersion: KNIP_VERSION,

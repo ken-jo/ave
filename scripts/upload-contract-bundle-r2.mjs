@@ -1,25 +1,6 @@
 #!/usr/bin/env node
-/**
- * Upload a signed contract bundle to the R2 release bucket, or delete a probe.
- *
- *   node scripts/upload-contract-bundle-r2.mjs --dir <bundle> --prefix contract/<tag>/ --identity <san>
- *   node scripts/upload-contract-bundle-r2.mjs --delete --prefix _ci-probe/contract/<id>/
- *
- * `<bundle>` is scripts/build-contract-bundle.mjs output plus
- * `SHA256SUMS.sigstore.json`. Before any request the local files must match
- * `SHA256SUMS` exactly, with no file missing and none extra.
- *
- * Objects are write-once (scripts/lib/r2-objects.mjs): the bundle files go
- * first, `SHA256SUMS` next and the signature last, so a present signature
- * means the whole bundle is present. A rerun of a tag rebuilds identical
- * bytes but signs afresh, so its signature differs from the published one.
- * The published signature is then kept when cosign verifies it against these
- * `SHA256SUMS` with the expected identity (`--identity`, the workflow's
- * certificate SAN, and the GitHub Actions issuer); otherwise the run fails.
- *
- * `--delete` removes every object under a `_ci-probe/` prefix and nothing else.
- * Needs R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY and R2_BUCKET.
- */
+// Verify exact signed-bundle membership before upload; publish the signature last.
+// Keep a published signature only if identity verification succeeds; deletion is restricted to probe prefixes.
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
@@ -35,7 +16,7 @@ export const GITHUB_ACTIONS_ISSUER = "https://token.actions.githubusercontent.co
 const RELEASE_PREFIX = /^contract\/v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?\/$/u;
 const PROBE_PREFIX = /^_ci-probe\/contract\/[A-Za-z0-9][A-Za-z0-9._-]*\/$/u;
 
-/** Upload order: the bundle files, then the digests, then the signature. */
+// Publish the signature last so its presence proves complete bundle publication.
 const UPLOAD_ORDER = [...Object.keys(CONTRACT_COPIES), ...Object.keys(CONTRACT_BUILDS), BUNDLE_MANIFEST, BUNDLE_SUMS];
 
 function contentType(name) {
@@ -71,7 +52,6 @@ function parseArgs(argv) {
   return options;
 }
 
-/** The staged bundle is exactly the files SHA256SUMS lists plus the signature. */
 function checkStaged(dir) {
   const sums = new Map();
   for (const line of readFileSync(join(dir, BUNDLE_SUMS), "utf8").split("\n")) {
@@ -103,7 +83,7 @@ function verifySignature(signature, sumsPath, identity) {
     sumsPath,
   ], {
     encoding: "utf8",
-    // cosign fetches the Sigstore trust root; it never needs the R2 credentials.
+    // Signature verification needs the trust root, never bucket credentials.
     env: Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("R2_"))),
   });
   if (result.error) throw new Error(`${TAG} cannot run cosign: ${result.error.message}`);
@@ -122,8 +102,7 @@ async function upload(aws, bucket, options) {
   if (state === "absent") put(aws, bucket, signature, local, TAG, ["--if-none-match", "*"]);
   else if (state === "identical") console.log(`${TAG} keep ${signature.key} (identical object already uploaded)`);
 
-  // Read the published bundle back: every file must equal the local bytes and
-  // the published signature must verify them, whichever run wrote it.
+  // Read published bytes back and verify their signature regardless of which run uploaded them.
   const scratch = mkdtempSync(join(tmpdir(), "contract-published-"));
   try {
     for (const name of [...UPLOAD_ORDER, BUNDLE_SIGNATURE]) {

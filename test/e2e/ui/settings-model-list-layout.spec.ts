@@ -4,21 +4,7 @@ import { TEST_IDS } from "../../../src/shared/test-ids.js";
 import { CHANNELS } from "../../../src/contract/app-contract.js";
 import { llmImageInputKey } from "../../../src/shared/llm-vendor-defaults.js";
 
-/**
- * Settings → Model: the model dropdown's layout.
- *
- * A real provider catalog is long in both directions — dozens of ids, each too
- * wide for the trigger, each carrying a provider/context/pricing detail line.
- * Radix `Select` content defaults to `position="item-aligned"`, which anchors
- * the selected row on top of the trigger and sizes the popup to its own widest
- * row. With the selection near the top of a long list that leaves the list only
- * the room below the trigger — an 80-model catalog rendered into a 230px popup
- * (4.4 rows of 80) whose box no longer matches the control it belongs to.
- *
- * The list is seeded through the persisted `llm.modelListCache`, so no /models
- * handshake and no network is involved: `LlmTab`'s settings effect hydrates the
- * cache and renders exactly these ids.
- */
+// Long model catalogs need bounded popup geometry rather than selected-row alignment.
 
 const OWNERS = Array.from({ length: 8 }, (_, i) => `upstream-owner-${i}`);
 const SUFFIXES = [
@@ -28,7 +14,6 @@ const SUFFIXES = [
   'long-context-preview',
   'quantized-awq-preview',
 ];
-/** Catalog-sized: long ids, more rows than any popup can show at once. */
 const MODEL_IDS = Array.from(
   { length: 80 },
   (_, i) => `${OWNERS[i % OWNERS.length]}/model-family-${i}-${SUFFIXES[i % SUFFIXES.length]}`,
@@ -54,13 +39,10 @@ function seededModelListCache() {
   };
 }
 
-/**
- * A squeezed popup is the symptom, so the floor has to be well above the 230px
- * the broken layout produced and at or under the 386px cap the fix applies.
- */
+// The popup floor must distinguish a squeezed list while fitting the supported cap.
 const MIN_POPUP_HEIGHT = 320;
 
-/** Resize the app window itself; the settings shell keys off the panel width. */
+// Resize the native window because settings layout follows panel width.
 async function setWindowSize(
   app: import('@playwright/test').ElectronApplication,
   w: number,
@@ -75,7 +57,6 @@ async function setWindowSize(
   }, { w, h });
 }
 
-// The compiled bundles; every other theme is an installed package.
 for (const bundleId of ['moonstone', 'gallery'] as const) {
   for (const { name: sizeName, width } of [
     { name: 'wide', width: 1200 },
@@ -119,16 +100,14 @@ for (const bundleId of ['moonstone', 'gallery'] as const) {
         .poll(async () => shell.getAttribute('data-settings-layout'), { timeout: 5_000 })
         .toBe(sizeName === 'wide' ? 'wide' : 'narrow');
       if (sizeName === 'narrow') {
-        // The narrow shell is a 2-depth stack; drill into the Model category so
-        // the model dropdown is on screen.
+        // Narrow settings require drilling into the category before its controls exist.
         await settingsPage.getByRole('tab', { name: /Model|모델/ }).first().click();
         await expect(settingsPage.getByTestId(TEST_IDS.settingsMobileBack)).toBeVisible();
       }
 
       const modelSelect = settingsPage.getByTestId(TEST_IDS.llmModelSelect);
       await expect(modelSelect).toBeVisible({ timeout: 10_000 });
-      // The seeded ids only reach the dropdown once the cache-hydration effect
-      // has run; the provider row's sub-line reports the hydrated catalog size.
+      // Wait for catalog hydration before expecting seeded model rows.
       await expect(
         settingsPage.locator('[data-testid^="llm-tab:connection-subline:"]').first(),
       ).toBeVisible({ timeout: 10_000 });
@@ -149,7 +128,6 @@ for (const bundleId of ['moonstone', 'gallery'] as const) {
         const items = [...(node?.querySelectorAll('[data-slot="select-item"]') ?? [])].map((el) => {
           const item = el as HTMLElement;
           const r = item.getBoundingClientRect();
-          // The id itself lives in the row's own truncating box.
           const label = item.querySelector('.flex-1.truncate') as HTMLElement | null;
           const labelRect = label?.getBoundingClientRect();
           const badge = item.querySelector('[data-testid^="llm-tab:model-no-tools:"]') as HTMLElement | null;
@@ -198,35 +176,29 @@ for (const bundleId of ['moonstone', 'gallery'] as const) {
       const trigger = metrics.trigger!;
       expect(metrics.itemCount).toBe(MODEL_IDS.length);
 
-      // The popup belongs to its trigger: same left edge, same width.
       expect(Math.abs(popup.left - trigger.left)).toBeLessThanOrEqual(1);
       expect(Math.abs(popup.width - trigger.width)).toBeLessThanOrEqual(1);
 
-      // ...and it must stay inside the window rather than push the page sideways.
       expect(popup.right).toBeLessThanOrEqual(metrics.innerWidth + 1);
       expect(popup.left).toBeGreaterThanOrEqual(-1);
       expect(metrics.docScrollWidth).toBeLessThanOrEqual(metrics.innerWidth + 1);
 
-      // A catalog-sized list gets the room that is actually available.
       expect(popup.height).toBeGreaterThanOrEqual(MIN_POPUP_HEIGHT);
 
       for (const item of metrics.items) {
         expect(item.right).toBeLessThanOrEqual(popup.right + 1);
-        // `select-content` is `overflow-x-hidden`: a row wider than its box is
-        // clipped with no way to scroll to the rest of it.
+        // Horizontal clipping leaves over-wide rows unreachable; measure them against the popup.
         expect(item.scrollWidth, item.model ?? '').toBeLessThanOrEqual(item.clientWidth);
-        // The id gets an ellipsis inside the row rather than pushing past it.
         expect(item.labelEllipsized).toBe(true);
         expect(item.labelWidth).toBeGreaterThan(0);
         expect(item.labelRight).toBeLessThanOrEqual(item.right + 1);
         if (!MODEL_IDS.includes(item.model ?? '')) continue;
-        // The user's named no-tools entry outranks even a positive endpoint report.
+        // Explicit user no-tools declarations outrank positive endpoint reports.
         expect(item.badgeText).toBe(locale === 'ko' ? '도구 미지원' : 'No tools');
         const help = locale === 'ko' ? '이 모델에는 도구를 보내지 않습니다' : 'Tools are not sent to this model.';
         expect(item.badgeName).toBe(help);
         expect(item.badgeHelp).toBe(help);
         expect(item.badgeWidth).toBeGreaterThan(0);
-        // Explicit image support exercises vision and no-tools chips together.
         expect(item.visionBadge).toBe(true);
       }
 

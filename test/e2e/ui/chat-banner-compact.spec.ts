@@ -1,24 +1,9 @@
 import { test, expect } from './fixtures';
 import { TEST_IDS, testIdSelector } from "../../../src/shared/test-ids.js";
 
-/**
- * Chat banner + compact pipeline e2e smoke.
- *
- * Verifies that PR #708's shadcn UI migration + compact pipeline rewrites
- * haven't broken the chat surface DOM contracts that downstream consumers
- * (StatusBar, Composer slots, system entry banner) depend on.
- *
- * Coverage:
- *   1. status-bar + composer key data-testid markers render
- *   2. /compact slash command produces a system-entry banner response
- *      (verifies the slash → IPC chatCompact → renderer pipeline regardless
- *      of whether an LLM provider is wired — manualCompact returns a system
- *      banner even with no API key).
- *   3. Composer textarea accepts text input.
- */
+// Verify chat DOM contracts and the compact-command path without relying on provider availability.
 test.describe('chat banner + compact pipeline', () => {
   test('status-bar and composer DOM contracts render after window open', async ({ mainWindow }) => {
-    // Wait until the renderer has booted past the splash.
     const composer = mainWindow.locator(testIdSelector(TEST_IDS.composer)).first();
     const found = await composer
       .waitFor({ state: 'visible', timeout: 15_000 })
@@ -29,8 +14,7 @@ test.describe('chat banner + compact pipeline', () => {
 
     await expect(mainWindow.locator(testIdSelector(TEST_IDS.composerTextarea)).first()).toBeVisible();
     await expect(mainWindow.locator('[data-testid="composer-send-button"]').first()).toBeVisible();
-    // The notifications-only StatusBar intentionally unmounts while empty.
-    // Persistent composer status lives in the unified input action bar.
+    // Empty notifications unmount; persistent status belongs in the composer action bar.
     await expect(mainWindow.locator('[data-testid="iab-status-row"]').first()).toBeVisible();
   });
 
@@ -51,10 +35,7 @@ test.describe('chat banner + compact pipeline', () => {
     await input.fill('/compact');
     await mainWindow.locator('[data-testid="composer-send-button"]').click();
 
-    // manualCompact responds with a system banner whether or not an LLM is
-    // configured — "LLM provider 미구성" or "컴팩트 불필요" or success. The
-    // pipeline contract under test is "slash → chatCompact IPC → renderer
-    // surfaces a system entry within a few seconds".
+    // Compact always emits a system entry, including unconfigured-provider and no-op outcomes.
     await expect.poll(
       async () => mainWindow.locator('[data-testid="system-entry"]').count(),
       { timeout: 10_000 },

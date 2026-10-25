@@ -1,6 +1,3 @@
-/**
- * AuditTab renderer tests — renders with mock data, stats, filter, pagination.
- */
 import "./setup.js";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
@@ -83,10 +80,8 @@ describe("AuditTab", () => {
   it("displays stats: total count and sensitive ops", async () => {
     await renderAuditTab();
     await waitFor(() => {
-      // total = 5+3+1=9
       const allText = document.body.textContent ?? "";
       expect(allText).toContain("9");
-      // sensitive ops label is present
       expect(screen.getByText("민감 작업")).toBeTruthy();
     });
   });
@@ -103,11 +98,9 @@ describe("AuditTab", () => {
   it("shows expanded JSON when row is clicked", async () => {
     await renderAuditTab();
     await waitFor(() => screen.getByText("turn"));
-    // Click first row
     const rows = document.querySelectorAll("tbody tr");
     fireEvent.click(rows[0]);
     await waitFor(() => {
-      // JSON expanded — should contain the sessionId in pre block
       const pres = document.querySelectorAll("pre");
       const found = Array.from(pres).some((p) => p.textContent?.includes("sess-abc"));
       expect(found).toBe(true);
@@ -134,7 +127,6 @@ describe("AuditTab", () => {
     const api = auditTabApi({ searchResult: { entries, total: 120 } });
     await renderAuditTab(api);
     await waitFor(() => {
-      // "1 / 3" pagination — total 120 / 50 = 3 pages
       expect(screen.getByText(/1 \/ 3/)).toBeTruthy();
     });
   });

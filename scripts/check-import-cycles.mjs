@@ -106,11 +106,7 @@ function resolveLocalImport(from, specifier, fileSet, packageConfig) {
   return candidates.find((path) => fileSet.has(path)) ?? null;
 }
 
-/**
- * The runtime import graph of every TypeScript file under `rootInput`: each
- * file mapped to the set of local files it imports at runtime. Type-only
- * imports and exports are not edges, because they do not load a module.
- */
+// Type-only imports and exports do not create runtime graph edges.
 export function buildRuntimeImportGraph(rootInput) {
   const root = resolve(rootInput);
   const files = collectTypeScriptFiles(root);

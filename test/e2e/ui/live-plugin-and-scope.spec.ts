@@ -2,18 +2,7 @@ import { test, expect } from './fixtures.js';
 import { TEST_IDS, testIdSelector } from "../../../src/shared/test-ids.js";
 import { VIEW_FIXTURE_DISPATCH_MARKER, VIEW_FIXTURE_TOOL } from "../../fixtures/e2e-plugins/view-fixture.js";
 
-/**
- * Live checks the offline suites cannot make:
- *
- *   1. a real model actually calling a PLUGIN tool (not just a builtin), and
- *   2. a real call to a path outside the allowed directories reaching the
- *      out-of-scope review instead of silently succeeding.
- *
- * Both need a real provider (`AVE_SMOKE_OPENROUTER_KEY`); (1) uses the seeded
- * in-repository fixture plugin (test/fixtures/e2e-plugins). The permission mode decides which of the two can run:
- *   AVE_E2E_PERMISSION_MODE=allow    → (1), tools run without a card
- *   AVE_E2E_PERMISSION_MODE=default  → (2), the card is the thing under test
- */
+// Live coverage must dispatch a seeded plugin tool and route out-of-scope access to review.
 
 const liveKey = process.env.AVE_SMOKE_OPENROUTER_KEY?.trim();
 const mode = process.env.AVE_E2E_PERMISSION_MODE?.trim() ?? 'default';
@@ -28,23 +17,17 @@ test.describe('live plugin + scope', () => {
     const composer = mainWindow.locator(testIdSelector(TEST_IDS.composerTextarea)).first();
     await expect(composer).toBeEnabled({ timeout: 60_000 });
 
-    // Prove the seeded mode actually took. A partial permissions.json is
-    // discarded silently and the app stays on `default`, which looks identical
-    // until a tool asks for something out of scope.
+    // Verify the seeded mode: incomplete permission data is discarded and otherwise looks identical.
     await expect(mainWindow.locator('[data-testid="iab-status-row"]'))
       .toContainText(/allow|모두 허용|전체 허용/i, { timeout: 60_000 });
 
-    // Name the tools explicitly. The point is to prove the PLUGIN tool surface
-    // is exposed to the model and dispatchable, not to test tool selection.
+    // Name tools explicitly to test exposure and dispatch rather than model selection.
     await composer.fill(
       `Call the tool ${VIEW_FIXTURE_TOOL} once and report what it returned. Use the tool, do not guess.`,
     );
     await mainWindow.locator('[data-testid="composer-send-button"]').first().click();
 
-    // The prompt itself contains the tool name, so matching it in the
-    // transcript proves nothing — the user bubble alone would satisfy it. The
-    // fixture's marker can ONLY appear if the host actually dispatched the call
-    // into the plugin, so that is what is asserted.
+    // Assert the fixture-only marker; the tool name already appears in the user prompt.
     await expect(mainWindow.locator('body')).toContainText(VIEW_FIXTURE_DISPATCH_MARKER, {
       timeout: 180_000,
     });
@@ -61,10 +44,7 @@ test.describe('live plugin + scope', () => {
     );
     await mainWindow.locator('[data-testid="composer-send-button"]').first().click();
 
-    // The review card — NOT a silent read, and NOT a silent refusal. Assert
-    // through the catalog: a hard-coded literal only matches whichever locale
-    // it was typed in, so it would pass under `en` and fail under `ko` for
-    // reasons that have nothing to do with the behaviour.
+    // Assert the localized review card so a silent read or refusal cannot pass.
     const card = mainWindow.getByText(t('outOfAllowedDirCard.title')).first();
     await expect(card).toBeVisible({ timeout: 180_000 });
 
@@ -74,21 +54,17 @@ test.describe('live plugin + scope', () => {
       const text = document.body.innerText;
       return {
         showsRequestedPath: /\/etc\/hosts/.test(text),
-        // Substring, not regex — a catalog string may contain regex
-        // metacharacters and is not a pattern.
+        // Use substring matching because catalog text can contain regex metacharacters.
         offersScopes: text.includes(once) && text.includes(deny),
       };
     }, { once, deny });
     console.log(`[live-scope] requestedPathShown=${detail.showsRequestedPath} scopesOffered=${detail.offersScopes}`);
 
-    // The card has to NAME what is being asked for and let the user bound it,
-    // otherwise it is a prompt the user cannot answer responsibly. Both halves
-    // are asserted — computing `showsRequestedPath` and only logging it made
-    // the more important half unfalsifiable.
+    // Review must name the requested path and let the user bound its authority.
     expect(detail.showsRequestedPath).toBe(true);
     expect(detail.offersScopes).toBe(true);
 
-    // Denying must end the attempt rather than fall through to the read.
+    // Denial must end the attempt without falling through to a read.
     await mainWindow.getByRole('button', { name: deny }).first().click();
     await expect(mainWindow.locator('body')).not.toContainText(/127\.0\.0\.1\s+localhost/, { timeout: 60_000 });
   });

@@ -1,11 +1,5 @@
 #!/usr/bin/env node
-/**
- * Build Ave desktop installers for the requested native platform.
- *
- * The script intentionally keeps platform selection explicit. Native desktop
- * installers depend on OS-specific signing, native dependency rebuilds, and
- * target tooling, so the three-platform release path is the CI OS matrix.
- */
+// Native signing, dependency rebuilds and tooling require the CI platform matrix.
 import { runCommand } from "./hooks/spawn-command.mjs";
 import { createHash } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -250,36 +244,20 @@ function assertUvRuntimePayload(target, arch) {
   }
 }
 
-// Cross-builds this script knows how to make: host arch -> target arch, with
-// the GNU triple whose gcc/g++ (Ubuntu gcc-x86-64-linux-gnu/g++-x86-64-linux-gnu)
-// compile the one native module that ships no Linux prebuild.
+// Cross-build targets need the matching compiler for native modules without prebuilds.
 const LINUX_CROSS_TOOLCHAINS = {
   "arm64->x64": { triple: "x86_64-linux-gnu", gypArch: "x64" },
 };
 
-// Runtime packages npm selects by os/cpu (bun.lock `"cpu"` fields): after the
-// retarget each must exist for the target and must not exist for the host.
+// After retargeting, CPU-selected runtime packages must contain the target rather than host binaries.
 const ARCH_SELECTED_RUNTIME_PACKAGES = [
   (arch) => `@img/sharp-linux-${arch}`,
   (arch) => `@img/sharp-libvips-linux-${arch}`,
   (arch) => `@vscode/ripgrep-linux-${arch}`,
 ];
 
-/**
- * Make node_modules hold the target arch's runtime natives, after `build` has
- * used the host's own toolchain (esbuild, tailwind, webpack natives).
- *
- * - sharp/@img and @vscode/ripgrep select their binary package by cpu: a
- *   reinstall with bun's `--cpu/--os` installs the target's from the same
- *   frozen lockfile. `--ignore-scripts` keeps every install script from
- *   executing a target-arch binary or compiling a host-arch one.
- * - better-sqlite3 ships `prebuilds/linux-x64.node` and loads it by
- *   process.arch; afterPack keeps only the packed arch's file.
- * - node-pty ships no Linux prebuild and loads `build/Release/pty.node`
- *   first, so it is compiled here with node-gyp `--arch` and the cross
- *   compiler (N-API: Node headers serve Electron). Only the addon is kept,
- *   not node-gyp's objects or its `node_gyp_bins/python3` host symlink.
- */
+// Retarget runtime natives only after host build tools have run; disable install scripts.
+// Compile addons without prebuilds for the target and discard host objects and symlinks.
 function retargetLinuxNativeModules(arch) {
   const toolchain = LINUX_CROSS_TOOLCHAINS[`${process.arch}->${arch}`];
   if (!toolchain) {
@@ -401,8 +379,7 @@ async function main() {
   );
   const crossBuild = arch !== process.arch;
   if (crossBuild && !skipNativeRebuild) {
-    // electron-builder's own rebuild would compile every native module with
-    // the host compiler for the target arch.
+    // The default rebuild would use the host compiler for target modules.
     throw new Error(`cross-building linux-${arch} on ${process.arch} requires --skip-native-rebuild`);
   }
   assertPackagedDocumentInputs(JSON.parse(readFileSync(resolve(root, "package.json"), "utf8")), root);

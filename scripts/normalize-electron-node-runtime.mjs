@@ -24,11 +24,7 @@ const CONSOLE_SPAWNERS = Object.freeze([
   "spawn", "spawnSync", "exec", "execSync", "execFile", "execFileSync",
 ]);
 
-/**
- * The same call with `windowsHide: true` unless the caller chose a value.
- * The caller's options object is copied, never mutated, so a test that spies
- * on these functions still sees exactly what the code under test passed.
- */
+// Default console children to hidden without mutating caller options or overriding an explicit choice.
 export function withHiddenConsole(args) {
   const at = args.findIndex((arg, i) =>
     i > 0 && arg !== null && typeof arg === "object" && !Array.isArray(arg));
@@ -38,8 +34,7 @@ export function withHiddenConsole(args) {
     next[at] = { ...args[at], windowsHide: true };
     return next;
   }
-  // No options: they go before the callback, or last after dropping trailing
-  // undefined slots; each signature accepts an options object there.
+  // Insert options before the callback, after dropping trailing undefined arguments.
   const callback = args.findIndex((arg, i) => i > 0 && typeof arg === "function");
   const next = [...args];
   if (callback < 0) {
@@ -54,15 +49,7 @@ export function withHiddenConsole(args) {
   return next;
 }
 
-/**
- * Electron's executable is a GUI-subsystem program, so under it a console
- * child (git, tsc, powershell, cmd) that is not spawned with `windowsHide`
- * gets a console window of its own. A full Windows suite spawns thousands of
- * them — a storm of windows that flash open and shut and take the desktop
- * away while the suite runs. Production code passes `windowsHide` itself;
- * tests and fixtures need not, so the default is set here, for the test
- * runtime only, where every Electron-as-Node test process loads this module.
- */
+// Test-runtime children need hidden consoles because the parent executable uses the GUI subsystem.
 export function hideChildConsoles({
   target = process,
   module = childProcess,
@@ -76,7 +63,7 @@ export function hideChildConsoles({
       return original.apply(this, withHiddenConsole(args));
     };
     const statics = Object.getOwnPropertyDescriptors(original);
-    // exec/execFile's promisified form calls the unwrapped function directly.
+    // Promisified calls bypass the public wrapper and need the same default.
     const promisified = original[promisify.custom];
     delete statics[promisify.custom];
     Object.defineProperties(wrapped, statics);

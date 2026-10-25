@@ -1,29 +1,5 @@
-/**
- * The plugin host protocol TS client generator. Its command line, which writes
- * the client or checks the committed copy, is
- * `scripts/generate-plugin-host-protocol-client.ts`; this module only builds
- * the text and runs the two compile programs, so a test can drive both without
- * writing anything into the tree.
- *
- * `schemas/plugin-host-protocol/<version>/protocol-client.ts` is a typed
- * JSON-RPC client for one served protocol version
- * (docs/design/plugin-hostapi-protocol.md §9.7 P1). It is GENERATED from the
- * COMMITTED schema file beside it — not from the TypeScript sources the schema
- * is itself generated from — so the client is provably a projection of the
- * published artifact, and any language could project it the same way:
- *
- *  - `$defs.types` and every method's `params` and `result` compile through
- *    `json-schema-to-typescript` into named declarations;
- *  - `$defs.methods`, `$defs.notifications` and `$defs.errorCodes` become the
- *    `HostMethod`, `InstanceMethod`, `HostNotification` and
- *    `HostProtocolErrorCode` unions;
- *  - every `ave/host/*` method becomes one typed stub of `createHostClient`,
- *    named by its path segments (`storage/read` → `storage.read`).
- *
- * The file imports nothing and embeds no app version (decision 28): the
- * schema's `$id` and root description, which carry it, are never read. A
- * plugin repository pins the file by sha256 from the tag, like the schema.
- */
+// Generate the client from the committed schema so it projects the published artifact.
+// Keep it import-free and independent of app-version metadata.
 import { spawnSync } from "node:child_process";
 import { readFileSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -35,17 +11,10 @@ import { HOST_PROTOCOL_VERSIONS_SERVED } from "../../src/plugins/isolation/host-
 type JsonSchema = Record<string, unknown>;
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
-/** The prefix of every line the generator and its command line print. */
 export const HOST_PROTOCOL_CLIENT_LABEL = "[plugin-host-protocol-client]";
 const LABEL = HOST_PROTOCOL_CLIENT_LABEL;
 
-/**
- * The two programs `--check` compiles, relative to the repository root. They
- * are separate because one invocation cannot serve both: the standalone one
- * must see no ambient type at all, and the host-equality one needs the
- * repository's own `lib`, `types` and `skipLibCheck` for the host modules it
- * imports.
- */
+// Standalone compilation excludes ambient types; host-equality compilation needs repository options.
 export const HOST_PROTOCOL_CLIENT_PROGRAMS = {
   standalone: "scripts/tsconfig.plugin-host-protocol-client.json",
   hostEquality: "scripts/tsconfig.plugin-host-protocol-client-assertions.json",
@@ -53,7 +22,6 @@ export const HOST_PROTOCOL_CLIENT_PROGRAMS = {
 
 const HOST_PREFIX = "ave/host/";
 const INSTANCE_PREFIX = "ave/instance/";
-/** The declaration the compile root is emitted as, which the generator removes. */
 const ROOT_NAME = "HostProtocolCompileRoot";
 const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/u;
 
@@ -61,17 +29,14 @@ function fail(message: string): never {
   throw new Error(`${LABEL} ${message}`);
 }
 
-/** Where one served version's schema lives, relative to the repository root. */
 function hostProtocolSchemaPath(version: string): string {
   return `schemas/plugin-host-protocol/${version}/protocol.schema.json`;
 }
 
-/** Where one served version's client lives, relative to the repository root. */
 function hostProtocolClientPath(version: string): string {
   return `schemas/plugin-host-protocol/${version}/protocol-client.ts`;
 }
 
-/** The one version this build serves, which names both files. */
 function servedVersion(): string {
   if (HOST_PROTOCOL_VERSIONS_SERVED.length !== 1) {
     fail(
@@ -90,7 +55,7 @@ function recordAt(value: unknown, where: string): JsonSchema {
   return isRecord(value) ? value : fail(`the schema's ${where} is not an object`);
 }
 
-/** The same canonical key order the schema generator writes, so the input is order-independent. */
+// Canonical key order makes generation independent of schema ordering.
 function sortKeys(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(sortKeys);
   if (!isRecord(value)) return value;
@@ -101,11 +66,7 @@ function sortKeys(value: unknown): unknown {
   );
 }
 
-/**
- * Re-root every `#/$defs/types/X` reference at `#/$defs/X`: the compile root
- * holds the named types flat under its own `$defs`, which is where
- * `json-schema-to-typescript` takes a declaration's name from.
- */
+// Flatten type definitions so schema compilation names declarations by their keys.
 function reroot(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(reroot);
   if (!isRecord(value)) return value;
@@ -123,7 +84,6 @@ function reroot(value: unknown): unknown {
   return out;
 }
 
-/** `ave/host/storage/read` → `["storage", "read"]`, each a valid identifier. */
 function segmentsOf(method: string, prefix: string): string[] {
   const segments = method.slice(prefix.length).split("/");
   for (const segment of segments) {
@@ -136,7 +96,6 @@ function pascal(segments: readonly string[]): string {
   return segments.map((segment) => segment[0]!.toUpperCase() + segment.slice(1)).join("");
 }
 
-/** A JSDoc block at `indent`, or nothing for no text. */
 function docComment(text: string | undefined, indent: string): string {
   if (!text?.trim()) return "";
   const lines = text.replace(/\r\n?/gu, "\n").replaceAll("*/", "*\\/").trim().split("\n");
@@ -152,7 +111,6 @@ function unionOf(name: string, members: readonly string[], description: string):
   return `${docComment(description, "")}export type ${name} =\n${members.map((member) => `  | ${quoted(member)}`).join("\n")};\n`;
 }
 
-/** One `ave/host/*` stub: where it sits in the client and what it sends and answers. */
 interface HostStub {
   method: string;
   segments: string[];
@@ -161,7 +119,6 @@ interface HostStub {
   description: string | undefined;
 }
 
-/** A tree of stubs keyed by path segment; a leaf is a stub, a branch a namespace. */
 type StubTree = Map<string, HostStub | StubTree>;
 
 function stubTree(stubs: readonly HostStub[]): StubTree {
@@ -206,7 +163,6 @@ function implementationMembers(tree: StubTree, indent: string): string {
     .join("");
 }
 
-/** Build the client text for one protocol version from its schema's parsed JSON. */
 export async function renderHostProtocolClient(version: string, schema: unknown): Promise<string> {
   const defs = recordAt(recordAt(schema, "root").$defs, "$defs");
   const types = recordAt(defs.types, "$defs.types");
@@ -221,9 +177,7 @@ export async function renderHostProtocolClient(version: string, schema: unknown)
     fail(`the schema's HostProtocolVersion is ${JSON.stringify(versionType.const)}, but it was read as version ${version}`);
   }
 
-  // Everything that compiles, flat under one `$defs`, so each declaration is
-  // named by its key: the named types first, then each method side that is not
-  // a reference to one of them.
+  // Flatten declarations under one definition map so keys determine emitted names.
   const compiled: JsonSchema = {};
   for (const name of Object.keys(types).sort()) compiled[name] = reroot(types[name]);
   const sideName = (method: string, side: "params" | "result"): string => {
@@ -274,8 +228,7 @@ export async function renderHostProtocolClient(version: string, schema: unknown)
     cwd: ROOT,
     $refOptions: { resolve: { external: false } },
   });
-  // The compile root is only a handle on every declaration; it names nothing
-  // of the protocol, so its own declaration goes.
+  // Remove the synthetic compile-root declaration; it is not part of the protocol.
   const rootDeclaration = new RegExp(`^export type ${ROOT_NAME} =[\\s\\S]*?;\\n`, "mu");
   const matches = declarations.match(new RegExp(rootDeclaration.source, "gmu")) ?? [];
   if (matches.length !== 1) fail(`the compiled types declare ${ROOT_NAME} ${matches.length} times, not once`);
@@ -350,7 +303,6 @@ export function isHostNotification(frame: unknown): frame is HostNotificationFra
   return text.replace(/\r\n?/gu, "\n");
 }
 
-/** Build the client for the one served protocol version from its committed schema. */
 export async function generateHostProtocolClient(): Promise<{ path: string; text: string }> {
   const version = servedVersion();
   const schemaPath = hostProtocolSchemaPath(version);
@@ -366,27 +318,13 @@ export async function generateHostProtocolClient(): Promise<{ path: string; text
   };
 }
 
-/**
- * Compile one program (`tsc -p <project>`), with the repository's compiler run
- * by `node`: the command line passes the Node it runs under, and a test passes
- * the plain Node its harness names, because under the Electron-hosted runner
- * `process.execPath` is Electron. Any non-zero status is a failed compile and
- * comes back with the compiler's own output; a compiler that could not start
- * or was killed throws.
- *
- * `alone` also fails a program that loaded any file besides its own `files`
- * and the compiler's `lib` declarations. A compile error catches an import
- * that does not resolve; this catches one that does — a relative import of a
- * file that happens to exist beside the client, or a package that happens to
- * be installed where the check runs — which is still a client that does not
- * stand alone.
- */
+// Compile with plain Node rather than the test runtime executable.
+// Standalone mode also rejects non-library files in the compiler program.
 export function compileHostProtocolClientProgram(
   project: string,
   { alone, node }: { alone: boolean; node: string },
 ): { ok: boolean; output: string } {
-  // `typescript` exports no `lib/tsc.js` subpath, so it is found beside the
-  // package manifest, which it does export, wherever this module is resolved from.
+  // Resolve the compiler entry beside its exported package manifest.
   const tsc = join(dirname(createRequire(import.meta.url).resolve("typescript/package.json")), "lib", "tsc.js");
   const result = spawnSync(
     node,
@@ -403,8 +341,7 @@ export function compileHostProtocolClientProgram(
   const lines = `${result.stdout ?? ""}${result.stderr ?? ""}`.split(/\r?\n/u).filter((line) => line.trim());
   if (!alone) return { ok: result.status === 0, output: lines.join("\n") };
 
-  // A listed file is a bare absolute path on its own line; a diagnostic names
-  // its file relative to the working directory, with a position.
+  // Listed files are bare absolute paths; diagnostics add positions to relative paths.
   const listed = (line: string): boolean => isAbsolute(line) && !/\(\d+,\d+\): /u.test(line);
   const real = (path: string): string => realpathSync.native(path);
   const projectPath = resolve(ROOT, project);
@@ -413,9 +350,7 @@ export function compileHostProtocolClientProgram(
       real(resolve(dirname(projectPath), file))),
   );
   const files = lines.filter(listed).map(real);
-  // The compiler's own declarations: the directory it loaded its base
-  // `lib.es5.d.ts` from, which the native compiler ships in a platform package
-  // rather than beside `tsc.js`.
+  // Native compiler libraries live in a platform package; locate them from the loaded base library.
   const libDirs = new Set(files.filter((file) => basename(file) === "lib.es5.d.ts").map((file) => dirname(file)));
   const strays = files.filter((file) => !own.has(file) && !libDirs.has(dirname(file)));
   const diagnostics = lines.filter((line) => !listed(line));

@@ -1,11 +1,7 @@
 import { test, expect } from './fixtures';
 import { TEST_IDS, testIdSelector } from "../../../src/shared/test-ids.js";
 
-/**
- * Smoke test for chat input affordance. We do not require a live LLM
- * vendor key — if no input element can be found within the timeout,
- * we skip gracefully so this suite remains green in offline CI.
- */
+// Offline smoke skips when chat input never becomes available.
 test('chat input element can be located or test skips cleanly', async ({ mainWindow }) => {
   const input = mainWindow.locator(
     'textarea, input[type="text"], [contenteditable="true"]',

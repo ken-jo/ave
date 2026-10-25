@@ -1,11 +1,4 @@
-/**
- * Regression net for approval FIFO re-entrancy.
- *
- * Rapid double-invocation of decide() must only dispatch one IPC respond
- * call for the current in-flight approval. The pending head remains visible
- * until that response is acknowledged, so the next item is never surfaced as
- * an inert dialog.
- */
+// Keep the in-flight approval visible until response acknowledgement and suppress duplicate decisions.
 import "./setup.js";
 import { useLayoutEffect } from "react";
 import { describe, it, expect, vi, afterEach } from "vitest";
@@ -42,7 +35,6 @@ function installMockNs() {
   (window as unknown as { ave: unknown }).ave = ns;
   return {
     emit: (r: unknown) => handlers.forEach((h) => h(r)),
-    /** The host says this request is no longer answerable. */
     emitSettled: (requestId: string) =>
       settledHandlers.forEach((h) => h({ requestId })),
     respond,
@@ -62,9 +54,7 @@ describe("useApproval — Copilot HIGH #2 re-entrancy", () => {
 
     function ImmediateDecisionHarness() {
       const { queue, decide } = useApproval();
-      // Browser input can arrive as soon as the dialog has been committed,
-      // before passive effects. Model that boundary directly: this layout
-      // effect runs after the queue has rendered but before paint.
+      // Exercise input after commit but before passive effects by using a layout effect.
       useLayoutEffect(() => {
         if (queue[0]?.id === "req-layout") {
           void decide("req-layout", "allow-once");
@@ -133,8 +123,7 @@ describe("useApproval — Copilot HIGH #2 re-entrancy", () => {
 
     expect(result.current.queue.length).toBe(2);
 
-    // Rapid double-click — both calls fire before respond() resolves.
-    // Fire-and-forget; we assert synchronously before awaiting.
+    // Invoke twice before resolving the response and assert before awaiting either call.
     let first!: Promise<void>;
     let second!: Promise<void>;
     act(() => {
@@ -142,13 +131,10 @@ describe("useApproval — Copilot HIGH #2 re-entrancy", () => {
       second = result.current.decide(result.current.queue[0]!.id, "allow-once");
     });
 
-    // Only one respond should have been issued for req-1 — the second decide
-    // must early-return while req-1 remains the visible, in-flight head.
     expect(respond).toHaveBeenCalledTimes(1);
     expect(respond.mock.calls[0]?.[0]).toMatchObject({ requestId: "req-1" });
     expect(result.current.queue.map((request) => request.id)).toEqual(["req-1", "req-2"]);
 
-    // Drain the in-flight promise; both awaited calls resolve.
     await act(async () => {
       drainOne();
       await first;
@@ -157,7 +143,6 @@ describe("useApproval — Copilot HIGH #2 re-entrancy", () => {
 
     expect(result.current.queue.map((request) => request.id)).toEqual(["req-2"]);
 
-    // The next decide should now go through for req-2 (not dropped).
     let third!: Promise<void>;
     act(() => {
       third = result.current.decide(result.current.queue[0]!.id, "allow-once");
@@ -245,7 +230,7 @@ describe("useApproval — requests parked before this renderer mounted", () => {
       { id: "live-1", category: "tool", toolName: "list_files", args: {}, reason: "r", createdAt: 2, requireExplicit: false },
     ]);
     const { result } = renderHook(() => useApproval());
-    // A request that went out between the subscribe and the fetch arrives both ways.
+    // Deduplicate requests delivered by both subscription and initial snapshot.
     act(() => {
       emit({ id: "live-1", category: "tool", toolName: "list_files", args: {}, reason: "r", createdAt: 2, requireExplicit: false });
     });
@@ -269,9 +254,7 @@ describe("useApproval — requests parked before this renderer mounted", () => {
     });
     expect(respond).toHaveBeenCalledTimes(1);
 
-    // The head is being acknowledged: it leaves when the host answers, not
-    // here — dropping it now would settle a card whose answer is in flight.
-    // Only req-3 goes.
+    // Do not retire an in-flight head until acknowledgement; only unrelated queued requests may leave.
     act(() => {
       result.current.dropSettled(["req-1", "req-3"]);
     });
@@ -285,11 +268,7 @@ describe("useApproval — requests parked before this renderer mounted", () => {
   });
 });
 
-/**
- * The host can retire a parked request without the surface that asked ever
- * seeing it happen — the tile closed, a navigation let go of it. The card
- * then has nobody to take it down, so the host says so.
- */
+// Host retirement must remove requests even when the original requesting surface is gone.
 describe("useApproval — the host retires a request nobody here answered", () => {
   const parked = (id: string) => ({
     id,
@@ -333,9 +312,7 @@ describe("useApproval — the host retires a request nobody here answered", () =
     });
     expect(respond).toHaveBeenCalledTimes(1);
 
-    // The host settles the moment it takes the answer; the card must stay put
-    // until `respond` acknowledges, or a click landing in that window would
-    // look successful while answering nothing.
+    // Keep the card until respond acknowledges even if host settlement arrives first.
     act(() => {
       emitSettled("req-answering");
     });
@@ -358,8 +335,7 @@ describe("useApproval — the host retires a request nobody here answered", () =
     );
 
     const { result } = renderHook(() => useApproval());
-    // The host took `req-gone` after the snapshot was taken and before it
-    // arrived here: the snapshot still names it, and it must not be drawn.
+    // Ignore snapshot entries retired after the snapshot was taken.
     act(() => {
       emitSettled("req-gone");
     });
@@ -375,9 +351,7 @@ describe("useApproval — the host retires a request nobody here answered", () =
     const { result } = renderHook(() => useApproval());
     await waitFor(() => expect(listPending).toHaveBeenCalledTimes(1));
 
-    // The snapshot is the guard set's only reader, and it has now run. This
-    // is what makes releasing the set safe — and releasing it is what keeps a
-    // window that answers thousands of requests from remembering all of them.
+    // Release the retirement guard after its only snapshot reader runs to bound retained ids.
     for (let n = 0; n < 3; n += 1) {
       act(() => {
         emit(parked(`req-${n}`));

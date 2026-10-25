@@ -1,9 +1,4 @@
-/**
- * Phase 3 safety net — redact_notice stream event handling.
- *
- * When PII redaction is enabled the engine emits a redact_notice event;
- * the renderer converts it to a system badge entry in the chat list.
- */
+// Redaction events must render as system badges in the transcript.
 import "./setup.js";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { act, fireEvent, waitFor } from "@testing-library/react";

@@ -11,32 +11,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, "../../..");
 const MAIN_ENTRY = resolve(REPO_ROOT, "dist/src/main/main.js");
 
-/**
- * Drag-drop add-root, real-Electron (#1458).
- *
- * The prior drag-drop impl was removed for a jsdom false-green: a test that faked
- * `File.prototype.path` / a `{ path }` shape proves nothing, because the real path
- * only exists through `webUtils.getPathForFile` against an OS-backed File.
- *
- * IMPORTANT — CDP limitation (electron/electron#44600, #44982): a SYNTHETIC drop
- * injected via `Input.dispatchDragEvent` does NOT back its File with a real OS
- * path, so `webUtils.getPathForFile` returns "" for it. No browser-automation
- * primitive can synthesize an OS-backed dropped File. We therefore prove the two
- * halves of the feature with the seams automation CAN reach — both against a REAL
- * packaged renderer, a REAL preload bridge, and a REAL main process, never a fake:
- *
- *   (A) The real drop wiring + safe no-op: a synthetic CDP drop fires the real
- *       React handler, runs the real preload `webUtils` bridge, and (because the
- *       path is empty under CDP) is a correct no-op — no ack, no error, no widen.
- *       This locks that the drop handler and the bridge are wired to real Electron
- *       `webUtils` (not a stub) and that a path-less drag can never widen scope.
- *
- *   (B) The real trust pipeline: driving the drop's post-resolution flow through
- *       the REAL preload IPC (`window.ave.workspace.dropPrepare`) with a REAL
- *       seeded folder path — the opposite of the banned `{path}` fake — exercises
- *       the real main handler (real `validateDirectoryAddition` + real `fs.stat`),
- *       real ack token, real `pickRoot` persistence, and real `listRoots`.
- */
+// Synthetic drops cannot create OS-backed file paths; test safe no-op behavior and the real post-resolution trust path.
 test.describe("workspace drag-drop add-root (#1458)", () => {
   test.skip(!existsSync(MAIN_ENTRY), "dist/src/main/main.js not built; run bun run build first");
 
@@ -52,14 +27,13 @@ test.describe("workspace drag-drop add-root (#1458)", () => {
     userDataDir = mkdtempSync(resolve(tmpdir(), "ave-drop-user-data-"));
     tempHome = mkdtempSync(resolve(tmpdir(), "ave-drop-home-"));
     mkdirSync(resolve(tempHome, ".ave", "workspace"), { recursive: true });
-    // A real folder OUTSIDE the default allow-list — a successful add widens scope.
+    // Use a folder outside existing scope so successful acknowledgement proves authority widened.
     dropTarget = resolve(tempHome, "dropme-project");
     mkdirSync(dropTarget, { recursive: true });
     writeFileSync(resolve(dropTarget, "readme.md"), "# Dropped\n", "utf-8");
-    // A Layer-0 sensitive dir the drop MUST hard-deny even via the ack tier.
+    // Sensitive directories must be denied even through acknowledgement.
     sensitiveTarget = resolve(tempHome, ".ave", "secrets");
     mkdirSync(sensitiveTarget, { recursive: true });
-    // A plain file — a dropped file is not a root (not-a-dir).
     fileTarget = resolve(tempHome, "loose-file.txt");
     writeFileSync(fileTarget, "not a folder\n", "utf-8");
 
@@ -92,7 +66,6 @@ test.describe("workspace drag-drop add-root (#1458)", () => {
     if (tempHome) rmSync(tempHome, { recursive: true, force: true });
   });
 
-  /** Open the file-browser and return the drop-zone bounding box centre (px). */
   async function openRootsZone(): Promise<{ x: number; y: number }> {
     await page.setViewportSize({ width: 1400, height: 840 });
     await page.getByTestId(TEST_IDS.panePanelToggle).click();
@@ -105,16 +78,13 @@ test.describe("workspace drag-drop add-root (#1458)", () => {
     return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
   }
 
-  // ── (A) real drop wiring + safe no-op via a synthetic CDP drop ────────────
   test("a real drop fires the handler + real webUtils bridge and is a safe no-op under CDP (no widen)", async () => {
     const { x, y } = await openRootsZone();
-    // Assert the bridge is the REAL preload export wired to Electron webUtils
-    // (a function on window.aveDrop), not a test stub.
+    // Use the production file-path bridge rather than a synthetic path property.
     const bridgeType = await page.evaluate(() => typeof window.aveDrop?.resolveDroppedPaths);
     expect(bridgeType).toBe("function");
 
-    // Instrument the real drop path: capture what the handler's real bridge call
-    // yields. Under CDP the resolved path is "" (electron#44600) → [].
+    // Synthetic drops resolve no OS-backed path; capture the real bridge result.
     await page.evaluate(() => {
       const w = window as unknown as { __dropResolved?: string[] };
       const el = document.querySelector('[data-testid="chat-side-panel-project-roots"]');
@@ -127,15 +97,13 @@ test.describe("workspace drag-drop add-root (#1458)", () => {
         { capture: true, once: true },
       );
     });
-    // Kick the real drop via CDP AFTER the listener is attached.
     const cdp = await page.context().newCDPSession(page);
     const data = { items: [], files: [dropTarget], dragOperationsMask: 1 };
     await cdp.send("Input.dispatchDragEvent", { type: "dragEnter", x, y, data });
     await cdp.send("Input.dispatchDragEvent", { type: "drop", x, y, data });
     await cdp.detach();
 
-    // The real bridge ran and yielded no path (CDP can't back the File) — so the
-    // drop is a correct no-op: no ack panel, no error, scope unchanged.
+    // No resolved path means a safe no-op without acknowledgement or scope changes.
     await expect
       .poll(() => page.evaluate(() => (window as unknown as { __dropResolved?: string[] }).__dropResolved))
       .toEqual([]);
@@ -144,11 +112,8 @@ test.describe("workspace drag-drop add-root (#1458)", () => {
     await expect(page.getByTestId("chat-side-panel-op-error")).toHaveCount(0);
   });
 
-  // ── (B) real trust pipeline via the real preload IPC + real main handler ───
   test("real pipeline: a valid dropped folder adds as a root only after an explicit ack", async () => {
     await openRootsZone();
-    // Drive the post-resolution flow the drop handler runs, through the REAL
-    // preload IPC + REAL main handler, with a REAL seeded folder path.
     const prep = await page.evaluate(
       (p) => window.ave.workspace.dropPrepare(p),
       dropTarget,
@@ -157,15 +122,13 @@ test.describe("workspace drag-drop add-root (#1458)", () => {
     expect(prep.pendingPath).toBe(dropTarget);
     expect(typeof prep.ackToken).toBe("string");
 
-    // listRoots reports the canonical realpath (macOS /var → /private/var), so
-    // compare roots against the realpath while the ack flow uses the raw path.
+    // Compare canonical roots while acknowledgement uses the raw path; temporary paths may resolve through aliases.
     const canonicalDrop = realpathSync(dropTarget);
 
-    // Before the ack the scope has NOT widened.
     const before = await page.evaluate(() => window.ave.workspace.listRoots());
     expect((before.roots ?? []).some((r) => r.path === canonicalDrop)).toBe(false);
 
-    // Confirm by echoing the token (never the path) → real persistence.
+    // Confirm the token rather than echoing a path to prove persisted acknowledgement.
     const done = await page.evaluate(
       (tok) => window.ave.workspace.pickRoot({ ackToken: tok }),
       prep.ackToken as string,
@@ -184,7 +147,7 @@ test.describe("workspace drag-drop add-root (#1458)", () => {
       sensitiveTarget,
     );
     expect(prep.ok).toBe(false);
-    // Stable code (renderer maps to Korean) — NOT the validator's English prose.
+    // Assert stable localized error codes rather than validator prose.
     expect(prep.error).toBe("sensitive-path");
     expect(prep.ackToken).toBeUndefined();
     const roots = await page.evaluate(() => window.ave.workspace.listRoots());
@@ -201,15 +164,12 @@ test.describe("workspace drag-drop add-root (#1458)", () => {
 
   test("real pipeline: a dir swapped for a file between prepare and ack is refused (TOCTOU)", async () => {
     await openRootsZone();
-    // Prepare a real directory and mint a token, then replace the directory with
-    // a regular file before echoing the token. The ack/persist pass must re-stat
-    // and refuse the non-directory rather than widening the read scope.
+    // Replace the directory after token creation; acknowledgement must re-stat before widening scope.
     const toctouTarget = resolve(tempHome, "toctou-project");
     mkdirSync(toctouTarget, { recursive: true });
     const prep = await page.evaluate((p) => window.ave.workspace.dropPrepare(p), toctouTarget);
     expect(prep.ok).toBe(true);
     expect(typeof prep.ackToken).toBe("string");
-    // Swap the directory for a file (main-side fs, outside the renderer).
     rmSync(toctouTarget, { recursive: true, force: true });
     writeFileSync(toctouTarget, "now a file\n", "utf-8");
     const done = await page.evaluate(

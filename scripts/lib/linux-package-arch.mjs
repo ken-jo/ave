@@ -1,13 +1,4 @@
-/**
- * Architecture audit for a packaged Linux app and its installers.
- *
- * Linux installers are cross-built (x64 on the ARM64 release runners), so a
- * host-arch native binary that slips into the package is a broken install
- * that nothing else fails on: the build host cannot launch an x64 app to
- * smoke it. This walks every regular file, reads the ELF header itself
- * (EI_CLASS/EI_DATA/e_machine), and cross-checks each ELF and every `.node`
- * with `file(1)` so the verdict does not rest on one parser.
- */
+// Cross-built packages cannot run on the host; inspect native headers and cross-check with file(1).
 import { execFileSync } from "node:child_process";
 import { closeSync, existsSync, lstatSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -45,10 +36,7 @@ export function describeMachine(header) {
   return `${MACHINE_NAMES[header.machine] ?? `e_machine ${header.machine}`} (${header.elfClass}-bit ${header.littleEndian ? "LE" : "BE"})`;
 }
 
-/**
- * node-gyp's header cache for the cross node-pty build: under the workspace's
- * `.cache/` with the job's other caches, not the runner user's ~/.cache/node-gyp.
- */
+// Keep cross-build header caches in the workspace, separate from the runner account's cache.
 export function nodeGypHeadersDir(workspaceRoot) {
   return join(workspaceRoot, ".cache", "node-gyp");
 }
@@ -57,10 +45,7 @@ export function crossNodeGypRebuildArgs(nodeGypScript, gypArch, workspaceRoot) {
   return [nodeGypScript, "rebuild", `--arch=${gypArch}`, `--devdir=${nodeGypHeadersDir(workspaceRoot)}`];
 }
 
-/**
- * Under Electron (the unit-test runner) `fs` treats `app.asar` as a directory;
- * this audit walks the real files, so asar redirection is off while it runs.
- */
+// Disable archive redirection while auditing physical packaged files.
 function withoutAsar(fn) {
   const previous = process.noAsar;
   process.noAsar = true;
@@ -86,21 +71,14 @@ function readHead(path, length = 64, position = 0) {
   }
 }
 
-/** Scratch space: the job's RUNNER_TEMP on Actions, else the OS temp dir. */
 function scratchDir(prefix) {
   return mkdtempSync(join(process.env.RUNNER_TEMP || tmpdir(), prefix));
 }
 
 const SQUASHFS_MAGIC = "hsqs";
 
-/**
- * Byte offset of the squashfs payload in a type-2 AppImage: the end of the
- * runtime ELF, taken as e_shoff + e_shentsize * e_shnum (the section header
- * table is the last thing in the runtime). This is the calculation the
- * AppImage runtime itself uses for `--appimage-offset` (get_elf_size() in
- * AppImageKit/type2-runtime runtime.c, appimage_get_elf_size() in
- * libappimage). Returns null when the runtime is not a 64-bit LE ELF.
- */
+// The image payload starts after the runtime ELF section table.
+// Unsupported ELF layouts return null.
 export function appImagePayloadOffset(head) {
   const header = parseElfHeader(head);
   if (!header?.valid || header.elfClass !== 64 || !header.littleEndian || head.length < 64) return null;
@@ -157,10 +135,6 @@ function findAppRoots(root) {
   return roots.sort();
 }
 
-/**
- * Audit one extracted tree. Returns `{ violations, checked }`: `checked` lists
- * every file `file(1)` was run on, with its output, for the job log.
- */
 export function auditTree(root, arch, options = {}) {
   return withoutAsar(() => auditTreeUnchecked(root, arch, options));
 }
@@ -202,8 +176,7 @@ function auditTreeUnchecked(root, arch, { fileCommand = defaultFileCommand, labe
         violations.push(`${shown}: native addon is not a Linux ELF shared object`);
         crossCheck(path, shown);
       }
-      // uv ships gzip-compressed and is materialized at first launch; the
-      // compressed archive must hold the target-arch binary too.
+      // Audit the compressed runtime too: first-launch extraction must produce the target architecture.
       if (basename(path) === "uv.gz") {
         if (basename(join(path, "..")) !== spec.uvDir) violations.push(`${shown}: uv runtime directory is not ${spec.uvDir}`);
         const inflated = join(scratch, `uv-${checked.length}`);
@@ -220,8 +193,7 @@ function auditTreeUnchecked(root, arch, { fileCommand = defaultFileCommand, labe
     }
     if (nodeAddons === 0) violations.push(`${label}: no packaged .node native addon found`);
 
-    // The main executable sits at the app root next to resources/: at least
-    // one root-level ELF executable must exist (and was checked above).
+    // Require a checked root-level executable beside resources/.
     for (const appRoot of appRoots) {
       const rootElves = files.filter(({ path, mode }) =>
         join(path, "..") === appRoot && (mode & 0o111) !== 0 && !/\.so(\.\d+)*$/u.test(path) && parseElfHeader(readHead(path)));
@@ -233,7 +205,6 @@ function auditTreeUnchecked(root, arch, { fileCommand = defaultFileCommand, labe
   return { violations, checked };
 }
 
-/** Find the electron-builder intermediate dir for one Linux arch (`linux-unpacked` is x64). */
 function unpackedDirFor(releaseDir, arch) {
   const name = arch === "x64" ? "linux-unpacked" : `linux-${arch}-unpacked`;
   return join(releaseDir, name);
@@ -248,11 +219,7 @@ function installerFiles(releaseDir) {
   };
 }
 
-/**
- * Audit the unpacked app and, with `requireInstallers`, exactly one AppImage,
- * deb and rpm: their declared arch (runtime ELF, package metadata), then
- * every installer's extracted payload.
- */
+// Audit exactly one installer of each required format, including metadata and extracted payload.
 export function auditLinuxRelease(releaseDir, arch, options = {}) {
   return withoutAsar(() => auditLinuxReleaseUnchecked(releaseDir, arch, options));
 }
@@ -279,8 +246,7 @@ function auditLinuxReleaseUnchecked(releaseDir, arch, { requireInstallers = fals
     if (paths.length !== 1) violations.push(`expected exactly one ${kind} installer, found ${paths.length}`);
   }
 
-  // `unpack(dir)` writes the payload into `dir`, or into `join(dir, tree)`
-  // when the extractor must create its destination itself (unsquashfs -d).
+  // Some extractors create their destination; account for the resulting tree root.
   const extract = (installer, unpack, tree = ".") => {
     const dir = scratchDir("ave-installer-audit-");
     try {
@@ -296,9 +262,7 @@ function auditLinuxReleaseUnchecked(releaseDir, arch, { requireInstallers = fals
   };
 
   for (const appImage of installers.appImage) {
-    // The AppImage is its ELF runtime (which decides where it can run)
-    // followed by a squashfs of the app tree, extracted and audited like the
-    // deb/rpm payloads below.
+    // Audit the runtime ELF and extracted filesystem payload separately.
     const head = readHead(appImage);
     const header = parseElfHeader(head);
     if (!headerMatches(header, spec)) violations.push(`${basename(appImage)}: AppImage runtime is ${describeMachine(header)}, expected ${arch}`);

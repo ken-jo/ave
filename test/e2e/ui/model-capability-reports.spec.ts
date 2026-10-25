@@ -5,15 +5,11 @@ import { TEST_IDS } from "../../../src/shared/test-ids.js";
 import { llmModelListCacheKey } from "../../../src/shared/llm-model-list.js";
 
 const CASE_MODELS = [
-  // The saved id matches both reports by case. Its badges use the catalog's
-  // text input and no-tools declaration instead of borrowing either report.
-  // (gpt-3.5-turbo, used here before, is deprecated in the catalog and so no
-  // longer offered.)
+  // Catalog declarations remain authoritative when saved report ids differ only by case.
   { model: "tExT-eMbEdDiNg-3-sMaLl", vision: false, tools: false, effortUnknown: false },
   { model: "Text-Embedding-3-Small", vision: true, tools: true, effortUnknown: false },
   { model: "text-embedding-3-small", vision: false, tools: false, effortUnknown: false },
-  // Not in the catalog, and its report names no reasoning parameter: thinking
-  // would send no effort, so the row says so.
+  // Without a reported reasoning parameter, thinking sends no effort.
   { model: "gpt-5.1-codex", vision: false, tools: true, effortUnknown: true },
 ];
 
@@ -25,7 +21,6 @@ for (const locale of ["en", "ko"] as const) {
       await app.evaluate(({ ipcMain }, channels) => {
         ipcMain.removeHandler(channels.hasApiKey);
         ipcMain.handle(channels.hasApiKey, (_event, provider) => provider === "openai");
-        // Keep the saved reports authoritative while refresh is unavailable.
         ipcMain.removeHandler(channels.listLlmModels);
         ipcMain.handle(channels.listLlmModels, () => ({ ok: false, error: "model-list-fetch-failed", message: "No remote catalog in this fixture" }));
       }, { hasApiKey: CHANNELS.settings.hasApiKey, listLlmModels: CHANNELS.settings.listLlmModels });
@@ -85,11 +80,10 @@ for (const locale of ["en", "ko"] as const) {
       await testInfo.attach("picker", { body: await content.screenshot(), contentType: "image/png" });
       await settings.keyboard.press("Escape");
 
-      // The same rows at a phone-like width: the badges share the id's line.
       await app.evaluate(({ BrowserWindow }) => {
         for (const window of BrowserWindow.getAllWindows()) if (!window.isDestroyed()) window.setContentSize(420, 900);
       });
-      // A narrow window folds the inline settings away; open them again there.
+      // Reopen inline settings after the narrow layout folds them away.
       const narrowSettings = await openInlineSettings(app, mainWindow, "llm");
       await narrowSettings.getByTestId(TEST_IDS.llmModelSelect).click();
       await expect(narrowSettings.locator('[data-slot="select-content"] [data-slot="select-item"]').first()).toBeVisible();

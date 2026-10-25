@@ -1,37 +1,5 @@
-/**
- * THE GATE for the ext-apps transport adoption.
- *
- * A real Electron <webview> must complete `ui/initialize` end-to-end with an
- * UNMODIFIED ext-apps `App` — no self-echo, response received, and the host's
- * AppBridge observing `ui/notifications/initialized`.
- *
- * Why this is an ELECTRON spec and not a Chromium <iframe> harness: in a plain
- * Chromium iframe `window.parent` crosses, so a bare-iframe test passes even when
- * the webview path is completely dead. That is exactly how the old hand-rolled
- * bridge shipped broken (its unit tests called the handler directly, and its e2e
- * used an <iframe>). Only a real <webview> can prove this.
- *
- * Everything under the transport is production code — the privileged scheme, the
- * sandbox-proxy document + CSP response header, the relay preload installed via
- * session.setPreloads(), and the inner sandboxed iframe. The host page drives the
- * SHIPPING renderer wiring (`createMcpAppBridge`, the same function `McpAppView`
- * calls), so a regression in that wiring turns this gate red.
- *
- * ─── What this gate proves, and what it does NOT ─────────────────────────────
- * PROVES (verified by mutation: each of these broken one at a time turns it RED):
- *   - `createMcpAppBridge` sets `onsandboxready` and answers with the app HTML,
- *   - the `AppBridge` constructor args are in the right order (the M1 bug class),
- *   - `bridge.connect(transport)` is actually called,
- *   - the sandbox-proxy → relay-preload → inner-srcdoc → unmodified-App chain
- *     completes `ui/initialize` with no self-echo.
- * Does NOT prove (out of scope for this PoC; follow-up milestone):
- *   - RUNTIME app→host callbacks — `onreadresource` / `oncalltool`. Under scope S
- *     (third-party apps must work) those are real paths that would break silently
- *     if mis-wired; they are not exercised here.
- *   - a LIVE MCP server. We hand the app HTML into the harness instead of doing a
- *     real `resources/read` — a legitimate stub boundary that mirrors production
- *     (McpAppView also receives the HTML from the IPC, not from the bridge).
- */
+// A real guest must complete initialization through the production bridge without self-echo.
+// Plain frame tests cannot establish the desktop guest transport boundary.
 import { test, expect } from "@playwright/test";
 import { build } from "esbuild";
 import path from "node:path";
@@ -41,8 +9,7 @@ import { launchElectron } from "./seeded-electron.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, "../../..");
-// Bundled INTO dist/src/main/ so the production preload resolution
-// (`resolve(__dirname, "..", "mcp-app-preload.cjs")`) lands on the real preload.
+// Bundle beside production main output so relative preload resolution reaches the real preload.
 const OUT_DIR = path.join(REPO_ROOT, "dist/src/main");
 const MAIN_OUT = path.join(OUT_DIR, "mcp-app-handshake-main.js");
 
@@ -52,8 +19,6 @@ test.beforeAll(async () => {
     throw new Error(`Relay preload not built at ${preload}. Run 'bun run build' first.`);
   }
 
-  // The two page scripts are bundled to plain IIFEs and inlined into documents by
-  // the test main; the main itself is an ESM bundle alongside the real main.js.
   for (const [entry, outfile] of [
     ["host.ts", path.join(OUT_DIR, "mcp-app-handshake-host.js")],
     ["inner-app.ts", path.join(OUT_DIR, "mcp-app-handshake-inner.js")],
@@ -106,17 +71,13 @@ test("real <webview> completes ui/initialize with an UNMODIFIED ext-apps App", a
   };
 
   try {
-    // 1. The relay preload loaded in the sandbox-proxy document and announced itself.
-    //    (Proves session.setPreloads() actually injected a preload into the webview.)
+    // The relay-ready marker proves session preload injection reached the guest.
     await waitFor("SANDBOX_READY");
 
-    // 2. The inner frame is NOT its own parent — the self-echo is gone. This is the
-    //    single fact the old <webview>-hosted bridge could never satisfy.
+    // Distinct parent identity rules out self-echo.
     await waitFor("PARENT_IS_SELF:false");
 
-    // 3. THE GATE: the host AppBridge saw `ui/notifications/initialized`, so the
-    //    unmodified App's initialize request crossed out of the guest, was answered,
-    //    and the App accepted the response.
+    // Host initialization proves the unmodified guest accepted the response across the full transport.
     await waitFor("HANDSHAKE_OK");
     await waitFor("INNER_CONNECTED");
 

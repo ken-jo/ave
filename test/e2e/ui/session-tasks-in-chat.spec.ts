@@ -1,15 +1,4 @@
-/**
- * E2E: SessionTasksPanel appears inside ChatView when the assistant emits
- * `ave:session-tasks:changed` with in-progress items.
- *
- * Strategy: simulate the main-process IPC event with the active chat session
- * id and one in_progress item, then assert that
- * [data-testid="session-tasks-panel"] is visible within the chat container —
- * NOT as a top-level overlay.
- *
- * We use a light structural assertion (presence of the panel and active row)
- * rather than content text, so the test is resilient to copy changes.
- */
+// Inject a session-owned task update and verify the panel belongs inside chat rather than an overlay.
 import { test, expect } from './fixtures';
 import type { Page } from '@playwright/test';
 
@@ -32,7 +21,6 @@ async function currentSessionId(mainWindow: Page): Promise<string> {
 }
 
 test('session-tasks-panel is NOT present when no tasks exist', async ({ mainWindow }) => {
-  // The panel renders null when items list is empty — should not be in DOM
   const panel = mainWindow.locator('[data-testid="session-tasks-panel"]');
   const visible = await panel.isVisible().catch(() => false);
   expect(visible).toBe(false);
@@ -40,8 +28,6 @@ test('session-tasks-panel is NOT present when no tasks exist', async ({ mainWind
 
 test('session-tasks-panel appears inside ChatView after session-tasks:changed event', async ({ app, mainWindow }) => {
   const sessionId = await currentSessionId(mainWindow);
-  // Emit a session-tasks:changed event with one in_progress item via the
-  // preload bridge that the renderer's api.onSessionTasksChanged subscribes to.
   await app.evaluate(({ BrowserWindow }, sid) => {
     const win = BrowserWindow.getAllWindows().find((candidate) => !candidate.isDestroyed());
     if (!win) return false;
@@ -50,8 +36,6 @@ test('session-tasks-panel appears inside ChatView after session-tasks:changed ev
     return true;
   }, sessionId);
 
-  // Panel should now be visible — it lives inside the chat root grid, not as
-  // a top-level overlay.
   const panel = mainWindow.locator('[data-testid="session-tasks-panel"]');
   const found = await panel
     .waitFor({ state: 'visible', timeout: 8_000 })
@@ -66,17 +50,13 @@ test('session-tasks-panel appears inside ChatView after session-tasks:changed ev
 
   await expect(panel).toBeVisible();
 
-  // Closed by default: the active item rides on the chip.
   const collapsedActive = mainWindow.locator('[data-testid="session-tasks-collapsed-active"]');
   await expect(collapsedActive).toBeVisible();
 
-  // Opening the chip's popover should reveal the active row.
   await panel.click();
   const activeRow = mainWindow.locator('[data-testid="session-tasks-active-row"]');
   await expect(activeRow).toBeVisible();
 
-  // The chip sits on the composer's status row, right after the context
-  // ring — under the input box, not above it and not in the queue dock.
   const geometry = await mainWindow.evaluate(() => {
     const row = document.querySelector<HTMLElement>('[data-testid="iab-status-row"]');
     const ring = document.querySelector<HTMLElement>('[data-testid="iab-status-ring"]');
@@ -117,7 +97,6 @@ test('session-tasks-panel drops transient header badges and dismisses at complet
   await emitTasks([{ id: 'fresh-1', content: 'fresh step', status: 'pending' }]);
   const panel = mainWindow.locator('[data-testid="session-tasks-panel"]');
   await expect(panel).toBeVisible();
-  // A not-yet-complete plan must not surface the dismiss affordance.
   await expect(mainWindow.locator('[data-testid="session-tasks-dismiss"]')).toHaveCount(0);
 
   await emitTasks([
@@ -126,22 +105,18 @@ test('session-tasks-panel drops transient header badges and dismisses at complet
   ]);
   await expect(mainWindow.locator('[data-testid="session-tasks-dismiss"]')).toHaveCount(0);
 
-  // Every item completed → 2/2 → the dismiss X appears.
   await emitTasks([
     { id: 'fresh-1', content: 'fresh step', status: 'completed' },
     { id: 'fresh-2', content: 'added step', status: 'completed' },
   ]);
-  // The X lives in the chip's popover: open it first.
   await panel.click();
   const dismiss = mainWindow.locator('[data-testid="session-tasks-dismiss"]');
   await expect(dismiss).toBeVisible();
 
-  // Clicking it routes through clearSessionTasks, whose empty-list emit
-  // removes the panel (no local hide hack).
+  // Clear through the host event path so disappearance cannot be a local hide.
   await dismiss.click();
   await expect(panel).toHaveCount(0);
 
-  // A fresh plan repopulates the panel.
   await emitTasks([{ id: 'next-1', content: 'next topic step', status: 'pending' }]);
   await expect(panel).toBeVisible();
 });

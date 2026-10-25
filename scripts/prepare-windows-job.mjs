@@ -1,21 +1,5 @@
-/**
- * prepare-windows-job.mjs — build the Windows job launcher before tests when
- * it is missing or older than its sources.
- *
- * `resources/windows-job/<arch>/ave-job.exe` is git-ignored, so a fresh
- * Windows checkout has none, and the background-shell suites fail with
- * "Windows job launcher is missing". `test:prepare` and the pre-push hook run
- * this script; the build itself stays in `build:windows-job`
- * (scripts/build-windows-job.ps1). Only the launcher the suite loads is built:
- * the `-FailureFixture` executable belongs to scripts/test-windows-job.mjs.
- *
- * Stale means some file under native/windows-job/ or the build script is newer
- * than the executable. Without the C++ build tools the script fails, naming
- * them and the command to run; it never continues without the launcher.
- * Off Windows it does nothing.
- *
- * Usage: node scripts/prepare-windows-job.mjs   (test:prepare, pre-push)
- */
+// Prepare the ignored job launcher for fresh Windows checkouts before tests.
+// Build only the launcher tests load, not the failure-fixture executable.
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
@@ -25,12 +9,10 @@ const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 
 const BUILD_COMMAND = "bun run build:windows-job";
 const MSVC_COMPONENT = "Microsoft.VisualStudio.Component.VC.Tools.x86.x64";
 
-/** The launcher path the app resolves (src/main/windows-job-launcher.ts), relative to `root`. */
 export function windowsJobLauncherPath(arch = process.arch) {
   return path.join("resources", "windows-job", arch, "ave-job.exe");
 }
 
-/** The build script and every file under native/windows-job/, relative to `root`. */
 export function windowsJobSources(root) {
   const sources = [path.join("scripts", "build-windows-job.ps1")];
   const walk = (relative) => {
@@ -44,10 +26,6 @@ export function windowsJobSources(root) {
   return sources.sort();
 }
 
-/**
- * `{ state: "skip" | "missing" | "stale" | "fresh", launcher, newer? }`.
- * `newer` is the first source newer than the launcher.
- */
 export function windowsJobLauncherState(root, { platform = process.platform, arch = process.arch } = {}) {
   const launcher = windowsJobLauncherPath(arch);
   if (platform !== "win32") return { state: "skip", launcher };
@@ -57,7 +35,6 @@ export function windowsJobLauncherState(root, { platform = process.platform, arc
   return newer ? { state: "stale", launcher, newer } : { state: "fresh", launcher };
 }
 
-/** Whether vswhere reports an installation with the MSVC x86/x64 tools, as build-windows-job.ps1 asks it. */
 export function hasCppBuildTools({
   programFilesX86 = process.env["ProgramFiles(x86)"],
   exists = existsSync,
@@ -79,7 +56,6 @@ export function missingBuildToolsMessage(launcher) {
     `${MSVC_COMPONENT}) were not found. Install them, then run: ${BUILD_COMMAND}`;
 }
 
-/** Build the launcher when it is missing or stale. Returns the state found; throws when it cannot build. */
 export function prepareWindowsJob({
   root = PROJECT_ROOT,
   platform = process.platform,

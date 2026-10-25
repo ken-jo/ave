@@ -1,13 +1,4 @@
-/**
- * Pin / unpin flow on chat messages.
- *
- * Covers: addStarred fires with correct payload, toggle-off calls
- * starredRemove, and the starred view lists saved entries.
- *
- * Per-message pinning lives on the completed turn's action bar. The user's own
- * message card deliberately has no pin — a question is pinned by pinning the
- * conversation, not the utterance.
- */
+// Pins belong to completed turn actions; user messages are represented by their answer's pin.
 import "./setup.js";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { act, fireEvent, waitFor } from "@testing-library/react";
@@ -15,7 +6,6 @@ import { renderApp } from "./render-app.js";
 import { clickSidebarNavRow, submitChatMessage } from "./helpers.js";
 
 
-/** A finished turn, so the transcript renders the turn action bar that owns the pin. */
 const answeredTurn = (question: string, answer: string) => ({
   sessionId: "sess-star",
   messages: [
@@ -76,9 +66,7 @@ describe("Pin flow", () => {
     });
     await waitFor(() => expect(api.getSettings).toHaveBeenCalled());
 
-    // After the first click fires starredAdd, subsequent list reads should
-    // include the entry so isEntryStarred() flips true and the next click
-    // removes instead of re-adding.
+    // Refresh list results after adding so the next click removes rather than adds again.
     const addedEntry = {
       id: "s-new",
       sessionId: "sess-star",
@@ -101,10 +89,8 @@ describe("Pin flow", () => {
       fireEvent.click(await pinButton(container));
     });
     await waitFor(() => expect(api.addStarred).toHaveBeenCalled());
-    // refreshStarred runs after add; wait for the second starredList call.
     await waitFor(() => expect(api.starredList.mock.calls.length).toBeGreaterThan(1));
 
-    // Click again — now the entry is recognized as pinned and this removes.
     await act(async () => {
       fireEvent.click(await pinButton(container));
     });
@@ -133,7 +119,6 @@ describe("Pin flow", () => {
       starred,
     });
     await waitFor(() => expect(api.starredList).toHaveBeenCalled());
-    // Navigation moved from the hamburger menu to the persistent sidebar.
     await clickSidebarNavRow("features", "sidebar-starred");
     await waitFor(() => {
       expect(container.textContent).toContain("remembered answer");
@@ -158,8 +143,7 @@ describe("Pin flow", () => {
       starred,
     });
     await waitFor(() => expect(api.starredList).toHaveBeenCalled());
-    // Put another page behind Insights. Opening a result must activate Chat,
-    // not replay history back to this intermediate page.
+    // Open results must activate chat rather than replay history to the prior page.
     await clickSidebarNavRow("features", "toolbar-work-board");
     await waitFor(() => {
       expect(container.querySelector('[data-testid="view-path-current-work-board"]')).not.toBeNull();

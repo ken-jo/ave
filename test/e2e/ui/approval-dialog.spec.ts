@@ -2,11 +2,9 @@ import type { Page } from '@playwright/test';
 import { test, expect } from './fixtures.js';
 import { TEST_IDS } from "../../../src/shared/test-ids.js";
 
-// Approval geometry does not exercise plugins, so the default view-fixture
-// plugin is not seeded here.
+// Geometry coverage needs no seeded plugin.
 test.use({ seedViewFixturePlugin: false });
 
-/** The seeded conversation the focused tile holds — what a real ask names. */
 async function currentSessionId(mainWindow: Page): Promise<string> {
   return mainWindow.evaluate(async () => {
     const api = (window as unknown as {
@@ -23,20 +21,12 @@ async function currentSessionId(mainWindow: Page): Promise<string> {
   });
 }
 
-/**
- * Compatibility filename: this used to exercise the foreground dialog; the
- * assertions now pin the replacement bottom-floating dock.
- *
- * Foreground approval smoke: inject one real main-to-renderer request and
- * verify the route-independent dock without relying on an ambient tool run.
- */
+// Inject a real main-to-renderer request to verify route-independent approval without an ambient tool run.
 test('approval dock floats over the route without changing its layout', async ({
   app,
   mainWindow,
 }) => {
-  // A conversation-owned ask names its session: that is what makes the dock
-  // the conversation's (blocking its composer, taking focus). An ask that
-  // names none is a lane card instead — covered by the test below.
+  // Session ownership determines composer blocking and focus; sessionless requests belong in the lane.
   const sessionId = await currentSessionId(mainWindow);
   await app.evaluate(({ BrowserWindow }) => {
     const win = BrowserWindow.getAllWindows().find(
@@ -55,7 +45,6 @@ test('approval dock floats over the route without changing its layout', async ({
   }
   await expect(sidebarToggle).toHaveAttribute('aria-pressed', 'true');
 
-  // The work board lives in the sidebar's Features group, not on the rail itself.
   const featuresGroup = mainWindow.getByTestId('sidebar-group-features');
   const openWorkBoard = async () => {
     if ((await featuresGroup.getAttribute('aria-expanded')) !== 'true') {
@@ -71,9 +60,7 @@ test('approval dock floats over the route without changing its layout', async ({
     return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
   });
 
-  // Since #2117 a card takes focus only when nothing else holds it or the
-  // holder is inside its own surface. Navigating left focus in the sidebar,
-  // which keeps its caret by design, so release it as an idle user would.
+  // Release sidebar focus before checking card autofocus; another surface must keep its caret.
   await mainWindow.evaluate(() => {
     const active = document.activeElement;
     if (active instanceof HTMLElement) active.blur();
@@ -175,8 +162,7 @@ test('approval dock floats over the route without changing its layout', async ({
   await expect(dock.getByText(/Click to expand|펼쳐서 확인/)).toBeVisible();
   await expect(dock.getByTestId(TEST_IDS.openPermanentDenySettings)).toBeVisible();
 
-  // Container-based wrapping must keep long translated action labels inside
-  // the narrow card even when the expanded sidebar leaves very little room.
+  // Narrow cards must contain long translated action labels.
   const translatedControlOverflow = await dock.evaluate((element) => {
     const root = element as HTMLElement;
     const replacements = new Map<string, string>([
@@ -214,9 +200,7 @@ test('approval dock floats over the route without changing its layout', async ({
   expect(routeAfter.width).toBeCloseTo(routeBefore.width, 0);
   expect(routeAfter.height).toBeCloseTo(routeBefore.height, 0);
 
-  // A real route transition remains interactive while the floating card stays
-  // mounted above the route canvas.
-  // The Home row is gone (001bcb741); history Back is the route transition.
+  // History navigation must remain interactive while the floating card stays mounted.
   await mainWindow.getByTestId(TEST_IDS.viewPathBack).click();
   await expect(workBoardPanel).toBeHidden();
   const composerDock = mainWindow.locator('[data-composer-placement]').first();
@@ -241,9 +225,7 @@ test('approval dock floats over the route without changing its layout', async ({
   })).toBe(true);
   await expect(dock).toBeVisible();
 
-  // Approval is the foreground decision surface. Like the question card, it
-  // floats over the composer instead of pushing the chat layout upward; if
-  // both are pending, the approval card remains the topmost surface.
+  // Approval floats above the composer and takes precedence over simultaneous questions.
   await app.evaluate(({ BrowserWindow }, sid) => {
     const win = BrowserWindow.getAllWindows().find(
       (window) => !window.isDestroyed() && window.isVisible(),
@@ -277,9 +259,7 @@ test('approval dock floats over the route without changing its layout', async ({
     return document.elementFromPoint(x, y)?.closest('[data-testid="approval-dock"]') === root;
   })).toBe(true);
 
-  // If a question arrives while approval owns the foreground, resolving the
-  // approval must hand focus to that question instead of restoring the now
-  // hidden composer input beneath it.
+  // Resolving approval must focus the pending question rather than the obscured composer.
   await approve.focus();
   await approve.press('Enter');
   await expect(dock).toHaveCount(0);
@@ -288,8 +268,6 @@ test('approval dock floats over the route without changing its layout', async ({
   await expect(composerDock).not.toHaveAttribute('inert', '');
   await expect(composerDock).not.toHaveAttribute('aria-hidden', 'true');
 
-  // Re-open a deterministic approval so the remaining compact-height and
-  // keyboard assertions continue against the same simultaneous-question state.
   await app.evaluate(({ BrowserWindow }, sid) => {
     const win = BrowserWindow.getAllWindows().find(
       (window) => !window.isDestroyed() && window.isVisible(),
@@ -314,13 +292,10 @@ test('approval dock floats over the route without changing its layout', async ({
   await expect(composerDock).toHaveAttribute('inert', '');
   await expect(composerDock).toHaveAttribute('aria-hidden', 'true');
 
-  // At the minimum supported height, only the card body scrolls; the header
-  // and decision footer remain visible and the route still keeps its height.
+  // At minimum height, scroll only the card body while header and decisions remain visible.
   await openWorkBoard();
   await expect(workBoardPanel).toBeVisible();
-  // Window-mode resize tweens can legitimately update native bounds while the
-  // route changes. Use an explicit CDP renderer viewport override for the
-  // deterministic minimum-layout assertion.
+  // Native resize tweens can change bounds; override the renderer viewport for deterministic layout checks.
   const cdp = await mainWindow.context().newCDPSession(mainWindow);
   await cdp.send('Emulation.setDeviceMetricsOverride', {
     width: 460,
@@ -374,8 +349,7 @@ test('approval dock floats over the route without changing its layout', async ({
   await expect(approve).toBeVisible();
   await expect(deny).toBeVisible();
 
-  // A stray key outside the dock must not decide it. The flyout row closed
-  // with its flyout, so use the group trigger that stays on the rail.
+  // Keys outside the dock must not decide approval.
   await featuresGroup.focus();
   await featuresGroup.press('d');
   await expect(dock).toBeVisible();
@@ -392,8 +366,7 @@ test('approval dock floats over the route without changing its layout', async ({
   await approve.press('Enter');
   await expect(dock).toHaveCount(0);
 
-  // Space retains native button activation as well; the dock must not swallow
-  // it while providing its own Left/Right roving behavior.
+  // Preserve native Space activation alongside directional focus movement.
   await app.evaluate(({ BrowserWindow }, sid) => {
     const win = BrowserWindow.getAllWindows().find(
       (window) => !window.isDestroyed() && window.isVisible(),
@@ -430,10 +403,7 @@ test('an ask that names no conversation is a lane card that covers no composer',
   app,
   mainWindow,
 }) => {
-  // Current contract (App.tsx `paneLane`): a request without `sessionId`
-  // belongs to no conversation, so it is drawn as an `ApprovalLaneCard` in the
-  // focused pane's floating lane — never as the conversation's dock, and never
-  // disabling a composer it does not own.
+  // Sessionless requests belong to the focused pane lane and must not block any composer.
   await app.evaluate(({ BrowserWindow }) => {
     const win = BrowserWindow.getAllWindows().find(
       (window) => !window.isDestroyed() && window.isVisible(),
@@ -471,7 +441,6 @@ test('an ask that names no conversation is a lane card that covers no composer',
   await expect(lane).toBeVisible();
   await expect(lane).toHaveAttribute('role', 'region');
   await expect(mainWindow.getByTestId(TEST_IDS.approvalDock)).toHaveCount(0);
-  // The composer stays the user's: not inert, not hidden from assistive tech.
   await expect(composerDock).not.toHaveAttribute('inert', '');
   await expect(composerDock).not.toHaveAttribute('aria-hidden', 'true');
 
@@ -501,7 +470,6 @@ test('an ask that names no conversation is a lane card that covers no composer',
   }
   expect(geometry.scrollWidth).toBeLessThanOrEqual(geometry.clientWidth);
 
-  // Deciding it from the lane retires it like any other ask.
   await lane.getByTestId(TEST_IDS.denyButton).click();
   await expect(lane).toHaveCount(0);
 });
