@@ -1919,6 +1919,7 @@ function sensitiveValues(pipelines: readonly PsPipeline[], ctx: Context): string
 // Signals
 
 function lex(command: string, budget: PowerShellAnalysisBudget): { pipelines: PsPipeline[] | null; reason?: string; readable?: PsCommand[] } {
+  lexRecorder?.push(command);
   const lexer = new Lexer(command, budget);
   try {
     return { pipelines: lexer.parseProgram() };
@@ -1926,6 +1927,43 @@ function lex(command: string, budget: PowerShellAnalysisBudget): { pipelines: Ps
     if (error instanceof PsUnreadable) return { pipelines: null, reason: error.message, readable: lexer.readable };
     throw error;
   }
+}
+
+// One lex per decision: the floor inspection, the rule shape and the launch reader read the same input, so a successful lex is kept (pure, never
+// mutated after parsing) and the later two reuse it. Bounded; a miss lexes again.
+const LEXED = new Map<string, PsPipeline[]>();
+const LEXED_LIMIT = 32;
+let lexRecorder: string[] | null = null;
+
+function rememberLex(command: string, pipelines: PsPipeline[]): void {
+  LEXED.delete(command);
+  LEXED.set(command, pipelines);
+  if (LEXED.size > LEXED_LIMIT) LEXED.delete(LEXED.keys().next().value!);
+}
+
+/** The lexed program for a standalone reader (rule shape, launch argv): the inspection's own lex when it ran, else a fresh one. */
+function standaloneLex(command: string): ReturnType<typeof lex> | "budget" {
+  const cached = LEXED.get(command);
+  if (cached !== undefined) return { pipelines: cached };
+  const budget = new PowerShellAnalysisBudget();
+  let lexed: ReturnType<typeof lex>;
+  try {
+    budget.enter(command);
+    try { lexed = lex(command, budget); } finally { budget.leave(); }
+  } catch (error) {
+    if (error instanceof PowerShellBudgetError) return "budget";
+    throw error;
+  }
+  if (lexed.pipelines !== null) rememberLex(command, lexed.pipelines);
+  return lexed;
+}
+
+/** Records every input lexed from now until the returned stop function runs (tests of the lex-once contract). */
+export function _recordPowerShellLexesForTest(): { readonly lexed: readonly string[]; stop(): void } {
+  const lexed: string[] = [];
+  lexRecorder = lexed;
+  LEXED.clear();
+  return { lexed, stop: () => { lexRecorder = null; } };
 }
 
 // Rule shape
@@ -1946,15 +1984,8 @@ function ruleArgv(cmd: PsCommand): (string | null)[] | null {
 
 export function powerShellRuleShape(input: ShellCommandInput): PowerShellRuleShape {
   const command = typeof input === "string" ? input : input.command;
-  const budget = new PowerShellAnalysisBudget();
-  let lexed: ReturnType<typeof lex>;
-  try {
-    budget.enter(command);
-    try { lexed = lex(command, budget); } finally { budget.leave(); }
-  } catch (error) {
-    if (error instanceof PowerShellBudgetError) return { ok: false, reason: "analysis budget exceeded", visible: [] };
-    throw error;
-  }
+  const lexed = standaloneLex(command);
+  if (lexed === "budget") return { ok: false, reason: "analysis budget exceeded", visible: [] };
   if (lexed.pipelines === null) {
     const visible = (lexed.readable ?? []).map(ruleArgv).filter((argv): argv is (string | null)[] => argv !== null);
     return { ok: false, reason: lexed.reason ?? "unreadable", visible };
@@ -1981,16 +2012,8 @@ export function powerShellRuleShape(input: ShellCommandInput): PowerShellRuleSha
 // fixed before the launch: a group, a subexpression, a variable or splat, an expandable string with `$`, a backtick escape, or a backslash before a
 // dash or quote (which Windows argument parsing may treat otherwise) makes it null. Null when the input cannot be read.
 export function powerShellLaunchArgv(command: string): (string | null)[][] | null {
-  const budget = new PowerShellAnalysisBudget();
-  let lexed: ReturnType<typeof lex>;
-  try {
-    budget.enter(command);
-    try { lexed = lex(command, budget); } finally { budget.leave(); }
-  } catch (error) {
-    if (error instanceof PowerShellBudgetError) return null;
-    throw error;
-  }
-  if (lexed.pipelines === null) return null;
+  const lexed = standaloneLex(command);
+  if (lexed === "budget" || lexed.pipelines === null) return null;
   const commands: (string | null)[][] = [];
   const launchToken = (token: PsToken): string | null => {
     if (token.kind !== "word" || token.nested.length > 0 || token.reason !== undefined || token.raw.includes("`")) return null;
@@ -2228,6 +2251,7 @@ function visibleFallback(command: string, cwd: string | undefined, ordinaryAsk: 
 
 function inspectFrame(command: string, cwd: string | undefined, budget: PowerShellAnalysisBudget, launched: boolean, probe: boolean, files: PowerShellFileProvenance, pathData: boolean): FrameSignals {
   const { pipelines, reason, readable } = lex(command, budget);
+  if (pipelines !== null) rememberLex(command, pipelines);
   const ctx: Context = { cwd, tainted: new Set(), splats: new Map(), values: new Map(), vocabularyOpaque: false, scopeOpaque: false, launched, literalBoundary: false, files, pathData: new Set(), memberReads: new Set(), ordinary: {}, budget };
   let sensitive: string | null = null;
   const networkText = DOTNET_NETWORK.test(command);
