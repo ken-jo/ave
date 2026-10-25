@@ -1598,10 +1598,17 @@ option grammar, by three rules over the words each shell's own lexer produced
    (`| sh`, `| bash -s -- -c x`, `| pwsh -`, `| python3 -`, `base64 -d | sh`),
    `| iex`, `xargs` into a shell, or `/dev/stdin` as a script.
 
-A code string a shell will run (`bash -c`, `sh -c`, `pwsh -Command`, `cmd /c`)
-is lexed in its own dialect and goes through the same rules within the same
-bounds. Every bound fails closed: past the scan budget, the recursion depth or
-the decoded-byte bound the input is encoded code too. Encoded code gets the
+A code string a shell will run (`bash -c`, `sh -c`, `pwsh -Command`, `cmd /c`),
+including a value glued to its option (`--command=…`, `/c"…"`), is lexed in its
+own dialect and goes through the same rules within the same bounds; the stdin
+rule and this recursion share rule 2's launcher predicate, so `pwsh-preview`
+and the like are not missed. Whitespace anywhere inside a base64 run is ignored
+(as .NET's FromBase64String does), so a payload split into arbitrary chunks
+still decodes. Every bound fails closed: an input over a hard 16 KB length cap
+is hidden without being scanned, and exhausting the shared work budget, the
+recursion depth, the decoded-byte bound, or the lexer's own budget makes the
+input encoded code too; the base64 scan is linear in the input, so an ordinary
+long argument list is not mistaken for it. Encoded code gets the
 forced modal on both lanes, before any sandboxed allow; no allow rule covers it,
 the card offers no exact rule, and the card shows each decoded script. Literal
 script-file execution (`pwsh ./x.ps1`, `pwsh -f`) is outside these rules and
