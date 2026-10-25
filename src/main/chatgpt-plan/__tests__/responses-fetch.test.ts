@@ -1,3 +1,4 @@
+import { sseResponse } from "../../../__tests__/support/sse-response.js";
 import { describe, expect, it } from "vitest";
 import { VercelUnifiedProvider } from "../../../engine/llm/vercel/adapter.js";
 import type { StreamEvent } from "../../../engine/llm/types.js";
@@ -12,12 +13,7 @@ import {
 
 const BASE_BODY = { model: "gpt-6.1-sol", input: [{ role: "user", content: "hi" }], stream: true };
 
-function sse(events: unknown[]): Response {
-  return new Response(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(""), {
-    status: 200,
-    headers: { "content-type": "text/event-stream" },
-  });
-}
+const sse = sseResponse;
 
 describe("plan-usage request contract", () => {
   it("forces store:false and requires stream:true", () => {

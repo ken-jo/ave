@@ -1,5 +1,6 @@
+import { collectAsyncIterable as collect } from "../../../__tests__/test-helpers.js";
+import { sseResponse } from "../../../__tests__/support/sse-response.js";
 import { describe, expect, it, vi } from "vitest";
-import type { StreamEvent } from "../../../engine/llm/types.js";
 import { CHATGPT_PLAN_MODELS_URL, CHATGPT_PLAN_RESPONSES_URL, CHATGPT_PLAN_TOKEN_URL } from "../endpoints.js";
 import { ChatGptPlanRuntime, ChatGptPlanRuntimeError, createChatGptPlanRuntime } from "../runtime.js";
 import { CHATGPT_PLAN_ACCOUNT_SECRET_KEY, ChatGptPlanSession, type ChatGptPlanSecretStore } from "../session.js";
@@ -8,6 +9,8 @@ import { SubscriptionRuntimeService, SubscriptionRuntimeServiceError } from "../
 import type { AcpSubscriptionRuntimeRegistry } from "../../subscription-runtime-service.js";
 import type { CodexAppServerClient } from "../../codex-app-server-client.js";
 import { claimFakeRuntimeDirectories, createSubscriptionRuntimeNamespace } from "../../../__tests__/support/subscription-runtime-namespace.js";
+import { validateExternalUrl } from "../../../shared/external-url.js";
+import { t } from "../../../i18n/index.js";
 
 const PLAN_SCOPES = ["chatgpt.tokens.use.direct", "email", "offline_access", "openid", "profile", "resource.invoke"];
 const IDENTITY_SCOPES = ["email", "offline_access", "openid", "profile"];
@@ -44,12 +47,7 @@ function storedSecrets(scopes: readonly string[] | null): FakeSecrets {
   return secrets;
 }
 
-function sse(events: unknown[]): Response {
-  return new Response(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(""), {
-    status: 200,
-    headers: { "content-type": "text/event-stream" },
-  });
-}
+const sse = sseResponse;
 
 const COMPLETED_TURN = [
   { type: "response.created", response: { id: "r1", created_at: 1, model: "gpt-6.1-sol" } },
@@ -83,15 +81,15 @@ function harness(scopes: readonly string[] | null, responses: (url: string) => R
       callback: new Promise<URL>(() => undefined),
       close: () => undefined,
     }),
-  }, (url) => { opened.push(url); });
+  }, (url) => {
+    // The production opener: the same validation the subscription service applies before the system browser.
+    const validated = validateExternalUrl(url);
+    if (!validated.ok) throw new Error(validated.error);
+    opened.push(validated.url);
+  });
   return { runtime, requests, opened };
 }
 
-async function collect(stream: AsyncIterable<StreamEvent>): Promise<StreamEvent[]> {
-  const events: StreamEvent[] = [];
-  for await (const event of stream) events.push(event);
-  return events;
-}
 
 describe("ChatGPT plan runtime status", () => {
   it("is signed out with no stored record, and chat stays unavailable", () => {
@@ -124,6 +122,8 @@ describe("ChatGPT plan runtime status", () => {
     const params = new URL(consent.opened[0]!).searchParams;
     expect(params.get("client_id")).toBe("oaiapp_1");
     expect(params.get("prompt")).toBe("consent");
+    // The reauthorization carries the retained ID token as a hint, and still passes the opener's validation.
+    expect(params.get("id_token_hint")).toBe("stored-id-token");
     consent.runtime.cancelLogin();
   });
 });
@@ -178,6 +178,28 @@ describe("ChatGPT plan transport", () => {
     });
     expect(JSON.stringify(error)).not.toContain("user@example.com");
     expect(JSON.stringify(error)).not.toContain("stored-access-token");
+    // The main-process catalog resolves the message; a raw key would mean the fragment is not loaded.
+    expect(error).toMatchObject({ error: t("subscriptionProvidersSection.chatgptPlanErrorUsageLimit") });
+    expect((error as { error: string }).error).not.toMatch(/^subscriptionProvidersSection\./);
+  });
+
+  it("keeps the session when a refresh cannot reach the provider, and says to retry rather than sign in", async () => {
+    const secrets = storedSecrets(PLAN_SCOPES);
+    const record = JSON.parse(secrets.values.get(CHATGPT_PLAN_ACCOUNT_SECRET_KEY)!);
+    record.tokens.expiresAt = NOW - 1;
+    secrets.values.set(CHATGPT_PLAN_ACCOUNT_SECRET_KEY, JSON.stringify(record));
+    const runtime = createChatGptPlanRuntime({
+      secrets,
+      networkFetch: (async () => new Response("unavailable", { status: 503 })) as typeof fetch,
+      namespace: createSubscriptionRuntimeNamespace(),
+    }, () => undefined);
+    const transport = new ChatGptPlanTransport(
+      { kind: "subscription", provider: "chatgpt-plan", model: "gpt-6.1-sol" },
+      async () => runtime,
+    );
+    const events = await collect(transport.streamTurn({ model: "m", systemPrompt: "s", messages: [{ role: "user", content: "hi" }] }));
+    expect(events.at(-1)).toMatchObject({ type: "error", classification: "chatgpt-plan-temporarily-unavailable" });
+    expect(runtime.getStatus().connection).toBe("connected");
   });
 
   it("fails clearly when signed out, without making an inference request", async () => {

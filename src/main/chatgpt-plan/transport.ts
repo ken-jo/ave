@@ -16,7 +16,7 @@ import {
   createChatGptPlanResponsesFetch,
   type ChatGptPlanResponseFailure,
 } from "./responses-fetch.js";
-import type { ChatGptPlanRuntime } from "./runtime.js";
+import { ChatGptPlanRuntimeError, type ChatGptPlanRuntime } from "./runtime.js";
 
 type ErrorStreamEvent = Extract<StreamEvent, { type: "error" }>;
 type CreateTransport = (config: Parameters<typeof createVercelTransport>[0]) => Pick<LLMProvider, "streamTurn">;
@@ -57,7 +57,12 @@ function unavailableEvent(code: keyof typeof FAILURE_MESSAGE_KEYS): ErrorStreamE
     type: "error",
     error: t(FAILURE_MESSAGE_KEYS[code]),
     classification: code,
-    providerError: { origin: "unknown", providerCode: code, isRetryable: false, messagePreview: code },
+    providerError: {
+      origin: "unknown",
+      providerCode: code,
+      isRetryable: code === "chatgpt-plan-temporarily-unavailable",
+      messagePreview: code,
+    },
   };
 }
 
@@ -101,14 +106,17 @@ export class ChatGptPlanTransport implements Pick<LLMProvider, "streamTurn" | "l
       return;
     }
     let lastFailure: ChatGptPlanResponseFailure | undefined;
-    let tokenUnavailable = false;
+    let tokenFailure: keyof typeof FAILURE_MESSAGE_KEYS | undefined;
     const planFetch = createChatGptPlanResponsesFetch({
       fetch: runtime.fetch,
       accessToken: async () => {
         try {
           return await runtime.accessToken();
         } catch (error) {
-          tokenUnavailable = true;
+          // A refresh that could not reach the provider keeps the session; only a signed-out or unusable one needs a new sign-in.
+          tokenFailure = error instanceof ChatGptPlanRuntimeError && error.code === "subscription-runtime-unavailable"
+            ? "chatgpt-plan-temporarily-unavailable"
+            : "chatgpt-plan-reconnect-required";
           throw error;
         }
       },
@@ -148,8 +156,8 @@ export class ChatGptPlanTransport implements Pick<LLMProvider, "streamTurn" | "l
         continue;
       }
       if (event.type === "error") {
-        if (tokenUnavailable) {
-          yield unavailableEvent("chatgpt-plan-reconnect-required");
+        if (tokenFailure) {
+          yield unavailableEvent(tokenFailure);
           return;
         }
         const failure = lastFailure;

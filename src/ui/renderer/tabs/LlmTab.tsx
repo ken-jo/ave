@@ -1918,7 +1918,8 @@ export function LlmTab(props: LlmTabProps) {
   const activeRuntime = subscription.activeRuntime;
   const activeSyncRow = useMemo<ProviderConnection | undefined>(
     () => activeRuntime.kind === "subscription"
-      ? connections.find((row) => row.id === activeRuntime.provider)
+      ? connections.find((row) =>
+        row.id === activeRuntime.provider || row.planSubscription?.descriptor.id === activeRuntime.provider)
       : connections.find((row) => row.apiVendorId && rowCredentialId(row) === activeApiRowId),
     [activeApiRowId, activeRuntime, connections, rowCredentialId],
   );
@@ -2727,8 +2728,11 @@ export function LlmTab(props: LlmTabProps) {
   /** How many models this row contributes to the one chooser. */
   const rowOfferedModelCount = (row: ProviderConnection): number => {
     const apiId = row.apiVendorId ? apiProviderId(rowCredentialId(row)) : null;
+    const planId = row.planSubscription?.descriptor.id;
     return unifiedOptions.filter((option) =>
-      option.providerId === row.id || (apiId !== null && option.providerId === apiId)).length;
+      option.providerId === row.id
+      || (planId !== undefined && option.providerId === planId)
+      || (apiId !== null && option.providerId === apiId)).length;
   };
 
   /** Give each provider row one usability state; route details explain partial failures, while the active-route badge separately shows chat selection. */
