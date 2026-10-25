@@ -22,6 +22,12 @@ export type OpenAiProviderConnection =
       kind: "codex-subscription";
       selection: SubscriptionChatRuntimeSelection & { provider: "codex" };
       transport: OpenAiTransport;
+    }
+  | {
+      /** Sign in with ChatGPT plan usage: Ave's OAuth session on the Responses wire, no CLI and no API key. */
+      kind: "chatgpt-plan";
+      selection: SubscriptionChatRuntimeSelection & { provider: "chatgpt-plan" };
+      transport: OpenAiTransport;
     };
 
 /** Shared request policy with separately owned authentication and wire protocols. */
@@ -34,20 +40,21 @@ export class OpenAiProvider implements LLMProvider {
   constructor(connection: OpenAiProviderConnection) {
     this.transport = connection.transport;
     this.connectionKind = connection.kind;
-    if (connection.kind === "codex-subscription") {
-      if (connection.selection.kind !== "subscription" || connection.selection.provider !== "codex") {
+    if (connection.kind !== "api-key") {
+      const provider = connection.kind === "codex-subscription" ? "codex" : "chatgpt-plan";
+      if (connection.selection.kind !== "subscription" || connection.selection.provider !== provider) {
         throw new Error("invalid OpenAI subscription connection");
       }
       this.subscriptionRuntime = Object.freeze({
         kind: "subscription",
-        provider: "codex",
+        provider,
         ...(connection.selection.model === undefined ? {} : { model: connection.selection.model }),
       });
     }
   }
 
   listSubscriptionModels(): Promise<readonly string[]> {
-    if (this.connectionKind !== "codex-subscription" || !this.transport.listSubscriptionModels) {
+    if (this.connectionKind === "api-key" || !this.transport.listSubscriptionModels) {
       return Promise.reject(new Error("model catalog unavailable for this connection"));
     }
     return this.transport.listSubscriptionModels();
@@ -61,8 +68,8 @@ export class OpenAiProvider implements LLMProvider {
       messages: projectOpenAiMessages(input.messages),
       toolSchemas: projectOpenAiTools(input.toolSchemas),
     };
-    // Estimate the same prepared API input used for dispatch; native envelopes own their estimator.
-    return this.connectionKind === "api-key"
+    // Estimate the same prepared API input used for dispatch (API key and plan usage share the Responses/API wire); native envelopes own their estimator.
+    return this.connectionKind !== "codex-subscription"
       ? estimateRequestInputProjection(projected, {
           vendor: this.vendor,
           projectRequestInput: this.transport.projectRequestInput?.bind(this.transport),

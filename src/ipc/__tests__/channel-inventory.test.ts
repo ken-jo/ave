@@ -533,6 +533,7 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:settings:marketplace:uninstall-provider-preset",
         "ave:settings:set-api-key",
         "ave:settings:set-web-api-key",
+        "ave:settings:subscription:acknowledge-notice",
         "ave:settings:subscription:cancel-login",
         "ave:settings:subscription:choose-runtime",
         "ave:settings:subscription:forget-runtime",

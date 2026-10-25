@@ -41,6 +41,13 @@ const mockedOpen = vi.mocked(fspMock.open);
 // Use real throwaway certificates because acquisition parses and verifies subjects, rejecting merely PEM-shaped text.
 const SAMPLE_PEM = CORP_CA_PEM;
 
+function mockCacheWriter() {
+  mockedOpen.mockResolvedValue({
+    writeFile: vi.fn(async () => undefined),
+    close: vi.fn(async () => undefined),
+  } as never);
+}
+
 function makeFreshStat(): ReturnType<typeof fsMock.fstatSync> {
   return { mtimeMs: Date.now() - 1000 } as ReturnType<typeof fsMock.fstatSync>;
 }
@@ -184,11 +191,7 @@ describe("ensureCorporateCa", () => {
     // execFile returns fresh PEM
     mockExecFileStdout(SAMPLE_PEM);
 
-    const mockFd = {
-      writeFile: vi.fn(async () => undefined),
-      close: vi.fn(async () => undefined),
-    };
-    mockedOpen.mockResolvedValue(mockFd as never);
+    mockCacheWriter();
 
     const { ensureCorporateCa } = await import("../corp-ca-runtime.js");
     const result = await ensureCorporateCa();
@@ -202,11 +205,7 @@ describe("ensureCorporateCa", () => {
     // so this uses the second, genuinely different one.
     const twoCerts = SAMPLE_PEM + CORP_CA_G2_PEM;
     mockExecFileStdout(twoCerts);
-    const mockFd = {
-      writeFile: vi.fn(async () => undefined),
-      close: vi.fn(async () => undefined),
-    };
-    mockedOpen.mockResolvedValue(mockFd as never);
+    mockCacheWriter();
 
     const { ensureCorporateCa } = await import("../corp-ca-runtime.js");
     const result = await ensureCorporateCa();

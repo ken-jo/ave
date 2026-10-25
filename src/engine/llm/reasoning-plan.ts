@@ -90,6 +90,8 @@ export function planReasoning(params: {
   model: string;
   enableThinking: boolean;
   budgetTokens: number;
+  // A named effort chosen by the user (a speed menu) wins over the one a budget maps to.
+  requestedEffort?: ReturnType<typeof mapReasoningEffort>;
   baseUrl?: string;
   catalogModel?: string;
   // Route reasoning support includes endpoint reports; without it, consult only the catalog.
@@ -116,6 +118,7 @@ function routeReasoningSupport(params: {
 
 function planReasoningLevel(params: {
   vendor: LLMVendor; model: string; budgetTokens: number; baseUrl?: string; catalogModel?: string;
+  requestedEffort?: ReturnType<typeof mapReasoningEffort>;
   reasoning?: ResolvedReasoningSupport;
 }): ReasoningPlan | undefined {
   const entry = catalogModelFor(params.vendor, params.model, params.catalogModel, params.baseUrl)?.model;
@@ -125,7 +128,7 @@ function planReasoningLevel(params: {
     return { kind: "none", source: "model-catalog" };
   }
   if (OPENAI_FAMILY.has(params.vendor)) {
-    const requestedEffort = mapReasoningEffort(params.budgetTokens);
+    const requestedEffort = params.requestedEffort ?? mapReasoningEffort(params.budgetTokens);
     if (support?.source === "endpoint-report") {
       // The report must name the parameter used by the selected request protocol.
       const wireParameter = usesOpenAIResponsesWire(params.vendor, params.model, support, params.baseUrl) ? "reasoning" : "reasoning_effort";

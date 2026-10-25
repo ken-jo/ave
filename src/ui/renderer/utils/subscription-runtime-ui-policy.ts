@@ -5,6 +5,8 @@ import type {
   SubscriptionRuntimeId,
 } from "../../../shared/subscription-runtime.js";
 import { isPositiveSafeInteger } from "../../../shared/safe-integer.js";
+import { subscriptionRuntimeDescriptor } from "../../../shared/subscription-runtime.js";
+import { supportsVision } from "../../../engine/llm/vendor-capabilities.js";
 
 /**
  * Renderer-safe projection of the selected subscription runtime's verified
@@ -110,13 +112,17 @@ export function selectSubscriptionRuntimeUiPolicy({
       ? null
       : capabilities?.chat === true
     : false;
-  const imageAttachmentLimits = subscriptionSelected && capabilities?.images === true
+  // A runtime whose image input depends on the model (ChatGPT plan usage) offers images only for a model that accepts them.
+  const imageModelVendor = provider ? subscriptionRuntimeDescriptor(provider).imageInputFollowsModelOf : undefined;
+  const modelAcceptsImages = imageModelVendor === undefined
+    || (activeSubscriptionRuntime?.model !== undefined && supportsVision(imageModelVendor, activeSubscriptionRuntime.model));
+  const imageAttachmentLimits = subscriptionSelected && capabilities?.images === true && modelAcceptsImages
     ? safeImageAttachmentLimits(capabilities.imageAttachmentLimits)
     : null;
   const imagesReady = subscriptionSelected
     ? statusPending
       ? null
-      : capabilities?.images === true && imageAttachmentLimits !== null
+      : capabilities?.images === true && modelAcceptsImages && imageAttachmentLimits !== null
     : false;
   const filesReady = subscriptionSelected
     ? statusPending

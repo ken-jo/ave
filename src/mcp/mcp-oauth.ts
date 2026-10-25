@@ -452,9 +452,12 @@ export class McpOAuthSession {
       scope: discovery.scope, fetchFn: this.authFetch,
     });
     const method = client.token_endpoint_auth_method;
+    // A secret-bearing method must be one the token endpoint advertises. "none" is exempt: the server
+    // just issued this public client, and some servers (GitLab) list only their secret methods.
     if (method && (!["none", "client_secret_basic", "client_secret_post"].includes(method) ||
       (method !== "none" && !client.client_secret) ||
-      (discovery.metadata.token_endpoint_auth_methods_supported && !discovery.metadata.token_endpoint_auth_methods_supported.includes(method)))) {
+      (method !== "none" && discovery.metadata.token_endpoint_auth_methods_supported &&
+        !discovery.metadata.token_endpoint_auth_methods_supported.includes(method)))) {
       throw new Error(AUTH_FAILED);
     }
     if (!client.redirect_uris.includes(redirectUri)) throw new Error(AUTH_FAILED);

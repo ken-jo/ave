@@ -99,7 +99,7 @@ describe("CSV / TSV", () => {
     expect((await refusal(() => parseTableDocument(Buffer.alloc(11, 0x61), "csv", 0, limits({ maxFileBytes: 10 })))).code)
       .toBe("too-large");
     expect((await refusal(() => parseTableDocument(Buffer.from("a\n"), "csv", 1))).code).toBe("sheet-not-found");
-    expect((await refusal(() => parseTableDocument(Buffer.from("a\n"), "csv", -1))).code).toBe("sheet-not-found");
+    expect((await refusal(() => parseTableDocument(Buffer.from("a\n"), "csv", -1))).code).toBe("invalid-index");
   });
 
   it("refuses an unterminated quoted field rather than repairing it", async () => {

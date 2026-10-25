@@ -56,7 +56,7 @@ import { normalizeSettingsTab, type SettingsTab } from "../shared/settings-tabs.
 import {
   type LlmModelListCache,
 } from "../shared/llm-model-list.js";
-import type { ActiveChatRuntime } from "../shared/subscription-runtime.js";
+import type { ActiveChatRuntime, SubscriptionReasoningSpeed } from "../shared/subscription-runtime.js";
 import {
   isProcessingDisplayLevel,
   type ProcessingDisplayLevel,
@@ -385,6 +385,9 @@ export interface LLMSettings {
   /** The model catalog refresh (design `model-capability-catalog.md` §7). Absent means the default, `"auto"`: once a day the host fetches the public models.dev document and caches
    * it for the next launch. `"off"` keeps the catalog to the last cached copy or the bundled snapshot. The `AVE_MODEL_CATALOG` pin and the managed policy file can also turn it off. */
   modelCatalogRefresh?: "auto" | "off";
+  /** The model speed for a subscription runtime that `offersReasoningSpeed` (ChatGPT plan usage). Absent means
+   * `DEFAULT_SUBSCRIPTION_REASONING_SPEED`. API-key routes keep their own per-vendor thinking budget and never read it. */
+  subscriptionReasoningSpeed?: SubscriptionReasoningSpeed;
 }
 
 /** Patch shape for `SettingsService.patch()`. Vendor blocks are partial so a UI save touching a single vendor doesn't have to send every default or marketplace provider block. */
@@ -399,6 +402,7 @@ export interface LLMSettingsPatch {
   pricingOverrides?: PricingOverride[];
   pinnedModels?: string[];
   modelCatalogRefresh?: "auto" | "off";
+  subscriptionReasoningSpeed?: SubscriptionReasoningSpeed;
 }
 
 export interface ChatSettings {

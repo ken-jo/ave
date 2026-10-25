@@ -653,6 +653,7 @@ describe("preload contextBridge world shape lock", () => {
           "starredList": "function",
           "starredRemove": "function",
           "submitFeedback": "function",
+          "subscriptionAcknowledgeNotice": "function",
           "subscriptionCancelLogin": "function",
           "subscriptionChooseRuntime": "function",
           "subscriptionForgetRuntime": "function",

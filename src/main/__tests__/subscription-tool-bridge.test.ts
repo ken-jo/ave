@@ -1,3 +1,4 @@
+import { deferred } from "../../__tests__/support/deferred.js";
 import type { Server } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -53,14 +54,8 @@ describe("SubscriptionToolBridge remote tool aliases", () => {
       listenMcpServer(server: Server): Promise<void>;
     };
     const originalListen = internals.listenMcpServer.bind(bridge);
-    let signalListenStarted: () => void = () => {};
-    const listenStarted = new Promise<void>((resolve) => {
-      signalListenStarted = resolve;
-    });
-    let releaseListen: () => void = () => {};
-    const listenReleased = new Promise<void>((resolve) => {
-      releaseListen = resolve;
-    });
+    const { promise: listenStarted, resolve: signalListenStarted } = deferred<void>();
+    const { promise: listenReleased, resolve: releaseListen } = deferred<void>();
     let createdServer: Server | undefined;
     const listenSpy = vi.spyOn(internals, "listenMcpServer").mockImplementation(async (server) => {
       createdServer = server;

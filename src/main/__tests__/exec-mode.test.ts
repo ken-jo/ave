@@ -1,3 +1,4 @@
+import { withTempDirectory } from "./support/temp-directory.js";
 import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
 // Drive runStreamedTurn itself so stdout events cannot drift from host events.
 import { describe, expect, it, vi } from "vitest";
@@ -479,20 +480,15 @@ describe("runExecTurn — stream-json output", () => {
     expect(text).toBe(events.map((event) => `${JSON.stringify(event)}\n`).join(""));
   });
 
-  it("refuses a project root the workspace has not authorized instead of re-rooting it", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "exec-project-"));
-    try {
-      const harness = makeDeps({ isAuthorizedProjectRoot: () => false });
-      const code = await runExecTurn(harness.deps, turnRequest({ cwd: dir }));
-      expect(code).toBe(64);
-      expect(harness.newConversation).not.toHaveBeenCalled();
-      expect(harness.runTurn).not.toHaveBeenCalled();
-      expect(harness.stderr.text()).toContain("not an authorized workspace project");
-      expect(harness.stderr.text()).toContain(dir);
-    } finally {
-      await cleanupTmpDir(dir);
-    }
-  });
+  it("refuses a project root the workspace has not authorized instead of re-rooting it", withTempDirectory("exec-project-", async (dir) => {
+    const harness = makeDeps({ isAuthorizedProjectRoot: () => false });
+    const code = await runExecTurn(harness.deps, turnRequest({ cwd: dir }));
+    expect(code).toBe(64);
+    expect(harness.newConversation).not.toHaveBeenCalled();
+    expect(harness.runTurn).not.toHaveBeenCalled();
+    expect(harness.stderr.text()).toContain("not an authorized workspace project");
+    expect(harness.stderr.text()).toContain(dir);
+  }));
 
   it("publishes a structured authorization terminal without raw tool input", async () => {
     const authorizationRequired = issueAuthorizationRequiredControl({
@@ -523,19 +519,14 @@ describe("runExecTurn — stream-json output", () => {
     expect(harness.stdout.text()).not.toContain("super-secret-command");
   });
 
-  it("opens the session on the requested project root", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "exec-project-"));
-    try {
-      const harness = makeDeps();
-      await runExecTurn(harness.deps, turnRequest({ cwd: dir }));
-      expect(harness.newConversation).toHaveBeenCalledWith("main", {
-        projectRoot: dir,
-        projectName: basename(dir),
-      });
-    } finally {
-      await cleanupTmpDir(dir);
-    }
-  });
+  it("opens the session on the requested project root", withTempDirectory("exec-project-", async (dir) => {
+    const harness = makeDeps();
+    await runExecTurn(harness.deps, turnRequest({ cwd: dir }));
+    expect(harness.newConversation).toHaveBeenCalledWith("main", {
+      projectRoot: dir,
+      projectName: basename(dir),
+    });
+  }));
 
   it("threads the round budget into the turn options", async () => {
     const harness = makeDeps();
