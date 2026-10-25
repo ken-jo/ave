@@ -30,6 +30,9 @@ import {
 import { execFileSync, spawn } from "node:child_process";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
+import { lookup as lookupAll } from "node:dns/promises";
+// Ave patch test seam, reached by file path (not on the package entry).
+import { setDestinationResolverForTesting } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-manager.js";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, sep } from "node:path";
@@ -581,10 +584,15 @@ describe("asrt-sandbox — REAL enforcement via the SHARED config (strict union 
    * is HARD-DENIED at the proxy with NO askCb fallthrough (strictAllowlist).
    *
    * Probe hosts: two names under the reserved `.localhost` domain, served by
-   * a loopback HTTP server this suite starts. ASRT's proxy resolves an
-   * allow-listed `.localhost` name to loopback itself (RFC 6761; see its
-   * resolved-address guard), so the ONLY variable is whether the name is on
-   * the shared allow-list, and no probe leaves the machine. These cases used
+   * a loopback HTTP server this suite starts. ASRT's proxy resolves a name
+   * through the host's resolver, and hosts disagree on `.localhost` names:
+   * local macOS answers ::1 and 127.0.0.1, while the hosted macOS runner's
+   * getaddrinfo answers ENOTFOUND, so the proxy refused the allow-listed name
+   * with 403 there (2026-10-25, #184). The suite therefore pins the two probe
+   * names to the server's 127.0.0.1 through ASRT's destination-resolver test
+   * seam; the allow-list decision, the resolved-address guard and the pinned
+   * dial stay ASRT's own, so the ONLY variable is whether the name is on the
+   * shared allow-list, and no probe leaves the machine. These cases used
    * to probe example.com/example.org over the internet: a slow or failed
    * lookup on a loaded CI runner read as a denial (2026-10-19, PR #10) or
    * silently skipped the case. curl is told to proxy every name
@@ -603,9 +611,15 @@ describe("asrt-sandbox — REAL enforcement via the SHARED config (strict union 
     });
     await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", resolve));
     port = (server.address() as AddressInfo).port;
+    const probeHosts = new Set([ALLOWED_HOST, OTHER_HOST]);
+    setDestinationResolverForTesting(async (name) => {
+      if (probeHosts.has(name)) return [{ address: "127.0.0.1", family: 4 }];
+      return lookupAll(name, { all: true, verbatim: true });
+    });
   });
 
   afterAll(async () => {
+    setDestinationResolverForTesting(undefined);
     await new Promise<void>((resolve) => (server ? server.close(() => resolve()) : resolve()));
   });
 
