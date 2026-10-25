@@ -154,6 +154,23 @@ describe("spawnWindowsBundledProcess", () => {
     expect(homeCleanup).toHaveBeenCalledTimes(1);
   });
 
+  it("rechecks caller admission after preparation and releases the grant if permission changed", async () => {
+    let allowed = true;
+    const actualSpawn = vi.fn();
+    confinedSpawn.mockImplementationOnce(async (spec) => {
+      allowed = false;
+      spec.assertStillValid?.();
+      actualSpawn();
+      return { child: brokerChild(), confinement: "windows-srt" };
+    });
+    await expect(spawnWindowsBundledProcess({ ...input, assertStillValid: () => {
+      if (!allowed) throw new Error("permission revoked");
+    } })).rejects.toThrow("permission revoked");
+    expect(actualSpawn).not.toHaveBeenCalled();
+    expect(grantRelease).toHaveBeenCalledTimes(1);
+    expect(homeCleanup).toHaveBeenCalledTimes(1);
+  });
+
   it("refuses a process that came back unconfined, and ends it", async () => {
     const child = brokerChild();
     confinedSpawn.mockImplementationOnce(async () => ({ child, confinement: "unconfined", stdin: new PassThrough(), stdout: new PassThrough() }));

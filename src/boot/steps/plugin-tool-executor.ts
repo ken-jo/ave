@@ -14,6 +14,7 @@
 import { randomUUID } from "node:crypto";
 import { createHookRunner } from "../conversation.js";
 import { wireHookSystem } from "./hook-system-wiring.js";
+import { createHookCommandAuthorizer } from "../../hooks/hook-command-policy.js";
 import { ToolExecutor } from "../../tools/executor.js";
 import {
   createPluginSurfacePermissionScope,
@@ -72,7 +73,8 @@ export async function setupPluginToolExecutor(ctx: BootContext): Promise<void> {
   // `post-*.sh` / `perm-*.sh` files under `~/.config/ave/hooks/`).
   // Production boot has no renderer approval prompt: untrusted or changed hook
   // files are strict-denied and moved to `.disabled/`.
-  const hookSystem = await wireHookSystem({ auditLogger: bootAuditLogger });
+  const hookSystem = await wireHookSystem({ auditLogger: bootAuditLogger, notificationService: ctx.notificationService,
+    authorizeCommand: createHookCommandAuthorizer({ permissionManager, approvalGate }) });
   const scriptHookManager = hookSystem.manager;
   const pluginOperationGrants = new PluginOperationGrantCoordinator();
   const pluginOperationIdentityProvider: PluginOperationIdentityProvider = (

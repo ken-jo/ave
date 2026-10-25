@@ -3,7 +3,7 @@
  * `webPreferences.additionalArguments`.
  *
  * The dock window runs sandboxed, and a sandboxed preload can require only
- * `electron`, `events`, `timers` and `url` — not `node:path`, so it cannot
+ * `electron` — not `node:path`, so it cannot
  * resolve a sibling file from `__dirname` the way the host preload does. Main
  * already resolves every runtime asset (`runtimeAssetPath`), so it passes the
  * two URLs the dock mounts plugin cards with, and the preload reads them from

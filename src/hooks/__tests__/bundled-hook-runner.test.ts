@@ -21,7 +21,7 @@ vi.mock("../../permissions/asrt-sandbox.js", async (original) => {
   return { ...real, isAsrtSandboxActive: () => sandboxActive, isPluginWorkerConfinementActive: () => sandboxActive,
     wrapWorkerCommand: (cmdline: string, options?: unknown) => wrap(cmdline, options), cleanupAsrtSandboxAfterCommand: vi.fn(async () => undefined),
     // Not the real one: it creates `<AVE_HOME>/sandbox/tmp/…`, and this file does not isolate AVE_HOME.
-    ensureSandboxTempPrincipalDir: (principal: { kind: "plugin" | "mcp"; id: string }) => ({
+    ensureSandboxTempPrincipalDir: (principal: SandboxTempPrincipal) => ({
       dir: join(SANDBOX_TEMP_ROOT, real.sandboxTempPrincipalDirName(principal)), root: SANDBOX_TEMP_ROOT }) };
 });
 
@@ -55,7 +55,10 @@ vi.mock("../../sandbox/wrap-bundled-command.js", async (original) => {
 });
 
 import { runOneHookScript } from "../script-hook-runner.js";
-import { appOwnedSandboxPrivateRoots } from "../../permissions/asrt-sandbox.js";
+import { appOwnedSandboxPrivateRoots, type SandboxTempPrincipal } from "../../permissions/asrt-sandbox.js";
+import {
+  __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, setActiveSandboxCapability, setShellSandboxRequestedAtBoot,
+} from "../../permissions/sandbox-capability.js";
 
 const root = mkdtempSync(join(tmpdir(), "ave-bundled-hook-runner-"));
 const generationRoot = join(root, "generation");
@@ -67,10 +70,91 @@ const payload: ScriptHookStdin = { hookType: "pre", event: "pre", toolName: "rea
 const runnable = () => ({ id: "hook", hookType: "pre" as const, source: "config" as const,
   hookPath: script, command: ["node", script], confinement: { kind: "bundled" as const, pluginId: "hook-plugin", dataDir, generationRoot } });
 
-afterEach(() => { sandboxActive = false; admissionOpen = true; wrap.mockReset(); vi.restoreAllMocks(); windowsSpawns.length = 0; releaseHoldMock.mockReset(); failWindowsSpawn = undefined; });
+/**
+ * A user hook takes its sandbox from the host-shell plan, so it is wrapped only
+ * when the shell sandbox was requested and a full ASRT capability is live;
+ * ASRT running for plugin workers alone (`sandboxActive`) is not its scope.
+ */
+function activateShellSandbox(): void {
+  sandboxActive = true;
+  setShellSandboxRequestedAtBoot(true);
+  setActiveSandboxCapability({ kind: "asrt", confidence: "verified", platform: "darwin", reason: "test shell sandbox",
+    confines: { filesystem: true, process: true, network: true } });
+}
+
+afterEach(() => { __resetSandboxRequestedAtBootForTest(); __resetActiveSandboxCapabilityForTest(); sandboxActive = false; admissionOpen = true; wrap.mockReset(); vi.restoreAllMocks(); windowsSpawns.length = 0; releaseHoldMock.mockReset(); failWindowsSpawn = undefined; });
 afterAll(async () => { await cleanupTmpDir(root); });
 
 describe("bundled hook runner", () => {
+  it("applies the active wrapper to a user hook with its cwd write scope", async () => {
+    writeFileSync(script, "process.stdout.write(JSON.stringify({action:'allow',reason:'wrapped user hook'}))");
+    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    activateShellSandbox();
+    wrap.mockResolvedValueOnce({ argv: ["node", script], env: {} });
+    const { confinement: _confinement, ...userHook } = runnable();
+    const result = await runOneHookScript(userHook, payload, { cwd: dataDir });
+    expect(result.decision, result.reason).toBe("allow");
+    const options = wrap.mock.calls[0]![1] as { filesystem: { allowRead: string[]; allowWrite: string[]; denyRead: string[]; denyWrite: string[] } };
+    expect(options.filesystem.allowRead).not.toContain(script);
+    const hostTemp = process.env.TMPDIR ?? process.env.TEMP ?? process.env.TMP;
+    if (hostTemp) expect(options.filesystem.allowRead).not.toContain(hostTemp);
+    expect(options.filesystem.allowWrite).toContain(dataDir);
+    expect(options.filesystem.allowWrite).not.toContain(generationRoot);
+    expect(options.filesystem.denyRead).toContain(join(homedir(), ".ssh"));
+    expect(options.filesystem.denyWrite.length).toBeGreaterThan(0);
+  });
+
+  it("never grants a secret-path read merely because a command uses it as an anchor", async () => {
+    writeFileSync(script, "process.stdout.write(JSON.stringify({action:'allow',reason:'wrapped'}))");
+    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    activateShellSandbox();
+    wrap.mockResolvedValueOnce({ argv: ["node", script], env: {} });
+    const protectedAnchor = join(homedir(), ".ssh", "fixture-private.cjs");
+    const result = await runOneHookScript({ id: "protected-anchor", hookType: "pre", source: "config",
+      hookPath: protectedAnchor, command: ["node", protectedAnchor] }, payload, { cwd: dataDir });
+    expect(result.decision).toBe("allow");
+    const options = wrap.mock.calls[0]![1] as { filesystem: { allowRead: string[]; denyRead: string[] } };
+    expect(options.filesystem.allowRead).not.toContain(protectedAnchor);
+    expect(options.filesystem.denyRead).toContain(join(homedir(), ".ssh"));
+  });
+
+  it("refuses user hook execution if the active wrapper fails", async () => {
+    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    activateShellSandbox();
+    wrap.mockRejectedValueOnce(new Error("user hook wrap failed"));
+    const { confinement: _confinement, ...userHook } = runnable();
+    expect(await runOneHookScript(userHook, payload, { cwd: dataDir }))
+      .toMatchObject({ decision: "deny", reason: "sandbox unavailable: user hook wrap failed" });
+  });
+
+  it("refuses a user hook whose permission is revoked during sandbox preparation", async () => {
+    writeFileSync(script, "process.stdout.write(JSON.stringify({action:'allow',reason:'should not run'}))");
+    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    activateShellSandbox();
+    let allowed = true;
+    wrap.mockImplementationOnce(async () => {
+      allowed = false;
+      return { argv: ["node", script], env: {} };
+    });
+    const { confinement: _confinement, ...userHook } = runnable();
+    const result = await runOneHookScript(userHook, payload, { cwd: dataDir,
+      authorizeCommand: async () => ({ decision: "allow", reason: "initial admission", assertAllowed: () => {
+        if (!allowed) throw new Error("permission revoked");
+      } }),
+    });
+    expect(result).toMatchObject({ decision: "deny", rawStdout: "", reason: "hook command denied before spawn: permission revoked" });
+  });
+
+  it("does not wrap a user hook when ASRT runs only for plugin workers", async () => {
+    writeFileSync(script, "process.stdout.write(JSON.stringify({action:'allow',reason:'unwrapped user hook'}))");
+    sandboxActive = true;
+    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const { confinement: _confinement, ...userHook } = runnable();
+    const result = await runOneHookScript(userHook, payload, { cwd: dataDir });
+    expect(result.decision, result.reason).toBe("allow");
+    expect(wrap).not.toHaveBeenCalled();
+  });
+
   it("spawns the script with the sealed cwd, scoped env, and stdin envelope", async () => {
     writeFileSync(script, `const fs = require('node:fs'); let input = ''; process.stdin.on('data', (part) => input += part);
 process.stdin.on('end', () => process.stdout.write(JSON.stringify({action:'allow',reason:JSON.stringify({cwd:fs.realpathSync(process.cwd())===fs.realpathSync(process.env.PLUGIN_ROOT),root:process.env.PLUGIN_ROOT?.includes('generation'),data:process.env.PLUGIN_DATA?.includes('data'),event:JSON.parse(input).event})})));`);

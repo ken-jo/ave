@@ -12,6 +12,8 @@
  * canonical; this Electron adapter performs the one-way `ave:chat:stream`
  * compatibility projection at the display edge.
  */
+import { restoreCodeCheckpoint } from "../../memory/code-checkpoints.js";
+import { isRewindMode } from "../../shared/code-rewind.js";
 import { ipcMain, type WebContents } from "electron";
 import { t } from "../../i18n/index.js";
 import type { ActiveRolePrompt } from "../../data/role-presets.js";
@@ -1497,16 +1499,12 @@ export function registerChatHandlers(deps: IpcDeps): void {
     return turn ?? { ok: false, error: STREAMING_ACTIVE };
   });
 
-  // Rewind-only counterpart of `editResend`: same read → ordinal-resolve →
-  // truncate sequence, then it stops. The renderer puts the message text back
-  // in the composer, so replaying it is the user's next keystroke, not ours.
-  //
-  // The truncated history is written to disk here because nothing else will:
-  // `editResend` leaves persistence to the turn it starts, and this path
-  // starts no turn. Without the write, the discarded turns would come back on
-  // the next session load.
-  ipcMain.handle(CHANNELS.chat.rewindTo, async (e, messageId: string, chatGroupId?: unknown) => {
+  // Return-here never resends. Code restore must pass before conversation is
+  // changed; code-only leaves it intact. Conversation restore persists its
+  // truncation here because no follow-up turn will save it.
+  ipcMain.handle(CHANNELS.chat.rewindTo, async (e, messageId: string, chatGroupId?: unknown, mode: unknown = "conversation") => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.rewindTo, e); return UNAUTHORIZED_FRAME; }
+    if (!isRewindMode(mode)) return { ok: false, error: "invalid-rewind-mode" };
     const group = groupOf(e, chatGroupId);
     const conversationLoop = group.loop;
     if (typeof messageId !== "string" || messageId.length === 0) return { ok: false, error: "invalid-message-id" };
@@ -1521,11 +1519,23 @@ export function registerChatHandlers(deps: IpcDeps): void {
       // refused with the conversation untouched. The alternative — cut first,
       // then discover the image cannot be rebuilt — destroys the turn and the
       // attachment together, which is the one outcome a rewind must not have.
-      const restorable = restorableRewindInput(target);
+      const restorable = mode === "code" ? { ok: true as const, text: "" } : restorableRewindInput(target);
       if (!restorable.ok) return { ok: false, error: restorable.error };
       const personaPromptId = personaPromptIdFromUserMessage(target);
       if (!personaPromptId.ok) return { ok: false, error: personaPromptId.error };
       const sessionId = conversationLoop.getSessionId();
+      if (mode !== "conversation") {
+        const restored = await restoreCodeCheckpoint(sessionId, messageId, () => ({
+          cwd: conversationLoop.getSessionExecutionCwd(),
+          extraAllowedDirectories: conversationLoop.getTurnAdditionalDirectories(),
+        }));
+        if (!restored.ok) {
+          auditLogger.log({ timestamp: new Date().toISOString(), type: "warn", sessionId, input: `code_checkpoint_refused:${messageId}:${mode}`, output: restored.error });
+          return restored;
+        }
+        auditLogger.log({ timestamp: new Date().toISOString(), type: "info", sessionId, input: `code_checkpoint_restored:${messageId}:${mode}` });
+        if (mode === "code") return { ok: true, text: "" };
+      }
       // Captured before the truncate: the pruner needs the boundary rows THIS
       // rewind threw away. Asking instead which boundaries still survive also
       // condemns the ones a later compaction had already summarized away, so
