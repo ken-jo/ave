@@ -78,6 +78,7 @@ export function ApprovalDecisionBar({
   disabled,
   onCommit,
   onEditInSettings,
+  editInSettingsDisabled = false,
   slotProps,
   hideAllows = false,
   compact = false,
@@ -88,8 +89,10 @@ export function ApprovalDecisionBar({
   /** From `decisionSlotsDisabled`. */
   disabled: readonly [boolean, boolean, boolean];
   onCommit: (choice: ApprovalCardChoice, editedRule?: string) => void;
-  /** Opens Settings on this request's exact deny, for a choice whose rule Settings edits. */
+  /** Opens Settings on this request's exact deny, for a choice whose rule Settings edits. It is not a decision, so a lock on the decisions (Settings
+   * already holding the draft) leaves it open as the way back; only `editInSettingsDisabled` closes it. */
   onEditInSettings?: () => void;
+  editInSettingsDisabled?: boolean;
   /** Per-button attributes a card adds (focus order, shortcuts, descriptions). */
   slotProps?: (slot: 0 | 1 | 2) => SlotProps;
   /** Draw Deny only: a sealed display that cannot be read offers no allow at all. */
@@ -168,7 +171,7 @@ export function ApprovalDecisionBar({
               </Button>
             ) : null}
             {editing === "settings" ? (
-              <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-xs" disabled={lockAll || !onEditInSettings}
+              <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-xs" disabled={editInSettingsDisabled || !onEditInSettings}
                 data-testid={TEST_IDS.openPermanentDenySettings}
                 onClick={() => onEditInSettings?.()}>
                 {t("toolApprovalDialog.editRule")}

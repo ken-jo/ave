@@ -8,6 +8,7 @@ import { FloatingRightLane } from "../components/FloatingRightLane.js";
 import type { ApprovalRequest, PermissionEvaluationContext } from "../types.js";
 import { t } from "../../../i18n/runtime.js";
 import { TEST_IDS, testIdSelector } from "../../../shared/test-ids.js";
+import { selectDecision } from "../components/__tests__/support/decision-bar.js";
 
 function makeEvaluationContext(overrides: Partial<PermissionEvaluationContext> = {}): PermissionEvaluationContext {
   return {
@@ -844,6 +845,8 @@ describe("ApprovalDock", () => {
     expect(container.querySelector(testIdSelector(TEST_IDS.approvalReviewDetails))).toBeTruthy();
     expect(container.querySelector('[role="dialog"]')).toBeNull();
     expect(document.body.textContent).toContain("/Users/example/Documents/project/notes.md");
+    // Always deny is selected from the Deny dropdown; its Edit rule opens the exact deny in Settings.
+    selectDecision("deny-always");
     fireEvent.click(container.querySelector<HTMLButtonElement>(testIdSelector(TEST_IDS.openPermanentDenySettings))!);
     expect(onOpenPermanentDeny).toHaveBeenCalledWith(
       expect.objectContaining({ kind: "out-of-allowed-dir", toolName: "read_file" }),
@@ -874,6 +877,7 @@ describe("ApprovalDock", () => {
       />,
     );
 
+    selectDecision("deny-always");
     fireEvent.click(
       container.querySelector<HTMLButtonElement>(testIdSelector(TEST_IDS.openPermanentDenySettings))!,
     );
@@ -1044,6 +1048,7 @@ describe("ApprovalDock", () => {
     expect(details).toBeTruthy();
     expect(details!.open).toBe(false);
     expect(document.body.textContent).toContain("대상·영향·보호 조치·전체 입력을 펼쳐서 확인");
+    selectDecision("deny-always");
     fireEvent.click(document.body.querySelector<HTMLButtonElement>(testIdSelector(TEST_IDS.openPermanentDenySettings))!);
     expect(onOpenPermanentDeny).toHaveBeenCalledWith(
       expect.objectContaining({ id: "req-1", toolName: "read_file" }),
@@ -1052,14 +1057,15 @@ describe("ApprovalDock", () => {
     expect(onDecide).not.toHaveBeenCalled();
   });
 
-  it("'항상 허용' records a persistent grant", async () => {
+  it("'이 프로젝트에서 항상 허용' records a persistent grant", async () => {
     const onDecide = vi.fn();
     render(
       <ApprovalDock conversationLabel="conversation" queue={[makeRequest()]} onDecide={onDecide} />,
     );
     await waitFor(() => expect(document.body.textContent).toContain("read_file"));
+    selectDecision("allow-project");
     const alwaysBtn = Array.from(document.body.querySelectorAll("button")).find(
-      (b) => b.textContent === "항상 허용",
+      (b) => b.textContent === "이 프로젝트에서 항상 허용",
     );
     expect(alwaysBtn).toBeTruthy();
     fireEvent.click(alwaysBtn!);
@@ -1088,7 +1094,8 @@ describe("ApprovalDock", () => {
     fireEvent.click(document.body.querySelector<HTMLButtonElement>(testIdSelector(TEST_IDS.allowSessionButton))!);
     await waitFor(() => {
       expect(document.body.querySelector<HTMLButtonElement>(testIdSelector(TEST_IDS.denyButton))).toBeDisabled();
-      expect(document.body.querySelector<HTMLButtonElement>(testIdSelector(TEST_IDS.openPermanentDenySettings))).toBeDisabled();
+      expect(document.body.querySelector<HTMLButtonElement>('[data-testid="approval-deny-menu"]')).toBeDisabled();
+      expect(document.body.querySelector<HTMLButtonElement>('[data-testid="approval-allow-menu"]')).toBeDisabled();
     });
     const panel = document.body.querySelector<HTMLElement>('[data-testid="tool-approval-panel"]')!;
     fireEvent.keyDown(panel, { key: "d" });

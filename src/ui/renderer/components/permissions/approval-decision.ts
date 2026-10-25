@@ -127,7 +127,7 @@ export function exactDecisionModel(input: {
     variant: "exact",
     options: {
       "deny-always": offered(null, input.settingsEditing ? "settings" : null, label("deny-always")),
-      "allow-session": input.hasSession ? allow("allow-session") : refused("toolApprovalDialog.sessionAllowNeedsConversation", label("allow-session")),
+      "allow-session": input.hasSession || input.allowRefusalKey !== null ? allow("allow-session") : refused("toolApprovalDialog.sessionAllowNeedsConversation", label("allow-session")),
       "allow-project": input.sessionOnly ? refused("toolApprovalDialog.sessionOnlyRemember", label("allow-project")) : allow("allow-project"),
       "allow-everywhere": refused(input.sessionOnly ? "toolApprovalDialog.sessionOnlyRemember" : "toolApprovalDialog.exactEverywhereUnavailable", label("allow-everywhere")),
     },

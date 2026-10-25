@@ -109,7 +109,7 @@ describe("ToolApprovalContent MCP elicitation form", () => {
     };
     renderApproval(request, onDecide);
 
-    expect(screen.getByTestId(TEST_IDS.allowSessionButton)).toHaveTextContent("항상 허용");
+    expect(screen.getByTestId(TEST_IDS.allowSessionButton)).toHaveTextContent("이번 세션 동안 허용");
     expect(screen.getByTestId(TEST_IDS.allowSessionButton)).toBeDisabled();
     expect(screen.queryByTestId("mcp-elicitation-form")).not.toBeInTheDocument();
 

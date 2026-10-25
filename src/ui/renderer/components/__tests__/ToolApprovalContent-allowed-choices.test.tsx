@@ -3,6 +3,7 @@ import "../../../../../test/renderer/setup.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { renderApproval } from "./support/render-approval.js";
+import { selectDecision } from "./support/decision-bar.js";
 import type { ApprovalRequest } from "../../types.js";
 import { TEST_IDS } from "../../../../shared/test-ids.js";
 import { buildPermissionEvaluationContext } from "../../../../permissions/evaluation-context.js";
@@ -45,6 +46,8 @@ describe("ToolApprovalContent allowed choices", () => {
     };
     renderApproval(request, onDecide);
     expect(screen.getByTestId("allow-always-exact-scope")).toHaveTextContent("/workspace/project");
+    // The lasting exact approval is the project one, selected from the allow dropdown.
+    selectDecision("allow-project");
     const always = screen.getByTestId(TEST_IDS.allowSessionButton);
     expect(always).toBeEnabled();
     fireEvent.click(always);
@@ -68,7 +71,7 @@ describe("ToolApprovalContent allowed choices", () => {
     renderApproval(makeOneShotPluginRequest(), onDecide);
 
     expect(screen.getByTestId(TEST_IDS.denyButton)).toHaveTextContent("거절");
-    expect(screen.getByTestId(TEST_IDS.allowSessionButton)).toHaveTextContent("항상 허용");
+    expect(screen.getByTestId(TEST_IDS.allowSessionButton)).toHaveTextContent("이번 세션 동안 허용");
     expect(screen.getByTestId(TEST_IDS.allowSessionButton)).toBeDisabled();
 
     const approve = screen.getByTestId(TEST_IDS.approveButton);

@@ -945,7 +945,7 @@ export function ToolApprovalContent({
     }
     if (choice === "allow-once") {
       void recordThenRespond(null, () => {
-        if (approvalExtras === undefined) onDecide("allow-once");
+        if (approvalExtras === undefined) onDecide("allow-once", undefined);
         else onDecide("allow-once", undefined, approvalExtras);
       });
       return;
@@ -956,7 +956,7 @@ export function ToolApprovalContent({
         const rule = ruleSaveFor(choice, editedRule);
         void recordThenRespond(
           { decision: rule.action, scope: rule.scope === "session" ? "session" : "persistent", rule },
-          () => onDecide(rule.action === "deny" ? "deny-once" : "allow-once"),
+          () => (rule.action === "deny" ? onDecide("deny-once") : onDecide("allow-once", undefined)),
         );
         return;
       }
@@ -972,7 +972,7 @@ export function ToolApprovalContent({
           if (choice === "allow-everywhere" && parent !== undefined) void recordThenRespond(null, () => onDecide("allow-always", parent));
           return;
         }
-        void recordThenRespond({ decision: "allow", scope: choice === "allow-session" ? "session" : "persistent" }, () => onDecide("allow-always"));
+        void recordThenRespond({ decision: "allow", scope: choice === "allow-session" ? "session" : "persistent" }, () => onDecide("allow-always", undefined));
         return;
       }
       case "one-shot":
@@ -1523,6 +1523,7 @@ export function ToolApprovalContent({
                     if (recordingRequestIdRef.current === null) onOpenPermanentDeny(request, finalVerdict as UserApprovalVerdict);
                   }
                 : undefined}
+              editInSettingsDisabled={recordingDecision}
               hideAllows={rationaleDisplayInvalid}
               stackWhenNarrow={narrowLaneScroll}
               slotProps={(slot) => {
@@ -1591,19 +1592,34 @@ export function ToolApprovalContent({
                 {note}
               </p>
             ))}
-            {decisionModel.variant === "exact" && decisionModel.options["allow-project"].offered && request.persistentApprovalCwd ? (
+            {decisionModel.variant === "exact" && allowRefusal === null && request.persistentApprovalCwd ? (
               <p className="text-[10px] text-muted-foreground" data-testid="allow-always-exact-scope">
                 {rememberScopeText(tHook, request, request.persistentApprovalCwd)}
               </p>
             ) : null}
             {interactionLocked ? (
-              <p
-                id="approval-decision-locked"
-                className="text-[10px] text-muted-foreground"
-                data-testid="approval-decision-locked"
-              >
-                {tHook("toolApprovalDialog.decisionPendingInSettings")}
-              </p>
+              <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-1">
+                <p
+                  id="approval-decision-locked"
+                  className="text-[10px] text-muted-foreground"
+                  data-testid="approval-decision-locked"
+                >
+                  {tHook("toolApprovalDialog.decisionPendingInSettings")}
+                </p>
+                {/* Settings holds this request's exact-deny draft; the way back to it stays open while every decision is locked. */}
+                {onOpenPermanentDeny && decision.selected !== "deny-always" ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="link"
+                    className="h-auto min-w-0 max-w-full shrink p-0 text-right text-[11px] whitespace-normal break-words"
+                    data-testid={TEST_IDS.openPermanentDenySettings}
+                    onClick={() => onOpenPermanentDeny(request, finalVerdict as UserApprovalVerdict)}
+                  >
+                    {tHook("toolApprovalDialog.openPermissionSettings")}
+                  </Button>
+                ) : null}
+              </div>
             ) : null}
             {recordError ? (
               <p className="text-[11px] text-destructive" role="alert" data-testid="exact-decision-save-error">

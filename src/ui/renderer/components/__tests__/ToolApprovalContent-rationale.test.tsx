@@ -99,7 +99,7 @@ describe("ToolApprovalContent rationale card", () => {
     expect(panel).not.toHaveAttribute("data-approval-args");
 
     expect(screen.getByTestId(TEST_IDS.denyButton)).toHaveTextContent("거절");
-    expect(screen.getByTestId(TEST_IDS.allowSessionButton)).toHaveTextContent("항상 허용");
+    expect(screen.getByTestId(TEST_IDS.allowSessionButton)).toHaveTextContent("이번 세션 동안 허용");
     expect(screen.getByTestId(TEST_IDS.allowSessionButton)).toBeDisabled();
     const approve = screen.getByTestId(TEST_IDS.approveButton);
     expect(approve).toHaveTextContent("한 번만 허용");
