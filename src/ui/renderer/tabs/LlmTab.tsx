@@ -75,6 +75,7 @@ import { ModelCatalogRefreshSection } from "./ModelCatalogRefreshSection.js";
 import { useTranslation, type I18nContextValue } from "../../../i18n/react.js";
 import {
   SUBSCRIPTION_RUNTIME_API_COUNTERPART,
+  SUBSCRIPTION_RUNTIME_ROW_PARTNER,
   isSubscriptionRuntimeId,
   subscriptionRuntimeDescriptor,
   type SubscriptionRuntimeId,
@@ -825,6 +826,8 @@ interface ProviderConnection {
   modelListKey?: string;
   apiConfigured: boolean;
   subscription?: SubscriptionProviderView;
+  /** A second subscription way into the same provider (OpenAI: ChatGPT plan usage beside the Codex CLI); see `SUBSCRIPTION_RUNTIME_ROW_PARTNER`. */
+  planSubscription?: SubscriptionProviderView;
   connected: boolean;
 }
 
@@ -838,13 +841,22 @@ interface ConfiguredApiRoute {
 /** The name Settings gives a subscription runtime: its company's, through the API counterpart ("OpenAI" for the
  * ChatGPT plan, "Anthropic Claude" for the Claude plan). The runtime's own name is never a provider a user picks. */
 function subscriptionCompanyLabel(view: SubscriptionProviderView): string {
-  const counterpart = SUBSCRIPTION_RUNTIME_API_COUNTERPART[view.descriptor.id];
+  const counterpart = SUBSCRIPTION_RUNTIME_API_COUNTERPART[
+    SUBSCRIPTION_RUNTIME_ROW_PARTNER[view.descriptor.id] ?? view.descriptor.id
+  ];
   return counterpart ? getVendorInfo(counterpart).label : view.descriptor.planName;
 }
 
 /** The chooser's group name for a subscription's models: the company and the plan, so a subscription pick and
  * an API-key pick from the same company cannot be confused for one another ("OpenAI · ChatGPT subscription"). */
 function subscriptionModelsLabel(t: I18nContextValue["t"], view: SubscriptionProviderView): string {
+  // A partner runtime shares its company with the primary one, so its group names its own way in.
+  if (SUBSCRIPTION_RUNTIME_ROW_PARTNER[view.descriptor.id]) {
+    return t("subscriptionProvidersSection.chatgptPlanModels", {
+      company: subscriptionCompanyLabel(view),
+      plan: view.descriptor.planName,
+    });
+  }
   return t("subscriptionProvidersSection.subscriptionModels", {
     company: subscriptionCompanyLabel(view),
     plan: view.descriptor.planName,
@@ -1810,6 +1822,10 @@ export function LlmTab(props: LlmTabProps) {
       return preset ? providerOptionFromPreset(preset).label : getVendorInfo(route.vendorId).label;
     };
     for (const view of subscription.providers) {
+      // A partner runtime is drawn on its primary runtime's row, never as a second row for the same company.
+      if (SUBSCRIPTION_RUNTIME_ROW_PARTNER[view.descriptor.id]) continue;
+      const planView = subscription.providers.find((candidate) =>
+        SUBSCRIPTION_RUNTIME_ROW_PARTNER[candidate.descriptor.id] === view.descriptor.id);
       const counterpart = SUBSCRIPTION_RUNTIME_API_COUNTERPART[view.descriptor.id];
       if (counterpart) claimed.add(counterpart);
       const route = counterpart
@@ -1826,7 +1842,10 @@ export function LlmTab(props: LlmTabProps) {
           : {}),
         apiConfigured: Boolean(route),
         subscription: view,
-        connected: view.status?.connection === "connected" || Boolean(route),
+        ...(planView ? { planSubscription: planView } : {}),
+        connected: view.status?.connection === "connected"
+          || planView?.status?.connection === "connected"
+          || Boolean(route),
       });
     }
     for (const route of configuredApiRoutes) {
@@ -1989,6 +2008,7 @@ export function LlmTab(props: LlmTabProps) {
     // A signed-in subscription row answers turns through its runtime. Whether its API counterpart
     // also has a key is a different question, and asking it here told a working card to go set one up.
     if (row.subscription?.status?.connection === "connected") return null;
+    if (row.planSubscription?.status?.connection === "connected") return null;
     const vendorId = row.apiVendorId ?? "";
     if (vendorId === "vertex-ai" && !savedVendorBlocks[vendorId]?.vertexProject?.trim()) {
       return "needs-gcp-project";
@@ -2095,6 +2115,11 @@ export function LlmTab(props: LlmTabProps) {
       // Connected only. A signed-out provider has nothing to offer yet, and listing its models would invite a choice that cannot be honoured.
       if (view.status?.connection !== "connected") continue;
       const models = (view.status.models ?? []).filter((model) => model.id.trim());
+      // A runtime with no default model offers only what its list names; an empty list offers nothing to pick.
+      if (models.length === 0 && isSubscriptionRuntimeId(view.descriptor.id)
+        && subscriptionRuntimeDescriptor(view.descriptor.id).requiresModelSelection) {
+        continue;
+      }
       if (models.length === 0) {
         // No model choice at all; the row IS the provider. It still belongs in the list, because
         // picking it is exactly as much of a choice as picking a model from a provider that has several.
@@ -2262,11 +2287,14 @@ export function LlmTab(props: LlmTabProps) {
     if (picked) return picked;
     if (subscription.activeRuntime.kind === "subscription") {
       if (subscription.activeRuntime.provider === row.id) return "subscription";
+      if (subscription.activeRuntime.provider === row.planSubscription?.descriptor.id) return "plan";
     } else if (rowIsActiveApiProvider(row) && credentialedProviderIds.has(rowCredentialId(row))) {
       return "api";
     }
     const connection = row.subscription.status?.connection;
     if (connection === "connected" || connection === "pending") return "subscription";
+    const planConnection = row.planSubscription?.status?.connection;
+    if (planConnection === "connected" || planConnection === "pending") return "plan";
     if (credentialedProviderIds.has(rowCredentialId(row)) || rowCredentialDirty(row.id)) return "api";
     return null;
   }, [
@@ -2416,7 +2444,7 @@ export function LlmTab(props: LlmTabProps) {
   const otherCredentialNote = (row: ProviderConnection) => {
     if (!row.subscription || !row.apiVendorId) return null;
     const method = rowAuthMethod(row);
-    if (method === "subscription" && credentialedProviderIds.has(rowCredentialId(row))) {
+    if ((method === "subscription" || method === "plan") && credentialedProviderIds.has(rowCredentialId(row))) {
       return (
         <div
           className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/(--opacity-muted) px-3 py-2 text-xs text-muted-foreground"
@@ -2436,8 +2464,12 @@ export function LlmTab(props: LlmTabProps) {
         </div>
       );
     }
-    const view = row.subscription;
-    if (method === "api" && view.status?.connection === "connected") {
+    // A signed-in way in the card is not showing: on the Codex CLI, plan usage; on plan usage, the Codex CLI; on the API key, either.
+    const others = method === "subscription"
+      ? [row.planSubscription]
+      : method === "plan" ? [row.subscription] : [row.subscription, row.planSubscription];
+    const view = others.find((candidate) => candidate?.status?.connection === "connected");
+    if (view && method !== null) {
       const logout = subscription.props.actions.logout;
       return (
         <div
@@ -2454,7 +2486,7 @@ export function LlmTab(props: LlmTabProps) {
               disabled={Boolean(view.busyAction) || view.refreshPending === true}
               data-testid={`llm-tab:other-credential:${row.id}:sign-out`}
               onClick={() => {
-                pinAuthMethod(row, "api");
+                pinAuthMethod(row, method);
                 void Promise.resolve(logout(view.descriptor.id)).catch(() => undefined);
               }}
             >
@@ -2590,9 +2622,11 @@ export function LlmTab(props: LlmTabProps) {
 
   // Which of this provider's two routes is serving chat right now. The user asked for exactly this: the row
   // says the provider, the badge says the mode. Which path this row is serving chat through right now, or null.
-  const activeMode = (row: ProviderConnection): "subscription" | "api" | null =>
+  const activeMode = (row: ProviderConnection): ProviderSignInMethod | null =>
     subscription.activeRuntime.kind === "subscription"
-      ? (subscription.activeRuntime.provider === row.id ? "subscription" : null)
+      ? (subscription.activeRuntime.provider === row.id
+        ? "subscription"
+        : subscription.activeRuntime.provider === row.planSubscription?.descriptor.id ? "plan" : null)
       : (rowIsActiveApiProvider(row) ? "api" : null);
 
   /** What this card still needs before its models join the chooser. The card carries no switch of its own: picking a model IS picking the provider, so a provider that cannot answer a turn
@@ -2636,7 +2670,7 @@ export function LlmTab(props: LlmTabProps) {
    * say how it is reached. A filled badge is the route chat is actually running on; an outlined one is a route that is configured and idle. */
   const routeBadges = (row: ProviderConnection) => {
     const active = activeMode(row);
-    const badge = (mode: "subscription" | "api", label: string) => (
+    const badge = (mode: ProviderSignInMethod, label: string) => (
       <Badge
         key={mode}
         variant={active === mode ? "default" : "outline"}
@@ -2650,27 +2684,34 @@ export function LlmTab(props: LlmTabProps) {
     return (
       <>
         {row.subscription ? badge("subscription", t("llmTab.modeSubscription")) : null}
+        {row.planSubscription ? badge("plan", t("llmTab.modeChatgptPlan")) : null}
         {row.apiVendorId ? badge("api", t("llmTab.modeApiKey")) : null}
       </>
     );
   };
 
+  /** The subscription whose state can speak for the row: plan usage while the card is on it, otherwise the row's own runtime. */
+  const rowSubscriptionView = (row: ProviderConnection): SubscriptionProviderView | undefined =>
+    row.planSubscription && rowAuthMethod(row) === "plan" ? row.planSubscription : row.subscription;
+
   /** Whether the subscription's state is the row's state (see `providerRowState`). */
   const subscriptionSpeaksForRow = (row: ProviderConnection): boolean => {
-    if (!row.subscription) return false;
+    const view = rowSubscriptionView(row);
+    if (!view) return false;
     if (!row.apiConfigured) return true;
-    const connection = row.subscription.status?.connection;
+    const connection = view.status?.connection;
     return connection === "connected" || connection === "pending";
   };
 
   /** What a subscription row is waiting on, in the row's own words. The five-word column is deliberately coarse; it says whether the
    * provider is usable, not which handshake is missing; so the specific answer moves down to the sub-line, where it has room to be a sentence. */
   const runtimeSentence = (row: ProviderConnection): string | null => {
-    const status = row.subscription?.status;
-    if (!row.subscription || !status || !subscriptionSpeaksForRow(row)) return null;
+    const view = rowSubscriptionView(row);
+    const status = view?.status;
+    if (!view || !status || !subscriptionSpeaksForRow(row)) return null;
     if (status.runtime === "unavailable") return t("subscriptionProvidersSection.statusRuntimeUnavailable");
     if (status.runtime === "not-configured") {
-      return row.subscription.descriptor.executable === "discovered"
+      return view.descriptor.executable === "discovered"
         ? t("subscriptionProvidersSection.statusCliNotFound")
         : t("subscriptionProvidersSection.statusRuntimeNotConfigured");
     }
@@ -2695,7 +2736,7 @@ export function LlmTab(props: LlmTabProps) {
     // A row with a working API key is not held back by the other method: a missing or unusable CLI only
     // speaks for the row while the subscription is the way in (signed in, signing in, or no key to fall back on).
     const speaks = subscriptionSpeaksForRow(row);
-    const status = speaks ? row.subscription?.status ?? null : null;
+    const status = speaks ? rowSubscriptionView(row)?.status ?? null : null;
     // No word at all while the surface that owns the real state is still answering; guessing "signed out" during the check is how a row lies. "No CLI found" and
     // "the CLI found cannot be used" are answers, though: a runtime with nothing usable to run has no account to ask about, so its connection stays unknown for good.
     if (status?.runtime === "not-configured") return "needs-setup";
@@ -2760,7 +2801,8 @@ export function LlmTab(props: LlmTabProps) {
         : null;
     }
     const loading = (row.modelListKey ? modelLists[row.modelListKey]?.status === "loading" : false)
-      || row.subscription?.refreshPending === true;
+      || row.subscription?.refreshPending === true
+      || row.planSubscription?.refreshPending === true;
     return (
       <Button
         type="button"
@@ -2774,6 +2816,7 @@ export function LlmTab(props: LlmTabProps) {
         onClick={() => {
           if (request) void requestModelList(request.vendorId, { ...request.options, force: true });
           void refreshStatus?.(row.id as SubscriptionRuntimeId);
+          if (row.planSubscription) void refreshStatus?.(row.planSubscription.descriptor.id);
         }}
       >
         {loading
@@ -2869,6 +2912,7 @@ export function LlmTab(props: LlmTabProps) {
                     planName={row.subscription.descriptor.planName}
                     value={rowAuthMethod(row)}
                     onChange={(method) => chooseAuthMethod(row, method)}
+                    {...(row.planSubscription ? { offersPlan: true } : {})}
                   />
                 ) : null}
                 {row.subscription && rowAuthMethod(row) === "subscription" ? (
@@ -2879,6 +2923,18 @@ export function LlmTab(props: LlmTabProps) {
                       // Signing out keeps the card on the subscription, so the sign-in buttons come back instead of the card asking again.
                       logout: (providerId) => {
                         pinAuthMethod(row, "subscription");
+                        return subscription.props.actions.logout?.(providerId);
+                      },
+                    }}
+                  />
+                ) : null}
+                {row.planSubscription && rowAuthMethod(row) === "plan" ? (
+                  <SubscriptionAuthControls
+                    provider={row.planSubscription}
+                    actions={{
+                      ...subscription.props.actions,
+                      logout: (providerId) => {
+                        pinAuthMethod(row, "plan");
                         return subscription.props.actions.logout?.(providerId);
                       },
                     }}

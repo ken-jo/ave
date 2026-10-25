@@ -48,6 +48,7 @@ import {
 import { SubscriptionToolBridge } from "./subscription-tool-bridge.js";
 import { projectSubscriptionImageHistory } from "./subscription-image-history.js";
 import { projectedSubscriptionTransportDiagnosticsFromError } from "./subscription-transport-error-diagnostics.js";
+import { ChatGptPlanTransport } from "./chatgpt-plan/transport.js";
 
 const MAX_SERIALIZED_INPUT_BYTES = 700 * 1024;
 const MAX_ACP_SERIALIZED_INPUT_BYTES = 512 * 1024;
@@ -91,7 +92,7 @@ export interface SubscriptionLlmProviderOptions {
   readonly openExternal?: SubscriptionOpenExternal;
   // Main-test seam; production resolves the process singleton.
   readonly service?: Pick<SubscriptionRuntimeService, "openTextSession">
-    & Partial<Pick<SubscriptionRuntimeService, "listModels">>;
+    & Partial<Pick<SubscriptionRuntimeService, "listModels" | "requireChatGptPlan">>;
   // Optional redacted audit hook forwarded only at singleton creation.
   readonly runtimeServiceOptions?: GetSubscriptionRuntimeServiceOptions;
 }
@@ -644,6 +645,25 @@ export class SubscriptionLlmProvider implements LLMProvider {
 export function createSubscriptionLlmProvider(
   options: SubscriptionLlmProviderOptions,
 ): SubscriptionLlmProvider | OpenAiProvider {
+  if (options.selection.provider === "chatgpt-plan") {
+    // Plan usage never opens a CLI text session; it is the OpenAI Responses wire with the session's token.
+    // There is no runtime default model; a selection without one is not configured, and nothing falls back to an API key.
+    if (!options.selection.model) throw new Error("subscription-chat-unavailable");
+    const selection = { ...immutableSelection(options.selection), provider: "chatgpt-plan" as const };
+    return createOpenAiProvider({
+      kind: "chatgpt-plan",
+      selection,
+      transport: new ChatGptPlanTransport(selection, async () => {
+        const service = options.service?.requireChatGptPlan
+          ? options.service
+          : options.openExternal
+            ? await getSubscriptionRuntimeService(options.openExternal, options.runtimeServiceOptions)
+            : undefined;
+        if (!service?.requireChatGptPlan) throw new Error("subscription-runtime-opener-missing");
+        return service.requireChatGptPlan();
+      }),
+    });
+  }
   const transport = new SubscriptionLlmProvider(options);
   return transport.subscriptionRuntime.provider === "codex"
     ? createOpenAiProvider({

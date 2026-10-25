@@ -169,8 +169,9 @@ describe("plan-usage responses fetch", () => {
     });
     const unpinned = new VercelUnifiedProvider("openai", CHATGPT_PLAN_SDK_CREDENTIAL_PLACEHOLDER, CHATGPT_PLAN_API_BASE_URL, planFetch);
     const events: StreamEvent[] = [];
+    // A plan catalog may list a slug the bundled model catalog does not know; only the pin keeps it on Responses.
     for await (const event of unpinned.streamTurn({
-      model: "gpt-6.1-sol",
+      model: "plan-only-model",
       systemPrompt: "s",
       messages: [{ role: "user", content: "hi" }],
     })) events.push(event);

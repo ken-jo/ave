@@ -118,6 +118,8 @@ interface SubscriptionProviderActions {
   useForChat?: (providerId: SubscriptionProviderId, modelId: string | null) => void | Promise<void>;
   /** Explicitly return chat to the separately configured API-key provider. */
   useApiForChat?: () => void | Promise<void>;
+  /** Opens the provider's own usage settings (ChatGPT plan usage: chatgpt.com/settings/usage). */
+  manageUsage?: (providerId: SubscriptionProviderId) => void | Promise<void>;
 }
 
 export interface SubscriptionProvidersSectionProps {
@@ -172,6 +174,9 @@ function errorMessageKey(
   if (descriptor.executable === "discovered" && errorCode === "subscription-runtime-not-configured") {
     return "subscriptionProvidersSection.errorCliNotFound";
   }
+  if (descriptor.executable === "none" && errorCode === "subscription-runtime-not-configured") {
+    return "subscriptionProvidersSection.chatgptPlanNotConfigured";
+  }
   return ERROR_MESSAGE_KEYS[errorCode];
 }
 
@@ -197,6 +202,8 @@ export function SubscriptionAuthControls({
   };
   const { descriptor, status } = provider;
   const discovered = descriptor.executable === "discovered";
+  // Plan usage runs no executable: there is nothing to find, pick, change or forget.
+  const runsNoExecutable = descriptor.executable === "none";
   const runtime = status?.runtime ?? "checking";
   const connection = status?.connection ?? "unknown";
   const chatReady = connection === "connected" && status?.capabilities?.chat === true;
@@ -245,6 +252,10 @@ export function SubscriptionAuthControls({
   // credentials stay there.
   const usesOwnCli = isSubscriptionRuntimeId(descriptor.id)
     && subscriptionRuntimeDescriptor(descriptor.id).transport === "claude-cli";
+  // ChatGPT plan usage follows OpenAI's guidelines: say that eligible requests use the plan, how that differs from
+  // API-key charges, and link to where usage is managed.
+  const usesChatGptPlan = isSubscriptionRuntimeId(descriptor.id)
+    && subscriptionRuntimeDescriptor(descriptor.id).transport === "chatgpt-plan-direct";
 
   return (
     <div className="space-y-3" data-testid={`subscription-provider:${descriptor.id}`}>
@@ -255,6 +266,42 @@ export function SubscriptionAuthControls({
         >
           {t("subscriptionProvidersSection.claudeCliBillingDisclosure")}
         </p>
+      ) : null}
+      {usesChatGptPlan ? (
+        <p
+          className="text-xs text-muted-foreground"
+          data-testid={`subscription-provider:${descriptor.id}:billing-disclosure`}
+        >
+          {t("subscriptionProvidersSection.chatgptPlanDisclosure")}
+        </p>
+      ) : null}
+      {usesChatGptPlan && runtime === "not-configured" && !status?.errorCode ? (
+        <p
+          className="text-xs text-muted-foreground"
+          data-testid={`subscription-provider:${descriptor.id}:not-configured`}
+        >
+          {t("subscriptionProvidersSection.chatgptPlanNotConfigured")}
+        </p>
+      ) : null}
+      {usesChatGptPlan && chatReady ? (
+        <div
+          className="flex flex-wrap items-center gap-2 text-xs"
+          data-testid={`subscription-provider:${descriptor.id}:plan-in-use`}
+        >
+          <span className="font-medium">{t("subscriptionProvidersSection.chatgptPlanInUse")}</span>
+          {actions.manageUsage ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="link"
+              className="h-auto p-0 text-xs"
+              onClick={() => invoke(() => actions.manageUsage?.(descriptor.id))}
+              data-testid={`subscription-provider:${descriptor.id}:manage-usage`}
+            >
+              {t("subscriptionProvidersSection.chatgptPlanManageUsage")}
+            </Button>
+          ) : null}
+        </div>
       ) : null}
       {status?.errorCode && !(cliMissing && status.errorCode === "subscription-runtime-not-configured") ? (
         <p
@@ -355,7 +402,7 @@ export function SubscriptionAuthControls({
       ) : null}
 
       <div className="flex flex-wrap gap-2">
-        {!discovered && needsRuntimeSelection && actions.configureRuntime ? (
+        {!discovered && !runsNoExecutable && needsRuntimeSelection && actions.configureRuntime ? (
           <Button
             type="button"
             size="sm"
@@ -369,7 +416,7 @@ export function SubscriptionAuthControls({
               : t("subscriptionProvidersSection.configureRuntime")}
           </Button>
         ) : null}
-        {!discovered && hasRuntimeSelection && actions.configureRuntime ? (
+        {!discovered && !runsNoExecutable && hasRuntimeSelection && actions.configureRuntime ? (
           <Button
             type="button"
             variant="outline"
@@ -385,7 +432,7 @@ export function SubscriptionAuthControls({
           </Button>
         ) : null}
 
-        {!discovered && hasRuntimeSelection && actions.forgetRuntime ? (
+        {!discovered && !runsNoExecutable && hasRuntimeSelection && actions.forgetRuntime ? (
           <Button
             type="button"
             variant="ghost"
@@ -462,7 +509,9 @@ export function SubscriptionAuthControls({
             {provider.busyAction === `login-${method}`
               ? t("subscriptionProvidersSection.startingLogin")
               : method === "browser"
-                ? t("subscriptionProvidersSection.loginBrowser")
+                ? usesChatGptPlan
+                  ? t("subscriptionProvidersSection.chatgptPlanContinue")
+                  : t("subscriptionProvidersSection.loginBrowser")
                 : t("subscriptionProvidersSection.loginDeviceCode")}
           </Button>
         )) : null}
@@ -487,8 +536,8 @@ export function SubscriptionAuthControls({
   );
 }
 
-/** How a provider with two ways in is signed in to. */
-export type ProviderSignInMethod = "subscription" | "api";
+/** How a provider with two (or, for OpenAI, three) ways in is signed in to: its CLI subscription, its plan-usage sign-in, or an API key. */
+export type ProviderSignInMethod = "subscription" | "plan" | "api";
 
 /** No configured method means neither radio is selected; switching methods must not delete the other credential. */
 export function SignInMethodChoice({
@@ -497,20 +546,29 @@ export function SignInMethodChoice({
   value,
   onChange,
   disabled,
+  offersPlan,
 }: {
   rowId: string;
   planName: string;
   value: ProviderSignInMethod | null;
   onChange: (method: ProviderSignInMethod) => void;
   disabled?: boolean;
+  /** The row also has plan usage (Sign in with ChatGPT), so the CLI option names its CLI. */
+  offersPlan?: boolean;
 }) {
   const { t } = useTranslation();
   const labelId = useId();
   const optionId = (method: ProviderSignInMethod) => `${labelId}-${method}`;
-  const options: { method: ProviderSignInMethod; label: string }[] = [
-    { method: "subscription", label: t("subscriptionProvidersSection.methodSubscription", { plan: planName }) },
-    { method: "api", label: t("subscriptionProvidersSection.methodApiKey") },
-  ];
+  const options: { method: ProviderSignInMethod; label: string }[] = offersPlan
+    ? [
+        { method: "subscription", label: t("subscriptionProvidersSection.methodCodexCli", { plan: planName }) },
+        { method: "plan", label: t("subscriptionProvidersSection.methodChatgptPlan", { plan: planName }) },
+        { method: "api", label: t("subscriptionProvidersSection.methodApiKey") },
+      ]
+    : [
+        { method: "subscription", label: t("subscriptionProvidersSection.methodSubscription", { plan: planName }) },
+        { method: "api", label: t("subscriptionProvidersSection.methodApiKey") },
+      ];
   return (
     <div className="space-y-2" data-testid={`llm-tab:sign-in-method:${rowId}`}>
       <p id={labelId} className="text-sm font-medium">{t("subscriptionProvidersSection.methodQuestion")}</p>
@@ -518,7 +576,7 @@ export function SignInMethodChoice({
         aria-labelledby={labelId}
         value={value ?? ""}
         onValueChange={(next) => {
-          if (next === "subscription" || next === "api") onChange(next);
+          if (next === "subscription" || next === "api" || (offersPlan && next === "plan")) onChange(next);
         }}
         disabled={disabled}
         className="flex flex-wrap gap-2"

@@ -57,7 +57,7 @@ interface AccountRecord {
   readonly welcomed: boolean;
 }
 
-type ChatGptPlanSessionFailure =
+export type ChatGptPlanSessionFailure =
   | "secure-storage-unavailable"
   | "sign-in-in-progress"
   | "declined"
@@ -70,7 +70,7 @@ type ChatGptPlanSessionFailure =
   | "invalid-client"
   | "stored-record-invalid";
 
-class ChatGptPlanSessionError extends Error {
+export class ChatGptPlanSessionError extends Error {
   constructor(readonly failure: ChatGptPlanSessionFailure) {
     super(`chatgpt-plan session ${failure}`);
     this.name = "ChatGptPlanSessionError";

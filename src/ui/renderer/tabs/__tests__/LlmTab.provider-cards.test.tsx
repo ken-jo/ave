@@ -114,17 +114,43 @@ function claudeCodeView(
   };
 }
 
+/** ChatGPT plan usage (Sign in with ChatGPT), the third OpenAI way in, as the settings controller describes it. */
+function chatgptPlanView(
+  overrides: Partial<SubscriptionProviderView> = {},
+): SubscriptionProviderView {
+  const descriptor = subscriptionRuntimeDescriptor("chatgpt-plan");
+  return {
+    descriptor: {
+      id: "chatgpt-plan",
+      label: descriptor.label,
+      planName: descriptor.planName,
+      cliName: descriptor.cliName,
+      executable: descriptor.executable,
+      description: "",
+      loginMethods: descriptor.loginMethods,
+      supportsLogout: descriptor.supportsManagedLogout,
+    },
+    status: { runtime: "ready", connection: "signed-out", models: [] },
+    busyAction: null,
+    refreshPending: false,
+    ...overrides,
+  };
+}
+
 function installSubscription(
   providers: readonly SubscriptionProviderView[],
   actions: Record<string, unknown> = {},
+  activeRuntime: import("../../../../shared/subscription-runtime.js").ActiveChatRuntime = { kind: "api" },
 ) {
   useSubscriptionProvidersMock.mockReturnValue({
     providers,
-    activeRuntime: { kind: "api" as const },
+    activeRuntime,
     props: {
       providers,
-      activeSelection: null,
-      apiChatActive: true,
+      activeSelection: activeRuntime.kind === "subscription"
+        ? { providerId: activeRuntime.provider, modelId: activeRuntime.model ?? null }
+        : null,
+      apiChatActive: activeRuntime.kind === "api",
       apiChatBusy: false,
       chatSelectionBusy: false,
       apiChatError: null,
@@ -1151,6 +1177,60 @@ describe("LlmTab provider cards", () => {
     expect(screen.getByTestId("llm-api-key-input")).toHaveValue("");
     fireEvent.click(screen.getByTestId("llm-tab:save-providers-cancel"));
     expect(screen.queryByTestId("llm-api-key-input")).not.toBeInTheDocument();
+  });
+
+  it("offers the three OpenAI sign-ins side by side on one row", async () => {
+    installSubscription([codexView(), chatgptPlanView()]);
+    await renderTab(makeApi());
+    // Plan usage joins the OpenAI row; it is never a second "OpenAI" row.
+    expect(screen.queryByTestId("llm-tab:connection:chatgpt-plan")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("llm-tab:connection:codex:toggle"));
+    for (const method of ["subscription", "plan", "api"]) {
+      expect(screen.getByTestId(`llm-tab:sign-in-method:codex:${method}`)).toBeInTheDocument();
+    }
+    fireEvent.click(screen.getByTestId("llm-tab:sign-in-method:codex:plan"));
+    expect(screen.getByTestId("subscription-provider:chatgpt-plan:login-browser"))
+      .toHaveTextContent(t("subscriptionProvidersSection.chatgptPlanContinue"));
+    expect(screen.queryByTestId("subscription-provider:codex:login-browser")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("llm-api-key-input")).not.toBeInTheDocument();
+    // Plan usage runs no executable, so there is nothing to pick or forget.
+    expect(screen.queryByTestId("subscription-provider:chatgpt-plan:configure-runtime")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("llm-tab:sign-in-method:codex:subscription"));
+    expect(screen.getByTestId("subscription-provider:codex:login-browser")).toBeInTheDocument();
+    expect(screen.queryByTestId("subscription-provider:chatgpt-plan:login-browser")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("llm-tab:sign-in-method:codex:api"));
+    expect(screen.getByTestId("llm-api-key-input")).toBeInTheDocument();
+  });
+
+  it("opens on plan usage when chat runs on it and marks that route active", async () => {
+    installSubscription(
+      [codexView(), chatgptPlanView({
+        status: {
+          runtime: "ready",
+          connection: "connected",
+          models: [{ id: "gpt-6.1-sol", label: "GPT-6.1 Sol" }],
+          capabilities: { chat: true },
+        },
+      })],
+      { manageUsage: vi.fn() },
+      { kind: "subscription", provider: "chatgpt-plan", model: "gpt-6.1-sol" },
+    );
+    await renderTab(makeApi());
+    expect(screen.getByTestId("llm-tab:connection-route:codex:plan")).toHaveAttribute("data-active", "true");
+    expect(screen.getByTestId("llm-tab:connection-route:codex:subscription")).toHaveAttribute("data-active", "false");
+    fireEvent.click(screen.getByTestId("llm-tab:connection:codex:toggle"));
+    expect(screen.getByTestId("llm-tab:sign-in-method:codex:plan")).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByTestId("subscription-provider:chatgpt-plan:plan-in-use")).toBeInTheDocument();
+    expect(screen.getByTestId("subscription-provider:chatgpt-plan:manage-usage")).toBeInTheDocument();
+  });
+
+  it("keeps the two-way OpenAI choice when plan usage is absent", async () => {
+    installSubscription([codexView()]);
+    await renderTab(makeApi());
+    fireEvent.click(screen.getByTestId("llm-tab:connection:codex:toggle"));
+    expect(screen.getByTestId("llm-tab:sign-in-method:codex:subscription"))
+      .toHaveAccessibleName(t("subscriptionProvidersSection.methodSubscription", { plan: "ChatGPT" }));
+    expect(screen.queryByTestId("llm-tab:sign-in-method:codex:plan")).not.toBeInTheDocument();
   });
 
   it("asks for no endpoint where the endpoint is fixed", async () => {

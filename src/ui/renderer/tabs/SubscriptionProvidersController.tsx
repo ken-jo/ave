@@ -446,6 +446,10 @@ export function useSubscriptionProviders(api: AveApi) {
         if (result.ok) await refreshSettings();
       });
     },
+    manageUsage: async (provider) => {
+      const url = subscriptionRuntimeDescriptor(provider).usageSettingsUrl;
+      if (url) await api.openExternalUrl(url);
+    },
     useApiForChat: async () => {
       await runChatSelection(async () => {
         setApiChatBusy(true);

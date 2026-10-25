@@ -2,7 +2,7 @@
 import { CODEX_CLI_MINIMUM_VERSION } from "./codex-subscription.js";
 import { isNonNegativeSafeInteger, isPositiveSafeInteger } from "./safe-integer.js";
 
-const SUBSCRIPTION_RUNTIME_IDS = ["codex", "kimi-code", "grok-build", "claude-code"] as const;
+const SUBSCRIPTION_RUNTIME_IDS = ["codex", "kimi-code", "grok-build", "claude-code", "chatgpt-plan"] as const;
 
 export type SubscriptionRuntimeId = (typeof SUBSCRIPTION_RUNTIME_IDS)[number];
 export const MAX_SUBSCRIPTION_RUNTIME_MODEL_ID_LENGTH = 200;
@@ -149,7 +149,8 @@ export function isSubscriptionRuntimeStatusUpdatedEvent(
     && payload.revision > 0;
 }
 
-type SubscriptionRuntimeTransport = "codex-app-server" | "acp" | "claude-cli";
+/** `chatgpt-plan-direct` is Sign in with ChatGPT plan usage: Ave's own OAuth session and `POST /v1/responses`, no CLI. */
+type SubscriptionRuntimeTransport = "codex-app-server" | "acp" | "claude-cli" | "chatgpt-plan-direct";
 
 export type SubscriptionLoginMethod = "browser" | "device-code";
 
@@ -178,8 +179,8 @@ interface ApiChatRuntimeSelection {
 
 export type ActiveChatRuntime = ApiChatRuntimeSelection | SubscriptionChatRuntimeSelection;
 
-/** Discovered runtimes use installed CLI locations; user-selected runtimes allow an executable picker. */
-export type SubscriptionRuntimeExecutableSource = "discovered" | "user-selected";
+/** Discovered runtimes use installed CLI locations; user-selected runtimes allow an executable picker; `none` runs no executable. */
+export type SubscriptionRuntimeExecutableSource = "discovered" | "user-selected" | "none";
 
 export interface SubscriptionRuntimeDescriptor {
   id: SubscriptionRuntimeId;
@@ -196,6 +197,10 @@ export interface SubscriptionRuntimeDescriptor {
   installGuidance?: SubscriptionRuntimeInstallGuidance;
   /** No model selection uses the runtime default, offered explicitly rather than guessed as a model name. */
   offersCliDefaultModel: boolean;
+  /** The runtime has no default model at all: chat can be selected only with a model from its list. */
+  requiresModelSelection?: true;
+  /** Where the provider lets the user review and limit this app's plan usage. */
+  usageSettingsUrl?: string;
 }
 
 /** Install instructions are display text; the app never executes them. */
@@ -242,6 +247,39 @@ export const SUBSCRIPTION_RUNTIME_API_COUNTERPART: Readonly<
   "kimi-code": "moonshot",
 });
 
+/**
+ * Runtimes that are another way into a provider row already owned by a primary runtime. ChatGPT plan usage is the
+ * third OpenAI sign-in beside the Codex CLI and the API key, so it joins the Codex row instead of adding a second
+ * "OpenAI" row.
+ */
+export const SUBSCRIPTION_RUNTIME_ROW_PARTNER: Readonly<
+  Partial<Record<SubscriptionRuntimeId, SubscriptionRuntimeId>>
+> = Object.freeze({
+  "chatgpt-plan": "codex",
+});
+
+/** The three ways chat reaches OpenAI. Exactly one is in effect, chosen by the persisted `activeChatRuntime`. */
+export type OpenAiLoginType = "codex-cli" | "api-key" | "chatgpt-plan";
+
+/**
+ * Name the OpenAI sign-in a chat selection uses, or null when chat is not on OpenAI. This is derived from the one
+ * persisted selection (`activeChatRuntime` plus the API vendor), never stored separately, so the two cannot disagree:
+ * `{kind:"subscription", provider:"codex"}` is the Codex CLI, `{kind:"subscription", provider:"chatgpt-plan"}` is
+ * plan usage, and `{kind:"api"}` with vendor `openai` is the API key. Settings saved before plan usage existed hold
+ * one of the first two shapes and so keep their sign-in.
+ */
+export function openAiLoginTypeFor(
+  runtime: ActiveChatRuntime | undefined,
+  apiVendor: string | undefined,
+): OpenAiLoginType | null {
+  if (runtime?.kind === "subscription") {
+    if (runtime.provider === "codex") return "codex-cli";
+    if (runtime.provider === "chatgpt-plan") return "chatgpt-plan";
+    return null;
+  }
+  return apiVendor === "openai" ? "api-key" : null;
+}
+
 /** Safe capability projection when a runtime has not verified a feature. */
 export const DEFAULT_SUBSCRIPTION_RUNTIME_CAPABILITIES: SubscriptionRuntimeCapabilities = Object.freeze({
   chat: false,
@@ -283,6 +321,22 @@ export const SUBSCRIPTION_RUNTIME_DESCRIPTORS: readonly SubscriptionRuntimeDescr
       ]),
     }),
     offersCliDefaultModel: false,
+  },
+  {
+    id: "chatgpt-plan",
+    label: "ChatGPT plan",
+    planName: "ChatGPT",
+    // No CLI is involved; the name the card shows for this way in.
+    cliName: "Sign in with ChatGPT",
+    transport: "chatgpt-plan-direct",
+    executable: "none",
+    loginMethods: ["browser"],
+    supportsManagedLogout: true,
+    // The account's own `GET /v1/models` list; there is no runtime default to fall back on.
+    supportsModelSelection: true,
+    offersCliDefaultModel: false,
+    requiresModelSelection: true,
+    usageSettingsUrl: "https://chatgpt.com/settings/usage",
   },
   {
     id: "kimi-code",

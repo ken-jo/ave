@@ -68,6 +68,11 @@ class LazyVercelProvider implements LLMProvider {
   }
 }
 
+/** The bare lazy SDK wire, for a connection that owns its own request policy (ChatGPT plan usage). */
+export function createVercelTransport(config: ProviderConfig): LLMProvider {
+  return new LazyVercelProvider(config);
+}
+
 export function createProvider(config: ProviderConfig): LLMProvider {
   const transport = new LazyVercelProvider(config);
   return config.vendor === "openai"

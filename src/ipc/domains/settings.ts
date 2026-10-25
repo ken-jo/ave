@@ -1278,7 +1278,11 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       }
       const model = normalizeSubscriptionModel(modelValue);
       const descriptor = subscriptionRuntimeDescriptor(providerValue);
-      if (model === null || (model !== undefined && !descriptor.supportsModelSelection)) {
+      if (
+        model === null
+        || (model !== undefined && !descriptor.supportsModelSelection)
+        || (model === undefined && descriptor.requiresModelSelection === true)
+      ) {
         auditSubscriptionMutation("use-for-chat", providerValue, "rejected", "subscription-chat-unavailable");
         return { ok: false as const, error: "subscription-chat-unavailable" as const };
       }
