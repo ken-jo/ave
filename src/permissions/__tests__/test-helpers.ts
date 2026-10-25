@@ -174,3 +174,48 @@ export function auditRowStartingWith(
 export function inspectBuiltinCommandRisk(command: string) {
   return inspectHostRisk({ source: "builtin", finalInput: { command } });
 }
+
+const pathFilter = (kind: "subpath" | "literal", path: string): string => `(${kind} ${JSON.stringify(path)})`;
+
+/** The path a folded regex filter names, one per alternative; undefined for any other regex. */
+export function expandFoldedPathFilter(filter: string): string[] | undefined {
+  const match = /^\(regex ("(?:[^"\\]|\\.)*")\)$/u.exec(filter);
+  if (!match) return undefined;
+  const source = JSON.parse(match[1]!) as string;
+  const shape = /^\^((?:\\.|[^\\.*+?^${}()|[\]])*)\/\(((?:\\.|[^\\.*+?^${}()|[\]])*(?:\|(?:\\.|[^\\.*+?^${}()|[\]])*)*)\)(\(\/\.\*\)\?)?\$$/u
+    .exec(source);
+  if (!shape) return undefined;
+  const unescape = (text: string): string => text.replace(/\\(.)/gu, "$1");
+  const kind = shape[3] === undefined ? "literal" : "subpath";
+  return (shape[2]!.match(/(?:\\.|[^|\\])+/gu) ?? []).map((name) => pathFilter(kind, `${unescape(shape[1]!)}/${unescape(name)}`));
+}
+
+/** The profile's rules, each as its head and the sorted filters it matches, folded regexes expanded. */
+export function profileRules(profile: string): { head: string; filters: string[] }[] {
+  const out: { head: string; filters: string[] }[] = [];
+  const lines = profile.split("\n");
+  for (let index = 0; index < lines.length; index++) {
+    const head = lines[index]!;
+    if (!/^\((allow|deny) /u.test(head) || head.endsWith(")")) {
+      if (head.trim() !== "") out.push({ head, filters: [] });
+      continue;
+    }
+    const filters: string[] = [];
+    while (!lines[index + 1]!.startsWith("  (with message")) {
+      const filter = lines[++index]!.trim();
+      filters.push(...(expandFoldedPathFilter(filter) ?? [filter]));
+    }
+    index++;
+    out.push({ head, filters: filters.sort() });
+  }
+  return out;
+}
+
+/** The profile a wrapped argv carries, unquoted from the shell word that passes it to `sandbox-exec -p`. */
+export function profileOfWrappedArgv(argv: readonly string[]): string {
+  const command = argv.join("\n");
+  const start = command.indexOf("(version 1)");
+  const end = command.lastIndexOf('_SBX"))') + '_SBX"))'.length;
+  if (start < 0) throw new Error(`no sandbox profile in the wrapped argv: ${command.slice(0, 300)}`);
+  return command.slice(start, end).split(`'"'"'`).join("'");
+}
