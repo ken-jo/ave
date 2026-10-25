@@ -1,12 +1,13 @@
 name: CI
-# Pull requests into integration/* always run the best traced Vitest selection,
-# never a whole-suite fallback. Other pull requests run affected tests unless
-# selection is untrusted. A category merge (integration/* into main) and every
-# non-PR event run the full suite: a
-# push to main after a merge, a release tag, the nightly schedule and a manual
-# dispatch. Coverage is periodic: only the nightly schedule and a manual
-# dispatch instrument it and enforce its thresholds. See
-# scripts/run-ci-suite.mjs for the selection and its full-suite fallbacks.
+# Test-only diffs (collected tests and fixture assets only) run affected tests
+# on every PR base and main push, never the full suite. Test helper and setup
+# modules, the Vitest config, config/, scripts/ and .github/ are never
+# test-only. Main pushes use trusted selection over before..HEAD, like
+# non-integration PRs;
+# uncertainty falls back to full. Integration-base PRs keep traced selection.
+# Non-test-only category PRs, release tags, nightly schedules and manual
+# dispatches run the full suite. Coverage runs only on schedule and dispatch.
+# scripts/run-ci-suite.mjs owns the rule and records it in the job summary.
 on:
   pull_request:
     branches: [main, "integration/**"]
@@ -21,9 +22,9 @@ permissions:
   contents: read
 concurrency:
   # The event is part of the group so the nightly run on main never cancels,
-  # and is never cancelled by, the full run of a push to main. A push groups
+  # and is never cancelled by, the run of a push to main. A push groups
   # by ref and commit, so a second merge never cancels the first merge's
-  # full run, and tagging a merge commit (a push of the same sha to a tag
+  # run, and tagging a merge commit (a push of the same sha to a tag
   # ref) never cancels that commit's main run. A pull
   # request still cancels its own superseded run.
   group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'push' && format('{0}-{1}', github.ref, github.sha) || github.ref }}
@@ -111,6 +112,16 @@ jobs:
       - run: bun install --frozen-lockfile
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
+      - name: Restore webpack cache
+        id: webpack-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        with:
+          path: ave/.cache/webpack
+          key: ${{ runner.os }}-${{ runner.arch }}-ci-webpack-v1-${{ hashFiles('ave/bun.lock', 'ave/patches/**') }}-${{ hashFiles('ave/webpack.config.cjs', 'ave/tsconfig*.json') }}-${{ hashFiles('ave/src/**', 'ave/package.json') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-ci-webpack-v1-${{ hashFiles('ave/bun.lock', 'ave/patches/**') }}-${{ hashFiles('ave/webpack.config.cjs', 'ave/tsconfig*.json') }}-
+            ${{ runner.os }}-${{ runner.arch }}-ci-webpack-v1-${{ hashFiles('ave/bun.lock', 'ave/patches/**') }}-
       # uv is fetched to resources/ (outside node_modules) by the postinstall,
       # which bun skips when node_modules is already satisfied from cache. Ensure
       # it explicitly — fetch-uv is idempotent (no-op when already present).
@@ -157,6 +168,8 @@ jobs:
       - run: bun run build
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
+        env:
+          AVE_BUILD_MINIFIER: esbuild
       # Plan once: the shards below run this plan instead of planning again,
       # so every shard splits the same file list. A full run without
       # coverage gets FULL_RUN_SHARDS shards; an affected selection and a
@@ -165,6 +178,13 @@ jobs:
         id: plan
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
+        # The same base the documentation classifier diffs from. A push plans
+        # over everything since `before`, so a multi-commit or rebase-merged
+        # push is classified as a whole; scripts/run-ci-suite.mjs plans full
+        # when it is missing, zero or not an ancestor of HEAD. A pull request
+        # plans over its merge commit's first parent.
+        env:
+          AVE_CI_DIFF_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
           mkdir -p "$RUNNER_TEMP/ci-plan"
           node scripts/run-ci-suite.mjs --write-plan "$RUNNER_TEMP/ci-plan/ci-plan.json"
@@ -285,17 +305,15 @@ jobs:
         # The suite resolves entirely from ave/src. Sibling slugs appear
         # only as fixtures or mocked installer inputs.
         #
-        # `test:ci` (scripts/run-ci-suite.mjs) runs the full suite on every
-        # non-PR event and category merge (integration/* into main). PRs into
-        # integration/* always keep the best traced selection plus the nonempty
-        # must-run set (config/ci-must-run-tests.json), even when discovery fails
-        # or selection is untrusted; whole-suite checking waits for the category
-        # merge. An unresolved integration-base PR diff fails before selection.
-        # Other PR bases keep the untrusted -> full rule. Local pre-push is
-        # unchanged. Coverage is periodic:
-        # only the nightly schedule and a manual dispatch run
-        # `check:test-coverage` (instrumentation and every global threshold).
-        # The step summary names the mode and the reason.
+        # Test-only diffs always keep changed tests, fixture readers, triggered
+        # locks and the must-run set; a test helper or setup module is never
+        # test-only and runs full off integration bases. Other main pushes use trusted selection
+        # over the push's before..HEAD diff, with uncertainty falling back to full.
+        # Non-test-only category merges, tags, schedule and dispatch run full.
+        # Integration-base PRs retain best traced selection on uncertainty and
+        # fail on an unresolved diff. Local pre-push is unchanged.
+        # Only schedule and dispatch instrument coverage and enforce thresholds.
+        # The step summary names the mode and the rule that chose it.
         #
         # `check:test-coverage`, not `check:test-quality`: that composite runs
         # `check:test-duplicates` first, so a duplicated test helper would end
@@ -496,7 +514,8 @@ jobs:
     name: Windows permission path tests
     # A pull request into an integration/* category branch runs only
     # build-and-test; this job runs for pull requests into main and every
-    # full-run event (push, tag, schedule, dispatch).
+    # event (main push, tag, schedule, dispatch). These jobs run only the
+    # explicit platform regression files below, never the whole suite.
     if: github.event_name != 'pull_request' || github.base_ref == 'main'
     # GitHub-hosted runner, as every job is; see workflow-runner-policy.ts.
     # The runner needs Git for Windows (bash) and the C++ build tools that
@@ -652,7 +671,8 @@ jobs:
     name: macOS permission path tests
     # A pull request into an integration/* category branch runs only
     # build-and-test; this job runs for pull requests into main and every
-    # full-run event (push, tag, schedule, dispatch).
+    # event (main push, tag, schedule, dispatch). These jobs run only the
+    # explicit platform regression files below, never the whole suite.
     if: github.event_name != 'pull_request' || github.base_ref == 'main'
     # GitHub-hosted runner, as every job is; see workflow-runner-policy.ts.
     # The adversarial suite's Electron control runs the dev Electron binary
@@ -770,7 +790,8 @@ jobs:
     name: Linux confinement path tests
     # A pull request into an integration/* category branch runs only
     # build-and-test; this job runs for pull requests into main and every
-    # full-run event (push, tag, schedule, dispatch).
+    # event (main push, tag, schedule, dispatch). These jobs run only the
+    # explicit platform regression files below, never the whole suite.
     if: github.event_name != 'pull_request' || github.base_ref == 'main'
     # The architecture of `build-and-test`, so the native-module cache key below
     # and ASRT's `arm64` seccomp filter both apply.
