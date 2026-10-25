@@ -6,8 +6,7 @@ import { PermissionManager, type PermissionRule } from "../permission-manager.js
 import { editDepthCandidates, evaluateScopedRules, type ScopedRuleSubject } from "../rules/scoped-rule-matcher.js";
 import { canonicalRuleSpecifier, matchesWebFetchHost, parseRuleSpecifier } from "../rules/rule-specifier.js";
 import { projectRulesLocation } from "../rules/project-rule-files.js";
-import { protectedControlEntryFor } from "../sensitive-paths.js";
-import { caseFoldForMatch, foldCanonicalPathSeparators } from "../sensitive-paths.js";
+import { caseFoldForMatch, foldCanonicalPathSeparators, protectedControlEntryFor } from "../sensitive-paths.js";
 import { ToolExecutor } from "../../tools/executor.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { WriteFileTool, ReadFileTool, createFileTools } from "../../tools/file-tools.js";
