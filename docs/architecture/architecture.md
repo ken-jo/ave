@@ -1578,11 +1578,14 @@ and `PowerShell(gci *)` refuses `Get-ChildItem`. A `-EncodedCommand` payload
 destructive, exfiltration and secret floors run on the decoded script, a
 destructive one gets the same forced modal as the plain text, no allow rule
 covers an encoded command, and the card shows the decoded script. The
-invocation is read on quote-aware words, so a separator or line break inside a
-quoted value neither ends it nor cuts the payload short. A payload the host
-cannot fully decode, unbalanced quoting, or an encoded-looking word after
-`-Command`/`-File` is hidden code: it gets the forced modal and no allow rule
-covers it. The host builds the card's rule from
+payload is read from the argv each shell's own lexer produced (the same view
+the rule matcher uses), nested `-Command`, `cmd /c` and `bash -c` scripts
+included. A launched shell (`pwsh`, `powershell`, `cmd`, `bash`, `sh`, …) whose
+argv is not fully literal (a variable, splat, subexpression, backtick or caret
+escape, a cmd `%`/`!` expansion), input the lexer cannot read, a payload the
+host cannot fully decode, or an encoded-looking word after `-Command`/`-File`
+is hidden code: it gets the forced modal on both lanes, before any sandboxed
+allow, no allow rule covers it and the card offers no exact rule. The host builds the card's rule from
 the parsed command and matches it again before saving; a command that is not
 one literal simple command has no exact rule.
 
