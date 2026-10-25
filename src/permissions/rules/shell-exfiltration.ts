@@ -1653,6 +1653,14 @@ export function shellSensitivePathSignal(input: ShellCommandInput, cwd?: string)
   return hit ? `sensitive path argument (${hit})` : null;
 }
 
+// Exact rules require complete analysis and a canonical directory; indirect input remains an accepted limit.
+export function shellScanProofBlocker(input: ShellCommandInput, cwd?: string): string | null {
+  const parsed = asParsedShellCommand(input);
+  if (!parsed.analysis.ok) return parsed.analysis.reason;
+  const scan = scanCommand(parsed, cwd);
+  return scan.ordinaryAsk ?? scan.cdAsk ?? null;
+}
+
 // Incomplete path inspection is an ordinary ask, never credential evidence.
 export function shellScanOrdinaryAsk(input: ShellCommandInput, cwd?: string): string | null {
   const parsed = asParsedShellCommand(input);

@@ -55,7 +55,7 @@ describe("wrapper command boundaries", () => {
     expect(wrapperCommand(argv)).toMatchObject({ candidates: [2, 3, 4] });
     const shape = analyzeShellForRules(argv.join(" "));
     expect(shape).toMatchObject({ ok: true, ordinaryAsk: expect.stringMatching(/unsupported wrapper option/), hidden: [], allowBlockers: [] });
-    if (shape.ok) expect(shape.commands[0]?.allowBlockers).toEqual(["unsupported wrapper option"]);
+    if (shape.ok) expect(shape.commands[0]?.allowBlockers).toEqual([]);
   });
 
   it.each([

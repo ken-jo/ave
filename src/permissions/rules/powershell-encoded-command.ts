@@ -1,11 +1,27 @@
 import type { ShellRuleDialect } from "../../shared/permissions-events.js";
 import { literalRuleWord } from "./rule-specifier.js";
-import { wrapperPrefixLength, type ShellCommandInput } from "./shell-prefix-policy.js";
+import { wrapperCommand, type ShellCommandInput } from "./shell-prefix-policy.js";
 import { isPowerShellLauncher } from "./shell-prefix-values.js";
 
 const ENCODED_PARAMETER_RE = /^(?:[-–—―]+|\/)(?:e|ec|en|enc|enco|encod|encode|encoded|encodedc|encodedco|encodedcom|encodedcomm|encodedcomma|encodedcomman|encodedcommand)(?::([\s\S]*))?$/i;
 const SCRIPT_PARAMETER_RE = /^(?:[-–—―]+|\/)(?:c|co|com|comm|comma|comman|command|commandwithargs|cwa|f|fi|fil|file)(?::.*)?$/i;
 const VALUE_PARAMETER_RE = /^(?:[-–—―]+|\/)(?:workingdirectory|configurationname|configurationfile|custompipename|executionpolicy|inputformat|outputformat|settingsfile|version|windowstyle)$/i;
+
+// The encoded-execution exclusion reads launcher and option identity, never operand content or nested program text.
+export function encodedPowerShellExecutionReason(argv: readonly (string | null | undefined)[]): string | null {
+  const words = argv.map((word) => word ?? undefined);
+  const wrapper = wrapperCommand(words, words.length).index;
+  const head = words[wrapper];
+  if (head === undefined || !isPowerShellLauncher(head)) return null;
+  for (let index = wrapper + 1; index < words.length; index += 1) {
+    const arg = words[index];
+    if (arg === undefined || SCRIPT_PARAMETER_RE.test(arg)) break;
+    if (VALUE_PARAMETER_RE.test(arg)) { index += 1; continue; }
+    const parameter = ENCODED_PARAMETER_RE.exec(arg);
+    if (parameter !== null && (parameter[1] !== undefined || words[index + 1] !== undefined)) return "encoded PowerShell execution";
+  }
+  return null;
+}
 
 // Decode only a launcher's literal operand for display. No decoded text participates in permission decisions or further decoding.
 export function decodePowerShellEncodedCommands(input: ShellCommandInput, dialect: ShellRuleDialect): string[] {
@@ -13,7 +29,7 @@ export function decodePowerShellEncodedCommands(input: ShellCommandInput, dialec
   const scripts: string[] = [];
   const seen = new Set<string>();
   for (const words of displayArgv(command, dialect) ?? []) {
-    const start = wrapperPrefixLength(words);
+    const start = wrapperCommand(words, words.length).index;
     const head = words[start];
     if (head === undefined || !isPowerShellLauncher(head)) continue;
     for (let index = start + 1; index < words.length; index += 1) {

@@ -1,4 +1,5 @@
 import { POWERSHELL_FILE_TYPES } from "./powershell-file-types.js";
+import { canonicalPowerShellName } from "./powershell-command-policy.js";
 
 // Shell executable identities used for hidden-code and floor inspection.
 export const SHELLS = ["sh", "bash", "zsh", "dash", "ksh", "mksh", "yash", "fish", "csh", "tcsh", "pwsh", "powershell", "pwsh-preview", "cmd", "busybox"];
@@ -135,20 +136,10 @@ export const RUNNER_SET = new Set(PACKAGE_RUNNERS);
 // Checked before parsing commands that could satisfy a reusable allow rule.
 export const MAX_LITERAL_COMMAND_LENGTH = 10_000;
 
-const POWERSHELL_LAUNCHERS = new Set(["pwsh", "powershell", "pwsh-preview"]);
-const CODE_LAUNCHERS = new Set([...SHELLS, ...INTERPRETERS]);
-const WINDOWS_CODE_LAUNCHERS = new Map([...CODE_LAUNCHERS].map((name) => [name.toLowerCase(), name]));
+const POWERSHELL_LAUNCHERS = new Set(["pwsh", "pwsh-preview", "powershell", "powershell_ise"]);
 
-// Only exact executable basenames identify launchers. Case folding belongs to the host filesystem dialect.
-export function codeLauncherName(token: string, platform: NodeJS.Platform = process.platform): string | null {
-  const basename = token.split(/[\\/]/).pop() ?? token;
-  const name = (platform === "win32" ? basename.toLowerCase() : basename).replace(/\.exe$/, "");
-  return platform === "win32" ? WINDOWS_CODE_LAUNCHERS.get(name) ?? null : CODE_LAUNCHERS.has(name) ? name : null;
-}
-
-export function isPowerShellLauncher(token: string, platform: NodeJS.Platform = process.platform): boolean {
-  const name = codeLauncherName(token, platform);
-  return name !== null && POWERSHELL_LAUNCHERS.has(name);
+export function isPowerShellLauncher(token: string): boolean {
+  return POWERSHELL_LAUNCHERS.has(canonicalPowerShellName(token).replace(/\.exe$/i, ""));
 }
 
 // Canonical executable identity for visible-floor and restriction matching.

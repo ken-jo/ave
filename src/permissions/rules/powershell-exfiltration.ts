@@ -18,7 +18,8 @@ import {
 import { PowerShellFileProvenance } from "./powershell-file-provenance.js";
 import { canonicalPowerShellRuleTokens, literalPowerShellParameterIndexes, literalRuleWord } from "./rule-specifier.js";
 import { INTERPRETER_SET, RUNNER_SET, SHELL_SET, WRAPPER_SET, programName, runnerName, MAX_LITERAL_COMMAND_LENGTH } from "./shell-prefix-values.js";
-import { hiddenCodeReason, literalInvocationReason, isNetworkProgram, opaqueRunnerReason, runnerCodeContext, runnerCommandIndexes, wrapperCommand, type ShellCommandInput } from "./shell-prefix-policy.js";
+import { hiddenCodeReason, isNetworkProgram, opaqueRunnerReason, runnerCodeContext, runnerCommandIndexes, wrapperCommand, type ShellCommandInput } from "./shell-prefix-policy.js";
+import { encodedPowerShellExecutionReason } from "./powershell-encoded-command.js";
 import {
   MULTI_PURPOSE_NETWORK,
   sensitivePathInArgumentText,
@@ -35,6 +36,8 @@ interface PsWord {
   // Dequoted text (quotes and backtick escapes removed).
   text: string;
   quoted: boolean;
+  // Adjacent bare/quoted fragments are retained for floor inspection, but their argv identity is not modeled.
+  adjacent?: true;
   // `$(…)` bodies inside the word or an expandable string.
   nested: PsPipeline[][];
   reason?: string;
@@ -168,8 +171,10 @@ class Lexer {
         const previous = src[this.index - 1];
         if (previous && !/[\s;|&(){},:=+<>]/.test(previous)) throw new PsUnreadable("unsupported adjacent string fragment");
         const token = char === "'" ? this.parseSingleQuoted() : this.parseDoubleQuoted();
+        if (previous && /[:=+]/.test(previous)) token.adjacent = true;
         const following = src[this.index];
         if (following && !/[\s;|&(){},=+\-<>]/.test(following)) throw new PsUnreadable("unsupported adjacent string fragment");
+        if (following && /[=+\-]/.test(following)) token.adjacent = true;
         tokens.push(token);
         continue;
       }
@@ -1975,7 +1980,7 @@ export type PowerShellRuleShape =
 
 // A word whose value is fixed by its own text. Here-strings and stop-parsing tails remain outside the supported literal grammar.
 function isLiteralWord(token: PsToken): token is PsWord {
-  if (token.kind !== "word" || token.nested.length > 0 || token.reason !== undefined) return false;
+  if (token.kind !== "word" || token.nested.length > 0 || token.reason !== undefined || token.adjacent) return false;
   if (/^@["']/.test(token.raw) || /^--%/.test(normalizeDashes(token.raw))) return false;
   return literalRuleWord(token.raw, "powershell") !== undefined;
 }
@@ -2009,10 +2014,7 @@ export function powerShellRuleShape(input: ShellCommandInput): PowerShellRuleSha
         continue;
       }
       if (argv.includes(null)) opaque ??= "non-literal argument";
-      opaque ??= hiddenCodeReason(argv.map((token) => token ?? undefined));
-      opaque ??= literalInvocationReason(argv.map((token) => token ?? undefined));
-      const policy = typeof argv[0] === "string" ? POWERSHELL_COMMAND_POLICIES[canonicalPowerShellName(argv[0])] : undefined;
-      if (policy?.effects.some((effect) => effect === "launcher" || effect === "dispatch")) opaque ??= "code passed to a command carrier";
+      opaque ??= encodedPowerShellExecutionReason(argv);
       commands.push(argv);
       literalParameters.push(literalPowerShellParameterIndexes(argv, stage.tokens.flatMap((token, index) => token.kind === "word" && token.quoted ? [index] : [])));
     }

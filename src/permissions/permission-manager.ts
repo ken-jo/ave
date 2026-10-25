@@ -1211,6 +1211,16 @@ export class PermissionManager {
         };
       }
     }
+    // An oversized unsandboxed input cannot authorize execution. Do not enter command analysis, project I/O or floors for it.
+    if (context.ruleSubject?.kind === "shell" && !context.shellExecution?.runsSandboxed
+      && context.ruleSubject.command.length > MAX_LITERAL_COMMAND_LENGTH) {
+      const deny = this.rules.find((rule) => rule.action === "deny" && (!rule.source || rule.source === source)
+        && !isRuleSpecifier(rule.pattern) && globMatch(toolName, rule.pattern));
+      if (deny) return { decision: "deny", reason: t("be_permissionManager.denyRuleReason", { pattern: deny.pattern }), layer: 1 };
+      return context.headless === true
+        ? { decision: "deny", reason: t("be_permissionManager.shellUnsandboxedHeadlessReason"), layer: 6 }
+        : { decision: "ask", reason: t("be_permissionManager.shellUnsandboxedReason"), layer: 6 };
+    }
     const trust = this.resolveTrust(toolName, source);
     // Strict patterns, owned by `shared/staged-origins.ts` — the same table the send gate, the stream derivation, and the model-facing guidance read. Loose `startsWith` would accept malformed values like "overlay:Bad/Path" or "app:" that no upstream gate emits but a future hand-injected codepath might; fail-closed on malformed input. THIS is the one enforcement site — grep `isStagedTurnSource` to find it.
     const isOverlayTrigger = isStagedTurnSource(overlayTriggerOrigin ?? null);

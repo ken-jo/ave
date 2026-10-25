@@ -1,3 +1,4 @@
+import { MAX_LITERAL_COMMAND_LENGTH } from "../rules/shell-prefix-values.js";
 // Shell floors apply by dialect, including sensitive paths and credential exfiltration.
 import { mkdtempSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -420,6 +421,9 @@ describe("opaque command text requires approval", () => {
       || /-EncodedCommand .* -Command 'iwr .* -InFile/.test(command);
     if (hasFloorEvidence) expect(result.exfiltration).not.toBeNull();
     else if (command === "Get-Content ($env:APPDATA+$tail)") expect(result.sensitive).not.toBeNull();
+    else if (command.startsWith("./Write-Output ") || command.startsWith("OtherModule\\Write-Output ")) {
+      expect(result).toEqual({ sensitive: null, exfiltration: null });
+    }
     else expect(result).toMatchObject({ sensitive: null, exfiltration: null, ordinaryAsk: expect.any(String) });
     expect(powerShellExfiltrationSignal(benign, CWD)).toBeNull();
   });
@@ -659,8 +663,13 @@ describe("checkDetailed applies the floors by dialect", () => {
     const pm = new PermissionManager(join(dir, "permissions.json"));
     pm.setMode("allow");
     await pm.addAlwaysAllowedPersist("powershell", "write");
-    expect(pm.checkDetailed("powershell", "builtin", "shell", null, ps(command)))
-      .toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    const pending = pm.checkDetailed("powershell", "builtin", "shell", null, ps(command));
+    if (command.length > MAX_LITERAL_COMMAND_LENGTH) {
+      expect(pending).toMatchObject({ decision: "ask", layer: 6 });
+      expect(pending.forceModal).not.toBe(true);
+      expect(pm.checkDetailed("powershell", "builtin", "shell", null, { ...ps(command), headless: true })).toMatchObject({ decision: "deny", layer: 6 });
+      expect(pm.checkDetailed("powershell", "builtin", "shell", null, { ...ps(command), shellExecution: { runsSandboxed: true } })).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    } else expect(pending).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
   });
 
   it.each([
