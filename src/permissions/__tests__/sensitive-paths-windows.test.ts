@@ -76,15 +76,24 @@ describe("Windows credential stores are sensitive paths", () => {
     expect(isSensitivePath(path, "read")).toBeNull();
   });
 
-  it("rows hang off the home anchor, so the sandbox floor denies the literal home paths too", () => {
-    const deny = getDefaultSensitiveReadDenyPaths().map((path) => path.replace(/[\\/]$/, ""));
+  it.each(["win32", "linux", "darwin"] as const)("rows hang off the home anchor, so the %s sandbox floor denies the literal home paths unless the host is macOS", (platform) => {
+    const hostPlatform = process.platform;
+    Object.defineProperty(process, "platform", { value: platform, configurable: true });
+    let deny: string[];
+    try {
+      deny = getDefaultSensitiveReadDenyPaths().map((path) => path.replace(/[\\/]$/, ""));
+    } finally {
+      Object.defineProperty(process, "platform", { value: hostPlatform, configurable: true });
+    }
     for (const segments of [
       ["AppData", "Roaming", "Microsoft", "Credentials"],
       ["AppData", "Roaming", "Microsoft", "Protect"],
       ["AppData", "Local", "Microsoft", "PowerShell", "secretmanagement"],
     ]) {
       expect(SENSITIVE_PATH_ENTRIES.some((entry) => entry.anchor === "home" && entry.segments.join("/") === segments.join("/"))).toBe(true);
-      expect(deny).toContain(join(homedir(), ...segments));
+      // Nothing on macOS keeps a Windows store under the home, so its Seatbelt floor leaves the row to the host guard.
+      if (platform === "darwin") expect(deny).not.toContain(join(homedir(), ...segments));
+      else expect(deny).toContain(join(homedir(), ...segments));
     }
   });
 });
