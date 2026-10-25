@@ -1975,9 +1975,16 @@ export type PowerShellRuleShape =
 
 const POWERSHELL_RULE_LITERAL = /^[^\s;&|<>(){}$@`'"\u2018-\u201e,#*?[\]~]+$/;
 
+// A word whose value is fixed by its own text. A here-string (`@"…"@`, `@'…'@`), the stop-parsing token (`--%`, which hands the rest of the line
+// to the program verbatim, cmd's `%VAR%` expansion included) and a cmd-style `%VAR%` are not: what the program receives is decided elsewhere.
+function isLiteralWord(token: PsToken): token is PsWord {
+  if (token.kind !== "word" || token.nested.length > 0 || token.reason !== undefined) return false;
+  if (/^@["']/.test(token.raw) || /^--%/.test(normalizeDashes(token.raw)) || /%[^%\s]+%/.test(token.text)) return false;
+  return POWERSHELL_RULE_LITERAL.test(token.text);
+}
+
 function ruleArgv(cmd: PsCommand): (string | null)[] | null {
-  const argv = cmd.tokens.map((token) =>
-    token.kind === "word" && token.nested.length === 0 && POWERSHELL_RULE_LITERAL.test(token.text) ? token.text : null);
+  const argv = cmd.tokens.map((token) => isLiteralWord(token) ? token.text : null);
   if (argv.length === 0 || argv[0] === null || argv[0] === ".") return null;
   return canonicalPowerShellRuleTokens(argv);
 }
@@ -2007,36 +2014,41 @@ export function powerShellRuleShape(input: ShellCommandInput): PowerShellRuleSha
   return { ok: true, commands, opaque };
 }
 
-// The argv of every simple command in a PowerShell input, nested ones included (`$(…)`, `(…)`, `{…}`), as the lexer unescaped it, for reading what a
-// launched shell (`pwsh`, `cmd`, `bash`, …) receives. A call or dot-source operator before a command is dropped. A token is null unless its value is
-// fixed before the launch: a group, a subexpression, a variable or splat, an expandable string with `$`, a backtick escape, or a backslash before a
-// dash or quote (which Windows argument parsing may treat otherwise) makes it null. Null when the input cannot be read.
-export function powerShellLaunchArgv(command: string): (string | null)[][] | null {
+// Every word of a PowerShell input at every depth the lexer reads (`$(…)`, `(…)`, `{…}`, `@(…)`), for the encoded-payload scan: `texts` holds each
+// word's value as the lexer unescaped it (quotes and backtick escapes removed, here-string bodies and the `--%` tail included), and `argvs` each
+// simple command's words with a non-literal one (`isLiteralWord`) as null. Null when the input cannot be read.
+/** One command of a pipeline, as the encoded-payload scan reads it: each word's text (null for a parenthesized group) and whether it is a literal,
+ *  and whether the command reads the previous stage's output on stdin. */
+export interface WordStage {
+  words: { text: string | null; literal: boolean }[];
+  piped: boolean;
+}
+
+// Every word text at every depth, and every pipeline stage (at every depth) with its words, for the encoded-payload scan.
+export function powerShellWords(command: string): { texts: string[]; stages: WordStage[] } | null {
   const lexed = standaloneLex(command);
   if (lexed === "budget" || lexed.pipelines === null) return null;
-  const commands: (string | null)[][] = [];
-  const launchToken = (token: PsToken): string | null => {
-    if (token.kind !== "word" || token.nested.length > 0 || token.reason !== undefined || token.raw.includes("`")) return null;
-    if (!token.quoted && /[$@]/.test(token.text)) return null;
-    if (token.quoted && token.raw.startsWith("\"") && token.text.includes("$")) return null;
-    if (/\\[-\u2013\u2014\u2015/"']/.test(token.text)) return null;
-    return token.text;
-  };
+  const texts: string[] = [];
+  const stages: WordStage[] = [];
   const walk = (pipelines: readonly PsPipeline[]) => {
     for (const pipeline of pipelines) {
-      for (const stage of pipeline.stages) {
-        const first = stage.tokens[0];
-        const call = first?.kind === "word" && !first.quoted && (first.text === "&" || first.text === ".");
-        commands.push((call ? stage.tokens.slice(1) : stage.tokens).map(launchToken));
+      for (const [index, stage] of pipeline.stages.entries()) {
+        stages.push({
+          words: stage.tokens.map((token) => token.kind === "group" ? { text: null, literal: false } : { text: token.text, literal: isLiteralWord(token) }),
+          piped: index > 0,
+        });
         for (const token of stage.tokens) {
           if (token.kind === "group") walk(token.body);
-          else for (const nested of token.nested) walk(nested);
+          else {
+            texts.push(token.text);
+            for (const nested of token.nested) walk(nested);
+          }
         }
       }
     }
   };
   walk(lexed.pipelines);
-  return commands;
+  return { texts, stages };
 }
 
 // The sensitive-path floor shares the bounded analysis used for exfiltration.
