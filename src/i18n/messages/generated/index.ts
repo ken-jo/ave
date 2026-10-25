@@ -6,7 +6,7 @@
  * objects) and merges the English default catalog here. Non-English generated
  * catalogs are language-pack chunks under `../generated-locales/`.
  *
- * Fragments: 186
+ * Fragments: 187
  */
 import { en as en_agentBrowser } from "./agentBrowser.js";
 import { en as en_alerts } from "./alerts.js";

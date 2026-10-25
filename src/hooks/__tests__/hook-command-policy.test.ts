@@ -12,6 +12,20 @@ import { ApprovalGate, type ApprovalRequest } from "../../permissions/approval-g
 import { __resetSandboxRequestedAtBootForTest, getHostShellExecutionPlan, setSandboxRequestedAtBoot } from "../../permissions/sandbox-capability.js";
 import { resolveTurnExtensionPolicy, turnExtensionPolicyContext } from "../../shared/turn-extension-policy.js";
 
+const sandboxedHost = vi.hoisted(() => ({ active: false }));
+// The authorizer reads only the plan's route; a sandbox-capable host here
+// needs no live substrate.
+vi.mock("../../permissions/sandbox-capability.js", async (original) => {
+  const actual = await original<typeof import("../../permissions/sandbox-capability.js")>();
+  return {
+    ...actual,
+    getHostShellExecutionPlan: (...args: Parameters<typeof actual.getHostShellExecutionPlan>) => {
+      const plan = actual.getHostShellExecutionPlan(...args);
+      return sandboxedHost.active ? { ...plan, mode: "asrt", sandboxed: true, requiresExplicitUserApproval: false } : plan;
+    },
+  };
+});
+
 vi.mock("../../permissions/asrt-sandbox.js", async (original) => ({
   ...await original<typeof import("../../permissions/asrt-sandbox.js")>(),
   isAsrtSandboxActive: () => false,
@@ -23,6 +37,7 @@ const payload: ScriptHookStdin = { hookType: "pre", toolName: "read_file", sourc
   input: {}, sessionId: "hook-policy-session", trustOrigin: "user-keyboard" };
 const roots: string[] = [];
 afterEach(async () => {
+  sandboxedHost.active = false;
   vi.restoreAllMocks();
   __resetSandboxRequestedAtBootForTest();
   for (const root of roots.splice(0)) await cleanupTmpDir(root);
@@ -76,6 +91,21 @@ describe("hook command permission admission", () => {
     });
     expect(await runOneHookScript(hook, payload, { authorizeCommand: p.authorizeCommand }))
       .toMatchObject({ decision: "deny", rawStdout: "", reason: expect.stringContaining("hook command denied") });
+  });
+
+  it("admits a hook through a wildcard allow on a sandbox-capable host", async () => {
+    sandboxedHost.active = true;
+    const p = policy();
+    // An interpreter prefix is never an allowable wildcard; a plain command's is.
+    p.permissionManager.setRules([{ pattern: "Bash(printf *)", action: "allow" }]);
+    const command = { ...hook, command: ["printf", "ready"] };
+    const admitted = await p.authorizeCommand(command, payload, process.cwd());
+    expect(admitted.decision, admitted.reason).toBe("allow");
+    expect(p.requestAndWait).not.toHaveBeenCalled();
+    // The same rule does not admit it where no sandbox is available.
+    sandboxedHost.active = false;
+    expect((await p.authorizeCommand(command, payload, process.cwd())).decision).toBe("deny");
+    expect(p.requestAndWait).toHaveBeenCalledOnce();
   });
 
   it("invalidates an automatic admission when an ask rule replaces its allow", async () => {

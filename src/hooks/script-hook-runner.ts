@@ -351,6 +351,7 @@ export async function runOneHookScript(
     };
   } else if (sandboxEnabled && process.platform !== "win32") {
     const sandboxHome = createSandboxProcessHome();
+    let wrappedAsrt = false;
     try {
       const wrapped = await wrapBundledCommand({ command: spawnCmd, args: spawnArgs,
         sandboxHome,
@@ -359,9 +360,10 @@ export async function runOneHookScript(
         tempPrincipal: confinement ? { kind: "plugin", id: confinement.pluginId }
           : { kind: "hook", id: sha256Hex(runnable.id) },
         egressOwner: hookEgressOwner });
+      wrappedEgress = wrapped.egress;
+      wrappedAsrt = true;
       [spawnCmd, ...spawnArgs] = wrapped.argv;
       spawnEnv = bundledWrappedEnv(childEnvBase, wrapped.env, sandboxHome.env);
-      wrappedEgress = wrapped.egress;
       let cleaned = false;
       cleanupWrap = () => {
         if (cleaned) return;
@@ -370,6 +372,8 @@ export async function runOneHookScript(
         sandboxHome.cleanup();
       };
     } catch (error) {
+      wrappedEgress?.release();
+      if (wrappedAsrt) void cleanupAsrtSandboxAfterCommand();
       sandboxHome.cleanup();
       return deny(`sandbox unavailable: ${(error as Error).message}`);
     }
