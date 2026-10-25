@@ -305,13 +305,13 @@ describe("ensureAveHomePrivate", () => {
       `[System.IO.Directory]::GetAccessControl($env:AVE_TEST_TARGET).GetSecurityDescriptorSddlForm('${sections}')`,
     ], { env: { ...process.env, AVE_TEST_TARGET: path }, encoding: "utf-8", windowsHide: true }).trim();
   }
-  it.runIf(process.platform === "win32").each(["home", "secrets"])("refuses a %s junction and leaves its target's DACL unchanged", (which) => {
+  it.runIf(process.platform === "win32").each(["home", "secrets", "subscription-runtimes"])("refuses a %s junction and leaves its target's DACL unchanged", (which) => {
     const dir = home();
     const target = join(dirname(dir), "target");
     mkdirSync(target);
-    const link = which === "home" ? dir : join(dir, "secrets");
-    if (which === "secrets") expect(ensureAveHomePrivate(dir)).toMatchObject({ enforcement: "win32-dacl" });
-    if (which === "secrets") rmdirSync(link);
+    const link = which === "home" ? dir : join(dir, which);
+    if (which !== "home") expect(ensureAveHomePrivate(dir)).toMatchObject({ enforcement: "win32-dacl" });
+    if (which !== "home") rmdirSync(link);
     symlinkSync(target, link, "junction");
     try {
       const before = sddl(target);
