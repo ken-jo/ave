@@ -806,7 +806,6 @@ describe("DurableHostInvocationStartCasStore", () => {
     const valid = readFileSync(filePath, "utf8");
 
     writeFileSync(filePath, "x".repeat(1_025), "utf8");
-    // The over-limit message is the shared stable reader's (hmac-chain).
     await expect(journalStore(filePath, { maxBytes: 1_024 }).recoverAfterCrash({
       persistAudit: () => {},
       now: 11,
@@ -819,10 +818,8 @@ describe("DurableHostInvocationStartCasStore", () => {
     })).rejects.toThrow(/corrupt|canonical/);
   });
 
-  // An unprivileged Windows process cannot create a file symlink (EPERM) but
-  // can put a directory junction at the journal's name; Windows opens without
-  // O_NOFOLLOW, so the shared reader's lstat/fstat check is the refusal there.
-  // POSIX keeps the file symlink and adds the same directory link.
+  // Windows junctions avoid file-symlink privilege and exercise lstat/fstat refusal without O_NOFOLLOW.
+  // POSIX tests retain both file and directory links.
   it.each(platform === "win32" ? ["directory link"] : ["file symlink", "directory link"])(
     "rejects a final-component %s replacement",
     async (linkKind) => {
@@ -844,7 +841,6 @@ describe("DurableHostInvocationStartCasStore", () => {
         return;
       }
       unlinkSync(filePath);
-      // A junction on Windows; the type is ignored on POSIX.
       const targetDir = join(root, "replacement");
       mkdirSync(targetDir);
       symlinkSync(targetDir, filePath, "junction");

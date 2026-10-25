@@ -16,8 +16,7 @@ vi.mock("node:child_process", async (importOriginal) => {
   return { ...actual, spawn: childProcessMock.spawn, execFileSync: childProcessMock.execFileSync };
 });
 vi.mock("../mxc-shell-launch.js", () => ({ prepareMxcShellLaunch: mxcLaunchMock.prepare }));
-// The real helper builds a Windows profile with win32 path joins, which on a
-// POSIX test host would land as backslash-named entries in the working tree.
+// Mock Windows profile creation on POSIX so backslash paths cannot become entries in the working tree.
 vi.mock("../../permissions/sandbox-process-home.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../permissions/sandbox-process-home.js")>();
   const { mkdtempSync, rmSync } = await import("node:fs");
@@ -184,19 +183,17 @@ describe("builtin shell — Windows MXC containers", () => {
       const [launch] = mxcLaunchMock.prepare.mock.calls[0] as [{ filesystem: { allowWrite: string[]; denyWrite: string[]; allowRead: string[]; denyRead: string[]; floorPierces?: string[] } }];
       const { filesystem } = launch;
       expect(filesystem.allowWrite).toContain(workspace);
-      // Git metadata stays writable (#105); its controls do not.
+      // Git metadata remains writable; execution controls do not.
       for (const entry of [join(".git", "hooks"), join(".git", "config"), ".vscode", ".husky", join(".claude", "settings.json"), ".envrc"]) {
         expect(filesystem.denyWrite, entry).toContain(join(workspace, entry));
       }
       for (const store of [permissionsFilePath(), userApprovalFilePath(), egressGrantFilePath()]) {
         expect(filesystem.denyWrite, store).toContain(store);
       }
-      // On Windows the ranked request keeps a deny inside the granted
-      // workspace: read-only when it exists, denied when it does not.
+      // Windows keeps denied workspace controls read-only when present and denied when absent.
       if (process.platform === "win32" && ORIGINAL_PLATFORM === "win32") {
         const grants = rankMxcFilesystem({ ...filesystem, protectedFloor: [] }, existsSync);
-        // Windows paths are case-insensitive, and canonicalized entries may
-        // carry a lowercase drive letter.
+        // Compare Windows paths case-insensitively, including canonical drive letters.
         const folded = (paths: readonly string[]) => paths.map((path) => path.toLowerCase());
         expect(folded(grants.readwrite)).toContain(workspace.toLowerCase());
         expect(folded(grants.readonly)).toEqual(expect.arrayContaining(folded([join(workspace, ".git", "hooks"), join(workspace, ".vscode")])));
@@ -256,7 +253,7 @@ describe("builtin shell — Windows MXC containers", () => {
       { ...context("ps-mxc-running-error"), abortSignal: abort.signal },
     );
     expect(result.isError).toBe(true);
-    // Still running: nothing released yet, and the abort watch is still armed.
+    // A still-running errored child must retain its resources and abort watch.
     expect(mxcLaunchMock.release).not.toHaveBeenCalled();
     abort.abort();
     expect((launcher!["stdout"] as PassThrough).destroyed).toBe(true);

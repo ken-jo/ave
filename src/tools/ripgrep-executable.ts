@@ -5,12 +5,7 @@ import { preferAsarUnpackedPath } from "../main/asar-unpacked-path.js";
 
 const require = createRequire(import.meta.url);
 
-/**
- * Release targets and the platform package that carries each one's ripgrep
- * binary. The packages select themselves by `os`/`cpu`, so exactly one is
- * installed per target; `scripts/lib/ripgrep-runtime-files.cjs` holds the same
- * table for the packaging assertions and a lock suite keeps the two equal.
- */
+// Platform packages select the bundled binary; packaging assertions share this table through scripts/lib/ripgrep-runtime-files.cjs.
 export const RIPGREP_PLATFORM_PACKAGES = Object.freeze({
   "darwin-x64": "@vscode/ripgrep-darwin-x64",
   "darwin-arm64": "@vscode/ripgrep-darwin-arm64",
@@ -26,12 +21,7 @@ function isRipgrepTarget(value: string): value is RipgrepTarget {
   return Object.prototype.hasOwnProperty.call(RIPGREP_PLATFORM_PACKAGES, value);
 }
 
-/**
- * Resolve the ripgrep executable that package.json pins for this platform.
- * There is deliberately no PATH fallback: every argv value the caller passes
- * is host-owned and the binary must be the pinned one. `unavailable` builds
- * the caller's domain error.
- */
+// Resolve only the pinned platform binary, never PATH; callers supply the domain-specific unavailable error.
 export function resolvePinnedRipgrepExecutable(
   unavailable: () => Error,
   platform: NodeJS.Platform = process.platform,

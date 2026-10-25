@@ -1,15 +1,4 @@
-/**
- * `session_goal` LLM tool — the objective this session is working towards.
- *
- * One tool with upsert semantics: no goal yet and it registers one, a goal
- * already there and it updates. There is deliberately no second tool for
- * finishing — `status: "complete"` on this same call is what ends the session's
- * revival loop, so the model has one name to remember and the goal has one
- * writer.
- *
- * Every call answers with the whole goal record (text, status, round, ceiling),
- * so the model never has to remember how many rounds it has spent.
- */
+// Upsert and complete one session goal through one writer; every result returns full progress and status.
 import { createDynamicTool, type Tool } from "./base.js";
 import {
   SessionGoalMissingError,
@@ -40,12 +29,7 @@ function failure(error: string) {
   return { output: JSON.stringify({ error }), isError: true };
 }
 
-/**
- * A call that leaves the goal as it is burns a full-context round for nothing.
- * Reported as a failure for the same reason `session_tasks` reports one: it is
- * what engages the "do not retry the same failed tool input" prompt rule, and
- * a success answer had the model repeating the call until it hit TPM.
- */
+// Fail no-op updates so failed-input retry policy stops repeated full-context rounds.
 function noChange(detail: string) {
   return failure(`${detail}: nothing changed. Do not retry session_goal with the same input; continue with work tools and call session_goal again only when the goal itself changes.`);
 }
@@ -55,11 +39,7 @@ export function createSessionGoalTool(store: SessionGoalStore): Tool {
     name: "session_goal",
     description: t("be_sessionGoal.toolDescription"),
     source: "builtin",
-    // category="read" — for the same reason `session_tasks` is read: the goal
-    // is this conversation's own bookkeeping, written into its own session
-    // sidecar, with no external mutation and no cross-session impact. Raising
-    // the approval dock for "the goal is met" would gate the one call that
-    // STOPS the loop behind a click the user may not be there to give.
+    // Read-category session bookkeeping has no external or cross-session effect; goal completion must not wait behind an approval modal.
     category: "read",
     isReadOnly: () => true,
     jsonSchema: {
@@ -98,11 +78,7 @@ export function createSessionGoalTool(store: SessionGoalStore): Tool {
       const answer = (goal: SessionGoal) =>
         ({ output: JSON.stringify(view(goal)), isError: false });
       try {
-        // Upsert first, then the status verb, so `goal` + `status: complete`
-        // in one call registers the objective and closes it in that order.
-        // A status verb on a session with no goal reaches the store, whose
-        // missing-goal error is the answer — there is no second guard here to
-        // drift from it.
+        // Apply goal upsert before status so one call can create and complete; let the store own missing-goal errors.
         const upserted = text !== undefined ? await store.set(sessionId, text) : null;
         if (status === "complete") return answer(await store.complete(sessionId));
         if (status === "pause") return answer(await store.pause(sessionId));

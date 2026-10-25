@@ -26,8 +26,7 @@ function transfer(produce: (session: TransferSession) => Promise<void>, override
   return runOwnedTransfer({ sourcePath: source, destinationPath: destination, destinationKind: kind }, context, produce, limits(overrides));
 }
 async function absent(path: string): Promise<void> { await expect(lstat(path)).rejects.toMatchObject({ code: "ENOENT" }); }
-// win32 has no POSIX permission bits: Node reports a fixed 0o666 and chmod
-// only toggles read-only, so the owner-only modes are checked on POSIX hosts.
+// Windows exposes no POSIX owner-only modes; assert those modes only on POSIX hosts.
 const posixModes = process.platform !== "win32";
 
 beforeEach(async () => {

@@ -1,16 +1,5 @@
-/**
- * Prepare one Bash/PowerShell tool command for an MXC container on Windows:
- * the invocation's own proxy listener, the ranked filesystem lists, the
- * container request and the `wxc-exec.exe` argv. The shell tool spawns the
- * argv and owns the process lifetime; this module owns nothing that outlives
- * {@link MxcShellLaunch.release}.
- *
- * Order of teardown (`release`): the listener closes only after
- * `wxc-exec.exe` has exited. The container ends with it (MXC's job object;
- * measured, also when `wxc-exec.exe` is killed), and with the container its
- * WFP permit for the port, so no surviving process can reach a port number
- * the OS later hands to another invocation's listener.
- */
+// Prepare invocation-scoped container launch resources; release the proxy only after the launcher and its job have exited.
+// This prevents surviving processes from reaching a port reused by another invocation.
 import { win32 as winPath } from "node:path";
 
 import { getProtectedReadDenyFloor } from "../permissions/asrt-sandbox.js";
@@ -30,7 +19,6 @@ import {
 export interface MxcShellLaunch {
   /** `wxc-exec.exe` followed by its arguments; spawn with `shell: false`. */
   readonly argv: readonly string[];
-  /** The invocation's proxy port, for diagnostics. */
   readonly proxyPort: number;
   /** Close the listener. Call once `wxc-exec.exe` has exited. Idempotent. */
   release(): Promise<void>;

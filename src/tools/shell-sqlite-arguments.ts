@@ -74,10 +74,7 @@ function sqlTokens(program: string): SqlToken[] | null {
   return tokens;
 }
 
-/** Relation names accept strings as identifiers. Resolve that role from SQL
- * structure before applying a lexical string-data exemption. Parentheses in
- * expressions and subqueries do not give their literals a relation-name role.
- */
+// Infer relation-name roles from SQL structure before exempting string literals; expressions and subqueries do not imply source lists.
 function sqlRelationNames(tokens: readonly SqlToken[]): ReadonlySet<number> | null {
   const names = new Set<number>();
   const closes = new Map<number, number>();
@@ -114,8 +111,7 @@ function sqlRelationNames(tokens: readonly SqlToken[]): ReadonlySet<number> | nu
       && (keyword(i - 2, "is") || (keyword(i - 2, "not") && keyword(i - 3, "is"))))) {
       sources.push({ start: i + 1, end: tokens.length });
     }
-    // An unparenthesized right side of IN is a table name, optionally followed
-    // by table-valued arguments. IN (...) instead contains expressions/query.
+    // IN table optionally takes table-valued arguments; IN (...) contains expressions or a query.
     if (keyword(i, "in") && !symbol(i + 1, "(")) relation(i + 1, tokens.length);
     if (keyword(i, "update")) relation(keyword(i + 1, "or") ? i + 3 : i + 1, tokens.length);
     if (keyword(i, "into") && (keyword(i - 1, "insert", "replace")
@@ -141,8 +137,7 @@ function sqlRelationNames(tokens: readonly SqlToken[]): ReadonlySet<number> | nu
 
 /** Dot-command quoting is separate from SQL and from the invoking shell. */
 function dotArguments(program: string): string[] | null {
-  // Escaped double-quoted strings require a byte-oriented C escape contract.
-  // Refuse that form instead of checking an incorrectly decoded filename.
+  // Refuse escaped double-quoted filenames until byte-oriented C escape decoding can be proven.
   if (/[\r\n]/.test(program)) return null;
   const args: string[] = [];
   for (let i = 1; i < program.length;) {
@@ -193,16 +188,14 @@ export function classifySqliteArgumentSlots(argv: readonly string[]) {
     if (!tokens) { unresolved("program syntax"); return; }
     const first = tokens.find((token) => !(token.kind === "symbol" && token.value === ";"));
     if (!first) return;
-    // Some interfaces also accept script filenames. Do not exempt an opaque
-    // filename or guess whether the filesystem makes a script positional.
+    // Script positional roles may depend on files; never exempt opaque filenames by guessing.
     if (first.kind !== "word" || !SQL_STARTERS.has(first.value.toLowerCase())
       || /\.(?:sql|txt)$/i.test(program)) { unresolved("program or script-file operand"); return; }
     const relationNames = sqlRelationNames(tokens);
     if (!relationNames) { unresolved("program syntax"); return; }
     const literalPath = (at: number, end: readonly string[], database: boolean) => {
       const token = tokens[at], next = tokens[at + 1];
-      // Quoted identifiers can resolve to column values; only single-quoted
-      // literals followed by the expression boundary establish a filename.
+      // Only single-quoted literals followed by an expression boundary prove filenames; quoted identifiers may be columns.
       if (token?.kind !== "string" || (next && !end.includes(next.value.toLowerCase()))) {
         unresolved("computed file operand"); return;
       }
@@ -245,8 +238,7 @@ export function classifySqliteArgumentSlots(argv: readonly string[]) {
     if (DATA_DOT_COMMANDS.has(name!)) return;
     if (["shell", "system"].includes(name!)) {
       if (!operands.length) { unresolved("empty embedded command"); return; }
-      // The CLI wraps arguments containing a space in double quotes, without
-      // further escaping, and joins them before passing the line to system().
+      // CLI system() joins arguments after quoting spaces without additional escaping.
       if (process.platform === "win32") unresolved("embedded command dialect");
       nestedCommands.push({ value: operands.map((operand) => operand.includes(" ") ? `"${operand}"` : operand).join(" "), index });
       return;
@@ -256,8 +248,7 @@ export function classifySqliteArgumentSlots(argv: readonly string[]) {
       const file = operands[0];
       if (file === undefined) return;
       if (file.startsWith("|")) {
-        // Pipe input/output can become another program. The argv role contract
-        // cannot establish the stream consumed by that child command.
+        // Pipe streams can launch programs whose consumed data argv roles cannot establish.
         unresolved("command pipe effects");
       } else if (file.startsWith("-")) unresolved("output helper option");
       else if (!["stdout", "stderr", "off"].includes(file) || name === "read") path(file, index);
@@ -287,8 +278,7 @@ export function classifySqliteArgumentSlots(argv: readonly string[]) {
       }
       return;
     }
-    // Abbreviations, cwd changes, archive operations, parameter expressions and
-    // other unmodelled dot-commands cannot inherit data-only roles.
+    // Unmodelled dot commands, abbreviations, cwd changes, archives, and expressions receive no data exemption.
     unresolved("dot-command effects");
   };
 
@@ -298,8 +288,7 @@ export function classifySqliteArgumentSlots(argv: readonly string[]) {
     nonPathIndices.add(i);
     if (!optionsEnded && value === "--") { optionsEnded = true; continue; }
     if (!optionsEnded && value.startsWith("-")) {
-      // Single and double leading hyphens are documented. Equals, glued values,
-      // clusters, abbreviations and forwarding forms have no inferred arity.
+      // Support documented single/double hyphens only; infer no arity for glued, clustered, abbreviated, or forwarded forms.
       const name = value.replace(/^--?/, "");
       const roles = OPTION_OPERANDS.get(name);
       if (!roles || i + roles.length >= argv.length) { unresolved("option or option arity"); break; }
@@ -316,12 +305,9 @@ export function classifySqliteArgumentSlots(argv: readonly string[]) {
   }
   if (databaseIndex !== undefined) {
     const database = argv[databaseIndex]!;
-    // Positional script-file detection can depend on contents and availability,
-    // leaving later positionals in an unknown database/program role. Explicit
-    // -init and .read retain their unambiguous program-file contract.
+    // Positional script detection depends on file contents and availability; only explicit -init and .read prove program-file roles.
     if (/\.(?:sql|txt)$/i.test(database)) unresolved("positional script-file role");
-    // Alternate open modes may read raw filename bytes before URI parsing.
-    // Their file: interpretation is not the ordinary database-open contract.
+    // Alternate open modes may consume raw filename bytes before URI parsing; do not reuse ordinary file: database roles.
     if (alternateMode && database.startsWith("file:")) unresolved("database URI in alternate open mode");
     else if (/^~[\\/]/.test(database)) unresolved("conditional home-directory filename");
     else path(database, databaseIndex, !alternateMode);

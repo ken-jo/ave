@@ -25,29 +25,20 @@ export interface RationaleHostServiceOptions {
   readonly getRationaleScopeReviewer: () => RationaleScopeReviewer;
   readonly getRegistryGeneration: () => string | number;
   readonly getSandboxGeneration: () => string | number;
-  /**
-   * Required host authority. Production boot supplies the durable journal-backed
-   * implementation and performs crash recovery before activation.
-   */
+  // Boot must supply durable journal authority and complete crash recovery before activation.
   readonly invocationStartCas: HostInvocationStartCas;
   readonly auditSink: RationaleAuditSink;
   readonly now?: () => number;
 }
 
 export interface RationaleCoordinatorFactoryScope {
-  /**
-   * Must include the loop's live session/turn additional-directory scope, in
-   * addition to the shared permission and hook generations.
-   */
+  // Include live session/turn directory scope as well as permission and hook generations.
   readonly getRationalePolicyEpoch: () => string;
   /** Rejects a delayed factory call after its loop has switched sessions. */
   readonly isSessionCurrent: (sessionId: string) => boolean;
 }
 
-/**
- * Process-owned rationale authority host. Coordinator instances are ephemeral;
- * all ticket, anchor-round and invocation-start authority remains shared here.
- */
+// Ephemeral coordinators share process-owned ticket, anchor-round, and invocation-start authority.
 export class RationaleHostService {
   readonly #approvalGate: RationaleApprovalGate;
   readonly #getRationaleScopeReviewer: () => RationaleScopeReviewer;
@@ -91,10 +82,7 @@ export class RationaleHostService {
     });
   }
 
-  /**
-   * Creating/injecting this factory is dormant: no audit file, reviewer call or
-   * journal access occurs until the query-loop activation gate invokes it.
-   */
+  // Factory injection is dormant until activation: no audit, reviewer, or journal access.
   createCoordinatorFactory(
     scope: RationaleCoordinatorFactoryScope,
   ): RationaleCoordinatorFactory {
@@ -142,8 +130,7 @@ export class RationaleHostService {
               ...startInput,
               sessionId: input.sessionId,
             });
-            // A close may race the durable commit. Discarding the committed
-            // authority prevents execution; boot recovery later records unknown.
+            // If close races durable commit, discard authority to prevent execution; boot recovery records unknown.
             return isCurrent() ? committed : null;
           },
           commitTerminal: (terminalInput) =>

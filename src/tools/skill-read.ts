@@ -1,26 +1,5 @@
-/**
- * `skill_read` — fetch ONE bundled resource of an already-loaded skill.
- *
- * Agent Skills stage-3: a skill may ship `references/`, `assets/` … beside its
- * SKILL.md. `skill_load` lists those files as an inert manifest inside its
- * `<ave-skill>` result; this tool returns one file's bytes on demand, so a
- * large skill stays a small context footprint.
- *
- * Security model (bundled files are UNTRUSTED plugin/user content):
- *   - ACCESS: only skills already read with `skill_load` in THIS conversation
- *     are readable. Registry membership means the skill passed `skill_load`'s
- *     body-hash approval gate, so approval is reused rather than re-invented —
- *     and the registry is cleared when the conversation is replaced.
- *   - CONTAINMENT: plugin resources resolve against frozen, sha256-verified
- *     in-memory bytes (zero filesystem access); user resources are realpath-
- *     contained inside the skill's own directory. Flat `<name>.md` skills are
- *     refused outright — their parent is the shared skills root, so treating it
- *     as a bundle root would let one approved skill read its siblings.
- *   - GENERATION: a plugin read re-acquires the generation lease and refuses
- *     when the live generation no longer matches the approved one.
- *   - DATA ONLY: content is returned as a `tool_result` (the same channel as
- *     any file read) and is NEVER executed, and never enters the system prompt.
- */
+// Bundled resources are untrusted tool data, never executed or added to trusted prompts; require prior approved load in this conversation.
+// Read frozen verified plugin bytes or realpath-contained user files, refuse flat-skill sibling access, and reject generation drift.
 import { t } from "../i18n/index.js";
 import { createDynamicTool, type Tool } from "./base.js";
 import type { SkillStore } from "../main/skill-store.js";
@@ -33,7 +12,7 @@ const log = createLogger("ave");
 
 export interface SkillReadToolDeps {
   store: SkillStore;
-  /** Per-conversation read-skill registry — the ACCESS CONTROL surface (read ⇒ approved). */
+  // Conversation-local approved-load registry is the access boundary.
   overlay: SkillOverlay;
   /** Generation lease for plugin-owned skills; absent ⇒ plugin reads refuse. */
   acquirePluginGeneration?: (
@@ -53,10 +32,7 @@ export function createSkillReadTool(deps: SkillReadToolDeps): Tool {
     name: "skill_read",
     description: t("be_skillRead.toolDescription"),
     source: "builtin",
-    // Pure read: no filesystem mutation and — unlike `skill_load` — no mutation
-    // of the model's trusted system prompt either. The content lands in a
-    // tool_result, so it needs no approval prompt of its own; the gate is that
-    // the owning skill was already approved and loaded.
+    // Prior approved loading authorizes the resource read; no file or trusted-prompt mutation occurs.
     category: "read",
     isReadOnly: () => true,
     jsonSchema: {
@@ -91,21 +67,15 @@ export function createSkillReadTool(deps: SkillReadToolDeps): Tool {
         return errorResult("skill_read: missing sessionId in tool execution context");
       }
 
-      // ACCESS CONTROL: the skill must have been read in THIS conversation
-      // (⇒ it passed skill_load's approval gate). Nothing else grants read.
+      // Only this conversation's approved-load registry grants access.
       const entry = deps.overlay.list(sessionId).find((candidate) => candidate.name === skillName);
       if (!entry) {
-        // Also reached after a restored session or restart: the body may still be
-        // in history, but this conversation's read registry is empty. Re-reading
-        // does not re-prompt (the approval is hash-bound to the content).
+        // Restarts clear the read registry; reload to restore it using content-bound approval.
         return errorResult(
           `skill not read in this conversation session: call skill_load({ skillName: "${skillName}" }) first`,
         );
       }
-      // The manifest captured at load time is the AUTHORIZED set, so the
-      // discovery caps are real access bounds rather than display limits.
-      // (The rendered skill_load manifest is byte-capped separately, so what the model
-      // is SHOWN can be a subset of this set — never a superset.)
+      // The load-time manifest is the authorized set; display clipping can show fewer entries but can never authorize more.
       if (!entry.resources.some((resource) => resource.path === resourcePath)) {
         return errorResult(`resource not listed for ${skillName}: ${resourcePath}`);
       }
@@ -127,11 +97,9 @@ export function createSkillReadTool(deps: SkillReadToolDeps): Tool {
             localId: selectorMatch[2],
           });
           try {
-            // Refuse a cross-generation read: the approval that admitted this
-            // skill was bound to the generation recorded in the overlay.
+            // Reject generations that differ from the approved overlay identity.
             const owner = entry.pluginOwner;
-            // Fail CLOSED: a plugin-shaped selector without a recorded owner has
-            // no approved generation to compare against, so it is not readable.
+            // Missing plugin owner means no approved generation and must fail closed.
             if (
               !owner ||
               lease.generation.generationId !== owner.generationId ||
@@ -154,11 +122,7 @@ export function createSkillReadTool(deps: SkillReadToolDeps): Tool {
           }
         }
 
-        // Read against the identity captured at approval time — NOT a fresh
-        // name lookup: re-resolving `skillName` from disk would let a later
-        // file swap (or a newly-created ambiguous sibling) redirect a read the
-        // user authorized against a different file, and would re-run the bundle
-        // scan on every call.
+        // Read the approved identity, never a fresh name lookup that could follow file swaps or ambiguous siblings.
         const resource = await deps.store.readUserResource(
           { filePath: entry.filePath, pluginOwner: entry.pluginOwner },
           resourcePath,

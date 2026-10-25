@@ -13,11 +13,7 @@ export interface RationalePolicyEpochSources {
   additionalDirectories: readonly string[];
 }
 
-/**
- * Capture every mutable host policy surface consulted by the tool permission
- * suffix. Directory values are already canonicalized by the executor; sorting
- * makes the epoch independent of settings serialization order.
- */
+// Capture every mutable permission-suffix policy input; canonical directory sorting makes epochs serialization-order independent.
 export function captureRationalePolicyEpoch(
   sources: RationalePolicyEpochSources,
 ): string {

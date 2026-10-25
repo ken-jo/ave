@@ -1,15 +1,4 @@
-/**
- * C1 gap-lock — RateLimiter token-bucket (tool-governance §9).
- *
- * The executor's `RateLimiter` had ZERO coverage. It is a private class (not
- * exported), so this file locks its behavior two ways:
- *   1. Directly against the ToolExecutor's own limiter instance — the exact
- *      object the pipeline consumes — to pin the token-bucket refill-over-time
- *      contract deterministically (consume to empty → advance time → refills).
- *   2. Through the public `executeAll` path — a low/medium-trust tool whose
- *      bucket is drained surfaces the rate-limit error, and refills after time
- *      advances (observable rate-limit behavior through ToolExecutor).
- */
+// Verify token-bucket refill on the executor's own limiter and through public execution.
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ToolExecutor } from "../executor.js";
@@ -52,17 +41,14 @@ describe("RateLimiter (executor-owned instance)", () => {
     const nowSpy = vi.spyOn(Date, "now").mockReturnValue(t0);
     const limiter = limiterOf(new ToolExecutor(new ToolRegistry()));
 
-    // 20 tokens available at construction; consume all of them.
     for (let i = 0; i < 20; i += 1) {
       expect(limiter.check("low_tool", "low").allowed).toBe(true);
     }
-    // 21st call at the same instant → denied, no tokens left.
     expect(limiter.check("low_tool", "low")).toEqual({ allowed: false, remaining: 0 });
 
-    // Advance 3s: refill = 3/60 min * 20 tokens = 1 token → one more allowed.
+    // At 20 tokens/minute, three seconds refill one token.
     nowSpy.mockReturnValue(t0 + 3_000);
     expect(limiter.check("low_tool", "low").allowed).toBe(true);
-    // Immediately after, empty again.
     expect(limiter.check("low_tool", "low")).toEqual({ allowed: false, remaining: 0 });
   });
 });
@@ -96,8 +82,7 @@ describe("rate limiting observable through ToolExecutor.executeAll", () => {
       noopAuditLogger as never,
     );
 
-    // Pre-drain this tool's medium bucket (60/min) via the same limiter the
-    // pipeline consumes, so the next executeAll trips the Step-5 gate.
+    // Drain the executor's own bucket to exercise its rate-limit gate.
     const limiter = limiterOf(executor);
     for (let i = 0; i < 60; i += 1) limiter.check("rl_plugin_read", "medium");
 
@@ -109,7 +94,7 @@ describe("rate limiting observable through ToolExecutor.executeAll", () => {
     expect(denied[0].content).toContain("rl_plugin_read");
     expect(executeSpy).not.toHaveBeenCalled();
 
-    // Advance 1s: refill = 1/60 min * 60 tokens = 1 token → next call runs.
+    // At 60 tokens/minute, one second refills one token.
     nowSpy.mockReturnValue(t0 + 1_000);
     const allowed = await executor.executeAll(
       [{ id: "tu-rl-2", name: "rl_plugin_read", input: {} }],

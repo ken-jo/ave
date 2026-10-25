@@ -1,10 +1,4 @@
-/**
- * Tool pipeline — trust-based token-bucket rate limiter (tool-governance.md §9).
- *
- * Extracted from `executor.ts` (C7 decomposition). The executor owns a single
- * {@link RateLimiter} instance (`ToolExecutor.rateLimiter`) consumed at Step 5.
- * Behavior is locked by `src/tools/__tests__/executor-rate-limiter.test.ts` (C1).
- */
+// Shared trust-based token buckets enforce tool-governance.md rate limits.
 import type { TrustLevel } from "../types.js";
 
 interface RateBucket {
@@ -30,7 +24,6 @@ export class RateLimiter {
       this.buckets.set(key, bucket);
     }
 
-    // 토큰 리필 (1분당 limit 토큰)
     const elapsed = (now - bucket.lastRefill) / 60_000;
     bucket.tokens = Math.min(limit, bucket.tokens + elapsed * limit);
     bucket.lastRefill = now;

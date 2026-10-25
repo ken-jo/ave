@@ -1,17 +1,4 @@
-/**
- * What the tool lane does with a parent's answer.
- *
- * The gate decides; this file is about the three things the lane owes everyone
- * else afterwards — the eligibility assertion it hands the gate, the review
- * event the panels render, and what the CHILD is told when its own parent
- * refuses. A child told "the user denied this" is told something untrue and
- * has no idea what to do differently.
- *
- * The last block walks the whole chain through one lane — tier-1 auto-approve,
- * tier-2 allow, tier-2 deny, tier-3 escalate — because each tier is defined by
- * what it hands the next one, and four separately-passing tiers can still
- * compose into a chain that skips one.
- */
+// Parent adjudication must preserve decision attribution and compose correctly with reviewer and user stages.
 import { describe, it, expect, vi } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -36,7 +23,6 @@ import { makeMockWebContents } from "../../__tests__/test-helpers.js";
 const CHILD_SESSION = "sub-11112222-3333-child";
 const PARENT_SESSION = "conv-parent";
 
-/** One adjudication as the host composed it, kept so a test can inspect it. */
 type SeenAdjudication = {
   evidence: ParentAdjudicationEvidence;
   options: ParentAdjudicationOptions;
@@ -55,33 +41,25 @@ function scriptedAdjudicator(
   };
 }
 
-/**
- * A tool lane wired the way a sub-agent's turn reaches it: an `ask` verdict
- * from layer 3 with a tier-1 review behind it, and a real gate whose tier-2
- * stage is live.
- */
+// Use a real tier-2 gate after a layer-3 ask and tier-1 review.
 async function runChildToolCall(options: {
   answer?: ParentAdjudicationResult;
   provenance?: boolean;
   forceModal?: boolean;
   verdict?: boolean;
   layer?: number;
-  /** Tier 1's own answer. `allow` is the leg that never reaches the gate. */
+  // Tier-1 allow bypasses the gate.
   tier1?: "allow" | "ask";
-  /** How the user answers a dock that tier 2 handed back. */
   userAnswer?: "allow-once" | "deny-once";
 }): Promise<{
   content: string;
   isError: boolean | undefined;
   events: PermissionReviewEvent[];
   requests: Record<string, unknown>[];
-  /** What the dock was actually sent, notice included. */
   docked: Record<string, unknown>[];
-  /** What the gate returned for each ask — who decided it, and on what terms. */
   decisions: ApprovalDecision[];
-  /** What `gate.resolve` made of each user answer. `null` = it was not accepted. */
+  // null means the gate rejected the user answer.
   resolutions: (ApprovalDecision | null)[];
-  /** What the host actually put to the parent. */
   adjudications: SeenAdjudication[];
   executed: number;
 }> {
@@ -99,9 +77,7 @@ async function runChildToolCall(options: {
       ...(options.verdict === false
         ? {}
         : {
-            // The `headless` lane is the one the interactive dispatcher does
-            // not re-run, so the verdict this stub states is the verdict the
-            // approval request carries — which is what these tests are about.
+            // Headless verdicts are not rerun by interactive dispatch, preserving this fixture's verdict.
             reviewer: {
               route: "headless" as const,
               outcome: "fresh" as const,
@@ -116,11 +92,7 @@ async function runChildToolCall(options: {
     const resolutions: (ApprovalDecision | null)[] = [];
     const adjudications: SeenAdjudication[] = [];
     const wc = makeMockWebContents();
-    // The user, when the chain reaches them: answer whatever the dock was
-    // sent, echoing the nonce and hmac the gate minted for it. What `resolve`
-    // returns is kept, because a gate that rejected the answer (stale entry,
-    // failed integrity check, narrowed choice) denies the call too — and a
-    // test that looked only at the outcome could not tell the two apart.
+    // Echo host-issued nonce and HMAC; inspect resolve acceptance to distinguish user denial from integrity failure.
     wc.send.mockImplementation((channel: string, sent: Record<string, unknown>) => {
       if (channel !== IPC_APPROVAL_REQUEST) return;
       docked.push(sent);
@@ -158,8 +130,7 @@ async function runChildToolCall(options: {
           timeoutMs: 5_000,
           maxPerChildRun: 200,
           includeParentContextTurns: 0,
-          // The dock, not the queue: this chain test is about the four legs
-          // the user can see, and the deferred route removes the last one.
+          // Use the dock so the user-visible escalation leg remains in the chain.
           backgroundEscalation: "modal",
           model: "reviewer",
         }),
@@ -264,7 +235,7 @@ describe("what happens after the parent answers", () => {
     expect(run.executed).toBe(0);
     expect(run.isError).toBe(true);
     expect(run.content).toContain("that file is outside the task");
-    // Not the user's refusal — the child would act on that differently.
+    // Attribute parent refusal to the parent so the child can respond appropriately.
     expect(run.content).not.toContain("사용자가 실행을 거부");
     expect(run.events.some((e) => e.status === "parent_denied")).toBe(true);
   });
@@ -278,7 +249,7 @@ describe("what happens after the parent answers", () => {
       },
     });
 
-    // The dock owns it now; the gate's own timeout answers this test's request.
+    // After dock escalation, the gate timeout resolves the request.
     expect(
       run.events.some(
         (e) => e.status === "parent_approved" || e.status === "parent_denied",
@@ -291,16 +262,13 @@ describe("the chain, end to end", () => {
   it("tier 1: an automatic allow never reaches the parent or the dock", async () => {
     const run = await runChildToolCall({
       tier1: "allow",
-      // Scripted to deny, so a lane that consulted the parent anyway would
-      // fail here rather than pass for the wrong reason.
+      // A denying parent makes an unintended consultation observable.
       answer: { outcome: "deny", reason: "the parent should never see this" },
     });
 
     expect(run.executed).toBe(1);
     expect(run.isError).toBeUndefined();
-    // The wrapper that fills `requests` is installed before the executor is
-    // built, so an empty list proves the gate — and therefore the lane and the
-    // parent — was never entered at all.
+    // Install request capture before executor construction to detect every gate entry.
     expect(run.requests).toHaveLength(0);
     expect(run.adjudications).toHaveLength(0);
     expect(run.docked).toHaveLength(0);
@@ -322,9 +290,7 @@ describe("the chain, end to end", () => {
     expect(run.decisions[0]?.choice).toBe("allow-once");
     expect(run.decisions[0]?.rememberPattern).toBeUndefined();
     expect(run.events.some((e) => e.status === "parent_approved")).toBe(true);
-    // What the host actually put to the parent: the task the PARENT wrote, and
-    // none of the dock's purpose sentence, which for a sub-agent turn can only
-    // have come from the child's own arguments.
+    // Parent review receives the parent's task, never purpose text derived from child arguments.
     expect(run.adjudications).toHaveLength(1);
     expect(run.adjudications[0]?.evidence.child.spawnTaskSummary).toBe(
       "write the release notes",
@@ -342,8 +308,7 @@ describe("the chain, end to end", () => {
     expect(run.isError).toBe(true);
     expect(run.docked).toHaveLength(0);
     expect(run.events.some((e) => e.status === "parent_denied")).toBe(true);
-    // The refusal decides one call. A pattern here would be a parent minting
-    // policy for a user who never saw the request.
+    // Parent refusal applies to one call and cannot mint persistent policy on the user's behalf.
     expect(run.decisions[0]?.choice).toBe("deny-once");
     expect(run.decisions[0]?.rememberPattern).toBeUndefined();
   });
@@ -367,9 +332,7 @@ describe("the chain, end to end", () => {
     // Host-only inputs stop at the gate.
     expect(run.docked[0]).not.toHaveProperty("childProvenance");
     expect(run.docked[0]).not.toHaveProperty("parentAdjudicationEligible");
-    // The user's answer is the one that decided it — accepted by the gate,
-    // not rejected into a forced deny — and it is attributed to the user, not
-    // to a parent that explicitly declined to decide.
+    // Require gate acceptance and user attribution rather than a forced deny.
     expect(run.resolutions).toHaveLength(1);
     expect(run.resolutions[0]?.choice).toBe("allow-once");
     expect(run.executed).toBe(1);
@@ -395,10 +358,7 @@ describe("the chain, end to end", () => {
     });
     expect(run.executed).toBe(0);
     expect(run.isError).toBe(true);
-    // A dock timeout, a failed integrity check and a narrowed choice all end in
-    // a deny too, so the outcome alone proves nothing. The gate accepting this
-    // answer — and returning it without a pattern it would have forced — is
-    // what makes it the USER's refusal.
+    // Gate acceptance without a forced pattern distinguishes user denial from timeout or integrity rejection.
     expect(run.resolutions).toHaveLength(1);
     expect(run.resolutions[0]).not.toBeNull();
     expect(run.resolutions[0]?.choice).toBe("deny-once");
