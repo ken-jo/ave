@@ -1,3 +1,4 @@
+import { deferred } from "../../../__tests__/support/deferred.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { tmpdir } from "node:os";
@@ -162,10 +163,13 @@ function target(cdp: FakeCdp, options: { tabId?: string; url?: string; signal?: 
   return value;
 }
 
+function snapshotFixture() {
+  return { refs: new BrowserRefTable(), cdp: new FakeCdp() };
+}
+
 describe("browser snapshot refs", () => {
   it("gives interactive elements refs that stay the same across snapshots", async () => {
-    const refs = new BrowserRefTable();
-    const cdp = new FakeCdp();
+    const { refs, cdp } = snapshotFixture();
     cdp.nodes = page([
       ax("h", "heading", "Sign up", { backendDOMNodeId: 1, properties: [{ name: "level", value: { value: 1 } }] }),
       ax("n", "textbox", "Name", { backendDOMNodeId: 2 }),
@@ -184,8 +188,7 @@ describe("browser snapshot refs", () => {
   });
 
   it("returns only what changed in delta mode", async () => {
-    const refs = new BrowserRefTable();
-    const cdp = new FakeCdp();
+    const { refs, cdp } = snapshotFixture();
     cdp.nodes = page([ax("b", "button", "Save", { backendDOMNodeId: 3 })]);
     await snapshot(target(cdp), {}, refs);
     cdp.nodes = page([ax("b", "button", "Save", { backendDOMNodeId: 3 }), ax("s", "StaticText", "Saved!")]);
@@ -195,8 +198,7 @@ describe("browser snapshot refs", () => {
   });
 
   it("caps a snapshot at the character limit and says so", async () => {
-    const refs = new BrowserRefTable();
-    const cdp = new FakeCdp();
+    const { refs, cdp } = snapshotFixture();
     cdp.nodes = page(Array.from({ length: 2_000 }, (_, index) =>
       ax(`l${index}`, "link", `Result number ${index} with a fairly long accessible name to fill the page`, { backendDOMNodeId: 100 + index })));
     const shot = await snapshot(target(cdp), {}, refs);
@@ -208,8 +210,7 @@ describe("browser snapshot refs", () => {
 
 describe("resolving refs", () => {
   it("follows an element the page re-rendered as a new node", async () => {
-    const refs = new BrowserRefTable();
-    const cdp = new FakeCdp();
+    const { refs, cdp } = snapshotFixture();
     cdp.nodes = page([ax("b", "button", "Save", { backendDOMNodeId: 3 })]);
     const shot = await snapshot(target(cdp), {}, refs);
     const ref = /\[ref=(e\d+)\]/.exec(shot.text)![1]!;
@@ -226,8 +227,7 @@ describe("resolving refs", () => {
   });
 
   it("fails clearly on a stale ref and touches nothing", async () => {
-    const refs = new BrowserRefTable();
-    const cdp = new FakeCdp();
+    const { refs, cdp } = snapshotFixture();
     cdp.nodes = page([ax("b", "button", "Save", { backendDOMNodeId: 3 })]);
     const ref = /\[ref=(e\d+)\]/.exec((await snapshot(target(cdp), {}, refs)).text)![1]!;
 
@@ -246,8 +246,7 @@ describe("resolving refs", () => {
   });
 
   it("does not follow a re-render when the fingerprint is ambiguous", async () => {
-    const refs = new BrowserRefTable();
-    const cdp = new FakeCdp();
+    const { refs, cdp } = snapshotFixture();
     cdp.nodes = page([ax("b", "button", "Delete", { backendDOMNodeId: 3 })]);
     const ref = /\[ref=(e\d+)\]/.exec((await snapshot(target(cdp), {}, refs)).text)![1]!;
     cdp.nodes = page([
@@ -261,8 +260,7 @@ describe("resolving refs", () => {
 
 describe("typing", () => {
   async function field(attributes: Record<string, string>) {
-    const refs = new BrowserRefTable();
-    const cdp = new FakeCdp();
+    const { refs, cdp } = snapshotFixture();
     cdp.nodes = page([ax("f", "textbox", "Field", { backendDOMNodeId: 5 })]);
     cdp.attributes.set(5, attributes);
     const ref = /\[ref=(e\d+)\]/.exec((await snapshot(target(cdp), {}, refs)).text)![1]!;
@@ -427,8 +425,7 @@ describe("settle", () => {
 
 describe("snapshot noise", () => {
   it("leaves out InlineTextBox lines", async () => {
-    const refs = new BrowserRefTable();
-    const cdp = new FakeCdp();
+    const { refs, cdp } = snapshotFixture();
     cdp.nodes = [
       ax("root", "RootWebArea", "Fixture", { childIds: ["t"] }),
       ax("t", "StaticText", "Hello", { parentId: "root", childIds: ["i"] }),
@@ -456,8 +453,7 @@ describe("pressing keys", () => {
   });
 
   it("clicks into a named element before pressing", async () => {
-    const refs = new BrowserRefTable();
-    const cdp = new FakeCdp();
+    const { refs, cdp } = snapshotFixture();
     cdp.nodes = page([ax("f", "textbox", "Field", { backendDOMNodeId: 5 })]);
     const ref = /\[ref=(e\d+)\]/.exec((await snapshot(target(cdp), {}, refs)).text)![1]!;
     await pressKey(target(cdp), "Backspace", ref, refs);
@@ -468,8 +464,7 @@ describe("pressing keys", () => {
   });
 
   it("refuses Enter or Space into an element a click already activates", async () => {
-    const refs = new BrowserRefTable();
-    const cdp = new FakeCdp();
+    const { refs, cdp } = snapshotFixture();
     cdp.nodes = page([ax("b", "button", "Submit", { backendDOMNodeId: 6 })]);
     const ref = /\[ref=(e\d+)\]/.exec((await snapshot(target(cdp), {}, refs)).text)![1]!;
     await expect(pressKey(target(cdp), "Enter", ref, refs)).rejects.toMatchObject({ code: "use-click" });
@@ -493,8 +488,7 @@ describe("screenshot", () => {
 
 describe("focus before keyboard input", () => {
   async function textField(focusLag: number) {
-    const refs = new BrowserRefTable();
-    const cdp = new FakeCdp();
+    const { refs, cdp } = snapshotFixture();
     cdp.focusLag = focusLag;
     cdp.nodes = page([ax("f", "textbox", "Field", { backendDOMNodeId: 5, value: { type: "string", value: "" } })]);
     const ref = /\[ref=(e\d+)\]/.exec((await snapshot(target(cdp), {}, refs)).text)![1]!;
@@ -535,8 +529,7 @@ describe("focus before keyboard input", () => {
 
 describe("focus hand-back", () => {
   async function field() {
-    const refs = new BrowserRefTable();
-    const cdp = new FakeCdp();
+    const { refs, cdp } = snapshotFixture();
     cdp.nodes = page([ax("f", "textbox", "Field", { backendDOMNodeId: 5, value: { type: "string", value: "" } })]);
     const ref = /\[ref=(e\d+)\]/.exec((await snapshot(target(cdp), {}, refs)).text)![1]!;
     return { cdp, ref, refs };
@@ -1089,8 +1082,7 @@ describe("one press at a time in a window", () => {
     const { pages: [a, c] } = await twoPages();
     const send = c.cdp.send.bind(c.cdp);
     // Page C stops answering the guard's hit test, a read made while its press holds the window.
-    let markHung!: () => void;
-    const hung = new Promise<void>((resolve) => { markHung = resolve; });
+    const { promise: hung, resolve: markHung } = deferred<void>();
     vi.spyOn(c.cdp, "send").mockImplementation((method, params) => {
       if (method !== "DOM.getNodeForLocation") return send(method, params);
       markHung();
