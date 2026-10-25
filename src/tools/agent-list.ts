@@ -1,4 +1,4 @@
-import { createDynamicTool, type Tool } from "./base.js";
+import { createDynamicTool, toolSessionId, type Tool } from "./base.js";
 import type { AgentProfileStore } from "../main/agent-profile-store.js";
 import type { SubAgentRunner } from "../engine/subagent-runner.js";
 import { isResumableSubAgentTaskState } from "../engine/subagent-runner.js";
@@ -29,9 +29,7 @@ export function createAgentListTool(deps: AgentListToolDeps): Tool {
       }));
 
       // Include this conversation's persisted children so continuation preserves their context.
-      const originSessionId = typeof ctx.metadata?.sessionId === "string"
-        ? ctx.metadata.sessionId
-        : "";
+      const originSessionId = toolSessionId(ctx) ?? "";
       const runner = deps.getRunner?.();
       const persisted = originSessionId && runner
         ? runner.listPersistedSpawnsForOrigin(originSessionId)
