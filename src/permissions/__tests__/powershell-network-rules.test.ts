@@ -407,6 +407,31 @@ describe("PowerShell -EncodedCommand", () => {
     expect(buildShellRuleApproval(dialect, command, dir, { allow: true, deny: true }).exactRule).toBeNull();
   });
 
+  // Re-review round 7: wsl's leading `~` is a start directory, a re-joined command line is never rebuilt from words that held quoting or spacing
+  // (that code is hidden), and runas's quoted command argument is read.
+  it.each([
+    `wsl ~ -e pwsh -enc ${PAYLOAD}`,
+    `wsl ~ pwsh -enc ${PAYLOAD}`,
+    `wsl bash -c "pwsh -enc ${PAYLOAD}"`,
+    `wsl -- bash -c "pwsh -enc ${PAYLOAD}"`,
+    `cmd /c bash -c "pwsh -enc ${PAYLOAD}"`,
+    `pwsh -c Write-Output "x y" -enc ${PAYLOAD}`,
+    `runas /user:x "pwsh -enc ${PAYLOAD}"`,
+  ])("never lets a re-read command line lose its encoded command: %s", (command) => {
+    manager.setRules(ALLOW_LAUNCHERS.concat([{ pattern: "PowerShell(wsl *)", action: "allow" }, { pattern: "PowerShell(runas *)", action: "allow" }]));
+    const read = inspectEncodedPowerShell(command, "powershell");
+    expect(read.hidden || read.scripts.includes(DESTRUCTIVE), command).toBe(true);
+    expect(check(command, "powershell", true)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    expect(check(command, "powershell", false)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    expect(buildShellRuleApproval("powershell", command, dir, { allow: true, deny: true }).exactRule).toBeNull();
+  });
+
+  it("still reads a plain re-joined command line", () => {
+    expect(inspectEncodedPowerShell(`wsl ls -la`, "powershell")).toEqual({ scripts: [], hidden: false });
+    expect(inspectEncodedPowerShell(`pwsh -c Get-ChildItem src`, "powershell")).toEqual({ scripts: [], hidden: false });
+    expect(inspectEncodedPowerShell(`wsl ~ pwsh -enc ${PAYLOAD}`, "powershell").scripts).toEqual([DESTRUCTIVE]);
+  });
+
   // Coverage: a launcher added to the PowerShell vocabulary is read by the recursive reader without another code change.
   it("reads through every launcher in the PowerShell vocabulary, its aliases included", () => {
     const launchers = Object.entries(POWERSHELL_COMMAND_POLICIES).filter(([, policy]) => policy.effects.includes("launcher"));
