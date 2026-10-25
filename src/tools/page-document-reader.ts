@@ -285,25 +285,30 @@ async function loadPdfRuntime() {
   }
 }
 
+export function pdfAssetDirectory(path: string): string {
+  return `${path.replace(/[\\/]+$/, "")}/`;
+}
+
 async function pdf(bytes: Buffer, index: number): Promise<PreviewPageDocument> {
   if (!bytes.subarray(0, 1024).includes(Buffer.from("%PDF-"))) corrupt();
   const { createCanvas, library } = await loadPdfRuntime();
   const moduleUrl = import.meta.resolve("pdfjs-dist/legacy/build/pdf.mjs");
   // The minified worker is the packaged one; the display build keeps its type declarations.
   library.GlobalWorkerOptions.workerSrc = import.meta.resolve("pdfjs-dist/legacy/build/pdf.worker.min.mjs");
-  // pdf.js 6 has no eval-based paths (the former isEvalSupported option is gone);
-  // the child also runs with --disallow-code-generation-from-strings.
-  const task = library.getDocument({
-    data: new Uint8Array(bytes), disableFontFace: true, useSystemFonts: false,
-    useWorkerFetch: false, isOffscreenCanvasSupported: false, isImageDecoderSupported: false,
-    maxImageSize: PAGE_PREVIEW_LIMITS.maxPixels, canvasMaxAreaInBytes: PAGE_PREVIEW_LIMITS.maxPixels * 4,
-    stopAtErrors: true, verbosity: 0,
-    standardFontDataUrl: fileURLToPath(new URL("../../standard_fonts/", moduleUrl)),
-    cMapUrl: fileURLToPath(new URL("../../cmaps/", moduleUrl)),
-    wasmUrl: fileURLToPath(new URL("../../wasm/", moduleUrl)),
-    iccUrl: fileURLToPath(new URL("../../iccs/", moduleUrl)),
-  });
+  let task: ReturnType<typeof library.getDocument> | undefined;
   try {
+    // pdf.js 6 has no eval-based paths (the former isEvalSupported option is gone);
+    // the child also runs with --disallow-code-generation-from-strings.
+    task = library.getDocument({
+      data: new Uint8Array(bytes), disableFontFace: true, useSystemFonts: false,
+      useWorkerFetch: false, isOffscreenCanvasSupported: false, isImageDecoderSupported: false,
+      maxImageSize: PAGE_PREVIEW_LIMITS.maxPixels, canvasMaxAreaInBytes: PAGE_PREVIEW_LIMITS.maxPixels * 4,
+      stopAtErrors: true, verbosity: 0,
+      standardFontDataUrl: pdfAssetDirectory(fileURLToPath(new URL("../../standard_fonts/", moduleUrl))),
+      cMapUrl: pdfAssetDirectory(fileURLToPath(new URL("../../cmaps/", moduleUrl))),
+      wasmUrl: pdfAssetDirectory(fileURLToPath(new URL("../../wasm/", moduleUrl))),
+      iccUrl: pdfAssetDirectory(fileURLToPath(new URL("../../iccs/", moduleUrl))),
+    });
     const document = await task.promise;
     const streams = observePdfStreamFailures(document);
     if (index >= Math.min(document.numPages, PAGE_PREVIEW_LIMITS.maxPages)) {
@@ -335,7 +340,7 @@ async function pdf(bytes: Buffer, index: number): Promise<PreviewPageDocument> {
     }
     if (error instanceof Error && error.message === IMAGE_LIMIT_MESSAGE) limit();
     return corrupt();
-  } finally { await task.destroy(); }
+  } finally { await task?.destroy(); }
 }
 
 export async function parsePageDocument(bytes: Buffer, format: PreviewPageFormat, index: number): Promise<PreviewPageDocument> {

@@ -9,7 +9,7 @@ import { offsetWorkbook } from "../../__tests__/support/table-document-fixtures.
 import { createZipFixture, zipCentralOffset } from "../../__tests__/support/zip-fixtures.js";
 import { PREVIEW_DOCUMENT_LIMITS } from "../../shared/preview-document.js";
 import { PAGE_PREVIEW_LIMITS } from "../../shared/preview-page-document.js";
-import { parsePageDocument } from "../page-document-reader.js";
+import { parsePageDocument, pdfAssetDirectory } from "../page-document-reader.js";
 import { CFB_MAGIC } from "../workbook-container.js";
 import { readPageDocumentResponse } from "../preview-page-protocol.js";
 
@@ -23,6 +23,14 @@ function pngChunk(kind: string, data: Buffer): Buffer {
 }
 
 describe("page document previews", () => {
+  it("terminates asset directories with one forward slash across path styles", () => {
+    expect(pdfAssetDirectory("D:\\assets\\cmaps\\")).toBe("D:\\assets\\cmaps/");
+    expect(pdfAssetDirectory("D:\\assets\\standard_fonts\\/\\")).toBe("D:\\assets\\standard_fonts/");
+    expect(pdfAssetDirectory("/assets/wasm///")).toBe("/assets/wasm/");
+    expect(pdfAssetDirectory("/assets/iccs")).toBe("/assets/iccs/");
+    expect(pdfAssetDirectory("/assets/cmaps/")).toBe("/assets/cmaps/");
+  });
+
   it("follows slide relationships and preserves runs, escapes and breaks", async () => {
     const first = await parsePageDocument(presentationFixture(), "pptx", 0);
     expect(first).toMatchObject({ format: "pptx", totalPages: 2, page: { index: 0, paragraphs: ["First & safe\nNext line"], png: null } });
