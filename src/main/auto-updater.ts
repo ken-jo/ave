@@ -14,6 +14,7 @@ import {
   clearAppUpdateInstallRequested,
 } from "./app-update-install-intent.js";
 import { hasPluginInstallInFlight } from "../plugins/install-lifecycle.js";
+import { isAppRelaunchRequested } from "./app-relaunch-state.js";
 export type { UpdateState };
 const log = createLogger("auto-updater");
 
@@ -268,6 +269,7 @@ export function createAutoUpdater(deps: AutoUpdaterDeps): {
   };
 
   const installDownloadedUpdate = async (): Promise<{ ok: boolean; reason?: string }> => {
+    if (isAppRelaunchRequested()) return { ok: false, reason: "relaunch-in-progress" };
     const u = loadUpdater();
     if (!u) return { ok: false, reason: "updater-unavailable" };
     if (installInProgress) {

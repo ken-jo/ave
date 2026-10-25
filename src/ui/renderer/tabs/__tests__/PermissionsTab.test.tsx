@@ -1001,6 +1001,13 @@ describe("PermissionsTab — OS sandbox toggle and capability rendering", () => 
     expect(api.relaunchApp).not.toHaveBeenCalled();
   });
 
+  it("shows an in-progress relaunch in the confirmation dialog", async () => {
+    const api = await togglePending("shell");
+    api.relaunchApp.mockResolvedValue({ ok: false, error: "relaunch-in-progress" });
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: t("permissionsTab.sandboxRestartNow") })); });
+    expect(screen.getByRole("alert")).toHaveTextContent(t("permissionsTab.sandboxRestartBusy"));
+  });
+
   it("keeps a refused restart open with the localized reason", async () => {
     const api = await togglePending("shell");
     api.relaunchApp.mockResolvedValue({ ok: false, error: "update-install-in-progress" });

@@ -6,28 +6,39 @@ import { getAveAppVersion } from "../../shared/app-version.js";
 import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized } from "../gated.js";
 import type { IpcDeps } from "../types.js";
 import { hasUserKeyboardIntent } from "../../shared/chat-origin.js";
-import type { AppRelaunchResult } from "../../shared/app-relaunch.js";
-import { hasPluginInstallInFlight } from "../../plugins/install-lifecycle.js";
+import type { AppRelaunchError, AppRelaunchResult } from "../../shared/app-relaunch.js";
+import { hasExclusivePluginLifecycleMutation, hasPluginInstallInFlight } from "../../plugins/install-lifecycle.js";
 import { isAppUpdateInstallRequested } from "../../main/app-update-install-intent.js";
+import { isAppRelaunchRequested, setAppRelaunchRequested } from "../../main/app-relaunch-state.js";
 
 export function registerAppHandlers(deps: IpcDeps): void {
   const { auditLogger } = deps;
   ipcMain.handle(CHANNELS.app.relaunch, (event, payload: unknown): AppRelaunchResult => {
-    if (!validateHostRendererSender(event)) {
+    const refuse = (error: AppRelaunchError): AppRelaunchResult => {
+      auditLogger.log({ timestamp: new Date().toISOString(), sessionId: "ipc-guard", type: "warn",
+        input: JSON.stringify({ channel: CHANNELS.app.relaunch, error }) });
+      return { ok: false, error };
+    };
+    const window = deps.getMainWindow();
+    const mainFrame = event.senderFrame !== null && event.senderFrame === event.sender?.mainFrame;
+    if (!validateHostRendererSender(event) || !mainFrame || !window || window.isDestroyed() || window.webContents !== event.sender) {
       auditUnauthorized(auditLogger, CHANNELS.app.relaunch, event);
       return { ok: false, error: "unauthorized-frame" };
     }
     const intent = payload && typeof payload === "object" && "intent" in payload ? payload.intent : undefined;
-    if (!hasUserKeyboardIntent(intent)) return { ok: false, error: "user-keyboard-required" };
-    if (hasPluginInstallInFlight()) return { ok: false, error: "plugin-install-in-progress" };
-    if (isAppUpdateInstallRequested()) return { ok: false, error: "update-install-in-progress" };
-    if (!deps.relaunchApp) return { ok: false, error: "relaunch-unsupported" };
+    if (!hasUserKeyboardIntent(intent)) return refuse("user-keyboard-required");
+    if (isAppRelaunchRequested()) return refuse("relaunch-in-progress");
+    if (hasPluginInstallInFlight() || hasExclusivePluginLifecycleMutation()) return refuse("plugin-install-in-progress");
+    if (isAppUpdateInstallRequested()) return refuse("update-install-in-progress");
+    if (!deps.relaunchApp) return refuse("relaunch-unsupported");
+    setAppRelaunchRequested(true);
     try {
       deps.relaunchApp();
       return { ok: true };
     } catch (error) {
-      return { ok: false, error: error instanceof Error && error.message === "relaunch-unsupported"
-        ? "relaunch-unsupported" : "relaunch-failed" };
+      const code = error instanceof Error ? error.message : "";
+      if (code !== "relaunch-in-progress") setAppRelaunchRequested(false);
+      return refuse(code === "relaunch-unsupported" || code === "relaunch-in-progress" ? code : "relaunch-failed");
     }
   });
   ipcMain.handle(CHANNELS.app.info, async (e) => {

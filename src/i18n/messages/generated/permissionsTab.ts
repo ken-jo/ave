@@ -1,5 +1,6 @@
 // i18n fragment. Source: src/ui/renderer/tabs/PermissionsTab.tsx.
 export const en = {
+  "permissionsTab.sandboxRestartBusy": "Ave is already restarting. Please wait.",
   "permissionsTab.sandboxRestartTitle": "Restart Ave to apply the sandbox change?",
   "permissionsTab.sandboxRestartDescription": "Running agents and shells will stop when Ave restarts.",
   "permissionsTab.sandboxRestartLater": "Later",
@@ -388,6 +389,7 @@ export const en = {
   "permissionsTab.osSandboxWindowsSharedIdentity": "Extensions share one proxy identity: the proxy cannot tell which extension process opened a connection the way it can for a contained shell command.",
 } as const;
 export const ko: Record<keyof typeof en, string> = {
+  "permissionsTab.sandboxRestartBusy": "Ave를 다시 시작하고 있습니다. 잠시 기다려 주세요.",
   "permissionsTab.sandboxRestartTitle": "샌드박스 변경 사항을 적용하려면 Ave를 다시 시작할까요?",
   "permissionsTab.sandboxRestartDescription": "Ave를 다시 시작하면 실행 중인 에이전트와 셸이 중지됩니다.",
   "permissionsTab.sandboxRestartLater": "나중에",

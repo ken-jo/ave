@@ -1,4 +1,5 @@
 import { isAppUpdateInstallRequested } from "../main/app-update-install-intent.js";
+import { isAppRelaunchRequested } from "../main/app-relaunch-state.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { raceWithTimeout } from "../shared/abortable-deadline.js";
 
@@ -739,6 +740,7 @@ export function hasPluginInstallInFlight(pluginId?: string): boolean {
 }
 
 function assertAppUpdateInstallNotRequested(): void {
+  if (isAppRelaunchRequested()) throw Object.assign(new Error("Plugin changes are paused while Ave is restarting."), { code: "relaunch-in-progress" });
   if (!isAppUpdateInstallRequested()) return;
   throw new AppUpdateInstallInProgressError();
 }

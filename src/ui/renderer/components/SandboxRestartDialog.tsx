@@ -10,6 +10,7 @@ const RESTART_ERROR_KEYS: Record<AppRelaunchError, string> = {
   "user-keyboard-required": "permissionsTab.sandboxRestartGestureRequired",
   "plugin-install-in-progress": "permissionsTab.sandboxRestartPluginBusy",
   "update-install-in-progress": "permissionsTab.sandboxRestartUpdateBusy",
+  "relaunch-in-progress": "permissionsTab.sandboxRestartBusy",
   "relaunch-unsupported": "permissionsTab.sandboxRestartUnsupported",
   "relaunch-failed": "permissionsTab.sandboxRestartFailed",
 };

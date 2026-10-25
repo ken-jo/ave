@@ -3,6 +3,7 @@ export type AppRelaunchError =
   | "user-keyboard-required"
   | "plugin-install-in-progress"
   | "update-install-in-progress"
+  | "relaunch-in-progress"
   | "relaunch-unsupported"
   | "relaunch-failed";
 

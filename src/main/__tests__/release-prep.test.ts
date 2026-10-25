@@ -1,5 +1,6 @@
 // Release services must have no side effects until the user opts in.
-import { beforeEach, describe, it, expect, vi } from "vitest";
+import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
+import { setAppRelaunchRequested } from "../app-relaunch-state.js";
 import type { BrowserWindow, IpcMainInvokeEvent } from "electron";
 
 import type { AuditEntry, AuditLogger } from "../../audit/audit-logger.js";
@@ -94,6 +95,20 @@ const HOST_RENDERER_URL = "file:///Applications/Ave.app/Contents/Resources/app.a
 const PLUGIN_SHELL_URL = "file:///Applications/Ave.app/Contents/Resources/app.asar/dist/src/plugin-ui-shell.html";
 
 describe("auto-updater", () => {
+  afterEach(() => { setAppRelaunchRequested(false); });
+
+  it("refuses a downloaded update while relaunch is reserved", async () => {
+    const { win } = fakeWindow();
+    const updater = fakeUpdater();
+    const service = createTestAutoUpdater(win, updater);
+    await service.triggerCheck();
+    updater.emit("update-downloaded", { version: "3.0.0" });
+    setAppRelaunchRequested(true);
+    await expect(service._testOnly.installNow()).resolves.toEqual({ ok: false, reason: "relaunch-in-progress" });
+    expect(updater.installs).toBe(0);
+    expect(isAppUpdateInstallRequested()).toBe(false);
+  });
+
   beforeEach(() => {
     clearAppUpdateInstallRequested();
   });
