@@ -16,8 +16,7 @@ vi.mock("node:child_process", async (importOriginal) => {
   return { ...actual, spawn: childProcessMock.spawn, execFileSync: childProcessMock.execFileSync };
 });
 vi.mock("../mxc-shell-launch.js", () => ({ prepareMxcShellLaunch: mxcLaunchMock.prepare }));
-// The real helper builds a Windows profile with win32 path joins, which on a
-// POSIX test host would land as backslash-named entries in the working tree.
+// Mock Windows profile creation on POSIX so backslash paths cannot become entries in the working tree.
 vi.mock("../../permissions/sandbox-process-home.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../permissions/sandbox-process-home.js")>();
   const { mkdtempSync, rmSync } = await import("node:fs");
@@ -38,7 +37,10 @@ vi.mock("../../permissions/sandbox-process-home.js", async (importOriginal) => {
 
 import { BashTool, PowerShellTool } from "../shell-tools.js";
 import type { ToolExecutionContext } from "../types.js";
-import { MXC_BASH_UNAVAILABLE_MESSAGE } from "../../permissions/mxc-windows.js";
+import { MXC_BASH_UNAVAILABLE_MESSAGE, rankMxcFilesystem } from "../../permissions/mxc-windows.js";
+import { permissionsFilePath } from "../../permissions/permissions-store.js";
+import { userApprovalFilePath } from "../../permissions/user-approval-store.js";
+import { egressGrantFilePath } from "../../permissions/egress-grants.js";
 import {
   __resetActiveSandboxCapabilityForTest,
   __resetSandboxRequestedAtBootForTest,
@@ -163,6 +165,45 @@ describe("builtin shell — Windows MXC containers", () => {
     expect(mxcLaunchMock.release).toHaveBeenCalledTimes(1);
   });
 
+  it("gives the container the mandatory write floor: workspace control files and Ave's stores stay unwritable", async () => {
+    const { mkdirSync, mkdtempSync, existsSync, realpathSync, rmSync, writeFileSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const workspace = realpathSync(mkdtempSync(join(tmpdir(), "ave-mxc-floor-")));
+    try {
+      mkdirSync(join(workspace, ".git", "hooks"), { recursive: true });
+      writeFileSync(join(workspace, ".git", "config"), "[core]\n");
+      mkdirSync(join(workspace, ".vscode"));
+      bootMxcShells();
+      const result = await new PowerShellTool().execute(
+        { command: "Write-Output hi", timeoutSeconds: 7 },
+        { ...context("ps-mxc-floor"), cwd: workspace, extraAllowedDirectories: [workspace] },
+      );
+      expect(result.isError).toBe(false);
+      const [launch] = mxcLaunchMock.prepare.mock.calls[0] as [{ filesystem: { allowWrite: string[]; denyWrite: string[]; allowRead: string[]; denyRead: string[]; floorPierces?: string[] } }];
+      const { filesystem } = launch;
+      expect(filesystem.allowWrite).toContain(workspace);
+      // Git metadata remains writable; execution controls do not.
+      for (const entry of [join(".git", "hooks"), join(".git", "config"), ".vscode", ".husky", join(".claude", "settings.json"), ".envrc"]) {
+        expect(filesystem.denyWrite, entry).toContain(join(workspace, entry));
+      }
+      for (const store of [permissionsFilePath(), userApprovalFilePath(), egressGrantFilePath()]) {
+        expect(filesystem.denyWrite, store).toContain(store);
+      }
+      // Windows keeps denied workspace controls read-only when present and denied when absent.
+      if (process.platform === "win32" && ORIGINAL_PLATFORM === "win32") {
+        const grants = rankMxcFilesystem({ ...filesystem, protectedFloor: [] }, existsSync);
+        // Compare Windows paths case-insensitively, including canonical drive letters.
+        const folded = (paths: readonly string[]) => paths.map((path) => path.toLowerCase());
+        expect(folded(grants.readwrite)).toContain(workspace.toLowerCase());
+        expect(folded(grants.readonly)).toEqual(expect.arrayContaining(folded([join(workspace, ".git", "hooks"), join(workspace, ".vscode")])));
+        expect(folded(grants.denied)).toEqual(expect.arrayContaining(folded([join(workspace, ".husky"), join(workspace, ".envrc")])));
+      }
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("reports a launch that cannot be prepared as unsandboxed and spawns nothing", async () => {
     bootMxcShells();
     mxcLaunchMock.prepare.mockRejectedValueOnce(new Error("the sandbox proxy is not running"));
@@ -212,7 +253,7 @@ describe("builtin shell — Windows MXC containers", () => {
       { ...context("ps-mxc-running-error"), abortSignal: abort.signal },
     );
     expect(result.isError).toBe(true);
-    // Still running: nothing released yet, and the abort watch is still armed.
+    // A still-running errored child must retain its resources and abort watch.
     expect(mxcLaunchMock.release).not.toHaveBeenCalled();
     abort.abort();
     expect((launcher!["stdout"] as PassThrough).destroyed).toBe(true);

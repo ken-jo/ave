@@ -16,6 +16,7 @@ import {
   cleanupAsrtSandboxAfterCommand,
   isShellSandboxActive,
   sandboxTempEnvLaunch,
+  type SandboxWrapResult,
 } from "../../permissions/asrt-sandbox.js";
 import { openEgressInvocation } from "../../permissions/egress-invocations.js";
 import { getSandboxGeneration, isActiveSandboxShellContained } from "../../permissions/sandbox-capability.js";
@@ -46,22 +47,21 @@ import { isTerminalTabId } from "../../shared/tab-id.js";
 import { hasOnlyTypeableCharacters, MAX_TERMINAL_COMMAND_CHARS } from "../../shared/terminal-command-text.js";
 
 import { resolveManualShell } from "./manual-shell.js";
+import { prepareTerminalGitPolicyCheck, terminalSandboxWindowNotice } from "./terminal-sandbox-policy.js";
+import { t } from "../../i18n/index.js";
 import { isTerminalLane, sameTerminalSession, terminalLaneKey, type TerminalSessionRef, type TerminalSessionInfo, type TerminalSpawnRequest, type TerminalSpawnResult, type TerminalMutationResult, type TerminalDataEvent, type TerminalExitEvent } from "../../shared/terminal-session.js";
 
 const log = createLogger("ave");
 
-/** Scrollback ring cap per session (bytes). Bounds main-process memory + the
- * replay payload sent to a remounting renderer. */
+/** Scrollback ring cap per session (bytes). Bounds main-process memory + the replay payload sent to a remounting renderer. */
 const RING_MAX_BYTES = 256 * 1024;
 /** Hard bounds on the PTY geometry a renderer may request (anti-DoS). */
 const MIN_DIM = 1;
 const MAX_COLS = 1000;
 const MAX_ROWS = 1000;
-/** Anti-DoS: max concurrent PTY sessions across all tabs. A new spawn past this
- * is refused so an arbitrary/looping tabId can never spawn unbounded PTYs. */
+/** Anti-DoS: max concurrent PTY sessions across all tabs. A new spawn past this is refused so an arbitrary/looping tabId can never spawn unbounded PTYs. */
 const MAX_TERMINALS = 16;
-/** Anti-DoS: max bytes accepted for a single {@link writeTerminal} (keystroke /
- * paste) forward. An oversized write is dropped rather than streamed to the PTY. */
+/** Anti-DoS: max bytes accepted for a single {@link writeTerminal} (keystroke / paste) forward. An oversized write is dropped rather than streamed to the PTY. */
 const MAX_INPUT_BYTES = 1024 * 1024;
 
 export interface SpawnTerminalOptions extends TerminalSpawnRequest {
@@ -70,13 +70,12 @@ export interface SpawnTerminalOptions extends TerminalSpawnRequest {
 }
 export type SpawnTerminalResult = TerminalSpawnResult;
 
-/** main→renderer emitter. Registered ONCE by the terminal IPC domain, which
- * fans out to the app window(s) via safe-send. Kept as an injected sink so this
- * module stays free of `electron` imports (unit-testable in node). */
+/** main→renderer emitter. Registered ONCE by the terminal IPC domain, which fans out to the app window(s) via
+ * safe-send. Kept as an injected sink so this module stays free of `electron` imports (unit-testable in node). */
 export type TerminalEmit = (
   event: "data" | "exit",
   payload: TerminalDataEvent | TerminalExitEvent,
-  /** The window that owns the terminal — the only one its output goes to (null: no window). */
+  /** The window that owns the terminal; the only one its output goes to (null: no window). */
   ownerWindowId: number | null,
 ) => void;
 
@@ -96,23 +95,21 @@ interface TerminalSession {
   blocks: TerminalBlockTracker;
   /** Program name of the login shell this terminal runs (`zsh`, `bash`, …). */
   shellName: string;
-  /**
-   * Linux: the shell runs on a pty of its own inside the sandbox
-   * (terminal-inner-pty.ts), so it is checked through the sandbox's process
-   * tree and a resize is forwarded to its pty relay.
-   */
+  /** Linux: the shell runs on a pty of its own inside the sandbox (terminal-inner-pty.ts), so it
+   * is checked through the sandbox's process tree and a resize is forwarded to its pty relay. */
   innerPty: boolean;
+  /** Linux refuses agent typing when new Git controls need fresh deny mounts. */
+  gitPolicyChanged?: () => boolean;
   /** A resize forward to the inner pty's relay is running, and whether another resize came in meanwhile. */
   resizeForward: { running: boolean; again: boolean };
   /** FIFO scrollback chunks, capped to {@link RING_MAX_BYTES}. */
   ring: string[];
   ringBytes: number;
+  /** Host policy notices survive bounded terminal scrollback eviction. */
+  hostNotices: readonly string[];
   disposeData: () => void;
   disposeExit: () => void;
-  /**
-   * Aborted when the tab closes or its shell ends: denies the tab's pending
-   * egress asks at once instead of leaving their banners to time out.
-   */
+  /** Aborted when the tab closes or its shell ends: denies the tab's pending egress asks at once instead of leaving their banners to time out. */
   egressAbort?: AbortController;
   forceKillTimer: ReturnType<typeof setTimeout> | null;
   closing: boolean;
@@ -126,11 +123,8 @@ interface TerminalSpawnInFlight {
   promise: Promise<SpawnTerminalResult>;
   ownerWindowId: number | null;
   cancelled: boolean;
-  /**
-   * Aborted with the spawn: ends a wait that would otherwise outlive the
-   * cancel (the macOS tty handoff waits up to its own timeout for the
-   * trampoline, longer than a restore waits for the cancelled spawn).
-   */
+  /** Aborted with the spawn: ends a wait that would otherwise outlive the cancel (the macOS tty handoff
+   * waits up to its own timeout for the trampoline, longer than a restore waits for the cancelled spawn). */
   abort: AbortController;
   cleanupResources?: () => void;
 }
@@ -161,9 +155,8 @@ function agentSession(ref: TerminalSessionRef, ownerWindowId: number): TerminalS
 const terminalSpawnsInFlight = new Map<string, TerminalSpawnInFlight>();
 let terminalShutdownStarted = false;
 
-/** Lazy, cached ESM import of the native (external, asarUnpack'd) node-pty. Kept
- * dynamic like ASRT's loadSandboxManager so merely importing this module pulls
- * no native addon into non-terminal contexts. */
+/** Lazy, cached ESM import of the native (external, asarUnpack'd) node-pty. Kept dynamic like ASRT's
+ * loadSandboxManager so merely importing this module pulls no native addon into non-terminal contexts. */
 let _ptyModule: typeof import("node-pty") | null = null;
 async function loadPty(): Promise<typeof import("node-pty")> {
   if (_ptyModule) return _ptyModule;
@@ -179,27 +172,15 @@ function clampDim(value: number | undefined, fallback: number, max: number): num
   return n;
 }
 
-/** Resolve the interactive login shell. Never derived from workspace content —
- * only `$SHELL` (validated absolute) or a per-platform default. */
+/** Resolve the interactive login shell. Never derived from workspace content; only `$SHELL` (validated absolute) or a per-platform default. */
 function resolveLoginShell(): string {
   const envShell = process.env.SHELL;
   if (typeof envShell === "string" && isAbsolute(envShell)) return envShell;
   return process.platform === "darwin" ? "/bin/zsh" : "/bin/bash";
 }
 
-/**
- * Resolve + VALIDATE the working directory that ANCHORS the write-jail.
- *
- * Default (no request): the workspace root — `process.cwd()`, anchored to
- * `~/.ave/workspace` at boot (ensureWorkspaceCwd) — NEVER `$HOME`, whose jail
- * would let the shell write shell-rc / login-agent persistence files. A
- * renderer-supplied cwd is admitted only beneath an authorized workspace
- * project: the default workspace or a user-approved additional project root.
- * The host's project resolver owns that set; renderer paths never add a grant.
- * Canonicalization resolves symlink escapes before the segment-aligned check,
- * using the same canonical form as the resulting sandbox write-jail. HOME
- * itself remains an invalid jail anchor even if it is an authorized project.
- */
+/** Resolve + VALIDATE the working directory that ANCHORS the write-jail. Default (no request): the workspace root; `process.cwd()`, anchored to `~/.ave/workspace` at boot (ensureWorkspaceCwd); NEVER `$HOME`, whose jail would let the shell write shell-rc / login-agent persistence files. A renderer-supplied cwd is admitted only beneath an authorized workspace project:
+ * the default workspace or a user-approved additional project root. The host's project resolver owns that set; renderer paths never add a grant. Canonicalization resolves symlink escapes before the segment-aligned check, using the same canonical form as the resulting sandbox write-jail. HOME itself remains an invalid jail anchor even if it is an authorized project. */
 function resolveTerminalCwd(
   requested: string | undefined,
 ): { ok: true; cwd: string } | { ok: false; message: string } {
@@ -221,21 +202,15 @@ function resolveTerminalCwd(
   return { ok: true, cwd: canonical };
 }
 
-/** The command string ASRT runs under its `-c` wrapper: exec the interactive
- * login shell so it takes over the PTY node-pty allocated for the sandbox
- * wrapper process (fd 0/1/2 inherit down sandbox-exec/bwrap → shell), or, on
- * Linux, `innerPtyCommand` runs it on a pty of its own inside the sandbox. */
+/** The command string ASRT runs under its `-c` wrapper: exec the interactive login shell so it takes over the PTY node-pty allocated for the sandbox
+ * wrapper process (fd 0/1/2 inherit down sandbox-exec/bwrap → shell), or, on Linux, `innerPtyCommand` runs it on a pty of its own inside the sandbox. */
 function buildShellCommand(
   shell: string,
   tempDir: string,
   innerPtyCommand?: (shell: string, launch: { command: string; args: string[] }) => string,
 ): string {
-  // `exec` replaces the wrapper's `/bin/bash -c` shell so there is no extra
-  // process layer; `-l -i` = login + interactive (prompt, job control, rc).
-  // The temp directory is set inside the wrap, because ASRT writes its own
-  // `TMPDIR=` there that no spawn env outranks: the sandbox temp root, which
-  // this terminal is neither granted nor allowed to read. Its own, under its
-  // HOME, is both — as the shell tool's bootstrap does.
+  // `exec` replaces the wrapper's `/bin/bash -c` shell so there is no extra process layer; `-l -i` = login + interactive (prompt, job control, rc). The temp directory is set inside the wrap, because ASRT writes
+  // its own `TMPDIR=` there that no spawn env outranks: the sandbox temp root, which this terminal is neither granted nor allowed to read. Its own, under its HOME, is both; as the shell tool's bootstrap does.
   const launch = sandboxTempEnvLaunch(tempDir, shell, ["-l", "-i"]);
   if (innerPtyCommand !== undefined) return innerPtyCommand(shell, launch);
   return `exec ${[launch.command, ...launch.args].map(shellQuote).join(" ")}`;
@@ -253,11 +228,8 @@ function pushRing(session: TerminalSession, chunk: string): void {
   }
 }
 
-/**
- * Spawn or replay one interactive terminal lane. A renderer remount with the
- * same tab and lane receives buffered scrollback rather than a fresh shell;
- * the PTY survives view unmount.
- */
+/** Spawn or replay one interactive terminal lane. A renderer remount with the same tab and
+ * lane receives buffered scrollback rather than a fresh shell; the PTY survives view unmount. */
 export function spawnTerminal(options: SpawnTerminalOptions): Promise<SpawnTerminalResult> {
   return spawnTerminalBefore(options, Date.now() + RETIRING_WAIT_MS);
 }
@@ -275,8 +247,7 @@ function spawnTerminalBefore(options: SpawnTerminalOptions, deadline: number): P
   if (!tabId) {
     return Promise.resolve({ ok: false, reason: "bad-request", message: "missing tabId" });
   }
-  // The id reaches the shell as AVE_TERMINAL_ID and keys the PTY across every
-  // window, so only a well-formed terminal tab id is accepted.
+  // The id reaches the shell as AVE_TERMINAL_ID and keys the PTY across every window, so only a well-formed terminal tab id is accepted.
   if (!isTerminalTabId(tabId)) {
     return Promise.resolve({ ok: false, reason: "bad-request", message: "tabId is not a terminal tab id" });
   }
@@ -284,8 +255,7 @@ function spawnTerminalBefore(options: SpawnTerminalOptions, deadline: number): P
   const key = terminalLaneKey(options);
   const record = logicalTabs.get(tabId);
   if (options.lane === "agent" && !record) return Promise.resolve({ ok: false, reason: "no-terminal", message: "terminal tab has not been opened by the user" });
-  // A tab another window owns is not this window's to attach to: tab ids are
-  // unique per window by construction, so a clash is a contract violation.
+  // A tab another window owns is not this window's to attach to: tab ids are unique per window by construction, so a clash is a contract violation.
   const ownerWindowId = options.ownerWindowId ?? null;
   if (!terminalOwnedBy(tabId, ownerWindowId)) {
     log.warn({ tabId }, "terminal: refused a spawn for a tab another window owns");
@@ -305,11 +275,8 @@ function spawnTerminalBefore(options: SpawnTerminalOptions, deadline: number): P
     logicalTabs.set(tabId, { ownerWindowId, ...(options.cwd !== undefined ? { initialCwd: options.cwd } : {}) });
   }
 
-  // A shell still closing under this id (its window closed, and that window's
-  // saved layout is now being restored) is waited out, then a new one starts:
-  // replaying the dying one would attach the tab to a shell about to exit.
-  // The wait is held under its window, so the window closing (or the tab
-  // closing) during it cancels it rather than starting a shell for no one.
+  // A shell still closing under this id (its window closed, and that window's saved layout is now being restored) is waited out, then a new one starts: replaying the dying one would
+  // attach the tab to a shell about to exit. The wait is held under its window, so the window closing (or the tab closing) during it cancels it rather than starting a shell for no one.
   const closing = closingUnder(key);
   if (closing) {
     const waiter = addSpawnWaiter(key, ownerWindowId);
@@ -318,8 +285,7 @@ function spawnTerminalBefore(options: SpawnTerminalOptions, deadline: number): P
       if (outcome === "cancelled" || waiter.cancelled) {
         return { ok: false, reason: "spawn-failed", message: "terminal spawn cancelled" } as const;
       }
-      // Its own reason, not a cwd refusal: the renderer must not answer it by
-      // starting somewhere else.
+      // Its own reason, not a cwd refusal: the renderer must not answer it by starting somewhere else.
       return outcome === "gone"
         ? spawnTerminalBefore(options, deadline)
         : { ok: false, reason: "still-closing", message: "the previous shell for this tab is still closing" } as const;
@@ -333,15 +299,14 @@ function spawnTerminalBefore(options: SpawnTerminalOptions, deadline: number): P
       || !isActiveSandboxShellContained() || existing.info.sandboxGeneration !== getSandboxGeneration())) {
       return Promise.resolve({ ok: false, reason: "not-shell-contained", message: "agent terminal containment changed; close and reopen the tab" });
     }
-    if (existing.ring.length > 0) {
-      _emit("data", { ...existing.info, chunk: existing.ring.join("") }, existing.ownerWindowId);
+    if (existing.ring.length > 0 || existing.hostNotices.length > 0) {
+      _emit("data", { ...existing.info, chunk: `${existing.hostNotices.map(notice => `\r\n${notice}\r\n`).join("")}${existing.ring.join("")}` }, existing.ownerWindowId);
     }
     return Promise.resolve({ ok: true, tabId, replayed: true, session: sessionInfo(existing) });
   }
 
-  // Reserve the tab before the first async boundary. Concurrent renderer IPC
-  // calls for one tab must share the in-flight spawn; otherwise both can create
-  // a PTY and the later sessions.set() strands the first process and its HOME.
+  // Reserve the tab before the first async boundary. Concurrent renderer IPC calls for one tab must share the
+  // in-flight spawn; otherwise both can create a PTY and the later sessions.set() strands the first process and its HOME.
   const inFlight = terminalSpawnsInFlight.get(key);
   if (inFlight) {
     return inFlight.promise.then((result) =>
@@ -391,10 +356,8 @@ async function spawnNewTerminal(
   const key = terminalLaneKey(options);
   const sandboxGeneration = getSandboxGeneration();
 
-  // ── FAIL CLOSED: an interactive arbitrary-command shell may spawn ONLY when
-  // the active OS sandbox contains shell effects (filesystem + process). No
-  // plain-spawn fallback (No-Fallback rule) — a terminal outside shell
-  // confinement is strictly more dangerous than a one-shot bash tool. ──
+  // FAIL CLOSED: an interactive arbitrary-command shell may spawn ONLY when the active OS sandbox contains shell effects (filesystem +
+  // process). No plain-spawn fallback (No-Fallback rule) — a terminal outside shell confinement is strictly more dangerous than a one-shot bash tool.
   if (process.platform === "win32" || !isShellSandboxActive() || !isActiveSandboxShellContained()) {
     return {
       ok: false,
@@ -406,8 +369,7 @@ async function spawnNewTerminal(
     };
   }
 
-  // Anti-DoS: bound concurrent PTYs. A remount of an EXISTING tab was replayed
-  // above and does not reach here; only a genuinely NEW session counts.
+  // Anti-DoS: bound concurrent PTYs. A remount of an EXISTING tab was replayed above and does not reach here; only a genuinely NEW session counts.
   if (sessions.size + terminalSpawnsInFlight.size > MAX_TERMINALS) {
     return {
       ok: false,
@@ -416,8 +378,7 @@ async function spawnNewTerminal(
     };
   }
 
-  // cwd ANCHORS the write-jail: default = workspace root, never $HOME; a
-  // renderer-supplied cwd is validated absolute + within the workspace root.
+  // cwd ANCHORS the write-jail: default = workspace root, never $HOME; a renderer-supplied cwd is validated absolute + within the workspace root.
   const resolvedCwd = resolveTerminalCwd(options.cwd);
   if (!resolvedCwd.ok) {
     return { ok: false, reason: "bad-request", message: resolvedCwd.message };
@@ -427,8 +388,7 @@ async function spawnNewTerminal(
   const cols = clampDim(options.cols, 80, MAX_COLS);
   const rows = clampDim(options.rows, 24, MAX_ROWS);
 
-  // Until registration, cancellation owns every acquired resource. A result
-  // arriving after disposal is released on arrival, before another effect.
+  // Until registration, cancellation owns every acquired resource. A result arriving after disposal is released on arrival, before another effect.
   const cleanups: Array<() => void> = [];
   let disposed = false;
   const addCleanup = (cleanup: () => void): (() => void) => {
@@ -457,10 +417,8 @@ async function spawnNewTerminal(
   owner.cleanupResources = disposeResources;
 
   let sandboxHome: ReturnType<typeof createSandboxProcessHome>;
-  // No initializer, matching `sandboxHome` above: the catch below returns, so
-  // reaching past the try means both were assigned. A no-op placeholder would
-  // be dead — never observable — and would read as if a missing cleanup were a
-  // supported state (CodeQL: useless assignment to local variable).
+  // No initializer, matching `sandboxHome` above: the catch below returns, so reaching past the try means both were assigned. A no-op placeholder
+  // would be dead; never observable; and would read as if a missing cleanup were a supported state (CodeQL: useless assignment to local variable).
   let cleanupSandboxHome: () => void;
   try {
     sandboxHome = createSandboxProcessHome();
@@ -484,11 +442,8 @@ async function spawnNewTerminal(
     };
   }
 
-  // Command-block markers: the integration file goes into this terminal's own
-  // sandbox HOME, never the user's. A HOME that cannot take one small file is
-  // not a HOME the shell can use either, so a write failure fails the spawn.
-  // The nonce authenticates this terminal's markers (shell-integration.ts):
-  // only the startup file and the tracker know it, and it is never logged.
+  // Command-block markers: the integration file goes into this terminal's own sandbox HOME, never the user's. A HOME that cannot take one small file is not a HOME the shell can use
+  // either, so a write failure fails the spawn. The nonce authenticates this terminal's markers (shell-integration.ts): only the startup file and the tracker know it, and it is never logged.
   const shell = resolveLoginShell();
   const markerNonce = randomBytes(16).toString("hex");
   let integrationEnv: Record<string, string>;
@@ -510,13 +465,8 @@ async function spawnNewTerminal(
     };
   }
 
-  // Filesystem jail (mirrors worker-spawn): write = cwd ∪ authorized dirs;
-  // read = jail ∪ cwd; denyRead = the RESTATED shared sensitive read floor (a
-  // per-command denyRead REPLACES ASRT's boot array, so omit-it-and-leak).
-  // denyWrite = the RESTATED sensitive WRITE floor (shell-rc / ~/.ssh / ~/.config
-  // / LaunchAgents / cron persistence + the read floor): ASRT applies it as
-  // denyWithinAllow with PRECEDENCE over allowWrite, so even if the write-jail
-  // ever covers $HOME the shell can never write these re-exec vectors.
+  // Filesystem jail (mirrors worker-spawn): write = cwd ∪ authorized dirs; read = jail ∪ cwd; denyRead = the RESTATED shared sensitive read floor (a per-command denyRead REPLACES ASRT's boot array, so omit-it-and-leak). denyWrite = the RESTATED sensitive
+  // WRITE floor (shell-rc / ~/.ssh / ~/.config / LaunchAgents / cron persistence + the read floor): ASRT applies it as denyWithinAllow with PRECEDENCE over allowWrite, so even if the write-jail ever covers $HOME the shell can never write these re-exec vectors.
   const allowWrite = [
     ...deriveSandboxWritePaths({ allowedDirectories: [cwd] }),
     sandboxHome.path,
@@ -525,12 +475,14 @@ async function spawnNewTerminal(
   const denyRead = getDefaultSensitiveReadDenyPaths();
   const denyWrite = getDefaultSensitiveWriteDenyPaths();
 
-  // macOS only (terminal-tty-handoff.ts): the pty is spawned first, on a
-  // trampoline, so the wrap can grant the shell its own terminal by path.
+  // macOS only (terminal-tty-handoff.ts): the pty is spawned first, on a trampoline, so the wrap can grant the shell its own terminal by path.
   let handoff: TerminalTtyHandoff | undefined;
   let disposeHandoff: (() => void) | undefined;
   let trampolinePty: IPty | undefined;
   let pendingSession: TerminalSession | undefined;
+  let wrapped: SandboxWrapResult | undefined;
+  let wrappedProcessStarted = false;
+  let wrappedProcessExited = false;
   try {
     let innerPtyCommand: Parameters<typeof buildShellCommand>[2];
     if (terminalNeedsInnerPty()) {
@@ -548,8 +500,7 @@ async function spawnNewTerminal(
     let ownTty: string | undefined;
     let renderHandoffScript: ((argv: readonly string[], env: Readonly<Record<string, string>>) => string) | undefined;
     if (terminalNeedsOwnTtyGrant()) {
-      // Loaded on spawn, like node-pty: terminal-only code, and the main
-      // bundle's initial size has a budget.
+      // Loaded on spawn, like node-pty: terminal-only code, and the main bundle's initial size has a budget.
       const ttyHandoff = await import("./terminal-tty-handoff.js");
       owner.abort.signal.throwIfAborted();
       renderHandoffScript = ttyHandoff.renderHandoffScript;
@@ -568,24 +519,23 @@ async function spawnNewTerminal(
       ownTty = ttyHandoff.ownPtySlavePath(trampolinePty);
     }
 
-    // The tab's egress token, for the life of this shell: every proxy deny of
-    // the shell and its children is audited under the tab, and a connection to
-    // a host no grant covers is asked about in the tab's banner. Releasing it
-    // (the shell ended: the tab closed) drops the tab's "This tab" grants.
+    // The tab's egress token, for the life of this shell: every proxy deny of the shell and its children is audited under the tab, and a connection to a host no grant covers is
+    // asked about in the tab's banner. Releasing it (the shell ended: the tab closed) drops the tab's "This tab" grants. A pending ask also ends when the spawn itself is abandoned.
     const egressAbort = new AbortController();
-    const egress = openEgressInvocation(
-      { kind: "terminal", tabId },
-      { abortSignal: egressAbort.signal },
-    );
+    const egress = openEgressInvocation({ kind: "terminal", tabId }, {
+      abortSignal: AbortSignal.any([owner.abort.signal, egressAbort.signal]),
+    });
     const releaseEgress = addCleanup(() => {
       egressAbort.abort(new Error("terminal shell ended"));
       egress.release();
     });
-    const { argv, env } =
+    wrapped =
       ownTty === undefined
-        ? await wrapWorkerCommand(cmdline, { filesystem, abortSignal: owner.abort.signal, commandId: egress.token })
-        : await wrapTerminalCommand(cmdline, { filesystem, ownTty, abortSignal: owner.abort.signal, commandId: egress.token });
+        ? await wrapWorkerCommand(cmdline, { filesystem, commandId: egress.token, denyUnixSockets: true, abortSignal: owner.abort.signal })
+        : await wrapTerminalCommand(cmdline, { filesystem, ownTty, commandId: egress.token, denyUnixSockets: true, abortSignal: owner.abort.signal });
+    const { argv, env } = wrapped;
     const cleanupWrap = addCleanup(() => { void cleanupAsrtSandboxAfterCommand(); releaseEgress(); });
+    const gitPolicyChanged = prepareTerminalGitPolicyCheck(wrapped.filesystemPolicy, wrapped.gitControlSnapshot);
     owner.abort.signal.throwIfAborted();
 
     const [cmd, ...wrappedArgs] = argv;
@@ -593,17 +543,15 @@ async function spawnNewTerminal(
       throw new Error("ASRT returned an empty argv for the terminal wrap");
     }
 
-    // Secret-stripped env + only the ASRT proxy/CA keys ASRT actually changed,
-    // plus the TTY hints the shell/xterm expect. buildSandboxedChildEnv already
-    // strips AVE_*/*_API_KEY/GITHUB_TOKEN/AWS_* and overlays the proxy.
+    // Secret-stripped env + only the ASRT proxy/CA keys ASRT actually changed, plus the TTY hints the
+    // shell/xterm expect. buildSandboxedChildEnv already strips AVE_*/*_API_KEY/GITHUB_TOKEN/AWS_* and overlays the proxy.
     const childEnv: Record<string, string> = {
       ...buildSandboxedChildEnv(env, { ...sandboxHome.env, ...integrationEnv }),
       TERM: "xterm-256color",
       COLORTERM: "truecolor",
       LANG: process.env.LANG ?? "en_US.UTF-8",
-      // The terminal's stable id, wherever its view is mounted (side panel or
-      // a main pane): what a script or an agent in the shell names it by.
-      // Added after the strip above, which removes inherited AVE_* keys.
+      // The terminal's stable id, wherever its view is mounted (side panel or a main pane): what a script or
+      // an agent in the shell names it by. Added after the strip above, which removes inherited AVE_* keys.
       AVE_TERMINAL_ID: tabId,
     };
 
@@ -615,14 +563,16 @@ async function spawnNewTerminal(
       owner.abort.signal.throwIfAborted();
       assertSrtWinSpawnIntegrity(cmd);
       pty = ptySpawn(cmd, wrappedArgs, { ...ptyOptions, env: childEnv });
+      wrappedProcessStarted = true;
       addCleanup(() => pty.kill("SIGKILL"));
     }
-    // node-pty starts the shell in its own session, so its pid is the
-    // process group the sandbox keeps the ended tab's listener port for.
+    // node-pty starts the shell in its own session, so its pid is the process group the sandbox keeps the ended tab's listener port for.
     if (pty.pid > 1) egress.noteProcessGroup(pty.pid);
 
+    egress.noteProcessGroup(pty.pid);
     let markGone!: () => void;
     const gone = new Promise<void>((resolve) => { markGone = resolve; });
+    const sandboxWindowNotice = terminalSandboxWindowNotice();
     const session: TerminalSession = {
       info: { tabId, lane: "agent", terminalSessionId: randomBytes(16).toString("hex"), substrate: "asrt", sandboxGeneration, initialCwd: cwd, currentCwd: null, cwdSource: "unavailable", shellIntegration: false },
       pty,
@@ -630,9 +580,11 @@ async function spawnNewTerminal(
       blocks: new TerminalBlockTracker({ nonce: markerNonce, marksPromptEnd }),
       shellName: basename(shell).replace(/^-/u, ""),
       innerPty: innerPtyCommand !== undefined,
+      ...(gitPolicyChanged === undefined ? {} : { gitPolicyChanged }),
       resizeForward: { running: false, again: false },
       ring: [],
       ringBytes: 0,
+      hostNotices: [...(wrapped.notices ?? []), ...(sandboxWindowNotice === undefined ? [] : [sandboxWindowNotice])],
       disposeData: () => {},
       disposeExit: () => {},
       egressAbort,
@@ -645,49 +597,57 @@ async function spawnNewTerminal(
     pendingSession = session;
 
     const dataSub = pty.onData((chunk) => {
-      // The view and the replay ring get the tracker's display text: the
-      // same bytes with the marker nonce removed (and an incomplete OSC held
-      // until it completes).
+      // The view and the replay ring get the tracker's display text: the same bytes with the marker nonce removed (and an incomplete OSC held until it completes).
       const display = session.blocks.recordOutput(chunk);
       if (!display) return;
       pushRing(session, display);
-      // Initialization can outlive a renderer mount. Publish its accumulated
-      // output only at registration, so an in-flight join misses no prefix
-      // and receives no duplicate replay of data already delivered to it.
+      // Initialization can outlive a renderer mount. Publish its accumulated output only at registration, so
+      // an in-flight join misses no prefix and receives no duplicate replay of data already delivered to it.
       if (sessions.get(key) === session) _emit("data", { ...session.info, chunk: display }, session.ownerWindowId);
     });
     session.disposeData = addCleanup(() => dataSub.dispose());
 
     const exitSub = pty.onExit(({ exitCode, signal }) => {
-      // A trampoline that exits before it runs the shell fails the spawn: the
-      // spawn's own catch cleans up, once, so this handler must not.
+      wrappedProcessExited = true;
+      // A trampoline that exits before it runs the shell fails the spawn: the spawn's own catch cleans up, once, so this handler must not.
       if (pendingSession === session) return;
       session.exited = true;
-      // The blocks outlive the shell (the tab still shows its output) until
-      // the tab closes or a new shell replaces them.
-      session.blocks.recordExit();
       if (session.forceKillTimer !== null) clearTimeout(session.forceKillTimer);
-      _emit("exit", { ...session.info, exitCode, signal }, session.ownerWindowId);
-      // Per-command ASRT state decrement (mirrors worker-spawn cleanupOnce) +
-      // drop the session so a later spawn for the same tab starts fresh.
+      // Per-command ASRT state decrement (mirrors worker-spawn cleanupOnce) + drop the session so a later spawn for the same tab starts fresh.
       cleanupWrap();
-      cleanupSandboxHome();
-      session.disposeData();
-      session.disposeExit();
-      if (sessions.get(key) === session) sessions.delete(key);
-      session.markGone();
+      const finish = (notice?: string): void => {
+        if (notice !== undefined) {
+          session.hostNotices = [...session.hostNotices, notice];
+          const display = session.blocks.recordOutput(`\r\n${notice}\r\n`);
+          pushRing(session, display);
+          _emit("data", { ...session.info, chunk: display }, session.ownerWindowId);
+        }
+        // Keep a final cleanup notice in the open block before readers see exit.
+        session.blocks.recordExit();
+        _emit("exit", { ...session.info, exitCode, signal }, session.ownerWindowId);
+        cleanupSandboxHome();
+        session.disposeData();
+        session.disposeExit();
+        if (sessions.get(key) === session) sessions.delete(key);
+        session.markGone();
+      };
+      if (wrapped?.cleanupCompleted !== undefined) {
+        void wrapped.cleanupCompleted.then(outcome => finish([outcome.notice, outcome.failure].filter(Boolean).join("\n") || undefined), error => {
+          log.warn({ tabId, err: errorMessage(error) }, "terminal: sandbox cleanup failed");
+          finish(errorMessage(error));
+        });
+      } else finish();
     });
     session.disposeExit = addCleanup(() => exitSub.dispose());
 
     if (handoff !== undefined && renderHandoffScript !== undefined) {
-      // Subscribed first: the shell starts writing as soon as it is exec'd.
-      // A trampoline that dies before reading the fifo ends the wait now, not
-      // at the timeout; so does the spawn's cancel (its tab or window closed,
-      // or shutdown began), which a restore of the same id is waiting out.
+      // Subscribed first: the shell starts writing as soon as it is exec'd. A trampoline that dies before reading the fifo ends the wait now, not
+      // at the timeout; so does the spawn's cancel (its tab or window closed, or shutdown began), which a restore of the same id is waiting out.
       const trampolineExited = new AbortController();
       const trampolineExitSub = pty.onExit(() => trampolineExited.abort());
       const disposeTrampolineExit = addCleanup(() => trampolineExitSub.dispose());
       try {
+        wrappedProcessStarted = true;
         await handoff.deliver(renderHandoffScript(argv, childEnv), {
           signal: AbortSignal.any([trampolineExited.signal, owner.abort.signal]),
         });
@@ -703,17 +663,30 @@ async function spawnNewTerminal(
     if (sandboxGeneration !== getSandboxGeneration() || !isShellSandboxActive() || !isActiveSandboxShellContained()) throw new Error("terminal sandbox changed during launch");
     sessions.set(key, session);
     registerTerminalBlockTracker(session.info, session.blocks, options.ownerWindowId ?? null);
-    if (session.ring.length > 0) _emit("data", { ...session.info, chunk: session.ring.join("") }, session.ownerWindowId);
+    if (session.ring.length > 0 || session.hostNotices.length > 0) _emit("data", { ...session.info, chunk: `${session.hostNotices.map(notice => `\r\n${notice}\r\n`).join("")}${session.ring.join("")}` }, session.ownerWindowId);
     // The session now owns its wrap, HOME and subscriptions until exit.
     owner.cleanupResources = undefined;
     cleanups.length = 0;
     log.info({ tabId, cwd, cols, rows, pid: pty.pid }, "terminal: spawned sandboxed PTY");
     return { ok: true, tabId, replayed: false, session: sessionInfo(session) };
   } catch (err) {
-    // Reverse acquisition order detaches listeners before killing the PTY;
-    // each release is shared with cancellation and any late setup result.
+    // Reverse acquisition order detaches listeners before killing the PTY; each release is shared with cancellation and any late setup result.
     disposeResources();
-    const message = errorMessage(err);
+    const notices = [...(wrapped?.notices ?? [])];
+    if (wrapped?.cleanupCompleted !== undefined) {
+      if (wrappedProcessStarted && !wrappedProcessExited) notices.push(t("sandboxPolicy.cleanupPending"));
+      else {
+        try {
+          const outcome = await wrapped.cleanupCompleted;
+          if (outcome.notice !== undefined) notices.push(outcome.notice);
+          if (outcome.failure !== undefined) notices.push(outcome.failure);
+        } catch (error) {
+          notices.push(errorMessage(error));
+          log.warn({ tabId, err: errorMessage(error) }, "terminal: spawn cleanup failed");
+        }
+      }
+    }
+    const message = [errorMessage(err), ...notices].join("\n");
     if (owner.cancelled) {
       log.info({ tabId }, "terminal: cancelled in-flight spawn");
     } else {
@@ -759,7 +732,7 @@ async function spawnManualTerminal(options: SpawnTerminalOptions, owner: Termina
       pty, ownerWindowId: options.ownerWindowId ?? null,
       blocks: new TerminalBlockTracker({ nonce: randomBytes(16).toString("hex"), marksPromptEnd: false }),
       shellName: basename(launch.command), innerPty: false,
-      resizeForward: { running: false, again: false }, ring: [], ringBytes: 0,
+      resizeForward: { running: false, again: false }, ring: [], ringBytes: 0, hostNotices: [],
       disposeData: () => {}, disposeExit: () => {},
       forceKillTimer: null, closing: false, exited: false, gone, markGone,
     };
@@ -808,8 +781,7 @@ export async function ensureAgentTerminal(tabId: string, ownerWindowId: number, 
     if (!agentSession(existing.info, ownerWindowId)) throw new Error("agent terminal confinement changed; close and reopen the terminal tab");
     info = sessionInfo(existing);
   } else {
-    // Cancelling a tool waiter does not close a shell the tab now owns. No
-    // requested command is typed by initialization, including after this wait aborts.
+    // Cancelling a tool waiter does not close a shell the tab now owns. No requested command is typed by initialization, including after this wait aborts.
     const result = await waitForTerminalSpawn(
       spawnTerminal({ tabId, lane: "agent", ownerWindowId, ...(logical.initialCwd !== undefined ? { cwd: logical.initialCwd } : {}) }),
       signal,
@@ -854,19 +826,13 @@ function waitForTerminalSpawn(promise: Promise<SpawnTerminalResult>, signal?: Ab
   });
 }
 
-/**
- * The authenticated window that reserved this logical tab, or undefined when
- * no tab is reserved. A null owner represents a host-owned tab.
- */
+/** The authenticated window that reserved this logical tab, or undefined when no tab is reserved. A null owner represents a host-owned tab. */
 export function terminalTabOwnerWindow(tabId: string): number | null | undefined {
   return logicalTabs.get(tabId)?.ownerWindowId;
 }
 
-/**
- * The window that owns a live (or starting) terminal tab: where that tab's
- * egress asks are drawn. Undefined when no shell runs or starts under the id;
- * null when the shell belongs to no window.
- */
+/** The window that owns a live (or starting) terminal tab: where that tab's egress asks are drawn.
+ * Undefined when no shell runs or starts under the id; null when the shell belongs to no window. */
 export function terminalOwnerWindowId(tabId: string): number | null | undefined {
   const session = sessions.get(terminalLaneKey({ tabId, lane: "agent" }));
   if (session && !session.exited && !session.closing) return session.ownerWindowId;
@@ -909,19 +875,11 @@ export type VerifyTerminalShellResult =
   | { ok: true; cwd: string }
   | { ok: false; reason: "no-terminal" | "foreground-not-shell" | "shell-busy" | "cwd-unverified" | "cwd-mismatch"; message: string };
 
-/**
- * How long typing waits for the shell to draw a fresh prompt after the
- * line-editor reset (Ctrl-C at an idle prompt).
- */
+/** How long typing waits for the shell to draw a fresh prompt after the line-editor reset (Ctrl-C at an idle prompt). */
 const FRESH_PROMPT_TIMEOUT_MS = 3_000;
 
-/**
- * Check what the shell's markers say against the operating system: the
- * terminal's foreground process must be its own shell (not a program that
- * printed a prompt), and that shell's real working directory must be the one
- * the markers reported. Markers are output text; the process table is not.
- * Returns the shell's directory as the operating system resolves it.
- */
+/** Check what the shell's markers say against the operating system: the terminal's foreground process must be its own shell (not a program that printed a prompt), and that shell's
+ * real working directory must be the one the markers reported. Markers are output text; the process table is not. Returns the shell's directory as the operating system resolves it. */
 export async function verifyAgentTerminalShell(ref: TerminalSessionRef, ownerWindowId: number, reportedCwd: string): Promise<VerifyTerminalShellResult> {
   const tabId = ref.tabId;
   const session = agentSession(ref, ownerWindowId);
@@ -938,18 +896,8 @@ export async function verifyAgentTerminalShell(ref: TerminalSessionRef, ownerWin
   return foregroundVerdict(await readTerminalForeground(session.pty.pid), session.pty.pid, session.shellName, reportedCwd);
 }
 
-/**
- * Judge the reading of a sandboxed Linux terminal's shell
- * ({@link readSandboxedShell}) for {@link verifyAgentTerminalShell}. The shell was
- * found by its place in the sandbox's process tree and its name; it must also
- * be the shell that reported the prompt (`reportedPid`, `$$` from the P
- * marker, is its pid in its own namespace), hold its own terminal's
- * foreground, have no child or other process sharing its terminal session or
- * foreground group (a command still finishing, or a background job that could
- * write to the terminal or, through TIOCSTI on
- * that terminal, type into the line), and be in the very directory
- * `reportedCwd` names on the host (same device and inode).
- */
+/** Judge the reading of a sandboxed Linux terminal's shell ({@link readSandboxedShell}) for {@link verifyAgentTerminalShell}. The shell was found by its place in the sandbox's process tree and its name; it must also be the shell that reported the prompt (`reportedPid`, `$$` from the P marker, is its pid in its own namespace), hold its
+ * own terminal's foreground, have no child or other process sharing its terminal session or foreground group (a command still finishing, or a background job that could write to the terminal or, through TIOCSTI on that terminal, type into the line), and be in the very directory `reportedCwd` names on the host (same device and inode). */
 export function sandboxedShellVerdict(
   reading: SandboxedShellReading,
   reportedCwd: string,
@@ -1006,9 +954,8 @@ export function foregroundVerdict(
     return { ok: false, reason: "cwd-unverified", message: `the terminal's shell could not be checked: ${reading.reason}` };
   }
   const { foreground } = reading;
-  // The shell is the process spawned on the pty (its session leader; every
-  // wrapper before it execs in place). A nested shell or any other process
-  // holding the terminal is not it, whatever its name.
+  // The shell is the process spawned on the pty (its session leader; every wrapper before it execs
+  // in place). A nested shell or any other process holding the terminal is not it, whatever its name.
   if (foreground.pid !== shellPid || foreground.command !== shellName) {
     return {
       ok: false,
@@ -1046,43 +993,10 @@ function waitForFreshPrompt(blocks: TerminalBlockTracker, since: number, timeout
   });
 }
 
-/**
- * Type one agent command into a terminal and press Enter, as the user would:
- * the shell echoes it and runs it in the visible terminal. Only for
- * `terminal_run`, after the invocation was authorized.
- *
- * Refused unless the terminal is `ownerWindowId`'s, alive, and its shell is
- * at an empty prompt ({@link TerminalBlockTracker.promptState}): text typed
- * while a command or a full-screen program is in the foreground would go to
- * that program, and text typed after the user's own unfinished input would
- * join it. `line` must hold no control or invisible characters
- * (terminal-command-text.ts); one that does is a caller bug and throws.
- *
- * A line editor can be in a state no output shows: an ESC or Ctrl-X prefix
- * waiting for its next key, vi command mode, a key typed ahead during the
- * last command. Text typed then is read as editing keys, and the shell runs
- * something other than the approved line. So, in order:
- *  1. Check the shell against the operating system
- *     ({@link verifyAgentTerminalShell}): its own process holds the terminal, in
- *     `expectedCwd` — so the next key reaches the shell, not a program.
- *  2. Ctrl-C. At an idle prompt the terminal turns it into SIGINT, whatever
- *     the keymap or a pending prefix: the line editor drops the line and its
- *     state and draws a fresh prompt. It cannot run anything. bash may wait
- *     for one more key before it draws that prompt, so Ctrl-C is sent again
- *     until it does ({@link resetToFreshPrompt}).
- *  3. Wait for that fresh prompt, and check it is still idle, untouched and
- *     in the same directory, then require its actual editable buffer to be empty.
- *  4. Write the line as a bracketed paste (`ESC[200~ … ESC[201~`), which the
- *     line editor inserts as text and never reads as keys. The shell reported
- *     bracketed paste on, with the builtin paste widgets, at this prompt
- *     (promptState).
- *  5. Press Enter only once both the echo and a fresh private editor-buffer
- *     acknowledgement match the approved line and the user pressed no key;
- *     otherwise clear it (Ctrl-C) only while the untouched shell remains safe.
- *
- * Returns the id the command's block will have at least, so the caller can
- * wait for it, and compare the command the shell ran with the approved one.
- */
+/** Only authorized terminal_run may type into its owning window's live, empty shell prompt; refuse control or invisible characters.
+ * Verify OS process and cwd, reset editor state with Ctrl-C, then require a fresh untouched prompt and empty buffer.
+ * Paste as bracketed text; press Enter only after echo and private buffer acknowledgements match the approved line without user input.
+ * On mismatch, clear only while the untouched shell is safe; return the block floor so execution can be compared with approval. */
 export async function typeAgentTerminalCommand(
   ref: TerminalSessionRef,
   ownerWindowId: number,
@@ -1093,6 +1007,14 @@ export async function typeAgentTerminalCommand(
   const tabId = ref.tabId;
   const live = (): TerminalSession | undefined => agentSession(ref, ownerWindowId);
   const session = live();
+  if (session?.gitPolicyChanged !== undefined) {
+    try {
+      if (session.gitPolicyChanged()) return { ok: false, reason: "cwd-unverified", message: t("sandboxPolicy.terminalChanged") };
+    } catch (error) {
+      log.warn({ tabId, err: errorMessage(error) }, "terminal: Git protection refresh failed");
+      return { ok: false, reason: "cwd-unverified", message: t("sandboxPolicy.terminalChanged") };
+    }
+  }
   return typeLineAtPrompt(
     {
       blocks: session?.blocks,
@@ -1121,11 +1043,7 @@ export interface PromptTypingTarget {
   readonly missing: string;
 }
 
-/**
- * The typing protocol of {@link typeAgentTerminalCommand}, over any terminal:
- * check, reset (Ctrl-C), wait for the fresh prompt, paste, confirm the edit
- * line, Enter.
- */
+/** The typing protocol of {@link typeAgentTerminalCommand}, over any terminal: check, reset (Ctrl-C), wait for the fresh prompt, paste, confirm the edit line, Enter. */
 export async function typeLineAtPrompt(
   target: PromptTypingTarget,
   line: string,
@@ -1206,8 +1124,7 @@ export async function typeLineAtPrompt(
   }
   const beforeEnter = await safeToWrite();
   if (beforeEnter) return beforeEnter;
-  // The query widget can repaint the display without changing its buffer.
-  // Echo was checked before the query; the fresh report is the buffer proof.
+  // The query widget can repaint the display without changing its buffer. Echo was checked before the query; the fresh report is the buffer proof.
   if (blocks.promptEndCount() !== prompt || blocks.typedSincePromptEnd()
     || blocks.editLineReport()?.generation !== confirmed.generation || blocks.editLineReport()?.line !== line) {
     return notTyped("edit-line-mismatch", "the terminal prompt or editor acknowledgement changed before Enter; no further input was sent");
@@ -1218,28 +1135,11 @@ export async function typeLineAtPrompt(
   return { ok: true, firstBlockId };
 }
 
-/**
- * How long typing waits for a fresh prompt after one Ctrl-C before it sends
- * another, and how long the prompts must then stay still.
- */
+/** How long typing waits for a fresh prompt after one Ctrl-C before it sends another, and how long the prompts must then stay still. */
 const RESET_REPEAT_MS = 500;
 
-/**
- * Ctrl-C until the shell draws a fresh prompt; refuse if none comes within
- * {@link FRESH_PROMPT_TIMEOUT_MS}.
- *
- * One is not always enough. bash 5.2 (readline 8.2) clears its line on SIGINT
- * at once, echoing `^C`, but draws the fresh prompt only when the interrupt
- * breaks its wait for a key. A Ctrl-C that arrives while readline is still
- * drawing the prompt, before that wait, leaves the cleared line and the `^C`
- * after the prompt's end marker, and no fresh prompt until the next key
- * (measured: an ubuntu:24.04 container under load, 20 of 3,017 commands; the
- * output stopped at `^C ESC[?2004l CR ESC[?2004h`). The next Ctrl-C is that
- * key. Each resend requires unchanged user input and a new OS check; when more than
- * one was sent, a prompt drawn for an earlier one can arrive before the last
- * one's, so the prompts must stay still for a moment before anything is
- * pasted.
- */
+/** Repeat Ctrl-C until a fresh prompt appears; each resend requires unchanged user input and a new OS check.
+ * Some shells defer prompt drawing until another key, so multiple resets must settle before pasting. */
 async function resetToFreshPrompt(
   blocks: TerminalBlockTracker,
   target: PromptTypingTarget,
@@ -1304,11 +1204,8 @@ async function requestEditLine(
   }
 }
 
-/**
- * Wait until the prompt typed at (`prompt`, its end count) shows exactly
- * `line` in its edit line, with no key from the user since it was drawn.
- * False on timeout, or when that prompt goes away.
- */
+/** Wait until the prompt typed at (`prompt`, its end count) shows exactly `line` in its edit line,
+ * with no key from the user since it was drawn. False on timeout, or when that prompt goes away. */
 async function waitForEditLine(blocks: TerminalBlockTracker, prompt: number, line: string, timeoutMs: number, signal?: AbortSignal): Promise<boolean> {
   // Echoed text does not notify subscribers (only markers do), so poll.
   const deadline = Date.now() + timeoutMs;
@@ -1343,12 +1240,8 @@ export function resizeTerminal(ref: TerminalSessionRef, cols: number, rows: numb
   return { ok: true };
 }
 
-/**
- * Tell the inner pty's relay about a resize (terminal-inner-pty.ts). One
- * forward at a time per terminal: a resize during one (a window being
- * dragged) is folded into one more forward after it, which reads the size the
- * outer pty has by then.
- */
+/** Tell the inner pty's relay about a resize (terminal-inner-pty.ts). One forward at a time per terminal: a resize during
+ * one (a window being dragged) is folded into one more forward after it, which reads the size the outer pty has by then. */
 function forwardResizeToInnerPty(tabId: string, session: TerminalSession): void {
   const state = session.resizeForward;
   if (state.running) {
@@ -1367,10 +1260,7 @@ function forwardResizeToInnerPty(tabId: string, session: TerminalSession): void 
     });
 }
 
-/**
- * How long a spawn may wait, in all, for closing shells under the same id;
- * past the SIGKILL escalation.
- */
+/** How long a spawn may wait, in all, for closing shells under the same id; past the SIGKILL escalation. */
 const RETIRING_WAIT_MS = 5_000;
 
 interface TerminalSpawnWaiter {
@@ -1407,10 +1297,7 @@ function removeSpawnWaiter(tabId: string, waiter: TerminalSpawnWaiter): void {
   if (waiters.size === 0) terminalSpawnWaiters.delete(tabId);
 }
 
-/**
- * Settles once the closing shell or cancelled spawn under `tabId` is gone;
- * `null` when nothing under that id is closing.
- */
+/** Settles once the closing shell or cancelled spawn under `tabId` is gone; `null` when nothing under that id is closing. */
 function closingUnder(tabId: string): Promise<unknown> | null {
   const session = sessions.get(tabId);
   if (session && session.closing && !session.exited) return session.gone;
@@ -1419,10 +1306,7 @@ function closingUnder(tabId: string): Promise<unknown> | null {
   return null;
 }
 
-/**
- * Wait for `closing` until `deadline`, or until the waiter is cancelled; the
- * deadline timer is cleared however the wait ends.
- */
+/** Wait for `closing` until `deadline`, or until the waiter is cancelled; the deadline timer is cleared however the wait ends. */
 function waitOutClosing(
   closing: Promise<unknown>,
   deadline: number,
@@ -1437,11 +1321,7 @@ function waitOutClosing(
   });
 }
 
-/**
- * Close every terminal a window owns — the window is gone (macOS keeps the
- * app running when its last window closes, so nothing else would). Returns
- * how many were closed.
- */
+/** Close every terminal a window owns; the window is gone (macOS keeps the app running when its last window closes, so nothing else would). Returns how many were closed. */
 export function killTerminalsOwnedBy(ownerWindowId: number): number {
   const ids = [...logicalTabs.entries()].filter(([, tab]) => tab.ownerWindowId === ownerWindowId).map(([id]) => id);
   for (const id of ids) killTerminal(id);
@@ -1478,13 +1358,11 @@ function killTerminalLane(key: string): void {
   session.forceKillTimer = setTimeout(() => {
     if (session.exited) return;
     try {
-      // node-pty defaults to SIGHUP. A shell may trap/ignore it, so retain
-      // ownership until this definitive escalation or the exit callback.
+      // node-pty defaults to SIGHUP. A shell may trap/ignore it, so retain ownership until this definitive escalation or the exit callback.
       session.pty.kill("SIGKILL");
     } catch (err) {
-      // Keep the session registered even when signal delivery fails. Losing
-      // the only owner here would allow a replacement PTY while this one may
-      // still be alive and would strand its ASRT/HOME finalizers.
+      // Keep the session registered even when signal delivery fails. Losing the only owner here would
+      // allow a replacement PTY while this one may still be alive and would strand its ASRT/HOME finalizers.
       log.warn(
         { tabId, err: errorMessage(err) },
         "terminal: force kill failed",
@@ -1500,11 +1378,8 @@ export function killAllTerminals(): number {
   return count;
 }
 
-/**
- * App-shutdown path: signal every PTY immediately and wait only until all exit
- * callbacks run or the bounded deadline expires. Unlike a tab close, shutdown
- * cannot rely on a later timer after Electron has already quit.
- */
+/** App-shutdown path: signal every PTY immediately and wait only until all exit callbacks run or the bounded
+ * deadline expires. Unlike a tab close, shutdown cannot rely on a later timer after Electron has already quit. */
 export async function forceKillAllTerminalsForShutdown(timeoutMs = 1_000): Promise<number> {
   terminalShutdownStarted = true;
   logicalTabs.clear();
@@ -1513,12 +1388,12 @@ export async function forceKillAllTerminalsForShutdown(timeoutMs = 1_000): Promi
   const inFlight = [...terminalSpawnsInFlight.values()];
   for (const owner of inFlight) cancelInFlightSpawn(owner);
 
-  // Snapshot and signal live PTYs synchronously before yielding to any pending
-  // setup promise. Shutdown must not give an existing shell extra runtime just
-  // because another tab is still resolving its wrapper/native module.
+  // Snapshot and signal live PTYs synchronously before yielding to any pending setup promise. Shutdown must not
+  // give an existing shell extra runtime just because another tab is still resolving its wrapper/native module.
   const sessionsToKill = [...sessions.entries()].filter(([, session]) => !session.exited);
   for (const [tabId, session] of sessionsToKill) {
     session.closing = true;
+    session.egressAbort?.abort();
     session.disposeData();
     if (session.forceKillTimer !== null) {
       clearTimeout(session.forceKillTimer);
@@ -1527,8 +1402,7 @@ export async function forceKillAllTerminalsForShutdown(timeoutMs = 1_000): Promi
     try {
       session.pty.kill("SIGKILL");
     } catch (err) {
-      // Keep ownership until a late exit callback; the bounded wait below
-      // prevents a broken native PTY from hanging application shutdown.
+      // Keep ownership until a late exit callback; the bounded wait below prevents a broken native PTY from hanging application shutdown.
       log.warn(
         { tabId, err: errorMessage(err) },
         "terminal: shutdown SIGKILL failed",

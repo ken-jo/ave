@@ -1,15 +1,4 @@
-/**
- * ResourceMentionMenu — the caret-anchored dropdown for `@` resource mentions.
- *
- * Presentational only, exactly like {@link InlineSlashMenu}: focus stays in the
- * textarea (selection on `mousedown`, which prevents the focus shift) and keyboard
- * navigation is driven by Composer.handleKeyDown through the useResourceMention state.
- *
- * A sibling component rather than a shared generic one. The two menus differ in what a
- * row IS — a slash row carries a category icon and label, a resource row carries a
- * server and a URI — and the part actually worth not duplicating is the anchor
- * geometry, which both take from `useCaretAnchoredBox`.
- */
+/** Keep focus in the textarea; Composer drives keyboard navigation and useCaretAnchoredBox supplies shared anchor geometry. */
 import { useRef } from "react";
 import { createPortal } from "react-dom";
 import type { RefObject } from "react";

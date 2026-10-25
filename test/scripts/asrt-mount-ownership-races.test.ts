@@ -8,10 +8,7 @@ import {
   wrapCommandWithSandboxLinux,
 } from "@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js";
 
-// Patch part 7: selected public-name replacement races preserve foreign entries.
-// Replacements follow real syscalls; publication failures precede rename.
-// The patch preamble documents the remaining path-syscall windows.
-// These cases only plan a wrap (bwrapPath is /usr/bin/true); nothing is executed.
+// Exercise ownership races with real syscalls while stopping before command execution.
 
 type Kind = "file" | "directory";
 type Identity = { dev: bigint; ino: bigint };
@@ -60,7 +57,6 @@ function same(left: Identity, right: Identity): boolean {
   return left.dev === right.dev && left.ino === right.ino;
 }
 
-/** Run `callback` after each real call of `method`, with its arguments. */
 function afterCall(method: Method, callback: (args: unknown[]) => void): void {
   const original = fs[method] as (...args: unknown[]) => unknown;
   vi.spyOn(fs, method).mockImplementation(((...args: unknown[]) => {
@@ -76,7 +72,6 @@ function restoreFs(): void {
   syncBuiltinESMExports();
 }
 
-/** Every name in `dir` the patch uses for a private stage or quarantine. */
 function privateNames(dir: string): string[] {
   return fs.readdirSync(dir).filter((name) => name.includes(".ave-"));
 }
@@ -151,8 +146,7 @@ describe.skipIf(process.platform === "win32")("mount point ownership under sysca
     },
   );
 
-  // Real unlink/rmdir with an open descriptor, not a fabricated inode collision.
-  // This proves the pin's lifetime; it does not reproduce Linux inode reuse.
+  // An open descriptor pins the unlinked inode, preventing reuse from masking an ownership error.
   it.each(["file", "directory"] as const)(
     "keeps the unlinked %s pinned and preserves an empty foreign replacement",
     async (kind) => {
@@ -357,7 +351,6 @@ describe.skipIf(process.platform === "win32")("mount point ownership under sysca
     }
   });
 
-  /** Move whatever is at `entry` aside and put a foreign entry of `kind` there. */
   function replace(entry: string, kind: Kind, content = "unrelated content"): Identity {
     real.rename(entry, join(root, `aside-${moved++}`));
     if (kind === "directory") real.mkdir(entry);
@@ -365,7 +358,7 @@ describe.skipIf(process.platform === "win32")("mount point ownership under sysca
     return identityOf(entry);
   }
 
-  // Review of 31c09d3a0, defect 1: cleanup checked identity, then deleted by path.
+  // Ownership checks must cover the deletion itself, not just an earlier path lookup.
   it.each(["file", "directory"] as const)(
     "leaves a foreign %s that replaces the mount point after its identity check",
     async (kind) => {
@@ -384,14 +377,11 @@ describe.skipIf(process.platform === "win32")("mount point ownership under sysca
     },
   );
 
-  // Review of 31c09d3a0, defect 2: the directory's identity was read by path
-  // after it was created there, so a replacement right after creation was
-  // recorded as ours and deleted by the next cleanup.
+  // A replacement after creation must not be captured as the owned directory.
   it("records the directory it made, not one that replaces it right after publication", async () => {
     let staged = false;
     let foreign: Identity | undefined;
-    // 31c09d3a0 publishes with mkdir(target); the fix stages under a private
-    // name and publishes with rename(staged, target).
+    // Replace the directory at publication, whether created directly or staged then renamed.
     afterCall("mkdirSync", ([entry]) => {
       if (typeof entry === "string" && entry.includes(".ave-mount-")) staged = true;
       if (entry === target && !staged && foreign === undefined) foreign = replace(target, "directory");

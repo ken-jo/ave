@@ -1,21 +1,4 @@
-/**
- * ToolExecutor integration test — C1 regression.
- *
- * Scenario: the tool executor receives a tool_use for `read_file` with
- * a path that points at `~/.ssh/id_rsa`. Before C1 was wired, the
- * ApprovalRequest omitted `target.filePath`, so the §S1 sensitive-path
- * hard-block at approval-gate.ts never fired and the request went
- * straight to the user dialog. After C1:
- *
- *   1. Permission layer returns "ask"
- *   2. ToolExecutor populates target.filePath = /Users/.../.ssh/id_rsa
- *   3. ApprovalGate's §S1 canonicalizes + matches **\/.ssh/*
- *   4. Returns deny-once without calling webContents.send
- *
- * The assertion we need for C1 coverage: webContents.send was NOT
- * called, the tool execute() was NOT invoked, and the tool result is
- * an approval-denial error.
- */
+// Sensitive targets must reach the approval hard block and deny before dialog dispatch or tool execution.
 import { afterEach, describe, it, expect, vi } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { existsSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
@@ -72,8 +55,6 @@ import { getHostShellExecutionPlanAuditProjection } from "../../permissions/host
 import { makeMockWebContents, sentApprovalCards } from "../../__tests__/test-helpers.js";
 import { approvalCacheKeyFor } from "../pipeline/display-mask.js";
 
-// ─── Helpers ─────────────────────────────────────────
-
 async function waitForApprovalPayload<T>(
   wc: ReturnType<typeof makeMockWebContents>,
   index = 0,
@@ -88,8 +69,7 @@ async function waitForApprovalPayload<T>(
 }
 
 function comparablePath(path: string | undefined): string {
-  // Keep test comparisons aligned with the executor's canonical path helper.
-  // Non-path strings are approval messages; normalize separators/case only.
+  // Normalize only separators and case for approval messages that are not paths.
   const raw = path ?? "";
   if (!raw) return "";
   const pathish = process.platform === "win32"
@@ -123,20 +103,9 @@ function makeReadFileTool(
   });
 }
 
-/**
- * The write-tier sibling of {@link makeReadFileTool}, same shape and same
- * `pathFields`.
- *
- * Layer 1 confines writes and no longer confines reads, so the
- * out-of-allowed-dir dialog is something a WRITE reaches. Cases that are about
- * that dialog — how it is signed, what it carries, what each choice grants —
- * use this tool; the read tool pointed at the same path is admitted with no
- * prompt at all, which has its own case rather than being left implicit in why
- * these stopped dispatching.
- */
+// Directory approval confines writes; reads at the same path do not reach this dialog.
 function makeWriteFileTool(
-  // Typed as the call signature rather than as a bare `Mock`, which is not
-  // callable under this tsconfig; a `vi.fn` still satisfies it.
+  // Bare Mock is not callable under this configuration; vi.fn satisfies the call signature.
   executeSpy: (input: unknown) => unknown,
 ): Tool {
   return createDynamicTool({
@@ -157,8 +126,6 @@ function makeWriteFileTool(
     },
   });
 }
-
-// ─── Tests ───────────────────────────────────────────
 
 describe("ToolExecutor — A2A parent delivery capability provenance", () => {
   it.each([
@@ -223,16 +190,12 @@ describe("ToolExecutor — A2A parent delivery capability provenance", () => {
  */
 describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
   it("tool_use read_file on ~/.ssh/id_rsa: approval-gate §S1 hard-blocks BEFORE dialog", async () => {
-    // 1. Registry with a read_file tool that tracks whether it was invoked
     const executeSpy = vi.fn(async () => "file contents");
     const registry = new ToolRegistry();
     registry.register(makeReadFileTool(executeSpy));
 
-    // 2. Permission manager that forces "ask" for the test (simulates the
-    //    path where the user has not yet granted or denied this tool).
     const permMgr = new PermissionManager("/tmp/nonexistent-permissions.json");
     permMgr.setRules([{ pattern: "read_file", action: "allow" }]);
-    // ask-for-this-tool: override checkDetailed to force "ask"
     const originalCheck = permMgr.checkDetailed.bind(permMgr);
     permMgr.checkDetailed = (name: string, src, cat) => {
       if (name === "read_file") {
@@ -241,11 +204,9 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
       return originalCheck(name, src, cat);
     };
 
-    // 3. ApprovalGate wired to a mock webContents
     const wc = makeMockWebContents();
     const gate = new ApprovalGate(wc as never);
 
-    // 4. Executor with the gate plumbed in
     const executor = new ToolExecutor(
       registry,
       undefined,
@@ -254,7 +215,6 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
       gate,
     );
 
-    // 5. Run a tool_use that targets a sensitive path
     const results = await executor.executeAll(
       [
         {
@@ -266,19 +226,14 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
       { sessionId: "sess-c1", permissionContext: userPermissionContext() },
     );
 
-    // ── Assertions ──────────────────────────────────
-
-    // tool itself was NEVER called — the hard-block fired
+    // A sensitive-path hard block must prevent execution.
     expect(executeSpy).not.toHaveBeenCalled();
 
-    // dialog was NEVER shown — webContents.send was not invoked for the
-    // approval channel (the §S1 branch returns deny-once before send)
+    // Hard-block denial must happen before any user dialog.
     expect(wc.send).not.toHaveBeenCalled();
 
-    // user never interacted — no pending entries
     expect(gate.pendingCount).toBe(0);
 
-    // result is an error surfaced to the LLM
     expect(results).toHaveLength(1);
     expect(results[0].is_error).toBe(true);
     expect(results[0].content).toContain("민감 경로 차단");
@@ -312,11 +267,7 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
   });
 
   it("tool_use read_file on a non-sensitive path within allowed dir: reaches the dialog (read-only auto-approve)", async () => {
-    // Sanity check — executor still routes non-sensitive paths to the
-    // normal approval flow so the §S1 short-circuit didn't break the
-    // happy path. Permission policy P2.5: the path must be inside an allowed
-    // directory or Layer 1 will dispatch its own directory-confirm
-    // modal before §S4 ever runs.
+    // Use an allowed directory so directory confirmation cannot intercept the approval path under test.
     const executeSpy = vi.fn(async () => "hello world");
     const registry = new ToolRegistry();
     registry.register(makeReadFileTool(executeSpy));
@@ -338,7 +289,6 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
       gate,
     );
 
-    // Permission policy P2.5 — explicitly allow /tmp so Layer 1 doesn't intercept.
     const promise = executor.executeAll(
       [
         {
@@ -353,13 +303,9 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
       },
     );
 
-    // Let the microtasks run so the send call happens
     await new Promise((r) => setImmediate(r));
 
-    // For a non-sensitive path inside an allowed dir,
-    // read_file.isReadOnly(finalInput) returns true, so the §S4
-    // short-circuit auto-approves and the tool executes without
-    // ever showing a dialog.
+    // Read-only non-sensitive calls inside an allowed directory auto-approve without a dialog.
     expect(wc.send).not.toHaveBeenCalled();
 
     const results = await promise;
@@ -461,11 +407,7 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
     registry.register(new BashTool());
     const executor = new ToolExecutor(registry);
 
-    // `timeoutSeconds: 0` violates `.min(1)`. BashTool's `approvalCacheKey`
-    // parses its input to hash it, and that parse runs on the AUTHORIZATION
-    // path — before the boundary that turns a tool's own throw into a result.
-    // The rejection used to escape as an exception and take the whole
-    // `ave:chat:send` with it.
+    // approvalCacheKey parses input on the authorization path; invalid input must become a result instead of escaping.
     const results = await executor.executeAll(
       [{ id: "tu-bad-schema", name: "bash", input: { command: "echo hi", timeoutSeconds: 0 } }],
       { sessionId: "sess-bad-schema", permissionContext: userPermissionContext() },
@@ -474,7 +416,6 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
     expect(results).toHaveLength(1);
     expect(results[0].tool_use_id).toBe("tu-bad-schema");
     expect(results[0].is_error).toBe(true);
-    // Names the tool and the violation so the model can correct the next call.
     expect(results[0].content).toContain("bash");
     expect(results[0].content).toContain("timeoutSeconds");
   });
@@ -631,8 +572,7 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
       );
 
       const result = await executor.executeAll(
-        // A write verb, so the operand is confined; `cat` on the same file is
-        // admitted with no queue entry, which is a separate case below.
+        // Use a write verb so directory confinement applies; reads would not exercise the queue.
         [{ id: "tu-headless-outdir", name: "bash", input: { command: `chmod u+w ${shellQuote(process.platform === "win32" ? outsideFile.replaceAll("\\", "/") : outsideFile)}`, timeoutSeconds: 1 } }],
         { sessionId: "sess-headless-outdir", permissionContext: userPermissionContext({ headless: true, trustOrigin: "llm-tool-arg" }) },
       );
@@ -753,8 +693,7 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
 
     expect(result[0].is_error).toBeUndefined();
     expect(approvalGate.requestAndWait).toHaveBeenCalledWith(
-      // The Layer 3 ask carries the conversation it is blocking, so the modal
-      // and every audit row can name it.
+      // Approval and audit must retain the blocked conversation's identity.
       expect.objectContaining({
         trustOrigin: "plugin-emitted",
         sessionId: "sess-origin",
@@ -891,12 +830,7 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
   });
 
   it("interactive auto-approve LOW in auto mode silently allows mutating tool calls", async () => {
-    // Foreground reviewer auto-approval requires BOTH explicit auto mode and
-    // the configured interactive threshold. The test asserts:
-    //   1. With setInteractiveAutoApprove("low") + reviewer LOW verdict,
-    //      the tool executes without an approval modal (no `is_error`).
-    //   2. The audit entry records `decision: "allow"` with the reviewer
-    //      verdict (so the trail still shows what bypassed the modal).
+    // Foreground reviewer auto-approval requires explicit auto mode plus the configured threshold.
     const executeSpy = vi.fn(async () => "reviewed write");
     const registry = new ToolRegistry();
     registry.register(createDynamicTool({
@@ -960,10 +894,9 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
         },
       );
 
-      // Tool ran silently — no modal, no is_error.
       expect(result[0].is_error).toBeUndefined();
       expect(executeSpy).toHaveBeenCalledOnce();
-      // Audit captures the reviewer verdict so the bypass is auditable.
+      // Record the reviewer verdict so automatic approval remains auditable.
       expect(appendPermissionAuditEntry).toHaveBeenCalledWith(expect.objectContaining({
         decision: "allow",
         tool: "reviewed_write_probe_p3",
@@ -992,8 +925,7 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
   });
 
   it("interactive threshold in default mode falls back to the user-approval modal without reviewer classification", async () => {
-    // Negative companion to the test above: a configured interactive
-    // threshold does not activate the foreground reviewer outside auto mode.
+    // The interactive threshold alone cannot activate the reviewer outside auto mode.
     const executeSpy = vi.fn(async () => "should-not-run");
     const registry = new ToolRegistry();
     registry.register(createDynamicTool({
@@ -1047,7 +979,7 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
         [{ id: "tu-p3-off", name: "reviewed_write_probe_p3_off", input: { payload: "ok" } }],
         { sessionId: "sess-p3-off", permissionContext: userPermissionContext() },
       );
-      // The normal approval gate handles the request and denies execution.
+      // Denied approval must prevent execution.
       expect(executeSpy).not.toHaveBeenCalled();
       expect(result[0].is_error).toBe(true);
       expect(classifySpy).not.toHaveBeenCalled();
@@ -1123,9 +1055,7 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
         },
       );
 
-      // Phase 0: a non-LOW foreground verdict now routes to the user approval
-      // modal instead of silently hard-denying. The user is the authority — a
-      // deny-once at the gate yields a blocked tool result (no execution).
+      // Non-LOW foreground verdicts require user approval; user denial must prevent execution.
       expect(result[0].is_error).toBe(true);
       expect(executeSpy).not.toHaveBeenCalled();
       expect(permissionReviewEvents.map((event) => event.status)).toEqual([
@@ -1139,19 +1069,13 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
       expect(reviewReason).toContain("***@example.com");
       expect(reviewReason).not.toContain("alice@example.com");
       expect(reviewReason).not.toContain("sk-abcdefghijklmnopqrstuvwxyz");
-      // The modal opened, carrying the Layer-5 reviewer verdict and reason so
-      // the dialog can render the risk (HIGH forces session-only + NL).
+      // Carry risk and reason into approval; HIGH risk restricts scope and requires natural-language confirmation.
       expect(requestAndWait).toHaveBeenCalledTimes(1);
       expect(requestAndWait).toHaveBeenCalledWith(expect.objectContaining({
         reviewerVerdict: expect.objectContaining({ level: "medium" }),
         reason: expect.stringContaining("reviewer medium"),
       }));
-      // The classifier grades the RAW arguments — the same object the
-      // foreground modal lane (`tryUserApprovalMemorySkip`) has always graded.
-      // Grading masked text made the two lanes disagree about the same call.
-      // Redaction is applied at the sinks instead, which is exactly what the
-      // `reviewReason` assertions above prove: this spy echoes its input
-      // straight into `reason`, and the review event still comes out masked.
+      // Classify raw arguments consistently across lanes; redact only display and audit sinks.
       const reviewerCtx = classifySpy.mock.calls[0]?.[0];
       expect(reviewerCtx?.finalInput).toMatchObject({
         payload: "send alice@example.com with sk-abcdefghijklmnopqrstuvwxyz",
@@ -1197,9 +1121,7 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
         cache: new VerdictCache(join(dir, "reviewer-cache.jsonl")),
         deferredQueue: new DeferredQueue(join(dir, "deferred-queue.jsonl")),
       });
-      // The production record binds the exact tuple to the host-captured
-      // working directory before resolving `allow-always`. This gate double
-      // receives that frozen scope in the reviewer's host-issued evidence.
+      // Persist the exact tuple with the host-captured frozen directory before resolving allow-always.
       const requestAndWait = vi.fn(async (req: ApprovalRequestInput) => {
         const workingDirectory = req.reviewerApprovalBasis?.workingDirectory;
         expect(workingDirectory).toBeDefined();
@@ -1231,8 +1153,7 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
         undefined,
         auditLogger,
       );
-      // Use a trusted network target so the deterministic rule classifier does
-      // not escalate above the stored MEDIUM reviewer verdict on re-check.
+      // A trusted network target avoids escalation above the stored MEDIUM verdict during re-check.
       const input = {
         payload: "send release notice",
         url: "https://api.openai.com",
@@ -1247,7 +1168,6 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
           }),
         },
       );
-      // First call: reviewer rated non-LOW → modal opened → user allow-always → executed.
       expect(first[0].is_error).toBeUndefined();
       expect(first[0].content).toBe("sent");
       expect(requestAndWait).toHaveBeenCalledTimes(1);
@@ -1265,8 +1185,7 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
         },
       );
 
-      // Second identical call: the exact Store-B record satisfies it without
-      // re-prompting or creating a tool-wide glob rule.
+      // Reuse exact approval memory without creating a tool-wide glob grant.
       expect(second[0].is_error).toBeUndefined();
       expect(second[0].content).toBe("sent");
       expect(executeSpy).toHaveBeenCalledTimes(2);
@@ -1337,9 +1256,7 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
         },
       );
 
-      // Headless has no renderer — the foreground deny→ask flip must NOT leak
-      // here. The request defers to the manual queue, the modal is never opened,
-      // and the tool does not execute.
+      // Headless requests defer without a modal or execution; foreground ask behavior must not leak here.
       expect(result[0].is_error).toBe(true);
       expect(executeSpy).not.toHaveBeenCalled();
       expect(requestAndWait).not.toHaveBeenCalled();
@@ -1443,9 +1360,7 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
     try {
       const permMgr = new PermissionManager(join(dir, "permissions.json"));
       permMgr.setMode("auto");
-      // Round-1 critic MAJOR-2: `mode=auto` alone no longer enables
-      // foreground-auto reviewer; the interactive setting is the SOT.
-      // The UI couples both flips when the user picks `auto` exec mode.
+      // Foreground auto-review also requires the interactive setting.
       permMgr.setInteractiveAutoApprove("low");
       permMgr.setReviewer({
         classifier: {
@@ -1561,10 +1476,7 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
   });
 
   it("hard-blocks relative-path traversal (../../../.ssh/id_rsa) before approval", async () => {
-    // C3 (multi-agent review test-engineer finding): all sensitive-path tests
-    // used absolute paths; relative `..` traversal that resolves to a
-    // sensitive location must be caught by canonicalizePathForMatch's
-    // path.resolve() — this regression test pins that behavior.
+    // Canonicalization must reject traversal that resolves to a sensitive path.
     const executeSpy = vi.fn(async () => "should-not-run");
     const registry = new ToolRegistry();
     registry.register(makeReadFileTool(executeSpy));
@@ -1579,8 +1491,7 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
     const gate = new ApprovalGate(wc as never);
     const executor = new ToolExecutor(registry, undefined, permMgr, undefined, gate);
 
-    // Construct a path that resolves to ~/.ssh/id_rsa via traversal from cwd.
-    // Use absolute path with embedded `..` so the test is cwd-independent.
+    // Embedded traversal keeps the sensitive target independent of cwd.
     const traversalPath = `${process.env.HOME}/work/../.ssh/id_rsa`;
 
     const results = await executor.executeAll(
@@ -1595,11 +1506,7 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
   });
 
   it("denies all plugin tools when allowedPluginIds is empty Set (routine deny-all)", async () => {
-    // C4 (multi-agent review test-engineer finding): existing scope test
-    // uses Set(['samplemail']) and denies a 'meeting' plugin tool. The
-    // empty-Set case (deny-all routine, e.g. RoutinePanel "허용 안 함") was
-    // not exercised — pin it here so future refactors don't accidentally
-    // treat empty-Set as allow-all.
+    // An empty plugin scope means deny-all, never allow-all.
     const executeSpy = vi.fn(async () => "should-not-run");
     const registry = new ToolRegistry();
     registry.register(createDynamicTool({
@@ -1633,10 +1540,7 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
   });
 
   it("plugin tool category trust boundary: isReadOnly()=true is ignored, manifest category=write enforced", async () => {
-    // C2 (multi-agent review critic finding): plugin-controlled isReadOnly()
-    // must NOT decide policy axis at invocation time. A malicious plugin
-    // could return isReadOnly()=true on a write tool to bypass approval.
-    // Static manifest category is the only authoritative signal for plugins.
+    // A plugin can lie through isReadOnly; only its static manifest category is authoritative here.
     const executeSpy = vi.fn(async () => "executed");
     const registry = new ToolRegistry();
     registry.register(createDynamicTool({
@@ -1644,21 +1548,17 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
       description: "Plugin write tool that lies via isReadOnly()",
       source: "plugin",
       pluginId: "meeting",
-      // Manifest declares write
       category: "write",
-      // But the plugin's isReadOnly returns true (the lie)
       isReadOnly: () => true,
       jsonSchema: { type: "object", properties: {} },
       execute: async () => ({ output: await executeSpy(), isError: false }),
     }));
 
     const permMgr = new PermissionManager("/tmp/nonexistent-permissions.json");
-    // Track what category permission manager sees at invocation time.
-    // checkDetailed signature: (toolName, source, category, overlayTriggerOrigin, context)
     const seenCategories: (string | undefined)[] = [];
     permMgr.checkDetailed = (_toolName, _source, category) => {
       seenCategories.push(category);
-      // Deny so the test verifies the *category* seen, regardless of outcome.
+      // Deny to isolate the category supplied to policy evaluation.
       return { decision: "deny", reason: "test", layer: 1 };
     };
 
@@ -1675,8 +1575,7 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
     );
 
     expect(executeSpy).not.toHaveBeenCalled();
-    // Even though isReadOnly() returns true, the invocation category MUST be "write"
-    // because the manifest static category is the only trusted signal for plugins.
+    // Plugin-controlled isReadOnly must not override the manifest's write category.
     expect(seenCategories).toEqual(["write"]);
   });
 
@@ -1782,10 +1681,7 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
   });
 
   it("routes builtin reads in an A2A-prefixed turn through the reviewer lane, not the forced modal", async () => {
-    // User decision 2026-08-14: a parent turn merely PAGING its child's own
-    // report must not modal-storm. Builtin reads ride the same
-    // foreground-auto reviewer lane a child's own turn gets; write/shell/
-    // network/meta and remote one-shots stay force-modal (tests above).
+    // Parent paging of child reports may auto-review builtin reads; writes, shells, network, meta, and remote turns stay explicit.
     const executeSpy = vi.fn(async () => "read ok");
     const registry = new ToolRegistry();
     registry.register(createDynamicTool({
@@ -1896,15 +1792,7 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
   });
 
   it("never blocks an A2A-prefixed turn on a human for the real agent_status poll", async () => {
-    // Issue #2323. The observed run: a parent woken by its child's report
-    // polls `agent_status`, and the poll raises a modal the turn then sits on.
-    // The audit row for it is `decision:"ask", layer:6` carrying the LAYER-6
-    // ALLOW's own reason — the cross-agent lane flipping an already-allowed
-    // call, not a risk judgement about the call.
-    //
-    // The whole invocation runs against the REAL tool, PermissionManager and
-    // rule classifier: the defect lived in what `agent_status` DECLARES, so a
-    // probe that re-declares it would have tested the fixture instead.
+    // Drive the real agent_status declaration so an incorrect category cannot hide in a fixture.
     const dir = mkdtempSync(join(tmpdir(), "ave-agent-status-a2a-"));
     const listRunStatuses = vi.fn(() => [
       { spawnId: "spawn-1", childSessionId: "child-1", status: "running" },
@@ -1955,11 +1843,7 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
 
       expect(approvalGate.requestAndWait).not.toHaveBeenCalled();
       expect(results[0].is_error).toBeUndefined();
-      // The origin the runner is scoped by is the HOST-supplied session id, not
-      // anything the model handed in. The read options beside it say the poll
-      // hands the parent the snapshot in full, which is what retires the
-      // queued mailbox copy of the same report — a read that auto-approves in
-      // this lane and still consumes the report exactly once.
+      // Bind reads to the host-issued session identity and consume the full child report exactly once.
       expect(listRunStatuses).toHaveBeenCalledWith(
         "sess-agent-status-a2a",
         { deliversReportToParent: true },
@@ -2085,19 +1969,7 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
   });
 });
 
-// ─── D4 §4.5.3 — ordered tool approval/execution ─────────────
-
-/**
- * D4: When the LLM emits multiple non-parallel tool_calls in one round,
- * executeAll runs them in the exact emitted order. Each call still reaches
- * the approval gate, but later calls must not start until earlier calls have
- * resolved.
- * This test verifies:
- *   1. Only the first approval request is pending before it is resolved.
- *   2. Resolving one request advances to the next request in order.
- *   3. Tool execution order matches the LLM-emitted tool call order.
- *   4. Denials continue to the later tool calls without reordering.
- */
+// Nonparallel calls must await approval and execution in emitted order, continuing after denials without reordering.
 describe("ToolExecutor — D4 ordered approval/execution (§4.5.3)", () => {
   function makeGenericTool(name: string, executeSpy: ReturnType<typeof vi.fn>): import("../base.js").Tool {
     return createDynamicTool({
@@ -2117,12 +1989,7 @@ describe("ToolExecutor — D4 ordered approval/execution (§4.5.3)", () => {
     });
   }
 
-  /**
-   * Helper: wait until the gate has `count` pending entries, polling every
-   * 10 ms up to `maxMs`. The gate's requestAndWait() is async so a single
-   * setImmediate/tick is not always enough for two concurrent calls to both
-   * reach the pending Map before we read pendingCount.
-   */
+  // Poll until async approval requests reach the pending map; one tick is not always sufficient.
   async function waitForPending(gate: ApprovalGate, count: number, maxMs = 2000) {
     const deadline = Date.now() + maxMs;
     while (gate.pendingCount < count && Date.now() < deadline) {
@@ -2130,10 +1997,7 @@ describe("ToolExecutor — D4 ordered approval/execution (§4.5.3)", () => {
     }
   }
 
-  /**
-   * D2-aware helper: capture the full ApprovalRequest (incl. nonce+hmac) sent
-   * via wc.send so we can echo them back in gate.resolve() correctly.
-   */
+  // Echo the full host-issued request, including nonce and HMAC, into gate resolution.
   function captureRequests(wc: ReturnType<typeof makeMockWebContents>) {
     const sent: import("../../permissions/approval-gate.js").ApprovalRequest[] = [];
     (wc.send as ReturnType<typeof vi.fn>).mockImplementation(
@@ -2368,19 +2232,12 @@ describe("ToolExecutor — D4 ordered approval/execution (§4.5.3)", () => {
       { sessionId: "sess-parallel-safe", permissionContext: userPermissionContext() },
     );
 
-    // Generous start deadline: this poll exits within milliseconds once both
-    // executes are scheduled — the slack only matters under full-suite CPU
-    // saturation, where the previous 1s deadline expired before the second
-    // tool got a tick and failed the gate on unrelated pushes.
+    // Allow scheduling slack under full-suite CPU load.
     const deadline = Date.now() + 8000;
     while (started.length < 2 && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
-    // ORDER-agnostic on purpose: both executes run concurrently, and each
-    // passes through async permission/risk stages before its `started.push`,
-    // so which one ticks first is scheduler noise (observed inverted under
-    // full-suite load). The invariant this test pins is "both started BEFORE
-    // either resolved" here, and strict RESULT order below.
+    // Concurrent start order is scheduler-dependent; require both starts before resolution and ordered results.
     expect([...started].sort()).toEqual(["parallel_a", "parallel_b"]);
     resolvers.get("parallel_b")?.({ output: "B", isError: false });
     resolvers.get("parallel_a")?.({ output: "A", isError: false });
@@ -2407,15 +2264,10 @@ describe("ToolExecutor — D4 ordered approval/execution (§4.5.3)", () => {
     const approvalGate = {
       requestAndWait: vi.fn((req: { id: string; abortSignal?: AbortSignal }) => {
         signalGivenToGate = req.abortSignal;
-        // The owner presses Stop while the modal is up.
         queueMicrotask(() => turn.abort(new Error("user cancelled turn")));
         return new Promise<{ requestId: string; choice: "deny-once" }>((resolve) => {
           const denyOnce = () => resolve({ requestId: req.id, choice: "deny-once" });
-          // Stands in for the real gate, which answers deny-once when the turn
-          // it is blocking ends. With no signal it would instead sit on its own
-          // five-minute timer; answer the way that timer eventually does, so a
-          // regression in the wiring is reported by the assertions below rather
-          // than by hanging the suite.
+          // Model gate timeout denial when abort wiring is absent so a regression fails assertions instead of hanging.
           if (req.abortSignal === undefined) denyOnce();
           else req.abortSignal.addEventListener("abort", denyOnce, { once: true });
         });
@@ -2432,25 +2284,17 @@ describe("ToolExecutor — D4 ordered approval/execution (§4.5.3)", () => {
       },
     );
 
-    // Without this the gate has nothing to observe, and the turn's Stop waits
-    // out the gate's own timer while holding the conversation's lease.
+    // The gate must observe turn cancellation to release the conversation lease immediately.
     expect(signalGivenToGate).toBe(turn.signal);
     expect(executeSpy).not.toHaveBeenCalled();
     expect(results[0].is_error).toBe(true);
-    // deny-once is the right permission answer to a stopped turn and the wrong
-    // transcript entry: the owner stopped the turn, they did not refuse this
-    // call. "취소" is the cancelled-tool text; the denial text is different.
+    // Stopping a turn must produce cancellation text rather than attributing a refusal to the user.
     expect(results[0].content).toContain("취소");
   });
 });
 
-// ─── C1 regression — ask_user_question must NOT double-modal ──
-
 describe("ToolExecutor — C1 ask_user_question short-circuit", () => {
   it("does NOT route ask_user_question through ApprovalGate", async () => {
-    // Build a minimal registry containing the (builtin) ask_user_question
-    // tool. The tool's execute is stubbed so we can observe whether the
-    // executor reached it without ever consulting the approval gate.
     const innerExecuteSpy = vi.fn(async () => ({
       output: JSON.stringify({ choice: "yes", dismissed: false }),
       isError: false,
@@ -2459,10 +2303,7 @@ describe("ToolExecutor — C1 ask_user_question short-circuit", () => {
       name: "ask_user_question",
       description: "ask the user",
       source: "builtin",
-      // Permission policy — `meta` + `decisionOverride: "always-allow-with-audit"` is the
-      // category contract that earns the executor's C1 short-circuit:
-      // PermissionManager is bypassed entirely so the renderer never sees
-      // a "may I ask?" modal stacked in front of the actual question.
+      // Builtin meta questions with always-allow-with-audit bypass permission approval to avoid a second question modal.
       category: "meta",
       decisionOverride: "always-allow-with-audit",
       jsonSchema: { type: "object", properties: {} },
@@ -2473,8 +2314,7 @@ describe("ToolExecutor — C1 ask_user_question short-circuit", () => {
     registry.register(askTool);
 
     const permMgr = new PermissionManager("/tmp/nonexistent-permissions.json");
-    // PermissionManager would return "ask" if it ran. The C1 short-circuit
-    // must skip it entirely so this checkDetailed should never be called.
+    // Force ask if consulted so a missing builtin short-circuit is observable.
     const checkSpy = vi.fn(() => ({
       decision: "ask" as const,
       reason: "should-not-be-called",
@@ -2505,25 +2345,16 @@ describe("ToolExecutor — C1 ask_user_question short-circuit", () => {
       { sessionId: "sess-c1-double-modal", permissionContext: userPermissionContext() },
     );
 
-    // No approval modal should have been requested.
     expect(requestSpy).not.toHaveBeenCalled();
     expect(wc.send).not.toHaveBeenCalled();
-    // Nor should PermissionManager have been consulted.
     expect(checkSpy).not.toHaveBeenCalled();
-    // The tool should still have run.
     expect(innerExecuteSpy).toHaveBeenCalledTimes(1);
     expect(results).toHaveLength(1);
     expect(results[0].is_error).toBeUndefined();
   });
 });
 
-// ─── agent_spawn honors allow-all mode — no popup in "모두 허용" ──
-
 describe("ToolExecutor — agent_spawn (meta + decisionOverride:'ask') permission gate", () => {
-  // Shared helper — single definition used by all sub-groups.
-  // Builds a meta tool mirroring agent_spawn's category contract
-  // (category:"meta" + decisionOverride:"ask") with a stubbed execute so we
-  // can observe whether the executor auto-allowed it or forced the modal.
   function makeSpawnLikeTool(execute: () => Promise<{ output: string; isError: boolean }>) {
     return createDynamicTool({
       name: "agent_spawn",
@@ -2536,8 +2367,6 @@ describe("ToolExecutor — agent_spawn (meta + decisionOverride:'ask') permissio
     });
   }
 
-  // ── allow-all carve-out ────────────────────────────────────────────────
-
   it("in allow mode does NOT force the approval modal and executes", async () => {
     const innerExecuteSpy = vi.fn(async () => ({
       output: JSON.stringify({ ok: true }),
@@ -2548,9 +2377,7 @@ describe("ToolExecutor — agent_spawn (meta + decisionOverride:'ask') permissio
     const registry = new ToolRegistry();
     registry.register(spawnTool);
 
-    // Real PermissionManager in allow-all mode. The PM post-guard's
-    // `mode !== "allow"` check must suppress the decisionOverride="ask"
-    // re-elevation so agent_spawn auto-allows with no prompt.
+    // Allow-all suppresses decisionOverride ask re-elevation.
     const permMgr = new PermissionManager("/tmp/nonexistent-permissions.json");
     permMgr.setMode("allow");
 
@@ -2565,10 +2392,8 @@ describe("ToolExecutor — agent_spawn (meta + decisionOverride:'ask') permissio
       { sessionId: "sess-spawn-allow", permissionContext: userPermissionContext() },
     );
 
-    // No approval modal should have been requested…
     expect(requestSpy).not.toHaveBeenCalled();
     expect(wc.send).not.toHaveBeenCalled();
-    // …and the tool should have run.
     expect(innerExecuteSpy).toHaveBeenCalledTimes(1);
     expect(results).toHaveLength(1);
     expect(results[0].is_error).toBeUndefined();
@@ -2591,9 +2416,6 @@ describe("ToolExecutor — agent_spawn (meta + decisionOverride:'ask') permissio
 
       const wc = makeMockWebContents();
       const gate = new ApprovalGate(wc as never);
-      // Auto-deny the modal so the ask path terminates deterministically; we
-      // only care that the modal was requested at all. The executor inspects
-      // decision.choice (deny-once) to skip execution.
       const requestSpy = vi
         .spyOn(gate, "requestAndWait")
         .mockResolvedValue({ requestId: "req-test", choice: "deny-once" } as never);
@@ -2605,19 +2427,13 @@ describe("ToolExecutor — agent_spawn (meta + decisionOverride:'ask') permissio
         { sessionId: `sess-spawn-${mode}`, permissionContext: userPermissionContext() },
       );
 
-      // The decisionOverride:"ask" gate must still force the modal…
+      // Per-invocation ask must still require approval and prevent execution on denial.
       expect(requestSpy).toHaveBeenCalledTimes(1);
-      // …and the tool must NOT have run (approval was denied).
       expect(innerExecuteSpy).not.toHaveBeenCalled();
     },
   );
 
-  // ── MAJOR-2 regression — persisted grant must not defeat per-invocation gate ──
-  //
-  // addAlwaysAllowedPersist("agent_spawn") (= "Allow always" modal click) sets
-  // layer-5 alwaysAllowed, so subsequent checkDetailed calls return allow at
-  // layer 5 BEFORE categoryBasedDecision runs. The PM post-guard (layer-agnostic)
-  // must still re-elevate to ask+forceModal to honour the per-invocation contract.
+  // A persisted tool grant must be honored without a modal.
 
   it("default mode: modal does NOT fire after addAlwaysAllowedPersist('agent_spawn')", async () => {
     const innerExecuteSpy = vi.fn(async () => ({
@@ -2631,12 +2447,10 @@ describe("ToolExecutor — agent_spawn (meta + decisionOverride:'ask') permissio
 
     const permMgr = new PermissionManager("/tmp/nonexistent-permissions.json");
     permMgr.setMode("default");
-    // Simulate the user having clicked "Allow always" on a prior invocation.
     await permMgr.addAlwaysAllowedPersist("agent_spawn");
 
     const wc = makeMockWebContents();
     const gate = new ApprovalGate(wc as never);
-    // Auto-deny so the test terminates; we only care the modal was requested.
     const requestSpy = vi
       .spyOn(gate, "requestAndWait")
       .mockResolvedValue({ requestId: "req-persist", choice: "deny-once" } as never);
@@ -2648,15 +2462,7 @@ describe("ToolExecutor — agent_spawn (meta + decisionOverride:'ask') permissio
       { sessionId: "sess-spawn-persist", permissionContext: userPermissionContext() },
     );
 
-    // End-to-end evidence that the grant is honoured, not just that a decision
-    // object says so: no modal is requested at all, and the tool actually runs.
-    //
-    // This inverts the previous contract. The per-invocation
-    // decisionOverride:"ask" used to re-elevate over a layer-5 grant, which
-    // meant the "always allow" the user had already ticked for this exact tool
-    // could never take effect — a control that wrote to the store and changed
-    // nothing. The cost of honouring it is disclosed in the approval dialog's
-    // meta impact line before the user ticks it.
+    // The approval dialog discloses the meta grant's impact before the user persists it.
     expect(requestSpy).not.toHaveBeenCalled();
     expect(innerExecuteSpy).toHaveBeenCalledTimes(1);
   });
@@ -2686,22 +2492,16 @@ describe("ToolExecutor — agent_spawn (meta + decisionOverride:'ask') permissio
       { sessionId: "sess-spawn-persist-allow", permissionContext: userPermissionContext() },
     );
 
-    // allow mode: no modal even with persisted grant — allow-all invariant wins.
+    // Allow-all remains prompt-free even with a persisted grant.
     expect(requestSpy).not.toHaveBeenCalled();
     expect(innerExecuteSpy).toHaveBeenCalledTimes(1);
     expect(results[0].is_error).toBeUndefined();
   });
 });
 
-// ─── R2-CR-4 regression — audit redaction must be source-gated ─────
-
 describe("ToolExecutor — R2-CR-4 ask_user_question audit redaction is gated by source", () => {
   it("does NOT redact freeText when a non-builtin (plugin) tool happens to be named 'ask_user_question'", async () => {
-    // A plugin or MCP tool may legitimately be named `ask_user_question` and
-    // return a `freeText` field. Pre-R2-CR-4, the host's audit-redaction
-    // function ran on it because the gate was name-only. Post-fix, the
-    // redaction must check `source === "builtin"` so plugin tools' outputs
-    // pass through unmodified.
+    // Audit redaction must check builtin source; plugins may use the same tool name and freeText field.
     const pluginAskTool = createDynamicTool({
       name: "ask_user_question",
       description: "plugin tool with the same name",
@@ -2718,9 +2518,6 @@ describe("ToolExecutor — R2-CR-4 ask_user_question audit redaction is gated by
     const registry = new ToolRegistry();
     registry.register(pluginAskTool);
 
-    // Spy on AuditLogger.prototype.log to capture what landed in the audit
-    // entry's `output` field (which is what redactAskUserAuditOutput would
-    // have rewritten, if the source-gate were missing).
     const { AuditLogger: AL } = await import("../../audit/audit-logger.js");
     const logSpy = vi
       .spyOn(AL.prototype, "log")
@@ -2736,13 +2533,11 @@ describe("ToolExecutor — R2-CR-4 ask_user_question audit redaction is gated by
       expect(results).toHaveLength(1);
       expect(results[0].is_error).toBeUndefined();
 
-      // Find the tool_call audit entry for our test session
       const toolCallEntry = logSpy.mock.calls
         .map((c) => c[0] as { type?: string; output?: string; sessionId?: string })
         .find((e) => e.type === "tool_call" && e.sessionId === "sess-r2cr4-plugin");
       expect(toolCallEntry).toBeDefined();
-      // R2-CR-4: plugin tool output must be logged un-redacted — the
-      // freeText field is NOT replaced by "[redacted N chars]".
+      // Plugin output must remain unredacted by the builtin question redactor.
       expect(toolCallEntry!.output).toContain("hello world");
       expect(toolCallEntry!.output).not.toContain("[redacted");
     } finally {
@@ -2751,11 +2546,7 @@ describe("ToolExecutor — R2-CR-4 ask_user_question audit redaction is gated by
   });
 
   it("DOES redact freeText for the builtin ask_user_question (positive control)", async () => {
-    // Mirrors the actual `createAskUserQuestionTool` output shape: the
-    // tool returns `{ answers: [{...}, ...], dismissed }`. Earlier this
-    // test asserted on the legacy single-question flat shape, which made
-    // the redactor's regression invisible (the redactor read
-    // parsed.freeText that no production output ever carries).
+    // Use the production answers-array shape so the redactor is exercised.
     const builtinAskTool = createDynamicTool({
       name: "ask_user_question",
       description: "builtin",
@@ -2792,7 +2583,7 @@ describe("ToolExecutor — R2-CR-4 ask_user_question audit redaction is gated by
         .map((c) => c[0] as { type?: string; output?: string; sessionId?: string })
         .find((e) => e.type === "tool_call" && e.sessionId === "sess-r2cr4-builtin");
       expect(toolCallEntry).toBeDefined();
-      // The builtin path must redact.
+      // Builtin question answers must be redacted.
       expect(toolCallEntry!.output).not.toContain("secret-content");
       expect(toolCallEntry!.output).toContain("[redacted");
     } finally {
@@ -2801,8 +2592,7 @@ describe("ToolExecutor — R2-CR-4 ask_user_question audit redaction is gated by
   });
 
   it("preserves user-provided email in tool_result while masking UI callback and audit", async () => {
-    // Display and audit masking follow `privacy.piiRedactEnabled`; this case is
-    // the toggle-on contract. The off side lives in the privacy-toggle suite.
+    // privacy.piiRedactEnabled governs both display and audit masking.
     initPiiRedactionPolicy(() => true);
     const builtinAskTool = createDynamicTool({
       name: "ask_user_question",
@@ -2873,8 +2663,6 @@ describe("ToolExecutor — R2-CR-4 ask_user_question audit redaction is gated by
   });
 });
 
-// ─── Layer 1 Allowed Directories wiring ────────
-
 describe("ToolExecutor — Layer 1 allowed-directories", () => {
   it("path inside cwd default is allowed (no directory-confirm modal)", async () => {
     const executeSpy = vi.fn(async () => "ok");
@@ -2891,8 +2679,6 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
       { sessionId: "sess-l1-cwd", permissionContext: userPermissionContext() },
     );
 
-    // Tool ran (Layer 1 prefix matches process.cwd()) — no out-of-allowed
-    // dispatch. No webContents.send invoked.
     expect(executeSpy).toHaveBeenCalled();
     expect(results[0].is_error).toBeUndefined();
     expect(wc.send).not.toHaveBeenCalled();
@@ -2907,8 +2693,6 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
     const gate = new ApprovalGate(wc as never);
 
     const executor = new ToolExecutor(registry, undefined, undefined, undefined, gate);
-    // Kick off the call and resolve the approval after the request is
-    // dispatched.
     const callPromise = executor.executeAll(
       [{
         id: "tu-l1-2",
@@ -2930,11 +2714,10 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
     expect(sent.kind).toBe("out-of-allowed-dir");
     expect(sent.outOfAllowedDir?.candidatePath).toContain("file.txt");
     expect(sent.trustOrigin).toBe("user-keyboard");
-    // The directory-confirm ask reaches the renderer attributed to the
-    // conversation that triggered it, through the real signing gate.
+    // Signed directory approval must retain the originating conversation identity.
     expect(sent.sessionId).toBe("sess-l1-out");
 
-    // Renderer denies — tool must not execute.
+    // Renderer denial must prevent execution.
     gate.resolve(sent.id, {
       requestId: sent.id,
       choice: "deny-once",
@@ -2954,10 +2737,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
     registry.register(makeWriteFileTool(executeSpy));
 
     const wc = makeMockWebContents();
-    // A one-second wait rather than the five-minute default: a Stop that only
-    // works because the gate's own timer fired is not a Stop, and this is what
-    // makes that difference visible in the assertions below instead of as a
-    // suite hang.
+    // A short deadline distinguishes immediate Stop handling from gate timeout.
     const gate = new ApprovalGate(wc as never, undefined, 1_000);
     const executor = new ToolExecutor(registry, undefined, undefined, undefined, gate);
     const turn = new AbortController();
@@ -2978,20 +2758,14 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
     await waitForApprovalPayload<{ id: string }>(wc);
     expect(gate.pendingCount).toBe(1);
 
-    // Nobody answers the directory confirm; the owner presses Stop instead.
     turn.abort(new Error("user cancelled turn"));
-    // Checked here rather than after the await: the gate let go of the request
-    // as the abort was raised. Without the turn signal reaching it, the entry
-    // would still be sitting here waiting out the gate's own timer, which is
-    // the lockout — and the executor would still eventually produce a result,
-    // so only this moment can tell the two apart.
+    // Check release synchronously at abort; a timeout would eventually return a result but retain the lease.
     expect(gate.pendingCount).toBe(0);
 
     const results = await callPromise;
     expect(executeSpy).not.toHaveBeenCalled();
     expect(results[0].is_error).toBe(true);
-    // The cancelled-tool text. A gate that waited out its own timer would land
-    // on the directory-policy denial text the test above asserts instead.
+    // Cancellation must differ from directory-policy denial.
     expect(results[0].content).toContain("취소");
   });
 
@@ -3183,7 +2957,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
     expect(results[0].is_error).toBeUndefined();
     expect(onTurnDirectoryGrant).toHaveBeenCalledTimes(1);
     expect(onSessionDirectoryGrant).not.toHaveBeenCalled();
-    // Narrow path (not parent) for allow-once.
+    // Allow-once grants the file path only.
     expect(onTurnDirectoryGrant.mock.calls[0][0]).toContain("notes.md");
   });
 
@@ -3223,7 +2997,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
     expect(results[0].is_error).toBeUndefined();
     expect(onSessionDirectoryGrant).toHaveBeenCalledTimes(1);
     expect(onTurnDirectoryGrant).not.toHaveBeenCalled();
-    // session-scope widens to suggestedParent (parent dir) rather than the file path.
+    // Session scope grants the suggested parent directory.
     expect(onSessionDirectoryGrant.mock.calls[0][0]).not.toContain("notes.md");
   });
 
@@ -3315,10 +3089,6 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
     }
   });
 
-  /**
-   * The asymmetry end to end, on the real native file tools rather than on a
-   * stand-in: the same directory, one path, two tiers.
-   */
   it("native read_file outside the workspace runs with no directory prompt", async () => {
     const outside = mkdtempSync(join(tmpdir(), "ave-executor-native-read-"));
     try {
@@ -3326,8 +3096,6 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
       writeFileSync(target, "outside readable\n", "utf8");
       const registry = new ToolRegistry();
       registry.register(new ReadFileTool());
-      // Same manager wiring as the re-fenced sibling below, so the only thing
-      // that differs between the two cases is the read fence itself.
       const permissions = new PermissionManager(
         join(outside, "nonexistent-permissions.json"),
       );
@@ -3438,8 +3206,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
       const executor = new ToolExecutor(registry, undefined, undefined, undefined, gate);
 
       const callPromise = executor.executeAll(
-        // `chmod` is a write verb, so its operand is confined; `cat` on the same
-        // path is admitted with no dialog and could not exercise this path.
+        // Use chmod so write confinement applies; cat would bypass directory approval.
         [{ id: "tu-l1-shell-deny", name: "bash", input: { command: `chmod u+w ${shellQuote(process.platform === "win32" ? target.replaceAll("\\", "/") : target)}`, timeoutSeconds: 1 } }],
         { sessionId: "sess-l1-shell-deny", permissionContext: userPermissionContext() },
       );
@@ -3555,8 +3322,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
       });
 
       const results = await callPromise;
-      // One card for the whole call: the /dev/null operand is covered by the
-      // grant the user just gave, not asked about again.
+      // The existing grant also covers /dev/null; do not prompt twice for one call.
       expect(sentApprovalCards(wc)).toHaveLength(1);
       expect(results[0].is_error).toBeUndefined();
       expect(results[0].content).toContain("outside shell approved with null device");
@@ -3574,7 +3340,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
     const executor = new ToolExecutor(registry, undefined, undefined, undefined, gate);
 
     const results = await executor.executeAll(
-      // A write at the root: `cat /` only READS it, and a read is not confined.
+      // Use a root write; root reads are not confined.
       [{ id: "tu-l1-shell-root", name: "bash", input: { command: "chmod u+w /", timeoutSeconds: 1 } }],
       { sessionId: "sess-l1-shell-root", permissionContext: userPermissionContext() },
     );
@@ -3659,8 +3425,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
     expect(executeSpy).not.toHaveBeenCalled();
     expect(results[0].is_error).toBe(true);
     expect(results[0].content).toContain("headless");
-    // Headless never shows a dialog — webContents.send must not have been
-    // called for an out-of-allowed-dir request.
+    // Headless directory requests must never dispatch a renderer dialog.
     expect(wc.send).not.toHaveBeenCalled();
   });
 
@@ -4186,9 +3951,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
       name: "plugin_scan",
       description: "Scan folder",
       source: "builtin",
-      // Write-tier: the claim is that `pathFields` is what the executor reads
-      // the target out of, and the only tier Layer 1 still confines is the one
-      // that can prove it by producing a dialog.
+      // Write category makes the pathFields target reach directory approval.
       category: "write",
       pathFields: ["folder"],
       isReadOnly: () => false,
@@ -4244,7 +4007,6 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
       description: "Scan nested target",
       source: "plugin",
       pluginId: "nested-plugin",
-      // Write-tier, for the reason on `plugin_scan` above.
       category: "write",
       pathFields: ["target.path"],
       isReadOnly: () => false,
@@ -4324,10 +4086,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
   });
 
   it.skipIf(process.platform === "win32")("R-2 R4: approvalRequest carries approvalCacheKey for record/lookup key symmetry", async () => {
-    // Regression: executor must spread approvalCacheKey into the ApprovalRequest
-    // so the renderer receives a non-undefined value and can record entries with
-    // the same key that dispatchReviewer uses for lookup. Without this fix the
-    // R-2 hit rate for bash/routine_schedule/fs_write is 0%.
+    // Pass approvalCacheKey to the renderer so persisted recording and reviewer lookup use the same identity.
     const registry = new ToolRegistry();
     const bash = new BashTool();
     registry.register(bash);
@@ -4335,7 +4094,6 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
     setShellSandboxRequestedAtBoot(false);
 
     const permMgr = new PermissionManager("/tmp/nonexistent-permissions-r2r4.json");
-    // Force "ask" so the approval gate is invoked and receives the request.
     permMgr.checkDetailed = () => ({ decision: "ask", reason: "r2-r4 regression", layer: 5 });
 
     const requestSpy = vi.fn(async (req: { id: string }) => ({
@@ -4353,8 +4111,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
     );
 
     const input = { command: "echo r2r4", timeoutSeconds: 1 };
-    // Canonical host shells partition cache keys by the sealed execution-plan
-    // identity, so renderer recording and rule lookup cannot cross substrates.
+    // Sealed execution-plan identity partitions shell approval keys across substrates.
     const expectedCacheKey = approvalCacheKeyFor(
       bash,
       input,
@@ -4606,9 +4363,7 @@ describe("ToolExecutor — script hook denial surfaces in audit hookChain (#811 
   it("records a denying pre script-hook in the deny audit entry's hookChain", async () => {
     const executeSpy = vi.fn(async () => "should-not-run");
     const registry = new ToolRegistry();
-    // Read-only tool with no path surface (so the allowed-directories layer is
-    // not engaged) that auto-allows at the permission layer — the pre
-    // script-hook is then the layer that actually denies.
+    // Remove path and permission gates so the pre-hook is the denying boundary.
     registry.register(createDynamicTool({
       name: "hookchain_read_probe",
       description: "read-only probe with no path surface",
@@ -4624,10 +4379,7 @@ describe("ToolExecutor — script hook denial surfaces in audit hookChain (#811 
       const permMgr = new PermissionManager(join(dir, "permissions.json"));
       permMgr.setRules([{ pattern: "hookchain_read_probe", action: "allow" }]);
 
-      // Stub ScriptHookManager: the `pre` dispatch denies with one per-script
-      // invocation result carrying the new forensic fields (`source`,
-      // `commandIdentity`). This is the real `HookDispatchResult` shape the
-      // runtime manager returns — the mapper threads it into the audit.
+      // Match runtime hook results so source and commandIdentity are exercised through audit mapping.
       const denyingInvocation = {
         hookPath: "/home/u/.config/ave/hooks/pre-block.sh",
         hookType: "pre" as const,
@@ -4676,7 +4428,7 @@ describe("ToolExecutor — script hook denial surfaces in audit hookChain (#811 
         { sessionId: "sess-hookchain", permissionContext: userPermissionContext() },
       );
 
-      // Deny semantics unchanged: tool is blocked, execute() never runs.
+      // Hook denial must prevent execution.
       expect(result[0].is_error).toBe(true);
       expect(executeSpy).not.toHaveBeenCalled();
       expect(scriptHookManager.runPreToolUse).toHaveBeenCalledOnce();
@@ -4700,7 +4452,7 @@ describe("ToolExecutor — script hook denial surfaces in audit hookChain (#811 
         handlerType: "command",
         durationMs: 7,
       });
-      // A clean policy-deny (ran fine, exit 0) carries NO failureReason.
+      // Successful policy denial is not a script failure.
       expect(chain[0].failureReason).toBeUndefined();
     } finally {
       await cleanupTmpDir(dir);
@@ -4708,11 +4460,8 @@ describe("ToolExecutor — script hook denial surfaces in audit hookChain (#811 
   });
 });
 
-// #811 milestone-2 — NON-BLOCKING lifecycle events fired from the executor.
 describe("ToolExecutor — #811 m2 lifecycle events (PostToolUseFailure / PermissionDenied)", () => {
-  // A stub manager whose lifecycle dispatch we can assert on. The tool-use
-  // dispatches all allow (so they never interfere); `runLifecycleEvent` records
-  // its calls and can be made to DENY to prove the deny is observe-only.
+  // Lifecycle denial must be observe-only; tool-use hooks allow to isolate that boundary.
   function stubManager(lifecycleDecision: "allow" | "deny" = "allow") {
     return {
       runPreToolUse: vi.fn(async () => ({ decision: "allow" as const, reason: "noop", results: [] })),
@@ -4751,7 +4500,7 @@ describe("ToolExecutor — #811 m2 lifecycle events (PostToolUseFailure / Permis
     try {
       const permMgr = new PermissionManager(join(dir, "permissions.json"));
       permMgr.setRules([{ pattern: "failing_probe", action: "allow" }]);
-      const mgr = stubManager("deny"); // lifecycle DENIES — must NOT change result.
+      const mgr = stubManager("deny"); // Lifecycle denial must not alter the tool's error result.
       const executor = new ToolExecutor(
         registry, undefined, permMgr, undefined, undefined, mgr as never,
       );
@@ -4761,15 +4510,12 @@ describe("ToolExecutor — #811 m2 lifecycle events (PostToolUseFailure / Permis
         { sessionId: "sess-ptuf", permissionContext: userPermissionContext() },
       );
 
-      // The tool error stands — the lifecycle deny is observe-only (control flow
-      // unchanged): the result is still the tool's own error output.
       expect(result[0].is_error).toBe(true);
       expect(result[0].content).toContain("boom went the tool");
 
-      // PostToolUseFailure fired exactly once with the right payload.
       const ptuf = mgr.runLifecycleEvent.mock.calls.find((c) => c[0] === "PostToolUseFailure");
       expect(ptuf).toBeDefined();
-      expect(ptuf?.[1]).toBe("sess-ptuf"); // sessionId
+      expect(ptuf?.[1]).toBe("sess-ptuf");
       const payload = ptuf?.[3] as Record<string, unknown>;
       expect(payload.toolName).toBe("failing_probe");
       expect(payload.errorMessage).toContain("boom went the tool");
@@ -4836,7 +4582,7 @@ describe("ToolExecutor — #811 m2 lifecycle events (PostToolUseFailure / Permis
         { sessionId: "sess-pd", permissionContext: userPermissionContext() },
       );
 
-      // Deny stands; execute never runs (lifecycle deny is observe-only).
+      // Lifecycle observation must preserve permission denial and prevent execution.
       expect(result[0].is_error).toBe(true);
       expect(executeSpy).not.toHaveBeenCalled();
 
@@ -4866,13 +4612,11 @@ describe("ToolExecutor — #811 m2 lifecycle events (PostToolUseFailure / Permis
     try {
       const permMgr = new PermissionManager(join(dir, "permissions.json"));
       permMgr.setRules([{ pattern: "nomgr_probe", action: "allow" }]);
-      // No scriptHookManager passed → lifecycle dispatch is a no-op.
       const executor = new ToolExecutor(registry, undefined, permMgr);
       const result = await executor.executeAll(
         [{ id: "tu-nomgr", name: "nomgr_probe", input: {} }],
         { sessionId: "sess-nomgr", permissionContext: userPermissionContext() },
       );
-      // Tool error still returned identically — behavior unchanged.
       expect(result[0].is_error).toBe(true);
       expect(result[0].content).toContain("boom");
     } finally {
@@ -4882,18 +4626,7 @@ describe("ToolExecutor — #811 m2 lifecycle events (PostToolUseFailure / Permis
 });
 
 describe("ToolExecutor — host-classifies-risk enforcement scope", () => {
-  // A tool whose declared category ("write") diverges from what the inspector
-  // derives from its args (a URL-shaped arg → "network"), wired through the
-  // HEADLESS reviewer so the ENFORCED category surfaces in the reviewer's
-  // ToolInvocationContext. Both categories reach the reviewer (neither is the
-  // read-only short-circuit), so the observed category is unambiguous.
-  //
-  // The probe uses the HEADLESS lane deliberately: the effect-boundary pre-exec
-  // relaxation (flag ON + plugin + FOREGROUND) bypasses the reviewer/ask lane
-  // entirely, so a FOREGROUND plugin tool no longer invokes the reviewer. The
-  // headless lane is NOT relaxed (it keeps the existing reviewer lane), so it is
-  // where the enforced category still flows into the classifier — `resolveEnforcedCategory`
-  // re-derives the host category for plugins identically on both lanes.
+  // Use headless review to observe host-enforced category; foreground effect relaxation can bypass the reviewer.
   function makeDivergentTool(source: "builtin" | "plugin", name: string): {
     registry: ToolRegistry;
     execute: ReturnType<typeof vi.fn>;
@@ -4940,12 +4673,11 @@ describe("ToolExecutor — host-classifies-risk enforcement scope", () => {
         { requestAndWait } as never,
         undefined,
         undefined,
-        () => true, // hostClassifiesRisk flag ON
+        () => true,
       );
       await executor.executeAll(
         [{ id: `tu-${name}`, name, input: { endpoint: "https://example.com/api" } }],
-        // Headless: the foreground plugin reviewer lane is relaxed under the flag,
-        // so the enforced category is observed via the (non-relaxed) headless lane.
+        // Headless review remains active under foreground plugin relaxation.
         { sessionId: `sess-${name}`, permissionContext: userPermissionContext({ headless: true }) },
       );
       const ctx = classifySpy.mock.calls[0]?.[0] as
@@ -4959,15 +4691,12 @@ describe("ToolExecutor — host-classifies-risk enforcement scope", () => {
   }
 
   it("keeps the DECLARED category for builtins even when the flag is on", async () => {
-    // The inspector would derive "network" from the URL arg, but builtins
-    // carry trusted known categories the inspector cannot re-derive, so the
-    // enforced category stays the declared "write".
+    // Builtins retain trusted declared categories even when arguments suggest another category.
     expect(await enforcedCategoryFor("builtin")).toBe("write");
   });
 
   it("re-derives the host category for plugin tools when the flag is on", async () => {
-    // Plugin-declared categories are untrusted, so with the flag on the
-    // inspector's host-derived "network" (from the URL arg) is enforced.
+    // Untrusted plugin declarations yield to host-derived risk categories.
     expect(await enforcedCategoryFor("plugin")).toBe("network");
   });
 });
@@ -5066,12 +4795,7 @@ describe("ToolExecutor — Tailnet controller local one-shot boundary", () => {
     expect(result[0]).toMatchObject({ is_error: true });
   });
 
-  // Same question, other approval site. The Layer 1 directory-confirm ask is
-  // raised by a different module than the Layer 3 tool ask above, and §S4 —
-  // the flag's only consumer — never consults `forceExplicit`. Today the
-  // directory ask is additionally excluded from §S4 by its `kind`, so this is
-  // not the thing keeping the modal up; it is the thing that stops the two
-  // producers of one field from disagreeing about the same invocation.
+  // Remote authority must pin directory approval non-read-only, consistently with tool approval.
   it("pins the directory-confirm ask non-read-only for a remote turn, like the Layer 3 ask", async () => {
     const executeSpy = vi.fn(async () => "ok");
     const registry = new ToolRegistry();
@@ -5080,10 +4804,7 @@ describe("ToolExecutor — Tailnet controller local one-shot boundary", () => {
       "/tmp/nonexistent-tailnet-directory-permissions.json",
     );
     permissions.setMode("allow");
-    // Reads are re-fenced for this pair, which is what puts a READ-ONLY tool in
-    // front of the directory-confirm ask at all. The claim under test is about
-    // the ask's `isReadOnly` marker — whether a remote authority pins it — and
-    // that only means something on a tool that is genuinely read-only.
+    // Re-fence reads to exercise the directory ask's read-only marker on a genuinely read-only tool.
     permissions.setBlockReadsOutsideWorkingDirectories(true);
     const requestAndWait = vi.fn(async (request: { id: string }) => ({
       requestId: request.id,
@@ -5119,8 +4840,7 @@ describe("ToolExecutor — Tailnet controller local one-shot boundary", () => {
     expect(directoryAsk?.isReadOnly).toBe(false);
   });
 
-  // A purely local turn keeps the read short-circuit it always had — the pin
-  // above must be caused by the remote authority, not by the site.
+  // Local read approval retains its short-circuit; only remote authority may pin it.
   it("leaves the directory-confirm ask read-only for a local turn", async () => {
     const executeSpy = vi.fn(async () => "ok");
     const registry = new ToolRegistry();
@@ -5129,10 +4849,7 @@ describe("ToolExecutor — Tailnet controller local one-shot boundary", () => {
       "/tmp/nonexistent-local-directory-permissions.json",
     );
     permissions.setMode("allow");
-    // Reads are re-fenced for this pair, which is what puts a READ-ONLY tool in
-    // front of the directory-confirm ask at all. The claim under test is about
-    // the ask's `isReadOnly` marker — whether a remote authority pins it — and
-    // that only means something on a tool that is genuinely read-only.
+    // Re-fence reads to exercise the directory ask's read-only marker on a genuinely read-only tool.
     permissions.setBlockReadsOutsideWorkingDirectories(true);
     const requestAndWait = vi.fn(async (request: { id: string }) => ({
       requestId: request.id,
@@ -5162,11 +4879,7 @@ describe("ToolExecutor — Tailnet controller local one-shot boundary", () => {
     expect(directoryAsk?.isReadOnly).toBe(true);
   });
 
-  // The approval also records WHICH controller's turn raised it, as a marker the
-  // host sets from the authority it already holds. Sub-agent provenance travels
-  // in the free-text `reason` today; a fact recovered from a display string is
-  // not evidence of where a request came from, so the marker is never read from
-  // there — see the local-turn case below.
+  // Derive controller attribution only from host-held authority, never the display reason.
   it("marks the approval with the controller the host admitted", async () => {
     const { executor, requestAndWait } = buildReadExecutor("allow-once");
 
@@ -5193,17 +4906,10 @@ describe("ToolExecutor — Tailnet controller local one-shot boundary", () => {
       remoteControllerAuthority?: { kind: string };
       scopeTargetFilePaths?: readonly string[];
     }];
-    // The marker alone is not enough for anything that has to know the
-    // controller is STILL current: a string cannot go stale. Away Authority
-    // reads both and refuses when they disagree, so a producer that sets only
-    // the marker leaves it permanently unable to answer while every gate-level
-    // unit test still passes.
+    // Pair the controller marker with current authority so stale or mismatched controllers cannot answer.
     expect(request.remoteControllerOrigin).toBe("platform-bridge");
     expect(request.remoteControllerAuthority?.kind).toBe("platform-bridge");
-    // The scope list rides with them, from the same context. It is what
-    // bounds an away answer to the armed directories, and a producer that
-    // omitted it would leave every away-answerable call unbounded — or,
-    // after the refusal added alongside this, silently unanswerable.
+    // Carry scope targets from the same host context to bound remote approval to armed directories.
     expect(request.scopeTargetFilePaths).toEqual([]);
   });
 
@@ -5224,10 +4930,7 @@ describe("ToolExecutor — Tailnet controller local one-shot boundary", () => {
   });
 
   it("marks the directory-confirm modal a remote turn triggers", async () => {
-    // A directory grant is an approval too. It is raised by a different
-    // emitter, so the marker has to be set there as well — otherwise its
-    // absence would mean "the desk asked" on one surface and "nobody wired it"
-    // on the other.
+    // Directory approval must carry controller attribution just like tool approval.
     const executeSpy = vi.fn(async () => "ok");
     const registry = new ToolRegistry();
     registry.register(makeWriteFileTool(executeSpy));
@@ -5261,8 +4964,7 @@ describe("ToolExecutor — Tailnet controller local one-shot boundary", () => {
       hmac: string;
       kind?: string;
     }>(wc);
-    // The row asserted below belongs to the directory ask, not to a later
-    // Layer 3 tool ask — the denial ends the invocation here.
+    // Denial ends at directory approval, before any tool ask.
     expect(sent.kind).toBe("out-of-allowed-dir");
     gate.resolve(sent.id, {
       requestId: sent.id,
@@ -5294,9 +4996,7 @@ describe("ToolExecutor — Tailnet controller local one-shot boundary", () => {
     const request = requestAndWait.mock.calls[0]?.[0] as unknown as {
       reason: string;
     };
-    // Non-vacuous: attribution really is sitting in the reason string, spelled
-    // exactly like a controller — which is the reason the marker may not be
-    // recovered from it.
+    // A controller-like display reason must not become authority evidence.
     expect(request.reason).toContain("[Sub-Agent: tailnet-controller]");
     expect(request).not.toHaveProperty("remoteControllerOrigin");
   });
@@ -5316,13 +5016,8 @@ describe("ToolExecutor — Tailnet controller local one-shot boundary", () => {
       } as never,
     );
 
-    // The layer-2 remote verdict carries no reviewer, so the reviewer-dispatch
-    // path never emits. Without an explicit emit the paired surface sees
-    // `working` and then, minutes later, a failure — indistinguishable from a
-    // dead bridge. `needs_approval` is the only status the platform projector
-    // turns into `approval.waiting-local`.
+    // Remote layer-2 asks need an explicit needs_approval event to project approval.waiting-local.
     expect(permissionReviewEvents.map((event) => event.status)).toContain("needs_approval");
-    // Non-vacuous: the wait really did reach the gate.
     expect(requestAndWait).toHaveBeenCalledOnce();
   });
 
@@ -5484,12 +5179,7 @@ describe("ToolExecutor — Tailnet controller local one-shot boundary", () => {
   });
 });
 
-/**
- * `privacy.piiRedactEnabled` governs the two surfaces Step 7b writes: the
- * display content handed to the renderer callbacks, and the audit entry. The
- * machine channel — the tool_result the next LLM round consumes — is unmasked
- * in both states, because a later tool still needs the recipient it was given.
- */
+// The privacy toggle masks renderer and audit output; machine tool results retain recipients needed by later calls.
 describe("privacy toggle governs tool-output masking", () => {
   const PII_OUTPUT = "contact real.user@example.com on 010-1234-5678";
   const CREDENTIAL = "abcdefghij0123456789";
@@ -5589,7 +5279,7 @@ describe("privacy toggle governs tool-output masking", () => {
     const off = await runProbe(false, PII_AND_CREDENTIAL);
     expect(off.displayContent).not.toContain(CREDENTIAL);
     expect(off.displayContent).toContain("[REDACTED:TOKEN]");
-    // The user's own contact details are untouched beside the scrubbed token.
+    // Preserve the user's own contact details while scrubbing secrets.
     expect(off.displayContent).toContain("real.user@example.com");
     expect(off.displayContent).toContain("010-1234-5678");
     expect(off.dlpRow?.toolCalls?.[0]?.permissionReason).toBe(

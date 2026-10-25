@@ -1,17 +1,4 @@
-/**
- * Risk + effect shadow-log emission tests (host-classifies-risk shadow mode).
- *
- * The shadow log is the (plain, non-HMAC) shadow reconciliation dataset that
- * must pass before effect-boundary gating is enabled. These tests pin:
- *   (a) every CATEGORY emission carries the declared vs host-derived pair and
- *       a correctly derived `diverged` flag;
- *   (b) every EFFECT emission carries the declared category + host-observed
- *       effect summary + `hasMutatingEffect`;
- *   (c) both sink to the AuditLogger (queryable ~/.ave/audit/*.jsonl), not
- *       process stdout;
- *   (d) both perform NO enforcement (pure side-effect — emission only);
- *   (e) the effect record actually lands in the audit file (temp AVE_HOME).
- */
+// Category/effect shadow rows share correlation and reach the dedicated non-HMAC audit sink; emission must never enforce or alter permission.
 import { describe, it, expect, afterEach } from "vitest";
 import { mkdtempSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -23,10 +10,7 @@ import { auditPayload } from "../judge/__tests__/judge-request-fixture.js";
 
 function collectingAudit(): { entries: AuditEntry[]; logger: AuditLogger } {
   const entries: AuditEntry[] = [];
-  // Only `.logShadow` (the DEDICATED shadow channel) is exercised by the shadow
-  // path — a structural stand-in keeps the unit tests off the filesystem. A `log`
-  // stub is included to PROVE the shadow path never touches the canonical
-  // telemetry channel.
+  // Only `.logShadow` (the DEDICATED shadow channel) is exercised by the shadow path — a structural stand-in keeps the unit tests off the filesystem. A `log` stub is included to PROVE the shadow path never touches the canonical telemetry channel.
   const logger = {
     logShadow: (e: AuditEntry) => entries.push(e),
     log: () => {
@@ -36,7 +20,7 @@ function collectingAudit(): { entries: AuditEntry[]; logger: AuditLogger } {
   return { entries, logger };
 }
 
-/** Parse the structured payload the shadow path packs into `output`. */
+// Parse the structured payload the shadow path packs into `output`.
 const payload = auditPayload;
 
 describe("emitRiskShadowLog — category shadow", () => {
@@ -107,8 +91,7 @@ describe("emitRiskShadowLog — category shadow", () => {
 
   it("is a pure side-effect sink that cannot alter a decision (void by type)", () => {
     const { entries, logger } = collectingAudit();
-    // The void return is TS-enforced; assert the BEHAVIOUR (it only emits one
-    // shadow row and exposes no decision surface) rather than the return value.
+    // The void return is TS-enforced; assert the BEHAVIOUR (it only emits one shadow row and exposes no decision surface) rather than the return value.
     emitRiskShadowLog(
       { toolName: "t", source: "mcp", declaredCategory: "network", hostDerivedCategory: "network", enforced: false, correlationId: "corr-cat-4" },
       logger,
@@ -165,8 +148,7 @@ describe("emitEffectShadowLog — effect shadow", () => {
       logger,
     );
     const p = payload(entries[0]);
-    // Empty ledger + hostObservable:false ⇒ a later read-recognition gate must
-    // NOT auto-relax this to read; it must fail closed.
+    // Empty ledger + hostObservable:false ⇒ a later read-recognition gate must NOT auto-relax this to read; it must fail closed.
     expect(p.hostObservable).toBe(false);
     expect(p.hasMutatingEffect).toBe(false);
     expect(p.effects).toEqual([]);
@@ -211,7 +193,6 @@ describe("shadow log — dedicated shadow channel sink (temp AVE_HOME)", () => {
   it("lands the effect record in the DEDICATED permission-shadow channel, NOT the telemetry channel", async () => {
     auditDir = mkdtempSync(join(tmpdir(), "ave-shadow-audit-"));
     const logger = new AuditLogger(auditDir);
-    // Write a real telemetry row first so we can prove channel separation.
     logger.log({ timestamp: new Date().toISOString(), sessionId: "s", type: "turn", input: "hi", output: "yo" });
     emitEffectShadowLog(
       {
@@ -244,8 +225,7 @@ describe("shadow log — dedicated shadow channel sink (temp AVE_HOME)", () => {
     expect(p.pluginId).toBe("ave-plugin-sampletool");
     expect(p.correlationId).toBe("corr-sink");
 
-    // The canonical telemetry channel (`<date>.jsonl`, NO channel infix) holds
-    // ONLY the turn telemetry — no shadow pollution.
+    // The canonical telemetry channel (`<date>.jsonl`, NO channel infix) holds ONLY the turn telemetry — no shadow pollution.
     const telemetryFiles = readdirSync(auditDir).filter((f) => /^\d{4}-\d{2}-\d{2}\.jsonl$/.test(f));
     expect(telemetryFiles.length).toBe(1);
     const telemetryText = readFileSync(join(auditDir, telemetryFiles[0]), "utf-8");

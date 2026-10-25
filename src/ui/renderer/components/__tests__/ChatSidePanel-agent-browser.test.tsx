@@ -23,13 +23,7 @@ function ActiveSurfaceReport({ api }: { api: AveApi }) {
 import { useWorkspaceTabs, type WorkspaceTabsStore } from "../../preview/workspace-tabs.js";
 import { __resetBrowserTabBridgeForTest, registerBrowserTabHost } from "../../preview/agent-browser-bridge.js";
 
-/**
- * The side panel's half of the agent browser: page tabs stay mounted when
- * hidden, the agent's tabs carry the control badge with a working stop, and
- * the panel reports the tab the user is looking at. A tab's page is a web
- * surface: its guest lives in the window's `WebSurfaceLayer` (mounted here as
- * App mounts it), which binds it to the tab and records where it navigates.
- */
+/** Keep hidden page guests alive in WebSurfaceLayer and let main own agent-control status and navigation records. */
 function makeApi() {
   let controlHandler: ((state: BrowserTabControlState) => void) | null = null;
   const api = {
@@ -228,7 +222,6 @@ describe("ChatSidePanel agent browser", () => {
     });
     expect(agentTabId).not.toBeNull();
 
-    // Both page tabs are mounted; only the active one is shown.
     const hosts = screen.getAllByTestId("chat-side-panel-browser-tab-host");
     expect(hosts.map((host) => host.getAttribute("data-tab-id"))).toEqual([agentTabId, expect.any(String)]);
     expect(hosts[0]).toHaveAttribute("aria-hidden", "true");
@@ -238,7 +231,6 @@ describe("ChatSidePanel agent browser", () => {
     act(() => emitControl(browserControlFixture([agentTabId!])));
     const badge = screen.getByTestId("agent-browser-control-badge");
     expect(hosts[0]).toContainElement(badge);
-    // The tab row says so too, on the agent's tab only.
     const marks = screen.getAllByTestId("chat-side-panel-tab-agent-controlled");
     expect(marks).toHaveLength(1);
     expect(marks[0]!.closest("[data-tab-id]")).toHaveAttribute("data-tab-id", agentTabId);

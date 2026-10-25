@@ -1,7 +1,4 @@
-/**
- * Own file because it mocks `node:fs/promises` and the retry sleep for the
- * whole module graph; `file-tools.test.ts` exercises the real filesystem.
- */
+// Isolate module-wide filesystem and sleep mocks from the real-filesystem suite.
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -53,8 +50,6 @@ afterEach(async () => {
 
 describe("write_file transient rename retry", () => {
   it("waits on the shared transient-lock curve, not a private one", async () => {
-    // Before consolidation this ladder slept 10ms then 25ms — a third curve
-    // beside the sync and background ladders that share transient-fs-lock-retry.
     renameFailures.push("EBUSY", "EPERM");
     const result = await new WriteFileTool().execute(
       { path: "notes.txt", content: "hello" },

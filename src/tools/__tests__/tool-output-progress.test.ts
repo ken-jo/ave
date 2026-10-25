@@ -307,8 +307,12 @@ describe.skipIf(process.platform === "win32")("bash live output", () => {
     dir = realpathSync(mkdtempSync(join(tmpdir(), "ave-live-output-exec-")));
     const registry = new ToolRegistry();
     registry.register(new BashTool());
+    const token = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8";
     const permissions = new PermissionManager(join(dir, "permissions.json"));
-    permissions.setMode("allow");
+    permissions.setRules([
+      { pattern: "Bash(printf progress)", action: "allow" },
+      { pattern: `Bash(printf GH_TOKEN=%s ${token})`, action: "allow" },
+    ]);
     const executor = new ToolExecutor(
       registry, undefined, permissions, new BashAstValidator({ mode: "deny" }),
       undefined, undefined, undefined, () => true,
@@ -328,10 +332,9 @@ describe.skipIf(process.platform === "win32")("bash live output", () => {
     expect(String(result!.content)).toBe("progress");
     expect(outputs).toEqual([{ name: "bash", text: "progress", toolUseId: "live-1" }]);
 
-    const token = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8";
     outputs.length = 0;
     const [secret] = await executor.executeAll(
-      [{ id: "live-2", name: "bash", input: { command: `printf 'GH_TOKEN=%s\\n' ${token}` } }],
+      [{ id: "live-2", name: "bash", input: { command: `printf GH_TOKEN=%s ${token}` } }],
       {
         sessionId: "live-session",
         executionCwd: dir,

@@ -1,8 +1,4 @@
-/**
- * The shell egress grant store (egress-grants.ts), the per-extension worker
- * lists (egress-runtime.ts) and the identity strength that caps the scopes
- * (egress-identity.ts).
- */
+// The shell egress grant store (egress-grants.ts), the per-extension worker lists (egress-runtime.ts) and the identity strength that caps the scopes (egress-identity.ts).
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -407,6 +403,49 @@ describe("terminal tab grants in the running process (egress-runtime)", () => {
   });
 });
 
+describe("shell domain grants in the running process", () => {
+  it("persists Always for later calls without granting the terminal a destination", async () => {
+    const { openEgressInvocation } = await import("../egress-invocations.js");
+    const { createEgressAskRuntimeCallback, listEgressGrants, revokeEgressGrant } = await import("../egress-runtime.js");
+    const owner = { kind: "shell" as const, toolName: "bash" as const, toolUseId: undefined,
+      context: { sessionId: "domain-session", workspaceRoot: dir, approvalSurface: "interactive" as const } };
+    const first = openEgressInvocation(owner);
+    const second = openEgressInvocation(owner);
+    const terminal = openEgressInvocation({ kind: "terminal", tabId: "terminal:0a1b2c3d-7" });
+    const requests: unknown[] = [];
+    const callback = createEgressAskRuntimeCallback({ approvalGate: { requestAndWait: async (request) => {
+      requests.push(request);
+      if (request.egressHost?.terminalTabId) return { requestId: request.id, choice: "deny-once" };
+      return { requestId: request.id, choice: "allow-once", egressScope: "always" };
+    } }, shellAskEnabled: () => true });
+    const destination = { host: "downloads.example.com", port: 443 };
+    const target = { scope: "always" as const, origin: "shell" as const, ...destination, network: "public" as const };
+    const ask = async (token: string) => {
+      const who = { attributionKey: token, identity: "listener" as const };
+      const byName = await callback(destination, { ...who, phase: "name" });
+      return byName === true ? callback(destination, { ...who, phase: "resolved", addresses: ["93.184.215.14"], resolution: "pinned" }) : byName;
+    };
+    setWorkerEgressAllowlists({ byExtension: new Map(), modelEndpointHosts: [] });
+    try {
+      await revokeEgressGrant(target);
+      expect(await ask(first.token)).toBe(true);
+      expect(requests).toEqual([expect.objectContaining({
+        kind: "egress-host", egressHost: expect.objectContaining({ scopes: ["once", "always"] }),
+      })]);
+      expect(await listEgressGrants()).toContainEqual(expect.objectContaining(target));
+      first.release();
+      expect(await ask(second.token)).toBe(true);
+      expect(requests).toHaveLength(1);
+      expect(await ask(terminal.token)).toEqual({ allow: false, reason: "denied by the user" });
+      expect(requests).toHaveLength(2);
+      expect((await revokeEgressGrant(target)).removed).toBe(true);
+    } finally {
+      await revokeEgressGrant(target);
+      first.release(); second.release(); terminal.release();
+    }
+  });
+});
+
 describe("destination networks", () => {
   it.each([
     ["github.com", "public"], ["8.8.8.8", "public"], ["2606:4700::1111", "public"],
@@ -498,8 +537,7 @@ describe("identity strength and the scopes it allows", () => {
 
 describe("worker egress lists", () => {
   it("gives a worker its own extension's domains and the model endpoints, never another extension's", () => {
-    // Bare names cover their subdomains too, as the shared allowlist did
-    // (normalizeUnionForAsrt).
+    // Bare names cover their subdomains too, as the shared allowlist did (normalizeUnionForAsrt).
     setWorkerEgressAllowlists({
       byExtension: new Map([
         ["ext_a", ["api.a.example", "*.cdn.a.example"]],

@@ -1,28 +1,6 @@
 #!/usr/bin/env node
-/**
- * check-source-text-safe.mjs — keep every source file readable by diff and search.
- *
- * A raw control byte inside a source file (typically written by accident into a
- * regex character class, e.g. `/[<NUL>-<0x1f>]/` instead of the escape text) is
- * valid JavaScript and runs correctly, so nothing catches it. What it breaks is the
- * machinery AROUND the code:
- *
- *   - git auto-detects a NUL in the first 8 KB as binary, so `git diff` prints
- *     "Binary files differ" and the file becomes invisible in review — including in
- *     the sensitive-area advisory used to surface cross-cutting changes;
- *   - ripgrep skips it, so the file cannot be found from a symbol it defines;
- *   - `.github/workflows/naming-gate.yml` scans `git diff … | grep -E "^\+"`, which
- *     yields nothing for a binary file, exempting it from that gate entirely.
- *
- * This happened twice in one review cycle, both times to the module defining a
- * shared validation predicate — the most review-sensitive kind of file. Hence a
- * gate rather than a convention: write control characters as escape TEXT
- * (`\u0000`, `\x1f`), which reads identically to the regex engine.
- *
- * TAB, LF, and CR are allowed (ordinary formatting). Run standalone with
- * `node scripts/check-source-text-safe.mjs`; the scanner is exported so
- * `test/scripts/source-text-safe.test.mjs` can exercise it against fixtures.
- */
+// Reject raw control bytes that hide source from diffs and policy scans; use textual escapes.
+// Ordinary tabs and line endings remain allowed.
 import { readFileSync } from "node:fs";
 import { relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -31,16 +9,9 @@ import { walkSourceFiles } from "./lib/source-walk.mjs";
 const ROOTS = ["src", "scripts", "test"];
 const EXTENSIONS = [".ts", ".tsx", ".mjs", ".js", ".jsx", ".json", ".css"];
 const ALLOWED_BYTES = new Set([0x09, 0x0a, 0x0d]);
-/** Report at most this many byte positions per file — enough to locate the cause. */
 const MAX_HITS_PER_FILE = 4;
 
-/**
- * Files that already carried raw control bytes before this gate existed. They are
- * test fixtures and one dialog, not enforcement code, so they are recorded rather
- * than rewritten — but the list may only SHRINK, which the scanner enforces: a
- * listed file that is now clean is reported as stale. Otherwise this set becomes
- * the obvious place to silence a future offender.
- */
+// Existing control-byte exceptions are shrink-only; clean entries are stale.
 const GRANDFATHERED = [
   "src/mcp/__tests__/mcp-app-download.test.ts",
   "src/shared/__tests__/mcp-app-partition.test.ts",
@@ -56,10 +27,6 @@ function controlByteHits(bytes) {
   return hits;
 }
 
-/**
- * Scan `roots` (relative to `repoRoot`) and split the result into files that must be
- * fixed and grandfathered entries that are now clean.
- */
 export function scanSourceTextSafety(repoRoot, roots = ROOTS, grandfathered = GRANDFATHERED) {
   const exempt = new Set(grandfathered);
   const offenders = [];
@@ -87,9 +54,7 @@ export function scanSourceTextSafety(repoRoot, roots = ROOTS, grandfathered = GR
   return { offenders, stale };
 }
 
-// Same guard shape as `check-import-cycles.mjs`: without the `process.argv[1]`
-// check, importing this module from a process that has no script path (`node -e`,
-// a REPL, a future runner) throws inside `resolve()` before the comparison.
+// Guard absent script paths so imports from interactive processes cannot throw.
 const invokedPath = process.argv[1] ? pathToFileURL(resolve(process.argv[1])).href : "";
 if (import.meta.url === invokedPath) {
   const { offenders, stale } = scanSourceTextSafety(resolve(import.meta.dirname, ".."));

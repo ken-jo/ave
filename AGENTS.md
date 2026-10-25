@@ -209,12 +209,12 @@ Keep task-specific inventories in issues rather than in this instruction file.
 - Tool and MCP timeouts come from `src/shared/tool-timeout-policy.ts` and
   `TOOL_TIMEOUT_POLICY`; never hardcode them. Wire `runWithCeiling` cancellation
   through its `AbortController`.
-- The OS tool sandbox is opt-in on every platform, per the decision comment beside
-  `osToolSandbox` in [settings-defaults.ts](src/data/settings-defaults.ts#L216-L262).
+- The OS tool sandbox defaults on for macOS/Linux and remains default-off on Windows,
+  per `osToolSandbox` in [settings-defaults.ts](src/data/settings-defaults.ts).
   It has two scopes: `osToolSandbox` confines host shells only (bash, PowerShell,
   the workspace terminal); `pluginWorkerConfinement` confines plugin workers,
-  plugin children, plugin hooks and MCP stdio servers. Neither decides the other:
-  `AVE_SANDBOX_ENABLED=1` forces the shell scope only and
+  plugin children, plugin hooks and MCP stdio servers, and stays opt-in. Neither
+  decides the other: `AVE_SANDBOX_ENABLED=1` forces the shell scope only and
   `AVE_PLUGIN_WORKER_CONFINEMENT=1` the worker scope. A shell spawn path gates on
   `isShellSandboxActive` / `detectShellSandboxCapability`, an extension spawn path
   on `isPluginWorkerConfinementActive`, never the raw `isAsrtSandboxActive`.

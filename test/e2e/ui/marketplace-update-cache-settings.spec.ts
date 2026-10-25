@@ -1,18 +1,7 @@
 import { test, expect } from './fixtures.js';
 import { openInlineSettings, closeInlineSettings } from './inline-settings.js';
 
-/**
- * Update notices + kept downloads — real-Electron round trip.
- *
- * Both of these were environment-only flags, which a packaged app's user has
- * no shell to set. The unit tests cover the resolvers; what they cannot cover
- * is whether the two switches in Settings → Marketplace → Maintenance actually
- * reach the settings service the marketplace reads. A control that only moved
- * component state would pass every render test and still change nothing about
- * the app.
- *
- * So this drives the real switches and asks the main process what it holds.
- */
+// Verify marketplace maintenance controls reach the settings service, beyond resolver-only coverage.
 test('the update-notice and kept-download switches round-trip through the real settings service', async ({
   app,
   mainWindow,
@@ -39,12 +28,10 @@ test('the update-notice and kept-download switches round-trip through the real s
   ]) {
     const toggle = settingsPage.getByTestId(testId);
     await expect(toggle).toBeVisible();
-    // The switch waits for the saved value before it takes a click.
+    // Wait for initial settings hydration before clicking.
     await expect(toggle).toBeEnabled();
     await expect(settingsPage.getByTestId(`${testId}:help`)).toBeVisible();
-    // Neither variable is set in this harness, so the "the environment is
-    // deciding this" notice must stay absent — it is the one piece of copy
-    // that would be a lie if it appeared on its own.
+    // No environment override is seeded, so an override notice would be misleading.
     await expect(settingsPage.getByTestId(`${testId}:forced`)).toHaveCount(0);
 
     const before = await toggle.getAttribute('aria-checked');

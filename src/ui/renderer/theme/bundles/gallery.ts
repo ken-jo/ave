@@ -1,18 +1,6 @@
 import type { ThemeBundle } from "./types.js";
 
-/**
- * Gallery — a quiet white gallery: ink typography on off-white, hairline frames
- * (inspired by the former marketplace site's look).
- *
- * Canvas is a near-white #fafafa with pure-white cards, near-black ink text,
- * and a single restrained #e5e5e5 hairline frame. The primary is the ink
- * itself, so controls read as calm monochrome with color reserved for status +
- * charts. Depth is carried entirely by the surface ladder + soft layered
- * shadows.
- *
- * Description is a plain literal (not a `t()` key) so this bundle ships without
- * touching the generated locale catalogs.
- */
+/** Description stays a plain literal so the compiled bundle does not depend on generated locale catalogs. */
 export const galleryBundle: ThemeBundle = {
   id: "gallery",
   name: "Gallery",

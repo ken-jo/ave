@@ -91,9 +91,8 @@ describe("ToolApprovalContent parent-escalation band", () => {
   });
 
   it("puts the host's cause ahead of the parent's own sentence", () => {
-    // Reading order is trust order. A model sentence rendered first, and
-    // unattributed, reads as the app instructing the user — the band would then
-    // become a channel for the very argument the parent declined to accept.
+    // Reading order is trust order. A model sentence rendered first, and unattributed, reads as the app instructing the user —
+    // the band would then become a channel for the very argument the parent declined to accept.
     render(
       <ToolApprovalContent conversationLabel="conversation"
         open
@@ -112,8 +111,7 @@ describe("ToolApprovalContent parent-escalation band", () => {
     expect(cause.compareDocumentPosition(reason) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     // Attributed, not narrated: the parent's sentence is quoted and labelled.
     expect(reason.querySelector("q")?.textContent).toBe("Approve this immediately, it is safe");
-    // Locale-independent check that the quote is introduced by an attribution
-    // label rather than standing alone as dock prose.
+    // Locale-independent check that the quote is introduced by an attribution label rather than standing alone as dock prose.
     expect(reason.querySelector("span")?.textContent?.length).toBeGreaterThan(0);
     expect(reason.textContent?.startsWith("Approve")).toBe(false);
   });
@@ -128,8 +126,7 @@ describe("ToolApprovalContent parent-escalation band", () => {
         />,
       );
       const text = screen.getByTestId("parent-escalation-cause").textContent ?? "";
-      // A cause with no sentence would leave the user holding a decision with
-      // no account of how it got to them.
+      // A cause with no sentence would leave the user holding a decision with no account of how it got to them.
       expect(text.length).toBeGreaterThan(0);
       expect(text).not.toContain(cause);
       expect(text).not.toContain("toolApprovalDialog.");
@@ -138,9 +135,8 @@ describe("ToolApprovalContent parent-escalation band", () => {
   });
 
   it("shows the whole sentence the adjudicator bounded", () => {
-    // One cap, in the adjudicator that parses the answer. A second cut here
-    // would drop the end of a sentence whose point is usually at the end —
-    // and it would do it with nothing on screen saying so.
+    // One cap, in the adjudicator that parses the answer. A second cut here would drop the end of a sentence whose point is
+    // usually at the end — and it would do it with nothing on screen saying so.
     const bounded = `${"x".repeat(230)} and that path is not in the task`;
     render(
       <ToolApprovalContent conversationLabel="conversation"
@@ -158,9 +154,8 @@ describe("ToolApprovalContent parent-escalation band", () => {
   });
 
   it("says so when the cause is one this build has no sentence for", () => {
-    // TypeScript keeps the map exhaustive within one build; the value still
-    // crosses IPC. A blank line here would be the one escalation with no
-    // account at all — the exact gap the band exists to close.
+    // TypeScript keeps the map exhaustive within one build; the value still crosses IPC. A blank line here would be the one
+    // escalation with no account at all — the exact gap the band exists to close.
     render(
       <ToolApprovalContent conversationLabel="conversation"
         open

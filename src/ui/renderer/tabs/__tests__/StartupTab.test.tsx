@@ -1,11 +1,3 @@
-/**
- * E4 — StartupTab renderer interactions.
- *
- * Verifies the tab reads settings on mount, toggles persist through
- * `updateSettings` (settings-IPC reuse — no dedicated channel), the accelerator
- * capture records a key combination, and the "enabled but no accelerator"
- * warning surfaces.
- */
 import "../../../../../test/renderer/setup.js";
 import { describe, it, expect, vi } from "vitest";
 import { fireEvent, render, waitFor } from "@testing-library/react";
@@ -67,7 +59,6 @@ describe("StartupTab", () => {
     const record = await findByTestId("startup-accelerator-record");
     fireEvent.click(record);
     const capture = await findByTestId("startup-accelerator-capture");
-    // Press CommandOrControl+Shift+K.
     fireEvent.keyDown(capture, { key: "k", ctrlKey: true, shiftKey: true });
     await waitFor(() => {
       expect(api.updateSettings).toHaveBeenCalledWith({
@@ -96,8 +87,7 @@ describe("StartupTab", () => {
       shortcuts: { toggleWindow: null, enabled: true },
     });
     const { findByText } = render(<StartupTab />);
-    // The warning key resolves through i18n; assert the rendered warning text
-    // node exists (ko runtime locale in this suite).
+    // The warning key resolves through i18n; assert the rendered warning text node exists (ko runtime locale in this suite).
     await waitFor(async () => {
       const warn = await findByText(/활성화|no key combination|enabled/i);
       expect(warn).toBeTruthy();
@@ -148,8 +138,8 @@ describe("StartupTab", () => {
   it("says the change takes effect next launch", async () => {
     installApi();
     const { findByTestId } = render(<StartupTab />);
-    // The toggle cannot change the running process — `disableHardwareAcceleration`
-    // is a before-whenReady call — so the copy has to say so unconditionally.
+    // The toggle cannot change the running process — `disableHardwareAcceleration` is a before-whenReady call — so the copy
+    // has to say so unconditionally.
     const help = await findByTestId("startup-hardware-acceleration-help");
     expect(help.textContent?.length ?? 0).toBeGreaterThan(0);
   });
@@ -192,8 +182,8 @@ describe("StartupTab", () => {
     installApi();
     const { findByTestId } = render(<StartupTab />);
     const select = (await findByTestId("startup-shutdown-timeout")) as HTMLSelectElement;
-    // The default has to be one of the offered options or the control would
-    // render a selection the user could never choose again.
+    // The default has to be one of the offered options or the control would render a selection the user could never choose
+    // again.
     await waitFor(() =>
       expect(select.value).toBe(String(TOOL_TIMEOUT_POLICY.shutdownCleanupMs)),
     );
@@ -208,8 +198,7 @@ describe("StartupTab", () => {
     const { findByTestId } = render(<StartupTab />);
     const forced = await findByTestId("startup-shutdown-timeout-forced");
     expect(forced.textContent).toContain("AVE_SHUTDOWN_CLEANUP_TIMEOUT_MS");
-    // Saying the environment decides while still accepting a choice would be
-    // offering a control that does nothing.
+    // Saying the environment decides while still accepting a choice would be offering a control that does nothing.
     const select = (await findByTestId("startup-shutdown-timeout")) as HTMLSelectElement;
     await waitFor(() => expect(select.disabled).toBe(true));
   });

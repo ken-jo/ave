@@ -1,14 +1,4 @@
-/**
- * Chat mode floats the expanded sidebar over the single conversation tile;
- * work mode keeps it a pushed sibling. The shell derives which from the mode
- * verdict alone, so these lock the three surfaces that geometry touches — the
- * sidebar card, `<main>`'s leading reserve, and the title band's lead — plus
- * the overlay's transient-surface behaviour (focus in, Escape / outside
- * pointer down out, focus back to the toggle).
- *
- * Harness conventions follow App-app-mode.test.tsx; the pre-paint mode seed
- * follows test/renderer/tile-scoped-surfaces.test.tsx.
- */
+/** Chat mode overlays the sidebar; work mode reserves its width. Focus returns to the toggle after dismissal. */
 import "../../../../test/renderer/setup.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, waitFor } from "@testing-library/react";
@@ -20,7 +10,6 @@ import {
   collapsedBandLeadClearance,
 } from "../../../shared/shell-geometry.js";
 import { SIDEBAR_DEFAULT_WIDTH } from "../../../shared/side-panel.js";
-
 
 /** jsdom has no OS lights: the band's collapsed lead is the plain-platform one. */
 const COLLAPSED_BAND_LEAD = `${Math.max(BAND_EDGE_PAD, collapsedBandLeadClearance(false))}px`;
@@ -163,8 +152,7 @@ describe("App sidebar overlay (chat mode)", () => {
       expect(main.style.paddingLeft).toBe(EXPANDED_MAIN_RESERVE);
       expect(band.style.paddingLeft).toBe(EXPANDED_BAND_LEAD);
 
-      // → chat: the transition collapses the rail (existing per-transition
-      // default); expanding it again overlays.
+      // → chat: the transition collapses the rail (existing per-transition default); expanding it again overlays.
       await act(async () => {
         fireEvent.click(container.querySelector('[data-testid="app-mode-chat"]')!);
       });

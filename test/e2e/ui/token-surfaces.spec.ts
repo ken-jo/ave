@@ -10,11 +10,7 @@ import {
 import { makeTestT } from "./i18n";
 import { TEST_IDS, testIdSelector } from "../../../src/shared/test-ids.js";
 
-// This spec drives the app via `launchSeededElectron` (not the `./fixtures`
-// `test`, which exposes a `t` fixture). `launchSeededElectron` seeds the ko
-// locale (buildLlmSettings → buildE2eBaseSettings default), so bind the catalog
-// resolver to ko here. Asserting `t('key')` instead of a raw Korean literal
-// makes the assertion pass in any locale (see ./i18n.ts).
+// Bind assertions to the Korean locale seeded by this independently launched harness.
 const t = makeTestT("ko");
 
 function turnSummary(opts: {
@@ -90,8 +86,7 @@ test.describe("context-budget token surfaces", () => {
       await expect(ctx.page.getByText("토큰 표면 응답")).toBeVisible();
 
       const ring = ctx.page.getByTestId("token-progress-ring");
-      // gpt-5.4-mini is TPM-bound (host TPM default 200_000 in model-host-policy), so the
-      // effective limit is 200K: 123,456 / 200,000 ≈ 62%.
+      // The host token-per-minute bound sets the effective limit used by the percentage.
       await expect(ring).toHaveAttribute(
         "aria-label",
         t("tokenProgressRing.projectedInputAriaLabel", { pct: "62" }),
@@ -171,7 +166,6 @@ test.describe("context-budget token surfaces", () => {
 
       await expect(ctx.page.getByTestId("token-progress-ring")).toHaveAttribute(
         "aria-label",
-        // post-compact projected 42,000 / 200,000 (TPM) ≈ 21%
         t("tokenProgressRing.projectedInputAriaLabel", { pct: "21" }),
       );
       await expect(ctx.page.getByTestId(TEST_IDS.tokenCostBadge)).toHaveCount(1);
@@ -241,7 +235,6 @@ test.describe("context-budget token surfaces", () => {
       await expect(ctx.page.getByText("큰 툴 결과 이후 응답")).toBeVisible();
       await expect(ctx.page.getByTestId("token-progress-ring")).toHaveAttribute(
         "aria-label",
-        // projected 180,000 / 200,000 (TPM) = 90%
         t("tokenProgressRing.projectedInputAriaLabel", { pct: "90" }),
       );
       await ctx.page.getByTestId("token-progress-ring").click({ force: true });

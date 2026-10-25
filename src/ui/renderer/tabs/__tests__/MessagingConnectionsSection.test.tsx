@@ -1,16 +1,4 @@
-/**
- * The messaging-connection rows in the 원격 연결 list.
- *
- * The first assertion is the one that matters most: Telegram is built into this
- * build, so its row is on the page whether or not a marketplace catalog entry
- * for it was ever installed. Gating it on that list would delete the only way
- * to connect a bot from a machine that installed nothing.
- *
- * The rest is the reading, not the layout: the row is worded in the shared
- * state vocabulary, a marketplace connection this build cannot drive still
- * appears and says why, and a catalog entry for Telegram is folded INTO the
- * built-in row rather than listed beside it as a second Telegram.
- */
+/** Built-in messaging remains visible without a catalog install; matching catalog entries merge into that row. */
 // @vitest-environment jsdom
 import "../../../../../test/renderer/setup.js";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -84,8 +72,7 @@ describe("MessagingConnectionsSection", () => {
 
     expect(await screen.findByTestId("connection:telegram")).toBeTruthy();
     fireEvent.click(screen.getByTestId("connection:telegram:toggle"));
-    // The bot connection is a host surface, so its controls are reachable with
-    // no catalog entry behind them at all.
+    // The bot connection is a host surface, so its controls are reachable with no catalog entry behind them at all.
     expect(await screen.findByTestId("telegram-connection-content")).toBeTruthy();
   });
 
@@ -137,8 +124,7 @@ describe("MessagingConnectionsSection", () => {
     const { api, openExternalUrl } = makeApi([TELEGRAM]);
     render(<Harness api={api} />);
 
-    // One Telegram, not two: the catalog entry is metadata about the built-in
-    // row, not a second connection.
+    // One Telegram, not two: the catalog entry is metadata about the built-in row, not a second connection.
     expect(await screen.findAllByTestId("connection:telegram")).toHaveLength(1);
     expect(screen.queryByTestId("messaging-connection:telegram")).toBeNull();
 

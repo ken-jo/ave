@@ -39,16 +39,11 @@ export const DEFAULT_SETTINGS: AppSettings = {
       "You are Ave, an agent that works beside the user across the web, the terminal, and their files. You provide accurate, helpful answers grounded in the user's documents and context. Respond in the user's language.",
     autoCompact: true,
     processingDisplayLevel: DEFAULT_PROCESSING_DISPLAY_LEVEL,
-    // Tool rounds a sub-agent may run before it hits `round-cap` and suspends.
-    // Run as configured — no ceiling narrows it. Exposed because the right
-    // budget depends on the work: a deep multi-repo review needs far more
-    // rounds than a single-file lookup, and guessing wrong shows up as an
-    // agent that stops mid-investigation with partial output.
+    // Tool rounds a sub-agent may run before it hits `round-cap` and suspends. Run as configured; no ceiling narrows it. Exposed because the right budget depends on the
+    // work: a deep multi-repo review needs far more rounds than a single-file lookup, and guessing wrong shows up as an agent that stops mid-investigation with partial output.
     subAgentMaxRounds: SUBAGENT_MAX_ROUNDS_DEFAULT,
-    // Assistant rounds between host progress notifications inside one turn.
-    // Ten is short enough that a run which stopped converging is told so while
-    // it still has budget to change approach, and long enough that a normal
-    // three-or-four-round turn never sees one. `0` turns them off.
+    // Assistant rounds between host progress notifications inside one turn. Ten is short enough that a run which stopped converging is told so
+    // while it still has budget to change approach, and long enough that a normal three-or-four-round turn never sees one. `0` turns them off.
     progressNudgeRounds: 10,
   },
   a2aRemote: {
@@ -64,22 +59,19 @@ export const DEFAULT_SETTINGS: AppSettings = {
     provider: "duckduckgo",
   },
   marketplace: {
-    // No catalog URL or API key: packages come from git marketplaces
-    // (src/marketplace/), whose sources live in ~/.ave/marketplaces/.
+    // No catalog URL or API key: packages come from git marketplaces (src/marketplace/), whose sources live in ~/.ave/marketplaces/.
     installedProviderIds: [],
     installedProviderPresets: [],
     installedThemeBundleIds: [],
     installedLanguagePacks: [],
     installedMessagingConnections: [],
-    // Both default ON, which is what the pre-setting env-only resolvers did
-    // when their variables were unset — i.e. on every packaged install.
+    // Both default ON, which is what the pre-setting env-only resolvers did when their variables were unset; i.e. on every packaged install.
     updateCheckEnabled: true,
     offlineCacheEnabled: true,
   },
   routine: {},
   homeDocs: {
-    // Off is the pre-existing behavior: a packaged update is offered as an
-    // upgrade marker and the user's live doc is never moved unprompted.
+    // Off is the pre-existing behavior: a packaged update is offered as an upgrade marker and the user's live doc is never moved unprompted.
     keepLatest: false,
   },
   privacy: {
@@ -96,15 +88,13 @@ export const DEFAULT_SETTINGS: AppSettings = {
     auditRotationMaxBytes: 10 * 1024 * 1024, // 10 MB
     auditRetentionDays: 30,
   },
-  // Owner decision 2026-10-20: the sandbox egress proxy follows the
-  // environment and the OS proxy settings unless Settings says otherwise.
+  // Owner decision 2026-10-20: the sandbox egress proxy follows the environment and the OS proxy settings unless Settings says otherwise.
   upstreamProxy: { ...DEFAULT_UPSTREAM_PROXY },
   diagnostics: {
-    // Raw crash-dump binaries excluded by default — metadata-only in the bundle.
+    // Raw crash-dump binaries excluded by default; metadata-only in the bundle.
     includeCrashDumps: false,
-    // From the fs-free retention SOT (src/shared/log-retention.ts), the same
-    // constant log-file-sink re-exports as LOG_RETENTION_DAYS — one literal, no
-    // drift between the boot-time prune window and this default.
+    // From the fs-free retention SOT (src/shared/log-retention.ts), the same constant log-file-sink
+    // re-exports as LOG_RETENTION_DAYS; one literal, no drift between the boot-time prune window and this default.
     logRetentionDays: LOG_RETENTION_DAYS,
   },
   appearance: {
@@ -119,25 +109,18 @@ export const DEFAULT_SETTINGS: AppSettings = {
     turnCompletionSoundEnabled: true,
     closeBehavior: "hide-to-tray",
     appMode: DEFAULT_APP_MODE,
-    // Opt-in loopback API server — OFF by default (also enabled by env
-    // AVE_LOCAL_API=1). #1409/#1436.
+    // Opt-in loopback API server; OFF by default (also enabled by env AVE_LOCAL_API=1). #1409/#1436.
     localApiServer: false,
-    // Staged by platform, matching the pre-setting behaviour exactly: the GPU
-    // process is what crashes on restricted Windows/Linux corp+VDI drivers, and
-    // macOS has never shown that failure. The setting exists so a user whose
-    // machine is fine is not stuck with the safe default forever.
+    // Staged by platform, matching the pre-setting behaviour exactly: the GPU process is what crashes on restricted Windows/Linux corp+VDI
+    // drivers, and macOS has never shown that failure. The setting exists so a user whose machine is fine is not stuck with the safe default forever.
     hardwareAcceleration: process.platform !== "win32" && process.platform !== "linux",
-    // The corporate CA pipeline stays on by default -- it was on before it had
-    // a setting, and on a machine with no such CA it costs one keychain query
-    // that finds nothing. The name is a placeholder that an organization is
-    // expected to replace: on a machine whose CA is named anything else the
-    // lookup finds nothing, which costs one query and changes nothing.
+    // The corporate CA pipeline stays on by default -- it was on before it had a setting, and on a machine with no such CA it costs one keychain query that finds nothing. The name
+    // is a placeholder that an organization is expected to replace: on a machine whose CA is named anything else the lookup finds nothing, which costs one query and changes nothing.
     corpCaEnabled: true,
     corpCaCommonName: DEFAULT_CORP_CA_COMMON_NAME,
     corpCaDebugLog: false,
-    // The quit-time cleanup window, from the timeout policy that already owns
-    // the number. Stated here so the control has something concrete to render
-    // and to persist when the user picks the default back.
+    // The quit-time cleanup window, from the timeout policy that already owns the number. Stated here so
+    // the control has something concrete to render and to persist when the user picks the default back.
     shutdownCleanupTimeoutMs: TOOL_TIMEOUT_POLICY.shutdownCleanupMs,
     sidePanelWidth: SIDE_PANEL_DEFAULT_WIDTH,
     sidebarWidth: SIDEBAR_DEFAULT_WIDTH,
@@ -152,11 +135,11 @@ export const DEFAULT_SETTINGS: AppSettings = {
     pinnedProjectRoots: [],
     archivedProjectRoots: [],
     projectLabels: {},
-    // E4 — auto-launch defaults OFF (opt-in). Only applied on packaged builds.
+    // E4; auto-launch defaults OFF (opt-in). Only applied on packaged builds.
     launchAtStartup: false,
     launchMinimized: false,
   },
-  // E4 — global shortcuts default OFF with no accelerator chosen.
+  // E4; global shortcuts default OFF with no accelerator chosen.
   shortcuts: {
     toggleWindow: null,
     enabled: false,
@@ -164,8 +147,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   plugins: {},
   pluginConfigs: {},
   alerts: {
-    // The master switch is on; every kind is opt-in on its own row, so this
-    // alone notifies nothing.
+    // The master switch is on; every kind is opt-in on its own row, so this alone notifies nothing.
     osNotificationsEnabled: true,
     kinds: {},
   },
@@ -175,99 +157,32 @@ export const DEFAULT_SETTINGS: AppSettings = {
     idlePreferenceRefresh: false,
     // Derived long-term overviews send eligible active notes to the configured model only on opt-in.
     idleMemoryConsolidation: false,
-    // Existing installs do not start a new provider-backed capture path until
-    // the user chooses review or auto in Settings.
+    // Existing installs do not start a new provider-backed capture path until the user chooses review or auto in Settings.
     memoryCaptureMode: "off",
-    // A background child that finishes must be able to reach its parent. With
-    // wake off, its message lands in the mailbox and waits there until the
-    // user happens to type another message in that session (the next user
-    // turn drains the mailbox as guidance) — the result is not lost, but the
-    // parent never acts on it autonomously, and nothing tells the user a
-    // result is waiting. Since `background` is the model's per-spawn choice,
-    // the host cannot know in advance whether a given run needs autonomous
-    // delivery, so wake has to be on for the channel to be trustworthy.
-    //
-    // Wake is not a new authority path: it runs the normal parent `runTurn` and
-    // is still subject to the fail-closed UserPromptSubmit gate, exactly as a
-    // user-typed message is.
+    // Wake delivers background results through the normal parent turn and its fail-closed prompt gate; mailbox-only delivery waits for another user turn.
     subAgentAutonomousWake: true,
-    // A child ask that the automatic reviewer left at `ask` goes to the child's
-    // own parent agent before it goes to the user. Ships ON: the parent wrote
-    // the child's task and is the only party besides the user who knows whether
-    // a given call serves it, and a user who delegated the work did not ask to
-    // arbitrate each step of it. The lane can only narrow to a ONE-SHOT allow,
-    // under a host-enforced verdict ceiling, after every hard check in the
-    // approval gate — and anything it cannot decide still becomes the same user
-    // modal as before.
+    // A child ask that the automatic reviewer left at `ask` goes to the child's own parent agent before it goes to the user. Ships ON: the parent wrote the child's task and is the only party besides the user who knows whether a given call serves it, and a user who
+    // delegated the work did not ask to arbitrate each step of it. The lane can only narrow to a ONE-SHOT allow, under a host-enforced verdict ceiling, after every hard check in the approval gate; and anything it cannot decide still becomes the same user modal as before.
     subAgentParentAdjudication: true,
     // External A2A wire routes are independently opt-in and default OFF.
     a2aLoopbackServer: false,
     a2aRemoteRouting: false,
     a2aRemoteReceiver: false,
 
-    // Fresh installs may start the optional first-boot tour. Persisting an
-    // explicit `false` (instead of relying on `undefined`) keeps the
-    // contract obvious: the flag flips to `true` exactly once, from
-    // `markOnboardingCompleted` after the user finishes (or skips) the
-    // chain. Any other path that wants to suppress the chain must set
-    // this to `true` deliberately — no "missing key === skipped" trap.
+    // Fresh installs may start the optional first-boot tour. Persisting an explicit `false` (instead of relying on `undefined`) keeps the contract obvious: the flag flips to `true` exactly once, from
+    // `markOnboardingCompleted` after the user finishes (or skips) the chain. Any other path that wants to suppress the chain must set this to `true` deliberately; no "missing key === skipped" trap.
     onboardingCompleted: false,
-    // Permission policy host-classifies-risk migration gate. Ships ON — the
-    // host derives the effective category from host-owned signals (foreground
-    // plugin read-relaxation included) instead of trusting the plugin-declared
-    // category. Shadow mode reconciliation completed before this flip; users
-    // can still opt out in Settings.
+    // Permission policy host-classifies-risk migration gate. Ships ON; the host derives the effective category from host-owned signals (foreground plugin
+    // read-relaxation included) instead of trusting the plugin-declared category. Shadow mode reconciliation completed before this flip; users can still opt out in Settings.
     hostClassifiesRisk: true,
-    // Shell sandbox is opt-in on every platform. It decides whether host shells
-    // (bash, powershell, the terminal) run confined; workers: see below it.
-    //
-    // Windows install-time provisioning (NSIS customInstall, issue #1608) makes
-    // opt-in work out of the box, BUT default-on win32 is DEFERRED: Windows
-    // srt-win is only PARTIALLY confined (filesystem + network, no PROCESS
-    // isolation), and the shell-containment gate (`isActiveSandboxShellContained`,
-    // used by bash.ts / powershell.ts) requires full fs+process confinement.
-    //
-    // The shell tools DO handle that partial case now: `buildHostShellExecutionPlan`
-    // routes win32+ASRT to an honest plain host child (`fallbackReason:
-    // "windows-partial-shell-acl-unsafe"`) authorized per invocation by a one-shot
-    // host permit, rather than erroring. So default-on would run; it is withheld
-    // for what it would COST, not what it would break — every bash/powershell call
-    // would take an allow-once approval while gaining no shell isolation, and the
-    // win32 substrate has no live QA evidence (the Windows CI job exercises the
-    // logic, not a provisioned srt-win machine). All platforms remain opt-in;
-    // live QA alone does not change the default activation policy below.
-    //
-    // The default is the same on every platform.
-    //
-    // OFF on every platform, and one policy follows from it: host shells run
-    // exactly as confined as this setting says — unconfined while it is off,
-    // under ASRT once it is on. Turning it (or the worker setting below) on is
-    // where the platform work happens (Windows needs its one-time
-    // provisioning from Settings > Permissions); until then nothing is spawned
-    // as if a sandbox existed. The former darwin-only default made macOS the
-    // one platform where plugin isolation was exercised and left Windows and
-    // Linux with a plugin path that required a sandbox the host had never
-    // asked for.
-    //
-    // Independent of `hostClassifiesRisk` (ON everywhere): with no sandbox the
-    // foreground read-relaxation, which is coupled to the sandbox FILESYSTEM-
-    // CONTAINING the host (ToolExecutor.sandboxFsContainedProvider), falls back
-    // to the pre-exec ask. When ON, boot activates ASRT if the platform sandbox
-    // can run, else the default/settings path DEGRADES (loud warning,
-    // non-bricking); the explicit `AVE_SANDBOX_ENABLED=1` env opt-in stays
-    // fail-closed. See boot.ts + boot/steps/sandbox-gate.ts.
-    osToolSandbox: false,
-    // Plugin-worker confinement: plugin workers, out-of-process plugin
-    // children, plugin script hooks and external MCP stdio servers run under
-    // ASRT exactly when this is on, whatever the shell sandbox above says.
-    // Its own setting (owner 2026-10-16) so that a shell sandbox default can
-    // change without confining workers whose manifests under-declare the
-    // domains they reach. OFF everywhere; `loadSettings` derives it from a
-    // stored `osToolSandbox: true` when a file predates the split.
+    // Request OS confinement by default where the host shell has a supported isolation backend. Windows remains explicitly gated off until its shell isolation is ready.
+    // Stored user values override this default. Settings activation degrades visibly when unavailable; explicit AVE_SANDBOX_ENABLED=1 activation stays fail-closed on macOS/Linux.
+    osToolSandbox: process.platform === "darwin" || process.platform === "linux",
+    // Plugin-worker confinement: plugin workers, out-of-process plugin children, plugin script hooks and external MCP stdio servers run under ASRT exactly when this is on, whatever the shell sandbox above says. Its own setting (owner
+    // 2026-10-16) so that the shell sandbox default can be on without confining workers whose manifests under-declare the domains they reach. OFF everywhere; `loadSettings` derives it from a stored `osToolSandbox: true` when a file predates the split.
     pluginWorkerConfinement: false,
-    // Shell egress asks: a sandboxed shell's connection to a host no grant
-    // covers asks the person (denied when nobody can answer). Off denies such
-    // connections outright. On with the proxy-egress ask (design B, PR 4).
+    // Shell egress asks: a sandboxed shell's connection to a host no grant covers asks the person (denied when
+    // nobody can answer). Off denies such connections outright. On with the proxy-egress ask (design B, PR 4).
     shellEgressAsk: true,
   },
 };

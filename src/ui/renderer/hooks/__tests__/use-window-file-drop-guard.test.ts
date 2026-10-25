@@ -2,8 +2,8 @@ import { describe, it, expect, afterEach } from "vitest";
 import { renderHook, cleanup } from "@testing-library/react";
 import { useWindowFileDropGuard } from "../use-window-file-drop-guard.js";
 
-// Unmount each rendered hook between tests so its window listeners detach —
-// otherwise leftover guards from prior tests would fire on later dispatches.
+// Unmount each rendered hook between tests so its window listeners detach — otherwise leftover guards from prior tests
+// would fire on later dispatches.
 afterEach(() => cleanup());
 
 /**

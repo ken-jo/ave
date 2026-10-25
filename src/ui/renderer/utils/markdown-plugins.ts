@@ -1,12 +1,4 @@
-// Shared remark plugin config for every ReactMarkdown surface in the
-// renderer. All chat surfaces (assistant card, trigger card, imported
-// trigger summary/response, routine card, etc.) MUST import from here so
-// markdown behavior stays in lockstep — copying the tuple inline lets one
-// component drift while the others stay correct.
-//
-// `singleTilde: false` forces strikethrough to require `~~text~~` (GFM
-// standard). Without it remark-gfm renders `7~12℃` style ranges as a
-// `<del>` between the tildes.
+// Share one markdown configuration across chat surfaces; singleTilde:false preserves literal ranges such as 7~12℃.
 
 import remarkGfm from "remark-gfm";
 import type { Options } from "react-markdown";
@@ -17,9 +9,6 @@ type MarkdownNode = {
   children?: MarkdownNode[];
   [key: string]: unknown;
 };
-
-
-
 
 export function remarkKoreanAdjacentStrong() {
   return (tree: MarkdownNode) => {
@@ -77,8 +66,8 @@ function splitLiteralStrong(value: string): MarkdownNode[] {
   return out;
 }
 
-// Use the type from `react-markdown` (a direct dependency) rather than
-// `unified` (a transitive one) so the package boundary stays clean.
+// Use the type from `react-markdown` (a direct dependency) rather than `unified` (a transitive one) so the package
+// boundary stays clean.
 export const MARKDOWN_REMARK_PLUGINS: Options["remarkPlugins"] = [
   [remarkGfm, { singleTilde: false }],
   remarkKoreanAdjacentStrong,

@@ -1,13 +1,4 @@
-/**
- * Shell tool family tests — bash, powershell, and the background-shell
- * registry with its bash_output / bash_kill tools, colocated with
- * {@link ../shell-tools.ts}. Each original suite keeps its own enclosing
- * describe so its hooks and helpers stay scoped to its own tests.
- *
- * The spawnWithSandbox isolated-HOME integration test stays in
- * bash-sandbox-home-integration.test.ts: it vi.mocks asrt-sandbox.js
- * file-wide, which must not leak onto the unmocked suites here.
- */
+// Keep isolated-HOME sandbox mocks in their own suite so they cannot leak into native shell tests.
 
 import type { PowerShellArgument, PowerShellValueArgument } from "../powershell-ast.js";
 import { EventEmitter } from "node:events";
@@ -45,16 +36,6 @@ import {
   _spawnPowerShellForTest,
 } from "../shell-tools.js";
 
-/**
- * BashTool (Tier A1) unit tests — real `sh -c` spawn, no mocks.
- *
- * Uses harmless commands (echo, false, sleep, yes|head) so the test
- * suite remains fast and side-effect free on macOS/Linux CI.
- *
- * BashTool extends the canonical {@link ../base.js ZodTool}, so tests
- * exercise it through the same {@link execute} entry point the §6.4
- * {@link ../registry.js ToolRegistry} uses in production — no adapter.
- */
 describe("bash tool", () => {
   const ctx = (cwd: string = process.cwd()): ToolExecutionContext => ({
     cwd,
@@ -116,7 +97,6 @@ describe("bash tool", () => {
         ctx(),
       );
       expect(result.isError).toBe(false);
-      // "yes" outputs "y\n" repeated -> 20_000 chars -> must be truncated.
       expect(result.output.length).toBeGreaterThan(12_000);
       expect(result.output.length).toBeLessThan(12_100);
       expect(result.output.endsWith("...[truncated]...")).toBe(true);
@@ -141,14 +121,12 @@ describe("bash tool", () => {
         { ...ctx(dir), abortSignal: controller.signal },
       );
       try {
-        // `> child.pid` creates the file before printf writes it, so existence
-        // alone can expose an empty file and a pid of 0 — and process.kill(0, 0)
-        // probes our own process group, which never throws. Wait for the pid.
+        // Wait for a nonempty child PID; redirection creates the file first, and PID 0 would probe our own group.
         const pid = await vi.waitFor(() => {
           const text = existsSync(pidFile) ? readFileSync(pidFile, "utf8") : "";
           expect(text).toMatch(/^[1-9][0-9]*$/u);
           return Number(text);
-        }, { timeout: 5_000 }); // the shell starting under a loaded CI runner can take over the 1 s default
+        }, { timeout: 5_000 }); // Allow shell startup slack under runner load.
         controller.abort();
         const result = await pending;
         expect(result.isError).toBe(true);
@@ -188,8 +166,7 @@ describe("bash tool", () => {
         expect(result.isError).toBe(true);
         expect(result.metadata?.timedOut).toBe(true);
         expect(result.output).toMatch(/timed out/i);
-        // Expiry is a RETRYABLE tool error, not a thrown failure: the call
-        // returns a normal ToolResult and tells the caller how to escalate.
+        // Timeouts return retryable tool errors rather than throwing.
         expect(result.output).toMatch(/retry with a larger `timeoutSeconds`/i);
       },
     );
@@ -201,8 +178,7 @@ describe("bash tool", () => {
         const tool = new BashTool();
         const timedOut = await tool.execute({ command: "sleep 3", timeoutSeconds: 1 }, ctx());
         expect(timedOut.metadata?.timedOut).toBe(true);
-        // Same command, larger budget — the escalation path the timeout message
-        // advertises must actually work.
+        // Verify the larger timeout advertised by retry guidance works.
         const retried = await tool.execute({ command: "sleep 3", timeoutSeconds: 10 }, ctx());
         expect(retried.isError).toBe(false);
         expect(retried.metadata?.timedOut).toBeFalsy();
@@ -220,19 +196,16 @@ describe("bash tool", () => {
       expect(result.isError).toBe(true);
       expect(result.metadata?.interactiveRequired).toBe(true);
       expect(result.output.toLowerCase()).toContain("interactive");
-      // Did NOT actually spawn — returncode should be absent.
       expect(result.metadata).not.toHaveProperty("returncode");
     });
 
     it("allows a command that looks interactive but has -y flag", async () => {
-      // Use a harmless echo with the literal scaffold string + -y to exercise
-      // the allow branch without spawning a real scaffolder.
+      // Use harmless echo to exercise scaffold preflight without invoking a scaffolder.
       const tool = new BashTool();
       const result = await tool.execute(
         { command: "echo some-app -y", timeoutSeconds: SHELL_TIMEOUT_SECONDS },
         ctx(),
       );
-      // Preflight did NOT block — metadata.interactiveRequired is undefined.
       expect(result.metadata?.interactiveRequired).toBeUndefined();
       expect(result.isError).toBe(false);
       expect(result.output).toBe("some-app -y");
@@ -430,9 +403,7 @@ describe("bash tool", () => {
       }
     });
 
-    // A walk that only prints paths reaches nothing a read could not reach
-    // directly, and reads are not confined to the workspace, so refusing it was
-    // refusing the read the host admits.
+    // Path-printing walks retain wide-read access.
     it("spawns a read-only recursive traversal", async () => {
       const root = mkdtempSync(join(tmpdir(), "ave-bash-recursive-read-"));
       try {
@@ -448,9 +419,7 @@ describe("bash tool", () => {
   });
 
   describe("BashTool — schema default", () => {
-    // Hardcoded numeric expectations pin the model-facing contract. If the
-    // SOT changes (e.g. shellDefaultMs becomes 61_000), these tests break and
-    // force an explicit decision instead of silently drifting the contract.
+    // Fixed numeric expectations require explicit changes to the model-facing timeout contract.
     it("input schema defaults timeoutSeconds to 120 when omitted — a deadline always exists", () => {
       const parsed = BashToolInputSchema.parse({ command: "echo hi" });
       expect(parsed.timeoutSeconds).toBe(120);
@@ -484,24 +453,20 @@ describe("bash tool", () => {
     });
   });
 
-  // ── env allowlist — secrets must NOT leak to child process ────
+  // Parent secrets must not reach child environments.
 
   describe("BashTool — env allowlist: secrets must not reach child", () => {
     it("does not leak AVE_TEST_SECRET to the spawned child", async () => {
-      // Arrange: set a secret in the parent env
       const SECRET_KEY = "AVE_TEST_SECRET";
       const SECRET_VAL = "secret-xyz-12345";
       const prev = process.env[SECRET_KEY];
       process.env[SECRET_KEY] = SECRET_VAL;
       try {
         const tool = new BashTool();
-        // `env` prints all env vars; if the filter works, AVE_TEST_SECRET
-        // is absent and grep exits 1 (isError=true with "(no output)").
         const result = await tool.execute(
           { command: "env | grep AVE_TEST_SECRET || true", timeoutSeconds: SHELL_TIMEOUT_SECONDS },
           ctx(),
         );
-        // The child exited cleanly (|| true) but no match should be found
         expect(result.output).not.toContain(SECRET_VAL);
         expect(result.output).not.toContain("AVE_TEST_SECRET=");
       } finally {
@@ -533,8 +498,6 @@ describe("bash tool", () => {
         { command: "which echo || true", timeoutSeconds: SHELL_TIMEOUT_SECONDS },
         ctx(),
       );
-      // We expect either "/bin/echo", "/usr/bin/echo", or similar — just
-      // verify PATH was not stripped (output contains "echo")
       expect(result.output).toContain("echo");
     });
   });
@@ -632,9 +595,7 @@ describe("powershell tool", () => {
       onTestFinished(cleanup);
       try {
         const pid = await Promise.race([childPid, pending.then(() => { throw new Error("Command ended before reporting its child"); })]);
-        // Keep this observer outside the command's process tree. Acquire the
-        // native handle before cancellation and retain it through the final
-        // probe, so exit notification and PID reuse cannot race the assertion.
+        // Retain a native handle from outside the command tree through cancellation to prevent PID-reuse races.
         const observer = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", [
           "$ErrorActionPreference = 'Stop'",
           `$target = [Diagnostics.Process]::GetProcessById(${pid})`,
@@ -847,19 +808,7 @@ describe("powershell tool", () => {
   });
 });
 
-/**
- * pwsh 7 binShell threading.
- *
- * `resolvePowerShellExecutable()` must prefer PowerShell 7 (`pwsh.exe`) on
- * win32 when it is on PATH, falling back to Windows PowerShell 5.1
- * (`powershell.exe`). The sandbox spawn path derives ASRT's `binShell` token
- * from that resolved flavor via `binShellForExecutable`, so the sandboxed inner
- * shell equals the unsandboxed one (no silent 7→5.1 downgrade under the sandbox).
- *
- * These tests exercise the pure resolver + token mapper. The actual ASRT spawn
- * (`wrapToolCommand`) is not invoked — the binShell wiring inside
- * spawnPowerShellWithSandbox simply reads `binShellForExecutable(executable)`.
- */
+// Prefer pwsh when available and pass the same resolved shell flavor into sandbox wrapping.
 describe("powershell binShell resolution", () => {
   const ORIGINAL_PLATFORM = process.platform;
   const ORIGINAL_PATH = process.env["PATH"];
@@ -911,13 +860,11 @@ describe("powershell binShell resolution", () => {
 
       const resolved = resolvePowerShellExecutable();
       expect(resolved).toBe("pwsh.exe");
-      // The sandbox path would hand ASRT 'pwsh', matching the resolved binary.
       expect(binShellForExecutable(resolved)).toBe("pwsh");
     });
 
     it("falls back to powershell.exe when pwsh.exe is absent from PATH", () => {
       setProcessPlatform("win32");
-      // A directory with no pwsh.exe in it.
       const dir = createTestDir("ave-nopwsh-");
       process.env["PATH"] = dir;
       process.env["PATHEXT"] = ".COM;.EXE;.BAT;.CMD";
@@ -930,9 +877,7 @@ describe("powershell binShell resolution", () => {
     it("finds pwsh via a bare PATHEXT suffix entry (pwsh + .EXE)", () => {
       setProcessPlatform("win32");
       const dir = createTestDir("ave-pwshext-");
-      // Only the suffix-appended form exists; the bare 'pwsh.exe' literal probe
-      // and the PATHEXT loop both look at the same path here, but assert the
-      // suffix branch resolves when PATH lists a directory containing pwsh.exe.
+      // Cover executable suffix resolution from PATH.
       writeFileSync(join(dir, "pwsh.exe"), "");
       process.env["PATH"] = ["/nonexistent", dir].join(delimiter);
       process.env["PATHEXT"] = ".EXE";
@@ -949,7 +894,6 @@ describe("powershell binShell resolution", () => {
 });
 
 describe("background shells", () => {
-  /** Minimal ChildProcess stand-in: stdout/stderr emitters + kill + exit/close/error. */
   function fakeChild(): {
     child: import("node:child_process").ChildProcess;
     stdout: EventEmitter;
@@ -998,7 +942,6 @@ describe("background shells", () => {
       expect(first?.output).toBe("hello warn");
       expect(first?.status).toBe("running");
 
-      // Second read returns only what arrived since the first.
       f.stdout.emit("data", Buffer.from("!"));
       const second = backgroundShellManager.read("s1", id);
       expect(second?.output).toBe("!");
@@ -1036,7 +979,6 @@ describe("background shells", () => {
       expect(backgroundShellManager.read("s2", id)).toBeUndefined();
       expect(backgroundShellManager.kill("s2", id)).toBeUndefined();
       expect(f.kill).not.toHaveBeenCalled();
-      // Owner still sees it.
       expect(backgroundShellManager.read("s1", id)).toBeDefined();
     });
 
@@ -1047,7 +989,6 @@ describe("background shells", () => {
       const r = backgroundShellManager.read("s1", id);
       expect(r?.truncated).toBe(true);
       expect(r?.output.length).toBe(MAX_OUTPUT_CHARS);
-      // Further output is dropped.
       f.stdout.emit("data", Buffer.from("more"));
       expect(backgroundShellManager.read("s1", id)?.output).toBe("");
     });
@@ -1069,10 +1010,10 @@ describe("background shells", () => {
       const idA = backgroundShellManager.register({ sessionId: "s1", command: "a", child: a.child, startedAt: "t" });
       a.stdout.emit("data", Buffer.from("done"));
       a.emitClose(0);
-      expect(backgroundShellManager.read("s1", idA)?.output).toBe("done"); // fully consumed
+      expect(backgroundShellManager.read("s1", idA)?.output).toBe("done");
       const b = fakeChild();
       backgroundShellManager.register({ sessionId: "s1", command: "b", child: b.child, startedAt: "t" });
-      expect(backgroundShellManager.read("s1", idA)).toBeUndefined(); // reaped
+      expect(backgroundShellManager.read("s1", idA)).toBeUndefined();
       expect(backgroundShellManager._size()).toBe(1);
     });
 
@@ -1083,7 +1024,7 @@ describe("background shells", () => {
       a.emitClose(0);
       const b = fakeChild();
       backgroundShellManager.register({ sessionId: "s1", command: "b", child: b.child, startedAt: "t" });
-      expect(backgroundShellManager.read("s1", idA)?.output).toBe("unread"); // still fetchable
+      expect(backgroundShellManager.read("s1", idA)?.output).toBe("unread");
     });
   });
 

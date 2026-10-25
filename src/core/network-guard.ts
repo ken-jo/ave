@@ -32,17 +32,10 @@ import { isIPv4, isIPv6 } from "node:net";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 
 export class NetworkGuardError extends Error {
-  /**
-   * For an {@link AddressPolicy} verdict: how restrictive the refusal is. When
-   * every answer of a lookup is refused, the hop fails with the refusal of
-   * the highest rank (the most restrictive class dropped).
-   */
+  /** For an {@link AddressPolicy} verdict: how restrictive the refusal is. When every answer of a lookup
+   * is refused, the hop fails with the refusal of the highest rank (the most restrictive class dropped). */
   readonly rank: number;
-  /**
-   * For an {@link AddressPolicy} verdict: the answer is not dropped but fails
-   * the hop, even when other answers pass (a target that needs a decision
-   * the caller has not made).
-   */
+  /** For an {@link AddressPolicy} verdict: the answer is not dropped but fails the hop, even when other answers pass (a target that needs a decision the caller has not made). */
   readonly fatal: boolean;
 
   constructor(message: string, options: { cause?: unknown; rank?: number; fatal?: boolean } = {}) {
@@ -53,39 +46,17 @@ export class NetworkGuardError extends Error {
   }
 }
 
-/**
- * What one resolved address is to the guard (design §18.2.1). One list of
- * ranges answers every caller; the refusals and warnings built on it belong
- * to the caller.
- *
- *   - `public`: {@link isGloballyRoutableAddress};
- *   - `internal`: RFC 1918, ULA, CGNAT and `198.18.0.0/15` (fake-IP proxy
- *     tools answer every name from it), minus the metadata addresses;
- *   - `this-computer`: loopback and the unspecified addresses, which reach
- *     loopback;
- *   - `metadata`: link-local and the cloud metadata addresses inside ULA and
- *     CGNAT;
- *   - `unroutable`: every other special-purpose block.
- *
- * IPv4-mapped IPv6 and NAT64 take the class of the IPv4 address they embed.
- * Anything that is not an IP address is `unroutable`: there is no address
- * to judge.
- */
+/** What one resolved address is to the guard (design §18.2.1). One list of ranges answers every caller; the refusals and warnings built on it belong to the caller. - `public`: {@link isGloballyRoutableAddress}; - `internal`: RFC 1918, ULA, CGNAT and `198.18.0.0/15` (fake-IP proxy tools answer every name from it), minus the metadata addresses; -
+ * `this-computer`: loopback and the unspecified addresses, which reach loopback; - `metadata`: link-local and the cloud metadata addresses inside ULA and CGNAT; - `unroutable`: every other special-purpose block. IPv4-mapped IPv6 and NAT64 take the class of the IPv4 address they embed. Anything that is not an IP address is `unroutable`: there is no address to judge. */
 export type AddressClass = "public" | "internal" | "this-computer" | "metadata" | "unroutable";
 
-/**
- * What a caller decides for one resolved address of one hop: allowed, or the
- * refusal (dropped, or `fatal`) as a {@link NetworkGuardError}. It replaces
- * the three `allow*` axes for a caller that passes it.
- */
+/** What a caller decides for one resolved address of one hop: allowed, or the refusal (dropped, or
+ * `fatal`) as a {@link NetworkGuardError}. It replaces the three `allow*` axes for a caller that passes it. */
 type AddressVerdict = "allow" | NetworkGuardError;
 export type AddressPolicy = (address: string, hop: URL) => AddressVerdict;
 
-/**
- * A transport that resolves the hop's host once and connects only to the
- * answers `select` keeps (design §18.2.4), so the address that was checked is
- * the address that is used. `select` throws when no answer may be used.
- */
+/** A transport that resolves the hop's host once and connects only to the answers `select` keeps (design
+ * §18.2.4), so the address that was checked is the address that is used. `select` throws when no answer may be used. */
 export type AddressCheckedFetch = (
   url: string,
   init: RequestInit,
@@ -93,42 +64,19 @@ export type AddressCheckedFetch = (
 ) => Promise<Response>;
 
 export interface NetworkGuardOptions {
-  /**
-   * Allows RFC1918 IPv4 and IPv6 ULA addresses after an upstream approval
-   * gate has authorized the request. A predicate scopes that approval to
-   * the current redirect hop URL. Loopback, link-local, metadata, CGNAT
-   * (see {@link allowCarrierGradeNat}), and 0.0.0.0/8 remain blocked.
-   */
+  /** Allows RFC1918 IPv4 and IPv6 ULA addresses after an upstream approval gate has authorized the request. A predicate scopes that approval
+   * to the current redirect hop URL. Loopback, link-local, metadata, CGNAT (see {@link allowCarrierGradeNat}), and 0.0.0.0/8 remain blocked. */
   allowPrivateNetworks?: boolean | ((url: URL) => boolean);
-  /**
-   * Allows loopback addresses after a separate local-development approval
-   * gate has authorized the request. A predicate scopes that approval to the
-   * current redirect hop URL. Link-local, metadata, CGNAT, and 0.0.0.0/8
-   * remain blocked.
-   */
+  /** Allows loopback addresses after a separate local-development approval gate has authorized the request. A predicate
+   * scopes that approval to the current redirect hop URL. Link-local, metadata, CGNAT, and 0.0.0.0/8 remain blocked. */
   allowLoopback?: boolean | ((url: URL) => boolean);
-  /**
-   * Allows CGNAT addresses (100.64.0.0/10) after an explicit endpoint trust
-   * decision has authorized the request. A predicate scopes that approval to
-   * the current redirect hop URL. Loopback, link-local, metadata, RFC1918, and
-   * 0.0.0.0/8 remain blocked.
-   *
-   * Its own axis rather than a widening of {@link allowPrivateNetworks}: this
-   * is the range an authenticated overlay network (tailnet) draws peer
-   * addresses from, and it is also what a carrier hands out ahead of a NAT the
-   * host does not control. A caller that trusts its own LAN must not silently
-   * inherit the overlay, and a caller that trusts one named overlay peer must
-   * not silently inherit the LAN.
-   */
+  /** Allows CGNAT addresses (100.64.0.0/10) after an explicit endpoint trust decision has authorized the request. A predicate scopes that approval to the current redirect hop URL. Loopback, link-local, metadata, RFC1918, and 0.0.0.0/8 remain blocked. Its own axis rather than a widening of {@link allowPrivateNetworks}: this
+   * is the range an authenticated overlay network (tailnet) draws peer addresses from, and it is also what a carrier hands out ahead of a NAT the host does not control. A caller that trusts its own LAN must not silently inherit the overlay, and a caller that trusts one named overlay peer must not silently inherit the LAN. */
   allowCarrierGradeNat?: boolean | ((url: URL) => boolean);
 }
 
-/**
- * A caller that judges each resolved address itself. The guard resolves
- * nothing for it: the transport resolves each hop once and keeps the answers
- * the policy allows (`selectAnswers`), so the check is bound to the
- * connection instead of to a separate, earlier lookup.
- */
+/** A caller that judges each resolved address itself. The guard resolves nothing for it: the transport resolves each hop once and keeps
+ * the answers the policy allows (`selectAnswers`), so the check is bound to the connection instead of to a separate, earlier lookup. */
 export type AddressPolicyFetchInit = RequestInit & {
   addressPolicy: AddressPolicy;
   fetchImpl: AddressCheckedFetch;
@@ -137,24 +85,16 @@ export type AddressPolicyFetchInit = RequestInit & {
 };
 
 type NetworkGuardFetchInit = RequestInit & NetworkGuardOptions & {
-  /**
-   * The transport this request runs on. REQUIRED, and deliberately without a
-   * default.
-   *
-   * It used to default to the ambient `fetch`, which is Node's — a stack that
-   * reads neither the machine's proxy configuration nor its trust store. A
-   * caller that passed the guard but forgot the transport therefore went out
-   * direct, on a path the user never chose, and said nothing about it. The
-   * guard is the one place every caller here already passes through, so the
-   * requirement lives here: forgetting the transport is now a compile error
-   * rather than a silent route change.
-   */
+  /** Host permission check on every actual destination, before transport. */
+  authorizeTarget?: (url: URL) => Promise<void>;
+  /** The transport this request runs on. REQUIRED, and deliberately without a default. It used to default to the ambient `fetch`, which is Node's; a stack that reads neither the machine's proxy configuration nor its trust store. A caller that passed the guard but forgot the
+   * transport therefore went out direct, on a path the user never chose, and said nothing about it. The guard is the one place every caller here already passes through, so the requirement lives here: forgetting the transport is now a compile error rather than a silent route change. */
   fetchImpl: typeof fetch;
   maxRedirects?: number;
   timeoutMs?: number;
 };
 
-// ─── Private / reserved IPv4 ranges (RFC 1918, 5735, 6598, 3927) ────
+// Private / reserved IPv4 ranges (RFC 1918, 5735, 6598, 3927)
 const RFC1918_IPV4_RANGES: Array<[bigint, bigint]> = [
   // 10.0.0.0/8
   [ipv4ToBigInt("10.0.0.0"), ipv4ToBigInt("10.255.255.255")],
@@ -164,7 +104,7 @@ const RFC1918_IPV4_RANGES: Array<[bigint, bigint]> = [
   [ipv4ToBigInt("192.168.0.0"), ipv4ToBigInt("192.168.255.255")],
 ];
 
-// 100.64.0.0/10 (CGNAT) — also the tailnet peer range.
+// 100.64.0.0/10 (CGNAT); also the tailnet peer range.
 const CGNAT_IPV4_RANGE: [bigint, bigint] = [
   ipv4ToBigInt("100.64.0.0"),
   ipv4ToBigInt("100.127.255.255"),
@@ -172,26 +112,12 @@ const CGNAT_IPV4_RANGE: [bigint, bigint] = [
 
 
 
-// ─── IANA special-purpose address registry ─────────────────────────────
-/**
- * The blocks IANA records as special-purpose, with the entries it marks
- * "globally reachable: True" carved back out.
- *
- * The RFC1918 ranges above answer "is this the user's own network?", which is
- * a question with a legitimate yes: a caller can opt into it. These answer a
- * different one — "could a packet to this address reach a host on the public
- * internet at all?" — and for documentation, benchmarking, multicast and
- * reserved space the answer is no under any option. Keeping the two sets
- * apart is what lets `allowPrivateNetworks` open a LAN without also opening
- * 224.0.0.0/4.
- *
- * Written as CIDR text rather than packed integers so each line can be read
- * against the registry it came from.
- */
+// The blocks IANA records as special-purpose, with the entries it marks "globally reachable: True" carved back out. The RFC1918 ranges above answer "is this the user's own network?", which is a question with a legitimate yes: a caller can opt into it. These answer a different one; "could a packet to this address reach a host on the public
+// internet at all?"; and for documentation, benchmarking, multicast and reserved space the answer is no under any option. Keeping the two sets apart is what lets `allowPrivateNetworks` open a LAN without also opening 224.0.0.0/4. Written as CIDR text rather than packed integers so each line can be read against the registry it came from.
 const SPECIAL_PURPOSE_IPV4 = [
   "0.0.0.0/8", // this network
   "10.0.0.0/8", // private-use
-  "100.64.0.0/10", // shared address space (CGNAT) — also the tailnet peer range
+  "100.64.0.0/10", // shared address space (CGNAT); also the tailnet peer range
   "127.0.0.0/8", // loopback
   "169.254.0.0/16", // link-local, including the 169.254.169.254 metadata service
   "172.16.0.0/12", // private-use
@@ -225,7 +151,7 @@ const SPECIAL_PURPOSE_IPV6 = [
 
 /** Special-purpose IPv6 entries IANA still marks globally reachable. */
 const GLOBALLY_REACHABLE_IPV6 = [
-  "64:ff9b::/96", // NAT64 — outside 2000::/3, so it needs the exception to pass
+  "64:ff9b::/96", // NAT64; outside 2000::/3, so it needs the exception to pass
   "2001:1::1/128", // PCP anycast
   "2001:1::2/128", // TURN anycast
   "2001:1::3/128", // DNS-SD service registration
@@ -236,14 +162,11 @@ const GLOBALLY_REACHABLE_IPV6 = [
   "2620:4f:8000::/48", // direct delegation AS112 service
 ] as const;
 
-/** Global unicast — everything a public IPv6 destination must be inside. */
+/** Global unicast; everything a public IPv6 destination must be inside. */
 const GLOBAL_UNICAST_IPV6 = "2000::/3";
 
-/**
- * The three ranges a caller can OPT INTO. They are matched by their own
- * predicates rather than by "not globally routable", so tightening the
- * routable answer above can never widen what an opt-in reaches.
- */
+/** The three ranges a caller can OPT INTO. They are matched by their own predicates rather than by "not
+ * globally routable", so tightening the routable answer above can never widen what an opt-in reaches. */
 const LOOPBACK_IPV4 = "127.0.0.0/8";
 const LOOPBACK_IPV6 = "::1/128";
 const UNIQUE_LOCAL_IPV6 = "fc00::/7";
@@ -251,7 +174,7 @@ const UNIQUE_LOCAL_IPV6 = "fc00::/7";
 interface AddressBlock {
   network: bigint;
   prefix: number;
-  /** 32 for IPv4, 128 for IPv6 — the width the prefix is measured against. */
+  /** 32 for IPv4, 128 for IPv6; the width the prefix is measured against. */
   bits: 32 | 128;
 }
 
@@ -282,14 +205,8 @@ const LOOPBACK_IPV6_BLOCK = parseIpv6Block(LOOPBACK_IPV6);
 const NAT64_IPV6_BLOCK = parseIpv6Block("64:ff9b::/96");
 const UNIQUE_LOCAL_IPV6_BLOCK = parseIpv6Block(UNIQUE_LOCAL_IPV6);
 
-/**
- * Expand an IPv6 literal to its 128 bits, or `null` when it is malformed.
- *
- * Textual prefix tests do not survive contact with the address forms a URL can
- * carry: `::1` and `0:0:0:0:0:0:0:1` name the same host, a zone id can be
- * appended, and `::ffff:1.2.3.4` embeds a dotted quad. Expanding once and
- * comparing numbers is the only form that answers the same for all of them.
- */
+/** Expand an IPv6 literal to its 128 bits, or `null` when it is malformed. Textual prefix tests do not survive contact with the address forms a URL can carry: `::1` and `0:0:0:0:0:0:0:1`
+ * name the same host, a zone id can be appended, and `::ffff:1.2.3.4` embeds a dotted quad. Expanding once and comparing numbers is the only form that answers the same for all of them. */
 function ipv6ToBigInt(address: string): bigint | null {
   let input = address.toLowerCase().split("%")[0]!;
   const embeddedIpv4 = input.match(/^(.*:)(\d+\.\d+\.\d+\.\d+)$/);
@@ -311,22 +228,7 @@ function ipv6ToBigInt(address: string): bigint | null {
   return parts.reduce((value, part) => (value << 16n) | BigInt(Number.parseInt(part, 16)), 0n);
 }
 
-/**
- * Can a packet to `address` reach a host on the public internet?
- *
- * This is the shared answer for every caller that has to refuse a destination
- * the user did not choose — the SSRF guard below, and the A2A remote transport
- * in `api/a2a-remote-transport.ts`, which used to carry a second copy. Two
- * copies of this question is one classifier more than the codebase can keep
- * consistent: they disagreed on multicast, on reserved space, and on every
- * IPv6 address outside global unicast, so the two subsystems refused different
- * sets while both looked like they were asking the same thing.
- *
- * IPv4 is a deny-list because the registry is: anything not recorded as
- * special-purpose is routable. IPv6 is an allow-list — global unicast, minus
- * the special-purpose blocks inside it — because the address space is mostly
- * unassigned, and unassigned is not the same as reachable.
- */
+/** Share one public-address classifier across outbound transports: deny special-purpose IPv4 ranges and allow only nonspecial global-unicast IPv6. */
 export function isGloballyRoutableAddress(address: string): boolean {
   if (isIPv4(address)) {
     const value = ipv4ToBigInt(address);
@@ -337,9 +239,7 @@ export function isGloballyRoutableAddress(address: string): boolean {
     const value = ipv6ToBigInt(address);
     if (value === null) return false;
     if (inBlock(value, NAT64_IPV6_BLOCK)) {
-      // The gateway forwards to the IPv4 address in the low 32 bits, so the
-      // address reaches exactly what that one does: 64:ff9b::a9fe:a9fe is the
-      // metadata service, not the internet.
+      // The gateway forwards to the IPv4 address in the low 32 bits, so the address reaches exactly what that one does: 64:ff9b::a9fe:a9fe is the metadata service, not the internet.
       const v4 = value & 0xffffffffn;
       return isGloballyRoutableAddress([24n, 16n, 8n, 0n].map((shift) => String((v4 >> shift) & 0xffn)).join("."));
     }
@@ -390,18 +290,8 @@ export function classifyAddress(address: string): AddressClass {
   return "unroutable";
 }
 
-/**
- * The answers of one lookup a connection may use under `policy` (design
- * §18.2.4).
- *
- *   - `connectable` (a transport Ave owns): refused answers are dropped and
- *     the connection uses the rest; a `fatal` verdict on an answer that is
- *     not dropped fails the hop; no answer left fails with the refusal of
- *     the highest rank.
- *   - `every` (a preflight whose connection Ave does not make, such as ssh):
- *     any refused answer fails the operation, since the connection may use
- *     any of them; then a `fatal` verdict does.
- */
+/** The answers of one lookup a connection may use under `policy` (design §18.2.4). - `connectable` (a transport Ave owns): refused answers are dropped and the connection uses the rest; a `fatal` verdict on an answer that is not dropped fails the
+ * hop; no answer left fails with the refusal of the highest rank. - `every` (a preflight whose connection Ave does not make, such as ssh): any refused answer fails the operation, since the connection may use any of them; then a `fatal` verdict does. */
 export function selectAnswers(answers: readonly string[], hop: URL, policy: AddressPolicy, mode: "connectable" | "every" = "connectable"): string[] {
   if (answers.length === 0) throw new NetworkGuardError(`target host did not resolve: ${hop.hostname}`);
   const kept: string[] = [];
@@ -424,15 +314,8 @@ export function selectAnswers(answers: readonly string[], hop: URL, policy: Addr
   return kept;
 }
 
-/**
- * Synchronous syntactic validation for an http(s) URL.
- *
- * Throws {@link NetworkGuardError} on:
- *   - malformed URL
- *   - non-http(s) scheme
- *   - missing host
- *   - embedded credentials (user/pass)
- */
+/** Synchronous syntactic validation for an http(s) URL. Throws {@link NetworkGuardError}
+ * on: - malformed URL - non-http(s) scheme - missing host - embedded credentials (user/pass) */
 export function validateHttpUrl(rawUrl: string): URL {
   let parsed: URL;
   try {
@@ -486,20 +369,8 @@ export async function ensurePublicHttpUrl(
   return parsed;
 }
 
-/**
- * Does `host` land EXCLUSIVELY on this machine?
- *
- * The question {@link ensurePublicHttpUrl} cannot answer: it says "no blocked
- * address here", and a public address is never blocked — so a name that has
- * been poisoned or rebound to a routable host passes it. A caller that is
- * about to do something only safe on the local machine (send cleartext, for
- * one) needs the positive form instead, and gets it from the same resolution
- * and the same loopback predicate the SSRF layer uses — no second notion of
- * "loopback" anywhere.
- *
- * Fails closed: an unresolvable host, or one that answers with nothing, is
- * unproven and therefore not loopback.
- */
+/** Does `host` land EXCLUSIVELY on this machine? The question {@link ensurePublicHttpUrl} cannot answer: it says "no blocked address here", and a public address is never blocked; so a name that has been poisoned or rebound to a routable host passes it. A caller that is about to do something only safe on the
+ * local machine (send cleartext, for one) needs the positive form instead, and gets it from the same resolution and the same loopback predicate the SSRF layer uses; no second notion of "loopback" anywhere. Fails closed: an unresolvable host, or one that answers with nothing, is unproven and therefore not loopback. */
 export async function resolvesToLoopbackOnly(host: string): Promise<boolean> {
   let addresses: string[];
   try {
@@ -510,27 +381,8 @@ export async function resolvesToLoopbackOnly(host: string): Promise<boolean> {
   return addresses.length > 0 && addresses.every(isLoopbackAddress);
 }
 
-/**
- * Does `host` land EXCLUSIVELY on the private network (or this machine)?
- *
- * The second positive form, for the second cleartext exemption: a plugin the
- * user granted `allowPrivateNetworks` may speak http to an INTRANET host,
- * because bytes that never cross the public internet have nothing for https
- * to protect them from on the way. That sentence is only true if every
- * address behind the name is actually private — a name with one public
- * address would put cleartext on the open wire — so this proves the positive
- * with the same resolution and the same classifiers the SSRF layer uses.
- *
- * Loopback counts toward THE PROOF — those bytes stay local — but passing
- * this proof does not reach loopback: whether 127.0.0.1 is reachable at all
- * stays the SSRF layer's decision, under the separate declared-literal grant.
- * A split-horizon name answering 127.0.0.1 alongside 10.x proves private here
- * and is then refused there. Link-local and CGNAT do NOT count — 169.254.x
- * is where cloud metadata lives, and neither range is what "the user's
- * intranet" means.
- *
- * Fails closed: unresolvable, or resolving to nothing, is unproven.
- */
+/** Cleartext intranet access requires every resolved address to be private or loopback; missing answers fail closed.
+ * Link-local and CGNAT do not qualify, and the separate SSRF grant still governs loopback access. */
 export async function resolvesToPrivateNetworkOnly(host: string): Promise<boolean> {
   let addresses: string[];
   try {
@@ -546,24 +398,15 @@ export async function resolvesToPrivateNetworkOnly(host: string): Promise<boolea
   );
 }
 
-/**
- * Drop-in fetch wrapper that enforces per-hop redirect validation
- * and a timeout.
- *
- * Key properties:
- *   - Each redirect hop re-runs {@link ensurePublicHttpUrl} (defense
- *     against DNS rebinding and `Location: http://10.0.0.1/` pivots).
- *   - `redirect: "manual"` so the runtime fetch never silently
- *     follows a hop we have not validated.
- *   - Timeout implemented via `AbortController`.
- *   - Default `maxRedirects = 5`, `timeoutMs = 15000`.
- */
+/** Drop-in fetch wrapper that enforces per-hop redirect validation and a timeout. Key properties: - Each redirect hop re-runs {@link ensurePublicHttpUrl} (defense against DNS rebinding and `Location:
+ * http://10.0.0.1/` pivots). - `redirect: "manual"` so the runtime fetch never silently follows a hop we have not validated. - Timeout implemented via `AbortController`. - Default `maxRedirects = 5`, `timeoutMs = 15000`. */
 export async function fetchPublicHttpResponse(
   rawUrl: string,
   init: NetworkGuardFetchInit,
 ): Promise<Response> {
   const {
     fetchImpl,
+    authorizeTarget,
     allowPrivateNetworks = false,
     allowLoopback = false,
     allowCarrierGradeNat = false,
@@ -573,6 +416,7 @@ export async function fetchPublicHttpResponse(
     ...request
   } = init;
   return followRedirects(rawUrl, request, { maxRedirects, timeoutMs, signal }, async (url, requestInit) => {
+    await authorizeTarget?.(validateHttpUrl(url));
     await ensurePublicHttpUrl(url, { allowPrivateNetworks, allowLoopback, allowCarrierGradeNat });
     return fetchImpl(url, requestInit);
   });
@@ -609,15 +453,12 @@ async function followRedirects(
   const externalSignal = limits.signal;
   let currentUrl = rawUrl;
 
-  // Unbounded loop: the redirect cap is enforced by the single `hop >= maxRedirects`
-  // check below. The last permitted hop (hop === maxRedirects) always returns a final
-  // response or throws, so control never falls through past the loop.
+  // Unbounded loop: the redirect cap is enforced by the single `hop >= maxRedirects` check below. The last permitted
+  // hop (hop === maxRedirects) always returns a final response or throws, so control never falls through past the loop.
   for (let hop = 0; ; hop++) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
-    // Forward aborts from the caller-supplied signal so callers can cancel
-    // long-running requests (e.g., transport.close()). The per-hop timer
-    // still fires independently.
+    // Forward aborts from the caller-supplied signal so callers can cancel long-running requests (e.g., transport.close()). The per-hop timer still fires independently.
     let externalAbortListener: (() => void) | null = null;
     if (externalSignal) {
       if (externalSignal.aborted) {
@@ -654,11 +495,8 @@ async function followRedirects(
   }
 }
 
-// ─── Internals ──────────────────────────────────────────────────────
-
 async function resolveHostAddresses(host: string): Promise<string[]> {
-  // `URL.hostname` keeps IPv6 brackets (e.g. "[::1]") — strip them
-  // before handing to `isIPv4` / `isIPv6` / `dns.lookup`.
+  // `URL.hostname` keeps IPv6 brackets (e.g. "[::1]"); strip them before handing to `isIPv4` / `isIPv6` / `dns.lookup`.
   const bare = stripIpv6Brackets(host);
   if (isIPv4(bare) || isIPv6(bare)) {
     return [bare];
@@ -674,12 +512,8 @@ function stripIpv6Brackets(host: string): string {
   return host;
 }
 
-/**
- * The SSRF layer's default verdict. Every axis a caller can opt into
- * (`allowPrivateNetworks`, `allowLoopback`, `allowCarrierGradeNat`) is
- * checked separately in `isAllowedAddress` against its own range, so
- * narrowing this function narrows only what passes WITHOUT an opt-in.
- */
+/** The SSRF layer's default verdict. Every axis a caller can opt into (`allowPrivateNetworks`, `allowLoopback`, `allowCarrierGradeNat`) is
+ * checked separately in `isAllowedAddress` against its own range, so narrowing this function narrows only what passes WITHOUT an opt-in. */
 function isPublicAddress(address: string): boolean {
   return isGloballyRoutableAddress(address);
 }
@@ -752,19 +586,12 @@ function isRfc1918Ipv4(address: string): boolean {
   return RFC1918_IPV4_RANGES.some(([start, end]) => num >= start && num <= end);
 }
 
-/**
- * Extracts the dotted-quad IPv4 form from an `::ffff:...` mapped IPv6
- * address. Accepts both the dotted-quad form (`::ffff:10.0.0.1`) and
- * the normalized hex form Node's URL parser emits (`::ffff:a00:1`).
- * Returns `null` on malformed input.
- */
+/** Extracts the dotted-quad IPv4 form from an `::ffff:...` mapped IPv6 address. Accepts both the dotted-quad form
+ * (`::ffff:10.0.0.1`) and the normalized hex form Node's URL parser emits (`::ffff:a00:1`). Returns `null` on malformed input. */
 function ipv4FromMappedIpv6(lower: string): string | null {
-  const tail = lower.slice(7); // after "::ffff:"
-  // Dotted-quad form.
+  const tail = lower.slice(7); // after "::ffff:" Dotted-quad form.
   if (isIPv4(tail)) return tail;
-  // Hex form: one or two hex groups (each 1..4 chars) joined by ":".
-  // Pad each group to 4 chars, concatenate to 8 hex digits, then
-  // split into four bytes.
+  // Hex form: one or two hex groups (each 1..4 chars) joined by ":". Pad each group to 4 chars, concatenate to 8 hex digits, then split into four bytes.
   const groups = tail.split(":");
   if (groups.length < 1 || groups.length > 2) return null;
   let hex = "";

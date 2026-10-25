@@ -1,13 +1,4 @@
-/**
- * AuditTab — the date picker and the row timestamps are HOST-LOCAL. The audit
- * store partitions by UTC day, and the picker used to seed its inputs from the
- * same UTC key, so a host east of UTC showed yesterday as "today" for the
- * first hours of every day.
- *
- * Every case pins `TZ`: CI runs UTC, where local and UTC days coincide and the
- * defect cannot show. Only `Date` is faked so testing-library's `waitFor` keeps
- * real timers.
- */
+/** Pin TZ to expose local/UTC day differences; fake only Date so waitFor keeps real timers. */
 import "../../../../../test/renderer/setup.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, waitFor } from "@testing-library/react";

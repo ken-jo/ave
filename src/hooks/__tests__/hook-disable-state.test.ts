@@ -7,7 +7,7 @@ import { disableHook } from "../hook-discovery.js";
 import { disabledHookOriginalName, hookDisableCausePath, readHookDisableCause, writeHookDisableCause } from "../hook-disable-state.js";
 import { collectHookMatcherDiagnostics } from "../hook-matcher-diagnostics.js";
 
-/** Runs when a cause record is about to be written: plant something at the sidecar, or fail. */
+// Runs when a cause record is about to be written: plant something at the sidecar, or fail.
 const injection = vi.hoisted(() => ({ beforeWrite: undefined as ((path: string) => void) | undefined }));
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
@@ -45,7 +45,6 @@ function linkOrSkip(ctx: TestContext, target: string, path: string): void {
   }
 }
 
-/** Disables an invalid guard script into `.disabled/` and returns where it went. */
 function disableGuard(fileName = "pre-guard.sh"): string {
   const active = join(hooksDir, fileName);
   writeFileSync(active, "#!/bin/sh\n# ave-hook-matcher: *danger*\nexit 0\n");
@@ -122,7 +121,7 @@ describe("disable cause records", () => {
   });
 
   describe.each(["file", "link"] as const)("a user record planted as a %s just before the write", (kind) => {
-    /** Plants at the destination sidecar, never at a path derived from the staging name. */
+    // Plants at the destination sidecar, never at a path derived from the staging name.
     function plant(ctx: TestContext, fail: boolean): { at?: string } {
       const planted: { at?: string } = {};
       injection.beforeWrite = () => {

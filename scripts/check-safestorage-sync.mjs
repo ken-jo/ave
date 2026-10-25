@@ -1,78 +1,37 @@
-/**
- * check-safestorage-sync.mjs — no synchronous safeStorage call may meet Electron 46
- *
- * WHY THIS GATE EXISTS. Electron 45 deprecates the synchronous safeStorage methods
- * (`isEncryptionAvailable`, `encryptString`, `decryptString`), and Electron 46
- * removes them with Chromium's synchronous OSCrypt backend. On 45 they still work
- * and warn once, and what they encrypt stays readable through the async methods
- * (`isAsyncEncryptionAvailable`, `encryptStringAsync`, `decryptStringAsync`), so
- * the move to the async API is its own change rather than part of the 45 bump.
- *
- * What must not happen is a bump to 46 that leaves a synchronous call behind: the
- * call sites are the audit HMAC key store, the desktop secret encryption adapter and
- * the live smoke scripts, and on 46 each would fail at runtime, not at build time.
- * So this gate fails while the installed Electron major is 46 or later and any
- * synchronous member is still reached in `src/` or `scripts/`, and the failure lists
- * every site to move. Below 46 it only reports how many sites are left.
- *
- * WHAT IT READS. Whole files, so a member access split across lines counts. A sync
- * member is reached by `safeStorage.name`, `safeStorage?.name` or
- * `safeStorage["name"]` (also through a member, `this.safeStorage.name`), with any
- * whitespace between the parts, or by destructuring it out of `safeStorage`. A
- * reference is enough: passing `safeStorage.encryptString` along calls it later.
- *
- * WHO MAY TOUCH IT. Only the files in SAFE_STORAGE_OWNERS may name `safeStorage` in
- * a file that also loads Electron (`from "electron"`, `require("electron")`,
- * `import("electron")`); everyone else uses the adapter in
- * `src/main/desktop-secret-encryption.ts`. Any other such file fails on every
- * Electron version: once the object is renamed, re-exported or passed around, no
- * pattern can follow it to its calls, so an allowlist is the only rule that holds.
- * Test files are exempt from that rule, because their `vi.mock("electron", …)` and
- * `mockedElectron.safeStorage` are mocks, not uses; their sync-member references
- * still count toward the migration. Exporting `safeStorage`, or re-exporting it
- * (or all of Electron) from "electron", fails everywhere, owners and test files
- * included.
- */
+// Reject synchronous secret-storage calls on runtimes that removed them.
+// Restrict direct access to owners and forbid re-exports so aliases cannot evade scanning.
 import { readFileSync } from "node:fs";
 import { relative, sep } from "node:path";
 import process from "node:process";
 import { walkSourceFiles } from "./lib/source-walk.mjs";
 
 const ROOT = process.cwd();
-/** The first Electron major without the synchronous methods. */
 export const SYNC_SAFE_STORAGE_REMOVED_IN = 46;
 const SYNC_NAMES = "isEncryptionAvailable|encryptString|decryptString";
-/** `safeStorage.name` / `safeStorage?.name`, whitespace and newlines allowed; `\b` keeps `…Async` out. */
+// Word boundaries keep asynchronous members out; allow whitespace across lines.
 const SYNC_MEMBER = new RegExp(`\\bsafeStorage\\s*(?:\\?\\.|\\.)\\s*(${SYNC_NAMES})\\b`, "g");
-/** `safeStorage["name"]` / `safeStorage?.["name"]`. */
 const SYNC_BRACKET = new RegExp(`\\bsafeStorage\\s*(?:\\?\\.\\s*)?\\[\\s*(["'\`])(${SYNC_NAMES})\\1\\s*\\]`, "g");
-/** `{ … } = safeStorage` (also `= this.safeStorage`), the pattern's body in group 1. */
 const DESTRUCTURE = /\{([^{}]*)\}\s*=\s*(?:[\w$]+\s*(?:\?\.|\.)\s*)*safeStorage\b(?!\s*(?:\?\.|\.|\[))/g;
 const SYNC_NAME = new RegExp(`\\b(${SYNC_NAMES})\\b`, "g");
-/** A file that loads Electron. */
 const ELECTRON_REF = /\bfrom\s*["']electron(?:\/[\w-]+)?["']|\b(?:require|import)\s*\(\s*["']electron(?:\/[\w-]+)?["']\s*\)/;
-/** `export { safeStorage … } from "electron"` and `export * from "electron"`. */
 const ELECTRON_REEXPORT = /\bexport\s+(?:type\s+)?(?:\{[^{}]*\bsafeStorage\b[^{}]*\}|\*(?:\s+as\s+[\w$]+)?)\s*from\s*["']electron(?:\/[\w-]+)?["']/g;
-/** `export { safeStorage }` / `export default safeStorage`: an owner handing the object out. */
 const SAFE_STORAGE_EXPORT = /\bexport\s+(?:default\s+safeStorage\b(?!\s*(?:\?\.|\.|\[))|(?:type\s+)?\{[^{}]*\bsafeStorage\b[^{}]*\}(?!\s*from\b))/g;
 const SAFE_STORAGE_IDENTIFIER = /\bsafeStorage\b/;
-/** The only files that may name `safeStorage` beside Electron. */
 export const SAFE_STORAGE_OWNERS = Object.freeze([
   "src/main/desktop-secret-encryption.ts",
   "scripts/smoke-live-app.mjs",
   "scripts/smoke-live-model.mjs",
 ]);
-/** A vitest file: `__tests__/`, `*.test.*` or `*.spec.*`. */
 export function isTestFile(rel) {
   return /(?:^|\/)__tests__\//.test(rel) || /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(rel);
 }
 const SCAN_DIRS = ["src", "scripts"];
-/** This gate names every form it looks for, so it does not read itself. */
+// This gate contains the patterns it scans for and must exclude itself.
 const SELF = "scripts/check-safestorage-sync.mjs";
 const SKIP_DIRS = new Set([".git", "node_modules", "dist", "out", ".claude", ".worktrees"]);
 const EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".mjs", ".cjs", ".js"];
 
-/** The major of the Electron installed under `root`; an absent or malformed one is the failure. */
+// Missing or malformed runtime versions fail closed.
 export function installedElectronMajor(root = ROOT) {
   let version;
   try {
@@ -91,11 +50,6 @@ function lineAt(text, index) {
   return line;
 }
 
-/**
- * Every reach of a sync member (`kind` "call" or "destructure") in one file's text,
- * and every `aliases` entry: a re-export, or (outside the owners and test files) a
- * use of `safeStorage` beside Electron.
- */
 export function scanSafeStorageText(text, rel = "") {
   const sites = [];
   const aliases = [];
@@ -144,7 +98,6 @@ export function collectSyncSafeStorageCalls(root = ROOT) {
   return { calls, aliases };
 }
 
-/** `electronMajor` overrides the installed one (tests). */
 export function checkSyncSafeStorage(root = ROOT, options = {}) {
   const installed = options.electronMajor === undefined ? installedElectronMajor(root) : { major: options.electronMajor };
   if (installed.error) return { ok: false, problems: [installed.error], calls: [], aliases: [] };

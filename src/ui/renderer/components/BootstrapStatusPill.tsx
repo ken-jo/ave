@@ -1,15 +1,4 @@
-// Managed-plugin bootstrap status, as a toolbar pill.
-//
-// Five outcomes, one per thing the user can do about it — four of them visible:
-//   - start                → muted, spinner, nothing to click
-//   - error                → destructive, click retries the bootstrap
-//   - complete + failed[]  → destructive, click retries the bootstrap
-//   - complete + skipped   → warning, click dismisses the report
-//   - complete, clean      → renders nothing, which is what most launches are:
-//                            the band gains no weight for a success
-//
-// The pill does not auto-clear. The host re-emits start/complete/error during a
-// retry, so the subscription drives the next state.
+// Keep bootstrap results until dismissed or replaced by a retry event; clean completion renders nothing.
 
 import { AlertTriangle, Info, RefreshCw, X } from "lucide-react";
 import { useTranslation } from "../../../i18n/react.js";
@@ -63,9 +52,8 @@ export function BootstrapStatusPill({
   }
 
   if (status.skipped) {
-    // Why the bootstrap was skipped lives in `title`, and hover text is not in
-    // the accessibility tree — so the accessible name carries it too, or a
-    // screen reader is told only that something can be dismissed.
+    // Why the bootstrap was skipped lives in `title`, and hover text is not in the accessibility tree — so the accessible name
+    // carries it too, or a screen reader is told only that something can be dismissed.
     const skippedTitle = t(BOOTSTRAP_SKIP_MESSAGE_KEY[status.skipped.reason]);
     return (
       <ToolbarStatusPill

@@ -23,8 +23,7 @@ import { classifyRemoteFailure, GIT_TIMEOUTS_MS, GitRunner, type GitRemote, type
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { gitFixtureEnv } from "../../../__tests__/support/git-fixture-env.mjs";
 
-// Each immutable token view owns a real broker; matching views share its
-// listener and detected executable. Runner configs and tickets stay private.
+// Each immutable token view owns a real broker; matching views share its listener and detected executable. Runner configs and tickets stay private.
 let sharedRuntime: TestGitRunner;
 const tokenBrokers = new Map<string, Promise<AskpassBroker>>();
 beforeAll(async () => {
@@ -135,8 +134,6 @@ describe("GitRunner invocation contract", () => {
     expect(flags).toEqual([
       "protocol.file.allow=never",
       "submodule.recurse=false",
-      "core.fsmonitor=false",
-      `core.hooksPath=${join(t.dir, "empty")}`,
       "http.followRedirects=false",
       "http.proxy=http://proxy.corp.example:3128",
       "filter.lfs.smudge=",
@@ -145,6 +142,9 @@ describe("GitRunner invocation contract", () => {
       "gc.auto=0",
       "maintenance.auto=false",
       "credential.helper=",
+      "safe.bareRepository=explicit",
+      "core.fsmonitor=false",
+      `core.hooksPath=${join(t.dir, "empty")}`,
     ]);
     // No reset without a stored token for the host (an OS helper answers), or for a source without token auth.
     expect(await t.runner.configArgs(remote("https://gitlab.com/acme/tools"))).not.toContain("credential.helper=");
@@ -497,8 +497,7 @@ describe("GitRunner authentication through the askpass broker", () => {
     writeFileSync(join(t.dir, "gitconfig"), `[credential]\n\thelper = store --file=${store.replaceAll("\\", "/")}\n`);
     server.seen.length = 0;
     try {
-      // A token source over http whose user has not accepted sending the token unencrypted, as a listed
-      // (managed) host is: the listing does not imply it.
+      // A token source over http whose user has not accepted sending the token unencrypted, as a listed (managed) host is: the listing does not imply it.
       const withheld: GitRemote = { ...remote(server.url("private-tools")), credentialsAllowed: false };
       expect(await t.runner.configArgs(withheld)).toContain("credential.helper=");
       const error = await expectCode(
@@ -596,8 +595,8 @@ describe("classifyRemoteFailure", () => {
     ["fatal: unable to access 'https://github.com/a/b/': Failed to connect to github.com port 443 after 2 ms: Couldn't connect to server", false, https, "SOURCE_UNREACHABLE", { reason: "refused", host: "github.com" }],
     ["fatal: unable to access 'https://github.com/a/b/': SSL certificate problem: unable to get local issuer certificate", false, https, "SOURCE_UNREACHABLE", { reason: "tls", host: "github.com" }],
     ["fatal: unable to access 'https://github.com/a/b/': The requested URL returned error: 502", false, https, "SOURCE_UNREACHABLE", { reason: "http-status", host: "github.com", status: 502 }],
-    // A host's "not found" is also its answer for a private repository: with Ave's token the token may not reach it,
-    // without one the address may be wrong or the repository private; neither is claimed.
+    // A host's "not found" is also its answer for a private repository: with Ave's token the token may
+    // not reach it, without one the address may be wrong or the repository private; neither is claimed.
     ["remote: Repository not found.\nfatal: repository 'https://github.com/a/b/' not found", true, https, "SOURCE_AUTH_REQUIRED", { reason: "token-no-access", host: "github.com" }],
     ["remote: Repository not found.\nfatal: repository 'https://github.com/a/b/' not found", false, https, "SOURCE_UNREACHABLE", { reason: "not-found", host: "github.com" }],
     ["fatal: unable to access 'https://git.example.com/a/b/': The requested URL returned error: 404", false, https, "SOURCE_UNREACHABLE", { reason: "not-found", host: "github.com" }],

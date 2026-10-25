@@ -14,7 +14,6 @@ const { assertRipgrepRuntimeFiles, RIPGREP_LICENSE_NOTICES } = createRequire(imp
 
 const repoRoot = resolve(__dirname, "../..");
 const read = (path: string) => readFileSync(join(repoRoot, path), "utf8");
-/** Every installer target: the three desktop platforms times afterPack's arch enum table. */
 const RELEASE_TARGETS = ["darwin", "linux", "win32"].flatMap((platform) =>
   ["x64", "arm64"].map((arch) => ({ platform, arch })));
 
@@ -65,8 +64,7 @@ describe("ripgrep ships for every release target", () => {
   });
 
   it.each(RELEASE_TARGETS)("packaging resolves $platform-$arch to the runtime resolver's package", ({ platform, arch }) => {
-    // The fixture is named after the runtime table, so the packaging table
-    // must name the same package for this target to pass.
+    // Fixture names derive from the runtime table; the packaging table must agree.
     const modules = nodeModulesWith(platform, arch, "rg");
     expect(assertRipgrepRuntimeFiles(modules, platform, arch)).toMatch(/[\\/]bin[\\/]rg(\.exe)?$/);
     const otherArch = arch === "x64" ? "arm64" : "x64";
@@ -91,7 +89,6 @@ describe("ripgrep ships for every release target", () => {
     expect(footprint).toContain("for (const notice of RIPGREP_LICENSE_NOTICES)");
     expect(footprint).toContain('resolve(resourcesDir, "licenses", "ripgrep", notice)');
 
-    // The notices name the versions that actually ship.
     const pinned = manifest.dependencies["@vscode/ripgrep"] as string;
     const readme = read("resources/licenses/ripgrep/README.txt");
     expect(readme).toContain(`@vscode/ripgrep ${pinned}`);

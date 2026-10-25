@@ -1,12 +1,7 @@
 import { test, expect } from './fixtures.js';
 import { closeInlineSettings, openInlineSettings } from './inline-settings.js';
 
-/**
- * The "more in the marketplace" links of the provider, theme and language
- * pickers open Settings → Marketplace on that kind of package (design §15.1).
- * Installing one needs a git source, which an isolated E2E run does not reach;
- * the content install itself is covered by the content store suites.
- */
+// Test picker-to-marketplace routing; isolated runs do not install packages from a remote source.
 test('the provider, theme and language pickers open the git marketplace on their kind', async ({
   app,
   mainWindow,
@@ -15,7 +10,6 @@ test('the provider, theme and language pickers open the git marketplace on their
   const settingsPage = await openInlineSettings(app, mainWindow, 'llm');
 
   const llmTab = settingsPage.getByRole('tab', { name: t('settingsContent.tabLlm'), exact: true });
-  // Exact names: the marketplace's own kind tabs read "Theme 0", "Language 0".
   const appearanceTab = settingsPage.getByRole('tab', {
     name: t('settingsContent.tabAppearance'),
     exact: true,
@@ -26,8 +20,7 @@ test('the provider, theme and language pickers open the git marketplace on their
   });
   const kind = (name: string) => settingsPage.getByTestId(`git-marketplace:kind:${name}`);
 
-  // A built-in provider is on the page (the fixture seeds a key for every
-  // vendor); a marketplace provider is not, until a package brings it.
+  // Built-in providers are seeded; marketplace providers appear only after package installation.
   await expect(settingsPage.getByTestId('llm-tab:connection:claude')).toBeVisible();
   await expect(settingsPage.getByTestId('llm-tab:connection:groq')).toHaveCount(0);
 

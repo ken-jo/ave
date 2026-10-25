@@ -1,6 +1,4 @@
-// FloatingRightLane anchors chat overlays within the pane's horizontal inset.
-// Occupants share the lane's width constraint and stack without covering each
-// other's controls. The action panel now lives in the chat group header.
+// Keep overlays inside the pane inset and stack occupants without covering their controls.
 import { useEffect, useRef, type ReactNode, type WheelEvent } from "react";
 import { registerWebSurfaceOccluder } from "../preview/web-surfaces.js";
 
@@ -61,9 +59,8 @@ function handleLaneWheel(event: WheelEvent<HTMLDivElement>) {
 }
 
 export function FloatingRightLane({ children }: { children: ReactNode }) {
-  // A page in a web panel is drawn ABOVE the pane (the surface layer), so the
-  // lane's cards would sit under it. Each card is cut out of any page it
-  // overlaps instead; the lane itself spans dead space and is not.
+  // A page in a web panel is drawn ABOVE the pane (the surface layer), so the lane's cards would sit under it. Each card is
+  // cut out of any page it overlaps instead; the lane itself spans dead space and is not.
   const laneRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     const lane = laneRef.current;
@@ -92,9 +89,8 @@ export function FloatingRightLane({ children }: { children: ReactNode }) {
   return (
     <div
       ref={laneRef}
-      // `pointer-events-none` on the lane and `-auto` on each occupant: the lane
-      // spans dead space between and beside its children, and chat has to stay
-      // clickable through it.
+      // `pointer-events-none` on the lane and `-auto` on each occupant: the lane spans dead space between and beside its
+      // children, and chat has to stay clickable through it.
       className="@container pointer-events-none absolute inset-x-4 top-2 bottom-4 z-50 flex touch-pan-y flex-col items-end gap-2 overflow-y-auto overscroll-contain [&>*]:shrink-0"
       data-testid="floating-right-lane"
       onWheel={handleLaneWheel}

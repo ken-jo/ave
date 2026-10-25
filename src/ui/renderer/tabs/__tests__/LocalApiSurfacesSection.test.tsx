@@ -41,8 +41,7 @@ describe("LocalApiSurfacesSection", () => {
     ]) {
       await waitFor(() => expect(screen.getByTestId(id)).toBeTruthy());
     }
-    // The gates are read once at boot, so the section must not imply the
-    // surface came up the moment the switch moved.
+    // The gates are read once at boot, so the section must not imply the surface came up the moment the switch moved.
     expect(screen.getByTestId("local-api-surfaces-restart-note")).toBeTruthy();
   });
 

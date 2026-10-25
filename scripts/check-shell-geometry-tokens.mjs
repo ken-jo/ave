@@ -1,59 +1,11 @@
 #!/usr/bin/env node
-/**
- * check-shell-geometry-tokens.mjs — SSOT mirror guard
- *
- * `src/styles.css` and `src/shared/shell-geometry.ts` each hold a copy of the
- * same pixel counts, and they have to. The CSS tokens are what the class
- * strings read; the TypeScript constants are what the arithmetic that happens
- * in JS reads — the main process's window-bounds math, the chat group's split
- * math, the title band's lead padding. Neither language can import the other's
- * value, so the duplication is unavoidable; what is avoidable is the two
- * drifting apart silently, which is exactly the failure this whole
- * consolidation exists to prevent.
- *
- * This gate closes that last gap: for every pair below it parses the `:root`
- * declaration out of the stylesheet and the `export const` out of the module
- * and fails the build when they disagree.
- *
- * Fail-closed throughout. A missing token, a missing constant, a value it
- * cannot resolve, or a name defined twice is a FAILURE, not a skip — a guard
- * that answers "nothing to compare" with exit 0 is worse than no guard,
- * because it reports OK forever. Comments are stripped before anything is
- * matched, so neither a commented-out declaration nor a historical value left
- * in a docstring can stand in for the live one.
- *
- * Sits beside `check-opacity-tokens.mjs` / `check-color-tokens.mjs` in
- * `bun run build`, and follows their conventions: plain node, no TypeScript
- * loader (the constant is read as source text, not imported, so the gate runs
- * before and independently of any build step).
- *
- * `--root <dir>` overrides the repo root, which is how the unit test in
- * `test/scripts/` drives it against fixture trees.
- */
+// Compare mirrored CSS and script geometry constants without importing build output.
+// Missing, duplicate or unresolved values fail closed; comments cannot stand in for declarations.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-/**
- * The mirrored pairs. Add to this list whenever a `--chrome-*` / `--shell-*`
- * pixel count gains a TypeScript twin — that is the moment the drift becomes
- * possible, and the moment this gate has to know about it.
- *
- * `--shell-card-inset` is here because it is load-bearing on the TS side twice
- * over: `CLUSTER_LEAD_PAD_DARWIN` subtracts the card's left inset to re-express
- * the traffic-light clearance from the card's edge, and `SIDE_PANEL_CARD_INSET`
- * doubles it into the reserve the main process sizes the window by. It is
- * written in CSS as an alias (`var(--chrome-gap)`) rather than a literal, which
- * is why this gate resolves one level of `var()` instead of only reading px.
- *
- * `--shell-collapsed-rail-reserve` is here because the content surface pads by
- * the token while `__tests__/shell-geometry.test.ts` pins `COLLAPSED_RAIL_RESERVE`
- * to the traffic lights. The two drifting apart is exactly the band-to-title
- * offset this pair closed.
- *
- * `--chrome-icon-button` / `--chrome-gap-hair` are here because
- * `collapsedBandLeadClearance` adds the sidebar's cluster strip up from them
- * to start the band's path past that strip while the rail is collapsed.
- */
+// Register every token with a script-side twin, including one-level aliases.
+// Insets and rail reserves affect both content clearance and window sizing.
 const MIRRORS = [
   { css: "--chrome-gap", ts: "SHELL_GUTTER" },
   { css: "--chrome-gap-tight", ts: "CHROME_GAP_TIGHT" },
@@ -77,13 +29,7 @@ function parseArgs(argv) {
   return { root: value };
 }
 
-/**
- * Source with its comments blanked out, so a declaration that has been
- * commented away cannot be read as live and a value quoted in prose cannot
- * shadow the real one. Quote-aware: a `/*` or `//` inside a string literal is
- * content, not a comment. Newlines survive so anything downstream that counts
- * lines still can.
- */
+// Blank comments while preserving strings and newlines for accurate source positions.
 function stripComments(source, { lineComments }) {
   let out = "";
   let quote = null;
@@ -127,13 +73,8 @@ function stripComments(source, { lineComments }) {
   return out;
 }
 
-/**
- * Every custom-property declaration in the stylesheet, as raw value strings
- * keyed by name. A declaration ends at `;` or at the `}` that closes its block,
- * so the last one in a block needs no trailing semicolon; `!important` is
- * dropped because it changes the cascade, not the value. The leading character
- * class keeps `var(--x)` references from being read as declarations of `--x`.
- */
+// Accept declarations without a trailing semicolon and ignore !important.
+// Exclude var() references from declaration names.
 function cssDeclarations(source) {
   const declarations = new Map();
   const re = /(?:^|[;{}\s])(--[A-Za-z0-9_-]+)\s*:\s*([^;}]*)/g;
@@ -149,12 +90,7 @@ function cssDeclarations(source) {
 const PX = /^(-?\d+(?:\.\d+)?)px$/;
 const VAR_ALIAS = /^var\(\s*(--[A-Za-z0-9_-]+)\s*\)$/;
 
-/**
- * A declared token as a number of px, following at most one `var()` alias.
- * Returns `{ px }` or `{ error }` — never a silent skip. One level is
- * deliberate: an alias chain is a design smell in a token file this small, and
- * refusing to walk it keeps this resolver from having to detect cycles.
- */
+// Resolve at most one alias; deeper chains fail rather than needing cycle detection.
 function resolvePx(name, declarations, { allowAlias = true } = {}) {
   const values = declarations.get(name);
   if (!values || values.length === 0) {
@@ -187,7 +123,6 @@ function resolvePx(name, declarations, { allowAlias = true } = {}) {
   return { px: distinct[0] };
 }
 
-/** Every `export const NAME = <n>;` in the module, as numbers keyed by name. */
 function tsConstants(source) {
   const constants = new Map();
   const re = /export\s+const\s+([A-Za-z_$][\w$]*)\s*=\s*(-?\d+(?:\.\d+)?)\s*;/g;

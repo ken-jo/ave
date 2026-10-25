@@ -1,34 +1,5 @@
-/**
- * Judge engine — placement, tiered chain, hooks, fallbacks, circuit breaker and
- * audit for one tool call. Pure with respect to permission state: it reads the rule outcome
- * the caller already computed and returns what the judge contributes. It does
- * no deferred-queue I/O and writes no rules.
- *
- * Placement: floors → user deny/ask → user allow → mode matrix → JUDGE → dock.
- * The judge runs only when every earlier layer left the call undecided, the
- * call's category is enabled, and the call is not one the judge may never
- * decide (strict mode, plugin/agent capability grants, remote-controller
- * requests).
- *
- * Lanes: in `headless` nobody can be asked, so any non-allow becomes
- * `deny` with `defer: true` — the call site appends it to the existing
- * deferred queue.
- *
- * Chain: stages run in order. A stage's `allow`/`deny` whose confidence meets
- * its `escalateBelow` threshold (or that has no threshold) is final. A stage's
- * `ask`, a confidence below the threshold (a missing confidence counts as
- * below), or a stage failure escalates to the next stage. When the last stage
- * is still ambiguous the call goes to the dock (`ask`).
- *
- * Fallbacks: a stage failure (timeout, error, unparseable, unavailable) is
- * never an allow. When the LAST stage fails, the engine falls back to `ask` in
- * the foreground and `deny` + defer headless. Timeouts are tagged apart and,
- * like every fallback, never count toward the breaker. The breaker counts the
- * chain's final denials per session, whichever stage made them.
- *
- * `shadow` mode runs the whole chain and audits it, but `applied` is false:
- * the caller keeps today's path and the user still decides.
- */
+// Judges cannot decide strict mode, capability grants or remote-controller calls and cannot override earlier floors/rules/matrix decisions. Run stages in order; ask, missing/low confidence and failures escalate.
+// Only a confident final allow/deny applies; unresolved or failed chains ask foreground and deny/defer headless, never allow by fallback. Count final denials only; shadow mode audits without changing permission or writing rules/queues.
 import { randomUUID } from "node:crypto";
 import type { AuditLogger } from "../../audit/audit-logger.js";
 import { errorMessage } from "../../shared/error-message.js";
@@ -52,41 +23,39 @@ import { formatJudgeModel, type JudgeMode, type JudgeSettings, type JudgeStageSe
 
 type PriorRuleDecision = "allow" | "ask" | "deny" | "undecided";
 
-/** What the layers before the judge concluded about this call. */
+// What the layers before the judge concluded about this call.
 export interface JudgeGate {
-  /** Outcome of floors + user rules + mode matrix; the judge runs only on `undecided`. */
+  // Outcome of floors + user rules + mode matrix; the judge runs only on `undecided`.
   priorDecision: PriorRuleDecision;
   strictMode: boolean;
-  /** Plugin or agent capability grant — never judge-decidable. */
+  // Plugin or agent capability grant — never judge-decidable.
   capabilityGrant: boolean;
-  /** Request raised by a remote controller — never judge-decidable. */
+  // Request raised by a remote controller — never judge-decidable.
   remoteController: boolean;
 }
 
 type BeforeJudgeResult =
-  /**
-   * `redactInputKeys`: tool-input keys whose values the JUDGE sees as
-   * {@link POLICY_REDACTED}. Redaction is the only change a hook can make: the
-   * call that executes, its cwd, rule verdict and policy are never altered, and
-   * the audit row (argsHash, redactedRequest) always describes the real call.
-   */
+  // `redactInputKeys`: tool-input keys whose values the JUDGE sees as POLICY_REDACTED. Redaction is the only change a hook can make: the call that executes, its cwd, rule verdict and policy are never altered, and the audit row (argsHash, redactedRequest) always describes the real call.
   | { action: "continue"; redactInputKeys?: readonly string[] }
-  | { action: "short-circuit"; decision: "ask" | "deny"; reason: string };
+  | { action: "short-circuit"; decision: "ask" | "deny"; reason: string; fallback?: JudgeFailureKind };
 
-/** What a judge sees in place of a value a beforeJudge hook redacted. */
+type AfterJudgeResult = JudgeDecision | {
+  decision: JudgeDecision;
+  rationale: string;
+  fallback?: JudgeFailureKind;
+};
+
+// What a judge sees in place of a value a beforeJudge hook redacted.
 export const POLICY_REDACTED = "[redacted by policy]";
 
 export interface JudgeHooks {
-  /**
-   * May hide input values from the judge or short-circuit to ask/deny. It
-   * receives a copy; mutating it has no effect on the call or the judge.
-   */
+  // May hide input values from the judge or short-circuit to ask/deny. It receives a copy; mutating it has no effect on the call or the judge.
   beforeJudge?(request: Readonly<JudgeRequest>): BeforeJudgeResult | Promise<BeforeJudgeResult>;
-  /** May only keep or downgrade the verdict (allow → ask → deny). */
-  afterJudge?(verdict: JudgeVerdict, request: JudgeRequest): JudgeDecision | Promise<JudgeDecision>;
+  // May only keep or downgrade the verdict (allow → ask → deny).
+  afterJudge?(verdict: JudgeVerdict, request: JudgeRequest): AfterJudgeResult | Promise<AfterJudgeResult>;
 }
 
-/** One configured stage and its provider; `judge` null = could not be constructed (→ `unavailable`). */
+// One configured stage and its provider; `judge` null = could not be constructed (→ `unavailable`).
 export interface JudgeChainStage {
   settings: JudgeStageSettings;
   judge: PermissionJudge | null;
@@ -94,14 +63,14 @@ export interface JudgeChainStage {
 
 export interface JudgeEngineDeps {
   settings: JudgeSettings;
-  /** Constructed stages, in `settings.chain` order. Empty = judge off. */
+  // Constructed stages, in `settings.chain` order. Empty is off unless rejected.
   chain: readonly JudgeChainStage[];
+  // A rejected configured chain is unavailable, rather than an explicit off.
+  chainRejected?: boolean;
+  // Unreadable policy cannot establish off or shadow intent.
+  settingsUnreadable?: boolean;
   breaker: JudgeCircuitBreaker;
-  /**
-   * Shadow rows go to the plain shadow channel; active decisions go to the
-   * HMAC-chained permission audit channel and fail the call if it cannot be
-   * written.
-   */
+  // Shadow rows go to the plain shadow channel; active decisions go to the HMAC-chained permission audit channel and fail the call if it cannot be written.
   audit: Pick<AuditLogger, "logShadow" | "appendPermissionAuditEntry">;
   hooks?: JudgeHooks;
   now?: () => number;
@@ -129,13 +98,13 @@ export interface JudgeAuditRecord {
   category: string;
   argsHash: string;
   redactedRequest: RedactedJudgeRequest;
-  /** The stage whose verdict ended the chain; null when the chain fell back. */
+  // The stage whose verdict ended the chain; null when the chain fell back.
   judge: { id: string; version: string } | null;
-  /** That stage's effective verdict (`ask` when it was still ambiguous); null on fallback. */
+  // That stage's effective verdict (`ask` when it was still ambiguous); null on fallback.
   verdictDecision: JudgeDecision | null;
-  /** Every stage that ran, in order. */
+  // Every stage that ran, in order.
   stages: JudgeStageRecord[];
-  /** Decision after hooks, lanes and fallbacks. */
+  // Decision after hooks, lanes and fallbacks.
   decision: JudgeDecision;
   applied: boolean;
   source: JudgeOutcomeSource;
@@ -143,7 +112,7 @@ export interface JudgeAuditRecord {
   latencyMs: number;
   fallback: JudgeFailureKind | null;
   breakerTripped: boolean;
-  /** Input keys a beforeJudge hook hid from the judge. */
+  // Input keys a beforeJudge hook hid from the judge.
   policyRedactedKeys?: string[];
 }
 
@@ -151,16 +120,16 @@ interface JudgeStageRecord {
   id: string;
   provider: JudgeStageSettings["provider"];
   version: string | null;
-  /** `<provider>/<model>` for builtin-llm (configured, else the resolved reviewer model); null for external or unresolved. */
+  // `<provider>/<model>` for builtin-llm (configured, else the resolved reviewer model); null for external or unresolved.
   model: string | null;
   decision: JudgeDecision | null;
   confidence: number | null;
   escalateBelow: number | null;
   latencyMs: number;
-  /** decided = ended the chain; escalated = ambiguous; failed = no verdict; skipped = chain deadline already spent. */
+  // decided = ended the chain; escalated = ambiguous; failed = no verdict; skipped = chain deadline already spent.
   outcome: "decided" | "escalated" | "failed" | "skipped";
   fallback: JudgeFailureKind | null;
-  /** Redacted, truncated provider stderr (external command judges). */
+  // Redacted, truncated provider stderr (external command judges).
   stderr?: string;
 }
 
@@ -170,36 +139,36 @@ export type JudgeOutcome =
       judged: true;
       mode: JudgeMode;
       decision: JudgeDecision;
-      /** False in shadow mode: the caller must keep its pre-judge path. */
+      // False in shadow mode: the caller must keep its pre-judge path.
       applied: boolean;
-      /** Headless non-allow: the call site appends to the deferred queue. */
+      // Headless non-allow: the call site appends to the deferred queue.
       defer: boolean;
-      /** Present when `defer`: the verdict and summary the deferred entry carries. */
+      // Present when `defer`: the verdict and summary the deferred entry carries.
       deferral?: { verdict: RiskVerdict; inputSummary: string };
       source: JudgeOutcomeSource;
-      /** Stage id whose verdict ended the chain. */
+      // Stage id whose verdict ended the chain.
       decidedBy?: string;
       fallback?: JudgeFailureKind;
-      /** Rule the dock MAY offer; never persisted by the engine. */
+      // Rule the dock MAY offer; never persisted by the engine.
       suggestedRule?: string;
       rationale: string;
       breakerTripped: boolean;
     };
 
 function skipReason(gate: JudgeGate, request: JudgeRequest, deps: JudgeEngineDeps): JudgeSkipReason | null {
-  if (deps.chain.length === 0) return "judge-off";
+  if (deps.chain.length === 0 && !deps.chainRejected && !deps.settingsUnreadable) return "judge-off";
   if (gate.priorDecision !== "undecided") return "rule-decided";
   if (gate.strictMode) return "strict-mode";
   if (gate.capabilityGrant) return "capability-grant";
   if (gate.remoteController) return "remote-controller";
   const category = request.invocation.category;
   if (!isJudgeCategory(category)) return "category-not-judged";
-  if (!deps.settings.categories[category]) return "category-disabled";
-  if (deps.breaker.isOpen(request.sessionId)) return "breaker-open";
+  if (!deps.settingsUnreadable && !deps.settings.categories[category]) return "category-disabled";
+  if (!deps.chainRejected && !deps.settingsUnreadable && deps.breaker.isOpen(request.sessionId)) return "breaker-open";
   return null;
 }
 
-/** The judge's view of the call: the real request with policy-redacted input values. */
+// The judge's view of the call: the real request with policy-redacted input values.
 function judgeView(request: JudgeRequest, redactInputKeys: readonly string[] | undefined): JudgeRequest {
   if (!redactInputKeys || redactInputKeys.length === 0) return request;
   const input = request.invocation.finalInput;
@@ -218,10 +187,7 @@ interface JudgeRun {
   fallback?: JudgeFailureKind;
   failureMessage?: string;
   diagnostics?: JudgeDiagnostics;
-  /**
-   * The engine's own timer fired (the stage budget it was given ran out), as
-   * opposed to a provider that reported a `timeout` failure on its own.
-   */
+  // The engine's own timer fired (the stage budget it was given ran out), as opposed to a provider that reported a `timeout` failure on its own.
   engineTimedOut?: true;
 }
 
@@ -277,13 +243,13 @@ type ChainResult =
   | { kind: "verdict"; stage: JudgeChainStage; verdict: JudgeVerdict }
   | { kind: "fallback"; fallback: JudgeFailureKind; failureMessage: string };
 
-/** The model a stage actually ran: the configured one, else the provider's resolved model. */
+// The model a stage actually ran: the configured one, else the provider's resolved model.
 function stageModel(stage: JudgeChainStage): string | null {
   if (stage.settings.provider !== "builtin-llm") return null;
   return stage.settings.model ? formatJudgeModel(stage.settings.model) : stage.judge?.model ?? null;
 }
 
-/** True when the verdict is final for its stage: allow/deny meeting the stage threshold. */
+// True when the verdict is final for its stage: allow/deny meeting the stage threshold.
 function isFinalVerdict(stage: JudgeStageSettings, verdict: JudgeVerdict): boolean {
   if (verdict.decision === "ask") return false;
   if (stage.escalateBelow === undefined) return true;
@@ -330,9 +296,7 @@ async function runChain(
     };
     if (!run.verdict) {
       records.push({ ...base, decision: null, confidence: null, outcome: "failed", fallback: run.fallback ?? "error" });
-      // The engine's timer fired on a budget the chain deadline capped: the
-      // deadline is spent and no later stage gets to run. A provider that
-      // reports its own timeout is an ordinary stage failure and escalates.
+      // The engine's timer fired on a budget the chain deadline capped: the deadline is spent and no later stage gets to run. A provider that reports its own timeout is an ordinary stage failure and escalates.
       if (run.engineTimedOut && stageTimeout < deps.settings.timeoutMs) {
         for (const rest of deps.chain.slice(i + 1)) {
           records.push({
@@ -394,11 +358,7 @@ async function writeAudit(deps: JudgeEngineDeps, request: JudgeRequest, record: 
   });
 }
 
-/**
- * Decide what the judge contributes to one tool call. Returns `judged: false`
- * when the judge must not run; the caller then continues exactly as without a
- * judge. Throws only for internal contract violations or a caller abort.
- */
+// Decide what the judge contributes to one tool call. Returns `judged: false` when the judge must not run; the caller then continues exactly as without a judge. Throws only for internal contract violations or a caller abort.
 export async function resolveJudge(
   gate: JudgeGate,
   request: JudgeRequest,
@@ -410,7 +370,7 @@ export async function resolveJudge(
 
   const now = deps.now ?? Date.now;
   const started = now();
-  const mode = deps.settings.mode;
+  const mode = deps.settingsUnreadable ? "active" : deps.settings.mode;
   let redactedKeys: readonly string[] = [];
   let source: JudgeOutcomeSource;
   let verdict: JudgeVerdict | undefined;
@@ -427,7 +387,8 @@ export async function resolveJudge(
     if (before.decision !== "ask" && before.decision !== "deny") {
       throw new JudgeContractError("beforeJudge may only short-circuit to ask or deny");
     }
-    source = "hook";
+    source = before.fallback ? "fallback" : "hook";
+    fallback = before.fallback;
     decision = before.decision;
     rationale = before.reason;
   } else {
@@ -436,7 +397,12 @@ export async function resolveJudge(
     }
     redactedKeys = before.redactInputKeys ?? [];
     const view = judgeView(request, redactedKeys);
-    const chain = await runChain(deps, view, signal, now, stages);
+    const unavailable = deps.chainRejected || deps.settingsUnreadable;
+    if (unavailable && signal?.aborted) throw signal.reason;
+    const chain = unavailable
+      ? { kind: "fallback" as const, fallback: "unavailable" as const,
+          failureMessage: deps.settingsUnreadable ? "Permission judge settings cannot be read" : "Permission judge configuration is invalid" }
+      : await runChain(deps, view, signal, now, stages);
     if (chain.kind === "verdict") {
       source = "judge";
       decidedBy = chain.stage;
@@ -444,11 +410,20 @@ export async function resolveJudge(
       decision = verdict.decision;
       rationale = verdict.rationale;
       if (deps.hooks?.afterJudge) {
-        const after = await deps.hooks.afterJudge(verdict, request);
+        const result = await deps.hooks.afterJudge(verdict, request);
+        const after = typeof result === "string" ? result : result.decision;
         if (!isSameOrStricter(verdict.decision, after)) {
           throw new JudgeContractError(`afterJudge may only downgrade (got ${verdict.decision} → ${String(after)})`);
         }
         decision = after;
+        if (typeof result !== "string") {
+          rationale = result.rationale;
+          if (result.fallback) {
+            if (after === "allow") throw new JudgeContractError("afterJudge failure must not allow");
+            fallback = result.fallback;
+            source = "fallback";
+          }
+        }
       }
     } else {
       source = "fallback";

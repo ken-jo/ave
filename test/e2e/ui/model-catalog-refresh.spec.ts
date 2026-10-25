@@ -79,7 +79,6 @@ for (const locale of ["en", "ko"] as const) {
       page.on("pageerror", (error) => { pageErrors.push(error.message); });
       await app.evaluate(({ ipcMain }, { channel, message }) => {
         ipcMain.removeHandler(channel);
-        // Forward the file-read failure through the real settings IPC boundary.
         ipcMain.handle(channel, () => { throw new Error(message); });
       }, { channel: CHANNELS.settings.get, message: readFailure });
       await page.reload();

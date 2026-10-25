@@ -1,17 +1,4 @@
-/**
- * effect-enforcement.test.ts — effect-boundary ENFORCEMENT.
- *
- * Covers the three hard guarantees and the security/UX properties:
- *   • FLAG OFF → no approval, executes exactly as today (byte-for-byte).
- *   • FLAG ON + foreground + write → approval AT THE EFFECT; deny throws + the real
- *     impl never runs; allow proceeds and returns the impl's value.
- *   • FLAG ON + read → never prompts.
- *   • Headless → NO modal (fail-closed throw); the mutation does not execute.
- *   • Dedup → one allow-always/allow-once suppresses repeats for the SAME descriptor,
- *     but a different target still re-prompts (a grant is never widened).
- *   • A throwing arg getter still triggers the gate (no suppression).
- *   • hostFetch is NOT in the generic gated set (it self-gates inline, verb-derived).
- */
+// Flag-off preserves behavior; flag-on mutations require approval before execution, reads never prompt, and headless calls fail closed. Grants cannot widen across descriptors, getters cannot suppress gating, and hostFetch self-gates by its pinned verb.
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import type { ApprovalChoice, ApprovalDecision, ApprovalGate, ApprovalRequest,
 } from "../approval-gate.js";
@@ -43,7 +30,7 @@ beforeEach(() => {
   __resetEffectGrantsForTest();
 });
 
-/** A stub ApprovalGate that records every request and answers with a fixed choice. */
+// A stub ApprovalGate that records every request and answers with a fixed choice.
 function makeGate(choice: ApprovalChoice | ApprovalChoice[]): {
   gate: ApprovalGate;
   requests: Array<Omit<ApprovalRequest, "requireExplicit">>;
@@ -62,7 +49,7 @@ function makeGate(choice: ApprovalChoice | ApprovalChoice[]): {
   return { gate, requests };
 }
 
-/** A fake per-plugin hostApi whose real impls only log the method they ran. */
+// A fake per-plugin hostApi whose real impls only log the method they ran.
 function makeApi(log: string[]) {
   return {
     // gated async writes
@@ -218,7 +205,7 @@ describe("enforceMutatingEffects — FLAG ON + foreground + write → approval A
 });
 
 describe("enforceMutatingEffects — openExternalUrl is now GATED (moved out of the exclusions)", () => {
-  /** A hostApi exposing openExternalUrl as a real async write impl. */
+  // A hostApi exposing openExternalUrl as a real async write impl.
   function makeUrlApi(log: string[]) {
     return {
       openExternalUrl: async (_url: string): Promise<void> => {
@@ -516,14 +503,12 @@ describe("GATED_EFFECT_PATHS — SOT-derived async-only membership", () => {
       "spawnWorker",
       "triggerConversation",
       "agentApproval.request",
-      // openExternalUrl is now GATED (egress/exfil-class) — moved out of the
-      // exclusions; it is async so the await-based wrapper can gate it.
+      // openExternalUrl is now GATED (egress/exfil-class) — moved out of the exclusions; it is async so the await-based wrapper can gate it.
       "openExternalUrl",
     ]) {
       expect(GATED_EFFECT_PATHS.has(p)).toBe(true);
     }
-    // hostFetch self-gates inline (verb-derived); config.set and
-    // agentApproval.respond are the bounded-ungated exclusions.
+    // hostFetch self-gates inline (verb-derived); config.set and agentApproval.respond are the bounded-ungated exclusions.
     for (const p of ["hostFetch", "config.set", "agentApproval.respond"]) {
       expect(GATED_EFFECT_PATHS.has(p)).toBe(false);
     }
@@ -551,8 +536,7 @@ describe("MAJOR-1 — the gated set is SOT-DERIVED + FAIL-CLOSED (not hand-curat
       ...ENFORCEMENT_EXCLUSIONS.keys(),
     ]);
 
-    // (a) Every write-classified path is either gated or explicitly excluded — a
-    // NEW write chokepoint added to the SOT can never silently ship un-enforced.
+    // (a) Every write-classified path is either gated or explicitly excluded — a NEW write chokepoint added to the SOT can never silently ship un-enforced.
     const unaccounted = [...writeClassified].filter(
       (p) => !accountedFor.has(p),
     );
@@ -561,8 +545,7 @@ describe("MAJOR-1 — the gated set is SOT-DERIVED + FAIL-CLOSED (not hand-curat
       `write-classified path(s) that are NEITHER gated NOR explicitly excluded — gate them (async) or add to ENFORCEMENT_EXCLUSIONS: ${unaccounted.join(", ")}`,
     ).toEqual([]);
 
-    // (b) No exclusion (or gated path) is fabricated — every accounted path is
-    // actually write-classified in the SOT (you cannot exclude a read / unknown).
+    // (b) No exclusion (or gated path) is fabricated — every accounted path is actually write-classified in the SOT (you cannot exclude a read / unknown).
     const overReaching = [...accountedFor].filter(
       (p) => !writeClassified.has(p),
     );
@@ -610,8 +593,7 @@ describe("M4 — headless NEVER honours a foreground-obtained grant (fail-closed
     expect(requests).toHaveLength(1);
     expect(log).toEqual(["write"]);
 
-    // 2) HEADLESS (unattended routine): the SAME descriptor must fail closed —
-    //    the foreground grant cannot bypass the headless lane.
+    // 2) HEADLESS (unattended routine): the SAME descriptor must fail closed — the foreground grant cannot bypass the headless lane.
     let caught: unknown;
     await runWithEffectGateContext(
       { headless: true, toolName: "routine" },
@@ -639,8 +621,7 @@ describe("M4 — headless NEVER honours a foreground-obtained grant (fail-closed
         await api.storage.write("a.txt", "1");
       },
     );
-    // onceGrants are invocation-scoped, so they cannot reach the headless call,
-    // but assert headless fails closed regardless.
+    // onceGrants are invocation-scoped, so they cannot reach the headless call, but assert headless fails closed regardless.
     await runWithEffectGateContext(
       { headless: true, toolName: "routine" },
       async () => {
@@ -656,9 +637,7 @@ describe("M4 — headless NEVER honours a foreground-obtained grant (fail-closed
 describe("M2 — object-field target is snapshotted ONCE at the gate (TOCTOU)", () => {
   it("the modal/grant target is a SINGLE read; a stateful getter cannot diverge it", async () => {
     const { gate, requests } = makeGate("allow-once");
-    // The real impl re-reads spec.source INDEPENDENTLY of the gate; assert the
-    // GATE pins its descriptor to ONE read (the first), so the modal + grant key
-    // can never disagree with each other.
+    // The real impl re-reads spec.source INDEPENDENTLY of the gate; assert the GATE pins its descriptor to ONE read (the first), so the modal + grant key can never disagree with each other.
     const implSawSource: string[] = [];
     const api = enforceMutatingEffects(
       {
@@ -693,8 +672,7 @@ describe("M2 — object-field target is snapshotted ONCE at the gate (TOCTOU)", 
       methodPath: "triggerConversation",
       target: "src-1",
     });
-    // …and the impl's later independent read got a DIFFERENT value, proving the
-    // gate's displayed/granted target is pinned to a single snapshot (not re-read).
+    // …and the impl's later independent read got a DIFFERENT value, proving the gate's displayed/granted target is pinned to a single snapshot (not re-read).
     expect(implSawSource).toEqual(["src-2"]);
   });
 });
@@ -857,7 +835,7 @@ describe("M3 — target-less blanket grants surface a method-wide breadth marker
 });
 
 describe("composed stack — enforceMutatingEffects(instrumentEffectsByPath(raw))", () => {
-  /** A raw hostApi-shaped object whose impls read `this` so we can prove binding. */
+  // A raw hostApi-shaped object whose impls read `this` so we can prove binding.
   function makeRawApi(log: string[]) {
     return {
       marker: "ROOT",

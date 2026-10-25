@@ -1,14 +1,4 @@
-/**
- * DevToolsPanel — floating panel for runtime dev controls.
- *
- * Visible only in non-production NODE_ENV. Triggered by the dev indicator
- * in MainToolbar (next to Home button) or by keyboard shortcut Cmd/Ctrl+Shift+D.
- *
- * Current controls:
- *   - Preflight threshold slider — adjusts the compact trigger
- *     so dev/test can reproduce compact scenarios without filling 200K context.
- *     Range 500 — 100,000 tokens. Live IPC push to engine.
- */
+/** Development-only controls expose preflight thresholds for reproducing compaction without filling the context. */
 import { useCallback, useEffect, useState } from "react";
 import { Tags, X } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";

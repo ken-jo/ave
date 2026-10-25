@@ -1,24 +1,4 @@
-/**
- * `builtin-llm` judge provider: the existing auto-mode reviewer
- * ({@link LlmRiskClassifier}, `max(rule, llm)`) behind the judge contract.
- *
- * It reproduces the shipped reviewer dispatch lanes
- * (`src/tools/pipeline/reviewer-dispatch.ts`), so moving auto mode behind this
- * provider changes no decision:
- *
- *   - A successful classification (`fresh`, `host-determined` — the outcomes
- *     `isReviewerAutoDecisionOutcome` accepts) is mapped exactly like
- *     `PermissionManager.resolveReviewerDecision`:
- *       - headless:   LOW → allow; MEDIUM/HIGH → deny (the call site defers it).
- *       - foreground: LOW → allow; MEDIUM → allow only under
- *                     `autoApprove: "medium"` and without
- *                     `requiresExplicitApproval`; otherwise ask.
- *   - A failed classification (`error`, `timeout`, `malformed`) is a
- *     {@link JudgeFailure}. The shipped lanes never map the verdict of a failed
- *     review — whatever `fallbackOnError` put in it — they deny headless and
- *     ask (modal) in the foreground. The engine's never-allow fallback does the
- *     same, so `fallbackOnError: "rule"` cannot turn a failure into an allow.
- */
+// Successful review follows foreground/headless risk thresholds; explicit-approval calls cannot auto-allow at medium. Failed, timed-out or malformed reviews never allow regardless of rule fallback: ask foreground and deny/defer headless.
 import type { LlmRiskClassificationTrace, RiskVerdict, ToolInvocationContext } from "../reviewer/risk-classifier.js";
 import type { ReviewerInteractiveAutoApprove } from "../permission-settings-store.js";
 import {
@@ -51,7 +31,7 @@ export function mapRiskVerdictToJudgeDecision(
   return autoApproved ? "allow" : "ask";
 }
 
-/** null = the outcome may auto-decide; otherwise the failure it surfaces as. */
+// null = the outcome may auto-decide; otherwise the failure it surfaces as.
 const REVIEWER_FAILURE_KIND: Record<LlmRiskClassificationTrace["outcome"], JudgeFailureKind | null> = {
   fresh: null,
   "host-determined": null,
@@ -67,9 +47,14 @@ export class BuiltinLlmJudge implements PermissionJudge {
   constructor(
     private readonly classifier: TracingRiskClassifier,
     private readonly autoApprove: () => ReviewerInteractiveAutoApprove,
-    /** Resolved `<provider>/<model>` the classifier runs on. */
+    // Resolved `<provider>/<model>` the classifier runs on.
     readonly model?: string,
+    readonly cacheScope?: Record<string, unknown>,
   ) {}
+
+  getClassifier(): TracingRiskClassifier {
+    return this.classifier;
+  }
 
   async judge(request: JudgeRequest, signal: AbortSignal): Promise<JudgeVerdict> {
     const trace = await this.classifier.classifyWithTrace(request.invocation, { abortSignal: signal });

@@ -62,6 +62,7 @@ beforeEach(() => {
   mkdirSync(cwd); mkdirSync(sessions, { recursive: true });
   vi.stubEnv("HOME", root);
   vi.stubEnv("AVE_HOME", profile);
+  setShellSandboxRequestedAtBoot(true);
   setActiveSandboxCapability({
     kind: "asrt", confidence: "verified", platform: process.platform,
     reason: "Controlled wrapper fixture",
@@ -89,27 +90,26 @@ async function invoke(dialect: "bash" | "powershell", extraAllowedDirectories: r
 }
 
 describe.skipIf(process.platform === "win32")("saved-session native shell policy wiring", () => {
-  it.each(["bash", "powershell"] as const)("%s keeps ancestor write scope without conflicting with the HOME read deny", async (dialect) => {
+  it.each(["bash", "powershell"] as const)("%s keeps ancestor write scope and broad HOME reads", async (dialect) => {
     const ancestor = dirname(root);
     const alias = join(root, "ancestor-link");
     symlinkSync(ancestor, alias);
     await invoke(dialect, [ancestor, alias]);
     const filesystem = vi.mocked(wrapToolCommand).mock.calls[0]![1]!.filesystem!;
     expect(filesystem.allowWrite).toContain(ancestor);
-    expect(filesystem.allowRead).not.toContain(ancestor);
-    expect(filesystem.allowRead).not.toContain(alias);
+    expect(filesystem.allowRead).toContain(ancestor);
+    expect(filesystem.allowRead!.some((path) => realpathSync(path) === realpathSync(alias))).toBe(true);
     expect(filesystem.allowRead).toContain(cwd);
     expect(filesystem.allowRead).toContain(sessions);
-    expect(filesystem.denyRead).toContain(root);
+    expect(filesystem.denyRead).not.toContain(root);
     expect(filesystem.denyWrite).toContain(sessions);
   });
 
   it.each([
     ["bash", "linux", false], ["powershell", "linux", false], ["bash", "darwin", true], ["powershell", "darwin", true],
   ] as const)("%s on %s: the wrap grants a protected write root only where the grant stays write-only", async (dialect, platform, granted) => {
-    // A bubblewrap write grant is a read-write bind over the deny's mask, so
-    // on Linux it would reopen reads the protected floor hides. The shell
-    // hands its roots to the wrap unchanged; the wrap's shared layer decides.
+    // A bubblewrap write grant is a read-write bind over the deny's mask, so on Linux it would reopen reads the
+    // protected floor hides. The shell hands its roots to the wrap unchanged; the wrap's shared layer decides.
     const protectedRoot = join(root, ".ssh", "work"); mkdirSync(protectedRoot, { recursive: true });
     const ordinary = join(root, "ordinary"); mkdirSync(ordinary);
     setProcessPlatform(platform);
@@ -134,7 +134,7 @@ describe.skipIf(process.platform === "win32")("saved-session native shell policy
     expect(filesystem.denyRead).not.toContain(sessions);
     expect(getDefaultSensitiveReadDenyPaths()).toContain(sessions);
     expect(filesystem.denyRead).toEqual(expect.arrayContaining([
-      root, join(profile, "secrets"), join(profile, "audit"), join(profile, "routine"),
+      join(profile, "secrets"), join(profile, "audit"), join(profile, "routine"),
       `${sessions}/**/.ssh`, `${sessions}/**/.env`,
     ]));
     const policy = getBuiltinShellSessionReadPolicy();

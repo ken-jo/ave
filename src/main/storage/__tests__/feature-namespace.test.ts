@@ -1,20 +1,8 @@
 import { canCreateSymlinks } from "../../../__tests__/support/symlink-capability.js";
-/**
- * feature-namespace SOT helper tests.
- *
- * Validates the Storage Namespace per Feature contract (project CLAUDE.md):
- *   - `~/.ave/<feature>/` directory mode 0o700, file mode 0o600 (POSIX;
- *     mode bits are not enforced on Windows, so the mode checks skip when
- *     `process.platform` is `"win32"`).
- *   - Atomic write — no `.tmp` sibling survives a completed write, and the
- *     target reflects the latest value (tmpfile + rename).
- *   - readJson is parse-with-fallback: missing file / corrupt JSON →
- *     caller's `fallback`.
- *   - childDir materializes a 0o700 subdirectory.
- *   - openFeatureNamespace rejects path-traversal feature ids.
- */
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, statSync, writeFileSync, readdirSync, existsSync, symlinkSync, readFileSync, lstatSync, mkdirSync } from "node:fs";
+/** Check namespace permissions, atomic writes, read defaults, child directories, and traversal rejection.
+ * POSIX mode assertions do not apply on Windows. */
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { mkdtempSync, statSync, writeFileSync, readdirSync, existsSync, symlinkSync, readFileSync, lstatSync, mkdirSync, promises as fs, renameSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -39,6 +27,7 @@ describe("feature-namespace", () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     if (prevAveHome === undefined) {
       delete process.env.AVE_HOME;
     } else {
@@ -107,12 +96,8 @@ describe("feature-namespace", () => {
   });
 
   it.skipIf(!canCreateSymlinks())("does not write through a symlink planted at the staging path", async () => {
-    // The staging name was a FIXED `${target}.tmp`. Anything that could predict
-    // the target could therefore plant that path first, and `fs.writeFile`
-    // follows a symlink: the payload landed at the planter's destination and
-    // the subsequent `rename` moved the LINK over the live path, leaving
-    // `~/.ave/<feature>/<file>` pointing wherever they chose. A random name
-    // plus O_CREAT|O_EXCL means the writer never opens a path that exists.
+    // The staging name was a FIXED `${target}.tmp`. Anything that could predict the target could therefore plant that path first, and `fs.writeFile` follows a symlink: the payload landed at the planter's destination
+    // and the subsequent `rename` moved the LINK over the live path, leaving `~/.ave/<feature>/<file>` pointing wherever they chose. A random name plus O_CREAT|O_EXCL means the writer never opens a path that exists.
     const featureDir = join(tempDir, "widgets");
     mkdirSync(featureDir, { recursive: true, mode: 0o700 });
     const target = join(featureDir, "config.json");
@@ -124,18 +109,15 @@ describe("feature-namespace", () => {
     await writeFileAtomicAtPath(target, "fresh");
 
     expect(readFileSync(target, "utf-8")).toBe("fresh");
-    // Nothing was written through the link, and the link was not renamed onto
-    // the live path.
+    // Nothing was written through the link, and the link was not renamed onto the live path.
     expect(readFileSync(outside, "utf-8")).toBe("untouched");
     expect(lstatSync(predictableStaging).isSymbolicLink()).toBe(true);
     expect(lstatSync(target).isSymbolicLink()).toBe(false);
   });
 
   it("gives two concurrent writers to one target their own staging file", async () => {
-    // With a fixed `${target}.tmp` both writers staged into the same file and
-    // both renamed it, so the survivor could hold either payload or a splice of
-    // the two. work-board-store and routines-store both route here, so that was
-    // two live stores under ~/.ave.
+    // With a fixed `${target}.tmp` both writers staged into the same file and both renamed it, so the survivor could hold either
+    // payload or a splice of the two. work-board-store and routines-store both route here, so that was two live stores under ~/.ave.
     const featureDir = join(tempDir, "widgets");
     mkdirSync(featureDir, { recursive: true, mode: 0o700 });
     const target = join(featureDir, "shared.json");
@@ -167,6 +149,40 @@ describe("feature-namespace", () => {
     if (POSIX) {
       expect(statSync(child).mode & 0o777).toBe(0o700);
     }
+  });
+
+  it("exclusive childDir refuses an existing slot while ordinary childDir reuses it", async () => {
+    const ns = openFeatureNamespace("widgets");
+    const child = await ns.childDir("invocation", { exclusive: true });
+    expect(statSync(child).isDirectory()).toBe(true);
+    if (POSIX) expect(statSync(child).mode & 0o777).toBe(0o700);
+    writeFileSync(join(child, "original"), "retained");
+    await expect(ns.childDir("invocation", { exclusive: true })).rejects.toMatchObject({ code: "EEXIST" });
+    expect(await ns.childDir("invocation")).toBe(child);
+    expect(readFileSync(join(child, "original"), "utf8")).toBe("retained");
+  });
+
+  it.skipIf(!POSIX)("exclusive childDir never chmods a symbolic replacement after mkdir", async () => {
+    const ns = openFeatureNamespace("widgets");
+    const outside = join(tempDir, "outside");
+    mkdirSync(outside, { mode: 0o755 });
+    const originalMode = statSync(outside).mode & 0o777;
+    const child = join(ns.dir, "invocation");
+    const mkdir = fs.mkdir.bind(fs);
+    vi.spyOn(fs, "mkdir").mockImplementation((async (
+      path: Parameters<typeof fs.mkdir>[0], options?: Parameters<typeof fs.mkdir>[1],
+    ) => {
+      const result = await mkdir(path, options);
+      if (String(path).endsWith("/invocation")) {
+        renameSync(child, `${child}-previous`);
+        symlinkSync(outside, child, "dir");
+      }
+      return result;
+    }) as typeof fs.mkdir);
+    await expect(ns.childDir("invocation", { exclusive: true })).rejects.toThrow();
+    expect(statSync(outside).mode & 0o777).toBe(originalMode);
+    expect(lstatSync(child).isSymbolicLink()).toBe(true);
+    expect(readdirSync(outside)).toEqual([]);
   });
 
   it("rejects path-traversal feature ids", () => {
@@ -213,8 +229,7 @@ describe("feature-namespace", () => {
 
       const dest = join(tempDir, FEATURE, DEST);
       expect(readFileSync(dest, "utf-8")).toBe(payload);
-      // Removing the original is the point: a domain-owned file left in the
-      // root is exactly what defeats per-domain backup and clear.
+      // Removing the original is the point: a domain-owned file left in the root is exactly what defeats per-domain backup and clear.
       expect(existsSync(join(tempDir, LEGACY))).toBe(false);
       if (POSIX) {
         expect(statSync(join(tempDir, FEATURE)).mode & 0o777).toBe(0o700);
@@ -228,9 +243,8 @@ describe("feature-namespace", () => {
     });
 
     it("never overwrites an existing destination, and leaves the legacy alone", () => {
-      // The destination's existence is the idempotency marker, so a store may
-      // call this on every load. If it could overwrite, a second call after a
-      // downgrade-and-rerun would clobber current data with a stale copy.
+      // The destination's existence is the idempotency marker, so a store may call this on every load. If it
+      // could overwrite, a second call after a downgrade-and-rerun would clobber current data with a stale copy.
       mkdirSync(join(tempDir, FEATURE), { recursive: true });
       writeFileSync(join(tempDir, FEATURE, DEST), '{"current":true}');
       writeFileSync(join(tempDir, LEGACY), payload);

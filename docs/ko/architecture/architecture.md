@@ -1827,10 +1827,10 @@ auto-resolve. 검증 실패 시 일반 write 규칙으로 폴백 (sound-by-const
 
 **선택 surface:** `/permission reviewer mode disabled|rule|llm|strict`,
 `/permission reviewer fallback deny|rule`,
-`/permission reviewer interactive off|low`. Reviewer provider/model 은
-별도 slash surface 가 아니며 지능 설정의 active LLM provider/model 을 따른다.
-`permissions.reviewer.provider/model` 은 이전 버전 호환용 persisted field 이고
-사용자-facing SOT 가 아니다. 변경은 settings.json 에 persist + selective
+`/permission reviewer interactive off|low`. Reviewer 모델은 별도 slash surface 가
+아니며 권한 설정의 `permissions.judge.model` 을 따르고, 비워 두면 지능 설정의 active
+LLM provider/model 을 따른다. 이전 `permissions.reviewer.provider/model` 키는 로드 시
+버려진다. 변경은 settings.json 에 persist + selective
 verdict-cache invalidation.
 
 **Cost optimization:** `~/.ave/permissions/reviewer-cache.jsonl` —
@@ -2114,6 +2114,9 @@ Layer 0–8 의 permission policy 는 _어떤 도구 호출을 허용/거부_ �
   이전 설정으로 열린 터널이 남지 않는다. 샌드박스
   프로세스의 환경에는 Ave 의 호출별 프록시만 보이고 상위 프록시나 자격 증명은
   들어가지 않는다.
+  macOS 프로필의 각 규칙은 같은 부모 디렉터리를 가진 `subpath`·`literal` 필터를
+  부모마다 정규식 하나로 접는다. 정규식은 같은 경로에 맞고, 감쌀 때마다 프로필을
+  다시 컴파일하는 sandbox-exec 는 몇 배 빨리 컴파일한다.
   `patches/@anthropic-ai%2Fsandbox-runtime@0.0.80.patch` 를 재생성할 때는
   첫 `diff --git` 앞의 설명을 보관하고
   `bun patch @anthropic-ai/sandbox-runtime@0.0.80` 을 실행한다. 설치된 패키지의

@@ -11,11 +11,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, "../../..");
 const MAIN_ENTRY = resolve(REPO_ROOT, "dist/src/main/main.js");
 
-/**
- * Workspace-rail follow-up (#1445 file-content preview + tab-bar scroll/drag +
- * project-path selection). Verifies the diagnosis-①/②/③ fixes in the packaged
- * renderer against a real, allow-listed project folder.
- */
+// Verify previews and rail interaction against a real allowed project folder.
 test.describe("workspace rail follow-up", () => {
   test.skip(!existsSync(MAIN_ENTRY), "dist/src/main/main.js not built; run bun run build first");
 
@@ -28,8 +24,7 @@ test.describe("workspace rail follow-up", () => {
   test.beforeEach(async () => {
     userDataDir = mkdtempSync(resolve(tmpdir(), "ave-wsrail-followup-user-data-"));
     tempHome = mkdtempSync(resolve(tmpdir(), "ave-wsrail-followup-home-"));
-    // The default project root is process.cwd() = AVE_HOME/workspace; seed a
-    // real markdown file there so the file-browser can list + open it.
+    // Seed files inside the harness working directory, which is the default project root.
     workspaceDir = resolve(tempHome, ".ave", "workspace");
     mkdirSync(workspaceDir, { recursive: true });
     writeFileSync(
@@ -73,13 +68,10 @@ test.describe("workspace rail follow-up", () => {
 
     await page.getByTestId(chatSidePanelLauncherTestId("file-browser")).click();
 
-    // The project-roots browser is present (diagnosis ③) with the seeded file.
     await expect(page.getByTestId("chat-side-panel-project-roots")).toBeVisible();
     const fileRow = page.getByTestId("chat-side-panel-fs-file").filter({ hasText: "architecture.md" });
     await expect(fileRow).toBeVisible({ timeout: 10_000 });
 
-    // Opening it loads the real content via the preview IPC (diagnosis ①) —
-    // not a path-only placeholder.
     await fileRow.click();
     await expect(page.getByTestId("chat-side-panel-file-preview")).toBeVisible();
     await expect(page.getByTestId("chat-side-panel-markdown")).toContainText("real-file-content-marker");
@@ -90,9 +82,7 @@ test.describe("workspace rail follow-up", () => {
     await page.getByTestId(TEST_IDS.panePanelToggle).click();
     await expect(page.getByTestId(TEST_IDS.chatSidePanel)).toBeVisible();
 
-    // Open enough tabs that the strip is guaranteed to overflow its width. The
-    // FIRST tab comes from the empty-state launcher (no tabs → no tab bar yet);
-    // the tab-bar "+" (add-tab) menu only appears once at least one tab exists.
+    // Open the first tab from the empty launcher; the tab-bar menu does not exist before it.
     const kinds = ["file-browser", "browser", "terminal", "preview"] as const;
     await page.getByTestId(`chat-side-panel-launcher-${kinds[0]}`).click();
     for (const kind of [...kinds.slice(1), ...kinds]) {
@@ -103,7 +93,6 @@ test.describe("workspace rail follow-up", () => {
     const scroll = page.getByTestId("chat-side-panel-tab-scroll");
     await expect(scroll).toBeVisible();
 
-    // The strip is horizontally scrollable and scrollLeft can advance.
     const canScroll = await scroll.evaluate((el) => el.scrollWidth > el.clientWidth);
     expect(canScroll).toBe(true);
     await scroll.evaluate((el) => {
@@ -114,7 +103,6 @@ test.describe("workspace rail follow-up", () => {
   });
 
   test("file-browser: ARIA tree, keyboard nav, folder expand, and right-click menu", async () => {
-    // Seed a subfolder so the tree has a directory to expand + navigate.
     const docsDir = resolve(workspaceDir, "docs");
     mkdirSync(docsDir, { recursive: true });
     writeFileSync(resolve(docsDir, "guide.md"), "# Guide\n\nnested-marker\n", "utf-8");
@@ -124,7 +112,6 @@ test.describe("workspace rail follow-up", () => {
     await expect(page.getByTestId(TEST_IDS.chatSidePanel)).toBeVisible();
     await page.getByTestId(chatSidePanelLauncherTestId("file-browser")).click();
 
-    // ARIA tree widget with conformant treeitem rows.
     const tree = page.getByRole("tree");
     await expect(tree).toBeVisible();
     const folderRow = page.getByTestId("chat-side-panel-fs-folder").filter({ hasText: "docs" });
@@ -132,26 +119,22 @@ test.describe("workspace rail follow-up", () => {
     await expect(folderRow).toHaveAttribute("aria-level", "1");
     await expect(folderRow).toHaveAttribute("aria-expanded", "false");
 
-    // Keyboard: focus the folder, ArrowRight expands it, revealing its child.
     await folderRow.focus();
     await folderRow.press("ArrowRight");
     await expect(folderRow).toHaveAttribute("aria-expanded", "true");
     await expect(tree.getByRole("group")).toBeVisible();
     await expect(page.getByTestId("chat-side-panel-fs-file").filter({ hasText: "guide.md" })).toBeVisible();
 
-    // ArrowLeft collapses it again.
     await folderRow.press("ArrowLeft");
     await expect(folderRow).toHaveAttribute("aria-expanded", "false");
 
-    // Right-click opens the context menu with reveal + copy items (Escape to
-    // close — clicking Reveal would pop the OS file manager).
+    // Close the context menu without invoking the OS file manager.
     await folderRow.click({ button: "right" });
     await expect(page.getByTestId("chat-side-panel-fs-context-menu")).toBeVisible();
     await expect(page.getByTestId("chat-side-panel-fs-ctx-reveal")).toBeVisible();
     await expect(page.getByTestId("chat-side-panel-fs-ctx-copy-path")).toBeVisible();
     await page.keyboard.press("Escape");
 
-    // Collapse-all is present; the default root has no remove button.
     await expect(page.getByTestId("chat-side-panel-collapse-all")).toBeVisible();
     await expect(page.getByTestId("chat-side-panel-remove-root")).toHaveCount(0);
   });

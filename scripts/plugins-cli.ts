@@ -1,9 +1,7 @@
 import { readPluginRegistry } from "../src/plugins/registry.js";
 import { resolvePluginPaths } from "../src/plugins/plugin-paths.js";
 
-// Round-3: env-tier override removed. Use the explicit `--plugins-root <path>`
-// flag for portable installs / CI sandbox isolation. Default is
-// `~/.ave/plugins/` — same as the Electron host (single source of truth).
+// Use --plugins-root for portable installs and CI isolation; the default shares the host plugin root.
 function extractPluginsRootFlag(argv: string[]): { pluginsRoot?: string; rest: string[] } {
   const rest: string[] = [];
   let pluginsRoot: string | undefined;

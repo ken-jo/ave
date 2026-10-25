@@ -51,9 +51,7 @@ test("MCP App metadata CSP allows declared connect-src and blocks undeclared hos
 </body>
 </html>`;
 
-  // Spec shape: domain BUCKETS, not directive names. `connectDomains` → connect-src.
-  // (The old host type was keyed `connectSrc`, so a conformant server's
-  // `connectDomains` was silently dropped and its network access denied.)
+  // Resource declarations use domain buckets mapped to policy directives.
   const wrapped = wrapWithCsp(probeHtml, {
     connectDomains: ["https://allowed.example.com"],
   });

@@ -60,6 +60,7 @@
       "src/data/__tests__/settings-store-shared-secret-lease.test.ts",
       "src/engine/__tests__/conversation-loop-kill-durability.test.ts",
       "src/engine/telemetry/__tests__/tracing.test.ts",
+      "src/ipc/domains/__tests__/preview-document.test.ts",
       "src/main/__tests__/codex-conversation-runtime.test.ts",
       "src/plugins/__tests__/registry-atomicity.test.ts",
       "src/plugins/isolation/__tests__/host-protocol-schema-parity.test.ts",
@@ -68,7 +69,9 @@
       "src/tools/__tests__/archive-entry-reader-bundle.test.ts",
       "src/tools/__tests__/file-tools.test.ts",
       "src/tools/__tests__/image-preparation.test.ts",
+      "src/tools/__tests__/preview-document-process.test.ts",
       "test/scripts/main-bundle-budget.test.ts",
+      "test/scripts/preview-document-bundle.test.ts",
       "test/scripts/protocol-client-check.test.ts"
     ],
     "tree-invariants": [

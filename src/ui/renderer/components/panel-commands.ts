@@ -1,17 +1,4 @@
-/**
- * The main-area panel commands and their default chords — ONE table.
- *
- * The keydown handler binds off this table and the command palette lists the
- * same rows, so a command and its chord cannot be two different things in two
- * places. Changing a chord is changing its row here; the app has no per-user
- * keymap store yet, so these are the defaults every user gets.
- *
- * The chords follow the terminal tools the owner pointed at: cmux moves a
- * surface between panes with ⌥⌘⇧+arrow, reopens a closed one with ⌘⇧T and
- * jumps to the latest terminal asking for attention with ⌘⇧U; Warp maximizes
- * a pane with ⌘⇧Enter.
- * "⌘" is the platform's primary modifier (Ctrl off macOS).
- */
+/** One command table drives keyboard bindings and palette labels so chords cannot drift. */
 export type PanelCommandId =
   | "pane.moveLeft"
   | "pane.moveRight"

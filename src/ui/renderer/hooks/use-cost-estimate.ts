@@ -41,15 +41,8 @@ export function useCostEstimate(params: CostEstimateParams & { enabled?: true })
 export function useCostEstimate(params: CostEstimateParams & { enabled: false }): DisabledCostEstimate;
 export function useCostEstimate(params: CostEstimateParams & { enabled: boolean }): EnabledCostEstimate | DisabledCostEstimate;
 
-/**
- * Cost estimate hook.
- *
- * Returns the pre-send cost estimate + badge color for the draft input.
- * The expensive history serialization only depends on `entries`, so we
- * memo it separately keyed on length + last-entry identity (performance fix
- * pattern) — typing a draft in long sessions doesn't re-serialize the
- * whole conversation.
- */
+/** Memoize history serialization separately from draft changes so typing in long sessions does not reserialize the
+ * transcript. */
 export function useCostEstimate(params: CostEstimateParams): EnabledCostEstimate | DisabledCostEstimate {
   const { entries, draft, llmVendor, llmModel, pricingRoute, maxOutputTokens, outputLimitSource, enabled = true } = params;
   const pricingOverrides = usePricingOverrides();
@@ -89,8 +82,8 @@ export function useCostEstimate(params: CostEstimateParams): EnabledCostEstimate
     if (!enabled) return undefined;
     const resolved = resolveModelPricing(llmVendor ?? "", llmModel ?? "", pricingOverrides, pricingRoute);
     const pricing = resolved.source === "unknown" ? undefined : resolved.rates;
-    // Where the rates came from, or why there are none: a model the catalog
-    // lists at zero is said so, never shown as a $0 estimate.
+    // Where the rates came from, or why there are none: a model the catalog lists at zero is said so, never shown as a $0
+    // estimate.
     const provenance: Pick<EstimateBreakdown, "pricingSource" | "catalogListsZero"> = resolved.source === "unknown"
       ? (resolved.catalogListsZero !== undefined ? { catalogListsZero: resolved.catalogListsZero } : {})
       : { pricingSource: resolved.source };
@@ -125,8 +118,8 @@ export function useCostEstimate(params: CostEstimateParams): EnabledCostEstimate
       ...provenance,
     };
   }, [enabled, contextCarrierTokens, historySerialized, draft.text, draft.attachments, llmVendor, llmModel, pricingRoute, maxOutputTokens, pricingOverrides]);
-  // What this conversation's turns have produced, not the most a turn may:
-  // the limit is the upper end of the range, never the tier on its own.
+  // What this conversation's turns have produced, not the most a turn may: the limit is the upper end of the range, never
+  // the tier on its own.
   const completedTurnOutputs = useMemo(() => {
     if (!enabled) return [];
     return entries.flatMap((entry) => (entry.kind === "turn_summary" ? [entry.tokensOut] : []));
@@ -155,8 +148,8 @@ export function useCostEstimate(params: CostEstimateParams): EnabledCostEstimate
   if (!enabled) {
     return { costEstimate: undefined, costBadgeClass: undefined };
   }
-  // The `costEstimate` memo returns undefined only through the disabled branch
-  // above; retain that correlation for the overload contract.
+  // The `costEstimate` memo returns undefined only through the disabled branch above; retain that correlation for the
+  // overload contract.
   return { costEstimate: sourcedCostEstimate!, costBadgeClass: costBadgeClass! };
 }
 

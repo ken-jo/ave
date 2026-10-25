@@ -54,9 +54,8 @@ describe("MainToolbar", () => {
   });
 
   it("names the location on its leading edge, where the sidebar card ends", () => {
-    // History (back/forward) moved to the sidebar, which owns routes. The PATH
-    // stays on the band: it says WHERE THE WINDOW IS, and giving it a row of
-    // its own below the band cost 28px of every screen to repeat that.
+    // History (back/forward) moved to the sidebar, which owns routes. The PATH stays on the band: it says WHERE THE WINDOW IS,
+    // and giving it a row of its own below the band cost 28px of every screen to repeat that.
     renderWithProvider(defaultProps());
     const crumb = document.querySelector("[data-testid='view-path-breadcrumb']");
     expect(crumb).toBeTruthy();
@@ -65,8 +64,8 @@ describe("MainToolbar", () => {
     expect(screen.queryByTestId(TEST_IDS.viewPathBack)).toBeNull();
   });
 
-  // The search / star / export controls + the collapse toggle moved to the
-  // sidebar cluster strip — the band must NOT host them anymore.
+  // The search / star / export controls + the collapse toggle moved to the sidebar cluster strip — the band must NOT host
+  // them anymore.
   it("no longer renders the search / star / export controls (they live in the sidebar cluster)", () => {
     renderWithProvider(defaultProps());
     expect(screen.queryByTitle("통합 검색 (Cmd/Ctrl+F)")).toBeNull();
@@ -90,9 +89,6 @@ describe("MainToolbar", () => {
     expect(onToggleAppMode).toHaveBeenCalledWith("chat");
   });
 
-  // One row of lifecycle pills, app-wide before plugin-wide, and the mode
-  // toggle stays pinned to the far-right end. Plugin updates and bootstrap
-  // status used to float over the content as banners in the top-right stack.
   it("lines the lifecycle pills up in one row, app update first, before the mode toggle", () => {
     renderWithProvider(defaultProps({
       appUpdateState: { kind: "available", version: "9.9.9" },
@@ -137,10 +133,7 @@ describe("MainToolbar", () => {
   });
 
   it("draws the Dev badge as the band's shared status pill, keyboard hint and all", () => {
-    // It used to re-assemble the pill out of a ghost Button with its own font
-    // and padding, so the one control the band draws twice looked like two
-    // shapes. The keyboard hint rides along as the pill's trailing slot; the
-    // accessible name is still the control's, not the hint's.
+    // The keyboard hint uses the shared pill's trailing slot without changing the control's accessible name.
     vi.stubGlobal("__aveDevMode", true);
     const onOpenDevTools = vi.fn();
     renderWithProvider(defaultProps({ onOpenDevTools }));
@@ -155,8 +148,8 @@ describe("MainToolbar", () => {
   });
 
   it("no longer renders the work-panel toggle (each chat group owns its panel)", () => {
-    // One window-level button cannot mean the right thing once more than one
-    // conversation is on screen, so the control moved into the group header.
+    // One window-level button cannot mean the right thing once more than one conversation is on screen, so the control moved
+    // into the group header.
     renderWithProvider(defaultProps());
     expect(screen.queryByTestId(TEST_IDS.panePanelToggle)).toBeNull();
   });

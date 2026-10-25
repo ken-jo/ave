@@ -7,10 +7,7 @@ export interface PluginOperationPrincipal {
   ownerVersion: string;
   generationId: string;
   appSessionId: string;
-  /**
-   * Stable Host-private identity used only for cross-generation serialization
-   * and poison. Authority remains bound to the revocable `accountHash`.
-   */
+  // Stable Host-private identity used only for cross-generation serialization and poison. Authority remains bound to the revocable `accountHash`.
   accountScopeHash: string;
   accountHash: string;
 }
@@ -25,11 +22,7 @@ export interface PluginOperationGrantBinding extends PluginOperationPrincipal {
   toolName: string;
   operation: string;
   intentHash: string;
-  /**
-   * Fresh read receipt for read-backed writes. `null` deliberately represents
-   * a write with no truthful read prerequisite; the grant is still one-shot
-   * and bound to the full intent, principal, and active generation.
-   */
+  // Fresh read receipt for read-backed writes. `null` deliberately represents a write with no truthful read prerequisite; the grant is still one-shot and bound to the full intent, principal, and active generation.
   readRevision: string | null;
   expiresAt: number;
   nonce: string;
@@ -68,7 +61,7 @@ export interface PluginOperationExecutionLease {
 }
 
 export interface PluginOperationAccountTransitionLease {
-  /** Recheck tombstoned session/generation state immediately before handler entry. */
+  // Recheck tombstoned session/generation state immediately before handler entry.
   assertAuthorized(): void;
   release(): void;
 }
@@ -119,14 +112,7 @@ function snapshotKey(value: PluginReadSnapshotKey): string {
   return `${principalKey(value)}\0${value.readTool}\0${value.readOperation}`;
 }
 
-/**
- * Compute the Host-private account operation domain for one invocation.
- *
- * Every governed operation in one immutable plugin generation and provider
- * account shares the same domain. Operation declarations may add restrictions,
- * but cannot prove that a compromised handler will stay within a narrower
- * resource component; account-wide serialization therefore remains Host-owned.
- */
+// Compute the Host-private account operation domain for one invocation. Every governed operation in one immutable plugin generation and provider account shares the same domain. Operation declarations may add restrictions, but cannot prove that a compromised handler will stay within a narrower resource component; account-wide serialization therefore remains Host-owned.
 export function pluginOperationExecutionDomain(
   principal: PluginOperationDomainPrincipal,
   toolName: string,
@@ -242,13 +228,7 @@ export class PluginOperationGrantCoordinator {
     return revision;
   }
 
-  /**
-   * Mark the start of a governed read before plugin code executes.
-   *
-   * A new attempt supersedes every older snapshot or grant that could satisfy
-   * a write's read prerequisite, even if the attempt later fails, is aborted,
-   * or returns a structured non-success result.
-   */
+  // Mark the start of a governed read before plugin code executes. A new attempt supersedes every older snapshot or grant that could satisfy a write's read prerequisite, even if the attempt later fails, is aborted, or returns a structured non-success result.
   beginRead(key: PluginReadSnapshotKey, domainKey: string): void {
     this.assertPrincipalNotRevoked(key);
     const domain = this.requireDomain(domainKey, key);
@@ -475,16 +455,7 @@ export class PluginOperationGrantCoordinator {
     domain.revision = randomUUID();
   }
 
-  /**
-   * Permanently fail closed for a domain whose state may still be changing
-   * outside Host-observable effect boundaries.
-   *
-   * A new read, session reset, generation update, rollback, or account
-   * re-authentication cannot clear this state for the same Host-derived plugin
-   * and account identity. The poison scope uses the stable Host-private account
-   * identity and deliberately omits the revocable principal, version, and
-   * generation so reauthentication or replacement cannot clear it.
-   */
+  // Permanently fail closed for a domain whose state may still be changing outside Host-observable effect boundaries. A new read, session reset, generation update, rollback, or account re-authentication cannot clear this state for the same Host-derived plugin and account identity. The poison scope uses the stable Host-private account identity and deliberately omits the revocable principal, version, and generation so reauthentication or replacement cannot clear it.
   poisonDomain(domainKey: string): void {
     const domain = this.domainRevisions.get(domainKey);
     if (!domain) {
@@ -570,13 +541,7 @@ export class PluginOperationGrantCoordinator {
     });
   }
 
-  /**
-   * Serialize a credential transition behind every governed operation already
-   * admitted for the same stable provider account. Callers revoke the current
-   * principal before awaiting this lease, which rejects queued/future work;
-   * the transition then waits for the one in-flight holder to finish before
-   * login/logout code may mutate provider credentials.
-   */
+  // Serialize a credential transition behind every governed operation already admitted for the same stable provider account. Callers revoke the current principal before awaiting this lease, which rejects queued/future work; the transition then waits for the one in-flight holder to finish before login/logout code may mutate provider credentials.
   acquireAccountTransitionLease(
     principal: PluginOperationAccountTransitionPrincipal,
     signal?: AbortSignal,
@@ -831,9 +796,7 @@ export class PluginOperationGrantCoordinator {
     ) {
       return undefined;
     }
-    // Reservation and deletion are one synchronous critical section. Once a
-    // grant owns this revision, no concurrent approval can mint another grant
-    // from the same user-visible read snapshot.
+    // Reservation and deletion are one synchronous critical section. Once a grant owns this revision, no concurrent approval can mint another grant from the same user-visible read snapshot.
     this.snapshots.delete(newest.key);
     return newest.snapshot;
   }
@@ -1175,10 +1138,7 @@ export class PluginOperationGrantCoordinator {
       this.revokedGenerations.size +
       this.revokedAccounts.size;
     if (revocationCount >= this.maxRevocations) {
-      // Bounded fail-closed degradation. Once exact tombstones can no longer
-      // be retained safely, reject every future governed principal until
-      // process restart instead of evicting old revocations and reviving
-      // stale authority.
+      // Bounded fail-closed degradation. Once exact tombstones can no longer be retained safely, reject every future governed principal until process restart instead of evicting old revocations and reviving stale authority.
       this.revocationCapacityExhausted = true;
       this.revokedSessions.clear();
       this.revokedGenerations.clear();

@@ -1,19 +1,5 @@
-/**
- * `bun run plugin:validate` runs from source, in a checkout with no build
- * (`docs/design/plugin-hostapi-protocol.md` §9.7 P2).
- *
- * The checkout is a directory of links to this one's sources, dependencies
- * and `package.json`, and no `dist/`: the CLI and its child run the `.ts`
- * sources through the loader the script names, and the child gets that loader
- * only because the script passes it on with `--child-exec-arg`.
- *
- * And stdout carries only the report. The validated plugin logs through
- * `context.log` at construct, at start and in its tool, so the host side logs
- * each `notifications/ave/log` it receives — which the app logger would print
- * to stdout both in its test mode (`VITEST` set) and with its pretty stream
- * (`VITEST` and `NODE_ENV` unset). The logger hook replaces it in both
- * processes, so every stdout line parses as a report row.
- */
+// Source validation must pass its loader to child processes without requiring dist/.
+// Replace logging in both processes so stdout contains only report rows.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
@@ -126,19 +112,14 @@ afterAll(async () => {
     try {
       process.kill(pid, "SIGKILL");
     } catch {
-      // Already gone.
     }
   }
-  // A live descendant keeps the checkout open, and Windows refuses to remove a
-  // directory a process still holds. The kill returns before the process is
-  // gone, and its handles close a moment after it reports an exit code, so
-  // the removal waits for both.
+  // Windows descendants retain directory handles briefly after exit; wait before removal.
   const deadline = Date.now() + 10_000;
   while (descendantPids.some((pid) => systemProcessProbe.exists(pid)) && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  // The links go first, one by one and never recursively: a recursive removal
-  // follows a Windows junction into the checkout it points at.
+  // Remove links individually and non-recursively to avoid following junctions into the checkout.
   for (const name of LINKED) removeLinkOnly(join(checkout, name));
   await cleanupTmpDir(scratch);
 });
@@ -152,7 +133,7 @@ function validate(pluginDir: string, env: NodeJS.ProcessEnv, timeout = 60_000) {
   });
 }
 
-/** Every stdout line is a report row: `{ check, ok, message }` and an optional `path`. */
+// Stdout rows contain check, ok, message and an optional path.
 function reportRows(stdout: string): Array<Record<string, unknown>> {
   expect(stdout.endsWith("\n")).toBe(true);
   return stdout
@@ -177,12 +158,10 @@ describe("bun run plugin:validate from source", () => {
   }, 60_000);
 
   it("exits once the report is written, although a descendant of the plugin holds its stderr", () => {
-    // Half the descendant's minute: a validator held by its pipe is killed here.
     const result = validate(descendantPlugin, process.env, 30_000);
     const descendant = Number(/descendant-pid=(\d+)/.exec(result.stderr)?.[1]);
     expect(Number.isInteger(descendant)).toBe(true);
     descendantPids.push(descendant);
-    // The descendant lives for a minute; the validator does not wait for it.
     expect(() => process.kill(descendant, 0)).not.toThrow();
     expect(result.signal).toBeNull();
     expect(result.status).toBe(0);

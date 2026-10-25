@@ -1,20 +1,4 @@
-/**
- * The routed views are panes — the app's own, and a plugin's.
- *
- * A view used to draw its own page: an `<h2>` at the top of the body, its
- * global controls beside that heading, and its own page padding. The
- * conversation beside it, meanwhile, sat in a framed pane with a 36px header
- * that carried its title and its actions. Two shapes for the same thing.
- *
- * These tests pin the one shape: the view is the BODY of a pane, the frame
- * carries its name and its glyph, the controls that stood beside the heading
- * are in the frame's header, and closing the pane hands it back to the
- * conversation it was covering rather than closing anything.
- *
- * Driven through the real producers — a restored location, a sidebar click, a
- * click on the frame's close control — because the claim is about what the
- * user sees and does, not about which props a branch passes.
- */
+// Routed views share pane framing, title and controls without duplicate headings or padding.
 import "./setup.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, waitFor } from "@testing-library/react";
@@ -31,13 +15,7 @@ import { BUILTIN_LABEL_KEYS, type PaneViewKey } from "../../src/ui/renderer/util
 
 afterEach(() => vi.restoreAllMocks());
 
-/**
- * The pane the router drew for the active view, or null while it has none.
- *
- * `main-pane-shell` alone would not do: the conversation surface is one too and
- * is in the DOM at the same time (hidden, not unmounted), and its tile is also
- * a `pane`. `data-view` is what says which shell is the view's.
- */
+// Identify routed panes by data-view; hidden conversation panes remain mounted too.
 function pane(container: HTMLElement): HTMLElement | null {
   return container.querySelector(
     '[data-testid="main-pane-shell"][data-view] [data-testid="pane"]',
@@ -63,7 +41,6 @@ async function openView(view: PaneViewKey, bodyTestId: string) {
   return rendered;
 }
 
-// view key → the body it draws, identified by something the view itself owns.
 const VIEWS: ReadonlyArray<readonly [PaneViewKey, string]> = [
   ["work-board", "work-board-panel"],
   ["routines", "routine-panel"],
@@ -75,13 +52,9 @@ describe("built-in views are pane bodies", () => {
   it.each(VIEWS)("draws %s inside a pane whose header carries its own label", async (view, bodyTestId) => {
     const { container } = await openView(view, bodyTestId);
 
-    // The frame's title is the label the sidebar and the path already use for
-    // this destination — read from the same map, so a renamed view cannot be
-    // one thing in the rail and another on the pane.
+    // Read titles from the shared navigation map to prevent pane/sidebar naming drift.
     expect(paneTitle(container)).toBe(t(BUILTIN_LABEL_KEYS[view]));
-    // …and the glyph beside it. Read as "an icon is drawn", not as which one:
-    // which glyph is the map's business, and asserting it here would only
-    // restate the map.
+    // Check for an icon without duplicating the shared glyph mapping.
     expect(
       pane(container)?.querySelector('[data-testid="pane-header"] svg'),
     ).not.toBeNull();
@@ -90,8 +63,7 @@ describe("built-in views are pane bodies", () => {
   it.each(VIEWS)("leaves no heading of its own inside the %s body", async (view, bodyTestId) => {
     const { container } = await openView(view, bodyTestId);
 
-    // Exactly one h2 in the pane: the frame's. A body that kept its own would
-    // name the view twice, 36px apart.
+    // Only the frame supplies the pane heading.
     expect(pane(container)?.querySelectorAll("h2").length).toBe(1);
     expect(
       container.querySelector(`[data-testid="${bodyTestId}"]`)?.querySelector("h2"),
@@ -101,9 +73,7 @@ describe("built-in views are pane bodies", () => {
   it.each(VIEWS)("insets the %s body once, from the frame", async (view, bodyTestId) => {
     const { container } = await openView(view, bodyTestId);
 
-    // The page inset is the frame's `bodyInset="page"` and nothing else: the
-    // PageShell that used to add it is gone, so a body that still carried its
-    // own would sit twice as far in.
+    // The frame owns page padding; bodies must not add another inset.
     const inset = pane(container)?.querySelectorAll('[data-body-inset="page"]') ?? [];
     expect(inset.length).toBe(1);
     expect(inset[0]?.className).toContain("p-4");
@@ -122,7 +92,6 @@ describe("a view's global actions live in the pane header", () => {
     expect(add?.getAttribute("aria-label")).toBe(t("workBoard.addItemButton"));
     expect(header?.querySelector('[data-testid="pane-action-work-board-refresh"]')).not.toBeNull();
 
-    // The control still opens what it opened when it stood beside the heading.
     await act(async () => {
       fireEvent.click(add as HTMLElement);
     });
@@ -150,8 +119,6 @@ describe("a view's global actions live in the pane header", () => {
     const { container } = await openView("memory", "memory-search-panel");
     const header = pane(container)?.querySelector('[data-testid="pane-header"]');
 
-    // The search box is a body control and stays there; the header invents
-    // nothing to fill the space.
     expect(header?.querySelector('[data-testid^="pane-action-"]')).toBeNull();
     expect(container.querySelector('[data-testid="memory-search-panel"] input')).not.toBeNull();
   });
@@ -163,10 +130,6 @@ describe("a plugin view is a pane body", () => {
   const PLUGIN_LABEL = "Token Plugin";
   const PLUGIN_DESCRIPTION = "What this extension is for";
 
-  /**
-   * A plugin whose runtime is loaded and whose one UI extension is registered —
-   * the state in which its view is a place the window can be.
-   */
   const pluginFixture = {
     pluginCards: [{
       id: PLUGIN_ID,
@@ -208,14 +171,11 @@ describe("a plugin view is a pane body", () => {
     const { container } = await openPluginView();
 
     expect(paneTitle(container)).toBe(PLUGIN_LABEL);
-    // The description was a second line of page chrome under the heading. It is
-    // the title's tooltip now — still there, costing the pane no height.
+    // Keep descriptions in tooltips without adding a second row of pane chrome.
     expect(
       pane(container)?.querySelector('[data-testid="pane-header"] h2')?.getAttribute("title"),
     ).toBe(PLUGIN_DESCRIPTION);
-    // The glyph the sidebar row draws for this plugin, resolved from the same
-    // manifest fields. Read as "an icon is drawn": which one is the resolver's
-    // business.
+    // Verify an icon exists without restating the shared manifest resolver.
     expect(
       pane(container)?.querySelector('[data-testid="pane-header"] svg'),
     ).not.toBeNull();
@@ -224,9 +184,7 @@ describe("a plugin view is a pane body", () => {
   it("draws one box — the frame's — around the plugin surface", async () => {
     const { container } = await openPluginView();
 
-    // The host's own page shell is gone: what carries `plugin-page-shell` is
-    // the body wrapper INSIDE the frame, so the plugin's surface has exactly
-    // one outline and one header, not a card inside a card.
+    // Plugin bodies sit inside one host frame without a nested page shell.
     const shell = container.querySelector('[data-testid="plugin-page-shell"]');
     expect(pane(container)?.contains(shell as Node)).toBe(true);
     expect(shell?.querySelector("h2")).toBeNull();
@@ -234,10 +192,7 @@ describe("a plugin view is a pane body", () => {
   });
 
   it("unmounts the plugin surface when the pane goes back to the conversation", async () => {
-    // The conversation is the ONE surface kept mounted while hidden — its
-    // stream subscription and composer draft live in it. A plugin guest is a
-    // whole renderer process, so it leaves with its pane and pays for the
-    // return with a reload.
+    // Hide conversations to preserve streams and drafts; plugin guests unmount with their panes.
     const { container } = await openPluginView();
     expect(atHome(container)).toBe(false);
 
@@ -260,8 +215,7 @@ describe("closing a view's pane", () => {
 
     const close = pane(container)?.querySelector('[data-testid="pane-close"]');
     expect(close).not.toBeNull();
-    // The control names the VIEW, not the pane: the pane survives this click,
-    // so "close pane" would be a promise the click does not keep.
+    // Closing a view preserves its pane; accessible labels must describe that action.
     expect(close?.getAttribute("aria-label"))
       .toBe(t("pane.closeView", { view: t(BUILTIN_LABEL_KEYS.routines) }));
     expect(close?.getAttribute("aria-label")).not.toBe(t("pane.close"));
@@ -270,8 +224,6 @@ describe("closing a view's pane", () => {
       fireEvent.click(close as HTMLElement);
     });
 
-    // Back on `home`: the pane is the conversation's again, and the router
-    // draws no view pane at all.
     await waitFor(() => {
       expect(atHome(container)).toBe(true);
       expect(pane(container)).toBeNull();
@@ -280,17 +232,7 @@ describe("closing a view's pane", () => {
   });
 });
 
-/**
- * Settings is a pane body too — with one difference the tests below pin.
- *
- * It is the only built-in view that lays out REGIONS of its own: a nav column
- * and a detail pane, split by a full-height divider, which at a narrow pane
- * width becomes a two-depth list→detail stack. That structure is the user's
- * (they asked to keep it) and it needs the frame's hairline: an inset body
- * would float the divider inside the outline instead of reaching it. So the
- * frame gives Settings `bodyInset="none"` and the padding stays where Settings
- * already put it, inside each of its two regions.
- */
+// Settings owns its two layout regions; the outer pane must not duplicate their padding or headings.
 const SETTINGS_SHELL = "[data-settings-layout]";
 
 async function openSettingsPane(settingsTab?: string) {
@@ -320,14 +262,12 @@ describe("settings is a pane body", () => {
     const { container } = await openSettingsPane();
     const label = t(BUILTIN_LABEL_KEYS.settings);
 
-    // The pane's own name appears in exactly one heading: the frame's. The
-    // panel used to repeat it at the top of its nav column, 36px below.
+    // The pane heading appears once, supplied by the frame.
     const named = [...(pane(container)?.querySelectorAll("h2") ?? [])]
       .filter((h) => h.textContent?.trim() === label);
     expect(named.length).toBe(1);
     expect(named[0]?.closest('[data-testid="pane-header"]')).not.toBeNull();
-    // The ACTIVE PAGE's heading stays: it names the tab, a depth below the
-    // pane, exactly as the location path reads it (Settings › …).
+    // Keep the active tab heading as the next navigation depth.
     expect(container.querySelector(`${SETTINGS_SHELL} h2`)).not.toBeNull();
   });
 
@@ -337,10 +277,7 @@ describe("settings is a pane body", () => {
     const body = pane(container)?.querySelector('[data-body-inset]');
     expect(body?.getAttribute("data-body-inset")).toBe("none");
     expect(pane(container)?.querySelector('[data-body-inset="page"]')).toBeNull();
-    // Nothing but the panel's own root stands between the frame's body and the
-    // layout it draws, and that root adds no margin. The page wrapper the panel
-    // used to bring — three nested boxes ending in `px-3 pt-4 sm:px-4` — is
-    // gone, so the padding has exactly one home: the two regions themselves.
+    // Let settings regions own padding without intervening page wrappers.
     const shell = container.querySelector<HTMLElement>(SETTINGS_SHELL);
     const between: HTMLElement[] = [];
     for (let el = shell?.parentElement ?? null; el && el !== body; el = el.parentElement) between.push(el);
@@ -358,8 +295,6 @@ describe("settings is a pane body", () => {
 
     await waitFor(() => {
       expect(activeSettingsTab(container)).toBe("permissions");
-      // The move is persisted under the key it has always used, and the
-      // location path follows it — the pane did not swallow either.
       expect(api.updateSettings).toHaveBeenCalledWith(
         expect.objectContaining({ system: expect.objectContaining({ settingsTab: "permissions" }) }),
       );
@@ -369,28 +304,22 @@ describe("settings is a pane body", () => {
 
   it("draws the view in the pane that holds it and leaves its neighbour alone", async () => {
     const { container } = await renderApp({ hasApiKey: true });
-    // Focus follows a split, so the view opens in the SECOND tile.
     const [left, right] = await splitIntoTwoTiles(container);
     const cell = (chatGroupId: string) =>
       container.querySelector<HTMLElement>(`[data-testid="pane-cell:${chatGroupId}"]`)!;
 
     await clickSidebarNavRow("features", "toolbar-work-board");
 
-    // The board took ONE pane's box — the one that was focused.
     await waitFor(() => {
       expect(cell(right!.chatGroupId)
         .querySelector('[data-testid="main-pane-shell"][data-view="work-board"]')).not.toBeNull();
     });
-    // Its neighbour is untouched: still a conversation, still drawn. Before the
-    // route moved onto the canvas the whole surface went `display:none` here,
-    // so the second pane went dark for a view it was not showing.
+    // Routing changes only the focused tile; neighboring conversations remain visible.
     expect(cell(left!.chatGroupId)
       .querySelector('[data-testid="main-pane-shell"][data-view]')).toBeNull();
     expect(cell(left!.chatGroupId).querySelector('[data-testid="pane"]')).not.toBeNull();
 
-    // Two frames in that one cell: the board's, and the conversation it covers.
-    // The covered one is hidden rather than unmounted — its turn may still be
-    // streaming, and its composer draft and scroll position live in it.
+    // Keep the covered conversation mounted so its turn, draft and scroll position survive.
     expect(cell(right!.chatGroupId).querySelectorAll('[data-testid="pane"]')).toHaveLength(2);
   });
 

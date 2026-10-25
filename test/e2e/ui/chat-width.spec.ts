@@ -1,14 +1,6 @@
 import { test, expect } from './fixtures';
 
-/**
- * chat-width.spec.ts
- *
- * Verifies that the chat content column is constrained to ~max-w-3xl (768px)
- * and is horizontally centered within the main content area.
- *
- * All assertions are prefixed with test.skip guards so CI remains green when
- * the Electron app is not fully built or the relevant DOM nodes are absent.
- */
+// Guard layout checks when the build or relevant DOM nodes are unavailable.
 
 const CHAT_OUTER_SELECTOR =
   '.grid.grid-rows-\\[1fr_auto\\]';
@@ -27,9 +19,8 @@ test.describe('chat column width constraints', () => {
 
     const box = await chatOuter.boundingBox();
     expect(box).not.toBeNull();
-    // max-w-3xl = 768px; allow up to 800px for padding/scrollbar
+    // Allow padding and scrollbar headroom above the column-width limit.
     expect(box!.width).toBeLessThanOrEqual(800);
-    // Must not shrink-wrap below 600px at this viewport
     expect(box!.width).toBeGreaterThan(600);
   });
 
@@ -46,15 +37,13 @@ test.describe('chat column width constraints', () => {
 
     const box = await chatOuter.boundingBox();
     expect(box).not.toBeNull();
-    // At 1024px viewport max-w-3xl (768px) is not reached; w-full kicks in.
-    // The chat should fill to at least 600px.
+    // At this width the column fills available space before reaching its maximum.
     expect(box!.width).toBeGreaterThan(600);
   });
 
   test('at 1920x1080 — chat column is horizontally centered within the main content area', async ({ app, mainWindow }) => {
     await app.firstWindow().then((w) => w.setViewportSize({ width: 1920, height: 1080 }).catch(() => {}));
 
-    // Locate the main content wrapper (parent of the chat outer) and the chat column.
     const chatOuter = mainWindow.locator(CHAT_OUTER_SELECTOR).first();
     const found = await chatOuter
       .waitFor({ state: 'attached', timeout: 15_000 })
@@ -73,7 +62,6 @@ test.describe('chat column width constraints', () => {
     const leftGap = chatBox!.x - parentBox!.x;
     const rightGap = (parentBox!.x + parentBox!.width) - (chatBox!.x + chatBox!.width);
 
-    // Centering tolerance: gaps should be within 10px of each other
     expect(Math.abs(leftGap - rightGap)).toBeLessThanOrEqual(10);
   });
 });

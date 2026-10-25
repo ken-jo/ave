@@ -1,16 +1,5 @@
-/**
- * useInlineSlashMenu — drives the caret-anchored "/" autocomplete inside the
- * composer textarea.
- *
- * Given the controlled text + caret, it derives the active trigger (via
- * detectSlashQuery), filters every category by the typed query, and exposes a
- * flat navigable item list plus the accept/replace logic. Composer wires the
- * keyboard (↑/↓/⏎/esc) to move/accept/close; the InlineSlashMenu component
- * renders items/activeIndex.
- *
- * The menu is intentionally a sibling of the popover SlashPicker: both share
- * slash-picker-data.ts so their catalog + matching semantics never diverge.
- */
+/** Share picker catalogs and matching with SlashPicker; Composer owns keyboard input and this hook owns trigger
+ * replacement. */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { RefObject } from "react";
 import { useTranslation } from "../../../i18n/react.js";
@@ -83,8 +72,7 @@ export function useInlineSlashMenu({
 }: UseInlineSlashMenuArgs): UseInlineSlashMenuResult {
   const { t } = useTranslation();
   const [activeIndex, setActiveIndex] = useState(0);
-  // Manual dismissal (esc) — re-armed when the trigger token changes so a new
-  // "/" reopens after an explicit close.
+  // Manual dismissal (esc) — re-armed when the trigger token changes so a new "/" reopens after an explicit close.
   const [dismissedToken, setDismissedToken] = useState<string | null>(null);
 
   const trigger = useMemo(
@@ -112,8 +100,7 @@ export function useInlineSlashMenu({
 
   const stripTrigger = useCallback(
     (range: { start: number; end: number }) => {
-      // Remove the typed "/query" token entirely (used when an item runs an
-      // action / opens a view rather than inserting text).
+      // Remove the typed "/query" token entirely (used when an item runs an action / opens a view rather than inserting text).
       const next = text.slice(0, range.start) + text.slice(range.end);
       onTextChange(next);
       requestAnimationFrame(() => {

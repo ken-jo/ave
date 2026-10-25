@@ -329,6 +329,7 @@ jobs:
         # AVE_CI_PLAN_FILE is that plan, AVE_CI_SHARD this shard's place in
         # the matrix (`vitest --shard`); a one-shard matrix runs it whole.
         env:
+          AVE_REQUIRE_SANDBOX_CASES: "1"
           AVE_SMOKE_PYTHON: ${{ steps.python.outputs.python-path }}
           AVE_VITEST_MAX_WORKERS: "3"
           AVE_CI_PLAN_FILE: ${{ runner.temp }}/ci-plan/ci-plan.json
@@ -655,6 +656,8 @@ jobs:
           src/permissions/__tests__/srt-win-integrity.test.ts
           src/permissions/__tests__/egress-runtime-proxy.test.ts
           src/tools/__tests__/shell-windows-partial-plan-b.test.ts
+          src/tools/__tests__/shell-windows-mxc.test.ts
+          src/permissions/__tests__/mxc-windows.test.ts
           src/lib/__tests__/atomic-file.test.ts
           src/shared/__tests__/ave-home.test.ts
           src/lib/__tests__/with-file-lock.test.ts
@@ -749,8 +752,8 @@ jobs:
       # AVE_SMOKE_PYTHON unset the harness has the uv above install a managed
       # 3.12 under node_modules/.cache/ave-python-smoke and discovers it with
       # `--managed-python`, so no step relies on the machine's own python3.
-      # The plugin-confinement cases need a live sandbox. Both Linux jobs
-      # install the backend; this job needs no backend install.
+      # Native confinement cases need a live sandbox. Both Linux jobs install
+      # the backend; this job needs no backend install.
       # `AVE_REQUIRE_SANDBOX_CASES=1` makes confinement jobs fail if the sandbox
       # cannot initialize, instead of passing without taking a measurement.
       # terminal-egress-native.test.ts also needs the runner to reach
@@ -769,11 +772,16 @@ jobs:
           src/plugins/isolation/__tests__/adversarial-escapes.test.ts
           src/hooks/__tests__/bundled-hook-asrt.smoke.test.ts
           src/tools/__tests__/session-read-shell.test.ts
+          src/permissions/__tests__/sandbox-control-writes.integration.test.ts
+          src/permissions/__tests__/sandbox-shell-sockets.integration.test.ts
+          src/permissions/__tests__/sandbox-git-controls.integration.test.ts
+          src/permissions/__tests__/egress-terminal-background.integration.test.ts
           src/permissions/__tests__/egress-deny-native.test.ts
           src/permissions/__tests__/egress-token-isolation-native.test.ts
           src/main/terminal/__tests__/terminal-egress-native.test.ts
           test/scripts/asrt-patched-symbols.test.ts
           src/permissions/__tests__/allowed-directories.test.ts
+          src/permissions/__tests__/asrt-sandbox.test.ts
           src/permissions/__tests__/permission-manager-meta-override.test.ts
           src/tools/__tests__/registry-meta-governance.test.ts
           src/tools/__tests__/executor-rationale-batch.test.ts
@@ -912,3 +920,7 @@ jobs:
           src/main/terminal/__tests__/terminal-egress-native.test.ts
           test/scripts/asrt-patched-symbols.test.ts
           src/main/terminal/__tests__/pty-manager-linux-sandbox.test.ts
+          src/permissions/__tests__/sandbox-control-writes.integration.test.ts
+          src/permissions/__tests__/sandbox-shell-sockets.integration.test.ts
+          src/permissions/__tests__/sandbox-git-controls.integration.test.ts
+          src/permissions/__tests__/egress-terminal-background.integration.test.ts

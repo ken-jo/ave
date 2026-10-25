@@ -244,11 +244,8 @@ test.describe("chat preview rail", () => {
       const openButton = ctx.page.getByTestId(TEST_IDS.panePanelToggle);
       await expect(openButton).toBeVisible({ timeout: 20_000 });
       await expect(ctx.page.getByTestId("chat-preview-rail")).toHaveCount(0);
-      // No tool-activity control in the header: the activity lives in the panel.
       await expect(ctx.page.getByTestId("pane-header")).not.toContainText("도구 활동");
-      // The work panel is the conversation's, so its toggle is the pane's own
-      // trailing header control, below the window band that holds the mode
-      // toggle (6a64316b5, 954f1d9f9) — not a band control beside it.
+      // Work-panel controls belong to the pane header below the window band.
       const modeToggleBox = await ctx.page.getByTestId("app-mode-toggle").boundingBox();
       const paneHeader = ctx.page.getByTestId("pane-header");
       const paneHeaderBox = await paneHeader.boundingBox();
@@ -267,13 +264,10 @@ test.describe("chat preview rail", () => {
       const rail = ctx.page.getByTestId("chat-preview-rail");
       await expect(panel).toBeVisible({ timeout: 10_000 });
       await expect(rail).toBeVisible({ timeout: 10_000 });
-      // Redesigned rail opens EMPTY to the launcher (no default tabs, no mode
-      // toggles). Open the file-browser surface from the launcher to review files.
       await expect(ctx.page.getByTestId("chat-side-panel-launcher")).toBeVisible();
       await ctx.page.getByTestId(chatSidePanelLauncherTestId("file-browser")).click();
       await expect(ctx.page.getByTestId("chat-side-panel-tab-file-browser")).toBeVisible();
-      // The top pane defaults to the Directory source; session artifacts live
-      // behind the Session files segment. Switch to it to review report.md.
+      // Session artifacts require the Session files source rather than the default Directory source.
       await ctx.page.getByTestId("chat-side-panel-file-source-session").click();
       await expect(rail).toContainText("report.md");
       await expect(ctx.page.getByTestId("chat-side-panel-file-tree")).toBeVisible();
@@ -289,9 +283,6 @@ test.describe("chat preview rail", () => {
       await ctx.page.mouse.up();
       await expect.poll(async () => splitLayout.evaluate((element) => (element as HTMLElement).style.gridTemplateRows)).not.toBe(splitBeforeDrag);
 
-      // Open a browser surface via the single "+" launcher dropdown (the old
-      // per-kind add buttons + mode toggles are gone; one SOT list drives both
-      // the empty-state launcher and this menu).
       const tabCountBefore = await ctx.page.getByRole("tab").count();
       const addTabTrigger = ctx.page.getByTestId("chat-side-panel-add-tab");
       await addTabTrigger.dispatchEvent("pointerdown");
@@ -299,9 +290,7 @@ test.describe("chat preview rail", () => {
       await expect(ctx.page.getByRole("tab")).toHaveCount(tabCountBefore + 1);
       await expect(ctx.page.getByTestId("chat-side-panel-tab-browser")).toBeVisible();
       await expect(ctx.page.getByTestId("chat-side-panel-tab-actions")).toBeVisible();
-      // A browser tab is its address row and the conversation's latest page —
-      // here the last URL the transcript mentions. The visited-site list is the
-      // empty panel's landing, not part of a tab.
+      // A browser tab uses the latest transcript URL; visited sites belong to the empty landing panel.
       await expect(ctx.page.getByTestId("chat-side-panel-browser-visited")).toHaveCount(0);
       await expect(ctx.page.getByTestId("chat-side-panel-browser-address")).toHaveValue("https://search.example.test/ave-side-panel");
       await expect(ctx.page.getByTestId("chat-side-panel-browser-webview")).toBeVisible();
@@ -318,8 +307,7 @@ test.describe("chat preview rail", () => {
       await expect(directBrowserWebview).toBeVisible();
       await expect(directBrowserWebview).toHaveAttribute("src", sideBrowser.url);
 
-      // The narrow-screen drawer fallback is covered by workspace-rail-redesign.spec.ts;
-      // this spec stays at a docked viewport to exercise the side-by-side geometry.
+      // Keep this spec docked; the workspace-rail spec covers narrow drawers.
       const browserWebview = ctx.page.getByTestId("chat-side-panel-browser-webview");
       await expect(browserWebview).toBeVisible();
       await expect(browserWebview).toHaveAttribute("src", sideBrowser.url);
@@ -353,8 +341,7 @@ test.describe("chat preview rail", () => {
         body: Buffer.from(capturedGuest.pngBase64, "base64"),
       });
 
-      // Open a preview surface via the "+" dropdown; it lists non-browser,
-      // non-file targets only, so the html artifact + fetched host drop out.
+      // The preview launcher excludes targets already covered by browser and file surfaces.
       const addPreviewTrigger = ctx.page.getByTestId("chat-side-panel-add-tab");
       await addPreviewTrigger.dispatchEvent("pointerdown");
       await ctx.page.getByTestId(chatSidePanelLauncherTestId("menu-preview")).click();
@@ -369,11 +356,7 @@ test.describe("chat preview rail", () => {
       const actionBarBox = await ctx.page.getByTestId("input-action-bar").boundingBox();
       const railBox = await panel.boundingBox();
       const finalSplitterBox = await ctx.page.getByTestId("chat-side-panel-width-splitter").boundingBox();
-      // The docked card floats inside its tile with the floating sidebar's own
-      // air: the wrapper carries --shell-card-inset on top, start and end and
-      // --shell-card-inset-bottom below (a9c521325), so the transcript is
-      // pushed by the card plus its insets and the card's edges line up with
-      // the sidebar card's.
+      // Include card insets when measuring transcript displacement and alignment with the sidebar.
       const { inset, insetBottom } = await ctx.page.evaluate(() => {
         const style = getComputedStyle(document.documentElement);
         return {
@@ -394,7 +377,6 @@ test.describe("chat preview rail", () => {
       expect(Math.abs(railBox!.x - (mainColumnBox!.x + mainColumnBox!.width) - inset)).toBeLessThanOrEqual(1);
       expect(railBox!.x).toBeGreaterThanOrEqual(chatBox!.x + chatBox!.width - 2);
       expect(railBox!.x).toBeGreaterThan(actionBarBox!.x + actionBarBox!.width - 8);
-      // The width handle is the card's own start edge, inside the card (it clips).
       expect(finalSplitterBox!.width).toBeGreaterThanOrEqual(7);
       expect(finalSplitterBox!.width).toBeLessThanOrEqual(9);
       expect(Math.abs(finalSplitterBox!.x - railBox!.x)).toBeLessThanOrEqual(1);
@@ -405,8 +387,6 @@ test.describe("chat preview rail", () => {
       expect(Math.abs(actionBarBox!.width - mainColumnBox!.width)).toBeLessThanOrEqual(48);
       await expect(panel).not.toHaveCSS("position", "absolute");
 
-      // The activity tab lists every plugin and tool call of the session; the
-      // web and file lists live on the browser and file tabs.
       await addTabTrigger.dispatchEvent("pointerdown");
       await ctx.page.getByTestId(chatSidePanelLauncherTestId("menu-activity")).click();
       const activityWorkspace = ctx.page.getByTestId("chat-side-panel-activity-workspace");
@@ -423,7 +403,6 @@ test.describe("chat preview rail", () => {
         body: Buffer.from(activityProbe.screenshot.data, "base64"),
       });
 
-      // The file tab's changed-files segment says what happened to each file.
       await ctx.page.getByTestId("chat-side-panel-tab-file-browser").click();
       await ctx.page.getByTestId("chat-side-panel-file-source-changed").click();
       const changedRows = rail.getByTestId("chat-side-panel-file-change-row");
@@ -431,9 +410,7 @@ test.describe("chat preview rail", () => {
       await expect(changedRows.first()).toContainText("report.md");
       await expect(rail.getByTestId("chat-side-panel-file-change-operation")).toHaveText("씀");
 
-      // Switch back to the earlier file-browser tab (still open) to filter files.
-      // The tab body remounts, so its source resets to Directory — switch to the
-      // Session files segment again to see the session artifacts.
+      // Remounting resets the file source to Directory; reselect Session files.
       await ctx.page.getByTestId("chat-side-panel-tab-file-browser").click();
       await ctx.page.getByTestId("chat-side-panel-file-source-session").click();
       await expect(rail).toContainText("notes.md");

@@ -1,14 +1,4 @@
-/**
- * Persisted permission rule validation (issue #28, P1a), shared by the
- * user-global Store A file (`<ave home>/permissions.json`, extended in place to
- * hold specifier and `ask` rules) and the per-project rule files
- * (`project-rule-files.ts`).
- *
- * Corrupt data fails clearly: a file that does not parse, has the wrong shape,
- * or holds a rule outside the language throws
- * {@link PermissionRulesFileCorruptError}. Nothing is silently dropped, and the
- * writers refuse to overwrite a corrupt file (they read before they write).
- */
+// Corrupt rule files throw and writers refuse to overwrite them; nothing is silently dropped. Stored broad wildcards remain visible/removable but inert, survive unrelated writes unchanged, and cannot be newly saved.
 import type { PermissionRule } from "../permission-manager.js";
 import {
   ENFORCED_RULE_KINDS,
@@ -18,7 +8,25 @@ import {
   parseRuleSpecifier,
   type RuleSpecifier,
 } from "./rule-specifier.js";
-import { refusedShellPrefix } from "./shell-prefix-policy.js";
+import { refusedShellPrefix } from "./shell-prefix-values.js";
+import type { StoredRuleInvalidReason } from "../../shared/permissions-events.js";
+
+// A broad allow wildcard is refused at save but retained inert when already stored.
+class BroadShellWildcardError extends RuleSpecifierError {}
+
+// The reason a stored rule is inert, or null for a rule in force. Decisions skip such a rule and Settings lists it with this reason.
+export function storedRuleInvalidReason(rule: { pattern: string; action: string; source?: string | undefined }): StoredRuleInvalidReason | null {
+  if (rule.action !== "allow" || rule.source !== undefined || !isRuleSpecifier(rule.pattern)) return null;
+  const spec = parseRuleSpecifier(rule.pattern);
+  return spec.kind === "bash" && refusedShellPrefix(spec.tokens, spec.wildcard) === "broad-prefix"
+    ? "wildcard-not-allowlisted"
+    : null;
+}
+
+// Patterns of the inert rules a file already holds; a write may keep these and no others.
+export function inertRulePatterns(rules: readonly PermissionRule[] | undefined): ReadonlySet<string> {
+  return new Set((rules ?? []).filter((rule) => storedRuleInvalidReason(rule) !== null).map((rule) => rule.pattern));
+}
 
 export class PermissionRulesFileCorruptError extends Error {
   constructor(readonly filePath: string, detail: string) {
@@ -30,12 +38,7 @@ export class PermissionRulesFileCorruptError extends Error {
 type PermissionRuleAction = PermissionRule["action"];
 const ACTIONS: ReadonlySet<string> = new Set(["allow", "deny", "ask"]);
 
-/**
- * Validate one rule for storage. Specifier rules must be in canonical spelling,
- * of an enforced kind, and — for allow — not a refused shell prefix. Legacy
- * glob rules keep their existing shape. Throws {@link RuleSpecifierError} for a
- * rule outside the language; callers that read files wrap it as corrupt.
- */
+// Validate one rule for storage. Specifier rules must be in canonical spelling, of an enforced kind, and — for allow — not a refused shell prefix. Legacy glob rules keep their existing shape. Throws RuleSpecifierError for a rule outside the language; callers that read files wrap it as corrupt.
 export function validatePermissionRule(rule: unknown): PermissionRule {
   if (!rule || typeof rule !== "object" || Array.isArray(rule)) throw new RuleSpecifierError(String(rule), "rule must be an object");
   const candidate = rule as Record<string, unknown>;
@@ -46,8 +49,8 @@ export function validatePermissionRule(rule: unknown): PermissionRule {
   if (source !== undefined && typeof source !== "string") throw new RuleSpecifierError(pattern, "source must be a string");
   if (isRuleSpecifier(pattern)) {
     const spec = parseRuleSpecifier(pattern);
-    assertStorableSpecifier(pattern, spec, action as PermissionRuleAction);
     if (source !== undefined) throw new RuleSpecifierError(pattern, "specifier rules do not take a source");
+    assertStorableSpecifier(pattern, spec, action as PermissionRuleAction);
   }
   return candidate as unknown as PermissionRule;
 }
@@ -60,17 +63,15 @@ function assertStorableSpecifier(pattern: string, spec: RuleSpecifier, action: P
     throw new RuleSpecifierError(pattern, `${spec.kind} rules are not enforced yet`);
   }
   if (spec.kind === "bash" && action === "allow") {
-    const refused = refusedShellPrefix(spec.tokens);
+    const refused = refusedShellPrefix(spec.tokens, spec.wildcard);
+    if (refused === "broad-prefix") {
+      throw new BroadShellWildcardError(pattern, `"${spec.tokens.join(" ")}" is a refused allow prefix (broad-prefix); save a narrower prefix or exact command instead`);
+    }
     if (refused) throw new RuleSpecifierError(pattern, `"${spec.tokens.join(" ")}" is a refused allow prefix (${refused}); approve it once or for the session instead`);
   }
 }
 
-/**
- * 1-based line where element `index` of the top-level `"rules"` array starts
- * in `text`, or undefined when it cannot be located. A small JSON scanner:
- * strings are skipped, depth is tracked, so a `"rules"` key nested elsewhere
- * or a comma inside a string is not miscounted.
- */
+// 1-based line where element `index` of the top-level `"rules"` array starts in `text`, or undefined when it cannot be located. A small JSON scanner: strings are skipped, depth is tracked, so a `"rules"` key nested elsewhere or a comma inside a string is not miscounted.
 function ruleLine(text: string, index: number): number | undefined {
   let depth = 0;
   let inRules = false;
@@ -110,20 +111,31 @@ function ruleLine(text: string, index: number): number | undefined {
   return undefined;
 }
 
-/**
- * Validate a file's rule list. A bad rule fails the whole file (nothing is
- * silently dropped); the error names the rule's position, its line in
- * `sourceText` when the caller read one, and the rule's pattern, so the user
- * can fix that one rule.
- */
+// Validate a file's rule list. A bad rule fails the whole file (nothing is silently dropped); the error names the rule's position, its line in `sourceText` when the caller read one, and the rule's pattern, so the user can fix that one rule.
 export function validateRuleList(
   filePath: string,
   rules: unknown,
-  options: { specifiersOnly?: boolean; sourceText?: string } = {},
+  options: {
+    specifiersOnly?: boolean;
+    sourceText?: string;
+    // Inert broad allow wildcards that may stay in the file: `"all"` when reading what is stored, or the patterns the file already held when writing, so a write keeps them but cannot add one.
+    keepInertWildcards?: "all" | ReadonlySet<string>;
+  } = {},
 ): PermissionRule[] {
   if (!Array.isArray(rules)) throw new PermissionRulesFileCorruptError(filePath, "rules is not an array");
   return rules.map((rule, index) => {
     try {
+      const keep = options.keepInertWildcards;
+      if (keep !== undefined && rule && typeof rule === "object" && !Array.isArray(rule)) {
+        try {
+          validatePermissionRule(rule);
+        } catch (error) {
+          const pattern = (rule as { pattern?: unknown }).pattern;
+          if (error instanceof BroadShellWildcardError && typeof pattern === "string" && (keep === "all" || keep.has(pattern))) {
+            return { ...(rule as PermissionRule) };
+          }
+        }
+      }
       const validated = validatePermissionRule(rule);
       if (options.specifiersOnly && !isRuleSpecifier(validated.pattern)) {
         throw new RuleSpecifierError(validated.pattern, "project rule files hold rules-language specifiers only");
@@ -139,7 +151,7 @@ export function validateRuleList(
   });
 }
 
-/** "invalid JSON", with the line and column when the parser reports a location. */
+// "invalid JSON", with the line and column when the parser reports a location.
 export function invalidJsonDetail(error: unknown, text: string): string {
   const message = error instanceof Error ? error.message : "";
   const lineColumn = /line (\d+) column (\d+)/.exec(message);

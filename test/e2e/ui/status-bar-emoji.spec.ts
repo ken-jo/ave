@@ -1,10 +1,6 @@
 import { test, expect } from './fixtures';
 
-/**
- * The persistent identity surface moved from the notification-only StatusBar
- * into the unified composer status row. Verify the current contract without
- * depending on OS-specific emoji rendering.
- */
+// Verify persistent composer identity without depending on platform emoji glyphs.
 test('composer status row exposes permission, model and reasoning', async ({ mainWindow }) => {
   const row = mainWindow.locator('[data-testid="iab-status-row"]');
   await expect(row).toBeVisible({ timeout: 15_000 });

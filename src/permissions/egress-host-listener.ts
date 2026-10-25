@@ -1,6 +1,6 @@
 import { maskSensitiveData } from "../audit/dlp-filter.js";
 
-/** Host-only bridge to the runtime's invocation policy and refusal store. */
+// Host-only bridge to the runtime's invocation policy and refusal store.
 export async function openHostEgressListener(token: string) {
   // Keep the runtime external to the host bundle, as in the sandbox adapter.
   const { openHostInvocationProxy } = await import("@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-manager.js");

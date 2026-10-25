@@ -1,10 +1,5 @@
-/**
- * Integration-base CI always runs the best traced selection; other PR bases
- * use the full suite when selection is untrusted (scripts/run-ci-suite.mjs). These cases pin
- * the selection against the real import graph of this tree: a leaf module
- * selects its own tests, a shared module selects the tests of the modules
- * that import it, and a global input falls back to the full suite.
- */
+/** Integration-base CI always runs the best traced selection; other PR bases use the full suite when selection is untrusted (scripts/run-ci-suite.mjs). These cases pin the selection against
+ * the real import graph of this tree: a leaf module selects its own tests, a shared module selects the tests of the modules that import it, and a global input falls back to the full suite. */
 import { spawn, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -71,12 +66,8 @@ function readText(path: string): string | null {
   }
 }
 
-/**
- * The modules the real-graph cases change. Their `vitest related` coverage is
- * discovered once, in one process, before the cases run: discovery builds the
- * whole suite's module graph, and on the 3-CPU CI slice one discovery per
- * case took the file past two minutes (PR #10). The cases read the result.
- */
+/** The modules the real-graph cases change. Their `vitest related` coverage is discovered once, in one process, before the cases run: discovery
+ * builds the whole suite's module graph, and on the 3-CPU CI slice one discovery per case took the file past two minutes (). The cases read the result. */
 const GRAPH_SOURCES = [
   "src/core/route-engine.ts",
   "src/shared/escape-html.ts",
@@ -143,9 +134,7 @@ describe("CI test selection over the real import graph", () => {
   });
 
   it("selects a test that reads a changed module as text, which the import graph does not show", () => {
-    // module-size-boundaries.test.ts reads each module it bounds with fs; on
-    // 2026-08-07 a guard block pushed src/plugins/runtime/index.ts past its
-    // ceiling and only that test failed.
+    // module-size-boundaries.test.ts reads each module it bounds with fs; on 2026-08-07 a guard block pushed src/plugins/runtime/index.ts past its ceiling and only that test failed.
     const reader = "src/__tests__/module-size-boundaries.test.ts";
     expect(readText(reader)).toContain('"src/plugins/runtime/index.ts"');
     expect(graphCoverage.get("src/plugins/runtime/index.ts")).not.toContain(reader);
@@ -156,9 +145,8 @@ describe("CI test selection over the real import graph", () => {
   });
 
   it("selects a test whose spawned fixture is the only importer of a changed module", () => {
-    // The independent review's repro for PR #10: cache-concurrency spawns
-    // fixtures/refresh-process.ts under tsx, and only that fixture imports
-    // refresh.ts, so the import graph does not reach the test.
+    // The independent review's repro for cache-concurrency spawns fixtures/refresh-process.ts under
+    // tsx, and only that fixture imports refresh.ts, so the import graph does not reach the test.
     const spawner = "src/core/model-catalog/__tests__/cache-concurrency.test.ts";
     expect(graphCoverage.get("src/core/model-catalog/refresh.ts")).not.toContain(spawner);
     const plan = select([modified("src/core/model-catalog/refresh.ts")]);
@@ -357,8 +345,7 @@ describe("event rules over the pull request merge and the whole push", () => {
   });
 
   it("classifies a multi-commit push as a whole: an earlier source commit makes a test-only tip non-test-only", () => {
-    // Commit 1 changes src/tools/agent-guide.ts, commit 2 only a test. HEAD's
-    // first parent alone would read as test-only; before..HEAD carries both.
+    // Commit 1 changes src/tools/agent-guide.ts, commit 2 only a test. HEAD's first parent alone would read as test-only; before..HEAD carries both.
     const source = "src/tools/agent-guide.ts";
     const guideTest = "src/tools/__tests__/workflow-tools.test.ts";
     expect(trackedTests).toContain(guideTest);
@@ -652,11 +639,8 @@ describe("the must-run set", () => {
     expect(mustRunTests).toContain("src/plugins/__tests__/tool-name-policy.test.ts");
   });
 
-  // A test that reads the repository's tracked tree through git: `ls-files` or
-  // `ls-tree` as a quoted argument, `grep` as the first argument of a git
-  // helper call (`git(["grep", ...])`, `spawnSync("git", ["grep", ...])`), or a
-  // `git grep` / `git ls-files` / `git ls-tree` command string. Root-anchored
-  // readdirSync/globSync walkers need no entry: text-reader tracing selects them.
+  // A test that reads the repository's tracked tree through git: `ls-files` or `ls-tree` as a quoted argument, `grep` as the first argument of a git helper call (`git(["grep", ...])`,
+  // `spawnSync("git", ["grep", ...])`), or a `git grep` / `git ls-files` / `git ls-tree` command string. Root-anchored readdirSync/globSync walkers need no entry: text-reader tracing selects them.
   const TREE_READER = [
     /["'`]ls-(?:files|tree)["'`]/u,
     /\bgit\w*\(\s*\[\s*["'`]grep["'`]/u,
@@ -664,12 +648,10 @@ describe("the must-run set", () => {
     /["'`]git\s+(?:grep|ls-files|ls-tree)\b/u,
   ];
   const readsTrackedTree = (text: string) => TREE_READER.some((pattern) => pattern.test(text));
-  // Matches that read no tree of this repository. Each must still match, so a
-  // stale entry fails instead of hiding a real scanner later.
+  // Matches that read no tree of this repository. Each must still match, so a stale entry fails instead of hiding a real scanner later.
   const NOT_TREE_SCANNERS: Record<string, string> = {
     "src/marketplace/git/__tests__/repo.test.ts": "runs ls-tree on the temporary bare repository it creates",
     "src/permissions/__tests__/risk-classifier.test.ts": "`git grep` is a shell command it classifies, never runs",
-    "src/permissions/__tests__/rules-language.test.ts": "`git grep` is a shell command it matches against rules, never runs",
   };
 
   it.each([
@@ -687,9 +669,8 @@ describe("the must-run set", () => {
   });
 
   it("holds every test that scans the tracked tree, so a test-only diff runs those invariants", () => {
-    // A test-only pull request that adds a tsx-child test without listing it
-    // above breaks this file's out-of-process invariant without touching this
-    // file; the must-run set is the one place that makes such suites run.
+    // A test-only pull request that adds a tsx-child test without listing it above breaks this file's
+    // out-of-process invariant without touching this file; the must-run set is the one place that makes such suites run.
     const matches = trackedTests.filter((test) => readsTrackedTree(readText(test) ?? ""));
     for (const path of Object.keys(NOT_TREE_SCANNERS)) expect(matches, path).toContain(path);
     const treeScanners = matches.filter((test) => !(test in NOT_TREE_SCANNERS));
@@ -705,15 +686,12 @@ describe("the must-run set", () => {
   });
 
   it("holds every test that runs repository code in a tsx child or an esbuild bundle", () => {
-    // What such a child or bundle imports never enters the Vitest module
-    // graph: changing src/core/model-catalog/refresh.ts, which only
-    // cache-concurrency's spawned fixture imports, selected 238 files without
-    // that test before this group existed.
+    // What such a child or bundle imports never enters the Vitest module graph: changing src/core/model-catalog/refresh.ts,
+    // which only cache-concurrency's spawned fixture imports, selected 238 files without that test before this group existed.
     const outOfProcess = trackedTests.filter((test) => testRunsRepoCodeOutOfProcess(test, readText));
     expect(outOfProcess).toContain("src/core/model-catalog/__tests__/cache-concurrency.test.ts");
     expect(outOfProcess).toContain("src/tools/__tests__/archive-entry-reader-bundle.test.ts");
-    // These two bundle the image-preparation child only through
-    // src/__tests__/support/image-preparation-runtime.ts.
+    // These two bundle the image-preparation child only through src/__tests__/support/image-preparation-runtime.ts.
     expect(outOfProcess).toContain("src/tools/__tests__/file-tools.test.ts");
     expect(outOfProcess).toContain("src/main/__tests__/codex-conversation-runtime.test.ts");
     expect(outOfProcess.filter((test) => !mustRunTests.includes(test))).toEqual([]);
@@ -734,8 +712,7 @@ describe("the must-run set", () => {
   });
 
   it("recognizes the tsx and esbuild spellings, and not a plain import", () => {
-    // Assembled at run time, so this file does not itself read as one of
-    // those tests to the scan above.
+    // Assembled at run time, so this file does not itself read as one of those tests to the scan above.
     const loader = ["t", "sx"].join("");
     const entries = ["entry", "Points"].join("");
     expect(runsRepoCodeOutOfProcess(`spawn(process.execPath, ["--import", "${loader}", fixture])`)).toBe(true);

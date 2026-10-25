@@ -1,34 +1,4 @@
-/**
- * Proxy-deny visibility: every connection the ASRT proxy refuses becomes one
- * audit row naming the tool call, terminal tab or plugin worker that opened it.
- *
- * ASRT records each refusal in its violation store as a line such as
- * `deny network-outbound example.com:443 (domain not allowed)`, keyed by the
- * invocation's `commandId` (`egress-invocations.ts`). Nothing read that store
- * before, so a denied host was visible to nobody: not the user, not the audit
- * log, not the model. The monitor subscribes once at boot, before the
- * sandbox proxy starts (ASRT's store exists before `initialize()`, so no
- * refusal can precede the subscription), maps each new deny line to a
- * `SandboxEvent { type: "egress_attempted", blocked: true }`, looks its key up
- * among the live invocations, and appends one row to the sandbox audit
- * channel. A key no live invocation holds is recorded as "unattributed"; the
- * key itself is never written, because it arrived over a carrier the confined
- * process can write.
- *
- * Every field taken from the line is DLP-masked, host included: the host
- * arrives from the confined process (a SOCKS5 DOMAINNAME is arbitrary bytes),
- * so it can carry whatever that process chooses to put there.
- *
- * Volume: one row per refused connection attempt, as ASRT records it. ASRT
- * itself retains only the last 100 violations; the audit channel keeps every
- * row, so a process looping on a refused host writes one row per attempt for
- * as long as it runs. Rows are not dropped or sampled here, because every
- * deny is to be audited (design I6); the bound is the process's own connection
- * rate and its lifetime (a tool call's timeout, a tab's shell).
- *
- * This is observation only. Which hosts are allowed is still the strict
- * allow-list set at boot; no ask callback is involved.
- */
+// Subscribe before proxy startup and audit every new refusal once, attributed to live invocations or unattributed after release. Never persist the client-controlled key; DLP-mask every parsed field because even host bytes are attacker-controlled. Keep every attempt without sampling; this observer never changes egress policy.
 import { createLogger } from "../lib/logger.js";
 import { errorMessage } from "../shared/error-message.js";
 import { maskSensitiveData } from "../audit/dlp-filter.js";
@@ -48,16 +18,16 @@ import type { AsrtViolationRecord } from "./asrt-sandbox.js";
 
 const log = createLogger("egress-deny-monitor");
 
-/** A proxy refusal parsed from one ASRT violation line. */
+// A proxy refusal parsed from one ASRT violation line.
 export type ParsedEgressDeny = SandboxEgressDenyAuditEntry["deny"];
 
 const NETWORK_OUTBOUND = /^deny network-outbound (\S+):(\d+) \((.*)\)$/;
 const SOCKS_TUNNEL = /^deny socks-tunnel (\S+):(\d+) \((.*)\)$/;
 const HTTP_REQUEST = /^deny http-request (\S+) (\S+) \((.*)\)$/;
-/** The three proxy refusals ASRT records; anything else is not a network deny. */
+// The three proxy refusals ASRT records; anything else is not a network deny.
 const PROXY_DENY_PREFIX = /^deny (network-outbound|socks-tunnel|http-request) /;
 
-/** The reason a row carries when ASRT's line did not have the expected shape. */
+// The reason a row carries when ASRT's line did not have the expected shape.
 export const UNPARSED_DENY_REASON = "unparsed deny line";
 
 function mask(text: string): string {
@@ -70,17 +40,7 @@ function splitAuthority(authority: string): { host: string; port: number | null 
   return { host: match[1]!, port: Number(match[2]) };
 }
 
-/**
- * Parse one violation line, or undefined for a line that is not a proxy deny
- * (a Seatbelt or seccomp filesystem violation, for instance). ASRT has already
- * reduced the line to one display-safe physical line.
- *
- * A proxy deny whose line does not have the expected shape is still a deny:
- * ASRT records `malformed host` refusals with the host as the process sent it
- * (empty, spaces, control characters it has replaced with spaces), so such a
- * line becomes a row with the masked remainder as its host, no port, and
- * {@link UNPARSED_DENY_REASON}, never nothing.
- */
+// Parse one violation line, or undefined for a line that is not a proxy deny (a Seatbelt or seccomp filesystem violation, for instance). ASRT has already reduced the line to one display-safe physical line. A proxy deny whose line does not have the expected shape is still a deny: ASRT records `malformed host` refusals with the host as the process sent it (empty, spaces, control characters it has replaced with spaces), so such a line becomes a row with the masked remainder as its host, no port, and UNPARSED_DENY_REASON, never nothing.
 export function parseEgressDenyLine(line: string): ParsedEgressDeny | undefined {
   const prefix = PROXY_DENY_PREFIX.exec(line);
   if (prefix === null) return undefined;
@@ -122,15 +82,13 @@ function parseShapedDeny(line: string): ParsedEgressDeny | undefined {
     host = url.hostname;
     port = url.port === "" ? null : Number(url.port);
   } catch {
-    // Not an absolute URL: there is no host to separate, so the target
-    // stands in for it.
+    // Not an absolute URL: there is no host to separate, so the target stands in for it.
   }
-  // ASRT already cut the query string to `?…`; the path can still carry a
-  // token (`/hooks/<secret>`), so the URL is DLP-masked as a whole.
+  // ASRT already cut the query string to `?…`; the path can still carry a token (`/hooks/<secret>`), so the URL is DLP-masked as a whole.
   return { action: "http-request", host: mask(host), port, method: mask(method), url: mask(target), reason: mask(request[3]!) };
 }
 
-/** The audit form of a live owner: the token is never part of it. */
+// The audit form of a live owner: the token is never part of it.
 export function auditInvocationFor(owner: EgressInvocationOwner | undefined): SandboxEgressDenyInvocation {
   if (owner === undefined) return { kind: "unattributed" };
   switch (owner.kind) {
@@ -143,13 +101,7 @@ export function auditInvocationFor(owner: EgressInvocationOwner | undefined): Sa
   }
 }
 
-/**
- * Decisions the ask callback made in the last minute, so the monitor writes an
- * `egress-decision` row only for refusals the proxy made before asking it
- * (each callback decision writes its own row). Keyed by attribution key,
- * DLP-masked lower-case host and port, counted so concurrent connections to
- * one destination each match once.
- */
+// Decisions the ask callback made in the last minute, so the monitor writes an `egress-decision` row only for refusals the proxy made before asking it (each callback decision writes its own row). Keyed by attribution key, DLP-masked lower-case host and port, counted so concurrent connections to one destination each match once.
 const CALLBACK_DECISION_TTL_MS = 60_000;
 const recentCallbackDecisions = new Map<string, { count: number; at: number }>();
 
@@ -163,7 +115,7 @@ function pruneCallbackDecisions(now: number): void {
   }
 }
 
-/** Called by the ask callback for each decision it makes. */
+// Called by the ask callback for each decision it makes.
 export function noteCallbackDecision(attributionKey: string | undefined, host: string, port: number | undefined): void {
   const now = Date.now();
   pruneCallbackDecisions(now);
@@ -183,27 +135,15 @@ function consumeCallbackDecision(attributionKey: string | undefined, host: strin
 }
 
 export interface EgressDenyMonitorDeps {
-  /** ASRT's violation store subscription (`subscribeAsrtViolations`). */
+  // ASRT's violation store subscription (`subscribeAsrtViolations`).
   readonly subscribe: (listener: (violations: readonly AsrtViolationRecord[]) => void) => Promise<() => void>;
-  /** The audit sink (`emitSandboxAudit`). */
+  // The audit sink (`emitSandboxAudit`).
   readonly emit: (entry: SandboxEgressDenyAuditEntry | SandboxEgressDecisionAuditEntry) => Promise<void>;
-  /** The active sandbox capability, recorded on every row. */
+  // The active sandbox capability, recorded on every row.
   readonly capability: () => Pick<SandboxCapability, "kind" | "confidence">;
 }
 
-/**
- * Start recording proxy denies. Returns the unsubscribe function.
- *
- * The store hands its whole retained tail to the listener on every change and
- * once at subscription; a record is handled once, recognised by identity
- * (the store keeps the same objects while it retains them). Records already in
- * the store when the monitor starts are handled too: they were refused in this
- * process and are not in the audit log yet.
- *
- * The owner is looked up synchronously inside the listener, which the store
- * calls from `addViolation`, while the refused process is still alive and its
- * token still live.
- */
+// Start recording proxy denies. Returns the unsubscribe function. The store hands its whole retained tail to the listener on every change and once at subscription; a record is handled once, recognised by identity (the store keeps the same objects while it retains them). Records already in the store when the monitor starts are handled too: they were refused in this process and are not in the audit log yet. The owner is looked up synchronously inside the listener, which the store calls from `addViolation`, while the refused process is still alive and its token still live.
 export async function startEgressDenyMonitor(deps: EgressDenyMonitorDeps): Promise<() => void> {
   const seen = new WeakSet<AsrtViolationRecord>();
   return deps.subscribe((violations) => {
@@ -224,13 +164,11 @@ export async function startEgressDenyMonitor(deps: EgressDenyMonitorDeps): Promi
         deny,
       });
       const report = (error: unknown): void => {
-        // Audit failure must not break the proxy or the command; it is logged
-        // so a missing row has a visible cause.
+        // Audit failure must not break the proxy or the command; it is logged so a missing row has a visible cause.
         log.warn("could not record a proxy deny: %s", errorMessage(error));
       };
       deps.emit(entry).catch(report);
-      // The callback wrote its own decision row; a refusal the proxy made
-      // before asking it gets one here.
+      // The callback wrote its own decision row; a refusal the proxy made before asking it gets one here.
       if (!consumeCallbackDecision(attributionKey, deny.host, deny.port)) {
         deps.emit({
           timestamp: violation.timestamp.toISOString(),

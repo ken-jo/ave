@@ -46,6 +46,7 @@ const buildOptions = {
     // executes it: `spawnConfinedPluginChild` runs `dist/src/main/plugin-child-main.js`
     // directly, and a module buried inside `main.js` has no path to be run from.
     "plugin-child-main": resolve(repoRoot, "src", "plugins", "isolation", "plugin-child-main.ts"),
+    "preview-document-child-main": resolve(repoRoot, "src", "tools", "preview-document-child-main.ts"),
   },
   outdir,
   entryNames: "[name]",

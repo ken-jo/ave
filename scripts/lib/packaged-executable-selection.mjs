@@ -1,10 +1,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { basename, join, sep } from "node:path";
 
-/**
- * electron-builder names the Windows executable `<build.productName>.exe`, so
- * the selection reads the same field instead of repeating the product name.
- */
+// Derive the executable name from package metadata.
 const PRODUCT_NAME = JSON.parse(
   readFileSync(new URL("../../package.json", import.meta.url), "utf8"),
 ).build?.productName;
@@ -69,12 +66,7 @@ function pickBest(paths, preferredNeedles) {
   })[0] ?? null;
 }
 
-/**
- * The unpacked executable electron-builder produced for `target` (`mac`,
- * `linux` or `win`) under `releaseDir`, or `null` when there is none. Shared by
- * every script that launches the packaged build, so they all run the same
- * binary.
- */
+// All packaged launchers share artifact selection to run the same binary.
 export function findPackagedExecutable(target, releaseDir) {
   if (!existsSync(releaseDir)) {
     throw new Error(`release directory not found: ${releaseDir}`);

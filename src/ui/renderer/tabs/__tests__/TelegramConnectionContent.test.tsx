@@ -188,8 +188,7 @@ describe("TelegramConnectionContent", () => {
     }));
     render(<TelegramConnectionContent api={harness.api} chatGroupId="main" />);
 
-    // Paired but nothing shared: the pairing summary is visible and the share
-    // action is a separate, still-unclicked control.
+    // Paired but nothing shared: the pairing summary is visible and the share action is a separate, still-unclicked control.
     expect(await screen.findByTestId("telegram-connection-pairing")).toHaveTextContent("abc123def456");
     expect(harness.approveCurrentConversation).not.toHaveBeenCalled();
 
@@ -230,9 +229,8 @@ describe("TelegramConnectionContent", () => {
       approval: {
         id: APPROVAL_ID,
         expiresAt: 1_800_000_000_000,
-        // Identical to the closed-conversation snapshot above. Only the state
-        // differs, which is the whole point: the surface must not read this
-        // flag and guess.
+        // Identical to the closed-conversation snapshot above. Only the state differs, which is the whole point: the surface must
+        // not read this flag and guess.
         matchesCurrentConversation: false,
       },
     }));
@@ -242,8 +240,8 @@ describe("TelegramConnectionContent", () => {
       .toHaveTextContent("has been deleted");
     expect(screen.getByTestId("telegram-connection-state"))
       .toHaveTextContent("no longer exists");
-    // The "it stays shared, reopen it" advice belongs to the other reading and
-    // would send the owner looking for something that is gone.
+    // The "it stays shared, reopen it" advice belongs to the other reading and would send the owner looking for something that
+    // is gone.
     expect(screen.queryByTestId("telegram-connection-shared-conversation-closed")).toBeNull();
     // Naming a problem without offering the repair would be worse than silence.
     expect(screen.getByTestId("telegram-connection-approve")).toBeTruthy();
@@ -297,9 +295,7 @@ describe("TelegramConnectionContent", () => {
   });
 
   it("offers a retry from a connection problem rather than only a disconnect", async () => {
-    // A failed activation now keeps the pairing and reports the failure, so the
-    // one control this state used to offer was Disconnect — which spends the
-    // pairing the failure deliberately preserved.
+    // Preserve pairing after failed activation and offer retry instead of requiring disconnect.
     const { api, resume, pause } = makeApi(snapshotOf({
       state: "error",
       botUsername: "my_assistant_bot",
@@ -336,8 +332,7 @@ describe("TelegramConnectionContent", () => {
   });
 
   it("offers the pause control while the connection is healthy", async () => {
-    // The control for the case above: same block, same buttons, and only the
-    // state differs.
+    // The control for the case above: same block, same buttons, and only the state differs.
     const { api, resume } = makeApi(snapshotOf({
       state: "paired-unapproved",
       botUsername: "my_assistant_bot",

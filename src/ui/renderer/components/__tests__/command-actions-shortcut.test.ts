@@ -1,8 +1,3 @@
-/**
- * WorkspaceLauncherShortcut.alt field + matcher — the side-chat companion PR
- * adds a ⌥⌘S launcher entry, which required `matchesLauncherShortcut` to stop
- * unconditionally rejecting Alt and instead match it exactly.
- */
 import { describe, it, expect } from "vitest";
 import {
   WORKSPACE_TAB_LAUNCHER,

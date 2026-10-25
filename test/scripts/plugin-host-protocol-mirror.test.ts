@@ -18,11 +18,7 @@ import {
 const roots: string[] = [];
 const commit = "a".repeat(40);
 
-/**
- * The fixture trees below are not git checkouts; these cases are about the
- * manifest and copies, so they answer "no version is tagged". The tag rules
- * have their own cases against an injected reader and a real repository.
- */
+// This non-repository fixture has no tags; tagged immutability is covered separately.
 const untagged = { taggedSchema: () => null };
 
 function put(root: string, relative: string, bytes: string): void {
@@ -40,7 +36,6 @@ function schema(version: string, value: string): string {
 
 type Copy = readonly [appVersion: string, value: string, publishedTag: string | null];
 
-// The copy at `version` is the candidate; its value must be "candidate".
 function fixture(
   copies: readonly Copy[] = [
     ["0.12.0", "published", "v0.12.0"],
@@ -77,7 +72,6 @@ function readManifest(root: string) {
   return JSON.parse(readMirror(root, "mirror.json").toString("utf8"));
 }
 
-// Write the alias by hand, the way a promotion PR could without the script.
 function pointAlias(root: string, appVersion: string): void {
   const manifest = readManifest(root);
   manifest.aliases["2"] = `v${appVersion}`;
@@ -174,10 +168,7 @@ describe("host protocol web mirror", () => {
 });
 
 describe("host protocol mirror: a tagged version's copy is frozen", () => {
-  // The case that slipped through: v0.14.0 was tagged, its copy stayed an
-  // unpublished candidate because package.json was still 0.14.0, and a later
-  // protocol change regenerated it — the check accepted bytes the tag's app
-  // rejects, under that app's schema URL.
+  // A tagged candidate copy must remain immutable even after regeneration.
   const atTag = (tagged: Record<string, string>) =>
     ({ taggedSchema: (_root: string, appVersion: string) =>
       appVersion in tagged ? Buffer.from(tagged[appVersion]) : null });
@@ -190,7 +181,6 @@ describe("host protocol mirror: a tagged version's copy is frozen", () => {
     put(root, "schemas/plugin-host-protocol/2/protocol.schema.json", schema("0.12.2", "revised"));
     expect(() => syncProtocolMirror(root, commit, atTag({ "0.12.2": shipped })))
       .toThrow("differs from the schema tag v0.12.2 carries");
-    // Regenerated without the guard (an older script), the check still refuses it.
     syncProtocolMirror(root, commit, atTag({}));
     expect(() => checkProtocolMirror(root, atTag({ "0.12.2": shipped })))
       .toThrow("2/v0.12.2/protocol.schema.json differs from the schema tag v0.12.2 carries");
@@ -217,26 +207,22 @@ describe("host protocol mirror: a tagged version's copy is frozen", () => {
   });
 
   it("reads the tags of this repository by default", () => {
-    // This checkout's own mirror passes against its real tags.
     const repoRoot = resolve(import.meta.dirname, "../..");
     expect(checkProtocolMirror(repoRoot)).toMatch(/copies/);
   });
 });
 
 describe("host protocol mirror: tags read from a real git checkout", () => {
-  // Scrubbed of GIT_* so a hook's GIT_DIR cannot point these commands at the
-  // repository under test.
+  // Scrub inherited Git variables so the fixture owns repository resolution.
   const gitEnv = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_")));
   const git = (cwd: string, ...args: string[]) => execFileSync("git", [
     "-c", "user.name=Mirror Test", "-c", "user.email=mirror@example.invalid",
     "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", "-c", "init.defaultBranch=main",
-    // The repository checks blobs out as LF through .gitattributes; the fixture
-    // has none, so a system core.autocrlf would rewrite the recorded copies.
+    // Keep fixture blobs LF regardless of host autocrlf settings.
     "-c", "core.autocrlf=false",
     ...args,
   ], { cwd, env: gitEnv, stdio: ["ignore", "pipe", "pipe"] }).toString("utf8");
 
-  /** The default fixture, committed, with `v0.12.2` (the candidate's version) tagged. */
   function taggedRepo(tag: string | null = "v0.12.2") {
     const { root, base } = fixture();
     git(root, "init", "-q");
@@ -250,8 +236,7 @@ describe("host protocol mirror: tags read from a real git checkout", () => {
     const { root, base } = taggedRepo();
     expect(checkProtocolMirror(root)).toContain("3 copies, 1 aliases, 1 candidate");
 
-    // Rewrite the tagged version's copy and its recorded sha256 consistently,
-    // the way a regenerating sync would: only the tag can tell.
+    // A consistent regenerated hash cannot authorize modifying a tagged copy.
     const tampered = schema("0.12.2", "tampered");
     put(root, `${base}/2/v0.12.2/protocol.schema.json`, tampered);
     put(root, "schemas/plugin-host-protocol/2/protocol.schema.json", tampered);
@@ -265,8 +250,7 @@ describe("host protocol mirror: tags read from a real git checkout", () => {
   });
 
   it("passes a version that is not tagged yet, as the release script's pre-tag sync needs", () => {
-    // v0.12.2 is tagged; the release script bumps to 0.12.3, regenerates, and
-    // syncs before 0.12.3 has a tag.
+    // An unpublished version bump may regenerate the next contract.
     const { root } = taggedRepo();
     put(root, "package.json", JSON.stringify({ version: "0.12.3" }));
     put(root, "schemas/plugin-host-protocol/2/protocol.schema.json", schema("0.12.3", "next"));
@@ -291,8 +275,7 @@ describe("host protocol mirror: tags read from a real git checkout", () => {
     const { root } = fixture();
     expect(() => checkProtocolMirror(root)).toThrow("is not a git checkout");
 
-    // The same tree as a plain subdirectory of a tagged repository: git would
-    // answer with the parent's tags, so it must still be refused.
+    // A subdirectory must not inherit the parent repository tags.
     const { root: parent } = taggedRepo();
     const nested = join(parent, "vendor", "ave");
     mkdirSync(nested, { recursive: true });

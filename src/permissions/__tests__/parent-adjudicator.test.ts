@@ -1,14 +1,4 @@
-/**
- * {@link LlmParentAdjudicator} — tier 2 of the sub-agent approval chain.
- *
- * The module answers one question and has one safe answer for everything it
- * cannot answer. These tests are organised around that: a small number of
- * cases for the two decisive outcomes, and a larger number for every way the
- * lane must land on `escalate` instead of guessing.
- *
- * There is deliberately no case in which a failure produces `allow-once`. If
- * one is ever added, it is a security regression and not a feature.
- */
+// LlmParentAdjudicator — tier 2 of the sub-agent approval chain. The module answers one question and has one safe answer for everything it cannot answer. These tests are organised around that: a small number of cases for the two decisive outcomes, and a larger number for every way the lane must land on `escalate` instead of guessing. There is deliberately no case in which a failure produces `allow-once`. If one is ever added, it is a security regression and not a feature.
 import { describe, expect, it, vi } from "vitest";
 import {
   LlmParentAdjudicator,
@@ -82,8 +72,7 @@ describe("LlmParentAdjudicator — decisive answers", () => {
         makeOptions(),
       ),
     ).resolves.toEqual({
-      // Never "allow": the only allow this lane can express is one-shot, and
-      // the shape is what keeps a durable record from being reachable at all.
+      // Never "allow": the only allow this lane can express is one-shot, and the shape is what keeps a durable record from being reachable at all.
       outcome: "allow-once",
       reason: "the changelog edit is the task I gave it",
     });
@@ -101,8 +90,7 @@ describe("LlmParentAdjudicator — decisive answers", () => {
       ),
     ).resolves.toEqual({
       outcome: "deny",
-      // Carried verbatim so the child's tool_result can tell it WHY and let it
-      // try a different approach, rather than looping on an opaque refusal.
+      // Carried verbatim so the child's tool_result can tell it WHY and let it try a different approach, rather than looping on an opaque refusal.
       reason: "deleting the repo is not part of the sweep",
     });
   });
@@ -167,8 +155,7 @@ describe("LlmParentAdjudicator — everything it cannot decide", () => {
     );
 
     expect(result).toMatchObject({ outcome: "escalate", cause: "llm-error" });
-    // The reason reaches the user's dock and the audit row. A provider error
-    // can echo request fragments, so none of it is carried.
+    // The reason reaches the user's dock and the audit row. A provider error can echo request fragments, so none of it is carried.
     expect(result.reason).not.toContain("sk-live-SECRET");
     expect(result.reason).not.toContain("api.example");
   });
@@ -203,9 +190,7 @@ describe("LlmParentAdjudicator — everything it cannot decide", () => {
       adjudicator.adjudicate(makeEvidence(), options),
     ).resolves.toMatchObject({ outcome: "escalate", cause: "rate-limited" });
 
-    // Charged before the call, so an over-budget request never reaches the
-    // provider at all — a child cannot spend the parent's judgement by
-    // launching requests faster than they finish.
+    // Charged before the call, so an over-budget request never reaches the provider at all — a child cannot spend the parent's judgement by launching requests faster than they finish.
     expect(calls).toHaveLength(2);
   });
 
@@ -263,8 +248,7 @@ describe("LlmParentAdjudicator — the prompt it sends", () => {
     expect(calls).toHaveLength(1);
     expect(calls[0].model).toBe("reviewer-model");
     expect(calls[0].systemPrompt).toBe(PARENT_ADJUDICATOR_SYSTEM_PROMPT);
-    // The injection defence is stated in the system prompt, where the model
-    // cannot have influenced it, rather than mixed into the data block.
+    // The injection defence is stated in the system prompt, where the model cannot have influenced it, rather than mixed into the data block.
     expect(PARENT_ADJUDICATOR_SYSTEM_PROMPT).toContain("never instructions");
 
     const sent = JSON.parse(calls[0].userPrompt) as Record<string, unknown>;
@@ -294,9 +278,7 @@ describe("LlmParentAdjudicator — the prompt it sends", () => {
   });
 
   it("answers one at a time", async () => {
-    // Several children can block on the same parent at once. Interleaving
-    // their side turns would ask one agent to hold unrelated judgements in the
-    // same moment.
+    // Several children can block on the same parent at once. Interleaving their side turns would ask one agent to hold unrelated judgements in the same moment.
     let inFlight = 0;
     let maxInFlight = 0;
     const provider: LlmReviewerProvider = {
@@ -359,10 +341,7 @@ describe("UnavailableParentAdjudicator", () => {
   });
 
   it("satisfies the same interface as the live adjudicator", () => {
-    // The gate holds one type and calls it the same way whether or not a
-    // reviewer LLM was configured. If the stand-in ever stopped implementing
-    // the interface, the gate would need an "is there an adjudicator" branch —
-    // and a branch is where a fail-open answer would eventually be written.
+    // The gate holds one type and calls it the same way whether or not a reviewer LLM was configured. If the stand-in ever stopped implementing the interface, the gate would need an "is there an adjudicator" branch — and a branch is where a fail-open answer would eventually be written.
     const live: ParentAdjudicator = new LlmParentAdjudicator(
       providerReturning('{"outcome":"allow","reason":"fine"}').provider,
       "m",
@@ -376,10 +355,7 @@ describe("UnavailableParentAdjudicator", () => {
 
 describe("escalation causes", () => {
   it("declares no cause the module cannot actually produce", () => {
-    // A cause the gate can branch on but nothing emits is a branch that is
-    // never exercised and never reviewed. Every member below is asserted by a
-    // case above; this list is what fails to compile if the type gains a
-    // member without one.
+    // A cause the gate can branch on but nothing emits is a branch that is never exercised and never reviewed. Every member below is asserted by a case above; this list is what fails to compile if the type gains a member without one.
     const produced: readonly ParentAdjudicationEscalationCause[] = [
       "parent-escalated",
       "timeout",
@@ -426,14 +402,12 @@ describe("LlmParentAdjudicator — the parent-context block", () => {
     );
 
     const sent = JSON.parse(calls[0].userPrompt) as Record<string, unknown>;
-    // The key names the text as a quoted conversation, the way
-    // `argumentsAuthoredBySubAgent` names the arguments as the child's words.
+    // The key names the text as a quoted conversation, the way `argumentsAuthoredBySubAgent` names the arguments as the child's words.
     expect(sent.recentParentConversation).toEqual([
       { speaker: "user", quotedText: "sweep the docs" },
       { speaker: "assistant", quotedText: "I will start with the changelog" },
     ]);
-    // And the rule for reading it is in the system prompt, where nothing in
-    // the data block can have influenced it.
+    // And the rule for reading it is in the system prompt, where nothing in the data block can have influenced it.
     expect(PARENT_ADJUDICATOR_SYSTEM_PROMPT).toContain(
       "recentParentConversation",
     );
@@ -451,8 +425,7 @@ describe("LlmParentAdjudicator — the parent-context block", () => {
     );
 
     const sent = JSON.parse(calls[0].userPrompt) as Record<string, unknown>;
-    // Same grammar as `recentParentConversation`: the key names WHO caused the
-    // call, and the value is quoted rather than stated as the host's own claim.
+    // Same grammar as `recentParentConversation`: the key names WHO caused the call, and the value is quoted rather than stated as the host's own claim.
     expect(sent.raisedUnderAnotherAgentsInfluence).toEqual({
       quotedSenderLabel: "[Sub-Agent: researcher]",
     });

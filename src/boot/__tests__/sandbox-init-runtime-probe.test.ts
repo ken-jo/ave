@@ -1,11 +1,5 @@
-/**
- * Linux ASRT runtime-probe boot mapping.
- *
- * The adapter emits a typed failure only after the configured wrapper actually
- * fails. Boot must preserve the requested-at-boot signal, never publish a
- * verified capability, and choose the existing default-degrade vs explicit-
- * environment-abort policy without exposing wrapper diagnostics.
- */
+/** After a wrapper probe fails, retain requested activation but publish no verified capability.
+ * Explicit activation aborts; settings activation degrades without exposing wrapper diagnostics. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import {
@@ -18,6 +12,7 @@ const h = vi.hoisted(() => ({
   closeAll: vi.fn(() => 2),
   checkDeps: vi.fn(),
   isProbeError: vi.fn(),
+  isMacProbeError: vi.fn(),
   logger: {
     info: vi.fn(),
     warn: vi.fn(),
@@ -34,9 +29,7 @@ vi.mock("../../lib/logger.js", () => ({
 }));
 
 vi.mock("../../permissions/asrt-sandbox.js", async () => {
-  // The boot step sweeps both private roots and creates the HOME root, so they
-  // live under a directory this file owns in the OS temp dir — never the real
-  // AVE_HOME — whose parent can be created.
+  // Boot sweeps private roots; use an owned temporary home.
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
   const { mkdirSync } = await import("node:fs");
@@ -54,6 +47,7 @@ vi.mock("../../permissions/asrt-sandbox.js", async () => {
     subscribeAsrtViolations: async () => () => {},
     checkAsrtDependencies: h.checkDeps,
     isAsrtLinuxRuntimeProbeError: h.isProbeError,
+    isAsrtMacRuntimeProbeError: h.isMacProbeError,
     closeAllEgressConnections: h.closeAll,
   };
 });
@@ -80,6 +74,8 @@ beforeEach(() => {
   h.initialize.mockReset();
   h.checkDeps.mockReset();
   h.isProbeError.mockReset();
+  h.isMacProbeError.mockReset();
+  h.isMacProbeError.mockReturnValue(false);
   h.checkDeps.mockResolvedValue({ errors: [], warnings: [] });
   vi.stubEnv("AVE_SANDBOX_ENABLED", "");
   vi.stubEnv("AVE_PLUGIN_WORKER_CONFINEMENT", "");
@@ -161,6 +157,24 @@ describe("initSandboxGate — Linux ASRT runtime probe failures", () => {
   });
 });
 
+ describe("macOS sandbox runtime probe failure", () => {
+  it.each([false, true])("records its unavailable reason with explicit override %s", async (explicit) => {
+    setProcessPlatform("darwin");
+    const probeError = new Error("configured wrapper denied");
+    h.initialize.mockRejectedValue(probeError);
+    h.isMacProbeError.mockImplementation((error: unknown) => error === probeError);
+    vi.stubEnv("AVE_SANDBOX_ENABLED", explicit ? "1" : "");
+    const boot = initSandboxGate(harness.context(true));
+    if (explicit) await expect(boot).rejects.toBe(probeError);
+    else await expect(boot).resolves.toBeUndefined();
+    expect(detectSandboxCapability()).toMatchObject({ kind: "none" });
+    expect(harness.logSandboxGate).toHaveBeenCalledWith(expect.objectContaining({
+      platform: "darwin", outcome: explicit ? "abort" : "degrade",
+      reason: explicit ? "abort-macos-runtime-probe-failed" : "degrade-macos-runtime-probe-failed",
+    }));
+  });
+});
+
 describe("initSandboxGate — shell sandbox and plugin-worker confinement scopes", () => {
   it("activates ASRT for worker confinement alone and keeps host shells unsandboxed", async () => {
     await initSandboxGate(harness.context(false, true));
@@ -172,7 +186,7 @@ describe("initSandboxGate — shell sandbox and plugin-worker confinement scopes
     expect(getHostShellExecutionPlan()).toMatchObject({
       requestedSandbox: false,
       mode: "plain",
-      fallbackReason: "none",
+      fallbackReason: "disabled-by-setting",
       requiresExplicitUserApproval: false,
       capability: { kind: "none" },
     });

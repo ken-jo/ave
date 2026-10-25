@@ -27,8 +27,6 @@ function reviewerSettings(
 ) {
   return {
     mode: "llm" as const,
-    provider: "openai" as const,
-    model: "gpt-4o-mini",
     fallbackOnError: "deny" as const,
     interactive: { autoApprove: "low" as const },
     parentAdjudication,
@@ -38,11 +36,15 @@ function reviewerSettings(
 function installApi(opts: { featureEnabled?: boolean } = {}) {
   const ave = {
     permission: {
+      egressGrantsList: vi.fn(async () => ({ ok: true as const, grants: [] })),
+      egressGrantRevoke: vi.fn(async () => ({ ok: true as const })),
       getMode: vi.fn(async () => ({ mode: "auto" })),
       setMode: vi.fn(async (mode: string) => ({ ok: true, mode })),
       onModeChanged: vi.fn(() => () => undefined),
       onConfigChanged: vi.fn(() => () => undefined),
       listRules: vi.fn(async () => []),
+      listScopedRules: vi.fn(async () => ({ rules: [], errors: [] })),
+      removeScopedRule: vi.fn(async () => ({ ok: true })),
       hookTrustList: vi.fn(async () => ({
         ok: true as const,
         active: [],
@@ -62,7 +64,6 @@ function installApi(opts: { featureEnabled?: boolean } = {}) {
         }
         return { ok: true as const, verb: "adjudication" as const, settings: reviewerSettings() };
       }),
-      reviewerProviderHasKey: vi.fn(async () => true),
       sandboxCapability: vi.fn(async () => ({
         platform: "darwin" as NodeJS.Platform,
         enabled: false,
@@ -98,6 +99,7 @@ function installApi(opts: { featureEnabled?: boolean } = {}) {
     },
     userApproval: {
       list: vi.fn(async () => []),
+      listSession: vi.fn(async () => []),
       revokeByKey: vi.fn(async () => ({ ok: true })),
       record: vi.fn(async () => ({ ok: true })),
     },

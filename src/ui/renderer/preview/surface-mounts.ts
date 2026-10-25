@@ -1,20 +1,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 
-/**
- * Single-mount registry for workspace surfaces that own a live resource keyed
- * by tab id (a PTY today; a web guest once tabs move between the side panel
- * and the main area).
- *
- * Two live views of one terminal tab corrupt each other: main replays the
- * scrollback to every listener and both views send resizes. The registry
- * therefore grants each tab id to exactly one mounted view and records WHERE
- * it is mounted ("side-panel", "pane:<id>"). A second view of the same id
- * renders a placeholder until the owner unmounts, then takes the mount over —
- * which is also what makes a move work regardless of React's effect order.
- *
- * Tab ids are window-unique (see `workspace-tabs.ts`), so one registry per
- * renderer covers every group in the window.
- */
+/** Grant each window-unique tab id one live mount; duplicate terminal views corrupt replay and resize state, so wait for
+ * ownership handover. */
 
 interface MountOwner {
   token: symbol;
@@ -43,11 +30,8 @@ export function surfaceMountLocation(tabId: string): string | null {
   return owners.get(tabId)?.location ?? null;
 }
 
-/**
- * Re-renders the caller whenever any tab's mount changes, and returns a value
- * that changes with it: for a reader that asks `surfaceMountLocation` about
- * several tabs (which requests a mounted terminal draws itself).
- */
+/** Re-renders the caller whenever any tab's mount changes, and returns a value that changes with it: for a reader that asks
+ * `surfaceMountLocation` about several tabs (which requests a mounted terminal draws itself). */
 export function useSurfaceMountRevision(): number {
   return useSyncExternalStore(subscribe, () => revision);
 }
@@ -59,11 +43,8 @@ export interface SurfaceMountState {
   ownerLocation: string | null;
 }
 
-/**
- * Claim the single mount of `tabId` for a view at `location`. Released on
- * unmount or when `tabId` changes; a waiting view claims it as soon as it is
- * free.
- */
+/** Claim the single mount of `tabId` for a view at `location`. Released on unmount or when `tabId` changes; a waiting view
+ * claims it as soon as it is free. */
 export function useSurfaceMount(tabId: string, location: string): SurfaceMountState {
   const [token] = useState(() => Symbol("surface-mount"));
   const owner = useSyncExternalStore(subscribe, () => owners.get(tabId));
@@ -88,8 +69,8 @@ export function useSurfaceMount(tabId: string, location: string): SurfaceMountSt
     };
   }, [tabId, token]);
 
-  // A location change (the owner re-homed without unmounting) updates the
-  // record in place; releasing and re-claiming would let a waiting view in.
+  // A location change (the owner re-homed without unmounting) updates the record in place; releasing and re-claiming would
+  // let a waiting view in.
   useEffect(() => {
     const current = owners.get(tabId);
     if (current?.token === token && current.location !== location) {

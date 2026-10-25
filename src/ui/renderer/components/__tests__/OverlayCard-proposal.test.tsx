@@ -5,14 +5,7 @@ import { render, fireEvent } from "@testing-library/react";
 import { OverlayCard } from "../OverlayCard.js";
 import { TooltipProvider } from "../../../../components/ui/tooltip.js";
 
-/**
- * The proposal variant of the overlay card.
- *
- * A proposal asks a question, so its card offers the three answers instead of
- * the single confirm every other overlay card carries — and it must offer them
- * INSTEAD, not alongside, or the user would have two ways to accept and only
- * one of them would be recorded.
- */
+/** Proposal answers replace the ordinary confirm action; keeping both would expose an unrecorded accept path. */
 function renderProposal(overrides: Partial<Parameters<typeof OverlayCard>[0]> = {}) {
   const onAccept = vi.fn();
   const onLater = vi.fn();

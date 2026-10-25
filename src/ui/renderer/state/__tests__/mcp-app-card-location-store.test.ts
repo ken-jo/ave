@@ -1,11 +1,4 @@
-/**
- * mcp-app-card-location-store — the renderer-side authority for "which mount is a
- * card's ONE live surface right now" (inline home / pip panel / fullscreen panel).
- *
- * The load-bearing case is `reviveCardIfAt`'s guard: a revive signal that names a
- * location the card has since LEFT must be a no-op, or two mounts end up live for the
- * same card at once (the pip→fullscreen hazard — see the module doc).
- */
+/** Revive only if the card remains at the expected location; stale PiP signals must not revive a second mount after a move. */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { McpUiPayload } from "../../../../mcp/types.js";
 import {
@@ -96,7 +89,7 @@ describe("moveCard", () => {
 
     moveCard("card-B", { kind: "pip" }, content("b"));
 
-    expect(getCardLocation("card-A")).toEqual({ kind: "inline" }); // evicted back home
+    expect(getCardLocation("card-A")).toEqual({ kind: "inline" });
     expect(getCardLocation("card-B")).toEqual({ kind: "pip" });
     expect(getSlotOccupant("pip")?.cardId).toBe("card-B");
     // card-A's home mount is told to come back to life.
@@ -134,8 +127,8 @@ describe("reviveCardIfAt — the guarded chokepoint", () => {
   });
 
   it("PIP -> FULLSCREEN HAZARD: a stale revive naming the card's OLD location (pip) must not clobber the location it has since moved to (fullscreen) — this is the guard that prevents two live bridges for one card", () => {
-    // The pip mount itself requests fullscreen: the card moves on to `fullscreen`
-    // before any stale "you left pip" signal is processed.
+    // The pip mount itself requests fullscreen: the card moves on to `fullscreen` before any stale "you left pip" signal is
+    // processed.
     moveCard("c1", { kind: "pip" }, content());
     moveCard("c1", { kind: "fullscreen" }, content());
 
@@ -209,8 +202,8 @@ describe("subscribeSlotOccupant", () => {
     expect(pipListener).toHaveBeenCalledTimes(1);
     expect(fullscreenListener).not.toHaveBeenCalled();
 
-    // pip -> fullscreen: the pip panel must hear that its slot emptied, or it keeps a
-    // live <webview> for a card that is now living in the fullscreen panel.
+    // pip -> fullscreen: the pip panel must hear that its slot emptied, or it keeps a live <webview> for a card that is now
+    // living in the fullscreen panel.
     moveCard("c1", { kind: "fullscreen" }, content());
     expect(pipListener).toHaveBeenCalledTimes(2);
     expect(getSlotOccupant("pip")).toBeNull();

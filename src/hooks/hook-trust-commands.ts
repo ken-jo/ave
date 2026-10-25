@@ -38,19 +38,11 @@ export interface HookTrustRow {
   sha256: string;
   state: "trusted" | "new" | "changed" | "removed" | "disabled";
   previousSha256?: string;
-  /**
-   * #811 trust-review additive fields (STEP 6 — additive, renderer-optional).
-   * `source` distinguishes a legacy `.sh` hook from the declarative `hooks.json`
-   * trust unit. For the config row we summarize its declared entries so the
-   * `/permission hooks list` text surface shows command/event/matcher without a
-   * renderer change. Absent on `.sh` rows (back-compat).
-   */
+  // Config trust rows expose command/event/matcher summaries; script rows omit them.
   source?: "sh" | "config";
-  /** Number of declared command entries (config row only). */
   entryCount?: number;
-  /** Per-entry summaries (config row only): event + matcher + command. */
   entries?: Array<{ event: HookConfigEntry["event"]; matcher?: string; command: string }>;
-  /** Load rejections shown by the existing hook list, including matcher reasons. */
+  // Load rejections shown by the existing hook list, including matcher reasons.
   errors?: string[];
 }
 
@@ -119,7 +111,6 @@ function rowFromHook(hook: DiscoveredHook, state: HookTrustRow["state"]): HookTr
   };
 }
 
-/** Summarize parsed config entries onto a trust row (STEP 6 additive fields). */
 function withConfigSummary(row: HookTrustRow, entries: HookConfigEntry[], errors: string[]): HookTrustRow {
   const runnable = entries.filter((entry) => entry.matcherError === undefined);
   return {
@@ -139,12 +130,7 @@ function configPath(opts: HookTrustCommandOptions): string {
   return defaultHooksConfigPath(hooksDir(opts));
 }
 
-/**
- * Snapshot the `.sh` + `hooks.json` trust surface. The config trust unit rides
- * the same `DiscoveredHook` flow: when `hooks.json` exists in the hooks dir it
- * is folded into `active` (and the diff); when it only exists under `.disabled/`
- * it is folded into `disabled`. Both copies remain visible when present.
- */
+// Show both active and disabled config copies when both exist.
 function snapshot(opts: HookTrustCommandOptions): {
   active: DiscoveredHook[];
   disabled: DiscoveredHook[];
@@ -169,19 +155,12 @@ async function persistTrustedHooks(
   for (const hook of trustedHooks) byName.set(hook.fileName, hook);
   const trusted = [...byName.values()].sort((a, b) => a.fileName.localeCompare(b.fileName));
   await persistLockfile(trusted, lockfilePath(opts), previousAcceptedAt);
-  // Rebuild the runtime registry: trusted `.sh` hooks + trusted `hooks.json`
-  // config entries (the latter only when the config trust unit is trusted).
+  // Rebuild the runtime registry: trusted `.sh` hooks + trusted `hooks.json` config entries (the latter only when the config trust unit is trusted).
   refreshManagerRegistry(trusted, opts);
   return trusted.map((hook) => rowFromHook(hook, "trusted"));
 }
 
-/**
- * Feed the runtime manager the unified registry derived from the trusted set.
- * Trusted `.sh` hooks become `sh` registry entries; if the `hooks.json` trust
- * unit is in the trusted set, its parsed entries become `config` registry
- * entries. An untrusted `hooks.json` contributes NOTHING — its commands never
- * reach the runtime.
- */
+// Only trusted script and config entries reach the runtime; untrusted config contributes no commands.
 function refreshManagerRegistry(trusted: DiscoveredHook[], opts: HookTrustCommandOptions): void {
   if (!opts.manager) return;
   const shHooks = trusted.filter((h) => h.fileName !== HOOKS_CONFIG_FILENAME);
@@ -298,22 +277,7 @@ export async function disableHookTrust(
   };
 }
 
-/**
- * Permission policy architect round-4 ③ — `permission hooks reject <name>` permanently
- * removes a quarantined hook from `~/.config/ave/hooks/.disabled/`.
- *
- * Two-step contract: an active (trusted) hook MUST be `disable`d first;
- * `reject` only operates on `.disabled/` entries. Rationale:
- *   - destructive (unlink) — guard against single-typo data loss
- *   - audit clarity — the `disable → reject` pair is two distinct events,
- *     so the trail records "user removed trust, then user expunged file"
- *   - mirrors filesystem ergonomics — you don't `rm` a running script
- *
- * No lockfile mutation is required: the rejected file was already in
- * `.disabled/`, so it was already absent from `lockfile.hooks`. We
- * still re-persist the trusted set to refresh `acceptedAt` timestamps
- * for an audit-friendly snapshot.
- */
+// Reject unlinks only disabled hooks; active hooks must be disabled first to avoid accidental deletion and record trust removal separately from expunging. Refresh the trusted snapshot after rejection.
 export async function rejectHookTrust(
   fileName: string,
   opts: HookTrustCommandOptions = {},

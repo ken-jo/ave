@@ -1,20 +1,4 @@
-/**
- * One connection, as one line that opens.
- *
- * Settings has two lists of the same shape — the model providers and the
- * remote connections — and a reader scanning either one is asking the same
- * question: what can reach this desktop, is it working, and where is it. Two
- * row renderers answer that question in two visual languages, and the second
- * one always drifts: a state word gets a different tone here than there, a
- * badge moves to the other side of the name, and the reader has to relearn the
- * page. So the row lives once, and each list contributes what only it knows
- * through the slots below.
- *
- * The head is the whole disclosure — the row IS the connection, so opening it
- * must not require finding a particular control on it. Anything the embedding
- * list wants pressable sits in `action`, BESIDE the head and never inside it:
- * a button nested in a button is not a control the browser can give anyone.
- */
+/** Use one disclosure row for model and remote connections so state tones and navigation remain consistent. */
 import { type ReactNode } from "react";
 import { ChevronRight } from "lucide-react";
 import { cn } from "../../../lib/utils.js";
@@ -70,23 +54,10 @@ const STATE_DOT: Record<ConnectionRowState, string> = {
 export interface ConnectionRowProps {
   /** The name a reader would say out loud — the vendor, not the runtime. */
   label: string;
-  /**
-   * Null until the surface that owns the real state has answered. The row
-   * draws no word then rather than inventing a sixth one for "asking".
-   */
+  /** Null until the surface that owns the real state has answered. The row draws no word then rather than inventing a sixth
+   * one for "asking". */
   state: ConnectionRowState | null;
-  /**
-   * The address that makes the row concrete: an origin, a bot handle, a
-   * loopback host. Omitted when the connection genuinely has none, rather than
-   * filled with a placeholder.
-   *
-   * A node rather than a string where the line has to carry more than an
-   * address — the model providers put the endpoint AND the outcome of its last
-   * catalogue handshake here, on one node, because that is the only reading of
-   * that outcome in the tab and a second one is how two surfaces start
-   * disagreeing. A plain string still gets the truncation `title` for free; a
-   * node owns its own title and tone.
-   */
+  /** Omit absent addresses; rich endpoint nodes own their title and tone so handshake outcomes have one representation. */
   endpoint?: ReactNode;
   /**
    * Contributed under the head and OUTSIDE the disclosure — what the row has

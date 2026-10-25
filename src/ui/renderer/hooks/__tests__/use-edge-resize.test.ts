@@ -237,8 +237,7 @@ describe("useEdgeResize in a unit other than px", () => {
     );
     act(() => { result.current.onPointerDown(makePointerDownEvent(100)); });
     act(() => { dispatchWindowPointerMove(101); });
-    // One pixel moved: a quarter percent, which whole-unit rounding would
-    // have thrown away and turned the drag into 1% steps.
+    // One pixel moved: a quarter percent, which whole-unit rounding would have thrown away and turned the drag into 1% steps.
     expect(onWidthChange).toHaveBeenLastCalledWith(45.25);
     act(() => { dispatchWindowPointerMove(300); });
     expect(onWidthChange).toHaveBeenLastCalledWith(78); // clamped in the unit

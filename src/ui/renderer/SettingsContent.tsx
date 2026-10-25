@@ -87,8 +87,8 @@ const SETTINGS_NAV: { group: string; items: SettingsNavItem[] }[] = [
     ],
   },
   {
-    // The config/performance tabs read code-package runtime cards. Their DTO
-    // has no catalog kind; entry-free bundles will not appear in these tabs.
+    // The config/performance tabs read code-package runtime cards. Their DTO has no catalog kind; entry-free bundles will not
+    // appear in these tabs.
     group: "settingsContent.groupPlugins",
     items: [
       { value: "marketplace", icon: Store, labelKey: SETTINGS_TAB_LABEL_KEYS["marketplace"] },
@@ -102,9 +102,8 @@ const SETTINGS_NAV: { group: string; items: SettingsNavItem[] }[] = [
       { value: "audit", icon: FileSearch, labelKey: SETTINGS_TAB_LABEL_KEYS["audit"] },
     ],
   },
-  // About is app/system info, not an "Advanced" setting — it sits on its own as
-  // a divider-separated footer item (empty group string ⇒ headerless render)
-  // rather than under the Advanced header.
+  // About is app/system info, not an "Advanced" setting — it sits on its own as a divider-separated footer item (empty group
+  // string ⇒ headerless render) rather than under the Advanced header.
   {
     group: "",
     items: [
@@ -139,10 +138,8 @@ function TabSaveBar({
   );
 }
 
-
-// `./context/SavedToastContext.tsx` so PluginConfigTab can import the consumer
-// hook without forming a circular import with SettingsContent (which
-// itself imports PluginConfigTab in this file).
+// `./context/SavedToastContext.tsx` so PluginConfigTab can import the consumer hook without forming a circular import with
+// SettingsContent (which itself imports PluginConfigTab in this file).
 
 export function SettingsContent({
   api,
@@ -157,11 +154,8 @@ export function SettingsContent({
   onDiscardExactDeny,
 }: {
   api: AveApi;
-  /**
-   * The tile the away-authority grant would bind to — the focused conversation.
-   * Threaded from the window because settings has no conversation of its own,
-   * and main refuses a grant that names no tile.
-   */
+  /** The tile the away-authority grant would bind to — the focused conversation. Threaded from the window because settings
+   * has no conversation of its own, and main refuses a grant that names no tile. */
   chatGroupId: string;
   onSaved: () => void;
   initialTab?: string;
@@ -175,19 +169,8 @@ export function SettingsContent({
    */
   sectionTarget?: string | null;
   onSectionApplied?: () => void;
-  /**
-   * Reports every in-panel move to a new tab, already normalized. `initialTab`
-   * seeds (and re-seeds) the selection, so an embedder could always WRITE the
-   * tab; this is the read-back that was missing, and without it nothing outside
-   * this component can tell where the user actually is.
-   *
-   * Deliberately a notification rather than a controlled `value`/`onChange`
-   * pair. The two internal writers each move state that belongs to the same
-   * interaction — the narrow-layout depth, and the marketplace filter — so
-   * handing the tab to a parent would let that coupled state apply while the
-   * tab did not. Keeping the panel's tab state local preserves those coupled
-   * transitions while the shell observes normalized tab changes.
-   */
+  /** Keep tab state local for coupled depth/filter transitions; notify embedders of normalized changes instead of controlling
+   * the tab externally. */
   onTabChange?: (tab: string) => void;
   exactDenyDraft?: ExactDenyDraft | null;
   onExactDenySaved?: (requestId: string) => void;
@@ -200,15 +183,7 @@ export function SettingsContent({
   const [marketplaceKind, setMarketplaceKind] = useState<PackageKind | null>(null);
   const [pendingPermissions, setPendingPermissions] = useState(0);
 
-  // the settings route. Tabs whose save runs through the orchestration hook hit
-  // it via the wrapped `handleSaved` below; tabs with their own IPC
-  // (PluginConfigTab / AppearanceTab / RolesTab / McpTab) call
-  // `notifySaved()` from useNotifySaved() after their own success.
-  //
-  // Use a monotonic counter (not Date.now()) so two saves completing in
-  // the same millisecond still cause the SavedToastFloating useEffect to
-  // re-fire — React bails state updates via Object.is, and equal
-  // timestamps would silently drop the second toast.
+  // Count save notifications monotonically so two saves in one millisecond still retrigger the toast.
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const notifySaved = useCallback(() => setSavedAt((n) => (n ?? 0) + 1), []);
   const handleSaved = useCallback(() => {
@@ -217,18 +192,8 @@ export function SettingsContent({
   }, [notifySaved, onSaved]);
   const s = useSettingsOrchestration(api, handleSaved);
 
-  // Per-tab debounced save handlers. Immediate-apply controls (toggle,
-  // radio, slider, select) call `.schedule()`; rapid bursts collapse
-  // into a single `s.save(tab)` 200ms after the most recent change.
-  // The explicit TabSaveBar Save button calls `.cancel()` first to
-  // avoid a double-write race (pending debounce + click would otherwise
-  // fire `s.save` twice), then `s.save(tab)`. The save itself never
-  // leaves the route — modern multi-tab Settings (VS Code, Linear,
-  // Raycast) stay open after Save so the user can verify the change and edit a
-  // sibling tab; navigation belongs to the shared history navbar.
-  // Settings is an inline route. Leaving through the app-level navbar
-  // unmounts this surface, so pending immediate-apply changes must flush before
-  // the route is discarded, just as they do for window shutdown.
+  // Cancel pending debounce before explicit Save to avoid duplicate writes; flush pending changes before route unmount or
+  // shutdown.
   const llmSave = useDebouncedSave(() => void s.save("llm"), 200, { flushOnUnmount: true });
 
   const chatSave = useDebouncedSave(() => void s.save("chat"), 200, { flushOnUnmount: true });
@@ -238,8 +203,8 @@ export function SettingsContent({
     chatSave.flush();
     webSave.flush();
   }, [llmSave, chatSave, webSave]);
-  // Single writer for the tab so every in-panel move is reported outward; a
-  // second `setTab` call site would be a silent hole in that contract.
+  // Single writer for the tab so every in-panel move is reported outward; a second `setTab` call site would be a silent hole
+  // in that contract.
   const selectTab = useCallback((nextTab: string) => {
     const normalized = normalizeSettingsTab(nextTab);
     setTab(normalized);
@@ -253,19 +218,12 @@ export function SettingsContent({
     const normalized = normalizeSettingsTab(nextTab);
     if (normalized === "marketplace") setMarketplaceKind(null);
     selectTab(normalized);
-    // Committing a category (click, or Enter in manual/narrow mode) drops into
-    // depth-2 detail on narrow; inert on wide (both regions stay visible).
+    // Committing a category (click, or Enter in manual/narrow mode) drops into depth-2 detail on narrow; inert on wide (both
+    // regions stay visible).
     setMobileDepth("detail");
   }, [selectTab]);
 
-  // Flush any pending debounced save when the user closes the window or
-  // quits the app. The 200ms debounce window is short, but a user who
-  // toggles a control and immediately hits Cmd+Q would otherwise lose
-  // that toggle to the dying renderer process. `flush()` is a no-op
-  // when nothing is pending, so registering all four is safe.
-  // (Note: in the BrowserWindow conversion the hook's own unmount
-  // cleanup also fires `cancel()`, so the pre-conversion Dialog
-  // `open=false` cancel-effect was retired.)
+  // Flush pending debounced saves before shutdown so an immediate quit cannot lose a just-toggled setting.
   useEffect(() => {
     window.addEventListener("beforeunload", flushPendingSaves);
     window.addEventListener("pagehide", flushPendingSaves);
@@ -286,9 +244,8 @@ export function SettingsContent({
     clearLastSaveError();
   }, [initialTab, clearLastSaveError]);
 
-  // Deep-link arrival. Ordered after the tab reset above so the anchor it looks
-  // for belongs to the tab the link named: Radix mounts only the active pane,
-  // so a lookup run before that commit would find nothing.
+  // Deep-link arrival. Ordered after the tab reset above so the anchor it looks for belongs to the tab the link named: Radix
+  // mounts only the active pane, so a lookup run before that commit would find nothing.
   const noteSectionApplied = useCallback(() => onSectionApplied?.(), [onSectionApplied]);
   useSettingsSectionArrival(sectionTarget, noteSectionApplied);
 
@@ -321,25 +278,13 @@ export function SettingsContent({
     rightPaneRef.current?.scrollTo({ top: 0, behavior: "instant" });
   }, [tab]);
 
-  // ── Responsive shell ────────────────────────────────────────────────────
-  // Panel-width (not viewport) responsive switch: the inline Settings panel can
-  // be narrow on a wide display (split view / small window), so we measure the
-  // panel root itself. Below `SETTINGS_NARROW_ENTER_WIDTH` the w-48 sidebar +
-  // content master-detail is too cramped, so we collapse to a mobile 2-depth
-  // stack. `useContainerNarrow`'s dead-band keeps a drag near the boundary from
-  // flip-flopping, and it reports wide (isNarrow=false)
-  // under jsdom where ResizeObserver is absent — unit tests keep the
-  // master-detail layout unchanged.
+  // Measure panel width rather than viewport width; split panes can be narrow on wide displays. The dead band prevents
+  // resize oscillation.
   const rootRef = useRef<HTMLDivElement | null>(null);
   const { isNarrow } = useContainerNarrow(rootRef, { enter: SETTINGS_NARROW_ENTER_WIDTH, exit: SETTINGS_NARROW_EXIT_WIDTH });
 
-  // Narrow-only 2-depth navigation. Depth 1 = the grouped category list;
-  // depth 2 = one selected pane + a back bar. Default "list": a freshly opened
-  // narrow panel shows the category list first. App-level navigation stays in
-  // the titlebar navbar. Selecting a category marks it "detail"; on wide that is inert,
-  // but it means a later narrowing lands on the actively-selected pane instead
-  // of bouncing back to the list. On resize narrow→wide the depth is ignored
-  // (both regions show); wide→narrow reuses the retained depth.
+  // Retain narrow navigation depth across resize; a category selected while wide should remain the detail page when
+  // narrowed.
   const [mobileDepth, setMobileDepth] = useState<"list" | "detail">("list");
   const mobileBackRef = useRef<HTMLButtonElement>(null);
 
@@ -362,17 +307,7 @@ export function SettingsContent({
     }
   }, [mobileDepth, isNarrow]);
 
-  // Sidebar trigger style: full-width row, left-aligned, active row uses
-  // accent background to read like a real selected list item rather than
-  // the horizontal pill-tab style Radix ships by default. `data-[state=active]`
-  // overrides the base TabsTrigger active style (background + shadow) which
-  // looks wrong in a vertical list. `whitespace-nowrap` + `overflow-hidden`
-  // keep long labels (or scaled-up system fonts) from wrapping to two lines
-  // and breaking the row rhythm of the sidebar.
-  // Sidebar trigger style includes `flex` (not inline-flex), `gap-2` for
-  // the icon spacing, and explicit `justify-start` to override the
-  // shadcn TabsTrigger primitive's default `inline-flex items-center
-  // justify-center` (which would center-align the icon+label horizontally).
+  // Override primitive active/alignment styles for vertical rows; keep scaled labels on one clipped line.
   const sideTriggerCls =
     "flex w-full items-center justify-start gap-2.5 overflow-hidden whitespace-nowrap rounded-md px-3 py-2 text-sm font-medium " +
     "text-muted-foreground hover:bg-accent/(--opacity-strong) hover:text-foreground " +
@@ -402,9 +337,8 @@ export function SettingsContent({
       onValueChange={handleTabValueChange}
       // `data-settings-layout` exposes the panel-width layout mode for tests.
       data-settings-layout={isNarrow ? "narrow" : "wide"}
-      // No gap: sidebar and content share a single border (right edge of
-      // the sidebar) so the layout reads as two regions of the settings route,
-      // not two stacked cards. Simplified per user direction
+      // No gap: sidebar and content share a single border (right edge of the sidebar) so the layout reads as two regions of the
+      // settings route, not two stacked cards. Simplified per user direction
 
       className="relative flex h-full min-h-0 min-w-0 flex-1"
     >
@@ -642,9 +576,8 @@ export function SettingsContent({
               setSubAgentAutonomousWake={s.setSubAgentAutonomousWake}
               piiRedactEnabled={s.piiRedactEnabled}
               settingsLoaded={s.settingsLoaded}
-              // ChatTab wraps onPiiRedactToggle with onImmediateChange.
-              // Feature toggles own separate `features` patch paths,
-              // so it must not schedule the bulk chat payload.
+              // ChatTab wraps onPiiRedactToggle with onImmediateChange. Feature toggles own separate `features` patch paths, so it must
+              // not schedule the bulk chat payload.
               onPiiRedactToggle={() => s.setPiiRedactEnabled(!s.piiRedactEnabled)}
               onImmediateChange={chatSave.schedule}
             />

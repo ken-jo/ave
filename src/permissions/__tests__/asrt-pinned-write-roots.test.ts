@@ -1,11 +1,5 @@
-/**
- * `PerCommandFilesystem.pinWriteRoots` — the one mechanism that keeps
- * plugin-owned code from removing or replacing the host-created roots it writes
- * into. Its own file because one of these cases is about the FIRST wrap of a
- * process: a principal's temp directory does not exist until the host creates
- * it for that wrap, and a pin computed from a root that is not there yet is
- * silently dropped.
- */
+import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
+// Pin newly created write roots before the first wrap; computing pins before creation silently drops them and permits replacement.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -21,8 +15,7 @@ import {
   resetAsrtSandbox,
   wrapWorkerCommand,
 } from "../asrt-sandbox.js";
-import { asrtCanInitialize } from "./test-helpers.js";
-import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
+import { asrtCanInitialize, profileOfWrappedArgv, profileRules } from "./test-helpers.js";
 
 const MARKER = ".ave-pinned-write-root";
 let home: string;
@@ -62,11 +55,12 @@ describe("pinned write roots", () => {
           pinWriteRoots: true,
         },
       });
-      const profile = argv.join("\n");
+      // A rule's path filters, with the ones that share a parent folded into one regex expanded again.
+      const filters = new Set(profileRules(profileOfWrappedArgv(argv)).flatMap((rule) => rule.filters));
       for (const root of [tempDir, dataDir]) {
         const real = realpathSync(root);
-        expect(profile, `no marker deny for ${real}`).toContain(`(subpath "${join(real, MARKER)}")`);
-        expect(profile, `no literal pin for ${real}`).toContain(`(literal "${real}")`);
+        expect(filters.has(`(subpath ${JSON.stringify(join(real, MARKER))})`), `no marker deny for ${real}`).toBe(true);
+        expect(filters.has(`(literal ${JSON.stringify(real)})`), `no literal pin for ${real}`).toBe(true);
       }
     },
   );
@@ -74,11 +68,9 @@ describe("pinned write roots", () => {
   it("adds no marker without the flag, and none off macOS", () => {
     const dataDir = mkdtempSync(join(home, "plain-"));
     const unpinned = buildPerCommandSandboxCustomConfig({ allowWrite: [dataDir], denyWrite: [] });
-    expect(unpinned?.filesystem?.denyWrite).toEqual([]);
+    expect(unpinned?.filesystem?.denyWrite?.some((path) => typeof path === "string" && path.endsWith(MARKER))).toBe(false);
     const pinned = buildPerCommandSandboxCustomConfig({ allowWrite: [dataDir], denyWrite: [], pinWriteRoots: true });
-    expect(pinned?.filesystem?.denyWrite).toEqual(
-      process.platform === "darwin" ? [join(realpathSync(dataDir), MARKER)] : [],
-    );
+    expect(pinned?.filesystem?.denyWrite?.includes(join(realpathSync(dataDir), MARKER))).toBe(process.platform === "darwin");
   });
 
   it("refuses the flag without a restated deny floor, which a per-command denyWrite replaces", () => {

@@ -1,13 +1,5 @@
-/**
- * Proof that an isolated packaged Windows launch left the user's HKCU
- * `ave://` handler alone. The smokes launch win-unpacked with a temporary
- * `AVE_HOME` and `--user-data-dir`, and the app must then skip
- * `setAsDefaultProtocolClient` (src/main/ave-protocol-registration.ts). A
- * claim naming exactly `executable` is a regression: its values are removed
- * (and empty keys after that), so the host is left as it was, and the call
- * throws. A missing root, or a registration owned by another executable,
- * passes untouched. A no-op off Windows.
- */
+// Isolated packaged launches must leave the user's protocol handler unchanged.
+// Remove only claims for this executable, then throw to report the regression.
 import { spawnSync } from "node:child_process";
 import { windowsPowerShellEnv } from "./windows-powershell-env.mjs";
 
@@ -61,10 +53,6 @@ const WINDOWS_PROTOCOL_CLEANUP_SCRIPT = [
   "Write-Output 'removed'",
 ].join("\n");
 
-/**
- * `platform` and `run` exist so the outcome mapping is unit-tested without
- * PowerShell or the registry; callers pass only `executable`.
- */
 export function assertNoWindowsProtocolClaim(
   executable,
   { platform = process.platform, run = spawnSync } = {},

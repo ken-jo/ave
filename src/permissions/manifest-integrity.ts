@@ -1,39 +1,11 @@
-/**
- * Permission policy — Manifest integrity proxy (§3.5).
- *
- * Spec ref: docs/architecture/permission-policy-design.md §3.5.
- *
- * Plugins declare a `category` per tool in `plugin.json`. When the
- * declared category is `read`, the host expects the plugin tool to be
- * non-mutating. This module provides a runtime sanity-check: a thin
- * proxy over `node:fs` whose write methods throw a synchronous
- * {@link ManifestIntegrityError}. The runtime catches the throw,
- * audits it, disables the offending plugin, and surfaces an IPC
- * notification to the renderer.
- *
- * Trade-off (acknowledged):
- *   A plugin that imports `node:fs` directly (rather than reading the
- *   `fs` member off its execute context) bypasses this guard. v1 is a
- *   *partial* runtime guard — the comprehensive solution lands in plugin-sandbox follow-up
- *   when the plugin runtime moves into a V8 isolated context.
- *
- * Disable semantics:
- *   - On violation, the plugin id is added to the
- *     {@link ManifestIntegrityState.disabledPluginIds} set so the next
- *     plugin tool adapter refuses the call before tool dispatch.
- *   - The renderer IPC `ave:permissions:manifest-violation` channel
- *     surfaces the violation with the plugin id so the user can
- *     confirm a reinstall.
- *   - Audit log entry: `{ kind: "manifest_integrity_violation",
- *                         pluginId, toolName, attempted: <method> }`.
- */
+// Write attempts through a read-only filesystem proxy throw, audit and disable the plugin before later dispatch (docs/architecture/permission-policy-design.md). Direct filesystem imports bypass this partial guard; it is not process isolation.
 import type { AuditLogger } from "../audit/audit-logger.js";
 import { createLogger } from "../lib/logger.js";
 import { randomUUID } from "node:crypto";
 
 const log = createLogger("manifest-integrity");
 
-/** Methods of `node:fs` that mutate the filesystem (write side). */
+// Methods of `node:fs` that mutate the filesystem (write side).
 export const READ_ONLY_FS_DENY_METHODS: ReadonlySet<string> = new Set([
   // sync writes
   "writeFileSync",
@@ -76,8 +48,7 @@ export const READ_ONLY_FS_DENY_METHODS: ReadonlySet<string> = new Set([
   // dir / open
   "open",
   "openSync",
-  // promises (createReadOnlyFsPromisesProxy mirrors these — the same
-  // names live there too).
+  // promises (createReadOnlyFsPromisesProxy mirrors these — the same names live there too).
 ]);
 
 export class ManifestIntegrityError extends Error {
@@ -96,16 +67,7 @@ export class ManifestIntegrityError extends Error {
   }
 }
 
-/**
- * Build a Proxy that wraps a real `fs` module. Reading members is
- * allowed; calling any method in {@link READ_ONLY_FS_DENY_METHODS}
- * throws {@link ManifestIntegrityError} *synchronously* — the
- * caller's audit + disable hooks fire before the promise/callback
- * orchestration starts.
- *
- * Caller passes the {pluginId, toolName} so the violation message
- * carries enough context to drive the disable + IPC flow.
- */
+// Build a Proxy that wraps a real `fs` module. Reading members is allowed; calling any method in READ_ONLY_FS_DENY_METHODS throws ManifestIntegrityError *synchronously* — the caller's audit + disable hooks fire before the promise/callback orchestration starts. Caller passes the {pluginId, toolName} so the violation message carries enough context to drive the disable + IPC flow.
 export function createReadOnlyFsProxy(
   realFs: Record<string, unknown>,
   ctx: { pluginId: string; toolName: string },
@@ -114,10 +76,7 @@ export function createReadOnlyFsProxy(
     get(target, prop, receiver) {
       const key = typeof prop === "symbol" ? prop.description ?? "" : String(prop);
       if (READ_ONLY_FS_DENY_METHODS.has(key)) {
-        // Return a function so the caller fails inside the call site
-        // (preserving stack trace context) rather than at property
-        // lookup time. Some callers do `const w = fs.writeFile;` then
-        // call `w(...)`; we want the throw to fire at the *call*.
+        // Return a function so the caller fails inside the call site (preserving stack trace context) rather than at property lookup time. Some callers do `const w = fs.writeFile;` then call `w(...)`; we want the throw to fire at the *call*.
         return (..._args: unknown[]) => {
           throw new ManifestIntegrityError(ctx.pluginId, ctx.toolName, key);
         };
@@ -128,12 +87,7 @@ export function createReadOnlyFsProxy(
   });
 }
 
-/**
- * Mirror of {@link createReadOnlyFsProxy} for the `fs/promises` API.
- * Same deny-list, but every guarded member is *async-throw* (returns a
- * rejected promise) — matches the upstream contract where promise
- * methods don't synchronously throw.
- */
+// Mirror of createReadOnlyFsProxy for the `fs/promises` API. Same deny-list, but every guarded member is *async-throw* (returns a rejected promise) — matches the upstream contract where promise methods don't synchronously throw.
 export function createReadOnlyFsPromisesProxy(
   realFsPromises: Record<string, unknown>,
   ctx: { pluginId: string; toolName: string },
@@ -151,11 +105,7 @@ export function createReadOnlyFsPromisesProxy(
   });
 }
 
-/**
- * Process-wide state for plugin manifest-integrity violations. Plugin manifest
- * metadata is the plugin tool authority; declared read/write tools enter the
- * same disable/audit state when their boundary claims are violated.
- */
+// Process-wide state for plugin manifest-integrity violations. Plugin manifest metadata is the plugin tool authority; declared read/write tools enter the same disable/audit state when their boundary claims are violated.
 export class ManifestIntegrityState {
   private readonly disabledPluginIds = new Set<string>();
   private readonly listeners = new Set<(pluginId: string, toolName: string, attemptedMethod: string) => void | Promise<void>>();
@@ -164,7 +114,7 @@ export class ManifestIntegrityState {
     return this.disabledPluginIds.has(pluginId);
   }
 
-  /** Add a violator. Idempotent. */
+  // Add a violator. Idempotent.
   async recordViolation(pluginId: string, toolName: string, attemptedMethod: string): Promise<void> {
     this.disabledPluginIds.add(pluginId);
     const failures: unknown[] = [];
@@ -184,7 +134,7 @@ export class ManifestIntegrityState {
     }
   }
 
-  /** Subscribe to violation events. Returns disposer. */
+  // Subscribe to violation events. Returns disposer.
   onViolation(
     listener: (pluginId: string, toolName: string, attemptedMethod: string) => void | Promise<void>,
   ): () => void {
@@ -192,25 +142,22 @@ export class ManifestIntegrityState {
     return () => this.listeners.delete(listener);
   }
 
-  /** Test helper. */
+  // Test helper.
   resetForTests(): void {
     this.disabledPluginIds.clear();
     this.listeners.clear();
   }
 
-  /** Diagnostic — list disabled plugin ids. */
+  // Diagnostic — list disabled plugin ids.
   listDisabled(): string[] {
     return [...this.disabledPluginIds];
   }
 }
 
-/** Process-wide singleton. */
+// Process-wide singleton.
 export const manifestIntegrityState = new ManifestIntegrityState();
 
-/**
- * Wire an audit logger to record every violation. Idempotent —
- * subsequent calls replace the prior subscription. Returns disposer.
- */
+// Wire an audit logger to record every violation. Idempotent — subsequent calls replace the prior subscription. Returns disposer.
 export function bindManifestIntegrityAudit(
   audit: AuditLogger,
   state: ManifestIntegrityState = manifestIntegrityState,

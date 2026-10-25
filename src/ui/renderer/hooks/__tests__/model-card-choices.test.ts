@@ -17,8 +17,8 @@ describe("modelCardChoices", () => {
   });
 
   it("does not offer a retired or deprecated model, saved or pinned (design §6.1)", () => {
-    // o4-mini: deprecated in the bundled catalog. The deprecated tier sets no
-    // marker, and the saved model is still hidden from the card.
+    // o4-mini: deprecated in the bundled catalog. The deprecated tier sets no marker, and the saved model is still hidden from
+    // the card.
     const deprecated = modelCardChoices(llm({
       vendors: { openai: { model: "o4-mini" } } as never,
       pinnedModels: ["o4-mini", "gpt-5.4"],
@@ -116,8 +116,7 @@ describe("modelCardChoices", () => {
       activeChatRuntime: { kind: "subscription", provider: "unknown-runtime" } as never,
     }));
     expect(choices).toEqual([
-      // Not "Codex" — subscriptionRuntimeDescriptor's own fallback would
-      // hand back its first entry for an id it does not recognise.
+      // Unknown runtime ids must not borrow the descriptor registry's first label.
       expect.objectContaining({ kind: "subscription", provider: "unknown-runtime", vendorLabel: "unknown-runtime", modelId: null, current: true }),
       expect.objectContaining({ kind: "api", vendor: "openai", modelId: "gpt-5.4", current: false }),
     ]);

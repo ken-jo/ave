@@ -95,8 +95,8 @@ describe("RolesTab — ~/.ave reference doc upgrades", () => {
     renderRolesTab(api);
 
     expect(await screen.findByTestId("roles-tab:upgrade-markers")).toBeInTheDocument();
-    // The pending markers belong to the AGENTS.md section, not a surface of
-    // their own: a marker rendered outside it has no path shown beside it.
+    // The pending markers belong to the AGENTS.md section, not a surface of their own: a marker rendered outside it has no
+    // path shown beside it.
     expect(screen.getByTestId("roles-tab:agents-section")).toContainElement(
       screen.getByTestId("roles-tab:upgrade-markers"),
     );

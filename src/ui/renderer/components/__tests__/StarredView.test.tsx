@@ -398,9 +398,8 @@ describe("StarredView", () => {
   });
 
   it("renders past a session whose stored timestamp is not a date", async () => {
-    // `modifiedAt` is read off disk, so a truncated record can carry a string
-    // `Date` cannot parse. Before it was rejected at the key boundary it became
-    // the pseudo-key "0NaN-NaN-NaN" and reached the calendar's day parser.
+    // `modifiedAt` is read off disk, so a truncated record can carry a string `Date` cannot parse. Before it was rejected at
+    // the key boundary it became the pseudo-key "0NaN-NaN-NaN" and reached the calendar's day parser.
     const api = {
       starredRemove: vi.fn(async () => ({ ok: true })),
     } as unknown as Parameters<typeof StarredView>[0]["api"];
@@ -421,8 +420,7 @@ describe("StarredView", () => {
       />,
     );
 
-    // The good row still renders — the bad one is dropped from the day index
-    // rather than taking the view down with it.
+    // The good row still renders — the bad one is dropped from the day index rather than taking the view down with it.
     expect(await findByText("정상 대화")).toBeTruthy();
   });
 

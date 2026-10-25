@@ -1,12 +1,4 @@
-/**
- * What belongs to a TILE and what belongs to the WINDOW, with two or three
- * tiles open.
- *
- * Main pushes several surfaces at the renderer that predate tiled chat groups.
- * Each one has to answer the same question — is this news about one
- * conversation or about the window? — and the answer decides whether it is
- * subscribed per tile or once, and which tile gets to show it.
- */
+// Session-owned surfaces stay with their tiles; unowned surfaces render once for the window.
 import "./setup.js";
 import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 import { act, cleanup, createEvent, fireEvent, waitFor } from "@testing-library/react";
@@ -34,8 +26,7 @@ import type { AveApi } from "../../src/ui/renderer/types.js";
 import { A2ATaskState } from "../../src/shared/a2a.js";
 import { SUGGESTIONS_SESSION_ID } from "../../src/shared/suggestions-session.js";
 
-// Surface ownership needs committed DOM, while guest placement repeatedly
-// measures layout over animation frames. Advance frames where focus is proved.
+// Advance frames after committed layout when proving surface ownership and focus.
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ["requestAnimationFrame", "cancelAnimationFrame"] });
 });
@@ -52,7 +43,6 @@ async function advanceAnimationFrame(): Promise<void> {
   await act(async () => { vi.advanceTimersToNextFrame(); });
 }
 
-/** The permission namespace's subscriptions, as the mock records them. */
 function permissionSubscription(api: MockAveApi, name: string): ReturnType<typeof vi.fn> {
   return (api.permission as unknown as Record<string, ReturnType<typeof vi.fn>>)[name]!;
 }
@@ -65,8 +55,7 @@ describe("permission disclosure toasts with two tiles", () => {
 
     await splitIntoTwoTiles(container);
 
-    // The setting these report on is the window's, so a second conversation
-    // must not bring a second subscription with it.
+    // Window-owned settings need one subscription regardless of conversation count.
     expect(onHit).toHaveBeenCalledTimes(1);
 
     const fire = onHit.mock.calls[0]?.[0] as (payload: {
@@ -110,9 +99,7 @@ describe("permission disclosure toasts with two tiles", () => {
       });
     });
 
-    // The suggestion is the window's, and its surface is an approval card. With
-    // no card up in either tile it draws nowhere — a per-tile copy would show
-    // the same offer twice for one run of approvals.
+    // Window-owned approval suggestions render once and only when an approval surface exists.
     expect(
       container.querySelectorAll('[data-testid="reviewer-suggestion-band"]'),
     ).toHaveLength(0);
@@ -122,15 +109,13 @@ describe("permission disclosure toasts with two tiles", () => {
 describe("overlay cards with two tiles", () => {
   const overlayRegions = (tile: { element: HTMLElement }) =>
     tile.element.querySelectorAll('[data-testid="overlay-card-region"]');
-  /** The window's own region — where a card no conversation owns is drawn. */
   const windowRegion = (container: HTMLElement) =>
     container.querySelector<HTMLElement>('[data-overlay-surface="window"]');
 
   it("shows an app card in the tile holding the conversation it came from", async () => {
     const { container, emitOverlayShow } = await renderApp({ hasApiKey: true });
     const [primary, second] = await splitIntoTwoTiles(container);
-    // Focus follows the split, so the primary tile is NOT focused here — the
-    // card must still land on the tile holding its origin conversation.
+    // Origin ownership outranks focus when placing conversation cards.
     await focusTile(primary!);
 
     await act(async () => {
@@ -179,8 +164,7 @@ describe("overlay cards with two tiles", () => {
       fireEvent.click(confirm);
     });
 
-    // The staged prompt lands in the conversation the card came from, not in
-    // the focused one.
+    // Stage prompts in the origin conversation, not the focused one.
     await waitFor(() => {
       expect(second!.element.textContent).toContain("settle the invoice");
     });
@@ -191,8 +175,6 @@ describe("overlay cards with two tiles", () => {
     const { container, emitOverlayShow } = await renderApp({ hasApiKey: true });
     const [primary, second] = await splitIntoTwoTiles(container);
 
-    // Painted while its own tile is focused, so nothing about where it landed
-    // is ambiguous yet.
     await focusTile(second!);
     await act(async () => {
       emitOverlayShow({
@@ -214,10 +196,7 @@ describe("overlay cards with two tiles", () => {
       return button!;
     });
 
-    // The user walks over to the other tile between the paint and the click.
-    // The target is resolved from the card's ORIGIN at click time, so the
-    // staged prompt still lands where it was staged for — resolving it from
-    // whatever has focus would put one conversation's prompt in another.
+    // Resolve the card's origin at click time so focus changes cannot retarget staged prompts.
     await focusTile(primary!);
     await act(async () => {
       fireEvent.click(confirm);
@@ -230,13 +209,9 @@ describe("overlay cards with two tiles", () => {
   });
 
   it("draws a routine card once, in the tile holding the Suggestions conversation, whatever has focus", async () => {
-    // The primary tile holds the dedicated Suggestions conversation.
     const { container, emitRoutineFired } = await renderApp({ hasApiKey: true, currentSession: SUGGESTIONS_SESSION_ID });
     const [primary, second] = await splitIntoTwoTiles(container);
-    // Focus follows the split, so the second tile — the user's other
-    // conversation — is focused when the card arrives. A routine turn runs in
-    // no tile; its card is news for the Suggestions conversation, not for the
-    // conversation the user is working in.
+    // Routine results belong to Suggestions even while the user works in another tile.
     await act(async () => {
       emitRoutineFired({
         id: "schedule-daily",
@@ -252,7 +227,6 @@ describe("overlay cards with two tiles", () => {
     expect(overlayRegions(second!)).toHaveLength(0);
     expect(windowRegion(container)).toBeNull();
 
-    // Moving focus does not move it: it stays with its conversation.
     await focusTile(primary!);
     await focusTile(second!);
     expect(overlayRegions(primary!)).toHaveLength(1);
@@ -271,8 +245,6 @@ describe("overlay cards with two tiles", () => {
     });
     await waitFor(() => expect(overlayRegions(primary!)).toHaveLength(1));
 
-    // The user works elsewhere while the routine runs, and only then does the
-    // result land.
     await focusTile(second!);
     await act(async () => {
       emitRoutineFired({
@@ -284,8 +256,6 @@ describe("overlay cards with two tiles", () => {
       });
     });
 
-    // The result REPLACES the spinner in the queue — one card, in the
-    // Suggestions tile, nothing over the conversation the user is in.
     await waitFor(() => expect(primary!.element.textContent).toContain("daily summary"));
     expect(overlayRegions(primary!)).toHaveLength(1);
     expect(overlayRegions(second!)).toHaveLength(0);
@@ -307,8 +277,6 @@ describe("overlay cards with two tiles", () => {
         createdAt: new Date().toISOString(),
       });
     });
-    // The second tile is focused, but the card is drawn only where the
-    // Suggestions conversation is.
     const confirm = await waitFor(() => {
       const button = primary!.element.querySelector<HTMLButtonElement>(
         '[data-testid="overlay-card-primary-action"]',
@@ -322,7 +290,6 @@ describe("overlay cards with two tiles", () => {
       fireEvent.click(confirm);
     });
 
-    // The staged prompt is inserted through the Suggestions tile's own handle.
     await waitFor(() => expect(primary!.element.textContent).toContain("suggested target"));
     expect(second!.element.textContent).not.toContain("suggested target");
     expect(api.chatSend).toHaveBeenCalled();
@@ -356,8 +323,7 @@ describe("overlay cards with two tiles", () => {
       fireEvent.click(secondary);
     });
 
-    // A fresh conversation is started first, and the staged prompt is its
-    // first turn — with the plugin's provenance, not as the user's own words.
+    // Start a fresh conversation and preserve plugin provenance on its first staged prompt.
     await waitFor(() => expect(api.chatSend).toHaveBeenCalled());
     expect(api.chatNew.mock.invocationCallOrder[0]!).toBeLessThan(api.chatSend.mock.invocationCallOrder[0]!);
     expect(api.chatSend.mock.calls[0]![2]).toBe("plugin-emitted");
@@ -381,7 +347,6 @@ describe("overlay cards with two tiles", () => {
       });
     });
 
-    // The window re-reads its list for the Suggestions row; no tile draws it.
     await waitFor(() => expect(api.chatSessions.mock.calls.length).toBeGreaterThan(1));
     expect(container.querySelectorAll('[data-testid="overlay-card-region"]')).toHaveLength(0);
     expect(container.textContent).not.toContain("held suggestion");
@@ -403,7 +368,6 @@ describe("overlay cards with two tiles", () => {
     });
 
     const dismiss = await waitFor(() => {
-      // Wherever the card is drawn, there is exactly one of it to dismiss.
       const button = container.querySelector<HTMLButtonElement>(
         '[data-testid="routine-card-dismiss"]',
       );
@@ -424,7 +388,6 @@ describe("overlay cards with two tiles", () => {
 });
 
 describe("overlay cards whose origin conversation leaves the screen", () => {
-  /** A staged card raised inside `originSessionId`. */
   const appCard = (id: string, originSessionId: string, summary: string) => ({
     id,
     source: { kind: "app", serverId: "invoices", eventId: id },
@@ -449,10 +412,7 @@ describe("overlay cards whose origin conversation leaves the screen", () => {
     });
     expect(primary!.element.querySelector('[data-testid="pane-maximize-pending-answer"]')).toBeNull();
 
-    // Showing only the primary tile hides the tile holding the card's
-    // conversation. The card is that conversation's: it is not drawn in a
-    // conversation it was never staged for, and it does not vanish — it waits,
-    // and the one control that brings its pane back says something is waiting.
+    // Hidden origin cards wait with their conversation; mark the control that restores it.
     await toggleTileMaximized(primary!);
     await waitFor(() => {
       expect(primary!.element.querySelector('[data-testid="pane-maximize-pending-answer"]')).not.toBeNull();
@@ -460,8 +420,7 @@ describe("overlay cards whose origin conversation leaves the screen", () => {
     expect(container.querySelectorAll('[data-testid="overlay-card-region"]')).toHaveLength(0);
     expect(container.querySelector('[data-overlay-surface="window"]')).toBeNull();
 
-    // Restoring the split brings the origin conversation back, and with it the
-    // action — which runs in that conversation, not the focused one.
+    // Restoring the origin tile returns its card without changing the action's target.
     await toggleTileMaximized(primary!);
     await waitFor(() => {
       expect(primary!.element.querySelector('[data-testid="pane-maximize-pending-answer"]')).toBeNull();
@@ -488,11 +447,7 @@ describe("overlay cards whose origin conversation leaves the screen", () => {
 });
 
 describe("overlay cards in a pane routed off its conversation", () => {
-  /**
-   * A staged prompt with no origin conversation, so it is drawn in the focused
-   * pane. Plugin cards are addressed to the Suggestions conversation, so an
-   * app message that named none is the unowned kind left.
-   */
+  // App messages without origin follow focus; plugin cards always name Suggestions.
   const pluginCard = (id: string, summary: string) => ({
     id,
     source: { kind: "app", serverId: "mail-assistant", eventId: id },
@@ -505,7 +460,6 @@ describe("overlay cards in a pane routed off its conversation", () => {
   const routedShell = (container: HTMLElement, view: string) =>
     container.querySelector<HTMLElement>(`[data-testid="main-pane-shell"][data-view="${view}"]`);
   const regions = (root: ParentNode) => root.querySelectorAll('[data-testid="overlay-card-region"]');
-  /** The lane the region floats in must be the FRAME's body, under its header band. */
   const expectInFrameLane = (frame: HTMLElement, region: HTMLElement) => {
     const lane = region.closest<HTMLElement>('[data-testid="floating-right-lane"]');
     expect(lane).not.toBeNull();
@@ -523,7 +477,6 @@ describe("overlay cards in a pane routed off its conversation", () => {
     });
     const cell = container.querySelector<HTMLElement>(`[data-testid="pane-cell:${MAIN_CHAT_GROUP_ID}"]`)!;
     expect(cell.contains(shell)).toBe(true);
-    // The pane is drawn; only its conversation is behind the view.
     expect(cell.getAttribute("data-hidden")).toBeNull();
 
     await act(async () => {
@@ -543,8 +496,6 @@ describe("overlay cards in a pane routed off its conversation", () => {
     expectInFrameLane(frame, region);
     expect(container.querySelector('[data-overlay-surface="window"]')).toBeNull();
 
-    // Closing the view hands the pane back to its conversation, and the card
-    // comes with it — still drawn once, in the conversation frame's lane.
     await act(async () => {
       fireEvent.click(frame.querySelector('[data-testid="pane-close"]')!);
     });
@@ -563,7 +514,6 @@ describe("overlay cards in a pane routed off its conversation", () => {
   it("with two panes, draws the card in the focused pane — routed or not — and moves it when focus moves", async () => {
     const { container, emitOverlayShow } = await renderApp({ hasApiKey: true });
     const [primary, second] = await splitIntoTwoTiles(container);
-    // Focus follows the split, so the sidebar routes the SECOND pane.
     await clickSidebarNavRow("features", "toolbar-work-board");
     const shell = await waitFor(() => {
       const routed = routedShell(container, "work-board");
@@ -581,8 +531,6 @@ describe("overlay cards in a pane routed off its conversation", () => {
     expect(regions(primary!.element)).toHaveLength(0);
     expect(container.querySelector('[data-overlay-surface="window"]')).toBeNull();
 
-    // Focus moving to the conversation pane carries the card with it: one
-    // card, in the pane the user is in, in that frame's lane.
     await focusTile(primary!);
     const moved = await waitFor(() => {
       const region = primary!.element.querySelector<HTMLElement>('[data-testid="overlay-card-region"]');
@@ -613,8 +561,6 @@ describe("overlay queue navigation with two tiles", () => {
       createdAt: new Date().toISOString(),
     });
 
-    // Two with no origin — both drawn in the focused tile — and one for the
-    // tile holding its origin conversation.
     await act(async () => {
       emitOverlayShow(card("a1", undefined, "first for the window"));
       emitOverlayShow(card("b1", `session-${second!.chatGroupId}`, "only for the other tile"));
@@ -623,17 +569,14 @@ describe("overlay queue navigation with two tiles", () => {
 
     const indicator = (root: HTMLElement | null | undefined) =>
       root?.querySelector('[data-testid="routine-card-indicator"]')?.textContent;
-    // Each surface counts what IT shows. A window-wide counter would say 3/3.
+    // Counters describe each surface's own queue slice rather than the whole window.
     await waitFor(() => expect(indicator(primary!.element)).toBe("2/2"));
     expect(primary!.element.textContent).toContain("second for the window");
-    // One card is not a queue, so the tile that owns one shows no counter.
     expect(indicator(second!.element)).toBeUndefined();
     expect(second!.element.textContent).toContain("only for the other tile");
-    // Nothing is left over for the window.
     expect(container.querySelector('[data-overlay-surface="window"]')).toBeNull();
 
-    // Stepping back stays inside this surface's slice — it never lands on the
-    // card that renders in the other tile.
+    // Queue navigation stays inside the surface's slice.
     const back = primary!.element.querySelector<HTMLButtonElement>('[data-testid="overlay-card-prev"]')!;
     await act(async () => {
       fireEvent.click(back);
@@ -652,10 +595,7 @@ describe("an unowned card follows focus without losing its state", () => {
       const [primary, second] = await splitIntoTwoTiles(container);
       await focusTile(primary!);
 
-      // No origin (an app message that named no conversation — every plugin
-      // card is addressed to the Suggestions conversation instead), so the card
-      // is drawn in the focused tile — the primary here. Moving focus moves
-      // it; what the user did to it comes along.
+      // Unowned app cards follow focus while retaining their user-controlled state.
       const createdAt = new Date(Date.now() - 10 * 60 * 1000).toISOString();
       await act(async () => {
         emitOverlayShow({
@@ -689,10 +629,7 @@ describe("an unowned card follows focus without losing its state", () => {
 
       await focusTile(second!);
 
-      // Same card, now in the focused tile. Expansion lives in the window's
-      // context and the timestamp came from main, so neither is re-derived by
-      // the region that draws it next — a card that re-minted "now" would
-      // read 방금 instead.
+      // Moving a card must preserve controlled expansion and the original host timestamp.
       const movedRegion = await waitFor(() => {
         const region = second!.element.querySelector<HTMLElement>('[data-testid="overlay-card-region"]');
         expect(region).not.toBeNull();
@@ -726,7 +663,6 @@ describe("a turn parked on an approval, with two tiles", () => {
     within.querySelectorAll('[data-testid="approval-dock"]');
   const laneCard = (within: HTMLElement) =>
     within.querySelectorAll('[data-testid="approval-lane-card"]');
-  /** A plugin sidebar view, so the sidebar has a Plugins row to mark. */
   const pluginSidebarView = (pluginId: string, viewId: string) => ({
     pluginId,
     extension: { id: viewId, slot: "sidebar", kind: "embedded-module", title: "Inbox", entry: "ui/index.js", exportName: "mount" },
@@ -782,8 +718,7 @@ describe("a turn parked on an approval, with two tiles", () => {
     });
     const [primary, second] = await splitIntoTwoTiles(container);
 
-    // A turn that never ends keeps the second tile streaming; the next Enter
-    // there goes to the queue, not to the model.
+    // Keep a turn pending so subsequent input enters the queue.
     api.chatSend.mockImplementationOnce(() => new Promise(() => {}));
     await submitChatMessage(second!.element, "첫 질문");
     await waitFor(() => expect(api.chatSend).toHaveBeenCalledTimes(1));
@@ -812,7 +747,6 @@ describe("a turn parked on an approval, with two tiles", () => {
     });
     await waitFor(() => expect(band(second!)).not.toBeNull());
 
-    // The host settled the ask (timeout) and the turn ended on a failed call.
     await act(async () => {
       emitChatStream({ type: "done" });
     });
@@ -842,11 +776,7 @@ describe("a turn parked on an approval, with two tiles", () => {
   });
 
   it("draws a request parked before this tile knew its session once: in the tile, never beside it in the lane", async () => {
-    // A reload: the request comes back from the host before the primary tile
-    // has loaded the session it names. Until then no surface holds that
-    // session and no row lists it, so the focused pane's lane draws it as a
-    // request without a conversation; once the tile knows its session it
-    // claims the request, and the lane must let go of it.
+    // Before hydration, unmatched approvals use the focused lane; move them when session ownership becomes known.
     let resolveHistory!: (history: { sessionId: string; messages: never[] }) => void;
     const history = new Promise<{ sessionId: string; messages: never[] }>((resolve) => {
       resolveHistory = resolve;
@@ -875,7 +805,6 @@ describe("a turn parked on an approval, with two tiles", () => {
       pluginUiExtensions: [pluginSidebarView("mail-assistant", "inbox")],
     });
     const [primary, second] = await splitIntoTwoTiles(container);
-    // Focus follows the split: the second pane is where the user is.
     await act(async () => {
       emitApproval(request({ id: "req-host" }));
     });
@@ -883,12 +812,10 @@ describe("a turn parked on an approval, with two tiles", () => {
     await waitFor(() => expect(laneCard(second!.element)).toHaveLength(1));
     expect(laneCard(container)).toHaveLength(1);
     expect(laneCard(primary!.element)).toHaveLength(0);
-    // Not a dock: nobody's turn is parked, so no composer is covered.
     expect(dock(container)).toHaveLength(0);
     expect(band(primary!)).toBeNull();
     expect(band(second!)).toBeNull();
     expect(second!.element.querySelector('[data-testid="approval-lane-card"]')!.textContent).toContain("호스트 요청");
-    // The Plugins row says a request outside every conversation is waiting.
     expect(container.querySelector('[data-testid="sidebar-group-plugins-pending-answer"]')).not.toBeNull();
     for (const tile of [primary!, second!]) {
       const composer = tile.element.querySelector<HTMLElement>("[data-composer-placement]")!;
@@ -912,15 +839,12 @@ describe("a turn parked on an approval, with two tiles", () => {
     await waitFor(() => expect(laneCard(second!.element)).toHaveLength(1));
     expect(second!.element.querySelector('[data-testid="approval-lane-card"]')!.textContent)
       .toContain("익스텐션 요청 · mail-assistant");
-    // In the frame's lane — the same place an unowned overlay card is drawn.
     expect(laneCard(container)[0]!.closest('[data-testid="floating-right-lane"]')).not.toBeNull();
 
-    // One reader, the user, who is at the focused pane: focus moving moves it.
     await focusTile(primary!);
     await waitFor(() => expect(laneCard(primary!.element)).toHaveLength(1));
     expect(laneCard(second!.element)).toHaveLength(0);
     expect(laneCard(container)).toHaveLength(1);
-    // No window band exists to fall back to.
     expect(container.querySelector('[data-testid="window-approval-scope"]')).toBeNull();
   });
 
@@ -935,10 +859,7 @@ describe("a turn parked on an approval, with two tiles", () => {
     await waitFor(() => expect(dock(second!.element)).toHaveLength(1));
     expect(primary!.element.querySelector('[data-testid="pane-maximize-pending-answer"]')).toBeNull();
 
-    // The primary pane takes the canvas: the second is in the tree but drawn
-    // nowhere. Its card is its own — not moved to the pane the user is in,
-    // not drawn into a box nobody sees. The maximize control, the one way
-    // back to the hidden pane, says something is waiting there.
+    // Hidden pane cards stay owned and signal the restore control rather than moving to a visible neighbor.
     await toggleTileMaximized(primary!);
     await waitFor(() => {
       expect(primary!.element.querySelector('[data-testid="pane-maximize-pending-answer"]')).not.toBeNull();
@@ -947,7 +868,6 @@ describe("a turn parked on an approval, with two tiles", () => {
     expect(laneCard(container)).toHaveLength(0);
     expect(container.querySelector('[data-testid="window-approval-scope"]')).toBeNull();
 
-    // Restoring the split draws the pane, and the card with it, where it was.
     await toggleTileMaximized(primary!);
     const restored = collectTiles(container).find((tile) => tile.chatGroupId === second!.chatGroupId)!;
     await waitFor(() => expect(dock(restored.element)).toHaveLength(1));
@@ -1166,7 +1086,7 @@ describe("a turn parked on an approval, with two tiles", () => {
   });
 
   it("draws a side chat's approval over the side composer, and marks the panel toggle and the tab while it is out of sight", async () => {
-    // This case owns its timeout clock for the settled panel-close assertion.
+    // Use a controlled clock to assert the settled panel-close state.
     vi.useRealTimers();
     const { container, api, emitApproval } = await renderApp({ hasApiKey: true, sideChat: true });
     const toggle = () => container.querySelector<HTMLButtonElement>(testIdSelector(TEST_IDS.panePanelToggle))!;
@@ -1180,7 +1100,6 @@ describe("a turn parked on an approval, with two tiles", () => {
     const sideChatNew = (api.sideChat as unknown as { new: ReturnType<typeof vi.fn> }).new;
     await waitFor(() => expect(sideChatNew).toHaveBeenCalled());
 
-    // The side loop's turn parks: the card is the side chat's, over its composer.
     await act(async () => {
       emitApproval(request({ id: "req-side", sessionId: MOCK_SIDE_CHAT_SESSION_ID }));
     });
@@ -1189,8 +1108,6 @@ describe("a turn parked on an approval, with two tiles", () => {
     expect(dock(container)).toHaveLength(1);
     expect(container.querySelector('[data-testid="pane-panel-toggle-pending-answer"]')).toBeNull();
 
-    // Another tab in front of it: the card stays with the side chat; the tab
-    // says so.
     const add = container.querySelector<HTMLElement>('[data-testid="chat-side-panel-add-tab"]')!;
     await act(async () => {
       fireEvent.pointerDown(add, { button: 0 });
@@ -1209,13 +1126,10 @@ describe("a turn parked on an approval, with two tiles", () => {
     });
     expect(container.querySelector('[data-testid="pane-panel-toggle-pending-answer"]')).not.toBeNull();
 
-    // The panel closed: the toggle is the way back, and it says so too. Past
-    // the close transition as well — the settled-closed panel used to unmount,
-    // taking the side chat's claim and its parked question with it.
+    // Closing the panel must preserve side-chat ownership and its parked request through the transition.
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
       await act(async () => { fireEvent.click(toggle()); });
-      // Advance beyond the panel's close transition before checking its settled state.
       await act(async () => { await vi.advanceTimersByTimeAsync(400); });
     } finally {
       vi.useRealTimers();
@@ -1226,11 +1140,9 @@ describe("a turn parked on an approval, with two tiles", () => {
       expect(container.querySelector('[data-testid="pane-panel-toggle-pending-answer"]')).not.toBeNull();
     });
     expect(dock(container)).toHaveLength(1);
-    // No composer in the tile is covered by a card that is not its own.
     const tileComposer = container.querySelector<HTMLElement>('[data-testid="chat-main-column"] [data-composer-placement]')!;
     expect(tileComposer).not.toHaveAttribute("inert");
 
-    // Open again, back on the side-chat tab: the card is on screen, no dot.
     await act(async () => { fireEvent.click(toggle()); });
     await act(async () => {
       fireEvent.click(container.querySelector('[data-testid="chat-side-panel-tab-side-chat"]')!);
@@ -1267,8 +1179,7 @@ describe("a turn parked on an approval, with two tiles", () => {
     const tab = (kind: string) => container.querySelector<HTMLElement>(`[data-testid="chat-side-panel-tab-${kind}"]`);
     await waitFor(() => expect(tab("side-chat")?.getAttribute("aria-selected")).toBe("true"));
 
-    // The request opened the tab once. Moving to another tab is the user's
-    // call and must hold — the request is not re-applied on the next render.
+    // Auto-open each request once; later user tab navigation must persist across rerenders.
     const add = container.querySelector<HTMLElement>('[data-testid="chat-side-panel-add-tab"]')!;
     await act(async () => {
       fireEvent.pointerDown(add, { button: 0 });
@@ -1287,7 +1198,6 @@ describe("a turn parked on an approval, with two tiles", () => {
     await waitFor(() => expect(tab("browser")?.getAttribute("aria-selected")).toBe("true"));
     expect(tab("side-chat")?.getAttribute("aria-selected")).toBe("false");
 
-    // Closing the panel holds too.
     const toggle = container.querySelector<HTMLButtonElement>(testIdSelector(TEST_IDS.panePanelToggle))!;
     await act(async () => { fireEvent.click(toggle); });
     await waitFor(() => expect(toggle.getAttribute("aria-pressed")).toBe("false"));
@@ -1302,9 +1212,7 @@ describe("a turn parked on an approval, with two tiles", () => {
     });
     await waitFor(() => expect(laneCard(container)).toHaveLength(1));
 
-    // The tile that asked closed, so the host cancelled the ask. Nothing in
-    // this window watches that turn any more — the announcement is the only
-    // thing that can retire the card, and its deny would answer nothing.
+    // Host cancellation must retire requests after the asking tile closes.
     await act(async () => {
       emitApprovalSettled("req-host");
     });
@@ -1335,10 +1243,7 @@ describe("cards raised by one of three tiles", () => {
     tile.element.querySelector('[data-testid="approval-waiting-band"]');
   const tileCell = (node: Element) =>
     node.closest<HTMLElement>('[data-testid^="pane-cell:"]');
-  /**
-   * The tiles that did not ask: nothing covers them, their composers are not
-   * inert, and each takes the keyboard — focus lands, typed text stays.
-   */
+  // Other tiles must remain interactive while one conversation waits for approval.
   const expectUntouched = async (...others: Array<{ element: HTMLElement }>) => {
     for (const tile of others) {
       expect(tile.element.querySelectorAll(BLOCKING_SURFACE_SELECTOR)).toHaveLength(0);
@@ -1358,7 +1263,6 @@ describe("cards raised by one of three tiles", () => {
     const { container, api, emitApproval } = await renderApp({ hasApiKey: true });
     const [first, middle, third] = await splitIntoThreeTiles(container);
 
-    // The user is typing in the first tile when the middle tile's turn asks.
     await focusTile(first!);
     await act(async () => {
       textarea(first!)!.focus();
@@ -1375,16 +1279,12 @@ describe("cards raised by one of three tiles", () => {
     expect(dock(third!.element)).toHaveLength(0);
     expect(dock(container)).toHaveLength(1);
 
-    // No focus steal: the caret stays where the user was typing.
     await advanceAnimationFrame();
     expect(document.activeElement).toBe(textarea(first!));
-    // The card's nearest tile ancestor is the tile that asked.
     expect(tileCell(dock(container)[0]!)).toBe(middle!.element);
-    // Only the covered composer is inert; the other two accept input.
     expect(composer(middle!)).toHaveAttribute("inert");
     await expectUntouched(first!, third!);
 
-    // Both neighbours run a turn while the middle tile waits.
     await submitChatMessage(first!.element, "첫 타일 질문");
     await waitFor(() => expect(api.chatSend).toHaveBeenCalledTimes(1));
     await focusTile(third!);
@@ -1392,7 +1292,6 @@ describe("cards raised by one of three tiles", () => {
     await waitFor(() => expect(api.chatSend).toHaveBeenCalledTimes(2));
     expect(dock(middle!.element)).toHaveLength(1);
 
-    // Answering in the middle tile clears its card and frees its composer.
     const approve = middle!.element.querySelector<HTMLButtonElement>('[data-testid="approve-button"]');
     expect(approve).not.toBeNull();
     await act(async () => {
@@ -1406,7 +1305,6 @@ describe("cards raised by one of three tiles", () => {
     const { container, api, emitAskUserQuestion } = await renderApp({ hasApiKey: true });
     const [first, middle, third] = await splitIntoThreeTiles(container);
 
-    // The user is typing in the first tile when the middle tile's turn asks.
     await focusTile(first!);
     await act(async () => {
       textarea(first!)!.focus();
@@ -1428,8 +1326,7 @@ describe("cards raised by one of three tiles", () => {
     await waitFor(() => expect(question(middle!)).not.toBeNull());
     expect(tileCell(question(middle!)!)).toBe(middle!.element);
     expect(container.querySelectorAll('[data-testid="question-overlay"]')).toHaveLength(1);
-    // The card seats its first answer a frame after mounting; let that frame
-    // pass, then the caret must still be where the user was typing.
+    // Wait through first-answer seating before proving the existing caret was not stolen.
     await advanceAnimationFrame();
     expect(document.activeElement).toBe(textarea(first!));
     await expectUntouched(first!, third!);
@@ -1450,8 +1347,7 @@ describe("cards raised by one of three tiles", () => {
       textarea(first!)!.focus();
     });
 
-    // `agent_spawn` asks by contract; its card is an approval card raised by
-    // the turn that is spawning, so it belongs to that turn's tile.
+    // Spawn approval belongs to the spawning turn's tile.
     await act(async () => {
       emitApproval(request({
         id: "req-spawn-middle",
@@ -1505,9 +1401,7 @@ describe("the skill badge with three tiles", () => {
     const badges = (tile: { element: HTMLElement }) =>
       tile.element.querySelectorAll('[data-testid="skill-badge"]');
 
-    // `ave:skill-load:event` is window-wide and carries the session the tool
-    // ran in. The tile that owns that session is the one that loaded the
-    // skill; without the guard every open tile would grow the same badge.
+    // Guard window-wide skill events by owning session to avoid badges in every tile.
     await act(async () => {
       emitSkillLoaded({
         name: "release-notes",
@@ -1523,14 +1417,9 @@ describe("the skill badge with three tiles", () => {
   });
 });
 
-/**
- * The whole directive at once, with three tiles: everything a session raises
- * belongs to that session's tile, and everything no session raised is drawn
- * once in the window's own chrome.
- */
+// With several tiles, session surfaces remain local and unowned news renders once.
 describe("three tiles, every kind of surface at once", () => {
   it("puts each surface on exactly one tile, and what no tile owns in the window", async () => {
-    // The first tile holds the dedicated Suggestions conversation.
     const { container, api, emitApproval, emitAskUserQuestion, emitSkillLoaded, emitRoutineFired } =
       await renderApp({ hasApiKey: true, currentSession: SUGGESTIONS_SESSION_ID });
     const [first, middle, third] = await splitIntoThreeTiles(container);
@@ -1539,9 +1428,6 @@ describe("three tiles, every kind of surface at once", () => {
     const count = (root: HTMLElement, testId: string) =>
       root.querySelectorAll(`[data-testid="${testId}"]`).length;
 
-    // The middle tile's turn parks on an approval and loads a skill; a routine
-    // fires with no tile behind it; the window's permission setting reports a
-    // memory hit.
     await act(async () => {
       emitApproval({
         id: "req-acceptance",
@@ -1575,31 +1461,21 @@ describe("three tiles, every kind of surface at once", () => {
       }) => void)({ toolName: "fs_write", scope: "persistent", verdictAtApproval: "low" });
     });
 
-    // One of each, window-wide.
     await waitFor(() => expect(count(container, "approval-dock")).toBe(1));
     await waitFor(() => expect(count(container, "user-approval-hit-toast")).toBe(1));
     expect(count(container, "skill-badge")).toBe(1);
     expect(count(container, "overlay-card-region")).toBe(1);
 
-    // The approval card that just landed in the middle tile takes focus with
-    // it; the user goes back to the third tile. The routine card stays with
-    // the Suggestions conversation in the first tile.
     await focusTile(third!);
 
-    // The two the middle tile's turn raised are inside the middle tile.
     expect(count(middle!.element, "approval-dock")).toBe(1);
     expect(count(middle!.element, "skill-badge")).toBe(1);
-    // The routine card is addressed to the Suggestions conversation, so the
-    // tile holding it draws it — exactly one tile, and the window draws none.
-    // Naming the tile is the point: "exactly one tile draws it" would pass
-    // with the card on the wrong tile, which is the whole subject here.
+    // Assert the Suggestions tile explicitly; a count of one alone cannot prove correct routing.
     await waitFor(() => expect(count(first!.element, "overlay-card-region")).toBe(1));
     expect(count(third!.element, "overlay-card-region")).toBe(0);
     expect(count(middle!.element, "overlay-card-region")).toBe(0);
     expect(container.querySelector('[data-overlay-surface="window"]')).toBeNull();
 
-    // While the middle tile waits, a question for it lands there too — and the
-    // other two are still running turns of their own.
     await act(async () => {
       emitAskUserQuestion({
         id: "ask-acceptance",
@@ -1616,9 +1492,6 @@ describe("three tiles, every kind of surface at once", () => {
     await submitChatMessage(third!.element, "셋째 타일 질문");
     await waitFor(() => expect(api.chatSend).toHaveBeenCalledTimes(2));
 
-    // Nothing the middle tile raised reached its neighbours, and the routine
-    // card stayed with the Suggestions conversation: the first tile, and only
-    // there, wherever focus went.
     const suggestions = first!;
     for (const tile of [first!, third!]) {
       expect(tile.element.querySelectorAll(BLOCKING_SURFACE_SELECTOR)).toHaveLength(0);
@@ -1631,16 +1504,8 @@ describe("three tiles, every kind of surface at once", () => {
   });
 });
 
-/**
- * Reaching a conversation from the sidebar while another one is mid-turn.
- *
- * A running turn writes through the loop that owns it, and main rewrites the
- * whole session file from that loop's in-memory history — so the session under
- * a running loop cannot be swapped. What used to happen instead is that the
- * sidebar went dead: every row disabled, no toast, and on a plugin panel (where
- * no row counts as active) not even the streaming conversation's own row was
- * clickable. The conversation is given a group of its own now.
- */
+// Running loops cannot swap sessions because they own the history being written.
+// Open another conversation in its own group without disabling sidebar navigation.
 describe("opening a conversation while another is mid-turn", () => {
   const OTHER_SESSION = "sess-other";
   const withOtherSession = {
@@ -1654,10 +1519,7 @@ describe("opening a conversation while another is mid-turn", () => {
   const sessionRow = (container: HTMLElement, id: string) =>
     container.querySelector(`[data-testid="sidebar-session-${id}"]`) as HTMLButtonElement | null;
 
-  /**
-   * Chat mode starts with the rail collapsed, which hides the session list. The
-   * user in the report had it open — expanding it is part of reproducing them.
-   */
+  // Expand the collapsed chat-mode rail to exercise session navigation.
   const expandSidebar = async (container: HTMLElement) => {
     const toggle = container.querySelector('[data-testid="sidebar-collapse-toggle"]') as HTMLButtonElement | null;
     if (!toggle || toggle.getAttribute("aria-pressed") === "true") return;
@@ -1683,25 +1545,17 @@ describe("opening a conversation while another is mid-turn", () => {
       await expandSidebar(container);
 
       const row = await rowFor(container, OTHER_SESSION);
-      // A row that is not the streaming conversation stays live: one tile's
-      // turn is not a reason to lock every other conversation away.
+      // One streaming tile must not disable other conversation rows.
       expect(row.disabled).toBe(false);
       await act(async () => { fireEvent.click(row); });
 
       await waitFor(() => expect(api.chatSessionResume).toHaveBeenCalledWith(OTHER_SESSION));
-      // The adopted conversation got a group of its own, and chat mode draws
-      // only the focused one — so the canvas still shows a single tile. This is
-      // the whole point: the user asked to READ another conversation, not to
-      // rearrange the screen.
+      // In chat mode, adopting another group keeps a single focused tile without rearranging the canvas.
       const tiles = collectTiles(container);
       expect(tiles).toHaveLength(1);
       expect(tiles[0]!.chatGroupId).not.toBe(MAIN_CHAT_GROUP_ID);
-      // The displaced group is HIDDEN, not gone: its tile stays mounted so the
-      // running turn keeps its stream subscription, its streaming flag and its
-      // stop control. Unmounting it would drop the frames on the floor and stop
-      // the sidebar saying that conversation is running.
+      // Hide displaced conversations without unmounting so streams and running-state indicators survive.
       expect(mountedTileIds(container)).toContain(MAIN_CHAT_GROUP_ID);
-      // …and nothing released its loop to make room.
       expect(releasedGroupIds()).toEqual([]);
 
       await act(async () => {
@@ -1726,8 +1580,7 @@ describe("opening a conversation while another is mid-turn", () => {
     await waitFor(() => expect(collectTiles(container)).toHaveLength(2));
     const ids = collectTiles(container).map((tile) => tile.chatGroupId);
     expect(ids).toContain(MAIN_CHAT_GROUP_ID);
-    // The second tile has to actually HOLD the conversation that was asked for.
-    // A tile that merely appeared would lose the click's whole purpose.
+    // Assert the adopted tile holds the requested conversation, not merely that a tile appeared.
     await waitFor(() => expect(api.chatSessionResume).toHaveBeenCalledWith(OTHER_SESSION));
     await waitFor(() => expect(api.chatSessionHistory).toHaveBeenCalledWith(OTHER_SESSION));
 
@@ -1738,10 +1591,7 @@ describe("opening a conversation while another is mid-turn", () => {
   });
 
   it("stays reachable from a view that is not the conversation surface", async () => {
-    // The reported dead end. Off the chat surface NO row counts as active, and
-    // the old guard was `streaming && !active` — so a plugin panel (or any
-    // other view) turned every row off, including the row of the conversation
-    // that was streaming. There was no way back to it at all.
+    // A non-chat view must not disable navigation back to the streaming conversation.
     const pendingSend = deferred<{ ok: true }>();
     const { container, api } = await renderApp(withOtherSession);
     api.chatSend.mockImplementationOnce(async () => pendingSend.promise);
@@ -1749,13 +1599,9 @@ describe("opening a conversation while another is mid-turn", () => {
     await submitChatMessage(container, "아직 답하는 중");
     await waitFor(() => expect(api.chatSend).toHaveBeenCalled());
 
-    // The streaming conversation's row starts marked as the one on screen.
     const own = await rowFor(container, MOCK_DEFAULT_SESSION_ID);
     expect(own.getAttribute("aria-current")).toBe("page");
 
-    // Leave the conversation surface. Settings has the same shape as the plugin
-    // panel from the report: an inline view that is not "home", so no row is
-    // "active" any more — which is exactly what the old guard keyed off.
     const settings = container.querySelector('[data-testid="sidebar-settings"]') as HTMLButtonElement;
     await act(async () => { fireEvent.click(settings); });
     await waitFor(() => {
@@ -1767,7 +1613,6 @@ describe("opening a conversation while another is mid-turn", () => {
     expect(offSurface.disabled).toBe(false);
     expect(other.disabled).toBe(false);
 
-    // Clicking back into the streaming conversation returns to it.
     await act(async () => { fireEvent.click(offSurface); });
     await waitFor(() => {
       expect(sessionRow(container, MOCK_DEFAULT_SESSION_ID)!.getAttribute("aria-current")).toBe("page");
@@ -1788,7 +1633,6 @@ describe("opening a conversation while another is mid-turn", () => {
       return gate.promise;
     });
 
-    // Fill the window to the ceiling, then put every conversation mid-turn.
     const tiles = await splitIntoNTiles(container, MAX_CHAT_GROUPS);
     expect(tiles).toHaveLength(MAX_CHAT_GROUPS);
     for (const [index, tile] of tiles.entries()) {
@@ -1803,14 +1647,10 @@ describe("opening a conversation while another is mid-turn", () => {
 
     await act(async () => { fireEvent.click(await rowFor(container, OTHER_SESSION)); });
 
-    // Nothing was released to make room — least of all the primary, whose
-    // release also points its loop at a fresh conversation and clears the
-    // persisted window-active session.
+    // Making room must not release a busy loop or clear its persisted active session.
     expect(releasedGroupIds()).toEqual([]);
     expect(mountedTileIds(container)).toEqual(before);
     expect(api.chatSessionResume).not.toHaveBeenCalled();
-    // And the user is told, because nothing in this gesture shows the limit the
-    // way a missing drop edge does.
     await waitFor(() => expect(container.textContent).toContain("비워 둘 수 있는 대화가 없습니다"));
 
     await act(async () => {
@@ -1827,14 +1667,12 @@ describe("opening a conversation while another is mid-turn", () => {
     await submitChatMessage(container, "아직 답하는 중");
     await waitFor(() => expect(api.chatSend).toHaveBeenCalled());
 
-    // The rail's first action stays live: the focused tile's turn is not the
-    // window's, and it used to switch New Chat off for every tile at once.
+    // A busy tile must not disable the window's new-conversation action.
     const newChat = container.querySelector('[data-testid="sidebar-new-chat"]') as HTMLButtonElement;
     expect(newChat.disabled).toBe(false);
     await act(async () => { fireEvent.click(newChat); });
 
-    // The busy tile keeps its conversation and its turn; the new one is a
-    // group of its own beside it, and nothing was released to make room.
+    // Create a separate group without releasing the busy conversation.
     await waitFor(() => expect(collectTiles(container)).toHaveLength(2));
     expect(collectTiles(container).map((tile) => tile.chatGroupId)).toContain(MAIN_CHAT_GROUP_ID);
     expect(mountedTileIds(container)).toContain(MAIN_CHAT_GROUP_ID);
@@ -1877,7 +1715,6 @@ describe("opening a conversation while another is mid-turn", () => {
   });
 
   describe("New Chat during a turn starts under the project it was asked for (#2348)", () => {
-    // The busy conversation lives in /proj-a; /proj-b is another folder.
     const projectWindow = {
       hasApiKey: true,
       nativeContextMenu: true,
@@ -1898,11 +1735,9 @@ describe("opening a conversation while another is mid-turn", () => {
       },
     };
 
-    /** A window mid-turn in /proj-a, with the Projects tab showing its folders. */
     async function busyInProjectA() {
       const rendered = await renderApp(projectWindow as never);
-      // A group adopted beside the busy one gets a loop of its own, which holds
-      // no conversation yet — the mock otherwise hands every group main's.
+      // New groups start with empty loops rather than inheriting primary history.
       const groupImpl = rendered.api.chatGroup.getMockImplementation()!;
       rendered.api.chatGroup.mockImplementation((id: string) => {
         const made = groupImpl(id);
@@ -1926,15 +1761,10 @@ describe("opening a conversation while another is mid-turn", () => {
       return { ...rendered, pendingSend };
     }
 
-    /** The project the last `chatNew` asked for, or "(unscoped)" when none was. */
     const lastChatNewRoot = (api: MockAveApi) =>
       (api.chatNew.mock.calls.at(-1)?.[0] as { projectRoot?: string } | undefined)?.projectRoot ?? "(unscoped)";
 
-    /**
-     * The tile adopted beside the busy one starts its conversation under
-     * `expected`. Waits on that very state, so a wrong project reports the
-     * project it got rather than a timeout.
-     */
+    // Wait on the adopted tile's actual project so mismatches report the observed value.
     async function expectAdoptedTileProject(
       rendered: Awaited<ReturnType<typeof busyInProjectA>>,
       expected: string,
@@ -1976,18 +1806,14 @@ describe("opening a conversation while another is mid-turn", () => {
       rendered.api.chatNew.mockResolvedValueOnce({ ok: false, error: "project-not-allowed" } as never);
       await act(async () => { fireEvent.click(folderRow(rendered.container)); });
       await expectAdoptedTileProject(rendered, "/proj-b");
-      // The refusal is said out loud, not read as a blank success.
       await waitFor(() => expect(rendered.container.textContent).toContain("허용되지 않은 프로젝트입니다."));
-      // The adopted tile holds no conversation; the next New Chat must not
-      // inherit the folder the refused one asked for.
+      // A refused adoption must not seed the project of the next new conversation.
       rendered.api.chatNew.mockClear();
       await act(async () => { fireEvent.click(railNewChat(rendered.container)); });
       await waitFor(() => expect(lastChatNewRoot(rendered.api)).toBe("/proj-a"));
     });
 
     it("a New Chat refused at the ceiling leaves the window on the project it was on", async () => {
-      // Every group's loop holds a /proj-a conversation (the mock hands each
-      // group main's history), and every tile is mid-turn.
       const rendered = await renderApp(projectWindow as never);
       const pending: Array<{ resolve: (value: { ok: true }) => void }> = [];
       rendered.api.chatSend.mockImplementation(async () => {
@@ -2015,8 +1841,6 @@ describe("opening a conversation while another is mid-turn", () => {
       });
       rendered.api.chatSend.mockReset();
       rendered.api.chatNew.mockClear();
-      // The turns are over; the focused tile starts the next conversation in
-      // place, under the project the window is actually on.
       await act(async () => { fireEvent.click(railNewChat(rendered.container)); });
       await waitFor(() => expect(lastChatNewRoot(rendered.api)).toBe("/proj-a"));
     });
@@ -2035,8 +1859,6 @@ describe("opening a conversation while another is mid-turn", () => {
 
       await act(async () => { fireEvent.click(folderRow(rendered.container)); });
       await waitFor(() => expect(rendered.container.textContent).toContain("허용되지 않은 프로젝트입니다."));
-      // The loop still holds the /proj-a conversation, so the tile still shows
-      // it, and the window did not move to the folder main refused.
       expect(rendered.container.textContent).toContain("hello");
       rendered.api.chatNew.mockClear();
       await act(async () => { fireEvent.click(railNewChat(rendered.container)); });
@@ -2055,8 +1877,6 @@ describe("opening a conversation while another is mid-turn", () => {
       ],
     });
     const { api, container } = rendered;
-    // Each group gets a chatNew of its own, so the test can tell WHICH loop
-    // started a fresh conversation.
     const groupImpl = api.chatGroup.getMockImplementation()!;
     const groupChatNew = vi.fn(async () => ({ ok: true }));
     api.chatGroup.mockImplementation((id: string) => {
@@ -2085,8 +1905,6 @@ describe("opening a conversation while another is mid-turn", () => {
     await act(async () => { fireEvent.contextMenu(row); });
     await act(async () => { rendered.chooseNativeMenuCommand("conversation.delete"); });
 
-    // The tile that held it starts fresh; the busy focused tile is untouched
-    // and nothing is opened beside it.
     await waitFor(() => expect(groupChatNew).toHaveBeenCalledTimes(1));
     expect(api.chatNew).not.toHaveBeenCalled();
     expect(collectTiles(container)).toHaveLength(2);
@@ -2105,12 +1923,9 @@ describe("opening a conversation while another is mid-turn", () => {
       workspaceRoots: [{ path: "/ws", isDefault: true }, { path: "/proj-a", isDefault: false }],
       sessions: [
         { id: MOCK_DEFAULT_SESSION_ID, title: "주 대화", modifiedAt: new Date(2, 0, 2).toISOString() },
-        // Listed without its folder so the Chats tab shows the row; the
-        // tile's own project comes from its loop's history below.
+        // Omit the listed folder to show the row; use loop history as the tile's project authority.
         { id: `session-${OTHER_GROUP}`, title: "옆 타일 대화", modifiedAt: new Date(2, 0, 1).toISOString() },
       ],
-      // Every group's loop reads this history under its own id, so the tile
-      // beside main holds a /proj-a conversation.
       history: {
         sessionId: MOCK_DEFAULT_SESSION_ID,
         projectRoot: "/proj-a",
@@ -2121,7 +1936,6 @@ describe("opening a conversation while another is mid-turn", () => {
     const { api, container } = rendered;
     const groupImpl = api.chatGroup.getMockImplementation()!;
     const groupChatNew = vi.fn(async (_project?: { projectRoot?: string }) => ({ ok: true }) as { ok: boolean; error?: string });
-    // The folder has left the workspace: main refuses a conversation there.
     groupChatNew.mockResolvedValueOnce({ ok: false, error: "project-not-allowed" });
     api.chatGroup.mockImplementation((id: string) => {
       const made = groupImpl(id) as ReturnType<typeof groupImpl> & { chatNew?: unknown };
@@ -2140,8 +1954,7 @@ describe("opening a conversation while another is mid-turn", () => {
     await act(async () => { fireEvent.contextMenu(row); });
     await act(async () => { rendered.chooseNativeMenuCommand("conversation.delete"); });
 
-    // Refused under its folder, said out loud, then started unscoped: the tile
-    // does not stay on a session that no longer exists.
+    // If the original project is refused, report it and start unscoped rather than retain a deleted session.
     await waitFor(() => expect(groupChatNew).toHaveBeenCalledTimes(2));
     expect(groupChatNew.mock.calls[0]?.[0]).toMatchObject({ projectRoot: "/proj-a" });
     expect(groupChatNew.mock.calls[1]?.[0]).toBeUndefined();
@@ -2161,10 +1974,7 @@ describe("opening a conversation while another is mid-turn", () => {
     expect(row.disabled).toBe(false);
     await act(async () => { fireEvent.click(row); });
 
-    // The tile already holds it, so there is nothing to load and nothing to
-    // adopt — asking main would only earn a refusal for a conversation the
-    // window is already showing. This is the click that used to dead-end from
-    // a plugin panel, where no row counts as active.
+    // Already-held conversations need no host reload or adoption; navigation must work from non-chat views.
     expect(api.chatSessionResume).not.toHaveBeenCalled();
     expect(collectTiles(container)).toHaveLength(1);
     expect(collectTiles(container)[0]!.chatGroupId).toBe(MAIN_CHAT_GROUP_ID);
@@ -2188,9 +1998,7 @@ describe("opening a conversation while another is mid-turn", () => {
       await act(async () => { fireEvent.click(await rowFor(container, OTHER_SESSION)); });
       await waitFor(() => expect(mountedTileIds(container).length).toBe(2));
 
-      // The primary tile now holds its conversation without drawing it. A card
-      // for that conversation must not be handed to it: `display:none` would
-      // swallow the one surface the parked turn can be answered from.
+      // Hidden conversations cannot draw approval; retain a reachable route to the parked request.
       await act(async () => {
         emitOverlayShow({
           id: "app:invoices:hidden",
@@ -2233,8 +2041,6 @@ describe("opening a conversation while another is mid-turn", () => {
       await submitChatMessage(container, "아직 답하는 중");
       await waitFor(() => expect(api.chatSend).toHaveBeenCalled());
 
-      // The gate arrives while the tile is still drawn, so the tile takes it —
-      // it is the only surface that ever receives it.
       await act(async () => {
         emitAskUserQuestion({
           id: "ask-before-hide",
@@ -2255,9 +2061,7 @@ describe("opening a conversation while another is mid-turn", () => {
         `[data-testid="pane-cell:${MAIN_CHAT_GROUP_ID}"]`,
       )!;
       expect(hiddenTile.getAttribute("data-hidden")).toBe("true");
-      // The question is that conversation's, so it stays with it — not drawn
-      // into a surface nobody can see, not handed to the tile that is. The
-      // way to it is the row, which says something is waiting there.
+      // Hidden questions retain their origin and mark the navigation row that restores them.
       await waitFor(() => {
         expect(container.querySelector(`[data-testid="sidebar-pending-answer-${MOCK_DEFAULT_SESSION_ID}"]`)).not.toBeNull();
       });
@@ -2287,10 +2091,7 @@ describe("opening a conversation while another is mid-turn", () => {
       await act(async () => { fireEvent.click(await rowFor(container, OTHER_SESSION)); });
       await waitFor(() => expect(mountedTileIds(container).length).toBe(2));
 
-      // The turn that is still running is the reason the tile stays mounted —
-      // and a running turn parks on approvals. The tile keeps the request but
-      // draws nothing inside `display:none`; the row's dot is what says the
-      // turn is waiting, and opening the row is what brings the card back.
+      // Keep parked approvals with hidden running turns and expose their waiting state in navigation.
       await act(async () => {
         emitApproval({
           id: "req-hidden-tile",
@@ -2337,17 +2138,14 @@ describe("opening a conversation while another is mid-turn", () => {
     await waitFor(() => expect(api.chatSend).toHaveBeenCalled());
     api.chatSessionResume.mockClear();
 
-    // A centre drop asks the tile to SHOW this conversation, which is the one
-    // thing a mid-turn tile cannot do — the same refusal the sidebar hit.
+    // Center drops cannot replace the session under a running loop.
     const frame = second!.element.querySelector('[data-testid="pane"]')!;
     vi.spyOn(frame, "getBoundingClientRect").mockReturnValue({
       left: 0, top: 0, right: 800, bottom: 600, width: 800, height: 600, x: 0, y: 0,
       toJSON: () => ({}),
     } as DOMRect);
-    // jsdom drops the pointer coordinates a drag carries, and the coordinates
-    // ARE the gesture — so they are set on the event itself.
+    // Set drag coordinates explicitly because the DOM test environment drops them.
     const drop = createEvent.drop(frame, {
-      // `files` too: the window's file-drop guard reads it on every drop.
       dataTransfer: {
         types: [CHAT_SESSION_DRAG_TYPE], getData: () => OTHER_SESSION, dropEffect: "none", files: [],
       },
@@ -2375,8 +2173,6 @@ describe("opening a conversation while another is mid-turn", () => {
     });
 
     const tiles = await splitIntoNTiles(container, MAX_CHAT_GROUPS);
-    // Two conversations mid-turn — the primary, which the click will target,
-    // and one neighbour. The other two are idle and can be set aside.
     await focusTile(tiles[1]!);
     await submitChatMessage(tiles[1]!.element, "옆 타일");
     await focusTile(tiles[0]!);
@@ -2387,16 +2183,13 @@ describe("opening a conversation while another is mid-turn", () => {
 
     const released = releasedGroupIds();
     expect(released).toHaveLength(1);
-    // Not the primary, not the busy neighbour, and not the group just created
-    // for the incoming conversation — releasing any of those either aborts a
-    // turn or throws away the tile that was just made.
+    // Make room only by releasing idle tiles, never busy or newly adopted groups.
     expect(released[0]).not.toBe(MAIN_CHAT_GROUP_ID);
     expect(released[0]).not.toBe(tiles[1]!.chatGroupId);
     expect([tiles[2]!.chatGroupId, tiles[3]!.chatGroupId]).toContain(released[0]);
     expect(mountedTileIds(container)).not.toContain(released[0]);
     expect(mountedTileIds(container)).toHaveLength(MAX_CHAT_GROUPS);
-    // Making room costs a tile the user did not ask to lose, from a click that
-    // looked like plain navigation.
+    // Surface the cost when navigation must displace an existing tile.
     await waitFor(() => expect(container.textContent).toContain("자리를 만들기 위해"));
 
     await act(async () => {
@@ -2418,8 +2211,7 @@ describe("notices with two tiles", () => {
       emitNotificationToast({ kind: "ask-user", title: "질문", body: "창 전체에 한 번", contextRef: { questionId: "q-1" } });
     });
 
-    // A host notification is the window's news. Two tiles, one toast — and
-    // that one in the strip, not above either composer.
+    // Window notifications render once regardless of tile count.
     await waitFor(() => expect(toasts(container)).toHaveLength(1));
     expect(toasts(strip(container))).toHaveLength(1);
     expect(container.querySelectorAll('[data-testid="composer-toast-dock"]')).toHaveLength(0);
@@ -2427,7 +2219,6 @@ describe("notices with two tiles", () => {
 
   it("draws a provider fallback in the tile whose turn swapped, focused or not", async () => {
     const { container, emitChatFallback } = await renderApp({ hasApiKey: true });
-    // Focus follows a split, so the FIRST tile is the one not focused.
     const [first, second] = await splitIntoTwoTiles(container);
 
     await act(async () => {
@@ -2439,9 +2230,7 @@ describe("notices with two tiles", () => {
     expect(toasts(strip(container))).toHaveLength(0);
     expect(toasts(container)).toHaveLength(1);
 
-    // The notice takes a row of its own above the selector/runtime strip: an
-    // unpositioned sibling BEFORE the wrapper that holds the project selector,
-    // so it pushes that strip down instead of painting over it.
+    // Notices occupy their own flow row so they cannot cover the selector strip.
     const toastRow = first!.element.querySelector<HTMLElement>('[data-testid="composer-toast-dock"]')!;
     const selectorSlot = first!.element.querySelector<HTMLElement>('[data-testid="composer-project-selector-slot"]')!;
     expect(selectorSlot).not.toBeNull();
@@ -2467,9 +2256,7 @@ describe("notices with two tiles", () => {
 
     const notices = strip(container);
     await waitFor(() => expect(notices.querySelector('[data-testid="marketplace-announcement-banner"]')).not.toBeNull());
-    // In flow: an unpositioned flex sibling of the route canvas, before it, so
-    // its height comes out of the canvas instead of covering the top-right
-    // corner every pane keeps for its own floating lane.
+    // Keep window notices before the route canvas in flow, clear of pane floating lanes.
     expect(notices.className).not.toMatch(/\b(absolute|fixed)\b/);
     const canvas = container.querySelector<HTMLElement>(`[data-testid="${TEST_IDS.routeCanvas}"]`)!;
     expect(notices.parentElement).toBe(canvas.parentElement);

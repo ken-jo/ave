@@ -157,9 +157,8 @@ export function UsageDashboard({
     />
   );
 
-  // Workspace statistics (relocated from the former General tab) sit at the top
-  // of the Usage surface and stay visible regardless of the usage-summary
-  // fetch state, since they own their own loading via useWorkspaceStats.
+  // Workspace statistics (relocated from the former General tab) sit at the top of the Usage surface and stay visible
+  // regardless of the usage-summary fetch state, since they own their own loading via useWorkspaceStats.
   const workspaceStats = <WorkspaceStatsSection api={api} onNavigate={onNavigate} />;
 
   if (loading) {

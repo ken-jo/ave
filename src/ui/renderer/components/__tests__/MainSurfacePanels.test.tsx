@@ -1,8 +1,5 @@
 // @vitest-environment jsdom
-/**
- * Terminal and web panes in the main area: the store that owns their records
- * and the pane body each kind draws.
- */
+/** Terminal and web panes in the main area: the store that owns their records and the pane body each kind draws. */
 import "../../../../../test/renderer/setup.js";
 import { act, fireEvent, render, renderHook, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";

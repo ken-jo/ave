@@ -17,14 +17,13 @@ import {
 } from "../chat-group-session-registry.js";
 import type { ApprovalRequest } from "../../types.js";
 
-// `entries` identity is the store's change signal — useChatState owns it as
-// state and replaces it only when the transcript actually changes. A fresh
-// array literal per render would be a caller breaking that contract.
+// `entries` identity is the store's change signal — useChatState owns it as state and replaces it only when the transcript
+// actually changes. A fresh array literal per render would be a caller breaking that contract.
 const NO_ENTRIES: readonly ChatEntry[] = [];
 // The question queue follows the same reference-identity contract as entries.
 const NO_ASK_QUESTIONS: readonly [] = [];
-// Same contract for the project summary: it is `useState` in the tile, so its
-// identity changes only when the session's project does.
+// Same contract for the project summary: it is `useState` in the tile, so its identity changes only when the session's
+// project does.
 const NO_PROJECT: SessionProjectSummary = {};
 
 const NO_CHILDREN: ReadonlySet<string> = new Set();
@@ -109,8 +108,8 @@ describe("ChatGroupSessionRegistry", () => {
 
 describe("useChatGroupSession", () => {
   it("reports a quiet stand-in before any tile has published", () => {
-    // First paint happens before the publishing effect runs. Reporting
-    // "streaming" here would leave the window's controls stuck disabled.
+    // First paint happens before the publishing effect runs. Reporting "streaming" here would leave the window's controls
+    // stuck disabled.
     const registry = new ChatGroupSessionRegistry();
 
     const { result } = renderHook(() => useChatGroupSession(registry, "main"));
@@ -234,9 +233,8 @@ describe("overlayCardTile", () => {
   const tiles = [tile("main", "s-1"), tile("group-2", "s-2")];
 
   it("sends a card to the tile holding the conversation it came from", () => {
-    // Which tile is focused does not enter into it: the card's action
-    // continues the conversation it was raised in, which may be sitting
-    // unfocused beside the one the user is typing in.
+    // Which tile is focused does not enter into it: the card's action continues the conversation it was raised in, which may
+    // be sitting unfocused beside the one the user is typing in.
     expect(overlayCardTile(tiles, "main", { originSessionId: "s-2" })).toEqual({
       chatGroupId: "group-2",
       orphaned: false,
@@ -248,9 +246,8 @@ describe("overlayCardTile", () => {
   });
 
   it("draws a card with no conversation behind it in the focused pane, and follows focus", () => {
-    // The window's queue of unowned cards has one reader, the user, who is at
-    // the focused pane. Read at render time, so a focus move moves the card:
-    // one card, where the user is, however many panes are open.
+    // The window's queue of unowned cards has one reader, the user, who is at the focused pane. Read at render time, so a
+    // focus move moves the card: one card, where the user is, however many panes are open.
     expect(overlayCardTile(tiles, "group-2", {})).toEqual({ chatGroupId: "group-2", orphaned: false });
     expect(overlayCardTile(tiles, "main", {})).toEqual({ chatGroupId: "main", orphaned: false });
   });
@@ -270,8 +267,8 @@ describe("overlayCardTile", () => {
       chatGroupId: "main",
       orphaned: false,
     });
-    // The routed pane still draws its own conversation's question — in the
-    // routed frame's settle slot, not over a composer nobody sees.
+    // The routed pane still draws its own conversation's question — in the routed frame's settle slot, not over a composer
+    // nobody sees.
     expect(tileDrawsSession({ tiles: routed, sessionId: "s-1", owned: true, focused: true })).toBe(true);
   });
 
@@ -286,15 +283,14 @@ describe("overlayCardTile", () => {
       chatGroupId: null,
       orphaned: true,
     });
-    // Focus resting on a pane the tree is not drawing draws nowhere the user
-    // can see; the card waits until a drawn pane is focused.
+    // Focus resting on a pane the tree is not drawing draws nowhere the user can see; the card waits until a drawn pane is
+    // focused.
     expect(overlayCardTile(hidden, "group-2", {})).toEqual({
       chatGroupId: null,
       orphaned: false,
     });
-    // The hidden tile keeps its own question; the focused tile never adopts a
-    // session some tile holds, drawn or not — or the card would be drawn twice
-    // once the hidden pane came back, and only one copy could be answered.
+    // The hidden tile keeps its own question; the focused tile never adopts a session some tile holds, drawn or not — or the
+    // card would be drawn twice once the hidden pane came back, and only one copy could be answered.
     expect(tileDrawsSession({ tiles: hidden, sessionId: "s-2", owned: false, focused: true })).toBe(false);
     expect(tileDrawsSession({ tiles: hidden, sessionId: "s-2", owned: true, focused: false })).toBe(true);
   });
@@ -307,8 +303,8 @@ describe("overlayCardTile", () => {
   });
 
   it("marks an orphaned card as having no origin on screen", () => {
-    // Its conversation is gone; nothing on screen can run its action, and the
-    // selector says so rather than drawing an action that would run elsewhere.
+    // Its conversation is gone; nothing on screen can run its action, and the selector says so rather than drawing an action
+    // that would run elsewhere.
     expect(overlayCardTile(tiles, "main", { originSessionId: "s-gone" })).toEqual({
       chatGroupId: null,
       orphaned: true,
@@ -321,8 +317,8 @@ describe("tileDrawsSession", () => {
   const tiles = [tile("main", "s-main"), tile("group-2", "s-other")];
 
   it("adopts a routine's headless session into the focused tile, and only that tile", () => {
-    // A routine turn runs in a session no tile is showing. Its question has to
-    // land somewhere or the gate waits out its timeout against a blank window.
+    // A routine turn runs in a session no tile is showing. Its question has to land somewhere or the gate waits out its
+    // timeout against a blank window.
     const routineSession = "s-routine";
     expect(tileDrawsSession({ tiles, sessionId: routineSession, owned: false, focused: true })).toBe(true);
     expect(tileDrawsSession({ tiles, sessionId: routineSession, owned: false, focused: false })).toBe(false);
@@ -349,8 +345,7 @@ describe("tileDrawsSession", () => {
   });
 
   it("adopts a background child whose parent tile has since switched conversations", () => {
-    // The switch cleared the parent's spawn list, so the child is no longer
-    // owned by anyone and no tile holds its session.
+    // The switch cleared the parent's spawn list, so the child is no longer owned by anyone and no tile holds its session.
     expect(tileDrawsSession({ tiles, sessionId: "s-background-child", owned: false, focused: true })).toBe(true);
   });
 
@@ -370,8 +365,8 @@ describe("pendingAnswers", () => {
   const empty = { approvals: [], deferredSessionIds: [], overlayCards: [], sessions, isClaimed: () => false };
 
   it("marks the row, and no control, for a card drawn where the user is", () => {
-    // Over a drawn pane's composer: the conversation is interrupted, so its
-    // row says so — but nothing is hidden, so no control carries a dot.
+    // Over a drawn pane's composer: the conversation is interrupted, so its row says so — but nothing is hidden, so no control
+    // carries a dot.
     const tiles = [tile("main", "s-main", { askQuestions: [question("q1", "s-main")] })];
     const result = pendingAnswers({ ...empty, tiles, approvals: [approval("a1", { sessionId: "s-main" })] });
     expect([...result.sessionIds]).toEqual(["s-main"]);
@@ -496,8 +491,8 @@ describe("pruneGroupRequests — a request outlives neither its read nor its gro
   });
 
   it("drops the request of a group that closed before it hydrated", () => {
-    // group-2 closed without its tile ever holding a conversation — before it
-    // published, or after main refused its chatNew. Nothing will read it.
+    // group-2 closed without its tile ever holding a conversation — before it published, or after main refused its chatNew.
+    // Nothing will read it.
     const live = new Set(["main", "group-3"]);
     expect([...pruneGroupRequests(requests, live, [tile("group-3", "")]).keys()]).toEqual(["group-3"]);
   });

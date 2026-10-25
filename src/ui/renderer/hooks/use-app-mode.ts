@@ -21,22 +21,8 @@ export interface UseAppModeResult {
   setSidePanelOpen: Dispatch<SetStateAction<boolean>>;
 }
 
-/**
- * Workspace-mode (Chat / Work) state + its coupled shell layout side-effects.
- *
- * Extracted verbatim from App.tsx. Owns:
- *   - `appMode` (SOLE authority for chat-vs-work shell layout), seeded before first
- *     paint from the persisted mode so the shell renders the right layout on
- *     frame 0. `setAppMode` persists to host settings, guarded against no-op
- *     writes (#1312 render-loop guard).
- *   - `sidebarCollapsed` (owned by the shell; per-transition default coupled to
- *     appMode, NOT a lock).
- *   - the appMode-transition effects: rail-width coupling and OS-window
- *     resizeForMode (mount-skip via ref).
- *
- * The IPC bridge (`api.window?.resizeForMode`) is optional (absent in jsdom /
- * non-Electron) and guarded accordingly.
- */
+/** Seed app mode before paint, guard no-op writes, and treat sidebar defaults as mode-transition choices; optional window
+ * resize IPC may be absent. */
 export function useAppMode(api: Api): UseAppModeResult {
   // Seed from the persisted workspace mode injected by the main process
   // (preload's `window.__aveInitialAppMode`). Reading it at initializer time
@@ -53,9 +39,8 @@ export function useAppMode(api: Api): UseAppModeResult {
   // default, NOT a lock.
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => readInitialAppMode() === "chat");
 
-  // The right-docked work panel (ChatSidePanel), toggled from the title bar.
-  // Chat-mode only affordance: opening it widens the OS window (resizeForSidePanel)
-  // and closing it restores the normal chat bounds.
+  // The right-docked work panel (ChatSidePanel), toggled from the title bar. Chat-mode only affordance: opening it widens
+  // the OS window (resizeForSidePanel) and closing it restores the normal chat bounds.
   const [sidePanelOpen, setSidePanelOpen] = useState(false);
   // Persist appMode to host settings and update local state. Guarded against
   // no-op writes (same mode) so a re-render or repeated toggle never fires a
@@ -64,21 +49,13 @@ export function useAppMode(api: Api): UseAppModeResult {
   const setAppMode = useCallback((next: AppMode) => {
     setAppModeState((prev) => {
       if (prev === next) return prev;
-      // Persist the new mode so the next boot seeds from it. Fire-and-forget:
-      // a failed write only means the next launch falls back to the previous
-      // saved value — never blocks the toggle or surfaces an error toast.
+      // Persist the new mode so the next boot seeds from it. Fire-and-forget: a failed write only means the next launch falls
+      // back to the previous saved value — never blocks the toggle or surfaces an error toast.
       void api.updateSettings({ system: { appMode: next } });
       return next;
     });
   }, [api]);
-  // appMode drives the rail's default width on each mode transition: work
-  // mode expands it (wide working layout — inline views need the room), chat
-  // mode collapses it to the focused icon rail. This
-  // makes toggling visibly widen/narrow the shell. It is a per-transition
-  // default, NOT a lock — the user may still collapse/expand manually within a
-  // mode without it snapping back until the next mode switch. On the initial
-  // mount this re-asserts the already-seeded value (a no-op render), so it
-  // costs nothing and keeps the transition semantics in one place.
+  // Mode changes set a sidebar default, not a lock; manual collapse/expand remains until the next transition.
   useEffect(() => {
     setSidebarCollapsed(appMode === "chat");
   }, [appMode]);

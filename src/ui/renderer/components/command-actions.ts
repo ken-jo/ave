@@ -25,10 +25,8 @@ export interface WorkspaceLauncherItem {
   labelKey: string;
   /** Human-readable shortcut hint shown on the right of the launcher row. */
   shortcutHint: string;
-  /**
-   * Structured shortcut binding matched against KeyboardEvent. `null` means the
-   * hint is displayed but no key is bound (no matching accelerator).
-   */
+  /** Structured shortcut binding matched against KeyboardEvent. `null` means the hint is displayed but no key is bound (no
+   * matching accelerator). */
   shortcut: WorkspaceLauncherShortcut | null;
   icon: LucideIcon;
 }
@@ -123,11 +121,8 @@ export function matchesLauncherShortcut(
   return !event.metaKey && !event.ctrlKey;
 }
 
-/**
- * Build the default quick-action list from app state.
- * Kept separate from SlashPicker so App can build the actions without pulling
- * the picker — and its menu bridge — into the startup path.
- */
+/** Build the default quick-action list from app state. Kept separate from SlashPicker so App can build the actions without
+ * pulling the picker — and its menu bridge — into the startup path. */
 export function buildQuickActions({
   setActiveView,
   openSettings,

@@ -1,11 +1,4 @@
-/**
- * Self-test for the retired-name gate.
- *
- * The gate keeps a retired internal product name out of every tracked file's
- * content and path. A gate nobody has watched fail is a gate nobody can trust,
- * so this pins each outcome against throwaway Git repositories. Like the gate,
- * it never spells the name: every positive control is built from RETIRED_NAME.
- */
+// Build positive controls from RETIRED_NAME without spelling the forbidden name.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -28,7 +21,6 @@ const lower = RETIRED_NAME;
 const upper = RETIRED_NAME.toUpperCase();
 const capitalized = upper[0] + lower.slice(1);
 
-/** A repository whose index tracks `tracked`; `untracked` files are written but never added. */
 function fixture(tracked, untracked = {}) {
   const root = mkdtempSync(join(tmpdir(), "ave-retired-name-"));
   const env = gitFixtureEnv(root);
@@ -45,14 +37,12 @@ function fixture(tracked, untracked = {}) {
   return { root, cleanup: () => rmSync(root, { recursive: true, force: true }) };
 }
 
-// The name itself, pinned without spelling it: a changed code point fails here
-// even though every other test builds its controls from the constant.
+// Pin code points independently of controls derived from the same constant.
 test("pins the retired name by its sha256 and length", () => {
   assert.equal(RETIRED_NAME.length, 4);
   assert.equal(createHash("sha256").update(RETIRED_NAME).digest("hex"), "7899e2167ac27be58f7f4ed7adc44d7e2502353cc470275c3ad031f61145acb0");
 });
 
-// The pattern is pinned too, so a loosened branch or a stray `i` flag fails here.
 test("pins the pattern by the sha256 of its source and its flags", () => {
   assert.equal(RETIRED_NAME_PATTERN.flags, "u");
   assert.equal(createHash("sha256").update(RETIRED_NAME_PATTERN.source).digest("hex"), "7b780cc632a81f66abba9aa6caf3a574890604a17bf2959f3a8c9ba7d84a8c44");
@@ -154,8 +144,7 @@ test("keeps the real allowlist empty", () => {
   assert.deepEqual(ALLOWLIST, []);
 });
 
-// Retired plugin ids. Like the product name, the controls are built from the
-// list's words so this file never spells an id.
+// Derive retired plugin controls from the ID list without spelling forbidden IDs.
 const cap = (word) => word[0].toUpperCase() + word.slice(1);
 
 test("lists each retired id once, as lower-case words", () => {

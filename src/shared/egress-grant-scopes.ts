@@ -1,19 +1,5 @@
-/**
- * How long a person's allow for a sandboxed process's network destination
- * lasts (design B and F, owner 2026-10-16). Shared by main (the grant store
- * and the approval gate) and the renderer (the ask card, the terminal tab's
- * banner and Settings).
- *
- *   - `once`: this tool call only; for a terminal, this one connection.
- *   - `conversation`: this conversation, until the app restarts (shell tool calls).
- *   - `tab`: this terminal tab, until its shell exits (workspace terminals).
- *   - `workspace`: this working directory, until revoked in Settings (shell tool calls).
- *   - `always`: every workspace, until revoked in Settings.
- *
- * A grant covers only the network class shown at approval. A persistent
- * grant also records its origin (a shell tool call or workspace terminal)
- * and only ever covers that origin.
- */
+/** Grant lifetimes differ by origin: once means one shell call or one terminal connection; conversation/tab end with restart/shell exit.
+ * Workspace and always persist until revoked; every grant binds the approved network class, and persistent grants also bind shell versus terminal origin. */
 import type { EgressGrantScope } from "./sandbox-capability-info.js";
 
 export type { EgressGrantScope };
@@ -21,13 +7,8 @@ export type { EgressGrantScope };
 /** Every scope a grant can name. */
 const EGRESS_GRANT_SCOPES: readonly EgressGrantScope[] = ["once", "conversation", "tab", "workspace", "always"];
 
-/**
- * What kind of sandboxed process an ask is for, and so which ladder of scopes
- * it offers, narrowest first. A shell tool call's grant can last its
- * conversation or its working directory; a terminal's its tab. Terminals have
- * no "This workspace": every tab is anchored to the app's one default
- * workspace, which agent shell calls share, so it would name no tab's own work.
- */
+/** What kind of sandboxed process an ask is for, and so which ladder of scopes it offers, narrowest first. A shell tool call's grant can last its conversation or its working directory;
+ * a terminal's its tab. Terminals have no "This workspace": every tab is anchored to the app's one default workspace, which agent shell calls share, so it would name no tab's own work. */
 export type EgressAskOrigin = "shell" | "terminal";
 
 export const EGRESS_GRANT_SCOPE_LADDERS: Readonly<Record<EgressAskOrigin, readonly EgressGrantScope[]>> = {

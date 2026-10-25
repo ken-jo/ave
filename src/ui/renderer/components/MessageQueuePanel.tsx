@@ -1,15 +1,4 @@
-/**
- * MessageQueuePanel — the queued-turn strip that sits directly above the
- * composer, next to SessionTasksPanel.
- *
- * Colour contract: the panel's hue is `info`, and every foreground it paints
- * comes from a foreground token (`text-info`, `text-info-foreground`,
- * `text-foreground`, `text-muted-foreground`). It must never reach for
- * `text-accent` / `border-accent` — `--accent` is a SURFACE token (a pale
- * tint in the light bundles), so using it as a text or border colour makes the
- * control vanish against the panel. That is exactly how the per-row "즉시"
- * action and the selected-row outline disappeared.
- */
+/** Use info foreground tokens; accent is a surface tint and is unreadable as text or a border on light themes. */
 import { useSyncExternalStore, useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { ChevronDown, ChevronRight, MessageSquarePlus, ArrowUp, Check, X, Pencil } from "lucide-react";
 import { Badge } from "../../../components/ui/badge.js";
@@ -21,11 +10,8 @@ interface MessageQueuePanelProps {
   store: MessageQueueStore;
 
   onSendNow: (item: MessageQueueItem) => void;
-  /**
-   * The turn is parked on an approval. Rows drain at the next tool boundary,
-   * and a parked turn reaches none until the approval is answered — so the
-   * strip says that instead of promising the next break-point.
-   */
+  /** The turn is parked on an approval. Rows drain at the next tool boundary, and a parked turn reaches none until the
+   * approval is answered — so the strip says that instead of promising the next break-point. */
   heldByApproval: boolean;
 }
 
@@ -175,7 +161,6 @@ function MessageQueueRow({
   const commit = useCallback(() => {
     const next = draft.trim();
     if (next.length === 0) {
-
       setEditing(false);
       onRemove();
       return;
@@ -307,10 +292,8 @@ function MessageQueueRow({
           <button
             type="button"
             onClick={onSendNow}
-            /* `text-info` at 10px only reaches 4.1:1 on the panel — under AA.
-               The label rests in the readable foreground and the panel's hue
-               carries the hover/focus state instead, where it is decoration
-               rather than the thing you have to read. */
+            /** `text-info` at 10px only reaches 4.1:1 on the panel — under AA. The label rests in the readable foreground and the
+             * panel's hue carries the hover/focus state instead, where it is decoration rather than the thing you have to read. */
             className="inline-flex h-5 items-center gap-0.5 rounded border border-transparent px-1.5 text-[10px] font-medium text-foreground transition-colors hover:border-info/(--opacity-medium) hover:bg-info/(--opacity-subtle) hover:text-info motion-reduce:transition-none"
             aria-label={t("messageQueuePanel.sendNowAriaLabel")}
             title={t("messageQueuePanel.sendNowTitle")}

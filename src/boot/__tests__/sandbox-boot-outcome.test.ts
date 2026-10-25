@@ -1,17 +1,4 @@
-/**
- * What the boot sandbox gate tells the person using the app.
- *
- * The runtime capability SOT cannot answer this. A gate that degrades never
- * publishes a capability, so `detectSandboxCapability()` returns the same
- * kind:"none" / "no OS sandbox configured" it returns when the sandbox was
- * never turned on. Those are different facts — one is a setting the user chose,
- * the other is a setting the user chose that did not take effect — and before
- * this snapshot existed the difference lived only in the boot log, which a
- * packaged app's user cannot read.
- *
- * So each case below asserts BOTH halves: that the runtime SOT is still
- * indistinguishable, and that the boot outcome distinguishes it anyway.
- */
+/** Boot outcome distinguishes never-enabled isolation from failed activation even when both publish no runtime capability. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import {
@@ -24,6 +11,7 @@ const h = vi.hoisted(() => ({
   subscribe: vi.fn(),
   checkDeps: vi.fn(),
   isProbeError: vi.fn(),
+  isMacProbeError: vi.fn(),
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
@@ -35,16 +23,13 @@ vi.mock("../../lib/logger.js", () => ({
   createLogger: vi.fn(() => h.logger),
 }));
 
-// A Windows host without Microsoft Execution Containers: the srt-win degrade
-// this suite pins is the row of the Windows plan where neither substrate runs.
+// Use a Windows host with neither supported confinement substrate available.
 vi.mock("../../permissions/mxc-windows.js", () => ({
   detectHostMxcPrerequisites: async () => ({ state: "unavailable", reason: "tier-unsupported", windowsBuild: null, detail: "test host" }),
 }));
 
 vi.mock("../../permissions/asrt-sandbox.js", async () => {
-  // The boot step sweeps both private roots and creates the HOME root, so they
-  // live under a directory this file owns in the OS temp dir — never the real
-  // AVE_HOME — whose parent can be created.
+  // Boot sweeps private roots; use an owned temporary home.
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
   const { mkdirSync } = await import("node:fs");
@@ -62,6 +47,7 @@ vi.mock("../../permissions/asrt-sandbox.js", async () => {
     useAppOwnedSandboxTempRoot: () => "/tmp/ave-test-sandbox-tmp",
     checkAsrtDependencies: h.checkDeps,
     isAsrtLinuxRuntimeProbeError: h.isProbeError,
+    isAsrtMacRuntimeProbeError: h.isMacProbeError,
     closeAllEgressConnections: () => 0,
   };
 });
@@ -91,6 +77,8 @@ beforeEach(() => {
   h.subscribe.mockResolvedValue(() => {});
   h.checkDeps.mockReset();
   h.isProbeError.mockReset();
+  h.isMacProbeError.mockReset();
+  h.isMacProbeError.mockReturnValue(false);
   h.checkDeps.mockResolvedValue({ errors: [], warnings: [] });
   h.isProbeError.mockReturnValue(false);
   vi.stubEnv("AVE_SANDBOX_ENABLED", "");
@@ -129,7 +117,6 @@ describe("boot sandbox outcome", () => {
 
     await expect(initSandboxGate(harness.context(true))).resolves.toBeUndefined();
 
-    // The half the runtime SOT gets wrong: identical to a sandbox never enabled.
     expect(detectSandboxCapability()).toMatchObject({ kind: "none" });
 
     expect(getSandboxBootOutcome()).toEqual({
@@ -213,8 +200,7 @@ describe("boot sandbox outcome", () => {
 
     await initSandboxGate(harness.context(true));
 
-    // One report, two consumers. A branch that told the log one thing and the
-    // user another would be worse than one that told the user nothing.
+    // Audit and renderer must receive the same terminal outcome.
     const calls = harness.logSandboxGate.mock.calls;
     const audited = calls[calls.length - 1]?.[0] as {
       outcome: string;
@@ -237,8 +223,7 @@ describe("boot sandbox outcome", () => {
 
     expect(getSandboxBootOutcome()?.action).toBe("activate");
     expect(order).toEqual(["subscribe", "initialize"]);
-    // Every connection is decided per invocation: no shared allow-list, and
-    // the ask callback (extension allowlist, grants, prompt) for each one.
+    // Every connection needs an invocation-specific decision; never share extension allow-lists across identities.
     expect(h.initialize).toHaveBeenCalledWith(
       expect.objectContaining({ allowedDomains: [], strictAllowlist: false }),
       expect.any(Function),

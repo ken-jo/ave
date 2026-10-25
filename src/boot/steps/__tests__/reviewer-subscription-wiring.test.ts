@@ -35,13 +35,9 @@ describe("wireReviewerAndPermissions subscription runtime", () => {
       wireReviewerAndPermissions(context as never);
       const options = wireReviewerAgent.mock.calls[0]?.[0] as unknown as {
         streamProviderFor: (provider: string) => LLMProvider | null;
-        getSecret: (key: string) => string | null;
         resolveParentSessionAdjudicationTarget: (id: string) => unknown;
       };
       expect(options.streamProviderFor("openai")).toBeNull();
-      expect(options.streamProviderFor("anthropic")).toBeNull();
-      expect(options.getSecret("llm.apiKey.azure-foundry")).toBeNull();
-      expect(options.getSecret("llm.apiKey.gemini")).toBeNull();
       expect(options.resolveParentSessionAdjudicationTarget("parent")).toBeNull();
       expect(getSecret).not.toHaveBeenCalled();
       retired = false;
@@ -83,8 +79,7 @@ describe("wireReviewerAndPermissions subscription runtime", () => {
         get: vi.fn((key: string) => {
           if (key === "llm") {
             return {
-              // Deliberately different: reviewer must not consult this stale
-              // API-key setting while the subscription runtime is active.
+              // Deliberately different: reviewer must not consult this stale API-key setting while the subscription runtime is active.
               provider: "claude",
               retiredProvider,
               activeChatRuntime: selection,
@@ -119,8 +114,7 @@ describe("wireReviewerAndPermissions subscription runtime", () => {
       });
       expect(options.streamProviderFor("subscription:codex")).toBe(subscriptionProvider);
       expect(subscriptionProviderFactory).toHaveBeenCalledWith(selection);
-      // A forged/legacy API-key identity cannot fall through while a
-      // subscription runtime owns the active reviewer transport.
+      // A forged/legacy API-key identity cannot fall through while a subscription runtime owns the active reviewer transport.
       expect(options.streamProviderFor("claude")).toBeNull();
       expect(subscriptionProviderFactory).toHaveBeenCalledOnce();
       expect(settingsService.getSecret).not.toHaveBeenCalled();

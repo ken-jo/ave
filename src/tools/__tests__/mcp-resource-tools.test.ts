@@ -1,17 +1,5 @@
-/**
- * `mcp_resource_list` / `mcp_resource_read` — the model's path to server resources.
- *
- * What these tests pin is the trust posture, because the gates themselves live one
- * layer down in the client (deliberately, so the model path and the future user
- * path cannot drift in what they allow):
- *   - both tools are READ category and read-only, so neither can carry write
- *     authority into a turn;
- *   - a server's own error message never reaches the model — it can carry host
- *     paths, and a detailed failure is a probe channel;
- *   - what the host clipped is reported rather than silently dropped;
- *   - a resource the host refuses to fetch is still listed, and says so, so the
- *     model stops retrying instead of looping.
- */
+// Resource tools carry read authority only and share client gates across callers.
+// Hide server error details that expose host paths or enable probing; report clipping and refused resources explicitly.
 import { describe, expect, it, vi } from "vitest";
 import {
   createMcpResourceListTool,
@@ -36,9 +24,7 @@ function deps(over: Partial<McpResourceToolDeps> = {}): McpResourceToolDeps {
       },
       {
         serverId: "other-mcp",
-        // Fully populated on purpose: the exact-shape assertion below is the only
-        // thing pinning the optional-field projection, so it has to see every
-        // optional field rather than a two-field resource.
+        // Populate every optional field to exercise the full projection shape.
         resources: [{
           uri: "schema://users",
           name: "users",
@@ -87,7 +73,7 @@ describe("mcp_resource_list", () => {
   });
 
   it("tells the model which resources the host will not fetch", async () => {
-    // Hiding them would leave the model retrying a read that can never succeed.
+    // Keep refused resources visible so callers do not retry impossible reads.
     const tool = createMcpResourceListTool(() => deps());
     const out = parse((await tool.execute({}, ctx())).output);
     const first = (out.servers as Array<{ resources: Array<Record<string, unknown>> }>)[0];
@@ -113,7 +99,7 @@ describe("mcp_resource_read", () => {
     const out = parse((await tool.execute({ serverId: "hr-mcp", uri: "file:///policy.md" }, ctx())).output);
     expect(readDeclaredResource).toHaveBeenCalledWith("hr-mcp", "file:///policy.md");
     expect(out.blocks).toEqual([{ text: "BODY" }, { omittedKind: "binary" }]);
-    // Clipping is REPORTED. A silent clip reads as "this is the whole document".
+    // Report clipping so partial content cannot appear complete.
     expect(out.truncated).toBe(true);
     expect(out.droppedBlocks).toBe(3);
   });
@@ -143,8 +129,7 @@ describe("mcp_resource_read", () => {
   });
 
   it("never forwards the server's own failure text to the model", async () => {
-    // The tool logs the real reason host-side; a server message can carry host paths,
-    // and a detailed failure would also make a refused read a probe channel.
+    // Keep detailed errors host-side to prevent path disclosure and refusal probing.
     const tool = createMcpResourceReadTool(() =>
       deps({
         readDeclaredResource: async () => {
@@ -160,10 +145,7 @@ describe("mcp_resource_read", () => {
 });
 
 describe("resource tools — wiring and bounds", () => {
-  // The MCP manager is built in a LATER boot step than the builtin tools, so the
-  // window exists in every real launch. It gets its own outcome rather than a
-  // generic failure, or an operator sees "could not be read" for a host that was
-  // simply still starting.
+  // Tool registration precedes manager startup; distinguish not-ready from failed reads.
   it("says so when resource access is not wired yet", async () => {
     const list = createMcpResourceListTool(() => undefined);
     const read = createMcpResourceReadTool(() => undefined);
@@ -171,10 +153,7 @@ describe("resource tools — wiring and bounds", () => {
     const readOut = await read.execute({ serverId: "hr-mcp", uri: "file:///x" }, ctx());
     expect(listed.isError).toBe(true);
     expect(readOut.isError).toBe(true);
-    // Both tools report the SAME not-ready reason…
     expect(parse(listed.output).error).toBe(parse(readOut.output).error);
-    // …and it is distinguishable from a real read failure, which is the point: an
-    // operator must not see "could not be read" for a host that was still starting.
     const failing = createMcpResourceReadTool(() =>
       deps({ readDeclaredResource: async () => { throw new Error("boom"); } }),
     );
@@ -183,8 +162,7 @@ describe("resource tools — wiring and bounds", () => {
   });
 
   it("resolves access per call, so a late-arriving manager is picked up", async () => {
-    // Capturing the value at construction would freeze the registration-time
-    // `undefined` forever — the bug the resolver exists to prevent.
+    // Resolve lazily so registration-time undefined does not become permanent.
     let access: McpResourceToolDeps | undefined;
     const tool = createMcpResourceListTool(() => access);
     expect((await tool.execute({}, ctx())).isError).toBe(true);
@@ -195,9 +173,7 @@ describe("resource tools — wiring and bounds", () => {
   });
 
   it("bounds one list response and reports what it dropped", async () => {
-    // The unbounded axis is server_count x catalogue_size, and it lands in the
-    // model's context window. Dropping servers silently would read as "that is all
-    // there is".
+    // Bound server count times catalogue size and disclose omitted servers.
     const many = Array.from({ length: 40 }, (_, s) => ({
       serverId: `srv-${s}`,
       resources: Array.from({ length: 50 }, (_, i) => ({
@@ -210,17 +186,13 @@ describe("resource tools — wiring and bounds", () => {
     const rawOut = (await tool.execute({}, ctx())).output;
     const out = parse(rawOut);
     expect((out.servers as unknown[]).length).toBeLessThan(many.length);
-    // The BOUND, not just "something was dropped": a loose ceiling passes for any
-    // constant and would not have caught the single-server exemption this fixed.
+    // Assert the exact byte bound, including narrowed single-server responses.
     expect(rawOut.length).toBeLessThanOrEqual(MCP_RESOURCE_LIST_MAX_CHARS);
-    // Dropped servers are NAMED — `serverId` is the model's only narrowing lever,
-    // and it cannot narrow to a server it was never told about.
+    // Name omitted servers so the caller can narrow by serverId.
     expect(Array.isArray(out.omittedServerIds)).toBe(true);
   });
 
-  // The dominant axis is ONE server's catalogue: discovery caps resources at 200 but
-  // never their bytes, and a narrowed call always yields exactly one server — so a
-  // whole-servers-only bound would never fire for the biggest realistic payload.
+  // One server's descriptions can exceed the budget even when discovery caps entry count.
   it("drops descriptions before resources, keeping most of the catalogue", async () => {
     const one = [{
       serverId: "srv",
@@ -231,19 +203,14 @@ describe("resource tools — wiring and bounds", () => {
       })),
     }];
     const tool = createMcpResourceListTool(() => deps({ listResources: () => one }));
-    // Narrowed, because a resume cursor is only defined for one server's catalogue.
+    // Resume offsets apply to a single server's catalogue.
     const rawOut = (await tool.execute({ serverId: "srv" }, ctx())).output;
     const out = parse(rawOut);
     const servers = out.servers as Array<{ serverId: string; resources: unknown[] }>;
     expect(rawOut.length).toBeLessThanOrEqual(MCP_RESOURCE_LIST_MAX_CHARS);
-    // Cheapest loss first: the prose goes so the ENTRIES survive. uri + name is what a
-    // read needs, so nearly the whole catalogue stays usable — 197 of 200 here, where
-    // keeping the descriptions instead would have fit only a handful. The guarantee is
-    // the ORDER of loss, not completeness: 200 entries of any size cannot all fit a
-    // budget sized to the wire cap.
+    // Drop descriptions before resource identities to preserve usable reads; completeness is not guaranteed.
     expect(out.descriptionsOmitted).toBe(true);
     expect(servers[0].resources.length).toBeGreaterThan(150);
-    // …and what did not fit is both counted and resumable.
     expect(out.omittedResources).toBe(200 - servers[0].resources.length);
     expect(out.nextOffset).toBe(servers[0].resources.length);
   });
@@ -251,7 +218,7 @@ describe("resource tools — wiring and bounds", () => {
   it("trims resources from a server too large even without descriptions", async () => {
     const one = [{
       serverId: "srv",
-      // Long URIs, no prose to drop — the only remaining lever is the resource list.
+      // Long URIs leave only resource entries available to trim.
       resources: Array.from({ length: 200 }, (_, i) => ({
         uri: `file:///${"deep/".repeat(30)}f${i}`,
         name: `f${i}`,
@@ -262,18 +229,13 @@ describe("resource tools — wiring and bounds", () => {
     const out = parse(rawOut);
     const servers = out.servers as Array<{ serverId: string; resources: unknown[] }>;
     expect(rawOut.length).toBeLessThanOrEqual(MCP_RESOURCE_LIST_MAX_CHARS);
-    // Still returns something usable for that server rather than nothing…
     expect(servers).toHaveLength(1);
     expect(servers[0].resources.length).toBeGreaterThan(0);
     expect(servers[0].resources.length).toBeLessThan(200);
-    // …and says how much it withheld.
     expect(out.omittedResources).toBe(200 - servers[0].resources.length);
   });
 
-  // The bound has to hold when the OMISSION LIST is the payload. Two reviewers found
-  // the same hole independently: dropped ids were pushed without being charged, and
-  // the postcondition loop exits on "nothing kept" rather than on fitting — so a few
-  // dozen long server ids could leave an over-budget response with no tier left.
+  // Omitted server IDs also consume the response budget, even when no resources remain.
   it("bounds the response even when almost everything is omitted", async () => {
     const many = Array.from({ length: 200 }, (_, s) => ({
       serverId: `srv-${"x".repeat(100)}-${s}`,
@@ -287,14 +249,12 @@ describe("resource tools — wiring and bounds", () => {
     const rawOut = (await tool.execute({}, ctx())).output;
     const out = parse(rawOut);
     expect(rawOut.length).toBeLessThanOrEqual(MCP_RESOURCE_LIST_MAX_CHARS);
-    // Named ids are capped; the rest are a count, so nothing is silently lost.
+    // Cap named omissions and count the rest so truncation remains explicit.
     expect((out.omittedServerIds as string[]).length).toBeLessThanOrEqual(20);
     expect(out.unnamedOmittedServers).toBeGreaterThan(0);
   });
 
-  // Trimming at the SOURCE means the tail never reaches the wire, so unlike a stubbed
-  // result it cannot be paged back with `read_tool_result_chunk`. Without an offset the
-  // head was a permanent ceiling on what the model could ever see.
+  // Source-trimmed content never reaches result-chunk paging, so resource access needs its own offset.
   it("lets the model page past what the host trimmed", async () => {
     const one = [{
       serverId: "srv",
@@ -312,20 +272,14 @@ describe("resource tools — wiring and bounds", () => {
       (await tool.execute({ serverId: "srv", offset: first.nextOffset }, ctx())).output,
     );
     const secondServers = second.servers as Array<{ resources: Array<{ uri: string }> }>;
-    // The second page starts exactly where the first stopped, and reaches the tail.
     expect(secondServers[0].resources[0].uri)
       .toBe(`file:///f${firstServers[0].resources.length}`);
     const lastUri = secondServers[0].resources[secondServers[0].resources.length - 1].uri;
     expect(lastUri).toBe("file:///f199");
-    // Nothing withheld on the last page ⇒ no resume marker.
     expect(second.nextOffset).toBeUndefined();
   });
 
-  // The shape nothing pinned, and it is where a shared cursor goes wrong: `offset`
-  // indexes ONE server's resources, while a total `nextOffset` would advance every
-  // server by the others' shown counts — silently skipping the head of any server that
-  // was omitted from the previous page. Requiring `serverId` makes the cursor mean one
-  // thing; a cross-server page is refused rather than answered wrongly.
+  // Offsets require serverId; one shared cursor would skip entries across independent catalogues.
   it("refuses to page a multi-server response with one cursor", async () => {
     const two = [0, 1].map((s) => ({
       serverId: `srv-${s}`,
@@ -337,15 +291,12 @@ describe("resource tools — wiring and bounds", () => {
     }));
     const tool = createMcpResourceListTool(() => deps({ listResources: () => two }));
     const first = parse((await tool.execute({}, ctx())).output);
-    // An un-narrowed response never advertises a cursor it cannot honor…
     expect(first.nextOffset).toBeUndefined();
-    // …and following one anyway is an error, not a wrong answer.
     const paged = await tool.execute({ offset: 40 }, ctx());
     expect(paged.isError).toBe(true);
     expect(String(parse(paged.output).error)).toContain("serverId");
 
-    // Narrowed, the same catalogue answers without a cursor at all, because dropping
-    // the prose is enough to fit it — nothing withheld means nothing to resume.
+    // Dropping descriptions alone may fit a narrowed catalogue without a resume cursor.
     const narrowed = parse((await tool.execute({ serverId: "srv-1" }, ctx())).output);
     const shown = (narrowed.servers as Array<{ resources: unknown[] }>)[0].resources.length;
     expect(shown).toBe(60);
@@ -362,8 +313,7 @@ describe("resource tools — wiring and bounds", () => {
   });
 
   it("tells the model which argument was wrong", async () => {
-    // The list tool has no `uri` parameter, so reusing the read tool's message told
-    // the model to supply an argument its own schema rejects.
+    // List guidance must not request uri, which the list schema rejects.
     const tool = createMcpResourceListTool(() => deps());
     const out = parse((await tool.execute({ serverId: 42 }, ctx())).output);
     expect(String(out.error)).toContain("serverId");
@@ -371,9 +321,7 @@ describe("resource tools — wiring and bounds", () => {
   });
 
   it("declares the MCP scope dependency on both tools", () => {
-    // Builtins are otherwise always eager. These two hand the model untrusted
-    // server content, so they must honor the same `includeMcp` switch that keeps
-    // MCP tools out of headless (routine) loops.
+    // These builtins expose untrusted server content and must honor includeMcp scope in headless loops.
     expect(createMcpResourceListTool(() => deps()).requiresMcpScope).toBe(true);
     expect(createMcpResourceReadTool(() => deps()).requiresMcpScope).toBe(true);
   });

@@ -1,4 +1,4 @@
-/** What an MCP server will run and what it asks for (design §8.1, §15.3): shown before anything is added. */
+/** Show server execution and requested capabilities before adding it. */
 import { useTranslation } from "../../../../i18n/react.js";
 import type { McpRuntimeView } from "../../../../shared/git-marketplace.js";
 

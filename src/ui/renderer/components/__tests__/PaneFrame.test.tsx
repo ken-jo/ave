@@ -79,8 +79,8 @@ describe("PaneFrame", () => {
     const view = render(pane({ onClose: vi.fn() }));
     expect(screen.getByTestId("pane-close").getAttribute("aria-label")).toBe("패널 닫기");
 
-    // A routed pane's close puts the pane back on its conversation rather than
-    // removing it, so the label names the view instead of the pane.
+    // A routed pane's close puts the pane back on its conversation rather than removing it, so the label names the view
+    // instead of the pane.
     view.rerender(pane({ onClose: vi.fn(), closeLabel: "Close Routines" }));
     expect(screen.getByTestId("pane-close").getAttribute("aria-label")).toBe("Close Routines");
   });
@@ -102,10 +102,8 @@ describe("PaneFrame", () => {
   });
 
   it("floats the lane it is given at the top-right of its body, and draws no lane when given none", () => {
-    // The lane is the frame's: a card pinned to a pane stays in that pane
-    // whatever the pane shows. So the anchor lives in the frame's body — inside
-    // the outline, under the header band — not in the conversation, which a
-    // routed pane hides.
+    // The lane is the frame's: a card pinned to a pane stays in that pane whatever the pane shows. So the anchor lives in the
+    // frame's body — inside the outline, under the header band — not in the conversation, which a routed pane hides.
     const view = render(pane({ lane: <div data-testid="pinned-card">card</div> }));
     const lane = view.container.querySelector<HTMLElement>('[data-testid="floating-right-lane"]');
     expect(lane).not.toBeNull();
@@ -137,8 +135,8 @@ describe("PaneFrame", () => {
     const content = view.container.querySelector<HTMLElement>('[data-testid="pane-content"]')!;
     expect(content.compareDocumentPosition(settle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(lane.compareDocumentPosition(settle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    // The frame column is the approval scope: a dock in the slot looks up to
-    // it for the composer to cover, and finds none on a routed pane.
+    // The frame column is the approval scope: a dock in the slot looks up to it for the composer to cover, and finds none on a
+    // routed pane.
     expect(settle.closest("[data-approval-scope]")).not.toBeNull();
     expect(settle.closest("[data-approval-scope]")!.contains(body)).toBe(true);
 
@@ -207,8 +205,8 @@ describe("PaneFrame", () => {
     const trigger = screen.getByTestId("pane-split");
     fireEvent.click(trigger);
     fireEvent.click(screen.getByTestId("pane-split-row"));
-    // The popover's close would normally return focus to its trigger — inside
-    // THIS tile, whose focus capture would then undo the new tile's focus.
+    // The popover's close would normally return focus to its trigger — inside THIS tile, whose focus capture would then undo
+    // the new tile's focus.
     expect(document.activeElement).not.toBe(trigger);
   });
 
@@ -247,8 +245,8 @@ describe("PaneFrame", () => {
 
     seen.length = 0;
     render(pane({ asideSlot: true, children: <Probe /> }));
-    // The first render already says "inside a frame" — an object, not null —
-    // so a view can hold its panel back until the slot element is there.
+    // The first render already says "inside a frame" — an object, not null — so a view can hold its panel back until the slot
+    // element is there.
     expect(seen[0]).toEqual({ panel: null, tile: null });
     expect(seen[seen.length - 1]!.panel).toBe(screen.getByTestId("pane-panel-slot"));
   });
@@ -257,9 +255,8 @@ describe("PaneFrame", () => {
     render(pane({ asideSlot: true }));
     const slot = screen.getByTestId("pane-panel-slot");
     const header = screen.getByTestId("pane-header");
-    // The slot is the tile's own child, a sibling of the column that holds the
-    // header — not a descendant of it — so a panel there stands beside the
-    // header rather than under it.
+    // The slot is the tile's own child, a sibling of the column that holds the header — not a descendant of it — so a panel
+    // there stands beside the header rather than under it.
     expect(slot.parentElement).toBe(header.parentElement!.parentElement);
     expect(slot.contains(header)).toBe(false);
   });
@@ -317,8 +314,7 @@ describe("PaneFrame drop gesture", () => {
   function tileWithRect(props: Partial<React.ComponentProps<typeof PaneFrame>>) {
     const view = render(pane(props));
     const tile = view.container.querySelector('[data-testid="pane"]')!;
-    // jsdom lays nothing out, so the tile has to be told how big it is — the
-    // whole gesture is read off that rectangle.
+    // jsdom lays nothing out, so the tile has to be told how big it is — the whole gesture is read off that rectangle.
     tile.getBoundingClientRect = () => ({
       ...TILE,
       right: TILE.width,
@@ -336,10 +332,8 @@ describe("PaneFrame drop gesture", () => {
     dropEffect: "none",
   };
 
-  /**
-   * jsdom's drag events drop the pointer coordinates on the floor, and the
-   * whole gesture is those coordinates — so they are set on the event itself.
-   */
+  /** jsdom's drag events drop the pointer coordinates on the floor, and the whole gesture is those coordinates — so they are
+   * set on the event itself. */
   function drag(
     kind: "dragOver" | "drop",
     tile: Element,
@@ -356,9 +350,8 @@ describe("PaneFrame drop gesture", () => {
     const onSessionDrop = vi.fn();
     const tile = tileWithRect({ onSessionDrop, canSplit: true });
 
-    // Each side, and the middle. A tile with no size answers "right" to
-    // every point (the far edge is nearest to everything), so only the other
-    // answers prove the rectangle was actually read.
+    // Each side, and the middle. A tile with no size answers "right" to every point (the far edge is nearest to everything),
+    // so only the other answers prove the rectangle was actually read.
     drag("drop", tile, carriedSession, { x: 5, y: 300 });
     drag("drop", tile, carriedSession, { x: 400, y: 5 });
     drag("drop", tile, carriedSession, { x: 400, y: 595 });
@@ -459,19 +452,13 @@ describe("useChatGroups", () => {
     // Roomy on both axes.
     expect(result.current.splitFits("main", "row", { width: 1000, height: 1000 })).toBe(true);
     expect(result.current.splitFits("main", "column", { width: 1000, height: 1000 })).toBe(true);
-    // Each axis at its own boundary, written out in absolute px. These are the
-    // anchors: a half is measured after losing PANE_CELL_INSET, so the
-    // tightest canvas that still splits is 2*(floor + inset) — 916 wide against
-    // the 448 width floor, 580 tall against the 280 height floor. Because they
-    // are literals, a change to PANE_FRAME_BORDER (and so to the inset)
-    // moves the boundary and fails here, which a derived expectation could not
-    // catch: it would move with the implementation.
+    // Use literal split thresholds to detect inset regressions; derived expectations would move with the implementation.
     expect(result.current.splitFits("main", "row", { width: 916, height: 1000 })).toBe(true);
     expect(result.current.splitFits("main", "row", { width: 915, height: 1000 })).toBe(false);
     expect(result.current.splitFits("main", "column", { width: 1000, height: 580 })).toBe(true);
     expect(result.current.splitFits("main", "column", { width: 1000, height: 579 })).toBe(false);
-    // The same two boundaries derived from the constants, so the anchors above
-    // are readable as arithmetic rather than as magic numbers.
+    // The same two boundaries derived from the constants, so the anchors above are readable as arithmetic rather than as magic
+    // numbers.
     expect(2 * (PANE_MIN_WIDTH + PANE_CELL_INSET)).toBe(916);
     expect(2 * (PANE_MIN_HEIGHT + PANE_CELL_INSET)).toBe(580);
     // A canvas under BOTH floors fails on either axis.
@@ -479,7 +466,6 @@ describe("useChatGroups", () => {
     expect(result.current.splitFits("main", "column", { width: 800, height: 400 })).toBe(false);
     // Unmeasured: nothing to check against.
     expect(result.current.splitFits("main", "row", undefined)).toBe(true);
-    // After a side-by-side split each half is 500 of 1000 — a second split beside no longer fits.
     act(() => result.current.split("main", "row"));
     expect(result.current.splitFits("main", "row", { width: 1000, height: 1000 })).toBe(false);
   });
@@ -498,9 +484,8 @@ describe("useChatGroups", () => {
     let adopted: { chatGroupId: string; released: string | null } | null = null;
     act(() => { adopted = result.current.adopt("group-2", () => true, undefined); });
 
-    // "group-4" is the only leaf that is none of: the group being adopted
-    // beside, the focused group, the primary. Each of those three exclusions
-    // would name a different leaf here if it were dropped.
+    // "group-4" is the only leaf that is none of: the group being adopted beside, the focused group, the primary. Each of
+    // those three exclusions would name a different leaf here if it were dropped.
     expect(adopted).toMatchObject({ released: "group-4" });
     expect(result.current.thumbnailOpenIds).toEqual([]);
     expect(result.current.groups.map((group) => group.id))
@@ -548,8 +533,6 @@ describe("useChatGroups", () => {
     act(() => result.current.toggleMaximize("main"));
     expect(result.current.maximizedId).toBe("main");
 
-    // Focusing the other tile while one is maximized used to move focus alone:
-    // every focus-derived surface followed, and the screen did not.
     act(() => result.current.focus("group-2"));
     expect(result.current.focusedId).toBe("group-2");
     expect(result.current.maximizedId).toBe("group-2");
@@ -623,8 +606,8 @@ describe("useChatGroups pane content", () => {
     expect([...result.current.conversationIds]).toEqual(["main"]);
 
     act(() => result.current.split("main", "row"));
-    // A pane opened by a split is a conversation pane, exactly as before: the
-    // gesture that makes it is still "put a conversation here".
+    // A pane opened by a split is a conversation pane, exactly as before: the gesture that makes it is still "put a
+    // conversation here".
     expect(result.current.contentById).toEqual({
       main: { view: "home" },
       "group-2": { view: "home" },
@@ -639,8 +622,7 @@ describe("useChatGroups pane content", () => {
     act(() => result.current.setPaneContent("main", { view: "routines" }));
     expect(result.current.contentById["main"]).toEqual({ view: "routines" });
     expect(result.current.contentById["group-2"]).toEqual({ view: "home" });
-    // The pane keeps its conversation while a view is drawn over it — the
-    // transcript is hidden, not taken away.
+    // The pane keeps its conversation while a view is drawn over it — the transcript is hidden, not taken away.
     expect(result.current.conversationIds.has("main")).toBe(true);
 
     act(() => result.current.setPaneContent("main", { view: "home" }));
@@ -648,9 +630,8 @@ describe("useChatGroups pane content", () => {
   });
 
   it("reads the window's location off whichever pane has focus", () => {
-    // This IS the `activeView` derivation: the window is where the FOCUSED
-    // pane is, so focusing the other pane moves the window's location without
-    // either pane's content changing.
+    // This IS the `activeView` derivation: the window is where the FOCUSED pane is, so focusing the other pane moves the
+    // window's location without either pane's content changing.
     const { result } = renderHook(() => useChatGroups("work"));
     act(() => result.current.split("main", "row"));
     act(() => result.current.setPaneContent("main", { view: "work-board" }));
@@ -672,8 +653,8 @@ describe("useChatGroups pane content", () => {
     expect(result.current.focusedId).toBe("main");
     expect(result.current.contentById["group-2"]).toEqual({ view: "home" });
 
-    // Home is exempt — a pane's home is its OWN conversation, not a shared
-    // place, so two panes on home is the normal state and not a duplicate.
+    // Home is exempt — a pane's home is its OWN conversation, not a shared place, so two panes on home is the normal state and
+    // not a duplicate.
     act(() => result.current.focus("group-2"));
     act(() => result.current.setPaneContent("group-2", { view: "home" }));
     expect(result.current.focusedId).toBe("group-2");
@@ -704,8 +685,8 @@ describe("useChatGroups pane content", () => {
     expect(result.current.paneNeighbor("main", "left")).toBeUndefined();
     expect(result.current.paneNeighbor("main", "down")).toBeUndefined();
 
-    // A swap — both surfaces stay on screen — even though each location is
-    // already "open elsewhere", which `setPaneContent` alone would refuse.
+    // A swap — both surfaces stay on screen — even though each location is already "open elsewhere", which `setPaneContent`
+    // alone would refuse.
     act(() => result.current.movePaneContent("main", "group-2"));
     expect(result.current.contentById.main).toEqual({ view: "web", surface: "browser:2" });
     expect(result.current.contentById["group-2"]).toEqual({ view: "terminal", surface: "terminal:1" });
@@ -734,8 +715,7 @@ describe("useChatGroups pane content", () => {
     expect(result.current.focusedId).toBe("main");
     expect(result.current.contentById["group-2"]).toEqual({ view: "home" });
 
-    // A DIFFERENT view of the same plugin is a different place, and opens where
-    // it was asked for.
+    // A DIFFERENT view of the same plugin is a different place, and opens where it was asked for.
     act(() => result.current.focus("group-2"));
     act(() => result.current.setPaneContent("group-2", { view: "plugin:meeting:notes" }));
     expect(result.current.focusedId).toBe("group-2");
@@ -748,9 +728,8 @@ describe("useChatGroups pane content", () => {
     act(() => result.current.split("group-2", "row"));
     act(() => result.current.split("group-3", "row"));
 
-    // Four panes, four conversations: MAX_PANES counts the leaves, and
-    // MAX_CHAT_GROUPS counts the conversation set. Both are full, so the
-    // gesture stops offering a fifth and the drop refuses one.
+    // Four panes, four conversations: MAX_PANES counts the leaves, and MAX_CHAT_GROUPS counts the conversation set. Both are
+    // full, so the gesture stops offering a fifth and the drop refuses one.
     expect(leafIds(result.current.tree)).toHaveLength(MAX_PANES);
     expect(result.current.conversationIds.size).toBe(MAX_CHAT_GROUPS);
     expect(result.current.canSplit).toBe(false);
@@ -774,8 +753,7 @@ describe("useChatGroups pane content", () => {
     act(() => result.current.focus("group-3"));
 
     act(() => { result.current.adopt("group-2", () => true, undefined); });
-    // "group-4" was set aside: it must leave the conversation set too, or the
-    // ceiling would count a loop main no longer holds.
+    // "group-4" was set aside: it must leave the conversation set too, or the ceiling would count a loop main no longer holds.
     expect(result.current.conversationIds.has("group-4")).toBe(false);
     expect(result.current.contentById["group-4"]).toBeUndefined();
     expect(result.current.conversationIds.size).toBe(MAX_CHAT_GROUPS);
@@ -783,9 +761,8 @@ describe("useChatGroups pane content", () => {
   });
 
   it("opens a pane beside the focused one and gives back its id", () => {
-    // The sidebar's "open in a new pane" makes the SAME pane the header's split
-    // makes — a conversation pane, focused — and hands the id back so the
-    // caller can put a view in it.
+    // The sidebar's "open in a new pane" makes the SAME pane the header's split makes — a conversation pane, focused — and
+    // hands the id back so the caller can put a view in it.
     const { result } = renderHook(() => useChatGroups("work"));
     let opened: string | null = "not-called";
     act(() => { opened = result.current.openPane("main", undefined); });
@@ -812,9 +789,8 @@ describe("useChatGroups pane content", () => {
   });
 
   it("refuses a new pane the width cannot carry — the split's own floor", () => {
-    // No second rule for this gesture: `splitFits` is asked exactly as the
-    // header's split control asks it, so a canvas too narrow to halve refuses
-    // both the same way.
+    // No second rule for this gesture: `splitFits` is asked exactly as the header's split control asks it, so a canvas too
+    // narrow to halve refuses both the same way.
     const { result } = renderHook(() => useChatGroups("work"));
     const tooNarrow = { width: (PANE_MIN_WIDTH + PANE_CELL_INSET) * 2 - 1, height: 900 };
 
@@ -847,8 +823,8 @@ describe("useChatGroups pane content", () => {
     act(() => result.current.focus("main"));
     expect(result.current.focusedConversationId).toBe("main");
 
-    // The remembered pane can be closed out from under the binding; the answer
-    // falls back to a pane that still holds a conversation.
+    // The remembered pane can be closed out from under the binding; the answer falls back to a pane that still holds a
+    // conversation.
     act(() => result.current.close("main"));
     expect(result.current.focusedConversationId).toBe("group-2");
   });
@@ -856,9 +832,8 @@ describe("useChatGroups pane content", () => {
 
 describe("chatGroupApi", () => {
   it("layers the group binding over the rest of the api", () => {
-    // chatGroup() rebinds the chat channels only. A tile also calls
-    // getSettings, which lives on another preload surface — returning the bare
-    // binding hands the tile an api that is missing most of itself.
+    // chatGroup() rebinds the chat channels only. A tile also calls getSettings, which lives on another preload surface —
+    // returning the bare binding hands the tile an api that is missing most of itself.
     const getSettings = vi.fn();
     const boundSend = vi.fn();
     const chatGroup = vi.fn(() => ({ send: boundSend }) as unknown as AveApi);
@@ -888,8 +863,8 @@ describe("chatGroupApi", () => {
   });
 
   it("refuses a non-primary group on a surface that cannot bind one", () => {
-    // Returning the unbound surface would put this tile's turns in the primary
-    // conversation — a wrong answer is worse than a rejected one.
+    // Returning the unbound surface would put this tile's turns in the primary conversation — a wrong answer is worse than a
+    // rejected one.
     const api = {} as unknown as AveApi;
 
     expect(chatGroupApi(api, "main")).toBe(api);
@@ -920,8 +895,8 @@ describe("useChatGroups placement", () => {
   });
 
   it("refuses a drop past the ceiling instead of silently ignoring it", () => {
-    // The caller shows no edge affordance when this returns null, so the limit
-    // is visible in the gesture rather than as a rejection after the fact.
+    // The caller shows no edge affordance when this returns null, so the limit is visible in the gesture rather than as a
+    // rejection after the fact.
     const { result } = renderHook(() => useChatGroups("work"));
 
     act(() => { result.current.dropOnEdge("main", "right"); });
@@ -936,8 +911,7 @@ describe("useChatGroups placement", () => {
   });
 
   it("never reuses a closed tile's id", () => {
-    // Main-process loops are keyed by this id: reusing one would hand a new
-    // tile the previous tile's live history.
+    // Main-process loops are keyed by this id: reusing one would hand a new tile the previous tile's live history.
     const { result } = renderHook(() => useChatGroups("work"));
 
     act(() => { result.current.dropOnEdge("main", "right"); });
@@ -1072,8 +1046,8 @@ describe("PaneGutter", () => {
           onResize={onResize}
         />
       </TooltipProvider>,
-      // A root of its own: createRoot empties its container, and the cells
-      // have to survive as the gutter's siblings for the paint to find them.
+      // A root of its own: createRoot empties its container, and the cells have to survive as the gutter's siblings for the
+      // paint to find them.
       { container: canvas.appendChild(document.createElement("div")) },
     );
     return { view, gutter: gutter!, onResize };

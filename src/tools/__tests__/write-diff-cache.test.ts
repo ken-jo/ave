@@ -1,22 +1,9 @@
-/**
- * Issue #749 — write-diff-cache unit tests.
- *
- * Covers:
- *   1. writeDiffSidecar: writes sidecar when either side exceeds limit
- *   2. writeDiffSidecar: skips write when both sides are within limit
- *   3. writeDiffSidecar: rejects unsafe ids (path separator characters)
- *   4. readDiffSidecar: returns blob for written sidecar
- *   5. readDiffSidecar: returns null for missing sidecar
- *   6. clearSessionDiffCache: removes session dir
- *   7. purgeStaleSessionDiffDirs: removes dirs older than maxAgeMs
- */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { mkdtempSync, existsSync, readFileSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-// Override AVE_HOME so sidecar writes go to a temp dir.
 let testHome: string;
 
 beforeEach(() => {
@@ -29,7 +16,7 @@ afterEach(async () => {
   await cleanupTmpDir(testHome);
 });
 
-// Dynamic import AFTER env override so aveHome() picks up AVE_HOME.
+// Import after the environment override so aveHome reads the isolated home.
 async function loadModule() {
   return import("../write-diff-cache.js");
 }
@@ -37,7 +24,7 @@ async function loadModule() {
 const SESSION_ID = "session-abc123";
 const TOOL_USE_ID = "tu-def456";
 const SMALL = "x".repeat(10);
-const LARGE = "y".repeat(5000); // > 4096
+const LARGE = "y".repeat(5000);
 
 describe("write-diff-cache", () => {
   it("skips write when both sides are within WRITE_DIFF_PREVIEW_LIMIT", async () => {
@@ -52,10 +39,8 @@ describe("write-diff-cache", () => {
     );
     expect(result).toBe(false);
     expect(warns).toHaveLength(0);
-    // No file should be created
     const path = join(testHome, "diff-cache", SESSION_ID, `${TOOL_USE_ID}.json`);
     expect(existsSync(path)).toBe(false);
-    // Confirm WRITE_DIFF_PREVIEW_LIMIT is 4096
     expect(WRITE_DIFF_PREVIEW_LIMIT).toBe(4096);
   });
 
@@ -140,18 +125,15 @@ describe("write-diff-cache", () => {
 
   it("clearSessionDiffCache is a no-op when session dir does not exist", async () => {
     const { clearSessionDiffCache } = await loadModule();
-    // Should not throw
     await expect(clearSessionDiffCache("no-such-session")).resolves.toBeUndefined();
   });
 
   it("purgeStaleSessionDiffDirs removes dirs older than maxAgeMs", async () => {
     const { writeDiffSidecar, purgeStaleSessionDiffDirs } = await loadModule();
 
-    // Create two session dirs — one stale, one fresh.
     await writeDiffSidecar("stale-session", TOOL_USE_ID, LARGE, LARGE, () => {});
     await writeDiffSidecar("fresh-session", TOOL_USE_ID, LARGE, LARGE, () => {});
 
-    // Back-date the stale dir to 8 days ago.
     const staleDir = join(testHome, "diff-cache", "stale-session");
     const eightDaysAgo = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
     utimesSync(staleDir, eightDaysAgo, eightDaysAgo);
@@ -166,7 +148,6 @@ describe("write-diff-cache", () => {
 
   it("purgeStaleSessionDiffDirs is a no-op when root does not exist", async () => {
     const { purgeStaleSessionDiffDirs } = await loadModule();
-    // diff-cache root has not been created yet
     const { swept, failed } = await purgeStaleSessionDiffDirs(1000);
     expect(swept).toHaveLength(0);
     expect(failed).toHaveLength(0);

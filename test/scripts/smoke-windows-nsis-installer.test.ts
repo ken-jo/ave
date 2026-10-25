@@ -1670,21 +1670,8 @@ describe("Windows NSIS installer smoke contracts", () => {
       dependencies?: Record<string, string>;
       build?: { nsis?: { deleteAppDataOnUninstall?: boolean } };
     };
-    // Deliberate drift guard: installer.nsh drives srt-win.exe directly
-    // (`acl recover --force`, then `uninstall`), a CLI contract no type checker
-    // covers. An ASRT bump must re-verify against the newly vendored binary that
-    // both subcommands still exist, that `uninstall` still reports user
-    // cancellation as exit 10, and that the teardown still clears everything the
-    // install stamped — 0.0.73 added ambient write-deny stamps on the stock
-    // world-writable system dirs, which `uninstall` removes (and `--keep-user`
-    // deliberately keeps, a flag this installer does not pass). Verified for
-    // 0.0.80: 0.0.75 through 0.0.79 build srt-win.exe from the same Rust sources
-    // (upstream `vendor/srt-win-src/src` e29778f, `Cargo.toml` 8493e7d and
-    // `Cargo.lock` aa84cda). 0.0.80 (`src` 2d21779, same `Cargo.toml` and
-    // `Cargo.lock`) changes one function, by one commit (#656): a batch of ACE
-    // targets is merged per (path, kind) so a path in both deny lists keeps its
-    // read deny. `acl recover`, `uninstall` and its exit codes are untouched.
-    // Bump this only together with that check.
+    // Version bumps must recheck the vendored installer CLI: recovery and uninstall commands, cancellation exit 10, and removal of ambient deny stamps.
+    // The installer must not retain the sandbox user; type checks cannot verify this binary contract.
     expect(packageJson.dependencies?.["@anthropic-ai/sandbox-runtime"]).toBe(
       "0.0.80",
     );
@@ -1822,8 +1809,7 @@ describe("Windows NSIS installer smoke contracts", () => {
 
   it("enables machine and destructive gates only on disposable Windows CI", () => {
     const workflow = readRepoFile(".github/workflows/build-installers.yml");
-    // Both gates open only for the Windows matrix entry, which runs on a
-    // disposable hosted image (packaging-discipline-source locks the label).
+    // Both gates open only for the Windows matrix entry, which runs on a disposable hosted image (packaging-discipline-source locks the label).
     expect(workflow).toContain(
       "AVE_ALLOW_DISPOSABLE_WINDOWS_INSTALLER_SMOKE: ${{ matrix.target == 'win' && '1' || '' }}",
     );
@@ -1860,10 +1846,8 @@ describe("ASRT provisioning precondition", () => {
   });
 
   it("reports the payload, not just the field name", () => {
-    // A field name says WHICH check failed and not what was seen. A value that
-    // legitimately changed — a vendor bump moving the marker schema, say — then
-    // looks identical to a genuine provisioning failure, and the run happens on
-    // a Windows CI machine that is gone by the time anyone reads the log.
+    // A field name says WHICH check failed and not what was seen. A value that legitimately changed; a vendor bump moving the marker schema, say;
+    // then looks identical to a genuine provisioning failure, and the run happens on a Windows CI machine that is gone by the time anyone reads the log.
     const raw = { ...structuredClone(READY), marker_version: 99 };
     expect(() => assertAsrtUserReady(raw)).toThrow(/marker_version/);
     expect(() => assertAsrtUserReady(raw)).toThrow(/"marker_version":99/);

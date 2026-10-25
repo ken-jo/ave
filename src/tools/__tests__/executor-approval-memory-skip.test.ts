@@ -1,26 +1,5 @@
-/**
- * Foreground approval-dock skip via explicit-approval memory (Store B).
- *
- * Root cause this guards: approving with "allow this session" recorded the
- * decision in Store B (the exact-tuple user-approval memory) but the
- * foreground ask path never READ Store B — only the reviewer lane did. So
- * the modal kept reappearing on the next call with the same args.
- *
- * ToolExecutor.tryUserApprovalMemorySkip now mirrors the reviewer lane's
- * lookup at the foreground choke point. These tests pin:
- *   (a) session approval → same tuple re-call skips the modal + emits an
- *       audit entry with userApprovalUsed.memoryHit === true
- *   (b) session approval but args mutated to a higher rule verdict
- *       (maxVerdict escalation) → re-prompt
- *   (c) revoked entry (lookup returns null) → re-prompt
- *   (d) legacy-null verdictAtApproval → re-prompt (fail-closed)
- *   (e) deny rule + prior approval → deny wins (Store B never consulted)
- *   (f) overlay-trigger mutating + prior approval → ask wins (layer 2 hard
- *       gate is never memory-skipped)
- *   (g) headless path is unchanged — Store B is foreground-only
- *   (h) plugin panel user action suppresses the normal agent approval modal
- *       for foreground plugin asks, while hard/forceModal asks still prompt
- */
+/** Foreground memory reuse requires a matching tuple and non-escalated verdict, records an audit hit, and never bypasses deny or forced-modal gates.
+ * Revoked or legacy-null approvals re-prompt; headless calls remain outside this path. */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { mkdtempSync } from "node:fs";
@@ -28,9 +7,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { makeWriteProbeTool } from "./approval-memory-test-fixtures.js";
 
-// Store B lookup + audit sink — shaped per-test. vi.mock factories are
-// hoisted above all imports, so the mock fns must be created via vi.hoisted
-// (which runs even earlier) to be referenceable inside the factories.
+// Store B lookup + audit sink; shaped per-test. vi.mock factories are hoisted above all imports, so the
+// mock fns must be created via vi.hoisted (which runs even earlier) to be referenceable inside the factories.
 const { lookupApprovalMock, lookupUserDecisionMock, emitSandboxAuditMock, state } = vi.hoisted(() => ({
   lookupApprovalMock: vi.fn(async (): Promise<unknown> => state.lookupResult),
   lookupUserDecisionMock: vi.fn(async (): Promise<unknown> => state.decisionResult),
@@ -80,11 +58,10 @@ describe("ToolExecutor — explicit-approval memory skips the foreground modal (
     const registry = new ToolRegistry();
     registry.register(makeWriteProbeTool(executeSpy));
 
-    // Normal foreground ask (layer 6) — eligible for Store B skip.
+    // Normal foreground ask (layer 6); eligible for Store B skip.
     const permMgr = pmReturning({ decision: "ask", reason: "needs confirm", layer: 6 });
 
-    // Path is a direct LEAF of the allowed dir → rule verdict LOW.
-    // Stored verdict LOW → max(LOW, LOW) === LOW === stored → skip.
+    // Path is a direct LEAF of the allowed dir → rule verdict LOW. Stored verdict LOW → max(LOW, LOW) === LOW === stored → skip.
     state.lookupResult = {
       scope: "session",
       verdictAtApproval: "low",
@@ -113,7 +90,7 @@ describe("ToolExecutor — explicit-approval memory skips the foreground modal (
       },
     );
 
-    // Modal NOT shown — memory hit auto-allowed and the tool executed.
+    // Modal NOT shown; memory hit auto-allowed and the tool executed.
     expect(requestAndWait).not.toHaveBeenCalled();
     expect(executeSpy).toHaveBeenCalledTimes(1);
     expect(result[0].is_error).toBeUndefined();
@@ -158,8 +135,7 @@ describe("ToolExecutor — explicit-approval memory skips the foreground modal (
       [{ id: "tu-exact-deny", name: "write_probe", input: { path: join(dir, "file.txt") } }],
       {
         sessionId: "sess-exact-deny",
-        // Deliberately do not allow the temp directory. The exact deny must
-        // block before the Layer-1 out-of-directory card can appear.
+        // Deliberately do not allow the temp directory. The exact deny must block before the Layer-1 out-of-directory card can appear.
         permissionContext: userPermissionContext(),
       },
     );
@@ -174,6 +150,7 @@ describe("ToolExecutor — explicit-approval memory skips the foreground modal (
       "user-keyboard",
       undefined,
       process.cwd(),
+      "sess-exact-deny",
     );
     expect(lookupApprovalMock).not.toHaveBeenCalled();
   });
@@ -341,8 +318,7 @@ describe("ToolExecutor — explicit-approval memory skips the foreground modal (
 
     const permMgr = pmReturning({ decision: "ask", reason: "needs confirm", layer: 6 });
 
-    // Stored LOW. Current path is DEEP inside the allowed dir → rule MEDIUM.
-    // max(MEDIUM, LOW) === MEDIUM !== stored LOW → escalation → re-prompt.
+    // Stored LOW. Current path is DEEP inside the allowed dir → rule MEDIUM. max(MEDIUM, LOW) === MEDIUM !== stored LOW → escalation → re-prompt.
     state.lookupResult = {
       scope: "session",
       verdictAtApproval: "low",
@@ -371,7 +347,7 @@ describe("ToolExecutor — explicit-approval memory skips the foreground modal (
       },
     );
 
-    // Modal IS shown (escalation) — and we denied it, so the tool did not run.
+    // Modal IS shown (escalation); and we denied it, so the tool did not run.
     expect(requestAndWait).toHaveBeenCalledTimes(1);
     expect(executeSpy).not.toHaveBeenCalled();
     expect(result[0].is_error).toBe(true);
@@ -419,7 +395,7 @@ describe("ToolExecutor — explicit-approval memory skips the foreground modal (
 
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
-    // Legacy entry — verdictAtApproval is null (provenance lost).
+    // Legacy entry; verdictAtApproval is null (provenance lost).
     state.lookupResult = {
       scope: "persistent",
       verdictAtApproval: null,
@@ -447,7 +423,7 @@ describe("ToolExecutor — explicit-approval memory skips the foreground modal (
       },
     );
 
-    // Modal shown — legacy entry rejected. Stable structured marker emitted.
+    // Modal shown; legacy entry rejected. Stable structured marker emitted.
     expect(requestAndWait).toHaveBeenCalledTimes(1);
     const legacyCall = warnSpy.mock.calls.find((args: unknown[]) => {
       const marker = args[1];
@@ -469,7 +445,7 @@ describe("ToolExecutor — explicit-approval memory skips the foreground modal (
     // Layer 1 deny rule.
     const permMgr = pmReturning({ decision: "deny", reason: "deny rule", layer: 1 });
 
-    // A matching prior approval exists — it must be IGNORED.
+    // A matching prior approval exists; it must be IGNORED.
     state.lookupResult = {
       scope: "session",
       verdictAtApproval: "low",
@@ -513,7 +489,7 @@ describe("ToolExecutor — explicit-approval memory skips the foreground modal (
       layer: 2,
     });
 
-    // A matching prior approval exists — it must NOT skip the hard-ask gate.
+    // A matching prior approval exists; it must NOT skip the hard-ask gate.
     state.lookupResult = {
       scope: "session",
       verdictAtApproval: "low",
@@ -541,7 +517,7 @@ describe("ToolExecutor — explicit-approval memory skips the foreground modal (
       },
     );
 
-    // Modal shown — layer 2 hard gate is never memory-skipped.
+    // Modal shown; layer 2 hard gate is never memory-skipped.
     expect(requestAndWait).toHaveBeenCalledTimes(1);
     expect(result[0].is_error).toBe(true);
     // Store B must not be consulted for a layer <= 2 hard gate.
@@ -556,7 +532,7 @@ describe("ToolExecutor — explicit-approval memory skips the foreground modal (
     // Normal foreground-eligible ask (layer 6) but headless context.
     const permMgr = pmReturning({ decision: "ask", reason: "needs confirm", layer: 6 });
 
-    // A matching prior approval exists — headless must not read it.
+    // A matching prior approval exists; headless must not read it.
     state.lookupResult = {
       scope: "session",
       verdictAtApproval: "low",
@@ -584,7 +560,7 @@ describe("ToolExecutor — explicit-approval memory skips the foreground modal (
     // Headless ask with no headless reviewer route → blocked, tool not run.
     expect(result[0].is_error).toBe(true);
     expect(executeSpy).not.toHaveBeenCalled();
-    // Store B is foreground-only — never consulted on the headless path.
+    // Store B is foreground-only; never consulted on the headless path.
     expect(lookupApprovalMock).not.toHaveBeenCalled();
   });
 
@@ -696,16 +672,7 @@ describe("ToolExecutor — explicit-approval memory skips the foreground modal (
     expect(result[0].is_error).toBe(true);
   });
 
-  // ─────────────────────────────────────────────────────────────────────
-  // (i) DISCLOSURE — a foreground memory auto-approve must announce itself
-  //     to the renderer exactly like the reviewer lane's does.
-  //
-  // These assert on the CONSUMER's constructed input: the payload handed to
-  // `setBroadcastUserApprovalHit`, which is the seam boot wires to
-  // `sendToWindow(mainWindow, PERMISSIONS.userApprovalHit, ...)` — the toast
-  // in ChatView. The producer is the real ToolExecutor running a real
-  // invocation; nothing here calls the disclosure by hand.
-  // ─────────────────────────────────────────────────────────────────────
+  // Drive real invocations and assert the consumer broadcast payload so remembered auto-approval remains visible to the renderer.
 
   it("(i) foreground memory skip broadcasts the user-approval hit to the renderer", async () => {
     const executeSpy = vi.fn(async () => "wrote");
@@ -798,8 +765,7 @@ describe("ToolExecutor — explicit-approval memory skips the foreground modal (
   });
 
   it("(i3) does NOT disclose when the memory skip is refused (legacy-null → re-prompt)", async () => {
-    // Negative control: the broadcast must track the actual auto-approve, not
-    // merely the presence of a stored entry.
+    // Negative control: the broadcast must track the actual auto-approve, not merely the presence of a stored entry.
     const executeSpy = vi.fn(async () => "wrote");
     const registry = new ToolRegistry();
     registry.register(makeWriteProbeTool(executeSpy));

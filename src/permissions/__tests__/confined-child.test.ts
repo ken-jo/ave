@@ -1,19 +1,4 @@
-/**
- * The confinement primitive extracted from `worker-spawn.ts`.
- *
- * The worker suite proves the WIRING — that the primitive is called with the
- * right arguments — but it stubs `wrapWorkerCommand`, so a green run there
- * says nothing about what the primitive actually hands ASRT. These assert the
- * command line and filesystem config it composes, which is the part an
- * extraction can silently change.
- *
- * The deny floor is the reason this primitive owns that composition. In ASRT a
- * per-command `denyRead`/`denyWrite` REPLACES the shared boot floor instead of
- * extending it — an empty-but-present array is not nullish — so a caller that
- * omits it hands the child back read of `~/.ave/secrets`, `~/.ssh`, `~/.aws`.
- * Six call sites restate that floor by hand today. Callers here cannot omit it,
- * and these tests are what keeps that true.
- */
+// Per-command deny arrays replace the boot floor, even when empty; the confinement primitive must restate it so children cannot regain secret reads.
 import { afterEach, describe, expect, it, vi, beforeEach } from "vitest";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { EventEmitter } from "node:events";
@@ -21,6 +6,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
+import { egressInvocationOwner, liveEgressInvocationCount, onEgressInvocationReleased } from "../egress-invocations.js";
 import { TEST_WORKER_EGRESS_OWNER } from "../../__tests__/support/egress-fixture.js";
 import * as helperIntegrity from "../srt-win-integrity.js";
 
@@ -30,16 +16,14 @@ const wrapWorkerCommandMock = vi.fn<
 const spawnMock = vi.fn();
 const trackMock = vi.fn();
 const admissionMock = vi.fn();
-// Whether the host runs under the OS sandbox. The primitive follows this one
-// answer: wrap while it is true, spawn the caller's command as given while it
-// is false. Defaults to true so the composition cases below see the wrap.
+// Whether the host runs under the OS sandbox. The primitive follows this one answer: wrap while it is true, spawn the caller's command as given while it is false. Defaults to true so the composition cases below see the wrap.
 const sandboxActiveMock = vi.fn<() => boolean>();
 
 const TEMP_ROOT = "/home/u/.ave/sandbox/tmp";
 const HOME_ROOT = "/home/u/.ave/sandbox/home";
+const EGRESS_OWNER = { kind: "worker", role: "worker", pluginId: "x", instanceId: "main" } as const;
 const PRINCIPAL = { kind: "plugin", id: "x" } as const;
-// The principal's own directory, as the real `ensureSandboxTempPrincipalDir`
-// names it; named here so the cases can say which entry is the caller's.
+// The principal's own directory, as the real `ensureSandboxTempPrincipalDir` names it; named here so the cases can say which entry is the caller's.
 const TEMP_DIR = `${TEMP_ROOT}/plugin-78`;
 
 vi.mock("../asrt-sandbox.js", async (importOriginal) => ({
@@ -54,8 +38,7 @@ vi.mock("../asrt-sandbox.js", async (importOriginal) => ({
   isPluginWorkerConfinementActive: () => sandboxActiveMock(),
   wrapWorkerCommand: (command: string, options?: unknown) =>
     wrapWorkerCommandMock(command, options),
-  // The floor carries the sandbox private roots, as the real one does on
-  // macOS and Linux; the primitive's own directories are re-allowed under it.
+  // The floor carries the sandbox private roots, as the real one does on macOS and Linux; the primitive's own directories are re-allowed under it.
   getDefaultSensitiveReadDenyPaths: () => ["/home/u/.ave/secrets", "/home/u/.ssh", TEMP_ROOT, HOME_ROOT],
   getDefaultSensitiveWriteDenyPaths: () => ["/home/u/.ave/secrets", "/home/u/.bashrc"],
 }));
@@ -87,25 +70,69 @@ beforeEach(() => {
   admissionMock.mockReset();
 });
 
-/** The filesystem config the primitive handed ASRT on the last wrap. */
+// The filesystem config the primitive handed ASRT on the last wrap.
 function lastFilesystem() {
   const [, options] = wrapWorkerCommandMock.mock.calls.at(-1)!;
   return (options as { filesystem: Record<string, string[]> }).filesystem;
 }
 
-/**
- * The primitive's macOS and Linux behaviour: the allow-list grant mode and the
- * POSIX command line. The cases name their platform rather than inheriting the
- * runner's — on a Windows runner the line would be rendered for srt-win, and
- * the Windows rendering has cases of its own below.
- */
+// The primitive's macOS and Linux behaviour: the allow-list grant mode and the POSIX command line. The cases name their platform rather than inheriting the runner's — on a Windows runner the line would be rendered for srt-win, and the Windows rendering has cases of its own below.
 describe("spawnConfinedChild", () => {
+  it("keeps distinct invocation identities until each confined process exits", async () => {
+    const releases: unknown[] = [];
+    const unsubscribe = onEgressInvocationReleased((token, release) => releases.push({ token, ...release }));
+    try {
+      const spec = { command: "/usr/bin/python3", args: [], label: "worker:x:main", grantMode: "allow-list" as const, tempPrincipal: PRINCIPAL, baseEnv: {}, egressOwner: EGRESS_OWNER };
+      const first = await spawnConfinedChild(spec);
+      const second = await spawnConfinedChild({ ...spec, egressOwner: { ...EGRESS_OWNER, instanceId: "other" } });
+      const tokens = wrapWorkerCommandMock.mock.calls.map(([, options]) => (options as { commandId: string }).commandId);
+      expect(tokens[0]).toMatch(/^[a-f0-9]{32}$/);
+      expect(tokens[1]).not.toBe(tokens[0]);
+      expect(egressInvocationOwner(tokens[0]!)).toEqual(EGRESS_OWNER);
+      expect(egressInvocationOwner(tokens[1]!)).toMatchObject({ instanceId: "other" });
+      expect(spawnMock.mock.calls[0]![2]).toMatchObject({ detached: true });
+      first.child.emit("error", new Error("signal delivery failed"));
+      expect(egressInvocationOwner(tokens[0]!)).toEqual(EGRESS_OWNER);
+      first.child.emit("exit", 0, null);
+      expect(egressInvocationOwner(tokens[0]!)).toBeUndefined();
+      expect(egressInvocationOwner(tokens[1]!)).toBeDefined();
+      first.child.emit("exit", 0, null);
+      expect(releases).toHaveLength(1);
+      expect(releases[0]).toMatchObject({ token: tokens[0], processGroup: 4242 });
+      second.child.emit("exit", 0, null);
+    } finally { unsubscribe(); }
+  });
+
+  it.each(["wrap", "spawn", "validation", "empty argv", "wrapped callback"])("releases invocation identity after %s failure", async (failure) => {
+    const baseline = liveEgressInvocationCount();
+    if (failure === "wrap") wrapWorkerCommandMock.mockRejectedValueOnce(new Error("wrap failed"));
+    if (failure === "spawn") spawnMock.mockImplementationOnce(() => { throw new Error("spawn failed"); });
+    if (failure === "empty argv") wrapWorkerCommandMock.mockResolvedValueOnce({ argv: [], env: {} });
+    let validated = false;
+    await expect(spawnConfinedChild({ egressOwner: EGRESS_OWNER, command: "/usr/bin/python3", args: [], label: "worker:x:main", grantMode: "allow-list", tempPrincipal: PRINCIPAL, baseEnv: {},
+      assertStillValid: () => { if (failure === "validation" && validated) throw new Error("invalidated"); validated = true; },
+      onWrapped: () => { if (failure === "wrapped callback") throw new Error("callback failed"); },
+    })).rejects.toThrow();
+    expect(liveEgressInvocationCount()).toBe(baseline);
+  });
+
+  it("releases an invocation when no process starts", async () => {
+    const child = fakeChild();
+    child.pid = undefined;
+    spawnMock.mockReturnValueOnce(child);
+    await spawnConfinedChild({ egressOwner: EGRESS_OWNER, command: "/usr/bin/python3", args: [], label: "worker:x:main", grantMode: "allow-list", tempPrincipal: PRINCIPAL, baseEnv: {} });
+    const token = (wrapWorkerCommandMock.mock.calls[0]![1] as { commandId: string }).commandId;
+    expect(egressInvocationOwner(token)).toBeDefined();
+    child.emit("error", new Error("spawn failed"));
+    expect(egressInvocationOwner(token)).toBeUndefined();
+  });
+
   const hostPlatform = process.platform;
   beforeEach(() => setProcessPlatform("linux"));
   afterEach(() => setProcessPlatform(hostPlatform));
 
   it("restates the deny floor even when the caller passes no paths at all", async () => {
-    await spawnConfinedChild({ egressOwner: TEST_WORKER_EGRESS_OWNER,
+    await spawnConfinedChild({ egressOwner: EGRESS_OWNER,
       command: "/usr/bin/python3",
       args: [],
       label: "worker:x:main",
@@ -119,7 +146,7 @@ describe("spawnConfinedChild", () => {
   });
 
   it("carries the caller's allow paths alongside the floor, not instead of it", async () => {
-    await spawnConfinedChild({ egressOwner: TEST_WORKER_EGRESS_OWNER,
+    await spawnConfinedChild({ egressOwner: EGRESS_OWNER,
       command: "/usr/bin/python3",
       args: [],
       label: "worker:x:main",
@@ -131,18 +158,14 @@ describe("spawnConfinedChild", () => {
     });
 
     const fs = lastFilesystem();
-    // The temp directory comes FIRST and is not the caller's — the primitive
-    // grants it the way it restates the deny floor, for the same reason: a
-    // caller that forgot would produce a child whose `os.tmpdir()` names a
-    // directory it cannot write, and that failure surfaces inside whatever
-    // library happened to want a temp file rather than at the spawn.
+    // The temp directory comes FIRST and is not the caller's — the primitive grants it the way it restates the deny floor, for the same reason: a caller that forgot would produce a child whose `os.tmpdir` names a directory it cannot write, and that failure surfaces inside whatever library happened to want a temp file rather than at the spawn.
     expect(fs.allowRead).toEqual([TEMP_DIR, "/data/in"]);
     expect(fs.allowWrite).toEqual([TEMP_DIR, "/data/out"]);
     expect(fs.denyRead).toContain("/home/u/.ssh");
   });
 
   it("grants its principal's temp directory alone and read-denies the shared root, with no caller paths", async () => {
-    await spawnConfinedChild({ egressOwner: TEST_WORKER_EGRESS_OWNER,
+    await spawnConfinedChild({ egressOwner: EGRESS_OWNER,
       command: "/usr/bin/python3",
       args: [],
       label: "worker:x:main",
@@ -153,18 +176,15 @@ describe("spawnConfinedChild", () => {
     const fs = lastFilesystem();
     expect(fs.allowWrite).toEqual([TEMP_DIR]);
     expect(fs.allowRead).toEqual([TEMP_DIR]);
-    // Every other principal's directory is under the root, and ASRT's reads
-    // are deny-only: the floor's deny of it, restated whole, is what keeps the
-    // child from reading them all.
+    // Every other principal's directory is under the root, and ASRT's reads are deny-only: the floor's deny of it, restated whole, is what keeps the child from reading them all.
     expect(fs.denyRead).toEqual(["/home/u/.ave/secrets", "/home/u/.ssh", TEMP_ROOT, HOME_ROOT]);
     expect(fs.allowWrite).not.toContain(TEMP_ROOT);
   });
 
   it.each(["darwin", "linux"] as const)("on %s sets TMPDIR, TMP and TEMP to that directory inside the wrap", async (platform) => {
-    // ASRT puts its own `TMPDIR=<shared root>` ahead of the sandboxed command,
-    // so only an assignment made inside the wrap reaches the child.
+    // ASRT puts its own `TMPDIR=<shared root>` ahead of the sandboxed command, so only an assignment made inside the wrap reaches the child.
     setProcessPlatform(platform);
-    await spawnConfinedChild({ egressOwner: TEST_WORKER_EGRESS_OWNER,
+    await spawnConfinedChild({ egressOwner: EGRESS_OWNER,
       command: "/usr/bin/python3",
       args: ["-u"],
       label: "worker:x:main",
@@ -179,7 +199,7 @@ describe("spawnConfinedChild", () => {
   });
 
   it("refuses an allow-list spawn that names no temp principal, before any wrap", async () => {
-    await expect(spawnConfinedChild({ egressOwner: TEST_WORKER_EGRESS_OWNER,
+    await expect(spawnConfinedChild({ egressOwner: EGRESS_OWNER,
       command: "/usr/bin/python3",
       args: [],
       label: "worker:x:main",
@@ -191,9 +211,8 @@ describe("spawnConfinedChild", () => {
   });
 
   it("omits allow paths under deny-only, where ACLs grant reachability instead", async () => {
-    // Passing them here would imply a confinement the wrap does not perform:
-    // on Windows the grant is held against a separate holder process.
-    await spawnConfinedChild({ egressOwner: TEST_WORKER_EGRESS_OWNER,
+    // Passing them here would imply a confinement the wrap does not perform: on Windows the grant is held against a separate holder process.
+    await spawnConfinedChild({ egressOwner: EGRESS_OWNER,
       command: "python.exe",
       args: [],
       label: "worker:x:main:asrt-win",
@@ -213,7 +232,7 @@ describe("spawnConfinedChild", () => {
   });
 
   it("carries the plugins-root deny to the wrap under allow-list, beside the floor and never in place of it", async () => {
-    await spawnConfinedChild({ egressOwner: TEST_WORKER_EGRESS_OWNER,
+    await spawnConfinedChild({ egressOwner: EGRESS_OWNER,
       command: "/usr/bin/node",
       args: [],
       label: "plugin-child:x",
@@ -232,7 +251,7 @@ describe("spawnConfinedChild", () => {
 
   it("refuses the plugins-root deny under deny-only, where nothing would re-allow the child's own directories", async () => {
     await expect(
-      spawnConfinedChild({ egressOwner: TEST_WORKER_EGRESS_OWNER,
+      spawnConfinedChild({ egressOwner: EGRESS_OWNER,
         command: "/usr/bin/node",
         args: [],
         label: "worker:x:w:asrt-win",
@@ -245,9 +264,8 @@ describe("spawnConfinedChild", () => {
   });
 
   it("quotes every token so a path with spaces cannot mis-split", async () => {
-    // ASRT runs this through a shell, so an unquoted path becomes two arguments
-    // and the child either fails or opens something else.
-    await spawnConfinedChild({ egressOwner: TEST_WORKER_EGRESS_OWNER,
+    // ASRT runs this through a shell, so an unquoted path becomes two arguments and the child either fails or opens something else.
+    await spawnConfinedChild({ egressOwner: EGRESS_OWNER,
       command: "/opt/my tools/python3",
       args: ["--root", "/data/my folder", "--flag"],
       label: "worker:x:main",
@@ -262,15 +280,14 @@ describe("spawnConfinedChild", () => {
   });
 
   it("reports the wrap BEFORE spawning, so the caller can undo ASRT state", async () => {
-    // The wrap increments ASRT per-command state. A spawn failure after it must
-    // still decrement, and only the caller knows how its cleanup is arranged.
+    // The wrap increments ASRT per-command state. A spawn failure after it must still decrement, and only the caller knows how its cleanup is arranged.
     const order: string[] = [];
     spawnMock.mockImplementation(() => {
       order.push("spawn");
       return fakeChild();
     });
 
-    await spawnConfinedChild({ egressOwner: TEST_WORKER_EGRESS_OWNER,
+    await spawnConfinedChild({ egressOwner: EGRESS_OWNER,
       command: "/usr/bin/python3",
       args: [],
       label: "worker:x:main",
@@ -284,13 +301,10 @@ describe("spawnConfinedChild", () => {
   });
 
   it("spawns the caller's own command, unwrapped, while the host is not sandboxed", async () => {
-    // A child is confined exactly as much as the host is. With the sandbox
-    // off the host runs its own tools plain, so the child is spawned as given:
-    // no wrap, no `onWrapped` (there is no ASRT state to undo), and no ASRT
-    // env overlay — the caller's baseEnv plus its own extras is the whole env.
+    // A child is confined exactly as much as the host is. With the sandbox off the host runs its own tools plain, so the child is spawned as given: no wrap, no `onWrapped` (there is no ASRT state to undo), and no ASRT env overlay — the caller's baseEnv plus its own extras is the whole env.
     sandboxActiveMock.mockReturnValue(false);
     const onWrapped = vi.fn();
-    await spawnConfinedChild({ egressOwner: TEST_WORKER_EGRESS_OWNER,
+    await spawnConfinedChild({ egressOwner: EGRESS_OWNER,
       command: "/usr/bin/python3",
       args: ["-m", "worker", "--socket", "/tmp/w.sock"],
       label: "worker:x:main",
@@ -312,11 +326,9 @@ describe("spawnConfinedChild", () => {
   });
 
   it("checks validity on both sides of the wrap", async () => {
-    // Windows holder liveness: the ACL grant is only real while the holder is
-    // alive, so a holder that dies mid-wrap must not yield a child believed to
-    // be confined by a grant that no longer exists.
+    // Windows holder liveness: the ACL grant is only real while the holder is alive, so a holder that dies mid-wrap must not yield a child believed to be confined by a grant that no longer exists.
     const assertStillValid = vi.fn();
-    await spawnConfinedChild({ egressOwner: TEST_WORKER_EGRESS_OWNER,
+    await spawnConfinedChild({ egressOwner: EGRESS_OWNER,
       command: "/usr/bin/python3",
       args: [],
       label: "worker:x:main",
@@ -336,7 +348,7 @@ describe("spawnConfinedChild", () => {
       });
 
     await expect(
-      spawnConfinedChild({ egressOwner: TEST_WORKER_EGRESS_OWNER,
+      spawnConfinedChild({ egressOwner: EGRESS_OWNER,
         command: "/usr/bin/python3",
         args: [],
         label: "worker:x:main",
@@ -352,7 +364,7 @@ describe("spawnConfinedChild", () => {
   it("refuses an empty argv rather than spawning something arbitrary", async () => {
     wrapWorkerCommandMock.mockResolvedValueOnce({ argv: [], env: {} });
     await expect(
-      spawnConfinedChild({ egressOwner: TEST_WORKER_EGRESS_OWNER,
+      spawnConfinedChild({ egressOwner: EGRESS_OWNER,
         command: "/usr/bin/python3",
         args: [],
         label: "worker:x:main",
@@ -385,7 +397,7 @@ describe("spawnConfinedChild", () => {
       argv: ["/usr/bin/sandbox-exec", "-p", "(profile)", "/bin/sh", "-c", "python3"],
       env: {},
     });
-    await spawnConfinedChild({ egressOwner: TEST_WORKER_EGRESS_OWNER,
+    await spawnConfinedChild({ egressOwner: EGRESS_OWNER,
       command: "/usr/bin/python3",
       args: ["-u"],
       label: "worker:x:main",
@@ -401,9 +413,8 @@ describe("spawnConfinedChild", () => {
   });
 
   it("lets the sandbox HOME win over the base environment", async () => {
-    // The sandbox process home is the last overlay on purpose: a stale HOME
-    // inherited from the host would send the child's writes outside its jail.
-    await spawnConfinedChild({ egressOwner: TEST_WORKER_EGRESS_OWNER,
+    // The sandbox process home is the last overlay on purpose: a stale HOME inherited from the host would send the child's writes outside its jail.
+    await spawnConfinedChild({ egressOwner: EGRESS_OWNER,
       command: "/usr/bin/python3",
       args: [],
       label: "worker:x:main",
@@ -420,7 +431,7 @@ describe("spawnConfinedChild", () => {
   });
 
   it("registers the child under the caller's label", async () => {
-    await spawnConfinedChild({ egressOwner: TEST_WORKER_EGRESS_OWNER,
+    await spawnConfinedChild({ egressOwner: EGRESS_OWNER,
       command: "/usr/bin/python3",
       args: [],
       label: "worker:meeting:main:asrt",
@@ -429,7 +440,7 @@ describe("spawnConfinedChild", () => {
       baseEnv: {},
     });
     expect(admissionMock).toHaveBeenCalledWith("worker:meeting:main:asrt");
-    expect(trackMock).toHaveBeenCalledWith(expect.anything(), { label: "worker:meeting:main:asrt" });
+    expect(trackMock).toHaveBeenCalledWith(expect.anything(), { label: "worker:meeting:main:asrt", killProcessGroup: true });
   });
 });
 
@@ -445,7 +456,7 @@ describe("spawnConfinedChild reports the wrap it applied", () => {
     setProcessPlatform(platform);
     const hostSystemRoot = process.env.SystemRoot;
     process.env.SystemRoot = "C:\\Windows";
-    const spawned = await spawnConfinedChild({ egressOwner: TEST_WORKER_EGRESS_OWNER,
+    const spawned = await spawnConfinedChild({ egressOwner: EGRESS_OWNER,
       command: "/usr/bin/python3",
       args: [],
       label: "worker:x:main",
@@ -463,12 +474,11 @@ describe("spawnConfinedChild reports the wrap it applied", () => {
   });
 
   it("reports an unwrapped child as unconfined on every platform, whatever the setting would say", async () => {
-    // The answer follows the wrap, not `features.osToolSandbox`: the host can
-    // have the setting on and still not run a sandbox, and then nothing wraps.
+    // The answer follows the wrap, not `features.osToolSandbox`: the host can have the setting on and still not run a sandbox, and then nothing wraps.
     sandboxActiveMock.mockReturnValue(false);
     for (const platform of ["darwin", "linux", "win32"] as const) {
       setProcessPlatform(platform);
-      const spawned = await spawnConfinedChild({ egressOwner: TEST_WORKER_EGRESS_OWNER,
+      const spawned = await spawnConfinedChild({ egressOwner: EGRESS_OWNER,
         command: "/usr/bin/python3",
         args: [],
         label: "worker:x:main",
@@ -483,7 +493,7 @@ describe("spawnConfinedChild reports the wrap it applied", () => {
 
   it("refuses to name a wrap for a platform no substrate serves, before anything is spawned", async () => {
     setProcessPlatform("freebsd");
-    await expect(spawnConfinedChild({ egressOwner: TEST_WORKER_EGRESS_OWNER,
+    await expect(spawnConfinedChild({ egressOwner: EGRESS_OWNER,
       command: "/usr/bin/python3",
       args: [],
       label: "worker:x:main",
@@ -495,12 +505,7 @@ describe("spawnConfinedChild reports the wrap it applied", () => {
   });
 });
 
-/**
- * The `cmd.exe` rendering a sandboxed Windows plugin child launches through
- * (`windowsShell: "cmd"`). srt-win hands the line to `cmd.exe /d /v:off /s
- * /c` verbatim, so this line IS the shell input: every token is quoted, and
- * what quoting cannot neutralise is refused before anything is wrapped.
- */
+// The `cmd.exe` rendering a sandboxed Windows plugin child launches through (`windowsShell: "cmd"`). srt-win hands the line to `cmd.exe /d /v:off /s /c` verbatim, so this line IS the shell input: every token is quoted, and what quoting cannot neutralise is refused before anything is wrapped.
 describe("spawnConfinedChild's cmd.exe rendering on Windows", () => {
   const hostPlatform = process.platform;
   const hostSystemRoot = process.env.SystemRoot;
@@ -515,7 +520,7 @@ describe("spawnConfinedChild's cmd.exe rendering on Windows", () => {
   });
 
   function spawnCmd(command: string, args: readonly string[], env?: Record<string, string>) {
-    return spawnConfinedChild({ egressOwner: TEST_WORKER_EGRESS_OWNER,
+    return spawnConfinedChild({ egressOwner: EGRESS_OWNER,
       command,
       args,
       label: "plugin-child:x",
@@ -569,7 +574,7 @@ describe("spawnConfinedChild's cmd.exe rendering on Windows", () => {
   });
 
   it("refuses command-line environment without the cmd rendering", async () => {
-    await expect(spawnConfinedChild({ egressOwner: TEST_WORKER_EGRESS_OWNER,
+    await expect(spawnConfinedChild({ egressOwner: EGRESS_OWNER,
       command: "C:\\app.exe",
       args: [],
       label: "plugin-child:x",
@@ -581,18 +586,13 @@ describe("spawnConfinedChild's cmd.exe rendering on Windows", () => {
 
   it("refuses a Windows sandboxed spawn that names neither the relay nor cmd: srt-win's PowerShell launch would lose its stdin, environment and exit code", async () => {
     await expect(
-      spawnConfinedChild({ egressOwner: TEST_WORKER_EGRESS_OWNER, command: "C:\\py.exe", args: ["w.py"], label: "worker:x:main", grantMode: "deny-only", baseEnv: {} }),
+      spawnConfinedChild({ egressOwner: EGRESS_OWNER, command: "C:\\py.exe", args: ["w.py"], label: "worker:x:main", grantMode: "deny-only", baseEnv: {} }),
     ).rejects.toThrow(/names windowsStdio "relay" or windowsShell "cmd"/);
     expect(spawnMock).not.toHaveBeenCalled();
   });
 });
 
-/**
- * The Windows stdio relay (`windowsStdio: "relay"`): srt-win runs the host's
- * own runtime in relay mode, and the program — its command, arguments,
- * environment and directory — travels in the request over the authenticated
- * channel, never on the `cmd.exe` line.
- */
+// The Windows stdio relay (`windowsStdio: "relay"`): srt-win runs the host's own runtime in relay mode, and the program — its command, arguments, environment and directory — travels in the request over the authenticated channel, never on the `cmd.exe` line.
 describe("spawnConfinedChild's Windows stdio relay", () => {
   const hostPlatform = process.platform;
   const hostSystemRoot = process.env.SystemRoot;
@@ -614,8 +614,7 @@ describe("spawnConfinedChild's Windows stdio relay", () => {
   }
 
   function spawnRelayed(overrides: Partial<Parameters<typeof spawnConfinedChild>[0]> = {}) {
-    return spawnConfinedChild({
-      egressOwner: TEST_WORKER_EGRESS_OWNER,
+    return spawnConfinedChild({ egressOwner: EGRESS_OWNER,
       command: "C:\\Users\\example\\100% tools\\python.exe",
       args: ["w.py", 'say "hi"', "%PATH%"],
       label: "worker:x:main:asrt-win",
@@ -668,9 +667,7 @@ describe("spawnConfinedChild's Windows stdio relay", () => {
         args: ["w.py", 'say "hi"', "%PATH%"],
         cwd: "C:\\Users\\example\\work dir",
         env: {
-          // srt-win keeps PATH, PATHEXT, its proxy, its git config and the
-          // account's own USERNAME; the sandbox HOME wins over the base one;
-          // Node's symlink-preserving flags lead whatever NODE_OPTIONS was.
+          // srt-win keeps PATH, PATHEXT, its proxy, its git config and the account's own USERNAME; the sandbox HOME wins over the base one; Node's symlink-preserving flags lead whatever NODE_OPTIONS was.
           HOME: "C:\\sandbox\\home",
           TEMP: "C:\\sandbox\\home\\tmp",
           PLUGIN_PROBE: "kept",

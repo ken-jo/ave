@@ -33,8 +33,8 @@ function makeRationaleRequest(args: unknown): ApprovalRequest {
     category: "tool",
     kind: "rationale",
     allowedChoices: ["allow-once", "deny-once"],
-    // Deliberately different from the display contract: the renderer must not
-    // use generic request fields for a rationale decision card.
+    // Deliberately different from the display contract: the renderer must not use generic request fields for a rationale
+    // decision card.
     toolName: "untrusted-request-tool",
     toolCategory: "shell",
     args,
@@ -92,8 +92,8 @@ describe("ToolApprovalContent rationale card", () => {
     ).toBeNull();
     expect(screen.queryByTestId("rationale-model-fallback")).not.toBeInTheDocument();
 
-    // Generic request fields, raw args JSON, and raw details must not cross
-    // into the rationale UI, even when their values disagree with host facts.
+    // Generic request fields, raw args JSON, and raw details must not cross into the rationale UI, even when their values
+    // disagree with host facts.
     expect(screen.queryByText("untrusted-request-tool")).not.toBeInTheDocument();
     expect(screen.queryByText("UNTRUSTED request reason: do not render this")).not.toBeInTheDocument();
     expect(screen.queryByText("/untrusted/raw-target")).not.toBeInTheDocument();
@@ -185,8 +185,8 @@ describe("ToolApprovalContent rationale card", () => {
     );
     expect(screen.queryByTestId("rationale-approval-card")).not.toBeInTheDocument();
     expect(screen.queryByTestId("raw-injection")).not.toBeInTheDocument();
-    // Fail-closed is now BY OMISSION: an approval whose sealed evidence
-    // cannot be verified does not offer allow options at all.
+    // Fail-closed is now BY OMISSION: an approval whose sealed evidence cannot be verified does not offer allow options at
+    // all.
     expect(screen.queryByTestId(TEST_IDS.approveButton)).toBeNull();
     expect(screen.queryByTestId(TEST_IDS.allowAlwaysButton)).toBeNull();
 

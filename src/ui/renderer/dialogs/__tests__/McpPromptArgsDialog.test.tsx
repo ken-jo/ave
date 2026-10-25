@@ -32,8 +32,8 @@ describe("McpPromptArgsDialog", () => {
     expect(submit.disabled).toBe(false);
 
     fireEvent.click(submit);
-    // A blank OPTIONAL argument is omitted, not sent as "" — an empty string is
-    // a value, and a server may treat the two differently.
+    // A blank OPTIONAL argument is omitted, not sent as "" — an empty string is a value, and a server may treat the two
+    // differently.
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ name: "summarize" }), {
       topic: "q3 hiring",
     });
@@ -110,10 +110,7 @@ describe("McpPromptArgsDialog", () => {
     expect((screen.getByTestId("mcp-prompt-arg-input-topic") as HTMLInputElement).value).toBe("");
   });
 
-  // `prompts/list` output is a cast, not a check. A name that collides with an
-  // Object.prototype member used to be read off the prototype — `(…).trim is not a
-  // function` DURING RENDER, and this dialog mounts outside the error boundary, so
-  // the whole renderer unmounted.
+  // Validate argument names and store values outside Object.prototype; this dialog can render outside an error boundary.
   it("handles an argument named like an Object.prototype member", () => {
     const onSubmit = vi.fn();
     render(
@@ -171,9 +168,7 @@ describe("McpPromptArgsDialog", () => {
     expect(screen.getByTestId("mcp-prompt-args-dialog").querySelectorAll("input")).toHaveLength(1);
   });
 
-  // Main bounds argument KEYS at 64 chars. A longer required name used to render a
-  // field the user could fill, which main then dropped — the request went out
-  // without it and failed server-side with a generic toast.
+  // Share main's 64-character key bound so required fields cannot be collected and silently discarded.
   it("refuses to run a prompt whose required argument the form cannot offer", () => {
     render(
       <McpPromptArgsDialog

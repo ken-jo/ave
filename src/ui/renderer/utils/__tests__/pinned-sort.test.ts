@@ -26,9 +26,8 @@ describe("sortWithPinnedFirst", () => {
   });
 
   it("returns unpinned items unmoved relative to each other after unpinning (order reverts)", () => {
-    // Simulates: item was pinned (sorted to front), then unpinned — a
-    // re-sort with the updated isPinned predicate must return it to its
-    // original recency-order position among the (now all-unpinned) items.
+    // Simulates: item was pinned (sorted to front), then unpinned — a re-sort with the updated isPinned predicate must return
+    // it to its original recency-order position among the (now all-unpinned) items.
     const items = ["first", "second", "third"];
     const pinnedState = new Set(["second"]);
 

@@ -40,9 +40,8 @@ describe("explicit host execution approval", () => {
     expect(container.querySelector('[data-testid="tool-approval-shell-environment"]')?.textContent).toContain(t("shellExecution.temporaryHome"));
   });
 
-  // Design I3: an unavailable sandbox follows the normal rules, so its ask is
-  // an ordinary card that says the sandbox is unavailable, not a host-consent
-  // card (that framing stays for an explicit host request).
+  // Design I3: an unavailable sandbox follows the normal rules, so its ask is an ordinary card that says the sandbox is
+  // unavailable, not a host-consent card (that framing stays for an explicit host request).
   it("warns that the sandbox is unavailable on an ordinary fallback ask, without host-consent framing", () => {
     const fallback = request(false);
     fallback.args = { command: "printf fallback" };

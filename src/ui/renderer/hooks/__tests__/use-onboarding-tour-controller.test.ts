@@ -47,8 +47,8 @@ describe("useOnboardingTourController", () => {
     await waitFor(() => expect(updateSettings).toHaveBeenCalledWith({
       features: { onboardingCompleted: true },
     }));
-    // A dismissal is not a completion: the user said they did not want to be
-    // walked through the app, so no proposal is put in front of them either.
+    // A dismissal is not a completion: the user said they did not want to be walked through the app, so no proposal is put in
+    // front of them either.
     expect(listPending).not.toHaveBeenCalled();
 
     act(() => result.current.onTourComplete());

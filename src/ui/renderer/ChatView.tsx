@@ -66,11 +66,7 @@ import { TEST_IDS } from "../../shared/test-ids.js";
 import { usePrefersReducedMotion } from "./hooks/use-prefers-reduced-motion.js";
 import { formatTokensExact } from "../../lib/cost-format.js";
 
-/**
- * ChatView — consumes cross-cutting state via `useChatContext()`. Action
- * callbacks stay as direct props so data flow for user-driven side effects
- * remains explicit at the App level.
- */
+/** Chat state comes from context; user-action callbacks remain explicit props. */
 export interface ChatViewProps {
   api: AveApi;
   onAsk: (
@@ -83,49 +79,34 @@ export interface ChatViewProps {
   onRunPluginPrompt: (prompt: AgentPluginTemplatePrompt) => void;
   onEditSave: (idx: number, text: string) => void | Promise<void>;
   onFork: (idx: number) => void | Promise<void>;
-  /**
-   * Apply the chosen restore mode before this user message. Conversation
-   * restore returns its text to the composer, unsent; code-only keeps history.
-   * Report host acceptance so refusals preserve the current conversation.
-   */
+  /** Restore returns text to the composer unsent; code-only keeps history. Refusals preserve the current conversation. */
   onReturnHere: (idx: number, mode?: RewindMode) => Promise<{ ok: boolean }>;
   onToggleStar: (idx: number) => void | Promise<void>;
   onRetryEffort: () => void | Promise<void>;
-  /**
-   * `userBubble`: the bubble to show for the turn Continue starts. Set when the
-   * host appends a new user row (resuming an interrupted turn) rather than
-   * re-running the existing one.
-   */
+  /** userBubble is present only when Continue appends a new user row instead of rerunning the existing one. */
   onContinueFromLastUser?: (sessionId: string, opts?: { userBubble?: string }) => void | Promise<void>;
   isEntryStarred: (idx: number) => string | null;
-  /** Abort current streaming turn */
   onAbort: () => void | Promise<void>;
   /** Mid-stream "guide" utterance — non-interrupting direction adjustment. Returns IPC result so caller can preserve typed text on rejection. */
   onGuide: (text: string) => Promise<{ ok: true } | { ok: false; error: string }>;
   /** Surface visible error in chat transcript when guide is rejected (queue-full / too-long / no-active-turn). */
   onGuideError: (message: string) => void;
-  /** Submit thumbs up/down feedback for an assistant message. */
   onFeedback?: (messageIdx: number, rating: "up" | "down", reason?: string) => void | Promise<void>;
-  /** Workflow tool state — lifted to App level so panel survives view navigation */
+  /** Workflow state stays at App level to survive view navigation. */
   subAgentSpawns: SubAgentSpawn[];
   loadedSkills: SkillBadgeProps[];
-  /** True when there are pending ask_user_question requests — used to suppress routine overlay */
+  /** Pending questions suppress routine overlays. */
   hasAskQuestions: boolean;
   /** Pending ask_user_question requests rendered in the non-modal composer dock. */
   askQuestions: AskUserQuestionRequest[];
   /** App-owned `/allow` interceptor; approval UI itself lives beside routed content. */
   approvalSentenceInterceptSubmit?: (text: string) => boolean;
-  /**
-   * The requests this conversation (or a sub-agent it spawned) is parked on,
-   * head first. Their card is drawn INSIDE this view, over its own composer;
-   * no other tile sees it.
-   */
+  /** Only this conversation draws its own pending questions and those of its sub-agents. */
   pendingApprovals: readonly ApprovalRequest[];
   /** Called when a card submits or is dismissed; removes it from `askQuestions`. */
   onResolveAskQuestion: (id: string) => void;
   /** Plugin list — surfaced inside the SlashPicker's plugin category. */
   plugins: PluginEntry[];
-  /** Navigate to a plugin view */
   onSelectPlugin: (viewKey: string) => void;
   /** Workspace mode; chat mode compacts the footer model label. */
   appMode?: AppMode;
@@ -136,10 +117,8 @@ export interface ChatViewProps {
   onLoadSession?: (sessionId: string) => void | boolean | Promise<void | boolean>;
 
   commandActions: QuickAction[];
-  /** Controlled open state for SlashPicker */
   slashPickerOpen: boolean;
   onSlashPickerOpenChange: (open: boolean) => void;
-  // Fork-based revert is replaced by the same-session checkpoint chain.
   // sessionId remains stable until the user explicitly branches from a checkpoint.
 
   /** Toast surface rendered directly above the composer input. */
@@ -152,34 +131,21 @@ export interface ChatViewProps {
   sidePanelOpen?: boolean;
   onColumnsVisibilityChange?: (visibility: ChatColumnsVisibility) => void;
   onSidePanelOpenChange: (open: boolean) => void;
-  /**
-   * The tile this view belongs to. Its side panel's tabs are what the main
-   * area moves terminals and pages into and out of (`surface-moves.ts`).
-   */
+  /** Tile identity addresses side-panel tabs during surface moves. */
   chatGroupId?: string;
-  /**
-   * A stored side chat a sidebar row asked THIS tile to show. Addressed to one
-   * tile because the panel that draws it is one conversation's own column.
-   */
+  /** Side-chat requests target the tile whose conversation owns the panel. */
   sideChatOpenRequest?: SideChatOpenRequest | undefined;
   /** Tell the window its conversation list is stale — a side-chat turn moves a row in it. */
   onSessionsChanged?: (() => void | Promise<void>) | undefined;
-  /**
-   * The side chat holds a card the user cannot see from here — the window's
-   * verdict, passed down so the panel's tab carries the same dot the pane's
-   * toggle does.
-   */
+  /** Use the window's hidden-card verdict so panel tabs and pane toggles show the same attention dot. */
   sideChatPendingAnswer?: boolean;
   /** Constrain transcript and composer to a centered reading column. */
   blogLayout?: boolean;
   /** Active project — drives the empty-state composer's project selector trigger label. */
   activeProject?: ProjectIdentity;
-  /** Full known project list — the SAME source Sidebar's project group reads
-   *  from, so the composer selector never drifts from the sidebar's list. */
+  /** Use the sidebar's project list so both selectors agree. */
   workspaceProjects?: ProjectIdentity[];
-  /** Switch the active project — the SAME handler wired to the sidebar's project rows. */
   onNewChatForProject?: (project: { projectRoot?: string; projectName?: string }) => void | Promise<void>;
-  /** Re-fetch the workspace project list (e.g. after adding a project folder). */
   onRefreshProjects?: () => void | Promise<void>;
   onProjectError?: ProjectErrorReporter;
 }
@@ -190,7 +156,6 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
   const { t } = useTranslation();
   const approvals = useApprovalSurface();
   const approvalHead = pendingApprovals[0] ?? null;
-  // We still need the api for SessionTasksPanel; obtain it via singleton.
   const workflowApi = getApi();
   const debugStreamEnabled = isDebugStreamEnabled();
   const composerRef = useRef<ComposerHandle | null>(null);
@@ -213,22 +178,14 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
     llmVendor, llmModel, llmRouteModalities,
   } = useChatContext();
 
-  // Checkpoint view-mode — null = live, non-null = viewing a past checkpoint
-  // slice. Owned at the composition root because it is read by useChatScroll
-  // (auto-scroll suppression) + transcript slicing, and written by
-  // useCheckpointView (setViewMode).
+  // Checkpoint view mode owns both transcript slicing and auto-scroll suppression.
   const [viewMode, setViewMode] = useState<ViewModeState | null>(null);
 
-  // In view-mode, show only the sliced entries up to the checkpoint.
   const visibleEntries = useMemo(
     () => viewMode ? entries.slice(0, viewMode.slicedRangeEnd) : entries,
     [entries, viewMode],
   );
-  // An empty, settled conversation: the boot key/readiness probe has resolved
-  // (including the no-key state), nothing is waiting on the user, and no
-  // suggestion ghost is on screen. The composer stays bottom-docked either way
-  // — this only decides whether the new-chat affordances (project selector,
-  // suggested tasks) are offered.
+  // Offer new-chat controls only after readiness settles, with no pending request or suggestion ghost.
   const emptyConversation =
     appMode === "work" &&
     hasAskQuestions === false &&
@@ -236,23 +193,16 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
     hasApiKey !== null &&
     !suggestedRepliesActive &&
     viewMode === null;
-  // Depends on the layout alone, never on emptiness: a dock that changed
-  // width on the first send would be the very layout jump the bottom-docked
-  // composer exists to avoid.
+  // Composer width follows layout, not emptiness, to avoid a jump on first send.
   const dockColumnClass = blogLayout
     ? "mx-auto w-full max-w-(--reading-column-max) min-w-0"
     : "w-full max-w-full min-w-0";
-  // Empty-state composer project selector — open state is owned here (not
-  // inside ComposerProjectSelector) so it is force-closed the instant the
-  // conversation stops being empty (first message sent) and its trigger
-  // unmounts.
+  // Close the project selector when its empty-state trigger unmounts.
   const [projectSelectorOpen, setProjectSelectorOpen] = useState(false);
   useEffect(() => {
     if (!emptyConversation) setProjectSelectorOpen(false);
   }, [emptyConversation]);
-  // Sub-agent rows come only from the current runtime's agent-spawn event stream.
-  // Past parent transcripts are not reconstructed in development builds; the
-  // addressable child session id on the live spawn is the only transcript SOT.
+  // Sub-agent rows come only from live spawn events with addressable child session ids.
   const previewModel = useMemo(
     () => collectChatPreviewModel({ entries: visibleEntries, attachments }),
     [attachments, visibleEntries],
@@ -265,29 +215,19 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
     () => new Set(previewModel.targets.map((target) => target.id)),
     [previewModel.targets],
   );
-  // Latest resolvable target-id set, read (non-reactively) by the session-switch
-  // prune effect. handleLoadSession applies the new session's entries and the
-  // new session id in one batched commit, so this ref already reflects the new
-  // session by the time the prune effect fires.
+  // Read target ids through a ref so session-switch pruning sees the entries committed with the new session id.
   const previewTargetIdsRef = useRef(previewTargetIds);
   useEffect(() => {
     previewTargetIdsRef.current = previewTargetIds;
   }, [previewTargetIds]);
   const [selectedPreviewId, setSelectedPreviewId] = useState<string | null>(null);
-  // Workspace-tab store lifted out of ChatSidePanel. ChatSidePanel is unmounted
-  // whenever the rail closes / the view leaves home / the session switches
-  // (see the conditional mount below); owning the tabs inside it would destroy
-  // them on every such transition. ChatView stays mounted across those, so the
-  // store lives here — tab state now survives. See preview/workspace-tabs.ts.
+  // Keep workspace tabs in ChatView so closing the rail or navigating away does not destroy them.
   const workspaceTabs = useWorkspaceTabs();
   const surfaceMoves = useSurfaceMoves();
-  // The main area reaches this tile's side-panel tabs through the sink: a
-  // terminal or page moved here from a pane lands in these tabs.
   const { adoptTab, releaseTab, hasTab, setActiveTabId: selectWorkspaceTab } = workspaceTabs;
   const openSidePanelRef = useRef(onSidePanelOpenChange);
   openSidePanelRef.current = onSidePanelOpenChange;
-  // What the saved layout records of these tabs: the terminals and pages, with
-  // a terminal's last directory and a page's last address.
+  // Persist terminal directories and page addresses with the pane layout.
   const savedTabsRef = useRef({ tabs: workspaceTabs.tabs, browserUrlByTab: workspaceTabs.browserUrlByTab });
   savedTabsRef.current = { tabs: workspaceTabs.tabs, browserUrlByTab: workspaceTabs.browserUrlByTab };
   useEffect(() => {
@@ -311,30 +251,25 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
         ));
       },
     });
-    // Tabs a restored layout gave this pane, if its restore came first.
     for (const tab of takeRestoredSideTabs(chatGroupId)) adoptTab({ id: tab.tabId, kind: tab.kind, ordinal: tab.ordinal }, tab.url);
     return () => {
       unregister();
-      // The group is going: a terminal or page of its side panel can no
-      // longer be what the side chat acts on.
+      // Clear the side-chat target when its group leaves.
       for (const tab of savedTabsRef.current.tabs) if (isMovableTabKind(tab.kind)) forgetActiveSurface(tab.id);
     };
   }, [chatGroupId, adoptTab, releaseTab, hasTab, selectWorkspaceTab]);
-  // A tab opened, closed, moved or re-pointed is a layout change to save.
   const savedTabsKey = workspaceTabs.tabs.filter((tab) => isMovableTabKind(tab.kind)).map((tab) => `${tab.id}=${workspaceTabs.browserUrlByTab[tab.id] ?? ""}`).join("|");
   useEffect(() => {
     emitMainLayoutChange();
   }, [savedTabsKey]);
   const seenSubAgentSpawnKeysRef = useRef<Set<string>>(new Set());
-  // Docked side-panel width — durable shell preference (settings round-trip),
-  // owned next to the tab store so it survives ChatSidePanel unmount.
+  // Keep persisted panel width beside the tab store so it survives panel unmount.
   const {
     width: sidePanelWidth,
     setWidth: setSidePanelWidth,
     commitWidth: commitSidePanelWidth,
   } = usePanelWidth(api, SIDE_PANEL_WIDTH_PREF);
-  // Measure the tile, including both optional columns, so hiding a column
-  // cannot change the measurement that decided its visibility.
+  // Measure both optional columns so hiding one cannot change the visibility decision.
   const chatViewRootRef = useRef<HTMLDivElement | null>(null);
   const dockedPanelMotionRef = useRef<HTMLDivElement | null>(null);
   const panelSlot = usePanePanelSlot();
@@ -350,24 +285,15 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
   const { panelLayout, panelWidth: dockedPanelWidth } = columns;
   const dockedPanelShouldOpen = columns.panelVisible;
   const [dockedPanelPresent, setDockedPanelPresent] = useState(dockedPanelShouldOpen);
-  // A side chat's session claim, its parked approval cards and its question
-  // queue live in its view, and that view lives in the panel. Closing the
-  // panel therefore keeps it mounted — hidden — while a side-chat tab exists:
-  // unmounting it released the claim and dropped a question the host was
-  // still waiting on, so the gate sat out its deadline with nothing to answer.
-  // Likewise a browser tab the agent opened: its page is the agent's working
-  // state, and unmounting the panel would destroy it mid-task.
+  // Keep side-chat and agent-browser tabs mounted while hidden to preserve pending gates and working pages.
   const sideChatKeepsPanel = workspaceTabs.tabs.some((tab) =>
     (tab.kind === "side-chat" && !tab.content) || tab.agentRequestId !== undefined);
-  // Always start collapsed so an initially-open persisted panel never paints
-  // expanded before the opening transition lifecycle begins.
+  // Start collapsed even for a persisted open panel so the opening transition can run.
   const [dockedPanelExpanded, setDockedPanelExpanded] = useState(false);
   const [sidePanelResizing, setSidePanelResizing] = useState(false);
   const reduceMotion = usePrefersReducedMotion();
 
-  // Resizing only disables the CSS transition. It must not retrigger this
-  // mount/expand lifecycle, otherwise the first drag frame collapses the
-  // panel to 0px before expanding it again.
+  // Resizing must disable transitions without retriggering mount expansion.
   useEffect(() => {
     if (dockedPanelShouldOpen) {
       setDockedPanelPresent(true);
@@ -376,9 +302,7 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
         return;
       }
       setDockedPanelExpanded(false);
-      // Two frames guarantee the collapsed 0px state is painted before the
-      // expanded state is committed. A single RAF can be coalesced with the
-      // mount on fast machines, making the panel appear to pop in.
+      // Two animation frames ensure the collapsed state paints; one may coalesce with mount.
       let expansionFrame = 0;
       const mountFrame = window.requestAnimationFrame(() => {
         expansionFrame = window.requestAnimationFrame(() => {
@@ -415,40 +339,28 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
     (px: number) => {
       setSidePanelResizing(false);
       setSidePanelWidth(px);
-      // Persist the preferred width, bounded below by the shared panel floor.
       commitSidePanelWidth(Math.max(SIDE_PANEL_MIN_RESERVE, px));
     },
     [commitSidePanelWidth, setSidePanelWidth],
   );
 
-  // Tool activity — derived here (only this view sees the transcript) so its
-  // open-actions reach the workspace store / preview model / side-panel toggle
-  // that also live at ChatView level. It lives in the work panel: the empty
-  // launcher shows the compact report, and the file / browser / activity tabs
-  // list it in full. Left-click routes items in-app; right-click offers "open
-  // in system app" (web only — tool-derived local paths have no authorized
-  // OS-open channel, so that menu item is hidden for files).
+  // Tool-derived local paths have no authorized OS-open channel; offer system-open only for web items.
   const toolActivity = useMemo(() => computeToolActivity(entries), [entries]);
   const promptHistory = useMemo(() => collectPromptHistory(entries), [entries]);
-  // A session whose last turn the previous app run never finished. Offered,
-  // never auto-run: the user decides whether the model picks it back up.
+  // Offer interrupted-session continuation; never run it automatically.
   const interruptedOffer = useMemo(
     () => (streaming || viewMode || !currentSessionId || !onContinueFromLastUser
       ? null
       : interruptedTurnOffer(entries)),
     [entries, streaming, viewMode, currentSessionId, onContinueFromLastUser],
   );
-  // A suggested task fills the composer and focuses it; the user reviews
-  // (and replaces any `[placeholder]`) before sending.
+  // Suggested tasks fill the composer for user review and placeholder replacement before sending.
   const handleChooseSuggestedTask = useCallback((task: SuggestedTask) => {
     setQuestion(task.prompt);
     requestAnimationFrame(() => composerRef.current?.focus());
   }, [setQuestion]);
 
-  // Route a tool-activity item into the workspace rail. Single-click (`ephemeral`)
-  // opens it in the one reusable preview slot; double-click (`pinned`) opens and
-  // keeps it as a durable tab — the VS Code preview-tab model the workspace-tab
-  // store documents (single = ephemeral, double = pinned).
+  // Single-click reuses an ephemeral preview; double-click pins a durable tab.
   const routeActivity = useCallback((target: string, web: boolean, mode: "ephemeral" | "pinned") => {
     const open = mode === "pinned" ? workspaceTabs.openPinned : workspaceTabs.openInEphemeral;
     if (web) {
@@ -462,8 +374,7 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
       if (fileTarget) {
         open({ source: "preview", targetId: fileTarget.id });
       } else {
-        // No preview-target for this path — open the file-browser container so
-        // the user can still locate it in the tree.
+        // Open the file browser when a path has no preview target.
         workspaceTabs.addTab("file-browser");
       }
     }
@@ -483,39 +394,26 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
       const safe = normalizeBrowserNavigationUrl(target);
       if (safe) void api.openExternalUrl(safe);
     }
-    // Local paths: no authorized OS-open channel for tool-derived paths
-    // (c04f3b0f) — the menu item is not shown for files, so this is a no-op.
+    // Tool-derived local paths have no authorized OS-open channel.
   }, [api]);
 
   useEffect(() => {
     setSelectedPreviewId(null);
   }, [currentSessionId]);
 
-  // Prune stale preview/content tabs when the session changes. The workspace-tab
-  // store lives at ChatView (surviving the panel's unmount), so without this the
-  // prior session's session-scoped preview tabs would linger as dead
-  // `content-unavailable` placeholders and accumulate on every switch. Browser
-  // (url) content tabs + launcher container tabs are session-independent and are
-  // kept by the store. Depends only on the session id + the stable prune fn, so
-  // it runs on switch — not on every intra-session target change (which would
-  // wrongly close a tab whose target id was reclassified mid-stream).
+  // Prune session-scoped tabs only on session switch; URL and launcher tabs outlive sessions, and streaming reclassification
+  // must not close tabs.
   const { pruneContentTabs, closeContainerTab } = workspaceTabs;
   useEffect(() => {
     pruneContentTabs((targetId) => previewTargetIdsRef.current.has(targetId));
   }, [currentSessionId, pruneContentTabs]);
 
-  // The sub-agent tab is a view of THIS conversation's spawns, so it leaves
-  // with the conversation: the other container tabs (terminal, browser…) are
-  // tools that outlive a session, but a sub-agent list carried into the next
-  // conversation shows an empty "no sub-agents yet" for a chat that never
-  // asked for one. The launcher reopens it on request.
+  // Sub-agent lists belong to a conversation and close on session switch; terminal/browser containers outlive it.
   useEffect(() => {
     closeContainerTab("subagent");
   }, [currentSessionId, closeContainerTab]);
 
-  // A sub-agent starting NOW is worth opening the panel for; a row rebuilt
-  // from disk when the conversation was opened is not — entering a session
-  // that once ran sub-agents must not pop the panel.
+  // Auto-open for new live sub-agent spawns, never for rows restored from disk.
   useEffect(() => {
     let sawLiveSpawn = false;
     for (const spawn of subAgentSpawns) {
@@ -529,15 +427,7 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
     onSidePanelOpenChange(true);
   }, [currentSessionId, subAgentSpawns, workspaceTabs, onSidePanelOpenChange]);
 
-  // A sidebar row asked for a side chat: the rail has to be open and on its
-  // side-chat tab before the panel below can show what it loaded. Once per
-  // request — the nonce is the only dependency. The tab store's identity
-  // changes with every tab switch and the panel callback's with every render
-  // of the window, and keying the effect on either re-ran it after the user
-  // moved to another tab or closed the panel, snapping both straight back.
-  // The agent browser tools' tab operations (agent-browser-bridge.ts): this
-  // view's store carries out the ones routed to it. Read through refs so the
-  // registration is made once, not on every tab switch.
+  // Key side-chat requests only on nonce to prevent tab changes reopening the panel; refs keep browser registrations stable.
   const browserTabHostRef = useRef({ workspaceTabs, currentSessionId, onSidePanelOpenChange });
   useLayoutEffect(() => {
     browserTabHostRef.current = { workspaceTabs, currentSessionId, onSidePanelOpenChange };
@@ -622,8 +512,6 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
     hidden,
   });
 
-  // Checkpoint view-mode handlers + fork-success toast (depends on the scroll
-  // hook's scrollChatToBottom).
   const { forkToast, handleEnterView, handleExitView, handleBranchFrom } = useCheckpointView({
     api,
     currentSessionId,
@@ -636,18 +524,12 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
     scrollChatToBottom,
   });
 
-  // The main loop exposes a guide channel, so its queue can hand rows to the
-  // engine at a brake point and ⌘K is live. One object, memoized: the hook
-  // registers the shortcut against its identity.
+  // Memoize the guide-channel object because the queue hook registers shortcuts against its identity.
   const messageQueueGuide = useMemo(
     () => ({ inject: onGuide, onError: onGuideError }),
     [onGuide, onGuideError],
   );
-  // Mid-turn message queue — per-view store + dev/e2e window hook + stream
-  // brake-point drains + composer/streaming keyboard flows (Enter morph, ESC
-  // inject-or-abort, ⌘⏎ immediate inject, ⌘K guide).
-  // /allow <sentence> is answered against the app-owned pending approval
-  // instead of being sent to the model. It only proposes a dock choice.
+  // /allow proposes a choice to the app-owned approval dock instead of sending to the model.
   const {
     messageQueueStore,
     handleComposerSend,
@@ -669,10 +551,7 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
     interceptSubmit: approvalSentenceInterceptSubmit,
   });
 
-  // Queued messages were written to be said AFTER the point being rewound to,
-  // so conversation rewind discards them with everything after it. The
-  // queue lives here, so the clear happens here — and only once the host has
-  // confirmed the conversation was actually cut.
+  // Clear queued messages only after the host confirms a conversation rewind.
   const [rewindEntryIdx, setRewindEntryIdx] = useState<number | null>(null);
   const handleReturnHere = useCallback(async (idx: number) => {
     setRewindEntryIdx(idx);
@@ -684,7 +563,6 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
     if (result.ok) {
       if (mode !== "code") messageQueueStore.clear();
     }
-    // Refusals are rendered in this tile's transcript, outside the modal.
     setRewindEntryIdx(null);
     return result;
   }, [onReturnHere, messageQueueStore, rewindEntryIdx, streaming]);
@@ -731,7 +609,6 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
     }));
   }, [onAttachmentWarning, t]);
 
-  // Attach picker — native file dialog + atomic flushSync commit + 5-cap.
   const emitDropRejected = useCallback((count: number) => {
     onAttachmentWarning?.(t("app.dropRejected", { count }));
   }, [onAttachmentWarning, t]);
@@ -749,9 +626,7 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
     onPastedTextClipped: emitPastedTextClipped,
   });
 
-  // This conversation's composer, as a place a terminal block can be attached
-  // to (see `preview/composer-targets.ts`). Read through refs so the
-  // registration is made once per group.
+  // Register the composer once per group through refs.
   const attachPastedTextRef = useRef(attachPastedText);
   attachPastedTextRef.current = attachPastedText;
   const conversationHiddenRef = useRef(hidden);
@@ -766,20 +641,14 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
       element: () => chatViewRootRef.current?.querySelector<HTMLElement>('[data-composer-surface="main"]') ?? null,
     });
   }, [chatGroupId]);
-  // A terminal in this group's side panel attaches to whichever of the
-  // group's composers was used last — the side chat or this conversation.
+  // Side-panel terminal blocks attach to the group's last-used composer, including side chat.
   const attachFromSidePanel = useCallback(
     (text: string) => (chatGroupId === undefined ? attachPastedText(text) : attachToComposer(text, { fromGroup: chatGroupId })),
     [chatGroupId, attachPastedText],
   );
 
-  // Token progress ring — square, hover=percent, click=detail. The former
-  // sibling cost badge is gone: the cost/amount now lives INSIDE the ring's
-  // click-detail popover (a single flat surface), so the action row carries
-  // only the ring itself.
   const ringSlot = useMemo(() => {
-    // Subscription runtimes have no verified API billing/context contract.
-    // Never present the disabled projections as a misleading 0 / 0 limit.
+    // Subscription runtimes have no verified API billing/context contract; do not present disabled projections as zero limits.
     if (usageAvailable === false) return null;
     return (
       <TokenProgressRing
@@ -793,28 +662,17 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
     );
   }, [contextBudget, costBadgeClass, costEstimate, effectiveBudget, tpmLimit, usageAvailable, usedTokens]);
 
-  // Status sub-row (in the unified InputActionBar) — model / permission /
-  // active state. Resolved from the same IPC the former window-StatusBar
-  // producers used; the window StatusBar is notifications-only now.
   const inputStatusRow = useInputStatusRow(api);
-  // The token-context percent is no longer surfaced as a separate text cell in
-  // the status sub-row — the TokenProgressRing (which now lives at the end of
-  // that row) renders the % / cost detail on hover/click.
   const onOpenModelSettings = useCallback(() => onOpenSettings("llm"), [onOpenSettings]);
   const onOpenInputPermissions = useCallback(() => onOpenSettings("permissions"), [onOpenSettings]);
 
-  // No transcript auto-scroll is needed for the composer-dock question overlay:
-  // it stays visible independently of the transcript scroll position.
-
-  // Ctrl/Cmd+C while streaming and no text selected → abort
+  // Composer-dock questions stay visible independently of transcript scrolling.
   useEffect(() => {
     if (!streaming) return;
     const handler = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === "c") {
         const sel = window.getSelection();
-        if (sel && sel.toString().length > 0) return; // let copy work normally
-        // B4 fix: do not intercept Ctrl+C when focus is inside an editable element —
-        // native copy must work in <input>, <textarea>, and contenteditable.
+        if (sel && sel.toString().length > 0) return; // Preserve native Ctrl+C in inputs, textareas and contenteditable elements.
         const target = e.target as HTMLElement;
         const isEditable =
           target.tagName === "INPUT" ||
@@ -829,9 +687,6 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
     return () => window.removeEventListener("keydown", handler);
   }, [streaming, onAbort]);
 
-  // Main chat renders through the shared TranscriptRenderer with the main-chat
-  // interaction clusters populated. Sub-agent detail is a workspace-rail-only
-  // surface and reuses the same renderer from ChatSidePanel.
   const transcriptEntries = (
     <TranscriptRenderer
       entries={visibleEntries}
@@ -971,8 +826,8 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
         offer={interruptedOffer}
         onContinue={() => {
           if (!currentSessionId || !onContinueFromLastUser) return;
-          // "resume" appends a new user row ("Continue") after the interrupted
-          // answer; "rerun" re-asks the user's own last message, already on screen.
+          // "resume" appends a new user row ("Continue") after the interrupted answer; "rerun" re-asks the user's own last message,
+          // already on screen.
           void onContinueFromLastUser(
             currentSessionId,
             interruptedOffer === "resume" ? { userBubble: t("chatView.interruptedTurnContinue") } : undefined,
@@ -1088,9 +943,8 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
         return panelHost ? createPortal(column, panelHost) : column;
       })() : null}
       {dockedPanelPresent || sideChatKeepsPanel ? (() => {
-        // Inside a frame the panel waits for the slot to commit: rendering it
-        // inline for one pass and portaling it on the next would remount the
-        // whole panel (a portal and a host element are different fiber kinds).
+        // Inside a frame the panel waits for the slot to commit: rendering it inline for one pass and portaling it on the next
+        // would remount the whole panel (a portal and a host element are different fiber kinds).
         if (inFrame && !panelHost) return null;
         const wrapper = (
         <div
@@ -1104,19 +958,12 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
             order: 2,
             width: dockedPanelExpanded ? `${dockedPanelWidth}px` : "0px",
             maxWidth: columns.panelVisible ? dockedPanelWidth : 0,
-            // Closed and settled, but kept for the side chat it holds: out of
-            // the layout entirely, not a collapsed sliver of padding.
+            // Closed and settled, but kept for the side chat it holds: out of the layout entirely, not a collapsed sliver of padding.
             ...(dockedPanelPresent ? {} : { display: "none" }),
           }}
           className={[
-            // The card's air — the floating sidebar's own insets — lives on this
-            // wrapper in both modes, so the reserve the transcript is pushed by
-            // and the box the card floats in are the same width. It reads the
-            // `--shell-card-inset*` tokens the sidebar card is inset by, which
-            // is what keeps the two cards' edges on the same lines; those are
-            // px, not rem, because the reserve (`SIDE_PANEL_CARD_INSET`) is a
-            // pixel count the main process also uses and the user's font scale
-            // must not move it.
+            // Use the sidebar's pixel inset tokens for both floating-card edges and transcript reserve; font scaling must not change
+            // the host's pixel reserve.
             "z-40 flex min-w-0 shrink-0 origin-right justify-end pt-(--shell-card-inset) pr-(--shell-card-inset) pb-(--shell-card-inset-bottom) pl-(--shell-card-inset) will-change-[width,opacity,transform]",
             "relative self-stretch",
             sidePanelResizing
@@ -1169,8 +1016,7 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
           />
         </div>
         );
-        // Inside a frame the panel is the tile's guest, not this view's — see
-        // `PaneFrame`'s panel slot.
+        // Inside a frame the panel is the tile's guest, not this view's — see `PaneFrame`'s panel slot.
         return panelHost ? createPortal(wrapper, panelHost) : wrapper;
       })() : null}
     </div>

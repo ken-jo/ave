@@ -295,7 +295,7 @@ describe("foreground rationale contract", () => {
     });
     expect(requestedOff).toMatchObject({
       requestedSandbox: false,
-      fallbackReason: "none",
+      fallbackReason: "disabled-by-setting",
       requiresExplicitUserApproval: false,
     });
     expect(requestedOn.identity).not.toBe(requestedOff.identity);

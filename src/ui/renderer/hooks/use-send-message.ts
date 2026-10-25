@@ -84,11 +84,8 @@ export interface UseSendMessageDeps {
   /** The active route's input modalities, for the image gate. Optional: without them the catalog entry for the model's name decides. */
   llmRouteModalities?: Settings["llmRouteModalities"];
   llmReadyWithoutApiKey: Settings["llmReadyWithoutApiKey"];
-  /**
-   * Main's active chat model; null until the first snapshot. `kind: "none"`
-   * blocks the send and opens provider setup — the composer's own call to
-   * action — rather than handing the turn to a vendor default nobody chose.
-   */
+  /** Main's active chat model; null until the first snapshot. `kind: "none"` blocks the send and opens provider setup — the
+   * composer's own call to action — rather than handing the turn to a vendor default nobody chose. */
   activeChatModel: Settings["activeChatModel"];
   /** Canonical safe status and raw-image budget for the selected runtime. */
   subscriptionRuntimePolicy: Settings["subscriptionRuntimePolicy"];
@@ -96,12 +93,8 @@ export interface UseSendMessageDeps {
   settingsReady?: boolean;
   onOpenSettings: (tab?: string) => void;
   setQuestion: Dispatch<SetStateAction<string>>;
-  /**
-   * Tile-owned forward-ref cycle bridge. This hook WRITES it
-   * (`handleAskRef.current = handleAsk`) each render so the tile's MCP-prompt
-   * path can read the latest handleAsk. Do NOT inline-break the cycle — the
-   * ref is the seam.
-   */
+  /** Tile-owned forward-ref cycle bridge. This hook WRITES it (`handleAskRef.current = handleAsk`) each render so the tile's
+   * MCP-prompt path can read the latest handleAsk. Do NOT inline-break the cycle — the ref is the seam. */
   handleAskRef: MutableRefObject<HandleAskRefFn>;
 }
 
@@ -150,19 +143,7 @@ export interface UseSendMessageResult {
   ) => Promise<void>;
 }
 
-/**
- * The composer send pipeline (`handleAsk`), extracted verbatim from App.tsx.
- *
- * Owns `turnRequestRef` (the interrupt/stale-turn guard — used nowhere else) and
- * the full send flow: debug-stream tracing, mid-stream interrupt, the typed-only
- * slash-command shortcuts (/compact + /load), the api-key gate, the vision
- * confirm gate for text-only models, the user-bubble append (skipped for
- * trigger-import), and the chatSend trust-origin classification (queue-auto /
- * plugin-emitted / user-keyboard).
- *
- * Writes `handleAskRef.current = handleAsk` each render to keep the forward-ref
- * cycle with use-routine-overlay's handlePluginPrimaryAction alive.
- */
+/** Keep the interrupt/stale-turn guard local and refresh handleAskRef each render for routine-overlay callbacks. */
 export function useSendMessage(deps: UseSendMessageDeps): UseSendMessageResult {
   const {
     api, t, streaming, checkApiKey, composeOutgoing,
@@ -186,10 +167,7 @@ export function useSendMessage(deps: UseSendMessageDeps): UseSendMessageResult {
       userIntent?: UserKeyboardIntentSnapshot,
       opts?: { injectHint?: "queue" | "interrupt"; inputOrigin?: "queue-auto" },
     ) => {
-      // Cache once per invocation — `window.ave.env.debugStream` is fixed at
-      // preload bootstrap, so reading it again per debugLog call is wasted
-      // work. Guarding each call site with the cached flag also skips the
-      // payload object allocation when diagnostics are off (#566 item 1).
+      // Cache the preload-fixed debug flag per send and skip diagnostic payload allocation when disabled.
       const debugStreamEnabled = isDebugStreamEnabled();
       if (debugStreamEnabled) debugLog("handleAsk", "enter", { mode, qLen: q.length, streaming });
       const trimmed = q.trim();
@@ -197,25 +175,16 @@ export function useSendMessage(deps: UseSendMessageDeps): UseSendMessageResult {
         if (debugStreamEnabled) debugLog("handleAsk", "skip:empty");
         return;
       }
-      // Do not let a fast legacy-key probe race ahead of the authoritative
-      // runtime selection. Until settings resolves we cannot know whether a
-      // subscription login, rather than an API-key provider, is selected.
+      // Do not let a fast legacy-key probe race ahead of the authoritative runtime selection. Until settings resolves we cannot
+      // know whether a subscription login, rather than an API-key provider, is selected.
       if (!settingsReady) return;
-      // Prompt picker sends join `default` here because both are user initiated: the
-      // picker is live while a turn streams, so without this a click lands on
-      // `trackStreamTurn` and surfaces a raw "stream already active" error. The
-      // staged modes that are NOT user-initiated stay out — they are queued or
-      // injected by the host, and must never abort the turn the user is watching.
-      // A send while a turn is running interrupts it. The host stops the
-      // running turn inside the same chatSend call (see the `interrupt`
-      // payload flag); awaiting a separate abort here first let the keyboard
-      // intent expire, and the send that followed was silently refused.
+      // User sends interrupt in the same chatSend IPC so keyboard intent remains valid; staged and queue-auto sends never abort
+      // a running turn.
       const interrupt = (mode === "default" || mode === "mcp-prompt" || mode === "plugin-prompt")
         && streaming
         && opts?.inputOrigin !== "queue-auto";
-      // Renderer only performs UX-level shortcuts for typed composer input.
-      // Main owns the authoritative trust-origin classification.
-
+      // Renderer only performs UX-level shortcuts for typed composer input. Main owns the authoritative trust-origin
+      // classification.
 
       if (mode === "default" && opts?.inputOrigin !== "queue-auto") {
         if (await handleCompactCommand(trimmed)) {
@@ -249,15 +218,13 @@ export function useSendMessage(deps: UseSendMessageDeps): UseSendMessageResult {
           return;
         }
       }
-      // No connected provider means no model: the draft stays put and the
-      // user lands where a provider is added.
+      // No connected provider means no model: the draft stays put and the user lands where a provider is added.
       if (activeChatModel?.kind === "none") {
         onOpenSettings("llm");
         return;
       }
-      // Once a subscription runtime is selected its verified chat capability is
-      // the only send gate. A stored API key belongs to the inactive runtime and
-      // must never make this path sendable while login/verification is pending.
+      // Once a subscription runtime is selected its verified chat capability is the only send gate. A stored API key belongs to
+      // the inactive runtime and must never make this path sendable while login/verification is pending.
       if (subscriptionRuntimePolicy.subscriptionSelected && subscriptionRuntimePolicy.chatReady !== true) {
         onOpenSettings("llm");
         return;
@@ -295,14 +262,8 @@ export function useSendMessage(deps: UseSendMessageDeps): UseSendMessageResult {
         }));
         return;
       }
-      // Vendor vision capability gate. The composer accepts images regardless of
-      // the active model so the user can switch models freely; at send time a
-      // text-only model REFUSES the turn rather than negotiating a silent drop of
-      // the image parts. It sits with the other attachment gates, above the turn
-      // counter and the stream lease, so a refusal leaves the draft and its
-      // attachments exactly as the user left them. The composer disables its send
-      // button on the same condition; this is the authoritative refusal because
-      // Enter and ⌘⏎ reach `handleAsk` without passing through that button.
+      // Refuse unsupported image sends before acquiring turn state so drafts survive; keyboard sends need the same authoritative
+      // gate as the disabled button.
       if (
         hasImageAttachment
         && !subscriptionRuntimePolicy.subscriptionSelected
@@ -322,13 +283,12 @@ export function useSendMessage(deps: UseSendMessageDeps): UseSendMessageResult {
       // as a marker the model cannot resolve, silently.
       const draftAttachments = attachments;
       setQuestion("");
-      // Staged modes send the enveloped text VERBATIM — composeOutgoing's composer
-      // affordances (attachment markers, persona prompt) belong to typed input only.
+      // Staged modes send the enveloped text VERBATIM — composeOutgoing's composer affordances (attachment markers, persona
+      // prompt) belong to typed input only.
       const composed = mode === "default"
         ? composeOutgoing(trimmed)
         : composeImportedTriggerOutgoing(trimmed);
       const outgoing = composed.text;
-
 
       const outgoingAttachments = opts?.inputOrigin === "queue-auto" ? [] : composed.attachments;
       // Staged modes skip only the user-bubble append. The imported_trigger marker
@@ -338,10 +298,8 @@ export function useSendMessage(deps: UseSendMessageDeps): UseSendMessageResult {
       // and finalize their own entry with what they accumulated; only a
       // fresh turn starts from empty accumulators.
       if (interrupt) {
-        // Marked here, not at entry: every gate above returns without a send,
-        // and a turn nothing interrupted must not wear the badge. And before
-        // the new bubble: the mark walks back to the running turn's answer
-        // and stops at a user line.
+        // Marked here, not at entry: every gate above returns without a send, and a turn nothing interrupted must not wear the
+        // badge. And before the new bubble: the mark walks back to the running turn's answer and stops at a user line.
         if (debugStreamEnabled) debugLog("handleAsk", "interrupt:send");
         markLastAssistantInterrupted?.();
       } else {
@@ -356,7 +314,6 @@ export function useSendMessage(deps: UseSendMessageDeps): UseSendMessageResult {
           outgoingAttachments,
           opts?.inputOrigin === "queue-auto" ? "queue-auto" : SEND_MODE_ORIGIN[mode],
 
-
           opts?.inputOrigin === "queue-auto"
             ? undefined
             : mode === "default" ? userIntent : undefined,
@@ -368,9 +325,8 @@ export function useSendMessage(deps: UseSendMessageDeps): UseSendMessageResult {
         const refusal = chatSendRefusal(result);
         if (refusal !== undefined) throw new ChatSendRefusedError(refusal.code, refusal.interrupted);
         if (debugStreamEnabled) debugLog("handleAsk", "chatSend:resolved", { requestId });
-        // After successful send, clear attachments — the textarea was
-        // already cleared by setQuestion(""). N counter persists across
-        // turns so re-attached items get fresh numbers.
+        // After successful send, clear attachments — the textarea was already cleared by setQuestion(""). N counter persists
+        // across turns so re-attached items get fresh numbers.
         if (outgoingAttachments.length > 0 || attachments.length > 0) {
           setAttachments([]);
         }
@@ -381,39 +337,22 @@ export function useSendMessage(deps: UseSendMessageDeps): UseSendMessageResult {
             err: (err as Error)?.message,
           });
         }
-        // A rejected send carries an IPC code as its message — the send gate and the
-        // stream chokepoint both THROW their fail-closed code rather than returning
-        // an `{ok:false}` frame, so it never passes the code→sentence table. Electron
-        // wraps a rejection as `Error invoking remote method '<ch>': Error: <code>`,
-        // hence recovering the code from the tail. Anything unmapped keeps the
-        // previous localized framing — an unmapped failure must not lose it just
-        // because this path learned to map the mapped ones.
+        // Recover wrapped IPC rejection codes for localization; preserve contextual localized framing for unmapped failures.
         const rawMessage = errorMessage(err);
         const code = err instanceof ChatSendRefusedError
           ? err.code
           : rawMessage.match(/(?:^|Error:\s*)([a-z][a-z0-9-]*)\s*$/)?.[1];
-        // The generic sentence for this code speaks of permission changes;
-        // for a chat send the user needs to know their message did not go.
+        // The generic sentence for this code speaks of permission changes; for a chat send the user needs to know their message
+        // did not go.
         const mappedKey = code === "user-keyboard-required"
           ? "app.sendNeedsKeyboard"
           : resolveIpcErrorKey(code);
         const message = mappedKey ? t(mappedKey) : t("app.errorGeneric", { message: rawMessage });
-        // Put the turn back the way it was. The bubble was appended optimistically and
-        // the composer was cleared before the IPC resolved; a REFUSED send means main
-        // recorded nothing, so leaving either would show the user a message that was
-        // never sent and lose the text they typed. The vision-capability guard above
-        // already restores the draft for its own refusal — this is the same repair for
-        // every other one, which until now only the guard had.
-        //
-        // The bubble goes first: the error or note below must land after the
-        // turn it belongs to, and the walk back to that turn's answer stops
-        // at a user line.
+        // On refusal remove the optimistic bubble before adding its notice and restore the draft because main recorded no turn.
         if (mode === "default") dropUserEntry(trimmed);
         if (interrupt && err instanceof ChatSendRefusedError) {
-          // The running turn is not closed here with an error: refused at
-          // admission it goes on untouched, and refused after the abort its
-          // own closing frame finalizes it. Only the first case takes the
-          // badge back.
+          // The running turn is not closed here with an error: refused at admission it goes on untouched, and refused after the
+          // abort its own closing frame finalizes it. Only the first case takes the badge back.
           if (!err.interrupted) unmarkLastAssistantInterrupted?.();
           appendSystemEntry(message);
         } else {
@@ -427,17 +366,8 @@ export function useSendMessage(deps: UseSendMessageDeps): UseSendMessageResult {
           if (draftAttachments.length > 0) {
             setAttachments((current) => (current.length > 0 ? current : draftAttachments));
           }
-          // Restored INSIDE the guard. For a staged mode `q` is the provenance
-          // ENVELOPE, not anything the user typed (`App.tsx` hands this function
-          // `outcome.envelope` for an MCP-server prompt), and putting that in the
-          // composer would hand the user server-authored text as their own draft —
-          // the laundering shape this whole feature exists to prevent, reintroduced by
-          // the repair for a UX complaint. The send gate does reject it
-          // (`origin-envelope-mismatch`), so nothing downstream would treat it as
-          // staged; it should never be offered in the first place.
-          //
-          // Functional form so a draft typed WHILE the send was in flight wins over the
-          // one being restored — the same race the composer's own `textRef` handles.
+          // Restore only user-authored drafts, never staged provenance envelopes; functional updates preserve text typed while the
+          // send was in flight.
           setQuestion((current) => (current.length > 0 ? current : q));
         }
       } finally {
@@ -490,8 +420,8 @@ export function useSendMessage(deps: UseSendMessageDeps): UseSendMessageResult {
       t,
     ],
   );
-  // Keep ref in sync so handlePluginPrimaryAction can call handleAsk
-  // without a forward-declaration error (ref is populated before first use).
+  // Keep ref in sync so handlePluginPrimaryAction can call handleAsk without a forward-declaration error (ref is populated
+  // before first use).
   handleAskRef.current = handleAsk;
 
   return { handleAsk };

@@ -1,60 +1,5 @@
-/**
- * Host-mediated long-lived plugin-worker spawn primitive.
- *
- * ⚠️ HOST PRIMITIVE — TOOL PRODUCER NOT WIRED YET ⚠️
- * {@link spawnWorker} is the host half of worker-confinement-via-ASRT for an
- * HTTP plugin worker the HOST connects INBOUND to. It is added to the host +
- * hostApi surface here, but no production Tool descriptor is host-routed
- * through it yet. No manifest worker-routing field is accepted; a future
- * producer must introduce a Host-owned contract instead of reviving one.
- *
- * ─────────────────────────────────────────────────────────────────────────────
- * WHY A UDS CONTROL CHANNEL (the egress gap this closes)
- * The real dynamic-endpoint egress doer is the long-lived plugin worker (e.g.
- * local-indexer's embedding/caption HTTP worker), not a one-shot tool. To
- * confine it under ASRT while the HOST still drives it, the host must reach the
- * worker. The worker is an HTTP worker the host connects INBOUND to — but on
- * Linux ASRT runs the worker under bwrap `--unshare-net`, which puts it in its
- * OWN network namespace, so loopback TCP (127.0.0.1) inside the jail is NOT the
- * host's loopback. The fix is a Unix-domain-socket (UDS) control channel:
- *   - Linux: the host allocates a writable socketDir; ASRT `--bind`s every
- *     `filesystem.allowWrite` path into the namespace (the SAME mechanism it
- *     uses for its own proxy sockets), so a socket created there is reachable
- *     from BOTH sides. The worker also needs the trusted `allowAllUnixSockets`
- *     weakening to call `socket(AF_UNIX)` past the default seccomp filter.
- *   - macOS: no network namespace, but seatbelt blocks Unix sockets by default;
- *     the socketDir on `network.allowUnixSockets` emits the seatbelt allow rule
- *     so the worker may BIND the socket. The host connects from OUTSIDE the
- *     sandbox (unconstrained).
- *   - Windows: no reliable UDS-bind primitive, so the worker keeps its TCP
- *     control channel. ASRT 0.0.80 cannot accept per-exec filesystem
- *     allowRead/allowWrite, but it DOES expose a live ACL grant primitive
- *     keyed by holder PID. The host therefore creates a dedicated holder
- *     process per worker, applies explicit worker-scoped read/write grants to
- *     that holder, wraps the command through srt-win, and revokes the grant on
- *     worker cleanup. No shared all-plugin data grant is ever used.
- *
- * ⚠️ The Unix-socket ALLOW config (macOS `allowUnixSockets` / Linux
- * `allowAllUnixSockets`) is INERT per-command in current ASRT — it MUST be set on
- * the SHARED config. {@link spawnWorker} therefore calls
- * {@link registerWorkerUnixSocketDir} (a live, additive shared-config update)
- * BEFORE wrapping, and {@link unregisterWorkerUnixSocketDir} on cleanup. The
- * per-command wrap carries ONLY the filesystem jail (the `--bind`). This was
- * VERIFIED empirically: a per-command allowUnixSockets ⇒ the worker's `listen()`
- * fails with EPERM; the SAME value on the shared config ⇒ the bind succeeds.
- * ─────────────────────────────────────────────────────────────────────────────
- *
- * STORAGE NAMESPACE (CLAUDE.md `~/.ave/plugins/<id>/` rule): the socketDir is
- * the plugin's own sandbox-root subtree `~/.ave/plugins/<pluginId>/run/
- * <workerId>/` — host-allocated from the host-bound pluginId and sanitized
- * workerId. mkdir 0o700; the worker binds the socket 0o600.
- *
- * GATE DEFAULT-OFF: when {@link isPluginWorkerConfinementActive} is false (ASRT off, or
- * `features.pluginWorkerConfinement` off while ASRT serves shells), this is a plain
- * spawn of the exact command with the same secret-stripped worker env and returns
- * `socketPath: null` so the consumer falls back to the legacy TCP channel. No
- * UDS dir is created, nothing is wrapped.
- */
+// Linux network namespaces require a host-visible writable UDS directory plus AF_UNIX allowance; macOS requires a shared socket-directory allowance. Register shared socket policy before wrapping because per-command overrides are inert; remove it on cleanup and keep plugin-owned socket dirs/files private.
+// Windows uses TCP with a dedicated per-worker holder grant and cleanup, never a shared all-plugin grant. Worker-confinement off preserves exact argv/secret-stripped env with no UDS directory or wrap. Production tools require a host-owned routing contract; manifest worker routing is not accepted.
 
 import { spawn, type ChildProcess, type StdioOptions } from "node:child_process";
 import { mkdir } from "node:fs/promises";
@@ -94,60 +39,35 @@ import {
   unmarkPluginWorkerWrapped,
 } from "./sandbox-capability.js";
 
-/** Listener registered through {@link SpawnedWorker.onStdout}/`onStderr`. */
+// Listener registered through SpawnedWorker.onStdout/`onStderr`.
 export type WorkerOutputListener = (chunk: string) => void;
 
-/**
- * The spec the HOST hands {@link spawnWorker}. The hostApi factory binds
- * `pluginId` from the calling plugin instance; workerId/command/grant paths are
- * declared by trusted first-party plugin code and reviewed at the HostApi effect
- * boundary. `allowWritePaths` is the worker's filesystem write-jail; the
- * host-allocated socketDir is unioned onto it automatically.
- */
+// The spec the HOST hands spawnWorker. The hostApi factory binds `pluginId` from the calling plugin instance; workerId/command/grant paths are declared by trusted first-party plugin code and reviewed at the HostApi effect boundary. `allowWritePaths` is the worker's filesystem write-jail; the host-allocated socketDir is unioned onto it automatically.
 export interface SpawnWorkerSpec {
-  /** Owning plugin id — selects the `~/.ave/plugins/<pluginId>/` sandbox root. */
+  // Owning plugin id — selects the `~/.ave/plugins/<pluginId>/` sandbox root.
   readonly pluginId: string;
-  /** Stable per-worker id — names the `run/<workerId>/` control dir + the
-   *  reviewer wrapped-registry key. Sanitized to a single safe path segment. */
+  // Stable per-worker id — names the `run/<workerId>/` control dir + the reviewer wrapped-registry key. Sanitized to a single safe path segment.
   readonly workerId: string;
-  /** The worker executable to spawn (absolute path or PATH-resolved name). */
+  // The worker executable to spawn (absolute path or PATH-resolved name).
   readonly command: string;
-  /** Argv for the worker. The UDS path is injected per {@link udsArgName}. */
+  // Argv for the worker. The UDS path is injected per udsArgName.
   readonly args?: readonly string[];
-  /** Extra env merged onto the secret-stripped base env. */
+  // Extra env merged onto the secret-stripped base env.
   readonly env?: NodeJS.ProcessEnv;
-  /**
-   * Paths the worker may read in addition to write-granted paths. This is
-   * explicit by design: host code must declare trusted worker code/runtime
-   * paths instead of the spawn primitive inferring path grants from argv.
-   */
+  // Paths the worker may read in addition to write-granted paths. This is explicit by design: host code must declare trusted worker code/runtime paths instead of the spawn primitive inferring path grants from argv.
   readonly allowReadPaths?: readonly string[];
-  /** Paths the worker may write (its sandbox root etc.). The host-allocated
-   *  socketDir is added automatically so the `--bind` (Linux) comes for free. */
+  // Paths the worker may write (its sandbox root etc.). The host-allocated socketDir is added automatically so the `--bind` (Linux) comes for free.
   readonly allowWritePaths?: readonly string[];
-  /**
-   * How the host tells the worker WHERE to bind the control socket (gate ON,
-   * non-win32 only — when `socketPath` is non-null):
-   *   - a string like `"--uds"` → appends `[udsArgName, socketPath]` to args;
-   *   - `{ env: "AVE_CONTROL_SOCKET" }` → sets that env var to socketPath.
-   * The actual worker contract is plugin-specific; this primitive only provides
-   * the injection mechanism. Omitted ⇒ the worker is NOT told the path here (a
-   * future contract may discover it another way).
-   */
+  // How the host tells the worker WHERE to bind the control socket (gate ON, non-win32 only — when `socketPath` is non-null): - a string like `"--uds"` → appends `[udsArgName, socketPath]` to args; - `{ env: "AVE_CONTROL_SOCKET" }` → sets that env var to socketPath. The actual worker contract is plugin-specific; this primitive only provides the injection mechanism. Omitted ⇒ the worker is NOT told the path here (a future contract may discover it another way).
   readonly udsArgName?: string | { readonly env: string };
-  /**
-   * The reads, among {@link allowReadPaths}, this worker may hold inside the
-   * protected read floor: its plugin's declared `hostDirectory` that pierces
-   * it. Set by the host from the plugin's reviewed declaration, never by the
-   * plugin. Absent, none.
-   */
+  // The reads, among allowReadPaths, this worker may hold inside the protected read floor: its plugin's declared `hostDirectory` that pierces it. Set by the host from the plugin's reviewed declaration, never by the plugin. Absent, none.
   readonly floorPierces?: readonly string[];
 }
 
 const activeWrappedWorkerKeys = new Set<string>();
 const workerExitWaiters = new Map<string, Promise<void>>();
 
-/** Resolve after every worker of this plugin has definitively exited. */
+// Resolve after every worker of this plugin has definitively exited.
 export async function waitForPluginWorkersStopped(pluginId: string): Promise<void> {
   const prefix = `${pluginId.length}:${pluginId}:`;
   await Promise.all([...workerExitWaiters].filter(([key]) => key.startsWith(prefix)).map(([, ended]) => ended));
@@ -177,41 +97,31 @@ function reserveWrappedWorker(pluginId: string, workerId: string): () => void {
   };
 }
 
-/** Test-only reset for mocked children that do not emit a definitive exit. */
+// Test-only reset for mocked children that do not emit a definitive exit.
 export function __resetActiveWrappedWorkersForTest(): void {
   activeWrappedWorkerKeys.clear();
   workerExitWaiters.clear();
 }
 
-/**
- * The handle {@link spawnWorker} returns. `socketPath` is the host-side path to
- * connect to (undici `Agent({ connect: { socketPath } })` / `http.request({
- * socketPath })`) — or `null` when the worker should use TCP control. `null`
- * means gate-OFF plain spawn; callers must not infer sandbox status from
- * transport alone.
- */
+// The handle spawnWorker returns. `socketPath` is the host-side path to connect to (undici `Agent({ connect: { socketPath } })` / `http.request({ socketPath })`) — or `null` when the worker should use TCP control. `null` means gate-OFF plain spawn; callers must not infer sandbox status from transport alone.
 export interface SpawnedWorker {
-  /** Host-side UDS path, or null when the worker uses TCP control. */
+  // Host-side UDS path, or null when the worker uses TCP control.
   readonly socketPath: string | null;
-  /** The child pid (undefined only if spawn produced no pid). */
+  // The child pid (undefined only if spawn produced no pid).
   readonly pid: number | undefined;
-  /** Stop the worker (SIGTERM → SIGKILL after a grace period) + run cleanup. */
+  // Stop the worker (SIGTERM → SIGKILL after a grace period) + run cleanup.
   stop(): void;
-  /** Subscribe to worker stdout (utf-8, trimmed-per-chunk false). */
+  // Subscribe to worker stdout (utf-8, trimmed-per-chunk false).
   onStdout(listener: WorkerOutputListener): void;
-  /** Subscribe to worker stderr (utf-8). */
+  // Subscribe to worker stderr (utf-8).
   onStderr(listener: WorkerOutputListener): void;
-  /**
-   * Subscribe to worker EXIT (crash or normal). Fires once when the child
-   * process exits and its output streams drain — the consumer marks it dead and recovers
-   * (the handle owns lifecycle, so without it a crashed worker is undetectable).
-   */
+  // Subscribe to worker EXIT (crash or normal). Fires once when the child process exits and its output streams drain — the consumer marks it dead and recovers (the handle owns lifecycle, so without it a crashed worker is undetectable).
   onExit(listener: (info: { code: number | null; signal: NodeJS.Signals | null }) => void): void;
 }
 
 const SAFE_WORKER_SEGMENT = /^[a-z0-9][a-z0-9._-]{0,127}$/;
 
-/** Validate an id as one unambiguous path/registry segment. */
+// Validate an id as one unambiguous path/registry segment.
 function safeSegment(id: string, kind: string): string {
   if (typeof id !== "string" || !SAFE_WORKER_SEGMENT.test(id)) {
     throw new Error(
@@ -222,11 +132,7 @@ function safeSegment(id: string, kind: string): string {
   return id;
 }
 
-/**
- * Best-effort, idempotent removal of a stale control socket + its dir. Used
- * before spawn (crash-safe: a previous worker may have died without cleanup)
- * and on stop/exit. Sync so it can run inside an exit handler. Never throws.
- */
+// Best-effort, idempotent removal of a stale control socket + its dir. Used before spawn (crash-safe: a previous worker may have died without cleanup) and on stop/exit. Sync so it can run inside an exit handler. Never throws.
 function removeSocketArtifacts(socketPath: string, socketDir: string): void {
   try {
     unlinkSync(socketPath);
@@ -234,22 +140,14 @@ function removeSocketArtifacts(socketPath: string, socketDir: string): void {
     // Already gone / never created — fine.
   }
   try {
-    // Only removes the dir if empty — leaves a non-empty dir intact rather than
-    // deleting worker state we don't own.
+    // Only removes the dir if empty — leaves a non-empty dir intact rather than deleting worker state we don't own.
     rmdirSync(socketDir);
   } catch {
     // Non-empty or already gone — fine.
   }
 }
 
-/**
- * The worker's standard streams. stdin is the host's LIVENESS PIPE: the host
- * never writes to it and never ends it, so the only EOF a worker can ever read
- * there is the OS closing the write end because the host process is gone — in
- * every death mode, not only the graceful Quit that runs the managed-child
- * force-kill sweep. A worker reparented by a crashed or killed host has no
- * other signal that its owner left; with stdin `"ignore"` it lived on forever.
- */
+// The worker's standard streams. stdin is the host's LIVENESS PIPE: the host never writes to it and never ends it, so the only EOF a worker can ever read there is the OS closing the write end because the host process is gone — in every death mode, not only the graceful Quit that runs the managed-child force-kill sweep. A worker reparented by a crashed or killed host has no other signal that its owner left; with stdin `"ignore"` it lived on forever.
 const WORKER_STDIO: StdioOptions = ["pipe", "pipe", "pipe"];
 
 function definedEnv(env: NodeJS.ProcessEnv | undefined): Record<string, string> {
@@ -260,27 +158,17 @@ function definedEnv(env: NodeJS.ProcessEnv | undefined): Record<string, string> 
   return extra;
 }
 
-/**
- * Spawn a long-lived plugin worker, host-mediated and (gate ON) ASRT-wrapped
- * with a bind-mounted UDS control channel. See the module header for the model.
- *
- * @returns a {@link SpawnedWorker}. `socketPath` is non-null only on the wrapped
- *   mac/linux UDS path; null covers gate-OFF plain TCP and the Windows ASRT
- *   wrapped path, which keeps TCP control while filesystem/network effects run
- *   under srt-win.
- */
+// Spawn a long-lived plugin worker, host-mediated and (gate ON) ASRT-wrapped with a bind-mounted UDS control channel. See the module header for the model. @returns a SpawnedWorker. `socketPath` is non-null only on the wrapped mac/linux UDS path; null covers gate-OFF plain TCP and the Windows ASRT wrapped path, which keeps TCP control while filesystem/network effects run under srt-win.
 export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker> {
   assertExtensionStartAllowed();
   const safePlugin = safeSegment(spec.pluginId, "pluginId");
   const safeWorker = safeSegment(spec.workerId, "workerId");
   const args = [...(spec.args ?? [])];
 
-  // Secret-stripped base env (Least Privilege), shared with other child process
-  // spawners so Windows runtime variables stay complete without forwarding
-  // provider/API-key secrets.
+  // Secret-stripped base env (Least Privilege), shared with other child process spawners so Windows runtime variables stay complete without forwarding provider/API-key secrets.
   const baseEnv: NodeJS.ProcessEnv = buildSafeChildEnv(definedEnv(spec.env));
 
-  // ── Gate OFF → plain unwrapped spawn ────────────────────────────────
+  // Gate OFF → plain unwrapped spawn
   if (!isPluginWorkerConfinementActive()) {
     assertManagedChildProcessAdmissionOpen(`worker:${safePlugin}:${safeWorker}`);
     const child = spawn(spec.command, args, {
@@ -293,9 +181,7 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
     return makeHandle(child, null);
   }
 
-  // A wrapped worker owns a stable per-(plugin,worker) control path. Keep that
-  // key reserved while it is running OR stopping; otherwise a replacement can
-  // lose its marker, shared UDS allowance, and socket when the old exit arrives.
+  // A wrapped worker owns a stable per-(plugin,worker) control path. Keep that key reserved while it is running OR stopping; otherwise a replacement can lose its marker, shared UDS allowance, and socket when the old exit arrives.
   const releaseWorkerReservation = reserveWrappedWorker(safePlugin, safeWorker);
 
   if (process.platform === "win32") {
@@ -388,16 +274,12 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
       });
       assertHolderAlive();
 
-      // Windows grants reachability through ACLs against the holder process,
-      // so the wrap carries the deny floor only. The worker runs through the
-      // stdio relay: srt-win delivers neither its environment nor its stdin,
-      // and stdin is the liveness pipe — without the relay a worker reads its
-      // end at once and takes the host for gone (measured).
+      // Windows grants reachability through ACLs against the holder process, so the wrap carries the deny floor only. The worker runs through the stdio relay: srt-win delivers neither its environment nor its stdin, and stdin is the liveness pipe — without the relay a worker reads its end at once and takes the host for gone (measured).
       const spawned = await spawnConfinedChild({
         command: spec.command,
         args,
         label: `worker:${safePlugin}:${safeWorker}:asrt-win`,
-      egressOwner: { kind: "worker", role: "worker", pluginId: spec.pluginId, instanceId: spec.workerId },
+        egressOwner: { kind: "worker", role: "worker", pluginId: spec.pluginId, instanceId: spec.workerId },
         grantMode: "deny-only",
         baseEnv,
         extraEnv: { ...sandboxHome.env },
@@ -413,8 +295,7 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
       child = spawned.child;
       child.once("exit", finalizeResources);
       child.once("error", () => {
-        // `error` can mean signal/message delivery failed while the child is
-        // still alive. Definitive resource finalization stays on exit/close.
+        // `error` can mean signal/message delivery failed while the child is still alive. Definitive resource finalization stays on exit/close.
       });
       child.once("close", finalizeResources);
       assertHolderAlive();
@@ -432,9 +313,7 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
     }
   }
 
-  // ── Gate ON, mac/linux → ASRT-wrapped with a bind-mounted UDS ──
-  // socketDir under the plugin's OWN sandbox root (storage-namespace rule),
-  // host-controlled. mkdir 0o700; the worker binds the socket 0o600.
+  // Gate ON, mac/linux → ASRT-wrapped with a bind-mounted UDS socketDir under the plugin's OWN sandbox root (storage-namespace rule), host-controlled. mkdir 0o700; the worker binds the socket 0o600.
   const pluginRoot = pathResolve(aveHome(), "plugins", safePlugin);
   const socketDir = pathResolve(
     pluginRoot,
@@ -442,22 +321,14 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
     safeWorker,
   );
   const socketPath = join(socketDir, "control.sock");
-  // A path over `sun_path` fails as `EINVAL` — "malformed address" — which
-  // sends the diagnosis anywhere but at a length. Checked here, where the path
-  // was just assembled and the message can name every part of it.
+  // A path over `sun_path` fails as `EINVAL` — "malformed address" — which sends the diagnosis anywhere but at a length. Checked here, where the path was just assembled and the message can name every part of it.
   assertUnixSocketPathFits(socketPath, `worker control socket for ${safePlugin}/${safeWorker}`);
-  // Crash-safe: unlink any stale socket from a previous worker that died
-  // without cleanup BEFORE recreating the dir.
+  // Crash-safe: unlink any stale socket from a previous worker that died without cleanup BEFORE recreating the dir.
   try {
     await withPluginRuntimeDirQueue(pluginRoot, async () => {
       removeSocketArtifacts(socketPath, socketDir);
       await mkdir(socketDir, { recursive: true, mode: 0o700 });
-      // `mkdir({recursive,mode})` only applies `mode` to dirs it CREATES — a
-      // pre-existing leaf (e.g. left by an older build under a looser umask) keeps
-      // its old mode. Reject a symlinked socketDir (a same-user attacker
-      // pre-seeding the path can't redirect the bind/binds) FIRST, then force
-      // 0o700: `chmod` follows a link, so the other order would change the mode
-      // of whatever the link points at before refusing it.
+      // `mkdir({recursive,mode})` only applies `mode` to dirs it CREATES — a pre-existing leaf (e.g. left by an older build under a looser umask) keeps its old mode. Reject a symlinked socketDir (a same-user attacker pre-seeding the path can't redirect the bind/binds) FIRST, then force 0o700: `chmod` follows a link, so the other order would change the mode of whatever the link points at before refusing it.
       if (lstatSync(socketDir).isSymbolicLink()) {
         throw new Error(`[worker-spawn] refusing symlinked control dir: ${socketDir}`);
       }
@@ -477,17 +348,14 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
     throw err instanceof Error ? err : new Error(String(err));
   }
 
-  // Tell the worker where to bind. Either append `[name, path]` to argv or set
-  // an env var; the higher-level worker protocol remains plugin-specific.
+  // Tell the worker where to bind. Either append `[name, path]` to argv or set an env var; the higher-level worker protocol remains plugin-specific.
   if (typeof spec.udsArgName === "string") {
     args.push(spec.udsArgName, socketPath);
   } else if (spec.udsArgName && typeof spec.udsArgName === "object") {
     baseEnv[spec.udsArgName.env] = socketPath;
   }
 
-  // FAIL-CLOSED write jail: socketDir (so the Linux `--bind` exposes it + the
-  // socket file can be created on macOS) ∪ the host-supplied write paths. The
-  // worker also needs to READ its socketDir + tmp.
+  // FAIL-CLOSED write jail: socketDir (so the Linux `--bind` exposes it + the socket file can be created on macOS) ∪ the host-supplied write paths. The worker also needs to READ its socketDir + tmp.
   const allowWrite = [socketDir, sandboxHome.path, ...(spec.allowWritePaths ?? [])];
   const tmpDir = process.env.TMPDIR ?? process.env.TEMP ?? process.env.TMP;
   const allowRead = [
@@ -498,12 +366,7 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
     ...(tmpDir ? [tmpDir] : []),
   ];
 
-  // UDS allow — SHARED config, NOT per-command (the per-command channel is INERT
-  // for the seatbelt/seccomp UDS rules in current ASRT; see asrt-sandbox.ts's
-  // WORKER UDS header). Register the socketDir so the live shared config grants
-  // the worker's bind: macOS `allowUnixSockets:(subpath <dir>)`, Linux the
-  // `allowAllUnixSockets` weakening (the `--bind` of the writable dir scopes
-  // WHERE). MUST happen BEFORE the wrap so the spawned profile carries it.
+  // UDS allow — SHARED config, NOT per-command (the per-command channel is INERT for the seatbelt/seccomp UDS rules in current ASRT; see asrt-sandbox.ts's WORKER UDS header). Register the socketDir so the live shared config grants the worker's bind: macOS `allowUnixSockets:(subpath <dir>)`, Linux the `allowAllUnixSockets` weakening (the `--bind` of the writable dir scopes WHERE). MUST happen BEFORE the wrap so the spawned profile carries it.
   let registered = false;
   const socketHolder = {};
   let wrapped = false;
@@ -511,10 +374,7 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
     await registerWorkerUnixSocketDir(socketDir, socketHolder);
     registered = true;
 
-    // Assemble the command DEFENSIVELY: shell-quote the binary + every arg so a
-    // path with spaces/metacharacters cannot mis-split. ASRT runs this branch
-    // under a POSIX shell (mac/linux). The per-command wrap carries ONLY the
-    // filesystem jail (the `--bind`).
+    // Assemble the command DEFENSIVELY: shell-quote the binary + every arg so a path with spaces/metacharacters cannot mis-split. ASRT runs this branch under a POSIX shell (mac/linux). The per-command wrap carries ONLY the filesystem jail (the `--bind`).
     const { child } = await spawnConfinedChild({
       command: spec.command,
       args,
@@ -525,37 +385,24 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
       tempPrincipal: { kind: "plugin", id: spec.pluginId },
       allowRead,
       allowWrite,
-      // A plugin worker is plugin-owned code: it may not remove or replace the
-      // host-created roots it writes into, its plugin's data root above all.
+      // A plugin worker is plugin-owned code: it may not remove or replace the host-created roots it writes into, its plugin's data root above all.
       pinWriteRoots: true,
-      // Nor read what its plugin's child cannot: the plugins root is refused,
-      // and only the paths this worker was granted — which the dispatcher holds
-      // to the child's own envelope — are re-allowed inside it. Without this a
-      // child refused a neighbour's data could ask for a worker that reads it.
+      // Nor read what its plugin's child cannot: the plugins root is refused, and only the paths this worker was granted — which the dispatcher holds to the child's own envelope — are re-allowed inside it. Without this a child refused a neighbour's data could ask for a worker that reads it.
       denyPluginsRoot: true,
       ...(spec.floorPierces !== undefined ? { floorPierces: spec.floorPierces } : {}),
       baseEnv,
       extraEnv: { ...sandboxHome.env },
       stdio: WORKER_STDIO,
       onWrapped: () => {
-        // The wrap incremented ASRT's per-command state (Linux
-        // activeSandboxCount, proxy ref); from here a failure MUST decrement
-        // it (see the catch).
+        // The wrap incremented ASRT's per-command state (Linux activeSandboxCount, proxy ref); from here a failure MUST decrement it (see the catch).
         wrapped = true;
-        // Mark the reviewer wrapped-registry: this worker genuinely runs under
-        // ASRT. Keyed plugin-scoped (NOT workerId alone) so two plugins sharing
-        // a workerId (e.g. "main") cannot collide into a false `asrt`
-        // no-leak signal.
+        // Mark the reviewer wrapped-registry: this worker genuinely runs under ASRT. Keyed plugin-scoped (NOT workerId alone) so two plugins sharing a workerId (e.g. "main") cannot collide into a false `asrt` no-leak signal.
         markPluginWorkerWrapped(safePlugin, safeWorker);
       },
     });
     trackManagedChildProcess(child, { label: `worker:${safePlugin}:${safeWorker}:asrt` });
 
-    // Idempotent definitive-termination cleanup (mirrors mcp-client): exit or
-    // close runs it once. A stop request and process-operation error retain
-    // ownership because neither proves the child is dead.
-    // Drops the reviewer marker, releases the shared-config UDS allow + the
-    // per-command ASRT state, and removes the socket artifacts (crash-safe).
+    // Idempotent definitive-termination cleanup (mirrors mcp-client): exit or close runs it once. A stop request and process-operation error retain ownership because neither proves the child is dead. Drops the reviewer marker, releases the shared-config UDS allow + the per-command ASRT state, and removes the socket artifacts (crash-safe).
     let cleanupRan = false;
     const cleanupOnce = (): void => {
       if (cleanupRan) return;
@@ -572,18 +419,13 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
     };
     child.once("exit", finalizeOnce);
     child.once("error", () => {
-      // A process-operation error is not proof of death. `close` is the
-      // asynchronous-spawn-failure finalizer; live children finalize on exit.
+      // A process-operation error is not proof of death. `close` is the asynchronous-spawn-failure finalizer; live children finalize on exit.
     });
     child.once("close", finalizeOnce);
 
     return makeHandle(child, socketPath);
   } catch (err) {
-    // FAIL CLOSED: wrap/spawn setup failed. Roll back the shared-config UDS
-    // allow + socket artifacts so a failed spawn leaves no lingering allowance.
-    // If the wrap had SUCCEEDED (failure was the post-wrap spawn / empty-argv),
-    // also decrement ASRT's per-command state and drop the reviewer marker —
-    // `cleanupOnce` never wired up, so the catch owns that teardown.
+    // FAIL CLOSED: wrap/spawn setup failed. Roll back the shared-config UDS allow + socket artifacts so a failed spawn leaves no lingering allowance. If the wrap had SUCCEEDED (failure was the post-wrap spawn / empty-argv), also decrement ASRT's per-command state and drop the reviewer marker — `cleanupOnce` never wired up, so the catch owns that teardown.
     if (wrapped) {
       unmarkPluginWorkerWrapped(safePlugin, safeWorker);
       void cleanupAsrtSandboxAfterCommand();
@@ -596,13 +438,8 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
   }
 }
 
-/**
- * Compose the WRAPPED worker's env: the secret-stripped per-worker base env
- * plus ONLY the ASRT proxy/CA keys ASRT actually CHANGED relative to
- * `process.env` (none on mac/linux — proxy baked into the command string).
- * Mirrors mcp-client's buildWrappedStdioEnv.
- */
-/** Build the {@link SpawnedWorker} handle around a spawned child. */
+// Compose the WRAPPED worker's env: the secret-stripped per-worker base env plus ONLY the ASRT proxy/CA keys ASRT actually CHANGED relative to `process.env` (none on mac/linux — proxy baked into the command string). Mirrors mcp-client's buildWrappedStdioEnv.
+// Build the SpawnedWorker handle around a spawned child.
 function makeHandle(
   child: ChildProcess,
   socketPath: string | null,
@@ -665,7 +502,7 @@ function makeHandle(
     stream.once("close", markDrained);
   }
   const captureExit = (code: number | null, signal: NodeJS.Signals | null): void => {
-    // Record death immediately so stop() cannot signal a reused pid while pipes drain.
+    // Record death immediately so stop cannot signal a reused pid while pipes drain.
     terminalExit ??= { code, signal };
     completeIfDrained();
   };
@@ -697,9 +534,7 @@ function makeHandle(
     }
   };
 
-  // A worker that exits first leaves the liveness pipe without a reader. A
-  // late EPIPE on it is that pipe ending as designed, not a host fault, and
-  // must not surface as an unhandled 'error' on the host.
+  // A worker that exits first leaves the liveness pipe without a reader. A late EPIPE on it is that pipe ending as designed, not a host fault, and must not surface as an unhandled 'error' on the host.
   io.stdin?.on("error", () => {});
   return {
     socketPath,
@@ -711,8 +546,7 @@ function makeHandle(
       else exitListeners.push(listener);
     },
     stop(): void {
-      // Keep ASRT/UDS/HOME ownership until definitive child termination.
-      // A TERM-ignoring worker is escalated without releasing its confinement.
+      // Keep ASRT/UDS/HOME ownership until definitive child termination. A TERM-ignoring worker is escalated without releasing its confinement.
       stopOnce();
     },
   };

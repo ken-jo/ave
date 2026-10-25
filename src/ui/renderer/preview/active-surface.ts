@@ -1,23 +1,8 @@
 import { useEffect, useSyncExternalStore } from "react";
 import type { AveApi } from "../types.js";
 
-/**
- * The window's ACTIVE SURFACE — the terminal or web page the user last
- * brought into view — which is what an unbound conversation's tools act on
- * when a call names no tab. A pane's own chat is bound to its pane instead
- * (`BoundSurfaceChip`, main's bound conversation).
- *
- * The target follows focus: focusing a pane that shows a terminal or a
- * page, or bringing one to the front of a side panel, makes it the target.
- * Switching to a chat does not change it — the chat is how the user talks
- * ABOUT what they were just looking at. The rail's side chat shows it as its
- * chip (`ActiveSurfaceChip`), whose × drops it until another terminal or page
- * is shown. Closing the target clears it.
- *
- * One value per window, because main tracks one per window: this store is
- * the single place the window's choice is made, and the one a main-side
- * listener subscribes to.
- */
+/** Unbound tools use the window's last shown terminal/page; switching back to chat keeps it selected, while bound pane
+ * chats use their own surface. */
 type ActiveSurfaceKind = "terminal" | "browser";
 
 export interface ActiveSurface {
@@ -48,10 +33,8 @@ export function showActiveSurface(surface: ActiveSurface): void {
   emit();
 }
 
-/**
- * The target's facts changed without anything new being shown (a renamed
- * tab, a reported directory). Only the current target is updated.
- */
+/** The target's facts changed without anything new being shown (a renamed tab, a reported directory). Only the current
+ * target is updated. */
 export function updateActiveSurface(surface: ActiveSurface): void {
   if (active?.tabId !== surface.tabId || same(active, surface)) return;
   active = surface;
@@ -67,11 +50,8 @@ export function clearActiveSurface(): void {
 
 const closedListeners = new Set<(tabId: string) => void>();
 
-/**
- * A surface was closed; when it was the target, there is none. Every close
- * site calls this, so it is also where a closed surface is announced (its
- * pane chat ends with it).
- */
+/** A surface was closed; when it was the target, there is none. Every close site calls this, so it is also where a closed
+ * surface is announced (its pane chat ends with it). */
 export function forgetActiveSurface(tabId: string): void {
   if (active?.tabId === tabId) clearActiveSurface();
   for (const listener of [...closedListeners]) listener(tabId);

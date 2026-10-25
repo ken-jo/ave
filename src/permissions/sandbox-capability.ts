@@ -1,35 +1,4 @@
-/**
- * OS-level execution sandbox capability — single source of truth.
- *
- * Spec ref: docs/architecture/permission-policy-design.md (sandbox capability layer)
- * Issue: #691 (sandbox capability + reviewer SOT integration)
- *
- * Why this module exists:
- *   The permission stack (Layer 0 deny / Layer 1 directory allow / Layer 3
- *   approval gate / Layer 5 reviewer) protects against accidental dangerous
- *   tool calls, but none of those layers physically isolate the *executed*
- *   shell command from the host filesystem. A reviewer that downgrades a
- *   tool call from HIGH to LOW based solely on intent is missing half the
- *   picture — without OS-level isolation, "low intent + no sandbox" is
- *   still a meaningful residual risk.
- *
- *   This module is the SOT the reviewer consults. The reviewer prompt is
- *   updated to honor a composition rule: "if executionSandbox.kind === 'none',
- *   the LLM MUST NOT downgrade a rule-based MEDIUM/HIGH verdict to LOW
- *   purely on intent."
- *
- * How the capability is resolved:
- *   OS isolation is now backed by the Anthropic Sandbox Runtime (ASRT) —
- *   see asrt-sandbox.ts. The legacy per-OS runner registry
- *   (bwrap / sandbox-exec / AppContainer) was removed; ASRT provides the
- *   host-tool filesystem jail + global strict-union network enforcement. When
- *   the ASRT path is active it reports `kind: "asrt"`; the SOT falls back to
- *   `kind: "none"` (confidence: "verified") when the sandbox gate is off
- *   (DEFAULT) — the reviewer + UI then correctly report the absence of OS
- *   isolation. The active capability is published via
- *   `setActiveSandboxCapability`. The audit chain currently stores the reviewer
- *   verdict derived from this value, not the full SandboxCapability snapshot.
- */
+// Reviewer relaxation requires live OS isolation; none forbids intent-only downgrades from MEDIUM/HIGH to LOW. Inactive gates publish verified none; audit stores the resulting verdict rather than the full capability (docs/architecture/permission-policy-design.md).
 
 import { t } from "../i18n/index.js";
 import type { ToolCategory, ToolSource } from "../tools/types.js";
@@ -46,96 +15,41 @@ import {
   type HostShellExecutionPlanAuditProjection,
 } from "./host-shell-execution-plan.js";
 
-// RENDERER-SAFETY: this module is imported by the renderer (ToolApprovalContent
-// uses isWeakSandbox / the types), so it MUST NOT statically import
-// `asrt-sandbox.js` — that package (`@anthropic-ai/sandbox-runtime`) pulls Node
-// built-ins (`fs`/`child_process`/`net`) into the renderer webpack bundle. The
-// "is a server genuinely wrapped" signal therefore comes from the MAIN-process
-// wrapped registry below (only StdioTransport, main-only, populates it) plus the
-// active capability snapshot — never a direct gate call into asrt-sandbox.
+// RENDERER-SAFETY: this module is imported by the renderer (ToolApprovalContent uses isWeakSandbox / the types), so it MUST NOT statically import `asrt-sandbox.js` — that package (`@anthropic-ai/sandbox-runtime`) pulls Node built-ins (`fs`/`child_process`/`net`) into the renderer webpack bundle. The "is a server genuinely wrapped" signal therefore comes from the MAIN-process wrapped registry below (only StdioTransport, main-only, populates it) plus the active capability snapshot — never a direct gate call into asrt-sandbox.
 
 export type SandboxKind =
   | "none"
-  /** OS isolation provided by the Anthropic Sandbox Runtime (ASRT). Backend is
-   * bwrap on Linux, Seatbelt on macOS (both full-confine), and srt-win on
-   * Windows (filesystem + network, no process isolation). All report as a
-   * single `asrt` kind; the per-substrate `confines` field distinguishes full
-   * vs partial, which is what {@link sandboxRelaxesCategory} reads. */
+  // OS isolation provided by the Anthropic Sandbox Runtime (ASRT). Backend is bwrap on Linux, Seatbelt on macOS (both full-confine), and srt-win on Windows (filesystem + network, no process isolation). All report as a single `asrt` kind; the per-substrate `confines` field distinguishes full vs partial, which is what sandboxRelaxesCategory reads.
   | "asrt"
-  /**
-   * The invocation executes inside a host-issued disposable Linux guest (the
-   * workload broker only — the operator-attested container is same-process
-   * and never earns this kind; see {@link DisposableSubstrate}), not in this
-   * process.
-   * The guest owns its filesystem and process tree; the controller host, its
-   * profile and its environment are unreachable from it. Network is the
-   * guest's own policy and is NOT claimed as confined.
-   */
+  // The invocation executes inside a host-issued disposable Linux guest (the workload broker only — the operator-attested container is same-process and never earns this kind; see DisposableSubstrate), not in this process. The guest owns its filesystem and process tree; the controller host, its profile and its environment are unreachable from it. Network is the guest's own policy and is NOT claimed as confined.
   | "disposable-container"
-  /** OS-level isolation present but evidence quality is PARTIAL. */
+  // OS-level isolation present but evidence quality is PARTIAL.
   | "partial"
-  /** Filesystem-only isolation (landlock-only — future-proofing for Linux landlock runner). */
+  // Filesystem-only isolation (landlock-only — future-proofing for Linux landlock runner).
   | "fs-only";
 
-/**
- * Confidence in the detection result.
- *
- *   - "verified"          — actively checked (binary present + invocable, OS API
- *     reports the process is sandboxed, etc.).
- *   - "assumed"           — inferred from platform without active probe (used
- *     when a probe is expensive or not yet implemented).
- *   - "policy-best-effort" — binary confirmed present + executable, but the
- *     sandbox profile is a best-effort policy with known bypass paths;
- *     enforcement is weaker than "verified". Reserved for a future PARTIAL
- *     backend; no current platform reports this (macOS + Linux are verified
- *     ASRT). Distinguishes a best-effort policy from "assumed".
- */
+// Confidence in the detection result. - "verified" — actively checked (binary present + invocable, OS API reports the process is sandboxed, etc.). - "assumed" — inferred from platform without active probe (used when a probe is expensive or not yet implemented). - "policy-best-effort" — binary confirmed present + executable, but the sandbox profile is a best-effort policy with known bypass paths; enforcement is weaker than "verified". Reserved for a future PARTIAL backend; no current platform reports this (macOS + Linux are verified ASRT). Distinguishes a best-effort policy from "assumed".
 export type SandboxConfidence = "verified" | "assumed" | "policy-best-effort";
 
 export interface SandboxCapability {
   kind: SandboxKind;
   confidence: SandboxConfidence;
-  /** NodeJS.Platform value at detection time. Useful for audit replay. */
+  // NodeJS.Platform value at detection time. Useful for audit replay.
   platform: NodeJS.Platform;
-  /** Short human-readable explanation, surfaced to UI + reviewer prompt. */
+  // Short human-readable explanation, surfaced to UI + reviewer prompt.
   reason: string;
-  /**
-   * What this capability ACTUALLY confines (filesystem / process / network),
-   * for the substrate it describes. Machine-checkable so network honesty is
-   * auditable and future per-substrate enforcement can assert against it.
-   *
-   * Optional so existing callers/fixtures that only assert kind/confidence
-   * remain valid; the honest producers ({@link setActiveSandboxCapability}
-   * publish site + the substrate-aware resolver) populate it. Absence means
-   * "not declared" — callers MUST NOT read absence as "all confined".
-   */
+  // What this capability ACTUALLY confines (filesystem / process / network), for the substrate it describes. Machine-checkable so network honesty is auditable and future per-substrate enforcement can assert against it. Optional so existing callers/fixtures that only assert kind/confidence remain valid; the honest producers (setActiveSandboxCapability publish site + the substrate-aware resolver) populate it. Absence means "not declared" — callers MUST NOT read absence as "all confined".
   confines?: SandboxConfinement;
 }
 
-/**
- * The disposable substrate an invocation was routed to, as the executor
- * selected it (`ExecutionPlan.route === "disposable-container"` for shells,
- * the brokered canonical file route for file tools). Host-derived per
- * invocation; never read from tool input or wire metadata.
- *
- * Only the workload broker qualifies. The operator-attested container is the
- * other `disposable-container` authority, but it is same-process: Ave itself
- * runs inside that container and the shell is a plain child of the
- * controller, sharing its `~/.ave`, pid namespace and environment. "Confined
- * from the Docker host" is not confinement from the controller, so that route
- * keeps the host-shell plan grading and never becomes a `DisposableSubstrate`.
- */
+// Only executor-selected broker guests qualify as disposable substrates; never trust tool/wire metadata. Same-process operator containers share controller state, env and process namespace, so they retain host-shell grading.
 export interface DisposableSubstrate {
   readonly authority: "workload-broker";
-  /** Workload identity the brokered route bound to. */
+  // Workload identity the brokered route bound to.
   readonly id: string;
 }
 
-/**
- * Honest capability of a disposable guest. Filesystem and process effects
- * stay inside the guest, so the reviewer may grade them as guest-scoped;
- * network is the guest's own egress and stays unconfined here.
- */
+// Honest capability of a disposable guest. Filesystem and process effects stay inside the guest, so the reviewer may grade them as guest-scoped; network is the guest's own egress and stays unconfined here.
 export function disposableContainerCapability(
   substrate: DisposableSubstrate,
 ): SandboxCapability {
@@ -148,7 +62,7 @@ export function disposableContainerCapability(
   };
 }
 
-/** Verified guest whose filesystem and process tree are both disposable. */
+// Verified guest whose filesystem and process tree are both disposable.
 export function isDisposableSubstrateCapability(
   cap: SandboxCapability | undefined,
 ): boolean {
@@ -161,11 +75,7 @@ export function isDisposableSubstrateCapability(
   );
 }
 
-/**
- * Active capability cache. Set by {@link setActiveSandboxCapability} when the
- * ASRT sandbox path is initialized at boot. Defaults to `undefined` (the SOT
- * then reports `kind: "none"`).
- */
+// Active capability cache. Set by setActiveSandboxCapability when the ASRT sandbox path is initialized at boot. Defaults to `undefined` (the SOT then reports `kind: "none"`).
 let _activeCapability: SandboxCapability | undefined;
 let _sandboxGeneration = 0;
 let _shellSandboxRequestedAtBoot = false;
@@ -175,68 +85,39 @@ let _windowsSubstrate: SandboxWindowsSubstrateInfo | null = null;
 let _mxcShellCapability: SandboxCapability | undefined;
 const _issuedHostShellExecutionPlans = new WeakMap<HostShellExecutionPlan, string>();
 
-/** Monotonic identity for capability and wrapped-worker membership changes. */
+// Monotonic identity for capability and wrapped-worker membership changes.
 export function getSandboxGeneration(): string {
   return String(_sandboxGeneration);
 }
 
-/**
- * Store the active sandbox capability after the ASRT sandbox is initialized at
- * boot. Subsequent calls to detectSandboxCapability return this value.
- *
- * @internal — only the boot-time ASRT init path and tests should call this.
- */
+// Store the active sandbox capability after the ASRT sandbox is initialized at boot. Subsequent calls to detectSandboxCapability return this value. @internal — only the boot-time ASRT init path and tests should call this.
 export function setActiveSandboxCapability(cap: SandboxCapability): void {
   _activeCapability = cap;
   _sandboxGeneration += 1;
 }
-/**
- * Publish the boot-time SHELL sandbox intent (`features.osToolSandbox` /
- * `AVE_SANDBOX_ENABLED=1`). This is deliberately independent from the live
- * active capability: requested-on-but-degraded and explicit-off both have
- * kind="none", yet the host-shell plan must distinguish them without
- * re-reading mutable renderer settings. It is also what scopes the published
- * ASRT capability to shells: with it off, ASRT may still be active for plugin
- * workers, and {@link detectShellSandboxCapability} reports `none`.
- *
- * @internal — only the boot-time sandbox init path and tests should call this.
- */
+// Publish the boot-time SHELL sandbox intent (`features.osToolSandbox` / `AVE_SANDBOX_ENABLED=1`). This is deliberately independent from the live active capability: requested-on-but-degraded and explicit-off both have kind="none", yet the host-shell plan must distinguish them without re-reading mutable renderer settings. It is also what scopes the published ASRT capability to shells: with it off, ASRT may still be active for plugin workers, and detectShellSandboxCapability reports `none`. @internal — only the boot-time sandbox init path and tests should call this.
 export function setShellSandboxRequestedAtBoot(requested: boolean): void {
   if (_shellSandboxRequestedAtBoot !== requested) _sandboxGeneration += 1;
   _shellSandboxRequestedAtBoot = requested;
 }
 
-/** True only when the shell sandbox was requested for this process at boot. */
+// True only when the shell sandbox was requested for this process at boot.
 export function isShellSandboxRequestedAtBoot(): boolean {
   return _shellSandboxRequestedAtBoot;
 }
 
-/**
- * Publish the boot-time PLUGIN-WORKER confinement intent
- * (`features.pluginWorkerConfinement` / `AVE_PLUGIN_WORKER_CONFINEMENT=1`).
- * Sealed once per process like the shell intent, so a worker spawn never
- * re-reads the mutable setting; `isPluginWorkerConfinementActive` in
- * asrt-sandbox.ts combines it with the live ASRT state.
- *
- * @internal — only the boot-time sandbox init path and tests should call this.
- */
+// Publish the boot-time PLUGIN-WORKER confinement intent (`features.pluginWorkerConfinement` / `AVE_PLUGIN_WORKER_CONFINEMENT=1`). Sealed once per process like the shell intent, so a worker spawn never re-reads the mutable setting; `isPluginWorkerConfinementActive` in asrt-sandbox.ts combines it with the live ASRT state. @internal — only the boot-time sandbox init path and tests should call this.
 export function setPluginWorkerConfinementRequestedAtBoot(requested: boolean): void {
   if (_pluginWorkerConfinementRequestedAtBoot !== requested) _sandboxGeneration += 1;
   _pluginWorkerConfinementRequestedAtBoot = requested;
 }
 
-/** True only when plugin-worker confinement was requested for this process at boot. */
+// True only when plugin-worker confinement was requested for this process at boot.
 export function isPluginWorkerConfinementRequestedAtBoot(): boolean {
   return _pluginWorkerConfinementRequestedAtBoot;
 }
 
-/**
- * Record what the boot gate decided. Written once per boot, at the same points
- * that emit the gate's audit event, so the two cannot describe different
- * outcomes.
- *
- * @internal — only the boot-time sandbox init path and tests should call this.
- */
+// Record what the boot gate decided. Written once per boot, at the same points that emit the gate's audit event, so the two cannot describe different outcomes. @internal — only the boot-time sandbox init path and tests should call this.
 export function setSandboxBootOutcome(outcome: SandboxBootOutcome): void {
   _bootOutcome = Object.freeze({
     ...outcome,
@@ -245,32 +126,17 @@ export function setSandboxBootOutcome(outcome: SandboxBootOutcome): void {
   });
 }
 
-/**
- * What the boot gate decided, or `null` if it never ran.
- *
- * `null` is NOT "off": a caller that renders absence as a disabled sandbox
- * would be asserting something this process never established.
- */
+// What the boot gate decided, or `null` if it never ran. `null` is NOT "off": a caller that renders absence as a disabled sandbox would be asserting something this process never established.
 export function getSandboxBootOutcome(): SandboxBootOutcome | null {
   return _bootOutcome;
 }
 
-/** @internal — test teardown only. */
+// @internal — test teardown only.
 export function __resetSandboxBootOutcomeForTest(): void {
   _bootOutcome = null;
 }
 
-/**
- * Record which substrate carries Windows shells and extensions this boot
- * (`sandbox-init.ts`), and — when MXC carries the agent shells — the
- * capability their host-shell plans get. That capability is published here and
- * NOT through {@link setActiveSandboxCapability}: it describes one launch path
- * (Bash/PowerShell tool commands in an MXC container), not the process-wide
- * runtime, so the workspace terminal and the plugin surfaces, which read the
- * process-wide capability, never inherit it.
- *
- * @internal — only the boot-time sandbox init path and tests should call this.
- */
+// Record which substrate carries Windows shells and extensions this boot (`sandbox-init.ts`), and — when MXC carries the agent shells — the capability their host-shell plans get. That capability is published here and NOT through setActiveSandboxCapability: it describes one launch path (Bash/PowerShell tool commands in an MXC container), not the process-wide runtime, so the workspace terminal and the plugin surfaces, which read the process-wide capability, never inherit it. @internal — only the boot-time sandbox init path and tests should call this.
 export function setWindowsSandboxSubstrate(
   info: SandboxWindowsSubstrateInfo,
   mxcShellCapability?: SandboxCapability,
@@ -286,60 +152,39 @@ export function setWindowsSandboxSubstrate(
   _sandboxGeneration += 1;
 }
 
-/** What boot recorded for Windows, or null (off Windows, or before the gate ran). */
+// What boot recorded for Windows, or null (off Windows, or before the gate ran).
 export function getWindowsSandboxSubstrate(): SandboxWindowsSubstrateInfo | null {
   return _windowsSubstrate;
 }
 
-/**
- * The capability of a Bash/PowerShell tool command launched in an MXC
- * container, or undefined when that route is not live: MXC carries the shells
- * this boot, the shell sandbox was requested, and the process-wide ASRT
- * runtime (whose proxy the containers reach) is still published.
- */
+// The capability of a Bash/PowerShell tool command launched in an MXC container, or undefined when that route is not live: MXC carries the shells this boot, the shell sandbox was requested, and the process-wide ASRT runtime (whose proxy the containers reach) is still published.
 export function detectMxcShellCapability(): SandboxCapability | undefined {
   if (_mxcShellCapability === undefined || !_shellSandboxRequestedAtBoot) return undefined;
   if (_activeCapability?.kind !== "asrt") return undefined;
   return _mxcShellCapability;
 }
 
-/** @internal — test teardown only. */
+// @internal — test teardown only.
 export function __resetWindowsSandboxSubstrateForTest(): void {
   if (_windowsSubstrate !== null || _mxcShellCapability !== undefined) _sandboxGeneration += 1;
   _windowsSubstrate = null;
   _mxcShellCapability = undefined;
 }
 
-/** @internal — test teardown only. */
+// @internal — test teardown only.
 export function __resetSandboxRequestedAtBootForTest(): void {
   if (_shellSandboxRequestedAtBoot || _pluginWorkerConfinementRequestedAtBoot) _sandboxGeneration += 1;
   _shellSandboxRequestedAtBoot = false;
   _pluginWorkerConfinementRequestedAtBoot = false;
 }
 
-
-/**
- * Reset the active capability cache. Used by test teardown.
- * @internal
- */
+// Reset the active capability cache. Used by test teardown. @internal
 export function __resetActiveSandboxCapabilityForTest(): void {
   if (_activeCapability !== undefined) _sandboxGeneration += 1;
   _activeCapability = undefined;
 }
 
-/**
- * Detect the OS sandbox ASRT provides in this process.
- *
- * Returns the capability stored by {@link setActiveSandboxCapability} when the
- * ASRT sandbox path was initialized at boot. Falls back to kind="none" when no
- * sandbox is active (the gate is DEFAULT-OFF; isolation=none).
- *
- * ASRT activates when EITHER the shell sandbox or plugin-worker confinement was
- * requested, so this describes what a WRAPPED process gets, not that a given
- * substrate is wrapped. Host shells read {@link detectShellSandboxCapability};
- * a worker, plugin child or MCP server reports this only when its own wrapped
- * registry says it was wrapped ({@link resolveReviewerSandboxCapability}).
- */
+// Detect the OS sandbox ASRT provides in this process. Returns the capability stored by setActiveSandboxCapability when the ASRT sandbox path was initialized at boot. Falls back to kind="none" when no sandbox is active (isolation=none). ASRT activates when EITHER the shell sandbox or plugin-worker confinement was requested, so this describes what a WRAPPED process gets, not that a given substrate is wrapped. Host shells read detectShellSandboxCapability; a worker, plugin child or MCP server reports this only when its own wrapped registry says it was wrapped (resolveReviewerSandboxCapability).
 export function detectSandboxCapability(): SandboxCapability {
   if (_activeCapability) {
     return _activeCapability;
@@ -352,12 +197,7 @@ export function detectSandboxCapability(): SandboxCapability {
   };
 }
 
-/**
- * The OS sandbox host shells (bash / powershell tools, the workspace terminal)
- * get: the ASRT capability when the shell sandbox was requested at boot, and
- * `none` otherwise — including when ASRT is active only because plugin-worker
- * confinement is on, since no shell is wrapped then.
- */
+// The OS sandbox host shells (bash / powershell tools, the workspace terminal) get: the ASRT capability when the shell sandbox was requested at boot, and `none` otherwise — including when ASRT is active only because plugin-worker confinement is on, since no shell is wrapped then.
 export function detectShellSandboxCapability(): SandboxCapability {
   if (_shellSandboxRequestedAtBoot) return detectSandboxCapability();
   return {
@@ -367,19 +207,10 @@ export function detectShellSandboxCapability(): SandboxCapability {
     reason: "shell sandbox not requested at boot (features.osToolSandbox off)",
   };
 }
-/**
- * The OS sandbox extension processes (plugin workers, plugin children, plugin
- * hooks, MCP stdio servers) get when wrapped: the ASRT capability when
- * plugin-worker confinement was requested at boot, `none` otherwise —
- * including when ASRT is active only for the shell sandbox. A per-process
- * claim still needs that process's wrapped registry
- * ({@link resolveReviewerSandboxCapability}); this is the scope-level view the
- * settings surface reports.
- */
+// The OS sandbox extension processes (plugin workers, plugin children, plugin hooks, MCP stdio servers) get when wrapped: the ASRT capability when plugin-worker confinement was requested at boot, `none` otherwise — including when ASRT is active only for the shell sandbox. A per-process claim still needs that process's wrapped registry (resolveReviewerSandboxCapability); this is the scope-level view the settings surface reports.
 export function detectPluginWorkerSandboxCapability(): SandboxCapability {
   if (_pluginWorkerConfinementRequestedAtBoot && _windowsSubstrate?.extensions === "none" && _activeCapability !== undefined) {
-    // Windows with ASRT running as the MXC shells' proxy only: there is no
-    // substrate that confines plugin processes this boot.
+    // Windows with ASRT running as the MXC shells' proxy only: there is no substrate that confines plugin processes this boot.
     return {
       kind: "none",
       confidence: "verified",
@@ -397,12 +228,7 @@ export function detectPluginWorkerSandboxCapability(): SandboxCapability {
     reason: "extension confinement not requested at boot (features.pluginWorkerConfinement off)",
   };
 }
-/**
- * Resolve the boot-sealed execution plan for builtin host shell tools.
- * It is intentionally separate from detectSandboxCapability(): Windows Plan B
- * selects a plain child and must not present the process-global partial ASRT
- * capability as if it confined that child.
- */
+// Resolve the boot-sealed execution plan for builtin host shell tools. It is intentionally separate from detectSandboxCapability: Windows Plan B selects a plain child and must not present the process-global partial ASRT capability as if it confined that child.
 export function getHostShellExecutionPlan(executionMode: HostShellExecutionRequest = "default"): HostShellExecutionPlan {
   const generation = getSandboxGeneration();
   const mxc = detectMxcShellCapability();
@@ -417,75 +243,29 @@ export function getHostShellExecutionPlan(executionMode: HostShellExecutionReque
   return plan;
 }
 
-/**
- * True only for a plan produced by the host's live provider. Shell tools use
- * this to reject structural lookalikes passed by a direct in-process caller.
- */
+// True only for a plan produced by the host's live provider. Shell tools use this to reject structural lookalikes passed by a direct in-process caller.
 export function isIssuedHostShellExecutionPlan(
   plan: HostShellExecutionPlan,
 ): boolean {
   return _issuedHostShellExecutionPlans.has(plan);
 }
 
-/** Capability generation captured atomically when the host issued this plan. */
+// Capability generation captured atomically when the host issued this plan.
 export function getIssuedHostShellExecutionPlanGeneration(
   plan: HostShellExecutionPlan,
 ): string | undefined {
   return _issuedHostShellExecutionPlans.get(plan);
 }
 
-
-/**
- * Tool names whose effects run on the ASRT-wrapped host-shell substrate.
- *
- * ONLY the `bash` / `powershell` builtin shell tools route their workload
- * through {@link wrapToolCommand} (→ `spawnWithSandbox` in bash.ts /
- * powershell.ts), which is the per-command OS jail. Every other execution
- * substrate is NOT ASRT-wrapped:
- *   - `mcp` tools run in the LONG-LIVED MCP worker. EXTERNAL stdio servers
- *     are wrapped via `wrapWorkerCommand` in `StdioTransport.openWrapped`
- *     when the gate is ON; per-server confinement is
- *     reported through the wrapped-registry below. Plugin loopback servers
- *     use `LoopbackTransport` (in-process) — not ASRT-wrapped.
- *   - other `builtin` tools (read_file, write_file, list_files, …) run
- *     IN-PROCESS in the host — no OS jail either.
- *
- * This is one of THREE shell-tool derivations in the host, and it is
- * intentionally the NARROWEST — an exact two-name builtin set, not a prefix
- * rule. It must not be unified with `BashAstValidator._isBashTool`
- * (`src/main/bash-ast-validator.ts`, a deliberately wide name regex covering
- * plugin/MCP tools named `shell*`/`exec*`/…) nor with the canonical-instance
- * discriminator in `src/tools/invocation-runner.ts`: widening this set would
- * report confinement for a substrate that is not actually ASRT-wrapped.
- * The asymmetry is pinned by
- * `src/tools/__tests__/executor-shell-tool-identity.test.ts`.
- */
+// Only exact builtin bash/powershell names imply per-command shell wrapping. Do not merge this set with broad shell-name validation or canonical-instance checks; other builtins and loopback plugins run in-process, while external workers need their own live wrap records.
 const ASRT_WRAPPED_SHELL_TOOLS: ReadonlySet<string> = new Set(["bash", "powershell"]);
 
-/**
- * Per-server ownership tokens for EXTERNAL MCP stdio workers actually spawned
- * through the ASRT wrap in THIS process. Multiple generations with the same id
- * may overlap while an old process is terminating; each exit removes only its
- * own token, never a replacement transport's marker.
- *
- * Populated by {@link markMcpServerWrapped} from `StdioTransport.openWrapped`
- * only on the wrapped path, and cleared by {@link unmarkMcpServerWrapped} on
- * transport close (or a failed wrap). This is the per-server "wrapped" signal
- * {@link resolveReviewerSandboxCapability} consults so an MCP tool call reports
- * the GENUINE asrt capability ONLY for a server that is genuinely confined —
- * an unwrapped server (gate off, wrap failed, pre-existing) still reports
- * `none`. Membership here is necessary but NOT sufficient: the resolver also
- * re-checks {@link detectSandboxCapability} so a torn-down sandbox cannot leave
- * a stale `asrt` report.
- */
+// External server generations own separate wrap tokens; old exits must not clear replacement markers. Report confinement only with a successful local wrap record and an active verified capability; failed/pre-existing/unwrapped or torn-down workers remain none.
 const _wrappedMcpServerOwners = new Map<string, Set<symbol>>();
 
 export type McpWrappedOwner = symbol;
 
-/**
- * Record one transport generation of `serverId` as ASRT-wrapped.
- * @internal — only StdioTransport's wrapped-spawn path and tests call this.
- */
+// Record one transport generation of `serverId` as ASRT-wrapped. @internal — only StdioTransport's wrapped-spawn path and tests call this.
 export function markMcpServerWrapped(serverId: string): McpWrappedOwner {
   const owner = Symbol(serverId);
   const owners = _wrappedMcpServerOwners.get(serverId);
@@ -498,10 +278,7 @@ export function markMcpServerWrapped(serverId: string): McpWrappedOwner {
   return owner;
 }
 
-/**
- * Drop one transport generation's wrapped marker. Idempotent and owner-scoped.
- * @internal — only StdioTransport and tests call this.
- */
+// Drop one transport generation's wrapped marker. Idempotent and owner-scoped. @internal — only StdioTransport and tests call this.
 export function unmarkMcpServerWrapped(serverId: string, owner: McpWrappedOwner): void {
   const owners = _wrappedMcpServerOwners.get(serverId);
   if (owners === undefined || !owners.delete(owner)) return;
@@ -511,236 +288,90 @@ export function unmarkMcpServerWrapped(serverId: string, owner: McpWrappedOwner)
   }
 }
 
-/**
- * Whether any live `serverId` transport generation is wrapped through ASRT.
- * @internal — exported for the reviewer resolver + tests.
- */
+// Whether any live `serverId` transport generation is wrapped through ASRT. @internal — exported for the reviewer resolver + tests.
 export function isMcpServerWrapped(serverId: string): boolean {
   return _wrappedMcpServerOwners.has(serverId);
 }
 
-/**
- * Drop every wrapped-MCP-server marker. Called by {@link resetAsrtSandbox} on
- * sandbox teardown so no stale `asrt` signal survives, and by test teardown.
- * @internal
- */
+// Drop every wrapped-MCP-server marker. Called by resetAsrtSandbox on sandbox teardown so no stale `asrt` signal survives, and by test teardown. @internal
 export function clearWrappedMcpServers(): void {
   if (_wrappedMcpServerOwners.size > 0) _sandboxGeneration += 1;
   _wrappedMcpServerOwners.clear();
 }
 
-/**
- * Reset the wrapped-MCP-server registry. Test teardown only.
- * @internal
- */
+// Reset the wrapped-MCP-server registry. Test teardown only. @internal
 export function __resetWrappedMcpServersForTest(): void {
   clearWrappedMcpServers();
 }
 
-/**
- * The set of PLUGIN WORKER ids whose long-lived worker was ACTUALLY spawned
- * through the ASRT wrap in THIS process (worker-confinement via UDS — PR D-1).
- *
- * This mirrors the wrapped MCP owner registry for the OTHER long-lived worker
- * substrate: a `source === 'plugin'` tool whose side-effects run in a
- * host-spawned, ASRT-wrapped plugin worker ({@link spawnWorker} in
- * worker-spawn.ts). Populated by {@link markPluginWorkerWrapped} from the
- * wrapped-spawn path (gate ON + wrap succeeded) and cleared by
- * {@link unmarkPluginWorkerWrapped} on any worker exit / stop / failed wrap.
- *
- * This is the per-worker "wrapped" signal {@link resolveReviewerSandboxCapability}
- * consults so a plugin tool call reports the GENUINE asrt capability ONLY for a
- * worker that is genuinely confined — an unwrapped worker (gate off, wrap
- * failed, or a plugin with no host-spawned worker) stays `none`. Membership is
- * necessary but NOT sufficient: the resolver also re-checks
- * {@link detectSandboxCapability} so a torn-down sandbox cannot leave a stale
- * `asrt` report (the #1359/#1364 no-leak invariant).
- */
+// Mark plugin workers only after successful local wrapping and clear on exit/stop/failure; registry membership also requires a still-active capability. Global sandbox activation alone never proves this worker is confined.
 const _wrappedPluginWorkerIds = new Set<string>();
 
-/**
- * Compose the COLLISION-FREE registry key for a plugin worker. `workerId` is
- * stable only WITHIN a plugin (two plugins may both name a worker "main"), so
- * the marker MUST be scoped by `pluginId` — keying on `workerId` alone lets
- * plugin B inherit plugin A's `asrt` signal, defeating the no-leak invariant.
- * Both ids are `safeSegment`-sanitized upstream (no `/`), but may still contain
- * other characters, so the composition must be UNAMBIGUOUS: `(pluginId,
- * workerId)` must map 1:1 to the key — e.g. `("a:b","c")` must NOT collide with
- * `("a","b:c")`.
- *
- * This key is live for the marker registry, but plugin-worker reviewer
- * relaxation remains inert until a host-owned Tool producer sets both
- * `pluginId` and `workerId` for a call path that actually uses spawnWorker.
- */
+// Key wrap records by an unambiguous pluginId/workerId pair; worker names alone or delimiter collisions could lend another plugin confinement. Relaxation also needs host-owned tool metadata for a genuinely worker-backed call.
 function pluginWorkerKey(pluginId: string, workerId: string): string {
-  // Length-prefix the pluginId so the (pluginId, workerId) split is unambiguous
-  // for ANY input — the leading `<len>:` fixes where pluginId ends, so even an
-  // id containing `:` cannot forge another pair's key: ("a:b","c") → "3:a:b:c"
-  // vs ("a","b:c") → "1:a:b:c" differ on the length prefix. Self-contained
-  // (does NOT lean on safeSegment stripping the delimiter — this is a no-leak
-  // security boundary), and the middle `:` keeps it readable for audit/telemetry.
+  // Length-prefix the pluginId so the (pluginId, workerId) split is unambiguous for ANY input — the leading `<len>:` fixes where pluginId ends, so even an id containing `:` cannot forge another pair's key: ("a:b","c") → "3:a:b:c" vs ("a","b:c") → "1:a:b:c" differ on the length prefix. Self-contained (does NOT lean on safeSegment stripping the delimiter — this is a no-leak security boundary), and the middle `:` keeps it readable for audit/telemetry.
   return `${pluginId.length}:${pluginId}:${workerId}`;
 }
 
-/**
- * Record that a plugin worker (`pluginId`/`workerId`) was spawned through the
- * ASRT wrap.
- * @internal — only {@link spawnWorker}'s wrapped-spawn path and tests call this.
- */
+// Record that a plugin worker (`pluginId`/`workerId`) was spawned through the ASRT wrap. @internal — only spawnWorker's wrapped-spawn path and tests call this.
 export function markPluginWorkerWrapped(pluginId: string, workerId: string): void {
   const key = pluginWorkerKey(pluginId, workerId);
   if (!_wrappedPluginWorkerIds.has(key)) _sandboxGeneration += 1;
   _wrappedPluginWorkerIds.add(key);
 }
 
-/**
- * Drop a plugin worker's wrapped marker (worker exited / stopped / wrap failed).
- * Idempotent.
- * @internal — only {@link spawnWorker} and tests call this.
- */
+// Drop a plugin worker's wrapped marker (worker exited / stopped / wrap failed). Idempotent. @internal — only spawnWorker and tests call this.
 export function unmarkPluginWorkerWrapped(pluginId: string, workerId: string): void {
   if (_wrappedPluginWorkerIds.delete(pluginWorkerKey(pluginId, workerId))) {
     _sandboxGeneration += 1;
   }
 }
 
-/**
- * Whether a plugin worker (`pluginId`/`workerId`) is currently wrapped through ASRT.
- * @internal — exported for the reviewer resolver + tests.
- */
+// Whether a plugin worker (`pluginId`/`workerId`) is currently wrapped through ASRT. @internal — exported for the reviewer resolver + tests.
 export function isPluginWorkerWrapped(pluginId: string, workerId: string): boolean {
   return _wrappedPluginWorkerIds.has(pluginWorkerKey(pluginId, workerId));
 }
 
-/**
- * The set of PLUGIN ids whose out-of-process CHILD was ACTUALLY spawned
- * through the ASRT wrap in THIS process (`spawnConfinedPluginChild`).
- *
- * Third long-lived substrate next to the wrapped MCP servers and the wrapped
- * plugin workers above: an admitted out-of-process plugin executes EVERY tool
- * inside one host-spawned confined child whose filesystem write set is the
- * host-derived envelope (rooted at the plugin's own sandbox) — so a
- * `source === 'plugin'` call owned by such a plugin genuinely runs jailed.
- * Populated by the confined spawn's wrapped path only (gate ON + wrap
- * succeeded) and cleared on child exit / spawn failure. Membership is
- * necessary but NOT sufficient: {@link resolveReviewerSandboxCapability}
- * re-checks {@link detectSandboxCapability} so a torn-down sandbox cannot
- * leave a stale `asrt` report (the #1359/#1364 no-leak invariant).
- *
- * Keyed by bare pluginId: a plugin has at most ONE confined child, and the
- * restart sequence stops the old child (unmark) before the next spawn marks.
- */
+// Confined plugin children mark only successful wraps and unmark on failure/exit; verify live capability as well. Bare pluginId is safe only because restart stops/unmarks the sole prior child before replacing it.
 const _confinedPluginChildIds = new Set<string>();
 
-/**
- * Record that a plugin's out-of-process child was spawned through the ASRT wrap.
- * @internal — only `spawnConfinedPluginChild`'s wrapped path and tests call this.
- */
+// Record that a plugin's out-of-process child was spawned through the ASRT wrap. @internal — only `spawnConfinedPluginChild`'s wrapped path and tests call this.
 export function markPluginChildConfined(pluginId: string): void {
   if (!_confinedPluginChildIds.has(pluginId)) _sandboxGeneration += 1;
   _confinedPluginChildIds.add(pluginId);
 }
 
-/**
- * Drop a plugin's confined-child marker (child exited / spawn failed).
- * Idempotent.
- * @internal — only `spawnConfinedPluginChild` and tests call this.
- */
+// Drop a plugin's confined-child marker (child exited / spawn failed). Idempotent. @internal — only `spawnConfinedPluginChild` and tests call this.
 export function unmarkPluginChildConfined(pluginId: string): void {
   if (_confinedPluginChildIds.delete(pluginId)) {
     _sandboxGeneration += 1;
   }
 }
 
-/**
- * Whether a plugin's out-of-process child is currently ASRT-confined.
- * @internal — exported for the reviewer resolver + tests.
- */
+// Whether a plugin's out-of-process child is currently ASRT-confined. @internal — exported for the reviewer resolver + tests.
 export function isPluginChildConfined(pluginId: string): boolean {
   return _confinedPluginChildIds.has(pluginId);
 }
 
-/**
- * Drop every wrapped-plugin-worker marker. Called by {@link resetAsrtSandbox}
- * on sandbox teardown so no stale `asrt` signal survives, and by test teardown.
- * @internal
- */
+// Drop every wrapped-plugin-worker marker. Called by resetAsrtSandbox on sandbox teardown so no stale `asrt` signal survives, and by test teardown. @internal
 export function clearWrappedPluginWorkers(): void {
   if (_wrappedPluginWorkerIds.size > 0) _sandboxGeneration += 1;
   _wrappedPluginWorkerIds.clear();
 }
 
-/**
- * Drop every confined-plugin-child marker. Same teardown/no-leak contract as
- * {@link clearWrappedPluginWorkers}.
- * @internal
- */
+// Drop every confined-plugin-child marker. Same teardown/no-leak contract as clearWrappedPluginWorkers. @internal
 export function clearConfinedPluginChildren(): void {
   if (_confinedPluginChildIds.size > 0) _sandboxGeneration += 1;
   _confinedPluginChildIds.clear();
 }
 
-/**
- * Reset the wrapped-plugin-worker registry. Test teardown only.
- * @internal
- */
+// Reset the wrapped-plugin-worker registry. Test teardown only. @internal
 export function __resetWrappedPluginWorkersForTest(): void {
   clearWrappedPluginWorkers();
 }
 
-/**
- * Resolve the sandbox capability to feed the reviewer/risk-classifier for a
- * SPECIFIC tool call, reflecting that call's EXECUTION SUBSTRATE rather than
- * the process-global capability.
- *
- * THE INVARIANT (security): the `asrt` reviewer relaxation
- * ({@link isWeakSandbox} === false) must apply ONLY to executions GENUINELY
- * isolated by ASRT. The process-global {@link detectSandboxCapability} reports
- * `asrt` once the boot gate is ON, but that only describes the host-shell
- * substrate — plugin/MCP tool side-effects run in the unwrapped long-lived
- * worker (isolation=none), and in-process builtin tools are not jailed either.
- * Presenting the global `asrt` for those calls would let the LLM downgrade a
- * MEDIUM/HIGH verdict to LOW (auto-approve) for an UNSANDBOXED effect — the
- * exact opposite of enabling the sandbox.
- *
- * Mapping:
- *   - `builtin` + tool ∈ {bash, powershell} → the genuine
- *     {@link detectSandboxCapability} (the ASRT-wrapped shell path; `asrt`
- *     when the gate is ON, already `none` when it is OFF).
- *   - `mcp` + the originating server was ACTUALLY wrapped through ASRT
- *     (gate ON + {@link isAsrtSandboxActive} + {@link isMcpServerWrapped}) →
- *     the genuine {@link detectSandboxCapability}
- *     (the wrapped worker IS confined — mac/linux full, win32 partial).
- *   - `plugin` + the originating worker was ACTUALLY wrapped through ASRT
- *     (gate ON + {@link isPluginWorkerWrapped}) → the genuine
- *     {@link detectSandboxCapability} (the host-spawned plugin worker IS
- *     confined; see {@link spawnWorker}). Requires `workerId` from a host-owned
- *     Tool descriptor; manifest `_meta.workerId` alone is not accepted.
- *   - everything else (UNWRAPPED plugin, UNWRAPPED mcp, other builtin) → a
- *     forced `none` capability so {@link isWeakSandbox} treats the call as WEAK
- *     and the reviewer cannot relax.
- *
- * NO-LEAK INVARIANT (the #1359 review catch): never report `asrt` for a worker
- * this process did not wrap. An MCP server / plugin worker reports `asrt` ONLY
- * when its specific id is in the corresponding wrapped registry AND the sandbox
- * is still active — a gate-off, wrap-failed, win32-legacy, or pre-existing
- * unwrapped worker stays `none`.
- *
- * @param mcpServerId  Originating MCP server id, threaded from `Tool.mcpServerId`.
- *                     Required to report `asrt` for an `mcp` call; omitted ⇒ the
- *                     call resolves to `none` (the historical default), so every
- *                     pre-existing call site keeps its exact behaviour.
- * @param workerId     Originating plugin-worker id from a host-owned Tool
- *                     descriptor whose call path is worker-backed. Required to
- *                     report `asrt` for a `plugin` call; omitted ⇒ the call
- *                     resolves to `none` (the historical default for plugin
- *                     tools), so every pre-existing call site is unchanged.
- * @param disposableSubstrate  The disposable guest the executor routed THIS
- *                     invocation to. It is the substrate the effects land on,
- *                     so it takes precedence over the host-shell plan (whose
- *                     `none` describes a plain child this call will not spawn)
- *                     and over the in-process default for canonical file tools.
- */
+// Resolve the actual per-call substrate, never global capability: exact shell tools use their shell plan; external servers/workers require their own local wrap marker plus live verified runtime. Worker IDs must come from a host-owned descriptor, never manifest metadata.
+// Unwrapped/unknown/in-process calls stay none so reviewer relaxation cannot authorize unconfined effects. Broker-selected disposable substrate takes precedence over host-shell and canonical file defaults because that is where effects actually land.
 export function resolveReviewerSandboxCapability(
   source: ToolSource,
   toolName: string,
@@ -754,36 +385,17 @@ export function resolveReviewerSandboxCapability(
     return disposableContainerCapability(disposableSubstrate);
   }
   if (source === "builtin" && ASRT_WRAPPED_SHELL_TOOLS.has(toolName)) {
-    // The executor seals this plan before any reviewer/cache path. Never
-    // recompute a host-shell substrate after it has been selected for an
-    // invocation; an ASRT teardown must become a fail-closed execution error,
-    // not a reviewer verdict for a different late fallback.
+    // The executor seals this plan before any reviewer/cache path. Never recompute a host-shell substrate after it has been selected for an invocation; an ASRT teardown must become a fail-closed execution error, not a reviewer verdict for a different late fallback.
     return hostShellExecutionPlan?.capability ?? getHostShellExecutionPlan().capability;
   }
-  // `terminal_run` types its command into a workspace terminal, whose shell
-  // runs under that PTY's own ASRT wrap (main/terminal/pty-manager.ts). A
-  // terminal spawns only while the active sandbox contains shell effects and
-  // stays wrapped for its whole life, so while that still holds the command
-  // lands on a confined substrate. Otherwise it reports `none` like any other
-  // in-process builtin (never more confinement than is proven now).
-  // What this reports is the sandbox as it is NOW. The terminal's own jail —
-  // its write paths (spawn cwd ∪ its HOME), deny floors and egress allow-list —
-  // was fixed when its shell spawned; later changes to allowed directories or
-  // the network allow-list do not reach a running terminal. The capability
-  // kind is the same; the exact policy may be older.
+  // Terminal commands qualify only while live shell capability proves confinement. Their policy was fixed at PTY spawn: later directory/network changes do not update the running jail even when capability kind remains the same.
   if (source === "builtin" && toolName === "terminal_run" && isActiveSandboxShellContained()) {
     const active = detectSandboxCapability();
     if (active.kind === "asrt") {
       return { ...active, reason: `workspace terminal shell ASRT-wrapped — ${active.reason}` };
     }
   }
-  // worker-confinement PR D-1: a wrapped host-spawned plugin worker genuinely
-  // runs under ASRT — report its real capability so the reviewer composition
-  // reflects the actual confinement (not the false `none` the unwrapped worker
-  // earned). Same TWO main-process-only signals as the MCP branch: (1) the
-  // worker id is in the plugin-worker wrapped registry (only populated by
-  // spawnWorker's wrapped path, cleared on exit/stop/failure/teardown); (2) the
-  // active capability is a genuine verified `asrt`. Both must hold (no-leak).
+  // Worker relaxation needs both its own successful local wrap marker and the still-live verified capability; failure/exit/teardown must return none.
   if (
     source === "plugin" &&
     pluginId !== undefined &&
@@ -798,16 +410,7 @@ export function resolveReviewerSandboxCapability(
       };
     }
   }
-  // An admitted OUT-OF-PROCESS plugin executes every tool inside its one
-  // host-spawned ASRT-confined child (`spawnConfinedPluginChild`) — no
-  // workerId exists on those Tool descriptors because the substrate is the
-  // plugin child itself, keyed by pluginId. Same TWO main-process-only
-  // signals as the branches around it: (1) the pluginId is in the
-  // confined-child registry (populated only by the confined spawn's wrapped
-  // path, cleared on exit/failure/teardown); (2) the active capability is a
-  // genuine verified `asrt`. Both must hold (no-leak). The wrapped-worker
-  // branch above stays first so a worker-backed call keeps its more specific
-  // reason string.
+  // An admitted OUT-OF-PROCESS plugin executes every tool inside its one host-spawned ASRT-confined child (`spawnConfinedPluginChild`) — no workerId exists on those Tool descriptors because the substrate is the plugin child itself, keyed by pluginId. Same TWO main-process-only signals as the branches around it: (1) the pluginId is in the confined-child registry (populated only by the confined spawn's wrapped path, cleared on exit/failure/teardown); (2) the active capability is a genuine verified `asrt`. Both must hold (no-leak). The wrapped-worker branch above stays first so a worker-backed call keeps its more specific reason string.
   if (
     source === "plugin" &&
     pluginId !== undefined &&
@@ -821,17 +424,7 @@ export function resolveReviewerSandboxCapability(
       };
     }
   }
-  // A wrapped external MCP stdio worker genuinely runs under
-  // ASRT — report its real capability so the reviewer composition reflects the
-  // actual confinement (and not the false `none` the unwrapped worker earned).
-  //
-  // Liveness is established by TWO main-process-only signals, no renderer-unsafe
-  // gate call: (1) the server id is in the wrapped registry — only populated by
-  // StdioTransport's wrapped-spawn path (gate ON + wrap succeeded) and cleared on
-  // close/failure/teardown; (2) the active capability is a genuine verified
-  // `asrt` — published by boot and cleared on {@link resetAsrtSandbox}. Both must
-  // hold, so a torn-down sandbox (active reset) or an unwrapped server (not in the
-  // registry) falls through to `none` (no-leak invariant).
+  // External server confinement needs both its successful local wrap record and the still-live verified published capability; teardown or missing markers returns none without renderer-unsafe runtime imports.
   if (source === "mcp" && mcpServerId !== undefined && isMcpServerWrapped(mcpServerId)) {
     const active = detectSandboxCapability();
     if (active.kind === "asrt") {
@@ -865,9 +458,9 @@ export interface ReviewerSandboxCacheState {
   readonly mcpServerId?: string;
   readonly pluginId?: string;
   readonly workerId?: string;
-  /** Present only for a canonical builtin shell with a host-sealed plan. */
+  // Present only for a canonical builtin shell with a host-sealed plan.
   readonly hostShellExecutionPlan?: HostShellExecutionPlanAuditProjection;
-  /** Present only when the executor routed the call to a disposable guest. */
+  // Present only when the executor routed the call to a disposable guest.
   readonly disposableSubstrate?: DisposableSubstrate;
   readonly capability: {
     readonly kind: SandboxKind;
@@ -878,15 +471,7 @@ export interface ReviewerSandboxCacheState {
   };
 }
 
-/**
- * Cache-invalidation identity for reviewer sandbox composition.
- *
- * The reviewer cache may store a verdict relaxed because a long-lived MCP or
- * plugin worker is ASRT-wrapped. That relaxation is valid only while the exact
- * worker remains wrapped in THIS process. Fold the live wrap marker into the
- * invalidation key so an un-wrap turns the previous relaxed verdict stale
- * before any future producer can make plugin-worker relaxation live.
- */
+// Cache-invalidation identity for reviewer sandbox composition. The reviewer cache may store a verdict relaxed because a long-lived MCP or plugin worker is ASRT-wrapped. That relaxation is valid only while the exact worker remains wrapped in THIS process. Fold the live wrap marker into the invalidation key so an un-wrap turns the previous relaxed verdict stale before any future producer can make plugin-worker relaxation live.
 export function resolveReviewerSandboxCacheState(
   source: ToolSource,
   toolName: string,
@@ -952,29 +537,7 @@ export function resolveReviewerSandboxCacheState(
   };
 }
 
-/**
- * Format the capability for inclusion in the reviewer LLM prompt.
- *
- * The format is stable + grep-able so the reviewer's response can be
- * audited against the input that produced it. Example output:
- *
- *   "executionSandbox=none (verified, darwin) — no OS sandbox configured for the host process"
- *
- * When the capability declares {@link SandboxCapability.confines}, the
- * per-dimension confinement is appended so the reviewer LLM sees an HONEST
- * picture of what is (and is NOT) jailed — e.g. Windows ASRT confines
- * filesystem + network but not process, and the LLM must not relax shell risk
- * on the strength of filesystem/network confinement alone:
- *
- *   "executionSandbox=asrt (verified, win32) confines[net:✓ fs:✓ proc:✗] — …"
- *
- * The suffix is omitted when `confines` is absent (legacy/`none` capabilities)
- * so the historical grep-stable strings are preserved.
- *
- * Labels for extended kinds:
- *   partial  → localized partial OS isolation label
- *   fs-only  → localized filesystem-only isolation label
- */
+// Keep prompt capability text stable for audit and expose per-dimension limits; filesystem/network isolation alone cannot justify shell relaxation without process isolation. Omit dimensions only when absent on the capability.
 export function formatSandboxCapabilityForPrompt(capability: SandboxCapability): string {
   const kindLabel = (() => {
     switch (capability.kind) {
@@ -984,8 +547,7 @@ export function formatSandboxCapabilityForPrompt(capability: SandboxCapability):
       case "partial":      return t("be_sandboxCapability.partialLabel");
       case "fs-only":      return t("be_sandboxCapability.fsOnlyLabel");
       default: {
-        // Exhaustive check — if a new SandboxKind is added without updating
-        // this switch, the TypeScript compiler will report an error here.
+        // Exhaustive check — if a new SandboxKind is added without updating this switch, the TypeScript compiler will report an error here.
         const _exhaustive: never = capability.kind;
         return _exhaustive;
       }
@@ -1002,19 +564,7 @@ export function formatSandboxCapabilityForPrompt(capability: SandboxCapability):
   );
 }
 
-/**
- * Returns true when the capability is "weak" — i.e. the LLM reviewer
- * MUST NOT downgrade a rule-based MEDIUM/HIGH verdict to LOW on this
- * invocation. Centralised here so the reviewer + audit + UI agree.
- *
- *   - `kind === "none"`          → weak (no isolation)
- *   - `kind === "partial"`       → weak (partial isolation = evidence gap)
- *   - `confidence === "assumed"` → weak (unverified isolation = no isolation)
- *
- * `fs-only` is NOT weak — it is strong-for-fs. The composition rule
- * handles network egress separately for fs-only runners.
- * Anything else (verified `asrt`) is "strong".
- */
+// Returns true when the capability is "weak" — i.e. the LLM reviewer MUST NOT downgrade a rule-based MEDIUM/HIGH verdict to LOW on this invocation. Centralised here so the reviewer + audit + UI agree. - `kind === "none"` → weak (no isolation) - `kind === "partial"` → weak (partial isolation = evidence gap) - `confidence === "assumed"` → weak (unverified isolation = no isolation) `fs-only` is NOT weak — it is strong-for-fs. The composition rule handles network egress separately for fs-only runners. Anything else (verified `asrt`) is "strong".
 export function isWeakSandbox(cap: SandboxCapability): boolean {
   if (cap.kind === "none") return true;
   if (cap.kind === "partial") return true;
@@ -1022,39 +572,14 @@ export function isWeakSandbox(cap: SandboxCapability): boolean {
   return false;
 }
 
-/**
- * Whether the reviewer may relax (allow an LLM downgrade of a rule-based
- * MEDIUM/HIGH verdict to LOW) for a tool call of the given {@link ToolCategory}
- * under this capability — per-CATEGORY, gated on the matching `confines`
- * dimension.
- *
- * Why per-category (and not the binary {@link isWeakSandbox}):
- *   {@link isWeakSandbox} is confines-BLIND — it returns "strong" for ANY
- *   verified non-none ASRT capability, which is correct only while every ASRT
- *   substrate is FULL-confine (mac/linux: {filesystem, process, network} all
- *   true). Windows ASRT is partial: filesystem + network are confined, process
- *   isolation is not. This gates relaxation on the dimensions that actually
- *   cover each category:
- *     - `network`               → confines.network
- *     - `read` / `write` / `meta` → confines.filesystem
- *     - `shell`                 → confines.filesystem AND confines.process
- *
- * Behaviour invariant: a full-confine ASRT relaxes ALL categories, matching the
- * historical `isWeakSandbox(cap) === false` behavior. A partial-confine ASRT
- * relaxes only the categories covered by its declared dimensions. This actively
- * applies on Windows ASRT 0.0.80 (`filesystem + network`, no process): network
- * and filesystem-bearing read/write/meta calls may relax, but shell calls may
- * not relax because process isolation is absent.
- */
+// Relax only the dimension covering the category: network needs network isolation, read/write/meta need filesystem, shell needs filesystem plus process. Partial confinement cannot inherit full-runtime relaxation.
 export function sandboxRelaxesCategory(
   cap: SandboxCapability,
   category: ToolCategory,
 ): boolean {
   // none/partial/assumed never relax — unchanged from the binary gate.
   if (isWeakSandbox(cap)) return false;
-  // LEGACY: a verified non-none capability WITHOUT a declared `confines` field
-  // keeps the old all-or-nothing behaviour, so existing fixtures and
-  // mac/linux-verified ASRT (published with full confines) are unaffected.
+  // LEGACY: a verified non-none capability WITHOUT a declared `confines` field keeps the old all-or-nothing behaviour, so existing fixtures and mac/linux-verified ASRT (published with full confines) are unaffected.
   if (!cap.confines) return true;
   if (category === "network") return cap.confines.network === true;
   if (category === "shell") {
@@ -1064,40 +589,12 @@ export function sandboxRelaxesCategory(
   return cap.confines.filesystem === true;
 }
 
-/**
- * Whether the ACTIVE OS sandbox FILESYSTEM-CONTAINS the host process.
- *
- * This is the gate the foreground plugin read-relaxation (ToolExecutor's
- * effect-boundary block) consults. The relaxation removes the pre-exec ask
- * whose job is to gate (among others) the off-hostApi `node:fs` WRITE residual,
- * so it may fire ONLY when that residual is FILESYSTEM-CONTAINED by the OS
- * sandbox — a bare "sandbox active" boolean is NOT sufficient. Windows srt-win
- * is partial, but this generic signal only describes the host shell substrate;
- * plugin workers need the narrower per-worker/plugin provider below.
- *
- * Reads the host-shell view of the active capability
- * ({@link detectShellSandboxCapability}) and applies the SAME filesystem-confinement
- * truth {@link sandboxRelaxesCategory} uses for filesystem-bearing categories
- * (`confines.filesystem === true`):
- *   - macOS / Linux ASRT (full-confine)           → true
- *   - Windows srt-win ASRT (fs+network partial)   → true
- *   - sandbox inactive (kind "none")              → false
- *
- * RENDERER-SAFETY: like the rest of this module this is a pure read of the
- * published capability snapshot — it never imports asrt-sandbox.js, so the
- * main-process boot/conversation wiring can call it without pulling Node
- * built-ins into a renderer bundle.
- */
+// Foreground plugin relaxation requires filesystem containment because off-API writes lose their pre-exec ask; active-runtime status alone is insufficient. This is the shell snapshot only, so workers need narrower proofs; read published state without importing main-only runtime dependencies.
 export function isActiveSandboxFilesystemContained(): boolean {
   return detectShellSandboxCapability().confines?.filesystem === true;
 }
 
-/**
- * Whether the active sandbox is strong enough for an arbitrary interactive
- * shell surface. A shell can create subprocesses and persistence hooks, so it
- * follows the same category rule as {@link sandboxRelaxesCategory}: filesystem
- * AND process confinement must both be true.
- */
+// Whether the active sandbox is strong enough for an arbitrary interactive shell surface. A shell can create subprocesses and persistence hooks, so it follows the same category rule as sandboxRelaxesCategory: filesystem AND process confinement must both be true.
 export function isActiveSandboxShellContained(): boolean {
   return sandboxRelaxesCategory(detectShellSandboxCapability(), "shell");
 }
@@ -1110,17 +607,7 @@ export interface PluginEffectContainmentLookup {
   readonly workerId?: string;
 }
 
-/**
- * Whether the foreground plugin effect-boundary can stand in for the removed
- * pre-exec ask for THIS plugin tool call.
- *
- * The generic host-shell capability is deliberately not enough here. Plugin
- * effect-boundary relaxation is valid only when the call is tied to a
- * host-owned `Tool.workerId` and that exact `pluginId/workerId` is currently
- * marked as ASRT-wrapped by {@link spawnWorker}. This keeps ordinary in-process
- * plugin tools on the pre-exec ask path until their execution substrate is
- * actually worker-backed.
- */
+// Whether the foreground plugin effect-boundary can stand in for the removed pre-exec ask for THIS plugin tool call. The generic host-shell capability is deliberately not enough here. Plugin effect-boundary relaxation is valid only when the call is tied to a host-owned `Tool.workerId` and that exact `pluginId/workerId` is currently marked as ASRT-wrapped by spawnWorker. This keeps ordinary in-process plugin tools on the pre-exec ask path until their execution substrate is actually worker-backed.
 export function isActiveSandboxFilesystemContainedForPluginEffects(
   input?: PluginEffectContainmentLookup,
 ): boolean {

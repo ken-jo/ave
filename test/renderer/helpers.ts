@@ -1,6 +1,3 @@
-/**
- * Common test helpers for renderer test files.
- */
 import { createElement, type ReactElement } from "react";
 import { act, fireEvent, render, waitFor } from "@testing-library/react";
 import { TooltipProvider } from "../../src/components/ui/tooltip.js";
@@ -14,10 +11,7 @@ import { expect, vi } from "vitest";
 export { relativeLuminance } from "../contrast-helpers.js";
 export { deferred } from "../../src/__tests__/support/deferred.js";
 
-/**
- * An approval surface with nothing pending, for components that draw their
- * own approval dock (SideChatView, ChatView) rendered outside App.
- */
+// Supply empty approval context when rendering dock-owning bodies outside the app.
 export function approvalSurfaceStub(): ApprovalSurfaceContextValue {
   return {
     queue: [],
@@ -31,11 +25,6 @@ export function approvalSurfaceStub(): ApprovalSurfaceContextValue {
   };
 }
 
-/**
- * Submits a chat message by typing into the main composer textarea and
- * pressing Enter. Mirrors the pattern previously duplicated across
- * chat-edit-resend.test.tsx and chat-retry-effort.test.tsx.
- */
 export async function submitChatMessage(
   container: HTMLElement,
   text: string,
@@ -50,25 +39,12 @@ export async function submitChatMessage(
   });
 }
 
-/** One open tile: its chat group id and the element its content renders in. */
 export interface RenderedTile {
   chatGroupId: string;
-  /** The tile's cell — everything that tile renders is inside it. */
   element: HTMLElement;
 }
 
-/**
- * Every tile the view is SHOWING, in layout order.
- *
- * The `pane-cell:` testid prefix — and the slice that recovers the chat
- * group id from it — is this one place, so a test that needs the open tiles
- * never has to restate the naming scheme.
- *
- * A conversation the view is not showing keeps its tile mounted (its turn keeps
- * its stream subscription that way) and marks it `data-hidden`. Those are not
- * "open tiles" to a reader, so they are left out here; {@link mountedTileIds}
- * is for the tests that are about them.
- */
+// Enumerate visible tiles only; hidden conversations stay mounted to retain stream subscriptions.
 export function collectTiles(container: HTMLElement): RenderedTile[] {
   const prefix = "pane-cell:";
   return Array.from(container.querySelectorAll<HTMLElement>(`[data-testid^="${prefix}"]`))
@@ -79,34 +55,21 @@ export function collectTiles(container: HTMLElement): RenderedTile[] {
     }));
 }
 
-/** Every chat group that still has a mounted tile, shown or hidden. */
 export function mountedTileIds(container: HTMLElement): string[] {
   const prefix = "pane-cell:";
   return Array.from(container.querySelectorAll<HTMLElement>(`[data-testid^="${prefix}"]`))
     .map((element) => element.getAttribute("data-testid")!.slice(prefix.length));
 }
 
-/**
- * Halve the window into a second tile and hand back both, in layout order.
- *
- * The split control lives in each tile's header, so this drives the same
- * gesture a user would. Tests that need two CONVERSATIONS want this: the mock
- * api gives every non-primary group its own session id. Focus follows a split,
- * so the SECOND tile is the focused one on return.
- */
+// Splitting creates a second conversation and moves focus to the new tile.
 export async function splitIntoTwoTiles(container: HTMLElement): Promise<RenderedTile[]> {
   return splitWith(container, container, 2);
 }
 
-/**
- * Split twice — the window, then the tile the first split focused — and hand
- * back all three, in layout order. Three conversations, three session ids.
- */
 export async function splitIntoThreeTiles(container: HTMLElement): Promise<RenderedTile[]> {
   return splitIntoNTiles(container, 3);
 }
 
-/** Split until `count` tiles are open, each split taken from the newest tile. */
 export async function splitIntoNTiles(
   container: HTMLElement,
   count: number,
@@ -128,8 +91,7 @@ async function splitWith(
   await act(async () => {
     fireEvent.click(split);
   });
-  // The split control opens a direction choice (portaled, so it is looked up
-  // on the document); either direction yields one more tile.
+  // The split direction menu is portaled; query it from the document.
   const sideBySide = document.querySelector<HTMLButtonElement>('[data-testid="pane-split-row"]');
   if (!sideBySide) throw new Error("no split direction choice");
   await act(async () => {
@@ -142,11 +104,7 @@ async function splitWith(
   return tiles;
 }
 
-/**
- * Show one tile alone, or restore the split. Every other tile UNMOUNTS while a
- * tile is maximized, which is one of the ways a card's origin conversation can
- * stop being on screen.
- */
+// Maximizing unmounts other tiles, exercising approvals whose origin stops being visible.
 export async function toggleTileMaximized(tile: RenderedTile): Promise<void> {
   const button = tile.element.querySelector<HTMLButtonElement>('[data-testid="pane-maximize"]');
   if (!button) throw new Error(`tile ${tile.chatGroupId} has no maximize control`);
@@ -155,12 +113,7 @@ export async function toggleTileMaximized(tile: RenderedTile): Promise<void> {
   });
 }
 
-/**
- * Make every element report an overflowing summary.
- *
- * jsdom computes no layout, so `scrollHeight` and `clientHeight` are both 0 and
- * the card's expand toggle never appears. Returns the undo.
- */
+// Simulate overflow because the DOM test environment computes no layout; return an undo function.
 export function forceOverflowingSummaries(): () => void {
   const scrollDesc = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
   const clientDesc = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
@@ -172,7 +125,6 @@ export function forceOverflowingSummaries(): () => void {
   };
 }
 
-/** Move focus to a tile the way clicking into it does. */
 export async function focusTile(tile: RenderedTile): Promise<void> {
   const frame = tile.element.querySelector<HTMLElement>('[data-testid="pane"]');
   if (!frame) throw new Error(`tile ${tile.chatGroupId} has no frame`);
@@ -181,13 +133,7 @@ export async function focusTile(tile: RenderedTile): Promise<void> {
   });
 }
 
-/**
- * A deferred permission-queue entry as the renderer receives it, in the
- * out-of-allowed-dir write lane both queue surfaces draw. Approval is only
- * offered for an entry that records something to grant, so the fixture carries
- * that lane's directory grant; a suite exercising a non-grantable entry passes
- * `{ grant: undefined }`.
- */
+// Grantable deferred entries need directory authority; use grant: null for non-grantable cases.
 export function makeDeferredQueueEntry(
   overrides: Partial<DeferredQueueEntry> = {},
 ): DeferredQueueEntry {
@@ -205,39 +151,18 @@ export function makeDeferredQueueEntry(
   };
 }
 
-/**
- * The live message-queue store, which `use-message-queue` publishes on `window`
- * under dev+e2e. Render with `aveEnv: { isDev: true, isE2E: true }` for it to
- * be defined.
- */
+// Enable development and E2E flags to expose the live message queue store.
 export function getQueueStore(): MessageQueueStore | undefined {
   return (window as unknown as { __ave_message_queue_store__?: MessageQueueStore })
     .__ave_message_queue_store__;
 }
 
-/** Drops the published store so one test's queue cannot leak into the next. */
 export function clearQueueStoreHandle(): void {
   delete (window as unknown as { __ave_message_queue_store__?: unknown })
     .__ave_message_queue_store__;
 }
 
-/**
- * Settings-tab helpers.
- *
- * Radix names a tab trigger `${baseId}-trigger-${value}`, so these address the
- * settings tabs by their settings-tab id rather than their localized label, and
- * they ignore unrelated tablists elsewhere in the app shell (the sidebar's
- * Chats/Projects control is also `role="tab"`).
- */
-/**
- * End a CSS animation on `element` the way the browser would.
- *
- * jsdom has no `AnimationEvent`, and React picks the event name it listens to
- * from what the DOM offers: with `AnimationEvent` absent and `WebkitAnimation`
- * present on a style declaration, `onAnimationEnd` is bound to
- * `webkitAnimationEnd`, so `fireEvent.animationEnd` (type `animationend`)
- * never reaches the handler. Dispatching both names covers either mapping.
- */
+// Address settings tabs by stable ids and scope away from unrelated tablists.
 export function endAnimation(element: Element): void {
   act(() => {
     element.dispatchEvent(new Event("webkitAnimationEnd", { bubbles: true }));
@@ -251,7 +176,6 @@ export function settingsTabTrigger(container: HTMLElement, value: string): HTMLE
   return el;
 }
 
-/** Radix commits a tab on primary-button mousedown, not on the click event. */
 export function clickSettingsTab(container: HTMLElement, value: string): void {
   const trigger = settingsTabTrigger(container, value);
   fireEvent.mouseDown(trigger, { button: 0 });
@@ -266,15 +190,7 @@ export function activeSettingsTab(container: HTMLElement): string | null {
   return null;
 }
 
-/**
- * Settings as they would be on disk from a previous run, with the location the
- * app should resume at.
- *
- * Shared because the restore feature and visit history need the SAME fixture:
- * one asserts the app lands there, the other asserts history treats landing
- * there as arrival rather than a step. Two copies would let a change to the
- * persisted shape fix one test and silently rot the other.
- */
+// Share persisted-location fixtures so restore and visit-history assertions use identical input.
 export function settingsWithActiveView(activeView: string, settingsTab?: string) {
   return {
     ...MOCK_DEFAULT_SETTINGS,
@@ -286,15 +202,6 @@ export function settingsWithActiveView(activeView: string, settingsTab?: string)
   };
 }
 
-/**
- * A tool activity state with nothing in it.
- *
- * Shared because two tests need the same empty starting point for different
- * reasons — one exercises item routing after filling a list in, the other
- * asserts the collapsed rail's placement in the floating lane. Two copies would
- * let a change to `ToolActivityState` be fixed in one and rot in the
- * other.
- */
 export function emptyToolActivity(): ToolActivityState {
   return {
     readFileCount: 0,
@@ -312,22 +219,17 @@ export function emptyToolActivity(): ToolActivityState {
   };
 }
 
-/** Render a component that uses shadcn tooltips — they require the provider above them. */
 export function renderWithTooltipProvider(ui: ReactElement) {
   return render(createElement(TooltipProvider, null, ui));
 }
 
-/** Sidebar nav group whose flyout holds a row: the built-in views or the plugin rows. */
 export type SidebarNavGroup = "features" | "plugins";
 
 function sidebarGroupMenu(group: SidebarNavGroup): HTMLElement | null {
   return document.querySelector(`[data-testid="sidebar-group-${group}-menu"]`);
 }
 
-/**
- * Opens a sidebar nav group's flyout and returns its menu. The rows render in
- * a portal, so they are read from `document`, never from the render container.
- */
+// Flyout rows are portaled; query the document rather than the render container.
 export async function openSidebarGroup(group: SidebarNavGroup): Promise<HTMLElement> {
   const trigger = await waitFor(() => {
     const el = document.querySelector<HTMLButtonElement>(`[data-testid="sidebar-group-${group}"]`);
@@ -355,12 +257,7 @@ export async function closeSidebarGroup(group: SidebarNavGroup): Promise<void> {
   await waitFor(() => expect(sidebarGroupMenu(group)).toBeNull());
 }
 
-/**
- * Picks a row the way the user does: open the flyout, click, and let it close.
- *
- * `modifiers` is how the SECOND destination is reached — a meta/ctrl click is
- * "open in a new pane", the same event the row's context menu performs.
- */
+// Modified clicks open a destination in another pane.
 export async function clickSidebarNavRow(
   group: SidebarNavGroup,
   rowTestId: string,
@@ -375,7 +272,6 @@ export async function clickSidebarNavRow(
   await waitFor(() => expect(sidebarGroupMenu(group)).toBeNull());
 }
 
-/** Whether a flyout row is the current page — opens and closes the flyout to read it. */
 export async function sidebarNavRowActive(group: SidebarNavGroup, rowTestId: string): Promise<boolean> {
   const menu = await openSidebarGroup(group);
   const active = menu.querySelector(`[data-testid="${rowTestId}"]`)?.getAttribute("aria-current") === "page";
@@ -383,15 +279,7 @@ export async function sidebarNavRowActive(group: SidebarNavGroup, rowTestId: str
   return active;
 }
 
-/**
- * A pending tool-approval request as the host emits it, in the read lane every
- * approval surface draws first.
- *
- * The card the renderer draws is built from these fields, so the shape is the
- * fixture and the identity is not: a suite that needs to tell two cards apart,
- * or that raises a write instead of a read, passes those in. Three describes
- * had written the same ten fields out to change three of them.
- */
+// Default approval fixtures use the read lane; override identity and grant fields for other cases.
 export function approvalRequest(
   overrides: Record<string, unknown> = {},
 ): Record<string, unknown> {

@@ -124,11 +124,9 @@ export interface DurableHostInvocationStartCasStoreOptions {
   filePath: string;
   auditSecret: string;
   sealStore: SecretStore;
-  /** Fault-injection seam; production uses the repository atomic writer. */
   writeFileAtomic?: typeof writeUtf8FileAtomicSync;
   now?: () => number;
   maxEntries?: number;
-  /** Testable lower ceiling; production remains hard-capped at 16 MiB. */
   maxBytes?: number;
 }
 
@@ -137,12 +135,7 @@ export interface InvocationCrashRecoveryResult {
   delivered: number;
 }
 
-/**
- * Audit projection is intentionally at-least-once. A crash after the sink
- * commits but before this journal marks delivery may replay the same canonical
- * record. Sinks can identify it by (invocationDigest, version); this does not
- * replay or re-authorize the invocation-start CAS.
- */
+// Audit delivery is at-least-once: deduplicate by invocationDigest and version without replaying invocation-start CAS.
 export type RecoveryInvocationAuditSink = (
   sessionId: string,
   record: InvocationAuditRecord,
@@ -906,9 +899,7 @@ export class DurableHostInvocationStartCasStore implements HostInvocationStartCa
       throw new Error("invocation journal genesis root mismatch");
     }
 
-    // The sealed head makes deletion of only the newest A/B slot detectable.
-    // Joint rollback of the journal, both slots, and this local head still
-    // requires an external monotonic authority to prevent.
+    // The sealed head detects newest-slot deletion; preventing rollback of all local state requires external monotonic authority.
     if (checkpoint.generation < head.generation) {
       throw new Error("invocation journal head is ahead of available checkpoint");
     }
@@ -984,9 +975,7 @@ export class DurableHostInvocationStartCasStore implements HostInvocationStartCa
           throw error;
         }
         if (persisted !== null && canonicalJsonEqual(persisted, envelope)) {
-          // A second complete atomic replace is the durability barrier. Its
-          // failure must escape; mere visibility after the first rename is
-          // not sufficient authority to advance the checkpoint.
+          // The second atomic replace is the durability barrier; propagate failure before checkpoint advancement.
           this.#writeFileAtomic(this.#filePath, content, 0o600);
           return;
         }

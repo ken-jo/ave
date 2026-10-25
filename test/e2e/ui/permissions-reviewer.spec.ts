@@ -2,26 +2,12 @@ import { test, expect } from './fixtures';
 import { openInlineSettings, closeInlineSettings } from './inline-settings.js';
 import { TEST_IDS, execModeTestId } from "../../../src/shared/test-ids.js";
 
-/**
- * Reviewer settings (single-axis redesign) — e2e smoke.
- *
- * The permission UI now exposes ONE axis: the exec-mode policy preset
- * (strict / default / auto / allow). The standalone reviewer-mode radio group
- * was removed — the LLM reviewer is implicit in the "auto" (자동 검증) mode.
- * Settings no longer exposes reviewer provider/model/fallback controls; auto
- * mode only shows the built-in reviewer prompt as a collapsed detail inside
- * the selected Auto-verify policy row.
- *
- * The render + IPC patterns are unit-tested in
- * `PermissionsTab.reviewer-c3.test.tsx` and `PermissionsTab.test.tsx`; this
- * guards the real Electron settings window render and the auto-gating behavior.
- */
+// Auto mode owns implicit review; settings expose only the execution policy axis.
 test('reviewer prompt stays collapsed inside the auto-verification policy row', async ({ app, mainWindow }) => {
   const settingsPage = await openInlineSettings(app, mainWindow, 'permissions');
 
   await expect(settingsPage.getByTestId(execModeTestId("auto"))).toBeVisible();
 
-  // Select 자동 검증 — only the read-only prompt collapse appears inside that row.
   await settingsPage.locator('#exec-mode-auto-radio').click();
 
   const autoRow = settingsPage.getByTestId(execModeTestId("auto"));
@@ -36,11 +22,9 @@ test('reviewer prompt stays collapsed inside the auto-verification policy row', 
 test('switching exec-mode away from auto hides the reviewer prompt collapse again', async ({ app, mainWindow }) => {
   const settingsPage = await openInlineSettings(app, mainWindow, 'permissions');
 
-  // Enter the auto-verification mode → prompt collapse visible.
   await settingsPage.locator('#exec-mode-auto-radio').click();
   await expect(settingsPage.getByTestId(execModeTestId("auto")).getByTestId(TEST_IDS.reviewerPromptPanel)).toBeVisible();
 
-  // Switch to the default ("쓰기만 확인") preset → prompt collapse gone.
   await settingsPage.locator('#exec-mode-default-radio').click();
   await expect(settingsPage.getByTestId(TEST_IDS.reviewerPromptPanel)).toHaveCount(0);
 

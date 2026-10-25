@@ -1,19 +1,5 @@
-/**
- * The renderer's half of the agent browser tools' tab operations.
- *
- * Main sends one `ave:browser:tab-op` stream per window, but a window can
- * hold several chat views, each with its own workspace-tab store. This
- * module subscribes ONCE and routes each operation to exactly one store:
- *   · select / close → the store that holds the tab;
- *   · new            → the store of the chat the tab is opened for
- *                      (`sessionId`), else the first store registered that
- *                      opens agent tabs (the main area's web panels do
- *                      not: an agent's new tab goes beside its chat).
- * It also mirrors main's agent-control state for the "Agent is controlling
- * this tab" badge. Main resolves the agent's request only when it observes
- * the result (a bind, the guest gone, the tab shown), so a dropped or
- * unroutable operation simply times out there.
- */
+/** Subscribe once per window and route tab operations to one store: existing-tab owner, or the requesting chat for new
+ * tabs. */
 import { useSyncExternalStore } from "react";
 import type { BrowserTabControlState, BrowserTabOpRequest } from "../../../shared/browser-surface.js";
 import type { AveApi } from "../types.js";
@@ -146,10 +132,8 @@ function setControlState(state: BrowserTabControlState): void {
   notifyControl();
 }
 
-/**
- * Register a chat view's tab store. The first registration subscribes to
- * main; the last unregistration unsubscribes. Returns the unregister function.
- */
+/** Register a chat view's tab store. The first registration subscribes to main; the last unregistration unsubscribes.
+ * Returns the unregister function. */
 export function registerBrowserTabHost(api: AveApi, host: BrowserTabHost): () => void {
   hosts.push(host);
   if (!unsubscribe && api.browserTabs) {
@@ -194,17 +178,7 @@ function subscribeControl(listener: () => void): () => void {
 const BIND_RETRY_LIMIT = 20;
 const BIND_RETRY_MS = 100;
 
-/**
- * Bind the guest of `webview` to `tabId` in main (`ave:browser:bind-tab`) on
- * every attach, and now if it is already attached, so the agent browser tools
- * can reach the tab's page. `requestId` marks a tab opened for the agent.
- * Returns the cleanup. The page's did-attach can reach the renderer before
- * main has seen the guest attach (main's did-attach-webview); main answers
- * guest-not-live until then, so the bind is retried shortly. And at
- * did-attach the element cannot name its guest yet (measured: Electron's
- * `getWebContentsId()` throws until the guest's first dom-ready), so the
- * first dom-ready of each guest binds it too.
- */
+/** Bind on attach and first dom-ready; retry guest-not-live because renderer attach can precede main's guest registration. */
 export function bindGuestToTab(
   api: AveApi,
   webview: HTMLElement,

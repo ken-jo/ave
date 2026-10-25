@@ -39,22 +39,14 @@ afterEach(async () => {
   vi.unstubAllEnvs();
 });
 
-/**
- * Where a bundled hook's own directories sit, as production places them: under
- * the roots every plugin-owned wrap is refused (`denyPluginsRoot`), so the hook
- * runs only because its own generation is re-allowed (`ownPluginReads`) and
- * writes only because its data is granted — and the neighbours beside it stay
- * unread only because the roots are denied.
- */
+// Bundled hooks may read only their own generation and write only their own data; neighbouring plugins stay denied.
 const LAYOUTS = {
-  // An entry plugin's hook (`plugin-hook-projection.ts`): its generation
-  // payload in the plugin cache, its data in the plugin's own directory.
+  // An entry plugin's hook (`plugin-hook-projection.ts`): its generation payload in the plugin cache, its data in the plugin's own directory.
   "an entry plugin": (ave: string) => ({
     generationRoot: join(ave, "plugins", ".cache", "smoke-plugin", "generations", "g", "payload"),
     dataDir: join(ave, "plugins", "smoke-plugin", "data"),
   }),
-  // An agent plugin's hook (`agent-plugin-hook-runtime.ts`): its installed
-  // version in the content store, its data in the `agent-plugin-data` namespace.
+  // An agent plugin's hook (`agent-plugin-hook-runtime.ts`): its installed version in the content store, its data in the `agent-plugin-data` namespace.
   "an agent plugin": (ave: string) => ({
     generationRoot: join(ave, "packages", "agent-plugin", "smoke-plugin", "1.0.0"),
     dataDir: join(ave, "agent-plugin-data", "smoke-plugin"),
@@ -65,9 +57,7 @@ describe("bundled hook process smoke", () => {
   it.runIf(process.platform === "darwin" || process.platform === "linux").for(Object.keys(LAYOUTS) as (keyof typeof LAYOUTS)[])(
     "spawns %s's hook from under the plugin roots and denies secret and neighbour reads, outside writes, and unlisted sockets",
     async (kind, context) => {
-      // A host without the sandbox backend (the Linux suite runner has no
-      // bubblewrap) cannot measure this: the case is skipped there, visibly,
-      // and fails instead wherever AVE_REQUIRE_SANDBOX_CASES says it must run.
+      // Skip when the sandbox backend is unavailable, unless AVE_REQUIRE_SANDBOX_CASES requires it.
       if (!(await sandboxCasesRun())) return context.skip("the ASRT sandbox cannot initialize on this host");
       const root = realpathSync(mkdtempSync(join(tmpdir(), "ave-hook-asrt-")));
       const ave = join(root, "ave-home");
@@ -118,8 +108,7 @@ connection.on('close', () => process.stdout.write(JSON.stringify({ action: 'allo
         for (const outcome of reported.neighbourReads) expect(["EPERM", "EACCES", "ENOENT"]).toContain(outcome);
         expect(readFileSync(join(dataDir, "state.json"), "utf8")).toBe("allowed");
 
-        // A user hook is read from its protected configuration directory, with
-        // only that exact script re-allowed and its working directory writable.
+        // A user hook is read from its protected configuration directory, with only that exact script re-allowed and its working directory writable.
         const userHooks = join(fakeHome, ".config", "ave", "hooks");
         const workspace = join(root, "workspace");
         mkdirSync(userHooks, { recursive: true });
@@ -130,9 +119,7 @@ connection.on('close', () => process.stdout.write(JSON.stringify({ action: 'allo
         writeFileSync(userScript, readFileSync(script));
         writeFileSync(siblingScript, NEIGHBOUR);
         symlinkSync(secret, escapedScript);
-        // A user hook takes the host-shell plan, so it is confined only when
-        // the shell sandbox is requested too, not by worker confinement alone:
-        // publish both as the boot step does for a full mac/linux ASRT.
+        // User hooks require the host-shell sandbox gate; worker confinement alone does not confine them.
         setShellSandboxRequestedAtBoot(true);
         setActiveSandboxCapability({ kind: "asrt", confidence: "verified", platform: process.platform,
           reason: "ASRT active for shells", confines: sandboxConfinementForPlatform(process.platform, "full") });

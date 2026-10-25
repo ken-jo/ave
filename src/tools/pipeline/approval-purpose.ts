@@ -1,19 +1,10 @@
-/**
- * Tool pipeline — high-risk approval purpose-suggestion cluster.
- *
- * Pure helpers factored out of `executor.ts` (C7 decomposition). Derives the
- * pre-filled "purpose" string shown on the high-risk approval dock from the
- * recent user turn text (preferred) or a purpose-bearing tool-input field.
- */
+// Prefer recent user intent over tool-input purpose text for high-risk approval suggestions.
 import { maskSensitiveData } from "../../audit/dlp-filter.js";
 import { t } from "../../i18n/index.js";
 import type { ApprovalPurposeSuggestion } from "../../shared/permission-review-status.js";
 import type { ToolPermissionContext } from "../executor.js";
 
-// C0 control characters (U+0000-U+001F) plus DEL (U+007F). Built from char
-// codes so the source stays ASCII-clean (no raw control bytes); semantically
-// identical to the original control-character stripping regex. `String.replace`
-// with a global regex resets lastIndex per call, so reuse is safe.
+// Build C0 and DEL matching from character codes to keep raw control bytes out of source.
 const CONTROL_CHARACTERS = new RegExp(
   "[" + String.fromCharCode(0) + "-" + String.fromCharCode(0x1f) + String.fromCharCode(0x7f) + "]",
   "g",
