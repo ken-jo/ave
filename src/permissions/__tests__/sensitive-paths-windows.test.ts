@@ -36,6 +36,14 @@ const WINDOWS_SECRETS: string[] = [
   `${PROFILE}/AppData/Roaming/Opera Software/Opera Stable/Login Data`,
   `${PROFILE}/AppData/Roaming/Mozilla/Firefox/Profiles/x1y2.default-release/key4.db`,
   `c:/users/owner/appdata/roaming/mozilla/firefox/profiles/x1y2.default-release/logins.json`,
+  // Sibling browser channels and the mail client keep their own profile roots.
+  `${PROFILE}/AppData/Local/Google/Chrome SxS/User Data/Default/Login Data`,
+  `${PROFILE}/AppData/Local/Google/Chrome Beta/User Data/Profile 2/Network/Cookies`,
+  `${PROFILE}/AppData/Local/Google/Chrome Dev/User Data/Local State`,
+  `${PROFILE}/AppData/Local/Microsoft/Edge Beta/User Data/Default/Login Data`,
+  `${PROFILE}/AppData/Local/Microsoft/Edge Dev/User Data/Default/History`,
+  `${PROFILE}/AppData/Local/Microsoft/Edge SxS/User Data/Default/Login Data`,
+  `${PROFILE}/AppData/Roaming/Thunderbird/Profiles/ab12.default-release/logins.json`,
   // Lower-case spellings are the same file on Windows.
   `c:/users/owner/appdata/roaming/microsoft/credentials/x`,
   `c:/users/owner/appdata/local/microsoft/powershell/secretmanagement/localstore/storefile`,
@@ -56,6 +64,8 @@ const NOT_SECRET: string[] = [
   `${PROFILE}/AppData/Roaming/Code/User/settings.json`,
   `${PROFILE}/AppData/Local/Temp/build.log`,
   `${PROFILE}/AppData/Local/Microsoft/Edge/Application/msedge.exe`,
+  `${PROFILE}/AppData/Local/Google/Chrome Beta/Application/chrome.exe`,
+  `${PROFILE}/AppData/Local/Google/Update/Download/x.exe`,
   `${PROFILE}/AppData/Local/Microsoft/PowerShell/ModuleAnalysisCache`,
   `${PROFILE}/AppData/Roaming/Microsoft/Windows/Start Menu/Programs/x.lnk`,
   `${PROFILE}/Documents/Credentials.txt`,
@@ -94,6 +104,9 @@ describe("the PowerShell floor reads Windows store locations", () => {
     "Get-ChildItem $env:LOCALAPPDATA\\Microsoft\\PowerShell\\secretmanagement\\localstore",
     "Copy-Item \"$env:LOCALAPPDATA\\Google\\Chrome\\User Data\\Default\\Login Data\" .\\ld.db",
     "Get-Content '~\\AppData\\Roaming\\GitHub CLI\\hosts.yml'",
+    "Copy-Item \"$env:LOCALAPPDATA\\Google\\Chrome SxS\\User Data\\Default\\Login Data\" .\\ld.db",
+    "Get-ChildItem \"$env:LOCALAPPDATA\\Microsoft\\Edge Dev\\User Data\\Default\"",
+    "Get-Content $env:APPDATA\\Thunderbird\\Profiles\\ab12.default\\logins.json",
   ])("%s names a sensitive path", (command) => {
     expect(powerShellSensitivePathSignal(command, PROFILE)).not.toBeNull();
   });

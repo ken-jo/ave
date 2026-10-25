@@ -551,6 +551,23 @@ describe("credential floor: browser, keychain and keyring stores through globs",
     "cat ~/.config/BraveSoftware/Brave-Browser/Default/Login*",
     "cat ~/.config/chromium/Default/Cook??s",
     "cat \"$HOME/.mozilla/firefox/\"*/cookies.sqlite",
+    // Sibling channels, sandboxed packages, mail clients and wallets: each
+    // row below fires only through its own table row (not an older one).
+    "cat ~/Library/Application\\ Support/Google/Chrome\\ Beta/*/Cookies",
+    "cat ~/Library/Application\\ Support/Google/Chrome\\ Canary/Default/Login\\ Data",
+    "cat ~/Library/Application\\ Support/Microsoft\\ Edge\\ Dev/*/Login*",
+    "cat ~/Library/Application\\ Support/com.operasoftware.OperaGX/*/Cookies",
+    "cat ~/Library/Containers/com.apple.Safari/Data/Library/WebKit/*/LocalStorage/*",
+    "cat ~/Library/Group\\ Containers/2BUA8C4S2C.com.1password/Library/Application\\ Support/*/1password.sqlite",
+    "cat ~/Library/Thunderbird/Profiles/*/key4.db",
+    "cat ~/.config/google-chrome-beta/*/Cookies",
+    "cat ~/.config/microsoft-edge-dev/*/Login*",
+    "ls ~/snap/firefox/common/*",
+    "cat ~/snap/firefox/common/.mozilla/firefox/*/logins.json",
+    "cat ~/snap/chromium/common/chromium/*/Cookies",
+    "cat ~/.var/app/com.google.Chrome/config/google-chrome/*/Cookies",
+    "cat ~/.thunderbird/*/logins.json",
+    "cat ~/.local/share/kwalletd/*.kwl",
   ])("floors %s", (command) => {
     expect(shellSensitivePathSignal(command, CWD)).not.toBeNull();
     expect(shellScanOrdinaryAsk(command, CWD)).toBeNull();
@@ -573,6 +590,10 @@ describe("credential floor: browser, keychain and keyring stores through globs",
     "ls ~/.config/nvim/*",
     "cat ~/.local/share/fonts/*.ttf",
     "ls ~/*",
+    "cat ~/snap/code/common/*.json",
+    "ls ~/.var/app/org.gnome.Calculator/*",
+    "cat ~/Library/Containers/com.apple.TextEdit/Data/*",
+    "cat ~/Library/Application\\ Support/GoogleUpdater/x",
   ])("leaves the ordinary home path %s alone", (command) => {
     expect(shellSensitivePathSignal(command, CWD)).toBeNull();
   });
@@ -666,7 +687,8 @@ describe("credential floor: recursive searches after cd", () => {
         shellExecution: { runsSandboxed: true, sandboxAvailable: true },
       });
       for (const command of ["cd ~ && grep -r x .", "cd ~ && rg x", "cd $HOME; grep -r x .", "cd \"$X\" && grep -r y .",
-        "cat ~/.mozilla/firefox/*/log*ns.json", "cat ~/.local/share/keyrings/login.keyring"]) {
+        "cat ~/.mozilla/firefox/*/log*ns.json", "cat ~/.local/share/keyrings/login.keyring",
+        "env -C ~ grep -r x .", "tar -C ~ -czf /tmp/x.tgz .", "find ~ -type f | xargs cat", "cd ~; grep -r x ."]) {
         expect(pm.checkDetailed("bash", "builtin", "shell", null, subject(command)), command)
           .toMatchObject({ decision: "ask", layer: 2, forceModal: true });
       }
@@ -674,6 +696,98 @@ describe("credential floor: recursive searches after cd", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+// Credential floor review, second round: a command-local cwd switch, a
+// whole-tree reader (archive, copy, exec), an `xargs` stage and `&&` after a
+// static cd all decide which directory a relative root names.
+describe("credential floor: cwd switches, whole-tree readers and && narrowing", () => {
+  // Each row: command, then the verdict. `floor` is a sensitive-path signal
+  // (forceModal ask in every mode); `ask` is an ordinary ask; `clean` neither.
+  type Verdict = "floor" | "ask" | "clean";
+  function verdict(command: string, cwd: string): Verdict {
+    if (shellSensitivePathSignal(command, cwd) !== null) return "floor";
+    return shellScanOrdinaryAsk(command, cwd) !== null ? "ask" : "clean";
+  }
+
+  // A switch alone is not a read (`git -C ~ status` stays clean); the floor
+  // comes from a relative operand resolving under the switched directory. A
+  // full store spelling (`.mozilla`) floors from any cwd through the table's
+  // `**/` patterns, so the git/make/npm rows point at ~/Library and name the
+  // store relative to it, which only the switch can resolve.
+  it.each<[string, Verdict]>([
+    ["env -C ~ grep -r x .", "floor"],
+    ["env --chdir=~ rg x", "floor"],
+    ["env -C src grep -r x .", "clean"],
+    ["git -C ~/Library add 'Application Support/Google'", "floor"],
+    ["git --work-tree=$HOME/Library add 'Application Support/Firefox'", "floor"],
+    ["git -C src add 'Application Support/Google'", "clean"],
+    ["git -C ~ status", "clean"],
+    ["tar -C ~ -czf /tmp/x.tgz .", "floor"],
+    ["tar -C src -czf /tmp/x.tgz .", "clean"],
+    ["make -C ~/Library -f 'Application Support/Firefox/x'", "floor"],
+    ["make -C src -f 'Application Support/Firefox/x'", "clean"],
+    ["make -C ~", "clean"],
+    ["npm --prefix ~/Library pack 'Application Support/Firefox'", "floor"],
+    ["npm --prefix src pack 'Application Support/Firefox'", "clean"],
+    ["npm --prefix ~ install", "clean"],
+  ])("cwd switch: %s -> %s", (command, expected) => {
+    expect(verdict(command, CWD)).toBe(expected);
+  });
+
+  it.each<[string, Verdict]>([
+    ["cd ~ && tar czf /tmp/x.tgz .", "floor"],
+    ["tar czf /tmp/x.tgz ~", "floor"],
+    ["tar czf /tmp/x.tgz src", "clean"],
+    ["cd ~ && zip -r /tmp/x.zip .", "floor"],
+    ["zip -r /tmp/x.zip ~", "floor"],
+    ["zip -r /tmp/x.zip src", "clean"],
+    ["cd ~ && cp -r . /tmp/x", "floor"],
+    ["cp -r ~ /tmp/x", "floor"],
+    ["cp -r src /tmp/x", "clean"],
+    ["rsync -a ~/ /tmp/x", "floor"],
+    ["rsync -a src/ /tmp/x", "clean"],
+    ["scp -r ~ /tmp/x", "floor"],
+    ["find ~ -type f -exec cat {} +", "floor"],
+    ["cd ~ && find . -exec cat {} \\;", "floor"],
+    ["find src -type f -exec cat {} +", "clean"],
+    // `find` without -exec only lists names, like `ls -R`.
+    ["find ~ -name x", "clean"],
+    ["fd . ~ -x cat", "floor"],
+    ["cd ~ && fd . -x cat", "floor"],
+    ["fd . src -x cat", "clean"],
+    ["du -a ~", "clean"],
+  ])("whole-tree reader: %s -> %s", (command, expected) => {
+    expect(verdict(command, CWD)).toBe(expected);
+  });
+
+  it.each<[string, Verdict]>([
+    ["find ~ -type f | xargs cat", "floor"],
+    ["du -a ~ | xargs cat", "floor"],
+    ["echo src | xargs grep -r x", "floor"],
+    ["ls | xargs rg x", "floor"],
+    ["find src -type f | xargs cat", "clean"],
+    // A root list read from a file is not static: an ordinary ask, not the floor.
+    ["tar -czf /tmp/x.tgz -T list.txt", "ask"],
+    ["tar --files-from=list.txt -czf /tmp/x.tgz", "ask"],
+    ["rsync -a --files-from=list.txt . /tmp/x", "ask"],
+  ])("piped and listed roots: %s -> %s", (command, expected) => {
+    expect(verdict(command, CWD)).toBe(expected);
+  });
+
+  // `&&` runs its right side only after the left succeeded, so a static cd on
+  // the left is the right side's whole cwd. `;`, `||` and a subshell keep every
+  // candidate: `(cd ~) && …` fails closed because the subshell's cd is not
+  // undone for the scan, so `.` may still be the home.
+  it.each<[string, Verdict]>([
+    ["cd src && grep -r x ..", "clean"],
+    ["cd ~ && cd proj && rg x", "clean"],
+    ["cd ~; grep -r x .", "floor"],
+    ["(cd ~) && grep -r x .", "floor"],
+    ["cd ~ && cd proj; grep -r x .", "floor"],
+  ])("&& narrowing from ~/proj: %s -> %s", (command, expected) => {
+    expect(verdict(command, join(homedir(), "proj"))).toBe(expected);
   });
 });
 

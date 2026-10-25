@@ -260,7 +260,10 @@ describe("asrt-sandbox — gate ON wraps a real command under the OS sandbox", (
   it.runIf(process.platform === "darwin" || process.platform === "linux")(
     "surfaces the native permission error for a floored browser or keychain read",
     async (context) => {
-      if (!(await asrtCanInitialize())) return context.skip();
+      if (!(await asrtCanInitialize())) {
+        if (process.env.AVE_REQUIRE_SANDBOX_CASES === "1") throw new Error("ASRT cannot initialize on this machine");
+        return context.skip();
+      }
       const root = realpathSync(mkdtempSync(join(tmpdir(), "asrt-credential-floor-")));
       const cwd = join(root, "workspace");
       mkdirSync(cwd);
@@ -1100,14 +1103,23 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     ["darwin", [
       ["Library", "Keychains"],
       ["Library", "Cookies"],
-      ["Library", "Application Support", "Google", "Chrome"],
+      ["Library", "Containers", "com.apple.Safari"],
+      // The vendor parent covers every Chrome channel (Beta, Dev, Canary).
+      ["Library", "Application Support", "Google"],
       ["Library", "Application Support", "Microsoft Edge"],
+      ["Library", "Application Support", "Microsoft Edge Beta"],
+      ["Library", "Application Support", "Microsoft Edge Dev"],
+      ["Library", "Application Support", "Microsoft Edge Canary"],
       ["Library", "Application Support", "BraveSoftware"],
       ["Library", "Application Support", "Chromium"],
       ["Library", "Application Support", "Arc"],
       ["Library", "Application Support", "Vivaldi"],
       ["Library", "Application Support", "com.operasoftware.Opera"],
+      ["Library", "Application Support", "com.operasoftware.OperaGX"],
       ["Library", "Application Support", "Firefox"],
+      ["Library", "Thunderbird"],
+      ["Library", "Group Containers", "2BUA8C4S2C.com.1password"],
+      ["Library", "Group Containers", "2BUA8C4S2C.com.agilebits"],
       [".password-store"],
       [".config", "op"],
     ]],
@@ -1119,7 +1131,23 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
       [".config", "microsoft-edge"],
       [".config", "vivaldi"],
       [".config", "opera"],
+      [".config", "google-chrome-beta"],
+      [".config", "google-chrome-unstable"],
+      [".config", "microsoft-edge-beta"],
+      [".config", "microsoft-edge-dev"],
+      ["snap", "firefox"],
+      ["snap", "chromium"],
+      ["snap", "brave"],
+      ["snap", "thunderbird"],
+      [".var", "app", "org.mozilla.firefox"],
+      [".var", "app", "org.chromium.Chromium"],
+      [".var", "app", "com.google.Chrome"],
+      [".var", "app", "com.brave.Browser"],
+      [".var", "app", "com.microsoft.Edge"],
+      [".var", "app", "org.mozilla.Thunderbird"],
+      [".thunderbird"],
       [".local", "share", "keyrings"],
+      [".local", "share", "kwalletd"],
       [".password-store"],
       [".config", "op"],
     ]],
@@ -1130,6 +1158,13 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
       ["AppData", "Local", "Chromium", "User Data"],
       ["AppData", "Local", "Vivaldi", "User Data"],
       ["AppData", "Roaming", "Opera Software"],
+      ["AppData", "Local", "Google", "Chrome SxS", "User Data"],
+      ["AppData", "Local", "Google", "Chrome Beta", "User Data"],
+      ["AppData", "Local", "Google", "Chrome Dev", "User Data"],
+      ["AppData", "Local", "Microsoft", "Edge Beta", "User Data"],
+      ["AppData", "Local", "Microsoft", "Edge Dev", "User Data"],
+      ["AppData", "Local", "Microsoft", "Edge SxS", "User Data"],
+      ["AppData", "Roaming", "Thunderbird"],
       ["AppData", "Roaming", "Mozilla", "Firefox", "Profiles"],
       ["AppData", "Roaming", "Microsoft", "Credentials"],
       ["AppData", "Local", "Microsoft", "Credentials"],
