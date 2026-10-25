@@ -19,9 +19,6 @@ import { parseResolvedModelPricing, type ModelUsageSegment } from "../shared/mod
 
 type TokenUsageSegment = ModelUsageSegment<LLMVendor>;
 
-
-
-
 export type CheckpointTrigger = "auto-compact" | "manual";
 
 export const EMPTY_ASSISTANT_RESPONSE_TEXT = t("be_chatStreamState.emptyAssistantResponse");

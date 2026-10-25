@@ -1,6 +1,5 @@
 export type Locale = "ko" | "en";
 
-
 /** The site's canonical origin. The app reads its service descriptor from here too. */
 export const SITE_ORIGIN = "https://ave.agent-connector.ai";
 

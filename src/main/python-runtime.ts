@@ -32,8 +32,6 @@ import { resolveBundledUvBinaryPath } from "./uv-runtime.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 const log = createLogger("python-runtime");
 
-
-
 type BootstrapPhase =
   | "pending"
   | "installing-python"

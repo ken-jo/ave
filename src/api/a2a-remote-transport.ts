@@ -27,7 +27,6 @@ export interface CreateA2AStrictTransportOptions {
   maxHeaderBytes?: number;
 }
 
-
 function validateA2ARemoteUrl(raw: string): URL {
   let url: URL;
   try {

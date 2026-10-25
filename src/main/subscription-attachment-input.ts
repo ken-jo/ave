@@ -332,7 +332,6 @@ export function normalizeLocalUserContentParts(raw: unknown): UserContentPart[] 
   return out.length > 0 ? out : undefined;
 }
 
-
 export function subscriptionAttachmentByteLength(attachment: SubscriptionPromptAttachment): number {
   return Buffer.byteLength(attachment.data, "base64");
 }

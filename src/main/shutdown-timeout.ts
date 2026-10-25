@@ -71,7 +71,6 @@ function warnOnceOnUnusableEnvValue(env: NodeJS.ProcessEnv): void {
   );
 }
 
-
 /**
  * Race the cleanup chain against a hard deadline.
  *

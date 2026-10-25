@@ -366,7 +366,6 @@ export const INSTALLED_LLM_VENDOR_IDS = LLM_VENDORS.filter(
 /** Accept compatibility ids at migration, secret, and runtime boundaries. */
 export const KNOWN_LEGACY_LLM_VENDOR_IDS = INSTALLED_LLM_VENDOR_IDS;
 
-
 export type MarketplaceEligibleLLMVendor = InstalledLLMVendor;
 
 export const MARKETPLACE_ELIGIBLE_LLM_VENDOR_IDS = INSTALLED_LLM_VENDOR_IDS;

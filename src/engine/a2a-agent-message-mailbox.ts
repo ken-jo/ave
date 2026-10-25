@@ -41,7 +41,6 @@ export interface A2AAgentMailboxEntry {
   approvalLabel: string;
 }
 
-
 interface PersistedA2AAgentMailbox {
   version: typeof MAILBOX_VERSION;
   entries: A2AAgentMailboxEntry[];

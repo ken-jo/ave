@@ -1,5 +1,4 @@
 
-
 export const STATUS_BAR_VENDOR_EMOJIS = {
   claude: "🟧",
   openai: "🟦",

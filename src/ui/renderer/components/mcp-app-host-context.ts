@@ -59,7 +59,6 @@ import {
   type McpUiDisplayMode,
 } from "../../../shared/mcp-app-display-mode.js";
 
-
 /** @see ext-apps `McpUiTheme` */
 type McpUiTheme = "light" | "dark";
 

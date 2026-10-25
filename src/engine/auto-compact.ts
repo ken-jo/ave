@@ -19,7 +19,6 @@ export { countHangul, estimateTokens } from "../shared/token-estimate.js";
 
 // Resolve context windows from settings, endpoint reports, catalog, then the conservative default.
 
-
 // Resolve the prompt cap and context window from the same route.
 function budgetWindow(
   vendor: LLMVendor,

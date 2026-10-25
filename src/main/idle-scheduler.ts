@@ -18,8 +18,6 @@ export type IdleState =
   | "PAUSED"
   | "RESUME_DELAY";
 
-
-
 export interface IndexJob {
   filePath: string;
   mode: string; // "auto" | "pdf" | "md" | "docx" | "pptx" | "xlsx" | "txt" | "html"

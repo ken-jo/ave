@@ -48,7 +48,6 @@ const GROK_BUILD_GOVERNED_AGENT_FILE_NAME = "ave-governed-chat.md";
  */
 const GROK_BUILD_MCP_TOOLSET_SENTINEL = "mcp__ave-host-tools__workspace_read";
 
-
 /**
  * One source of truth for Grok's ACP and native agent-profile policies.
  * It intentionally does not select a model: account entitlement and Grok's
