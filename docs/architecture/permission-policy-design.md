@@ -373,6 +373,10 @@ each admitted write root, taking precedence over grants:
 - Ave settings, permission settings, rules, policies and approval grants, with
   paths derived from their owning stores rather than copied filenames.
 
+The Windows MXC PowerShell container receives the same denies from the same
+policy builder: an existing protected entry inside a write grant becomes
+read-only and an absent one is denied, so it cannot be created.
+
 The existing sensitive-write floor owns real-home startup-file protection; the
 root-relative policy does not maintain a second real-home filename list.
 Denies cover creation when a protected path does not yet exist, as well as

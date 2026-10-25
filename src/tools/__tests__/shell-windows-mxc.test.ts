@@ -38,7 +38,10 @@ vi.mock("../../permissions/sandbox-process-home.js", async (importOriginal) => {
 
 import { BashTool, PowerShellTool } from "../shell-tools.js";
 import type { ToolExecutionContext } from "../types.js";
-import { MXC_BASH_UNAVAILABLE_MESSAGE } from "../../permissions/mxc-windows.js";
+import { MXC_BASH_UNAVAILABLE_MESSAGE, rankMxcFilesystem } from "../../permissions/mxc-windows.js";
+import { permissionsFilePath } from "../../permissions/permissions-store.js";
+import { userApprovalFilePath } from "../../permissions/user-approval-store.js";
+import { egressGrantFilePath } from "../../permissions/egress-grants.js";
 import {
   __resetActiveSandboxCapabilityForTest,
   __resetSandboxRequestedAtBootForTest,
@@ -161,6 +164,44 @@ describe("builtin shell — Windows MXC containers", () => {
     // The launcher runs from its own directory; the container cwd is in the request.
     expect((containerSpawn[2] as { cwd?: string }).cwd).toBe(String.raw`C:\Program Files\Ave\resources\mxc\x64`);
     expect(mxcLaunchMock.release).toHaveBeenCalledTimes(1);
+  });
+
+  it("gives the container the mandatory write floor: workspace control files and Ave's stores stay unwritable", async () => {
+    const { mkdirSync, mkdtempSync, existsSync, realpathSync, rmSync, writeFileSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const workspace = realpathSync(mkdtempSync(join(tmpdir(), "ave-mxc-floor-")));
+    try {
+      mkdirSync(join(workspace, ".git", "hooks"), { recursive: true });
+      writeFileSync(join(workspace, ".git", "config"), "[core]\n");
+      mkdirSync(join(workspace, ".vscode"));
+      bootMxcShells();
+      const result = await new PowerShellTool().execute(
+        { command: "Write-Output hi", timeoutSeconds: 7 },
+        { ...context("ps-mxc-floor"), cwd: workspace, extraAllowedDirectories: [workspace] },
+      );
+      expect(result.isError).toBe(false);
+      const [launch] = mxcLaunchMock.prepare.mock.calls[0] as [{ filesystem: { allowWrite: string[]; denyWrite: string[]; allowRead: string[]; denyRead: string[]; floorPierces?: string[] } }];
+      const { filesystem } = launch;
+      expect(filesystem.allowWrite).toContain(workspace);
+      // Git metadata stays writable (#105); its controls do not.
+      for (const entry of [join(".git", "hooks"), join(".git", "config"), ".vscode", ".husky", join(".claude", "settings.json"), ".envrc"]) {
+        expect(filesystem.denyWrite, entry).toContain(join(workspace, entry));
+      }
+      for (const store of [permissionsFilePath(), userApprovalFilePath(), egressGrantFilePath()]) {
+        expect(filesystem.denyWrite, store).toContain(store);
+      }
+      // On Windows the ranked request keeps a deny inside the granted
+      // workspace: read-only when it exists, denied when it does not.
+      if (process.platform === "win32" && ORIGINAL_PLATFORM === "win32") {
+        const grants = rankMxcFilesystem({ ...filesystem, protectedFloor: [] }, existsSync);
+        expect(grants.readwrite).toContain(workspace);
+        expect(grants.readonly).toEqual(expect.arrayContaining([join(workspace, ".git", "hooks"), join(workspace, ".vscode")]));
+        expect(grants.denied).toEqual(expect.arrayContaining([join(workspace, ".husky"), join(workspace, ".envrc")]));
+      }
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
   });
 
   it("reports a launch that cannot be prepared as unsandboxed and spawns nothing", async () => {

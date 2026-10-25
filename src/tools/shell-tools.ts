@@ -64,6 +64,7 @@ import {
 import { openEgressInvocation, type ShellEgressContext } from "../permissions/egress-invocations.js";
 import { MXC_BASH_UNAVAILABLE_MESSAGE, powerShellMxcCommandLine } from "../permissions/mxc-windows.js";
 import { prepareMxcShellLaunch, type MxcShellLaunch } from "./mxc-shell-launch.js";
+import { buildMandatorySandboxWritePolicy } from "../permissions/sandbox-write-policy.js";
 import { currentEffectGateContext } from "../permissions/effect-enforcement.js";
 import { currentToolExecutionCwd } from "./execution-context.js";
 import {
@@ -3443,15 +3444,25 @@ async function spawnPowerShellInMxc(
   );
   let launch: MxcShellLaunch;
   try {
+    // MXC bypasses the ASRT wrap, so it takes the same mandatory write floor
+    // the per-command ASRT config restates: workspace control files (.git
+    // controls, .vscode, .husky, .claude, .envrc, …) and Ave's permission,
+    // approval and egress grant stores. Ranking keeps a deny inside a granted
+    // directory as read-only (existing) or denied (absent).
+    const sensitiveDenyWrite = getDefaultSensitiveWriteDenyPaths();
+    const mandatory = buildMandatorySandboxWritePolicy(sandboxWritePaths, undefined, sensitiveDenyWrite);
     launch = await prepareMxcShellLaunch({
       egressToken: egress.token,
       commandLine: powerShellMxcCommandLine(systemRoot, command),
       cwd,
       filesystem: {
-        allowWrite: sandboxWritePaths,
+        allowWrite: mandatory.allowWrite,
         allowRead,
         denyRead,
-        denyWrite: getDefaultSensitiveWriteDenyPaths(),
+        denyWrite: [...new Set([
+          ...sensitiveDenyWrite,
+          ...mandatory.denyWrite.map((entry) => typeof entry === "string" ? entry : entry.path),
+        ])],
         floorPierces,
       },
       env: buildSafeChildEnv({ ...sandboxHome.env }),

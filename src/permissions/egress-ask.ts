@@ -76,7 +76,6 @@ export interface EgressShellApprovalRequest extends EgressApprovalRequestCommon 
   readonly sessionId: string | undefined;
   readonly toolName: ShellEgressOwner["toolName"];
   readonly toolUseId: string | undefined;
-  readonly approvalSurface?: "interactive" | "unavailable";
   readonly workspaceRoot?: string;
 }
 
@@ -288,7 +287,6 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
     if (owner.kind === "shell") {
       answer = await requester({
         origin: "shell",
-        approvalSurface: owner.context.approvalSurface,
         workspaceRoot: owner.context.workspaceRoot,
         sessionId: owner.context.sessionId,
         toolName: owner.toolName,

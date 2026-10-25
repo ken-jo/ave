@@ -151,6 +151,7 @@ describe.skipIf(process.platform !== "win32")("native proxy with production egre
     expect(runtime.requestAndWait.mock.calls[0]?.[0]).toMatchObject({
       kind: "egress-host", toolName: "powershell", sessionId: invocation.owner.kind === "shell" ? invocation.owner.context.sessionId : undefined,
       forceExplicit: true, durableApprovalRecordAllowed: false,
+      // OWNER ITEM: ip2 caps shell egress grants at once/always; owner 2026-10-16 offers once/conversation/workspace/always (Windows shared frontend capped at once/conversation, 2026-10-19). This follows ip2 until the owner picks.
       egressHost: { ...DESTINATION, scopes: ["once", "always"], network: "public" },
     });
     expect(await listEgressGrants()).toEqual([expect.objectContaining({
@@ -178,6 +179,7 @@ describe.skipIf(process.platform !== "win32")("native proxy with production egre
       forceExplicit: true, durableApprovalRecordAllowed: false,
       // A shared channel stops shell grants below Always, and shell calls
       // have no This conversation scope, so only once remains.
+      // OWNER ITEM: ip2 caps shell egress grants at once/always; owner 2026-10-16 offers once/conversation/workspace/always (Windows shared frontend capped at once/conversation, 2026-10-19). This follows ip2 until the owner picks.
       egressHost: { ...DESTINATION, scopes: ["once"], network: "public" },
     });
     const grants = await listEgressGrants();
@@ -221,6 +223,7 @@ describe.skipIf(process.platform !== "win32")("native proxy with production egre
     const invocation = openShell();
     await expectResponse(connect(runtime.sharedPort, proxyAuthorization(invocation.token, runtime.credential)), 403);
     expect(runtime.requestAndWait).toHaveBeenCalledTimes(1);
+    // OWNER ITEM: ip2 caps shell egress grants at once/always; owner 2026-10-16 offers once/conversation/workspace/always (Windows shared frontend capped at once/conversation, 2026-10-19). This follows ip2 until the owner picks.
     expect(runtime.requestAndWait.mock.calls[0]?.[0].egressHost?.scopes).toEqual(["once"]);
     expect(runtime.upstream.received).toEqual([]);
     expect(await listEgressGrants()).toEqual([]);

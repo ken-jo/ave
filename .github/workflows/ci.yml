@@ -656,6 +656,8 @@ jobs:
           src/permissions/__tests__/srt-win-integrity.test.ts
           src/permissions/__tests__/egress-runtime-proxy.test.ts
           src/tools/__tests__/shell-windows-partial-plan-b.test.ts
+          src/tools/__tests__/shell-windows-mxc.test.ts
+          src/permissions/__tests__/mxc-windows.test.ts
           src/lib/__tests__/atomic-file.test.ts
           src/shared/__tests__/ave-home.test.ts
           src/lib/__tests__/with-file-lock.test.ts

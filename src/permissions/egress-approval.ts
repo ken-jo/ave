@@ -40,11 +40,13 @@ export function createApprovalGateEgressRequester(
     // A terminal's ask names its tab: the gate draws it in the window that
     // owns that tab, and the renderer in the tab's banner.
     const toolName = terminal ? TERMINAL_EGRESS_TOOL_NAME : request.toolName;
-    const headless = request.origin === "shell" && request.approvalSurface === "unavailable";
+    // Only a foreground shell call reaches here: a background one was denied
+    // before asking (I5, owner 2026-10-16), so the reviewer runs in the
+    // foreground lane only.
     const mode = permissionManager?.getMode();
     let reviewerVerdict;
     if (request.origin === "shell" && permissionManager && mode !== "strict" &&
-      (headless || mode === "auto" || permissionManager.hasJudge("network"))) {
+      (mode === "auto" || permissionManager.hasJudge("network"))) {
       const cwd = request.workspaceRoot ?? process.cwd();
       const review = await permissionManager.dispatchReviewer("sandbox_network", {
         source: "builtin", category: "network", pathFields: [],
@@ -53,17 +55,17 @@ export function createApprovalGateEgressRequester(
         trustOrigin: "llm-tool-arg",
         ...(request.sessionId === undefined ? {} : { sessionId: request.sessionId }),
         evaluationContext: buildPermissionEvaluationContext({
-          policyMode: mode ?? "default", headless, source: "builtin", category: "network",
+          policyMode: mode ?? "default", headless: false, source: "builtin", category: "network",
           trustOrigin: "llm-tool-arg", executionCwd: cwd, allowedDirectories: [cwd], pathFields: [],
           targetFilePaths: [], sensitivePathsAdjacent: [],
         }),
-      }, undefined, { defer: headless ? "medium-high" : "none", ...(request.abortSignal ? { abortSignal: request.abortSignal } : {}) });
+      }, undefined, { defer: "none", ...(request.abortSignal ? { abortSignal: request.abortSignal } : {}) });
       reviewerVerdict = review.verdict;
       const judge = review.judge;
       const reviewed = judge && !review.judgeBaselineAllowed
         ? judge.judged && judge.applied ? judge.decision : "ask"
         : isReviewerAutoDecisionOutcome(review.outcome)
-          ? permissionManager.resolveReviewerDecision(review.verdict, headless ? "headless" : "foreground-auto", review.builtinDecision).decision
+          ? permissionManager.resolveReviewerDecision(review.verdict, "foreground-auto", review.builtinDecision).decision
           : "ask";
       if (reviewed === "allow" && request.scopes.includes("once")) return { allow: true, scope: "once" };
       if (reviewed === "deny" && judge?.judged && judge.applied && judge.decision === "deny") {
