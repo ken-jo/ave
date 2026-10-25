@@ -22,7 +22,7 @@ const egressRequest = (overrides: Partial<EgressShellApprovalRequest> = {}): Egr
   toolName: "bash",
   toolUseId: "toolu_1",
   destination: { host: "github.com", port: 443 },
-  scopes: ["once", "conversation", "workspace", "always"],
+  scopes: ["once", "session", "project", "always"],
   network: "public",
   abortSignal: undefined,
   ...overrides,
@@ -63,13 +63,13 @@ describe("egress-host approval requests", () => {
       toolName: "bash",
       args: { host: "github.com", port: 443 },
       allowedChoices: ["allow-once", "deny-once"],
-      egressHost: { host: "github.com", port: 443, scopes: ["once", "conversation", "workspace", "always"], network: "public" },
+      egressHost: { host: "github.com", port: 443, scopes: ["once", "session", "project", "always"], network: "public" },
       sessionId: "session-1",
     });
     gate.resolveFromDesktopRenderer(card.id, {
-      requestId: card.id, choice: "allow-once", egressScope: "workspace", nonce: card.nonce, hmac: card.hmac,
+      requestId: card.id, choice: "allow-once", egressScope: "project", nonce: card.nonce, hmac: card.hmac,
     });
-    await expect(answer).resolves.toEqual({ allow: true, scope: "workspace" });
+    await expect(answer).resolves.toEqual({ allow: true, scope: "project" });
   });
 
   it("denies when the person denies", async () => {
@@ -111,15 +111,15 @@ describe("egress-host approval requests", () => {
     const rows = auditLogger.log.mock.calls.map(([row]) => String((row as { output?: string }).output ?? ""));
     expect(rows.some((row) => row.startsWith(`[approval:native-desktop-required] ${card.id}`))).toBe(true);
     gate.resolveFromDesktopRenderer(card.id, {
-      requestId: card.id, choice: "allow-once", egressScope: "conversation", nonce: card.nonce, hmac: card.hmac,
+      requestId: card.id, choice: "allow-once", egressScope: "session", nonce: card.nonce, hmac: card.hmac,
     });
-    await expect(answer).resolves.toEqual({ allow: true, scope: "conversation" });
+    await expect(answer).resolves.toEqual({ allow: true, scope: "session" });
   });
 
   it("refuses an allow with a scope the card did not offer, or without one", async () => {
     for (const scope of ["always", undefined] as const) {
       const { wc, gate, auditLogger } = makeGate();
-      const answer = createApprovalGateEgressRequester(gate)(egressRequest({ scopes: ["once", "conversation"] }));
+      const answer = createApprovalGateEgressRequester(gate)(egressRequest({ scopes: ["once", "session"] }));
       const card = await cardSent(wc);
       const decision = {
         requestId: card.id,
@@ -140,7 +140,7 @@ describe("egress-host approval requests", () => {
     const answer = createApprovalGateEgressRequester(gate)(egressRequest());
     const card = await cardSent(wc);
     gate.resolveFromDesktopRenderer(card.id, {
-      requestId: card.id, choice: "allow-session", egressScope: "conversation", nonce: card.nonce, hmac: card.hmac,
+      requestId: card.id, choice: "allow-session", egressScope: "session", nonce: card.nonce, hmac: card.hmac,
     });
     await expect(answer).resolves.toMatchObject({ allow: false });
   });
@@ -176,7 +176,7 @@ describe("egress-host approval requests", () => {
     await expect(gate.requestAndWait({ ...base, egressHost: { host: "github.com", port: 443, scopes: ["once"], network: "lan" as never } }))
       .rejects.toThrow(/names its network/u);
     await expect(gate.requestAndWait({
-      ...base, egressHost: { host: "127.0.0.1", port: 8080, scopes: ["once", "workspace"], network: "local" },
+      ...base, egressHost: { host: "127.0.0.1", port: 8080, scopes: ["once", "project"], network: "local" },
     })).rejects.toThrow(/never offered a persistent scope/u);
     await expect(gate.requestAndWait({
       ...base, egressHost: { host: "intranet.corp.test", port: 443, scopes: ["once", "always"], network: "unverified" },
@@ -187,12 +187,12 @@ describe("egress-host approval requests", () => {
       .rejects.toThrow(/never recorded/u);
     await expect(gate.requestAndWait({ ...base, kind: undefined }))
       .rejects.toThrow(/only valid on an egress-host request/u);
-    // This tab belongs to a terminal's ask, This conversation to a shell call's.
+    // This tab belongs to a terminal's ask, This session to a shell call's.
     await expect(gate.requestAndWait({ ...base, egressHost: { host: "github.com", port: 443, scopes: ["once", "tab"], network: "public" } }))
       .rejects.toThrow(/only a terminal tab's egress ask offers This tab/u);
     await expect(gate.requestAndWait({
-      ...base, egressHost: { host: "github.com", port: 443, scopes: ["once", "conversation"], network: "public", terminalTabId: TAB },
-    })).rejects.toThrow(/offered This tab, not This conversation/u);
+      ...base, egressHost: { host: "github.com", port: 443, scopes: ["once", "session"], network: "public", terminalTabId: TAB },
+    })).rejects.toThrow(/offered This tab, not This session/u);
     await expect(gate.requestAndWait({
       ...base, egressHost: { host: "github.com", port: 443, scopes: ["once"], network: "public", terminalTabId: "browser:0a1b2c3d-1" },
     })).rejects.toThrow(/not a terminal tab id/u);

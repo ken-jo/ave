@@ -237,8 +237,8 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "egress-grant-store-unreadable": "formatIpcError.egressGrantStoreUnreadable",
   "invalid-egress-grant-scope": "formatIpcError.invalidEgressGrantScope",
   "invalid-egress-grant-destination": "formatIpcError.invalidEgressGrantDestination",
-  "invalid-egress-grant-workspace": "formatIpcError.invalidEgressGrantWorkspace",
-  "invalid-egress-grant-conversation": "formatIpcError.invalidEgressGrantConversation",
+  "invalid-egress-grant-project": "formatIpcError.invalidEgressGrantProject",
+  "invalid-egress-grant-session": "formatIpcError.invalidEgressGrantSession",
   "invalid-egress-grant-tab": "formatIpcError.invalidEgressGrantTab",
   "invalid-egress-grant-origin": "formatIpcError.invalidEgressGrantOrigin",
   // ── Upstream proxy (ave:permissions:upstream-proxy-*, settings:update) ──

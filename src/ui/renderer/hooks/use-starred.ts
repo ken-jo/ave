@@ -126,10 +126,5 @@ function starredMessageIndexOfEntry(
   if (entryIdx < 0 || entryIdx >= entries.length) return undefined;
   const target = entries[entryIdx];
   if (target.kind !== "user" && target.kind !== "assistant") return undefined;
-  let ordinal = 0;
-  for (let i = 0; i < entryIdx; i += 1) {
-    const kind = entries[i].kind;
-    if (kind === "user" || kind === "assistant") ordinal += 1;
-  }
-  return ordinal;
+  return entries.slice(0, entryIdx).filter((entry) => entry.kind === "user" || entry.kind === "assistant").length;
 }

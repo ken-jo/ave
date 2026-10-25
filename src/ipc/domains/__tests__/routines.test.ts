@@ -13,6 +13,9 @@ vi.mock("electron", () => ({
   },
 }));
 
+const endSessionScopedPermissions = vi.fn();
+vi.mock("../../../permissions/session-scope-end.js", () => ({ endSessionScopedPermissions }));
+
 vi.mock("../../../lib/logger.js", () => ({
   createLogger: vi.fn(() => ({ warn: vi.fn(), info: vi.fn(), error: vi.fn() })),
 }));
@@ -200,6 +203,8 @@ describe("routine pending results", () => {
       ["routine-session-1"],
       ["routine-session-2"],
     ]);
+    // Each deleted conversation's "This session" grants end with it (owner 2026-10-25).
+    expect(endSessionScopedPermissions.mock.calls.map(([sessionId]) => sessionId)).toEqual(["routine-session-1", "routine-session-2"]);
   });
 });
 

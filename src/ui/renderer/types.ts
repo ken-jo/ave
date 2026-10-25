@@ -1399,6 +1399,7 @@ import type {
   ScopedPermissionRuleError,
   UserApprovalDecision,
   UserApprovalHitPayload,
+  ShellRuleSaveScope,
   UserApprovalScope,
   UserApprovalVerdict,
 } from "../../shared/permissions-events.js";
@@ -1412,7 +1413,7 @@ export type AveUserApprovalApi = {
      *  ApprovalGate.getRequestSnapshot — renderer-supplied authority fields
      *  below are ignored (kept on the wire for legacy callers + audit). */
     requestId: string;
-    rule?: { pattern: string; scope: "project" | "user" };
+    rule?: { scope: ShellRuleSaveScope };
     toolName: string;
     args: string;
     source: string;
@@ -2026,8 +2027,8 @@ export interface AvePreviewApi {
     message?: string;
   }>;
   /**
-   * Table document (csv/tsv/xlsx/xls/ods) parsed in main under the same guard
-   * as `readFile`; returns one sheet as a bounded grid of display strings.
+   * Read under `readFile` authority and parse in an isolated child. The
+   * zero-based index selects a sheet or page, according to the file format.
    */
   readDocument: (path: string, sheetIndex: number) => Promise<PreviewReadDocumentResult>;
 }

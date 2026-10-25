@@ -1,7 +1,7 @@
 /** Permissions domain IPC handlers. Covers: ave:permission:*, ave:approval:*, ave:policy:* */
 import { ipcMain, session } from "electron";
 import { randomUUID } from "node:crypto";
-import { isRuleSpecifier, normalizeRuleSpecifierInput } from "../../permissions/rules/rule-specifier.js";
+import { isRuleSpecifier } from "../../permissions/rules/rule-specifier.js";
 import { validatePermissionRule } from "../../permissions/rules/rule-files.js";
 import { shellRuleCoversCommand } from "../../permissions/rules/shell-rule-approval.js";
 import { loadPolicy, savePolicy } from "../../permissions/policy-store.js";
@@ -27,6 +27,7 @@ import {
 import { envForcedValueForSettingsPath, resolveEnvBackedBoolean } from "../../shared/env-backed-settings.js";
 import {
   isSessionOnlyApprovalMemoryScope,
+  isShellRuleSaveScope,
   type PermissionReviewSuggestionPayload,
   type PermissionReviewSuggestionReason,
 } from "../../shared/permissions-events.js";
@@ -382,38 +383,38 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     const body = payloadRecord(payload);
     const intent = requireUserKeyboardIntent(body.intent);
     if (!intent.ok) return intent;
-    const { scope, origin, host, port, workspaceRoot, sessionId, tabId, network } = body;
+    const { scope, origin, host, port, projectRoot, sessionId, tabId, network } = body;
     if (network !== undefined && !isEgressGrantNetwork(network)) {
       return { ok: false, error: "invalid-egress-grant-destination", message: "revoke: invalid network class" };
     }
-    if (scope !== "conversation" && scope !== "tab" && scope !== "workspace" && scope !== "always") {
-      return { ok: false, error: "invalid-egress-grant-scope", message: "revoke: scope must be conversation, tab, workspace or always" };
+    if (scope !== "session" && scope !== "tab" && scope !== "project" && scope !== "always") {
+      return { ok: false, error: "invalid-egress-grant-scope", message: "revoke: scope must be session, tab, project or always" };
     }
     if (typeof host !== "string" || host.length === 0 || typeof port !== "number" || !Number.isInteger(port)) {
       return { ok: false, error: "invalid-egress-grant-destination", message: "revoke: host and port are required" };
     }
-    if (scope === "workspace" ? typeof workspaceRoot !== "string" : workspaceRoot !== undefined) {
-      return { ok: false, error: "invalid-egress-grant-workspace", message: "revoke: a workspace grant names its workspaceRoot, no other grant does" };
+    if (scope === "project" ? typeof projectRoot !== "string" : projectRoot !== undefined) {
+      return { ok: false, error: "invalid-egress-grant-project", message: "revoke: a project grant names its projectRoot, no other grant does" };
     }
-    if (scope === "conversation" ? typeof sessionId !== "string" || sessionId.length === 0 : sessionId !== undefined) {
-      return { ok: false, error: "invalid-egress-grant-conversation", message: "revoke: a conversation grant names its sessionId, no other grant does" };
+    if (scope === "session" ? typeof sessionId !== "string" || sessionId.length === 0 : sessionId !== undefined) {
+      return { ok: false, error: "invalid-egress-grant-session", message: "revoke: a session grant names its sessionId, no other grant does" };
     }
     if (scope === "tab" ? typeof tabId !== "string" || !isTerminalTabId(tabId) : tabId !== undefined) {
       return { ok: false, error: "invalid-egress-grant-tab", message: "revoke: a tab grant names its terminal tabId, no other grant does" };
     }
-    const persistent = scope === "workspace" || scope === "always";
+    const persistent = scope === "project" || scope === "always";
     if (persistent
-      ? (scope === "workspace" ? origin !== "shell" : origin !== "shell" && origin !== "terminal")
+      ? (scope === "project" ? origin !== "shell" : origin !== "shell" && origin !== "terminal")
       : origin !== undefined) {
-      return { ok: false, error: "invalid-egress-grant-origin", message: "revoke: a workspace or always grant names its origin (shell, or terminal for always), no other grant does" };
+      return { ok: false, error: "invalid-egress-grant-origin", message: "revoke: a project or always grant names its origin (shell, or terminal for always), no other grant does" };
     }
     const destination = { host, port, ...(network === undefined ? {} : { network }) };
     const { revokeEgressGrant } = await import("../../permissions/egress-runtime.js");
     try {
       const { removed, closed } = await revokeEgressGrant(
-        scope === "conversation" ? { scope, sessionId: sessionId as string, ...destination }
+        scope === "session" ? { scope, sessionId: sessionId as string, ...destination }
         : scope === "tab" ? { scope, tabId: tabId as string, ...destination }
-        : scope === "workspace" ? { scope, origin: "shell", workspaceRoot: workspaceRoot as string, ...destination }
+        : scope === "project" ? { scope, origin: "shell", projectRoot: projectRoot as string, ...destination }
         : { scope, origin: origin as "shell" | "terminal", ...destination },
       );
       auditLogger.log({
@@ -1230,31 +1231,38 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       return { ok: false, error: "no-such-request", message: "user-approval record: no in-flight ApprovalRequest for requestId" };
     }
     if (body.rule !== undefined) {
+      // A bash card's save choice (owner 2026-10-25, five-choice shell card): the host stores the exact `Bash(<command>)` rule it derived from the live command, at the chosen scope. The renderer names only the scope; a pattern or any other field is refused, never used.
       const rule = payloadRecord(body.rule);
       const context = snapshot.shellRule;
-      if (!context || typeof rule.pattern !== "string" || (rule.scope !== "project" && rule.scope !== "user") || scope !== "persistent") {
-        return { ok: false, error: "invalid-rule", message: "A command rule requires a live shell request" };
+      const ruleScope = rule.scope;
+      if (!context || Object.keys(rule).some((key) => key !== "scope") || !isShellRuleSaveScope(ruleScope) ||
+        decision !== "allow" || (ruleScope === "session") !== (scope === "session")) {
+        return { ok: false, error: "invalid-rule", message: "A command rule names only its scope (session, project or always) on a live shell request" };
       }
+      const pattern = context.exactRule;
       const command = snapshot.args && typeof snapshot.args === "object" ? (snapshot.args as Record<string, unknown>).command : undefined;
-      // Same normalization as the dock preview; the store itself stays strict.
-      const pattern = normalizeRuleSpecifierInput(rule.pattern);
-      // A rule the store refuses or that cannot cover the live command is invalid whatever the request allows, so it is checked first.
+      if (pattern === null || (ruleScope === "session" ? !context.sessionAllowed : !context.persistentAllowed)) {
+        return { ok: false, error: "one-shot-not-recordable", message: "This request cannot create an allow rule" };
+      }
+      // Re-check against the live command with the store's own validator, so a stale or tampered snapshot cannot save a rule that does not match it exactly.
       try {
-        if (typeof command !== "string" || !shellRuleCoversCommand(pattern, decision, command, context.projectCwd)) {
+        if (typeof command !== "string" || !shellRuleCoversCommand(pattern, "allow", command, context.projectCwd)) {
           return { ok: false, error: "invalid-rule", message: "The rule does not cover this command" };
         }
       } catch (error) {
         return { ok: false, error: "invalid-rule", message: errorMessage(error) };
       }
-      if (decision === "allow" && !context.persistentAllowed) {
-        return { ok: false, error: "one-shot-not-recordable", message: "This request cannot create an allow rule" };
-      }
       if (displayedVerdictAtApproval !== snapshot.verdictAtApproval) return { ok: false, error: "verdict-mismatch" };
       const pm = conversationLoop.permissionManager;
       if (!pm) return { ok: false, error: "no-permission-manager" };
       try {
-        await pm.addRulePersist({ pattern, action: decision }, rule.scope === "project"
-          ? { kind: "project", projectCwd: context.projectCwd } : { kind: "user" });
+        if (ruleScope === "session") {
+          if (!snapshot.sessionId) return { ok: false, error: "missing-session", message: "This request has no conversation session" };
+          pm.addSessionShellRule(snapshot.sessionId, pattern);
+        } else {
+          await pm.addRulePersist({ pattern, action: "allow" }, ruleScope === "project"
+            ? { kind: "project", projectCwd: context.projectCwd } : { kind: "user" });
+        }
       } catch (error) {
         // A rule that validated but could not be stored: corrupt file, lock or I/O.
         return { ok: false, error: "rule-save-failed", message: errorMessage(error) };
@@ -1263,13 +1271,14 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
         timestamp: new Date().toISOString(),
         sessionId: snapshot.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
         type: "approval",
-        output: `[approval:remembered] store=rules decision=${decision} scope=${rule.scope} toolName=${JSON.stringify(snapshot.toolName)} source=${JSON.stringify(snapshot.source)}`,
+        output: `[approval:remembered] store=rules decision=allow scope=${ruleScope} rule=${JSON.stringify(pattern)} toolName=${JSON.stringify(snapshot.toolName)} source=${JSON.stringify(snapshot.source)}`,
       });
       broadcastPermissionConfigChanged(deps);
       return { ok: true };
     }
-    if (decision === "allow" && scope === "persistent" && snapshot.shellRule) {
-      return { ok: false, error: "command-rule-required", message: "A persistent shell allow must record the offered command rule" };
+    // A bash card remembers an allow only as its exact command rule, at any scope.
+    if (decision === "allow" && snapshot.shellRule) {
+      return { ok: false, error: "command-rule-required", message: "A shell allow is remembered only as its exact Bash(<command>) rule" };
     }
     if (!snapshot.durableApprovalRecordAllowed) {
       return { ok: false, error: "one-shot-not-recordable", message: "user-approval record: one-shot approvals cannot be recorded" };
@@ -1289,9 +1298,6 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     }
     const verdictAtApproval = snapshot.verdictAtApproval;
     // Conservative risk display during a failed assessment does not decide persistence. Only the gate's live eligibility snapshot can authorize it.
-    if (decision === "allow" && scope === "session" && snapshot.shellRule && !snapshot.shellRule.sessionAllowed) {
-      return { ok: false, error: "one-shot-not-recordable", message: "This request cannot create a session approval" };
-    }
     // Every session approval (shell, browser, terminal, any exact tool approval) belongs to the
     // root conversation of the request, so one without a conversation has nothing to be scoped to.
     if (scope === "session" && !snapshot.sessionId) {

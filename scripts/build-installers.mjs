@@ -254,6 +254,7 @@ const ARCH_SELECTED_RUNTIME_PACKAGES = [
   (arch) => `@img/sharp-linux-${arch}`,
   (arch) => `@img/sharp-libvips-linux-${arch}`,
   (arch) => `@vscode/ripgrep-linux-${arch}`,
+  (arch) => `@napi-rs/canvas-linux-${arch}-gnu`,
 ];
 
 // Retarget runtime natives only after host build tools have run; disable install scripts.

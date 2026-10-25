@@ -1,4 +1,5 @@
 /** Normalize deterministically; invalid computational types drop the model, while unknown descriptive or enum values drop only that field. */
+import { isRecord } from "../is-record.js";
 import {
   REASONING_EFFORT_VALUES,
   type CatalogCostTier,
@@ -34,9 +35,7 @@ class Malformed extends Error {}
 type Note = (message: string) => void;
 
 function record(value: unknown): Record<string, unknown> | undefined {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : undefined;
+  return isRecord(value) ? value : undefined;
 }
 
 function optionalString(value: unknown, field: string, max = MAX_TEXT_LENGTH): string | undefined {

@@ -16,6 +16,17 @@ vi.mock("../../../components/ui/scroll-area.js", () => ({
 
 type ToolGroupEntry = Extract<ChatEntry, { kind: "tool_group" }>;
 
+function makeTool(overrides: Partial<ToolGroupEntry["tools"][number]> = {}): ToolGroupEntry["tools"][number] {
+  return {
+    toolUseId: "tu-1",
+    name: "read_file",
+    input: {},
+    status: "done",
+    displayOrder: 0,
+    ...overrides,
+  };
+}
+
 function makeGroup(overrides: Partial<ToolGroupEntry> = {}): ToolGroupEntry {
   return {
     kind: "tool_group",
@@ -23,14 +34,10 @@ function makeGroup(overrides: Partial<ToolGroupEntry> = {}): ToolGroupEntry {
     groupIds: ["grp-1"],
     status: "done",
     tools: [
-      {
-        toolUseId: "tu-1",
-        name: "read_file",
+      makeTool({
         input: { path: "/tmp/test.txt" },
         result: "file content",
-        status: "done",
-        displayOrder: 0,
-      },
+      }),
     ],
     ...overrides,
   };
@@ -44,8 +51,8 @@ function makeMultiGroup(overrides: Partial<ToolGroupEntry> = {}): ToolGroupEntry
     groupIds: ["grp-2"],
     status: "done",
     tools: [
-      { toolUseId: "tu-1", name: "index_search", input: {}, result: "r1", status: "done", displayOrder: 0 },
-      { toolUseId: "tu-2", name: "read_file", input: {}, result: "r2", status: "done", displayOrder: 1 },
+      makeTool({ name: "index_search", result: "r1" }),
+      makeTool({ toolUseId: "tu-2", result: "r2", displayOrder: 1 }),
     ],
     ...overrides,
   };
@@ -82,35 +89,26 @@ describe("ToolGroupCard", () => {
   it("shows tool provenance labels for builtin, plugin, and MCP tools", () => {
     const { container } = render(<ToolGroupCard group={makeMultiGroup({
       tools: [
-        {
-          toolUseId: "tu-1",
-          name: "read_file",
-          input: {},
+        makeTool({
           result: "r1",
-          status: "done",
-          displayOrder: 0,
           source: "builtin",
-        },
-        {
+        }),
+        makeTool({
           toolUseId: "tu-2",
           name: "meeting_start",
-          input: {},
           result: "r2",
-          status: "done",
           displayOrder: 1,
           source: "plugin",
           pluginId: "com.example.meeting",
-        },
-        {
+        }),
+        makeTool({
           toolUseId: "tu-3",
           name: "mcp_fetch",
-          input: {},
           result: "r3",
-          status: "done",
           displayOrder: 2,
           source: "mcp",
           mcpServerId: "server-1",
-        },
+        }),
       ],
     })} />);
 
@@ -123,7 +121,7 @@ describe("ToolGroupCard", () => {
 
   it("single tool running: shows spinner inline", () => {
     const { container } = render(
-      <ToolGroupCard group={makeGroup({ status: "running", tools: [{ toolUseId: "tu-1", name: "read_file", input: {}, status: "running", displayOrder: 0 }] })} />,
+      <ToolGroupCard group={makeGroup({ status: "running", tools: [makeTool({ status: "running" })] })} />,
     );
     expect(container.textContent).not.toContain("도구 사용 중");
     expect(container.textContent).toContain("파일 읽기");
@@ -131,7 +129,7 @@ describe("ToolGroupCard", () => {
 
   it("single tool running: keeps input collapsed by default", () => {
     const { container } = render(
-      <ToolGroupCard group={makeGroup({ status: "running", tools: [{ toolUseId: "tu-1", name: "read_file", input: { path: "/tmp/live.txt" }, status: "running", displayOrder: 0 }] })} />,
+      <ToolGroupCard group={makeGroup({ status: "running", tools: [makeTool({ input: { path: "/tmp/live.txt" }, status: "running" })] })} />,
     );
 
     expect(container.textContent).toContain("파일 읽기");
@@ -144,11 +142,11 @@ describe("ToolGroupCard", () => {
   it("single tool running then done: does not leave result expanded", () => {
     const running = makeGroup({
       status: "running",
-      tools: [{ toolUseId: "tu-1", name: "read_file", input: { path: "/tmp/live.txt" }, status: "running", displayOrder: 0 }],
+      tools: [makeTool({ input: { path: "/tmp/live.txt" }, status: "running" })],
     });
     const done = makeGroup({
       status: "done",
-      tools: [{ toolUseId: "tu-1", name: "read_file", input: { path: "/tmp/live.txt" }, result: "live result", status: "done", displayOrder: 0 }],
+      tools: [makeTool({ input: { path: "/tmp/live.txt" }, result: "live result" })],
     });
     const { container, rerender } = render(<ToolGroupCard group={running} />);
 
@@ -159,7 +157,7 @@ describe("ToolGroupCard", () => {
   });
 
   it("single tool error: shows 실패 badge", () => {
-    const group = makeGroup({ status: "error", tools: [{ toolUseId: "tu-1", name: "read_file", input: {}, result: "err", status: "error", displayOrder: 0 }] });
+    const group = makeGroup({ status: "error", tools: [makeTool({ result: "err", status: "error" })] });
     const { container } = render(<ToolGroupCard group={group} />);
     expect(container.textContent).toContain("실패");
   });
@@ -173,7 +171,7 @@ describe("ToolGroupCard", () => {
       }),
     });
     const { container } = render(<ToolGroupCard group={makeGroup({ tools: [
-      { toolUseId: "tu-1", name: "web_fetch", input: { url: "https://wttr.in/Seoul" }, result, status: "done", displayOrder: 0 },
+      makeTool({ name: "web_fetch", input: { url: "https://wttr.in/Seoul" }, result }),
     ] })} />);
     fireEvent.click(container.querySelector("button") as HTMLButtonElement);
 
@@ -189,14 +187,12 @@ describe("ToolGroupCard", () => {
       rows: JSON.stringify([{ id: 1, title: "보고서" }]),
     });
     const { container } = render(<ToolGroupCard group={makeGroup({ tools: [
-      {
+      makeTool({
         toolUseId: "tu-json",
         name: "search_files",
         input: { query: "월간 보고", options: JSON.stringify({ limit: 3, sort: "mtime" }) },
         result,
-        status: "done",
-        displayOrder: 0,
-      },
+      }),
     ] })} />);
     fireEvent.click(container.querySelector("button") as HTMLButtonElement);
 
@@ -216,7 +212,7 @@ describe("ToolGroupCard", () => {
       content: "Google News ".repeat(90),
     });
     const { container } = render(<ToolGroupCard group={makeGroup({ tools: [
-      { toolUseId: "tu-1", name: "web_fetch", input: { url: "https://news.google.com/rss/search?q=IT" }, result, status: "done", displayOrder: 0 },
+      makeTool({ name: "web_fetch", input: { url: "https://news.google.com/rss/search?q=IT" }, result }),
     ] })} />);
     fireEvent.click(container.querySelector("button") as HTMLButtonElement);
 
@@ -234,8 +230,8 @@ describe("ToolGroupCard", () => {
   it("multi-tool: shows '도구 사용 중' header when running", () => {
     const { container } = render(
       <ToolGroupCard group={makeMultiGroup({ status: "running", tools: [
-        { toolUseId: "tu-1", name: "index_search", input: {}, status: "running", displayOrder: 0 },
-        { toolUseId: "tu-2", name: "read_file", input: {}, status: "running", displayOrder: 1 },
+        makeTool({ name: "index_search", status: "running" }),
+        makeTool({ toolUseId: "tu-2", status: "running", displayOrder: 1 }),
       ] })} />,
     );
     expect(container.textContent).toContain("도구 사용 중");
@@ -244,8 +240,8 @@ describe("ToolGroupCard", () => {
   it("multi-tool running: does not auto-expand the first running tool", () => {
     const { container } = render(
       <ToolGroupCard group={makeMultiGroup({ status: "running", tools: [
-        { toolUseId: "tu-1", name: "index_search", input: { query: "hidden live input" }, status: "running", displayOrder: 0 },
-        { toolUseId: "tu-2", name: "read_file", input: {}, status: "running", displayOrder: 1 },
+        makeTool({ name: "index_search", input: { query: "hidden live input" }, status: "running" }),
+        makeTool({ toolUseId: "tu-2", status: "running", displayOrder: 1 }),
       ] })} />,
     );
 
@@ -284,8 +280,8 @@ describe("ToolGroupCard", () => {
 
   it("multi-tool error: shows 오류 있음 badge", () => {
     const group = makeMultiGroup({ status: "error", tools: [
-      { toolUseId: "tu-1", name: "index_search", input: {}, result: "err", status: "error", displayOrder: 0 },
-      { toolUseId: "tu-2", name: "read_file", input: {}, result: "ok", status: "done", displayOrder: 1 },
+      makeTool({ name: "index_search", result: "err", status: "error" }),
+      makeTool({ toolUseId: "tu-2", result: "ok", displayOrder: 1 }),
     ] });
     const { container } = render(<ToolGroupCard group={group} />);
     expect(container.textContent).toContain("오류 있음");
@@ -295,15 +291,11 @@ describe("ToolGroupCard", () => {
     const group = makeGroup({
       status: "done",
       tools: [
-        {
-          toolUseId: "tu-1",
-          name: "read_file",
+        makeTool({
           input: { path: "/tmp/test.txt" },
           result: "file content",
-          status: "done",
-          displayOrder: 0,
           durationMs: 1400,
-        },
+        }),
       ],
     });
     const { container } = render(<ToolGroupCard group={group} />);
@@ -316,15 +308,10 @@ describe("ToolGroupCard", () => {
     const group = makeGroup({
       status: "done",
       tools: [
-        {
-          toolUseId: "tu-1",
-          name: "read_file",
-          input: {},
+        makeTool({
           result: "ok",
-          status: "done",
-          displayOrder: 0,
           durationMs: 50,
-        },
+        }),
       ],
     });
     const { container } = render(<ToolGroupCard group={group} />);
@@ -335,15 +322,10 @@ describe("ToolGroupCard", () => {
     const group = makeGroup({
       status: "done",
       tools: [
-        {
-          toolUseId: "tu-1",
-          name: "read_file",
-          input: {},
+        makeTool({
           result: "ok",
-          status: "done",
-          displayOrder: 0,
           durationMs: 72_400,
-        },
+        }),
       ],
     });
     const { container } = render(<ToolGroupCard group={group} />);
@@ -354,13 +336,9 @@ describe("ToolGroupCard", () => {
     const group = makeGroup({
       status: "running",
       tools: [
-        {
-          toolUseId: "tu-1",
-          name: "read_file",
-          input: {},
+        makeTool({
           status: "running",
-          displayOrder: 0,
-        },
+        }),
       ],
     });
     const { container } = render(<ToolGroupCard group={group} />);
@@ -371,8 +349,8 @@ describe("ToolGroupCard", () => {
     const group = makeMultiGroup({
       status: "done",
       tools: [
-        { toolUseId: "tu-1", name: "index_search", input: {}, result: "r1", status: "done", displayOrder: 0, durationMs: 300 },
-        { toolUseId: "tu-2", name: "read_file", input: {}, result: "r2", status: "done", displayOrder: 1, durationMs: 1400 },
+        makeTool({ name: "index_search", result: "r1", durationMs: 300 }),
+        makeTool({ toolUseId: "tu-2", result: "r2", displayOrder: 1, durationMs: 1400 }),
       ],
     });
     const { container } = render(<ToolGroupCard group={group} />);
@@ -390,14 +368,11 @@ describe("ToolGroupCard", () => {
     });
     const group = makeGroup({
       tools: [
-        {
+        makeTool({
           toolUseId: "tu-stub",
-          name: "read_file",
           input: { path: "/tmp/big.txt" },
           result: stubResult,
-          status: "done",
-          displayOrder: 0,
-        },
+        }),
       ],
     });
     const { container } = render(<ToolGroupCard group={group} sessionId="session-1" />);
@@ -414,14 +389,12 @@ describe("ToolGroupCard", () => {
     });
     const group = makeGroup({
       tools: [
-        {
+        makeTool({
           toolUseId: "tu-truncated",
           name: "long_output_query",
           input: { query: "긴 규정 답변" },
           result: stubResult,
-          status: "done",
-          displayOrder: 0,
-        },
+        }),
       ],
     });
     const { container } = render(<ToolGroupCard group={group} sessionId="session-1" />);
@@ -434,14 +407,11 @@ describe("ToolGroupCard", () => {
     const stubResult = "[tool_result stripped: tool=Read, origLen=5000]";
     const group = makeGroup({
       tools: [
-        {
+        makeTool({
           toolUseId: "tu-stub",
-          name: "read_file",
           input: { path: "/tmp/big.txt" },
           result: stubResult,
-          status: "done",
-          displayOrder: 0,
-        },
+        }),
       ],
     });
     // no sessionId prop → falls back to ToolPayloadBlock
@@ -454,14 +424,11 @@ describe("ToolGroupCard", () => {
   it("single tool with non-stub result + sessionId → renders ToolPayloadBlock (not CompactedToolResult)", () => {
     const group = makeGroup({
       tools: [
-        {
+        makeTool({
           toolUseId: "tu-normal",
-          name: "read_file",
           input: { path: "/tmp/small.txt" },
           result: "normal file content",
-          status: "done",
-          displayOrder: 0,
-        },
+        }),
       ],
     });
     const { container } = render(<ToolGroupCard group={group} sessionId="session-1" />);
@@ -475,7 +442,7 @@ describe("ToolGroupCard", () => {
     const openHtmlPreview = installHtmlPreviewWindowMock();
     const group = makeGroup({
       tools: [
-        {
+        makeTool({
           toolUseId: "tu-html-1",
           name: "render_html",
           input: { html: "<p>hi</p>" },
@@ -486,9 +453,7 @@ describe("ToolGroupCard", () => {
             html: "<p>hi</p>",
             warnings: [],
           }),
-          status: "done",
-          displayOrder: 0,
-        },
+        }),
       ],
     });
     const { container } = render(<ToolGroupCard group={group} />);
@@ -514,19 +479,18 @@ describe("ToolGroupCard", () => {
     const running = makeGroup({
       status: "running",
       tools: [
-        {
+        makeTool({
           toolUseId: "tu-html-auto",
           name: "render_html",
           input: { html: "<p>live</p>" },
           status: "running",
-          displayOrder: 0,
-        },
+        }),
       ],
     });
     const done = makeGroup({
       status: "done",
       tools: [
-        {
+        makeTool({
           toolUseId: "tu-html-auto",
           name: "render_html",
           input: { html: "<p>live</p>" },
@@ -537,9 +501,7 @@ describe("ToolGroupCard", () => {
             html: "<p>live</p>",
             warnings: [],
           }),
-          status: "done",
-          displayOrder: 0,
-        },
+        }),
       ],
     });
     const { rerender } = render(<ToolGroupCard group={running} />);
@@ -559,19 +521,16 @@ describe("ToolGroupCard", () => {
     const openHtmlPreview = installHtmlPreviewWindowMock();
     const group = makeGroup({
       tools: [
-        {
+        makeTool({
           toolUseId: "tu-html-2",
           name: "render_html",
-          input: {},
           result: JSON.stringify({
             kind: "ave.render_html",
             height: 200,
             html: "<script>console.log('hi')</script>",
             warnings: [],
           }),
-          status: "done",
-          displayOrder: 0,
-        },
+        }),
       ],
     });
     const { container } = render(<ToolGroupCard group={group} />);
@@ -596,7 +555,7 @@ describe("ToolGroupCard", () => {
   it("single edit_file: renders FileEditDiff with old and new text", () => {
     const group = makeGroup({
       tools: [
-        {
+        makeTool({
           toolUseId: "tu-edit",
           name: "edit_file",
           input: {
@@ -605,9 +564,7 @@ describe("ToolGroupCard", () => {
             newText: "const x = 1;\nconst y = 3;",
           },
           result: JSON.stringify({ path: "src/foo.ts", replacements: 1 }),
-          status: "done",
-          displayOrder: 0,
-        },
+        }),
       ],
     });
     const { container } = render(<ToolGroupCard group={group} />);
@@ -628,7 +585,7 @@ describe("ToolGroupCard", () => {
   it("single multi_edit with 2 replacements: renders 2 hunks", () => {
     const group = makeGroup({
       tools: [
-        {
+        makeTool({
           toolUseId: "tu-patch",
           name: "multi_edit",
           input: {
@@ -639,9 +596,7 @@ describe("ToolGroupCard", () => {
             ],
           },
           result: JSON.stringify({ path: "src/bar.ts", replacements: 2 }),
-          status: "done",
-          displayOrder: 0,
-        },
+        }),
       ],
     });
     const { container } = render(<ToolGroupCard group={group} />);
@@ -656,7 +611,7 @@ describe("ToolGroupCard", () => {
   it("single write_file (existing): renders before and after", () => {
     const group = makeGroup({
       tools: [
-        {
+        makeTool({
           toolUseId: "tu-write-existing",
           name: "write_file",
           input: { path: "src/baz.ts", content: "after\n" },
@@ -669,9 +624,7 @@ describe("ToolGroupCard", () => {
             before: "before\n",
             after: "after\n",
           }),
-          status: "done",
-          displayOrder: 0,
-        },
+        }),
       ],
     });
     const { container } = render(<ToolGroupCard group={group} />);
@@ -683,7 +636,7 @@ describe("ToolGroupCard", () => {
   it("single write_file (new file): shows Create verb without before", () => {
     const group = makeGroup({
       tools: [
-        {
+        makeTool({
           toolUseId: "tu-write-new",
           name: "write_file",
           input: { path: "src/new.ts", content: "hello\n" },
@@ -695,9 +648,7 @@ describe("ToolGroupCard", () => {
             truncated: false,
             after: "hello\n",
           }),
-          status: "done",
-          displayOrder: 0,
-        },
+        }),
       ],
     });
     const { container } = render(<ToolGroupCard group={group} />);
@@ -708,7 +659,7 @@ describe("ToolGroupCard", () => {
   it("single write_file (truncated): shows truncated marker", () => {
     const group = makeGroup({
       tools: [
-        {
+        makeTool({
           toolUseId: "tu-write-trunc",
           name: "write_file",
           input: { path: "src/big.ts", content: "x".repeat(10000) },
@@ -720,9 +671,7 @@ describe("ToolGroupCard", () => {
             truncated: true,
             after: "x".repeat(100),
           }),
-          status: "done",
-          displayOrder: 0,
-        },
+        }),
       ],
     });
     const { container } = render(<ToolGroupCard group={group} />);
@@ -735,7 +684,7 @@ describe("ToolGroupCard — failure badges", () => {
     return makeGroup({
       status: "error",
       tools: [
-        { toolUseId: "tu-err", name: "read_file", input: {}, result: "boom", status: "error", displayOrder: 0 },
+        makeTool({ toolUseId: "tu-err", result: "boom", status: "error" }),
       ],
     });
   }
@@ -754,8 +703,8 @@ describe("ToolGroupCard — failure badges", () => {
     const group = makeMultiGroup({
       status: "error",
       tools: [
-        { toolUseId: "tu-1", name: "index_search", input: {}, result: "r1", status: "done", displayOrder: 0 },
-        { toolUseId: "tu-2", name: "read_file", input: {}, result: "boom", status: "error", displayOrder: 1 },
+        makeTool({ name: "index_search", result: "r1" }),
+        makeTool({ toolUseId: "tu-2", result: "boom", status: "error", displayOrder: 1 }),
       ],
     });
     const { container } = render(<ToolGroupCard group={group} />);

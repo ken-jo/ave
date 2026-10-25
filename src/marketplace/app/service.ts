@@ -748,42 +748,36 @@ export class MarketplaceService implements RetirementEntryLookup {
 
   /** Repair moves downloaded state aside and resyncs while preserving installed bindings and credentials. */
   async repairSource(id: string): Promise<SourceView[]> {
-    return this.operation(() => this.repairSourceNow(id));
-  }
-
-  private async repairSourceNow(id: string): Promise<SourceView[]> {
-    const source = this.source(id);
-    await this.options.syncer.resetLocalData(source.id);
-    this.catalogChanged();
-    await this.syncOne(source.id);
-    await this.enforceRevocations();
-    return this.listSources();
+    return this.operation(async () => {
+      const source = this.source(id);
+      await this.options.syncer.resetLocalData(source.id);
+      this.catalogChanged();
+      await this.syncOne(source.id);
+      await this.enforceRevocations();
+      return this.listSources();
+    });
   }
 
   async refresh(id?: string): Promise<SourceView[]> {
-    return this.operation(() => this.refreshNow(id));
-  }
-
-  private async refreshNow(id?: string): Promise<SourceView[]> {
-    if (id !== undefined) await this.syncAndEnforce([this.source(id).id]);
-    else await this.syncAll();
-    return this.listSources();
+    return this.operation(async () => {
+      if (id !== undefined) await this.syncAndEnforce([this.source(id).id]);
+      else await this.syncAll();
+      return this.listSources();
+    });
   }
 
   /** Offline means every source failed offline; broken or mixed sources make the result partial.
      * Abort prevents subsequent stages and progress; unexpected failures throw. */
   async discover(signal?: AbortSignal): Promise<SyncDiscovery> {
-    return this.operation(() => this.discoverNow(signal), signal);
-  }
-
-  private async discoverNow(signal?: AbortSignal): Promise<SyncDiscovery> {
-    const { results, broken } = await this.syncAll(signal);
-    const reached = [...results].filter(([, result]) => result.status === "ok").map(([sourceId]) => sourceId);
-    const failed = [...results.values()].filter((result) => result.status === "failed");
-    if (failed.length === 0 && broken === 0) return { result: "ok", reached };
-    const offline = broken === 0 && failed.length > 0 && failed.length === results.size
-      && failed.every((result) => result.status === "failed" && result.code === "SOURCE_UNREACHABLE" && result.detail?.reason === "offline");
-    return { result: offline ? "offline" : "partial", reached };
+    return this.operation(async () => {
+      const { results, broken } = await this.syncAll(signal);
+      const reached = [...results].filter(([, result]) => result.status === "ok").map(([sourceId]) => sourceId);
+      const failed = [...results.values()].filter((result) => result.status === "failed");
+      if (failed.length === 0 && broken === 0) return { result: "ok", reached };
+      const offline = broken === 0 && failed.length > 0 && failed.length === results.size
+        && failed.every((result) => result.status === "failed" && result.code === "SOURCE_UNREACHABLE" && result.detail?.reason === "offline");
+      return { result: offline ? "offline" : "partial", reached };
+    }, signal);
   }
 
   /** Broken sources count toward discovery status but are not synced. */

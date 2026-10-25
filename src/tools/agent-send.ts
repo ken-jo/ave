@@ -1,4 +1,4 @@
-import { createDynamicTool, type Tool } from "./base.js";
+import { createDynamicTool, toolSessionId, type Tool } from "./base.js";
 import type { ToolExecutionResult } from "./types.js";
 import type { A2APart } from "../shared/a2a.js";
 import {
@@ -176,9 +176,7 @@ export function createAgentSendTool(deps: AgentSendToolDeps): Tool {
     },
     execute: async (rawInput, ctx) => {
       const runtime = deps.getRuntime();
-      const senderChildSessionId = typeof ctx.metadata?.sessionId === "string"
-        ? ctx.metadata.sessionId
-        : "";
+      const senderChildSessionId = toolSessionId(ctx) ?? "";
       const messageId = createDlpSafeUuid();
       const rawRecipient = isRecord(rawInput) && typeof rawInput.to === "string"
         ? rawInput.to.trim()

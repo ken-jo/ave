@@ -90,6 +90,29 @@ function readDelimitedSample(decoded: Generator<string>, maxChars: number): {
   return { text, chunks, continues: !next.done };
 }
 
+/** Validate only complete inspected records, before permissive field decoding. */
+function validateDelimitedRecord(record: string, delimiter: string, newline: string, format: "csv" | "tsv"): void {
+  if (record.endsWith(newline)) record = record.slice(0, -newline.length);
+  let state: "start" | "plain" | "quoted" | "closed" = "start";
+  for (const character of record) {
+    if (state === "quoted") {
+      if (character === '"') state = "closed";
+    } else if (state === "closed") {
+      if (character === '"') state = "quoted";
+      else if (character === delimiter) state = "start";
+      else throw new TableDocumentError("corrupt-document", "Unexpected text after a quoted field.");
+    } else if (character === delimiter) state = "start";
+    else if (character === "\r" || character === "\n") {
+      throw new TableDocumentError("corrupt-document", "Unexpected line break inside a field.");
+    } else if (character === '"') {
+      // IANA text/tab-separated-values defines no quoting, so a mid-field quote is literal text.
+      if (state === "start") state = "quoted";
+      else if (format === "csv") throw new TableDocumentError("corrupt-document", "Quote inside an unquoted field.");
+    } else state = "plain";
+  }
+  if (state === "quoted") throw new TableDocumentError("corrupt-document", "Unterminated quoted field.");
+}
+
 async function parseDelimited(
   bytes: Uint8Array,
   format: "csv" | "tsv",
@@ -142,10 +165,18 @@ async function parseDelimited(
     decoded.return(undefined);
     throw error;
   }
+  let inspectionBuffer = "";
+  let inspectedCharacters = 0;
   function* chunks(): Generator<string> {
     try {
-      yield* buffered;
-      yield* decoded;
+      for (const chunk of buffered) {
+        inspectionBuffer += chunk;
+        yield chunk;
+      }
+      for (const chunk of decoded) {
+        inspectionBuffer += chunk;
+        yield chunk;
+      }
     } finally {
       decoded.return(undefined);
     }
@@ -174,6 +205,19 @@ async function parseDelimited(
           // A one-column document need not have a detectable delimiter.
           if (result.errors.some((error) => error.code !== "UndetectableDelimiter")) {
             finish(new TableDocumentError("corrupt-document", "Malformed delimited document."));
+            parser.abort();
+            return;
+          }
+          const consumed = result.meta.cursor - inspectedCharacters;
+          try {
+            if (consumed < 0 || consumed > inspectionBuffer.length) {
+              throw new TableDocumentError("read-failed", "Delimited record cursor is invalid.");
+            }
+            validateDelimitedRecord(inspectionBuffer.slice(0, consumed), delimiter, newline, format);
+            inspectionBuffer = inspectionBuffer.slice(consumed);
+            inspectedCharacters = result.meta.cursor;
+          } catch (error) {
+            finish(error);
             parser.abort();
             return;
           }
@@ -338,7 +382,7 @@ export async function parseTableDocument(
   limits: TableDocumentLimits = PREVIEW_DOCUMENT_LIMITS,
 ): Promise<PreviewTableDocument> {
   if (!Number.isSafeInteger(sheetIndex) || sheetIndex < 0) {
-    throw new TableDocumentError("sheet-not-found", `sheet index ${String(sheetIndex)} is not a non-negative integer`);
+    throw new TableDocumentError("invalid-index", `sheet index ${String(sheetIndex)} is not a non-negative integer`);
   }
   if (bytes.length > limits.maxFileBytes) {
     throw new TableDocumentError("too-large", `${bytes.length} bytes exceeds ${limits.maxFileBytes}`);

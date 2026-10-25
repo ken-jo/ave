@@ -340,7 +340,7 @@ describe("bounded sensitive-path inspection", () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
-  it("keeps incomplete inspection ordinary and exact tool grants effective", async () => {
+  it("keeps incomplete inspection ordinary, and a remembered action grant no substitute for an exact rule without a sandbox", async () => {
     const dir = mkdtempSync(join(tmpdir(), "ave-scan-budget-"));
     try {
       const manager = new PermissionManager(join(dir, "permissions.json"));
@@ -355,7 +355,8 @@ describe("bounded sensitive-path inspection", () => {
       expect(pending).toMatchObject({ decision: "ask", layer: 6 });
       expect(pending.forceModal).not.toBe(true);
       await manager.addAlwaysAllowedPersist(`bash-action:${command}`);
-      expect(check(command)).toMatchObject({ decision: "allow", layer: 5 });
+      // Owner 2026-10-25 (unsandboxed shell exact-rule requirement): only an exact Bash(<command>) rule runs a plain shell unasked.
+      expect(check(command)).toMatchObject({ decision: "ask", layer: 6 });
       expect(check(`${command} .env`)).toMatchObject({ decision: "ask", forceModal: true });
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
@@ -674,7 +675,7 @@ describe("credential floor: recursive searches after cd", () => {
       const pm = new PermissionManager(join(dir, "permissions.json"));
       const subject = (command: string) => ({
         ruleSubject: { kind: "shell" as const, dialect: "bash" as const, command, cwd: dir },
-        shellExecution: { runsSandboxed: true, sandboxAvailable: true },
+        shellExecution: { runsSandboxed: true },
       });
       for (const command of ["cd ~ && grep -r x .", "cd ~ && rg x", "cd $HOME; grep -r x .", "cd \"$X\" && grep -r y .",
         "cat ~/.mozilla/firefox/*/log*ns.json", "cat ~/.local/share/keyrings/login.keyring",
@@ -867,7 +868,7 @@ describe("credential floor: metadata listing globs", () => {
       const pm = new PermissionManager(join(dir, "permissions.json"));
       const subject = (command: string, runsSandboxed: boolean) => ({
         ruleSubject: { kind: "shell" as const, dialect: "bash" as const, command, cwd: dir },
-        shellExecution: { runsSandboxed, sandboxAvailable: true },
+        shellExecution: { runsSandboxed },
       });
       const command = "ls ~/Library/Application\\ Support/*";
       expect(pm.checkDetailed("bash", "builtin", "shell", null, subject(command, true))).toMatchObject({ decision: "allow" });
@@ -941,7 +942,7 @@ describe("one parse per decision", () => {
     try {
       const pm = new PermissionManager(join(dir, "permissions.json"));
       await pm.addRulePersist({ pattern: "Bash(rm *)", action: "deny" }, { kind: "user" });
-      await pm.addRulePersist({ pattern: "Bash(cat *)", action: "allow" }, { kind: "user" });
+      await pm.addRulePersist({ pattern: "Bash(cat README.md)", action: "allow" }, { kind: "user" });
       const parses = vi.mocked(shellAnalysis.analyzeShell);
       for (const [command, decision] of [
         ["cat README.md", "allow"],
@@ -952,7 +953,7 @@ describe("one parse per decision", () => {
         ["rm -f x", "deny"],
       ] as const) {
         parses.mockClear();
-        const result = pm.checkDetailed("bash", "builtin", "shell", null, { ruleSubject: { kind: "shell", dialect: "bash", command, cwd: dir }, shellExecution: { runsSandboxed: false, sandboxAvailable: true } });
+        const result = pm.checkDetailed("bash", "builtin", "shell", null, { ruleSubject: { kind: "shell", dialect: "bash", command, cwd: dir }, shellExecution: { runsSandboxed: false } });
         expect(result.decision, command).toBe(decision);
         // Nested code a floor re-parses (`echo 'rm x' | bash` → `rm x`) is a different string.
         expect(parses.mock.calls.filter(([text]) => text === command), command).toHaveLength(1);

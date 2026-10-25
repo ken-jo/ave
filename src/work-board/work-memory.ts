@@ -111,25 +111,24 @@ export async function renderWorkContext(
   maxLines = 40,
   options?: WorkMemoryProjectOptions,
 ): Promise<string> {
+  const blocks: string[] = [];
   if (!options?.projectRoot) {
     const user = (await readOrSeedUser(storage)).trim();
     const memory = (await readMemory(storage)).trim();
-    const block = `## User\n${user}\n\n## Work Flow Memory\n${memory}`;
-    const lines = block.split("\n");
-    return lines.length <= maxLines ? block : lines.slice(0, maxLines).join("\n");
-  }
-  const paths = memoryPaths(options);
-  const blocks: string[] = [];
-  if (options.includeUnscoped === true) {
+    blocks.push(`## User\n${user}`, `## Work Flow Memory\n${memory}`);
+  } else {
+    const paths = memoryPaths(options);
+    if (options.includeUnscoped === true) {
+      blocks.push(
+        `## User\n${(await readOrSeedUser(storage)).trim()}`,
+        `## Existing Work Flow Memory\n${(await readMemory(storage)).trim()}`,
+      );
+    }
     blocks.push(
-      `## User\n${(await readOrSeedUser(storage)).trim()}`,
-      `## Existing Work Flow Memory\n${(await readMemory(storage)).trim()}`,
+      `## Project User\n${(await readOrSeedUserAt(storage, paths.dir, paths.userFile)).trim()}`,
+      `## Project Work Flow Memory\n${(await readMemoryAt(storage, paths.memoryFile)).trim()}`,
     );
   }
-  blocks.push(
-    `## Project User\n${(await readOrSeedUserAt(storage, paths.dir, paths.userFile)).trim()}`,
-    `## Project Work Flow Memory\n${(await readMemoryAt(storage, paths.memoryFile)).trim()}`,
-  );
   const block = blocks.join("\n\n");
   const lines = block.split("\n");
   if (lines.length <= maxLines) return block;

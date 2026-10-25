@@ -31,7 +31,7 @@ const shellAsk: ApprovalRequest = {
   ...terminalAsk("shell-1"),
   toolName: "bash",
   sessionId: "session-1",
-  egressHost: { host: "github.com", port: 443, network: "public", scopes: ["once", "conversation", "workspace", "always"] },
+  egressHost: { host: "github.com", port: 443, network: "public", scopes: ["once", "session", "project", "always"] },
 } as ApprovalRequest;
 
 function surface(queue: ApprovalRequest[], overrides: Partial<ApprovalSurfaceContextValue> = {}): ApprovalSurfaceContextValue {
@@ -57,7 +57,7 @@ describe("TerminalEgressBanner", () => {
   beforeEach(() => { previousLocale = getLocale(); setLocale("en"); });
   afterEach(() => { setLocale(previousLocale); });
 
-  it("shows `<host>:<port> blocked` with Allow once, This tab, Always and Deny (no This workspace), and answers with the scope", () => {
+  it("shows `<host>:<port> blocked` with Allow once, This tab, Always and Deny (no This project), and answers with the scope", () => {
     const value = surface([terminalAsk("ask-1")]);
     withSurface(value, <TerminalEgressBanner tabId={TAB} />);
     const banner = screen.getByRole("region", { name: "Network approval for this terminal" });

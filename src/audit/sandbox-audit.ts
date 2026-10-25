@@ -5,6 +5,7 @@ import type { UserApprovalVerdict } from "../shared/permissions-events.js";
 import type { ToolTrustOrigin } from "../tools/types.js";
 import type { RiskLevel } from "../shared/permission-review-status.js";
 import type { EgressDenial, EgressDenialSource } from "../shared/egress-denials.js";
+import type { EgressGrantScope } from "../shared/sandbox-capability-info.js";
 
 /** Events observed by sandbox backends while intercepting filesystem or network operations. */
 export type SandboxEvent =
@@ -139,9 +140,21 @@ export interface SandboxEgressDecisionAuditEntry {
   decision: "allow" | "deny";
   basis: EgressDecisionBasis;
   /** Null when no grant matched or was selected. */
-  scope: "once" | "conversation" | "tab" | "workspace" | "always" | null;
+  scope: EgressGrantScope | null;
   /** Null for allowed requests. */
   reason: string | null;
+}
+
+/** A v1 "This workspace" network grant the v1 → v2 grant-file migration dropped instead of widening it: its directory was inside a repository, and a v2 "This project" grant keys on the repository root. DLP-mask the host and both directories as for denial rows. */
+export interface SandboxEgressGrantMigrationAuditEntry {
+  timestamp: string;
+  entryKind: "egress-grant-migration";
+  action: "dropped";
+  destination: { host: string; port: number };
+  /** The v1 grant's exact directory. */
+  workspaceRoot: string;
+  /** The repository root a v2 project grant would have covered. */
+  projectRoot: string;
 }
 
 /** Record skipped unusable proxy routes once per lookup, not connection.

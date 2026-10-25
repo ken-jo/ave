@@ -137,6 +137,7 @@ function makeDeps(options: {
     listPersistedRules: vi.fn(async () => []),
     listScopedRules: vi.fn(async (): Promise<{ rules: ScopedPermissionRule[]; errors: ScopedPermissionRuleError[] }> => ({ rules: [], errors: [] })),
     addRulePersist: vi.fn(async () => undefined),
+    addSessionShellRule: vi.fn(() => undefined),
     removeRulePersist: vi.fn(async () => undefined),
     addAlwaysAllowedPersist: vi.fn(async () => undefined),
     addAlwaysDeniedPersist: vi.fn(async () => undefined),
@@ -1620,51 +1621,67 @@ describe("state-mutating permission channels refuse non-host frames", () => {
 
 
 describe("command rules recorded from live approvals", () => {
-  const rule = { pattern: "Bash(git status *)", scope: "project" };
-  const body = { requestId: "live-shell", args: "{}", scope: "persistent", verdictAtApproval: "medium", nlJustification: null, rule };
-  const shellRule = { suggestedPattern: rule.pattern, projectCwd: "/srv/project", projectRoot: "/srv/project", persistentAllowed: true, sessionAllowed: true };
+  // Owner 2026-10-25 (five-choice shell card): the renderer names only a save scope; the host stores the exact rule it derived.
+  const exactRule = "Bash(git status --short)";
+  const body = { requestId: "live-shell", args: "{}", scope: "persistent", verdictAtApproval: "medium", nlJustification: null, rule: { scope: "project" } };
+  const shellRule = { exactRule, projectCwd: "/srv/project", projectRoot: "/srv/project", persistentAllowed: true, sessionAllowed: true };
 
-  it("writes only the host project rule and never also records an exact decision", async () => {
+  it("writes only the host's exact project rule and never also records an exact decision", async () => {
     const { deps } = await setup({ shellRule, snapshotArgs: { command: "git status --short" } });
     const result = await invoke(PERMISSIONS.userApprovalRecord, { ...body, projectCwd: "/different/project" });
     expect(result).toMatchObject({ ok: true });
-    expect(deps.conversationLoop.permissionManager.addRulePersist).toHaveBeenCalledWith({ pattern: rule.pattern, action: "allow" }, { kind: "project", projectCwd: "/srv/project" });
+    expect(deps.conversationLoop.permissionManager.addRulePersist).toHaveBeenCalledWith({ pattern: exactRule, action: "allow" }, { kind: "project", projectCwd: "/srv/project" });
     expect(recordApprovalMock).not.toHaveBeenCalled();
     expect(deps.auditLogger.log).toHaveBeenCalledWith({
       timestamp: expect.any(String), sessionId: "conversation-1", type: "approval",
-      output: '[approval:remembered] store=rules decision=allow scope=project toolName="bash_run" source="user-keyboard"',
+      output: `[approval:remembered] store=rules decision=allow scope=project rule=${JSON.stringify(exactRule)} toolName="bash_run" source="user-keyboard"`,
     });
   });
 
-  it.each(["Bash(sudo *)", "Bash(git push *)", "Bash(*)", "Edit(/srv/project/**)"])("refuses an edited rule that cannot cover the pending command: %s", async (pattern) => {
-    const { deps } = await setup({ shellRule, snapshotArgs: { command: "git status" } });
-    const result = await invoke(PERMISSIONS.userApprovalRecord, { ...body, rule: { ...rule, pattern } });
-    expect(result).toMatchObject({ ok: false, error: "invalid-rule" });
+  it("writes the exact rule to the user-global rules for Always", async () => {
+    const { deps } = await setup({ shellRule, snapshotArgs: { command: "git status --short" } });
+    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, rule: { scope: "always" } })).toMatchObject({ ok: true });
+    expect(deps.conversationLoop.permissionManager.addRulePersist).toHaveBeenCalledWith({ pattern: exactRule, action: "allow" }, { kind: "user" });
+  });
+
+  it("holds the exact rule for This session in the conversation, never on disk", async () => {
+    const { deps } = await setup({ shellRule, snapshotArgs: { command: "git status --short" } });
+    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, scope: "session", rule: { scope: "session" } })).toMatchObject({ ok: true });
+    expect(deps.conversationLoop.permissionManager.addSessionShellRule).toHaveBeenCalledWith("conversation-1", exactRule);
     expect(deps.conversationLoop.permissionManager.addRulePersist).not.toHaveBeenCalled();
     expect(recordApprovalMock).not.toHaveBeenCalled();
   });
 
   it.each([
-    ["Bash( git status * )", "Bash(git status *)"],
-    ["Bash(git\tstatus   *)", "Bash(git status *)"],
-  ])("saves a hand-spaced rule %s in the canonical form the dock previewed", async (pattern, saved) => {
+    [{ scope: "project", pattern: "Bash(git status *)" }, "persistent"],
+    [{ scope: "project", pattern: exactRule }, "persistent"],
+    [{ scope: "user" }, "persistent"],
+    [{ scope: "workspace" }, "persistent"],
+    [{ scope: "conversation" }, "session"],
+    [{ scope: "session" }, "persistent"],
+    [{ scope: "always" }, "session"],
+    [{}, "persistent"],
+  ])("refuses a renderer pattern, an unknown or mismatched scope: %j (%s)", async (rule, scope) => {
     const { deps } = await setup({ shellRule, snapshotArgs: { command: "git status --short" } });
-    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, rule: { ...rule, pattern } })).toMatchObject({ ok: true });
-    expect(deps.conversationLoop.permissionManager.addRulePersist).toHaveBeenCalledWith({ pattern: saved, action: "allow" }, { kind: "project", projectCwd: "/srv/project" });
+    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, scope, rule })).toMatchObject({ ok: false, error: "invalid-rule" });
+    expect(deps.conversationLoop.permissionManager.addRulePersist).not.toHaveBeenCalled();
+    expect(deps.conversationLoop.permissionManager.addSessionShellRule).not.toHaveBeenCalled();
+    expect(recordApprovalMock).not.toHaveBeenCalled();
   });
 
-  it.each([
-    ["rm notes.txt", "Bash(rm *)"],
-    ["chmod -R u+w src", "Bash(chmod -R *)"],
-    ["chown -R me src", "Bash(chown -R *)"],
-    ["git clean -n", "Bash(git clean *)"],
-    ["truncate -s 1M data.bin", "Bash(truncate *)"],
-    ["git checkout main", "Bash(git checkout *)"],
-    ["git clean -fdx", "Bash(git clean -fdx)"],
-  ])("refuses a forged destructive allow prefix for %s", async (command, pattern) => {
-    const { deps } = await setup({ shellRule, snapshotArgs: { command } });
-    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, rule: { ...rule, pattern } })).toMatchObject({ ok: false, error: "invalid-rule" });
+  it("refuses a rule decision that is not an allow", async () => {
+    const { deps } = await setup({ shellRule, snapshotArgs: { command: "git status --short" } });
+    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, decision: "deny" })).toMatchObject({ ok: false, error: "invalid-rule" });
     expect(deps.conversationLoop.permissionManager.addRulePersist).not.toHaveBeenCalled();
+  });
+
+  it("refuses a host rule that no longer covers the live command exactly", async () => {
+    const { deps } = await setup({ shellRule: { ...shellRule, exactRule: "Bash(git status *)" }, snapshotArgs: { command: "git status --short" } });
+    expect(await invoke(PERMISSIONS.userApprovalRecord, body)).toMatchObject({ ok: true });
+    expect(deps.conversationLoop.permissionManager.addRulePersist).toHaveBeenCalledWith({ pattern: "Bash(git status *)", action: "allow" }, expect.anything());
+    deps.conversationLoop.permissionManager.addRulePersist.mockClear();
+    await setup({ shellRule: { ...shellRule, exactRule: "Bash(git push)" }, snapshotArgs: { command: "git status --short" } });
+    expect(await invoke(PERMISSIONS.userApprovalRecord, body)).toMatchObject({ ok: false, error: "invalid-rule" });
   });
 
   it("reports a storage failure apart from an invalid rule", async () => {
@@ -1674,49 +1691,30 @@ describe("command rules recorded from live approvals", () => {
     expect(deps.auditLogger.log).not.toHaveBeenCalledWith(expect.objectContaining({ type: "approval" }));
   });
 
-  it("refuses a rule that is empty after normalization", async () => {
-    const { deps } = await setup({ shellRule, snapshotArgs: { command: "git status" } });
-    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, rule: { ...rule, pattern: "Bash( \t )" } })).toMatchObject({ ok: false, error: "invalid-rule" });
+  it.each(["session", "project", "always"])("refuses %s when the host offered no saveable rule", async (ruleScope) => {
+    const { deps } = await setup({ shellRule: { ...shellRule, exactRule: null, persistentAllowed: false, sessionAllowed: false }, snapshotArgs: { command: "git status --short" } });
+    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, scope: ruleScope === "session" ? "session" : "persistent", rule: { scope: ruleScope } })).toMatchObject({ ok: false, error: "one-shot-not-recordable" });
     expect(deps.conversationLoop.permissionManager.addRulePersist).not.toHaveBeenCalled();
+    expect(deps.conversationLoop.permissionManager.addSessionShellRule).not.toHaveBeenCalled();
   });
 
-  it("refuses allow persistence for floors even when the renderer submits a valid rule", async () => {
-    const { deps } = await setup({ shellRule: { ...shellRule, persistentAllowed: false, sessionAllowed: false }, snapshotArgs: { command: "git status" } });
-    expect(await invoke(PERMISSIONS.userApprovalRecord, body)).toMatchObject({ ok: false, error: "one-shot-not-recordable" });
-    expect(deps.conversationLoop.permissionManager.addRulePersist).not.toHaveBeenCalled();
-  });
-
-  it("allows a persistent command denial to narrow a one-shot request", async () => {
-    const { deps } = await setup({ durableApprovalRecordAllowed: false, shellRule: { ...shellRule, persistentAllowed: false }, snapshotArgs: { command: "rm -rf build" } });
-    const deniedRule = { pattern: "Bash(rm *)", scope: "user" };
-    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, rule: deniedRule, decision: "deny" })).toMatchObject({ ok: true });
-    expect(deps.conversationLoop.permissionManager.addRulePersist).toHaveBeenCalledWith({ pattern: deniedRule.pattern, action: "deny" }, { kind: "user" });
-    expect(recordApprovalMock).not.toHaveBeenCalled();
-  });
-
-  it("requires a conversation identity for new session records", async () => {
-    await setup({ snapshotSessionId: null, shellRule });
-    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, scope: "session", rule: undefined })).toMatchObject({ ok: false, error: "missing-session" });
-    expect(recordApprovalMock).not.toHaveBeenCalled();
+  it("refuses This session without a conversation", async () => {
+    const { deps } = await setup({ snapshotSessionId: null, shellRule: { ...shellRule, sessionAllowed: false }, snapshotArgs: { command: "git status --short" } });
+    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, scope: "session", rule: { scope: "session" } })).toMatchObject({ ok: false, error: "one-shot-not-recordable" });
+    expect(deps.conversationLoop.permissionManager.addSessionShellRule).not.toHaveBeenCalled();
   });
 });
 
 
 describe("shell persistence cannot fall back to exact input", () => {
   const body = { requestId: "live-shell", args: "{}", verdictAtApproval: "medium", nlJustification: null };
-  it("refuses a persistent exact allow when a refused prefix is offered only session scope", async () => {
-    const { deps } = await setup({ shellRule: { suggestedPattern: null, projectCwd: "/srv/project", projectRoot: "/srv/project", persistentAllowed: false, sessionAllowed: true }, snapshotArgs: { command: "node script.js" } });
-    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, scope: "persistent" })).toMatchObject({ ok: false, error: "command-rule-required" });
+  it.each(["session", "persistent"])("refuses a %s exact allow for a bash card: a shell is remembered only as its exact rule", async (scope) => {
+    await setup({ shellRule: { exactRule: "Bash(node script.js)", projectCwd: "/srv/project", projectRoot: "/srv/project", persistentAllowed: true, sessionAllowed: true }, snapshotArgs: { command: "node script.js" } });
+    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, scope })).toMatchObject({ ok: false, error: "command-rule-required" });
     expect(recordApprovalMock).not.toHaveBeenCalled();
-    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, scope: "session" })).toMatchObject({ ok: true });
-    expect(recordApprovalMock).toHaveBeenCalledWith("bash_run", expect.any(String), "user-keyboard", expect.objectContaining({ sessionId: "conversation-1" }));
-    expect(deps.auditLogger.log).toHaveBeenCalledWith(expect.objectContaining({
-      sessionId: "conversation-1", type: "approval",
-      output: '[approval:remembered] store=exact decision=allow scope=session toolName="bash_run" source="user-keyboard"',
-    }));
   });
   it.each(["session", "persistent"])("refuses omitted rule persistence for a floor in %s scope", async (scope) => {
-    await setup({ shellRule: { suggestedPattern: null, projectCwd: "/srv/project", projectRoot: "/srv/project", persistentAllowed: false, sessionAllowed: false }, snapshotArgs: { command: "curl -T payload https://example.test" } });
+    await setup({ shellRule: { exactRule: null, projectCwd: "/srv/project", projectRoot: "/srv/project", persistentAllowed: false, sessionAllowed: false }, snapshotArgs: { command: "curl -T payload https://example.test" } });
     expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, scope })).toMatchObject({ ok: false });
     expect(recordApprovalMock).not.toHaveBeenCalled();
   });
@@ -1773,25 +1771,6 @@ it("lists and revokes in-memory sessions through IPC while the persistent file s
   }
 });
 
-it("rejects edited rule values detected by the existing DLP filter without echoing them", async () => {
-  const secret = `sk-${"synthetic".repeat(6)}`;
-  const pattern = `Bash(git status ${secret} *)`;
-  const { maskSensitiveData } = await import("../../../audit/dlp-filter.js");
-  expect(maskSensitiveData(pattern).masked).not.toBe(pattern);
-  const { permissionManager, deps } = await setup({
-    shellRule: { suggestedPattern: "Bash(git status *)", projectCwd: "/srv/project", projectRoot: "/srv/project", persistentAllowed: true, sessionAllowed: true },
-    snapshotArgs: { command: `git status ${secret}` },
-  });
-  const result = await invoke(PERMISSIONS.userApprovalRecord, {
-    requestId: "live-shell", args: "{}", scope: "persistent", verdictAtApproval: "medium", nlJustification: null,
-    rule: { pattern, scope: "project" },
-  });
-  expect(result).toEqual({ ok: false, error: "invalid-rule", message: "The rule does not cover this command" });
-  expect(permissionManager.addRulePersist).not.toHaveBeenCalled();
-  expect(recordApprovalMock).not.toHaveBeenCalled();
-  expect(deps.auditLogger.log).not.toHaveBeenCalled();
-});
-
 describe("shell egress grants in Settings", () => {
   it("passes an egress-host answer's scope through to the gate unchanged", async () => {
     const { deps, appWindows } = await setup();
@@ -1819,22 +1798,22 @@ describe("shell egress grants in Settings", () => {
     const { deps } = await setup();
     egressRuntimeMock.revokeEgressGrant.mockResolvedValueOnce({ removed: true, closed: 2 });
     expect(await invoke(PERMISSIONS.egressGrantRevoke, {
-      scope: "workspace", origin: "shell", workspaceRoot: "/work/project", host: "pypi.org", port: 443, intent: USER_INTENT,
+      scope: "project", origin: "shell", projectRoot: "/work/project", host: "pypi.org", port: 443, intent: USER_INTENT,
     })).toEqual({ ok: true });
     expect(egressRuntimeMock.revokeEgressGrant).toHaveBeenCalledWith({
-      scope: "workspace", origin: "shell", workspaceRoot: "/work/project", host: "pypi.org", port: 443,
+      scope: "project", origin: "shell", projectRoot: "/work/project", host: "pypi.org", port: 443,
     });
     expect(deps.auditLogger.log).toHaveBeenCalledWith(expect.objectContaining({
-      output: "[egress-grant:revoke] scope=workspace origin=shell host=pypi.org port=443 removed=true closedConnections=2",
+      output: "[egress-grant:revoke] scope=project origin=shell host=pypi.org port=443 removed=true closedConnections=2",
     }));
     expect(await invoke(PERMISSIONS.egressGrantRevoke, {
       scope: "always", origin: "terminal", host: "pypi.org", port: 443, intent: USER_INTENT,
     })).toEqual({ ok: true });
     expect(egressRuntimeMock.revokeEgressGrant).toHaveBeenLastCalledWith({ scope: "always", origin: "terminal", host: "pypi.org", port: 443 });
     expect(await invoke(PERMISSIONS.egressGrantRevoke, {
-      scope: "conversation", sessionId: "session-1", host: "pypi.org", port: 443, intent: USER_INTENT,
+      scope: "session", sessionId: "session-1", host: "pypi.org", port: 443, intent: USER_INTENT,
     })).toEqual({ ok: true });
-    expect(egressRuntimeMock.revokeEgressGrant).toHaveBeenLastCalledWith({ scope: "conversation", sessionId: "session-1", host: "pypi.org", port: 443 });
+    expect(egressRuntimeMock.revokeEgressGrant).toHaveBeenLastCalledWith({ scope: "session", sessionId: "session-1", host: "pypi.org", port: 443 });
     expect(await invoke(PERMISSIONS.egressGrantRevoke, {
       scope: "tab", tabId: "terminal:0a1b2c3d-1", host: "pypi.org", port: 443, intent: USER_INTENT,
     })).toEqual({ ok: true });
@@ -1850,19 +1829,23 @@ describe("shell egress grants in Settings", () => {
     expect(await invoke(PERMISSIONS.egressGrantRevoke, { scope: "always", host: "pypi.org", port: 443 }))
       .toMatchObject({ ok: false, error: "user-keyboard-required" });
     for (const [payload, error] of [
-      [{ scope: "conversation", sessionId: "s", host: "pypi.org", port: 443, network: "reserved" }, "invalid-egress-grant-destination"],
-      [{ scope: "conversation", sessionId: "s", host: "pypi.org", port: 443, network: null }, "invalid-egress-grant-destination"],
+      [{ scope: "session", sessionId: "s", host: "pypi.org", port: 443, network: "reserved" }, "invalid-egress-grant-destination"],
+      [{ scope: "session", sessionId: "s", host: "pypi.org", port: 443, network: null }, "invalid-egress-grant-destination"],
       [{ scope: "once", host: "pypi.org", port: 443 }, "invalid-egress-grant-scope"],
-      [{ scope: "conversation", host: "pypi.org", port: 443 }, "invalid-egress-grant-conversation"],
-      [{ scope: "always", origin: "shell", sessionId: "s", host: "pypi.org", port: 443 }, "invalid-egress-grant-conversation"],
+      // The pre-2026-10-25 names are refused, never mapped (owner five-choice network card decision).
+      [{ scope: "conversation", sessionId: "s", host: "pypi.org", port: 443 }, "invalid-egress-grant-scope"],
+      [{ scope: "workspace", origin: "shell", projectRoot: "/w", host: "pypi.org", port: 443 }, "invalid-egress-grant-scope"],
+      [{ scope: "project", origin: "shell", workspaceRoot: "/w", host: "pypi.org", port: 443 }, "invalid-egress-grant-project"],
+      [{ scope: "session", host: "pypi.org", port: 443 }, "invalid-egress-grant-session"],
+      [{ scope: "always", origin: "shell", sessionId: "s", host: "pypi.org", port: 443 }, "invalid-egress-grant-session"],
       [{ scope: "always", origin: "shell", host: "", port: 443 }, "invalid-egress-grant-destination"],
       [{ scope: "always", origin: "shell", host: "pypi.org", port: "443" }, "invalid-egress-grant-destination"],
-      [{ scope: "workspace", origin: "shell", host: "pypi.org", port: 443 }, "invalid-egress-grant-workspace"],
-      [{ scope: "always", origin: "shell", workspaceRoot: "/w", host: "pypi.org", port: 443 }, "invalid-egress-grant-workspace"],
+      [{ scope: "project", origin: "shell", host: "pypi.org", port: 443 }, "invalid-egress-grant-project"],
+      [{ scope: "always", origin: "shell", projectRoot: "/w", host: "pypi.org", port: 443 }, "invalid-egress-grant-project"],
       [{ scope: "always", host: "pypi.org", port: 443 }, "invalid-egress-grant-origin"],
       [{ scope: "always", origin: "worker", host: "pypi.org", port: 443 }, "invalid-egress-grant-origin"],
-      [{ scope: "workspace", origin: "terminal", workspaceRoot: "/w", host: "pypi.org", port: 443 }, "invalid-egress-grant-origin"],
-      [{ scope: "conversation", origin: "shell", sessionId: "s", host: "pypi.org", port: 443 }, "invalid-egress-grant-origin"],
+      [{ scope: "project", origin: "terminal", projectRoot: "/w", host: "pypi.org", port: 443 }, "invalid-egress-grant-origin"],
+      [{ scope: "session", origin: "shell", sessionId: "s", host: "pypi.org", port: 443 }, "invalid-egress-grant-origin"],
       [{ scope: "tab", host: "pypi.org", port: 443 }, "invalid-egress-grant-tab"],
       [{ scope: "tab", tabId: "browser:0a1b2c3d-1", host: "pypi.org", port: 443 }, "invalid-egress-grant-tab"],
       [{ scope: "always", origin: "terminal", tabId: "terminal:0a1b2c3d-1", host: "pypi.org", port: 443 }, "invalid-egress-grant-tab"],
@@ -1874,7 +1857,7 @@ describe("shell egress grants in Settings", () => {
 
   it.each(["public", "local", "unverified"] as const)("revokes only the named %s class", async (network) => {
     await setup();
-    const grant = { scope: "conversation", sessionId: "session-1", host: "pypi.org", port: 443, network };
+    const grant = { scope: "session", sessionId: "session-1", host: "pypi.org", port: 443, network };
     expect(await invoke(PERMISSIONS.egressGrantRevoke, { ...grant, intent: USER_INTENT })).toEqual({ ok: true });
     expect(egressRuntimeMock.revokeEgressGrant).toHaveBeenLastCalledWith(grant);
   });

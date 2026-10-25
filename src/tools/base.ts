@@ -39,6 +39,14 @@ export type {
   ToolExecutionResult,
 } from "./types.js";
 
+export function toolSessionId(ctx: ToolExecutionContext): string | undefined {
+  return typeof ctx.metadata?.sessionId === "string" ? ctx.metadata.sessionId : undefined;
+}
+
+export function toolErrorResult(error: string): { output: string; isError: true } {
+  return { output: JSON.stringify({ error }), isError: true };
+}
+
 /**
  * Canonical tool contract used by the §6.4 {@link ToolRegistry}, the
  * §6.3 permission stack, the executor pipeline, and

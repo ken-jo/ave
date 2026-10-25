@@ -21,6 +21,7 @@ import {
 } from "./egress-grants.js";
 import type { EgressAskOrigin, EgressGrantNetwork, EgressGrantScope } from "../shared/egress-grant-scopes.js";
 import { auditInvocationFor, noteCallbackDecision } from "./egress-deny-monitor.js";
+import { projectRuleRoot } from "./rules/project-rule-files.js";
 
 // What the person is asked about: for a shell tool call on its card, for a terminal in its tab.
 export type EgressApprovalRequest = EgressShellApprovalRequest | EgressTerminalApprovalRequest;
@@ -69,7 +70,6 @@ export interface EgressAskDeps {
   // The abort signal the token was opened with (`egressInvocationAbortSignal`).
   readonly abortSignalOf: (token: string) => AbortSignal | undefined;
   // The hosts a worker may reach: its extension's declared domains plus the model endpoints the host configured, as ASRT-style patterns (`d`, `*.d`, optionally `:port`). `undefined` pluginId is a worker no extension owns.
-  readonly shellGrantScopes?: readonly EgressGrantScope[];
   readonly workerAllowedDomains: (pluginId: string | undefined) => readonly string[];
   readonly grants: EgressGrantStore;
   // `features.shellEgressAsk`. Off: shells get granted hosts only and are never asked.
@@ -138,8 +138,13 @@ export function egressAllowlistMatches(entries: readonly string[], destination: 
 // Who a grant for this owner is held for.
 function grantSubject(token: string, owner: ShellEgressOwner | TerminalEgressOwner): EgressGrantSubject {
   return owner.kind === "shell"
-    ? { token, sessionId: owner.context.sessionId, tabId: undefined, workspaceRoot: owner.context.workspaceRoot, origin: "shell" }
-    : { token, sessionId: undefined, tabId: owner.tabId, workspaceRoot: undefined, origin: "terminal" };
+    ? { token, sessionId: owner.context.sessionId, tabId: undefined, projectRoot: egressProjectRoot(owner.context.workspaceRoot), origin: "shell" }
+    : { token, sessionId: undefined, tabId: owner.tabId, projectRoot: undefined, origin: "terminal" };
+}
+
+// The project a shell call's "This project" grant keys on: the repository root of its working directory, the same root a project `Bash(...)` rule applies to (five-choice cards). A relative working directory is a host contract violation and throws, which the callback turns into an audited deny.
+function egressProjectRoot(cwd: string | undefined): string | undefined {
+  return cwd === undefined ? undefined : projectRuleRoot(cwd);
 }
 
 // A terminal connection whose shared "Allow once" another connection already took: it asks again.
@@ -213,10 +218,9 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
     const subject = grantSubject(token, owner);
     const origin: EgressAskOrigin = owner.kind;
     const scopes = egressScopesForNetwork(egressGrantScopesFor(strength, origin), network).filter((scope) =>
-      owner.kind === "shell" && deps.shellGrantScopes && !deps.shellGrantScopes.includes(scope) ? false :
-      scope === "conversation" ? subject.sessionId !== undefined
+      scope === "session" ? subject.sessionId !== undefined
       : scope === "tab" ? subject.tabId !== undefined
-      : scope === "workspace" ? subject.workspaceRoot !== undefined
+      : scope === "project" ? subject.projectRoot !== undefined
       : true);
     let answer: EgressApprovalAnswer;
     if (owner.kind === "shell") {
@@ -310,7 +314,7 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
         || (resolution !== "pinned" && resolution !== "upstream")) {
         return { owner, decision: deny("policy", EGRESS_DENY_REASONS.malformed) };
       }
-      // A name the upstream proxy resolves (this host could not, or a plain-HTTP request names it to the upstream) was never checked: it is offered at most This conversation, and no persistent grant covers it, unless its name alone already says more.
+      // A name the upstream proxy resolves (this host could not, or a plain-HTTP request names it to the upstream) was never checked: it is offered at most This session, and no persistent grant covers it, unless its name alone already says more.
       const judged = egressDestinationNetwork(canonicalHost, addresses);
       network = resolution === "upstream" && judged === "public" ? "unverified" : judged;
     } else {
@@ -333,8 +337,7 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
         // Matched by origin: a shell grant never covers a terminal, nor the reverse.
         const subject = grantSubject(token, owner);
         const grantDestination = { ...destination, network };
-        const eligibleScopes = egressScopesForNetwork(egressGrantScopesFor(strength, owner.kind), network)
-          .filter((scope) => owner.kind !== "shell" || !deps.shellGrantScopes || deps.shellGrantScopes.includes(scope));
+        const eligibleScopes = egressScopesForNetwork(egressGrantScopesFor(strength, owner.kind), network);
         const key = holdKey(token, destination, strength);
         if (resolvedPhase) {
           // An answer given by name becomes a grant only for the class it was given for.

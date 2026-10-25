@@ -8,6 +8,7 @@ import type {
   SandboxAuditEntry,
   SandboxEgressDecisionAuditEntry,
   SandboxEgressDenyAuditEntry,
+  SandboxEgressGrantMigrationAuditEntry,
   SandboxEgressRouteAuditEntry,
 } from "./sandbox-audit.js";
 
@@ -19,7 +20,12 @@ function sinkPath(date = new Date()): string {
 
 /** Append one JSONL row with file mode 0o600 and directory mode 0o700; callers decide how to handle write failures. */
 export async function emitSandboxAudit(
-  entry: SandboxAuditEntry | SandboxEgressDenyAuditEntry | SandboxEgressDecisionAuditEntry | SandboxEgressRouteAuditEntry,
+  entry:
+    | SandboxAuditEntry
+    | SandboxEgressDenyAuditEntry
+    | SandboxEgressDecisionAuditEntry
+    | SandboxEgressRouteAuditEntry
+    | SandboxEgressGrantMigrationAuditEntry,
 ): Promise<void> {
   // Stay async: a path that cannot be resolved must reach the caller's
   // `.catch` as a rejection, never as a synchronous throw. The tracking below

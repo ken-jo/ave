@@ -1,5 +1,5 @@
-/** The approval dock card for an `egress-host` ask: a sandboxed shell call wants to connect to a host no grant covers. The person denies it once or allows it for one of the scopes the host offered (Allow once, This conversation, This workspace, Always). The answer is `allow-once` with the picked scope, or
- * `deny-once`; the host refuses any scope it did not offer. A workspace terminal tab's ask (`egressHost.terminalTabId`) is drawn in that tab's banner (`TerminalEgressBanner`); this card draws it only when no view of the tab is mounted, and then offers This tab in place of This conversation, as the host does. */
+/** The approval dock card for an `egress-host` ask: a sandboxed shell call wants to connect to a host no grant covers. The person denies it once or allows it for one of the scopes the host offered (Allow once, This session, This project, Always — with Deny, the five choices of owner decision 2026-10-25). The answer is `allow-once` with the picked scope, or
+ * `deny-once`; the host refuses any scope it did not offer. A workspace terminal tab's ask (`egressHost.terminalTabId`) is drawn in that tab's banner (`TerminalEgressBanner`); this card draws it only when no view of the tab is mounted, and then offers This tab in place of This session, as the host does. */
 import type { ReactElement } from "react";
 import { Button } from "../../../../components/ui/button.js";
 import { useTranslation } from "../../../../i18n/react.js";
@@ -10,9 +10,9 @@ import { terminalTabLabel } from "../../preview/terminal-tab-labels.js";
 
 export const EGRESS_SCOPE_LABEL_KEYS: Record<EgressGrantScope, string> = {
   once: "egressApprovalCard.allowOnce",
-  conversation: "egressApprovalCard.allowConversation",
+  session: "egressApprovalCard.allowSession",
   tab: "egressApprovalCard.allowTab",
-  workspace: "egressApprovalCard.allowWorkspace",
+  project: "egressApprovalCard.allowProject",
   always: "egressApprovalCard.allowAlways",
 };
 
@@ -105,7 +105,7 @@ export function EgressHostApprovalCard({
           </Button>
         ))}
       </div>
-      {payload.scopes.includes("workspace") || payload.scopes.includes("always") ? (
+      {payload.scopes.includes("project") || payload.scopes.includes("always") ? (
         <p className="min-w-0 break-words text-xs text-muted-foreground">
           {t(terminalTabId === undefined ? "egressApprovalCard.revokeHint" : "egressApprovalCard.revokeHintTerminal")}
         </p>

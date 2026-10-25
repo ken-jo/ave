@@ -168,8 +168,8 @@ export function setApprovalConversationRootResolver(resolver: ApprovalConversati
   resolveConversationRoot = resolver;
 }
 
-// The root conversation a session approval is keyed and listed under.
-function approvalConversationRoot(sessionId: string): string {
+// The root conversation a session approval (and a session shell rule) is keyed and listed under.
+export function approvalConversationRoot(sessionId: string): string {
   if (!sessionId.trim()) throw new Error("Approval session identity must be non-empty");
   const root = resolveConversationRoot(sessionId);
   if (!root.trim()) throw new Error("Approval root session identity must be non-empty");
@@ -461,6 +461,24 @@ function projectApprovalForList(key: string, entry: UserApprovalEntry): UserAppr
     ...(entry.toolName === undefined ? {} : { toolName: entry.toolName }),
     ...(entry.source === undefined ? {} : { source: entry.source }),
   };
+}
+
+// Forget the "This session" approvals of a conversation that ended (owner 2026-10-25: session scope dies with the session). Returns how many were dropped.
+// Session approvals are held under the root conversation, so only a root id is accepted: a sub-agent's end must not drop its parent's approvals.
+export function dropSessionApprovals(rootSessionId: string): number {
+  if (approvalConversationRoot(rootSessionId) !== rootSessionId) {
+    throw new Error("Session approvals end only with their root conversation");
+  }
+  const root = rootSessionId;
+  let dropped = 0;
+  for (const [key, entry] of sessionStore) {
+    if (entry.scope === "session" && entry.sessionId === root) {
+      sessionStore.delete(key);
+      dropped += 1;
+    }
+  }
+  if (dropped > 0) approvalGeneration += 1;
+  return dropped;
 }
 
 // Session rows remain inspectable and revocable when the disk file is corrupt.
