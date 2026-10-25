@@ -9,6 +9,7 @@ import { CHANNELS } from "../../contract/app-contract.js";
 import { broadcastToAppWindows } from "../window-fanout.js";
 import { normalizeLocale, setLocale, tryLoadLocaleMessages } from "../../i18n/index.js";
 import { reconcileGlobalShortcuts } from "../../main/global-shortcuts.js";
+import { withInstalledStateMutation } from "../../main/installed-state-mutation.js";
 import { telemetryAllowedHosts } from "../../main/telemetry.js";
 import { publishAppPreferenceChange } from "../../boot/steps/plugin-runtime/app-preference.js";
 import {
@@ -367,17 +368,19 @@ export async function mutateMarketplaceProviderPresets(
   deps: IpcDeps,
   mutate: () => Promise<AppSettings>,
 ): Promise<{ result: AppSettings; finishError: { ok: false; error: string; message: string } | null }> {
-  const prevLlm = deps.settingsService.get("llm");
-  const prevPresets = deps.settingsService.get("marketplace").installedProviderPresets;
-  const result = await mutate();
-  // The settings are saved: whatever fails from here is reported, never thrown, so no caller undoes a write that already landed.
-  let finishError: { ok: false; error: string; message: string } | null;
-  try {
-    finishError = await finishProviderPresetMarketplaceMutation(deps, prevLlm, prevPresets);
-  } catch (err) {
-    finishError = { ok: false, error: "provider-preset-refresh-failed", message: errorMessage(err) };
-  }
-  return { result, finishError };
+  return withInstalledStateMutation(async () => {
+    const prevLlm = deps.settingsService.get("llm");
+    const prevPresets = deps.settingsService.get("marketplace").installedProviderPresets;
+    const result = await mutate();
+    // The settings are saved: whatever fails from here is reported, never thrown, so no caller undoes a write that already landed.
+    let finishError: { ok: false; error: string; message: string } | null;
+    try {
+      finishError = await finishProviderPresetMarketplaceMutation(deps, prevLlm, prevPresets);
+    } catch (err) {
+      finishError = { ok: false, error: "provider-preset-refresh-failed", message: errorMessage(err) };
+    }
+    return { result, finishError };
+  });
 }
 
 async function finishProviderPresetMarketplaceMutation(
@@ -410,7 +413,7 @@ async function finishProviderPresetMarketplaceMutation(
       deps.settingsService.get("marketplace").installedProviderPresets,
     )
   ) {
-    void deps.refreshSandboxNetworkConfig?.();
+    await deps.refreshSandboxNetworkConfig?.();
   }
   await broadcastSettingsSnapshot(deps);
   return rewireError;

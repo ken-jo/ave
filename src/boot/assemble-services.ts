@@ -19,6 +19,7 @@ export function assembleAppServices(ctx: ReadyBootContext): AppServices {
   };
 
   return {
+    relaunchApp: () => ctx.host.relaunch(),
     pythonRuntime: ctx.pythonRuntime,
     pythonPath: ctx.pythonPath,
     pluginRuntime: ctx.pluginRuntime,

@@ -7,6 +7,7 @@ import { windowsPowerShellEnv } from "./lib/windows-powershell-env.mjs";
 import { createHash } from "node:crypto";
 import { existsSync, watch, copyFileSync, mkdirSync, readFileSync } from "node:fs";
 import { waitForAllFirstBuilds } from "./lib/dev-watcher-gate.mjs";
+import { shouldRelaunchDevChild } from "./lib/dev-relaunch-policy.mjs";
 import { resolveBuildAssets } from "./lib/build-assets.mjs";
 import { ensureElectronNativeModules } from "./lib/electron-native-modules.mjs";
 import {
@@ -488,6 +489,7 @@ function launchElectron() {
     const e = {
       ...process.env,
       AVE_DEV: "1",
+      AVE_DEV_LAUNCHER: "1",
       AVE_DEV_CONSOLE: process.env.AVE_DEV_CONSOLE ?? "1",
       // Development logging is selected at module load; set the environment before launch.
       NODE_ENV: process.env.NODE_ENV ?? "development",
@@ -528,6 +530,10 @@ function launchElectron() {
   electronProc.on("exit", (code, signal) => {
     log("electron", `exited code=${code} signal=${signal ?? "-"}`);
     electronProc = null;
+    if (!shuttingDown && !restartInFlight && shouldRelaunchDevChild(code, signal)) {
+      launchElectron();
+      return;
+    }
     if (!shuttingDown && !restartInFlight && signal !== "SIGTERM" && signal !== "SIGKILL") {
       shutdown(0);
     }

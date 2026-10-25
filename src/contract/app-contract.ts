@@ -641,6 +641,7 @@ export const CHANNELS = {
   },
   app: {
     info: "ave:app:info",
+    relaunch: "ave:app:relaunch",
   },
   approval: {
     request: "ave:approval:request",
@@ -886,6 +887,7 @@ export function isPublicChannel(channel: string): channel is PublicChannel {
  * assert none of them ever leaks into {@link PUBLIC_CHANNELS}.
  */
 export const CHANNEL_GESTURE: Record<string, "required" | "none"> = {
+  [CHANNELS.app.relaunch]: "required",
   // ── public subset (reads + chat send) — gesture: none ──
   [CHANNELS.chat.send]: "none",
   [CHANNELS.chat.sessions]: "none",

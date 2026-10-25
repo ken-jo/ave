@@ -29,6 +29,7 @@ export function createBootHostFixture(overrides: Partial<BootHost> = {}): BootHo
     singleHopNetworkFetch: directHostFetchTransport(fetchUnavailable),
     llmFetch: fetchUnavailable,
     exit: () => { throw new Error("test-host-exit"); },
+    relaunch: () => { throw new Error("relaunch-unsupported"); },
     close: async () => {},
     ...overrides,
   };

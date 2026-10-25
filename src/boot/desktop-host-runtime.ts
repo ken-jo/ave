@@ -19,6 +19,7 @@ import { ElectronFloatingDockSurface, hostDockThemeSource } from "../main/floati
 import { peekFloatingDock } from "./steps/plugin-runtime/host-api-factory.js";
 import { pickFoldersForPlugin } from "../main/host-api/pick-folders.js";
 import type { BootHost } from "./host-runtime.js";
+import { relaunchDesktopHost } from "./desktop-relaunch.js";
 
 export function createDesktopBootHost(projectRoot: string): BootHost {
   return {
@@ -30,6 +31,7 @@ export function createDesktopBootHost(projectRoot: string): BootHost {
     ...createDesktopNetworkFetch(),
     resolveProxy: (url) => session.defaultSession.resolveProxy(url),
     exit: (code) => app.exit(code),
+    relaunch: () => relaunchDesktopHost(app),
     close: async () => {},
     desktop: {
       getAppWindows,

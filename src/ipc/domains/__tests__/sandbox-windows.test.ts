@@ -488,6 +488,28 @@ describe("sandboxCapability win32 reconcile", () => {
 });
 
 describe("sandboxCapability shell status (the permission card's checkbox)", () => {
+  it("reports worker restart pending from the sealed boot intent and clears it on reversal", async () => {
+    const capability = await import("../../../permissions/sandbox-capability.js");
+    capability.setSandboxBootOutcome({ action: "skip", reason: "gate-off", onSignal: "off", dependencyErrors: [], causes: [] });
+    capability.setPluginWorkerConfinementRequestedAtBoot(false);
+    await setup({ pluginWorkerConfinement: true });
+    expect(await invoke(PERMISSIONS.sandboxCapability, hostFrameEvent())).toMatchObject({ workerRestartPending: true });
+    await setup({ pluginWorkerConfinement: false });
+    expect(await invoke(PERMISSIONS.sandboxCapability, hostFrameEvent())).toMatchObject({ workerRestartPending: false });
+    capability.setPluginWorkerConfinementRequestedAtBoot(true);
+    expect(await invoke(PERMISSIONS.sandboxCapability, hostFrameEvent())).toMatchObject({ workerRestartPending: true });
+    await setup({ pluginWorkerConfinement: true });
+    expect(await invoke(PERMISSIONS.sandboxCapability, hostFrameEvent())).toMatchObject({ workerRestartPending: false });
+  });
+
+  it("does not mark an environment-forced worker scope pending when its stored value changes", async () => {
+    const capability = await import("../../../permissions/sandbox-capability.js");
+    capability.setSandboxBootOutcome({ action: "activate", reason: "deps-present", onSignal: "explicit-env", dependencyErrors: [], causes: [] });
+    capability.setPluginWorkerConfinementRequestedAtBoot(true);
+    vi.stubEnv("AVE_PLUGIN_WORKER_CONFINEMENT", "1");
+    await setup({ pluginWorkerConfinement: false });
+    expect(await invoke(PERMISSIONS.sandboxCapability, hostFrameEvent())).toMatchObject({ workerRestartPending: false });
+  });
   async function readShell(features: FeatureFixture) {
     await setup(features);
     const result = (await invoke(PERMISSIONS.sandboxCapability, hostFrameEvent())) as {
