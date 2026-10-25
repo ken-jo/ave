@@ -2154,7 +2154,9 @@ with its own owner rule:
   grant remains inheritable by new children without propagating to existing ones.
   Read-back and `isOwnerOnlyDacl` verification still fail closed if protection
   did not take effect. The immediate children of `secrets/` are scanned read-only;
-  their foreign explicit allow entries remain reported and are never removed.
+  their foreign explicit and inherited allow entries remain reported and are never
+  removed. Inherited system and administrator grants remain accepted, as do child
+  owners and deny entries; explicit foreign grants remain refusals.
   An existing `AVE_HOME` the app did not create may be
   owned by `S-1-5-32-544` only when the current token's default owner is
   `S-1-5-32-544`. Its DACL must then be protected and hold exactly one entry,

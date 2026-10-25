@@ -270,12 +270,13 @@ describe("ensureAveHomePrivate", () => {
     vi.mocked(execFileSync).mockReturnValueOnce("{}");
     expect(() => readWindowsDirectoryDacls([home()])).toThrow("invalid result set");
   });
-  it("accepts inherited foreign grants on immediate children", () => {
+  it("accepts inherited system and administrator grants on immediate children", () => {
     const dir = home();
     const child = join(dir, "secrets", "token");
     const result = ensureAveHomePrivate(dir, { platform: "win32", readDacls: (paths) => [
       ...paths.map(descriptor), { ...descriptor(child), child: true, rules: [
         { ...OWNER_RULE, isInherited: true }, { ...OWNER_RULE, sid: "S-1-5-18", isInherited: true },
+        { ...OWNER_RULE, sid: "S-1-5-32-544", isInherited: true },
       ] },
     ] });
     expect(result).toMatchObject({ enforcement: "win32-dacl" });
@@ -289,6 +290,16 @@ describe("ensureAveHomePrivate", () => {
       ] },
     ] });
     expect(result).toMatchObject({ enforcement: "none", category: "extra-principals", failedPath: child });
+  });
+  it("accepts an immediate child's existing owner and explicit deny entries", () => {
+    const dir = home();
+    const child = join(dir, "secrets", "token");
+    const result = ensureAveHomePrivate(dir, { platform: "win32", readDacls: (paths) => [
+      ...paths.map(descriptor), { ...descriptor(child), child: true, ownerSid: "S-1-5-18", rules: [
+        { ...OWNER_RULE, isInherited: true }, { ...OWNER_RULE, sid: "S-1-1-0", accessControlType: 1 },
+      ] },
+    ] });
+    expect(result).toMatchObject({ enforcement: "win32-dacl" });
   });
   it.runIf(process.platform === "win32")("reapplies owner-only DACLs after foreign inheritable grants on all three protected directories", () => {
     const dir = home();
@@ -396,6 +407,27 @@ describe("ensureAveHomePrivate", () => {
   });
   it.runIf(process.platform === "win32")("reports a foreign explicit grant on a secrets child directory without rewriting it", () => {
     checkChildRefusal("directory", (path) => mkdirSync(path));
+  });
+  it.runIf(process.platform === "win32")("refuses an inherited Everyone read grant on a secrets child without rewriting its ACL", () => {
+    const dir = home();
+    expect(ensureAveHomePrivate(dir)).toMatchObject({ enforcement: "win32-dacl" });
+    const secrets = join(dir, "secrets");
+    execFileSync(win32SystemBinary("icacls"), [secrets, "/grant", "*S-1-1-0:(OI)(CI)R", "/q"], { encoding: "utf-8", windowsHide: true });
+    const child = join(secrets, "token");
+    writeFileSync(child, "private");
+    const [entry] = readWindowsDirectoryDacls([child]);
+    expect(entry.rules).toEqual(expect.arrayContaining([
+      expect.objectContaining({ sid: "S-1-1-0", accessControlType: 0, isInherited: true }),
+    ]));
+    expect(entry.rules?.filter((rule) => rule.sid !== entry.currentUserSid)).toHaveLength(1);
+    const before = sddl(child, "Owner, Group, Access");
+    expect(before).toMatch(/^O:.*G:.*D:/);
+    const result = ensureAveHomePrivate(dir);
+    expect(sddl(child, "Owner, Group, Access")).toBe(before);
+    expect(result).toMatchObject({ enforcement: "none", failedPath: child, category: "extra-principals",
+      extraPrincipals: [expect.objectContaining({ sid: "S-1-1-0" })] });
+    setAveHomePrivacyAtBoot(result);
+    expect(() => assertAveHomePrivacyForConfinement()).toThrow(child);
   });
   it.runIf(process.platform === "win32")("blocks later home grants from reaching subscription runtimes and new children", () => {
     const dir = home();

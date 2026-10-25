@@ -377,7 +377,8 @@ export function ensureAveHomePrivate(
         throw new Error("Directory DACL rules read-back is invalid");
       }
       const extraPrincipals = [...new Map(descriptor.rules
-        .filter((rule) => rule.sid !== sid && (!descriptor.child || (rule.accessControlType === 0 && !rule.isInherited)))
+        .filter((rule) => rule.sid !== sid && (!descriptor.child || (rule.accessControlType === 0 &&
+          (!rule.isInherited || !["S-1-5-18", "S-1-5-32-544"].includes(rule.sid)))))
         .map(({ sid, account }) => [sid, { sid, ...(account ? { account } : {}) }])).values()];
       if (extraPrincipals.length > 0) {
         return { enforcement: "none", home, failedPath: path, category: "extra-principals", extraPrincipals,
