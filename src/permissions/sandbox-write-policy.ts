@@ -175,10 +175,20 @@ function isMissingPath(error: unknown): boolean {
 // No pipes, links or unbounded reads may turn discovery into an arbitrary file read.
 function readGitMetadata(path: string, budget: GitDiscoveryBudget): string | undefined {
   let fd: number;
-  try { fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK | (constants.O_NOFOLLOW ?? 0)); }
+  let entry: ReturnType<typeof lstatSync> | undefined;
+  try {
+    if (constants.O_NOFOLLOW === undefined) {
+      entry = lstatSync(path);
+      if (!entry.isFile()) throw new Error("Invalid sandbox Git control metadata");
+    }
+    fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK | (constants.O_NOFOLLOW ?? 0));
+  }
   catch (error) { if (isMissingPath(error)) return undefined; throw error; }
   try {
     const stat = fstatSync(fd);
+    if (entry !== undefined && (entry.dev !== stat.dev || entry.ino !== stat.ino)) {
+      throw new Error("Sandbox Git metadata changed during discovery");
+    }
     if (!stat.isFile() || stat.size > MAX_GIT_METADATA_BYTES) throw new Error("Invalid sandbox Git control metadata");
     if (stat.size > budget.metadataBytes) throw new Error("Sandbox Git metadata budget exhausted");
     const buffer = Buffer.alloc(Math.min(MAX_GIT_METADATA_BYTES, budget.metadataBytes) + 1);
@@ -691,7 +701,8 @@ export function buildMandatorySandboxWritePolicy(
   };
   const discovered = new Set<string>();
   const discoveredRoutingPins = new Set<string>();
-  const separatorPattern = process.platform === "win32" ? /[\\/]/u : /\//u;
+  // Roots are joined with the host separator, so depth follows it rather than the policy platform.
+  const separatorPattern = sep === "\\" ? /[\\/]/u : /\//u;
   // Scan narrow grants first so a broad ambient tree cannot spend the budget required by an independently admitted workspace or private temp root.
   for (const root of [...roots].sort((left, right) => right.split(separatorPattern).length - left.split(separatorPattern).length)) {
     if (revoked.has(root)) continue;
