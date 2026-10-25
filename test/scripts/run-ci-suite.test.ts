@@ -652,11 +652,47 @@ describe("the must-run set", () => {
     expect(mustRunTests).toContain("src/plugins/__tests__/tool-name-policy.test.ts");
   });
 
+  // A test that reads the repository's tracked tree through git: `ls-files` or
+  // `ls-tree` as a quoted argument, `grep` as the first argument of a git
+  // helper call (`git(["grep", ...])`, `spawnSync("git", ["grep", ...])`), or a
+  // `git grep` / `git ls-files` / `git ls-tree` command string. Root-anchored
+  // readdirSync/globSync walkers need no entry: text-reader tracing selects them.
+  const TREE_READER = [
+    /["'`]ls-(?:files|tree)["'`]/u,
+    /\bgit\w*\(\s*\[\s*["'`]grep["'`]/u,
+    /["'`]git["'`]\s*,\s*\[\s*["'`]grep["'`]/u,
+    /["'`]git\s+(?:grep|ls-files|ls-tree)\b/u,
+  ];
+  const readsTrackedTree = (text: string) => TREE_READER.some((pattern) => pattern.test(text));
+  // Matches that read no tree of this repository. Each must still match, so a
+  // stale entry fails instead of hiding a real scanner later.
+  const NOT_TREE_SCANNERS: Record<string, string> = {
+    "src/marketplace/git/__tests__/repo.test.ts": "runs ls-tree on the temporary bare repository it creates",
+    "src/permissions/__tests__/risk-classifier.test.ts": "`git grep` is a shell command it classifies, never runs",
+    "src/permissions/__tests__/rules-language.test.ts": "`git grep` is a shell command it matches against rules, never runs",
+  };
+
+  it.each([
+    ['spawnSync("git", ["ls-files", "-z"])', true],
+    ['hostGit(["ls-tree", "-r", "--name-only", "HEAD"])', true],
+    ['git(["grep", "-l", "pattern"])', true],
+    ['spawnSync("git", ["grep", "-n", "x"])', true],
+    ['execSync("git grep -l needle")', true],
+    ['execSync(`git ls-tree -r HEAD`)', true],
+    ['expect(argv).toEqual(["grep", "a b c", "file"])', false],
+    ['tokenizeShell("ls | grep foo")', false],
+    ['expect(text).toContain("start with `grep` before editing")', false],
+  ])("detects a tracked-tree reader: %s -> %s", (text, expected) => {
+    expect(readsTrackedTree(text as string)).toBe(expected);
+  });
+
   it("holds every test that scans the tracked tree, so a test-only diff runs those invariants", () => {
     // A test-only pull request that adds a tsx-child test without listing it
     // above breaks this file's out-of-process invariant without touching this
     // file; the must-run set is the one place that makes such suites run.
-    const treeScanners = trackedTests.filter((test) => /["'`]ls-files["'`]/u.test(readText(test) ?? ""));
+    const matches = trackedTests.filter((test) => readsTrackedTree(readText(test) ?? ""));
+    for (const path of Object.keys(NOT_TREE_SCANNERS)) expect(matches, path).toContain(path);
+    const treeScanners = matches.filter((test) => !(test in NOT_TREE_SCANNERS));
     expect(treeScanners).toEqual(expect.arrayContaining([
       "test/scripts/run-ci-suite.test.ts", "test/scripts/pre-push-tier.test.ts",
       "test/scripts/repository-identity.test.ts", "test/scripts/pre-push-markdown-policy.test.ts",
