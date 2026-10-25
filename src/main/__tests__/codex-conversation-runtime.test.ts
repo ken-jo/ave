@@ -1,9 +1,8 @@
+import { RuntimeProcessFixture as FakeAppServerProcess } from "./support/runtime-process.js";
 import type { ChildProcess, SpawnOptions } from "node:child_process";
-import { EventEmitter } from "node:events";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, promises as fs, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PassThrough } from "node:stream";
 import sharp from "sharp";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { makeRecordedSpawn } from "../../__tests__/test-helpers.js";
@@ -48,18 +47,6 @@ vi.mock("../main-paths.js", async (original) => {
 type Spawn = NonNullable<CodexConversationRuntimeOptions["spawn"]>;
 type JsonRecord = Record<string, unknown>;
 
-class FakeAppServerProcess extends EventEmitter {
-  readonly stdin = new PassThrough();
-  readonly stdout = new PassThrough();
-  readonly stderr = new PassThrough();
-  pid = -1;
-  exitCode: number | null = null;
-  killed = false;
-  kill = vi.fn((_signal?: NodeJS.Signals | number) => {
-    this.killed = true;
-    return true;
-  });
-}
 
 interface Harness {
   runtime: CodexConversationRuntime;
@@ -111,6 +98,26 @@ async function createHarness(onMessage?: (message: JsonRecord, harness: Harness)
   });
   harnesses.push(harness);
   return harness;
+}
+
+function createInitializedHarness(onMessage: NonNullable<Parameters<typeof createHarness>[0]>) {
+  return createHarness((message, current) => {
+    if (message.method === "initialize") {
+      reply(current.child, requestId(message), {});
+      return;
+    }
+    return onMessage(message, current);
+  });
+}
+
+function createTurnHarness(onMessage: NonNullable<Parameters<typeof createHarness>[0]>) {
+  return createInitializedHarness((message, current) => {
+    if (message.method === "thread/start") {
+      reply(current.child, requestId(message), { thread: { id: "thread-1" } });
+      return;
+    }
+    return onMessage(message, current);
+  });
 }
 
 function reply(child: FakeAppServerProcess, id: unknown, result: unknown): void {
@@ -712,15 +719,7 @@ describe("CodexConversationRuntime", () => {
   });
 
   it("keeps only the newest exact Codex last usage snapshot across the turn/start reply race", async () => {
-    const harness = await createHarness((message, current) => {
-      if (message.method === "initialize") {
-        reply(current.child, requestId(message), {});
-        return;
-      }
-      if (message.method === "thread/start") {
-        reply(current.child, requestId(message), { thread: { id: "thread-1" } });
-        return;
-      }
+    const harness = await createTurnHarness((message, current) => {
       if (message.method === "turn/start") {
         notify(current.child, "thread/tokenUsage/updated", {
           threadId: "other-thread",
@@ -794,15 +793,7 @@ describe("CodexConversationRuntime", () => {
 
   it("stages a subscription image as localImage bytes and removes it after completion", async () => {
     let stagedPath: string | undefined;
-    const harness = await createHarness((message, current) => {
-      if (message.method === "initialize") {
-        reply(current.child, requestId(message), {});
-        return;
-      }
-      if (message.method === "thread/start") {
-        reply(current.child, requestId(message), { thread: { id: "thread-1" } });
-        return;
-      }
+    const harness = await createTurnHarness((message, current) => {
       if (message.method === "turn/start") {
         const input = (message.params as { input?: Array<{ type?: string; path?: string }> }).input;
         stagedPath = input?.find((part) => part.type === "localImage")?.path;
@@ -958,15 +949,7 @@ describe("CodexConversationRuntime", () => {
 
   it("removes a staged localImage when turn/start fails", async () => {
     let stagedPath: string | undefined;
-    const harness = await createHarness((message, current) => {
-      if (message.method === "initialize") {
-        reply(current.child, requestId(message), {});
-        return;
-      }
-      if (message.method === "thread/start") {
-        reply(current.child, requestId(message), { thread: { id: "thread-1" } });
-        return;
-      }
+    const harness = await createTurnHarness((message, current) => {
       if (message.method === "turn/start") {
         const input = (message.params as { input?: Array<{ type?: string; path?: string }> }).input;
         stagedPath = input?.find((part) => part.type === "localImage")?.path;
@@ -986,15 +969,7 @@ describe("CodexConversationRuntime", () => {
 
   it("removes a staged localImage when an active turn is interrupted", async () => {
     let stagedPath: string | undefined;
-    const harness = await createHarness((message, current) => {
-      if (message.method === "initialize") {
-        reply(current.child, requestId(message), {});
-        return;
-      }
-      if (message.method === "thread/start") {
-        reply(current.child, requestId(message), { thread: { id: "thread-1" } });
-        return;
-      }
+    const harness = await createTurnHarness((message, current) => {
       if (message.method === "turn/start") {
         const input = (message.params as { input?: Array<{ type?: string; path?: string }> }).input;
         stagedPath = input?.find((part) => part.type === "localImage")?.path;
@@ -1074,15 +1049,7 @@ describe("CodexConversationRuntime", () => {
   }
 
   it("removes only stale exact staged image files before a new staging session", async () => {
-    const harness = await createHarness((message, current) => {
-      if (message.method === "initialize") {
-        reply(current.child, requestId(message), {});
-        return;
-      }
-      if (message.method === "thread/start") {
-        reply(current.child, requestId(message), { thread: { id: "thread-1" } });
-        return;
-      }
+    const harness = await createTurnHarness((message, current) => {
       if (message.method === "turn/start") {
         reply(current.child, requestId(message), { turn: { id: "turn-1", status: "inProgress" } });
         notify(current.child, "turn/completed", {
@@ -1109,15 +1076,7 @@ describe("CodexConversationRuntime", () => {
 
   it("projects a safe TPM diagnostic from a turn/start response error", async () => {
     const rawDetail = "429 rate limit for private-plan: tokens per minute account=secret";
-    const harness = await createHarness((message, current) => {
-      if (message.method === "initialize") {
-        reply(current.child, requestId(message), {});
-        return;
-      }
-      if (message.method === "thread/start") {
-        reply(current.child, requestId(message), { thread: { id: "thread-1" } });
-        return;
-      }
+    const harness = await createTurnHarness((message, current) => {
       if (message.method === "turn/start") {
         current.child.stdout.write(`${JSON.stringify({
           id: requestId(message),
@@ -1164,15 +1123,7 @@ describe("CodexConversationRuntime", () => {
 
   it("projects a safe context diagnostic from a failed turn completion", async () => {
     const rawDetail = "context_length_exceeded for private conversation history";
-    const harness = await createHarness((message, current) => {
-      if (message.method === "initialize") {
-        reply(current.child, requestId(message), {});
-        return;
-      }
-      if (message.method === "thread/start") {
-        reply(current.child, requestId(message), { thread: { id: "thread-1" } });
-        return;
-      }
+    const harness = await createTurnHarness((message, current) => {
       if (message.method === "turn/start") {
         reply(current.child, requestId(message), { turn: { id: "turn-1", status: "inProgress" } });
         notify(current.child, "turn/completed", {
@@ -1211,11 +1162,7 @@ describe("CodexConversationRuntime", () => {
     { response: null, readiness: "unknown" },
   ])("fails closed with bounded internal readiness $readiness", async ({ response, readiness }) => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const harness = await createHarness((message, current) => {
-      if (message.method === "initialize") {
-        reply(current.child, requestId(message), {});
-        return;
-      }
+    const harness = await createInitializedHarness((message, current) => {
       if (message.method === "windowsSandbox/readiness") {
         reply(current.child, requestId(message), response);
         return true;
@@ -1236,11 +1183,7 @@ describe("CodexConversationRuntime", () => {
   });
 
   it("verifies the shared ChatGPT account without creating a thread or a billable turn", async () => {
-    const harness = await createHarness((message, current) => {
-      if (message.method === "initialize") {
-        reply(current.child, requestId(message), {});
-        return;
-      }
+    const harness = await createInitializedHarness((message, current) => {
       if (message.method === "account/read") {
         reply(current.child, requestId(message), {
           account: { type: "chatgpt" },
@@ -1266,11 +1209,7 @@ describe("CodexConversationRuntime", () => {
   });
 
   it("fails closed when the shared runtime does not report ChatGPT authentication", async () => {
-    const harness = await createHarness((message, current) => {
-      if (message.method === "initialize") {
-        reply(current.child, requestId(message), {});
-        return;
-      }
+    const harness = await createInitializedHarness((message, current) => {
       if (message.method === "account/read") {
         reply(current.child, requestId(message), { account: null });
       }
@@ -1350,15 +1289,7 @@ describe("CodexConversationRuntime", () => {
     "subAgentActivity", "webSearch", "imageView", "sleep", "imageGeneration",
     "enteredReviewMode", "exitedReviewMode", "unknownNativeItem",
   ])("terminates the transport when an ungoverned %s item starts", async (type) => {
-    const harness = await createHarness((message, current) => {
-      if (message.method === "initialize") {
-        reply(current.child, requestId(message), {});
-        return;
-      }
-      if (message.method === "thread/start") {
-        reply(current.child, requestId(message), { thread: { id: "thread-1" } });
-        return;
-      }
+    const harness = await createTurnHarness((message, current) => {
       if (message.method === "turn/start") {
         reply(current.child, requestId(message), { turn: { id: "turn-1", status: "inProgress" } });
         notify(current.child, "item/started", {
@@ -1420,15 +1351,7 @@ describe("CodexConversationRuntime", () => {
     const observations: unknown[] = [];
     let sentRequests = false;
     let repliesSeen = 0;
-    const harness = await createHarness((message, current) => {
-      if (message.method === "initialize") {
-        reply(current.child, requestId(message), {});
-        return;
-      }
-      if (message.method === "thread/start") {
-        reply(current.child, requestId(message), { thread: { id: "thread-1" } });
-        return;
-      }
+    const harness = await createTurnHarness((message, current) => {
       if (message.method === "turn/start") {
         reply(current.child, requestId(message), { turn: { id: "turn-1", status: "inProgress" } });
         sentRequests = true;
@@ -1556,15 +1479,7 @@ describe("CodexConversationRuntime", () => {
     }] as const;
     const onDynamicToolCall = vi.fn(async () => "must not run");
     let nativeReplies = 0;
-    const harness = await createHarness((message, current) => {
-      if (message.method === "initialize") {
-        reply(current.child, requestId(message), {});
-        return;
-      }
-      if (message.method === "thread/start") {
-        reply(current.child, requestId(message), { thread: { id: "thread-1" } });
-        return;
-      }
+    const harness = await createTurnHarness((message, current) => {
       if (message.method === "turn/start") {
         reply(current.child, requestId(message), { turn: { id: "turn-1", status: "inProgress" } });
         serverRequest(current.child, "native-command", "item/commandExecution/requestApproval", {
@@ -1623,15 +1538,7 @@ describe("CodexConversationRuntime", () => {
     const waitForTurnStart = new Promise<void>((resolveTurnStart) => {
       turnStartSeen = resolveTurnStart;
     });
-    const harness = await createHarness((message, current) => {
-      if (message.method === "initialize") {
-        reply(current.child, requestId(message), {});
-        return;
-      }
-      if (message.method === "thread/start") {
-        reply(current.child, requestId(message), { thread: { id: "thread-1" } });
-        return;
-      }
+    const harness = await createTurnHarness((message, current) => {
       if (message.method === "turn/start") {
         reply(current.child, requestId(message), { turn: { id: "turn-1", status: "inProgress" } });
         turnStartSeen?.();
@@ -1668,15 +1575,7 @@ describe("CodexConversationRuntime", () => {
     const turnStartReceived = new Promise<void>((resolveTurnStart) => {
       signalTurnStart = resolveTurnStart;
     });
-    const harness = await createHarness((message, current) => {
-      if (message.method === "initialize") {
-        reply(current.child, requestId(message), {});
-        return;
-      }
-      if (message.method === "thread/start") {
-        reply(current.child, requestId(message), { thread: { id: "thread-1" } });
-        return;
-      }
+    const harness = await createTurnHarness((message, current) => {
       if (message.method === "turn/start") {
         deferredTurnStart = message;
         signalTurnStart();
@@ -1716,15 +1615,7 @@ describe("CodexConversationRuntime", () => {
     const turnStartReceived = new Promise<void>((resolveTurnStart) => {
       signalTurnStart = resolveTurnStart;
     });
-    const harness = await createHarness((message, current) => {
-      if (message.method === "initialize") {
-        reply(current.child, requestId(message), {});
-        return;
-      }
-      if (message.method === "thread/start") {
-        reply(current.child, requestId(message), { thread: { id: "thread-1" } });
-        return;
-      }
+    const harness = await createTurnHarness((message) => {
       if (message.method === "turn/start") {
         deferredTurnStart = message;
         signalTurnStart();
@@ -1762,15 +1653,7 @@ describe("CodexConversationRuntime", () => {
       signalTurnStart = resolveTurnStart;
     });
     const completed = vi.fn();
-    const harness = await createHarness((message, current) => {
-      if (message.method === "initialize") {
-        reply(current.child, requestId(message), {});
-        return;
-      }
-      if (message.method === "thread/start") {
-        reply(current.child, requestId(message), { thread: { id: "thread-1" } });
-        return;
-      }
+    const harness = await createTurnHarness((message) => {
       if (message.method === "turn/start") {
         deferredTurnStart = message;
         signalTurnStart();
@@ -1835,15 +1718,7 @@ describe("CodexConversationRuntime", () => {
     const turnStartReceived = new Promise<void>((resolveTurnStart) => {
       signalTurnStart = resolveTurnStart;
     });
-    const harness = await createHarness((message, current) => {
-      if (message.method === "initialize") {
-        reply(current.child, requestId(message), {});
-        return;
-      }
-      if (message.method === "thread/start") {
-        reply(current.child, requestId(message), { thread: { id: "thread-1" } });
-        return;
-      }
+    const harness = await createTurnHarness((message) => {
       if (message.method === "turn/start") signalTurnStart();
     });
 
@@ -1866,15 +1741,7 @@ describe("CodexConversationRuntime", () => {
     const waitForTurnStart = new Promise<void>((resolveTurnStart) => {
       turnStartSeen = resolveTurnStart;
     });
-    const harness = await createHarness((message, current) => {
-      if (message.method === "initialize") {
-        reply(current.child, requestId(message), {});
-        return;
-      }
-      if (message.method === "thread/start") {
-        reply(current.child, requestId(message), { thread: { id: "thread-1" } });
-        return;
-      }
+    const harness = await createTurnHarness((message) => {
       if (message.method === "turn/start") {
         turnStartSeen?.();
       }
@@ -1911,15 +1778,7 @@ describe("CodexConversationRuntime", () => {
       });
       return "Ave tool result.";
     });
-    const harness = await createHarness((message, current) => {
-      if (message.method === "initialize") {
-        reply(current.child, requestId(message), {});
-        return;
-      }
-      if (message.method === "thread/start") {
-        reply(current.child, requestId(message), { thread: { id: "thread-1" } });
-        return;
-      }
+    const harness = await createTurnHarness((message, current) => {
       if (message.method === "turn/start") {
         reply(current.child, requestId(message), { turn: { id: "turn-1", status: "inProgress" } });
         notify(current.child, "item/started", {
@@ -1990,15 +1849,7 @@ describe("CodexConversationRuntime", () => {
     const turnStartReceived = new Promise<void>((resolveTurnStart) => {
       signalTurnStart = resolveTurnStart;
     });
-    const harness = await createHarness((message, current) => {
-      if (message.method === "initialize") {
-        reply(current.child, requestId(message), {});
-        return;
-      }
-      if (message.method === "thread/start") {
-        reply(current.child, requestId(message), { thread: { id: "thread-1" } });
-        return;
-      }
+    const harness = await createTurnHarness((message) => {
       if (message.method === "turn/start") {
         deferredTurnStart = message;
         signalTurnStart();
@@ -2057,15 +1908,7 @@ describe("CodexConversationRuntime", () => {
 
   it("rejects malformed dynamic tool requests without invoking Ave", async () => {
     const onDynamicToolCall = vi.fn(async () => "must not run");
-    const harness = await createHarness((message, current) => {
-      if (message.method === "initialize") {
-        reply(current.child, requestId(message), {});
-        return;
-      }
-      if (message.method === "thread/start") {
-        reply(current.child, requestId(message), { thread: { id: "thread-1" } });
-        return;
-      }
+    const harness = await createTurnHarness((message, current) => {
       if (message.method === "turn/start") {
         reply(current.child, requestId(message), { turn: { id: "turn-1", status: "inProgress" } });
         serverRequest(current.child, "malformed-rpc", "item/tool/call", {
@@ -2106,15 +1949,7 @@ describe("CodexConversationRuntime", () => {
 
   it("rejects a dynamic tool request for another thread or turn", async () => {
     const onDynamicToolCall = vi.fn(async () => "must not run");
-    const harness = await createHarness((message, current) => {
-      if (message.method === "initialize") {
-        reply(current.child, requestId(message), {});
-        return;
-      }
-      if (message.method === "thread/start") {
-        reply(current.child, requestId(message), { thread: { id: "thread-1" } });
-        return;
-      }
+    const harness = await createTurnHarness((message, current) => {
       if (message.method === "turn/start") {
         reply(current.child, requestId(message), { turn: { id: "turn-1", status: "inProgress" } });
         notify(current.child, "item/agentMessage/delta", {
@@ -2177,15 +2012,7 @@ describe("CodexConversationRuntime", () => {
 
   it("rejects unknown dynamic tools even for the active Ave turn", async () => {
     const onDynamicToolCall = vi.fn(async () => "must not run");
-    const harness = await createHarness((message, current) => {
-      if (message.method === "initialize") {
-        reply(current.child, requestId(message), {});
-        return;
-      }
-      if (message.method === "thread/start") {
-        reply(current.child, requestId(message), { thread: { id: "thread-1" } });
-        return;
-      }
+    const harness = await createTurnHarness((message, current) => {
       if (message.method === "turn/start") {
         reply(current.child, requestId(message), { turn: { id: "turn-1", status: "inProgress" } });
         serverRequest(current.child, "unknown-rpc", "item/tool/call", {
@@ -2247,11 +2074,7 @@ describe("CodexConversationRuntime", () => {
 
   it("does not start a Codex turn when aborted while creating its thread", async () => {
     let threadStartRequest: JsonRecord | undefined;
-    const harness = await createHarness((message, current) => {
-      if (message.method === "initialize") {
-        reply(current.child, requestId(message), {});
-        return;
-      }
+    const harness = await createInitializedHarness((message) => {
       if (message.method === "thread/start") threadStartRequest = message;
     });
     const abortController = new AbortController();
