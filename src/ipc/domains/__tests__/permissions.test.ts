@@ -1793,9 +1793,10 @@ describe("rules recorded from live approval cards", () => {
       expect(pm(deps).addRulePersist).toHaveBeenCalledWith({ pattern: "Network(api.example.com:443)", action: "deny" }, { kind: "user" });
     });
 
-    it("saves an edited wildcard host allow for the project, with no shell warning", async () => {
+    // A host rule decides only a sandboxed command's connections, so a wildcard one carries the same warning as a wildcard shell allow.
+    it("saves an edited wildcard host allow for the project, with the sandboxed-only warning", async () => {
       const { deps } = await setup({ egress: { ...egress, scopes: [...egress.scopes] } });
-      expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, rule: { action: "allow", scope: "project", pattern: "Network(*.example.com)" } })).toEqual({ ok: true });
+      expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, rule: { action: "allow", scope: "project", pattern: "Network(*.example.com)" } })).toEqual({ ok: true, warning: "wildcard-allow-sandboxed-only" });
       expect(pm(deps).addRulePersist).toHaveBeenCalledWith({ pattern: "Network(*.example.com)", action: "allow" }, { kind: "project", projectCwd: "/srv/project" });
     });
 
@@ -1813,6 +1814,20 @@ describe("rules recorded from live approval cards", () => {
     it("refuses a persistent host allow for a destination offered only in-memory scopes", async () => {
       const { deps } = await setup({ egress: { ...egress, network: "local", scopes: ["once", "session"] } });
       expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, rule: { action: "allow", scope: "always" } })).toMatchObject({ ok: false, error: "scope-not-offered" });
+      expect(pm(deps).addRulePersist).not.toHaveBeenCalled();
+    });
+
+    // Host rules are shell-origin, as shell grants are: a terminal tab's card saves none, deny or allow.
+    it("refuses every host rule from a terminal tab's card", async () => {
+      const { deps } = await setup({ egress: { ...egress, scopes: ["once", "tab", "always"], terminalTabId: "tab-1", rule: null } });
+      expect(await invoke(PERMISSIONS.userApprovalRecord, { ...networkBody, rule: { action: "deny", scope: "always", pattern: "Network(api.example.com)" } })).toMatchObject({ ok: false, error: "scope-not-offered" });
+      expect(await invoke(PERMISSIONS.userApprovalRecord, { ...body, rule: { action: "allow", scope: "always", pattern: "Network(api.example.com)" } })).toMatchObject({ ok: false, error: "scope-not-offered" });
+      expect(pm(deps).addRulePersist).not.toHaveBeenCalled();
+    });
+
+    it("refuses an IP-literal host rule with the grammar's error", async () => {
+      const { deps } = await setup({ egress: { ...egress, scopes: [...egress.scopes] } });
+      expect(await invoke(PERMISSIONS.userApprovalRecord, { ...networkBody, rule: { action: "deny", scope: "always", pattern: "Network(169.254.169.254)" } })).toMatchObject({ ok: false, error: "invalid-rule" });
       expect(pm(deps).addRulePersist).not.toHaveBeenCalled();
     });
 

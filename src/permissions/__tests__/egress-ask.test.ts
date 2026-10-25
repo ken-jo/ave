@@ -1081,21 +1081,21 @@ describe("egress ask callback — host rules", () => {
 
   it("denies on a deny rule without asking or consulting grants", async () => {
     await grants.grant("always", ["once", "session", "project", "always"], { token: SHELL_TOKEN, sessionId: "session-1", tabId: undefined, projectRoot: PROJECT, origin: "shell" }, { ...github, network: "public" });
-    networkRule = async () => ({ decision: "deny", pattern: "Network(github.com)" });
+    networkRule = async () => ({ decision: "deny", pattern: "Network(github.com)", scope: "user" });
     expect(await callback()(github, publicGithub())).toEqual({ allow: false, reason: `${EGRESS_DENY_REASONS.denyRule} Network(github.com)` });
     expect(asked).toEqual([]);
     expect(audit.map((row) => [row.decision, row.basis, row.scope])).toEqual([["deny", "rule", null]]);
   });
 
   it("allows a public destination on an allow rule without asking", async () => {
-    networkRule = async () => ({ decision: "allow", pattern: "Network(*.github.com)" });
+    networkRule = async () => ({ decision: "allow", pattern: "Network(*.github.com)", scope: "user" });
     expect(await callback()(github, publicGithub())).toBe(true);
     expect(asked).toEqual([]);
     expect(audit.map((row) => [row.decision, row.basis, row.scope])).toEqual([["allow", "rule", null]]);
   });
 
   it("asks instead of allowing when an allow rule's name resolves to a private address", async () => {
-    networkRule = async () => ({ decision: "allow", pattern: "Network(github.com)" });
+    networkRule = async () => ({ decision: "allow", pattern: "Network(github.com)", scope: "user" });
     expect(await callback()(github, listener(SHELL_TOKEN, ["10.0.0.5"]))).toEqual({ allow: false, reason: "denied by the user" });
     expect(asked).toHaveLength(1);
     expect(asked[0]?.network).toBe("local");
@@ -1103,9 +1103,37 @@ describe("egress ask callback — host rules", () => {
 
   it("asks on an ask rule even when a grant covers the destination", async () => {
     await grants.grant("always", ["once", "session", "project", "always"], { token: SHELL_TOKEN, sessionId: "session-1", tabId: undefined, projectRoot: PROJECT, origin: "shell" }, { ...github, network: "public" });
-    networkRule = async () => ({ decision: "ask", pattern: "Network(github.com)" });
+    networkRule = async () => ({ decision: "ask", pattern: "Network(github.com)", scope: "user" });
     expect(await callback()(github, publicGithub())).toEqual({ allow: false, reason: "denied by the user" });
     expect(asked).toHaveLength(1);
+  });
+
+  // Security review of #223: host rules keep the grant invariants. They are shell-origin, and a shared identity uses no persistent one.
+  it("never consults host rules for a terminal tab", async () => {
+    let consulted = false;
+    networkRule = async () => { consulted = true; return { decision: "allow", pattern: "Network(github.com)", scope: "user" }; };
+    expect(await callback()(github, listener(TERMINAL_TOKEN, ["140.82.112.3"]))).toEqual({ allow: false, reason: "denied by the user" });
+    expect(consulted).toBe(false);
+    expect(asked).toHaveLength(1);
+  });
+
+  it.each([["user", false], ["project", false], ["session", true]] as const)("a shared identity honors a %s allow rule: %s", async (scope, honored) => {
+    strength = "shared";
+    networkRule = async () => ({ decision: "allow", pattern: "Network(github.com)", scope });
+    const result = await callback()(github, { ...publicGithub(), identity: "username" });
+    if (honored) {
+      expect(result).toBe(true);
+      expect(asked).toEqual([]);
+    } else {
+      expect(result).toEqual({ allow: false, reason: "denied by the user" });
+      expect(asked).toHaveLength(1);
+    }
+  });
+
+  it("a shared identity still meets a persistent deny rule", async () => {
+    strength = "shared";
+    networkRule = async () => ({ decision: "deny", pattern: "Network(github.com)", scope: "user" });
+    expect(await callback()(github, { ...publicGithub(), identity: "username" })).toEqual({ allow: false, reason: `${EGRESS_DENY_REASONS.denyRule} Network(github.com)` });
   });
 
   it("turns a host rule lookup failure into an audited deny", async () => {

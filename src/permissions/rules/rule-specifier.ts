@@ -174,8 +174,16 @@ function parseWebFetch(text: string, body: string): RuleSpecifier {
   return { kind: "webfetch", ...parseHostPattern(text, body.slice("domain:".length)) };
 }
 
+// A connection is decided by its canonical host name; an address literal never reaches a host rule (the card offers none), so a rule naming one would
+// parse, save and never match — a deny that is silently inert. Every spelling a resolver reads as an address is refused: dotted decimal, and any name
+// whose last label is a number (`0x7f000001`, `2130706433`, `127.1`), since no host name ends in a numeric label.
 function parseNetwork(text: string, body: string): RuleSpecifier {
-  return { kind: "network", ...parseHostPattern(text, body) };
+  const spec = parseHostPattern(text, body);
+  const last = spec.host.split(".").pop()!;
+  if (/^(?:0x[0-9a-f]*|[0-9]+)$/.test(last)) {
+    throw new RuleSpecifierError(text, "an IP address is not a host name; a Network(...) rule names a host (an address literal is never matched by one)");
+  }
+  return { kind: "network", ...spec };
 }
 
 // `<host>`, `*.<host>`, either with `:<port>`.

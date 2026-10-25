@@ -265,19 +265,29 @@ describe("Network(...) host rules", () => {
     expect(() => parseRuleSpecifier(text)).toThrow();
   });
 
+  // An address never reaches a host rule, so a rule naming one would be a silently inert deny: every address spelling is refused when parsed.
+  it.each(["Network(127.0.0.1)", "Network(169.254.169.254:80)", "Network(0x7f000001)", "Network(2130706433)", "Network(127.1)", "Network(*.0.0.1)"])("refuses the address literal %s", (text) => {
+    expect(() => parseRuleSpecifier(text)).toThrow(/IP address is not a host name/);
+  });
+
+  it("still accepts host names with digits", () => {
+    expect(parseRuleSpecifier("Network(s3.eu-west-1.amazonaws.com)")).toMatchObject({ kind: "network" });
+    expect(parseRuleSpecifier("Network(1password.com)")).toMatchObject({ kind: "network" });
+  });
+
   it("decides a destination by deny, then ask, then allow, over user, project and session rules", async () => {
     expect(await manager.networkRuleDecision({ host: "api.example.com", port: 443 })).toBeUndefined();
     manager.setRules([{ pattern: "Network(*.example.com)", action: "allow" }]);
-    expect(await manager.networkRuleDecision({ host: "api.example.com", port: 443 })).toEqual({ decision: "allow", pattern: "Network(*.example.com)" });
+    expect(await manager.networkRuleDecision({ host: "api.example.com", port: 443 })).toEqual({ decision: "allow", pattern: "Network(*.example.com)", scope: "user" });
     expect(await manager.networkRuleDecision({ host: "example.com", port: 443 })).toBeUndefined();
     await manager.addRulePersist({ pattern: "Network(api.example.com:443)", action: "ask" }, { kind: "project", projectCwd: dir });
-    expect(await manager.networkRuleDecision({ host: "api.example.com", port: 443, projectCwd: dir })).toEqual({ decision: "ask", pattern: "Network(api.example.com:443)" });
-    expect(await manager.networkRuleDecision({ host: "api.example.com", port: 443 })).toEqual({ decision: "allow", pattern: "Network(*.example.com)" });
+    expect(await manager.networkRuleDecision({ host: "api.example.com", port: 443, projectCwd: dir })).toEqual({ decision: "ask", pattern: "Network(api.example.com:443)", scope: "project" });
+    expect(await manager.networkRuleDecision({ host: "api.example.com", port: 443 })).toEqual({ decision: "allow", pattern: "Network(*.example.com)", scope: "user" });
     manager.addSessionRule("conversation-a", "Network(other.test)");
-    expect(await manager.networkRuleDecision({ host: "other.test", port: 80, sessionId: "conversation-a" })).toEqual({ decision: "allow", pattern: "Network(other.test)" });
+    expect(await manager.networkRuleDecision({ host: "other.test", port: 80, sessionId: "conversation-a" })).toEqual({ decision: "allow", pattern: "Network(other.test)", scope: "session" });
     expect(await manager.networkRuleDecision({ host: "other.test", port: 80, sessionId: "conversation-b" })).toBeUndefined();
     await manager.addRulePersist({ pattern: "Network(api.example.com)", action: "deny" }, { kind: "user" });
-    expect(await manager.networkRuleDecision({ host: "api.example.com", port: 443, projectCwd: dir })).toEqual({ decision: "deny", pattern: "Network(api.example.com)" });
+    expect(await manager.networkRuleDecision({ host: "api.example.com", port: 443, projectCwd: dir })).toEqual({ decision: "deny", pattern: "Network(api.example.com)", scope: "user" });
   });
 
   it("refuses a session rule of another kind", () => {
