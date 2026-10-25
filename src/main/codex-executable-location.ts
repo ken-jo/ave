@@ -1037,7 +1037,9 @@ export async function makePrivateDirectoryTree(path: string, created: string[]):
   const made: string[] = [];
   let directory = resolvePath(path);
   for (; !same(directory, first); directory = dirname(directory)) {
-    if (dirname(directory) === directory) throw new CodexExecutableLocationError("Created directory is outside the requested path");
+    if (dirname(directory) === directory) {
+      throw new CodexExecutableLocationError(`Created directory is outside the requested path: ${JSON.stringify(reported)} for ${JSON.stringify(path)}`);
+    }
     made.unshift(directory);
   }
   created.push(directory, ...made);
