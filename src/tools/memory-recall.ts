@@ -4,27 +4,8 @@ import { scrubSecretsForLLM } from "../shared/dlp.js";
 import { errorMessage } from "../shared/error-message.js";
 import { neutralizeFenceClose, neutralizeFenceOpen } from "../shared/fence-sanitizer.js";
 
-/**
- * Companions to `memory_write`: let the model check what Ave already
- * remembers before it submits a near-duplicate, read a remembered fact in
- * full, and withdraw a candidate it submitted by mistake.
- *
- * Boundaries (the same store and scope memory_write uses):
- * - Reads return exactly the memories prompt selection could already inject
- *   for the host-selected project (active, unexpired, not derived; in the
- *   default project also the notes saved before project scoping). Pending
- *   candidates are review-only: they are listed by id and title so the model
- *   does not resubmit them, but their content is never returned.
- * - Every string bound for the model passes the model-bound secret scrub;
- *   legacy and imported notes predate memory_write's credential refusal.
- * - Remembered text is fenced the way the system prompt fences it: a memory
- *   (and above all a candidate nobody reviewed yet) may carry text that came
- *   from a web page, so it reaches the model as data, not instructions.
- * - memory_delete removes candidates only. Active memories were activated
- *   by the user's review, so a model (or content steering it) cannot undo
- *   that; the result points the model to the user instead. It is a `write`
- *   tool outside the memory_write auto-approval, so it asks first.
- */
+// Read only prompt-eligible memories in host-selected project scope; pending candidates expose IDs and titles, never bodies.
+// Scrub and fence all model-bound text; deletion may remove only candidates, with approval, never user-activated memories.
 
 const DEFAULT_SEARCH_LIMIT = 10;
 const MAX_SEARCH_LIMIT = 50;
@@ -39,11 +20,7 @@ interface MemoryRecallToolDeps {
   memoryManager: MemoryRecallStore;
 }
 
-/**
- * The same project scope memory_write assigns: the host-selected conversation
- * cwd. In the default project prompt selection also includes notes saved
- * before project scoping; the executor says so in the invocation metadata.
- */
+// Use the host-selected cwd and include unscoped notes only for the default project, matching prompt selection.
 function memoryProjectScope(ctx: ToolExecutionContext): { projectRoot?: string; includeUnscoped?: boolean } {
   const projectRoot = typeof ctx.cwd === "string" ? ctx.cwd.trim() : "";
   if (!projectRoot) return {};

@@ -1,11 +1,4 @@
 import type { ShellExecutionFacts } from "../../shared/shell-execution.js";
-/**
- * Tool pipeline — filesystem target-path extraction + shell path policy.
- *
- * Pure helpers factored out of `executor.ts` (C7 decomposition). No executor
- * state is touched; every function is a free transformation over the tool
- * descriptor + finalized input.
- */
 import { resolve as pathResolve } from "node:path";
 import { resolveToolPathForPermission } from "../../shared/tool-path-resolution.js";
 import type { Tool } from "../base.js";
@@ -16,14 +9,7 @@ import {
   type ShellPathPolicyViolation,
 } from "../shell-path-policy.js";
 
-/**
- * Extract absolute filesystem target paths from a tool's declared
- * `pathFields` contract. Used so {@link ApprovalGate}'s
- * §S1 sensitive-path hard-block can actually run against the path the
- * tool is about to touch. Returns an empty list when a tool declares no
- * path fields; built-in shell tools enforce command operands inside their
- * own native execution surface.
- */
+// Extract declared file targets for sensitive-path hard blocks; native shells check command operands on their own surface.
 export function extractTargetFilePaths(
   tool: Tool,
   input: unknown,
@@ -47,14 +33,7 @@ export function extractTargetFilePaths(
   return [...new Set(paths)];
 }
 
-/**
- * Run the shell path policy over EVERY command-bearing argument of the call.
- *
- * Scanning only `finalInput.command` left the other command fields
- * (`cmd`/`script`/`shellCommand`) unexamined — the same asymmetry that let a
- * second field carry the real payload past classification. The policy is a
- * containment control, so it has to see every string that will be executed.
- */
+// Check every command-bearing field, including cmd, script, and shellCommand; containment cannot inspect only command.
 export function shellPathPolicyViolation(
   finalInput: Record<string, unknown>,
   sandboxRoot: string,

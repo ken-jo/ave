@@ -1,21 +1,4 @@
-/**
- * Producer-driven pin for the host-risk category channel.
- *
- * `inspectHostRisk` is a CONSUMER: something else builds its `HostRiskSignals`
- * and something else uses the `ToolCategory` it returns. Its own unit tests hand
- * it a literal, so they stay green even if no production path ever calls it —
- * which is exactly how the signals it used to accept (`pathFields`,
- * `allowedDirectories`) sat inert until the containment answer they fed was
- * found to be discarded.
- *
- * This file therefore drives the REAL producer, `resolveEnforcedCategory`, with
- * a `Tool` built by the REAL production adapter (`mcpToolToPluginTool`, the
- * plugin-loopback reverse projection) and asserts the consumer's output on the
- * far side. The load-bearing case picks an input where the host-derived category
- * DIFFERS from the declared one, so the assertion is satisfiable only if the
- * producer actually reached the inspector — deleting the `inspectHostRisk(...)`
- * call site turns it red rather than leaving it green.
- */
+// Drive the real adapter and category producer with differing declared and derived categories so missing inspection cannot pass.
 import { describe, it, expect } from "vitest";
 import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -25,12 +8,7 @@ import { resolveEnforcedCategory } from "../risk-classification.js";
 
 const TMP = realpathSync(tmpdir());
 
-/**
- * Capture the shadow channel. The AuditLogger is injected into
- * `resolveEnforcedCategory` by design (the module owns no global state), so a
- * capturing sink observes the real record without a temp AVE_HOME or a write
- * queue to drain.
- */
+// Capture injected audit output without filesystem setup.
 function shadowSink(): { logger: AuditLogger; records: Record<string, unknown>[] } {
   const records: Record<string, unknown>[] = [];
   const logger = {
@@ -41,12 +19,7 @@ function shadowSink(): { logger: AuditLogger; records: Record<string, unknown>[]
   return { logger, records };
 }
 
-/**
- * A plugin tool as PRODUCTION builds it: `mcpToolToPluginTool` is the loopback
- * reverse projection every first-party plugin tool goes through, so `source`,
- * `category` and `pathFields` here are the values the real registry holds — not
- * a combination hand-picked to make an assertion pass.
- */
+// Use production reverse projection so source, category, and pathFields match real registry values.
 function productionPluginTool() {
   return mcpToolToPluginTool(
     "ave-plugin-fixture",
@@ -109,15 +82,12 @@ describe("resolveEnforcedCategory — producer → inspectHostRisk → enforced 
       auditLogger: logger,
     });
 
-    expect(enforced).toBe("write"); // declared wins when the flag is off
+    expect(enforced).toBe("write");
     expect(records[0]).toMatchObject({ hostDerivedCategory: "read", enforced: false });
   });
 
   it("keeps every filesystem-shaped call write-equivalent without a scope input", () => {
-    // These are the two inputs the removed containment branch existed to tell
-    // apart: one escaping any plausible Layer-1 scope, one inside the workspace.
-    // Both were "write" before the branch was deleted and both are "write" now —
-    // that equivalence is the whole behavioural claim of this change.
+    // Inside and outside write targets must retain the same risk category; containment is a separate gate.
     const { logger, records } = shadowSink();
     const tool = productionPluginTool();
 

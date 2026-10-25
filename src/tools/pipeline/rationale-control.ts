@@ -1,11 +1,4 @@
-/**
- * Versioned host/LLM contract for foreground reviewer rationale handoff.
- *
- * This module deliberately owns no durable ticket map and grants no authority.
- * The turn orchestrator may carry one sealed control value in memory; the
- * follow-up ticket-store PR will add TTL/CAS/audit persistence behind this
- * contract without changing the provider or executor surface.
- */
+// Versioned rationale handoff carries sealed control in memory but grants no execution authority or durable tickets.
 import { randomUUID } from "node:crypto";
 import type { ChatInputOrigin } from "../../shared/chat-origin.js";
 import type { ToolCategory, ToolSource, ToolTrustOrigin } from "../types.js";
@@ -44,12 +37,7 @@ export const RATIONALE_ACTIVATION_PREREQUISITES = [
 export type RationaleActivationPrerequisite =
   typeof RATIONALE_ACTIVATION_PREREQUISITES[number];
 
-/**
- * Versioned release ledger for the foreground rationale path. This is a
- * source-controlled attestation rather than a user or environment setting:
- * adding or changing a prerequisite must update this ledger and its scenario
- * board before the production gate can be enabled.
- */
+// Versioned production prerequisites require matching source ledger and scenario-board updates.
 export const RATIONALE_GUARDED_ACTIVATION_EVIDENCE = Object.freeze({
   "persistent-ticket-store": true,
   "host-anchor-round-cas": true,
@@ -65,11 +53,7 @@ export const RATIONALE_GUARDED_ACTIVATION_EVIDENCE = Object.freeze({
   "bounded-modal-ui": true,
 } satisfies Readonly<Record<RationaleActivationPrerequisite, true>>);
 
-/**
- * Keeps the release decision fail-closed if any explicitly versioned
- * prerequisite is omitted or false. The optional argument exists solely so
- * the scenario board can exercise every missing-attestation path.
- */
+// Missing or false prerequisites fail closed; the optional ledger supports missing-attestation tests.
 export function isRationaleGuardedActivationReady(
   evidence: Readonly<
     Partial<Record<RationaleActivationPrerequisite, boolean>>
@@ -80,11 +64,7 @@ export function isRationaleGuardedActivationReady(
   );
 }
 
-/**
- * PR(3) turns on the production path only after every versioned attestation
- * above has landed. The query loop still requires a boot-published host
- * coordinator before it changes ordering or injects rationale orchestration.
- */
+// Production activation requires all attestations plus a boot-published host coordinator.
 export const FOREGROUND_RATIONALE_PRODUCTION_ENABLED =
   isRationaleGuardedActivationReady();
 
@@ -96,11 +76,7 @@ export interface ForegroundRationaleActivationContext {
   readonly enableDormantRationaleForTesting: boolean | undefined;
 }
 
-/**
- * One predicate controls both meta-tool ordering and coordinator injection.
- * Test activation remains impossible outside an exact NODE_ENV=test process;
- * a missing or failed boot publication leaves the legacy batch path intact.
- */
+// One predicate gates ordering and injection; test activation requires NODE_ENV=test and failed publication keeps the batch path.
 export function isForegroundRationaleOrchestrationEnabled(
   context: Readonly<ForegroundRationaleActivationContext>,
 ): boolean {
@@ -144,11 +120,7 @@ export interface RationaleEligibilityProvenance {
   taint: RationaleTaint;
 }
 
-/**
- * Host-only marker for an unexecuted sibling proposal. The digest binds the
- * keyboard-turn anchor, tool name, and canonical original input while
- * deliberately excluding the provider-assigned tool-use id.
- */
+// Bind unexecuted sibling proposals to keyboard anchor, tool, and canonical input, excluding provider tool-use ID.
 export interface CancelledSiblingProposalGuard {
   contractVersion: typeof RATIONALE_CONTROL_CONTRACT_VERSION;
   anchorId: string;
@@ -281,12 +253,8 @@ export function validateTriggeringBatchDisposition(
   }
 }
 
-/**
- * Opaque reservation returned by the host-owned atomic anchor-round CAS.
- * Structural validation is not authenticity; callers MUST obtain it from the
- * trusted store. Reusing an identical reservation produces the same control
- * identity because ticketId and nonce are assigned here, not by the factory.
- */
+// Reservations must come from trusted atomic CAS; shape validation cannot prove authenticity.
+// Host-assigned ticketId and nonce keep identical retries on the same control identity.
 export interface HostAnchorRoundReservationReceipt {
   contractVersion: typeof RATIONALE_CONTROL_CONTRACT_VERSION;
   kind: "host-anchor-round-cas-reservation";
@@ -436,11 +404,7 @@ export class InMemoryHostAnchorRoundCasStore implements HostAnchorRoundCas {
   }
 }
 
-/**
- * `toolUseId` is the host invocation identity. It intentionally is not part of
- * the reusable ActionIdentity/actionDigest, but the full sealed action is bound
- * by invocationDigest and execution also requires a host-consumed CAS receipt.
- */
+// Reusable action identity excludes toolUseId; invocationDigest binds it and execution still requires host-consumed CAS.
 export interface SealedRationaleAction {
   toolUseId: string;
   toolName: string;
@@ -558,9 +522,7 @@ export function sanitizeDisplayText(value: string, maxLength: number): string {
   const withoutMarkup = value
     .replace(/<[^>]*>/g, " ")
     .trim();
-  // Keep every host display projection on the same Unicode policy as the
-  // renderer contract. Run it again after DLP masking so a future masker
-  // cannot reintroduce an invisible directional or control character.
+  // Apply renderer Unicode policy again after masking so display cannot regain invisible controls.
   const masked = maskSensitiveData(
     normalizeRationaleApprovalDisplayText(withoutMarkup),
   ).masked;
@@ -716,8 +678,7 @@ function cloneBoundedStringList(
   if (!Array.isArray(value)) {
     throw new TypeError(label + " exceeds its bounded string-list contract");
   }
-  // Validate descriptors and prototypes before any inherited iterator helper
-  // can observe attacker-controlled Array subclasses or accessors.
+  // Validate descriptors and prototypes before inherited iterators can trigger attacker-controlled accessors.
   assertCanonicalJson(value, label);
   const descriptors = Object.getOwnPropertyDescriptors(value) as Record<string, PropertyDescriptor>;
   const lengthDescriptor = descriptors.length;
@@ -786,7 +747,6 @@ const RATIONALE_TAINTS: readonly string[] = [
   "mcp-prompt-emitted", "plugin-prompt-emitted", "agent-message", "queue-auto", "surface-user", "tailnet-surface", "platform-bridge",
 ];
 
-/** Reject a contract record whose own keys are not exactly `expected`. */
 export function assertExactOwnKeys(value: object, expected: readonly string[], label: string): void {
   if (!hasExactKeys(value, expected)) {
     throw new TypeError(label + " contains unexpected or missing fields");
@@ -804,7 +764,6 @@ export function cloneRationaleCanonicalJson<T>(
   return cloneCanonicalJson(value, label);
 }
 
-/** {@link cloneRationaleCanonicalJson} typed back to the input shape for contract builders. */
 export function sealRationaleCanonicalJson<T>(value: T, label: string): T {
   return cloneCanonicalJson(value, label) as T;
 }
@@ -874,10 +833,7 @@ function computeRationaleInvocationDigest(input: {
   ticketId: string;
   nonce: string;
   anchor: RequestAnchor;
-  // SHA-256 is only a deterministic consistency key. It is not an
-  // authenticity primitive: resume/execution must compare it with the
-  // immutable digest stored by the host ticket CAS, never with a digest
-  // supplied or recomputed by an untrusted caller.
+  // SHA-256 proves consistency, not authenticity; compare against immutable host-CAS digests, never caller-supplied digests.
   actionDigest: string;
   triggeringBatchDisposition: TriggeringBatchDisposition;
   anchorRoundReservation: HostAnchorRoundReservationReceipt;
@@ -1198,8 +1154,7 @@ export function isRationaleEligible(input: {
     isValidRationaleProvenance(input.rationaleProvenance) &&
     input.rationaleProvenance.startedFromUserKeyboard === true &&
     input.rationaleProvenance.taint === "none" &&
-    // Model-authored tool arguments are the first-round boundary used by the
-    // current trust-origin SOT. file-content/app/plugin/agent provenance fails.
+    // Only model-authored tool arguments satisfy this keyboard-turn boundary; other content provenance fails.
     input.invocationTrustOrigin === "llm-tool-arg"
   );
 }

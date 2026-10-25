@@ -39,8 +39,7 @@ export async function normalizeImage(bytes: Buffer, requested: ImagePreparationO
   const orientedHeight = swapsDimensions ? originalWidth : originalHeight;
   let dimension = Math.min(options.maxDimension, Math.max(orientedWidth, orientedHeight));
   for (let attempt = 0; attempt < IMAGE_PREPARATION_POLICY.maxEncodeAttempts; attempt++) {
-    // PNG preserves transparency and avoids introducing lossy encoding artifacts.
-    // This fully decodes the selected frame; metadata inspection alone is not validation.
+    // PNG preserves transparency without lossy artifacts; fully decode the chosen frame because metadata alone cannot validate it.
     const { data, info } = await sharp(bytes, decoderOptions).autoOrient()
       .resize({ width: dimension, height: dimension, fit: "inside", withoutEnlargement: true })
       .png().timeout({ seconds: Math.ceil(TOOL_TIMEOUT_POLICY.imagePreparationMs / 1000) })

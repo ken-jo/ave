@@ -1,11 +1,4 @@
-/**
- * Tool pipeline — permission-audit entry builders + audit-output redaction.
- *
- * Pure helpers factored out of `executor.ts` (C7 decomposition). These build
- * the {@link PermissionAuditEntryInput} rows and the hook-chain forensic
- * surface; they touch no executor state. The {@link AuditWriter} (audit-writer.ts)
- * composes them with the shared AuditLogger to actually persist rows.
- */
+// Pure permission-audit and hook-chain builders; AuditWriter owns persistence.
 import { randomUUID } from "node:crypto";
 import type { Tool } from "../base.js";
 import type { ToolSource, ToolCategory } from "../types.js";
@@ -16,16 +9,8 @@ import type { HookDispatchResult } from "../../hooks/script-hook-manager.js";
 import type { ToolPermissionContext } from "../executor.js";
 import { resolveToolPathForPermission } from "../../shared/tool-path-resolution.js";
 
-/**
- * Redact every `freeText` field from an `ask_user_question` tool result
- * before it is written to the audit log. Result shape (one card,
- * 1–4 questions):
- *   {"answers":[{"choice":"…"},{"freeText":"…"}],"dismissed":false}
- * We keep choice/dismissed but replace each non-empty freeText with a
- * placeholder so user-typed PII never lands in the audit trail. Falls
- * back to the original content when JSON parsing fails (e.g. error
- * responses).
- */
+// Redact nonempty answers[].freeText before audit while retaining choices and dismissal.
+// Non-JSON error responses pass through unchanged.
 export function redactAskUserAuditOutput(rawOutput: string): string {
   try {
     const parsed = JSON.parse(rawOutput) as Record<string, unknown>;
@@ -94,13 +79,7 @@ function permissionAuditBase(args: {
   };
 }
 
-/**
- * Derive the `failureReason` discriminant from a fail-closed
- * {@link ScriptHookInvocationResult}. Only a denying result that failed for an
- * operational reason (timeout / nonzero exit / spawn-error / bad output) carries
- * one; a clean `{action:"deny"}` verdict from a hook that ran fine returns
- * `undefined` (it denied on policy, not on failure).
- */
+// Only operational hook failures carry failureReason; a successful policy deny does not.
 function hookFailureReason(
   r: ScriptHookInvocationResult,
 ): HookResult["failureReason"] | undefined {
@@ -114,15 +93,7 @@ function hookFailureReason(
   return undefined;
 }
 
-/**
- * Map a runtime {@link HookDispatchResult} (pre / post / perm) into the audit
- * {@link HookResult}[] surface. Each per-script
- * invocation result becomes one forensic row carrying its `decision`/`reason`,
- * the `source` discriminant (`.sh` vs config), the `commandIdentity` anchor, and
- * a `failureReason` when the hook failed closed. Returns `undefined` when the
- * dispatch ran no matching hooks so non-hook audit rows stay clean (`hookChain`
- * remains absent).
- */
+// Emit one forensic row per script, preserving source, command identity, and fail-closed cause; omit absent chains.
 export function hookChainFromDispatch(
   event: ScriptHookType,
   dispatch: HookDispatchResult | undefined,
@@ -132,15 +103,12 @@ export function hookChainFromDispatch(
     const failureReason = hookFailureReason(r);
     return {
       hookName: r.hookPath,
-      // `hookChainFromDispatch` only handles the tool-use events, so the narrow
-      // pre|post|perm projection comes straight from the `event` param. (The
-      // runner's `r.hookType` widened to `HookEvent` for the lifecycle surface.)
+      // Project tool-use event from pre/post/perm input; runtime hookType also includes lifecycle events.
       hookType: event,
       action: r.decision,
       reason: r.reason,
       durationMs: r.durationMs,
-      // `event` today equals `hookType`; kept explicit so the closed-set surface
-      // is populated for forward-compat readers.
+      // Populate event explicitly for readers of the closed audit surface.
       event,
       handlerType: "command",
       commandIdentity: r.commandIdentity,
@@ -151,11 +119,7 @@ export function hookChainFromDispatch(
   });
 }
 
-/**
- * Concatenate two optional hook chains (e.g. the pre + post rows on the success
- * path) into one, dropping empty/absent inputs. Returns `undefined` when both
- * are empty so the audit row's `hookChain` stays absent for non-hook calls.
- */
+// Omit hookChain when neither input contains rows.
 export function mergeHookChains(
   ...chains: Array<HookResult[] | undefined>
 ): HookResult[] | undefined {

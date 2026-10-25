@@ -1,11 +1,3 @@
-/**
- * Tool pipeline — display/DLP masking + callback emission + approval-cache key.
- *
- * Pure helpers factored out of `executor.ts` (C7 decomposition). These mask the
- * tool input shown to the renderer/audit, derive the per-invocation approval
- * cache key, and fan tool-start / permission-review events out to the executor
- * callbacks. No executor state is touched.
- */
 import { isPiiRedactionEnabled, maskSensitiveData } from "../../audit/dlp-filter.js";
 import {
   getHostShellExecutionPlanCacheIdentity,
@@ -20,10 +12,7 @@ import type {
   ToolExecutorCallbacks,
 } from "../executor.js";
 
-// The tool input the renderer shows, and the deferred-approval summary, are
-// display surfaces governed by `privacy.piiRedactEnabled`. Resolve the setting
-// once per input rather than per string so one displayed object cannot be half
-// masked if the user flips the toggle mid-walk.
+// Resolve privacy masking once per input so a mid-walk setting change cannot produce mixed display state.
 function maskDisplayValue(value: unknown, pii: boolean): unknown {
   if (typeof value === "string") {
     return maskSensitiveData(value, { pii }).masked;
@@ -53,10 +42,6 @@ export function summarizeInputForDeferred(input: Record<string, unknown>): strin
   }
 }
 
-/**
- * The policy key of one invocation and what a remembered decision for it is
- * keyed on (see {@link ApprovalMemory}).
- */
 export interface InvocationApprovalIdentity {
   readonly approvalCacheKey: string | undefined;
   readonly approvalMemory: ApprovalMemory;
@@ -64,12 +49,7 @@ export interface InvocationApprovalIdentity {
 
 export const ARGS_APPROVAL_MEMORY: ApprovalMemory = Object.freeze({ kind: "args" });
 
-/**
- * Target-wide memory exists only when the tool opts in with
- * `approvalMemoryScope`; `approvalCacheKey` alone never widens it. The key
- * hashes the scope together with the sealed host-shell plan, so a decision
- * made under one execution substrate never answers for another.
- */
+// Only approvalMemoryScope enables target-wide memory; bind it to the sealed shell plan to prevent cross-substrate reuse.
 async function approvalMemoryFor(
   tool: Tool,
   input: Record<string, unknown>,
@@ -82,12 +62,8 @@ async function approvalMemoryFor(
   const executionPlan = hostShellExecutionPlan === undefined
     ? null
     : getHostShellExecutionPlanCacheIdentity(hostShellExecutionPlan);
-  // Remember the origin policy while handing execute this invocation's live
-  // tab and document identity. Cached metadata must never select an old tab.
-  // A terminal command is remembered by command, terminal and directory: each
-  // terminal's shell has its own sandbox jail, fixed when it was spawned, so a
-  // decision made for one terminal does not carry to another (cwdForMatch is
-  // derived from cwd and left out).
+  // Cached origin policy must use the live tab/document, never select a stale target.
+  // Terminal decisions bind command, terminal, and directory because each terminal has its own fixed sandbox.
   const memoryScope = scope.kind === "browser-origin"
     ? { kind: scope.kind, origin: scope.origin, tabOpener: scope.tabOpener }
     : scope.kind === "browser-agent-tabs" ? { kind: scope.kind }
@@ -138,9 +114,7 @@ export function approvalCacheKeyFor(
   const planIdentity = getHostShellExecutionPlanCacheIdentity(
     hostShellExecutionPlan,
   );
-  // A canonical host shell still needs a plan partition when it does not
-  // declare a tool-specific key: lookupApproval also receives canonical args,
-  // so this only adds the sealed execution substrate to that identity.
+  // Partition canonical shell approvals by sealed execution plan even without a tool-specific cache key.
   return base === undefined
     ? `${tool.name}:${planIdentity}`
     : `${base}:${planIdentity}`;

@@ -501,7 +501,7 @@ describe("archive accounting and owned stream lifecycle", () => {
     const started = new Promise<void>((resolve) => { closeStarted = resolve; });
     const gate = new Promise<void>((resolve) => { release = resolve; });
     let admitted = 0; let settled = false;
-    const delayed: TransferTreeSink = { async directory() {}, async file(_path, body) { admitted++; for await (const _chunk of body) { /* drain before final close */ } closeStarted(); await gate; } };
+    const delayed: TransferTreeSink = { async directory() {}, async file(_path, body) { admitted++; for await (const _chunk of body) {  } closeStarted(); await gate; } };
     const operation = consumeTarArchive(stream(bytes), delayed, { signal: final.signal, limits: LIMITS });
     void operation.then(() => { settled = true; }, () => { settled = true; });
     await started; final.abort(); await new Promise<void>((resolve) => setImmediate(resolve));
