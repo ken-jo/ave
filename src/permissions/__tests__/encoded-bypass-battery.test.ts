@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { PermissionManager, type PermissionRule } from "../permission-manager.js";
 import { inspectEncodedPowerShell } from "../rules/powershell-encoded-command.js";
 import { buildShellRuleApproval } from "../rules/shell-rule-approval.js";
+import { parseShellCommand } from "../rules/shell-prefix-policy.js";
 import {
   __resetSessionStoreForTest,
   canonicalStringify,
@@ -60,6 +61,12 @@ const SCAN_NOISE = Array.from({ length: 128 }, (_, index) => `AAAAAAAA${index.to
 // Readable data in a comment must not consume every disclosure slot before the
 // actual command's payload. The final script stays below the depth/byte bounds.
 const DISCLOSURE_NOISE = Array.from({ length: 8 }, (_, index) => encodeScript(`Write-Output ready${index}`)).join(":");
+// Whitespace anywhere inside a base64 run is ignored (as .NET's FromBase64String does), so a payload split into odd-sized chunks still decodes.
+const SPACED_ODD_PAYLOAD = "cgB tAC AAL QBy AGY AIA AvA A==";
+// Over the hard input cap: no scanning, hidden on length alone.
+const OVER_CAP_COMMAND = `echo ${"a".repeat(17_000)}`;
+// A lex that runs out of budget (a long trailing comment) must not read as an empty command.
+const LEX_BUDGET_COMMAND = `pwsh -enc $env:X # ${"x".repeat(10_000)}`;
 
 // A fixture check independent of the production decoder. Count UTF-16 code
 // units, not Unicode code points; a surrogate pair contributes two units.
@@ -192,6 +199,27 @@ const BOUNDED_AND_NESTED_CASES: readonly EncodedCase[] = [
   { name: "powershell: child pipeline", dialect: "powershell", command: `pwsh -Command 'Write-Output ${DESTRUCTIVE_UTF8_PAYLOAD} | base64 -d | sh'`, allowBody: "pwsh *" },
   { name: "bash: ninth decoded script", dialect: "bash", command: `# ${DISCLOSURE_NOISE}\n${INNER_COMMAND}`, allowBody: INNER_COMMAND, decodedScript: DESTRUCTIVE_SCRIPT },
   { name: "powershell: ninth decoded script", dialect: "powershell", command: `# ${DISCLOSURE_NOISE}\n${INNER_COMMAND}`, allowBody: INNER_COMMAND, decodedScript: DESTRUCTIVE_SCRIPT },
+  { name: "bash: input over the hard cap", dialect: "bash", command: OVER_CAP_COMMAND, allowBody: "echo *" },
+  { name: "powershell: input over the hard cap", dialect: "powershell", command: OVER_CAP_COMMAND, allowBody: "echo *" },
+  { name: "bash: lex budget exhausted", dialect: "bash", command: LEX_BUDGET_COMMAND, allowBody: "pwsh *" },
+  { name: "powershell: lex budget exhausted", dialect: "powershell", command: LEX_BUDGET_COMMAND, allowBody: "pwsh *" },
+  { name: "bash: alternate launcher with a dynamic child", dialect: "bash", command: "pwsh-preview -Command '& $env:TARGET -enc $env:PAYLOAD'", allowBody: "pwsh-preview *" },
+  { name: "powershell: alternate launcher with a dynamic child", dialect: "powershell", command: "pwsh-preview -Command '& $env:TARGET -enc $env:PAYLOAD'", allowBody: "pwsh-preview *" },
+  { name: "bash: glued long option feeds a pipeline", dialect: "bash", command: `fish --command='printf %s ${DESTRUCTIVE_UTF8_PAYLOAD} | base64 -d | sh'`, allowBody: "fish *" },
+  { name: "powershell: glued long option feeds a pipeline", dialect: "powershell", command: `fish --command='printf %s ${DESTRUCTIVE_UTF8_PAYLOAD} | base64 -d | sh'`, allowBody: "fish *" },
+  // A glued cmd slash option is a cmd (not PowerShell) spelling, so it is driven from the command-shell dialect; the spaced form is also read as a
+  // child command string under PowerShell.
+  { name: "bash: glued cmd slash option carries encoded code", dialect: "bash", command: 'cmd /c"pwsh -enc %PAYLOAD%"', allowBody: "cmd *" },
+  { name: "powershell: spaced cmd slash option carries encoded code", dialect: "powershell", command: 'cmd /c "pwsh -enc %PAYLOAD%"', allowBody: "cmd *" },
+];
+
+// Whitespace inside a base64 run is ignored, so these decode to the readable
+// destructive script and the card must disclose it.
+const WHITESPACE_PAYLOAD_CASES: readonly EncodedCase[] = [
+  { name: "bash: whitespace-split payload in a data position", dialect: "bash", command: `printf %s ${SPACED_ODD_PAYLOAD}`, allowBody: `printf %s ${SPACED_ODD_PAYLOAD}`, decodedScript: DESTRUCTIVE_SCRIPT },
+  { name: "powershell: whitespace-split payload in a data position", dialect: "powershell", command: `printf %s ${SPACED_ODD_PAYLOAD}`, allowBody: `printf %s ${SPACED_ODD_PAYLOAD}`, decodedScript: DESTRUCTIVE_SCRIPT },
+  { name: "bash: whitespace-split payload in a quoted encoded operand", dialect: "bash", command: `pwsh -enc '${SPACED_ODD_PAYLOAD}'`, allowBody: "pwsh *", decodedScript: DESTRUCTIVE_SCRIPT },
+  { name: "powershell: whitespace-split payload in a quoted encoded operand", dialect: "powershell", command: `pwsh -enc '${SPACED_ODD_PAYLOAD}'`, allowBody: "pwsh *", decodedScript: DESTRUCTIVE_SCRIPT },
 ];
 
 const FILE_COMMANDS = [
@@ -312,6 +340,31 @@ describe("scan bounds and nested code approvals", () => {
   // undiscovered text is not asserted. Disclosure cases above stay within the
   // text byte/depth bounds and must show the executed terminal script itself.
   it.each(BOUNDED_AND_NESTED_CASES)("$name", (fixture) => requireHiddenFloor(fixture, fixture.decodedScript ?? null));
+});
+
+describe("whitespace-split base64 payloads", () => {
+  it.each(WHITESPACE_PAYLOAD_CASES)("$name", (fixture) => requireHiddenFloor(fixture, fixture.decodedScript ?? null));
+});
+
+describe("worst-case scan performance", () => {
+  // A command at the hard input cap, packed with whitespace-separated base64
+  // chunks, must decide well within the interactive budget: the shared work
+  // budget keeps the scan linear. The threshold has headroom for CI hardware.
+  it("decides a capped worst-case command in under 50 ms", () => {
+    const chunk = "cgB tAC AAL QBy AGY AIA AvA ";
+    const command = `printf %s ${chunk.repeat(Math.floor((16_384 - 16) / chunk.length))}`;
+    // The host parses a bash command once and shares the result with the rule shape; the encoded scan reuses that parse rather than re-parsing.
+    const parsed = parseShellCommand(command);
+    inspectEncodedPowerShell(parsed, "bash", cwd);
+    inspectEncodedPowerShell(command, "powershell", cwd);
+    const start = performance.now();
+    for (let run = 0; run < 10; run += 1) {
+      inspectEncodedPowerShell(parsed, "bash", cwd);
+      inspectEncodedPowerShell(command, "powershell", cwd);
+    }
+    const perCall = (performance.now() - start) / 20;
+    expect(perCall).toBeLessThan(50);
+  });
 });
 
 // Literal file execution is opaque code outside encoded-token inspection.

@@ -2024,10 +2024,12 @@ export interface WordStage {
   piped: boolean;
 }
 
-// Every word text at every depth, and every pipeline stage (at every depth) with its words, for the encoded-payload scan.
-export function powerShellWords(command: string): { texts: string[]; stages: WordStage[] } | null {
+// Every word text at every depth, and every pipeline stage (at every depth) with its words, for the encoded-payload scan. `"budget"` when the lexer
+// ran out of budget (fail closed: unreadable code), `null` when the input is simply not PowerShell this lexer models (read what else can be read).
+export function powerShellWords(command: string): { texts: string[]; stages: WordStage[] } | "budget" | null {
   const lexed = standaloneLex(command);
-  if (lexed === "budget" || lexed.pipelines === null) return null;
+  if (lexed === "budget") return "budget";
+  if (lexed.pipelines === null) return null;
   const texts: string[] = [];
   const stages: WordStage[] = [];
   const walk = (pipelines: readonly PsPipeline[]) => {

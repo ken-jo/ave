@@ -592,10 +592,20 @@ describe("checkDetailed applies the floors by dialect", () => {
     expect(result.forceModal).toBeUndefined();
   });
 
+  // A lexer that runs out of budget cannot be read for hidden code, so it fails closed to the human-only floor, not the ordinary ask
+  // (owner re-review round 9, 2026-10-26); a saved exact-action grant never turns it into an allow.
+  it("hides an expression that exhausts the lexer budget, unremembered without a sandbox", async () => {
+    const command = `Get-Content (${"'a' + ".repeat(3000)}'b')`;
+    const pm = new PermissionManager(join(dir, "permissions.json"));
+    pm.setMode("allow");
+    expect(pm.checkDetailed("powershell", "builtin", "shell", null, ps(command))).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    await pm.addAlwaysAllowedPersist(ps(command).approvalCacheKey, "write");
+    expect(pm.checkDetailed("powershell", "builtin", "shell", null, ps(command))).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+  });
+
   it.each([
     "Write-Host 'unterminated", "iex $code", "Get-Content $missing",
     "Invoke-Item payload.bat", "Set-Content build.ps1 Get-Date; build.ps1",
-    `Get-Content (${"'a' + ".repeat(3000)}'b')`,
   ])("keeps parser, code and provenance asks ordinary but unremembered without a sandbox: %#", async (command) => {
     const pm = new PermissionManager(join(dir, "permissions.json"));
     pm.setMode("allow");
