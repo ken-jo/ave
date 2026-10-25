@@ -941,7 +941,7 @@ describe("native access-rule admission", () => {
     const cmdlets = new Set(powershell.match(/\b[A-Z][A-Za-z]+-[A-Z][A-Za-z]+\b/g));
     const moduleOf: Record<string, string> = {
       "Import-Module": "Core", "ForEach-Object": "Core", "Where-Object": "Core",
-      "ConvertFrom-Json": "Utility", "ConvertTo-Json": "Utility", "Select-Object": "Utility", "Add-Type": "Utility",
+      "ConvertFrom-Json": "Utility", "ConvertTo-Json": "Utility", "Select-Object": "Utility", "Add-Type": "Utility", "Add-Member": "Utility",
       "Get-ChildItem": "Management", "Get-ItemProperty": "Management",
       "Get-LocalUser": "LocalAccounts", "Get-LocalGroup": "LocalAccounts", "Get-LocalGroupMember": "LocalAccounts",
       "Get-AppxPackage": "Appx",

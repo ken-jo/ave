@@ -1133,8 +1133,10 @@ export class SubscriptionRuntimeService {
     ]);
     const codexRuntimeDirectory = await namespace.childDir("codex-v3-home/runtime");
     // These directories persist across launches. Claiming them on every start
-    // also returns one an earlier elevated run left owned by Administrators
-    // to the current account, instead of refusing it from then on.
+    // returns one an earlier elevated run left owned by Administrators to the
+    // current account, instead of refusing it from then on. One owned by any
+    // other account is refused unchanged, so start fails rather than adopt a
+    // directory someone else made.
     await (options.claimRuntimeDirectories ?? claimPrivateOwnership)([
       codexHome, codexRuntimeDirectory, codexSqlite, loginWorkspace, loginTemp, textWorkspace, textTemp,
       claudeHome, claudeWorkspace, claudeTemp,

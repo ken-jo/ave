@@ -5,7 +5,7 @@ import {
   verifyCodexExecutableArtifact, type CodexExecutableArtifact,
 } from "./codex-executable-artifact.js";
 import {
-  assertCodexExecutableLocation, assertCodexPrivateRuntimeDirectory, claimPrivateOwnership, createPrivateTempDirectory, type CodexLocationRequest,
+  assertCodexExecutableLocation, assertCodexPrivateRuntimeDirectory, createPrivateObjects, createPrivateTempDirectory, type CodexLocationRequest,
 } from "./codex-executable-location.js";
 import { isNativeExecutableFile } from "./native-executable-format.js";
 import { cliExecutableCandidates, type CliDiscoveryEnvironment } from "./user-cli-discovery.js";
@@ -110,9 +110,12 @@ export async function pinClaudeCodeExecutable(
   const directory = await createPrivateTempDirectory(join(runtimeDirectory, "executable-"));
   try {
     await assertCodexPrivateRuntimeDirectory(directory, routeKind);
-    const primary = await copyNativeExecutableFile(interpreter,
-      join(directory, discovery.platform === "win32" ? "runtime.exe" : "runtime"), discovery.platform, process.arch, "native");
-    await claimPrivateOwnership([primary.executable]);
+    const primary = await createPrivateObjects(async (created) => {
+      const copy = await copyNativeExecutableFile(interpreter,
+        join(directory, discovery.platform === "win32" ? "runtime.exe" : "runtime"), discovery.platform, process.arch, "native");
+      created.push(copy.executable);
+      return copy;
+    });
     if (primary.contentHash !== interpreterHash) throw new Error("Subscription interpreter changed");
     const packageArtifact = root === null || script === null ? null : await copySubscriptionPackageArtifact(root, script, directory);
     const artifact: CodexExecutableArtifact = Object.freeze({ ...primary, companion: null });

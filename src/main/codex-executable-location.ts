@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { windowsPowerShellEnv } from "../shared/windows-powershell-env.js";
 import { constants, promises as fs, type Stats } from "node:fs";
 import { homedir } from "node:os";
-import { posix, win32 } from "node:path";
+import { dirname, posix, resolve as resolvePath, win32 } from "node:path";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { isRecord } from "../shared/is-record.js";
 import { createLogger } from "../lib/logger.js";
@@ -203,12 +203,30 @@ const WINDOWS_ACL_SCRIPT = [
   "      } finally { LocalFree(descriptor); }",
   "    }",
   "  }",
-  // Opens the path object itself, as Read does, with WRITE_OWNER only.
-  "  public static void SetOwner(string path, System.Security.Principal.SecurityIdentifier owner) {",
+  // Both open the path object itself, as Read does. Owner asks for
+  // READ_CONTROL only, which an owner holds implicitly. ClaimFromAdministrators
+  // adds WRITE_OWNER, re-reads the owner on that same handle, and sets the
+  // claimant only while BUILTIN\Administrators still owns the object.
+  "  private static SafeFileHandle Open(string path, uint access) {",
+  "    SafeFileHandle handle = CreateFile(path, access, 7, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero);",
+  "    if (handle.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());",
+  "    return handle;",
+  "  }",
+  "  private static string OwnerOf(SafeFileHandle handle) {",
+  "    IntPtr owner, group, dacl, sacl, descriptor;",
+  "    uint result = GetSecurityInfo(handle, 1, 1, out owner, out group, out dacl, out sacl, out descriptor);",
+  "    if (result != 0) throw new Win32Exception((int)result);",
+  "    try { return new System.Security.Principal.SecurityIdentifier(owner).Value; }",
+  "    finally { LocalFree(descriptor); }",
+  "  }",
+  "  public static string Owner(string path) {",
+  "    using (SafeFileHandle handle = Open(path, 0x00020000)) { return OwnerOf(handle); }",
+  "  }",
+  "  public static void ClaimFromAdministrators(string path, System.Security.Principal.SecurityIdentifier owner) {",
   "    byte[] sid = new byte[owner.BinaryLength];",
   "    owner.GetBinaryForm(sid, 0);",
-  "    using (SafeFileHandle handle = CreateFile(path, 0x00080000, 7, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero)) {",
-  "      if (handle.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());",
+  "    using (SafeFileHandle handle = Open(path, 0x00080000 | 0x00020000)) {",
+  "      if (OwnerOf(handle) != \"S-1-5-32-544\") throw new InvalidOperationException(\"Owner changed during the claim\");",
   "      uint result = SetSecurityInfo(handle, 1, 1, sid, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);",
   "      if (result != 0) throw new Win32Exception((int)result);",
   "    }",
@@ -220,11 +238,27 @@ const WINDOWS_ACL_SCRIPT = [
   // Direct assignment preserves the decoded array without nesting it inside
   // a single pipeline object.
   "$targets = $request.paths",
-  // The owner is this host's token user, never request data. A failed claim
+  // The owner is this host's token user, never request data. Every owner is
+  // read first. One the claimant already owns is kept, without asking for
+  // WRITE_OWNER. One owned by BUILTIN\Administrators, the default owner an
+  // elevated token gives new objects, is set to the claimant. Any other owner
+  // is refused, and then nothing in the request changes. A failed open or set
   // throws, which ends the host and fails the request.
+  "$claims = $null",
   "if ($request.setOwner -is [bool] -and $request.setOwner) {",
   "  $claimant = [System.Security.Principal.WindowsIdentity]::GetCurrent().User",
-  "  foreach ($target in @($targets)) { [ExecutablePathSecurity]::SetOwner([string]$target, $claimant) }",
+  "  $claimTargets = @($targets)",
+  "  $previous = @(foreach ($target in $claimTargets) { [ExecutablePathSecurity]::Owner([string]$target) })",
+  "  $refused = @($previous | Where-Object { $_ -ne $claimant.Value -and $_ -ne 'S-1-5-32-544' }).Count -ne 0",
+  "  $claims = @(for ($index = 0; $index -lt $claimTargets.Count; $index++) {",
+  "    $target = [string]$claimTargets[$index]",
+  "    $owner = $previous[$index]",
+  "    if ($owner -eq $claimant.Value) { $outcome = 'kept' }",
+  "    elseif ($owner -ne 'S-1-5-32-544') { $outcome = 'refused' }",
+  "    elseif ($refused) { $outcome = 'unclaimed' }",
+  "    else { [ExecutablePathSecurity]::ClaimFromAdministrators($target, $claimant); $outcome = 'set' }",
+  "    [PSCustomObject]@{ path = $target; previousOwner = $owner; outcome = $outcome }",
+  "  })",
   "}",
   "$paths = @($targets | ForEach-Object {",
   "  $target = [string]$_",
@@ -308,6 +342,7 @@ const WINDOWS_ACL_SCRIPT = [
   "} catch { $desktopPackage = @{ status = 'unavailable'; reason = 'resolution-failed' } }",
   "}",
   "$result = [PSCustomObject]@{ currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value; machineDomainSid = $machineDomainSid; capSidAccounts = $capSidAccounts; paths = $paths; sandboxGroup = $sandboxGroup; desktopPackage = $desktopPackage }",
+  "if ($null -ne $claims) { $result | Add-Member -NotePropertyName claims -NotePropertyValue $claims }",
   // One physical line per reply, written outside the pipeline.
   "[Console]::Out.WriteLine(([PSCustomObject]@{ id = $request.id; result = $result } | ConvertTo-Json -Depth 7 -Compress))",
   "[Console]::Out.WriteLine(('END ' + [string]$request.id))",
@@ -472,7 +507,7 @@ async function assertExtendedAccessRules(inspected: readonly InspectedPath[], pr
   if (seen.size !== inspected.length) throw new CodexExecutableLocationError("Executable access rules are incomplete");
 }
 
-const WINDOWS_ACL_RESULT_KEYS = new Set(["currentSid", "machineDomainSid", "capSidAccounts", "paths", "sandboxGroup", "desktopPackage"]);
+const WINDOWS_ACL_RESULT_KEYS = new Set(["currentSid", "machineDomainSid", "capSidAccounts", "paths", "sandboxGroup", "desktopPackage", "claims"]);
 const WINDOWS_ACL_PATH_KEYS = new Set(["path", "owner", "daclPresent", "entries"]);
 const WINDOWS_ACL_GROUP_KEYS = new Set(["name", "description", "sid", "members"]);
 
@@ -891,16 +926,20 @@ async function inspectCodexLocations(requests: readonly CodexLocationRequest[], 
 }
 
 /**
- * Make the current account the owner of objects the product just created.
+ * Make the current account the owner of the product's private objects.
  *
  * An elevated token usually gives new objects BUILTIN\Administrators as their
  * owner, and admission requires the current account to own everything under a
  * private root. This is the one place that ownership is established (the rule
  * is written in docs/architecture/architecture.md, "Windows object
- * ownership"). The resident ACL host sets the owner from its own token user,
- * opening each path object itself, and the reply must show that owner for
- * every path; anything else refuses. Elsewhere POSIX creation modes already
- * leave the current account as owner, so there is nothing to claim.
+ * ownership"). The resident ACL host reads each owner on the path object
+ * itself. It keeps one the current account already owns, without asking for
+ * WRITE_OWNER, and gives one owned by BUILTIN\Administrators to its own token
+ * user. Any other owner refuses the whole batch and changes nothing, so a
+ * directory another account planted is never taken over. The reply must then
+ * show the current account as every path's owner. Elsewhere POSIX creation
+ * modes already leave the current account as owner, so there is nothing to
+ * claim.
  */
 export async function claimPrivateOwnership(paths: readonly string[]): Promise<void> {
   if (process.platform !== "win32" || paths.length === 0) return;
@@ -914,40 +953,103 @@ export async function claimPrivateOwnership(paths: readonly string[]): Promise<v
       skipPackage: true,
       setOwner: true,
     }, launch, { timeoutMs: TOOL_TIMEOUT_POLICY.windowsAclRequestMs, maxBytes: aclOutputBytes(batch) });
-    const claimed = result as { currentSid: unknown; paths: { path: unknown; owner: unknown }[] };
-    if (typeof claimed.currentSid !== "string" || !SID_PATTERN.test(claimed.currentSid)
-        || claimed.paths.length !== batch.length
-        || claimed.paths.some((entry, index) => entry.path !== batch[index]!.path || entry.owner !== claimed.currentSid)) {
-      throw new CodexExecutableLocationError("Runtime directory owner could not be set to the current account");
+    const claim = parseOwnershipClaim(result, batch.map(({ path }) => path));
+    const refused = claim.claims.find(({ outcome }) => outcome === "refused");
+    if (refused) {
+      throw new CodexExecutableLocationError(`Runtime directory is owned by another account: ${JSON.stringify(refused.path)} (owner ${refused.previousOwner}, account ${claim.currentSid})`);
+    }
+    const unowned = claim.paths.find(({ owner }) => owner !== claim.currentSid);
+    if (unowned) {
+      throw new CodexExecutableLocationError(`Runtime directory owner could not be set to the current account: ${JSON.stringify(unowned.path)} (owner ${unowned.owner}, account ${claim.currentSid})`);
     }
   }
+}
+
+const OWNERSHIP_CLAIM_OUTCOMES = ["kept", "set", "unclaimed", "refused"] as const;
+
+interface OwnershipClaim {
+  currentSid: string;
+  paths: { path: string; owner: string }[];
+  claims: { path: string; previousOwner: string; outcome: typeof OWNERSHIP_CLAIM_OUTCOMES[number] }[];
+}
+
+/** The claim reply, checked path by path against the request; any other shape refuses. */
+function parseOwnershipClaim(value: unknown, requested: readonly string[]): OwnershipClaim {
+  const invalid = () => new CodexExecutableLocationError("Runtime directory ownership reply is invalid");
+  if (!isRecord(value) || typeof value.currentSid !== "string" || !SID_PATTERN.test(value.currentSid)
+      || !isRecord(value.desktopPackage) || value.desktopPackage.status !== "skipped" || Object.keys(value.desktopPackage).length !== 1
+      || !Array.isArray(value.paths) || value.paths.length !== requested.length
+      || !Array.isArray(value.claims) || value.claims.length !== requested.length) {
+    throw invalid();
+  }
+  const paths = value.paths.map((entry: unknown, index) => {
+    if (!isRecord(entry) || entry.path !== requested[index] || typeof entry.owner !== "string" || !SID_PATTERN.test(entry.owner)) {
+      throw invalid();
+    }
+    return { path: entry.path as string, owner: entry.owner };
+  });
+  const claims = value.claims.map((entry: unknown, index) => {
+    if (!isRecord(entry) || !hasOnlyKeys(entry, OWNERSHIP_CLAIM_KEYS) || entry.path !== requested[index]
+        || typeof entry.previousOwner !== "string" || !SID_PATTERN.test(entry.previousOwner)
+        || !OWNERSHIP_CLAIM_OUTCOMES.includes(entry.outcome as typeof OWNERSHIP_CLAIM_OUTCOMES[number])) {
+      throw invalid();
+    }
+    return { path: entry.path as string, previousOwner: entry.previousOwner, outcome: entry.outcome as typeof OWNERSHIP_CLAIM_OUTCOMES[number] };
+  });
+  return { currentSid: value.currentSid, paths, claims };
+}
+
+const OWNERSHIP_CLAIM_KEYS = new Set(["path", "previousOwner", "outcome"]);
+
+/**
+ * Create the product's private objects and make the current account their
+ * owner with one claim. `create` makes them and records each path it made in
+ * `created`, parents before children. If creation or the claim fails, every
+ * recorded path is removed, last first, before the error is rethrown, so no
+ * half-owned object is left behind.
+ */
+export async function createPrivateObjects<T>(create: (created: string[]) => Promise<T>): Promise<T> {
+  const created: string[] = [];
+  try {
+    const result = await create(created);
+    await claimPrivateOwnership(created);
+    return result;
+  } catch (error) {
+    for (const path of [...created].reverse()) await fs.rm(path, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+/**
+ * `fs.mkdir` with `recursive` that records, parents first, each directory it
+ * made, for {@link createPrivateObjects}.
+ */
+export async function makePrivateDirectoryTree(path: string, created: string[]): Promise<void> {
+  const first = await fs.mkdir(path, { recursive: true, mode: 0o700 });
+  if (first === undefined) return;
+  // Node reports the first directory it made; every level from there down to
+  // `path` is new. A report outside `path` would make removal reach a
+  // directory this call did not make, so it is a contract violation.
+  const made: string[] = [];
+  for (let directory = resolvePath(path); directory !== resolvePath(first); directory = dirname(directory)) {
+    if (dirname(directory) === directory) throw new CodexExecutableLocationError("Created directory is outside the requested path");
+    made.unshift(directory);
+  }
+  created.push(resolvePath(first), ...made);
 }
 
 /**
  * Create private directories in order, each owned by the current account,
  * with one ownership claim for the whole set. A later path may sit inside an
- * earlier one; the first path's parent must exist. If any creation or the
- * claim fails, every directory this call made is removed before the error
- * is rethrown, so no half-owned directory is left behind.
+ * earlier one; the first path's parent must exist.
  */
 export async function createPrivateDirectories(paths: readonly string[]): Promise<void> {
-  const created: string[] = [];
-  await claimCreatedOrRemove(created, async () => {
+  await createPrivateObjects(async (created) => {
     for (const path of paths) {
       await fs.mkdir(path, { mode: 0o700 });
       created.push(path);
     }
   });
-}
-
-async function claimCreatedOrRemove(created: string[], create: () => Promise<void>): Promise<void> {
-  try {
-    await create();
-    await claimPrivateOwnership(created);
-  } catch (error) {
-    for (const path of [...created].reverse()) await fs.rm(path, { recursive: true, force: true });
-    throw error;
-  }
 }
 
 /** Create one private directory owned by the current account; its parent must exist. */
@@ -958,9 +1060,11 @@ export async function createPrivateDirectory(path: string): Promise<string> {
 
 /** `fs.mkdtemp` for a private directory owned by the current account. */
 export async function createPrivateTempDirectory(prefix: string): Promise<string> {
-  const created: string[] = [];
-  await claimCreatedOrRemove(created, async () => { created.push(await fs.mkdtemp(prefix)); });
-  return created[0]!;
+  return createPrivateObjects(async (created) => {
+    const path = await fs.mkdtemp(prefix);
+    created.push(path);
+    return path;
+  });
 }
 
 /** Admit the file's location; callers execute a separately pinned artifact. */

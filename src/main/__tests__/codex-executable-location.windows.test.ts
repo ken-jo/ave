@@ -1,5 +1,5 @@
-import { copyFileSync, mkdtempSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
-import { spawn } from "node:child_process";
+import { copyFileSync, mkdtempSync, readdirSync, realpathSync, rmdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -10,6 +10,7 @@ import {
   claimPrivateOwnership,
   CodexExecutableLocationError,
   createPrivateDirectories,
+  createPrivateDirectory,
   createPrivateTempDirectory,
   _resetDesktopPackageCacheForTest,
   _resetWindowsAclHostForTest,
@@ -19,6 +20,7 @@ import {
   type WindowsAclRequest, type WindowsAclHostLaunch,
 } from "../windows-acl-host.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
+import { windowsPowerShellEnv } from "../../shared/windows-powershell-env.js";
 
 // Mocked access rules answer at the request level. The real case empties the
 // seam, so the product's own ACL host runs.
@@ -49,6 +51,8 @@ afterEach(async () => {
 
 function realHostFixture() {
   const streams: { stdout: string; stderr: string }[] = [];
+  // Every reply that went through the product's transport, in order.
+  const replies: string[] = [];
   let launch: WindowsAclHostLaunch | undefined;
   const host = new WindowsAclHost((command, args, options) => {
     const child = spawn(command, args, options);
@@ -60,9 +64,11 @@ function realHostFixture() {
   });
   realHosts.push(host);
   _setWindowsAclTransportForTest({
-    request(request, captured, limits) {
+    async request(request, captured, limits) {
       launch = captured;
-      return host.request(request, captured, limits);
+      const line = await host.request(request, captured, limits);
+      replies.push(line);
+      return line;
     },
     discard: () => host.discard(),
   });
@@ -79,7 +85,8 @@ function realHostFixture() {
     expect(lines).toHaveLength(2);
     expect(lines[1]).toBe(`END ${JSON.parse(lines[0]!).id}`);
   };
-  return { host, streams, request, prime, get launch() { return launch!; } };
+  const owners = async (id: number, paths: string[]) => (JSON.parse(await request(id, paths)) as RawReply).result.paths.map(({ owner }) => owner);
+  return { host, streams, replies, request, owners, prime, get launch() { return launch!; } };
 }
 
 it.runIf(process.platform === "win32")("reuses the real host pid while clearing prior paths and capability values", async () => {
@@ -197,6 +204,75 @@ it.runIf(process.platform === "win32")("claims created directories and files for
   process.stdout.write(`ACL host owner claim evidence ${JSON.stringify({ defaultOwner, account: reply.result.currentSid, claimed: [directoryOwner, fileOwner], starts: host.starts })}\n`);
 }, 45_000);
 
+/** Set an owner this process may not take for itself; icacls enables the restore privilege an elevated token holds. */
+function setOwner(path: string, sid: string): void {
+  execFileSync(join(process.env.SystemRoot!, "System32", "icacls.exe"), [path, "/setowner", `*${sid}`, "/q"],
+    { windowsHide: true, stdio: "pipe" });
+}
+
+interface ClaimReply { result: { currentSid: string; claims: { path: string; previousOwner: string; outcome: string }[] } }
+
+it.runIf(process.platform === "win32")("keeps a directory the account already owns without asking for WRITE_OWNER", async () => {
+  const fixture = realHostFixture();
+  await fixture.prime();
+  const parent = realpathSync(mkdtempSync(join(tmpdir(), "ave-owner-kept-")));
+  roots.push(parent);
+  const directory = await createPrivateDirectory(join(parent, "owned"));
+  // The account owns it and holds Modify only: neither TakeOwnership nor ChangePermissions.
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    "$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User",
+    "$acl = [System.Security.AccessControl.DirectorySecurity]::new()",
+    "$acl.SetAccessRuleProtection($true, $false)",
+    "$acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($sid, 'Modify', 'ContainerInherit,ObjectInherit', 'None', 'Allow'))",
+    "[System.IO.Directory]::SetAccessControl($env:AVE_OWNED_DIRECTORY, $acl)",
+  ].join("; ");
+  execFileSync(join(process.env.SystemRoot!, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+    ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
+    { windowsHide: true, stdio: "pipe", env: windowsPowerShellEnv({ ...process.env, AVE_OWNED_DIRECTORY: directory }) });
+  // Opening it for WRITE_OWNER would be denied, so the claim succeeds only by keeping the owner.
+  await claimPrivateOwnership([directory]);
+  const reply = JSON.parse(fixture.replies.at(-1)!) as ClaimReply;
+  expect(reply.result.claims).toEqual([{ path: directory, previousOwner: reply.result.currentSid, outcome: "kept" }]);
+}, 45_000);
+
+it.runIf(process.platform === "win32")("refuses a directory another account owns and changes nothing in its batch", async () => {
+  const fixture = realHostFixture();
+  await fixture.prime();
+  const parent = realpathSync(mkdtempSync(join(tmpdir(), "ave-owner-foreign-")));
+  roots.push(parent);
+  const administrators = realpathSync(mkdtempSync(join(parent, "administrators-")));
+  setOwner(administrators, "S-1-5-32-544");
+  const foreign = realpathSync(mkdtempSync(join(parent, "foreign-")));
+  setOwner(foreign, "S-1-5-18");
+  const refusal = await claimPrivateOwnership([administrators, foreign]).then(() => null, (error: unknown) => error);
+  expect(refusal).toBeInstanceOf(CodexExecutableLocationError);
+  expect((refusal as Error).message).toMatch(/owned by another account.*owner S-1-5-18/);
+  const reply = JSON.parse(fixture.replies.at(-1)!) as ClaimReply;
+  expect(reply.result.claims.map(({ outcome }) => outcome)).toEqual(["unclaimed", "refused"]);
+  expect(await fixture.owners(320, [administrators, foreign])).toEqual(["S-1-5-32-544", "S-1-5-18"]);
+}, 45_000);
+
+it.runIf(process.platform === "win32")("claims a junction itself and leaves its target alone", async () => {
+  const fixture = realHostFixture();
+  await fixture.prime();
+  const parent = realpathSync(mkdtempSync(join(tmpdir(), "ave-owner-junction-")));
+  roots.push(parent);
+  const target = realpathSync(mkdtempSync(join(parent, "target-")));
+  setOwner(target, "S-1-5-18");
+  const link = join(parent, "link");
+  symlinkSync(target, link, "junction");
+  try {
+    // A followed link would read the target's owner and refuse.
+    await claimPrivateOwnership([link]);
+    const reply = JSON.parse(fixture.replies.at(-1)!) as ClaimReply;
+    expect(await fixture.owners(330, [link, target])).toEqual([reply.result.currentSid, "S-1-5-18"]);
+  } finally {
+    // Remove the link alone; a recursive removal would follow it.
+    rmdirSync(link);
+  }
+}, 45_000);
+
 it.runIf(process.platform === "win32")("refuses a claim the real host cannot apply", async () => {
   const { prime } = realHostFixture();
   await prime();
@@ -249,7 +325,16 @@ it.runIf(process.platform === "win32").each([
   ["a failed claim", () => { throw new WindowsAclHostError("Windows ACL host exited (1)"); }, WindowsAclHostError],
   ["a claim read back with another owner", (request: WindowsAclRequest) => JSON.stringify({ id: request.id, result: {
     currentSid: "S-1-5-21-100-200-300-1001", desktopPackage: { status: "skipped" },
-    paths: request.paths.map((path) => ({ path, owner: "S-1-5-32-544", daclPresent: true, entries: [] })) } }), CodexExecutableLocationError],
+    paths: request.paths.map((path) => ({ path, owner: "S-1-5-32-544", daclPresent: true, entries: [] })),
+    claims: request.paths.map((path) => ({ path, previousOwner: "S-1-5-32-544", outcome: "set" })) } }), CodexExecutableLocationError],
+  ["a claim refused for another owner", (request: WindowsAclRequest) => JSON.stringify({ id: request.id, result: {
+    currentSid: "S-1-5-21-100-200-300-1001", desktopPackage: { status: "skipped" },
+    paths: request.paths.map((path) => ({ path, owner: "S-1-5-18", daclPresent: true, entries: [] })),
+    claims: request.paths.map((path) => ({ path, previousOwner: "S-1-5-18", outcome: "refused" })) } }), CodexExecutableLocationError],
+  ["a claim reply without its outcomes", (request: WindowsAclRequest) => JSON.stringify({ id: request.id, result: {
+    currentSid: "S-1-5-21-100-200-300-1001", desktopPackage: { status: "skipped" },
+    paths: request.paths.map((path) => ({ path, owner: "S-1-5-21-100-200-300-1001", daclPresent: true, entries: [] })) } }),
+  CodexExecutableLocationError],
 ] as const)("removes a directory it created after %s", async (_label, answer, refusal) => {
   const parent = realpathSync(mkdtempSync(join(tmpdir(), "ave-owner-refusal-")));
   roots.push(parent);

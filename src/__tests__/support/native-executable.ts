@@ -217,6 +217,8 @@ export function fakeFixtureAclTransport(execFile: typeof ChildProcessModule.exec
             })),
             // No desktop-package exemption: fixtures are owner-only.
             desktopPackage: request.skipPackage ? { status: "skipped" } : { status: "unavailable", reason: "mapping-not-found" },
+            // Fixture objects are the current account's own, so a claim keeps each owner.
+            ...request.setOwner ? { claims: request.paths.map((path) => ({ path, previousOwner: currentSid, outcome: "kept" })) } : {},
           },
         });
       } catch (cause) {
@@ -238,11 +240,14 @@ export function fakeFixtureAcl(actual: typeof ChildProcessModule): typeof ChildP
 /** A private artifact made as the product makes one: through its ownership helpers. */
 export async function codexExecutableArtifactFixture(home: string): Promise<CodexExecutableArtifact> {
   // Loaded here: this module is also loaded from a mocked process module's factory.
-  const { claimPrivateOwnership, createPrivateDirectory, createPrivateTempDirectory } = await import("../../main/codex-executable-location.js");
+  const { createPrivateDirectory, createPrivateObjects, createPrivateTempDirectory } = await import("../../main/codex-executable-location.js");
   const parent = await createPrivateDirectory(join(home, "runtime"));
   const directory = await createPrivateTempDirectory(join(parent, "artifact-"));
   const bytes = nativeExecutableBytes();
-  const executable = writeNativeExecutable(join(directory, process.platform === "win32" ? "codex.exe" : "codex"), bytes, 0o500);
-  await claimPrivateOwnership([executable]);
+  const executable = await createPrivateObjects(async (created) => {
+    const path = writeNativeExecutable(join(directory, process.platform === "win32" ? "codex.exe" : "codex"), bytes, 0o500);
+    created.push(path);
+    return path;
+  });
   return { executable, contentHash: createHash("sha256").update(bytes).digest("hex"), companion: null };
 }

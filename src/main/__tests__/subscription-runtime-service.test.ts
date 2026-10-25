@@ -26,6 +26,7 @@ import {
   readSubscriptionToolMcpServerConfig,
 } from "../subscription-tool-mcp-server.js";
 import { SubscriptionToolBridge } from "../subscription-tool-bridge.js";
+import { CodexExecutableLocationError } from "../codex-executable-location.js";
 import { claimFakeRuntimeDirectories, createSubscriptionRuntimeNamespace as namespace } from "../../__tests__/support/subscription-runtime-namespace.js";
 
 const CODEX_CONNECTED: CodexSubscriptionStatus = {
@@ -101,6 +102,15 @@ describe("SubscriptionRuntimeService", () => {
     } finally {
       await service.stop();
     }
+  });
+
+  it("refuses to start when a persistent runtime directory cannot be claimed", async () => {
+    const refusal = new CodexExecutableLocationError("Runtime directory is owned by another account");
+    const stopAll = vi.fn(async () => undefined);
+    await expect(SubscriptionRuntimeService.create(async () => undefined, {
+      namespace: namespace(), claimRuntimeDirectories: vi.fn(async () => { throw refusal; }), codexClient: fakeCodexClient(),
+      acpRegistry: { stopAll } as unknown as AcpSubscriptionRuntimeRegistry,
+    })).rejects.toBe(refusal);
   });
 
   it.each(["kimi-code", "grok-build"] as const)("does not enable signed-out chat after verification (%s)", async (provider) => {

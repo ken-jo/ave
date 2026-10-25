@@ -1604,26 +1604,39 @@ text; production paths remain covered.
 
 An elevated Windows token usually has `BUILTIN\Administrators` (`S-1-5-32-544`)
 as its default owner, so a file or directory the app creates is owned by that
-group rather than by the user. Ownership on Windows follows two rules:
+group rather than by the user. Admission (`assertCodexLocations` in
+`src/main/codex-executable-location.ts`) treats owners in two ways:
 
-1. **Objects the app creates are owned by the current user SID, set when they
-   are created.** Private runtime directories, the files copied into them, and
-   the app's private temporary directories are made through
-   `createPrivateDirectory`, `createPrivateDirectories`,
-   `createPrivateTempDirectory` and `claimPrivateOwnership` in
-   `src/main/codex-executable-location.ts`. Those
-   functions ask the resident ACL host to set the owner from the host's own
-   token user and read it back. If that fails, creation is refused and a
-   directory created by the call is removed. Persistent runtime directories are
-   claimed again whenever the app prepares them, so one left behind by an
-   earlier elevated run is owned by the user again rather than refused.
-   Admission keeps the strict check that every component under a private root
-   is owned by the current user.
-2. **Roots the app did not create, such as `AVE_HOME`, may be owned by
-   `S-1-5-32-544` only when the current token's default owner is
-   `S-1-5-32-544` and every access entry belongs to the owner or to a trusted
-   system principal.** The app protects such a root, but it does not take
-   ownership of it.
+1. **Inside a private root, every component must be owned by the current
+   user.** A private root is a directory admitted as `private-directory`: the
+   subscription runtime directories, and the `executable-`, `artifact-` and
+   `probe-` directories and copies made in them. Ownership there is
+   established only through `claimPrivateOwnership`, and through
+   `createPrivateObjects`, `createPrivateDirectories`,
+   `createPrivateDirectory` and `createPrivateTempDirectory`, which create
+   objects and then claim them. A claim asks the resident ACL host to read
+   each owner on the path object itself, without following a reparse point:
+   - an object the user already owns is kept, without asking for
+     `WRITE_OWNER`;
+   - an object owned by `S-1-5-32-544` is given to the user, on a handle that
+     re-reads the owner before it sets it;
+   - an object with any other owner refuses the whole claim, and nothing in
+     it changes.
+   The reply must then show the user as every object's owner. When a claim
+   fails, a creating helper removes what it made. The ephemeral `executable-`,
+   `artifact-` and `probe-` directories are created and claimed per run. The
+   ten persistent `subscription-runtimes` directories are claimed every time
+   the subscription service starts. One that an earlier elevated run left
+   owned by `S-1-5-32-544` becomes the user's again; one owned by another
+   account refuses start and is left as it is.
+2. **Outside a private root, the owner must be the current user or a trusted
+   system principal.** This covers a private root's ancestors (among them
+   `AVE_HOME` and `subscription-runtimes`, which `mkdir` creates and nothing
+   claims) and an executable's location. The trusted principals are SYSTEM
+   (`S-1-5-18`), `S-1-5-32-544` and TrustedInstaller. Admission also accepts
+   the sandbox principals and capability SIDs it identifies. This does not
+   depend on the token's default owner. Write access there is judged by the
+   access entries, not by the owner.
 
 Any other owner is refused. A change to either rule changes the security
 contract for both.
