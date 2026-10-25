@@ -43,7 +43,11 @@ import {
   DEFAULT_SUBSCRIPTION_IMAGE_ATTACHMENT_LIMITS,
   normalizeSubscriptionImageAttachment,
   normalizeSubscriptionPromptAttachment,
+  SUBSCRIPTION_ATTACHMENT_INPUT_REJECTED,
+  SUBSCRIPTION_ATTACHMENT_INPUT_TOO_LARGE,
+  SUBSCRIPTION_ATTACHMENT_UNAVAILABLE,
   SubscriptionAttachmentTransportError,
+  subscriptionAttachmentTransportFailure,
   type SubscriptionPromptAttachment,
 } from "./subscription-attachment-input.js";
 import { SubscriptionToolBridge } from "./subscription-tool-bridge.js";
@@ -56,8 +60,7 @@ const MAX_ACP_SERIALIZED_INPUT_BYTES = 512 * 1024;
 
 // User and governed tool images cross this boundary as strict native attachments. Normal Ave files keep their existing path-marker plus governed
 // read-tool flow; a generic raw file payload never gains an unreviewed upload path here.
-export const SUBSCRIPTION_ATTACHMENT_INPUT_REJECTED = "subscription-attachments-not-supported";
-export const SUBSCRIPTION_ATTACHMENT_INPUT_TOO_LARGE = "subscription-attachment-too-large";
+export { SUBSCRIPTION_ATTACHMENT_INPUT_REJECTED, SUBSCRIPTION_ATTACHMENT_INPUT_TOO_LARGE };
 
 export class SubscriptionAttachmentInputRejectedError extends Error {
   readonly code = SUBSCRIPTION_ATTACHMENT_INPUT_REJECTED;
@@ -81,8 +84,6 @@ class SubscriptionInputTooLargeError extends Error {
 type ErrorStreamEvent = Extract<StreamEvent, { type: "error" }>;
 // Fixed renderer-safe response for every rejected boundary or runtime fault.
 const SUBSCRIPTION_CHAT_UNAVAILABLE = "Subscription runtime could not complete. Verify the connected runtime and try again.";
-const SUBSCRIPTION_ATTACHMENT_UNAVAILABLE = "The selected subscription runtime cannot send this attachment.";
-const SUBSCRIPTION_ATTACHMENT_TOO_LARGE = "The selected subscription runtime cannot send an attachment this large.";
 
 export interface SubscriptionLlmProviderOptions {
   // A settings-normalized selection; it is never an API-key vendor config.
@@ -160,26 +161,7 @@ function subscriptionFailure(
   failure: unknown,
   tools: readonly { name: string }[] | undefined,
 ): ErrorStreamEvent {
-  if (failure instanceof SubscriptionAttachmentTransportError) {
-    const tooLarge = failure.code === "subscription-attachment-too-large";
-    return {
-      type: "error",
-      error: tooLarge ? SUBSCRIPTION_ATTACHMENT_TOO_LARGE : SUBSCRIPTION_ATTACHMENT_UNAVAILABLE,
-      classification: tooLarge
-        ? SUBSCRIPTION_ATTACHMENT_INPUT_TOO_LARGE
-        : SUBSCRIPTION_ATTACHMENT_INPUT_REJECTED,
-      providerError: {
-        origin: "unknown",
-        statusCode: 400,
-        providerCode: tooLarge
-          ? SUBSCRIPTION_ATTACHMENT_INPUT_TOO_LARGE
-          : SUBSCRIPTION_ATTACHMENT_INPUT_REJECTED,
-        messagePreview: tooLarge
-          ? "subscription attachment input too large"
-          : "subscription attachment input rejected",
-      },
-    };
-  }
+  if (failure instanceof SubscriptionAttachmentTransportError) return subscriptionAttachmentTransportFailure(failure);
 
   if (failure instanceof SubscriptionAttachmentInputRejectedError) {
     return {

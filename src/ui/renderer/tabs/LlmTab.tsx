@@ -864,6 +864,14 @@ function subscriptionModelsLabel(t: I18nContextValue["t"], view: SubscriptionPro
   });
 }
 
+/** Whether a subscription model may be sent original images: the runtime's capability, then (for a runtime whose image
+ * input follows the model) the same catalog predicate the composer and the send path use. */
+function subscriptionModelAcceptsImages(runtimeId: string, modelId: string): boolean {
+  if (!isSubscriptionRuntimeId(runtimeId)) return false;
+  const vendor = subscriptionRuntimeDescriptor(runtimeId).imageInputFollowsModelOf;
+  return vendor === undefined || supportsVision(vendor, modelId);
+}
+
 function apiRouteRowId(route: ConfiguredApiRoute): string {
   return route.presetId ? marketplaceProviderPresetSecretId(route.presetId) : route.vendorId;
 }
@@ -2154,9 +2162,11 @@ export function LlmTab(props: LlmTabProps) {
           providerLabel: subscriptionModelsLabel(t, view),
           vendorLabel: subscriptionModelsLabel(t, view),
           modelId: model.label || model.id,
-          // A subscription runtime answers the image question itself; the model-name predicate is
-          // explicitly bypassed on this route; so the badge follows the host-verified projection or is not drawn.
-          ...(view.status.capabilities?.images === true ? { vision: true } : {}),
+          // A subscription runtime answers the image question itself, so the badge follows the host-verified
+          // projection; a runtime whose image input follows the model (plan usage) also needs a model that accepts them.
+          ...(view.status.capabilities?.images === true && subscriptionModelAcceptsImages(view.descriptor.id, model.id)
+            ? { vision: true }
+            : {}),
         });
       }
     }

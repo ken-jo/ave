@@ -18,6 +18,12 @@ import {
   type ChatGptPlanResponseFailure,
 } from "./responses-fetch.js";
 import { ChatGptPlanRuntimeError, type ChatGptPlanRuntime } from "./runtime.js";
+import {
+  DEFAULT_SUBSCRIPTION_IMAGE_ATTACHMENT_LIMITS,
+  SubscriptionAttachmentTransportError,
+  subscriptionAttachmentTransportFailure,
+} from "../subscription-attachment-input.js";
+import { projectSubscriptionImageHistory } from "../subscription-image-history.js";
 
 type ErrorStreamEvent = Extract<StreamEvent, { type: "error" }>;
 type CreateTransport = (config: Parameters<typeof createVercelTransport>[0]) => Pick<LLMProvider, "streamTurn">;
@@ -119,6 +125,18 @@ export class ChatGptPlanTransport implements Pick<LLMProvider, "streamTurn" | "l
       yield unavailableEvent("chatgpt-plan-model-unavailable");
       return;
     }
+    let messages: StreamTurnParams["messages"];
+    try {
+      // Only the newest turn's images travel as originals, inside the runtime's attachment budget; older ones stay
+      // as text references, exactly as on the Codex runtime. Whether this model accepts images is the adapter's gate.
+      messages = projectSubscriptionImageHistory(params.messages, DEFAULT_SUBSCRIPTION_IMAGE_ATTACHMENT_LIMITS);
+    } catch (error) {
+      if (error instanceof SubscriptionAttachmentTransportError) {
+        yield subscriptionAttachmentTransportFailure(error);
+        return;
+      }
+      throw error;
+    }
     let runtime: ChatGptPlanRuntime;
     try {
       runtime = await this.runtime();
@@ -157,7 +175,7 @@ export class ChatGptPlanTransport implements Pick<LLMProvider, "streamTurn" | "l
     // `max_output_tokens` is refused on this route. Background callers keep their ceiling: generateText stops the
     // stream locally at the same limit. Chat turns on subscription runtimes never carry one.
     const { outputTokenLimit: _outputTokenLimit, requestedOutputTokenLimit: _requested, ...rest } = params;
-    for await (const event of transport.streamTurn({ ...rest, model })) {
+    for await (const event of transport.streamTurn({ ...rest, messages, model })) {
       if (event.type === "message_complete") {
         const { usage, ...complete } = event;
         const subscriptionUsage = usage
@@ -180,6 +198,11 @@ export class ChatGptPlanTransport implements Pick<LLMProvider, "streamTurn" | "l
       if (event.type === "error") {
         if (tokenFailure) {
           yield unavailableEvent(tokenFailure);
+          return;
+        }
+        if (!lastFailure && event.code === "image-input-unsupported") {
+          // The adapter's own model-capability refusal, raised before any request: fixed text, and not retryable.
+          yield event;
           return;
         }
         const failure = lastFailure ?? streamFailure(event);

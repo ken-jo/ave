@@ -1229,6 +1229,27 @@ describe("LlmTab provider cards", () => {
     expect(screen.getByTestId("subscription-provider:chatgpt-plan:manage-usage")).toBeInTheDocument();
   });
 
+  it("marks only plan models that accept images with the vision badge", async () => {
+    installSubscription(
+      [codexView(), chatgptPlanView({
+        status: {
+          runtime: "ready",
+          connection: "connected",
+          models: [{ id: "gpt-6.1-sol", label: "GPT-6.1 Sol" }, { id: "gpt-oss-120b", label: "gpt-oss-120b" }],
+          capabilities: { chat: true, images: true },
+        },
+      })],
+      { manageUsage: vi.fn() },
+      { kind: "subscription", provider: "chatgpt-plan", model: "gpt-6.1-sol" },
+    );
+    await renderTab(makeApi());
+    const ids = await chooserModelIds();
+    // The chooser prints a plan model by its label.
+    expect(ids).toEqual(expect.arrayContaining(["GPT-6.1 Sol", "gpt-oss-120b"]));
+    expect(within(chooserOption("GPT-6.1 Sol")).getByTestId("llm-tab:model-vision:GPT-6.1 Sol")).toBeInTheDocument();
+    expect(within(chooserOption("gpt-oss-120b")).queryByTestId("llm-tab:model-vision:gpt-oss-120b")).not.toBeInTheDocument();
+  });
+
   it("keeps the two-way OpenAI choice when plan usage is absent", async () => {
     installSubscription([codexView()]);
     await renderTab(makeApi());

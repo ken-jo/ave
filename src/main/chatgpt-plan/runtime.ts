@@ -9,6 +9,7 @@ import type {
 } from "../../shared/subscription-runtime.js";
 import { DEFAULT_SUBSCRIPTION_RUNTIME_CAPABILITIES } from "../../shared/subscription-runtime.js";
 import { createChatGptPlanFetch } from "./egress.js";
+import { DEFAULT_SUBSCRIPTION_IMAGE_ATTACHMENT_LIMITS } from "../subscription-attachment-input.js";
 import { ChatGptPlanIdTokenVerifier } from "./id-token.js";
 import { loadOrCreateChatGptPlanHostId } from "./host-id.js";
 import { startChatGptPlanCallbackListener, type ChatGptPlanCallbackListener } from "./loopback.js";
@@ -37,11 +38,16 @@ export interface ChatGptPlanRuntimeDeps {
   readonly onEvent?: (event: ChatGptPlanSessionEvent) => void;
 }
 
-/** Every Ave capability is governed by Ave itself on this route; original images are not offered yet. */
+/**
+ * Every Ave capability is governed by Ave itself on this route. Original images go natively on the Responses wire
+ * within the same budget as the Codex runtime; whether the selected model accepts them is decided per model (the
+ * descriptor's `imageInputFollowsModelOf`, and the adapter's vision gate on send). Files use Ave's file marker and
+ * governed read tool, exactly as on the API-key route.
+ */
 const CHATGPT_PLAN_CAPABILITIES: SubscriptionRuntimeCapabilities = Object.freeze({
   chat: true,
-  images: false,
-  imageAttachmentLimits: null,
+  images: true,
+  imageAttachmentLimits: DEFAULT_SUBSCRIPTION_IMAGE_ATTACHMENT_LIMITS,
   files: true,
   tools: true,
   projectAccess: true,

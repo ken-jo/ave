@@ -11,6 +11,7 @@ import type { CodexAppServerClient } from "../../codex-app-server-client.js";
 import { claimFakeRuntimeDirectories, createSubscriptionRuntimeNamespace } from "../../../__tests__/support/subscription-runtime-namespace.js";
 import { validateExternalUrl } from "../../../shared/external-url.js";
 import { t } from "../../../i18n/index.js";
+import { DEFAULT_SUBSCRIPTION_IMAGE_ATTACHMENT_LIMITS } from "../../subscription-attachment-input.js";
 
 const PLAN_SCOPES = ["chatgpt.tokens.use.direct", "email", "offline_access", "openid", "profile", "resource.invoke"];
 const IDENTITY_SCOPES = ["email", "offline_access", "openid", "profile"];
@@ -48,6 +49,13 @@ function storedSecrets(scopes: readonly string[] | null): FakeSecrets {
 }
 
 const sse = sseResponse;
+
+const PNG_SIGNATURE_BASE64 = "iVBORw0KGgo=";
+const PNG_DATA_URL = (() => {
+  const bytes = Buffer.alloc(32, 7);
+  Buffer.from(PNG_SIGNATURE_BASE64, "base64").copy(bytes);
+  return `data:image/png;base64,${bytes.toString("base64")}`;
+})();
 
 const COMPLETED_TURN = [
   { type: "response.created", response: { id: "r1", created_at: 1, model: "gpt-6.1-sol" } },
@@ -101,7 +109,13 @@ describe("ChatGPT plan runtime status", () => {
   it("is connected with chat once a plan-usage grant is stored", () => {
     const status = harness(PLAN_SCOPES).runtime.getStatus();
     expect(status.connection).toBe("connected");
-    expect(status.capabilities).toMatchObject({ chat: true, tools: true, generateText: true, images: false });
+    expect(status.capabilities).toMatchObject({
+      chat: true,
+      tools: true,
+      generateText: true,
+      images: true,
+      imageAttachmentLimits: DEFAULT_SUBSCRIPTION_IMAGE_ATTACHMENT_LIMITS,
+    });
   });
 
   it("shows a sign-in without the plan grant as signed out, and asks for consent on the next sign-in", async () => {
@@ -288,6 +302,56 @@ describe("ChatGPT plan transport", () => {
     );
     const events = await collect(transport.streamTurn({ model: "m", systemPrompt: "s", messages: [{ role: "user", content: "hi" }] }));
     expect(events.at(-1)).toMatchObject({ type: "error", classification: "chatgpt-plan-reconnect-required" });
+    expect(h.requests.some((entry) => entry.url === CHATGPT_PLAN_RESPONSES_URL)).toBe(false);
+  });
+
+  it("sends the newest turn's image natively to a model that accepts images", async () => {
+    const h = harness(PLAN_SCOPES);
+    const transport = new ChatGptPlanTransport(
+      { kind: "subscription", provider: "chatgpt-plan", model: "gpt-6.1-sol" },
+      async () => h.runtime,
+    );
+    const events = await collect(transport.streamTurn({
+      model: "m",
+      systemPrompt: "s",
+      messages: [{ role: "user", content: [{ type: "text", text: "what is this?" }, { type: "image", image: PNG_DATA_URL }] }],
+    }));
+    expect(events.find((event) => event.type === "error")).toBeUndefined();
+    const body = h.requests.find((entry) => entry.url === CHATGPT_PLAN_RESPONSES_URL)!.body as { input: unknown[] };
+    expect(JSON.stringify(body.input)).toContain('"type":"input_image"');
+  });
+
+  it("refuses an image for a model that does not accept images, before any inference request", async () => {
+    const h = harness(PLAN_SCOPES);
+    const transport = new ChatGptPlanTransport(
+      { kind: "subscription", provider: "chatgpt-plan", model: "gpt-oss-120b" },
+      async () => h.runtime,
+    );
+    const events = await collect(transport.streamTurn({
+      model: "m",
+      systemPrompt: "s",
+      messages: [{ role: "user", content: [{ type: "image", image: PNG_DATA_URL }] }],
+    }));
+    expect(events.at(-1)).toMatchObject({ type: "error", code: "image-input-unsupported" });
+    expect(h.requests.some((entry) => entry.url === CHATGPT_PLAN_RESPONSES_URL)).toBe(false);
+  });
+
+  it("refuses an image beyond the attachment budget with the fixed subscription error", async () => {
+    const h = harness(PLAN_SCOPES);
+    const transport = new ChatGptPlanTransport(
+      { kind: "subscription", provider: "chatgpt-plan", model: "gpt-6.1-sol" },
+      async () => h.runtime,
+    );
+    const tooMany = Array.from(
+      { length: DEFAULT_SUBSCRIPTION_IMAGE_ATTACHMENT_LIMITS.maxCount + 1 },
+      () => ({ type: "image" as const, image: PNG_DATA_URL }),
+    );
+    const events = await collect(transport.streamTurn({
+      model: "m",
+      systemPrompt: "s",
+      messages: [{ role: "user", content: tooMany }],
+    }));
+    expect(events).toEqual([expect.objectContaining({ type: "error", classification: "subscription-attachment-too-large" })]);
     expect(h.requests.some((entry) => entry.url === CHATGPT_PLAN_RESPONSES_URL)).toBe(false);
   });
 

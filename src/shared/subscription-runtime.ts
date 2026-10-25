@@ -201,6 +201,11 @@ export interface SubscriptionRuntimeDescriptor {
   requiresModelSelection?: true;
   /** Where the provider lets the user review and limit this app's plan usage. */
   usageSettingsUrl?: string;
+  /**
+   * Original images are sent only when the selected model accepts them, judged by this API vendor's model catalog
+   * (the same predicate as that vendor's API-key route). Absent: the runtime's verified capability alone decides.
+   */
+  imageInputFollowsModelOf?: "openai";
 }
 
 /** Install instructions are display text; the app never executes them. */
@@ -356,6 +361,7 @@ export const SUBSCRIPTION_RUNTIME_DESCRIPTORS: readonly SubscriptionRuntimeDescr
     offersCliDefaultModel: false,
     requiresModelSelection: true,
     usageSettingsUrl: "https://chatgpt.com/settings/usage",
+    imageInputFollowsModelOf: "openai",
   },
   {
     id: "kimi-code",

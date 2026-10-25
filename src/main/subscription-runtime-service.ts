@@ -431,7 +431,7 @@ function isConnectedAndReady(status: {
 
 // The same native prompt budget governs capabilities and request construction.
 export function getSubscriptionImageAttachmentLimits(runtimeId: SubscriptionRuntimeId) {
-  return runtimeId === "codex"
+  return runtimeId === "codex" || runtimeId === "chatgpt-plan"
     ? DEFAULT_SUBSCRIPTION_IMAGE_ATTACHMENT_LIMITS
     : ACP_SUBSCRIPTION_IMAGE_ATTACHMENT_LIMITS;
 }
