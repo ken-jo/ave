@@ -31,6 +31,8 @@ const LAUNCHER_NAMES: ReadonlySet<string> = new Set([
     .filter(([, policy]) => policy.effects.includes("launcher"))
     .flatMap(([name, policy]) => [name, programOf(name), ...policy.aliases.map((alias) => alias.toLowerCase())]),
   ...SHELL_SET, ...WRAPPER_SET, ...RUNNER_SET,
+  // Windows launchers outside the PowerShell vocabulary; each takes its command as a quoted command-line argument, which `generic` reads.
+  "runas",
 ]);
 const POSIX_SHELLS = new Set([...SHELL_SET].filter((name) => !["pwsh", "powershell", "cmd", "busybox"].includes(name)));
 
@@ -83,6 +85,10 @@ function programOf(word: string): string {
 
 type Argv = readonly (string | null)[];
 
+// A word that held quoting, spacing or shell syntax before its shell's lexer took it apart: joining such words back with spaces would not give the
+// command line the inner shell receives.
+const REJOIN_UNSAFE_RE = /[\s;&|<>(){}$`'"^%!*?[\]~#]/;
+
 class Reader {
   readonly scripts: string[] = [];
   hidden = false;
@@ -105,6 +111,18 @@ class Reader {
   }
 
   /** `scanned`: the argv was found inside another launcher's arguments, so its tail may hold that launcher's own parameters. */
+  /** Read the command line made of `words`. One word is read as it is; several are joined only when each is plain, since a word that held quoting
+   *  or spacing (`bash -c "pwsh -enc ..."`) cannot be put back as the inner shell sees it, and that code is hidden. */
+  private line(dialect: ShellRuleDialect, words: readonly string[], depth: number): void {
+    if (words.length === 0) return;
+    if (words.length === 1) return this.text(dialect, words[0]!, depth);
+    if (words.some((word) => REJOIN_UNSAFE_RE.test(word))) {
+      this.hidden = true;
+      return;
+    }
+    this.text(dialect, words.join(" "), depth);
+  }
+
   private command(dialect: ShellRuleDialect, argv: Argv, depth: number, scanned = false): void {
     const head = argv[0];
     if (typeof head !== "string") return;
@@ -173,7 +191,7 @@ class Reader {
         const rest = args.slice(index + 1);
         // An encoded-looking word after the script starts is either the script's argument or a parameter the host misplaced: it cannot tell.
         if (rest.some((word) => ENCODED_PARAMETER_RE.test(word))) this.hidden = true;
-        if (command !== null) this.text("powershell", [command[1] ?? "", ...rest].join(" ").trim(), depth + 1);
+        if (command !== null) this.line("powershell", command[1] === undefined || command[1] === "" ? rest : [command[1], ...rest], depth + 1);
         return;
       }
       if (/\s/.test(arg)) this.embedded("powershell", arg, depth);
@@ -198,8 +216,7 @@ class Reader {
       const arg = args[index]!;
       if (CMD_RUN_RE.test(arg) && !CMD_SWITCH_RE.test(arg)) {
         const glued = arg.slice(2);
-        const line = [...(glued.length > 0 ? [glued] : []), ...args.slice(index + 1)].join(" ");
-        this.text("powershell", line, depth + 1);
+        this.line("powershell", [...(glued.length > 0 ? [glued] : []), ...args.slice(index + 1)], depth + 1);
         return;
       }
       // An unknown switch, or an argument before /c, /r or /k: the host cannot tell what cmd runs.
@@ -219,18 +236,20 @@ class Reader {
         return;
       }
       if (option === "--") {
-        this.text("bash", args.slice(index + 1).join(" "), depth + 1);
+        this.line("bash", args.slice(index + 1), depth + 1);
         return;
       }
       if (WSL_VALUE_OPTIONS.has(option)) { index += 1; continue; }
       if (WSL_FLAG_OPTIONS.has(option)) continue;
+      // A leading `~` starts in the home directory, as `--cd ~` does.
+      if (arg === "~") continue;
       if (WSL_NO_COMMAND.has(option)) return;
       if (arg.startsWith("-")) {
         this.hidden = true;
         return;
       }
       // The first plain argument starts the command line wsl hands to the distribution's shell.
-      this.text("bash", args.slice(index).join(" "), depth + 1);
+      this.line("bash", args.slice(index), depth + 1);
       return;
     }
   }
