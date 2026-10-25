@@ -1120,6 +1120,12 @@ export function getDefaultSensitiveWriteDenyPaths(userDataDir = _baseTrustedSett
 export function buildSandboxConfig(trustedSettings: TrustedSandboxSettings): SandboxRuntimeConfig {
   const srtWinPath = process.platform === "win32" && trustedSettings.windows?.externalConfinement !== true
     ? getVerifiedSrtWinExePath() : undefined;
+  // Refuse the grants as requested, before the write policy can narrow one
+  // away: a root withdrawn for its Git-scan budget would otherwise pass
+  // silently, so the refusal would depend on how full the directory is.
+  if (srtWinPath !== undefined) {
+    assertPrivateHelperGrants(trustedSettings.allowRead ?? [], trustedSettings.allowWrite ?? []);
+  }
   const network: NetworkConfig = {
     // Deny-by-default — empty allow-list ⇒ no network egress.
     allowedDomains: [...(trustedSettings.allowedDomains ?? [])],

@@ -16,7 +16,7 @@ import type { AddressInfo } from "node:net";
 import { lookup as lookupAll } from "node:dns/promises";
 // Ave patch test seam, reached by file path (not on the package entry).
 import { setDestinationResolverForTesting } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-manager.js";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, parse, sep } from "node:path";
 import { shellQuote } from "../../lib/shell-resolver.js";
@@ -64,6 +64,7 @@ import {
   getVendoredJavaProxyAgentJarPath,
   checkAsrtDependencies,
 } from "../asrt-sandbox.js";
+import { buildMandatorySandboxWritePolicy } from "../sandbox-write-policy.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { useVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-privacy.js";
 import { getApplySeccompBinaryPath } from "@anthropic-ai/sandbox-runtime/dist/sandbox/generate-seccomp-filter.js";
@@ -912,6 +913,31 @@ describe("asrt-sandbox — proxyPortRange single SOT (install↔config consisten
       if (prevPlatform) {
         Object.defineProperty(process, "platform", prevPlatform);
       }
+    }
+  });
+
+  it("refuses a helper-covering write grant even when the Git scan budget narrows it away", () => {
+    // The temp root the helper copy lives in is shared with sibling test files;
+    // once it holds more entries than the Git-control scan may visit, the write
+    // policy withdraws the root. The refusal must not depend on that.
+    const hostPlatform = process.platform;
+    let filler: string | undefined;
+    try {
+      setProcessPlatform("win32");
+      const executable = buildSandboxConfig({ allowedDomains: [] }).windows!.srtWin!.path;
+      const root = dirname(dirname(executable));
+      filler = mkdtempSync(join(root, "scan-budget-"));
+      for (let group = 0; group < 180; group += 1) {
+        mkdirSync(join(filler, `g${group}`));
+        for (let file = 0; file < 100; file += 1) writeFileSync(join(filler, `g${group}`, `f${file}`), "");
+      }
+      expect(buildMandatorySandboxWritePolicy([root]).narrowedWriteRoots)
+        .toEqual([{ root: realpathSync(root), reason: "entry-budget" }]);
+      expect(() => buildSandboxConfig({ allowWrite: [root] }))
+        .toThrow("Windows filesystem grant overlaps a private helper image");
+    } finally {
+      setProcessPlatform(hostPlatform);
+      if (filler !== undefined) rmSync(filler, { recursive: true, force: true });
     }
   });
 
