@@ -1,3 +1,4 @@
+import { writeSettingsFile } from "./support/settings-file.js";
 import { unavailableSecretEncryption } from "../../__tests__/support/host-runtime.js";
 // The boot reader must use the same settings file the UI writes.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -52,20 +53,12 @@ describe("readPersistedAppModeSync", () => {
   });
 
   it("normalizes legacy 'action' on disk to 'work'", () => {
-    writeFileSync(
-      join(userDataPath, "ave-settings.json"),
-      JSON.stringify({ system: { appMode: "action" } }),
-      "utf-8",
-    );
+    writeSettingsFile(userDataPath, { system: { appMode: "action" } });
     expect(readPersistedAppModeSync(userDataPath)).toBe("work");
   });
 
   it("defaults to 'work' on a malformed appMode value", () => {
-    writeFileSync(
-      join(userDataPath, "ave-settings.json"),
-      JSON.stringify({ system: { appMode: "not-a-mode" } }),
-      "utf-8",
-    );
+    writeSettingsFile(userDataPath, { system: { appMode: "not-a-mode" } });
     expect(readPersistedAppModeSync(userDataPath)).toBe("work");
   });
 
@@ -75,11 +68,7 @@ describe("readPersistedAppModeSync", () => {
   });
 
   it("defaults to 'work' when system block is absent (legacy settings.json)", () => {
-    writeFileSync(
-      join(userDataPath, "ave-settings.json"),
-      JSON.stringify({ marketplace: { backend: "real-cloud" } }),
-      "utf-8",
-    );
+    writeSettingsFile(userDataPath, { marketplace: { backend: "real-cloud" } });
     expect(readPersistedAppModeSync(userDataPath)).toBe("work");
   });
 });
