@@ -976,6 +976,16 @@ or another tab; agent output does not take Manual's focus. A wait timeout means
 the command can still be running, and cancellation of a waiter does not prove
 process cleanup.
 
+On Linux, an Agent terminal keeps its initial mount namespace until it exits.
+Before typing an agent command, the host re-scans against that initial policy
+and refuses newly required denies, withdrawn grants or scan failures until the
+terminal is reopened. Metadata appearing after that check can still be used
+until shell exit, with no time limit. Startup/replay output and terminal tool
+results disclose this limitation. Foreground and background work can use new
+metadata before the next check; raw input does not run the check. A project
+outside the original grant stays unwritable. The [sandbox policy](permission-policy-design.md#preparation-and-native-validation)
+explains why prompt markers cannot provide a reliable post-block boundary.
+
 An unavailable confined backend leaves Manual usable and Agent explicitly
 unavailable. The current Windows interactive Agent backend cannot attest this
 contract and is unavailable; it never falls back to a host PTY. General sandbox
@@ -1535,7 +1545,7 @@ reviewer, audit and cache consumers use that plan.
 
 The [builtin shell sandbox policy](permission-policy-design.md#os-shell-sandbox-policy)
 defines writes within project and temporary roots, mandatory control-file
-write denies including repository pointers and metadata, bounded nested
+write denies for repository configuration, hooks and pointers, bounded nested
 repository discovery, broad reads subject to existing protections, domain approval
 through the local egress proxy, and denied Unix sockets. Inactive shell
 confinement remains visible in the chat header and Settings through a
@@ -1547,11 +1557,33 @@ repository discovery cannot complete. Independently scanned narrower roots,
 including the working directory and private temporary directory, keep their
 own grants; removing an ambient temporary-root grant does not deny those
 children. The linked policy owns discovery and serialized-policy limits.
+The existing tool result and terminal output report why access was narrowed,
+which roots lost their grants and which roots remain writable.
 
-Protecting repository metadata also makes index/ref updates and commits
-unavailable inside that confinement; they require the existing approved host
-route. Linux absent-path protection can create host-visible mount-point
-placeholders, with normal cleanup and crash-recovery limits defined by the
+Existing repository metadata permits index/ref updates, commits, branches and
+stashes. macOS blocks new `.git` entries and requires the existing approved
+host route. Linux deny-mounts existing Git controls only, preserving missing
+routing records as absent, and re-scans nested controls before each command.
+After confirmed exit it atomically quarantines newly appeared controls,
+new or replaced marker entries, new submodule/private-worktree stores,
+newly materialized pre-resolved stores and reserved bare-layout entries within
+discovery coverage and the final effective write grants. Inaccessible control
+subtrees are excluded; a whole-entry move that would include protected state
+fails visibly instead. New routing or directory links cannot authorize cleanup
+targets. The entries remain recoverable, and existing result and terminal
+output show their original paths and restore locations. Rename failures report an
+error without deleting entries. Every Ave-owned Git process carries one shared
+hardening policy. Linux invocations hold overlapping canonical write roots
+until quarantine succeeds. The current Ave-owned user-project Git query defers
+without spawning or caching its temporary answer while a hold is active;
+cleanup failure retains the hold for the host process's lifetime. Future
+user-workspace Git callers must use the same availability check. Holds compare
+checkout-root paths; a non-overlapping sibling checkout can still read a shared
+external gitdir or commondir. This ordering is not durable across crashes and
+does not control Git already running or
+external editor and user-terminal processes. New controls remain usable during
+the invocation by such processes; these temporal and failed-cleanup risks are
+defined by the
 [same policy](permission-policy-design.md#os-shell-sandbox-policy).
 
 Isolation between plugins is a macOS and Linux property. There every wrap of

@@ -15,6 +15,7 @@ import {
   cleanupAsrtSandboxAfterCommand,
   isAsrtSandboxActive,
   sandboxTempEnvLaunch,
+  type SandboxWrapResult,
 } from "../../permissions/asrt-sandbox.js";
 import { openEgressInvocation } from "../../permissions/egress-invocations.js";
 import { getSandboxGeneration, isActiveSandboxShellContained } from "../../permissions/sandbox-capability.js";
@@ -45,6 +46,8 @@ import { isTerminalTabId } from "../../shared/tab-id.js";
 import { hasOnlyTypeableCharacters, MAX_TERMINAL_COMMAND_CHARS } from "../../shared/terminal-command-text.js";
 
 import { resolveManualShell } from "./manual-shell.js";
+import { prepareTerminalGitPolicyCheck, terminalSandboxWindowNotice } from "./terminal-sandbox-policy.js";
+import { t } from "../../i18n/index.js";
 import { isTerminalLane, sameTerminalSession, terminalLaneKey, type TerminalSessionRef, type TerminalSessionInfo, type TerminalSpawnRequest, type TerminalSpawnResult, type TerminalMutationResult, type TerminalDataEvent, type TerminalExitEvent } from "../../shared/terminal-session.js";
 
 const log = createLogger("ave");
@@ -101,11 +104,15 @@ interface TerminalSession {
    * tree and a resize is forwarded to its pty relay.
    */
   innerPty: boolean;
+  /** Linux refuses agent typing when new Git controls need fresh deny mounts. */
+  gitPolicyChanged?: () => boolean;
   /** A resize forward to the inner pty's relay is running, and whether another resize came in meanwhile. */
   resizeForward: { running: boolean; again: boolean };
   /** FIFO scrollback chunks, capped to {@link RING_MAX_BYTES}. */
   ring: string[];
   ringBytes: number;
+  /** Host policy notices survive bounded terminal scrollback eviction. */
+  hostNotices: readonly string[];
   disposeData: () => void;
   disposeExit: () => void;
   /** Ends pending network approval when the confined shell closes. */
@@ -330,8 +337,8 @@ function spawnTerminalBefore(options: SpawnTerminalOptions, deadline: number): P
       || !isActiveSandboxShellContained() || existing.info.sandboxGeneration !== getSandboxGeneration())) {
       return Promise.resolve({ ok: false, reason: "not-shell-contained", message: "agent terminal containment changed; close and reopen the tab" });
     }
-    if (existing.ring.length > 0) {
-      _emit("data", { ...existing.info, chunk: existing.ring.join("") }, existing.ownerWindowId);
+    if (existing.ring.length > 0 || existing.hostNotices.length > 0) {
+      _emit("data", { ...existing.info, chunk: `${existing.hostNotices.map(notice => `\r\n${notice}\r\n`).join("")}${existing.ring.join("")}` }, existing.ownerWindowId);
     }
     return Promise.resolve({ ok: true, tabId, replayed: true, session: sessionInfo(existing) });
   }
@@ -528,6 +535,9 @@ async function spawnNewTerminal(
   let disposeHandoff: (() => void) | undefined;
   let trampolinePty: IPty | undefined;
   let pendingSession: TerminalSession | undefined;
+  let wrapped: SandboxWrapResult | undefined;
+  let wrappedProcessStarted = false;
+  let wrappedProcessExited = false;
   try {
     let innerPtyCommand: Parameters<typeof buildShellCommand>[2];
     if (terminalNeedsInnerPty()) {
@@ -571,15 +581,17 @@ async function spawnNewTerminal(
       abortSignal: AbortSignal.any([owner.abort.signal, egressAbort.signal]),
     });
     addCleanup(() => egress.release());
-    const { argv, env } =
+    wrapped =
       ownTty === undefined
         ? await wrapWorkerCommand(cmdline, { filesystem, commandId: egress.token, denyUnixSockets: true, abortSignal: owner.abort.signal })
         : await wrapTerminalCommand(cmdline, { filesystem, ownTty, commandId: egress.token, denyUnixSockets: true, abortSignal: owner.abort.signal });
+    const { argv, env } = wrapped;
     const cleanupWrap = addCleanup(() => {
       egressAbort.abort();
       egress.release();
       void cleanupAsrtSandboxAfterCommand();
     });
+    const gitPolicyChanged = prepareTerminalGitPolicyCheck(wrapped.filesystemPolicy, wrapped.gitControlSnapshot);
     owner.abort.signal.throwIfAborted();
 
     const [cmd, ...wrappedArgs] = argv;
@@ -608,12 +620,14 @@ async function spawnNewTerminal(
       const { spawn: ptySpawn } = await loadPty();
       owner.abort.signal.throwIfAborted();
       pty = ptySpawn(cmd, wrappedArgs, { ...ptyOptions, env: childEnv });
+      wrappedProcessStarted = true;
       addCleanup(() => pty.kill("SIGKILL"));
     }
 
     egress.noteProcessGroup(pty.pid);
     let markGone!: () => void;
     const gone = new Promise<void>((resolve) => { markGone = resolve; });
+    const sandboxWindowNotice = terminalSandboxWindowNotice();
     const session: TerminalSession = {
       egressAbort,
       info: { tabId, lane: "agent", terminalSessionId: randomBytes(16).toString("hex"), substrate: "asrt", sandboxGeneration, initialCwd: cwd, currentCwd: null, cwdSource: "unavailable", shellIntegration: false },
@@ -622,9 +636,11 @@ async function spawnNewTerminal(
       blocks: new TerminalBlockTracker({ nonce: markerNonce, marksPromptEnd }),
       shellName: basename(shell).replace(/^-/u, ""),
       innerPty: innerPtyCommand !== undefined,
+      ...(gitPolicyChanged === undefined ? {} : { gitPolicyChanged }),
       resizeForward: { running: false, again: false },
       ring: [],
       ringBytes: 0,
+      hostNotices: [...(wrapped.notices ?? []), ...(sandboxWindowNotice === undefined ? [] : [sandboxWindowNotice])],
       disposeData: () => {},
       disposeExit: () => {},
       forceKillTimer: null,
@@ -650,23 +666,37 @@ async function spawnNewTerminal(
     session.disposeData = addCleanup(() => dataSub.dispose());
 
     const exitSub = pty.onExit(({ exitCode, signal }) => {
+      wrappedProcessExited = true;
       // A trampoline that exits before it runs the shell fails the spawn: the
       // spawn's own catch cleans up, once, so this handler must not.
       if (pendingSession === session) return;
       session.exited = true;
-      // The blocks outlive the shell (the tab still shows its output) until
-      // the tab closes or a new shell replaces them.
-      session.blocks.recordExit();
       if (session.forceKillTimer !== null) clearTimeout(session.forceKillTimer);
-      _emit("exit", { ...session.info, exitCode, signal }, session.ownerWindowId);
       // Per-command ASRT state decrement (mirrors worker-spawn cleanupOnce) +
       // drop the session so a later spawn for the same tab starts fresh.
       cleanupWrap();
-      cleanupSandboxHome();
-      session.disposeData();
-      session.disposeExit();
-      if (sessions.get(key) === session) sessions.delete(key);
-      session.markGone();
+      const finish = (notice?: string): void => {
+        if (notice !== undefined) {
+          session.hostNotices = [...session.hostNotices, notice];
+          const display = session.blocks.recordOutput(`\r\n${notice}\r\n`);
+          pushRing(session, display);
+          _emit("data", { ...session.info, chunk: display }, session.ownerWindowId);
+        }
+        // Keep a final cleanup notice in the open block before readers see exit.
+        session.blocks.recordExit();
+        _emit("exit", { ...session.info, exitCode, signal }, session.ownerWindowId);
+        cleanupSandboxHome();
+        session.disposeData();
+        session.disposeExit();
+        if (sessions.get(key) === session) sessions.delete(key);
+        session.markGone();
+      };
+      if (wrapped?.cleanupCompleted !== undefined) {
+        void wrapped.cleanupCompleted.then(outcome => finish([outcome.notice, outcome.failure].filter(Boolean).join("\n") || undefined), error => {
+          log.warn({ tabId, err: errorMessage(error) }, "terminal: sandbox cleanup failed");
+          finish(errorMessage(error));
+        });
+      } else finish();
     });
     session.disposeExit = addCleanup(() => exitSub.dispose());
 
@@ -679,6 +709,7 @@ async function spawnNewTerminal(
       const trampolineExitSub = pty.onExit(() => trampolineExited.abort());
       const disposeTrampolineExit = addCleanup(() => trampolineExitSub.dispose());
       try {
+        wrappedProcessStarted = true;
         await handoff.deliver(renderHandoffScript(argv, childEnv), {
           signal: AbortSignal.any([trampolineExited.signal, owner.abort.signal]),
         });
@@ -694,7 +725,7 @@ async function spawnNewTerminal(
     if (sandboxGeneration !== getSandboxGeneration() || !isAsrtSandboxActive() || !isActiveSandboxShellContained()) throw new Error("terminal sandbox changed during launch");
     sessions.set(key, session);
     registerTerminalBlockTracker(session.info, session.blocks, options.ownerWindowId ?? null);
-    if (session.ring.length > 0) _emit("data", { ...session.info, chunk: session.ring.join("") }, session.ownerWindowId);
+    if (session.ring.length > 0 || session.hostNotices.length > 0) _emit("data", { ...session.info, chunk: `${session.hostNotices.map(notice => `\r\n${notice}\r\n`).join("")}${session.ring.join("")}` }, session.ownerWindowId);
     // The session now owns its wrap, HOME and subscriptions until exit.
     owner.cleanupResources = undefined;
     cleanups.length = 0;
@@ -704,7 +735,21 @@ async function spawnNewTerminal(
     // Reverse acquisition order detaches listeners before killing the PTY;
     // each release is shared with cancellation and any late setup result.
     disposeResources();
-    const message = errorMessage(err);
+    const notices = [...(wrapped?.notices ?? [])];
+    if (wrapped?.cleanupCompleted !== undefined) {
+      if (wrappedProcessStarted && !wrappedProcessExited) notices.push(t("sandboxPolicy.cleanupPending"));
+      else {
+        try {
+          const outcome = await wrapped.cleanupCompleted;
+          if (outcome.notice !== undefined) notices.push(outcome.notice);
+          if (outcome.failure !== undefined) notices.push(outcome.failure);
+        } catch (error) {
+          notices.push(errorMessage(error));
+          log.warn({ tabId, err: errorMessage(error) }, "terminal: spawn cleanup failed");
+        }
+      }
+    }
+    const message = [errorMessage(err), ...notices].join("\n");
     if (owner.cancelled) {
       log.info({ tabId }, "terminal: cancelled in-flight spawn");
     } else {
@@ -750,7 +795,7 @@ async function spawnManualTerminal(options: SpawnTerminalOptions, owner: Termina
       pty, ownerWindowId: options.ownerWindowId ?? null,
       blocks: new TerminalBlockTracker({ nonce: randomBytes(16).toString("hex"), marksPromptEnd: false }),
       shellName: basename(launch.command), innerPty: false,
-      resizeForward: { running: false, again: false }, ring: [], ringBytes: 0,
+      resizeForward: { running: false, again: false }, ring: [], ringBytes: 0, hostNotices: [],
       disposeData: () => {}, disposeExit: () => {},
       forceKillTimer: null, closing: false, exited: false, gone, markGone,
     };
@@ -1071,6 +1116,14 @@ export async function typeAgentTerminalCommand(
   const tabId = ref.tabId;
   const live = (): TerminalSession | undefined => agentSession(ref, ownerWindowId);
   const session = live();
+  if (session?.gitPolicyChanged !== undefined) {
+    try {
+      if (session.gitPolicyChanged()) return { ok: false, reason: "cwd-unverified", message: t("sandboxPolicy.terminalChanged") };
+    } catch (error) {
+      log.warn({ tabId, err: errorMessage(error) }, "terminal: Git protection refresh failed");
+      return { ok: false, reason: "cwd-unverified", message: t("sandboxPolicy.terminalChanged") };
+    }
+  }
   return typeLineAtPrompt(
     {
       blocks: session?.blocks,

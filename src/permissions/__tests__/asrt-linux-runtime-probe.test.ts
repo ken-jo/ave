@@ -8,7 +8,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
-import { mkdirSync, mkdtempSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
@@ -16,6 +16,10 @@ import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import * as sandboxWritePolicy from "../sandbox-write-policy.js";
+import * as bareRepositoryCleanup from "../sandbox-bare-repository-cleanup.js";
+import { openEgressInvocation } from "../egress-invocations.js";
+import { getLocale, setLocale } from "../../i18n/index.js";
+import { isHostGitWorkspaceAvailable } from "../../shared/host-git.js";
 
 const h = vi.hoisted(() => ({
   initialize: vi.fn(),
@@ -45,6 +49,7 @@ vi.mock("node:child_process", () => ({
 import {
   ASRT_LINUX_RUNTIME_PROBE_ERROR_CODE,
   ASRT_MAC_RUNTIME_PROBE_ERROR_CODE,
+  buildPerCommandSandboxCustomConfig,
   getDefaultSensitiveWriteDenyPaths,
   isAsrtMacRuntimeProbeError,
   initializeAsrtSandbox,
@@ -56,9 +61,10 @@ import {
 } from "../asrt-sandbox.js";
 
 const ORIGINAL_PLATFORM = process.platform;
+const originalLocale = getLocale();
 const temporaryRoots: string[] = [];
 const CONFIGURED_LINUX_BWRAP_COMMAND =
-  "/configured/asrt/bwrap --new-session --die-with-parent --unshare-user --cap-drop ALL --ro-bind / / --proc /proc -- /bin/bash -c true";
+  "/configured/asrt/bwrap --new-session --die-with-parent --unshare-pid --unshare-user --cap-drop ALL --ro-bind / / --proc /proc -- /bin/bash -c true";
 
 interface ProbeChild extends EventEmitter {
   kill: ReturnType<typeof vi.fn>;
@@ -98,6 +104,7 @@ async function flushMicrotasks(): Promise<void> {
 }
 
 beforeEach(() => {
+  setLocale("en");
   setProcessPlatform("linux");
   h.initialize.mockResolvedValue(undefined);
   h.openInvocationListener.mockResolvedValue({ port: 12345 });
@@ -113,6 +120,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  setLocale(originalLocale);
   vi.useRealTimers();
   if (isAsrtSandboxActive()) {
     await resetAsrtSandbox();
@@ -124,6 +132,235 @@ afterEach(async () => {
 });
 
 describe("Linux wrap filesystem discovery snapshot", () => {
+  it("sweeps trusted writable stores reached through a write-denied pointer file", async () => {
+    const base = realpathSync(mkdtempSync(join(tmpdir(), "asrt-pointer-store-")));
+    temporaryRoots.push(base);
+    const project = join(base, "project");
+    const storage = join(base, "storage");
+    const metadata = join(storage, "metadata");
+    mkdirSync(project);
+    mkdirSync(metadata, { recursive: true });
+    const marker = join(project, ".git");
+    writeFileSync(marker, `gitdir: ${metadata}\n`);
+    writeFileSync(join(metadata, "HEAD"), "ref: refs/heads/main\n");
+    writeFileSync(join(metadata, "config"), "[core]\n");
+    await initializeAsrtSandbox({ allowedDomains: [] });
+    let snapshot: sandboxWritePolicy.SandboxGitControlSnapshot | undefined;
+    buildPerCommandSandboxCustomConfig({ allowWrite: [project, storage] }, undefined, value => { snapshot = value; });
+    expect(snapshot!.isPathExcluded?.(marker)).toBe(true);
+    expect(snapshot!.markerStores.get(marker)).toContain(metadata);
+    setProcessPlatform(ORIGINAL_PLATFORM);
+    const cleanup = await bareRepositoryCleanup.prepareSandboxBareRepositoryCleanup([project, storage], "pointer-store", snapshot);
+    const control = join(metadata, "config.worktree");
+    writeFileSync(control, "created during command\n");
+    expect(cleanup()).toContain(JSON.stringify(control));
+    expect(existsSync(control)).toBe(false);
+    expect(existsSync(marker)).toBe(true);
+  });
+
+  it.each(["with\\backslash", "e\u0301"])("keeps physical spelling when excluding nested metadata: %s", async spelling => {
+    const base = realpathSync(mkdtempSync(join(tmpdir(), "asrt-physical-exclusion-")));
+    temporaryRoots.push(base);
+    const root = join(base, spelling);
+    const hidden = join(root, "private");
+    mkdirSync(hidden, { recursive: true });
+    await initializeAsrtSandbox({ allowedDomains: [] });
+    let snapshot: sandboxWritePolicy.SandboxGitControlSnapshot | undefined;
+    buildPerCommandSandboxCustomConfig({ allowWrite: [root], denyWrite: [hidden] }, undefined,
+      value => { snapshot = value; });
+    setProcessPlatform(ORIGINAL_PLATFORM);
+    const cleanup = await bareRepositoryCleanup.prepareSandboxBareRepositoryCleanup([root], "physical-excluded", snapshot);
+    mkdirSync(join(hidden, ".git"));
+    writeFileSync(join(hidden, ".git", "config"), "host file\n");
+    writeFileSync(join(root, "config"), "sandbox bare layout\n");
+    expect(cleanup()).toContain(JSON.stringify(join(root, "config")));
+    expect(existsSync(join(hidden, ".git", "config"))).toBe(true);
+  });
+
+  it("keeps a directory wildcard exclusion disjoint from sibling Git controls", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "asrt-glob-exclusion-")));
+    temporaryRoots.push(root);
+    mkdirSync(join(root, ".git"));
+    writeFileSync(join(root, ".git", "HEAD"), "ref: refs/heads/main\n");
+    await initializeAsrtSandbox({ allowedDomains: [] });
+    let snapshot: sandboxWritePolicy.SandboxGitControlSnapshot | undefined;
+    buildPerCommandSandboxCustomConfig({ allowWrite: [root], denyWrite: [join(root, "private", "**")] }, undefined,
+      value => { snapshot = value; });
+    setProcessPlatform(ORIGINAL_PLATFORM);
+    const cleanup = await bareRepositoryCleanup.prepareSandboxBareRepositoryCleanup([root], "glob-excluded", snapshot);
+    const control = join(root, ".git", "config.worktree");
+    writeFileSync(control, "created during command\n");
+    expect(cleanup()).toContain(JSON.stringify(control));
+    expect(existsSync(control)).toBe(false);
+  });
+
+  it("refuses unrepresentable deny patterns before a command can run", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "asrt-unsupported-exclusion-")));
+    temporaryRoots.push(root);
+    await initializeAsrtSandbox({ allowedDomains: [] });
+    expect(() => buildPerCommandSandboxCustomConfig({ allowWrite: [root], denyWrite: [join(root, "private-[ab]", "**")] }))
+      .toThrow("Linux Git quarantine cannot represent a filesystem deny pattern");
+  });
+
+  it.each(["read", "write"] as const)("preserves host-created controls inside a nested %s-denied subtree", async kind => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "asrt-excluded-controls-")));
+    temporaryRoots.push(root);
+    const hidden = join(root, "private-store");
+    mkdirSync(hidden);
+    await initializeAsrtSandbox({ allowedDomains: [], ...(kind === "read" ? { denyRead: [hidden] } : {}) });
+    let snapshot: sandboxWritePolicy.SandboxGitControlSnapshot | undefined;
+    const config = buildPerCommandSandboxCustomConfig({
+      allowWrite: [root], ...(kind === "write" ? { denyWrite: [hidden] } : {}),
+    }, undefined, value => { snapshot = value; });
+    expect(config?.filesystem?.allowWrite).toEqual([root]);
+    setProcessPlatform(ORIGINAL_PLATFORM);
+    const cleanup = await bareRepositoryCleanup.prepareSandboxBareRepositoryCleanup([root], "nested-excluded", snapshot);
+    const marker = join(hidden, ".git");
+    mkdirSync(marker);
+    writeFileSync(join(marker, "config"), "concurrent host file\n");
+    writeFileSync(join(root, "config"), "sandbox bare layout\n");
+    expect(cleanup()).toContain(JSON.stringify(join(root, "config")));
+    expect(existsSync(join(marker, "config"))).toBe(true);
+    expect(existsSync(join(root, "config"))).toBe(false);
+  });
+
+  it("limits cleanup identities to roots actually granted after the read floor", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "asrt-effective-snapshot-")));
+    temporaryRoots.push(root);
+    const retained = join(root, "retained");
+    const withheld = join(root, "withheld");
+    mkdirSync(retained);
+    mkdirSync(withheld);
+    await initializeAsrtSandbox({ allowedDomains: [], denyRead: [withheld] });
+    let snapshot: sandboxWritePolicy.SandboxGitControlSnapshot | undefined;
+    const config = buildPerCommandSandboxCustomConfig({ allowWrite: [retained, withheld] }, undefined, value => { snapshot = value; });
+    expect(config?.filesystem?.allowWrite).toEqual([retained]);
+    expect([...snapshot!.roots.keys()]).toEqual([retained]);
+    expect(snapshot!.bareRoots.has(withheld)).toBe(false);
+    setProcessPlatform(ORIGINAL_PLATFORM);
+    const cleanup = await bareRepositoryCleanup.prepareSandboxBareRepositoryCleanup([retained], "effective-only", snapshot);
+    writeFileSync(join(withheld, "config"), "concurrent host file\n");
+    expect(cleanup()).toBeUndefined();
+    expect(existsSync(join(withheld, "config"))).toBe(true);
+  });
+
+  it.each(["tool", "worker"] as const)("settles cleanup when a %s wrap completes after invocation release", async kind => {
+    await initializeAsrtSandbox({ allowedDomains: [] });
+    const cleanup = vi.fn(() => "quarantine restore location");
+    vi.spyOn(bareRepositoryCleanup, "prepareSandboxBareRepositoryCleanup").mockResolvedValue(cleanup);
+    let finishWrap!: (wrapped: { argv: string[]; env: NodeJS.ProcessEnv }) => void;
+    let enteredWrap!: () => void;
+    const entered = new Promise<void>(resolve => { enteredWrap = resolve; });
+    h.wrapWithSandboxArgv.mockImplementationOnce(() => new Promise(resolve => { finishWrap = resolve; enteredWrap(); }));
+    const invocation = openEgressInvocation({ kind: "terminal", tabId: "cancelled-terminal" });
+    const pending = (kind === "tool" ? wrapToolCommand : wrapWorkerCommand)("true", { commandId: invocation.token });
+    await entered;
+    expect(finishWrap).toBeTypeOf("function");
+    invocation.release();
+    finishWrap({ argv: ["/bin/bash", "-c", CONFIGURED_LINUX_BWRAP_COMMAND], env: {} });
+    const wrapped = await pending;
+    await expect(wrapped.cleanupCompleted).resolves.toEqual({ notice: "quarantine restore location" });
+    expect(cleanup).toHaveBeenCalledOnce();
+    invocation.release();
+    expect(cleanup).toHaveBeenCalledOnce();
+  });
+
+  it("reports cleanup failures to the command result owner after release", async () => {
+    await initializeAsrtSandbox({ allowedDomains: [] });
+    vi.spyOn(bareRepositoryCleanup, "prepareSandboxBareRepositoryCleanup").mockResolvedValue(() => {
+      throw new Error("cleanup permission refused");
+    });
+    const invocation = openEgressInvocation({ kind: "shell", toolName: "bash", toolUseId: undefined,
+      context: { sessionId: undefined, workspaceRoot: undefined, approvalSurface: "unavailable" } });
+    const wrapped = await wrapToolCommand("true", { commandId: invocation.token });
+    invocation.release();
+    // Later ended terminals cannot evict an unconsumed shell outcome.
+    for (let index = 0; index < 129; index++) {
+      const terminal = openEgressInvocation({ kind: "terminal", tabId: `terminal-${index}` });
+      await wrapWorkerCommand("true", { commandId: terminal.token });
+      terminal.release();
+    }
+    const output = await wrapped.cleanupCompleted;
+    expect(output?.failure).toContain("cleanup permission refused");
+    expect(output?.failure).toContain("inspect them before running independent Git");
+  });
+
+  it("exposes a scan budget reason and the actual retained write roots", () => {
+    vi.spyOn(sandboxWritePolicy, "buildMandatorySandboxWritePolicy").mockReturnValue({
+      allowWrite: ["/project/child"], denyWrite: [],
+      narrowedWriteRoots: [{ root: "/project", reason: "entry-budget" }],
+    });
+    const notices: string[] = [];
+    const config = buildPerCommandSandboxCustomConfig({ allowWrite: ["/project", "/project/child"] }, notice => notices.push(notice));
+    expect(config?.filesystem?.allowWrite).toEqual(["/project/child"]);
+    expect(notices).toEqual([expect.stringContaining('Project too large to scan for nested repositories within the directory-entry budget; write access narrowed to "/project/child"')]);
+    expect(notices[0]).toContain('withheld roots: "/project"');
+  });
+
+  it("defers bare-layout quarantine to the owning invocation release", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "asrt-bare-release-")));
+    temporaryRoots.push(root);
+    await initializeAsrtSandbox({ allowedDomains: [] });
+    const cleanup = vi.fn(() => "quarantine restore location");
+    vi.spyOn(bareRepositoryCleanup, "prepareSandboxBareRepositoryCleanup").mockResolvedValue(cleanup);
+    h.wrapWithSandboxArgv.mockClear();
+    const invocation = openEgressInvocation({ kind: "shell", toolName: "bash", toolUseId: undefined,
+      context: { sessionId: undefined, workspaceRoot: root, approvalSurface: "unavailable" } });
+    try {
+      const wrapped = await wrapToolCommand("true", { commandId: invocation.token, filesystem: { allowWrite: [root], denyWrite: [] } });
+      const applied = h.wrapWithSandboxArgv.mock.calls[0]![2].filesystem;
+      for (const name of sandboxWritePolicy.SANDBOX_BARE_REPOSITORY_ENTRIES) {
+        expect(applied.denyWrite).not.toContain(join(root, name));
+        expect(existsSync(join(root, name))).toBe(false);
+      }
+      writeFileSync(join(root, "HEAD"), "ref: refs/heads/main\n");
+      writeFileSync(join(root, "config"), "planted");
+      mkdirSync(join(root, "objects"));
+      mkdirSync(join(root, "refs"));
+      expect(existsSync(join(root, "HEAD"))).toBe(true);
+      expect(cleanup).not.toHaveBeenCalled();
+      expect(isHostGitWorkspaceAvailable(root)).toBe(false);
+      invocation.release();
+      await expect(wrapped.cleanupCompleted).resolves.toEqual({ notice: "quarantine restore location" });
+      expect(isHostGitWorkspaceAvailable(root)).toBe(true);
+    } finally { invocation.release(); }
+    expect(cleanup).toHaveBeenCalledOnce();
+  });
+
+  it("rescans shared write roots for each tool command without an override", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "asrt-rescan-")));
+    temporaryRoots.push(root);
+    await initializeAsrtSandbox({ allowedDomains: [], allowWrite: [root] });
+    h.wrapWithSandboxArgv.mockClear();
+    await wrapToolCommand("true", { commandId: TEST_COMMAND_ID });
+    const before = h.wrapWithSandboxArgv.mock.calls[0]![2].filesystem;
+    expect(before.denyWrite).not.toContain(join(root, ".git"));
+    mkdirSync(join(root, ".git"));
+    writeFileSync(join(root, ".git", "HEAD"), "ref: refs/heads/main\n");
+    writeFileSync(join(root, ".git", "config"), "original\n");
+    await wrapToolCommand("true", { commandId: TEST_COMMAND_ID });
+    const after = h.wrapWithSandboxArgv.mock.calls[1]![2].filesystem;
+    expect(after.denyWrite).not.toContain(join(root, ".git"));
+    expect(after.denyWrite).toContain(join(root, ".git", "config"));
+    expect(after.allowWrite).toEqual([root]);
+  });
+
+  it("withholds workspace host Git after a failed quarantine", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "asrt-failed-git-hold-")));
+    temporaryRoots.push(root);
+    await initializeAsrtSandbox({ allowedDomains: [] });
+    vi.spyOn(bareRepositoryCleanup, "prepareSandboxBareRepositoryCleanup").mockResolvedValue(() => {
+      throw new Error("retained control could not be quarantined");
+    });
+    const invocation = openEgressInvocation({ kind: "shell", toolName: "bash", toolUseId: undefined,
+      context: { sessionId: undefined, workspaceRoot: root, approvalSurface: "unavailable" } });
+    const wrapped = await wrapToolCommand("true", { commandId: invocation.token, filesystem: { allowWrite: [root], denyWrite: [] } });
+    expect(isHostGitWorkspaceAvailable(root)).toBe(false);
+    invocation.release();
+    expect((await wrapped.cleanupCompleted)?.failure).toContain("retained control");
+    expect(isHostGitWorkspaceAvailable(root)).toBe(false);
+  });
+
   it.each([
     ["tool", wrapToolCommand], ["worker", wrapWorkerCommand],
   ] as const)("uses one immutable scan for the %s runtime and literal-deny replay", async (_kind, wrap) => {
@@ -132,7 +369,7 @@ describe("Linux wrap filesystem discovery snapshot", () => {
     const fixture = realpathSync(mkdtempSync(join(tmpdir(), "asrt-snapshot-")));
     temporaryRoots.push(fixture);
     const root = join(fixture, "workspace[held]");
-    const denied = join(root, ".git");
+    const denied = join(root, ".gitconfig");
     const ordinary = join(root, "ordinary");
     mkdirSync(denied, { recursive: true });
     mkdirSync(ordinary);
@@ -157,7 +394,7 @@ describe("Linux wrap filesystem discovery snapshot", () => {
       filesystem.denyWrite.push(ordinary);
       return {
         argv: ["/bin/bash", "-c", [
-          "/configured/asrt/bwrap --new-session --die-with-parent --ro-bind / /",
+          "/configured/asrt/bwrap --new-session --die-with-parent --unshare-pid --ro-bind / /",
           `--tmpfs ${quote(root)}`,
           mount("--bind", denied), mount("--bind", ordinary),
           mount("--ro-bind", denied), mount("--ro-bind", root),

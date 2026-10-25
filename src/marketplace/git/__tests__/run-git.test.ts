@@ -135,8 +135,6 @@ describe("GitRunner invocation contract", () => {
     expect(flags).toEqual([
       "protocol.file.allow=never",
       "submodule.recurse=false",
-      "core.fsmonitor=false",
-      `core.hooksPath=${join(t.dir, "empty")}`,
       "http.followRedirects=false",
       "http.proxy=http://proxy.corp.example:3128",
       "filter.lfs.smudge=",
@@ -145,6 +143,9 @@ describe("GitRunner invocation contract", () => {
       "gc.auto=0",
       "maintenance.auto=false",
       "credential.helper=",
+      "safe.bareRepository=explicit",
+      "core.fsmonitor=false",
+      `core.hooksPath=${join(t.dir, "empty")}`,
     ]);
     // No reset without a stored token for the host (an OS helper answers), or for a source without token auth.
     expect(await t.runner.configArgs(remote("https://gitlab.com/acme/tools"))).not.toContain("credential.helper=");

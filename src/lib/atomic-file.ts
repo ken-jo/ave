@@ -46,10 +46,11 @@ const DEFAULT_PARENT_DIRECTORY_SYNC_RUNTIME: ParentDirectorySyncRuntime = {
   close: closeSync,
 };
 
-function replaceStagedFile(
+/** Rename a staged filesystem entry with the shared synchronous lock policy. */
+export function replaceStagedFile(
   from: string,
   to: string,
-  runtime: ParentDirectorySyncRuntime,
+  runtime: ParentDirectorySyncRuntime = DEFAULT_PARENT_DIRECTORY_SYNC_RUNTIME,
 ): void {
   const rename = runtime.rename ?? renameSync;
   const wait = runtime.wait ?? ((milliseconds: number) => {

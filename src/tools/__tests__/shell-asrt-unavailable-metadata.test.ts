@@ -57,10 +57,10 @@ describe("ASRT unavailable metadata", () => {
 
   it("lets failure verdicts override preceding artifact metadata, but rejects later overrides", () => {
     const verdict = 'sandboxed: false, sandboxAttempted: true, isolation: "unavailable"';
-    for (const prefix of ["", "...artifactMetadata, "]) {
+    for (const prefix of ["", "...artifactMetadata, ", "...cleanupMetadata, "]) {
       expect(isUnavailableMetadata(prefix + verdict)).toBe(true);
     }
-    for (const suffix of ["...artifactMetadata", "sandboxed: true", "sandboxAttempted: false", 'isolation: "asrt"', "[unknownKey]: true"]) {
+    for (const suffix of ["...artifactMetadata", "...cleanupMetadata", "sandboxed: true", "sandboxAttempted: false", 'isolation: "asrt"', "[unknownKey]: true"]) {
       expect(isUnavailableMetadata(verdict + ", " + suffix)).toBe(false);
     }
   });

@@ -9,7 +9,7 @@
  * (design §5.5). `model-facing-keys.test.ts` fails when a key reaches the
  * model from outside this set.
  */
-const MODEL_FACING_PREFIXES = ["be_", "shellExecution."] as const;
+const MODEL_FACING_PREFIXES = ["be_", "shellExecution.", "sandboxPolicy."] as const;
 const MODEL_FACING_KEYS: ReadonlySet<string> = new Set([
   "routinePanel.naturalRoutinePrompt",
   "pluginPromptOrigin.notDirectInput",

@@ -34,6 +34,7 @@ import { isIP } from "node:net";
 import { delimiter, dirname } from "node:path";
 import type { Readable } from "node:stream";
 import { proxyUrlFromPacEntry } from "../../shared/pac-proxy.js";
+import { buildHostGitArgs } from "../../shared/host-git.js";
 import { buildSafeChildEnv } from "../../tools/safe-env.js";
 import { forceKillManagedChildProcess, spawnManaged } from "../../main/managed-child-processes.js";
 import { selectAnswers, type AddressPolicy } from "../../core/network-guard.js";
@@ -293,11 +294,9 @@ export class GitRunner {
 
   /** The `-c` flags for one call under one route: the same `proxy` its binding checked (§18.2.4). */
   private configArgsFor(remote: GitRemote | undefined, proxy: string): string[] {
-    return [
+    const configArgs = [
       "-c", "protocol.file.allow=never",
       "-c", "submodule.recurse=false",
-      "-c", "core.fsmonitor=false",
-      "-c", `core.hooksPath=${this.options.emptyDir}`,
       "-c", "http.followRedirects=false",
       "-c", `http.proxy=${proxy}`,
       "-c", "filter.lfs.smudge=",
@@ -309,6 +308,7 @@ export class GitRunner {
       ...(this.offersToken(remote) || this.withholdsCredentials(remote) ? ["-c", "credential.helper="] : []),
       ...Object.entries(this.options.managedConfig ?? {}).flatMap(([key, value]) => ["-c", `${key}=${value}`]),
     ];
+    return buildHostGitArgs([], { configArgs, disabledHooksPath: this.options.emptyDir });
   }
 
   /** The child environment for one call (without the askpass ticket). */

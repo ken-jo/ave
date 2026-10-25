@@ -1,6 +1,7 @@
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, lchownSync, lstatSync, mkdirSync, mkdtempSync, readlinkSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import fs, { chmodSync, lchownSync, lstatSync, mkdirSync, mkdtempSync, readlinkSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { capabilityArgs, wrapCommandWithSandboxLinux, cleanupBwrapMountPoints } from "@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js";
@@ -11,14 +12,111 @@ import { shellQuote } from "../../lib/shell-resolver.js";
 import { deriveSandboxWritePaths } from "../sandbox-write-jail.js";
 import { asrtCanInitialize } from "./test-helpers.js";
 
+const BWRAP_PREFIX = "bwrap --new-session --die-with-parent --unshare-pid";
+
 const priorAveHome = process.env.AVE_HOME;
 const temporaryRoots: string[] = [];
 
 afterEach(async () => {
+  vi.restoreAllMocks();
+  syncBuiltinESMExports();
   if (priorAveHome === undefined) delete process.env.AVE_HOME;
   else process.env.AVE_HOME = priorAveHome;
   for (const root of temporaryRoots.splice(0)) await cleanupTmpDir(root);
 });
+
+it.skipIf(process.platform === "win32").each(["ELOOP", "ENAMETOOLONG"])(
+  "rejects a Git mandatory-control lookup failure with %s",
+  async (code) => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "ave-linux-git-controls-")));
+    temporaryRoots.push(root);
+    mkdirSync(join(root, ".git"));
+    const hooks = join(root, ".git", "hooks");
+    const failure = Object.assign(new Error(`Git control lookup failed: ${code}`), { code });
+    const originalLstat = fs.lstatSync;
+    vi.spyOn(fs, "lstatSync").mockImplementation(((...args: Parameters<typeof fs.lstatSync>) => {
+      if (args[0] === hooks) throw failure;
+      return originalLstat(...args);
+    }) as typeof fs.lstatSync);
+    syncBuiltinESMExports();
+    vi.spyOn(process, "cwd").mockReturnValue(root);
+    try {
+      await expect(wrapCommandWithSandboxLinux({
+        command: "true",
+        needsNetworkRestriction: false,
+        readConfig: { denyOnly: [], allowWithinDeny: [] },
+        writeConfig: { allowOnly: [root], denyWithinAllow: [] },
+        allowAllUnixSockets: true,
+      })).rejects.toBe(failure);
+    } finally {
+      cleanupBwrapMountPoints();
+    }
+  },
+);
+
+it.skipIf(process.platform === "win32").each(["absent", "cwd", "nested"])(
+  "keeps absent Git mandatory controls absent while generating a %s wrapper",
+  async (location) => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "ave-linux-git-controls-")));
+    temporaryRoots.push(root);
+    const gitDirectory = join(root, ...(location === "nested" ? ["project"] : []), ".git");
+    if (location !== "absent") {
+      mkdirSync(gitDirectory, { recursive: true });
+      writeFileSync(join(gitDirectory, "HEAD"), "ref: refs/heads/main\n");
+    }
+    const controls = [join(gitDirectory, "hooks"), join(gitDirectory, "config")];
+    vi.spyOn(process, "cwd").mockReturnValue(root);
+    for (const control of controls) expect(lstatSync(control, { throwIfNoEntry: false })).toBeUndefined();
+    try {
+      const generated = await wrapCommandWithSandboxLinux({
+        command: "true",
+        needsNetworkRestriction: false,
+        readConfig: { denyOnly: [], allowWithinDeny: [] },
+        writeConfig: { allowOnly: [root], denyWithinAllow: [join(root, "settings.json")] },
+        allowAllUnixSockets: true,
+      });
+      const words = execFileSync("/bin/bash", ["-c", `set -- ${generated}; printf '%s\\n' "$@"`], { encoding: "utf8" }).trimEnd().split("\n");
+      for (const control of controls) {
+        expect(lstatSync(control, { throwIfNoEntry: false }), control).toBeUndefined();
+        expect(finalMountCovering(words, control)).toEqual(["--bind", root, root]);
+      }
+      expect(words).toContain(join(root, ".bashrc"));
+      expect(words).toContain(join(root, "settings.json"));
+      if (location === "absent") expect(lstatSync(gitDirectory, { throwIfNoEntry: false })).toBeUndefined();
+    } finally {
+      cleanupBwrapMountPoints();
+    }
+    for (const control of controls) expect(lstatSync(control, { throwIfNoEntry: false })).toBeUndefined();
+  },
+);
+
+it.skipIf(process.platform === "win32").each(["cwd", "nested"])(
+  "keeps existing Git mandatory controls read-only in a %s wrapper",
+  async (location) => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "ave-linux-git-controls-")));
+    temporaryRoots.push(root);
+    const gitDirectory = join(root, ...(location === "nested" ? ["project"] : []), ".git");
+    const hooks = join(gitDirectory, "hooks");
+    const config = join(gitDirectory, "config");
+    mkdirSync(hooks, { recursive: true });
+    writeFileSync(join(gitDirectory, "HEAD"), "ref: refs/heads/main\n");
+    writeFileSync(config, "[core]\nrepositoryformatversion = 0\n");
+    vi.spyOn(process, "cwd").mockReturnValue(root);
+    try {
+      const generated = await wrapCommandWithSandboxLinux({
+        command: "true",
+        needsNetworkRestriction: false,
+        readConfig: { denyOnly: [], allowWithinDeny: [] },
+        writeConfig: { allowOnly: [root], denyWithinAllow: [] },
+        allowAllUnixSockets: true,
+      });
+      const words = execFileSync("/bin/bash", ["-c", `set -- ${generated}; printf '%s\\n' "$@"`], { encoding: "utf8" }).trimEnd().split("\n");
+      for (const control of [hooks, config]) expect(finalMountCovering(words, control)).toEqual(["--ro-bind", control, control]);
+    } finally {
+      cleanupBwrapMountPoints();
+    }
+  },
+);
 
 it.runIf(process.platform !== "win32")("makes the generated Linux secrets mask read-only while preserving a nested write mount", async () => {
   const root = mkdtempSync(join(tmpdir(), "ave-floor-"));
@@ -190,14 +288,14 @@ it.runIf(process.platform !== "win32")("preserves a same-path write bind through
   const alias = join(root, "alias", "work");
   mkdirSync(real, { recursive: true });
   symlinkSync(join(root, "actual"), join(root, "alias"), "dir");
-  const command = `bwrap --ro-bind / / --tmpfs '${real}' --tmpfs '${alias}' --bind '${alias}' '${alias}' -- /bin/sh -c 'true'`;
+  const command = `${BWRAP_PREFIX} --ro-bind / / --tmpfs '${real}' --tmpfs '${alias}' --bind '${alias}' '${alias}' -- /bin/sh -c 'true'`;
   const wrapped = hardenLinuxSandboxWrap({ argv: ["/bin/bash", "-c", command], env: {} });
   expect(wrapped.argv[2]).not.toContain("--remount-ro");
 
   const realSecrets = join(root, "actual", "secrets");
   const aliasSecrets = join(root, "alias", "secrets");
   mkdirSync(realSecrets);
-  const secretsCommand = `bwrap --ro-bind / / --tmpfs '${realSecrets}' --tmpfs '${aliasSecrets}' -- /bin/sh -c 'true'`;
+  const secretsCommand = `${BWRAP_PREFIX} --ro-bind / / --tmpfs '${realSecrets}' --tmpfs '${aliasSecrets}' -- /bin/sh -c 'true'`;
   const secretsWrapped = hardenLinuxSandboxWrap({ argv: ["/bin/bash", "-c", secretsCommand], env: {} });
   expect(secretsWrapped.argv[2]).toContain(`'--remount-ro' '${aliasSecrets}'`);
 });
@@ -208,7 +306,7 @@ it.runIf(process.platform !== "win32")("refuses a mount whose alias identity can
   const dangling = join(root, "dangling");
   symlinkSync(join(root, "missing"), dangling, "dir");
   expect(() => hardenLinuxSandboxWrap({
-    argv: ["/bin/bash", "-c", `bwrap --tmpfs '${join(dangling, "work")}' -- /bin/sh -c 'true'`],
+    argv: ["/bin/bash", "-c", `${BWRAP_PREFIX} --tmpfs '${join(dangling, "work")}' -- /bin/sh -c 'true'`],
     env: {},
   })).toThrow(/identity/);
 });
@@ -216,7 +314,7 @@ it.runIf(process.platform !== "win32")("refuses a mount whose alias identity can
 // The hardener runs only on Linux and resolves bwrap targets as host paths;
 // on Win32 a rooted /tmp/example resolves onto a drive, which no bwrap sees.
 it.runIf(process.platform !== "win32")("remounts a mask that is the final mount at its target", () => {
-  const command = "bwrap --tmpfs /tmp/example --bind /tmp/example /tmp/example --tmpfs /tmp/example -- /bin/sh -c 'true'";
+  const command = `${BWRAP_PREFIX} --tmpfs /tmp/example --bind /tmp/example /tmp/example --tmpfs /tmp/example -- /bin/sh -c 'true'`;
   const wrapped = hardenLinuxSandboxWrap({ argv: ["/bin/bash", "-c", command], env: {} });
   expect(wrapped.argv[2]).toContain("'--remount-ro' '/tmp/example' --");
 });
@@ -226,6 +324,19 @@ it("refuses a wrapper whose mount options cannot be located", () => {
     .toThrow(/bubblewrap/);
 });
 
+it.each(["--new-session", "--die-with-parent", "--unshare-pid"])(
+  "requires the process lifetime guard even when no mounts change: %s",
+  (missing) => {
+    const prefix = BWRAP_PREFIX.split(" ").filter((word) => word !== missing).join(" ");
+    // A command operand containing the spelling cannot satisfy a wrapper option.
+    const command = `${prefix} --ro-bind / / -- /bin/sh -c 'printf ${missing}'`;
+    for (const filesystem of [{}, { allowRead: ["/tmp"] }]) {
+      expect(() => hardenLinuxSandboxWrap({ argv: ["/bin/bash", "-c", command], env: {} }, filesystem))
+        .toThrow(`Linux sandbox wrapper is missing required process isolation: ${missing}`);
+    }
+  },
+);
+
 it.each([
   "--args 9",
   "--overlay-src /tmp/example",
@@ -234,7 +345,7 @@ it.each([
   "--bind /tmp/other /tmp/example",
 ])("refuses an unsupported wrapper option form: %s", (option) => {
   expect(() => hardenLinuxSandboxWrap({
-    argv: ["/bin/bash", "-c", `bwrap ${option} -- /bin/sh -c 'true'`],
+    argv: ["/bin/bash", "-c", `${BWRAP_PREFIX} ${option} -- /bin/sh -c 'true'`],
     env: {},
   })).toThrow(/unsupported/);
 });
@@ -310,7 +421,7 @@ it.runIf(process.platform !== "win32")(
 
 it.runIf(process.platform !== "win32")("does not put back a write root that one of the wrap's write denies covers", () => {
   const { plugins, pluginRoot, pluginData } = pluginRootHoldingData();
-  const command = `bwrap --ro-bind / / --bind '${pluginData}' '${pluginData}' --tmpfs '${plugins}' `
+  const command = `${BWRAP_PREFIX} --ro-bind / / --bind '${pluginData}' '${pluginData}' --tmpfs '${plugins}' `
     + `--bind '${pluginData}' '${pluginData}' --ro-bind '${pluginRoot}' '${pluginRoot}' -- /bin/sh -c 'true'`;
   const replayed = hardenLinuxSandboxWrap(
     { argv: ["/bin/bash", "-c", command], env: {} },
@@ -328,7 +439,7 @@ it.runIf(process.platform !== "win32")("does not put back a write root that one 
 });
 
 it.runIf(process.platform !== "win32")("leaves an explicitly granted host temp bind unchanged", () => {
-  const wrapped = { argv: ["/bin/bash", "-c", "bwrap --ro-bind / / --bind /tmp /tmp -- /bin/sh -c 'true'"], env: {} };
+  const wrapped = { argv: ["/bin/bash", "-c", `${BWRAP_PREFIX} --ro-bind / / --bind /tmp /tmp -- /bin/sh -c 'true'`], env: {} };
   expect(hardenLinuxSandboxWrap(wrapped)).toBe(wrapped);
 });
 
@@ -345,7 +456,7 @@ it.runIf(process.platform !== "win32").each(["directory", "file", "symlink"])("p
   const before = lstatSync(leaf);
   const link = kind === "symlink" ? readlinkSync(leaf) : undefined;
   const wrapped = {
-    argv: ["/bin/bash", "-c", `bwrap --ro-bind / / --bind /tmp /tmp --bind ${shellQuote(shared)} ${shellQuote(shared)} -- /bin/sh -c 'true'`],
+    argv: ["/bin/bash", "-c", `${BWRAP_PREFIX} --ro-bind / / --bind /tmp /tmp --bind ${shellQuote(shared)} ${shellQuote(shared)} -- /bin/sh -c 'true'`],
     env: {},
   };
   expect(hardenLinuxSandboxWrap(wrapped)).toBe(wrapped);
@@ -438,14 +549,14 @@ it.runIf(process.platform !== "win32")("accepts a generated namespace-limiting w
 it("accepts only the pinned root-user capability mapping sequence", () => {
   const capabilities = capabilityArgs({ euid: 0, hasSetfcap: true, usesSeccompHelper: true });
   expect(capabilities).toEqual(["--cap-drop", "ALL", "--cap-add", "CAP_SETFCAP"]);
-  const command = `bwrap --unshare-user ${capabilities.join(" ")} --ro-bind / / -- /bin/sh -c 'true'`;
+  const command = `${BWRAP_PREFIX} --unshare-user ${capabilities.join(" ")} --ro-bind / / -- /bin/sh -c 'true'`;
   for (const filesystem of [{}, { allowRead: ["/tmp"] }]) {
     expect(() => hardenLinuxSandboxWrap({ argv: ["/bin/bash", "-c", command], env: {} }, filesystem)).not.toThrow();
   }
 });
 
 it.each(["CAP_SYS_ADMIN", "ALL"])("refuses a broader capability addition: %s", (capability) => {
-  const command = `bwrap --unshare-user --cap-drop ALL --cap-add ${capability} -- /bin/sh -c 'true'`;
+  const command = `${BWRAP_PREFIX} --unshare-user --cap-drop ALL --cap-add ${capability} -- /bin/sh -c 'true'`;
   for (const filesystem of [{}, { allowRead: ["/tmp"] }]) {
     expect(() => hardenLinuxSandboxWrap({ argv: ["/bin/bash", "-c", command], env: {} }, filesystem)).toThrow(/unsupported capability/u);
   }
@@ -455,6 +566,6 @@ it.each([
   "--cap-drop ALL --cap-add CAP_SETFCAP",
   "--unshare-user --cap-add CAP_SETFCAP",
 ])("refuses capability restoration without its confinement preconditions: %s", (options) => {
-  const command = `bwrap ${options} -- /bin/sh -c 'true'`;
+  const command = `${BWRAP_PREFIX} ${options} -- /bin/sh -c 'true'`;
   expect(() => hardenLinuxSandboxWrap({ argv: ["/bin/bash", "-c", command], env: {} })).toThrow(/requires an isolated user namespace and dropped capabilities/u);
 });

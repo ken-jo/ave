@@ -31,6 +31,7 @@ import { renameDirectory } from "../../lib/transient-fs-lock-retry.js";
 import { canonicalZipEntryPathIdentity, sanitizeZipEntryPath } from "../../plugins/zip-entry-path.js";
 import { buildSafeChildEnv } from "../../tools/safe-env.js";
 import type { GitRuntimeProgress } from "../../shared/git-runtime.js";
+import { buildHostGitArgs } from "../../shared/host-git.js";
 import { MarketplaceError, isMarketplaceError, type MarketplaceErrorDetail } from "../errors.js";
 import { stallGuarded } from "../net/stall-guard.js";
 import type { ManagedGitInstall } from "./detect.js";
@@ -269,7 +270,7 @@ function runCopy(layout: ManagedGitLayout, args: string[], input?: string): Prom
   });
   if (layout.pathPrefix.length > 0) env.PATH = [...layout.pathPrefix, env.PATH ?? ""].join(process.platform === "win32" ? ";" : ":");
   return new Promise((resolve, reject) => {
-    const child = execFile(layout.executable, args, { env, timeout: SMOKE_TIMEOUT_MS, windowsHide: true, maxBuffer: 64 * 1024 }, (error, stdout) =>
+    const child = execFile(layout.executable, buildHostGitArgs(args), { env, timeout: SMOKE_TIMEOUT_MS, windowsHide: true, maxBuffer: 64 * 1024 }, (error, stdout) =>
       error ? reject(error) : resolve(String(stdout)),
     );
     if (input !== undefined) child.stdin?.end(input);

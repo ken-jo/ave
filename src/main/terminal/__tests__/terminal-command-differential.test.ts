@@ -632,7 +632,7 @@ async function openSession(shellPath: string, rig: Rig, promptTokens?: string): 
       // The previous command left the shell not ready for the next one:
       // a failure of its own, reported without retrying the command.
       stuck.push(`${name}: ${JSON.stringify(previous)} left the shell ${typed.reason} (edit line ${JSON.stringify(tracker.editLineText())}; output ${JSON.stringify(recentOutput)})`);
-      throw new Error(`${name}: not typed (${typed.reason}): ${line} (after ${previous}); ${stuck.at(-1)}`);
+      throw new Error(`${name}: not typed (${typed.reason}): ${line} (after ${previous}; prompt ${tracker.promptState()}; prompt ends ${tracker.promptEndCount()}); ${stuck.at(-1)}`);
     }
     previous = line;
     const prompts = tracker.promptEndCount();
