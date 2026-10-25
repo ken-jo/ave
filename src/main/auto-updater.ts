@@ -14,7 +14,7 @@ import {
   clearAppUpdateInstallRequested,
 } from "./app-update-install-intent.js";
 import { hasPluginInstallInFlight } from "../plugins/install-lifecycle.js";
-import { isAppRelaunchRequested } from "./app-relaunch-state.js";
+import { isAppRelaunchRequested, onAppRelaunchChanged } from "./app-relaunch-state.js";
 export type { UpdateState };
 const log = createLogger("auto-updater");
 
@@ -59,6 +59,7 @@ export interface UpdaterLike {
   // When false (our choice), `checkForUpdates` only detects — caller must invoke `downloadUpdate()` explicitly. Default in electron-updater is `true`,
   // which would silently fetch ~100MB on every app start.
   autoDownload?: boolean;
+  autoInstallOnAppQuit?: boolean;
 }
 
 // Keep the last good state on transient feed or download errors; log failures without inventing a renderer state.
@@ -111,6 +112,7 @@ export function createAutoUpdater(deps: AutoUpdaterDeps): {
   let wired = false;
   let lastState: UpdateState = { kind: "idle" };
   let installInProgress = false;
+  let unsubscribeRelaunch: (() => void) | undefined;
 
   const loadUpdater = (): UpdaterLike | null => {
     if (updater) return updater;
@@ -182,6 +184,12 @@ export function createAutoUpdater(deps: AutoUpdaterDeps): {
   };
 
   const wire = (u: UpdaterLike) => {
+    if (!unsubscribeRelaunch) {
+      const autoInstallOnAppQuit = u.autoInstallOnAppQuit;
+      unsubscribeRelaunch = onAppRelaunchChanged((requested) => {
+        u.autoInstallOnAppQuit = requested ? false : autoInstallOnAppQuit;
+      });
+    }
     if (wired) return;
     wired = true;
     // Reject downgrades and pin the stable channel: feed integrity alone cannot prevent forged older metadata or channel redirection.
@@ -449,6 +457,8 @@ export function createAutoUpdater(deps: AutoUpdaterDeps): {
       if (timer) clearInterval(timer);
       timer = undefined;
       unregisterIpc();
+      unsubscribeRelaunch?.();
+      unsubscribeRelaunch = undefined;
     },
     triggerCheck,
     _testOnly: {

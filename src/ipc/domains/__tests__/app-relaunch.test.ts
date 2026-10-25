@@ -14,6 +14,8 @@ import { folderService, type FolderServiceHarness } from "../../../marketplace/_
 import { nodeFolders, writeFolderFiles } from "../../../marketplace/__tests__/fixtures/folder-fs.js";
 import { descriptorText, jsonText } from "../../../marketplace/__tests__/fixtures/package-files.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
+import { ContentStore } from "../../../marketplace/content/store.js";
+import { EMPTY_MARKETPLACE_POLICY } from "../../../marketplace/sources/policy.js";
 
 vi.mock("electron", () => ({ ipcMain: { handle: vi.fn() } }));
 
@@ -76,7 +78,77 @@ async function unboundMcpInstall() {
   return { harness: marketplace, planId: preview.planId, written: join(root, "mcp-installed") };
 }
 
+async function installedLanguage() {
+  const { harness, planId } = await languageInstall();
+  await harness.service.executeInstall(planId);
+  const deactivate = vi.fn(async () => undefined);
+  const store = await ContentStore.open({ root: join(harness.root, "packages"), english: {}, activation: {
+    activate: async () => ({ retired: Promise.resolve() }), deactivate, approveComponents: async () => undefined,
+  } });
+  await store.install(harness.content[0]!);
+  harness.installers.content.list = async () => store.list().map((entry) => ({ kind: entry.kind, name: entry.name,
+    version: entry.version, sourceId: entry.origin.sourceId, originCommit: entry.origin.commit }));
+  harness.installers.content.uninstall = async () => { await store.uninstall("language", "french", EMPTY_MARKETPLACE_POLICY); };
+  return { harness, store, deactivate, key: { sourceId: "languages", kind: "language" as const, name: "french" } };
+}
+
+function revokeLanguage(root: string) {
+  writeFolderFiles(join(root, "source"), { "policy/revocations.json": jsonText({ schemaVersion: 1, revocations: [
+    { kind: "language", name: "french", versions: "*", reason: "unsafe", at: "2026-10-02T00:00:00Z", action: "uninstall" },
+  ] }) });
+}
+
 describe("app relaunch boundary", () => {
+  it("refuses language removal after accepted relaunch without deactivating or changing the ledger", async () => {
+    const { harness, store, deactivate, key } = await installedLanguage();
+    const before = store.list();
+    expect(invoke()).toEqual({ ok: true });
+    await expect(harness.service.uninstall(key)).rejects.toMatchObject({ code: "relaunch-in-progress" });
+    expect(deactivate).not.toHaveBeenCalled();
+    expect(store.list()).toEqual(before);
+  });
+
+  it("refuses catalog language revocation after accepted relaunch", async () => {
+    const { harness, store, deactivate } = await installedLanguage();
+    const before = store.list();
+    revokeLanguage(harness.root);
+    expect(invoke()).toEqual({ ok: true });
+    await harness.service.refresh("languages");
+    expect(deactivate).not.toHaveBeenCalled();
+    expect(store.list()).toEqual(before);
+    expect(harness.service.takeRevocationNotice()?.revoked).toEqual([expect.objectContaining({ outcome: "failed" })]);
+  });
+
+  async function heldLanguageRemoval(revoked: boolean) {
+    const { harness, store, deactivate, key } = await installedLanguage();
+    let entered!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    deactivate.mockImplementationOnce(async () => { entered(); await held; });
+    if (revoked) revokeLanguage(harness.root);
+    const pending = revoked ? harness.service.refresh("languages") : harness.service.uninstall(key);
+    await started;
+    try {
+      expect(invoke()).toEqual({ ok: false, error: "plugin-install-in-progress" });
+      expect(relaunchApp).not.toHaveBeenCalled();
+      expect(store.list()).toHaveLength(1);
+    } finally {
+      release();
+      await pending;
+    }
+    expect(store.list()).toEqual([]);
+    expect(invoke()).toEqual({ ok: true });
+  }
+
+  it("refuses relaunch while a language uninstall holds deactivation", async () => {
+    await heldLanguageRemoval(false);
+  });
+
+  it("refuses relaunch while catalog language revocation holds deactivation", async () => {
+    await heldLanguageRemoval(true);
+  });
+
   it("refuses a language pack without writing after relaunch is accepted", async () => {
     const { harness, planId, written } = await languageInstall();
     const install = vi.spyOn(harness.installers.content, "install").mockImplementation(async () => {
