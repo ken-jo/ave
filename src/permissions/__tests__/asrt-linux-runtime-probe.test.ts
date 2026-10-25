@@ -9,13 +9,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { basename, dirname, join } from "node:path";
 import type { SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
 import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import * as globMatcher from "../../lib/glob-matcher.js";
+import { globMatch } from "../../lib/glob-matcher.js";
+import { expandLeadingTilde } from "../../shared/home-tilde.js";
+import { canonicalizePathForMatch } from "../sensitive-paths.js";
 import * as sandboxWritePolicy from "../sandbox-write-policy.js";
 import * as bareRepositoryCleanup from "../sandbox-bare-repository-cleanup.js";
 import { openEgressInvocation } from "../egress-invocations.js";
@@ -50,7 +53,10 @@ vi.mock("node:child_process", () => ({
 import {
   ASRT_LINUX_RUNTIME_PROBE_ERROR_CODE,
   ASRT_MAC_RUNTIME_PROBE_ERROR_CODE,
+  appOwnedSandboxPrivateRoots,
   buildPerCommandSandboxCustomConfig,
+  getBuiltinShellReadPolicy,
+  getBuiltinShellSessionReadPolicy,
   getDefaultSensitiveWriteDenyPaths,
   isAsrtMacRuntimeProbeError,
   initializeAsrtSandbox,
@@ -664,5 +670,96 @@ describe("configured profile launch on macOS", () => {
     expect(failure).toMatchObject({ code: ASRT_MAC_RUNTIME_PROBE_ERROR_CODE });
     expect(h.reset).toHaveBeenCalledOnce();
     expect(isAsrtSandboxActive()).toBe(false);
+  });
+});
+
+// The read policy checks every grant against every floor entry. It compiles
+// each entry once; this oracle is the per-path, per-ancestor check it replaced.
+describe.each([
+  ["darwin", "a trusted subtree deny", ["~/secret/**"]],
+  ["linux", "a trusted subtree deny", ["~/secret/**"]],
+  ["darwin", "a trusted bracket deny", ["~/s[ab]"]],
+  ["linux", "a trusted bracket deny", ["~/s[ab]"]],
+] as const)("builtin shell read policy on %s with %s", (platform, _label, denyRead) => {
+  beforeEach(async () => {
+    setProcessPlatform(platform);
+    await initializeAsrtSandbox({ allowedDomains: [], denyRead: [...denyRead] });
+  });
+
+  const referenceCovers = (denied: string, canonicalPath: string): boolean => {
+    if (/[\[\]]/.test(denied)) return true;
+    const pattern = canonicalizePathForMatch(expandLeadingTilde(denied));
+    for (let candidate = canonicalPath; ; candidate = dirname(candidate)) {
+      if (globMatch(candidate, pattern) || globMatch(`${candidate}/`, pattern)) return true;
+      if (dirname(candidate) === candidate) return false;
+    }
+  };
+  const corpus = (): string[] => {
+    const empty = getBuiltinShellReadPolicy([], homedir());
+    const paths = new Set<string>();
+    for (const entry of [...empty.denyRead, ...empty.floorPierces]) {
+      const wildcard = entry.search(/[*?[]/u);
+      const literal = expandLeadingTilde(wildcard < 0 ? entry : entry.slice(0, wildcard));
+      const base = literal.replace(/[\\/]+$/u, "") || "/";
+      paths.add(base);
+      paths.add(join(base, "child", "file"));
+      paths.add(dirname(base));
+      // Case-folded on darwin, so an upper-cased spelling is the same deny.
+      paths.add(join(dirname(base), basename(base).toUpperCase()));
+      paths.add(`${base}-sibling`);
+    }
+    for (const pierce of empty.floorPierces) paths.add(join(pierce, "nested", ".ssh", "id_ed25519"));
+    // The trusted denies: the subtree root and a path in it, a near miss, and
+    // names the bracket would match and would not.
+    for (const name of ["secret", join("secret", "x"), "secretive", "sa", "sb", "sc"]) paths.add(join(homedir(), name));
+    for (const ordinary of [["projects", "x"], ["projects", "x", ".git", "hooks"], [".config"], [".claude", "hooks"], [".husky"]]) {
+      paths.add(join(homedir(), ...ordinary));
+    }
+    paths.add(join(tmpdir(), "ave-read-policy-cwd"));
+    return [...paths];
+  };
+
+  it("allows and withholds exactly what the per-path check does", () => {
+    const reads = corpus();
+    const ownHome = join(appOwnedSandboxPrivateRoots()[0] ?? tmpdir(), "own-home");
+    const sessions = getBuiltinShellSessionReadPolicy();
+    expect(sessions.denyRead).toEqual(expect.arrayContaining([...denyRead]));
+    const privateRoots = appOwnedSandboxPrivateRoots();
+    const own = canonicalizePathForMatch(ownHome);
+    const expected = [...reads, ...sessions.allowRead].filter((path) => {
+      const resolved = canonicalizePathForMatch(path);
+      if (sessions.denyRead.some((denied) => referenceCovers(denied, resolved))) return false;
+      const insideOwnHome = resolved === own || resolved.startsWith(`${own}/`);
+      return insideOwnHome || !privateRoots.some((root) => referenceCovers(root, resolved));
+    });
+    const policy = getBuiltinShellReadPolicy(reads, homedir(), ownHome);
+    expect(policy.allowRead).toEqual(expected);
+    expect(policy.denyRead).toEqual([...sessions.denyRead, ...privateRoots]);
+    if (denyRead[0] === "~/secret/**") {
+      // The subtree root itself is denied only through its trailing-slash
+      // spelling: `/**` does not match the bare directory.
+      expect(policy.allowRead).not.toContain(join(homedir(), "secret"));
+      expect(policy.allowRead).not.toContain(join(homedir(), "secret", "x"));
+      expect(policy.allowRead).toContain(join(homedir(), "secretive"));
+      expect(policy.allowRead).toContain(join(homedir(), "projects", "x"));
+    } else {
+      // A bracket pattern is not represented, so it fails closed for every grant.
+      expect(policy.allowRead).toEqual([]);
+    }
+  });
+
+  it("compiles each deny once however many paths it checks", () => {
+    const ordinary = [join(homedir(), "projects", "x"), join(tmpdir(), "ave-read-policy-cwd")];
+    const compile = vi.spyOn(globMatcher, "compileGlobMatcher");
+    const match = vi.spyOn(globMatcher, "globMatch");
+    const work = (): number => compile.mock.calls.length + match.mock.calls.length;
+    getBuiltinShellReadPolicy(ordinary.slice(0, 1), homedir());
+    const forOne = work();
+    compile.mockClear();
+    match.mockClear();
+    getBuiltinShellReadPolicy([...ordinary, ...Array.from({ length: 40 }, (_, index) => join(homedir(), "projects", `p${index}`))], homedir());
+    // Before, every path re-canonicalized and recompiled every deny for each
+    // of its ancestors: 40 more paths cost thousands more compiles.
+    expect(work()).toBe(forOne);
   });
 });
