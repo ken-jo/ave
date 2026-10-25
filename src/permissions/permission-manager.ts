@@ -1250,7 +1250,7 @@ export class PermissionManager {
     const powerShellSignals = ruleSubject?.dialect === "powershell" ? inspectPowerShellCommand(ruleSubject.command, ruleSubject.cwd) : undefined;
     // Scripts handed to PowerShell as `-EncodedCommand` (from either dialect) are decoded and meet the same floors as plaintext `-Command`; no allow
     // rule covers a command that carries one.
-    const encoded = ruleSubject === undefined ? { scripts: [], hidden: false } : inspectEncodedPowerShell(ruleSubject.command);
+    const encoded = ruleSubject === undefined ? { scripts: [], hidden: false } : inspectEncodedPowerShell(parsedSubject ?? ruleSubject.command, ruleSubject.dialect, ruleSubject.cwd);
     const encodedScripts = encoded.scripts;
     // An encoded-command payload the host could not fully decode hides the code that runs: a destructive floor, never an allow rule (fail closed).
     const encodedHidden = encoded.hidden;

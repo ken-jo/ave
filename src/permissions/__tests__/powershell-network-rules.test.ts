@@ -321,6 +321,59 @@ describe("PowerShell -EncodedCommand", () => {
     expect(buildShellRuleApproval("powershell", command, dir, { allow: true, deny: true }).decodedCommands).toEqual([DESTRUCTIVE]);
   });
 
+  // Re-review round 5: the reader works on each shell lexer's unescaped argv, and a launched shell whose argv is not fully literal is hidden code.
+  // Every input: a forced modal sandboxed and not, over allow rules that would otherwise match, and no exact rule on the card.
+  const PAYLOAD = encode(DESTRUCTIVE);
+  const HIDDEN_INPUTS: readonly (readonly [string, "powershell" | "bash"])[] = [
+    [`pwsh \`-enc ${PAYLOAD}`, "powershell"],
+    [`pwsh \\-enc ${PAYLOAD}`, "powershell"],
+    [`pwsh "a\`"" -enc ${PAYLOAD}`, "powershell"],
+    [`pwsh \u201cx" -enc ${PAYLOAD} "y\u201d`, "powershell"],
+    [`pwsh @splat -enc ${PAYLOAD}`, "powershell"],
+    [`pwsh $flag ${PAYLOAD}`, "powershell"],
+    [`pwsh -enc $(Get-Payload)`, "powershell"],
+    [`cmd /c pwsh ^-enc ${PAYLOAD}`, "powershell"],
+    [`cmd /c pwsh -enc %PAYLOAD%`, "powershell"],
+    ["bash $X", "powershell"],
+    ["bash $X", "bash"],
+    ["pwsh $X", "bash"],
+  ];
+  const ALLOW_LAUNCHERS = ["pwsh *", "cmd *", "bash *"].flatMap((body) => [
+    { pattern: `PowerShell(${body})`, action: "allow" as const }, { pattern: `Bash(${body})`, action: "allow" as const },
+  ]);
+  const check = (command: string, dialect: "powershell" | "bash", runsSandboxed: boolean) => manager.checkDetailed(dialect, "builtin", "shell", null, {
+    ruleSubject: { kind: "shell", dialect, command, cwd: dir },
+    shellExecution: { runsSandboxed },
+  });
+
+  it.each(HIDDEN_INPUTS)("treats a launched shell it cannot read literally as hidden code: %s (%s)", (command, dialect) => {
+    manager.setRules(ALLOW_LAUNCHERS);
+    expect(check(command, dialect, true)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    expect(check(command, dialect, false)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    expect(buildShellRuleApproval(dialect, command, dir, { allow: true, deny: true }).exactRule).toBeNull();
+  });
+
+  it.each([
+    [`pwsh \\-enc ${PAYLOAD}`, "bash"],
+    [`& pwsh -enc ${PAYLOAD}`, "powershell"],
+    [`$(pwsh -enc ${PAYLOAD})`, "powershell"],
+    [`pwsh -c 'pwsh -enc ${PAYLOAD}'`, "powershell"],
+    [`cmd /c "pwsh -enc ${PAYLOAD}"`, "powershell"],
+    [`bash -c 'pwsh -enc ${PAYLOAD}'`, "bash"],
+  ] as const)("decodes what the shell's own lexer passes on: %s (%s)", (command, dialect) => {
+    manager.setRules(ALLOW_LAUNCHERS);
+    expect(buildShellRuleApproval(dialect, command, dir, { allow: true, deny: true })).toMatchObject({ exactRule: null, decodedCommands: [DESTRUCTIVE] });
+    expect(check(command, dialect, true)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    expect(check(command, dialect, false)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+  });
+
+  it("leaves a literal launched shell and a plain command alone", () => {
+    for (const command of ['pwsh -NoProfile -Command "Get-Date"', "Get-ChildItem src", "cmd /c dir"]) {
+      expect(buildShellRuleApproval("powershell", command, dir, { allow: true, deny: true })).not.toHaveProperty("decodedCommands");
+      expect(check(command, "powershell", true)).not.toMatchObject({ forceModal: true });
+    }
+  });
+
   it("does not read a -Command script's own -e argument as an encoded command", () => {
     const card = buildShellRuleApproval("powershell", 'pwsh -NoProfile -Command "Select-String -e needle notes.txt"', dir, { allow: true, deny: true });
     expect(card).not.toHaveProperty("decodedCommands");
