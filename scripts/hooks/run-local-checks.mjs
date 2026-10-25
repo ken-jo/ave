@@ -76,10 +76,9 @@
 // are not the branch's own: merging the base in does not move the tier, while
 // own commits and a merge's conflict resolutions still do (scanPushedHistory).
 // A direct push TO an integration/* branch is treated like the default
-// branch (full checks):
-// those branches advance through reviewed PR merges and lead-run merges of
-// main, so a direct push is the exceptional case and has to carry the whole
-// proof itself.
+// branch (full checks): those branches advance through reviewed PR merges and
+// lead-run merges of main, so a direct push is the exceptional case and has to
+// carry the whole proof itself.
 // A non-fast-forward push of a branch (a rebase, an amend) is diffed like a
 // new branch, against its merge-base with the closest live default or
 // integration/* tip, and also against the remote commit it replaces: a commit
