@@ -1,10 +1,3 @@
-/**
- * Tool-Level Deferral — SystemPromptBuilder <tool-catalog> source.
- *
- * Verifies:
- *   - <tool-catalog> lists in-scope, NOT-loaded plugin/mcp tools
- *     with the tool_search instruction; loaded tools are not duplicated.
- */
 import { describe, it, expect } from "vitest";
 
 import { SystemPromptBuilder } from "../system-prompt-builder.js";
@@ -66,9 +59,7 @@ describe("SystemPromptBuilder — tool catalog (Tool-Level Deferral)", () => {
     expect(prompt).toContain("tool_search");
     expect(prompt).toContain("### plugin:com.example.meeting");
     expect(prompt).toContain("plugin:<id>/mcp:<id> 도구를 builtin 으로 설명하지 마세요.");
-    // meeting_stop is deferred → present in catalog.
     expect(prompt).toContain("**meeting_stop**");
-    // meeting_start is loaded → NOT duplicated in catalog.
     const catalogBlock = prompt.slice(prompt.indexOf("<tool-catalog>"));
     expect(catalogBlock).not.toContain("**meeting_start**");
   });

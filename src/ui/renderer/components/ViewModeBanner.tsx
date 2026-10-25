@@ -1,16 +1,9 @@
-
-
-
-
-
 import { useTranslation } from "../../../i18n/react.js";
 
 export interface ViewModeState {
   compactNum: number;
-  /**
-   * Exclusive slice end — use as `messages.slice(0, slicedRangeEnd)`.
-   * Equal to `messageCountAtTrigger` stored in the checkpoint metadata.
-   */
+  /** Exclusive slice end — use as `messages.slice(0, slicedRangeEnd)`. Equal to `messageCountAtTrigger` stored in the
+   * checkpoint metadata. */
   slicedRangeEnd: number;
 }
 

@@ -1,16 +1,5 @@
-/**
- * Main-only owner facade for the Telegram private-DM bridge.
- *
- * The renderer never computes connection state, never names a conversation, and
- * never sees the bot token, a raw Telegram id, or a raw conversation id. This
- * facade owns the whole decision: it derives the coarse state, holds the bot
- * handle in memory, and returns only the shared wire contract's shapes.
- *
- * Every method answers with a stable error code instead of throwing. A raw
- * main-process error could carry the bot token (a fetch error carries the
- * request URL, and the token is URL path material), so nothing but a code from
- * `TELEGRAM_CONNECTION_ERROR_CODES` ever leaves this module.
- */
+// Renderers receive safe connection summaries, never tokens, raw actor IDs, or conversation IDs. Only stable error codes leave this module because fetch
+// errors can embed tokens in URLs.
 import { createHash } from "node:crypto";
 import { SecretEncryptionUnavailableError } from "../data/secret-document-store.js";
 import {
@@ -48,18 +37,11 @@ import { mintTelegramPairingCode, telegramPairingCodeDigest } from "./telegram-p
 import type { TelegramPollHealth } from "./telegram-bridge-server.js";
 import { createSerialQueue } from "../lib/with-file-lock.js";
 
-
-/**
- * Sole storage key for the owner bot token; activation reads the same one.
- * Security-sensitive: read it only through `getEncryptedSecret`.
- */
+// Sole storage key for the owner bot token; activation reads the same one. Security-sensitive: read it only through `getEncryptedSecret`.
 export const TELEGRAM_BOT_TOKEN_SECRET_KEY = "telegram.botToken.v1";
 const SECRET_KEY = TELEGRAM_BOT_TOKEN_SECRET_KEY;
-/**
- * Must stay byte-identical to `botFingerprint()` in telegram-bridge-server.ts:
- * the platform runtime derives every actor digest from this value, so a second
- * grammar would silently invalidate stored pairings.
- */
+// Must stay byte-identical to `botFingerprint()` in telegram-bridge-server.ts: the platform runtime derives every actor digest from this value, so a
+// second grammar would silently invalidate stored pairings.
 const BOT_FINGERPRINT_DOMAIN = "ave/telegram-bridge/bot-fingerprint/v1\0";
 const PAIRING_CODE_MAX_ATTEMPTS = 5;
 
@@ -69,25 +51,21 @@ const APPROVAL_DURATION_MS: Readonly<Record<TelegramApprovalDurationPreset, numb
   "24h": 24 * 60 * 60 * 1_000,
 });
 
-/** What the facade hands an activation so it can report how polling is going. */
+// What the facade hands an activation so it can report how polling is going.
 export interface TelegramBridgeStartHooks {
   readonly onPollHealth: (health: TelegramPollHealth) => void;
 }
 
-/** Lifecycle hooks owned by main composition; this facade only sequences them. */
+// Lifecycle hooks owned by main composition; this facade only sequences them.
 interface TelegramConnectionBridgeControl {
   start(hooks: TelegramBridgeStartHooks): Promise<void>;
   stop(reason: "shutdown" | "user"): Promise<void>;
-  /** Poll again now if an activation is running; a no-op otherwise. */
+  // Poll again now if an activation is running; a no-op otherwise.
   nudge?(): void;
 }
 
-/**
- * Wait before the next automatic resume after `attempt` failed ones in a row:
- * 5 s, 10 s, 20 s ... capped at five minutes. Slower than the poll loop's own
- * backoff because each attempt is a full bot verification, not one poll; a
- * wake or a network coming back skips the wait entirely.
- */
+// Wait before the next automatic resume after `attempt` failed ones in a row: 5 s, 10 s, 20 s ... capped at five minutes. Slower than the poll loop's
+// own backoff because each attempt is a full bot verification, not one poll; a wake or a network coming back skips the wait entirely.
 export function telegramResumeRetryDelayMs(attempt: number): number {
   const exponent = Math.min(Math.max(attempt, 1) - 1, 16);
   return Math.min(RESUME_RETRY_BASE_MS * 2 ** exponent, RESUME_RETRY_MAX_MS);
@@ -95,33 +73,18 @@ export function telegramResumeRetryDelayMs(attempt: number): number {
 const RESUME_RETRY_BASE_MS = 5_000;
 const RESUME_RETRY_MAX_MS = 5 * 60 * 1_000;
 
-/**
- * Whether a failed resume is worth retrying without the owner. Only "Telegram
- * could not be reached": everything else — a rejected token, a webhook or poll
- * conflict, an unreadable credential, an unwritable store — is a stop the owner
- * has to see and act on, and retrying it would either hammer the provider with
- * a credential it already refused or hide the repair behind a spinner.
- */
+// Automatically retry only unreachable-provider failures; invalid tokens, conflicts, unreadable credentials, and storage failures require owner action.
 export function isTransientTelegramResumeFailure(code: TelegramConnectionErrorCode): boolean {
   return code === "telegram-provider-unreachable";
 }
 
-/** Subscribe to an event; returns the unsubscribe. */
+// Subscribe to an event; returns the unsubscribe.
 export type TelegramWakeSource = (listener: () => void) => () => void;
 
-/** How often {@link createNetworkOnlineSource} looks, while it is subscribed. */
+// How often {@link createNetworkOnlineSource} looks, while it is subscribed.
 const NETWORK_ONLINE_CHECK_MS = 5_000;
 
-/**
- * Turn a connectivity probe into an "it came back online" event.
- *
- * Electron's main process exposes connectivity only as `net.isOnline()`, with
- * no change event. Its documented reading is asymmetric — `false` is a strong
- * signal, `true` is not proof — which is exactly the edge wanted here: an
- * offline-to-online transition is the moment a retry has a chance. The probe
- * runs only while someone is subscribed, and the service subscribes only while
- * reconnecting, so a healthy connection pays nothing for it.
- */
+// Poll connectivity only while reconnecting; false is reliable and a false-to-true edge permits retry without claiming reachability.
 export function createNetworkOnlineSource(
   isOnline: () => boolean,
   intervalMs: number = NETWORK_ONLINE_CHECK_MS,
@@ -145,11 +108,8 @@ export function createNetworkOnlineSource(
   };
 }
 
-/**
- * The narrow slice of the settings store this facade may use. `getSecret` is
- * deliberately absent: it can return a value stored under the development
- * plain-text encoding, which must never be sent to an external cloud provider.
- */
+// The narrow slice of the settings store this facade may use. `getSecret` is deliberately absent: it can return a value stored under the development
+// plain-text encoding, which must never be sent to an external cloud provider.
 interface TelegramConnectionSecretService {
   setSecret(key: string, value: string): Promise<void>;
   getEncryptedSecret(key: string): string | null;
@@ -161,47 +121,24 @@ export interface CreateTelegramConnectionServiceOptions {
   readonly store: TelegramConnectionStore;
   readonly settingsService: TelegramConnectionSecretService;
   readonly bridgeControl: TelegramConnectionBridgeControl;
-  /**
-   * Reconcile the durable pairing against the actor key this machine can load
-   * right now, retiring it when that key is gone.
-   *
-   * Required rather than optional: this facade owns the order the two secrets
-   * are touched in, and a composition that left it out would report a pairing
-   * nothing can derive as a working one. See {@link reconcileActorKeyFailure}
-   * for where it is sequenced and why.
-   */
+  // Actor-key reconciliation is required and precedes credential access so stale pairing cannot appear healthy.
   readonly reconcileActorKey: () => Promise<void>;
-  /** Read at the moment of an approval; a renderer can never choose this id. */
+  // Read at the moment of an approval; a renderer can never choose this id.
   readonly getCurrentConversationId: () => string;
   readonly conversationDigestFor: (conversationId: string) => string;
-  /**
-   * Whether a conversation still exists. Required rather than optional: an
-   * absent check would silently make every deleted share look healthy, which
-   * is the exact failure this dependency exists to end.
-   */
+  // Whether a conversation still exists. Required rather than optional: an absent check would silently make every deleted share look healthy, which is the
+  // exact failure this dependency exists to end.
   readonly conversationExists: (conversationId: string) => boolean;
-  /**
-   * The transport this service's own Bot API calls (bot verification) run on.
-   * REQUIRED: Node's ambient `fetch` reads neither the machine's proxy
-   * configuration nor its trust store, so a verification issued on it would go
-   * direct on a machine whose configuration says otherwise. Composition
-   * supplies Chromium's stack.
-   */
+  // Require the composed OS-aware transport for verification; ambient fetch ignores machine proxy and trust.
   readonly networkFetch: typeof fetch;
-  /**
-   * The machine woke from sleep. Subscribed for the service's lifetime: a long
-   * poll in flight across a sleep usually sits on a dead socket, so the wake is
-   * the moment to poll again whether or not anything has failed yet.
-   */
+  // The machine woke from sleep. Subscribed for the service's lifetime: a long poll in flight across a sleep usually sits on a dead socket, so the wake is
+  // the moment to poll again whether or not anything has failed yet.
   readonly onSystemResume?: TelegramWakeSource;
-  /**
-   * The machine came back online. Subscribed only while reconnecting, so a
-   * source that has to watch for it costs nothing while Telegram is answering.
-   */
+  // The machine came back online. Subscribed only while reconnecting, so a source that has to watch for it costs nothing while Telegram is answering.
   readonly onNetworkOnline?: TelegramWakeSource;
-  /** Test seam for the resume retry timer; production uses an unref'd timeout. */
+  // Test seam for the resume retry timer; production uses an unref'd timeout.
   readonly scheduleRetry?: (run: () => void, delayMs: number) => () => void;
-  /** Test-only injection; production builds a real Bot API client. */
+  // Test-only injection; production builds a real Bot API client.
   readonly createBotApiClient?: (botToken: string) => TelegramBotApiClient;
 }
 
@@ -211,7 +148,7 @@ export interface TelegramConnectionService {
   disconnect(): Promise<TelegramConnectionMutationResult>;
   pause(): Promise<TelegramConnectionMutationResult>;
   resume(): Promise<TelegramConnectionMutationResult>;
-  /** Boot-time continuation only; never a user action. */
+  // Boot-time continuation only; never a user action.
   resumeStoredConnection(): Promise<void>;
   createPairingCode(): Promise<TelegramCreatePairingCodeResult>;
   revokePairing(id: string): Promise<TelegramConnectionMutationResult>;
@@ -220,11 +157,11 @@ export interface TelegramConnectionService {
   ): Promise<TelegramConnectionMutationResult>;
   revokeApproval(id: string): Promise<TelegramConnectionMutationResult>;
   subscribe(listener: () => void): () => void;
-  /** Cancel a pending automatic resume and drop the wake subscriptions. */
+  // Cancel a pending automatic resume and drop the wake subscriptions.
   dispose(): void;
 }
 
-/** Same digest the platform runtime is handed as `botFingerprint`. */
+// Same digest the platform runtime is handed as `botFingerprint`.
 function telegramBotFingerprint(botToken: string): string {
   return createHash("sha256")
     .update(BOT_FINGERPRINT_DOMAIN, "utf8")
@@ -244,11 +181,8 @@ const INPUT_INVALID = failure("telegram-connection-input-invalid");
 const REJECTED = failure("telegram-connection-operation-rejected");
 const TOKEN_UNREADABLE = failure("telegram-bot-token-unreadable");
 
-/**
- * Classify a Bot API failure. A 401 is the token itself; a 409 means another
- * receiver already owns this bot's updates. Everything else is reported as an
- * unreachable provider rather than guessed at.
- */
+// Classify a Bot API failure. A 401 is the token itself; a 409 means another receiver already owns this bot's updates. Everything else is reported as an
+// unreachable provider rather than guessed at.
 function providerFailure(reason: TelegramBotApiFailureReason): TelegramConnectionFailure {
   if (reason === "unauthorized") return failure("telegram-bot-token-rejected");
   if (reason === "conflict") return failure("telegram-poll-conflict");
@@ -259,7 +193,7 @@ function isFailure(value: { readonly ok: boolean }): value is TelegramConnection
   return value.ok === false;
 }
 
-/** A verified bot carries its handle; a failure carries only a stable code. */
+// A verified bot carries its handle; a failure carries only a stable code.
 type VerifiedBot =
   | { readonly ok: true; readonly username: string }
   | TelegramConnectionFailure;
@@ -298,15 +232,7 @@ interface ApprovalProjection {
   readonly matchesCurrentConversation: boolean;
 }
 
-/**
- * What the stored share resolves to, as three outcomes rather than two.
- *
- * The missing case is the reason this is not a nullable value. Collapsing it
- * into `none` claims nothing was ever shared, and collapsing it into `resolved`
- * makes a deleted conversation look like one the owner merely navigated away
- * from — the surface then tells them to go open something that is gone. A
- * saved binding that no longer resolves has to be able to say so.
- */
+// Keep missing separate from none and resolved so deleted shared conversations cannot appear healthy or never shared.
 type BoundConversation =
   | { readonly kind: "none" }
   | { readonly kind: "missing" }
@@ -315,12 +241,7 @@ type BoundConversation =
 const NO_BOUND_CONVERSATION: BoundConversation = Object.freeze({ kind: "none" as const });
 const MISSING_BOUND_CONVERSATION: BoundConversation = Object.freeze({ kind: "missing" as const });
 
-/**
- * Project the one live share. The store decides which grant that is; this only
- * reports whether it happens to be the conversation on screen, which is what
- * the owner needs to know because execution still requires it — the share
- * itself is durable and does not lapse when they look away.
- */
+// A durable share survives conversation switches, but execution still requires the shared conversation to be on screen.
 function projectApproval(
   approval: TelegramOwnerApprovalSummary | null,
   currentDigest: string | null,
@@ -334,28 +255,8 @@ function projectApproval(
   });
 }
 
-/**
- * Ordered so no earlier condition can be skipped: an environment-managed or
- * unencryptable host answers before any stored state is consulted, and both
- * "paused" and "no approval" are answered before `active` can be reached.
- *
- * A share that exists is `active` whether or not its conversation is on screen.
- * The binding is durable, so "you are looking elsewhere" is a property of the
- * approval, not a state of the connection — it does not survive a restart as a
- * state, and it never described anything the owner had to repair.
- *
- * A pairing retired by an actor-key rotation is the opposite: it IS something
- * the owner has to repair, it survives a restart, and it ends only when a new
- * pairing exists. That is why it is a state and not a `lastErrorCode` note —
- * an error code would be answered above as `error`, which withholds the very
- * affordance the owner needs, and `setConnected` clears the note on the next
- * reconnect while the pairing stays gone.
- *
- * A share whose conversation was deleted is a third thing again: like the
- * retired pairing it survives a restart and needs an owner action, but the
- * connection and the pairing are both fine, so it is neither `error` nor
- * `paired-unapproved`.
- */
+// Evaluate host capability, pause, and approval before active state; a durable share stays active while viewed elsewhere.
+// Key loss and deleted conversations are persistent owner-repair states, not transient provider errors.
 function deriveState(
   owner: TelegramOwnerConnectionSnapshot,
   bound: BoundConversation,
@@ -363,23 +264,16 @@ function deriveState(
 ): TelegramConnectionState {
   if (owner.desiredState === "disconnected") return "disconnected";
   if (owner.desiredState === "paused") return "paused-by-owner";
-  // Ahead of `error`: an automatic resume that is still retrying has recorded
-  // why it failed, and that note is the reason the surface shows next to
-  // "reconnecting" — not a stop the owner has to repair. Ahead of the pairing
-  // and share states too, because none of them can make progress while
-  // Telegram is unreachable, and `active` there was the lie this state ends.
+  // Show reconnecting before saved provider errors or share state so unreachable service cannot appear active.
   if (reconnecting) return "reconnecting";
   if (owner.lastErrorCode !== null) return "error";
   if (owner.pairing === null) {
-    // A code already minted is the repair in progress; say so rather than
-    // repeating the loss the owner is in the middle of fixing.
+    // A code already minted is the repair in progress; say so rather than repeating the loss the owner is in the middle of fixing.
     if (owner.pendingCode !== null) return "pairing-pending";
     return owner.pairingUnrecognized ? "pairing-unrecognized" : "connected-unpaired";
   }
-  // The resolver is the single authority for all three of these. Deciding
-  // "is anything shared" from `approval` and "does it resolve" from `bound`
-  // would be two sources for one question, and the case where they disagree is
-  // exactly the one that has to be reported rather than averaged.
+  // The resolver is the single authority for all three of these. Deciding "is anything shared" from `approval` and "does it resolve" from `bound` would be
+  // two sources for one question, and the case where they disagree is exactly the one that has to be reported rather than averaged.
   switch (bound.kind) {
     case "none": return "paired-unapproved";
     case "missing": return "shared-conversation-missing";
@@ -407,10 +301,10 @@ export function createTelegramConnectionService(
     ?? ((botToken: string) =>
       createTelegramBotApiClient({ botToken, fetchImplementation: options.networkFetch }));
   const listeners = new Set<() => void>();
-  /** Serialize multi-step lifecycle work so two connects cannot interleave. */
+  // Serialize multi-step lifecycle work so two connects cannot interleave.
   const runExclusive = createSerialQueue();
 
-  /** Resolved from getMe and never persisted; a restart re-verifies it. */
+  // Resolved from getMe and never persisted; a restart re-verifies it.
   let botUsername: string | null = null;
 
   const emitChange = (): void => {
@@ -425,12 +319,9 @@ export function createTelegramConnectionService(
 
   store.subscribe(emitChange);
 
-  // ── Reconnecting ──────────────────────────────────────────────────────────
-  // Two in-memory facts, neither persisted: a restart re-derives both from the
-  // first poll or resume attempt it makes.
-  /** The running activation's poll loop says Telegram is not answering. */
+  // Keep retry timer and failure reason in memory; restart re-derives them from durable desired state.
   let pollRetrying = false;
-  /** An automatic resume is scheduled after a resume Telegram did not answer. */
+  // An automatic resume is scheduled after a resume Telegram did not answer.
   let resumeRetry: { readonly attempt: number; readonly cancel: () => void } | null = null;
   let disposed = false;
   let stopNetworkWatch: (() => void) | null = null;
@@ -442,7 +333,7 @@ export function createTelegramConnectionService(
 
   const reconnecting = (): boolean => pollRetrying || resumeRetry !== null;
 
-  /** Watch for the network only while there is something to reconnect. */
+  // Watch for the network only while there is something to reconnect.
   const syncNetworkWatch = (): void => {
     const want = !disposed && reconnecting() && options.onNetworkOnline !== undefined;
     if (want && stopNetworkWatch === null) {
@@ -457,7 +348,7 @@ export function createTelegramConnectionService(
       try {
         stop();
       } catch {
-        /* nothing to keep */
+        // nothing to keep
       }
     }
   };
@@ -477,11 +368,8 @@ export function createTelegramConnectionService(
     emitChange();
   };
 
-  /**
-   * Try again after a resume Telegram did not answer, and keep trying — the
-   * reference remote surfaces reconnect on their own after sleep or a network
-   * loss rather than leaving a dead connection for the owner to notice.
-   */
+  // Try again after a resume Telegram did not answer, and keep trying — the reference remote surfaces reconnect on their own after sleep or a network loss
+  // rather than leaving a dead connection for the owner to notice.
   const scheduleResumeRetry = (attempt: number): void => {
     if (disposed) return;
     resumeRetry?.cancel();
@@ -494,8 +382,7 @@ export function createTelegramConnectionService(
   };
 
   const runResumeRetry = async (attempt: number): Promise<void> => {
-    // Keep the slot (and with it the `reconnecting` state) while the attempt
-    // runs; the attempt's own outcome decides whether another is scheduled.
+    // Keep the slot (and with it the `reconnecting` state) while the attempt runs; the attempt's own outcome decides whether another is scheduled.
     if (disposed || readDesiredState() !== "connected") {
       cancelResumeRetry();
       emitChange();
@@ -504,10 +391,7 @@ export function createTelegramConnectionService(
     await resumeWithRetry(attempt + 1, "automatic");
   };
 
-  /**
-   * The machine woke or came back online: retry a pending resume now, from the
-   * bottom of its backoff, or tell a running activation to poll now.
-   */
+  // The machine woke or came back online: retry a pending resume now, from the bottom of its backoff, or tell a running activation to poll now.
   const wake = (): void => {
     if (disposed) return;
     if (resumeRetry !== null) {
@@ -520,7 +404,7 @@ export function createTelegramConnectionService(
     try {
       bridgeControl.nudge?.();
     } catch {
-      /* the next scheduled poll still runs */
+      // the next scheduled poll still runs
     }
   };
 
@@ -535,11 +419,8 @@ export function createTelegramConnectionService(
 
   const bridgeHooks: TelegramBridgeStartHooks = Object.freeze({ onPollHealth: notePollHealth });
 
-  /**
-   * The conversation on screen, named both ways. The store persists the id so
-   * the share survives a restart and re-derives the digest to check it, so a
-   * caller that produced one without the other could not be verified.
-   */
+  // The conversation on screen, named both ways. The store persists the id so the share survives a restart and re-derives the digest to check it, so a
+  // caller that produced one without the other could not be verified.
   const currentConversation = (): { readonly id: string; readonly digest: string } | null => {
     try {
       const id = options.getCurrentConversationId();
@@ -551,35 +432,15 @@ export function createTelegramConnectionService(
     }
   };
 
-  /**
-   * Resolve the saved binding, refusing to fall back to a default.
-   *
-   * It reads through `resolveBoundConversation`, the same function the phone's
-   * egress path uses, so the screen and the phone cannot name different
-   * conversations. That resolver returns a plaintext id only after the store
-   * has re-derived its digest and matched, so an id edited into the file on its
-   * own cannot be resolved here. The store's own header records what that check
-   * does and does not rule out.
-   *
-   * A throw from the existence check is `missing` rather than `resolved`: an
-   * unanswerable existence question is not evidence the conversation is there,
-   * and the state it produces asks the owner to share again, which is safe. The
-   * opposite default would hide the loss behind a healthy-looking share.
-   */
+  // Use the same digest-validated durable binding as egress, never a default conversation.
+  // Treat failed existence checks as missing rather than claiming a healthy share.
   const boundConversation = (): BoundConversation => {
     try {
       const actorDigest = store.activePairingActorDigest();
       if (actorDigest === null) return NO_BOUND_CONVERSATION;
       const id = store.resolveBoundConversation(actorDigest);
       if (id === null) return NO_BOUND_CONVERSATION;
-      // The conversation on screen exists whether or not it has been written
-      // yet. Existence is a transcript file, and a conversation gets one only
-      // when its first turn is saved — so sharing a conversation the owner just
-      // opened reported it as deleted the moment they shared it, next to a
-      // "Done." toast, and again on every refresh until they said something.
-      // Nothing was wrong: the share routed correctly the whole time, because
-      // routing asks whether the conversation is current, not whether it is
-      // on disk. This asks the same question first.
+      // A newly opened current conversation exists before its first saved transcript; check current identity before disk existence.
       if (id === currentConversation()?.id) {
         return Object.freeze({ kind: "resolved" as const, id });
       }
@@ -603,35 +464,16 @@ export function createTelegramConnectionService(
     return snapshot === null ? UNAVAILABLE : Object.freeze({ ok: true as const, snapshot });
   };
 
-  /** Best-effort: never let a persisted note about a failure mask the failure. */
+  // Best-effort: never let a persisted note about a failure mask the failure.
   const noteError = async (error: TelegramConnectionErrorCode): Promise<void> => {
     try {
       await store.setLastError(error);
     } catch {
-      /* the returned code is the authority; the stored note is a convenience */
+      // the returned code is the authority; the stored note is a convenience
     }
   };
 
-  /**
-   * Run the actor-key reconcile, and report a failure the way every other step
-   * here does — as a code, never as a throw.
-   *
-   * It is called from two places because it answers two questions that cannot
-   * be asked at the same moment:
-   *
-   * - in `resume`, BEFORE the credential is read. Both secrets live in the same
-   *   OS credential store, so the failure that actually happens in the field —
-   *   a keychain reset, or app data restored onto another machine — loses both
-   *   at once. Reading the credential first ends the resume at "token
-   *   unreadable" and leaves the owner surface, which reads the store and not
-   *   the bridge, still naming a paired account this machine cannot derive.
-   * - in `activate`, AFTER `setConnected`. That is where a first connect adopts
-   *   the key's name; before it there is no bot identity in the document, so
-   *   the reconcile has nothing to reconcile and returns without adopting.
-   *
-   * The decision itself is the store's and is idempotent, so the two calls are
-   * one authority asked twice, not two rules.
-   */
+  // Reconcile before resume reads credentials, and after first connect stores bot identity; return stable failure codes instead of throws.
   const reconcileActorKeyFailure = async (): Promise<TelegramConnectionFailure | null> => {
     try {
       await options.reconcileActorKey();
@@ -649,16 +491,7 @@ export function createTelegramConnectionService(
     }
   };
 
-  /**
-   * Undo a connect attempt's `setConnected`, and nothing more.
-   *
-   * Guarded on the state the attempt started from, because `setDisconnected`
-   * erases the pairing and its approvals. A store that was already
-   * `disconnected` holds neither — that state is only ever reached by the reset
-   * itself or by a fresh document — so restoring it there destroys nothing.
-   * Anything else, including a state this facade could not read, is left alone
-   * and reported through `lastErrorCode` instead.
-   */
+  // Rollback to disconnected only if the attempt began there; setDisconnected erases pairing and approvals, so preserve all other or unreadable states.
   const restorePreviousDesiredState = async (
     previous: TelegramDesiredState | null,
   ): Promise<void> => {
@@ -666,7 +499,7 @@ export function createTelegramConnectionService(
     try {
       await store.setDisconnected();
     } catch {
-      /* the bridge is not running either way */
+      // the bridge is not running either way
     }
   };
 
@@ -679,24 +512,17 @@ export function createTelegramConnectionService(
     }
   };
 
-  /**
-   * Put the credential back the way it was. A connect attempt with a new token
-   * must not destroy the working one it failed to replace.
-   */
+  // Put the credential back the way it was. A connect attempt with a new token must not destroy the working one it failed to replace.
   const restoreSecret = async (previous: string | null): Promise<void> => {
     try {
       if (previous === null) await settingsService.deleteSecret(SECRET_KEY);
       else await settingsService.setSecret(SECRET_KEY, previous);
     } catch {
-      /* rollback is best effort; the caller already has its failure code */
+      // rollback is best effort; the caller already has its failure code
     }
   };
 
-  /**
-   * Verify the bot before anything durable points at it: identity first, then
-   * webhook ownership. A bot that already has a webhook belongs to another
-   * deployment, and Ave never calls setWebhook/deleteWebhook to take it.
-   */
+  // Verify identity and webhook ownership before durable activation; never take over another deployment’s webhook.
   const verifyBot = async (botToken: string): Promise<VerifiedBot> => {
     let client: TelegramBotApiClient;
     try {
@@ -721,28 +547,12 @@ export function createTelegramConnectionService(
       return failure("telegram-provider-unreachable");
     }
     if (!webhook.ok) return providerFailure(webhook.reason);
-    // Fail closed: an already-registered webhook belongs to someone else, and
-    // removing it is not Ave's call to make.
+    // Fail closed: an already-registered webhook belongs to someone else, and removing it is not Ave's call to make.
     if (webhook.value.hasWebhook) return failure("telegram-webhook-conflict");
     return Object.freeze({ ok: true as const, username: identity.value.username });
   };
 
-  /**
-   * Bring the bridge up for a verified bot.
-   *
-   * A failed start leaves the store exactly as it found it. That is the whole
-   * point: `setDisconnected` is not the inverse of `setConnected`, it is a
-   * destructive reset that erases the pairing, every approval, the pending code
-   * and the poll offset. Undoing all of that because a bridge failed to start —
-   * a Windows EPERM, a busy namespace, a locked file — spends the owner's
-   * pairing on a condition that is usually gone by the next attempt, and it
-   * does it on the unattended boot-resume path where nobody chose it.
-   *
-   * The caller records the returned code instead, which `deriveState` answers
-   * as `error`: the owner is told the connection is down, keeps what they had,
-   * and can retry. A caller that really is rolling back an attempt with nothing
-   * behind it — `connect` — restores the previous state itself.
-   */
+  // Failed activation preserves stored pairing, shares, codes, and offsets; record an error instead of using destructive disconnect as rollback.
   const activate = async (
     botToken: string,
     username: string,
@@ -752,8 +562,7 @@ export function createTelegramConnectionService(
     } catch {
       return UNAVAILABLE;
     }
-    // The document now names a bot, which is what a first connect needs before
-    // the actor key can be adopted for it.
+    // The document now names a bot, which is what a first connect needs before the actor key can be adopted for it.
     const reconciled = await reconcileActorKeyFailure();
     if (reconciled !== null) return reconciled;
     try {
@@ -785,8 +594,7 @@ export function createTelegramConnectionService(
               expiresAt: owner.pendingCode.expiresAt,
               attemptsRemaining: owner.pendingCode.attemptsRemaining,
             },
-        // A poll loop that is retrying records nothing durable, so the reason
-        // shown next to "reconnecting" is projected here, from memory.
+        // A poll loop that is retrying records nothing durable, so the reason shown next to "reconnecting" is projected here, from memory.
         lastErrorCode: owner.lastErrorCode ?? (pollRetrying ? "telegram-provider-unreachable" : null),
       });
       return projected === null ? UNAVAILABLE : Object.freeze({ ok: true as const, snapshot: projected });
@@ -798,8 +606,7 @@ export function createTelegramConnectionService(
   const connect = async (botToken: string): Promise<TelegramConnectionMutationResult> => {
     if (!isTelegramBotToken(botToken)) return INPUT_INVALID;
     return await runExclusive(async () => {
-      // Probed before any write: an unencryptable host must not receive the
-      // token even briefly.
+      // Probed before any write: an unencryptable host must not receive the token even briefly.
       let encrypted: boolean;
       try {
         encrypted = settingsService.isSecretStorageEncrypted();
@@ -810,9 +617,7 @@ export function createTelegramConnectionService(
       // A new token supersedes any automatic resume of the old one.
       cancelResumeRetry();
 
-      // Both halves of "put it back the way it was", read before the first
-      // write so a failed attempt can restore the credential and the state it
-      // replaced.
+      // Both halves of "put it back the way it was", read before the first write so a failed attempt can restore the credential and the state it replaced.
       const previous = readStoredToken();
       const previousDesired = readDesiredState();
       try {
@@ -845,8 +650,7 @@ export function createTelegramConnectionService(
       try {
         await settingsService.deleteSecret(SECRET_KEY);
       } catch (error) {
-        // Still tear the rest down: a token that survives is worse when the
-        // bridge is also left running.
+        // Still tear the rest down: a token that survives is worse when the bridge is also left running.
         secretFailure = error instanceof SecretEncryptionUnavailableError
           ? ENCRYPTION_UNAVAILABLE
           : UNAVAILABLE;
@@ -889,13 +693,7 @@ export function createTelegramConnectionService(
     });
   };
 
-  /**
-   * `automatic` resumes (boot, backoff retry, wake) act only while the owner
-   * still wants the connection, checked inside the queue: a pause whose persist
-   * is in flight when a retry fires is ahead of it in the queue, and the retry
-   * must not turn that pause back into a live connection. An `owner` resume is
-   * the owner asking, so it proceeds from any state.
-   */
+  // Automatic resume rechecks desired state inside the queue so it cannot undo a pending pause; explicit owner resume may proceed from any state.
   const resume = async (origin: "owner" | "automatic"): Promise<TelegramConnectionMutationResult> => {
     return await runExclusive(async () => {
       if (origin === "automatic" && (disposed || readDesiredState() !== "connected")) return OK;
@@ -906,22 +704,13 @@ export function createTelegramConnectionService(
         return ENCRYPTION_UNAVAILABLE;
       }
       if (!encrypted) return ENCRYPTION_UNAVAILABLE;
-      // Ahead of the credential read on purpose; `reconcileActorKeyFailure`
-      // records why the order is the whole point of this call.
+      // Ahead of the credential read on purpose; `reconcileActorKeyFailure` records why the order is the whole point of this call.
       const reconciled = await reconcileActorKeyFailure();
       if (reconciled !== null) {
         await noteError(reconciled.error);
         return reconciled;
       }
-      // Disconnect deletes the token, so a resumable bridge is exactly one that
-      // still has a stored credential.
-      //
-      // Recorded, not merely returned. Every other failure here notes itself,
-      // and this one has to most of all: it is reached from the boot resume
-      // with nobody at the keyboard to read a return value, and leaving
-      // `lastErrorCode` null there let `deriveState` answer `active` for a
-      // connection with no poll loop behind it — which the surface renders as a
-      // live share, down to enabling the Away Authority arm control.
+      // Require stored credentials for resume and persist failure codes so unattended boot cannot report an active share without a poll loop.
       const botToken = readStoredToken();
       if (botToken === null) {
         await noteError(TOKEN_UNREADABLE.error);
@@ -937,23 +726,18 @@ export function createTelegramConnectionService(
         await noteError(activated.error);
         return activated;
       }
-      // An activation that was already running keeps its own poll schedule;
-      // a resume the owner asked for means "try now", so say so to the loop.
+      // An activation that was already running keeps its own poll schedule; a resume the owner asked for means "try now", so say so to the loop.
       try {
         bridgeControl.nudge?.();
       } catch {
-        /* its next scheduled poll still runs */
+        // its next scheduled poll still runs
       }
       return activated;
     });
   };
 
-  /**
-   * Resume, and if Telegram simply could not be reached, keep trying on a
-   * backoff and on every wake — while the owner still wants the connection.
-   * Any other outcome ends the retrying: success needs none, and every other
-   * failure is a stop the owner has to see.
-   */
+  // Resume, and if Telegram simply could not be reached, keep trying on a backoff and on every wake — while the owner still wants the connection. Any
+  // other outcome ends the retrying: success needs none, and every other failure is a stop the owner has to see.
   const resumeWithRetry = async (
     nextAttempt: number,
     origin: "owner" | "automatic",
@@ -971,13 +755,8 @@ export function createTelegramConnectionService(
     return result;
   };
 
-  /**
-   * Boot-time continuation of whatever the owner left connected.
-   *
-   * A paused, disconnected, or environment-managed store is a no-op, so app
-   * start never reaches Telegram on its own. Failures are recorded as the
-   * connection's last error rather than surfaced: nobody is at the keyboard.
-   */
+  // Boot-time continuation of whatever the owner left connected. A paused, disconnected, or environment-managed store is a no-op, so app start never
+  // reaches Telegram on its own. Failures are recorded as the connection's last error rather than surfaced: nobody is at the keyboard.
   const resumeStoredConnection = async (): Promise<void> => {
     let desired: TelegramDesiredState;
     try {
@@ -991,8 +770,7 @@ export function createTelegramConnectionService(
 
   const createPairingCode = async (): Promise<TelegramCreatePairingCodeResult> => {
     return await runExclusive(async () => {
-      // The bot handle is in-memory only, so a code cannot be minted before
-      // this activation verified the bot it would point the owner at.
+      // The bot handle is in-memory only, so a code cannot be minted before this activation verified the bot it would point the owner at.
       if (botUsername === null) return UNAVAILABLE;
       const handle = botUsername;
       let connected: boolean;
@@ -1002,11 +780,7 @@ export function createTelegramConnectionService(
         return UNAVAILABLE;
       }
       if (!connected) return REJECTED;
-      // Minting and digesting both come from the shared pairing-code authority:
-      // the polling ingress redeems with the same derivation, and a second one
-      // here would make every correct code fail to pair.
-      // A freshly minted code always digests, so a throw or a null here is an
-      // internal invariant failure, not a state the owner can act on.
+      // Mint and digest through the shared pairing-code authority; a freshly minted code that cannot digest violates an internal invariant.
       let code: string;
       let codeDigest: string | null;
       try {
@@ -1105,7 +879,7 @@ export function createTelegramConnectionService(
       try {
         stop?.();
       } catch {
-        /* nothing to keep */
+        // nothing to keep
       }
     },
   });

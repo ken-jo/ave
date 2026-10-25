@@ -1,4 +1,3 @@
-/** A local fixture exercises declared alerts through an app-visible tool. */
 export const ALERT_FIXTURE_MANIFEST = {
   id: "alert-fixture",
   name: "Alert Fixture",

@@ -245,8 +245,8 @@ describe("collectChatPreviewModel", () => {
             displayOrder: 0,
             status: "done",
             category: "write",
-            // A bare filename with NO directory separator — the shape the model
-            // produces when writing into the working directory by name.
+            // A bare filename with NO directory separator — the shape the model produces when writing into the working directory by
+            // name.
             input: { path: "2026-07-03.md", content: "# Notes" },
             result: JSON.stringify({ kind: "ave.write_file", path: "2026-07-03.md" }),
           },
@@ -256,8 +256,8 @@ describe("collectChatPreviewModel", () => {
 
     const model = collectChatPreviewModel({ entries, attachments: [] });
 
-    // The bare-name write appears in the session files list as a write, linked to
-    // an openable file target (clicking it opens the preview).
+    // The bare-name write appears in the session files list as a write, linked to an openable file target (clicking it opens
+    // the preview).
     const file = model.files.find((item) => item.path === "2026-07-03.md");
     expect(file).toEqual(
       expect.objectContaining({
@@ -289,8 +289,8 @@ describe("collectChatPreviewModel", () => {
             displayOrder: 0,
             status: "done",
             category: "write",
-            // The `content` body mentions filename-like tokens; only the `path`
-            // key vouches for a real file, so the body must NOT leak entries.
+            // The `content` body mentions filename-like tokens; only the `path` key vouches for a real file, so the body must NOT leak
+            // entries.
             input: { path: "report.md", content: "see index.ts and config.json" },
             result: JSON.stringify({ kind: "ave.write_file", path: "report.md" }),
           },

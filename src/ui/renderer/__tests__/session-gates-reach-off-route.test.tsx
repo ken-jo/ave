@@ -1,22 +1,4 @@
-/**
- * A deadline-bearing gate (approval request, ask_user_question) must reach the
- * user whatever is on screen. Two ways a session stops being drawn that the
- * tile did not know about:
- *
- *   - the route leaves the chat surface — Settings, a plugin view, the work
- *       board — and the whole surface goes display:none while the tile still
- *       believes it is drawn, keeps its approval claim and draws its cards
- *       into the void;
- *   - a question ADOPTED from a headless session (routine, side chat,
- *       orphaned sub-agent) is dropped when the idle tile that adopted it
- *       loads another conversation, while the host keeps waiting on it.
- *
- * Both were found by an audit that reproduced them; these are those probes
- * with the assertions turned the right way round. The cards belong to the
- * conversation that asked, so a routed pane draws its own conversation's
- * cards in the routed frame's settle slot — the same pane, over the view
- * that covers the conversation — and nothing of them appears anywhere else.
- */
+/** Pending approvals and questions must remain answerable when a session is routed away or an adopted session is replaced. */
 import "../../../../test/renderer/setup.js";
 import { describe, it, expect } from "vitest";
 import { act, fireEvent, waitFor } from "@testing-library/react";
@@ -41,8 +23,8 @@ const question = (id: string, sessionId: string) => ({
 describe("gates reach the user when the route leaves the chat surface", () => {
   it("an approval card is drawn in the routed pane while Settings is open, and over the composer when home returns", async () => {
     const pendingSend = deferred<{ ok: true }>();
-    // The conversation is listed so the sidebar has a row to carry the dot;
-    // without one, "no dot" would pass for the wrong reason.
+    // The conversation is listed so the sidebar has a row to carry the dot; without one, "no dot" would pass for the wrong
+    // reason.
     const { container, api, emitApproval, emitViewActivate } = await renderApp({
       hasApiKey: true,
       sessions: [{ id: MOCK_DEFAULT_SESSION_ID, title: "설정 중 승인", modifiedAt: new Date(2, 0, 1).toISOString() }],
@@ -58,8 +40,8 @@ describe("gates reach the user when the route leaves the chat surface", () => {
     await act(async () => { emitViewActivate("settings"); });
     await waitFor(() => expect(chatSurface(container).getAttribute("data-visible")).toBe("false"));
 
-    // The pane still holds the conversation the request belongs to, so the
-    // pane draws it: in the settle slot of the frame showing Settings.
+    // The pane still holds the conversation the request belongs to, so the pane draws it: in the settle slot of the frame
+    // showing Settings.
     await waitFor(() => expect(count(routedPane(container, "settings"), "approval-dock")).toBe(1));
     expect(count(conversation(container), "approval-dock")).toBe(0);
     expect(count(container, "approval-dock")).toBe(1);
@@ -112,8 +94,8 @@ describe("gates reach the user when the route leaves the chat surface", () => {
     await waitFor(() => expect(count(pane(), "approval-dock")).toBe(1));
     expect(count(pane(), "question-overlay")).toBe(1);
 
-    // Both cards share one z-index, so the one later in the document paints
-    // on top. Over the composer that is the approval; it must be here too.
+    // Both cards share one z-index, so the one later in the document paints on top. Over the composer that is the approval; it
+    // must be here too.
     const dock = pane().querySelector('[data-testid="approval-dock"]')!;
     const overlay = pane().querySelector('[data-testid="question-overlay"]')!;
     expect(overlay.compareDocumentPosition(dock) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -188,8 +170,8 @@ describe("an adopted question survives the adopting tile loading another session
     await act(async () => { fireEvent.click(row); });
     await waitFor(() => expect(api.chatSessionResume).toHaveBeenCalledWith(OTHER));
 
-    // The tile now shows another conversation; the question it adopted is
-    // owned by its own session id and is still on screen, still answerable.
+    // The tile now shows another conversation; the question it adopted is owned by its own session id and is still on screen,
+    // still answerable.
     await waitFor(() => expect(count(container, "question-overlay")).toBe(1));
     expect(count(cell, "question-overlay")).toBe(1);
     expect(api.respondAskUserQuestion).not.toHaveBeenCalled();

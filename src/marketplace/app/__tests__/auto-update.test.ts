@@ -1,13 +1,4 @@
-/**
- * Automatic updates through the real service (design §18.7.2-§18.7.6), over a
- * folder source: a folder's refresh is offered and classified, an automatic
- * update runs checkpoint two against the installed baseline, a manual review
- * stages before approval and installs exactly what it staged, a required
- * update is reviewed by the policy and may leave a component waiting, an
- * update whose package changed since it was classified does nothing, and
- * nothing it was queued with authorizes it: the policy, the switches and
- * shutdown are read again when its turn comes.
- */
+/** Exercises queued updates against current policy, consent and staged bytes. */
 import { mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -21,12 +12,10 @@ import { scrubMarketplaceStrings } from "../../errors.js";
 import { classifyUpdate, type AutoUpdateSettings } from "../../updates/eligibility.js";
 import type { ApplyDecision } from "../service.js";
 
-// A release is declared: the folder rung never tries it.
 const RELEASE = { release: { repo: "acme/alpha", sha256: sha("never fetched") } };
 
 const ENTRY_JS = "export default { version: 1 };\n";
 const KEY = { sourceId: "team", kind: "plugin" as const, name: "alpha" };
-// A folder plugin installs plugin.json and dist/ only (§18.4.2).
 const HOOK = {
   "plugins/alpha/dist/hooks/audit.json": JSON.stringify({ hooks: { PreToolUse: [{ hooks: [{ type: "command", command: ["node", "${PLUGIN_ROOT}/dist/hooks/audit.js"] }] }] } }),
   "plugins/alpha/dist/hooks/audit.js": "process.exit(0)\n",
@@ -64,7 +53,6 @@ function writeSourceFiles(files: Record<string, string>): void {
   for (const [path, contents] of Object.entries(files)) sourceVolume.file(join(folder, path), contents);
 }
 
-/** A user-added folder source "team" with alpha installed, or the same folder managed by a policy that requires alpha. */
 async function setUp(managed: "user" | "required"): Promise<void> {
   root = mkdtempSync(join(tmpdir(), "ave-auto-update-"));
   folder = join(mkdtempSync(join(tmpdir(), "ave-auto-update-src-")), "market");
@@ -81,7 +69,6 @@ async function setUp(managed: "user" | "required"): Promise<void> {
     if (preview.type !== "marketplace") throw new Error(`expected a marketplace preview, got ${preview.type}`);
     await harness.service.addSource({ previewId: preview.previewId, id: "team" });
   }
-  // Installed by a reviewed install: its receipt records this app version's review.
   await harness.service.executeInstall((await harness.service.planInstall(KEY)).planId, [], true);
 }
 
@@ -92,7 +79,6 @@ function requiredPolicy(required: boolean) {
   };
 }
 
-/** The scheduler's judgement with the switches in `settings`, as it would read them when the update's turn comes. */
 function decideWith(settings: AutoUpdateSettings): ApplyDecision {
   return (facts, policy) => classifyUpdate(facts, { policy, settings, memory: null, skipped: false })?.state === "automatic";
 }
@@ -116,7 +102,6 @@ async function edit(files: Record<string, string>): Promise<void> {
 const target = { key: KEY, from: "1.0.0", to: "1.0.0", switchSource: false };
 
 describe("a folder's refresh (§18.7.6)", () => {
-  // Keep the complete folder-read, staged-byte and install path on disk here.
   beforeAll(() => { sourceStorage = "disk"; });
   afterAll(() => { sourceStorage = "volume"; });
   it("is offered when the tree changes at the same version, applies by itself, and is gone once applied", async () => {
@@ -127,7 +112,6 @@ describe("a folder's refresh (§18.7.6)", () => {
     expect(candidate).toMatchObject({ facts: { change: "refresh", consent: [], unconfirmedApprovals: [], required: false, enabled: true, policyBlocked: false } });
 
     await expect(harness.service.applyUpdate(target, automatic)).resolves.toEqual({ state: "applied" });
-    // An automatic update keeps the review the installed receipt recorded.
     expect(harness.installed.get("alpha")).toMatchObject({ reviewedAppVersion: getAveAppVersion() });
     expect(await harness.service.updates()).toEqual([]);
     await expect(harness.service.appliedState(KEY, "1.0.0")).resolves.toEqual({ state: "applied" });
@@ -139,7 +123,7 @@ describe("checkpoint two (§18.7.3)", () => {
     const before = harness.installed.get("alpha");
     await edit({ ...pluginFiles({ hook: true }) });
     const [candidate] = await harness.service.updateCandidates(new Set(["team"]));
-    // The catalog cannot see a bundled hook: checkpoint one finds nothing.
+    // Bundled hooks are invisible to the catalog, so checkpoint one cannot detect them.
     expect(candidate?.facts.consent).toEqual([]);
     const outcome = await harness.service.applyUpdate(target, automatic);
     expect(outcome).toMatchObject({ state: "needs-review", delta: expect.arrayContaining([expect.objectContaining({ field: "hook:audit", before: null })]) });
@@ -167,7 +151,6 @@ describe("the update review (§18.7.3)", () => {
     expect(hook).toMatchObject({ kind: "extension", consent: { kind: "extension", component: "hook", localId: "audit", approvalDigest: expect.stringMatching(/^[a-f0-9]{64}$/u) } });
 
     await harness.service.executeInstall(review.planId, [hook!.consent], true);
-    // The reviewed bytes, not a second staging, and the approved component with them.
     expect(stage).toHaveBeenCalledTimes(1);
     expect(harness.installed.get("alpha")?.componentConsents).toEqual([hook!.consent]);
   });
@@ -199,7 +182,6 @@ describe("required and superseded updates (§18.7.2, §18.7.4)", () => {
     const uninstall = harness.service.uninstall({ sourceId: "team", kind: "plugin", name: "alpha" });
     await vi.waitFor(() => expect(resume).toBeTypeOf("function"));
     const update = harness.service.applyUpdate(target, automatic);
-    // The uninstall holds the package: the update has not read it, staged or installed anything.
     for (let i = 0; i < 20; i += 1) await new Promise((resolve) => setImmediate(resolve));
     expect(harness.plugins.length).toBe(installs);
     resume();
@@ -211,7 +193,6 @@ describe("required and superseded updates (§18.7.2, §18.7.4)", () => {
 
   it("reports package transactions idle only once the last package lock is released", async () => {
     const idle: boolean[] = [];
-    // The same source storage the outer fixture wrote the folder into (a volume unless a suite selects disk).
     const observedRoot = mkdtempSync(join(tmpdir(), "ave-auto-update-idle-"));
     const observed = await folderService({ root: observedRoot, folders: sourceFolders,
       onPackageTransactionsIdle: () => idle.push(observed.service.packageTransactionsIdle) });
@@ -228,7 +209,6 @@ describe("required and superseded updates (§18.7.2, §18.7.4)", () => {
     observed.onUninstall.current = () => new Promise<void>((resolve) => { resume = resolve; });
     const uninstall = observed.service.uninstall({ sourceId: "team", kind: "plugin", name: "alpha" });
     await vi.waitFor(() => expect(resume).toBeTypeOf("function"));
-    // Held: the uninstall's own lock is not idle, and nobody is told it is.
     expect(observed.service.packageTransactionsIdle).toBe(false);
     expect(idle).toEqual([]);
     resume();
@@ -263,7 +243,6 @@ describe("nothing queued authorizes an update: the policy, the switches and shut
     const installs = harness.plugins.length;
     let release!: () => void;
     harness.onUninstall.current = () => new Promise<void>((resolve) => { release = resolve; });
-    // A user uninstall holds the package's lock.
     const uninstall = harness.service.uninstall({ sourceId: "team", kind: "plugin", name: "alpha" });
     await vi.waitFor(() => expect(release).toBeTypeOf("function"));
     const shutdown = new AbortController();
@@ -278,7 +257,6 @@ describe("nothing queued authorizes an update: the policy, the switches and shut
 });
 
 describe("a required update (§18.7.2)", () => {
-  // Select the required baseline before the outer fixture installs anything.
   beforeAll(() => {
     ownership = "required";
   });
@@ -287,7 +265,6 @@ describe("a required update (§18.7.2)", () => {
   });
 
   describe("a required folder read and update on disk", () => {
-    // Exercise managed-source canonicalization and the policy-authorized update on disk.
     beforeAll(() => { sourceStorage = "disk"; });
     afterAll(() => { sourceStorage = "volume"; });
     it("is reviewed by the policy, skips checkpoint two, and leaves a new hook waiting as approval-pending", async () => {
@@ -295,11 +272,10 @@ describe("a required update (§18.7.2)", () => {
       harness.onInstalled.current = (name) => {
         harness.approvals.set(name, [{ field: "hook:audit", approvalDigest: "a".repeat(64), approved: false, recordDigest: null }]);
       };
-      // Even with every switch off: the policy stands for the consent.
+      // Required policy entries authorize updates even with user switches off.
       await expect(harness.service.applyUpdate(target, decideWith({ autoUpdate: false }))).resolves.toEqual({ state: "approval-pending" });
       expect(harness.installed.get("alpha")).toMatchObject({ reviewedAppVersion: getAveAppVersion() });
       await expect(harness.service.appliedState(KEY, "1.0.0")).resolves.toEqual({ state: "approval-pending", pendingApproval: null });
-      // Approved: the state clears.
       harness.approvals.set("alpha", [{ field: "hook:audit", approvalDigest: "a".repeat(64), approved: true, recordDigest: "a".repeat(64) }]);
       await expect(harness.service.appliedState(KEY, "1.0.0")).resolves.toEqual({ state: "applied" });
     });
@@ -310,7 +286,6 @@ describe("a required update (§18.7.2)", () => {
     const [candidate] = await harness.service.updateCandidates(new Set(["team"]));
     expect(candidate?.facts).toMatchObject({ required: true, consent: [expect.objectContaining({ field: "authority.capabilities" })] });
     const before = harness.installed.get("alpha");
-    // The entry is removed, the source stays managed: the next operation applies the change.
     harness.policy.change(policyLoad(requiredPolicy(false)));
     await expect(harness.service.applyUpdate(target, automatic)).resolves.toEqual({ state: "superseded" });
     expect(harness.policy.load).toMatchObject({ ok: true, policy: { requiredInstalls: [] } });
@@ -319,7 +294,6 @@ describe("a required update (§18.7.2)", () => {
 });
 
 describe("an install in a requirement's way whose package sheet cannot load (§10.2)", () => {
-  // The organization requires alpha from the official source, which this harness never reaches.
   const requireOfficial = () => harness.policy.change(policyLoad({ requiredInstalls: [{ source: "ave", kind: "plugin", name: "alpha" }] }));
   const unmet = async () => (await harness.service.autoUpdateContext()).unmetRequired;
 
@@ -329,7 +303,6 @@ describe("an install in a requirement's way whose package sheet cannot load (§1
       expect.objectContaining({ key: { sourceId: "ave", kind: "plugin", name: "alpha" }, reason: "source-unreachable", installedFrom: { sourceId: "team", label: "Team tools", removal: "sheet" } }),
     ]);
     await expect(harness.service.detail(KEY)).resolves.toMatchObject({ entry: { key: KEY } });
-    // team no longer lists alpha: no sheet can load for it, and the row offers the uninstall itself.
     await edit({ "marketplace.json": `${JSON.stringify({ schemaVersion: 2, name: "team", displayName: "Team tools", packages: [] })}\n` });
     expect((await unmet())[0]!.installedFrom).toEqual({ sourceId: "team", label: "Team tools", removal: "confirm" });
     await expect(harness.service.detail(KEY)).rejects.toMatchObject({ code: "PACKAGE_INCOMPATIBLE" });
@@ -342,7 +315,6 @@ describe("an install in a requirement's way whose package sheet cannot load (§1
     requireOfficial();
     const shown = (await unmet())[0]!.installedFrom!;
     expect(shown).toMatchObject({ sourceId: "team" });
-    // Before the confirmation, alpha is installed from another source instead.
     const item = harness.installed.get("alpha")!;
     harness.installed.set("alpha", { ...item, sourceId: "other-tools" });
     await expect(harness.service.uninstall({ sourceId: shown.sourceId, kind: "plugin", name: "alpha" })).rejects.toMatchObject({
@@ -350,7 +322,6 @@ describe("an install in a requirement's way whose package sheet cannot load (§1
       message: "plugin alpha is not installed from team",
     });
     expect(harness.installed.get("alpha")).toEqual({ ...item, sourceId: "other-tools" });
-    // Gone altogether: refused too.
     harness.installed.delete("alpha");
     await expect(harness.service.uninstall({ sourceId: shown.sourceId, kind: "plugin", name: "alpha" })).rejects.toMatchObject({ code: "PACKAGE_ID_CONFLICT" });
   });
@@ -366,12 +337,10 @@ describe("an install in a requirement's way whose package sheet cannot load (§1
 
 describe("a quarantined source (§18.8)", () => {
   it("offers no update, applies none, and leaves its id and its packages out of the switches", async () => {
-    // An update waits while the source is healthy.
     await edit({ "plugins/alpha/dist/index.js": "export default { version: 2 };\n" });
     expect(await harness.service.updates()).toHaveLength(1);
     const item = harness.installed.get("alpha")!;
     harness.service.close();
-    // Then its stored id turns out to have a credential's shape: the registry quarantines the source.
     const quarantinedId = `glp${"at-"}${"abcd1234".repeat(3)}`;
     const list = join(root, "marketplaces", "sources.json");
     writeFileSync(list, readFileSync(list, "utf8").replace('"team"', JSON.stringify(quarantinedId)));
@@ -393,7 +362,6 @@ describe("a quarantined source (§18.8)", () => {
     await expect(harness.service.applyUpdate(quarantined, automatic)).resolves.toEqual({ state: "superseded" });
     expect(harness.installed.get("alpha")).toEqual({ ...item, sourceId: quarantinedId });
   });
-  /** alpha installed from "team", whose stored id then turns out to have a credential's shape; the official source is required instead. */
   async function quarantineTeam(): Promise<string> {
     const item = harness.installed.get("alpha")!;
     harness.service.close();
@@ -406,7 +374,6 @@ describe("a quarantined source (§18.8)", () => {
     return quarantinedId;
   }
 
-  /** The unmet row as the renderer receives it: through the scrub every status crosses (§18.8). */
   const published = async () => scrubMarketplaceStrings((await harness.service.autoUpdateContext()).unmetRequired);
 
   it("names an install bound to it in a requirement's way by the handle its Sources row carries, and uninstalls it by that handle", async () => {
@@ -427,7 +394,7 @@ describe("a quarantined source (§18.8)", () => {
     const handle = before!.installedFrom!.sourceId;
     expect(await harness.service.removeSource(handle)).toEqual({ orphanedPackages: [{ sourceId: handle, kind: "plugin", name: "alpha" }] });
     expect(harness.installed.get("alpha")?.sourceId).toBe(quarantinedId);
-    // The receipt still names the removed source: its view id is derived from the stored id alone.
+    // Derive the removed source view id from the receipt; no registry entry remains.
     const [after] = await published();
     expect(after!.installedFrom).toEqual({ sourceId: handle, label: handle, removal: "confirm" });
     const key = { sourceId: after!.installedFrom!.sourceId, kind: "plugin" as const, name: "alpha" };

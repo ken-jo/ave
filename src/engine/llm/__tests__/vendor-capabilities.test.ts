@@ -45,9 +45,7 @@ describe("supportsVision", () => {
   });
 
   it("refuses images where nobody states the modalities, whatever the name", () => {
-    // Before slice 7 a name rule let these through: an Azure deployment name
-    // does not establish the model, nor does a custom endpoint, and the dated
-    // Claude 3 id is not in the catalog.
+    // Deployment names and custom endpoints cannot establish model capabilities.
     expect(supportsVision("azure-foundry", "gpt-4.1")).toBe(false);
     expect(supportsVision("azure-foundry", "gpt-3.5-turbo")).toBe(false);
     expect(supportsVision("claude", "claude-3-5-sonnet-20241022")).toBe(false);
@@ -65,7 +63,6 @@ describe("supportsVision — the model's stated input modalities decide", () => 
   afterEach(() => installModelCatalog(bundled));
 
   it.each([
-    // [vendor, model, the catalog's answer] — each one the name rules got wrong.
     ["openai", "o3", true],
     ["openai", "o1", true],
     ["openai", "o4-mini", true],
@@ -79,13 +76,12 @@ describe("supportsVision — the model's stated input modalities decide", () => 
   it("follows the route's modalities, and refuses when the route states none", () => {
     expect(supportsVision("openai", "gpt-4o", { inputModalities: { input: ["text"], source: "provider-reported" } })).toBe(false);
     expect(supportsVision("openai-compatible", "a-served-model", { inputModalities: { input: ["text", "image"], source: "provider-reported" } })).toBe(true);
-    // A route with nothing stated is not re-resolved by name, and nothing is assumed:
-    // gpt-4o takes images by the catalog, but this route stated nothing for it.
+    // Unstated route capabilities must not be inferred again from model names.
     expect(supportsVision("openai", "gpt-4o", {})).toBe(false);
   });
 
   it("does not read a model that takes file attachments as taking images", () => {
-    // The composer sends a file as a path the agent reads; `attachment` is not an image input.
+    // File attachments are agent-readable paths, not model image input.
     installModelCatalog({
       ...bundled,
       providers: {
@@ -106,7 +102,7 @@ describe("vendorSupportsLengthContinuation", () => {
   });
 
   it("is OFF for commercial gateways and non-self-hosted vendors", () => {
-    // Commercial OpenAI-compatible gateways do not honor continue_final_message.
+    // Hosted gateways may speak the API without supporting assistant-prefill continuation.
     expect(vendorSupportsLengthContinuation("openrouter")).toBe(false);
     expect(vendorSupportsLengthContinuation("groq")).toBe(false);
     expect(vendorSupportsLengthContinuation("together")).toBe(false);

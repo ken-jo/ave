@@ -7,6 +7,8 @@ import { isPiiRedactionEnabled, maskSensitiveData } from "../audit/dlp-filter.js
 import { emitEffectShadowLog } from "../permissions/reviewer/risk-shadow-log.js";
 import { runWithEffectLedger, type EffectLedger } from "../permissions/effect-ledger.js";
 import { runWithToolExecutionCwd } from "./execution-context.js";
+import { isCanonicalWebFetchTool } from "./web-fetch.js";
+import { screenEgressRequest } from "../permissions/reviewer/risk-classifier.js";
 import { runWithEffectGateContext } from "../permissions/effect-enforcement.js";
 import { CHOKEPOINT_EFFECT } from "../permissions/effect-kind.js";
 import type { HostShellExecutionPermitBinding } from "../permissions/host-shell-execution-permit.js";
@@ -154,6 +156,7 @@ export interface ExecutionStageContext {
   abortSignal: AbortSignal | undefined;
   hostShellExecutionPermitBinding: HostShellExecutionPermitBinding | undefined;
   hostShellApprovalDecision: ApprovalDecision | undefined;
+  hostShellAllowRuleDecision: PermissionCheckResult | undefined;
   hostShellExecutionPlan: HostShellExecutionPlan | undefined;
   executionRouteGrant?: ExecutionGrant;
   finalizeExecutionRouteGrant?: () => Promise<ExecutionGrant | undefined>;
@@ -203,6 +206,7 @@ export async function executeAuthorizedToolInvocation(
     abortSignal,
     hostShellExecutionPermitBinding,
     hostShellApprovalDecision,
+    hostShellAllowRuleDecision,
     hostShellExecutionPlan,
     executionRouteGrant,
     finalizeExecutionRouteGrant,
@@ -618,13 +622,17 @@ export async function executeAuthorizedToolInvocation(
     // ── Step 6: Execute ─────────────────────────────
   // Mint only after all permission, hook, rate-limit, and audit gates passed.
   // The permit is private host state, binds this exact final shell action,
-  // and is consumed once by the plain requested-sandbox fallback spawn path.
+  // and is consumed once by the plain explicit-host / Plan-B spawn path. Its
+  // authority is either the user's allow-once receipt or, for an explicit host
+  // request only, the matching allow-rule decision (design I3).
   const hostShellExecutionPermit =
     hostShellExecutionPlan !== undefined &&
     hostShellExecutionPermitBinding !== undefined
       ? mintHostShellExecutionPermit({
           plan: hostShellExecutionPlan,
           approvalDecision: hostShellApprovalDecision,
+          allowRuleDecision: hostShellAllowRuleDecision,
+          permissionManager: services.permissionManager,
           binding: hostShellExecutionPermitBinding,
         })
       : undefined;
@@ -633,7 +641,7 @@ export async function executeAuthorizedToolInvocation(
     hostShellExecutionPermit === undefined
   ) {
     const msg =
-      "Requested-sandbox shell execution blocked: no host-verified allow-once receipt was available for this action.";
+      "Unsandboxed shell execution blocked: no host policy authorization or verified approval receipt was available for this action.";
     const durationMs = Date.now() - startTime;
     emitToolStart(callbacks, toolUse.name, finalInput, meta);
     callbacks?.onToolEnd?.(toolUse.name, msg, true, meta, undefined, durationMs);
@@ -693,6 +701,34 @@ export async function executeAuthorizedToolInvocation(
   const ownerPluginSandboxRoot = tool.pluginId ? resolveOwnerPluginSandboxRoot(tool.pluginId) : undefined;
   const executionContext: ToolExecutionContext = {
     cwd: executionCwd,
+    ...(isCanonicalWebFetchTool(tool) && services.permissionManager && typeof finalInput.url === "string" ? {
+      authorizeNetworkTarget: (() => {
+        const initialUrl = new URL(finalInput.url as string);
+        // Completed per-call asks retain their mandatory layer after the
+        // authorization stage changes the decision to allow.
+        const hasPerCallApproval = permissionResult?.decision === "allow" && permissionResult.layer <= 2;
+        let scopedFetch = false;
+        let first = true;
+        return async (url: URL): Promise<void> => {
+          const rules = await services.permissionManager!.checkNetworkRules(url.href, executionCwd, finalInput.allowPrivateNetwork === true);
+          const initial = first && url.href === initialUrl.href;
+          first = false;
+          if (initial && (rules.decision === "allow" || rules.decision === "ask")) scopedFetch = true;
+          const screen = screenEgressRequest({ url: url.href, allowPrivateNetwork: finalInput.allowPrivateNetwork === true });
+          const initialApproval = initial && hasPerCallApproval;
+          const approvedOrigin = hasPerCallApproval && url.origin === initialUrl.origin;
+          // One approval covers ordinary redirects within that origin;
+          // restrictions and fresh sensitive requests still apply per hop.
+          if (rules.decision === "deny"
+            || (!initialApproval && rules.floor)
+            || (!initial && (scopedFetch || hasPerCallApproval) && screen.outcome === "screened")
+            || (rules.decision === "ask" && !approvedOrigin)
+            || ((scopedFetch || hasPerCallApproval) && !initial && rules.decision !== "allow" && !approvedOrigin)) {
+            throw new Error("Network destination requires a new permission decision");
+          }
+        };
+      })(),
+    } : {}),
     extraAllowedDirectories: [...new Set(invocationRuntimeAllowedDirectories)],
     blockReadsOutsideWorkingDirectories,
     // Owner plugin sandbox root — same derivation the reviewer uses

@@ -1,4 +1,4 @@
-/** Main-owned print transport. Ave retains history and executes host tools. */
+// Main-owned print transport. Ave retains history and executes host tools.
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
@@ -40,7 +40,7 @@ export interface ClaudeCodeConversationRuntimeOptions {
   readonly workspaceDir: string;
   readonly runtimeTempDir: string;
   readonly bridge: SubscriptionToolBridge;
-  /** A model the service validated against `listModels`; absent: the CLI's default. */
+  // A model the service validated against `listModels`; absent: the CLI's default.
   readonly model?: string;
   readonly spawn?: (command: string, args: readonly string[], options: SpawnOptions) => ChildProcess;
   readonly platform?: NodeJS.Platform;
@@ -219,8 +219,7 @@ export class ClaudeCodeConversationRuntime {
         }
       });
       spawned.once("close", (code, exitSignal) => {
-        // Keep the exact handle through finally: a settled root can still
-        // own a live MCP descendant group in the managed-child registry.
+        // Keep the exact handle through finally: a settled root can still own a live MCP descendant group in the managed-child registry.
         if (failure || ended) return;
         try {
           decoder.decode();

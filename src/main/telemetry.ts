@@ -1,12 +1,4 @@
-/**
- * Production release prep — anonymous opt-in telemetry.
- *
- * Privacy contract:
- *   - No PII. Only event name + numeric duration/count + hashed session UUID.
- *   - Default OFF. Must be explicitly enabled via settings UI.
- *   - Transport: HTTP POST, batched daily (or on flush()).
- *   - Endpoint configurable per-install (self-hosted friendly).
- */
+// Opt-in telemetry contains event names, numeric metrics, and hashed session IDs only.
 import { randomUUID } from "node:crypto";
 import type { TelemetrySettings } from "../data/settings-store.js";
 import type { AuditLogger } from "../audit/audit-logger.js";
@@ -14,15 +6,7 @@ import { createLogger } from "../lib/logger.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 const log = createLogger("telemetry");
 
-/**
- * Default host allowlist for the telemetry endpoint. Production deployments
- * MUST set `AVE_TELEMETRY_ALLOWLIST` env (comma-separated hostnames) — the
- * corp telemetry host name is intentionally NOT hardcoded so the binary can
- * ship to any environment without leaking the operator's domain.
- *
- * `localhost` is only honored in non-packaged (dev) builds; the isPackaged
- * check in validateEndpoint() rejects it when app.isPackaged === true.
- */
+// Production operators supply their endpoint allowlist; localhost is allowed only in unpackaged builds.
 export const DEFAULT_TELEMETRY_ALLOWLIST: readonly string[] = [
   "localhost",
 ];
@@ -35,19 +19,7 @@ function parseAllowlist(envVal: string | undefined): string[] {
     .filter((h) => h.length > 0);
 }
 
-/**
- * The hosts telemetry may be sent to, for the settings surface to SHOW.
- *
- * Deliberately read-only, and deliberately not a setting. The allowlist is the
- * bound on `telemetry.endpoint`, which the user can already edit — so a control
- * the same user could widen would not be a bound at all, it would be a
- * formality one extra click away. Showing it is the part that has to exist:
- * without it the endpoint field silently rejects everything the operator did
- * not permit, and the user has no way to learn why.
- *
- * Same parse as {@link validateTelemetryEndpoint} uses, so the list on screen
- * is the list actually enforced rather than a second guess at it.
- */
+// Show the enforced endpoint allowlist read-only; ordinary endpoint settings must not widen the operator’s bound.
 export function telemetryAllowedHosts(env: NodeJS.ProcessEnv = process.env): readonly string[] {
   return Object.freeze(parseAllowlist(env.AVE_TELEMETRY_ALLOWLIST));
 }
@@ -57,12 +29,7 @@ export interface EndpointValidationResult {
   reason?: string;
 }
 
-/**
- * Validate a telemetry endpoint URL.
- *   - protocol MUST be https: (rejects http:, file:, data:, javascript:)
- *   - host MUST be in allowlist
- *   - localhost is rejected in packaged builds
- */
+// Require HTTPS and an allowlisted host; packaged builds also reject localhost.
 export function validateTelemetryEndpoint(
   endpoint: string | undefined,
   opts: { isPackaged: boolean; allowlistEnv?: string },
@@ -90,15 +57,8 @@ export function validateTelemetryEndpoint(
   return { valid: true };
 }
 
-/**
- * Strip userinfo, query string, and fragment from a URL before it is written
- * to the audit log. Query/fragment may contain bearer tokens or secrets; the
- * userinfo segment (`user:pass@host`) is an obvious credential leak. Keep
- * only `protocol//host/pathname`.
- *
- * Non-URL inputs are truncated to 200 chars with a marker so we still have
- * some trace of what was rejected without bleeding secrets.
- */
+// Remove URL credentials, query, and fragment before audit; keep only scheme, host, and path.
+// Bound non-URL diagnostics separately.
 export function sanitizeUrlForAudit(raw: unknown): string | undefined {
   if (typeof raw !== "string" || raw.length === 0) return undefined;
   try {
@@ -128,26 +88,17 @@ export interface TelemetryEvent {
 }
 
 export interface TelemetryDeps {
-  /**
-   * Settings accessor — invoked on every track()/flush() so a user toggle
-   * takes effect immediately. A snapshot object would go stale and keep
-   * accepting events after the user opted out.
-   */
+  // Settings accessor — invoked on every track()/flush() so a user toggle takes effect immediately. A snapshot object would go stale and keep accepting
+  // events after the user opted out.
   settings: () => TelemetrySettings;
   appVersion?: string;
-  /**
-   * The transport this client's uploads run on. REQUIRED: the ambient
-   * `fetch` is Node's, which reads neither the machine's proxy configuration
-   * nor its trust store, so defaulting to it sent telemetry out on a path the
-   * user never chose — and, on an intercepted network, nowhere at all.
-   */
+  // The transport this client's uploads run on. REQUIRED: the ambient `fetch` is Node's, which reads neither the machine's proxy configuration nor its
+  // trust store, so defaulting to it sent telemetry out on a path the user never chose — and, on an intercepted network, nowhere at all.
   fetchImpl: typeof fetch;
   flushIntervalMs?: number;
-  /** M2: when true, localhost endpoints are rejected. Pass app.isPackaged. */
+  // Reject localhost endpoints in packaged builds.
   isPackaged?: boolean;
-  /** M2: optional audit sink for endpoint rejections. */
   auditLogger?: Pick<AuditLogger, "log">;
-  /** M2: override env for host allowlist — tests pass explicit string. */
   allowlistEnv?: string;
 }
 
@@ -159,7 +110,7 @@ export class TelemetryService {
   private readonly fetchImpl: typeof fetch;
   private readonly flushIntervalMs: number;
   private timer: NodeJS.Timeout | undefined;
-  /** M2: once an invalid endpoint is seen, disable for the session (no retry). */
+  // An invalid endpoint disables telemetry for the session without retry.
   private sessionDisabled = false;
 
   constructor(private readonly deps: TelemetryDeps) {
@@ -172,11 +123,7 @@ export class TelemetryService {
     return this.deps.settings();
   }
 
-  /**
-   * M2: validate the configured endpoint. On first invalid endpoint, emit an
-   * audit warn and mark session-disabled so no further retries/traffic occur.
-   * Returns true when the endpoint is safe to use.
-   */
+  // Audit the first invalid endpoint and disable further session traffic.
   private endpointAllowed(endpoint: string | undefined): boolean {
     if (this.sessionDisabled) return false;
     const result = validateTelemetryEndpoint(endpoint, {
@@ -189,12 +136,10 @@ export class TelemetryService {
         this.deps.auditLogger?.log({
           timestamp: new Date().toISOString(),
           sessionId: "telemetry",
-          // Warn-level: rejection is expected on misconfig; the app still
-          // functions (telemetry disabled for session). Not an error.
+          // Warn-level: rejection is expected on misconfig; the app still functions (telemetry disabled for session). Not an error.
           type: "warn",
           input: `[telemetry] endpoint rejected: ${result.reason}`,
-          // Sanitize: never log raw URL — may contain userinfo (user:pass@),
-          // query-string secrets, or fragment tokens. Keep only protocol+host+path.
+          // Sanitize: never log raw URL — may contain userinfo (user:pass@), query-string secrets, or fragment tokens. Keep only protocol+host+path.
           output: sanitizeUrlForAudit(endpoint),
         });
       } catch {
@@ -239,9 +184,8 @@ export class TelemetryService {
 
   async flush(): Promise<void> {
     if (!this.isActive() || this.queue.length === 0) return;
-    // Snapshot the batch but DO NOT dequeue until after a confirmed 2xx. On
-    // error or non-ok HTTP we leave events in the queue so they retry on the
-    // next flush instead of being silently lost.
+    // Snapshot the batch but DO NOT dequeue until after a confirmed 2xx. On error or non-ok HTTP we leave events in the queue so they retry on the next
+    // flush instead of being silently lost.
     const batch = this.queue.slice(0);
     const batchLen = batch.length;
     const endpoint = this.currentSettings().endpoint!;

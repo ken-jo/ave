@@ -106,18 +106,7 @@ it("uses the recorded primary price only for matching older request segments", (
   expect(summary.today.cost).toBeCloseTo(0.1 + 0.3, 9);
 });
 
-/**
- * Every bucket boundary in this file is the HOST's midnight, so the fixture
- * instants only mean what their comments say once the zone is pinned — and the
- * pin has to be at MODULE scope, not inside one `describe`. It was inside
- * `describe("usage-stats")` first, which left `UsageSummaryCache`,
- * `getUsageRange` and `usage summary cache wiring` running on the ambient zone:
- * green on a KST laptop, 8 failures under `America/New_York`.
- *
- * Seoul is simply what these fixtures were written against; nothing in the code
- * knows the name. Node re-reads `TZ` on assignment, for both `Date` and the
- * `Intl` default.
- */
+// Pin the timezone at module scope: every suite uses host-midnight bucket boundaries.
 let previousTz: string | undefined;
 beforeEach(() => {
   previousTz = process.env.TZ;
@@ -208,17 +197,14 @@ describe("UsageSummaryCache", () => {
 
 describe("usage-stats", () => {
   it("aggregates today/week/month totals from turn entries", () => {
-    const now = new Date("2026-04-18T12:00:00Z"); // Saturday
+    const now = new Date("2026-04-18T12:00:00Z");
     const entries: AuditTurnEntry[] = [
       turn({ timestamp: "2026-04-18T10:00:00Z", tokenUsage: { inputTokens: 1_000_000, outputTokens: 500_000 },
       }),
-      // Monday of same week
       turn({ timestamp: "2026-04-13T10:00:00Z", tokenUsage: { inputTokens: 200_000, outputTokens: 100_000 },
       }),
-      // Earlier in month
       turn({ timestamp: "2026-04-02T10:00:00Z", tokenUsage: { inputTokens: 50_000, outputTokens: 25_000 },
       }),
-      // Previous month — should only count toward trend, not today/week/month
       turn({ timestamp: "2026-03-15T10:00:00Z", tokenUsage: { inputTokens: 10_000, outputTokens: 5_000 },
       }),
     ];
@@ -261,8 +247,7 @@ describe("usage-stats", () => {
             outputTokens: 5,
             totalTokens: 45,
           },
-          // The normalizer rejects raw/expanded provider payloads at the
-          // persisted-data boundary instead of letting them pollute totals.
+          // Reject raw provider payloads at persistence so they cannot pollute usage totals.
           {
             provider: "codex",
             model: "gpt-5.4",
@@ -277,12 +262,10 @@ describe("usage-stats", () => {
       },
     ], now);
 
-    // API-key totals and pricing keep their original scope.
     expect(summary.today.totalTokens).toBe(1_500);
     expect(summary.perVendor.map((row) => row.vendor)).toEqual(["openai"]);
     expect(summary.perModel.map((row) => row.model)).toEqual(["gpt-4.1"]);
 
-    // Subscription values stay in the token-only sibling summary.
     expect(summary.subscription.today).toMatchObject({
       inputTokens: 140,
       outputTokens: 25,
@@ -314,7 +297,7 @@ describe("usage-stats", () => {
   });
 
   it("buckets today and the trend on the host's calendar day, not UTC's", () => {
-    const now = new Date("2026-07-03T16:00:00Z"); // 2026-07-04 01:00 in Seoul
+    const now = new Date("2026-07-03T16:00:00Z");
     const entries: AuditTurnEntry[] = [
       turn({ timestamp: "2026-07-03T15:30:00Z", tokenUsage: { inputTokens: 100, outputTokens: 10 },
       }),
@@ -335,7 +318,6 @@ describe("usage-stats", () => {
     const entries = [turn({ tokenUsage: { inputTokens: 1_000_000, outputTokens: 1_000_000 } }),
     ];
     const summary = computeUsageSummary(entries, new Date());
-    // $3 input + $15 output = $18
     expect(summary.perVendor[0].cost).toBeCloseTo(18, 5);
     expect(summary.perVendor[0].vendor).toBe("claude");
   });
@@ -356,10 +338,7 @@ describe("usage-stats", () => {
   });
 
   it("respects env pricing override", () => {
-    // The price resolver does not read the environment for itself — the
-    // resolver decides between the setting and the variable, and the caller
-    // that caches on the answer hands it in. The claim under test is the same:
-    // an env blob makes the reported price the corrected one.
+    // Pass the environment price override through the resolver; it does not read the environment itself.
     const overrides = resolvePricingOverrides(undefined, {
       AVE_PRICING_OVERRIDE: JSON.stringify({
         claude: {
@@ -388,8 +367,6 @@ describe("usage-stats", () => {
     const gpt = { inputPer1M: 2, outputPer1M: 8, contextWindow: 1_000_000 };
 
     it("claude — fresh + cache.read × 0.1 + cache.write × 1.25 + output (ratio fallback)", () => {
-      // 1M fresh + 1M cacheRead + 1M cacheWrite + 1M output
-      // 1*$3 + 1*$0.30 + 1*$3.75 + 1*$15 = $22.05
       expect(
         computeCost(
           {
@@ -406,8 +383,6 @@ describe("usage-stats", () => {
 
     it("claude — explicit cacheReadPer1M / cacheWritePer1M override the ratio fallback", () => {
       const explicit = { ...sonnet, cacheReadPer1M: 0.5, cacheWritePer1M: 6 };
-      // 1M fresh + 1M cacheRead + 1M cacheWrite + 1M output
-      // 1*$3 + 1*$0.50 + 1*$6 + 1*$15 = $24.50
       expect(
         computeCost(
           {
@@ -425,8 +400,6 @@ describe("usage-stats", () => {
     it.each(["openai", "azure-foundry"] as const)(
       "%s — cache fields split prompt_tokens into fresh + discounted cached input",
       (vendor) => {
-        // 1M prompt input contains 0.25M cached input. Cost is:
-        // 0.75M*$2 fresh + 0.25M*$0.20 cached + 1M*$8 output = $9.55.
         expect(
           computeCost(
             {
@@ -464,7 +437,6 @@ describe("usage-stats", () => {
       (vendor) => {
         const flash = { inputPer1M: 0, outputPer1M: 0, contextWindow: 1_000_000,
         };
-        // Free tier: $0 regardless of cache.
         expect(
           computeCost(
             {
@@ -491,16 +463,13 @@ describe("usage-stats", () => {
         sonnet,
         "claude",
       );
-      // Negatives clamp to 0 — usage is monotonic; malformed upstream data
-      // must not produce sub-zero billing.
+      // Clamp negative upstream usage so malformed data cannot produce negative billing.
       expect(result).toBe(0);
     });
   });
 
   it("totalTokens vendor-aware — OpenAI cacheRead is NOT double-counted", () => {
-    // For OpenAI, Vercel SDK's `cachedInputTokens` is already inside
-    // `inputTokens`. If totalTokens added cacheRead again, the dashboard
-    // would inflate by ~10% on cache-hot conversations.
+    // Cached input is already included in prompt input here; adding it again inflates totals.
     const entries: AuditTurnEntry[] = [
       {
         timestamp: new Date().toISOString(),
@@ -510,12 +479,11 @@ describe("usage-stats", () => {
         tokenUsage: {
           inputTokens: 1_000_000,
           outputTokens: 100_000,
-          cacheReadTokens: 500_000, // already inside inputTokens for OpenAI
+          cacheReadTokens: 500_000,
         },
       },
     ];
     const summary = computeUsageSummary(entries, new Date());
-    // OpenAI: total = input + output = 1_100_000 (cache NOT added)
     expect(summary.perVendor[0].totalTokens).toBe(1_100_000);
   });
 
@@ -525,7 +493,6 @@ describe("usage-stats", () => {
         timestamp: new Date().toISOString(),
         sessionId: "legacy-openai",
         type: "turn",
-        // A zero row in the hand-kept table that the catalog does not price.
         route: "openai/o1-mini",
         tokenUsage: {
           inputTokens: 10_000,
@@ -555,7 +522,6 @@ describe("usage-stats", () => {
     ];
     const summary = computeUsageSummary(entries, new Date());
     expect(summary.perVendor[0].vendor).toBe("azure-foundry");
-    // azure/gpt-5.4-mini: 5K fresh at $0.75/M + 5K cached at $0.075/M + 1K out at $4.5/M.
     expect(summary.perVendor[0].cost).toBeCloseTo(0.008625, 9);
     expect(summary.perVendor[0].unknownCostTurns ?? 0).toBe(0);
   });
@@ -599,8 +565,7 @@ describe("usage-stats", () => {
   });
 
   it("keeps a per-model segment whose vendor id this build no longer knows", () => {
-    // Audit rows are history: one written under a since-renamed vendor id
-    // (nousResearch → nous-research) still spent its tokens.
+    // Persisted audit rows retain usage even when their vendor identifier has since changed.
     const entries: AuditTurnEntry[] = [
       {
         timestamp: new Date().toISOString(),
@@ -701,9 +666,7 @@ describe("usage-stats", () => {
       },
     ];
     const summary = computeUsageSummary(entries, new Date());
-    // Each provider request is below the >272K tier:
-    // 2 * (200K * $2.50/M) = $1. Aggregating first would incorrectly
-    // price 400K at the tier's $5/M = $2.
+    // Price each request before aggregation; merged inputs can cross a tier no request reached.
     expect(summary.perModel[0].cost).toBeCloseTo(1, 5);
   });
 
@@ -735,9 +698,7 @@ describe("usage-stats", () => {
       },
     ];
     const summary = computeUsageSummary(entries, new Date());
-    // Claude: total = input + output + cacheRead + cacheWrite = 1_800_000
     expect(summary.perVendor[0].totalTokens).toBe(1_800_000);
-    // Cost = fresh $3 + cache read $0.15 + cache write $0.75 + output $1.50.
     expect(summary.perVendor[0].cost).toBeCloseTo(5.4, 5);
   });
 
@@ -763,10 +724,7 @@ describe("usage-stats", () => {
   });
 
   it("Anthropic billing-contract: cache reduces total cost vs uncached input", () => {
-    // Same total token volume, but as 1M cache-read vs 1M fresh-input.
-    // Anthropic cache-read at 0.1× input: cache turn must be 10× cheaper
-    // on the input side. Locks the contract that audit/usage stats report
-    // matches Anthropic's own billing breakdown.
+    // Cache-read usage must retain its discounted input cost in audit and summary accounting.
     const sonnet = { inputPer1M: 3, outputPer1M: 15, contextWindow: 200_000 };
     const cached = computeCost(
       {
@@ -800,7 +758,6 @@ describe("usage-stats", () => {
       gpt54mini,
       "openai",
     );
-    // 100K fresh at $0.75/M + 900K cached at $0.075/M.
     expect(cached).toBeCloseTo(0.1425, 5);
     expect(fresh).toBeCloseTo(0.75, 5);
     expect(cached).toBeLessThan(fresh);
@@ -827,11 +784,7 @@ describe("usage-stats", () => {
     const dir = mkdtempSync(join(tmpdir(), "usage-stats-"));
     try {
       mkdirSync(dir, { recursive: true });
-      // Use a fixture date pinned to "yesterday" so the test stays inside
-      // the 30-day lookback regardless of when CI runs. A hardcoded date
-      // (e.g. "2026-04-18") silently ages out once wall-clock drifts past
-      // the lookback window — the exact regression the previous fixture
-      // hit on 2026-05-19 (1 day past the 30-day cap).
+      // Derive yesterday from the clock so fixtures stay inside the rolling lookback window.
       const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
       const yyyy = yesterday.getUTCFullYear();
       const mm = String(yesterday.getUTCMonth() + 1).padStart(2, "0");
@@ -1297,7 +1250,6 @@ function resetAuditStatGate(): void {
   auditStatGate.calls = 0;
 }
 
-// Ensure env override and the stat gate do not bleed between tests.
 beforeEach(() => {
   delete process.env.AVE_PRICING_OVERRIDE;
   resetAuditStatGate();

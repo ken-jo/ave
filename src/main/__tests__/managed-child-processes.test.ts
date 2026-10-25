@@ -3,14 +3,7 @@ import { spawnSync, type ChildProcess } from "node:child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 
-// These unit tests hand FAKE children with real-looking pids (4321, 5432) to a
-// module whose tree-kill path shells out to the REAL taskkill/pgrep against
-// those pids. When such a pid happens to exist on the loaded host, `taskkill
-// /T /F` kills an innocent live process tree AND returns 0 — skipping the
-// `child.kill("SIGKILL")` fallback these assertions pin (the observed
-// full-suite-only failure). Neutralize the shell-out: a "failed" taskkill and
-// a "no children" pgrep force the deterministic in-process fallback on every
-// platform, and no real process is ever signalled.
+// Stub taskkill and pgrep so fake fixture PIDs can never signal real processes; force deterministic child.kill fallback.
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   return {
@@ -229,12 +222,10 @@ describe("managed child process tracking", () => {
   });
 
   it("skips the kill call when the tracked child already exited (exitCode set)", () => {
-    // Regression guard for the race between `before-quit` shutdown and a
-    // child that resolved on its own a microtask earlier. `isKillable`
-    // must short-circuit so the SIGKILL is not sent to a dead pid (which
+    // Regression guard for the race between `before-quit` shutdown and a child that resolved on its own a microtask earlier. `isKillable` must short-circuit
+    // so the SIGKILL is not sent to a dead pid (which
 
-    // could otherwise race with PID reuse and signal an unrelated
-    // process on long-lived hosts).
+    // could otherwise race with PID reuse and signal an unrelated process on long-lived hosts).
     const child = makeChild();
     child.exitCode = 0;
     trackManagedChildProcess(child, { label: "test-already-dead" });
@@ -243,7 +234,6 @@ describe("managed child process tracking", () => {
     expect(child.kill).not.toHaveBeenCalled();
     expect(getManagedChildProcessCount()).toBe(0);
   });
-
 
   it("force kills and untracks one specifically cancelled child", () => {
     const child = makeChild();

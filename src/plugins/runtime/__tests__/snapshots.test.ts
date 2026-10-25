@@ -1,7 +1,3 @@
-/**
- * Tests for readEnabledManifestSnapshots — edge cases.
- */
-
 import { beforeAll, describe, expect, it } from "vitest";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -214,7 +210,6 @@ describe("resolveManifestLoadPlan — registry", () => {
       const pluginsRoot = join(dir, "plugins");
       await mkdir(pluginsRoot, { recursive: true });
 
-      // manifest path is outside pluginsRoot
       const outsidePath = join(dir, "evil", "plugin.json");
 
       const registryPath = join(dir, "registry.json");

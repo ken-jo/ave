@@ -1,6 +1,3 @@
-/**
- * PluginPerfTab renderer tests — renders with mock data, refresh, color coding.
- */
 import "./setup.js";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
@@ -93,9 +90,6 @@ describe("PluginPerfTab", () => {
   it("color-codes error rate: green for <1%, amber for 1-5%, red for >5%", async () => {
     await renderTab();
     await waitFor(() => {
-      // com.example.meeting: 0/10 = 0% → green
-      // com.example.email: 2/20 = 10% → red (>5%)
-      // com.example.bad: 6/10 = 60% → red
       const allText = document.body.textContent ?? "";
       expect(allText).toContain("0.0%");   // meeting — green
       expect(allText).toContain("10.0%");  // email — red

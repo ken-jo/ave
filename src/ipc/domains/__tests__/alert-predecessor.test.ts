@@ -5,7 +5,6 @@ import { MarketplaceService } from "../../../marketplace/app/service.js";
 import { EMPTY_MARKETPLACE_POLICY, type PolicyLoad, type PolicyUpdate } from "../../../marketplace/sources/policy.js";
 import { isPluginInstallLockHeld, withPluginInstallLock } from "../../../plugins/install-lifecycle.js";
 
-/** A policy file that changes when `change` is called: the next refresh applies the change under the exclusive lock. */
 function changingPolicy() {
   let pending: PolicyUpdate | null = null;
   const source = {
@@ -24,10 +23,7 @@ function changingPolicy() {
   return source;
 }
 
-/**
- * `sourceId` is the stored id both plugins are installed from; `viewId` is the id the catalog's view
- * carries for it — the same id, or the handle a credential-shaped one goes out as (§18.8).
- */
+// sourceId names the installed source; viewId may be its redacted catalog handle.
 function harness(sourceId = "trusted", viewId = sourceId) {
   const installed = [
     { kind: "plugin", name: "retired-plugin", version: "1.0.0", sourceId, originCommit: null },
@@ -80,7 +76,6 @@ describe("predecessor removal authority at the lifecycle boundary", () => {
   });
 
   it("removes a predecessor installed from a credential-shaped source id by its stored identity (§18.8)", async () => {
-    // Built at run time, so no whole token sits in the source.
     const stored = `glp${"at-"}${"abcd1234".repeat(3)}`;
     const h = harness(stored, "ave-legacy-0123456789abcdef0123456789abcdef");
     const [presented] = await h.access.present([structuredClone(h.row)] as never);
@@ -109,7 +104,6 @@ describe("predecessor removal authority at the lifecycle boundary", () => {
 describe("lock order between predecessor removal and installation (§18.6)", () => {
   type PackageLocking = { withPackage: (kind: string, name: string, fn: () => Promise<unknown>) => Promise<unknown> };
 
-  /** An install as the service runs one: its operation, then the package's lock, then the plugin's. */
   function realInstall(h: ReturnType<typeof harness>, entered: () => void, inside: () => Promise<void> = async () => {}) {
     Object.assign(h.market, {
       executeInstallNow: async () => {
@@ -132,7 +126,6 @@ describe("lock order between predecessor removal and installation (§18.6)", () 
 
   it("finishes both when the policy changes while removal holds the plugin locks and an install waits behind it", async () => {
     const h = harness();
-    // Removal waits inside the plugin locks, at its authority re-read, until released.
     let releaseRemoval: () => void = () => {};
     const removalMayGo = new Promise<void>((resolve) => (releaseRemoval = resolve));
     let removalHolds: () => void = () => {};
@@ -142,7 +135,6 @@ describe("lock order between predecessor removal and installation (§18.6)", () 
       await removalMayGo;
       return [structuredClone(h.row)];
     });
-    // An install inside its own operation, which then needs the predecessor's package lock and plugin lock.
     let installEnters: () => void = () => {};
     const installEntered = new Promise<void>((resolve) => (installEnters = resolve));
     realInstall(h, installEnters);
@@ -151,14 +143,12 @@ describe("lock order between predecessor removal and installation (§18.6)", () 
     await removalHolding;
     const install = h.market.executeInstall("fixture-plan");
     await installEntered;
-    // The policy changes now: a service call that refreshed here would wait for the install's shared hold.
     h.policy.change();
     releaseRemoval();
 
     expect(await bothFinish(removal, install)).toBe("finished");
     expect(await removal).toMatchObject({ ok: true });
     expect(h.uninstall).toHaveBeenCalledOnce();
-    // The change applies at the next operation, once neither holds anything.
     await h.market.asOneOperation(async () => {});
     expect(h.policy.apply).toHaveBeenCalledOnce();
     expect(h.policy.load).toMatchObject({ ok: true, policy: { requireHttps: true } });
@@ -170,7 +160,6 @@ describe("lock order between predecessor removal and installation (§18.6)", () 
     const installMayGo = new Promise<void>((resolve) => (releaseInstall = resolve));
     let installHolds: () => void = () => {};
     const installHolding = new Promise<void>((resolve) => (installHolds = resolve));
-    // The install holds its package lock and has not yet asked for the plugin lock.
     Object.assign(h.market, {
       executeInstallNow: async () => (h.market as unknown as PackageLocking).withPackage("plugin", "retired-plugin", async () => {
         installHolds();
@@ -269,7 +258,6 @@ describe("the service's package locks (§18.6)", () => {
     const order: string[] = [];
     let child!: Promise<unknown>;
     const holder = h.market.asOneOperation(async (lease) => {
-      // Not awaited: the holder returns while the uninstall runs under its lease.
       child = h.market.uninstallInstalled({ kind: "plugin", name: "retired-plugin", sourceId: "trusted" }, { lease }).then(() => order.push("uninstall"));
       await inside;
     }, packageOf("retired-plugin"));

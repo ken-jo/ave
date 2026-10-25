@@ -1,35 +1,3 @@
-/**
- * IdleSchedulerService — 5-state 전이 + 우선순위 큐 테스트
- *
- * 청사진 §6.1 Agent 5: `ave/src/main/__tests__/idle-scheduler.test.ts`
- *
- * 실행: `cd ave && npm test`
- *
- * SECURITY_GATE: 5-state 전이 로직 회귀 방지 게이트.
- * IdleScheduler 핵심 전이 변경 시 반드시 이 스위트가 green이어야 함.
- *
- * 검증 케이스 20개:
- *   1) enqueue priority sort — P0 먼저, FIFO 보존
- *   2) enqueue 동일 priority → enqueuedAt 순서
- *   3) signalKeystroke → IDLE_SCAN에서 THROTTLED 전환
- *   4) signalConversation → IDLE_SCAN에서 RUNNING 전환
- *   5) 내부 _tick은 idle 조건 충족 시 IDLE_SCAN으로 전환
- *   6) 빈 큐 + IDLE_SCAN → workerClient 미호출
- *   7) 큐에 job 있으면 workerClient.enqueue + processOne 호출
- *   8) transition same-state → no-op + 로그 스킵
- *   9) PAUSED 상태에서는 _reevaluate 무시
- *  10) suspend → PAUSED, resume → RESUME_DELAY
- *  11) RESUME_DELAY 타이머 만료 → RUNNING
- *  12) onBattery + IDLE_SCAN → RUNNING 강등
- *  13) CPU spike (cpuEma > 0.7) + IDLE_SCAN → THROTTLED
- *  14) getMetrics shape
- *  15) stop 후 listener 해제
- *  16) conversationCooldown 미만이면 IDLE_SCAN 진입 차단
- *  17) P0 job이 P3보다 먼저 처리됨
- *  18) worker 실패 시 다음 job으로 진행
- *  19) 전체 전이 시퀀스
- *  20) signalConversation은 RUNNING에서 state 변경 없음
- */
 import { describe, it, expect, vi } from "vitest";
 import { strict as assert } from "node:assert";
 
@@ -39,8 +7,6 @@ import {
   type PowerMonitorLike,
   type WorkerClientLite,
 } from "../idle-scheduler.js";
-
-// ─── Mock WorkerClient ────────────────────────────
 
 interface EnqueueCall {
   filePath: string;
@@ -97,8 +63,6 @@ function makeMockWorker(): WorkerClientLite & {
   };
 }
 
-// ─── Mock powerMonitor ─────────────────────────────
-
 class FakePowerMonitor implements PowerMonitorLike {
   onBatteryPower = false;
   private idleTimeSec = 0;
@@ -142,8 +106,6 @@ class FakePowerMonitor implements PowerMonitorLike {
     return this.handlers.get(event)?.length ?? 0;
   }
 }
-
-// ─── 헬퍼 ───────────────────────────────────────────
 
 function makeService(
   overrides: { powerMonitor?: FakePowerMonitor; worker?: ReturnType<typeof makeMockWorker> } = {},
@@ -411,10 +373,7 @@ describe("SECURITY_GATE: IdleSchedulerService 5-state", () => {
   });
 
   it("case 21: workerClient 없이 생성 — 상태 머신은 동작, _processOne은 안전한 no-op", async () => {
-    // boot.ts now constructs the scheduler without a workerClient because the
-    // local-indexer plugin indexes eagerly in its background worker. The shared
-    // idle-state machine must still work for preference-refresh / post-turn /
-    // conversation-loop consumers, and the (dormant) queue must never throw.
+    // Idle-state consumers and the dormant queue must work without a workerClient.
     const pm = new FakePowerMonitor();
     const sched = new IdleSchedulerService({
       powerMonitor: pm,

@@ -1,9 +1,4 @@
-/**
- * ConversationHistory — append / restore lifecycle.
- *
- * Message-count caps are opt-in. Default chat history must not trim the
- * persisted transcript; token preflight / auto-compact owns context control.
- */
+// History caps are opt-in; token preflight and compaction control context size.
 import { describe, expect, it } from "vitest";
 import { ConversationHistory } from "../conversation-history.js";
 import type { GenericMessage } from "../llm/types.js";
@@ -12,8 +7,6 @@ function withoutRuntimeMeta(messages: ReadonlyArray<GenericMessage>) {
   return messages.map((message) => {
     const { meta, ...rest } = message;
     if (!meta) return rest;
-    // `createdAt` and `messageId` are stamped by the store on the way in, not
-    // supplied by the caller — these assertions are about the caller's message.
     const {
       createdAt: _createdAt,
       messageId: _messageId,
@@ -44,7 +37,7 @@ describe("ConversationHistory.getCapacityRemaining", () => {
     const h = new ConversationHistory({ maxMessages: 2 });
     h.append({ role: "user", content: "1" });
     h.append({ role: "user", content: "2" });
-    h.append({ role: "user", content: "3" }); // trim drops oldest, length stays 2
+    h.append({ role: "user", content: "3" });
     expect(h.length).toBe(2);
     expect(h.getCapacityRemaining()).toBe(0);
   });
@@ -59,7 +52,6 @@ describe("ConversationHistory.getCapacityRemaining", () => {
     expect(h.getCapacityRemaining()).toBe(Number.POSITIVE_INFINITY);
   });
 });
-
 
 describe("ConversationHistory.removeExact", () => {
   it("removes only the append-returned message and preserves later notices", () => {
@@ -199,13 +191,7 @@ describe("ConversationHistory tool-call invariant", () => {
   });
 });
 
-/**
- * A restored row's identity is what every row-addressed action resolves
- * against, and `restore` reads it off a file the user (or an import) can write.
- * A value that is not a usable identity, or one a row earlier in the same
- * history already answers to, would make "find the row named X" return the
- * wrong row or none — so those are re-minted instead of trusted.
- */
+// Restore must re-mint invalid or duplicate row identities from writable history.
 describe("ConversationHistory.restore — row identity", () => {
   const idsOf = (h: ConversationHistory) => h.getMessages().map((m) => m.meta?.messageId);
 

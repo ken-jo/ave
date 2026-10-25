@@ -1,23 +1,5 @@
-/**
- * `normalizeSourceUrl` — the one spelling of a marketplace source URL
- * (design §7.1).
- *
- * Policy allow/block matching, reserved-name checks, token lookup and
- * duplicate detection all compare this form, so two spellings of one
- * repository can never be treated as two repositories, and a block rule
- * cannot be sidestepped by changing case, adding a trailing dot or `.git`,
- * or writing the host as an IDN or a numeric IPv4 variant.
- *
- * Accepted inputs:
- *   - `owner/repo`                → `https://github.com/owner/repo`
- *   - `user@host:path` (scp form) → `ssh://user@host/path`
- *   - `https://…`, `http://…`, `ssh://…`
- *
- * Rejected: a `<helper>::` transport (`ext::`, `fd::`, `hg::…`; design
- * §18.3 #1), every other scheme (`file:`, `git:`, …), credentials in the URL
- * (an ssh user name is not a credential; #2), query and fragment, dot and
- * empty path segments, control characters and whitespace.
- */
+/** Canonical source URLs are shared by policy, credentials and duplicate detection.
+ * Reject helper transports, credentials and ambiguous paths before they can select another target. */
 import { scrubDiagnosticSecrets } from "../../shared/dlp.js";
 import { MarketplaceError, type MarketplaceErrorDetail } from "../errors.js";
 
@@ -25,15 +7,11 @@ type SourceUrlScheme = "https" | "http" | "ssh";
 
 export interface NormalizedSourceUrl {
   scheme: SourceUrlScheme;
-  /** ssh user name (`git` in `git@github.com:o/r`); always null for http(s). */
   user: string | null;
-  /** Lowercase ASCII host; an IPv6 literal keeps its brackets. */
   host: string;
-  /** Explicit port, or null when it is the scheme's default. */
   port: number | null;
-  /** `/owner/repo`: no trailing `/`, no `.git`, canonical percent-encoding. */
+  /** Canonical repository path has no trailing slash or .git suffix. */
   path: string;
-  /** The stored string built from the fields above. */
   url: string;
 }
 
@@ -43,28 +21,16 @@ const SCP_FORM = /^([A-Za-z0-9._~-]+)@(\[[0-9A-Fa-f:.]+\]|[^:/@[\]]+):(.+)$/u;
 const SCHEME_FORM = /^([A-Za-z][A-Za-z0-9+.-]*):\/\/(.*)$/su;
 /** Never starts with `-`, so ssh cannot read it as an option. */
 const SSH_USER = /^[A-Za-z0-9._~][A-Za-z0-9._~-]*$/u;
-/** DNS labels after IDNA (plus `_`, which some internal zones use); none starts or ends with `-`. */
 const HOST_NAME = /^(?!-)[a-z0-9_-]+(?<!-)(?:\.(?!-)[a-z0-9_-]+(?<!-))*$/u;
 const UNRESERVED = /[A-Za-z0-9\-._~]/u;
-/** RFC 3986 pchar minus `%`, which is handled separately. */
 const PCHAR = /[A-Za-z0-9\-._~!$&'()*+,;=:@]/u;
 
-/**
- * The message echoes the input for *Copy details*, scrubbed: the refusal of
- * `https://user:password@host/…` must not carry the password onward.
- */
+/** Scrub input echoed in diagnostic details, including URL credentials. */
 function reject(input: string, reason: string, detail?: MarketplaceErrorDetail<"SOURCE_URL_REJECTED">): never {
   throw new MarketplaceError("SOURCE_URL_REJECTED", `source URL rejected (${reason}): ${scrubDiagnosticSecrets(input)}`, detail ? { detail } : undefined);
 }
 
-/**
- * Canonical host: WHATWG parsing gives IDNA to ASCII, lowercase, and one
- * spelling for IPv4 variants (`0x7f.1` → `127.0.0.1`) and IPv6 literals.
- * One trailing dot is removed so `github.com.` equals `github.com`. A port is
- * never part of a host: in a host-only field (`host:` patterns,
- * `allowHttpHosts`, `auth.host`) it would otherwise be dropped silently and
- * widen the rule to every port.
- */
+/** Canonicalize host aliases and trailing dots; reject ports in host-only policy fields. */
 export function normalizeSourceHost(input: string, raw: string): string {
   if (!raw || raw.includes("%") || /[\s\\/?#@]/u.test(raw)) reject(input, "invalid host");
   if (!raw.startsWith("[") && raw.includes(":")) reject(input, "a host takes no port");
@@ -186,28 +152,16 @@ function render(parts: Omit<NormalizedSourceUrl, "url">): string {
   return `${parts.scheme}://${user}${parts.host}${port}${parts.path}`;
 }
 
-/**
- * A download URL's path in the form patterns compare: canonical
- * percent-encoding (`%65vil` is `evil`), no trailing `/`, and no empty, `.`
- * or `..` segment, which a server may collapse into another path. The root
- * (a service endpoint at `/`) stays `/`.
- */
+/** Decode and normalize download paths before policy matching; retain / for root endpoints. */
 export function normalizeDownloadPath(input: string, rawPath: string): string {
   if (rawPath === "" || rawPath === "/") return "/";
   return `/${normalizePathSegments(input, rawPath, false).join("/")}`;
 }
 
-/**
- * git's `<helper>::<address>` form: `ext::` runs its text as a command, any
- * other runs `git-remote-<helper>` from the search path (§18.3 #1).
- */
+/** Helper transport syntax launches arbitrary programs and must be rejected. */
 const HELPER_TRANSPORT = /^([A-Za-z][A-Za-z0-9+.-]*)::/u;
 
-/**
- * Input that names a folder rather than a git address (§18.4.1 stage 1,
- * lexically): a `file:` URL, an absolute, home, drive, UNC or relative path.
- * A deep link never carries one (§18.3 #7).
- */
+/** Folder input is lexical only and is forbidden in deep links. */
 export function isFolderPathInput(input: string): boolean {
   const text = input.trim();
   return /^file:/iu.test(text)
@@ -228,17 +182,8 @@ export function normalizeSourceUrl(input: string): NormalizedSourceUrl {
   return { ...normalized, url: render(normalized) };
 }
 
-/**
- * Repository identity: host and path, the path compared without case.
- *
- * Scheme, port and ssh user are how one connects, not which repository it
- * is: `https://github.com/acme/tools` and `git@github.com:acme/tools` are one
- * repository. Hosting services resolve owner and repository names without
- * case, so `ACME/Tools` is that repository too. Both rules exist so that a
- * block rule cannot be sidestepped by changing scheme or case; the price is
- * that two repositories differing only in case on a case-sensitive server
- * count as one, which only ever refuses more.
- */
+/** Repository identity ignores case, scheme, port and SSH user to prevent policy bypass.
+ * Case-sensitive repositories differing only in case are conservatively treated as one. */
 function repositoryPath(url: NormalizedSourceUrl): string {
   return url.path.toLowerCase();
 }
@@ -247,30 +192,15 @@ export function sameSourceRepository(a: NormalizedSourceUrl, b: NormalizedSource
   return a.host === b.host && repositoryPath(a) === repositoryPath(b);
 }
 
-/**
- * A managed-policy pattern (design §12), parsed once when the policy loads.
- *
- *   - `host:<host>` matches the host on any scheme and port.
- *   - a URL matches the same repository ({@link sameSourceRepository}: host
- *     and path without case, any scheme and port);
- *   - a URL ending in `*` matches the host and any path that starts with the
- *     text before the `*`, without case, on any scheme and port.
- * The pattern's own scheme and port only have to be valid.
- *
- * `path:` patterns name folders (§18.6) and match folders only; host and URL
- * patterns match git sources only.
- */
+/** Host and repository patterns ignore scheme and port; only trailing * enables prefix matching.
+ * Folder path patterns and git patterns never cross-match. */
 export type SourcePattern =
   | { kind: "host"; host: string; text: string }
   | { kind: "exact"; url: NormalizedSourceUrl; text: string }
   | { kind: "prefix"; host: string; pathPrefix: string; text: string }
   | FolderPattern;
 
-/**
- * A `path:` pattern (§18.6): `path:<folder>` that folder, `path:<prefix>*`
- * every folder whose path starts with the prefix, `path:*` every folder.
- * `folder` is the comparison form of {@link folderPatternKey}.
- */
+/** path: patterns match one folder, a trailing-* prefix, or all folders with path:*. */
 export interface FolderPattern {
   kind: "path";
   folder: string;
@@ -278,10 +208,7 @@ export interface FolderPattern {
   text: string;
 }
 
-/**
- * The form a folder path and a `path:` pattern are compared in: `\` and `/`
- * are equal, and a drive letter is upper case (stage 1 writes it so).
- */
+/** Path matching normalizes separators and uppercases the drive letter. */
 export function folderPatternKey(path: string): string {
   const slashed = path.replace(/\\/gu, "/");
   return /^[a-z]:/u.test(slashed) ? `${slashed[0]!.toUpperCase()}${slashed.slice(1)}` : slashed;
@@ -293,7 +220,6 @@ function parseFolderPattern(text: string): FolderPattern {
   const prefix = body.endsWith("*");
   const folder = folderPatternKey(prefix ? body.slice(0, -1) : body);
   if (prefix && folder === "") return { kind: "path", folder, prefix, text };
-  // An absolute path: `/…`, a drive `X:/…`, or a share `//server/share…`.
   if (!/^(?:\/|[A-Za-z]:\/)/u.test(folder)) reject(text, "a path: pattern names an absolute folder");
   const rest = folder.replace(/^(?:\/\/|[A-Za-z]:\/|\/)/u, "");
   const segments = rest === "" ? [] : rest.split("/");
@@ -303,12 +229,7 @@ function parseFolderPattern(text: string): FolderPattern {
   return { kind: "path", folder, prefix, text };
 }
 
-/**
- * Whether a folder matches a `path:` pattern (§18.6). The case rule is
- * conservative: an `allow` pattern matches only with exact case, a `block`
- * pattern ignoring case, since a rule is written without knowing the
- * volume's case sensitivity.
- */
+/** Allow requires exact case; block ignores case because volume sensitivity is unknown. */
 export function matchesFolderPattern(path: string, pattern: FolderPattern, list: "allow" | "block"): boolean {
   const fold = (text: string) => (list === "block" ? text.normalize("NFC").toLowerCase() : text.normalize("NFC"));
   const folder = fold(folderPatternKey(path));
@@ -321,8 +242,7 @@ export function parseSourcePattern(text: string): SourcePattern {
   if (text.startsWith("host:")) {
     return { kind: "host", host: normalizeSourceHost(text, text.slice("host:".length)), text };
   }
-  // A `*` anywhere but the end would otherwise pass as a literal path
-  // character, and a block rule the admin meant as a wildcard would match nothing.
+  // Reject internal wildcards rather than silently treating intended policy patterns as literal paths.
   if (text.slice(0, -1).includes("*")) reject(text, "only a trailing * is allowed");
   if (!text.endsWith("*")) {
     return { kind: "exact", url: normalizeSourceUrl(text), text };
@@ -342,12 +262,7 @@ export function parseSourcePattern(text: string): SourcePattern {
   return { kind: "prefix", host: parts.host, pathPrefix: pathPrefix.toLowerCase(), text };
 }
 
-/**
- * What a URL names: a repository (a source's remote) or a file served from
- * under one (a release asset or archive download). For a download an exact
- * repository pattern covers every path beneath the repository, so a rule
- * written for `…/acme/tools` also governs `…/acme/tools/releases/download/…`.
- */
+/** Exact repository patterns also govern artifact downloads beneath that repository path. */
 export type PatternTarget = "repository" | "download";
 
 export function matchesSourcePattern(url: NormalizedSourceUrl, pattern: SourcePattern, target: PatternTarget = "repository"): boolean {

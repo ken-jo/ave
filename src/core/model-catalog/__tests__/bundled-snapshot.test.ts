@@ -1,15 +1,4 @@
-/**
- * The committed snapshot, held to the committed input that generates it.
- *
- * `check:model-catalog` holds the file to the generator's output; this does
- * the same inside the suite, and checks what the bytes alone cannot: the
- * snapshot verifies under its own name, every mapped provider is present,
- * the input carries no field the normalizer does not read, and the license
- * travels with the data. (`THIRD-PARTY-NOTICES.md` reproduces the same text;
- * it is documentation, which the suite does not read.) The `--fetch` path is
- * exercised offline: an injected fetch answers the downloads, and the files
- * land in a scratch root.
- */
+/** Verify snapshot identity, provider coverage, input pruning, and bundled licensing; exercise downloads offline. */
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -56,7 +45,6 @@ describe("bundled model catalog", () => {
     expect(Object.keys(providers["alibaba-cn"]?.models ?? {})).toEqual(expect.arrayContaining(["qwen3-max", "qwen3-coder-plus"]));
     const doubao = Object.keys(providers.volcengine?.models ?? {});
     expect(doubao.some((id) => id.startsWith("doubao-"))).toBe(true);
-    // Ave's Doubao default is not listed; it stays unknown to the catalog.
     expect(doubao).not.toContain("doubao-1-5-pro-256k-250115");
   });
 
@@ -86,7 +74,6 @@ const SCHEMA_BLOB = "b".repeat(40);
 
 type Answer = (url: string) => Response | Promise<Response>;
 
-/** A fetch that answers each download by URL; any URL it was not given fails the test. */
 function fetchFor(answers: { api: Answer; head: Answer; schema: Answer; license: Answer }) {
   const urls: string[] = [];
   const fetchImpl = (async (input: string | URL | Request) => {
@@ -116,7 +103,6 @@ describe("model catalog --fetch", () => {
 
   it("re-prunes a download into the committed input byte for byte, and names the same catalog", async () => {
     const root = scratch();
-    // The committed input is already pruned, so pruning it again must change nothing.
     const { fetchImpl } = fetchFor({
       api: () => new Response(read(MODEL_CATALOG_PATHS.input), { status: 200, headers: { etag: 'W/"fixture"' } }),
       head: () => json({ sha: HEAD }),
@@ -133,7 +119,6 @@ describe("model catalog --fetch", () => {
       upstreamHeadAtFetch: HEAD,
       upstreamSchemaBlob: SCHEMA_BLOB,
     });
-    // Same content, new provenance: the same catalog name as the committed snapshot.
     expect(generated.document.sha256).toBe(JSON.parse(read(MODEL_CATALOG_PATHS.snapshot)).sha256);
   });
 
@@ -151,7 +136,6 @@ describe("model catalog --fetch", () => {
     const source = JSON.parse(readFileSync(join(root, MODEL_CATALOG_PATHS.source), "utf-8")) as Record<string, unknown>;
     expect(source).not.toHaveProperty("upstreamHeadAtFetch");
     expect(source).not.toHaveProperty("upstreamSchemaBlob");
-    // Without a head, the license is read from the branch.
     expect(urls).toContain("https://raw.githubusercontent.com/anomalyco/models.dev/dev/LICENSE");
     expect(readFileSync(join(root, MODEL_CATALOG_PATHS.input), "utf-8")).toBe(read(MODEL_CATALOG_PATHS.input));
   });
@@ -169,19 +153,9 @@ describe("model catalog --fetch", () => {
   });
 });
 
-/**
- * A vendor maps only to catalog providers that serve its own endpoint: the
- * catalog's limits are that endpoint's limits, and a provider of the same
- * models elsewhere (an international host, a different product) has others.
- * Held against the provider `api` the pruned input keeps.
- */
+/** Map providers only to their own endpoint because model limits differ by host and product. */
 describe("the provider map's host rule", () => {
-  /**
-   * Mapped providers the catalog lists without an `api`: the source reaches
-   * them through a provider-specific SDK package rather than an
-   * OpenAI-compatible URL, so there is no host to compare. Each is the
-   * vendor's own first-party API.
-   */
+  /** SDK-only providers have no api hostname to compare; mappings must still name first-party APIs. */
   const NO_API_PROVIDERS: Readonly<Record<string, string>> = {
     anthropic: "Anthropic's API, reached through @ai-sdk/anthropic",
     openai: "OpenAI's API, reached through @ai-sdk/openai",
@@ -201,12 +175,10 @@ describe("the provider map's host rule", () => {
   type Input = Record<string, { api?: string }>;
   const input = JSON.parse(read(MODEL_CATALOG_PATHS.input)) as Input;
 
-  /** The endpoint Ave calls for a vendor by default, when it has one. */
   function vendorBaseUrl(vendor: LLMVendor, presets: Partial<Record<string, { baseUrl: string }>>): string | undefined {
     return Object.hasOwn(presets, vendor) ? presets[vendor]?.baseUrl : undefined;
   }
 
-  /** Each mapping that breaks the rule, as `<vendor> → <provider>: <why>`. */
   function hostFaults(
     map: Readonly<Record<string, readonly string[]>>,
     providers: Input,
@@ -231,7 +203,7 @@ describe("the provider map's host rule", () => {
         if (catalogUrl.host !== vendorUrl.host) {
           faults.push(`${vendor} → ${provider}: ${catalogUrl.host} is not ${vendorUrl.host}`);
         } else if (!["", "/v1"].includes(path(catalogUrl)) && path(catalogUrl) !== path(vendorUrl)) {
-          // A path beyond the version names a product on a shared host (z.ai's coding plan).
+          // A path after the version can identify a distinct product on a shared host.
           faults.push(`${vendor} → ${provider}: ${path(catalogUrl)} is not ${path(vendorUrl)}`);
         }
       }
@@ -254,7 +226,6 @@ describe("the provider map's host rule", () => {
   it("refuses a provider at another host, another product on the same host, and a dead default", () => {
     const withOthers: Input = {
       ...input,
-      // A catalog provider whose endpoint is hosted in another region.
       alibaba: { api: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1" },
     };
     expect(hostFaults({ ...CATALOG_PROVIDERS_BY_VENDOR, qwen: ["alibaba", "alibaba-cn"] }, withOthers)).toEqual([
@@ -263,7 +234,6 @@ describe("the provider map's host rule", () => {
     expect(hostFaults({ ...CATALOG_PROVIDERS_BY_VENDOR, zai: ["zai-coding-plan"] }, withOthers)).toEqual([
       "zai → zai-coding-plan: /api/coding/paas/v4 is not /api/paas/v4",
     ]);
-    // Baseten's default before it was corrected: the host does not resolve.
     const oldBaseten = { ...OPENAI_COMPATIBLE_VENDOR_PRESETS, baseten: { ...OPENAI_COMPATIBLE_VENDOR_PRESETS.baseten, baseUrl: "https://model-api.baseten.co/v1" } };
     expect(hostFaults(CATALOG_PROVIDERS_BY_VENDOR, input, oldBaseten)).toEqual([
       "baseten → baseten: inference.baseten.co is not model-api.baseten.co",

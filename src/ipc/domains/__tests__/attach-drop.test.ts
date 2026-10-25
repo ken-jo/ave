@@ -1,11 +1,4 @@
-/**
- * Composer drag-drop: the one-shot token main mints for a dropped file list.
- *
- * Registering validates and binds; only REDEEMING authorizes. These pin the
- * misuse cases the token exists for — reuse, an unknown or other-window token,
- * expiry — and the paths registration must refuse outright: a sensitive file,
- * a symlink to one, a deny-listed type, a folder.
- */
+// Registration binds a drop token; only single-use, sender-bound redemption grants authority.
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { shell } from "electron";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -13,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HOST_FRAME_URL } from "../../../__tests__/test-helpers.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
+import { canCreateSymlinks } from "../../../__tests__/support/symlink-capability.js";
 
 const { handlers } = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
@@ -36,7 +30,6 @@ import { DROP_TOKEN_TTL_MS, registerAttachHandlers } from "../attach.js";
 
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0]);
 
-/** A host-renderer event from the webContents with id `senderId`. */
 function hostEvent(senderId: number) {
   return { senderFrame: { url: HOST_FRAME_URL }, sender: { id: senderId }, frameId: 0, processId: 0 };
 }
@@ -58,7 +51,6 @@ beforeAll(() => {
   writeFileSync(imagePath, PNG);
   writeFileSync(notesPath, "hello");
   writeFileSync(join(root, ".env"), "SECRET=1");
-  symlinkSync(join(root, ".env"), join(root, "innocent.txt"));
   writeFileSync(join(root, "run.exe"), "MZ");
   mkdirSync(join(root, "folder"));
   registerAttachHandlers({ auditLogger: { log: vi.fn() }, getMainWindow: () => ({}) } as never);
@@ -85,7 +77,6 @@ describe("composer drop token", () => {
   it("authorizes the dropped files only when the token is redeemed", async () => {
     const reg = await register(7, [imagePath, notesPath]);
     expect(reg).toMatchObject({ ok: true, rejected: [] });
-    // Registered but not redeemed: nothing is readable yet.
     expect(await call(CHANNELS.attach.readImage, 7, imagePath)).toEqual({
       ok: false,
       error: "path_not_authorized",
@@ -147,7 +138,7 @@ describe("composer drop token", () => {
       ok: false,
       error: "drop-token-invalid",
     });
-    // The wrong-window attempt consumed it: the owner cannot use it either.
+    // A wrong-window redemption attempt consumes the token.
     expect(await call(CHANNELS.attach.redeemDrop, 7, reg.token)).toEqual({
       ok: false,
       error: "drop-token-invalid",
@@ -164,10 +155,9 @@ describe("composer drop token", () => {
     });
   });
 
-  it("refuses a sensitive path, a symlink to one, a blocked type and a folder", async () => {
+  it("refuses a sensitive path, a blocked type and a folder", async () => {
     const reg = await register(7, [
       join(root, ".env"),
-      join(root, "innocent.txt"),
       join(root, "run.exe"),
       join(root, "folder"),
       notesPath,
@@ -175,7 +165,6 @@ describe("composer drop token", () => {
     expect(reg.ok).toBe(true);
     expect(reg.rejected).toEqual([
       { name: ".env", reason: "sensitive-path" },
-      { name: "innocent.txt", reason: "sensitive-path" },
       { name: "run.exe", reason: "denied-extension" },
       { name: "folder", reason: "not-a-file" },
     ]);
@@ -189,21 +178,29 @@ describe("composer drop token", () => {
     });
   });
 
-  it("re-checks a dropped symlink's current target when it is opened or read", async () => {
+  it.skipIf(!canCreateSymlinks())("refuses a symlink to a sensitive path", async () => {
+    const link = join(root, "innocent.txt");
+    symlinkSync(join(root, ".env"), link);
+    expect(await register(7, [link])).toMatchObject({
+      ok: false,
+      rejected: [{ name: "innocent.txt", reason: "sensitive-path" }],
+    });
+  });
+
+  it.skipIf(!canCreateSymlinks())("re-checks a dropped symlink's current target when it is opened or read", async () => {
     const link = join(root, "retarget.txt");
     symlinkSync(notesPath, link);
     const reg = await register(7, [link]);
     expect(reg.ok).toBe(true);
     await call(CHANNELS.attach.redeemDrop, 7, reg.token);
 
-    // Validated while it pointed at notes.txt, then pointed at an executable.
+    // Swap the symlink after registration to test redemption-time path validation.
     rmSync(link);
     symlinkSync(join(root, "run.exe"), link);
     vi.mocked(shell.openPath).mockClear();
     expect(await call(CHANNELS.attach.openExternal, 7, link)).toEqual({ ok: false, error: "denied_extension" });
     expect(shell.openPath).not.toHaveBeenCalled();
 
-    // ...or at a credential file.
     rmSync(link);
     symlinkSync(join(root, ".env"), link);
     expect(await call(CHANNELS.attach.readImage, 7, link)).toEqual({ ok: false, error: "sensitive-path" });

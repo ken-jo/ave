@@ -45,29 +45,16 @@ function safeProcessEnv(): LaunchEnv {
   return env;
 }
 
-/**
- * Chromium switches every e2e Electron launch gets. On macOS, safeStorage
- * otherwise opens the login Keychain item "Ave Safe Storage", whose ACL does
- * not match a test Electron, and macOS prompts the machine's owner mid-run.
- * The mock keychain keeps e2e off the owner's Keychain entirely.
- */
+/** Chromium switches every e2e Electron launch gets. On macOS, safeStorage otherwise opens the login Keychain item "Ave Safe Storage", whose ACL
+ * does not match a test Electron, and macOS prompts the machine's owner mid-run. The mock keychain keeps e2e off the owner's Keychain entirely. */
 export const E2E_CHROMIUM_SWITCHES: readonly string[] = process.platform === "darwin" ? ["--use-mock-keychain"] : [];
 
-/**
- * The E2E runtime signal every e2e launch carries (`isE2eTestRuntime` in
- * src/boot/dev-flags.ts). Among other things it keeps the app from claiming the
- * OS `ave://` handler (src/main/ave-protocol-registration.ts), so a spec never
- * depends on the launch being unpackaged to leave the installed app's deep
- * links alone.
- */
+/** The E2E runtime signal every e2e launch carries (`isE2eTestRuntime` in src/boot/dev-flags.ts). Among other things it keeps the app from claiming the OS
+ * `ave://` handler (src/main/ave-protocol-registration.ts), so a spec never depends on the launch being unpackaged to leave the installed app's deep links alone. */
 export const E2E_RUNTIME_ENV = Object.freeze({ AVE_E2E: "1", NODE_ENV: "test" });
 
-/**
- * The only way an e2e spec launches Electron (test/scripts/e2e-electron-launch.test.mjs
- * keeps it that way): Playwright's launch with {@link E2E_CHROMIUM_SWITCHES} in front
- * and {@link E2E_RUNTIME_ENV} over the spec's env (Playwright's default env is
- * `process.env`, so a spec that passes none keeps it).
- */
+/** The only way an e2e spec launches Electron (test/scripts/e2e-electron-launch.test.mjs keeps it that way): Playwright's launch with {@link
+ * E2E_CHROMIUM_SWITCHES} in front and {@link E2E_RUNTIME_ENV} over the spec's env (Playwright's default env is `process.env`, so a spec that passes none keeps it). */
 export function launchElectron(options: Parameters<typeof electron.launch>[0]): ReturnType<typeof electron.launch> {
   const baseEnv: Record<string, string> = {};
   for (const [key, value] of Object.entries(options?.env ?? process.env)) {
@@ -102,14 +89,8 @@ export function buildE2eBaseSettings(onboardingCompleted = true, locale: "ko" | 
     features: {
       onboardingCompleted,
     },
-    // Pin the UI locale for e2e. Defaults to Korean: after #1200 the production
-    // default is English (DEFAULT_LOCALE), but the specs assert the Korean
-    // catalog (mirroring src/i18n/testing/vitest-ambient-intl.ts, which pins the
-    // renderer unit suite to ko for the same reason). The English boot path is
-    // covered by the english-default-smoke spec, which passes locale:"en".
-    // schemaVersion:2 is REQUIRED — settings-store normalizeAppearance only
-    // reads `language` inside the v2 branch, so without it the seed is silently
-    // ignored and the UI stays en.
+    // Pin the UI locale for e2e. Defaults to Korean: after #1200 the production default is English (DEFAULT_LOCALE), but the specs assert the Korean catalog (mirroring src/i18n/testing/vitest-ambient-intl.ts, which pins the renderer unit suite to ko for the same reason).
+    // The English boot path is covered by the english-default-smoke spec, which passes locale:"en". schemaVersion:2 is REQUIRED; settings-store normalizeAppearance only reads `language` inside the v2 branch, so without it the seed is silently ignored and the UI stays en.
     appearance: {
       schemaVersion: 2,
       bundleId: DEFAULT_BUNDLE_ID,
@@ -118,18 +99,8 @@ export function buildE2eBaseSettings(onboardingCompleted = true, locale: "ko" | 
   };
 }
 
-/**
- * Secrets to seed into `ave-secrets.json` so the host reports a usable LLM key
- * at boot (`ave:settings:has-api-key` → `getSecret("llm.apiKey.<provider>")`),
- * which enables the chat composer. Before #1201 a fixture-key path resolved this
- * implicitly; that path is gone, so e2e seeds an explicit key for every vendor
- * (covers whichever `llm.provider` a spec ends up with — default azure-foundry).
- *
- * Electron is launched unpackaged for these fixtures, so boot explicitly
- * selects the development secret policy. The canonical document therefore
- * uses the development-only plaintext encoding without weakening packaged
- * behavior when OS encryption is unavailable.
- */
+/** Secrets to seed into `ave-secrets.json` so the host reports a usable LLM key at boot (`ave:settings:has-api-key` → `getSecret("llm.apiKey.<provider>")`), which enables the chat composer. Before #1201 a fixture-key path resolved this implicitly; that path is gone, so e2e seeds an explicit key for every vendor (covers
+ * whichever `llm.provider` a spec ends up with; default azure-foundry). Electron is launched unpackaged for these fixtures, so boot explicitly selects the development secret policy. The canonical document therefore uses the development-only plaintext encoding without weakening packaged behavior when OS encryption is unavailable. */
 export function buildE2eSecrets(liveOpenRouterKey?: string): {
   version: 1;
   entries: Record<string, { encoding: "plain-development"; value: string }>;
@@ -141,8 +112,7 @@ export function buildE2eSecrets(liveOpenRouterKey?: string): {
       value: `sk-e2e-${vendor}`,
     };
   }
-  // Live-model opt-in only. Every other vendor keeps its fake key, so a spec
-  // that wanders off openrouter still fails offline instead of spending money.
+  // Live-model opt-in only. Every other vendor keeps its fake key, so a spec that wanders off openrouter still fails offline instead of spending money.
   if (liveOpenRouterKey) {
     entries["llm.apiKey.openrouter"] = {
       encoding: "plain-development",
@@ -338,7 +308,7 @@ function removeSeededElectronDirectories(userDataDir: string, tempHome: string):
   rmSync(tempHome, { recursive: true, force: true });
 }
 
-function makeTreeWritableSync(root: string): void {
+export function makeTreeWritableSync(root: string): void {
   try {
     chmodSync(root, 0o700);
   } catch {
@@ -360,13 +330,8 @@ export async function sendRendererStreamEvent(
   }, event);
 }
 
-/**
- * Resize the app's main window to `w` x `h` content pixels.
- *
- * "Main" is the largest visible, non-destroyed window: a spec that has opened
- * a plugin or approval window must still size the shell it is measuring, and
- * area is the only property that distinguishes them from the main process.
- */
+/** Resize the app's main window to `w` x `h` content pixels. "Main" is the largest visible, non-destroyed window: a spec that has opened a
+ * plugin or approval window must still size the shell it is measuring, and area is the only property that distinguishes them from the main process. */
 export async function setWindowSize(
   app: ElectronApplication,
   w: number,

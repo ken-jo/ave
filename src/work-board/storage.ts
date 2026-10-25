@@ -1,21 +1,4 @@
-/**
- * Work-board storage seam.
- *
- * The domain modules (work-board-store, activity-log) were originally written
- * against a plugin's injected `PluginStorage` handle. In the host they persist
- * through the `~/.ave/work-board/` feature namespace — the single source of
- * truth for the 0o700-dir / 0o600-file / atomic-write contract (see
- * {@link openFeatureNamespace}). This module defines the narrow read/write
- * surface those modules depend on and a namespace-backed implementation, so the
- * domain logic keeps its in-memory-fake testability seam while never
- * hand-rolling `fs`.
- *
- * All relative paths are single- or two-segment names under the feature dir
- * (`board.json`, `activity.jsonl`). JSON files round-trip through the namespace
- * helper's atomic writer; text/JSONL files round-trip through the same
- * path-level atomic writer so a crash mid-write never leaves a half-written
- * file.
- */
+/** Use the private feature namespace and atomic writer for both JSON and text; domain modules never hand-roll filesystem access. */
 import { promises as fs } from "node:fs";
 import { join, dirname } from "node:path";
 import {
@@ -23,15 +6,9 @@ import {
   writeFileAtomicAtPath,
 } from "../main/storage/feature-namespace.js";
 
-/** Feature id owning `~/.ave/work-board/`. */
 export const WORK_BOARD_FEATURE = "work-board";
 
-/**
- * Narrow storage surface the work-board domain modules consume. Each method
- * takes a path relative to the feature directory. JSON helpers seed `null` on
- * an absent file (the contract's "first run" signal — never a corrupt-read
- * fallback); text helpers return `""`. `exists` gates first reads.
- */
+/** Paths are feature-relative; absence returns null for JSON and empty text, with exists gating first reads. */
 export interface WorkBoardStorage {
   readJson<T = unknown>(relPath: string): Promise<T | null>;
   writeJson<T>(relPath: string, value: T, indent?: number): Promise<void>;
@@ -41,27 +18,18 @@ export interface WorkBoardStorage {
   mkdir(relPath: string): Promise<void>;
 }
 
-/** Absolute path of `<feature-dir>/<relPath>`. Resolved lazily per call so a
- *  later `AVE_HOME` override (e2e fixtures) is always honoured. */
 function abs(relPath: string): string {
   return join(openFeatureNamespace(WORK_BOARD_FEATURE).dir, relPath);
 }
 
-/**
- * Feature-namespace-backed implementation of {@link WorkBoardStorage}. Every
- * write composes the SOT atomic-write contract (0o700 dir, 0o600 file, tmpfile
- * + rename). There is no remote and no fallback path.
- */
+/** All writes use private atomic publication; no remote or fallback path exists. */
 export const featureNamespaceStorage: WorkBoardStorage = {
   async readJson<T = unknown>(relPath: string): Promise<T | null> {
     try {
       const raw = await fs.readFile(abs(relPath), "utf-8");
       return JSON.parse(raw) as T;
     } catch {
-      // Absent file → first run. JSON.parse on a present-but-corrupt file is a
-      // genuine error, but the upstream domain contract treats "no usable
-      // file" uniformly as "absent" (seed empty) — matching the original
-      // PluginStorage.readJson behaviour the modules were written against.
+      // The domain treats present unusable JSON as absent, matching its storage contract.
       return null;
     }
   },
@@ -91,17 +59,12 @@ export const featureNamespaceStorage: WorkBoardStorage = {
     try {
       await fs.chmod(abs(relPath), 0o700);
     } catch {
-      /* pre-existing dir may already be wider on some hosts */
+      /* Existing directories may retain wider permissions. */
     }
   },
 };
 
-/**
- * Build a {@link WorkBoardStorage} rooted at an arbitrary absolute directory.
- * Used by tests to inject a temp dir without touching `~/.ave`. Still routes
- * every write through {@link writeFileAtomicAtPath} so the 0o700/0o600 contract
- * holds for the injected location too.
- */
+/** Injected test roots must still use the same private atomic writer. */
 export function createDirStorage(rootDir: string): WorkBoardStorage {
   const at = (relPath: string): string => join(rootDir, relPath);
   return {

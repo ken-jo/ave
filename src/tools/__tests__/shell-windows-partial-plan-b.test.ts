@@ -37,7 +37,7 @@ import {
   getHostShellExecutionPlan,
   isIssuedHostShellExecutionPlan,
   setActiveSandboxCapability,
-  setSandboxRequestedAtBoot,
+  setShellSandboxRequestedAtBoot,
 } from "../../permissions/sandbox-capability.js";
 import { __resetShellResolverCache } from "../../lib/shell-resolver.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
@@ -96,14 +96,14 @@ function issueWindowsPlanB(): HostShellExecutionPlan {
     reason: "srt-win partial",
     confines: { filesystem: true, process: false, network: true },
   });
-  setSandboxRequestedAtBoot(true);
+  setShellSandboxRequestedAtBoot(true);
   return getHostShellExecutionPlan();
 }
 
 function issueRequestedUnavailable(platform: "darwin" | "linux" | "win32"): HostShellExecutionPlan {
   setProcessPlatform(platform);
   __resetActiveSandboxCapabilityForTest();
-  setSandboxRequestedAtBoot(true);
+  setShellSandboxRequestedAtBoot(true);
   return getHostShellExecutionPlan();
 }
 let approvalSequence = 0;
@@ -188,8 +188,7 @@ describe("builtin shell - Windows partial Plan-B native execution", () => {
     __resetShellResolverCache();
     childProcessMock.spawn.mockReset();
     childProcessMock.execFileSync.mockReset();
-    // Bash resolves a POSIX shell by probing it synchronously on Windows.
-    // Keep that probe fully mocked too: no real host child is started.
+    // Mock the Windows shell capability probe too so no real host child starts.
     childProcessMock.execFileSync.mockImplementation((_file, args) => args.join(" ").includes("AVE_PROBE_RHS") ? "parent\0AB가😀\0" : "__ave_shell_ok__");
     childProcessMock.spawn.mockImplementation(
       (
@@ -315,8 +314,9 @@ describe.each(["darwin", "linux", "win32"] as const)(
       childProcessMock.execFileSync.mockReset();
     });
 
+    // Unavailable sandboxing follows ordinary permission authority and records the fallback execution plan.
     it.each(SHELLS)(
-      "runs $label once with a generic permit and rejects its replay",
+      "runs $label as a permitless plain child and records the fallback plan",
       async ({ toolName, create, input, expectedSpawnCount }) => {
         const plan = issueRequestedUnavailable(platform);
         expect(plan).toMatchObject({
@@ -324,24 +324,13 @@ describe.each(["darwin", "linux", "win32"] as const)(
           requestedSandbox: true,
           mode: "plain",
           fallbackReason: "requested-sandbox-unavailable",
-          requiresExplicitUserApproval: true,
+          requiresExplicitUserApproval: false,
         });
         const toolUseId = `${toolName}-requested-unavailable-${platform}`;
-        const baseContext = {
-          cwd: process.cwd(),
-          extraAllowedDirectories: [] as const,
-        };
-        const permit = await mintOneShotPermit({
-          plan,
-          toolName,
-          toolUseId,
-          rawInput: input,
-          context: baseContext,
-        });
         const context: ToolExecutionContext = {
-          ...baseContext,
+          cwd: process.cwd(),
+          extraAllowedDirectories: [],
           hostShellExecutionPlan: plan,
-          hostShellExecutionPermit: permit,
           metadata: { toolUseId },
         };
 
@@ -351,16 +340,10 @@ describe.each(["darwin", "linux", "win32"] as const)(
           isError: false,
           metadata: { sandboxed: false, isolation: "none" },
         });
+        expect(first.metadata?.sandboxExecutionPlan).toBe(
+          getHostShellExecutionPlanAuditProjection(plan),
+        );
         expect(childProcessMock.spawn).toHaveBeenCalledTimes(expectedSpawnCount);
-
-        const spawnCountAfterFirst = childProcessMock.spawn.mock.calls.length;
-        const replay = await create().execute(input, context);
-        expect(replay).toMatchObject({
-          isError: true,
-          metadata: { sandboxed: false, isolation: "none" },
-        });
-        expect(replay.output).toContain("one-shot host approval permit");
-        expect(childProcessMock.spawn).toHaveBeenCalledTimes(spawnCountAfterFirst + (toolName === "powershell" ? 1 : 0));
       },
     );
   },

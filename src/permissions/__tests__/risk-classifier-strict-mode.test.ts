@@ -1,22 +1,9 @@
-/**
- * Issue #664 / PR #860 — StrictRiskClassifier focused unit tests.
- *
- * Post-#664 `strict` is the honest name for the pre-fix `disabled`
- * fail-closed semantic. Every invocation returns HIGH so headless mutations
- * route to the deferred queue.
- *
- * Pins:
- *   - level === "high" for every category × source × trustOrigin
- *   - reason mentions "strict" and "defer" so audit logs are searchable
- *   - The classifier never inspects finalInput / allowedDirectories — the
- *     "defer-all" contract is independent of the request shape.
- */
+// Strict mode always returns HIGH, independent of args or directories, so headless mutations defer.
 import { describe, it, expect } from "vitest";
 import {
   StrictRiskClassifier,
 } from "../reviewer/risk-classifier.js";
 import { makeRiskClassifierContext as ctx } from "./test-helpers.js";
-
 
 describe("StrictRiskClassifier — issue #664 defer-all", () => {
   const c = new StrictRiskClassifier();
@@ -34,8 +21,7 @@ describe("StrictRiskClassifier — issue #664 defer-all", () => {
   });
 
   it("shell category (reversible verb) → HIGH (no downgrade)", () => {
-    // Even a reversible `echo` returns HIGH — strict mode is "every call
-    // routes to deferred queue", not "rule-based with deferred queue".
+    // Even a reversible `echo` returns HIGH — strict mode is "every call routes to deferred queue", not "rule-based with deferred queue".
     const v = c.classify(
       ctx({
         category: "shell",

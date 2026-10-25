@@ -307,7 +307,6 @@ function normalizeMailbox(raw: unknown): {
   };
 }
 
-/** Durable, recipient-child-keyed mailbox plus persistent tree budget ledger. */
 export class A2AAgentMessageMailbox {
   private statePromise: Promise<LoadedMailbox> | null = null;
   private mutationTail: Promise<void> = Promise.resolve();

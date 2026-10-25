@@ -1,11 +1,4 @@
-/**
- * Integration test stubs — Issue #260 trigger wiring.
- *
- * Each test asserts that the matching trigger site invokes
- * NotificationService.fire(...) with the expected `kind` and a sample body.
- * The underlying integrations are mocked — these stubs are about wiring,
- * not the integration internals.
- */
+// Integrations are mocked; these cases exercise notification trigger wiring.
 import { describe, it, expect, vi } from "vitest";
 import { AskUserQuestionGate } from "../ask-user-question-gate.js";
 import { ApprovalGate } from "../../permissions/approval-gate.js";
@@ -70,32 +63,22 @@ describe("Trigger 4: ApprovalGate fires `approval` on requestAndWait entry", () 
   });
 });
 
-// Trigger 2 (deliverRoutineResult) was removed as part of the v2 routine
-// migration — routine-delivery.js is a v1 artifact and no longer exists.
+// Trigger 2 (deliverRoutineResult) was removed as part of the v2 routine migration — routine-delivery.js is a v1 artifact and no longer exists.
 
-// Trigger 1 (turn-end) is exercised through the full ConversationLoop, which
-// requires extensive deps to construct (provider, tool registry, memory,
-// system prompt builder, etc.). The relevant wiring assertion is covered at
-// the unit level in `notification-service.test.ts` and at the type level by
-// `ConversationLoopDeps.notificationService` being threaded through
-// `runTurn`. A full E2E for this trigger lives at the manual-smoke layer.
+// Turn-end wiring is covered by notification-service tests and the typed loop dependency; full-loop execution remains manual smoke coverage.
 describe("Trigger 1: ConversationLoop turn-end wiring (type-level)", () => {
   it("ConversationLoopDeps accepts notificationService", async () => {
-    // Compile-time assertion: this test merely imports the module and
-    // confirms the deps shape. Runtime call would require a full provider
-    // setup which is out of scope for a wiring stub.
+    // Compile-time assertion: this test merely imports the module and confirms the deps shape. Runtime call would require a full provider setup which is out
+    // of scope for a wiring stub.
     const mod = await import("../../engine/conversation-loop.js");
     expect(typeof mod.ConversationLoop).toBe("function");
   });
 
-  // L5 — negative test: the turn-end fire is gated on
-  // `result.stopReason !== "interrupted" && result.text.trim().length > 0`.
-  // We verify the gate logic in isolation rather than spinning up the full
-  // ConversationLoop (provider/tool-registry/memory/etc dep chain).
+  // L5 — negative test: the turn-end fire is gated on `result.stopReason !== "interrupted" && result.text.trim().length > 0`. We verify the gate logic in
+  // isolation rather than spinning up the full ConversationLoop (provider/tool-registry/memory/etc dep chain).
   it("turn-end gate: interrupted result does NOT fire", () => {
     const svc = makeFakeNotificationService();
-    // Mirror the production gate from runTurn():
-    // `if (result.stopReason !== "interrupted" && typeof text === "string" && text.trim().length > 0)`
+    // Mirror the production gate from runTurn(): `if (result.stopReason !== "interrupted" && typeof text === "string" && text.trim().length > 0)`
     const interrupted = { stopReason: "interrupted" as const, text: "partial response" };
     if (
       interrupted.stopReason !== "interrupted" &&

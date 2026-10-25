@@ -1,27 +1,4 @@
-/**
- * Host-renderer-only IPC for the git marketplace (design §13).
- * Covers: ave:marketplace:{sources,catalog,package,install,update,updates,uninstall,direct}:*
- * and the marketplace:{sync-progress,catalog-changed,install-progress,update-status} events.
- *
- * This is also the composition root: the git runner, network gate, source
- * registry, syncer and each kind's installer are built here, once, on the
- * first request. Plugins install through the same lifecycle (install lock,
- * state preparation, generation activation) as a catalog install; content
- * packages through the installed-content store the content domain loaded,
- * which is re-applied in main after each change; MCP servers through the MCP
- * config with their own record file.
- *
- * Every answer is a `GitMarketplaceResult` envelope: a marketplace failure
- * carries its error code, a malformed request is `invalid-request`, and any
- * other failure is `unavailable` with its message.
- *
- * The work outside a request — the boot sync and installs, and the update
- * scheduler with its notices and status (design §7.3, §10.2, §18.7.1) —
- * starts from `startBackground`, which the desktop launch calls once the
- * window has loaded. The boot status pill's Retry (`ave:bootstrap:retry`)
- * runs that boot pass again; `updates:status` and `updates:check` answer from
- * the scheduler.
- */
+// Compose the marketplace lazily behind host-renderer-only IPC; no network work starts before a request.
 import { app, BrowserWindow, dialog, ipcMain, powerMonitor, session, shell, type IpcMainInvokeEvent } from "electron";
 import { randomBytes } from "node:crypto";
 import { mkdir, rm } from "node:fs/promises";
@@ -135,7 +112,6 @@ export type GitMarketplacePort = Pick<
   | "packageTransactionsIdle"
 >;
 
-/** The settings secret each host's token is stored under (design §2.1). */
 function gitTokenSecretKey(host: string): string {
   return `marketplace.gitToken.${host}`;
 }
@@ -150,11 +126,7 @@ function settingsTokenStore(deps: IpcDeps): TokenStore {
   };
 }
 
-/**
- * The plugin port of the marketplace. `gated` is the marketplace's event
- * boundary: an install that lands after shutdown keeps its files and record,
- * but neither tells the host's subscribers nor refreshes the plugin bridge.
- */
+// After shutdown, a landed install retains files but cannot publish events or refresh the plugin bridge.
 export function pluginInstaller(deps: IpcDeps, gated: ReturnType<typeof whileRunning>): PluginInstallerPort {
   const { pluginMarketplace, pluginRuntime } = deps;
   const lifecycle = pluginLifecycleServices(deps);
@@ -183,7 +155,6 @@ export function pluginInstaller(deps: IpcDeps, gated: ReturnType<typeof whileRun
       return withPluginInstallLock(pluginId, async () => {
         await lifecycle.ensureInstallStateReady(pluginId);
         const consents = (options.componentConsents ?? []).map((consent) => ({ kind: consent.component, localId: consent.localId, approvalDigest: consent.approvalDigest }));
-        // The reviewed components are approved for the generation this install prepares (§18.7.3).
         const install = () => pluginMarketplace.installGitPlugin(plan, {
           stage: options.stage,
           switchSource: options.switchSource,
@@ -281,23 +252,16 @@ function contentInstaller(content: () => Promise<InstalledContentRuntime | null>
   };
 }
 
-/** Kept plugin zips (design §7.5): `~/.ave/packages/artifacts`. */
 function keptArtifactsDir(home: string): string {
   return join(home, "packages", "artifacts");
 }
 
-/** Keeping is off: the kept zips go now, not at the next install. */
 function dropKeptArtifactsIfOff(deps: IpcDeps, home: string): void {
   if (resolveKeepArtifacts(deps.settingsService.get("marketplace").offlineCacheEnabled)) return;
   void clearKeptArtifacts(keptArtifactsDir(home)).catch((error: unknown) => log.warn({ err: errorMessage(error) }, "kept artifacts could not be removed"));
 }
 
-/**
- * Where the service's revocation feed lands (design §10.4): the registry the
- * load gates answer from. A changed set reloads installed content, which
- * applies the gate, and refreshes the catalog; plugins meet it at their next
- * load.
- */
+// Revocation updates reload installed content and refresh the catalog; plugins recheck on their next load.
 export function revocationSink(
   content: () => Promise<InstalledContentRuntime | null>,
   catalogChanged: () => void,
@@ -312,12 +276,10 @@ export function revocationSink(
   };
 }
 
-/** Build the marketplace over `~/.ave`. Nothing touches the network until a request does. */
 async function createGitMarketplaceService(
   deps: IpcDeps,
   content: () => Promise<InstalledContentRuntime | null>,
   home: string,
-  /** The app's shutdown: no event of the service, the syncer or the revocation sink reaches the renderer after it. */
   shutdown: AbortSignal,
   onCatalogChanged: () => void,
 ): Promise<{ service: MarketplaceService; close: () => Promise<void> }> {
@@ -325,22 +287,20 @@ async function createGitMarketplaceService(
   const pluginPaths = deps.pluginPaths;
   const root = join(home, "marketplaces");
   const workRoot = join(root, ".work");
-  // Previews and scratch exports live only as long as the process that made them.
+  // Process-owned previews and scratch exports expire with their creator.
   await rm(join(root, ".previews"), { recursive: true, force: true });
   await rm(workRoot, { recursive: true, force: true });
   await mkdir(workRoot, { recursive: true });
-  // Keeping may have been turned off while the app was not running (or by the environment).
   dropKeptArtifactsIfOff(deps, home);
-  // Re-read at the start of every operation; a change applies without a restart (§18.6).
+  // Re-read policy at each operation so changes apply without restart.
   const policy = await FilePolicySource.open();
   if (!policy.load.ok) log.warn({ err: policy.load.error }, "marketplace policy unreadable; only the official source is reachable");
-  // Downloads resolve once per hop and connect to the checked address (§18.2.4).
+  // Resolve once per download hop and connect only to the checked address.
   const transport = createPinnedFetch({ resolveProxy: (url) => session.defaultSession.resolveProxy(url) });
-  // A marketplace on this machine (an author's own checkout served over HTTP,
-  // the E2E fixture) needs no confirmation in an unpackaged build with AVE_DEV=1.
+  // Unpackaged AVE_DEV=1 builds may use a local marketplace without confirmation.
   const gate = new NetworkGate({ policy, allowLoopback: isDevModeUnlocked(), transport });
   const tokens = settingsTokenStore(deps);
-  // A token typed into the add dialog answers only that preview's prompts (design §9.3).
+  // Dialog credentials authorize only that preview's prompts.
   const previewTokens = new Map<string, string>();
   const git = new MarketplaceGit({
     envRoot: join(root, ".git-env"),
@@ -351,15 +311,13 @@ async function createGitMarketplaceService(
     resolveProxy: (url) => session.defaultSession.resolveProxy(url),
   });
   const registry = await SourceRegistry.open({ root, policy });
-  // Folder sources (§18.4): every filesystem call through one interface; on
-  // Windows a drive letter is classified by native/windows-path-kind/.
+  // Route folder access through the filesystem interface; classify Windows drives through native/windows-path-kind.
   const folders = {
     fs: createNodeFolderFs({ platform: process.platform, queryDosDevice }),
     platform: process.platform,
     limits: { maxFiles: DEFAULT_MARKETPLACE_ARTIFACT_LIMITS.maxEntryCount, maxBytes: DEFAULT_MARKETPLACE_ARTIFACT_LIMITS.maxTotalUncompressedBytes },
   };
 
-  // Every event of the service, the syncer and the revocation sink leaves through these, closed at shutdown.
   const events = marketplaceEvents(shutdown, {
     syncProgress: (progress) => broadcastTo(deps, CHANNELS.gitMarketplace.syncProgress, progress),
     installProgress: (progress) => broadcastTo(deps, CHANNELS.gitMarketplace.installProgress, progress),
@@ -371,7 +329,6 @@ async function createGitMarketplaceService(
 
   const packagesRoot = join(home, "packages");
   const mcpRecordsPath = join(packagesRoot, "mcp-installs.json");
-  // MCP package files, and the zip inspector the plugin ladder checks a release with.
   const artifacts = new PluginArtifactStore({
     installRoot: join(home, "mcp"),
     cacheRoot: join(home, "mcp", ".cache"),
@@ -435,7 +392,7 @@ async function createGitMarketplaceService(
     onSyncProgress: events.onSyncProgress,
     onCatalogChanged: events.onCatalogChanged,
     onInstallProgress: events.onInstallProgress,
-    // A sign-in pruning deferred by a package transaction runs once none is open.
+    // Defer sign-in pruning until no package transaction holds a generation.
     onPackageTransactionsIdle: () => deps.mcpManager.packageTransactionsSettled(),
     log: { warn: (message) => log.warn(message) },
     legacyMigration: {
@@ -460,8 +417,6 @@ async function createGitMarketplaceService(
     },
   };
 }
-
-// ─── request checks ─────────────────────────────────────────────────────────
 
 class InvalidRequest extends Error {}
 
@@ -494,7 +449,6 @@ function componentConsents(value: unknown): readonly ComponentConsent[] {
   return value.map((item: unknown): ComponentConsent => {
     const consent = record(item, "a component consent");
     if (consent.kind === "extension") {
-      // An extension's bundled component by local id, with the approval digest its review showed (§18.7.3).
       if (Object.keys(consent).some((key) => !["kind", "component", "localId", "approvalDigest"].includes(key))
         || (consent.component !== "hook" && consent.component !== "mcpServer")) throw new InvalidRequest("extension consent has an invalid component or field");
       const localId = text(consent.localId, "component local id", 128);
@@ -522,7 +476,6 @@ function componentConsents(value: unknown): readonly ComponentConsent[] {
   });
 }
 
-/** `components:approve`'s consents (§18.7.5): an agent plugin's server or hook consent plus the approval digest its review showed. */
 function reviewedConsents(value: unknown): readonly ReviewedComponentConsent[] {
   if (!Array.isArray(value) || value.length === 0 || value.length > 64) throw new InvalidRequest("consents must be an array of 1 to 64 entries");
   const names = new Set<string>();
@@ -552,7 +505,6 @@ function installedKey(value: unknown): InstalledKeyView {
   return { sourceId: key.sourceId === null ? null : text(key.sourceId, "sourceId", 64), kind: key.kind, name: text(key.name, "name", 64) };
 }
 
-/** A list of confirmations: known warnings, each once (§18.5). */
 function warnings(value: unknown, what: string): SourceWarning[] {
   if (!Array.isArray(value) || value.length > 16 || !value.every(isSourceWarning) || new Set(value).size !== value.length) {
     throw new InvalidRequest(`${what} must list known confirmations, each once`);
@@ -560,18 +512,9 @@ function warnings(value: unknown, what: string): SourceWarning[] {
   return value as SourceWarning[];
 }
 
-/** How long a *Choose folder…* selection stays usable for previews (§18.9). */
 const FOLDER_PICK_TTL_MS = 15 * 60_000;
 
-/**
- * The folder *Choose folder…* last chose (§18.9), held in main. The tab gets
- * an opaque `pick` and the path scrubbed for display: scrubbed text is not an
- * address (a masked name can name another folder, or none), so a preview of
- * the chosen folder names it by `pick` and main reads the path it kept. One
- * selection at a time: a newer pick replaces it, an add drops it, and it
- * expires after {@link FOLDER_PICK_TTL_MS}. It lives only as long as this
- * process. Any other `pick` is refused as `folder-pick-unknown`.
- */
+// Keep selected paths in main behind expiring opaque picks; redacted display text must never become an address.
 class FolderPicks {
   private held: { pick: string; path: string; at: number } | null = null;
 
@@ -583,7 +526,6 @@ class FolderPicks {
     return { pick, display: scrubMarketplaceStrings(path) };
   }
 
-  /** The path `pick` names; any pick not held now is refused, never guessed. */
   resolve(pick: string): string {
     const held = this.held;
     if (held === null || held.pick !== pick || this.now() - held.at >= FOLDER_PICK_TTL_MS) {
@@ -600,7 +542,6 @@ class FolderPicks {
 function previewRequest(value: unknown, picks: FolderPicks): SourcePreviewRequest {
   const request = record(value, "the preview request");
   if (request.pick !== undefined) {
-    // A chosen folder: main's own path for it, and nothing a folder does not take.
     if (request.input !== undefined || request.ref !== undefined || request.subdir !== undefined || request.token !== undefined || request.auth !== "none") {
       throw new InvalidRequest("a chosen folder is previewed by its pick alone, with no address, branch, package folder or sign-in");
     }
@@ -673,57 +614,40 @@ function directMcpRequest(value: unknown): DirectMcpPreviewRequest {
   };
 }
 
-// ─── handlers ───────────────────────────────────────────────────────────────
-
 const UNAUTHORIZED: GitMarketplaceResult<never> = Object.freeze({ ok: false, code: "unauthorized-frame", message: "unauthorized-frame" });
 
-/** Close the built marketplace when the app quits: the askpass broker's socket and directory, and preview clones. */
 async function closeOnQuit(close: () => Promise<void>): Promise<void> {
-  // Loaded only once a marketplace exists: the shutdown registry pulls in the app's servers.
+  // Load shutdown wiring lazily because it imports app servers.
   const { registerShutdownHook } = await import("../../main/app-shutdown.js");
   registerShutdownHook("git-marketplace", () => {
     close().catch((error: unknown) => log.warn({ err: errorMessage(error) }, "git marketplace close failed"));
   });
 }
 
-/**
- * The conversation's idle gate for the apply queue (§18.7.4): the main
- * conversation's activity coordinator, which every surface acquires before
- * it touches the main loop.
- */
+// The apply queue shares the main conversation's activity coordinator with every surface.
 function conversationActivity(deps: IpcDeps): { isBusy(): boolean; onIdle(listener: () => void): () => void } {
   const runtime = deps.conversationSurfaceRuntime;
   if (!runtime) throw new Error("the conversation surface runtime is not wired; the apply queue has no idle gate");
   return runtime.activity;
 }
 
-/** Record `version` of `key` as skipped (`skippedPluginUpdates`, §18.7.5). */
 async function skipVersion(deps: IpcDeps, key: { kind: string; name: string }, version: string): Promise<void> {
   const skipped = readSkippedPluginUpdates(deps.settingsService.get("marketplace").skippedPluginUpdates);
   putSkippedPluginUpdate(skipped, packageUpdateSkipKey(key), version);
   await deps.settingsService.patch({ marketplace: { skippedPluginUpdates: skipped } });
 }
 
-/** Every window gets `payload` with its strings scrubbed: what the marketplace tells the renderer crosses only scrubbed (§18.8). */
+// Scrub every payload string before broadcasting marketplace data.
 function broadcastTo(deps: IpcDeps, channel: string, payload?: unknown): void {
   broadcastToAppWindows(deps, channel, scrubMarketplaceStrings(payload));
 }
 
 export interface GitMarketplaceRegistration {
-  /** Reuse the same main-owned service for retaining alert predecessor removal. */
   getService(): Promise<GitMarketplacePort>;
-  /**
-   * Start the boot pass and the update scheduler (desktop only, once the
-   * window has loaded). An isolated E2E run reports the pass skipped: it must
-   * not reach the official repository. Answers the scheduler's `started`:
-   * settled when the boot pass, its apply check and the first update list are
-   * done (already settled when nothing started), so a caller that must see
-   * that work finished waits for the work itself, not for what it published.
-   */
+  // Start after desktop hydration; started settles after boot, apply check, and initial update list.
+  // Isolated tests skip official sources unless they supply their own scheduler sources.
   startBackground(): Promise<void>;
-  /** `marketplace` settings were written: republish the updates under the new notice and skip settings, and run a due check. */
   settingsChanged(): void;
-  /** No package transaction is open; true before the service is built, when none can be. */
   packageTransactionsIdle(): boolean;
 }
 
@@ -733,48 +657,43 @@ export function registerGitMarketplaceHandlers(
   create?: () => Promise<{ service: GitMarketplacePort; close: () => Promise<void> }>,
   onBuilt: (close: () => Promise<void>) => Promise<void> = closeOnQuit,
   home: string = aveHome(),
-  /** The marketplace's lifetime, shared with its git runtime and deep links (`getMarketplaceLifetime`). */
   shutdown: AbortController = getMarketplaceLifetime(),
 ): GitMarketplaceRegistration {
   let background: MarketplaceBackground | null = null;
-  // Aborted by the `git-marketplace-events` shutdown hook: it closes the event
-  // boundary and stops the update scheduler in the same step.
+  // Close the event boundary and stop the scheduler together at shutdown.
   const gated = whileRunning(shutdown.signal);
   shutdown.signal.addEventListener("abort", () => background?.stop(), { once: true });
-  // From registration on: the git runtime and deep links share this lifetime before any marketplace is built.
-  // Imported, not named at load: the shutdown registry pulls in the app's servers.
+  // Share lifetime from registration, before lazy marketplace construction; import shutdown wiring only when needed.
   void import("../../main/app-shutdown.js")
     .then(({ registerShutdownHook }) => registerShutdownHook("git-marketplace-events", () => shutdown.abort()))
     .catch((error: unknown) => log.warn({ err: errorMessage(error) }, "marketplace shutdown hook failed"));
-  // What is installed or offered changed: the update pill follows without waiting for the next sync.
   const build = create ?? (() => createGitMarketplaceService(deps, content, home, shutdown.signal, () => void background?.recheck()));
   let ready: Promise<{ service: GitMarketplacePort; close: () => Promise<void> }> | null = null;
   let current: GitMarketplacePort | null = null;
   const loaded = () => {
     ready ??= (async () => {
       const built = await build();
-      // Readable at once: an install that runs during onBuilt already holds its package lock.
+      // Read install state immediately; onBuilt may already hold its package lock.
       current = built.service;
       try {
         await onBuilt(built.close);
       } catch (error) {
         current = null;
-        // Nothing would close a service no one can reach: close it here, then build afresh next time.
+        // Close unreachable services so they cannot leak before a later rebuild.
         await built.close().catch((closeError: unknown) => log.warn({ err: errorMessage(closeError) }, "git marketplace close after a failed start failed"));
         throw error;
       }
       return built;
     })().catch((error: unknown) => {
-      // Built again on the next request: a missing directory or a transient read may clear.
+      // Retry construction on the next request after transient directory or read failures.
       ready = null;
       throw error;
     });
     return ready;
   };
 
-  /** A failure as the envelope carries it (§18.8). */
   const failure = <T>(channel: string, error: unknown): GitMarketplaceResult<T> => {
-    // A message or a detail's text can quote a git error or an address; it reaches the renderer and its clipboard only scrubbed.
+    // Failure details may quote credentials or addresses; scrub before renderer or clipboard delivery.
     if (error instanceof MarketplaceError) return { ok: false, code: error.code, message: scrubDiagnosticSecrets(error.message), ...(error.detail ? { detail: scrubMarketplaceErrorDetail(error.code, error.detail) } : {}) };
     if (error instanceof InvalidRequest) return { ok: false, code: "invalid-request", message: scrubDiagnosticSecrets(error.message) };
     const message = scrubDiagnosticSecrets(errorMessage(error));
@@ -790,7 +709,7 @@ export function registerGitMarketplaceHandlers(
       }
       try {
         const { service } = await loaded();
-        // Paths, addresses, labels and names in an answer reach the renderer only scrubbed, like a failure's detail.
+        // Scrub all answer strings, including paths, addresses, labels, and names.
         return { ok: true, value: scrubMarketplaceStrings(await run(service, args)) };
       } catch (error) {
         return failure<T>(channel, error);
@@ -804,7 +723,6 @@ export function registerGitMarketplaceHandlers(
   handle(channels.sourcesPreview, (service, [request]) => service.previewSource(previewRequest(request, picks)));
   handle(channels.sourcesAdd, async (service, [request]) => {
     const added = await service.addSource(addRequest(request));
-    // The chosen folder was for this add: a later preview chooses again.
     picks.drop();
     return added;
   });
@@ -813,12 +731,11 @@ export function registerGitMarketplaceHandlers(
     if (confirmed.length === 0) throw new InvalidRequest("warnings must name at least one confirmation");
     return service.acknowledgeSource(text(id, "id", 64), confirmed);
   });
-  // *Show in Finder / Explorer*: an id, never a path, and only a folder source's (§18.9).
+  // Reveal accepts only a folder-source id, never a renderer path.
   handle(channels.sourcesReveal, async (service, [id]) => {
     const path = await service.revealFolder(text(id, "id", 64));
     if (path === null) throw new InvalidRequest("only a folder source has a folder to show");
-    // Straight to the shell, no call in between: revealFolder classified the path as its last
-    // step. A remap after that is the stated residual of design §7.7 (reveal boundary).
+    // Call the shell immediately after classification; path remapping remains the reveal-boundary residual in design §7.7.
     shell.showItemInFolder(path);
     return null;
   });
@@ -827,7 +744,6 @@ export function registerGitMarketplaceHandlers(
     if (typeof enabled !== "boolean") throw new InvalidRequest("enabled must be a boolean");
     return service.setEnabled(text(id, "id", 64), enabled);
   });
-  // Repair is a refresh with that intent (§18.8): it starts the source's downloaded copy over before the sync.
   handle(channels.sourcesRefresh, (service, [id, intent]) => {
     if (intent === undefined) return service.refresh(id === undefined ? undefined : text(id, "id", 64));
     if (intent !== "repair") throw new InvalidRequest("intent must be repair");
@@ -842,7 +758,7 @@ export function registerGitMarketplaceHandlers(
   handle(channels.updatePlan, (service, [key]) => service.planUpdate(packageKey(key)));
   handle(channels.installExecute, async (service, [planId, consents]) => {
     const result = await service.executeInstall(text(planId, "planId", 64), componentConsents(consents), true);
-    // A rollback by hand: the version it left is skipped, so the next apply check does not undo it (§18.7.5).
+    // Skip the version left by manual rollback so the next apply check cannot undo it.
     if (result.action.action === "replace" && result.action.direction === "downgrade" && result.action.from !== null) {
       await skipVersion(deps, result.key, result.action.from);
       void background?.settingsChanged().catch((error: unknown) => log.warn({ err: errorMessage(error) }, "marketplace settings recheck failed"));
@@ -852,7 +768,6 @@ export function registerGitMarketplaceHandlers(
   handle(channels.uninstall, (service, [request]) => service.uninstall(uninstallRequest(request)));
   handle(channels.directPreview, (service, [request]) => service.previewDirectMcp(directMcpRequest(request)));
 
-  // Held in main until the tab reads them; answering them builds no marketplace.
   const handleHeld = <T>(channel: string, run: () => T) => {
     ipcMain.handle(channel, (event: IpcMainInvokeEvent): GitMarketplaceResult<T> => {
       if (!validateHostRendererSender(event)) {
@@ -864,8 +779,7 @@ export function registerGitMarketplaceHandlers(
   };
   handleHeld(channels.deepLinkTake, takePendingGitMarketplaceLink);
 
-  // *Choose folder…* (§18.9): main's own folder dialog, which needs no marketplace. Main keeps the path;
-  // the tab shows it scrubbed and previews it by its pick (`FolderPicks`).
+  // Keep native folder picks in main; the renderer receives only scrubbed labels and opaque picks.
   ipcMain.handle(channels.sourcesPickFolder, async (event: IpcMainInvokeEvent): Promise<GitMarketplaceResult<FolderPickView | null>> => {
     if (!validateHostRendererSender(event)) {
       auditUnauthorized(deps.auditLogger, channels.sourcesPickFolder, event);
@@ -889,7 +803,6 @@ export function registerGitMarketplaceHandlers(
     return null;
   });
 
-  // The update scheduler's answers (design §18.7.1); none exists before the window has loaded, or in an isolated E2E run.
   const handleScheduler = <T>(channel: string, run: (scheduler: MarketplaceBackground, args: unknown[]) => Promise<T>) => {
     ipcMain.handle(channel, async (event: IpcMainInvokeEvent, ...args: unknown[]): Promise<GitMarketplaceResult<T>> => {
       if (!validateHostRendererSender(event)) {
@@ -919,7 +832,6 @@ export function registerGitMarketplaceHandlers(
     try {
       await background.retryBootInstalls();
     } catch (error) {
-      // Refused once the app is shutting down (the scheduler has stopped): the declared refusal, not a rejection.
       const message = scrubDiagnosticSecrets(errorMessage(error));
       log.warn({ err: message }, "marketplace boot pass retry refused");
       return { ok: false, error: message } as const;
@@ -931,14 +843,13 @@ export function registerGitMarketplaceHandlers(
     getService: async () => (await loaded()).service,
     packageTransactionsIdle: () => current?.packageTransactionsIdle ?? true,
     settingsChanged: () => {
-      // Never rejects for a stop (the scheduler ends quietly); anything else is logged, not left unhandled.
       void background?.settingsChanged().catch((error: unknown) => log.warn({ err: errorMessage(error) }, "marketplace settings recheck failed"));
       dropKeptArtifactsIfOff(deps, home);
     },
     startBackground: () => {
       if (background) return background.started;
       if (shutdown.signal.aborted) return Promise.resolve();
-      // An isolated E2E run skips the pass, unless the spec exercises the real scheduler against its own sources.
+      // Isolated tests skip boot updates unless exercising a scheduler with their own sources.
       if (isE2eTestRuntime() && !isE2eMarketplaceSchedulerRun()) {
         notifyBootstrapStatus(deps.getMainWindow(), { phase: "complete", installed: [], failed: [], skipped: { reason: "e2e-isolated" } });
         return Promise.resolve();
@@ -961,7 +872,6 @@ export function registerGitMarketplaceHandlers(
         activity: conversationActivity(deps),
         publishStatus: gated((status) => notifyBootstrapStatus(deps.getMainWindow(), scrubMarketplaceStrings(status))),
         publishNotice: gated((notice) => {
-          // Added to what the user has not dismissed yet: an update applied after the boot notice joins it (§18.7.5).
           setBootInstallNotice(mergeBootInstallNotices(getBootInstallNotice(), notice));
           broadcastTo(deps, channels.bootInstallsApplied);
         }),

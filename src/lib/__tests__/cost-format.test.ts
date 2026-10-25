@@ -1,10 +1,4 @@
-/**
- * `formatTokens` is the single authority for compact token counts on the
- * renderer's usage surfaces. These are exact rendered strings on purpose: the
- * two private copies this module replaced disagreed on decimals and rendered
- * `"InfinityM"`, `"NaN"` and `"-50"` to the user, and only exact assertions can
- * catch that coming back.
- */
+/** Assert exact token strings to catch invalid counts and precision drift. */
 import { describe, expect, it } from "vitest";
 import { formatCost, formatTokens } from "../cost-format.js";
 
@@ -42,11 +36,7 @@ describe("formatTokens", () => {
   });
 });
 
-/**
- * The ladder widens precision as the amount shrinks. These are exact strings
- * because the four copies this replaced each cut off at a different decimal,
- * so the same amount read `$0.50`, `$0.500` and `$0.5` on three screens.
- */
+/** Assert exact precision at every cost step so usage surfaces stay consistent. */
 describe("formatCost", () => {
   it("renders exact cost strings across the whole ladder", () => {
     expect(formatCost(0)).toBe("$0");
@@ -58,12 +48,7 @@ describe("formatCost", () => {
     expect(formatCost(1234.5)).toBe("$1,234.50");
   });
 
-  // The starred-session list grouped via `Intl` before this consolidation.
-  // Dropping the separator would have been the one change here that made a
-  // number harder to read, so the unified formatter keeps it and the other
-  // three surfaces gain it. Grouping is pinned to en-US regardless of UI
-  // locale — costs are USD everywhere, and the locale-shaped `1234,50 $` the
-  // starred view used to render was the outlier being removed.
+  // Use en-US grouping for USD amounts regardless of UI locale.
   it("groups thousands, and does not follow the UI locale to do it", () => {
     expect(formatCost(1000)).toBe("$1,000.00");
     expect(formatCost(1234567.891)).toBe("$1,234,567.89");

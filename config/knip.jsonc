@@ -33,12 +33,15 @@
         "src/headless.ts",
         // Executed as a separate managed child, not imported into the host loop.
         "src/tools/image-preparation-child.ts",
+        "src/tools/preview-document-child-main.ts",
         "scripts/smoke-live-model.mjs",
         // Informational hook-matcher benchmark, run by hand (see its header).
         "scripts/bench-hook-matchers.ts",
         "scripts/smoke-live-app.mjs",
         // Loaded by the installer packager through build.beforePack.
         "scripts/electron-before-pack.cjs",
+        // Run by electron-before-pack.cjs through a path (Windows builds).
+        "scripts/fetch-mxc.mjs",
         "scripts/hooks/run-local-checks.mjs",
         // Launched by the release builder after schema generation.
         "scripts/sync-plugin-host-protocol-mirror.mjs",

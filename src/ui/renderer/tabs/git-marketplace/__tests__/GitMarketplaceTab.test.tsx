@@ -1,8 +1,3 @@
-/**
- * The git marketplace tab (design §15.1–§15.3): browsing by kind, the first
- * sync of a never-read source, the installed view with a package bound to no
- * source, and a package's sheet from detail through review to the result.
- */
 // @vitest-environment jsdom
 import "../../../../../../test/renderer/setup.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";

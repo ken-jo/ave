@@ -90,6 +90,7 @@ describe("rationale policy epoch", () => {
     const before = epoch();
     await recordApproval("bash", '{"command":"pwd"}', "builtin", {
       scope: "session",
+      sessionId: "11111111-1111-4111-8111-111111111111",
       verdictAtApproval: "low",
       nlJustification: null,
       trustOrigin: "user-keyboard",

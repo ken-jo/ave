@@ -17,7 +17,7 @@ The Linux Codex subscription connection additionally requires
 `process.execve`, [added in Node 22.15.0](https://nodejs.org/download/release/v22.15.0/docs/api/process.html#processexecvefile-args-env).
 Package an exact Node 22 version exposing that API when enabling this feature;
 its absence fails subscription startup closed. The general application runtime
-baseline remains Node 22.4. See the
+baseline remains Node 22.12 (the `engines` floor). See the
 [CLI admission and launch contract](../architecture/openai-provider-integration.md#the-users-own-codex-cli).
 
 ```sh

@@ -1,7 +1,4 @@
-/**
- * Single-use plan and preview ids (design §13): taken once, expired after the
- * TTL whether or not anyone asks again, and superseded within a slot.
- */
+/** Tickets expire by TTL, are single-use and are superseded within their slot. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Tickets } from "../tickets.js";
 
@@ -50,7 +47,6 @@ describe("Tickets", () => {
     expect(() => tickets.peek(first.id)).toThrow(expect.objectContaining({ code: "PLAN_EXPIRED" }));
     expect(tickets.peek(second.id)).toBe("v2");
     expect(tickets.peek(other.id)).toBe("other");
-    // A taken ticket frees its slot: the next one there drops nothing.
     tickets.take(second.id);
     tickets.issue("v3", "acme:mcp:notes");
     expect(dropped).toHaveBeenCalledTimes(1);

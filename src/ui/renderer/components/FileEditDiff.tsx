@@ -1,8 +1,3 @@
-
-
-
-
-
 import { useState, useEffect, useRef } from "react";
 import { ChevronDown, ChevronRight, FilePlus2, FilePenLine } from "lucide-react";
 import type { FileEditDiffData, FileEditHunk } from "../utils/file-diff.js";
@@ -10,8 +5,6 @@ import { countDiffLines } from "../utils/file-diff.js";
 import { getApi } from "../api-client.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { errorMessage } from "../../../shared/error-message.js";
-
-// ─── Main inline diff component (edit_file / multi_edit / write_file inline) ─
 
 const VERB_KEY_BY_TOOL: Record<FileEditDiffData["tool"], string> = {
   edit_file: "fileEditDiff.verbEdit",
@@ -189,8 +182,6 @@ function hunkStartLine(hunks: FileEditHunk[], idx: number): number {
   return n;
 }
 
-// ─── Sidecar IPC diff component (write_file truncated+hasSidecar) ─────────────
-
 /** Split content into lines (no trailing newline artifact). */
 function sidecarLines(text: string): string[] {
   if (text === "") return [];
@@ -204,11 +195,8 @@ type SidecarDiffHunk =
   | { type: "removed"; line: string }
   | { type: "added"; line: string };
 
-/**
- * Minimal Myers-style unified diff — for display only.
- * Produces `removed` / `added` / `context` hunks.
- * Context window: 3 lines around each changed line.
- */
+/** Minimal Myers-style unified diff — for display only. Produces `removed` / `added` / `context` hunks. Context window: 3
+ * lines around each changed line. */
 function buildDiffHunks(before: string, after: string): SidecarDiffHunk[] {
   const bLines = sidecarLines(before);
   const aLines = sidecarLines(after);
@@ -364,7 +352,6 @@ export function WriteFileSidecarDiff({
   const path = filePath ?? parsed.path ?? "";
   const bytes = parsed.bytes !== undefined ? `${parsed.bytes.toLocaleString()} bytes` : "";
 
-  // ── Expanded — full diff ─────────────────────────────────────────────────────
   if (diffState === "expanded" && diffData) {
     const hunks = buildDiffHunks(diffData.before, diffData.after);
     return (
@@ -427,7 +414,6 @@ export function WriteFileSidecarDiff({
     );
   }
 
-  // ── Error state ──────────────────────────────────────────────────────────────
   if (diffState === "error") {
     return (
       <div className="rounded-md px-3 py-1.5 text-[11px] text-destructive/(--opacity-intense) bg-destructive/(--opacity-subtle) flex items-center gap-2">
@@ -443,7 +429,6 @@ export function WriteFileSidecarDiff({
     );
   }
 
-  // ── Idle / Loading — truncated preview with expand button ────────────────────
   const isLoading = diffState === "loading";
   return (
     <div

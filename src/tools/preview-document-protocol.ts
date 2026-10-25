@@ -1,0 +1,80 @@
+import {
+  PREVIEW_DOCUMENT_LIMITS,
+  previewDocumentFormatOf,
+  type PreviewDocumentError,
+  type PreviewTableDocument,
+} from "../shared/preview-document.js";
+import { isPlainRecord } from "../shared/is-record.js";
+
+type ParseError = Exclude<PreviewDocumentError,
+  "unauthorized" | "path-not-allowed" | "sensitive-path" | "not-a-file" | "unsupported-format">;
+
+export const DOCUMENT_PARSE_MESSAGES: Readonly<Record<ParseError, string>> = Object.freeze({
+  "too-large": "Document exceeds the file size limit.",
+  "archive-too-large": "Document expansion exceeds the preview limits.",
+  "sheet-not-found": "Requested sheet does not exist.",
+  encrypted: "Encrypted documents cannot be previewed.",
+  "unsupported-encoding": "Document encoding is not supported.",
+  "corrupt-document": "Document is malformed or has the wrong container type.",
+  busy: "Another document preview is active. Try again shortly.",
+  superseded: "A newer document preview replaced this request.",
+  "parse-limit": "Document parsing exceeded its resource budget.",
+  "read-failed": "Document parser failed its internal contract.",
+});
+
+export const DOCUMENT_PARSE_READY = "ave-document-ready\n";
+
+export function isDocumentParseError(value: unknown): value is Exclude<ParseError, "busy" | "superseded"> {
+  return typeof value === "string" && value !== "busy" && value !== "superseded"
+    && Object.hasOwn(DOCUMENT_PARSE_MESSAGES, value);
+}
+
+const DOCUMENT_FIELDS = ["format", "sheetNames", "totalSheets", "sheetsTruncated", "sheet"] as const;
+const SHEET_FIELDS = [
+  "index", "name", "rows", "firstRow", "firstColumn", "totalRows", "totalColumns",
+  "rowsTruncated", "columnsTruncated", "cellsTruncated",
+] as const;
+
+function hasExactFields(value: unknown, fields: readonly string[]): value is Record<string, unknown> {
+  return isPlainRecord(value) && Object.keys(value).length === fields.length
+    && fields.every((field) => Object.hasOwn(value, field));
+}
+
+function isCount(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function isDisplayString(value: unknown): value is string {
+  return typeof value === "string" && value.length <= PREVIEW_DOCUMENT_LIMITS.maxCellChars + 1;
+}
+
+function invalidResponse(): never {
+  throw new Error("Document result violates the preview contract.");
+}
+
+/** Validate in place: copying a large grid would allocate it again in the host. */
+export function readDocumentResponse(value: unknown): PreviewTableDocument {
+  if (!hasExactFields(value, DOCUMENT_FIELDS)
+      || typeof value.format !== "string" || previewDocumentFormatOf(`document.${value.format}`) !== value.format
+      || !Array.isArray(value.sheetNames) || value.sheetNames.length === 0
+      || value.sheetNames.length > PREVIEW_DOCUMENT_LIMITS.maxSheets
+      || !value.sheetNames.every(isDisplayString)
+      || !isCount(value.totalSheets) || value.totalSheets < value.sheetNames.length
+      || value.sheetsTruncated !== (value.totalSheets > value.sheetNames.length)
+      || !hasExactFields(value.sheet, SHEET_FIELDS)) invalidResponse();
+  const sheet = value.sheet;
+  if (!isCount(sheet.index) || value.sheetNames[sheet.index] !== sheet.name || !isDisplayString(sheet.name)
+      || !isCount(sheet.firstRow) || !isCount(sheet.firstColumn)
+      || !isCount(sheet.totalRows) || !isCount(sheet.totalColumns)
+      || typeof sheet.cellsTruncated !== "boolean" || !Array.isArray(sheet.rows)
+      || sheet.rows.length > PREVIEW_DOCUMENT_LIMITS.maxRows || sheet.totalRows < sheet.rows.length
+      || sheet.rowsTruncated !== (sheet.totalRows > sheet.rows.length)) invalidResponse();
+  const width = Math.min(sheet.totalColumns, PREVIEW_DOCUMENT_LIMITS.maxColumns);
+  if (sheet.columnsTruncated !== (sheet.totalColumns > width)
+      || sheet.rows.length * width > PREVIEW_DOCUMENT_LIMITS.maxReturnedCells) invalidResponse();
+  for (const row of sheet.rows) {
+    if (!Array.isArray(row) || row.length !== width) invalidResponse();
+    for (const cell of row) if (!isDisplayString(cell)) invalidResponse();
+  }
+  return value as unknown as PreviewTableDocument;
+}

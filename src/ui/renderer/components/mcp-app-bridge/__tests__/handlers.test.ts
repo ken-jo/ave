@@ -31,8 +31,8 @@ describe("createOnSandboxReady", () => {
     (handler as () => void)();
 
     expect(sendSandboxResourceReady).toHaveBeenCalledTimes(1);
-    // The relay preload owns the inner iframe's sandbox attribute; sending a wire
-    // `sandbox` value would be dead data, so the payload is html-only.
+    // The relay preload owns the inner iframe's sandbox attribute; sending a wire `sandbox` value would be dead data, so the
+    // payload is html-only.
     expect(sendSandboxResourceReady.mock.calls[0]![0]).toEqual({
       html: "<html><body>card</body></html>",
     });
@@ -94,7 +94,6 @@ describe("createOnReadResource", () => {
   });
 });
 
-/** Invoke the open-link handler ignoring the unused `RequestHandlerExtra` second arg. */
 function invokeOpenLink(handler: ReturnType<typeof createOnOpenLink>, url: string) {
   return (handler as (p: { url: string }) => Promise<{ isError?: boolean }>)({ url });
 }
@@ -161,8 +160,8 @@ describe("createOnCallTool — the app never names a server", () => {
 
     await handler({ name: "acme_open", arguments: { id: 7 } });
 
-    // No serverId in the app's params, and none in what the handler passes on: the
-    // binding was made by McpAppView from the card payload.
+    // No serverId in the app's params, and none in what the handler passes on: the binding was made by McpAppView from the
+    // card payload.
     expect(callTool).toHaveBeenCalledWith("acme_open", { id: 7 });
   });
 
@@ -317,13 +316,7 @@ describe("createOnRequestDisplayMode — the result is the mode ACTUALLY applied
 });
 
 describe("createOnRequestDisplayMode — an unadvertised mode is refused, once, here", () => {
-  // `pip` is now IN the advertised set (a renderer-side location store makes it real —
-  // see `mcp-app-card-location-store.ts`), so a `pip` request is FORWARDED to
-  // `applyMode` like any other advertised mode; it is exercised by the "honours exactly
-  // the advertised set" test below, which is drift-safe against the SoT rather than
-  // hardcoding a specific example. This handler-level module has no opinion on WHICH
-  // renderer location can actually honour a `pip` request — that decision lives
-  // in `applyMode` itself (McpAppView), not here.
+  // The handler enforces the advertised mode set; McpAppView owns whether and where the requested mode can be applied.
 
   it("refuses garbage a non-conforming app could send", async () => {
     const { handler, applyMode } = buildDisplayMode("inline");
@@ -379,8 +372,7 @@ describe("createOnDownloadFile — the app names no server and gets no reason ba
 
     const result = await handler(downloadParams);
 
-    // Declining to save is not a failure: raising isError would tell the app to retry
-    // or report a problem that never happened.
+    // Declining to save is not a failure: raising isError would tell the app to retry or report a problem that never happened.
     expect(result).toEqual({});
     expect(result.isError).toBeUndefined();
   });
@@ -450,8 +442,8 @@ describe("createOnUpdateModelContext — the result is an EmptyResult, always", 
   });
 
   it("a host REFUSAL is still `{}` — the spec gives this request no error channel", async () => {
-    // An over-cap body is an audit fact, not a protocol one. We neither invent an
-    // `isError` the spec does not define nor reject the bridge request.
+    // An over-cap body is an audit fact, not a protocol one. We neither invent an `isError` the spec does not define nor
+    // reject the bridge request.
     const { handler } = buildModelContext({ ok: false, error: "too-large", message: "context exceeds cap" });
 
     const result = await handler(contextParams);

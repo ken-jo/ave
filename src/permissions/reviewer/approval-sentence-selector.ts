@@ -1,32 +1,4 @@
-/**
- * One-shot reviewer that maps an approval SENTENCE onto one of the choices the
- * host is already willing to grant.
- *
- * Issue #1940. This replaces a hand-written lexicon: every defect that parser
- * accumulated — a negation token matching inside an unrelated word, a phrase
- * boundary that read a mixed-breadth sentence as an explicit standing grant,
- * particles welded to path tokens — was a symptom of parsing natural language
- * by hand.
- *
- * The security property is NOT that the model is careful. It is that the model
- * **selects and never authors**:
- *
- *   • The host builds the option table from choices it has already decided it
- *     would grant for this request, and gives each an opaque id.
- *   • The model may only return one of those ids.
- *   • The resolved option returned from here is the SAME OBJECT the caller
- *     passed in — not a reconstruction — so a path can only ever be one the
- *     host itself resolved.
- *
- * A free-form parser can emit a target the host never offered; a constrained
- * selector structurally cannot. Every failure resolves to no selection, which
- * leaves the user on the ordinary approval controls. There is no path here
- * that produces a grant.
- *
- * The selection is a PROPOSAL. The caller must still show the resolved path
- * and duration back to the user and take a separate confirmation gesture —
- * natural language reduces typing, it does not replace the approval authority.
- */
+// The model selects only opaque IDs for host-offered options and returns the original option object; it cannot author paths or grants. Failures leave ordinary controls available. Selection is only a proposal: show its resolved path/duration and require a separate user confirmation.
 import { maskSensitiveData } from "../../audit/dlp-filter.js";
 import { canonicalStringify } from "../../shared/canonical-json.js";
 import { stripMarkdown } from "../../shared/strip-markdown.js";
@@ -47,73 +19,47 @@ const APPROVAL_SENTENCE_SELECTOR_SYSTEM_PROMPT = [
   "reason is one concise string under 200 characters.",
 ].join(" ");
 
-/**
- * A choice the host has already decided it is willing to grant for this
- * request, tagged with an opaque id.
- *
- * `path` is host-resolved (e.g. from `pickClosestParent`) and is never echoed
- * back by the model — it travels out of here only as part of the caller's own
- * object.
- */
+// A choice the host has already decided it is willing to grant for this request, tagged with an opaque id. `path` is host-resolved (e.g. from `pickClosestParent`) and is never echoed back by the model — it travels out of here only as part of the caller's own object.
 export interface ApprovalOption {
   id: string;
   choice: ApprovalChoice;
   path?: string;
 }
 
-/**
- * The ONLY facts about the pending request that may reach the model.
- *
- * This type is the reasoning-blind boundary, and it is a closed record on
- * purpose. The evaluator sees only the user's own sentence and these
- * host-sealed request facts — never agent reasoning, never tool output. That
- * is how permission classifiers of this kind are built, because anything the
- * agent authored is downstream of content an attacker may control. Text
- * planted in a tool argument or a fetched page could otherwise describe the
- * approval it wants and have the model select it — injected text shaping its
- * own approval.
- *
- * So: no assistant turns, no agent rationale, no tool output, no raw args, no
- * free-form `reason`. Widening this requires editing the type, which is the
- * point — a `Record<string, unknown>` here would let any caller quietly
- * reintroduce the channel.
- */
+// Only the user sentence and closed host-sealed request facts may reach selection; exclude assistant rationale, tools, raw args and reason text so injected content cannot choose its own approval. Widening this boundary requires an explicit type change.
 export interface ApprovalRequestFacts {
-  /** Tool being invoked, e.g. "read_file". Host-supplied. */
+  // Tool being invoked, e.g. "read_file". Host-supplied.
   toolName: string;
-  /** Permission category the host classified the call as. */
+  // Permission category the host classified the call as.
   category: string;
-  /** Where the tool came from. */
+  // Where the tool came from.
   source: ToolSource;
-  /** Host-resolved path the request is about, when it has one. */
+  // Host-resolved path the request is about, when it has one.
   candidatePath?: string;
 }
 
 export interface ApprovalSentenceSelectionInput {
-  /** Raw user sentence. Untrusted; masked and sanitized before it is sent. */
+  // Raw user sentence. Untrusted; masked and sanitized before it is sent.
   sentence: string;
-  /** Host-sealed facts. See {@link ApprovalRequestFacts} — nothing else. */
+  // Host-sealed facts. See ApprovalRequestFacts — nothing else.
   request: ApprovalRequestFacts;
   options: readonly ApprovalOption[];
   abortSignal?: AbortSignal;
 }
 
-/**
- * Outcomes. Only `"selected"` carries an option, and every other outcome means
- * the caller falls back to the ordinary approval controls — never to a grant.
- */
+// Outcomes. Only `"selected"` carries an option, and every other outcome means the caller falls back to the ordinary approval controls — never to a grant.
 export type ApprovalSentenceSelection =
   | { outcome: "selected"; option: ApprovalOption; reason: string }
-  /** The model declined, or was not confident enough to be worth proposing. */
+  // The model declined, or was not confident enough to be worth proposing.
   | { outcome: "declined" }
-  /** No provider configured. */
+  // No provider configured.
   | { outcome: "unavailable" }
-  /** Provider threw, timed out, or was aborted. */
+  // Provider threw, timed out, or was aborted.
   | { outcome: "error" }
-  /** Output was not the exact contract, or named an id the host never offered. */
+  // Output was not the exact contract, or named an id the host never offered.
   | { outcome: "malformed" };
 
-/** Implemented by both the live selector and the no-provider stand-in. */
+// Implemented by both the live selector and the no-provider stand-in.
 export interface ApprovalSentenceSelector {
   select(input: ApprovalSentenceSelectionInput): Promise<ApprovalSentenceSelection>;
 }
@@ -124,20 +70,13 @@ const MAX_REASON_CHARS = 200;
 const MAX_OPTIONS = 8;
 
 const CONFIDENCES = new Set(["high", "low"]);
-/** C0/C1 controls and bidi overrides — the characters untrusted text must not carry into a sentence shown to a person. */
+// C0/C1 controls and bidi overrides — the characters untrusted text must not carry into a sentence shown to a person.
 export const UNTRUSTED_TEXT_CONTROL_RE =
   /[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g;
-/** Anything tag-shaped; untrusted text is flattened to words before selection. */
+// Anything tag-shaped; untrusted text is flattened to words before selection.
 export const HTML_TAG_RE = /<[^>]*>/g;
 
-/**
- * Strip anything that could restructure the prompt, then DLP-mask.
- *
- * The mask is not cosmetic: this is a SEND SITE. The sentence leaves the
- * machine for a model provider, and a user typing an approval sentence that
- * happens to contain a token or an absolute path is exactly the leak shape
- * DLP exists for. Mirrors the rationale scope reviewer's handling.
- */
+// Strip anything that could restructure the prompt, then DLP-mask. The mask is not cosmetic: this is a SEND SITE. The sentence leaves the machine for a model provider, and a user typing an approval sentence that happens to contain a token or an absolute path is exactly the leak shape DLP exists for. Mirrors the rationale scope reviewer's handling.
 function sanitizeUntrustedText(value: string, maxLength: number): string {
   const plainText = stripMarkdown(
     value
@@ -158,10 +97,7 @@ interface ParsedSelection {
   reason: string;
 }
 
-/**
- * Parse the model output under the exact contract. Anything else is
- * `null` ⇒ malformed ⇒ no proposal.
- */
+// Parse the model output under the exact contract. Anything else is `null` ⇒ malformed ⇒ no proposal.
 function parseSelection(text: unknown): ParsedSelection | null {
   if (
     typeof text !== "string" ||
@@ -203,7 +139,7 @@ function parseSelection(text: unknown): ParsedSelection | null {
   };
 }
 
-/** Reject an option table the host could not have meant to offer. */
+// Reject an option table the host could not have meant to offer.
 function optionsAreWellFormed(options: readonly ApprovalOption[]): boolean {
   if (options.length === 0 || options.length > MAX_OPTIONS) return false;
   const seen = new Set<string>();
@@ -237,9 +173,7 @@ export class LlmApprovalSentenceSelector implements ApprovalSentenceSelector {
         systemPrompt: APPROVAL_SENTENCE_SELECTOR_SYSTEM_PROMPT,
         userPrompt: canonicalStringify({
           kind: "approval-sentence-selection",
-          // Rebuilt field by field rather than spread, so a future field added
-          // to ApprovalRequestFacts cannot reach the model until someone adds
-          // it here deliberately.
+          // Rebuilt field by field rather than spread, so a future field added to ApprovalRequestFacts cannot reach the model until someone adds it here deliberately.
           request: {
             toolName: input.request.toolName,
             category: input.request.category,
@@ -248,10 +182,7 @@ export class LlmApprovalSentenceSelector implements ApprovalSentenceSelector {
               ? { candidatePath: input.request.candidatePath }
               : {}),
           },
-          // Only id and choice are disclosed. The host-resolved path is
-          // deliberately withheld: the model has no decision that needs it,
-          // and not sending it means a compromised response cannot echo one
-          // back as though the host had offered it.
+          // Only id and choice are disclosed. The host-resolved path is deliberately withheld: the model has no decision that needs it, and not sending it means a compromised response cannot echo one back as though the host had offered it.
           options: input.options.map((o) => ({ id: o.id, choice: o.choice })),
           sentence,
         }),
@@ -266,20 +197,17 @@ export class LlmApprovalSentenceSelector implements ApprovalSentenceSelector {
     );
     if (!parsed) return { outcome: "malformed" };
     if (parsed.optionId === null) return { outcome: "declined" };
-    // Low confidence is not a weaker proposal — it is no proposal. Uncertainty
-    // resolves to the ordinary controls, which is narrower than any option
-    // here (including deny, which is still a decision the user should make).
+    // Low confidence is not a weaker proposal — it is no proposal. Uncertainty resolves to the ordinary controls, which is narrower than any option here (including deny, which is still a decision the user should make).
     if (parsed.confidence !== "high") return { outcome: "declined" };
 
-    // Membership by lookup in the table the host just built. The returned
-    // object is the caller's own — never one rebuilt from model output.
+    // Membership by lookup in the table the host just built. The returned object is the caller's own — never one rebuilt from model output.
     const option = input.options.find((o) => o.id === parsed.optionId);
     if (!option) return { outcome: "malformed" };
     return { outcome: "selected", option, reason: parsed.reason };
   }
 }
 
-/** Used when no reviewer provider is configured. Never proposes anything. */
+// Used when no reviewer provider is configured. Never proposes anything.
 export class UnavailableApprovalSentenceSelector implements ApprovalSentenceSelector {
   async select(): Promise<ApprovalSentenceSelection> {
     return { outcome: "unavailable" };

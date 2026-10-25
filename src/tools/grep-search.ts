@@ -8,18 +8,8 @@ import { resolvePinnedRipgrepExecutable } from "./ripgrep-executable.js";
 import { forceKillManagedChildProcess, spawnManaged } from "../main/managed-child-processes.js";
 import { errorMessage } from "../shared/error-message.js";
 
-/**
- * `grep_files` search engine: ripgrep, the engine Claude Code's Grep and
- * opencode's grep both run. The executable is the ripgrep build the pinned
- * per-platform package ships (`@vscode/ripgrep-<platform>-<arch>/bin/rg`),
- * resolved without any PATH fallback.
- *
- * Contract with the tool class in file-tools.ts: the class has already
- * resolved the root and passed the execute-time path gate for it. This module
- * then owns the search and the per-result sensitive-path floor — ripgrep walks
- * every descendant, so a match in a protected file must be dropped here before
- * any text reaches the model.
- */
+// Use only the pinned bundled search binary under an already-authorized root.
+// Check every descendant result against sensitive-path policy before exposing text to the model.
 
 const GREP_DEFAULT_LIMIT = 200;
 const GREP_MAX_LIMIT = 1_000;
@@ -110,8 +100,7 @@ export function resolveBundledRipgrep(): string {
 
 export function buildRipgrepArgs(root: string, input: GrepFilesInput): string[] {
   const args = [
-    // A user RIPGREP_CONFIG_PATH must not inject flags such as --pre (which
-    // runs an arbitrary program per file) into a model-driven search.
+    // Ignore user search configuration so flags such as --pre cannot execute arbitrary programs.
     "--no-config",
     "--color=never",
     "--hidden",
@@ -144,8 +133,7 @@ export function buildRipgrepArgs(root: string, input: GrepFilesInput): string[] 
       if (input.contextAfter !== undefined) args.push(`--after-context=${input.contextAfter}`);
       break;
   }
-  // `-e` keeps a pattern that starts with `-` from being read as a flag, and
-  // `--` does the same for the path.
+  // Delimit patterns and paths so leading hyphens cannot become flags.
   args.push("--regexp", input.pattern, "--", root);
   return args;
 }
@@ -157,7 +145,6 @@ type GrepEntry =
   | { readonly kind: "file"; readonly path: string }
   | { readonly kind: "count"; readonly path: string; readonly count: number };
 
-/** Parse one rg output record. Returns null for records the result never shows. */
 function parseRecord(record: string, mode: GrepFilesInput["outputMode"]): GrepEntry | null {
   if (mode === "files_with_matches") {
     return record.length === 0 ? null : { kind: "file", path: record };
@@ -186,7 +173,6 @@ function parseRecord(record: string, mode: GrepFilesInput["outputMode"]): GrepEn
 
 interface RipgrepRun {
   readonly entries: GrepEntry[];
-  /** True when more entries existed beyond what was collected. */
   readonly more: boolean;
   readonly exitCode: number | null;
   readonly stderr: string;
@@ -200,7 +186,6 @@ function runRipgrep(
   signal: AbortSignal | undefined,
 ): Promise<RipgrepRun> {
   signal?.throwIfAborted();
-  // Collect one entry past the page so the result can say whether more exist.
   const wanted = input.offset + input.limit + 1;
   const separator = input.outputMode === "files_with_matches" ? "\0" : "\n";
   const child = spawnManaged(executable, args, {
@@ -233,8 +218,7 @@ function runRipgrep(
       if (stoppedEarly || failure) return;
       const entry = parseRecord(record, input.outputMode);
       if (entry === null) return;
-      // The sensitive-path floor: ripgrep has no notion of Ave's protected
-      // paths, so every result path is checked before it is kept.
+      // Check every result path: the search engine does not know the host's sensitive-path floor.
       if (entry.kind !== "gap" && sensitiveFilePattern(entry.path) !== null) return;
       if (entry.kind === "gap") {
         entries.push(entry);
@@ -300,11 +284,7 @@ function paginate(entries: GrepEntry[], offset: number, limit: number): GrepEntr
   return page;
 }
 
-/**
- * Content lines are grouped under their file path as `  12: text` (match) or
- * `  11- text` (context); `  --` marks a gap between non-adjacent groups in
- * the same file, as ripgrep's own separator does.
- */
+// Render numbered match/context lines under each file, using -- for nonadjacent gaps.
 function render(page: GrepEntry[]): string {
   const lines: string[] = [];
   let currentPath: string | undefined;
@@ -340,11 +320,7 @@ function grepError(output: string): ToolExecutionResult {
   return { output, isError: true };
 }
 
-/**
- * Run a ripgrep search under an already-authorized root and render the page
- * the model sees. `resolveExecutable` exists for tests; production always uses
- * the bundled binary.
- */
+// Search under an authorized root; production always resolves the bundled executable.
 export async function searchWithRipgrep(
   root: string,
   input: GrepFilesInput,
@@ -379,8 +355,7 @@ export async function searchWithRipgrep(
     return grepError(errorMessage(error));
   }
 
-  // rg: 0 = matches, 1 = no matches, 2 = an error occurred (possibly after
-  // printing some matches, e.g. one unreadable file in a large tree).
+  // Exit 1 means no matches; exit 2 can follow partial matches and still indicates failure.
   const hasResults = run.entries.some((entry) => entry.kind !== "gap");
   if (run.exitCode !== 0 && run.exitCode !== 1 && !hasResults) {
     return grepError(`grep_files failed: ${run.stderr || `ripgrep exited with code ${String(run.exitCode)}`}`);

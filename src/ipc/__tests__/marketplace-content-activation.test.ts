@@ -1,9 +1,3 @@
-/**
- * Content activation: a provider or messaging-connection
- * package takes effect through the same settings paths today's asset
- * install uses, and removing a selected theme, language or font returns its
- * setting to the default.
- */
 import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -117,7 +111,6 @@ describe("createContentActivation", () => {
     const activation = createContentActivation(deps);
     await activation.activate({ kind: "messaging-connection", connection }, entry("messaging-connection", "harbor-chat"), null, false);
     expect(settingsService.get("marketplace").installedMessagingConnections).toEqual([connection]);
-    // A reinstall replaces its own declaration.
     await activation.activate({ kind: "messaging-connection", connection: { ...connection, label: "Harbor Chat 2" } }, entry("messaging-connection", "harbor-chat"), entry("messaging-connection", "harbor-chat"), false);
     expect(settingsService.get("marketplace").installedMessagingConnections.map((item) => item.label)).toEqual(["Harbor Chat 2"]);
     await activation.deactivate(entry("messaging-connection", "harbor-chat"), null);
@@ -134,7 +127,6 @@ describe("createContentActivation", () => {
     await activation.deactivate(entry("language", "french"), { kind: "language", locale: "fr", nativeName: "Français", englishName: "French", messages: {}, missingKeys: [] });
     expect(settingsService.get("appearance").language).toBe("en");
 
-    // The font is selected by its package alias, so a package whose files no longer parse still resets it.
     await activation.deactivate(entry("font", "harbor-sans"), null);
     expect(settingsService.get("appearance").font?.family).toBe("system");
   });
@@ -172,7 +164,6 @@ describe("createContentActivation", () => {
     await activation.activate({ kind: "provider", vendor: moved }, entry("provider", "azure-foundry"), entry("provider", "azure-foundry"), false);
     expect(settingsService.getSecret("llm.apiKey.azure-foundry")).toBe("sk-corp");
 
-    // Removing the package locks the vendor and drops the key entered for the package's address.
     await activation.deactivate(entry("provider", "azure-foundry"), null);
     expect(settingsService.getSecret("llm.apiKey.azure-foundry")).toBeNull();
     expect(settingsService.get("marketplace").installedProviderIds).not.toContain("azure-foundry");
@@ -195,7 +186,6 @@ describe("createContentActivation", () => {
     const activation = createContentActivation(deps);
     await settingsService.setSecret("llm.apiKey.azure-foundry", "sk-user");
     const before = settingsService.get("llm").vendors["azure-foundry"]?.baseUrl;
-    // The real patch runs and changes memory; only the file write fails.
     const save = vi.spyOn(settingsService as unknown as { saveSettings(): Promise<void> }, "saveSettings").mockRejectedValueOnce(new Error("disk full"));
     await expect(
       activation.activate({ kind: "provider", vendor: { providerId: "azure-foundry", baseUrl: "https://gateway.corp.example/foundry" } }, entry("provider", "azure-foundry"), null, false),
@@ -210,7 +200,6 @@ describe("createContentActivation", () => {
     const activation = createContentActivation(deps);
     await settingsService.installMarketplaceProviderPreset(preset);
     await expect(activation.activate({ kind: "provider", preset }, entry("provider", "harbor-llm"), null, false)).rejects.toMatchObject({ code: "PACKAGE_ID_CONFLICT" });
-    // An update of the package's own install replaces it.
     await activation.activate({ kind: "provider", preset: { ...preset, label: "Harbor LLM 2" } }, entry("provider", "harbor-llm"), entry("provider", "harbor-llm"), false);
     expect(settingsService.get("marketplace").installedProviderPresets.map((item) => item.label)).toEqual(["Harbor LLM 2"]);
 
@@ -219,7 +208,6 @@ describe("createContentActivation", () => {
     await settingsService.patch({ marketplace: { installedProviderIds: ["azure-foundry"] } });
     await expect(activation.activate({ kind: "provider", vendor: { providerId: "azure-foundry" } }, entry("provider", "azure-foundry"), null, false)).rejects.toMatchObject({ code: "PACKAGE_ID_CONFLICT" });
 
-    // A legacy theme id names no compiled bundle any more: the package of that name takes it.
     const nord = { kind: "theme", name: "Nord", description: "Arctic.", shell: "dark", highContrast: false, tokens: {}, surfaces: {} } as unknown as ParsedContent;
     await settingsService.patch({ marketplace: { installedThemeBundleIds: ["nord"] } });
     await expect(activation.activate(nord, entry("theme", "nord"), null, false)).resolves.toEqual({ retired: expect.any(Promise) });
@@ -235,7 +223,6 @@ describe("createContentActivation", () => {
     expect(settingsService.get("marketplace")).toMatchObject({
       installedThemeBundleIds: ["forest"],
       installedLanguagePacks: [],
-      // Provider settings are the live activation of the adopted packages.
       installedProviderIds: ["azure-foundry"],
       installedProviderPresets: [expect.objectContaining({ providerId: "harbor-llm" })],
     });
@@ -245,14 +232,12 @@ describe("createContentActivation", () => {
   it("adds the selected theme, and its old followSystem counterpart, to the legacy themes (§16.3)", async () => {
     await settingsService.patch({ marketplace: { installedThemeBundleIds: ["nord"] }, appearance: { schemaVersion: 2, bundleId: "violet-dark", followSystem: true } });
     expect(legacyContentSettings(deps).activations.themes).toEqual(["nord", "violet-dark", "violet-light"]);
-    // A compiled bundle is not a package.
     await settingsService.patch({ appearance: { schemaVersion: 2, bundleId: "gallery", followSystem: false } });
     expect(legacyContentSettings(deps).activations.themes).toEqual(["nord"]);
   });
 
   it("adopts a legacy activation the settings hold without rewriting it, and activates one they do not", async () => {
     const activation = createContentActivation(deps);
-    // A vendor the server marketplace unlocked, with the user's own model, address and key.
     await settingsService.patch({ marketplace: { installedProviderIds: ["azure-foundry"] }, llm: { vendors: { "azure-foundry": { model: "user-model", baseUrl: "https://own.example/foundry" } } } });
     await settingsService.setSecret("llm.apiKey.azure-foundry", "sk-user");
     const vendor = { providerId: "azure-foundry" as const, defaultModel: "gpt-5", baseUrl: "https://gateway.corp.example/foundry" };
@@ -264,7 +249,6 @@ describe("createContentActivation", () => {
     await activation.activate({ kind: "provider", preset: { ...preset, label: "Harbor LLM 2" } }, entry("provider", "harbor-llm"), null, true);
     expect(settingsService.get("marketplace").installedProviderPresets.map((item) => item.label)).toEqual([preset.label]);
 
-    // Nothing held: adopting activates as a normal install does.
     await activation.activate({ kind: "messaging-connection", connection }, entry("messaging-connection", "harbor-chat"), null, true);
     expect(settingsService.get("marketplace").installedMessagingConnections).toEqual([connection]);
   });
@@ -279,7 +263,6 @@ describe("createContentActivation", () => {
     });
     await expect(activation.activate({ kind: "agent", name: "triage", description: "Triages." }, entry("agent", "triage"), null, false)).rejects.toMatchObject({ code: "PACKAGE_ID_CONFLICT" });
     await activation.activate({ kind: "skill", name: "summarize", description: "Summarizes." }, entry("skill", "summarize"), null, false);
-    // An update of the package's own install is not a first install.
     await activation.activate({ kind: "skill", name: "review", description: "Reviews." }, entry("skill", "review"), entry("skill", "review"), false);
     expect(skillStore.userSkillFile).toHaveBeenCalledTimes(2);
   });

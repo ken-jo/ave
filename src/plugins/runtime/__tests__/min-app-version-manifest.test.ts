@@ -1,10 +1,4 @@
-/**
- * Plugin↔app minimum-version gate — manifest `requires.minAppVersion` format
- * validation. The host re-validates the SemVer shape at load even though the
- * host JSON schema has the same `pattern` (a plugin using older contract files
- * must not smuggle a non-SemVer minAppVersion, which would make the
- * compatibility gate fail-closed silently).
- */
+/** Revalidate minAppVersion format in the host so stale schema copies cannot turn malformed versions into silent compatibility refusals. */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -92,8 +86,7 @@ describe("manifest requires.hostProtocol validator", () => {
     await rm(workDir, { recursive: true, force: true });
   });
 
-  // Permissive schema, so these cases reach the host's own re-validation — the
-  // copy that holds when a plugin ships against a stale schema.
+  // Use a permissive schema to isolate host revalidation.
   const makeValidator = permissiveManifestValidatorFactory({
     namespaceProperties: {
       entry: { type: "string" },
@@ -116,8 +109,7 @@ describe("manifest requires.hostProtocol validator", () => {
   });
 
   it("accepts a version this app does not serve, which the load gate refuses instead", async () => {
-    // The format is the manifest's business; whether this app serves it is the
-    // runtime's, so a well-formed future version parses.
+    // Well-formed future versions parse; runtime decides whether this app supports them.
     const futureVersion = String(Math.max(...HOST_PROTOCOL_VERSIONS_SERVED.map(Number)) + 1);
     const path = await writeManifest({ requires: { capabilities: [], hostProtocol: futureVersion } });
     const parsed = await parsePluginJson(path, makeValidator());

@@ -83,13 +83,7 @@ function freezeRecord(
   });
 }
 
-/**
- * Durable ownership record for Host state that must outlive registry removal.
- *
- * The record is written before the marketplace commit. Cleanup phases are
- * idempotent and checkpointed individually, so a crash or partial OS failure
- * can resume without needing the removed plugin manifest or runtime identity.
- */
+/** Persist cleanup ownership before registry removal so retries need neither the removed manifest nor runtime identity. */
 export class PluginUninstallCleanupJournal {
   private readonly records = new Map<string, PluginUninstallCleanupRecord>();
 
@@ -109,8 +103,7 @@ export class PluginUninstallCleanupJournal {
         throw new Error("plugin uninstall cleanup journal is too large");
       }
       for (const persistedRecord of parsed.cleanups) {
-        // Older journal versions predate explicit registry and runtime
-        // retirement checkpoints. Recovery must prove those states again.
+        // Older journals lack explicit registry/runtime checkpoints; recovery must reprove them.
         const record = {
           ...persistedRecord,
           registryRemovalCommitted:

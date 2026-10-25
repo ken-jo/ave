@@ -94,8 +94,8 @@ describe("TailnetObserverSection", () => {
 
     render(<TailnetObserverSection api={api} />);
 
-    // The dead end this section removes: with sharing unavailable the tab used
-    // to render only "not enabled on this desktop", with nothing to act on.
+    // The dead end this section removes: with sharing unavailable the tab used to render only "not enabled on this desktop",
+    // with nothing to act on.
     await waitFor(() => expect(screen.getByTestId("tailnet-observer-enabled")).toBeTruthy());
     expect(screen.getByTestId("tailnet-observer-status").textContent).toContain("Not listening");
   });
@@ -106,8 +106,8 @@ describe("TailnetObserverSection", () => {
     render(<TailnetObserverSection api={api} />);
     await waitFor(() => expect(screen.getByTestId("tailnet-observer-app-capability")).toBeTruthy());
 
-    // The capability field exists only once the advanced boundary is chosen:
-    // the beginner path never has to know the tailnet policy file exists.
+    // The capability field exists only once the advanced boundary is chosen: the beginner path never has to know the tailnet
+    // policy file exists.
     expect(screen.queryByTestId("tailnet-observer-capability")).toBeNull();
 
     fireEvent.click(screen.getByTestId("tailnet-observer-enabled"));
@@ -147,8 +147,7 @@ describe("TailnetObserverSection", () => {
     render(<TailnetObserverSection api={api} />);
     fireEvent.click(await screen.findByTestId("tailnet-observer-apply"));
 
-    // The refresh that follows a save clears feedback, so a confirmation set
-    // before it never reached the screen.
+    // The refresh that follows a save clears feedback, so a confirmation set before it never reached the screen.
     const feedback = await screen.findByTestId("tailnet-observer-feedback");
     expect(feedback.textContent).toContain("saved and applied");
   });
@@ -200,8 +199,7 @@ describe("TailnetObserverSection", () => {
     render(<TailnetObserverSection api={api} />);
 
     const error = await screen.findByTestId("tailnet-observer-start-error");
-    // The code used to fall through to "Listener settings could not be saved",
-    // a sentence about a save that had in fact succeeded.
+    // A failed post-save probe must not claim the settings save failed.
     expect(error.textContent).toContain("Remote commands cannot start");
     expect(error.textContent).not.toContain("could not be saved");
   });
@@ -296,8 +294,7 @@ describe("TailnetObserverSection", () => {
 
       render(<TailnetObserverSection api={api} />);
 
-      // The dead end: the snapshot used to fail outright, so no draft existed
-      // and the section rendered a Refresh button and nothing else.
+      // Keep a usable setup draft when the status probe fails.
       await waitFor(() => expect(screen.getByTestId("tailnet-observer-apply")).toBeTruthy());
       expect(screen.getByTestId("tailnet-observer-enabled")).toBeTruthy();
       expect(screen.queryByTestId("tailnet-observer-error")).toBeNull();

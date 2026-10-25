@@ -1,41 +1,4 @@
-/**
- * Orphan-uninstall sweeper.
- *
- * The Windows-atomic uninstall path in `marketplace.removeInstalledEntry()`
- * renames the plugin's install dir to a tombstone under
- * `<pluginsRoot>/+tombstones+/<pluginId>-<ts>-<rand>` before recursively
- * removing it. The rm runs fire-and-forget so the registry write can
- * complete even if the plugin's worker still holds open file handles
- * (SQLite WAL/SHM, watchers, etc) — on Windows those handles cause the rm
- * to fail with EBUSY (errno -4082).
- *
- * Any tombstone left behind by a failed deferred rm is purged here, on the
- * next boot, when the previous worker process is guaranteed to be gone and
- * its handles released. macOS/Linux rarely produce tombstones (unlink of
- * open files succeeds) but the sweeper is OS-agnostic.
- *
- * ## Safety properties
- *
- * - **No collision with plugin dirs**: tombstones live in the
- *   `+tombstones+/` subdirectory whose name uses `+` (not in plugin id
- *   allowed chars `^[a-zA-Z0-9._-]+$`), so a malicious plugin slug can
- *   never be confused with a tombstone or trigger sweeping of an
- *   installed plugin's dir.
- * - **Symlink safety**: entries are `lstat`ed and removed with
- *   `removeOwnedPluginTree`, whose `rm` severs a link rather than traversing
- *   it and whose access-restoring walk never follows one, so a
- *   tombstone-named symlink to `~/.ssh` only has the symlink removed.
- * - **Concurrent dev sessions**: idempotent. Two sessions sharing
- *   `pluginsRoot` may both attempt the same rm; the second sees ENOENT
- *   (silenced by `force: true`) and reports a noisy `failed[]` entry at
- *   worst — never data loss.
- *
- * ## Failure escalation
- *
- * Persistent failures (handle holder ≠ Ave process — antivirus, indexer)
- * surface via `auditFailures` callback so operator/IT-admin gets a forensic
- * trail beyond the info-level log line.
- */
+/** Sweep only the host tombstone namespace at boot; report persistent failures through the audit sink. */
 
 import { lstat, readdir } from "node:fs/promises";
 import { join } from "node:path";
@@ -46,16 +9,14 @@ import { assertNoConfinedProcessMayRun } from "../lib/confined-process-phase.js"
 const log = createLogger("plugins/orphan-uninstall-sweeper");
 
 export interface SweepResult {
-  /** Tombstone basenames successfully removed. */
   swept: string[];
-  /** Tombstones whose rm failed (likely a non-Ave process holding a handle). */
+  /** Failed tombstones may still have open external handles. */
   failed: Array<{ name: string; error: string }>;
 }
 
 export async function sweepOrphanUninstallDirs(
   pluginsRoot: string,
   options: {
-    /** Audit-log emitter for the persistent-failure escalation path. */
     auditFailures?: (failures: SweepResult["failed"]) => void;
   } = {},
 ): Promise<SweepResult> {
@@ -66,7 +27,6 @@ export async function sweepOrphanUninstallDirs(
     entries = await readdir(tombstoneDir);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-      // No tombstone subdir yet — pre-first-uninstall. Nothing to sweep.
       return { swept: [], failed: [] };
     }
     throw err;
@@ -74,23 +34,16 @@ export async function sweepOrphanUninstallDirs(
 
   if (entries.length === 0) return { swept: [], failed: [] };
 
-  // Parallel sweep — sequential serialized IO unnecessarily on heavy
-  // uninstall sessions (10+ tombstones can pile up after a managed-plugin
-  // refresh cycle).
+  // Sweep independent tombstones concurrently.
   const results = await Promise.allSettled(
     entries.map(async (name) => {
       const path = join(tombstoneDir, name);
-      // Guard against a non-directory entry sneaking into the subdir
-      // (host bug, manual fs poking). Only directories should be there; a
-      // link is removed as a link, never followed.
+      // Remove nondirectory entries as entries, never follow links.
       const st = await lstat(path);
       if (!st.isDirectory() && !st.isSymbolicLink()) return null;
-      // A tombstone made at runtime may hold a directory a still-running
-      // child is bound to; only the boot sweep, before any confined process,
-      // deletes recursively (see lib/confined-process-phase.ts).
+      // Delete recursively only at boot before confined processes can retain writable mounts.
       assertNoConfinedProcessMayRun(path);
-      // The child that wrote it may have locked a directory (chmod 000) or,
-      // on macOS, made a file user-immutable; a plain rm stops at either.
+      // Reclaim child-removed access and macOS immutable flags before retrying cleanup.
       await removeOwnedPluginTree(path);
       return name;
     }),
@@ -114,8 +67,7 @@ export async function sweepOrphanUninstallDirs(
   if (result.swept.length > 0) {
     log.info(`swept ${result.swept.length} orphan uninstall tombstone(s)`);
   }
-  // Escalate persistent failures so operator/IT can investigate (typically
-  // antivirus or indexer holding a handle past process death).
+  // Escalate persistent cleanup failures for operator diagnosis.
   if (result.failed.length > 0 && options.auditFailures) {
     try {
       options.auditFailures(result.failed);

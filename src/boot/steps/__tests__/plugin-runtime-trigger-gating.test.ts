@@ -1,13 +1,3 @@
-/**
- * C1 gap-lock — triggerConversation gate: evaluateTriggerSpec deny-branches
- * plus the RateLimiter / Dedupe / DenyThrottle helper classes.
- *
- * `trigger-conversation-capability.test.ts` already covers the ALLOW and
- * `capability_denied` outcomes of `evaluateTriggerSpec`. This file locks the
- * remaining deny branches (invalid source, empty prompt, rate-limited,
- * duplicate), the allow-path bookkeeping side effects, and the gating
- * behavior of the three exported helper classes.
- */
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -108,7 +98,6 @@ describe("evaluateTriggerSpec allow path bookkeeping", () => {
     if (outcome.kind !== "allow") throw new Error("unreachable");
     expect(outcome.result.accepted).toBe(true);
     expect(outcome.source).toBe("overlay:test");
-    // Side effects: dedupe + rate window advanced before returning.
     expect(dedupe.has("plugin-a", "obs-42")).toBe(true);
     expect(rateLimiter.isOverCap("plugin-a", NOW)).toBe(true);
   });
@@ -122,7 +111,6 @@ describe("TriggerConversationRateLimiter", () => {
     expect(rl.isOverCap("p", 0)).toBe(false);
     rl.record("p", 0);
     expect(rl.isOverCap("p", 0)).toBe(true);
-    // Past the window the earlier calls expire → capacity returns.
     expect(rl.isOverCap("p", 1_001)).toBe(false);
   });
 });
@@ -153,9 +141,7 @@ describe("TriggerDenyAuditThrottle", () => {
     expect(throttle.shouldEmit("p", "reason", 10)).toBe(false);
     expect(throttle.shouldEmit("p", "reason", 20)).toBe(false);
     expect(throttle.drainSuppressed("p", "reason")).toBe(2);
-    // After draining, the counter resets.
     expect(throttle.drainSuppressed("p", "reason")).toBe(0);
-    // Once the window elapses, the next denial emits again.
     expect(throttle.shouldEmit("p", "reason", 60_001)).toBe(true);
   });
 
@@ -168,20 +154,12 @@ describe("TriggerDenyAuditThrottle", () => {
 });
 
 describe("the user-initiated MCP bucket", () => {
-  // Two bounds that are easy to move independently and wrong to move independently:
-  // this bucket caps requests to somebody ELSE'S server, and the attachment bound is a
-  // budget for our own context window. They were briefly derived from one another, which
-  // meant raising the window budget silently raised how hard a server could be hit. The
-  // relationship is checked here instead, so changing either forces a look at both.
+  // Network request rate and context attachment budgets are separate bounds; changes require reviewing both.
   it("leaves room for several full-attachment turns inside one window", () => {
-    // One turn can spend up to the per-turn attachment bound in reads. A bucket that is
-    // only a couple of turns deep rate-limits a person mid-turn, which is the failure
-    // this number was raised to fix.
+    // Allow several turns of attachment reads while still stopping renderer request loops.
     expect(USER_PROMPT_RATE_LIMIT_MAX_CALLS).toBeGreaterThanOrEqual(
       MCP_RESOURCE_ATTACHMENTS_PER_TURN * 3,
     );
-    // …and it is still a bound: a renderer loop must hit it, so it cannot grow to the
-    // point where the limiter stops being a stop.
     expect(USER_PROMPT_RATE_LIMIT_MAX_CALLS).toBeLessThanOrEqual(
       MCP_RESOURCE_ATTACHMENTS_PER_TURN * 12,
     );

@@ -1,65 +1,28 @@
-/**
- * Host-owned loopback catcher for an OAuth authorization-code redirect.
- *
- * WHY THIS IS A HOST CAPABILITY AND NOT A PLUGIN'S OWN SOCKET. A plugin that
- * signs a user in with the authorization-code flow needs something listening at
- * the redirect URI. In-process it just called `http.createServer` itself. A
- * confined plugin child cannot: on macOS the Seatbelt profile emits
- * `network-bind` only under a flag this app never sets, so `listen()` is
- * refused; on Linux the child runs under `--unshare-net`, so `listen()`
- * SUCCEEDS into a private loopback the user's browser is not in — and the flow
- * then hangs AFTER the user has typed their password. A refusal that arrives
- * post-authentication as a hang is the worst shape available, which is why the
- * listener moves to the host rather than the fence being loosened.
- *
- * WHY NOT `openAuthWindow`. It already opens a window and returns the URL that
- * matched `completionUrlPatterns`, which looks like the same thing. It is not:
- * completion is checked on `did-navigate` and deliberately NOT on
- * `will-redirect` ("pre-commit redirect intent — not yet observed by server"),
- * so catching a redirect to a port where nothing listens would rest on
- * Chromium committing an error page for a refused connection. It would also
- * serve no response, and the identity provider's flow expects one. Depending on
- * error-page commit semantics for a credential path is the kind of thing that
- * works until a Chromium upgrade, so this serves the redirect for real.
- *
- * WHAT THE PLUGIN NEVER GETS. The handle names a listener; it is not the
- * listener. The plugin cannot choose the interface, the port, the response
- * body, or the request shape it accepts, and it receives the query parameters
- * ALONE — not headers, not the path, not the body. In particular the response
- * page is the host's: a caller-supplied success/error template would be plugin
- * markup rendered by the user's browser on a loopback origin, which is a
- * capability nobody asked for.
- */
+// Confined plugins cannot bind a browser-reachable loopback listener; the host owns OAuth redirect capture.
+// openAuthWindow observes committed navigation and cannot reliably serve a refused loopback redirect.
+// Plugins receive query parameters only and cannot choose the interface, port, response body, or accepted request shape.
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
 import { AddressInfo } from "node:net";
 
-/**
- * Bounds. Each is a refusal rather than a truncation: a request that exceeds
- * one is not a well-formed redirect from an identity provider, and treating it
- * as one that merely needs trimming would be a guess about a credential path.
- */
+// Bounds. Each is a refusal rather than a truncation: a request that exceeds one is not a well-formed redirect from an identity provider, and treating
+// it as one that merely needs trimming would be a guess about a credential path.
 const MAX_QUERY_PARAMS = 32;
 const MAX_PARAM_NAME_LENGTH = 128;
 const MAX_PARAM_VALUE_LENGTH = 8192;
-/** A request line long enough to be an attack rather than a redirect. */
+// A request line long enough to be an attack rather than a redirect.
 const MAX_REQUEST_URL_LENGTH = 16 * 1024;
 
 const DEFAULT_AUTH_REDIRECT_TIMEOUT_MS = 5 * 60_000;
 const MIN_AUTH_REDIRECT_TIMEOUT_MS = 5_000;
 const MAX_AUTH_REDIRECT_TIMEOUT_MS = 15 * 60_000;
 
-/** The parsed redirect. Query parameters only — see the file header. */
+// The parsed redirect. Query parameters only — see the file header.
 export type AuthRedirectParams = Readonly<Record<string, string>>;
 
 export interface AuthRedirectOpenResult {
   handle: string;
-  /**
-   * `http://localhost:<port>`. The SHAPE matters: identity providers register
-   * loopback redirect URIs by host, allowing any port, and MSAL's own default
-   * client builds exactly this string. Returning `127.0.0.1` instead would be
-   * a different registered URI and would be rejected by the provider.
-   */
+  // Providers register redirect hosts independently of ports; substituting 127.0.0.1 for localhost changes the registered identity.
   redirectUri: string;
 }
 
@@ -68,13 +31,10 @@ interface LiveCatcher {
   ownerKey: string;
   redirectUri: string;
   server: Server;
-  /** Set once the redirect arrives; read by a `wait` that comes in after it. */
+  // Set once the redirect arrives; read by a `wait` that comes in after it.
   received: AuthRedirectParams | null;
-  /**
-   * Whether what arrived was a refusal. Decided when the redirect lands, not
-   * when the landing page is served — by then the query is gone, because the
-   * 303 below is what removes it.
-   */
+  // Whether what arrived was a refusal. Decided when the redirect lands, not when the landing page is served — by then the query is gone, because the 303
+  // below is what removes it.
   receivedFailure: boolean;
   waiters: Array<{
     resolve: (params: AuthRedirectParams) => void;
@@ -83,18 +43,7 @@ interface LiveCatcher {
   closed: boolean;
 }
 
-/**
- * The page the user is left looking at.
- *
- * It reports the OUTCOME, not the arrival. A provider that refuses — the user
- * cancelled, the tenant blocked the app — redirects to this same URI carrying
- * `?error=`, and a page that said "complete" for that would be telling the user
- * something the app is about to contradict.
- *
- * Bilingual because the app's users are, and because this page is the host's:
- * a plugin cannot supply markup here, so it cannot supply its own wording
- * either, and the wording still has to reach the person reading it.
- */
+// The redirect page reports success or provider error, not merely arrival; host-owned bilingual wording cannot be supplied by plugins.
 function outcomePage(failed: boolean): string {
   const title = failed ? "로그인 실패 (Sign-in failed)" : "로그인 완료 (Sign-in complete)";
   const color = failed ? "#f87171" : "#60a5fa";
@@ -109,17 +58,7 @@ function outcomePage(failed: boolean): string {
 </body></html>`;
 }
 
-/**
- * Whether the request's `Host` header names the loopback interface.
- *
- * The listener is bound to 127.0.0.1, so a remote host cannot reach it — but a
- * PAGE in the user's own browser can, at any origin, and a forged
- * `?code=&state=` delivered that way would be indistinguishable from the real
- * redirect at this layer. The `state` check downstream is what actually defeats
- * that; refusing a non-loopback `Host` is the cheap half that also blocks
- * DNS-rebinding, where a name that resolves to 127.0.0.1 makes the browser
- * treat the listener as same-origin.
- */
+// Require a loopback Host header to block DNS rebinding; downstream OAuth state validation still authenticates the redirect.
 function isLoopbackHostHeader(hostHeader: string | undefined): boolean {
   if (hostHeader === undefined) return false;
   const withoutPort = hostHeader.replace(/:\d+$/, "").toLowerCase();
@@ -128,11 +67,8 @@ function isLoopbackHostHeader(hostHeader: string | undefined): boolean {
   );
 }
 
-/**
- * Parse the redirect's query string, refusing anything outside the bounds.
- * Returns `null` when there is nothing to report yet — a bare `/` is the
- * landing page the 303 below sends the browser to, not a redirect.
- */
+// Parse the redirect's query string, refusing anything outside the bounds. Returns `null` when there is nothing to report yet — a bare `/` is the
+// landing page the 303 below sends the browser to, not a redirect.
 function parseRedirectParams(requestUrl: string, base: string): AuthRedirectParams | null {
   if (requestUrl.length > MAX_REQUEST_URL_LENGTH) return null;
   let parsed: URL;
@@ -148,9 +84,7 @@ function parseRedirectParams(requestUrl: string, base: string): AuthRedirectPara
   for (const [name, value] of entries) {
     if (name.length > MAX_PARAM_NAME_LENGTH) return null;
     if (value.length > MAX_PARAM_VALUE_LENGTH) return null;
-    // Last write wins, matching `URLSearchParams.get` — a repeated parameter is
-    // malformed rather than meaningful, and picking a rule beats picking one
-    // per reader.
+    // Last write wins, matching `URLSearchParams.get` — a repeated parameter is malformed rather than meaningful, and picking a rule beats picking one per reader.
     out[name] = value;
   }
   return Object.freeze(out);
@@ -169,26 +103,13 @@ function normalizeTimeoutMs(timeoutMs: number | undefined): number {
   return timeoutMs;
 }
 
-/**
- * The registry of live catchers, keyed by owner.
- *
- * ONE PER OWNER, and the second `open` is refused rather than replacing the
- * first. Replacing would strand a sign-in already in flight — its redirect
- * would arrive at a closed port after the user had authenticated — which is the
- * same post-authentication failure this whole capability exists to avoid.
- * MSAL's own client refuses a second listen for the same reason.
- */
+// Allow one catcher per owner and refuse replacement so an in-flight sign-in cannot lose its redirect port.
 export class AuthRedirectCatchers {
   private readonly byHandle = new Map<string, LiveCatcher>();
   private readonly byOwner = new Map<string, string>();
 
-  /**
-   * `redirectHost` chooses how the redirect URI names the loopback listener.
-   * The default `localhost` matches what identity providers such as MSAL
-   * register. `127.0.0.1` is the RFC 8252 §7.3 loopback IP literal: for it an
-   * authorization server MUST accept any port, which a published client
-   * metadata document relies on. The listener is bound to 127.0.0.1 either way.
-   */
+  // localhost matches registered redirect hosts; the IP-literal option follows RFC 8252 §7.3 arbitrary-port rules.
+  // Both URI forms bind the listener to 127.0.0.1.
   async open(ownerKey: string, options: { redirectHost?: "localhost" | "127.0.0.1" } = {}): Promise<AuthRedirectOpenResult> {
     if (this.byOwner.has(ownerKey)) {
       throw new Error(
@@ -196,8 +117,7 @@ export class AuthRedirectCatchers {
       );
     }
     const handle = randomUUID();
-    // Reserve the owner slot BEFORE the await. Two concurrent `open` calls
-    // would otherwise both pass the check above and both bind.
+    // Reserve the owner slot BEFORE the await. Two concurrent `open` calls would otherwise both pass the check above and both bind.
     this.byOwner.set(ownerKey, handle);
     try {
       const server = createServer();
@@ -247,35 +167,25 @@ export class AuthRedirectCatchers {
     }
     const params = parseRedirectParams(req.url ?? "/", catcher.redirectUri);
     if (params === null) {
-      // The landing page: the browser followed the 303 below, or the provider
-      // sent the user here with nothing to report.
+      // The landing page: the browser followed the 303 below, or the provider sent the user here with nothing to report.
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       res.end(outcomePage(catcher.receivedFailure));
       return;
     }
-    // Redirect the browser to the bare URI so the authorization code does not
-    // remain in history. The response the USER ends up looking at is the
-    // landing page above.
+    // Redirect the browser to the bare URI so the authorization code does not remain in history. The response the USER ends up looking at is the landing page above.
     res.writeHead(303, { location: catcher.redirectUri });
     res.end();
     if (catcher.received !== null) return; // single-use; a replay changes nothing
     catcher.received = params;
-    // `error` is the OAuth 2.0 spelling (RFC 6749 §4.1.2.1) and the only one
-    // this layer reads. Which error it was is the caller's to interpret; that
-    // there WAS one is what the page has to say.
+    // `error` is the OAuth 2.0 spelling (RFC 6749 §4.1.2.1) and the only one this layer reads. Which error it was is the caller's to interpret; that there
+    // WAS one is what the page has to say.
     catcher.receivedFailure = typeof params.error === "string" && params.error.length > 0;
     const waiters = catcher.waiters.splice(0);
     for (const waiter of waiters) waiter.resolve(params);
   }
 
-  /**
-   * Resolve with the redirect's query parameters.
-   *
-   * Resolves immediately when the redirect already arrived, which is not a
-   * nicety: the browser can land before the caller gets around to waiting, and
-   * a wait that only ever watched for a FUTURE arrival would hang on exactly
-   * the fast path.
-   */
+  // Resolve with the redirect's query parameters. Resolves immediately when the redirect already arrived, which is not a nicety: the browser can land
+  // before the caller gets around to waiting, and a wait that only ever watched for a FUTURE arrival would hang on exactly the fast path.
   async wait(
     ownerKey: string,
     handle: string,
@@ -298,9 +208,7 @@ export class AuthRedirectCatchers {
       const timer = setTimeout(() => {
         const index = catcher.waiters.indexOf(waiter);
         if (index >= 0) catcher.waiters.splice(index, 1);
-        // Close on timeout. Leaving the port bound after the caller stopped
-        // waiting is a listener nobody owns, and the owner slot it holds would
-        // refuse the user's next attempt.
+        // Close on timeout. Leaving the port bound after the caller stopped waiting is a listener nobody owns, and the owner slot it holds would refuse the user's next attempt.
         this.close(ownerKey, handle);
         reject(new Error(`authRedirect.wait: no redirect received within ${boundedTimeoutMs}ms`));
       }, boundedTimeoutMs);
@@ -308,7 +216,7 @@ export class AuthRedirectCatchers {
     });
   }
 
-  /** Release the listener. Idempotent — a close of an unknown handle is a no-op. */
+  // Release the listener. Idempotent — a close of an unknown handle is a no-op.
   close(ownerKey: string, handle: string): void {
     const catcher = this.byHandle.get(handle);
     if (catcher === undefined) return;
@@ -325,7 +233,7 @@ export class AuthRedirectCatchers {
     catcher.server.closeAllConnections?.();
   }
 
-  /** Close every catcher an owner holds. Used when a plugin is unloaded. */
+  // Close every catcher an owner holds. Used when a plugin is unloaded.
   closeAllFor(ownerKey: string): void {
     const handle = this.byOwner.get(ownerKey);
     if (handle !== undefined) this.close(ownerKey, handle);
@@ -333,8 +241,7 @@ export class AuthRedirectCatchers {
 
   private requireOwned(ownerKey: string, handle: string, member: string): LiveCatcher {
     const catcher = this.byHandle.get(handle);
-    // ONE message for "no such handle" and "someone else's handle". Telling the
-    // two apart would let a plugin probe for another plugin's live sign-in.
+    // ONE message for "no such handle" and "someone else's handle". Telling the two apart would let a plugin probe for another plugin's live sign-in.
     if (catcher === undefined || catcher.ownerKey !== ownerKey) {
       throw new Error(`authRedirect.${member}: unknown redirect-catcher handle`);
     }

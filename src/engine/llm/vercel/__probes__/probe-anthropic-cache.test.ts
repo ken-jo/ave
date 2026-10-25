@@ -1,9 +1,4 @@
-/**
- * Probe: Anthropic provider metadata shape (cache tokens).
- *
- * Runs against the real API when AVE_RUN_PROBES=1 AND ANTHROPIC_API_KEY is set.
- * Writes observations to .omc/probes/anthropic-cache.json.
- */
+// Real-API probe requires AVE_RUN_PROBES=1 and credentials; records observations under .omc/probes/.
 import { describe, it, expect } from "vitest";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -25,8 +20,7 @@ describe.skipIf(!SHOULD_RUN)("probe: anthropic cache providerMetadata", () => {
             {
               type: "text",
               text: "You are a helpful assistant. " + "x".repeat(2048),
-              // experimental field (shape captured by probe) — cast via `any`
-              // because this member is not on the stable type yet.
+              // The probed experimental field is absent from the stable type.
               ...({
                 experimental_providerMetadata: {
                   anthropic: { cacheControl: { type: "ephemeral" } },

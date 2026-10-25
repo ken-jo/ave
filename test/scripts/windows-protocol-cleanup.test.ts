@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-// A real import, so a syntax break in the module (which both packaged smokes
-// import) fails here instead of only at the smokes' link time.
+// Import the cleanup module so syntax failures surface before packaged smoke linkage.
 import { assertNoWindowsProtocolClaim } from "../../scripts/lib/windows-protocol-cleanup.mjs";
 
 const EXECUTABLE = "C:\\build\\win-unpacked\\Ave.exe";

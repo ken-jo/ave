@@ -1,20 +1,4 @@
-/**
- * PluginRuntime.
- *
- * The plugin runtime is one object with one lifetime: `PluginRuntime` and the
- * abstract bases it extends (`PluginRuntimeState` ->
- * `PluginRuntimePublicationState` -> `PluginRuntimeCapabilityLifecycle` ->
- * `PluginRuntimeLifecycle` -> `PluginRuntime`) are a single inheritance chain
- * sharing one `this`, together with the helpers that only that chain uses.
- * They live in this file for that reason.
- *
- * Still separate modules, because each has consumers outside this file:
- *   - manifest-validation.ts  — AJV + MUST/SHOULD checks
- *   - sandbox.ts              — entry-path resolution, data-dir, plugin context
- *   - plugin-loader.ts        — factory import + method map
- *   - tool-visibility.ts      — model/app tool exposure
- *   - origin-chain.ts, runtime-admission.ts, detached-operation.ts, types.ts
- */
+/** Owns plugin admission, generation publication, dispatch, and retirement for one runtime lifetime. */
 
 import type { PluginAccessSpec, PluginManifest, PluginHostApi, PluginToolHandler, RuntimePlugin, RuntimePluginFactory, PluginAuthSpec, PluginConfigSchema, PluginOnboardingSpec, PluginUiExtension, PluginRegistryTrust } from "../types.js";
 import { classifySubscription } from "../capabilities.js";
@@ -87,84 +71,47 @@ import { sha256Hex } from "../../lib/hex-digest-equal.js";
 
 const log = createLogger("plugin-runtime");
 
-
-/**
- * Hard cap on the HTML one {@link RuntimePlugin.readUiResource} call may return
- * (see {@link PluginRuntime.readUiResource}). An MCP App card inlines its own
- * JS/CSS, so it is legitimately large — but it is a CARD, not a payload channel:
- * bounding it keeps a runaway hook from ballooning the render path. Exported so
- * the test pins the boundary rather than re-deriving it.
- */
+/** Bound HTML returned by one UI-resource read before it reaches the renderer. */
 export const MAX_UI_RESOURCE_HTML_BYTES = 4 * 1024 * 1024;
 
-
-
-
-// Re-export public interface types so callers that do
-// `import { PluginCard, PluginPerfStats } from "./runtime/index.js"` work.
 export type { ManifestLoadPlan, ManifestSnapshot };
 
-/**
- * Option C — non-active plugin catalog card.
- */
+/** Catalog metadata remains available for plugins without an active runtime. */
 export interface PluginCard {
   id: string;
   name: string;
   description: string;
   sampleTools: string[];
-  /** All tool names declared in the manifest (filtered by toolRegistry visibility when provided). */
+  /** Manifest tool names filtered through model visibility when a tool registry is supplied. */
   tools: string[];
-  /** Capability tags declared in manifest.capabilities. */
   capabilities: string[];
-  /** tool name → the tool's own `description` (#885 v6 — toolSchemas removed). */
   toolDescriptions?: Record<string, string>;
-  /** Runtime load status derived from loaded/failed/disabled runtime state. */
   loadStatus: "loaded" | "preparing" | "failed" | "disabled";
-  /** Whether this plugin's tools are currently exposed to the model. */
+  /** Model exposure is independent of whether the runtime is loaded. */
   active: boolean;
-  /** Whether a plugin instance is loaded and callable even when inactive. */
+  /** Inactive plugins can remain loaded and callable. */
   runtimeLoaded: boolean;
-  /** Current dependency/runtime preparation step while loadStatus is "preparing". */
+  /** Preparation detail is present only while loadStatus is "preparing". */
   preparationStatus?: PluginPreparationStatus;
-  /** Optional Lucide icon name declared in the plugin manifest. */
   icon?: string;
-  /** Optional short text rendered in place of a Lucide icon. */
   iconText?: string;
-  /** Manifest-declared sidebar UI metadata, even before the plugin is loaded. */
+  /** Sidebar metadata remains available before the plugin loads. */
   uiExtensions?: PluginUiExtension[];
   version?: string;
   configSchema?: PluginConfigSchema;
   /** Optional declarative auth contract — see architecture.md §9.4a "Plugin-Owned OAuth — Host UI Surface". */
   auth?: PluginAuthSpec;
-  /** Declarative egress disclosure copied from the plugin manifest/catalog. */
   networkAccess?: PluginManifest["networkAccess"];
-  /** Declarative first-run guidance copied unchanged from the manifest. */
   onboarding?: PluginOnboardingSpec;
-  /** Structured marketplace install failure classification for Doctor UI. */
   installFailureKind?: PluginInstallFailureKind;
-  /** User-visible install/load failure detail preserved for Doctor diagnostics. */
   installFailureMessage?: string;
-  /**
-   * The arm the plugin's factory came from (decision 51): for a loaded plugin,
-   * its running generation's; for a failed one, set only when construction
-   * failed after routing. Absent when routing was never reached.
-   */
+  /** Records factory routing only if construction reached that boundary. */
   arm?: PluginLoadArm;
   /** The wrap the plugin's child was spawned under, or `"not-spawned"`. Present with {@link arm}. */
   confinement?: PluginConfinementReport;
-  /**
-   * The last update or restart of a RUNNING plugin that the host refused
-   * (decision 52). Copied only while `loadStatus` is `"loaded"`: the incumbent
-   * keeps serving, so the refusal belongs to the attempt, not to the plugin's
-   * state. In memory only; cleared when a later attempt commits.
-   */
+  /** A refused update belongs to the attempt; the loaded incumbent keeps serving until a later commit clears it. */
   lastAttemptRefusal?: PluginAttemptRefusal;
-  /**
-   * Request slugs that can address this installed plugin in marketplace
-   * lifecycle events. This is derived from registry hints, not plugin-specific
-   * host knowledge, so renderer surfaces can collapse in-flight install rows
-   * onto the canonical plugin card.
-   */
+  /** Registry hints, manifest ids, and deployment aliases address one canonical catalog card. */
   installAliases?: string[];
 }
 
@@ -188,48 +135,11 @@ export interface PluginToolInvocationContext {
   ownerPluginId?: string;
   /** Host-admitted runtime activation; never inferred from mutable live state. */
   ownerGenerationId?: string;
-  /**
-   * Host-private auth classification captured from the exact immutable manifest
-   * that admitted this invocation. It prevents a replacement generation from
-   * downgrading a predecessor auth call into an ordinary app-only call.
-   */
+  /** Capture auth classification from the admitted manifest so a replacement cannot downgrade an earlier auth call. */
   authToolKind?: "status" | "login" | "logout";
-  /**
-   * True only when the renderer call was made during an active browser user
-   * activation. Renderer-provided booleans are not trusted directly; preload
-   * derives this from `navigator.userActivation.isActive`.
-   *
-   * Only the trusted host renderer (`origin: "ui"` — the plugin's own React
-   * panel) can produce this. An `origin: "mcp-app"` call NEVER sets it: the
-   * guest iframe's activation state is not the host frame's, and a gesture claim
-   * synthesized inside untrusted card HTML is unverifiable.
-   */
+  /** Only trusted panel gestures prove browser activation; embedded card claims cannot be verified. */
   userAction?: boolean;
-  /**
-   * Issue #664 P2 — UI-origin chain propagation.
-   *
-   * When a host wrapper tool (sourced from a user click in the panel) calls
-   * `ctx.callTool(...)` to delegate to another plugin's tool, the inner call
-   * is dispatched with `origin: "plugin"` but the *user* already approved the
-   * outer wrapper at the UI. Without propagation the inner call hits the
-   * headless reviewer lane (`headless: origin !== "ui"`), defeating the user
-   * approval the wrapper UX promised.
-   *
-   * `parentOrigin` carries the *effective* origin of the user action that
-   * triggered the call chain. The plugin runtime sets it to the calling
-   * HostApi's `origin` so a UI→plugin→plugin chain stays UI-origin all the
-   * way down. The reviewer lane reads this through the executor's
-   * {@link ToolPermissionContext} so the inner call is treated as
-   * foreground (headless=false) and the user's outer approval is honoured.
-   *
-   * Boundary: only wrapper tools owned by the host or first-party plugins
-   * benefit from this — third-party plugins still cross the same trust gate
-   * because the reviewer continues to evaluate each call. The propagation
-   * only changes the `headless` lane decision, not the per-tool deny/allow
-   * rules or the per-tool category × source × trust matrix.
-   *
-   * SoT: {@link InvocationOrigin}.
-   */
+  /** Propagate InvocationOrigin through nested calls; combining origins must retain the least trusted source. */
   parentOrigin?: InvocationOrigin;
   /** Host-owned app-call envelope. The renderer may carry only the opaque token. */
   appInvocation?: {
@@ -247,13 +157,7 @@ export type PluginToolInvocationDelegate = (
   context: PluginToolInvocationContext,
 ) => Promise<unknown>;
 
-/**
- * Kebab-case deny code (CLAUDE.md §IPC Error Message Language Convention) for the
- * ONE thing an MCP App is denied that the spec's `["app"]` semantics alone would
- * otherwise allow: the plugin's manifest-declared auth trio
- * (`manifest.auth.{statusTool,loginTool,logoutTool}`). See {@link callFromApp} for
- * why this is a deliberate narrowing, not a bug.
- */
+/** App calls cannot invoke an auth tool; the host owns auth transitions through callFromApp. */
 export const MCP_APP_AUTH_TOOL_NOT_APP_CALLABLE = "mcp-app-auth-tool-not-app-callable";
 
 interface PluginStartPreparationContext {
@@ -291,20 +195,12 @@ export interface PluginHostApiIncarnation {
 export interface PluginRuntimeOptions {
   hostRoot: string;
   encryption: SecretEncryption;
-  /**
-   * The plugin child's entry module, which every `entry` plugin's child runs
-   * (§9.8 A1: routing has no input, so every `entry` plugin is a child).
-   * Injected by the composition root — `resolvePluginChildEntryPath()` in the
-   * app, a bundle of the same entry built once per run in the tests — and
-   * required, with no default: a runtime that does not know where its child
-   * lives cannot load a plugin, and saying so is the constructor's job.
-   */
+  /** Entry plugins require the host-owned child entry module; reject construction when its location is unknown. */
   childEntryPath: string;
   manifestPaths?: string[];
   registryPath?: string;
   pluginsRoot?: string;
   configOverrides?: Record<string, Record<string, unknown>>;
-  /** Plugin-scoped HostApi factory — injected by boot.ts */
   createHostApi: (
     pluginId: string,
     manifest: PluginManifest,
@@ -318,62 +214,22 @@ export interface PluginRuntimeOptions {
   installReceiptCacheRoot?: string;
   auditLog?: (level: "info" | "warn" | "error", message: string, data?: unknown) => void;
   onMalformedCredentialSelector?: (pluginId: string) => void;
-  /**
-   * Fires when a plugin's tear-down path runs (`restartPlugin` stop phase,
-   * `restartAll` stop phase per plugin, `disable`, `removePlugin`,
-   * `reloadPlugin` stop phase, and `failClosedLoadedPlugin` when a
-   * fresh start fails mid-`restartAll`). The host wires this to
-   * `toolRegistry.unregisterByPlugin` +
-   * `conversationLoop.onPluginDisabled` so transient runtime state stays
-   * in sync with the runtime's plugin map.
-   *
-   * May fire more than once per logical cycle for the same pluginId — e.g.,
-   * `restartAll` fires it from its pre-stop fan-out and then again from
-   * `failClosedLoadedPlugin` if that plugin's start fails. Callbacks
-   * MUST be idempotent.
-   */
+  /** Teardown callbacks must be idempotent because failed startup can invoke them after an earlier stop. */
   onDisable?: (pluginId: string) => void;
-
 
   onEnable?: (pluginId: string) => void;
   /** Revokes renderer authority whenever a plugin UI generation changes. */
   onPluginUiRevisionChange?: (pluginId: string) => void;
-  /**
-   * Fires when the user toggles active/inactive without unloading the runtime.
-   * Unlike {@link onDisable}, this MUST NOT unregister plugin tools from the
-   * execution registry: auth/config/UI calls remain runtime-callable while
-   * model exposure is gated by ConversationLoop scope.
-   */
+  /** Changing model exposure must retain runtime registrations for app and integration calls. */
   onActiveStateChange?: (
     pluginId: string,
     enabled: boolean,
   ) => Promise<void> | void;
-  /**
-   * Optional dependency preparation gate. When this returns a Promise, plugin
-   * loading/start is deferred without blocking app boot; calls into the
-   * plugin fail with a clear "preparing" message until the Promise resolves.
-   */
+  /** Dependency preparation defers startup without blocking boot; calls fail as preparing until it resolves. */
   preparePluginStart?: (context: PluginStartPreparationContext) => PluginStartPreparationReturn;
 }
 
-
-// ---------------------------------------------------------------------------
-// Cross-plugin access control
-// ---------------------------------------------------------------------------
-
-/**
- * Cross-plugin access-control policy.
- *
- * Consolidates the deny/allow gate + audit + error-message construction for
- * the three plugin trust boundaries the runtime enforces:
- *   - event subscription across plugins (`assertEventSubscribeAccess`)
- *   - event emission of another plugin's event (`assertEventEmitAccess`)
- *   - renderer→plugin invocation allowlist (`assertAppVisibleToolInvokable`)
- *
- * Each function is pure given its resolved inputs; the runtime resolves the
- * owner/grant/state and delegates the policy decision here so the rules and
- * their audit trail live in one place.
- */
+/** Cross-plugin calls and subscriptions share one permission and audit policy. */
 
 type AuditLog = (
   level: "info" | "warn" | "error",
@@ -381,11 +237,7 @@ type AuditLog = (
   data?: unknown,
 ) => void;
 
-/**
- * Enforce that `callerPluginId` may subscribe to `eventType` from its owning
- * plugin. Self-owned or unowned events are always allowed; otherwise the
- * caller must hold an explicit event grant.
- */
+/** Foreign event subscriptions require an explicit grant; self-owned and unowned events are allowed. */
 export function assertEventSubscribeAccess(opts: {
   callerPluginId: string;
   eventType: string;
@@ -418,10 +270,7 @@ export function assertEventSubscribeAccess(opts: {
   );
 }
 
-/**
- * Enforce that `callerPluginId` may emit `eventType`. A plugin may only emit
- * events it owns (or events with no resolvable owner).
- */
+/** Plugins may emit only their own events or events without a resolvable owner. */
 export function assertEventEmitAccess(opts: {
   callerPluginId: string;
   eventType: string;
@@ -449,11 +298,7 @@ export function assertEventEmitAccess(opts: {
   );
 }
 
-/**
- * Enforce the renderer→plugin allowlist: only tools whose `_meta.ui.visibility`
- * includes `"app"` (#885 v6 — app-visible / dual) may be invoked from the UI IPC
- * bridge. `appVisibleTools` is derived by `declaredAppVisibleToolMethods`.
- */
+/** Renderer calls require explicit app visibility in the tool declaration. */
 function assertAppVisibleToolInvokable(opts: {
   method: string;
   pluginId: string;
@@ -467,18 +312,7 @@ function assertAppVisibleToolInvokable(opts: {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Plugin catalog cards
-// ---------------------------------------------------------------------------
-
-/**
- * Plugin catalog card construction (Option C).
- *
- * `buildPluginCard` is a pure projection of a manifest + resolved runtime
- * state into the `PluginCard` shape consumed by the marketplace/settings UI.
- * The runtime resolves load-status, visibility, preparation status, and
- * install aliases, then delegates the shaping here.
- */
+/** Card shaping is pure; callers resolve runtime state, visibility, preparation, and aliases first. */
 
 export function buildPluginCard(
   pluginId: string,
@@ -491,12 +325,7 @@ export function buildPluginCard(
     installAliases: string[] | undefined;
   },
 ): PluginCard {
-  // #885 v6 — the card stays LLM-facing: model-visible tools only. `visibleNames`
-  // (the ToolRegistry-visible set) is itself model-facing, so the pre-filter is a
-  // no-op when it is provided; it matters for the `visibleNames === null` fallback
-  // (listPluginCards with no registry), keeping app-only auth tools from surfacing
-  // as "tools" in the settings/marketplace UI (they are app-only-visibility, not
-  // model-facing).
+  // Catalog tool lists expose model-visible tools only; app-only tools must stay out.
   const modelTools = (manifest.tools ?? []).filter(isModelVisible);
   const filteredTools = !state.active
     ? []
@@ -534,10 +363,6 @@ export function buildPluginCard(
     installAliases: extras.installAliases,
   };
 }
-
-// ---------------------------------------------------------------------------
-// Plugin auth identity + invalidation
-// ---------------------------------------------------------------------------
 
 /** Host-private revocation tuple. Hash and minting generation are inseparable. */
 type PluginAuthInvalidation = Readonly<{
@@ -628,22 +453,8 @@ function authInvalidation(
     : undefined;
 }
 
-// ---------------------------------------------------------------------------
-// Per-plugin performance stats
-// ---------------------------------------------------------------------------
+/** Performance history survives resetLoadedState and runtime restarts. */
 
-/**
- * Per-plugin performance statistics.
- *
- * `PerfStatsTracker` owns the perf accounting Map and exposes the exact same
- * numbers the runtime previously computed inline. Deliberately NOT cleared by
- * `PluginRuntime.resetLoadedState()` — perf history survives a restart cycle,
- * matching the pre-extraction behavior.
- */
-
-/**
- * Per-plugin performance statistics collected at runtime.
- */
 export interface PluginPerfStats {
   startupMs: number;
   toolCallCount: number;
@@ -663,23 +474,18 @@ class PerfStatsTracker {
     return this.stats.has(pluginId);
   }
 
-  /** Create a zeroed entry if none exists yet. No-op when already present. */
+  /** Existing statistics must survive initialization. */
   ensure(pluginId: string): void {
     if (!this.stats.has(pluginId)) {
       this.stats.set(pluginId, zeroed());
     }
   }
 
-  /** Set `startupMs` on an existing entry. No-op when the entry is absent. */
   setStartupMs(pluginId: string, startupMs: number): void {
     const stats = this.stats.get(pluginId);
     if (stats) stats.startupMs = startupMs;
   }
 
-  /**
-   * Record a startup measurement: create the entry (seeded with `startupMs`)
-   * when absent, otherwise overwrite only `startupMs` on the existing entry.
-   */
   recordStartup(pluginId: string, startupMs: number): void {
     const existing = this.stats.get(pluginId);
     if (!existing) {
@@ -689,11 +495,6 @@ class PerfStatsTracker {
     }
   }
 
-  /**
-   * Account the start of a tool call: get-or-create the entry, bump
-   * `toolCallCount`, stamp `lastCallAt`, and return the live entry so the
-   * caller can finalize `errorCount` / `totalExecMs` around the invocation.
-   */
   beginCall(pluginId: string): PluginPerfStats {
     let stats = this.stats.get(pluginId);
     if (!stats) {
@@ -705,7 +506,7 @@ class PerfStatsTracker {
     return stats;
   }
 
-  /** Deep-copied snapshot — mutations by callers never affect internal state. */
+  /** Deep copies prevent callers from mutating internal statistics. */
   snapshot(): Record<string, PluginPerfStats> {
     const result: Record<string, PluginPerfStats> = {};
     for (const [id, stats] of this.stats) {
@@ -715,18 +516,7 @@ class PerfStatsTracker {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Config override store
-// ---------------------------------------------------------------------------
-
-/**
- * Plugin config-override store.
- *
- * `ConfigOverrideStore` owns the `pluginId → config` override map (including
- * the `"*"` wildcard slot) and centralizes the set/merge/clear semantics the
- * runtime previously implemented inline. Deliberately NOT cleared by
- * `PluginRuntime.resetLoadedState()` — overrides survive a restart cycle.
- */
+/** Plugin and wildcard config overrides survive resetLoadedState and runtime restarts. */
 class ConfigOverrideStore {
   private readonly overrides: Record<string, Record<string, unknown>>;
 
@@ -734,15 +524,11 @@ class ConfigOverrideStore {
     this.overrides = initial;
   }
 
-  /**
-   * Live reference to the override map — used to build plugin sandbox context.
-   * Callers MUST treat it as read-only.
-   */
+  /** Live config reference; callers must treat it as read-only. */
   all(): Record<string, Record<string, unknown>> {
     return this.overrides;
   }
 
-  /** Replace a plugin's overrides (empty config clears the entry). */
   set(pluginId: string, config: Record<string, unknown>): void {
     if (Object.keys(config).length === 0) {
       delete this.overrides[pluginId];
@@ -751,13 +537,11 @@ class ConfigOverrideStore {
     this.overrides[pluginId] = { ...config };
   }
 
-  /** Shallow copy of a plugin's override, or undefined when none is stored. */
   get(pluginId: string): Record<string, unknown> | undefined {
     const current = this.overrides[pluginId];
     return current ? { ...current } : undefined;
   }
 
-  /** Merge into a plugin's existing overrides (empty config is a no-op). */
   merge(pluginId: string, config: Record<string, unknown>): void {
     if (Object.keys(config).length === 0) return;
     this.overrides[pluginId] = {
@@ -766,7 +550,6 @@ class ConfigOverrideStore {
     };
   }
 
-  /** Merge into the wildcard (`"*"`) slot (empty config is a no-op). */
   setWildcard(config: Record<string, unknown>): void {
     if (Object.keys(config).length === 0) return;
     this.overrides["*"] = {
@@ -775,12 +558,10 @@ class ConfigOverrideStore {
     };
   }
 
-  /** Shallow copy of the wildcard slot; callers MUST NOT mutate the result. */
   getWildcard(): Record<string, unknown> {
     return { ...(this.overrides["*"] ?? {}) };
   }
 
-  /** Clear ONLY the named keys from the wildcard slot (empty `keys` no-op). */
   clearWildcard(keys: string[]): void {
     const current = this.overrides["*"];
     if (!current) return;
@@ -792,32 +573,12 @@ class ConfigOverrideStore {
     }
   }
 
-  /** Drop a plugin's overrides entirely (uninstall path). */
   delete(pluginId: string): void {
     delete this.overrides[pluginId];
   }
 }
 
-// ---------------------------------------------------------------------------
-// Preparation tracker
-// ---------------------------------------------------------------------------
-
-/**
- * Dependency-preparation lifecycle for deferred plugin starts.
- *
- * `PreparationTracker` owns the MONOTONIC preparation generation counter plus
- * every map/set that tracks an in-flight `preparePluginStart` gate:
- * preparing ids, per-plugin status, failures, and pending prepared-start
- * handles. It calls back into the runtime for the three effects it cannot own
- * itself — `instantiateAndStartSinglePlugin`, `markFailed`, and `onDisable` —
- * which are injected at construction.
- *
- * Generation semantics: each defer/cancel/reset bumps the counter and stamps
- * the plugin's generation. Any in-flight task that observes a generation
- * mismatch is stale and silently aborts, so a reset that rejects pending
- * readiness promises BEFORE clearing the maps (see {@link clear}) can never be
- * clobbered by a late-arriving prepared start.
- */
+/** Monotonic preparation generations prevent late starts from restoring state after reset. */
 
 interface PendingPreparedStart {
   generation: number;
@@ -859,12 +620,7 @@ class PreparationTracker {
     return this.pendingPreparedStarts.has(pluginId);
   }
 
-  /**
-   * Attempt to defer a plugin's start behind its `preparePluginStart` gate.
-   * Returns `true` when the start was deferred (an async preparation is now
-   * pending, or preparation failed synchronously) and `false` when no
-   * preparation applies and the caller should start the plugin inline.
-   */
+  /** True means startup was deferred; false means the caller should start inline. */
   deferStart(
     plan: ManifestLoadPlan,
     manifest: PluginManifest,
@@ -986,7 +742,6 @@ class PreparationTracker {
     logPluginLifecycle("error", { pluginId: manifest.id, phase: PluginPhase.START_FAIL, reason: message }, "plugin dependency preparation failed");
   }
 
-  /** Cancel and forget a single plugin's preparation state (uninstall path). */
   clearFor(pluginId: string): void {
     const pending = this.pendingPreparedStarts.get(pluginId);
     pending?.rejectReady(new Error(`plugin '${pluginId}' runtime dependency preparation was cancelled`));
@@ -997,10 +752,7 @@ class PreparationTracker {
     this.pendingPreparedStarts.delete(pluginId);
   }
 
-  /**
-   * Readiness promise for a plugin that is preparing (not yet loaded). The
-   * caller is responsible for the already-loaded fast path.
-   */
+  /** Only tracks pending preparation; callers handle the already-loaded fast path. */
   waitForReady(pluginId: string): Promise<void> {
     const pending = this.pendingPreparedStarts.get(pluginId);
     if (pending) {
@@ -1027,11 +779,7 @@ class PreparationTracker {
     return this.preparationFailures.get(pluginId);
   }
 
-  /**
-   * Runtime-reset clear: reject every pending readiness promise and bump its
-   * generation BEFORE clearing the maps, so no in-flight prepared start can
-   * resurrect state after the reset.
-   */
+  /** Reject waiters and advance the generation before clearing maps so late starts cannot resurrect state. */
   clear(): void {
     for (const [pluginId, pending] of this.pendingPreparedStarts) {
       pending.rejectReady(new Error(`plugin '${pluginId}' runtime dependency preparation was cancelled by runtime reset`));
@@ -1045,10 +793,6 @@ class PreparationTracker {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Atomic plugin removal
-// ---------------------------------------------------------------------------
-
 interface AtomicPluginRemovalOptions<T> {
   requestedPluginId: string;
   loaded: boolean;
@@ -1060,14 +804,7 @@ interface AtomicPluginRemovalOptions<T> {
   purgeRuntimeState(): Promise<void>;
 }
 
-/**
- * Commit the durable registry removal before purging Host runtime state.
- *
- * Once deactivation publishes the inactive generation pointer, retirement
- * failure is reported only after the remaining runtime tracking has been
- * purged. This keeps the durable marketplace commit and Host projection
- * monotonic even when a retired plugin's stop hook fails.
- */
+/** Commit durable registry removal before purging runtime state, even if retired stop hooks fail. */
 async function commitAtomicPluginRemoval<T>(
   options: AtomicPluginRemovalOptions<T>,
 ): Promise<T> {
@@ -1099,16 +836,7 @@ async function commitAtomicPluginRemoval<T>(
   return result;
 }
 
-// ---------------------------------------------------------------------------
-// Capability dependency resolution
-// ---------------------------------------------------------------------------
-
-/**
- * Resolves capability providers from runtime generations that are actually
- * admitted. A manifest being installed, registry-enabled, or merely loaded is
- * not sufficient: its provider must have completed startup and published an
- * active generation before another plugin can rely on its capabilities.
- */
+/** Only started, actively published generations supply capabilities; installed or enabled metadata is insufficient. */
 class CapabilityDependencies {
   constructor(
     private readonly manifests: ReadonlyMap<string, PluginManifest>,
@@ -1141,10 +869,6 @@ class CapabilityDependencies {
     return result.ok ? [] : result.missing;
   }
 }
-
-// ---------------------------------------------------------------------------
-// Capability commit scope types
-// ---------------------------------------------------------------------------
 
 type CapabilityDependencyCommitScope = <T>(
   operation: () => Promise<T>,
@@ -1183,20 +907,7 @@ interface CapabilityCommitScopedGenerationLifecycle
   ): Promise<CommittedPluginGeneration<T>>;
 }
 
-// ---------------------------------------------------------------------------
-// Lifecycle timeouts + session activation
-// ---------------------------------------------------------------------------
-
-/**
- * Lifecycle helpers — host-enforced plugin `start()` timeout and the
- * per-session on-demand activation tracker.
- *
- * Both are lifecycle-adjacent runtime concerns kept out of the PluginRuntime
- * orchestrator: the timeout is a pure policy helper shared by every start
- * site, and the session-activation tracker is self-contained in-memory state
- * with no dependency on the plugin load/registry machinery.
- */
-
+/** Lifecycle deadlines and session activation share runtime lifetime without depending on registry loading. */
 
 class PluginFactoryTimeoutError extends Error {
   readonly code = "plugin-factory-timeout";
@@ -1209,18 +920,12 @@ class PluginFactoryTimeoutError extends Error {
 /** Which plugins had not finished retiring when the shutdown deadline ended `stopAll()`. */
 type PluginRuntimeShutdownReport = Readonly<{ unfinished: readonly string[] }>;
 
-/**
- * A lifecycle operation building a candidate generation. `settled` follows
- * the operation; `releaseForShutdown`, set once the candidate is built and
- * started, releases it at once — the coordinator will not publish it after
- * shutdown began — instead of waiting for a durable commit still in progress.
- */
+/** Shutdown may release a constructed candidate before its durable commit settles. */
 type PluginCandidateConstruction = {
   readonly pluginId: string;
-  /** Fulfils once the operation settled and released what it built; rejects if that release failed. */
+  /** Settles after both construction and release; release failure remains observable. */
   settled: Promise<void>;
   releaseForShutdown?: () => Promise<void>;
-  /** Failures of releasing what the operation built, wherever the release ran. */
   readonly cleanupFailures: unknown[];
 };
 
@@ -1244,13 +949,7 @@ type PluginRuntimeRetirementView = Pick<
   "manifest" | "instance" | "lifecycleHookScope" | "hostEffects" | "disposers" | "deactivateHostApi" | "drainHostApiOperations"
 >;
 
-/**
- * Refusal of plugin work because the runtime is shutting down: a call or
- * acquisition arriving after shutdown began, one still queued for its lease
- * when it began, or a call still running when shutdown stopped waiting for
- * in-flight work. The last is rejected so that its caller is not left
- * waiting; the work's lease stays held until the work itself settles.
- */
+/** Shutdown rejects callers promptly but retains each work lease until the underlying call settles. */
 class PluginRuntimeShutdownError extends Error {
   readonly code = "plugin-runtime-shutdown";
 
@@ -1267,12 +966,7 @@ class PluginStartupTimeoutError extends Error {
   }
 }
 
-/**
- * Bound plugin factory execution without abandoning a late-created instance.
- * The caller revokes the pending HostApi incarnation when this rejects;
- * `onLateResolution` receives a result that appears after the timeout so it
- * can be stopped without ever becoming runtime-visible.
- */
+/** Revoke timed-out factory authority and retain its late instance for cleanup without publishing it. */
 export async function runPluginFactoryWithTimeout<T>(
   factory: () => Promise<T> | T,
   onLateResolution: (value: T) => Promise<void> | void,
@@ -1295,13 +989,7 @@ export async function runPluginFactoryWithTimeout<T>(
   }
 }
 
-/**
- * Run a plugin's `start()` lifecycle hook under a host-enforced timeout. The
- * manifest's declared `startupTimeoutMs` is honored when present and clamped
- * to `pluginStartupMaxMs`; an undeclared value falls back to
- * `pluginStartupDefaultMs`. The call sites share this helper — when they
- * diverge, fix it here, not in multiple places.
- */
+/** Clamp declared startup timeouts to the host ceiling for every lifecycle path. */
 export async function runStartWithTimeout(
   start: () => unknown,
   declaredTimeoutMs: number | undefined,
@@ -1317,34 +1005,14 @@ export async function runStartWithTimeout(
   );
 }
 
-/**
- * Transient, per-session on-demand activation map.
- *
- * Key   = sessionId  (a ConversationLoop instance's session UUID).
- * Value = Set of plugin IDs on-demand activated in that session via
- *         `request_plugin` while the plugin was registry-disabled.
- *
- * Using a Map instead of a flat Set scopes each session's activation state
- * independently: clearing session A never affects session B. This is
- * critical for concurrent loops (e.g. a routine running while the user has an
- * active main-chat conversation — the user starting a new chat must not wipe
- * the routine's activation mid-scan).
- *
- * INVARIANT: plugin enablement is NEVER mutated on this path — the plugin
- * remains registry-disabled throughout.
- */
+/** Session activation is transient and never changes registry enablement. */
 class SessionActivationTracker {
   private readonly bySession = new Map<string, Set<string>>();
 
-  /**
-   * Returns true iff the plugin was on-demand session-activated in the given
-   * session.
-   */
   isActivated(sessionId: string, pluginId: string): boolean {
     return this.bySession.get(sessionId)?.has(pluginId) ?? false;
   }
 
-  /** Record a plugin as session-activated for the given session. */
   activate(sessionId: string, pluginId: string): void {
     let set = this.bySession.get(sessionId);
     if (!set) {
@@ -1354,43 +1022,15 @@ class SessionActivationTracker {
     set.add(pluginId);
   }
 
-  /**
-   * Clear on-demand activations for `sessionId` ONLY — does NOT affect any
-   * other session's activation state.
-   */
+  /** Clearing one session must preserve every other session activation. */
   clear(sessionId: string): void {
     this.bySession.delete(sessionId);
   }
 }
 
-// ---------------------------------------------------------------------------
-// Manifest snapshots + load plan
-// ---------------------------------------------------------------------------
+// Use the shared registry-manifest trust predicate so boot and runtime accept the same paths.
 
-/**
- * Snapshot helpers — readEnabledManifestSnapshots, load plan resolution,
- * trust-boundary checks for registry manifest paths.
- */
-
-
-// The trust predicate lives in `../registry-manifest-trust.js` — one authority
-// shared with `resolveManifestPathsFromRegistry` (registry.ts), which resolves
-// the SAME field from the SAME registry for the same purpose. It cannot live
-// in registry.ts: this module already imports that one.
-
-/**
- * A registry row the load plan refuses to carry: it names an installed plugin
- * — `marketplace.list()` keeps reporting it as installed — whose manifest the
- * runtime must never read, so it cannot become a plan entry.
- *
- * It is reported OUT OF BAND rather than as a plan entry carrying a flag, and
- * that is the point. `readEnabledManifestSnapshots`, `restartAll`, `addPlugin`
- * and the re-enable path all consume the plan and all reach for
- * `plan.manifestPath`. A refused row inside the plan would be one forgotten
- * `if` away from handing an untrusted path to `readManifest`; keeping the plan
- * exclusively trusted makes that mistake unavailable rather than merely
- * avoided.
- */
+/** Refused registry rows remain diagnostic cards but never enter the executable load plan. */
 export type RegistryLoadRefusal = {
   pluginId: string;
   /** The resolved candidate, for the diagnostic the user is shown. Never read. */
@@ -1398,13 +1038,7 @@ export type RegistryLoadRefusal = {
   reason: string;
 };
 
-/**
- * Build a ManifestLoadPlan from manifestPaths + registry.
- *
- * `onRefused` receives every registry row dropped for an untrusted
- * `manifestPath`. Callers that only need the trusted plan omit it; boot passes
- * one so the drop reaches a card instead of only a log line.
- */
+/** Report untrusted registry rows through onRefused so boot can retain diagnostic cards. */
 export async function resolveManifestLoadPlan(opts: {
   manifestPaths: string[];
   registryPath?: string;
@@ -1451,15 +1085,7 @@ export async function resolveManifestLoadPlan(opts: {
   return plans;
 }
 
-/**
- * For every plan entry (enabled or inactive), read and validate the manifest.
- * Returns a map keyed by pluginIdHint (or manifest.id when no hint). Failed
- * reads are skipped with a warning.
- *
- * Inactive manifests are parsed into metadata so settings can offer re-enable,
- * but PluginRuntime does not instantiate or publish them until receipt and
- * package bytes have been reverified.
- */
+/** Manifest snapshots are metadata only; receipt and package bytes must be reverified before instantiation. */
 export async function readEnabledManifestSnapshots(
   loadPlan: ManifestLoadPlan[],
   validator: ValidateFunction,
@@ -1468,8 +1094,7 @@ export async function readEnabledManifestSnapshots(
   for (const plan of loadPlan) {
     try {
       const manifest = await parsePluginJson(plan.manifestPath, validator);
-      // Key by pluginIdHint (registry id) when available so addPlugin() lookups
-      // by registry id remain consistent even if manifest.id diverges.
+      // Prefer the registry id hint so lookups remain consistent when manifest.id differs.
       const key = plan.pluginIdHint ?? manifest.id;
       snapshots.set(key, {
         manifest,
@@ -1486,36 +1111,24 @@ export async function readEnabledManifestSnapshots(
   return snapshots;
 }
 
-// ---------------------------------------------------------------------------
-// Boot preflight
-// ---------------------------------------------------------------------------
-
 const BOOT_PREFLIGHT_CONCURRENCY = 4;
 
-/**
- * What a lifecycle path hands the factory funnel: the JS module an `entry`
- * plugin's runtime imports, or nothing more for a `process` plugin, whose launch
- * is resolved against the context the lifecycle builds.
- */
+/** Entry factories receive a resolved module; process launches resolve against their lifecycle context. */
 type PluginFactorySource =
   | { readonly kind: "entry"; readonly resolvedEntryPath: string }
   | { readonly kind: "process" };
 
-/** What a verified install receipt proves about the bytes on disk. */
 export interface PluginIntegrityEvidence {
   installSource: "marketplace" | "local-dev" | "git" | "folder";
   signerKeyId: string | null;
   artifactSha256: string | null;
-  /** The ladder rung the bytes came through (a folder install's is `folder`); `null` for any other install. */
   rung: PluginRung | null;
-  /** The kind of git source the install came from; `null` for any other install. */
   sourceOrigin: GitInstallRecord["sourceOrigin"] | null;
 }
 
 export type PluginIntegrityCheckResult =
   | {
       ok: true;
-      /** Absent when nothing was verified (no receipt cache root). */
       verified?: PluginIntegrityEvidence;
     }
   | {
@@ -1616,10 +1229,6 @@ async function mapBoundedInOrder<T, R>(
   return results;
 }
 
-// ---------------------------------------------------------------------------
-// Bundle integrity verification
-// ---------------------------------------------------------------------------
-
 type IntegrityAuditLog = (
   level: "info" | "warn" | "error",
   message: string,
@@ -1662,7 +1271,6 @@ export async function verifyPluginIntegrity(
   };
 }
 
-/** The evidence a receipt that verified carries, for the audit and the process-entry gate. */
 function integrityEvidence(receipt: PluginInstallReceipt): PluginIntegrityEvidence {
   return {
     installSource: receipt.installSource,
@@ -1708,19 +1316,12 @@ function reportPluginIntegrity(
   }
 }
 
-// ---------------------------------------------------------------------------
-// PluginRuntimeState
-// ---------------------------------------------------------------------------
-
 const START_FAILURE_STOP_TIMEOUT_MS = 2_000;
 const HOST_API_OPERATION_DRAIN_TIMEOUT_MS = 10_000;
 
 type RestartPluginResult = "started" | "deferred" | "failed" | undefined;
 
-/**
- * What the routing function returns (§9.8 A1): the factory and the arm it
- * belongs to, which the generation records (decision 51).
- */
+/** Keep each routed factory paired with its arm for generation diagnostics. */
 type RoutedPluginFactory = { createPlugin: RuntimePluginFactory; arm: PluginLoadArm };
 
 interface PendingRestartCancellation {
@@ -1833,57 +1434,31 @@ abstract class PluginRuntimeState {
   protected readonly knownEventOwners = new Map<string, string>();
   protected readonly failedPluginIds = new Set<string>();
   protected readonly failedPluginStubs = new Map<string, { name: string; description: string }>();
-  /**
-   * Structured load-failure classification for the Plugin Doctor, keyed by the
-   * plugin id (or the registry-id hint when the manifest never parsed).
-   * Populated by {@link markFailed}; only surfaced on cards whose `loadStatus`
-   * is `"failed"`, and cleared when the plugin loads successfully. Lets the
-   * Doctor tell reinstall-fixable failures (stale/pre-v6 schema manifest) apart
-   * from not-locally-fixable ones (app-version incompatibility).
-   */
+  /** Classify load failures by canonical id, or registry hint when no manifest can be read. */
   protected readonly loadFailureInfo = new Map<
     string,
     {
       installFailureKind?: PluginInstallFailureKind;
       installFailureMessage?: string;
-      /** Set only for a construction that failed after routing (§9.8 A1). */
+      /** Only construction failures reached after routing have an arm. */
       arm?: PluginLoadArm;
       confinement?: PluginConfinementReport;
     }
   >();
-  /**
-   * The last refused update or restart of a plugin whose running generation
-   * still serves (decision 52). Kept beside {@link loadFailureInfo} and
-   * cleared where it is, and when a later attempt commits; never marks the
-   * plugin failed, because the incumbent is not.
-   */
+  /** A refused replacement records attempt diagnostics while the loaded incumbent keeps serving. */
   protected readonly lastAttemptRefusal = new Map<string, PluginAttemptRefusal>();
-  /**
-   * The wrap each routed factory's child was spawned under, keyed by the
-   * factory the routing function returned: one routing call yields one factory
-   * and one invocation, so the key names exactly one attempt — an incumbent
-   * and the replacement built beside it never share an entry. Written by the
-   * out-of-process factory's spawn callback; a factory with no entry spawned
-   * no child.
-   */
+  /** Confinement belongs to one routed factory attempt; an unspawned factory has no child confinement. */
   private readonly childSpawnConfinements = new WeakMap<RuntimePluginFactory, SpawnConfinement>();
 
   protected recordChildSpawnConfinement(createPlugin: RuntimePluginFactory, confinement: SpawnConfinement): void {
     this.childSpawnConfinements.set(createPlugin, confinement);
   }
 
-  /** The Doctor's confinement for one routed factory's attempt. */
   protected confinementReport(createPlugin: RuntimePluginFactory): PluginConfinementReport {
     return this.childSpawnConfinements.get(createPlugin) ?? "not-spawned";
   }
   protected readonly disabledPluginIds = new Set<string>();
-  /**
-   * #1176 active/inactive — plugins toggled inactive at runtime via
-   * {@link setPluginEnabled}. Orthogonal to {@link disabledPluginIds} (the
-   * load/unload state): an inactive plugin stays *loaded* but its tools are
-   * hidden from the model's per-turn scope. `enabled !== false` is the active
-   * predicate, so absence from this set means active (migration-safe default).
-   */
+  /** Inactive means model exposure is off; absence from this set defaults to active. */
   protected readonly inactivePluginIds = new Set<string>();
   protected readonly preparation: PreparationTracker;
   /** Loaded or requested consumers waiting for a preparing capability provider. */
@@ -1893,11 +1468,7 @@ abstract class PluginRuntimeState {
     string,
     Promise<PluginStartPreparationOutcome>
   >();
-  /**
-   * Hash-only authenticated session state. The principal hash includes a
-   * per-login nonce so a later login to the same account cannot revive grants
-   * admitted under an earlier session.
-   */
+  /** Per-login nonces prevent a later login to the same account from reviving earlier grants. */
   protected pluginAccountHashes = new Map<string, {
     identityHash: string;
     principalHash: string;
@@ -1906,20 +1477,12 @@ abstract class PluginRuntimeState {
   protected pluginAuthInvocationEpochs = new Map<string, number>();
   /** Latest auth result that actually published for each immutable generation. */
   protected pluginAuthPublishedEpochs = new Map<string, number>();
-  /**
-   * Principal observed when an auth invocation began. A failed refresh revokes
-   * this exact authority unless a later result has actually published; a later
-   * *start* alone must not keep stale governed work alive.
-   */
+  /** Failed refresh revokes its captured authority unless a later result published; a later start is insufficient. */
   protected pluginAuthFailurePrincipals = new Map<string, {
     principalHash: string;
     generationId: string;
   }>();
-  /**
-   * Stable account identity retained after login/logout invalidates the active
-   * principal. Concurrent auth transitions reuse it so they cannot bypass the
-   * governed-operation/account-transition FIFO while the identity is absent.
-   */
+  /** Retain stable account identity across auth transitions to preserve their operation FIFO. */
   protected pluginAuthTransitionPrincipals = new Map<string, {
     identityHash: string;
     principalHash: string;
@@ -1929,11 +1492,7 @@ abstract class PluginRuntimeState {
   protected readonly pendingRestartCancellations = new Map<string, PendingRestartCancellation>();
   /** Monotonic generation used to reject stale async add/restart commits. */
   protected readonly pluginLifecycleGenerations = new Map<string, number>();
-  /**
-   * Process-lifetime quarantine for lifecycle work whose execution state is
-   * unknowable. In-process ESM evaluation and plugin hooks cannot be cancelled;
-   * another same-id incarnation would permit concurrent stale bodies.
-   */
+  /** Quarantine unknowable in-process work for the process lifetime; uncancellable bodies must not overlap a new incarnation. */
   protected readonly quarantinedPluginLifecycles = new Map<string, string>();
   /** HostApi incarnations whose plugin factory has not committed an instance. */
   private readonly pendingHostApiIncarnations = new Map<string, Set<() => void>>();
@@ -1945,68 +1504,30 @@ abstract class PluginRuntimeState {
   protected toolInvocationDelegate: PluginToolInvocationDelegate | null = null;
   protected generationAccess: PluginRuntimeGenerationAccess | undefined;
   protected generationLifecycle: PluginRuntimeGenerationLifecycle | undefined;
-  /**
-   * The generation the coordinator committed for a plugin while the runtime
-   * map does not hold it: a publication step failed between the commit and
-   * the map swap. The runtime still owns its instance and incarnation, so
-   * shutdown reaches it here. Set at commit, cleared by the map swap, by its
-   * retirement, or when shutdown stops it — so it is stopped exactly once.
-   */
+  /** A committed generation owns its resources even if runtime publication fails; retire it exactly once. */
   protected readonly committedUnmappedGenerations = new Map<string, PluginRuntimeGenerationProjection>();
-  /**
-   * Each runtime retirement phase a generation has run or is running, keyed
-   * by the generation's instance (one instance per generation, shared by the
-   * runtime map entry and every projection of it). Shutdown, removal,
-   * uninstall and coordinator retirement all retire through
-   * {@link prepareRuntimeRetirement}, so a second caller awaits the first run
-   * of a phase instead of rerunning its disposers or drain. A failed phase is
-   * forgotten so that a retry runs it again, matching the lifecycle's own
-   * per-phase checkpoint.
-   */
+  /** Checkpoint retirement per phase and generation; failed phases remain retryable. */
   private readonly retirementPhaseRuns = new WeakMap<RuntimePlugin, Map<PluginRuntimeRetirementPhase, Promise<void>>>();
-  /**
-   * The generation disposers that have already run successfully, per
-   * generation instance. A retried effects phase runs only the ones that
-   * failed: none runs twice.
-   */
+  /** Retry failed disposers only; successful disposers must not run twice. */
   private readonly completedRetirementDisposers = new WeakMap<RuntimePlugin, Set<() => void>>();
-  /**
-   * Aborted when shutdown begins: no new dispatch is admitted into any
-   * generation, and every caller still waiting for admission (a lease, a
-   * transition barrier) is rejected with {@link PluginRuntimeShutdownError}.
-   */
+  /** Shutdown closes all generation admission and rejects callers waiting on leases or transitions. */
   protected readonly runtimeShutdownAdmission = new AbortController();
   /** Aborted when shutdown gives up waiting for in-flight plugin calls. */
   protected readonly runtimeShutdown = new AbortController();
 
-  /**
-   * True once shutdown has begun. Host-to-plugin notifications (events,
-   * config changes, plugin-set changes) check it beside their incarnation
-   * guard, so nothing new reaches a plugin while it retires.
-   */
+  /** Stop host notifications when shutdown begins, alongside the incarnation guard. */
   isShuttingDown(): boolean {
     return this.runtimeShutdownAdmission.signal.aborted;
   }
 
-  /**
-   * Close admission — in the runtime and in the generation coordinator every
-   * consumer acquires through — without stopping anything. Idempotent;
-   * `stopAll` begins with it. The application's shutdown calls it earlier,
-   * before it disconnects MCP, so no post-commit MCP publication or new
-   * dispatch opens in between; calls already admitted keep running.
-   */
+  /** Close runtime and coordinator admission before publication can interleave; admitted calls keep running. */
   beginShutdown(): void {
     this.runtimeShutdownAdmission.abort();
     this.generationLifecycle?.closeAdmission(
       (pluginId) => new PluginRuntimeShutdownError(pluginId, "generation admission"),
     );
   }
-  /**
-   * Lifecycle operations building a candidate generation the coordinator has
-   * not committed: a prepared update or an add. Once shutdown begins their
-   * publication is refused and each releases what it built; shutdown waits
-   * for that release within its deadline.
-   */
+  /** Uncommitted lifecycle candidates release what they built during shutdown, within its deadline. */
   protected readonly candidateConstructions = new Set<PluginCandidateConstruction>();
 
   protected trackCandidateConstruction<T>(
@@ -2028,11 +1549,7 @@ abstract class PluginRuntimeState {
   }
   protected readonly pinnedGenerations =
     new AsyncLocalStorage<ReadonlyMap<string, string>>();
-  /**
-   * Cross-plugin capability admission has one short linearization boundary.
-   * Candidate import, factory execution, and startup intentionally happen
-   * outside this queue; only the final generation-pointer commit uses it.
-   */
+  /** Serialize only the final capability generation-pointer commit; imports, factories, and startup run outside the queue. */
   private capabilityDependencyCommitTail: Promise<void> = Promise.resolve();
   protected loaded = false;
 
@@ -2056,7 +1573,6 @@ abstract class PluginRuntimeState {
   protected createPendingRestartCancellation(): PendingRestartCancellation {
     return createPendingRestartCancellation();
   }
-  /** §B-1 — lazily-compiled AJV validator for plugin.schema.json. */
   protected manifestValidator: ValidateFunction | null = null;
   protected manifestValidatorPromise: Promise<ValidateFunction> | null = null;
 
@@ -2117,10 +1633,7 @@ abstract class PluginRuntimeState {
     });
   }
 
-  /**
-   * Live view of the raw config-override map, backed by {@link configStore}.
-   * Retained for tests that assert against the internal override map.
-   */
+  /** Tests observe the live override map rather than a snapshot. */
   protected get configOverrides(): Record<string, Record<string, unknown>> {
     return this.configStore.all();
   }
@@ -2137,17 +1650,15 @@ abstract class PluginRuntimeState {
     this.configStore.merge(this.resolveKnownPluginId(pluginId), config);
   }
 
-  /** Merge host-injected values into the wildcard (`"*"`) config slot. */
   setWildcardConfigOverride(config: Record<string, unknown>): void {
     this.configStore.setWildcard(config);
   }
 
-  /** Shallow copy of the wildcard config slot. */
   getWildcardConfigOverride(): Record<string, unknown> {
     return this.configStore.getWildcard();
   }
 
-  /** Clear only the named wildcard keys, preserving unrelated host values. */
+  /** Clear named wildcard keys without deleting unrelated host values. */
   clearWildcardConfigOverride(keys: string[]): void {
     this.configStore.clearWildcard(keys);
   }
@@ -2180,8 +1691,6 @@ abstract class PluginRuntimeState {
   ): void {
     reportPluginIntegrity(pluginId, result, this.auditLog);
   }
-
-  // ─── Manifest Validator (lazy) ─────────────────────────────────────────────
 
   protected async getManifestValidator(): Promise<ValidateFunction> {
     if (this.manifestValidator) return this.manifestValidator;
@@ -2222,8 +1731,6 @@ abstract class PluginRuntimeState {
     }
   }
 
-  // ─── Sandbox helpers (instance-context wrappers) ───────────────────────────
-
   protected resolveEntryPathForPlugin(pluginRoot: string, entry: string): string {
     return resolveEntryPath(pluginRoot, entry, this.hostRoot);
   }
@@ -2241,10 +1748,7 @@ abstract class PluginRuntimeState {
     return ensurePluginDataDir(pluginId, pluginRoot, this.pluginsRoot);
   }
 
-  /**
-   * The plugin's data directory WITHOUT creating it — for callers that run per
-   * request rather than per load. See {@link resolvePluginDataDir}.
-   */
+  /** Resolve the data directory without creating it on per-request paths. */
   protected resolveDataDir(pluginId: string, pluginRoot: string): string {
     return resolvePluginDataDir(pluginId, pluginRoot, this.pluginsRoot);
   }
@@ -2288,10 +1792,7 @@ abstract class PluginRuntimeState {
       lifecycleHookScope.depth = 0;
       if (pending) {
         forgetPending();
-        // A factory may never settle after invalidation. Pending incarnations
-        // have not transferred their disposer list into `this.disposers`, so
-        // invalidation itself owns immediate cleanup. Splicing makes every late
-        // factory/error continuation's cleanup idempotent.
+        // Pending factories may never settle; revoke and splice their private disposers now so late cleanup is idempotent.
         const pendingDisposers = disposers.splice(0);
         this.runDisposerList(pendingDisposers, "pending HostApi invalidation");
       }
@@ -2308,7 +1809,7 @@ abstract class PluginRuntimeState {
           disposers.push(dispose);
           return;
         }
-        try { dispose(); } catch { /* best-effort stale cleanup */ }
+        try { dispose(); } catch {  }
       },
       trackOperation: <T>(operation: Promise<T>): Promise<T> => {
         const tracked = Promise.resolve(operation);
@@ -2335,8 +1836,7 @@ abstract class PluginRuntimeState {
         candidateApprovedPluginAccess,
       );
       const hostApi = hostEffects ? hostEffects.wrapHostApi(rawHostApi) : rawHostApi;
-      // Defence-in-depth: PluginHostApi.storage is required but partial hostApi
-      // objects from test harnesses may omit it.
+      // Partial test HostApi objects may omit required storage.
       if (!hostApi.storage) {
         throw new Error(
           `createHostApi returned an incomplete HostApi without storage: ${pluginId}`,
@@ -2406,8 +1906,6 @@ abstract class PluginRuntimeState {
     return url.href;
   }
 
-  // ─── Load Plan & Snapshots ─────────────────────────────────────────────────
-
   protected async resolveManifestLoadPlanInternal(onRefused?: (refusal: RegistryLoadRefusal) => void): Promise<ManifestLoadPlan[]> {
     return resolveManifestLoadPlan({
       manifestPaths: this.manifestPaths,
@@ -2417,26 +1915,7 @@ abstract class PluginRuntimeState {
     });
   }
 
-  /**
-   * #885 v6 — MODEL-ONLY (ratified security decision §2.4a). The `knownToolOwners`
-   * map is the pre-runtime `??` fallback in `resolveToolOwner`, feeding the
-   * "plugin still installing" guard (`throwIfToolOwnerNotReady`). Today's `tools[]` was model-facing
-   * only; a naive all-names `.map` would silently add the app-only auth trio to the
-   * access-control map (a widening). `isModelVisible` reproduces today's EXACT set;
-   * UI-only ownership still resolves at runtime via `methodMap` (all names), which stays
-   * authoritative.
-   *
-   * HOLDS AFTER app-only tools became registry `Tool`s. Registry membership (what may
-   * execute under the gate) and model exposure (what the LLM is shown) were split apart;
-   * THIS map independently records names while a plugin is starting, and stays
-   * exactly the model-visible set.
-   *
-   * ONE method, three callers (`rememberPluginManifest`, `load`, single-plugin add), so
-   * the MODEL-ONLY `.filter(isModelVisible)` lives once. Pinned by
-   * `__tests__/known-tool-owners-model-only.test.ts` (which exercises
-   * `rememberPluginManifest`; the other two callers share this method, so the pin covers
-   * them too). A future all-names `.map` here flips that pin closed.
-   */
+  /** Known tool owners are model-only because origin permission checks use this fallback; app-only tools must not enter it. */
   protected rememberToolOwners(pluginId: string, manifest: PluginManifest): void {
     for (const t of (manifest.tools ?? []).filter(isModelVisible)) {
       this.knownToolOwners.set(t.name, pluginId);
@@ -2460,7 +1939,7 @@ abstract class PluginRuntimeState {
     for (const [eventType, ownerId] of [...this.knownEventOwners.entries()]) {
       if (ownerId === pluginId) this.knownEventOwners.delete(eventType);
     }
-    this.rememberToolOwners(pluginId, manifest); // #885 §2.4a MODEL-ONLY (see method)
+    this.rememberToolOwners(pluginId, manifest);
     for (const eventType of getDeclaredEmittedEvents(manifest)) {
       this.knownEventOwners.set(eventType, pluginId);
     }
@@ -2490,12 +1969,7 @@ abstract class PluginRuntimeState {
     aliases.add(normalizedAlias);
   }
 
-  /**
-   * Manifest ids and deployment aliases share every public lifecycle entry
-   * point, so they must form one unambiguous namespace. Validate a complete
-   * batch before boot mutates runtime state, and validate again at each
-   * incremental alias adoption.
-   */
+  /** Manifest ids and deployment aliases share one unambiguous namespace; validate both full plans and incremental adoption. */
   protected assertPluginIdentityNamespace(
     mappings: Iterable<{ pluginId: string; alias?: string }>,
     reservedInstallIds: Iterable<string> = [],
@@ -2580,10 +2054,7 @@ abstract class PluginRuntimeState {
       recordAliasOwner(alias, pluginId);
     }
 
-    // Failed manifest/integrity rows still own their raw registry ids for
-    // diagnostics and cleanup. Consume the claims backed by successful
-    // mappings, then reject any remaining raw id that overlaps a canonical or
-    // alias identity.
+    // Failed rows still reserve raw registry ids for diagnostics and cleanup; reject overlaps with canonical ids or aliases.
     const successfulClaimCounts = new Map<string, number>();
     for (const { alias } of normalizedMappings) {
       if (!alias) continue;
@@ -2729,12 +2200,7 @@ abstract class PluginRuntimeState {
     }
   }
 
-  /**
-   * `manifestDocument` is the `plugin.json` as authored, not the flat
-   * projection: the registry's `manifestSha256` pins the FILE, and every other
-   * producer of that value hashes the document. Re-deriving it from the
-   * projection here would make the pin disagree with itself.
-   */
+  /** Hash the authored plugin.json document, not its flattened projection, to match registry receipt pins. */
   protected validatePreparedRegistryEntry(
     manifest: PluginManifest,
     registryEntry: Readonly<
@@ -2848,8 +2314,6 @@ abstract class PluginRuntimeState {
     );
   }
 
-  // ─── Lifecycle ─────────────────────────────────────────────────────────────
-
   waitForPluginReady(pluginId: string): Promise<void> {
     const canonicalId = this.resolveKnownPluginId(pluginId);
     if (this.preparation.isPreparing(canonicalId)) {
@@ -2859,14 +2323,7 @@ abstract class PluginRuntimeState {
     return this.preparation.waitForReady(canonicalId);
   }
 
-  /**
-   * Verify installed bytes before parsing any manifest, then parse each accepted
-   * manifest exactly once. Work overlaps with a conservative bound while the
-   * returned array preserves registry/load-plan order for deterministic state
-   * projection and failure reporting.
-   */
-
-  // ─── Private helpers ───────────────────────────────────────────────────────
+  /** Verify installed bytes before parsing once per manifest; preserve load-plan order despite bounded concurrency. */
 
   protected resetLoadedState(): void {
     for (const plugin of this.plugins.values()) {
@@ -3088,12 +2545,7 @@ abstract class PluginRuntimeState {
     );
   }
 
-  /**
-   * `attempt` is the boot or add attempt the failure belongs to, passed by
-   * the attempt itself — never looked up by plugin id, so an overlapping
-   * attempt for the same plugin can neither lend nor erase its diagnostics.
-   * With it, the card says where the attempt ran ({@link recordAttemptDiagnostics}).
-   */
+  /** Failure diagnostics belong to the exact attempt object, never a plugin-id lookup that may name a replacement. */
   protected markFailed(
     pluginId: string,
     stub?: { name: string; description: string },
@@ -3111,23 +2563,7 @@ abstract class PluginRuntimeState {
     if (attempt) this.recordAttemptDiagnostics(pluginId, attempt);
   }
 
-  /**
-   * THE reporter for every LOAD-boundary refusal: each gate decides *whether*
-   * to refuse and supplies the wording, none decides *how* it reaches the user.
-   *
-   * The obligation it discharges is the STUB. `listPluginCards()` projects
-   * exactly two maps — `knownPluginManifests` and `failedPluginStubs` — so a
-   * gate that reaches its verdict before the manifest is read (receipt check,
-   * registry-path trust check) and marks the id failed WITHOUT a stub produces
-   * no card at all: the plugin vanishes from the sidebar, Settings and the
-   * Plugin Doctor while its registry row still reports it installed.
-   *
-   * `kind` is what makes one refusal distinguishable from another: it selects
-   * the remedy sentence AND whether a reinstall is offered at all
-   * ({@link isReinstallFixableFailureKind}); undefined means unclassified,
-   * which is treated as reinstall-repairable. `summary` becomes the card
-   * description, `reason` the Doctor's "Error detail".
-   */
+  /** Every load refusal uses this reporter; summary is card text and reason is diagnostic detail. */
   protected markLoadRefused(
     pluginId: string,
     refusal: {
@@ -3147,16 +2583,7 @@ abstract class PluginRuntimeState {
     }, attempt);
   }
 
-  /**
-   * Plugin↔app minimum-version gate (LOAD boundary). Returns `true` and marks
-   * the plugin failed when `manifest.requires.minAppVersion` is higher than the
-   * running Ave app version; the caller then skips `start()`. Returns `false`
-   * (no field, or app satisfies the minimum) so the normal load path proceeds.
-   *
-   * Fail-closed: an unresolvable app version ("unknown" sentinel) blocks too.
-   * The failed-stub `description` carries the English IPC error message; the
-   * renderer maps the `incompatible-app-version` code to the Korean copy.
-   */
+  /** Refuse manifests requiring a newer app and expose a stable code for renderer localization. */
   protected markIncompatibleAppVersion(manifest: PluginManifest): boolean {
     const minAppVersion = manifest.requires?.minAppVersion;
     if (!minAppVersion) return false;
@@ -3173,26 +2600,14 @@ abstract class PluginRuntimeState {
     this.markLoadRefused(manifest.id, {
       summary: `plugin requires Ave >= ${minAppVersion}, current ${currentAppVersion}`,
       reason: `plugin requires Ave >= ${minAppVersion}, current ${currentAppVersion}`,
-      // NOT locally reinstall-fixable — the marketplace ships the same too-new
-      // package, so a reinstall re-throws. The Doctor must fall back to a
-      // diagnosis directing the user to update the app.
+      // Reinstalling the same package cannot resolve an app-version mismatch.
       kind: "incompatible-app-version",
       displayName: manifest.name ?? manifest.id,
     });
     return true;
   }
 
-  /**
-   * Host protocol gate (LOAD boundary), the sibling of
-   * {@link markIncompatibleAppVersion} and run beside it on every load path.
-   * Returns `true` and marks the plugin failed when `requires.hostProtocol`
-   * is missing or names a version this app does not serve
-   * (plugin-hostapi-protocol.md §3.2).
-   *
-   * A distinct refusal from `incompatible-app-version`, so the Doctor can say
-   * "this plugin was built for a different protocol" rather than "update the
-   * app" — a newer app may have dropped the version rather than lacking it.
-   */
+  /** Refuse unserved host protocols on every load path; a newer app may also have dropped that protocol. */
   protected markIncompatibleHostProtocol(manifest: PluginManifest): boolean {
     const declared = manifest.requires?.hostProtocol;
     if (isServedHostProtocolVersion(declared)) return false;
@@ -3203,7 +2618,6 @@ abstract class PluginRuntimeState {
     return true;
   }
 
-  /** Report an {@link IncompatibleHostProtocolError}, found before a spawn or at construct. */
   protected refuseIncompatibleHostProtocol(
     manifest: PluginManifest,
     error: IncompatibleHostProtocolError,
@@ -3212,20 +2626,13 @@ abstract class PluginRuntimeState {
     this.markLoadRefused(manifest.id, {
       summary: refusal.summary,
       reason: error.message,
-      // NOT locally reinstall-fixable — the same package speaks the same
-      // protocol after a reinstall.
+      // Reinstalling the same package cannot change its declared protocol.
       kind: refusal.kind,
       displayName: manifest.name ?? manifest.id,
     });
   }
 
-  /**
-   * The log line and audit event of a refusal a child factory raises, shared
-   * by every path that reports one: boot and add mark the plugin failed with
-   * the result, and prepared activation and restart record it as the
-   * attempt's refusal instead ({@link recordAttemptRefusal}), so all four emit
-   * the same event with the same fields.
-   */
+  /** Share refusal log and audit fields across boot, add, update, and restart. */
   protected reportFactoryRefusal(
     manifest: PluginManifest,
     error: IncompatibleHostProtocolError | ProcessEntryUnconfinedError | PluginSandboxGrantError,
@@ -3255,13 +2662,7 @@ abstract class PluginRuntimeState {
     };
   }
 
-  /**
-   * Record a refusal the child factory raised while a RUNNING plugin was being
-   * updated or restarted (decision 52): the incumbent generation keeps serving,
-   * so this never goes through {@link markLoadRefused} — which would mark the
-   * plugin failed while it is not — and touches no runtime state but the one
-   * map. Returns false for any other error, which the caller handles as before.
-   */
+  /** Record refused replacements separately so the incumbent remains loaded; unrelated errors return false. */
   protected recordAttemptRefusal(
     manifest: PluginManifest,
     error: unknown,
@@ -3284,24 +2685,18 @@ abstract class PluginRuntimeState {
     return true;
   }
 
-  /**
-   * A `process` entry with no live sandbox that confines processes, found at
-   * spawn. Siblings of {@link refuseIncompatibleHostProtocol}, so every load
-   * path leaves a card the Doctor names rather than a generic failure.
-   */
+  /** An unconfined process launch must produce a diagnostic refusal on every load path. */
   protected markProcessEntryUnconfined(manifest: PluginManifest, error: ProcessEntryUnconfinedError): void {
     const refusal = this.reportFactoryRefusal(manifest, error);
     this.markLoadRefused(manifest.id, {
       summary: refusal.summary,
       reason: error.message,
-      // NOT reinstall-fixable: neither the sandbox setting nor the platform
-      // changes with a reinstall.
+      // Reinstallation cannot change sandbox settings or platform capability.
       kind: refusal.kind,
       displayName: manifest.name ?? manifest.id,
     });
   }
 
-  /** A `process` entry whose install the provenance gate refused (decision 35). */
   protected markProcessEntryUnpinned(
     manifest: PluginManifest,
     error: ProcessEntryRequiresPinnedArtifactError,
@@ -3311,13 +2706,12 @@ abstract class PluginRuntimeState {
     this.markLoadRefused(manifest.id, {
       summary: "This extension requires an install pinned by a release or archive artifact.",
       reason: error.message,
-      // NOT reinstall-fixable: the same source yields the same provenance.
+      // The same install source yields the same provenance refusal.
       kind: "process-entry-requires-pinned-artifact",
       displayName: manifest.name ?? manifest.id,
     });
   }
 
-  /** Report a filesystem grant the host cannot give this plugin incarnation. */
   protected refuseSandboxGrant(manifest: PluginManifest, error: PluginSandboxGrantError): void {
     const refusal = this.reportFactoryRefusal(manifest, error);
     this.markLoadRefused(manifest.id, {
@@ -3328,14 +2722,7 @@ abstract class PluginRuntimeState {
     });
   }
 
-  /**
-   * Put where a failed boot or add attempt ran on the failure record the card
-   * projects (§9.8 A1, "Doctor, wired end to end"): the arm routing chose and
-   * the wrap its child got, `"not-spawned"` when no child existed. An attempt
-   * that failed before routing chose no arm, so it carries neither — and
-   * erases whatever an earlier attempt left, which no longer describes this
-   * plugin. Merged into the classification the refusal already wrote.
-   */
+  /** Capture routing and confinement from the exact failed attempt, replacing stale diagnostics. */
   protected recordAttemptDiagnostics(pluginId: string, attempt: PluginLoadAttemptResources): void {
     if (attempt.routed) {
       this.retainFailureDiagnostics(pluginId, attempt.routed.arm, this.confinementReport(attempt.routed.createPlugin));
@@ -3344,7 +2731,6 @@ abstract class PluginRuntimeState {
     }
   }
 
-  /** Drop an earlier attempt's arm and confinement; the rest of the record stays. */
   protected clearFailureDiagnostics(pluginId: string): void {
     const info = this.loadFailureInfo.get(pluginId);
     if (!info || (info.arm === undefined && info.confinement === undefined)) return;
@@ -3353,11 +2739,7 @@ abstract class PluginRuntimeState {
     else this.loadFailureInfo.set(pluginId, rest);
   }
 
-  /**
-   * The factory's own failure on a boot or add attempt: the refusal it names,
-   * or a plain failure, and where the attempt ran. One reporter for both
-   * paths, so they cannot drift.
-   */
+  /** Boot and add share factory-failure reporting so routing diagnostics cannot drift. */
   protected reportAttemptFactoryFailure(
     manifest: PluginManifest,
     err: unknown,
@@ -3375,7 +2757,6 @@ abstract class PluginRuntimeState {
     this.recordAttemptDiagnostics(manifest.id, attempt);
   }
 
-  /** The loaded generation's own arm and confinement, kept when it is failed closed. */
   protected retainLoadedPluginDiagnostics(pluginId: string, plugin: LoadedPlugin): void {
     this.retainFailureDiagnostics(pluginId, plugin.arm, plugin.confinement);
   }
@@ -3388,15 +2769,7 @@ abstract class PluginRuntimeState {
     this.loadFailureInfo.set(pluginId, { ...this.loadFailureInfo.get(pluginId), arm, confinement });
   }
 
-  /**
-   * Plugin revocation gate (LOAD boundary). A plugin whose installed version
-   * its bound source revoked (design §10.4) must not keep running — mirrors
-   * `markIncompatibleAppVersion` immediately above, including the
-   * "isolation" property: this plugin is skipped, every other plugin still
-   * loads normally. The registry holds only each plugin's own source's
-   * revocations, fed from the marketplace snapshots before plugins load; an
-   * `uninstall` revocation is refused here too until the marketplace removes it.
-   */
+  /** Refuse revoked installed versions at load, including uninstall revocations awaiting marketplace removal. */
   protected markRevoked(manifest: PluginManifest): boolean {
     const decision = revocationRegistry.evaluate("plugin", manifest.id, manifest.version);
     if (decision.kind === "allow") return false;
@@ -3413,9 +2786,7 @@ abstract class PluginRuntimeState {
     this.markLoadRefused(manifest.id, {
       summary: reason,
       reason,
-      // NOT locally reinstall-fixable — the source offers no install of a
-      // revoked version, and moving to another version is an update, not a
-      // "repair". The Doctor must show the reason and offer Remove.
+      // Reinstall cannot repair a revoked version; offer removal or a permitted update.
       kind: "plugin-revoked",
       displayName: manifest.name ?? manifest.id,
     });
@@ -3511,7 +2882,6 @@ abstract class PluginRuntimeState {
   prepareRuntimeRetirement(
     runtime: PluginRuntimeRetirementView,
   ): readonly PluginRuntimeRetirementStep[] {
-    // Its owner is retiring it now; shutdown must not stop it a second time.
     if (this.committedUnmappedGenerations.get(runtime.manifest.id) === runtime) {
       this.committedUnmappedGenerations.delete(runtime.manifest.id);
     }
@@ -3521,7 +2891,6 @@ abstract class PluginRuntimeState {
       this.retirementPhaseRuns.set(runtime.instance, runs);
     }
     const phaseRuns = runs;
-    // Every caller shares one run of each phase per generation.
     const once = (
       phase: PluginRuntimeRetirementPhase,
       run: () => void | Promise<void>,
@@ -3540,10 +2909,7 @@ abstract class PluginRuntimeState {
     });
     return Object.freeze([
       once("runtime.authority", () => {
-        // Revoke general HostApi authority before user stop code runs. Any
-        // exact operation admitted before publication can finish during
-        // coordinator drain; retirement begins only after those leases have
-        // been released.
+        // Revoke general HostApi authority before stop hooks; exact admitted leases have already drained.
         runtime.deactivateHostApi?.();
       }),
       once("runtime.stop", async () => {
@@ -3600,12 +2966,7 @@ abstract class PluginRuntimeState {
     ]);
   }
 
-  /**
-   * Settle with `work`, or reject with {@link PluginRuntimeShutdownError} once
-   * shutdown stops waiting for in-flight calls. The work itself is not
-   * cancelled: the caller is released, and whoever holds resources for the
-   * work keeps them until it settles (see `withPinnedGeneration`).
-   */
+  /** Shutdown may reject the caller while uncancelled work retains its lease until settlement. */
   protected untilRuntimeShutdown<T>(
     pluginId: string,
     method: string,
@@ -3629,20 +2990,7 @@ abstract class PluginRuntimeState {
     });
   }
 
-  /**
-   * The runtime's admission boundary into a plugin generation: every dispatch
-   * route (tool calls, panel and app calls, UI resources, host integrations)
-   * enters a generation here, through the generation access's one guarded
-   * acquisition. Shutdown closes that acquisition (see `stopAll`): a caller
-   * arriving after shutdown began, or still queued for its lease when it
-   * begins, is rejected with {@link PluginRuntimeShutdownError}.
-   *
-   * An operation still running when shutdown stops waiting rejects its caller
-   * the same way, but its lease is held until the operation itself settles —
-   * a host callback or delegate keeps the generation (and the payload its
-   * retirement removes) until it is done; a call into the child settles when
-   * the generation's stop phase ends the child.
-   */
+  /** Every dispatch pins one immutable generation until its work settles; stopping a child settles its calls. */
   protected async withPinnedGeneration<T>(
     pluginId: string,
     operation: (
@@ -3673,8 +3021,7 @@ abstract class PluginRuntimeState {
       lease.release();
       throw error;
     }
-    // Registered before the shutdown race below, so it has run by the time
-    // that race settles with the work's own outcome.
+    // Observe work before the shutdown race so its settlement is recorded first.
     let workSettled = false;
     let detachedSettlement: Promise<unknown> | undefined;
     const settled = work.then(
@@ -3697,12 +3044,7 @@ abstract class PluginRuntimeState {
     }
   }
 
-  /**
-   * Run a host-owned integration against the exact immutable plugin instance
-   * admitted for the duration of the operation. Callers must not retain the
-   * instance beyond the callback: disable, update, rollback, and uninstall all
-   * wait for this lease before retiring the generation.
-   */
+  /** Integrations must not retain the leased instance; replacement and removal wait for this operation. */
   async withPluginInstanceLease<TPlugin, TResult>(
     pluginId: string,
     operation: (instance: TPlugin) => Promise<TResult>,
@@ -3714,20 +3056,9 @@ abstract class PluginRuntimeState {
   }
 }
 
-// ---------------------------------------------------------------------------
-// PluginRuntimePublicationState
-// ---------------------------------------------------------------------------
-
 /** Host-private in-memory projections for an already prepared plugin generation. */
 abstract class PluginRuntimePublicationState extends PluginRuntimeState {
-  /**
-   * The add attempt that built a candidate projection, keyed by that exact
-   * projection object. Ownership changes where the generation coordinator
-   * commits the candidate: the lifecycle calls the prepared publication's
-   * `handOver()` in that turn, before any projection publishes, and from then
-   * on the committed generation owns the attempt's resources — whatever a
-   * later publication step does or throws.
-   */
+  /** Attempt ownership transfers at the coordinator commit, even if later publication throws. */
   protected readonly commitHandoffs = new WeakMap<PluginRuntimeGenerationProjection, () => void>();
 
   getRuntimeGenerationProjection(pluginId: string): PluginRuntimeGenerationProjection | undefined {
@@ -3753,7 +3084,6 @@ abstract class PluginRuntimePublicationState extends PluginRuntimeState {
     });
   }
 
-  /** The live method map with `pluginId`'s methods replaced by `methods`. */
   private methodMapWith(
     pluginId: string,
     methods: ReadonlyMap<string, PluginToolHandler>,
@@ -3782,8 +3112,7 @@ abstract class PluginRuntimePublicationState extends PluginRuntimeState {
       [{ pluginId, alias: runtime.installId ?? undefined }],
       runtime.installId === null ? [] : [runtime.installId],
     );
-    // Refuse a method another plugin owns now; publish checks again against
-    // whatever was published in between.
+    // Recheck method ownership at publication because another plugin may have committed meanwhile.
     this.methodMapWith(pluginId, runtime.methods);
     const plugin: LoadedPlugin = {
       activationId: runtime.activationId,
@@ -3806,8 +3135,7 @@ abstract class PluginRuntimePublicationState extends PluginRuntimeState {
       : `${pluginId}\0${predecessorGenerationId}`;
     const publishHostEffects = runtime.hostEffects?.preparePublish();
     let published = false;
-    // The coordinator committed `runtime`: the attempt that built it hands its
-    // resources to the committed generation, exactly once.
+    // Transfer resources exactly once when the coordinator commits, before runtime publication.
     const handOver = (): void => {
       if (!published) this.committedUnmappedGenerations.set(pluginId, runtime);
       const handOff = this.commitHandoffs.get(runtime);
@@ -3819,10 +3147,8 @@ abstract class PluginRuntimePublicationState extends PluginRuntimeState {
       handOver,
       publish: () => {
         if (published) return;
-        // Publishing is only done for a committed generation.
         handOver();
-        // Other plugins publish while this one awaits its commit, so the next
-        // maps are built from the live ones here, not from a prepare-time copy.
+        // Build publication maps from live state after commit awaits to preserve intervening plugin changes.
         const nextMethods = this.methodMapWith(pluginId, runtime.methods);
         this.plugins.get(pluginId)?.hostEffects?.supersede();
         publishHostEffects?.();
@@ -3835,12 +3161,10 @@ abstract class PluginRuntimePublicationState extends PluginRuntimeState {
         this.markPluginUiRevision(pluginId);
         this.failedPluginIds.delete(pluginId);
         this.loadFailureInfo.delete(pluginId);
-        // A committed generation supersedes any refused attempt before it:
-        // restart (`replaceRuntime`) and prepared activation both publish here.
+        // A committed generation supersedes earlier refused attempts.
         this.lastAttemptRefusal.delete(pluginId);
         this.disabledPluginIds.delete(pluginId);
-        // Auth outcomes can arrive after preparation. Retain the live bridge
-        // and erase only the exact predecessor's mutable generation state.
+        // Retain the live auth bridge; erase mutable state only for the exact predecessor generation.
         if (predecessorAuthKey !== undefined) {
           this.pluginAccountHashes.delete(predecessorAuthKey);
           this.pluginAuthInvocationEpochs.delete(predecessorAuthKey);
@@ -3892,23 +3216,7 @@ abstract class PluginRuntimePublicationState extends PluginRuntimeState {
     });
   }
 
-  /**
-   * Two different owners can fail here, and they do not deserve the same answer.
-   *
-   * `hostEffects.postPublish()` is the host's own generation fence. If it fails
-   * the host can no longer say which generation owns which effect, so throwing
-   * — which keeps dispatch closed — is the only safe answer.
-   *
-   * `instance.onPublished()` is the plugin's startup, and by the time it runs
-   * the instance is constructed and its handlers are already in the method map.
-   * A plugin whose startup failed is in the same state as one whose worker dies
-   * a second after a successful startup — except the later death leaves dispatch
-   * open and lets each call report the real reason, while the earlier one used
-   * to close dispatch for the whole session with no retry path, since readiness
-   * is only replaced when a new generation is committed. One condition, two
-   * opposite outcomes, decided by timing. So a startup failure is recorded as
-   * degraded and dispatch opens; the plugin answers per call.
-   */
+  /** Host post-publication fence failures and plugin startup failures have different owners; startup degradation still permits dispatch. */
   async postPublishRuntimeGeneration(runtime: PluginRuntimeGenerationProjection): Promise<void> {
     const hostFaults: Error[] = [];
     for (const error of runtime.hostEffects?.postPublish() ?? []) {
@@ -3948,10 +3256,6 @@ abstract class PluginRuntimePublicationState extends PluginRuntimeState {
   }
 }
 
-// ---------------------------------------------------------------------------
-// PluginRuntimeCapabilityLifecycle
-// ---------------------------------------------------------------------------
-
 type PreparedArtifactHostApiIncarnation = {
   hostApi: PluginHostApi;
   disposers: Array<() => void>;
@@ -3961,13 +3265,7 @@ type PreparedArtifactHostApiIncarnation = {
   lifecycleHookScope: PluginLifecycleHookScope;
 };
 abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublicationState {
-  /**
-   * Install-receipt integrity gate (LOAD boundary). Same "skip this plugin,
-   * keep loading everything else" shape as the gates below. The kind stays
-   * unclassified on purpose: reinstalling rewrites payload and receipt
-   * together, which is the repair `isReinstallFixableFailureKind(undefined)`
-   * lets the Doctor offer.
-   */
+  /** Receipt-integrity refusal skips only this plugin and preserves reinstall repair classification. */
   protected markReceiptIntegrityFailed(
     pluginId: string,
     reason: string,
@@ -4028,12 +3326,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
     pluginId: string,
     providerIds: readonly string[],
   ): void;
-  /**
-   * A capability-blocked boot candidate is loaded enough to have a runtime
-   * projection, but it has never published a bundle generation. The bundle
-   * lifecycle deliberately rejects normal deactivation for that state, because
-   * an active pointer must never be fabricated just to tear down a candidate.
-   */
+  /** Unpublished capability-blocked candidates have no active bundle pointer; never fabricate one for teardown. */
   protected isUnpublishedLoadedCandidate(
     pluginId: string,
     plugin: LoadedPlugin,
@@ -4071,13 +3364,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
     }
   }
 
-  /**
-   * Retire resources owned by an unpublished candidate. The map/method state is
-   * deliberately not touched here: direct removal detaches it synchronously,
-   * while prepared replacement has already published the successor. A failed
-   * stop, effect cleanup, or HostApi drain preserves the old retained root and
-   * is surfaced to the caller's retirement contract.
-   */
+  /** Retire only unpublished candidate resources; cleanup failure retains its old root and reaches the caller. */
   private async retireUnpublishedCandidateResources(
     pluginId: string,
     plugin: LoadedPlugin,
@@ -4143,12 +3430,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
     this.throwUnpublishedCandidateCleanupErrors(pluginId, cleanupErrors);
   }
 
-  /**
-   * Discard exactly one unstarted, unpublished candidate without touching the
-   * bundle-generation pointer. Callers own durable state, retry cancellation,
-   * and catalog bookkeeping; this method only retires the candidate-local
-   * runtime resources it can prove still belong to `plugin`.
-   */
+  /** Discard the exact unstarted candidate without touching bundle pointers or a replacement runtime. */
   protected detachUnpublishedLoadedCandidate(
     pluginId: string,
     plugin: LoadedPlugin,
@@ -4164,8 +3446,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
     } catch (error) {
       cleanupErrors.push(error instanceof Error ? error : new Error(String(error)));
     }
-    // Do not remove a same-id successor's handlers if a stale callback manages
-    // to interleave with this candidate cleanup.
+    // Stale candidate cleanup must preserve a same-id successor’s handlers.
     if (this.plugins.get(pluginId) !== plugin) {
       throw new Error(`plugin '${pluginId}' unpublished candidate changed during cleanup`);
     }
@@ -4190,11 +3471,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
       );
   }
 
-  /**
-   * Retire a candidate displaced by a successfully published replacement. Its
-   * successor already owns the runtime maps, so this only touches resources
-   * captured from the exact old object and never mutates current map entries.
-   */
+  /** Displaced-candidate retirement touches captured old resources only; the successor owns current maps. */
   private retireDisplacedUnpublishedLoadedCandidate(
     pluginId: string,
     plugin: LoadedPlugin,
@@ -4230,8 +3507,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
     this.beginPluginLifecycleOperation(canonicalPluginId);
     this.preparation.clearFor(canonicalPluginId);
     this.pendingRestartPreparations.delete(canonicalPluginId);
-    // Late incarnations own private disposers; tracked state can be purged
-    // without waiting on an invalidated preparation that may never settle.
+    // Late incarnations own private disposers, so invalidated preparation need not settle before tracked state is purged.
     const plugin = this.plugins.get(canonicalPluginId);
     let retirementError: unknown;
     let unpublishedCleanup: (() => Promise<void>) | undefined;
@@ -4254,9 +3530,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
         retirementError = await this.captureCommittedRetirementFailure(canonicalPluginId, retirement, "plugin removal");
       }
     } else if (this.generationLifecycle?.getActive(canonicalPluginId)) {
-      // The coordinator committed a generation whose runtime publication then
-      // failed, so the runtime map never named it. That generation owns the
-      // instance, incarnation and root; only its retirement releases them.
+      // A committed generation still owns its resources when runtime-map publication fails; only retirement releases them.
       const { retirement } = await this.requireCapabilityCommitLifecycle("plugin removal").deactivateWithCommit(
         canonicalPluginId,
         async () => undefined,
@@ -4283,8 +3557,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
       log.info(`removePlugin: plugin in non-loaded state (failed/disabled), purging tracking — ${pluginId}`);
     }
 
-    // stop() may persist configuration while releasing resources. Delete the
-    // runtime override only after that hook has been bounded and deactivated.
+    // Stop hooks may persist config; delete overrides only after bounded deactivation.
     if (!options.preserveConfigOverride) {
       this.configStore.delete(canonicalPluginId);
     }
@@ -4318,27 +3591,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
     if (retirementError !== undefined) throw retirementError;
   }
 
-  /** Instantiate and start one post-boot plugin without rebuilding its peers. */
-  /**
-   * One add attempt, owned by its own {@link PluginLoadAttemptResources}: the
-   * object is the attempt's identity, holds the factory routing returned and
-   * whatever the attempt took before invoking it, and is passed explicitly to
-   * every report the attempt makes — so an overlapping add or boot of the
-   * same plugin can neither lend nor erase its diagnostics. An earlier
-   * attempt's arm and confinement are dropped up front: a failure before
-   * routing chose no arm. A throw after routing that the attempt did not
-   * report itself (data directory, HostApi incarnation, a duplicate tool, a
-   * rejected publication) is reported here as a crashed load, unless the
-   * attempt was cancelled, and the add still rejects with it. A throw after
-   * the coordinator committed the generation is not the attempt's: the
-   * committed generation owns its resources and its failure (the lifecycle
-   * records a post-commit fault and settles dispatch), and a normal removal
-   * retires it, so the attempt neither releases nor refuses anything.
-   *
-   * The add always rejects with the very error object it caught. That object
-   * is never modified: cleanup failures are logged and audited where they
-   * happen, never attached to it.
-   */
+  /** Each add attempt owns its resources until handover; cleanup failures must not replace the original error. */
   protected async instantiateAndStartSinglePlugin(
     plan: ManifestLoadPlan,
     manifest: PluginManifest,
@@ -4367,8 +3620,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
         log.error(`${manifest.id} add rejected after its generation was committed; the committed generation owns it: ${errorMessage(err)}`);
       } else if (attempt.routed) {
         if (this.isShuttingDown()) {
-          // Refused because the host is shutting down, not crashed: released,
-          // not reported as a load failure.
+          // Shutdown refusal releases resources without reporting a plugin crash.
           await this.releaseAttempt(attempt, "plugin runtime shutdown");
         } else if (opts.shouldCommit?.() ?? true) {
           await this.abandonCrashedPluginLoad(attempt, err);
@@ -4380,16 +3632,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
     }
   }
 
-  /**
-   * Release whatever the crashed attempt still owns, then report it.
-   *
-   * What the attempt owns is its own: a plugin already registered for this id
-   * — another attempt's generation, or this one's after it handed ownership
-   * over — is never touched (see {@link PluginLoadAttemptResources}). The
-   * report carries where the attempt ran when it had been routed. Neither a
-   * cleanup that fails nor an audit sink that throws replaces the crash being
-   * reported: both are logged, and the card is recorded regardless.
-   */
+  /** Release only this failed attempt’s resources; cleanup failure must not replace its diagnostic outcome. */
   protected async abandonCrashedPluginLoad(
     resources: PluginLoadAttemptResources,
     err: unknown,
@@ -4411,10 +3654,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
     }, resources);
   }
 
-  /**
-   * Audit an attempt's failure. The audit is a report about a failure, so a
-   * throwing audit sink is logged and never becomes the outcome itself.
-   */
+  /** A throwing audit sink is reported separately and never replaces the failure being audited. */
   protected auditAttemptEvent(type: string, data: { pluginId: string } & Record<string, unknown>): void {
     try {
       this.auditLog?.("error", type, data);
@@ -4423,28 +3663,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
     }
   }
 
-  /**
-   * Release everything `attempt` still owns, each resource exactly once: the
-   * field is cleared before its step runs, so a second call — or a throw
-   * part-way — never repeats one.
-   *
-   * Order: the incarnation's disposer list is taken first; then the HostApi
-   * incarnation stops answering (authority ends before anything else, so the
-   * instance cannot add effects while it is being stopped); then the
-   * constructed instance is stopped, ending its child; only then are its
-   * effects disposed — the prepared host-effect scope is discarded and the
-   * taken disposers run — its operations drained, and the unpublished root
-   * removed. Taking the list first is what keeps `deactivate` from running the
-   * disposers itself ahead of the stop: invalidating a pending incarnation runs
-   * whatever is still on its list at once, because a factory may never settle.
-   * That eager path still applies when something other than this release
-   * invalidates the incarnation (a removal racing the factory); it then finds
-   * the list already run, and this release finds it empty.
-   *
-   * Every step runs even if an earlier one fails; failures are logged,
-   * audited and returned, never thrown, so the caller's own outcome — a failed
-   * card, a cancellation, the original error — stands.
-   */
+  /** Clear each resource before release so retries and throws cannot release it twice; retain the caller’s original outcome. */
   protected async releaseAttempt(
     attempt: PluginLoadAttemptResources,
     context: string,
@@ -4493,11 +3712,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
     return failures;
   }
 
-  /**
-   * Hand what the attempt owns to the committed generation (add) or the
-   * registered plugin (boot); the attempt releases nothing after this, and a
-   * later rejection is that owner's.
-   */
+  /** After handover the committed generation owns every resource, including cleanup after later rejection. */
   protected handOverAttempt(attempt: PluginLoadAttemptResources): void {
     attempt.incarnation = undefined;
     attempt.constructed = undefined;
@@ -4517,8 +3732,6 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
     const canCommit = () => opts.shouldCommit?.() ?? true;
     if (!canCommit()) return "cancelled";
     this.rememberPluginInstallAlias(manifest.id, plan.pluginIdHint);
-    // What this path verified, for the process-entry gate; `undefined` when
-    // there is no registry id to verify a receipt under.
     let verified: PluginIntegrityEvidence | undefined;
     if (plan.pluginIdHint) {
       const integrityResult = await this.verifyReceiptAndDevGuard(
@@ -4528,10 +3741,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
       if (!canCommit()) return "cancelled";
       if (integrityResult.ok) verified = integrityResult.verified;
       if (!integrityResult.ok) {
-        // Keyed by the canonical manifest id — the caller already remembered
-        // the manifest under it, so the registry-id key the receipt check uses
-        // would leave that card reporting a non-failed status and strip the
-        // reason from `throwIfPluginFailedAfterAdd`.
+        // Receipt failures must be keyed by canonical manifest id so card status and add failure checks see them.
         this.markReceiptIntegrityFailed(
           manifest.id,
           integrityResult.reason,
@@ -4541,19 +3751,16 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
       }
     }
 
-    // Plugin↔app minimum-version gate — HARD BLOCK at LOAD (see boot path).
     if (!canCommit()) return "cancelled";
     if (this.markIncompatibleAppVersion(manifest)) {
       return "failed";
     }
 
-    // Host protocol gate — HARD BLOCK at LOAD, beside the app-version gate.
     if (!canCommit()) return "cancelled";
     if (this.markIncompatibleHostProtocol(manifest)) {
       return "failed";
     }
 
-    // Plugin revocation gate — HARD BLOCK at LOAD (see boot path).
     if (!canCommit()) return "cancelled";
     if (this.markRevoked(manifest)) {
       return "failed";
@@ -4567,9 +3774,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
         missingCapabilities,
       );
       if (preparingProviderIds) {
-        // This branch is reached only by PreparationTracker after the
-        // consumer's own preparation completed. Waiting here is background
-        // work, so startAll/restartAll remain nonblocking.
+        // Provider waits run only in background preparation so boot and restart remain nonblocking.
         if (opts.skipPreparation) {
           await this.waitForPreparingCapabilityProviderChange(
             preparingProviderIds,
@@ -4582,9 +3787,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
             opts,
           );
         }
-        // Let the existing tracker own a consumer's own preparation first.
-        // If it has no preparation hook, retain only the id and re-enter via
-        // addPlugin once a provider settles so current identity is re-read.
+        // After provider preparation settles, re-enter by id and resolve current identity rather than retaining a stale plan.
         if (
           this.preparation.deferStart(
             plan,
@@ -4686,10 +3889,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
         pluginDataDir,
         hostEffects,
       );
-    // The attempt owns the root, the incarnation and — once the factory
-    // returns — the instance, until the plugin is registered; every exit
-    // below releases them through `releaseAttempt`, and a throw nobody here
-    // caught is released by the add wrapper.
+    // Until registration, the attempt owns root, incarnation, and instance; every exit releases through releaseAttempt.
     attempt.incarnation = { deactivate, disposers, drainOperations, hostEffects };
 
     let instance: RuntimePlugin;
@@ -4721,8 +3921,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
       await this.releaseAttempt(attempt, "failed add factory");
       if (!canCommit()) return "cancelled";
       log.error(`${manifest.id} createPlugin failed: %s`, (err as Error).message);
-      // A child whose `construct` named a host method this app does not serve
-      // is the same refusal as an unserved declared version, and says so.
+      // An unserved construct method is a host-protocol refusal, like an unserved declared version.
       this.reportAttemptFactoryFailure(manifest, err, attempt);
       return "failed";
     }
@@ -4801,9 +4000,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
       arm: routed.arm,
       confinement: this.confinementReport(createPlugin),
     });
-    // Ownership passes when the coordinator commits `candidate` (see
-    // `commitHandoffs`), not when this await settles: the lifecycle can
-    // still reject after the commit, before or after the runtime publishes.
+    // Ownership transfers at coordinator commit; the lifecycle await can still reject before or after runtime publication.
     let rejectedAfterCommit: { error: unknown } | undefined;
     this.commitHandoffs.set(candidate, () => this.handOverAttempt(attempt));
     try {
@@ -4835,22 +4032,18 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
         }
         throw error;
       }
-      // Committed before the rejection: the generation owns every resource,
-      // and the lifecycle recorded its post-commit fault and settled its
-      // dispatch. Finish what the commit implies below, then reject with it.
+      // Post-commit rejection belongs to the generation; finish committed bookkeeping before returning the lifecycle fault.
       rejectedAfterCommit = { error };
     } finally {
       this.commitHandoffs.delete(candidate);
     }
-    // A resolved publication committed the generation even when the lifecycle
-    // did not call this runtime's hand-over step itself.
+    // Resolved publication commits ownership even when a lifecycle adapter omitted the handover callback.
     this.handOverAttempt(attempt);
     if (!rejectedAfterCommit) {
       this.finishCommittedAdd(manifest.id, startupMs);
       return "started";
     }
-    // The lifecycle's error is the add's outcome. A failure in the bookkeeping
-    // that follows is a second, separate failure: reported, never instead.
+    // Bookkeeping failure is reported separately and must not replace the lifecycle error.
     try {
       this.finishCommittedAdd(manifest.id, startupMs);
     } catch (followUpError) {
@@ -4863,7 +4056,6 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
     throw rejectedAfterCommit.error;
   }
 
-  /** What a committed add implies for the runtime's own bookkeeping. */
   private finishCommittedAdd(pluginId: string, startupMs: number): void {
     this.inactivePluginIds.delete(pluginId);
     this.perf.recordStartup(pluginId, startupMs);
@@ -4871,7 +4063,6 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
     this.onEnable?.(pluginId);
   }
 
-  /** Capability providers are successfully started, actively admitted generations. */
   protected capabilityDependencies(): CapabilityDependencies {
     return new CapabilityDependencies(
       this.knownPluginManifests,
@@ -4879,22 +4070,13 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
     );
   }
 
-  /**
-   * The generation coordinator is authoritative. The local started bit also
-   * prevents an unstarted boot candidate from being treated as active by
-   * legacy/test lifecycle adapters.
-   */
+  /** The coordinator owns admission; the local started bit also excludes unstarted candidates in lifecycle adapters. */
   protected isPluginGenerationActive(pluginId: string): boolean {
     return this.plugins.get(pluginId)?.started === true
       && Boolean(this.generationLifecycle?.getActive(pluginId));
   }
 
-  /**
-   * Returns a non-empty provider set only when every missing capability can be
-   * supplied by a provider that is already preparing. Callers must not await
-   * it on a boot/restart path: readiness is watched in the background so a
-   * hung preparation cannot hold the runtime startup promise open.
-   */
+  /** Only already-preparing providers may defer consumers; background waits must not hold startup open. */
   protected preparingCapabilityProviderIds(
     manifest: PluginManifest,
     missingCapabilities: readonly string[],
@@ -4913,9 +4095,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
       candidatesByCapability.set(capability, candidates);
     }
 
-    // A preparation task that would wait back on the current plugin can never
-    // publish a provider. Reject that cycle here so both tasks fail closed
-    // instead of leaving boot/restart indefinitely "preparing".
+    // Reject preparation cycles before either plugin can remain indefinitely preparing.
     const waitableByCapability = new Map<string, string[]>();
     for (const [capability, candidates] of candidatesByCapability) {
       const waitable = candidates.filter(
@@ -4927,7 +4107,6 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
     return [...new Set([...waitableByCapability.values()].flat())];
   }
 
-  /** Waits only inside an already-background preparation task. */
   private async waitForPreparingCapabilityProviderChange(
     providerIds: readonly string[],
   ): Promise<void> {
@@ -4938,11 +4117,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
     );
   }
 
-  /**
-   * Keep a consumer visibly preparing and retry it only after one of its
-   * concrete provider preparations settles. The retry callback must resolve
-   * current runtime identity itself; no stale load plan is retained here.
-   */
+  /** Retry after a concrete provider settles, resolving current runtime identity in the callback. */
   protected deferCapabilityBlockedRetry(
     pluginId: string,
     providerIds: readonly string[],
@@ -4973,11 +4148,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
     }
   }
 
-  /**
-   * Captures the exact consumer incarnation that was blocked. A later
-   * remove, disable, reset, restart, or reinstall must make the old callback
-   * a no-op even if a provider's original readiness promise settles late.
-   */
+  /** Capture the blocked incarnation so remove, disable, reset, restart, or reinstall invalidates late retries. */
   protected capabilityBlockedRetryGuard(
     pluginId: string,
     manifest: PluginManifest,
@@ -5002,8 +4173,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
       resolvePromise = resolve;
       rejectPromise = reject;
     });
-    // Callers can intentionally observe cancellation failures; avoid an
-    // unhandled rejection when no caller requested readiness for this block.
+    // Observe cancellation rejection even when nobody requested readiness.
     void promise.catch(() => undefined);
     return {
       promise,
@@ -5049,8 +4219,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
       return;
     }
     if (expectedReadiness && readiness !== expectedReadiness) return;
-    // A re-deferred retry owns the same readiness promise. An old watcher must
-    // never reject that newer attempt after it has replaced the map entry.
+    // An old watcher must not reject a newer retry that replaced its readiness entry.
     if (expectedEntry && current && current !== expectedEntry) return;
     this.capabilityBlockedRetries.delete(pluginId);
     this.capabilityBlockedReadiness.delete(pluginId);
@@ -5059,7 +4228,6 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
     readiness.reject(error);
   }
 
-  /** Cancel one blocked consumer and fail all of its outstanding waiters. */
   protected clearCapabilityBlockedRetry(
     pluginId: string,
     reason = `plugin '${pluginId}' capability dependency wait was cancelled`,
@@ -5170,7 +4338,6 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
       }
     }).catch(() => undefined);
   }
-  /** True when a preparing provider would itself wait back on `targetPluginId`. */
   private preparingCapabilityCanReach(
     pluginId: string,
     targetPluginId: string,
@@ -5192,9 +4359,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
           && candidate.capabilities?.includes(capability),
         )
         .map(([candidatePluginId]) => candidatePluginId);
-      // One alternative provider that can progress without the target breaks
-      // this path; a cycle is mandatory only when every candidate for a
-      // required capability routes back to the target.
+      // A cycle is mandatory only when every provider for a requirement routes back to the target.
       if (
         providers.length > 0
         && providers.every((providerId) =>
@@ -5223,12 +4388,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
     }
   }
 
-  /**
-   * The bundle lifecycle prepares candidates outside this scope, then calls it
-   * immediately around the generation-pointer commit. This closes the gap
-   * between dependency admission and a concurrent provider teardown without
-   * serializing module import or plugin startup.
-   */
+  /** The generation-pointer commit scope closes capability races without serializing import or startup. */
   protected capabilityDependencyCommitScope(
     assertDependencies: () => void,
   ): CapabilityDependencyCommitScope {
@@ -5245,11 +4405,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
     return this.requireGenerationLifecycle(operation) as CapabilityCommitScopedGenerationLifecycle;
   }
 
-  /**
-   * Refuse a provider teardown when it is the last active provider for an
-   * already-admitted consumer. Cascading teardown would be surprising and
-   * could expose a consumer while its declared runtime prerequisite is gone.
-   */
+  /** Refuse teardown of the last active provider needed by an admitted consumer. */
   protected assertNoActiveCapabilityDependents(
     providerPluginId: string,
     operation: "disable" | "remove",
@@ -5261,12 +4417,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
     );
   }
 
-  /**
-   * Before removing a provider or publishing its replacement, prove every
-   * already-active consumer remains covered by the post-change provider set.
-   * A replacement may legitimately change capabilities only when another
-   * active provider covers each affected consumer requirement.
-   */
+  /** Before removal or replacement, prove the post-change provider set covers every active consumer. */
   protected assertActiveCapabilityDependentsRemainSatisfied(
     providerPluginId: string,
     replacementManifest: PluginManifest | undefined,
@@ -5302,8 +4453,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
           return [];
         }
         const required = candidateManifest.requires?.capabilities ?? [];
-        // A consumer cannot satisfy its own declaration. This mirrors the
-        // normal admission resolver, which always excludes the candidate id.
+        // A consumer cannot satisfy its own capability requirement.
         const dependencyResult = resolveDependencies(
           required,
           availableProviders.filter(
@@ -5318,7 +4468,6 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
     return blocked;
   }
 
-  /** Plugin live-reload (dev only). */
   async reloadPlugin(pluginId: string): Promise<void> {
     const canonicalPluginId = this.resolveKnownPluginId(pluginId);
     this.assertPluginLifecycleAvailable(canonicalPluginId);
@@ -5339,7 +4488,6 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
     }
   }
 
-  /** Prepare and atomically publish one immutable marketplace generation. */
   async activatePreparedArtifact<T>(
     input: PreparedArtifactRuntimeActivationInput<T>,
   ): Promise<CommittedPluginGeneration<T>> {
@@ -5365,12 +4513,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
       input.registryEntry,
       manifestDocument,
     );
-    // Marketplace activation builds and starts the candidate directly from the
-    // verified staging tree, so it does not pass through restartPlugin's
-    // dependency-preparation gate. Prepare declared host-managed runtimes here
-    // before the factory snapshots configOverrides; otherwise Python-backed
-    // candidates start without the injected pythonExecutable and the atomic
-    // update rolls back even though ordinary boot/restart can prepare them.
+    // Marketplace activation starts from verified staging without restart preparation; unmet dependencies roll the atomic update back.
     const preparationResult = await this.preparePluginStart?.({
         pluginId: manifest.id,
         manifest,
@@ -5428,9 +4571,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
     };
     let routed: RoutedPluginFactory;
     try {
-      // The staged receipt is verified against the payload it materialised the
-      // same way a cached one is, so this path hands the gate evidence of its
-      // own rather than trusting the installer's word for it (decision 35).
+      // Verify the staged receipt against its own payload instead of trusting installer provenance claims.
       const staged = await verifyInstallReceiptRaw(input.receiptRaw, installId, payloadRoot);
       if (!staged.ok) {
         throw new Error(`prepared artifact '${manifest.id}' receipt does not verify against its payload: ${staged.reason}`);
@@ -5474,11 +4615,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
     } = hostApiIncarnation;
     let instance: RuntimePlugin | undefined;
     let candidateRelease: Promise<void> | undefined;
-    // Release what this activation built and has not handed to the
-    // coordinator — once, whether the activation's own failure or shutdown
-    // asks first.
-    // Every step runs even if an earlier one fails, so the payload is removed
-    // whenever it can be; the failures are thrown together afterwards.
+    // Release every uncommitted activation resource once; attempt all cleanup steps before throwing their combined failures.
     const releaseUncommittedCandidate = (): Promise<void> => {
       candidateRelease ??= (async () => {
         const failures: unknown[] = [];
@@ -5563,9 +4700,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
         arm: routed.arm,
         confinement: this.confinementReport(createPlugin),
       });
-      // Built and started. From here shutdown may release the candidate itself
-      // — the coordinator refuses to publish it once admission has closed — so
-      // a durable commit still held then does not keep its child alive.
+      // Shutdown may release a constructed candidate while its durable commit is pending; closed admission prevents publication.
       if (this.isShuttingDown()) {
         throw new PluginRuntimeShutdownError(manifest.id, "prepared artifact activation");
       }
@@ -5573,9 +4708,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
         generationLifecycle.getActive(manifest.id)?.generationId === generationId
           ? Promise.resolve()
           : releaseUncommittedCandidate();
-      // Awaited here, inside the try: a rejection from the locked publication
-      // (preparation, the durable commit) must reach the catch below, which
-      // releases the candidate unless the coordinator committed it.
+      // Await publication inside this try so rejection releases the candidate unless ownership already committed.
       return await withPluginInstallLock(manifest.id, async () => {
         let displacedUnpublishedCandidate:
           | { plugin: LoadedPlugin; disposers: Array<() => void> | undefined }
@@ -5615,9 +4748,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
           this.mergeConfigOverride(manifest.id, candidateConfigOverride);
         }
 
-        // The durable commit and pointer publication have succeeded. Only now
-        // may a blocked incumbent lose its readiness/retry state; durable
-        // failure above leaves that exact candidate retryable.
+        // Clear blocked retry state only after durable commit and pointer publication; failed commits leave it retryable.
         this.clearCapabilityBlockedRetry(
           manifest.id,
           `plugin '${manifest.id}' capability dependency wait was superseded by prepared activation`,
@@ -5639,9 +4770,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
           .then(() => undefined);
         const completion = Promise.all([result.completion, displacedRetirement])
           .then(() => undefined);
-        // Consumers may await the returned retirement; attaching this observer
-        // simply prevents an unobserved async cleanup failure from becoming an
-        // unhandled rejection before that happens.
+        // Observe retirement rejection until consumers await it.
         void retirement.catch(() => undefined);
         void completion.catch(() => undefined);
         return Object.freeze({
@@ -5672,12 +4801,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
           });
         }
       }
-      // A refusal the child factory raised at invocation (an unserved
-      // `hostProtocol` that reached this path without the boot/add gate, or a
-      // sibling refusal) is this attempt's, never the running generation's:
-      // reported with the boot/add audit event and recorded for the card, and
-      // the incumbent is not touched. The error still propagates, so the
-      // install flow surfaces it as the update's failure.
+      // Record child-factory refusal against the replacement attempt while the incumbent keeps serving; propagate the update error.
       if (!committed) this.recordAttemptRefusal(manifest, error, "update");
       throw error;
     }
@@ -5694,11 +4818,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
       this.assertNoActiveCapabilityDependents(canonicalPluginId, "remove");
       return commitAtomicPluginRemoval({
         requestedPluginId: pluginId,
-        // An unstarted capability-blocked candidate owns a local runtime
-        // projection but no bundle generation. Atomic removal must commit the
-        // marketplace transaction first, then let removePlugin discard that
-        // candidate locally instead of asking PluginBundleLifecycle to invent
-        // an inactive generation for it.
+        // Unpublished blocked candidates have no bundle pointer; commit removal before retiring their local resources.
         loaded: Boolean(generationLifecycle.getActive(canonicalPluginId)),
         known: this.hasTrackedPluginState(canonicalPluginId),
         hasActiveGeneration: () => Boolean(generationLifecycle.getActive(canonicalPluginId)),
@@ -5722,39 +4842,14 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
     });
   }
 
-  // ─── Dispatcher / Bridge ───────────────────────────────────────────────────
-
 }
-
-// ---------------------------------------------------------------------------
-// PluginRuntimeLifecycle
-// ---------------------------------------------------------------------------
 
 const BOOT_START_CANCELLED = "plugin start cancelled";
 
-/**
- * What one in-flight load attempt has taken from the host so far, so that a
- * throw anywhere inside it can still be unwound and named. `pluginId` starts
- * as the registry id and narrows to the canonical manifest id the moment the
- * manifest is in hand — a crash before that point is still attributable.
- *
- * One boot or add attempt to load a plugin. The object is the attempt's
- * identity: it is created per attempt, never shared or looked up by plugin
- * id, and handed explicitly to every report the attempt makes.
- *
- * It also OWNS what the attempt has taken and not yet handed over: the
- * unpublished root, the HostApi incarnation and, once the factory returned,
- * the constructed instance (whose child is running). Each is set when taken
- * and cleared when ownership passes on — to the generation the coordinator
- * committed (add) or the registered plugin (boot) — or when {@link PluginRuntimeCapabilityLifecycle.releaseAttempt}
- * releases it, so every exit releases each resource exactly once, whichever
- * path or throw it leaves by.
- */
+/** One attempt owns every acquired resource until handover, so every early exit can release it exactly once. */
 type PluginLoadAttemptResources = {
   pluginId: string;
-  /** The factory routing returned; set once routing chose the arm. */
   routed?: RoutedPluginFactory;
-  /** Materialized candidate generation root; unpublished until `commit()`. */
   runtimeRoot?: string;
   incarnation?: {
     deactivate: () => void;
@@ -5762,42 +4857,16 @@ type PluginLoadAttemptResources = {
     drainOperations: () => Promise<void>;
     hostEffects: HostApiGenerationScope;
   };
-  /** The instance the factory returned, until registered or stopped. */
   constructed?: {
     instance: RuntimePlugin;
     lifecycleHookScope: PluginLifecycleHookScope;
   };
-  /**
-   * Set at the moment ownership leaves the attempt: when the coordinator
-   * commits an add's generation, or when boot registers the plugin. From then
-   * on a failure, even one the attempt's own await surfaces, belongs to that
-   * owner: the attempt releases nothing and records no refusal.
-   */
+  /** Coordinator commit or boot registration transfers ownership; later failure must not trigger attempt cleanup or refusal. */
   handedOver?: true;
-  /**
-   * Where {@link PluginRuntimeCapabilityLifecycle.releaseAttempt} records its
-   * failures, when the attempt is a tracked construction shutdown reports on.
-   */
   cleanupFailures?: unknown[];
 };
 class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
-  /**
-   * Where every plugin's factory comes from (`docs/design/plugin-hostapi-protocol.md`
-   * §9.8 A1, decision 50).
-   *
-   * Every instantiation path — boot load, add, restart, capability reload,
-   * prepared activation — reaches the plugin's factory through this one
-   * method. Routing has no input: there is no routing SOT, no plugin-id table,
-   * no manifest field, setting or environment variable that selects an arm.
-   * After the provenance gate and the kind check, a `process` source gets its
-   * process launch and an `entry` source gets a factory that spawns the
-   * plugin's child; nothing is imported into main.
-   *
-   * It is a routing decision and NOT a fallback: nothing here retries
-   * in-process when the child arm fails. A plugin whose child cannot be spawned
-   * or confined fails to load, which is the same outcome an unimportable entry
-   * module has.
-   */
+  /** All lifecycle paths use one factory-routing funnel; unconfined process launches fail rather than falling back. */
   protected async importPluginFactoryForLifecycle(
     pluginId: string,
     source: PluginFactorySource,
@@ -5805,9 +4874,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
     verified: PluginIntegrityEvidence | undefined,
   ): Promise<RoutedPluginFactory> {
     this.assertPluginLifecycleAvailable(pluginId);
-    // FIRST, before routing: a `process` manifest without pinned provenance is
-    // refused on every activation path before any factory exists (decision
-    // 35). Each caller passes the evidence IT verified, or `undefined`.
+    // Verify process-entry provenance before factory routing, using this caller’s own receipt evidence.
     assertProcessEntryAdmitted(manifest, verified);
     if (source.kind !== pluginEntryKind(manifest)) {
       throw new Error(`plugin '${pluginId}' factory source is '${source.kind}' but its manifest declares '${pluginEntryKind(manifest)}'`);
@@ -5824,12 +4891,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
         ? { onMalformedCredentialSelector: this.onMalformedCredentialSelector }
         : {}),
     };
-    // A `process` launch is resolved against the generation and data
-    // directory the context names, which exist by the time the lifecycle
-    // calls the factory. An `entry` launch hands the child the resolved entry
-    // path; the child performs the import, and the whole of it is bounded by
-    // the factory timeout the caller already applies — a fresh process has an
-    // empty module registry, so there is no cache to bust.
+    // Process launch resolves against the generation context; fresh entry children need no import-cache invalidation.
     const createPlugin: RuntimePluginFactory = source.kind === "process"
       ? async (context) => createOutOfProcessPluginFactory({
         ...outOfProcess,
@@ -5842,11 +4904,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
     return { createPlugin, arm: "child" };
   }
 
-  /**
-   * The arm of every loaded plugin, as its generation recorded it: what
-   * `allPluginsAreOutOfProcess` is fed (decision 51), read from the runtime's
-   * registry of loaded plugins rather than from any list of ids.
-   */
+  /** Loaded generation records, rather than plugin-id lists, determine which factory arms are running. */
   listLoadedPluginArms(): Array<{ pluginId: string; arm: PluginLoadArm }> {
     return [...this.plugins.values()].map((plugin) => ({ pluginId: plugin.manifest.id, arm: plugin.arm }));
   }
@@ -5871,12 +4929,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
   async load(): Promise<void> {
     this.requireGenerationLifecycle("plugin load");
     if (this.loaded) return;
-    // Registry rows refused for an untrusted manifest path never reach the
-    // plan (see `RegistryLoadRefusal`), so this callback is the only chance to
-    // give them a card. Reporting them BEFORE the loop is deliberate: a later
-    // plan entry that loads the same canonical id clears `failedPluginIds`,
-    // `failedPluginStubs` and `loadFailureInfo` for it, so a genuine load wins
-    // over a stale refusal rather than the other way round.
+    // Untrusted-path refusals never enter the load plan; create a diagnostic stub without overwriting a genuine load.
     const untrustedRegistryRows: RegistryLoadRefusal[] = [];
     const loadPlan = await this.resolveManifestLoadPlanInternal(
       (refusal) => untrustedRegistryRows.push(refusal),
@@ -5911,12 +4964,9 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
         this.reportPluginManifestRejected(outcome.plan.manifestPath, outcome.error);
       }
       if (!outcome.ok) continue;
-      // Runtime identity is the literal manifest id. A registry id is only a
-      // deployment alias and must not own tools, events, grants, or HostApi.
+      // Manifest ids own tools, events, grants, and HostApi; registry ids are deployment aliases only.
       const pluginId = outcome.manifest.id;
-      // This is only a structural preflight: an inactive registry row cannot
-      // satisfy a dependency even provisionally. Final admission is deferred
-      // to startAll(), which requires a successfully published generation.
+      // Structural preflight cannot admit dependencies; only successfully published generations supply capabilities.
       if (outcome.plan.enabled) {
         enabledManifestSnapshots.set(pluginId, {
           manifest: outcome.manifest,
@@ -5926,7 +4976,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       this.rememberPluginInstallAlias(outcome.manifest.id, outcome.plan.pluginIdHint);
       this.knownPluginManifests.set(pluginId, outcome.manifest);
       this.knownPluginAccessGrants.set(pluginId, outcome.approvedPluginAccess);
-      this.rememberToolOwners(pluginId, outcome.manifest); // #885 §2.4a MODEL-ONLY (see method)
+      this.rememberToolOwners(pluginId, outcome.manifest);
       for (const eventType of getDeclaredEmittedEvents(outcome.manifest)) {
         this.knownEventOwners.set(eventType, pluginId);
       }
@@ -5937,12 +4987,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
     this.loaded = true;
   }
 
-  /**
-   * Registry manifest-path trust gate (LOAD boundary). The row named a manifest
-   * outside the plugin root, so the runtime refused to read it — which means,
-   * like the receipt gate, the verdict lands before any manifest exists and
-   * only a stub can carry it to a surface.
-   */
+  /** An untrusted manifest path must never be read; expose its refusal through a stub card. */
   private markUntrustedManifestPath(refusal: RegistryLoadRefusal): void {
     log.error(`${refusal.pluginId} rejected — ${refusal.reason}`);
     this.auditLog?.("error", "plugin_manifest_path_untrusted", {
@@ -5956,23 +5001,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
     });
   }
 
-  /**
-   * One plugin's whole load attempt, isolated.
-   *
-   * The refusals `instantiatePreflightedPlugin` decides for itself (bad entry
-   * path, failed import, missing capability, …) each leave a card and return.
-   * What this wrapper exists for is everything it does NOT decide: a throw out
-   * of `materializeImmutableRuntimeRoot`, `ensureDataDir`,
-   * `buildHostApiIncarnation`, or `buildMethodMap` used to unwind through
-   * `load()`'s `for` loop, which meant a single failing plugin denied every
-   * plugin AFTER it in registry order any load attempt at all — and left
-   * `this.loaded` false, so nothing retried. Those plugins were not refused;
-   * they were never considered, which is why nothing anywhere named them.
-   *
-   * Catching here converts that into the same per-plugin refusal every gate
-   * already produces: the plugin gets a `load-crash` card carrying the throw's
-   * message, and the loop moves on to the next entry.
-   */
+  /** Isolate each complete load attempt so one thrown preflight or factory failure cannot stop the remaining plugins. */
   private async admitPreflightedPlugin(
     outcome: BootPreflightOutcome,
     enabledManifestSnapshots: Map<string, ManifestSnapshot>,
@@ -5981,9 +5010,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       pluginId: outcome.plan.pluginIdHint
         ?? `<unresolved:${basename(dirname(outcome.plan.manifestPath))}>`,
     };
-    // Shutdown began: no child is constructed for a plugin it never saw.
     if (this.isShuttingDown()) return;
-    // Tracked so shutdown waits for a load already constructing a child.
     await this.trackCandidateConstruction(resources.pluginId, (construction) => {
       resources.cleanupFailures = construction.cleanupFailures;
       return this.admitPreflightedPluginAttempt(outcome, enabledManifestSnapshots, resources);
@@ -6018,8 +5045,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
     if (!outcome.ok) {
       if (outcome.kind === "integrity") {
         if (plan.pluginIdHint) {
-          // Keyed by the registry id: the manifest was never read, so the
-          // canonical id is unknown at this boundary.
+          // Without a trusted manifest, only the raw registry id is known.
           this.markReceiptIntegrityFailed(
             plan.pluginIdHint,
             outcome.integrityResult.reason,
@@ -6065,9 +5091,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       return;
     }
     const { manifest, approvedPluginAccess } = outcome;
-    // The id the manifest declares supersedes the registry hint for every
-    // later phase, and `resources` is what carries it there — the local is
-    // not read again in this method.
+    // Once parsed, the manifest id supersedes the registry hint in every later phase.
     resources.pluginId = manifest.id;
     this.rememberPluginInstallAlias(manifest.id, plan.pluginIdHint);
     this.knownPluginManifests.set(manifest.id, manifest);
@@ -6077,22 +5101,13 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
     this.inactivePluginIds.delete(manifest.id);
     this.disabledPluginIds.delete(manifest.id);
     this.failedPluginIds.delete(manifest.id);
-    // Plugin↔app minimum-version gate — HARD BLOCK at LOAD. A plugin already
-    // on disk (e.g. installed against a newer host, then the user downgraded
-    // the app, or a sideload) must NOT silently run against a too-old app.
-    // Skip activation, log an English reason, surface a "needs newer app"
-    // stub. Other plugins continue to load (isolation).
+    // An installed plugin may require a newer host; keep its failure card while allowing other plugins to load.
     if (this.markIncompatibleAppVersion(manifest)) {
       return;
     }
-    // Host protocol gate. Undeclared and unserved code is skipped before any
-    // factory activates.
     if (this.markIncompatibleHostProtocol(manifest)) {
       return;
     }
-    // Plugin revocation gate. Same LOAD-boundary shape as the
-    // version gate immediately above: skip this plugin, keep loading
-    // everything else (isolation).
     if (this.markRevoked(manifest)) {
       return;
     }
@@ -6147,8 +5162,6 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
         manifest.id,
         source,
         manifest,
-        // The preflight's own verification; absent when the row had no
-        // registry id and so nothing was verified.
         outcome.integrityResult?.ok ? outcome.integrityResult.verified : undefined,
       );
     } catch (err) {
@@ -6205,8 +5218,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       logPluginLifecycle("error", { pluginId: manifest.id, phase: PluginPhase.LOAD_FAIL, err, reason: "factory" }, "plugin factory failed");
       return;
     }
-    // The attempt owns the instance (and its running child) until the plugin
-    // is registered; a throw before then is released by the boot wrapper.
+    // Before registration the attempt owns the instance and child; boot cleanup releases them on failure.
     resources.constructed = { instance, lifecycleHookScope };
 
     const methods = buildMethodMap(manifest, instance, (toolName) =>
@@ -6227,8 +5239,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       }
     }
     if (this.isShuttingDown()) {
-      // Shutdown began while the child was constructed: it is released here,
-      // never registered where shutdown has already looked.
+      // Release children constructed after shutdown began instead of registering them after the shutdown scan.
       await this.releaseAttempt(resources, "plugin runtime shutdown");
       return;
     }
@@ -6253,28 +5264,20 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       arm: routed.arm,
       confinement: this.confinementReport(createPlugin),
     });
-    // Registered: the loaded plugin owns the root, the incarnation and the
-    // instance from here on.
+    // Registration transfers root, incarnation, and instance ownership to the loaded plugin.
     this.handOverAttempt(resources);
     this.disposers.set(manifest.id, disposers);
     this.markPluginUiRevision(manifest.id);
     this.failedPluginIds.delete(manifest.id);
     this.disabledPluginIds.delete(manifest.id);
     logPluginLifecycle("debug", { pluginId: manifest.id, phase: PluginPhase.LOAD_OK }, "plugin loaded");
-    // NOTE: inactive-plugin model visibility is not a runtime load concern.
-    // Boot sync still registers loaded tools for host/UI/auth execution;
-    // ConversationLoop scope suppresses model-visible tools for inactive
-    // plugins.
+    // Inactive plugins retain host, UI, and auth registrations; conversation scope controls model exposure.
   }
-
 
   async startAll(): Promise<void> {
     this.requireGenerationLifecycle("plugin start");
     await this.load();
-    // A provider is usable only after startup has completed and its generation
-    // is published. Iterate until every currently-startable plugin has been
-    // admitted; this permits registry order to be consumer-first without ever
-    // starting that consumer before its providers are live.
+    // Admit only after providers start and publish, iterating so registry order cannot start consumers first.
     const pendingPluginIds = new Set(
       [...this.plugins.values()]
         .filter((plugin) => !plugin.started)
@@ -6295,9 +5298,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
         startable.push({ pluginId, plugin });
       }
       if (startable.length === 0) break;
-      // A layer only contains plugins whose dependencies were already active
-      // before this pass. Start siblings concurrently; publication remains
-      // serialized by the short capability commit boundary.
+      // Start siblings concurrently only when their dependencies were active before this layer; serialize publication.
       const outcomes = await Promise.all(startable.map(async ({ pluginId, plugin }) => ({
         pluginId,
         plugin,
@@ -6309,9 +5310,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       }
     }
 
-    // Any remaining plugin is blocked by either a failed provider, a missing
-    // provider, or a dependency cycle. Do not admit its already-instantiated
-    // candidate: its capabilities were never live at the startup boundary.
+    // Unresolved candidates cannot be admitted when a provider is missing, failed, or cyclic.
     for (const pluginId of pendingPluginIds) {
       const plugin = this.plugins.get(pluginId);
       if (!plugin) continue;
@@ -6361,7 +5360,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
   ): Promise<string | undefined> {
     const generationLifecycle = this.requireCapabilityCommitLifecycle("plugin start");
     const plugin = this.plugins.get(pluginId);
-    // Shutdown cancels a boot start: it retires the loaded plugin itself.
+    // Shutdown owns retirement when it cancels a boot start.
     const isCurrent = () =>
       !this.isShuttingDown()
       && this.plugins.get(pluginId) === plugin
@@ -6373,9 +5372,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
     const slowTimer = setTimeout(() => {
       log.warn(`slow plugin: ${pluginId} (>${SLOW_THRESHOLD_MS}ms)`);
     }, SLOW_THRESHOLD_MS);
-    // Set when the coordinator commits this exact projection. From then on
-    // the committed generation owns the instance, incarnation and root; this
-    // start releases nothing, whatever its publication throws afterwards.
+    // After this projection commits, the generation owns its resources even if publication later throws.
     let committed = false;
     let publishedProjection: PluginRuntimeGenerationProjection | undefined;
     try {
@@ -6395,7 +5392,6 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
           if (error instanceof PluginStartupTimeoutError) {
             this.quarantinePluginLifecycle(pluginId, error.message);
           }
-          // Fail closed before moving on to another dependency layer.
           plugin.deactivateHostApi?.();
           throw error;
         }
@@ -6429,9 +5425,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       return undefined;
     } catch (error) {
       if (committed) {
-        // Not a start failure to clean up: the committed generation keeps its
-        // resources, the lifecycle recorded the post-commit fault and settled
-        // dispatch, and a normal removal retires it exactly once.
+        // Post-commit faults retain generation ownership; normal removal retires it exactly once.
         logPluginLifecycle("error", { pluginId, phase: PluginPhase.START_FAIL, err: error, reason: "post_commit" }, "plugin start failed after its generation was committed");
         try {
           this.resolveCapabilityBlockedRetry(pluginId);
@@ -6475,8 +5469,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
     );
     this.deferCapabilityBlockedRetry(pluginId, providerIds, async () =>
       withPluginInstallLock(pluginId, async () => {
-      // A remove, disable, restart, or reset may have replaced this mutable
-      // load candidate while its provider was preparing. Never resurrect it.
+      // A stale provider callback must not resurrect a replaced or removed load candidate.
       if (!isCurrent() || plugin.started) return;
       const missing = this.capabilityDependencies().missing(plugin.manifest);
       const nextProviderIds = this.preparingCapabilityProviderIds(
@@ -6515,9 +5508,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
     if (!manifest) return;
     const isCurrent = this.capabilityBlockedRetryGuard(pluginId, manifest);
     this.deferCapabilityBlockedRetry(pluginId, providerIds, async () => {
-      // Re-enter through addPlugin rather than retaining a pre-wait plan. It
-      // re-resolves the current registry, receipt, canonical identity, and
-      // lifecycle generation before admitting anything.
+      // Re-enter by id to re-resolve registry, receipt, canonical identity, and lifecycle generation.
       if (!isCurrent() || !this.hasTrackedPluginState(pluginId)) return;
       try {
         this.capabilityBlockedRetryAdds.add(pluginId);
@@ -6555,43 +5546,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
     super.resetLoadedState();
   }
 
-  /**
-   * Retire every generation the runtime owns, each exactly once, within the
-   * shutdown deadline — the caller's `signal` (the application's cleanup
-   * budget), or that same budget when the caller passes none:
-   *
-   * 1. Admission closes, in the runtime and in the generation coordinator
-   *    that every consumer acquires through: no new dispatch enters a
-   *    generation, callers still queued for a lease are rejected with
-   *    {@link PluginRuntimeShutdownError}, and no candidate publishes.
-   * 2. Generations the coordinator committed but the runtime map never
-   *    received start retiring at once; their dispatch never opened.
-   * 3. Candidates still being built (a prepared update, an add) are refused
-   *    at their commit and release what they built themselves; shutdown
-   *    waits for that release.
-   * 4. Retirements already under way — a removal, an uninstall, the
-   *    predecessor of a replacement — wait for in-flight calls to release
-   *    their leases; those calls get `pluginShutdownHandlerMs` to finish.
-   * 5. Calls still running are rejected with {@link PluginRuntimeShutdownError}.
-   *    Their leases stay held until the work itself settles, so nothing it
-   *    still uses is removed under it. Every retiring generation's runtime
-   *    phases then run at once — the stop phase ends the child, which settles
-   *    calls into it — and every generation in the runtime map retires, a
-   *    distinct incumbent included.
-   *
-   * Generations retire concurrently, each keeping its own phase order
-   * (authority → stop → effects → drain), so the time taken is that of the
-   * slowest generation rather than the sum. Every wait ends when the deadline
-   * passes. Every plugin whose retirement — runtime phases, lease drain and
-   * the lifecycle's own retirement — or candidate release has not finished
-   * by then, or has failed, is named in the returned report (and logged and
-   * audited); the
-   * application's managed-child backstop kills what they left running.
-   *
-   * All of it goes through {@link prepareRuntimeRetirement}, whose phases run
-   * once per generation, so a generation reached from more than one place
-   * never has its disposers or drain run twice.
-   */
+  /** Retire every owned generation once within the shutdown deadline; shared references must not duplicate drain or disposal. */
   async stopAll(options: { signal?: AbortSignal } = {}): Promise<PluginRuntimeShutdownReport> {
     const deadline = options.signal ? undefined : new AbortController();
     const deadlineTimer = deadline
@@ -6608,9 +5563,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
 
   private async stopAllWithin(signal: AbortSignal): Promise<PluginRuntimeShutdownReport> {
     this.beginShutdown();
-    // `finished` only when the work succeeded: a retirement or candidate
-    // release that failed (its payload possibly still on disk) is reported
-    // with the unfinished ones.
+    // Failed retirement remains unfinished because resources may still exist.
     const pending: Array<{ pluginId: string; done: Promise<void>; finished: boolean }> = [];
     const track = (pluginId: string, work: Promise<unknown>, after?: () => void): void => {
       const record = { pluginId, done: Promise.resolve(), finished: false };
@@ -6669,10 +5622,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
     return Object.freeze({ unfinished: Object.freeze(unfinished) });
   }
 
-  /**
-   * Run every phase in order, a failed one included, then reject if any
-   * failed: shutdown names the plugin as unfinished.
-   */
+  /** Run every shutdown phase despite earlier failures, then report the generation unfinished if any failed. */
   private async runShutdownRetirement(runtime: PluginRuntimeRetirementView): Promise<void> {
     const failures: unknown[] = [];
     for (const step of this.prepareRuntimeRetirement(runtime)) {
@@ -6688,10 +5638,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
     }
   }
 
-  /**
-   * Whether the generation lifecycle's retirements settled within `withinMs`;
-   * false as well when `signal` aborts first.
-   */
+  /** False also means the caller aborted before retirement settled. */
   private async waitForGenerationRetirements(withinMs: number, signal?: AbortSignal): Promise<boolean> {
     const lifecycle = this.generationLifecycle;
     if (!lifecycle) return true;
@@ -6714,7 +5661,6 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       if (timer) clearTimeout(timer);
     }
   }
-
 
   async restartAll(): Promise<void> {
     this.requireGenerationLifecycle("plugin restartAll");
@@ -6743,10 +5689,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
     const currentIdentities = await this.assertCurrentPluginIdentityLoadPlan(loadPlan);
     const targets = currentIdentities.filter(({ plan }) => plan.enabled);
     const targetIds = new Set(targets.map(({ snapshot }) => snapshot.manifest.id));
-    // Tear down consumers before their providers. The ordinary remove guard is
-    // intentionally strict, so registry changes that remove both sides of an
-    // active dependency must be ordered rather than attempting the provider
-    // first merely because of insertion order.
+    // Remove consumers before their providers so ordinary dependency guards remain valid during teardown.
     const pendingRemovalIds = new Set(
       [...this.plugins.keys()].filter((pluginId) => !targetIds.has(pluginId)),
     );
@@ -6759,9 +5702,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
           ).length === 0,
       );
       if (!nextPluginId) {
-        // A remaining active dependent is outside this removal set, or the
-        // set forms a capability cycle that cannot be safely torn down one at
-        // a time. Reuse the public guard for an actionable diagnostic.
+        // Refuse remaining dependents or cycles rather than bypassing the public removal guard.
         const blockedPluginId = pendingRemovalIds.values().next().value;
         if (typeof blockedPluginId === "string") {
           this.assertNoActiveCapabilityDependents(blockedPluginId, "remove");
@@ -6772,9 +5713,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       pendingRemovalIds.delete(nextPluginId);
     }
 
-    // A cold restartAll may have no active providers yet. Iterate just like
-    // boot so a consumer listed before its provider waits for the provider's
-    // successful active-generation publication.
+    // Cold restart admits providers before consumers, regardless of registry order.
     const pendingPluginIds = new Set(
       targets.map(({ snapshot }) => snapshot.manifest.id),
     );
@@ -6837,7 +5776,6 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
     if (failures.length > 0) throw failures[0]!;
   }
 
-  /** US-3c.2 — Targeted single-plugin restart. */
   async restartPlugin(
     pluginId: string,
     opts: { skipPreparation?: boolean; throwOnFailure?: boolean } = {},
@@ -7055,7 +5993,6 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
         pluginId,
         source,
         manifest,
-        // Verified above only when there is a receipt id to verify under.
         integrityResult.verified,
       );
       logPluginLifecycle("debug", { pluginId, phase: PluginPhase.RESTART_RELOAD_OK }, "factory routed");
@@ -7127,8 +6064,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       }
       await this.releaseAttempt(replacementAttempt, "failed restart factory");
       logPluginLifecycle("error", { pluginId, phase: PluginPhase.RESTART_RELOAD_FAIL, err, reason: "createPlugin_failed" }, "createPlugin failed during restart");
-      // The replacement's refusal, not the incumbent's: the running
-      // generation keeps serving and is never marked failed (decision 52).
+      // Replacement refusal belongs to that attempt; the running incumbent remains loaded.
       this.recordAttemptRefusal(manifest, err, "restart");
       if (opts.throwOnFailure) throw err;
       return "failed";
@@ -7199,8 +6135,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       arm: routed.arm,
       confinement: this.confinementReport(createPlugin),
     });
-    // Set when the coordinator commits this exact candidate; the committed
-    // generation then owns it (see `commitHandoffs`).
+    // Coordinator commit transfers ownership of this exact candidate.
     let committed = false;
     this.commitHandoffs.set(candidate, () => { committed = true; });
     try {
@@ -7221,11 +6156,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       );
     } catch (error) {
       if (committed) {
-        // The replacement is the committed generation: it owns its child,
-        // incarnation and root, the lifecycle recorded the post-commit fault
-        // and settled dispatch, and its own retirement releases it. The
-        // restart still fails with the lifecycle's error; what the commit
-        // implies runs first, and a failure there is reported, never instead.
+        // After commit, finish bookkeeping before returning the lifecycle error; report secondary bookkeeping failure separately.
         logPluginLifecycle("error", { pluginId, phase: PluginPhase.RESTART_RELOAD_FAIL, err: error, reason: "post_commit" }, "runtime generation failed after it was committed");
         try {
           this.onEnable?.(pluginId);
@@ -7250,7 +6181,6 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
     return "started";
   }
 
-  /** US-A3 — Targeted single-plugin add for install / install-local paths. */
   async addPlugin(pluginId: string): Promise<"started" | "preparing"> {
     const knownPluginId = this.resolveKnownPluginId(pluginId);
     this.assertPluginLifecycleAvailable(knownPluginId);
@@ -7299,7 +6229,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
     if (!snapshot) {
       const requestedPlan = loadPlan.find((plan) => plan.pluginIdHint === pluginId);
       if (requestedPlan?.enabled) {
-        await this.readManifest(requestedPlan.manifestPath); // throws with the actual reason
+        await this.readManifest(requestedPlan.manifestPath);
       }
       throw new Error(`addPlugin: plugin not found in registry or disabled: ${pluginId}`);
     }
@@ -7337,7 +6267,6 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
     return "started";
   }
 
-  /** US-A3 — Targeted single-plugin remove for uninstall paths. */
   async removePlugin(
     pluginId: string,
     options: { preserveConfigOverride?: boolean } = {},
@@ -7351,10 +6280,6 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
   }
 
 }
-
-// ---------------------------------------------------------------------------
-// PluginRuntime
-// ---------------------------------------------------------------------------
 
 export class PluginRuntime extends PluginRuntimeLifecycle {
   private readonly pendingSandboxRetirements = new Map<string, Promise<void>>();
@@ -7470,38 +6395,8 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
     });
   }
 
-  /**
-   * Invoke an app-visible plugin Tool directly against the runtime,
-   * enforcing the app-visible allowlist (#885 v6 — tools whose
-   * `_meta.ui.visibility` includes `"app"`, via `declaredAppVisibleToolMethods`).
-   * Used by the boot plugin-tool executor for UI-only runtime methods that bypass
-   * the reviewer surface.
-   *
-   * REACHABLE ONLY FROM THE TRUSTED PANEL (`origin: "ui"`). `isAppOnlyRuntimeInvocation`
-   * routes here only on a UI-effective chain, so an MCP App (`origin: "mcp-app"`,
-   * untrusted sandboxed iframe) can never land on this ungoverned path — a card's
-   * app-only call takes the GOVERNED executor instead ({@link callFromApp}), because
-   * an app-only tool is a registry `Tool`. The panel keeps this bypass (it can supply
-   * a real user gesture); the card never sees it.
-   *
-   * This bypass skips the ToolExecutor and therefore its Step-6
-   * `runWithCeiling` cap, so the ceiling is enforced STRUCTURALLY here — at the
-   * sole entry point of the bypass — rather than in the boot wiring that reaches
-   * it. Any caller of this method is capped regardless of how boot dispatches to
-   * it, closing the regression class where a future revert of the boot wiring
-   * back to a direct call would silently drop the ceiling (CLAUDE.md §Tool
-   * Execution Timeout Policy: every tool path passes through `runWithCeiling`).
-   *
-   * Abort-parity note: like the governed executor path, the ceiling only
-   * unblocks the *caller* — `PluginRuntime.call` hands the handler only
-   * `payload`, never an abort signal, so a hung handler's work stays detached.
-   * The immutable generation lease remains held until that detached settlement,
-   * so update/removal cannot publish a replacement beside stale handler work.
-   * We do NOT invent a handler-abort mechanism the executor path itself lacks.
-   * `ceilingMs` defaults to the SOT
-   * (`TOOL_TIMEOUT_POLICY.globalCeilingMs`) and is a parameter solely so tests
-   * can exercise the ceiling with a small value without weakening the SOT.
-   */
+  // Only trusted-panel origin may use this app-visible bypass; untrusted cards always use governed execution.
+  // Enforce the shared tool ceiling here and retain the immutable generation lease until detached handler work settles.
   async callDeclaredAppOnlyTool(
     method: string,
     payload?: unknown,
@@ -7534,9 +6429,7 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
       });
       const outcome = await runWithCeiling(
         async () => {
-          // Auth calls are stricter than ordinary pinned calls: an admitted
-          // predecessor may finish non-auth work, but it must not mutate
-          // credentials after the active generation has changed.
+          // An admitted predecessor may finish ordinary calls but cannot mutate credentials after its generation changes.
           if (
             isAuthTool &&
             this.requireGenerationAccess("plugin auth handler").getActive(entry.pluginId)
@@ -7544,9 +6437,7 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
           ) {
             throw new Error("plugin auth generation changed before handler entry");
           }
-          // The boot-owned transition lease rechecks session/generation
-          // revocation here, after runWithCeiling's task boundary and with no
-          // await before the plugin handler.
+          // Recheck session and generation revocation after the ceiling task boundary, with no await before dispatch.
           beforeHandler?.();
           return handler(payload);
         },
@@ -7567,16 +6458,7 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
     }, expectedGenerationId, method);
   }
 
-  /**
-   * Invoke a plugin method from the plugin's own TRUSTED first-party React panel
-   * (the host renderer), enforcing the UI invocation allowlist so only explicitly
-   * declared methods are reachable via the IPC bridge.
-   *
-   * This is the ONE origin that can carry a real user gesture, and therefore the
-   * ONE origin from which the ungoverned app-only dispatch path
-   * ({@link callDeclaredAppOnlyTool}) is reachable. An MCP App is NOT this — it
-   * uses {@link callFromApp}.
-   */
+  /** Trusted panel calls require explicit UI invocation permission; embedded cards use callFromApp. */
   async callFromUi(
     method: string,
     payload?: unknown,
@@ -7628,58 +6510,8 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
     }, options?.expectedGenerationId, method);
   }
 
-  /**
-   * Invoke a plugin method from an MCP APP — an untrusted `ui://` card running in
-   * a sandboxed iframe, calling a tool on its own server through the `oncalltool`
-   * bridge. The loopback arm of `mcp-ui-tool-call.ts` is the sole caller.
-   *
-   * Deliberately NOT {@link callFromUi}: an MCP App is not the plugin's trusted
-   * panel, and conflating the two is what let a hostile card reach the ungoverned
-   * app-only dispatch path. Two differences, both structural:
-   *
-   *  1. `origin: "mcp-app"` — so `isAppOnlyRuntimeInvocation` (which only ever
-   *     answers true for `"ui"`) can never route an app call into
-   *     {@link callDeclaredAppOnlyTool}. That also makes the auth `statusTool`
-   *     user-activation carve-out unreachable from a card. This is what makes the
-   *     ungoverned bypass unreachable from an app — structurally, not by a check.
-   *  2. NO `userAction` parameter. It is never true for an app, so it is not
-   *     accepted as an argument — there is nothing for a caller to get wrong.
-   *
-   * EVERY app-visible tool goes through the delegate (the governed ToolExecutor:
-   * `inspectHostRisk` → reviewer/approval → audit), APP-ONLY ONES INCLUDED, WITH ONE
-   * NAMED EXCEPTION below. They are §6.4 registry `Tool`s now — the loopback projects
-   * them to `tools/list` with their explicit visibility — so the gate has something
-   * to run, which is exactly what `["app"]` is for: a plugin ships tools that serve
-   * its CARD without putting them in the model's tool surface. (The earlier
-   * fail-closed deny existed only because an app-only tool had NO registry entry and
-   * therefore no gate; giving it one removes the reason to deny it, without giving
-   * the card the panel's ungoverned path.) The app-visibility allow-list
-   * (`assertAppVisibleToolInvokable`, the spec MUST) still bounds the surface: a
-   * MODEL-ONLY tool is not app-callable.
-   *
-   * ── DELIBERATE NARROWING below the spec's `["app"]` semantics: the auth trio ──
-   * `manifest.auth.{statusTool,loginTool,logoutTool}` is denied here BY NAME,
-   * unconditionally, even though it is app-visible and even though the executor
-   * would otherwise gate it like any other tool. Do not "fix" this by deleting it:
-   *
-   *  - The trio is not a generic spec `["app"]` tool; it is an Ave MANIFEST CONCEPT
-   *    whose intended caller has always been the plugin's own first-party React
-   *    panel (`callFromUi`) — trusted code, a real user gesture. `["app"]` on it is
-   *    an artifact of how the manifest expresses "the panel may call this", not a
-   *    server declaring "my card may call this". Cards are a different, untrusted
-   *    surface that did not exist when that declaration was designed.
-   *  - `auth.loginTool` in particular does not merely "run a tool": it spawns a real
-   *    auth `BrowserWindow` with cookie/partition access, pointed at an identity
-   *    provider. Letting an untrusted card trigger that is a privilege escalation
-   *    EVEN BEHIND THE APPROVAL GATE — the user would see a login window they did
-   *    not ask for, summoned by a card that can also render whatever it likes around
-   *    it. Approval-gating a phishing-shaped affordance is not the same as not
-   *    having it.
-   *  - So: registry membership (governed execution, reachable from the panel) is
-   *    right, and card reachability is not. This is that one exception, named and
-   *    contained to this method — `assertAppVisibleToolInvokable`, the `"ui"` panel path,
-   *    and `isAppOnlyRuntimeInvocation` are untouched.
-   */
+  // Untrusted cards have mcp-app origin and no userAction; every app-visible call uses governed execution.
+  // Deny all manifest auth tools even behind approval: cards must not summon privileged login windows or inherit panel authority.
   async callFromApp(
     method: string,
     payload?: unknown,
@@ -7731,40 +6563,15 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
     }, options?.expectedGenerationId, method);
   }
 
-  /**
-   * Serve one of a plugin's manifest-declared `ui://` MCP App cards by asking the
-   * PLUGIN for the HTML ({@link RuntimePlugin.readUiResource}). The plugin is the
-   * MCP server — it serves its own resource bytes; the host relays them. The host
-   * therefore never resolves or reads a plugin-declared disk path, which is what
-   * removed the realpath-containment layer this method replaces.
-   *
-   * The caller ({@link createPluginUiResourceProvider}) has ALREADY enforced the
-   * serving policy — own-namespace authority + declared-only — so this method's
-   * job is the RUNTIME-STATE gate plus bounding the hook:
-   *
-   *  - the same fail-closed gate `pluginRuntimeToolDelegate` applies to
-   *    `tools/call` — literally the same predicate, {@link checkRuntimeAdmission},
-   *    not a copy of it — so a disabled plugin cannot render a card any more than
-   *    it can run a tool;
-   *  - a `pluginUiResourceReadMs` ceiling (SOT: TOOL_TIMEOUT_POLICY) — a plugin
-   *    hook, unlike a file read, can hang; the user is waiting on a card;
-   *  - a hard HTML size cap, so a runaway hook cannot balloon the render path.
-   *
-   * Every failure throws — the loopback server maps it to `-32602`
-   * (resource-not-found under the final revision) and no body is ever served.
-   *
-   * `ceilingMs` defaults to the SOT and is a parameter solely so tests can exercise
-   * the ceiling with a small value without weakening it (same seam as
-   * {@link callDeclaredAppOnlyTool}).
-   */
+  // Relay plugin-served HTML only after own-namespace and declaration checks; never read a plugin-supplied disk path.
+  // Use shared runtime admission plus policy timeout and HTML size bounds; refusal serves no body.
   async readUiResource(
     pluginId: string,
     uri: string,
     ceilingMs: number = TOOL_TIMEOUT_POLICY.pluginUiResourceReadMs,
     expectedGenerationId?: string,
   ): Promise<string> {
-    // Gate 4, shared with pluginRuntimeToolDelegate — same predicate object,
-    // card-shaped message.
+    // Use the shared runtime admission predicate with card-specific refusal text.
     const refusal = checkRuntimeAdmission(this, pluginId);
     if (refusal === "inactive") {
       throw new Error(
@@ -7812,22 +6619,11 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
     return this.methodMap;
   }
 
-  // ─── Queries ───────────────────────────────────────────────────────────────
-
   getPerfStats(): Record<string, PluginPerfStats> {
     return this.perf.snapshot();
   }
 
-  /**
-   * Test-only: inject a plugin + method handler directly into the runtime's
-   * internal maps without going through the full load/start lifecycle.
-   *
-   * Populates `plugins`, `methodMap`, and `perfStats` so that `call()`,
-   * `getPerfStats()`, and related queries work without disk fixtures.
-   *
-   * @internal Only call from test files. The leading underscore signals
-   *   test-only usage; tree-shaking removes it from production bundles.
-   */
+  /** Test-only injection bypasses lifecycle loading; production callers must use normal admission. */
   _testInjectPlugin(
     pluginId: string,
     toolName: string,
@@ -7841,7 +6637,6 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
         version: "1.0.0",
         entry: "index.js",
         description: "Test fixture",
-        // #885 v6 — pure Tool[] (model-visible, matching the old tools[]-only shape).
         tools: [
           {
             name: toolName,
@@ -7854,7 +6649,7 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
       instance: {} as import("../types.js").RuntimePlugin,
       methods: new Map([[toolName, handler as import("../types.js").PluginToolHandler]]),
       started: true,
-      // The injected handler runs in this process and no child exists.
+      // Injected handlers run in-process without a child.
       arm: "in-process",
       confinement: "not-spawned",
     };
@@ -7889,66 +6684,30 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
     return [...this.plugins.keys()];
   }
 
-  /**
-   * #1176 active/inactive — whether a plugin's tools may be exposed this turn.
-   * Mirrors the registry `enabled` field: `enabled !== false` is active, so an
-   * unknown / never-toggled plugin defaults to active (migration-safe). This is
-   * orthogonal to load state — an inactive plugin stays loaded. Its tools are
-   * hidden from the model by resolveToolScope and refused on the model/agent
-   * execution path by the plugin-tool-adapter, while host-internal call() stays
-   * callable for auth/config/UI. The synchronous in-memory mirror lets the
-   * per-turn `resolveToolScope` gate read it without touching disk.
-   */
+  /** Model exposure mirrors enabled !== false; unknown plugins default active without a disk read. */
   isPluginEnabled(pluginId: string): boolean {
     return !this.inactivePluginIds.has(this.resolveKnownPluginId(pluginId));
   }
 
-  /**
-   * Transient, per-session on-demand activation state — see
-   * {@link SessionActivationTracker}. Managed by ConversationLoop:
-   * `setSessionActivated` after Gate 2 pass, `clearSessionActivated` at both
-   * session-reset sites (resetSession + restore-from-checkpoint) and after
-   * routine loop completion. Plugin enablement is NEVER mutated on this path —
-   * the plugin stays registry-disabled throughout.
-   */
+  /** Session activation is transient and must never mutate registry enablement. */
   private readonly sessionActivation = new SessionActivationTracker();
 
-  /**
-   * Returns true iff the plugin was on-demand session-activated in the given
-   * session. Gate 4 (pluginRuntimeToolDelegate) calls this with the session ID
-   * read from the ALS session context.
-   */
   isSessionActivated(sessionId: string, pluginId: string): boolean {
     return this.sessionActivation.isActivated(sessionId, pluginId);
   }
 
-  /**
-   * Record a plugin as session-activated for the given session.
-   * Called by ConversationLoop immediately after Gate 2 on-demand activation.
-   */
   setSessionActivated(sessionId: string, pluginId: string): void {
     this.sessionActivation.activate(sessionId, pluginId);
   }
 
-  /**
-   * Clear on-demand activations for `sessionId` ONLY — does NOT affect any
-   * other session's activation state. Called at session-reset and after
-   * routine loop completion (prevents stale Map entries from discarded loops).
-   */
+  /** Clear only the completed session’s activations to avoid stale entries without affecting other sessions. */
   clearSessionActivated(sessionId: string): void {
     this.sessionActivation.clear(sessionId);
   }
 
-  /**
-   * Atomically move a plugin between an active immutable generation and the
-   * inactive pointer. Disable drains all predecessor leases before reporting
-   * success. Re-enable rebuilds from installed bytes and reverifies the receipt
-   * before its registry commit and generation publication linearize together.
-   */
+  /** Disable drains predecessor leases; enable verifies immutable receipt bytes before atomic registry and generation publication. */
   async setPluginEnabled(pluginId: string, enabled: boolean): Promise<void> {
-    // A restart may own the already-known canonical lock while dependency
-    // preparation is still pending. Cancel it before admission; the retry
-    // callback below only runs after an initial lock has been acquired.
+    // Cancel dependency-held restart work before admission to its canonical lifecycle lock.
     this.cancelPendingRestart(this.resolveKnownPluginId(pluginId));
     return withResolvedPluginInstallLocks(
       () => {
@@ -7979,8 +6738,7 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
         await generationLifecycle.runInLifecycleQueue(canonicalPluginId, async () => {
           if (!this.inactivePluginIds.has(canonicalPluginId) === enabled) return;
           const persist = async (): Promise<void> => {
-            // Static manifests have no registry row, so their active toggle is
-            // session-local. Registry installs persist through their raw install id.
+            // Static toggles are session-local; installed toggles persist under the raw registry id.
             if (this.registryPath && installClaim !== null) {
               await updatePluginRegistry(this.registryPath, (registry) => {
                 const entry = registry.plugins.find(({ id }) => id === installClaim);
@@ -8020,9 +6778,7 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
                 );
               });
               await commitScope(async () => {
-                // The registry transition is the durable winner. Keep a
-                // preparing candidate retryable if that transaction fails;
-                // cancel and discard it only once the disabled state commits.
+                // Only a committed disabled state cancels the candidate; failed registry transactions leave preparation retryable.
                 await persist();
                 this.clearCapabilityBlockedRetry(
                   canonicalPluginId,
@@ -8124,8 +6880,7 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
               pluginRoot,
               manifest,
               receiptRaw,
-              // The whole trust the registry holds: without `origin` a re-enabled
-              // official plugin would lose its host-secret grant until restart.
+              // Preserve origin trust so re-enabled official plugins retain their host-secret grant.
               registryEntry: {
                 installSource: targetPlan.installSource,
                 manifestSha256: targetPlan.manifestSha256,
@@ -8140,10 +6895,7 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
             this.disabledPluginIds.delete(canonicalPluginId);
           }
 
-          // The generation pointer and durable registry are already committed.
-          // Keep this runtime view aligned even if a downstream host projection
-          // callback reports a post-commit fault; later requests must queue behind
-          // that callback and observe the committed state.
+          // After commit, align runtime state despite projection faults; later requests queue behind the callback.
           let callbackError: unknown;
           try {
             await this.onActiveStateChange?.(canonicalPluginId, enabled);
@@ -8215,12 +6967,7 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
   }
 
   listPluginCards(toolRegistry?: { getModelVisibleTools(): Array<{ name: string }> }): PluginCard[] {
-    // #885 v6 — the plugin card UI is model-facing (see buildPluginCard). Feed it the
-    // MODEL-visible set, not the executable `getVisibleTools()` superset: after app-only
-    // tools became registry `Tool`s, `getVisibleTools()` includes them (+ the auth trio),
-    // and passing that here would make `buildPluginCard`'s `.filter(isModelVisible)`
-    // pre-filter the ONLY thing keeping app-only names out of the settings/marketplace
-    // card. Using `getModelVisibleTools()` restores the pre-filter to a genuine no-op.
+    // Cards require model-visible tools; executable app-only tools must not enter the catalog list.
     const visibleNames = toolRegistry
       ? new Set(toolRegistry.getModelVisibleTools().map((t) => t.name))
       : null;
@@ -8228,16 +6975,12 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
     for (const [pluginId, manifest] of this.knownPluginManifests) {
       const runtimeLoaded = this.plugins.has(pluginId);
       const enabled = !this.inactivePluginIds.has(pluginId);
-      // A loaded candidate is not active until its generation has actually
-      // published. This includes consumers blocked on a preparing provider.
+      // Loaded candidates remain inactive until their generation publishes.
       const active = enabled && this.isPluginGenerationActive(pluginId);
       const loadStatus = this.preparation.isPreparing(pluginId)
         || this.capabilityBlockedPluginIds.has(pluginId)
         ? "preparing"
-        // #1176 active/inactive — a disabled plugin reports "disabled"
-        // whatever its load state. Disable retires the generation, so the card
-        // also carries `runtimeLoaded: false`; the settings switch keys off
-        // "disabled" so the plugin can still be enabled again.
+        // Disabled cards report runtimeLoaded false while retaining the settings switch needed to re-enable them.
         : !enabled
           ? "disabled"
           : runtimeLoaded
@@ -8255,36 +6998,29 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
         preparationStatus: this.preparation.getStatus(pluginId),
         installAliases: this.getPluginInstallAliases(pluginId),
       });
-      // A plugin that parsed its manifest but failed a later load phase (entry
-      // path, factory import, min-app-version gate, …) carries its Doctor
-      // classification here so the settings UI can offer the right repair.
+      // Retain later-phase load classification so the settings UI can offer the appropriate repair.
       if (loadStatus === "failed") {
         const info = this.loadFailureInfo.get(pluginId);
         if (info?.installFailureKind) card.installFailureKind = info.installFailureKind;
         if (info?.installFailureMessage) card.installFailureMessage = info.installFailureMessage;
-        // The Doctor's arm and confinement for a construction that failed
-        // after routing; absent when the failure came before any factory.
+        // Factory arm and confinement exist only if the failed construction reached routing.
         if (info?.arm) card.arm = info.arm;
         if (info?.confinement) card.confinement = info.confinement;
       }
-      // A running plugin reports the generation that serves, whatever the
-      // card's active/inactive status says.
+      // Report the generation actually serving, independent of model exposure.
       const loaded = this.plugins.get(pluginId);
       if (loaded) {
         card.arm = loaded.arm;
         card.confinement = loaded.confinement;
       }
-      // A refused update or restart of a running plugin is that attempt's
-      // record; the plugin itself stays loaded (decision 52).
+      // A refused replacement is attempt state; the incumbent stays loaded.
       const refusal = this.lastAttemptRefusal.get(pluginId);
       if (loadStatus === "loaded" && refusal) card.lastAttemptRefusal = { ...refusal };
       cards.set(pluginId, card);
     }
     for (const [pluginId, stub] of this.failedPluginStubs) {
       if (cards.has(pluginId)) continue;
-      // Manifest never parsed (schema-invalid / missing / corrupt on-disk shape)
-      // — surface the classification so the Doctor auto-repairs a reinstall-
-      // fixable cause instead of leaving the user to guess.
+      // Even unparsed manifests need classified stub cards for reinstall repair.
       const info = this.loadFailureInfo.get(pluginId);
       cards.set(pluginId, {
         id: pluginId,
@@ -8330,7 +7066,7 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
   getPluginEntryDir(pluginId: string): string | undefined {
     const plugin = this.plugins.get(pluginId);
     if (!plugin) return undefined;
-    // A `process` entry has no JS module for the dev watcher to follow.
+    // Process entries have no module path for the development watcher.
     if (plugin.manifest.process !== undefined) return undefined;
     try {
       const entryPath = this.resolveEntryPathForPlugin(plugin.pluginRoot, plugin.manifest.entry);
@@ -8344,26 +7080,13 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
     return this.plugins.get(pluginId)?.pluginRoot;
   }
 
-  /**
-   * Resolve the per-plugin sandboxed `PluginStorage` for `pluginId` — used by
-   * the plugin webview bridge (`ave:plugin:storage:*` IPC) so a UI panel in an
-   * isolated webview gets the same containment-checked path validation the host
-   * plugin gets. `undefined` for unknown ids (IPC → `unknown-plugin-id`).
-   * The audit sink is MANDATORY: those handlers only reply to the webview on
-   * refusal, so without it a symlink escape on a webview's behalf leaves no
-   * host-side trace. Shared with the boot host-api-factory wiring: ONE record.
-   */
+  // Webview storage shares host containment checks; unknown ids remain unknown-plugin-id.
+  // The mandatory shared audit sink records refusals that would otherwise leave no host-side trace.
   getPluginStorage(pluginId: string): import("../types.js").PluginStorage | undefined {
     const plugin = this.plugins.get(pluginId);
     if (!plugin) return undefined;
     const audit = createPluginStorageAuditSink(pluginId, (...a) => this.auditLog?.(...a));
-    // RESOLVES the data directory rather than ensuring it. This runs once per
-    // webview storage IPC call, and an install swap has the plugin root renamed
-    // aside for the length of two renames: a `mkdir` here landing in that window
-    // put an empty `data/` at the promoted root, which the carry that completes
-    // the swap then found and refused. The directory is created at load, and a
-    // call arriving while it is absent is refused rather than served from a
-    // directory this call invented.
+    // Storage IPC must resolve without creating directories so an install swap cannot produce a new path under the old root.
     return createPluginStorage(
       pluginId,
       resolvePluginHostStorageDir(this.resolveDataDir(pluginId, plugin.pluginRoot)),
@@ -8372,60 +7095,22 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
     );
   }
 
-  /**
-   * Resolve one plugin's declared FLOATING surface for the dock, or say why
-   * not.
-   *
-   * This is the admission gate for the host's always-on-top window. Everything
-   * downstream — the slot, the clamp, the chrome — assumes this said yes for a
-   * good reason, so a wrong yes here is the one that matters: it puts a
-   * plugin's pixels on top of every other application on the machine.
-   *
-   * Returns a {@link ResolvedFloatingSurface} on success, or a
-   * {@link FloatingDockErrorCode} naming the refusal. The codes are the
-   * plugin-visible vocabulary and they are not interchangeable — "you did not
-   * declare this" is a bug in the plugin, while "this plugin is not loaded" is
-   * a condition that may pass.
-   */
+  /** Floating admission must validate the declared surface before host window creation; preserve distinct refusal codes for invalid declarations and transient runtime state. */
   resolveFloatingSurface(
     pluginId: string,
     extensionId: string,
   ): ResolvedFloatingSurface | FloatingDockErrorCode {
-    // The REGISTRY, and deliberately nothing else. Both loader arms register
-    // here after a successful load, so this answers the same for a plugin in
-    // its own process as for one in ours — which matters because the only
-    // plugin that floats a surface runs out-of-process. Branching on isolation
-    // would be deciding whether a plugin may sit on top of every other
-    // application based on where it happens to run.
+    // Use registered runtime state for both loader arms; floating admission must not depend on the process location.
     const plugin = this.plugins.get(pluginId);
     if (!plugin) return "unknown-plugin";
     const extension = (plugin.manifest.ui ?? []).find((candidate) => candidate.id === extensionId);
     if (!extension) return "surface-not-declared";
 
-    // The dock renders through `plugin-ui-shell.html`, which resolves an
-    // entry URL and `import()`s it. That is the ONLY thing it can do, so the
-    // kinds below are not a policy preference — they are what the surface can
-    // actually paint.
-    //
-    //   `embedded-page` is refused everywhere already: the sidebar answers it
-    //   with `legacyIframeNotSupported`, because the iframe path it needs no
-    //   longer exists. Admitting it here would produce a transparent
-    //   always-on-top window with nothing in it, which is worse than a
-    //   refusal — the user would see a defect and the plugin would see
-    //   success.
-    //
-    //   `info-card` is not required to declare an entry at all (see
-    //   `manifest-validation.ts`), so there is nothing for the shell to
-    //   import. Same outcome.
+    // The dock imports module entry URLs; unsupported declaration kinds have nothing the shell can render.
     if (extension.slot !== "floating") return "surface-not-floating";
     if (extension.kind !== "embedded-module") return "surface-not-floating";
 
-    // Restating an invariant the manifest validator already holds — it
-    // requires `entry` + `exportName` for `embedded-module`, so a declaration
-    // without them never becomes a loaded plugin and this branch is not
-    // reachable from a valid manifest. It stays because the TYPE says these
-    // fields are optional, and a narrowing that throws away the reason is
-    // worse than one that names it.
+    // Require entry and exportName even though manifest validation also enforces them, preserving a specific refusal reason.
     const entrySource = extension.entry ?? extension.page;
     if (!entrySource) return "surface-has-no-entry";
 
@@ -8433,12 +7118,7 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
     try {
       entryPath = this.resolveEntryPathForPlugin(plugin.pluginRoot, entrySource);
     } catch (err) {
-      // `listUiExtensions` swallows this and skips the entry, which is right
-      // for building a LIST: one bad declaration should not cost the user
-      // every other panel. A single resolve is the opposite case — somebody
-      // asked about exactly this surface and is waiting for an answer, so the
-      // refusal is the answer. Still audited, because a path outside the
-      // install root is a containment violation and not a typo.
+      // Single-surface lookup must report containment failure instead of silently skipping it as list enumeration does.
       log.warn(`floating ui entry rejected for '${pluginId}': ${(err as Error).message}`);
       this.auditLog?.("error", "plugin_ui_entry_path_rejected", {
         pluginId,
@@ -8452,10 +7132,7 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
       pluginId,
       extensionId: extension.id,
       entryUrl: this.buildPluginUiEntryUrl(pluginId, plugin.manifest, entryPath),
-      // The plugin's string, rendered inside the host's chrome. It is placed
-      // as TEXT by the dock renderer, never as markup — a title is a label,
-      // not a way to draw into the host's own frame. Resolved in the current
-      // UI language; `FloatingDock.refreshTitles` re-resolves on a switch.
+      // Render plugin titles as text, and re-resolve host placeholders when the UI language changes.
       title: getPluginViewTitle(extension, getLocale()) ?? pluginId,
     };
   }
@@ -8465,13 +7142,7 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
     for (const [pluginId, plugin] of this.plugins) {
       const runtimeRevision = this.getPluginUiRevision(pluginId);
       for (const extension of plugin.manifest.ui ?? []) {
-        // Sidebar only. Every caller of this list renders its entries as
-        // in-window panels — the sidebar rail, the app menu, and the `uiList`
-        // IPC behind them — and until the floating slot existed `"sidebar"`
-        // was the only possible value, so none of them ever had to ask. A
-        // floating surface reaching them would appear as a panel the plugin
-        // never asked for, in addition to the dock slot it did.
-        // `resolveFloatingSurface` above is the floating slot's own lookup.
+        // Sidebar enumeration excludes floating surfaces; the dock resolves its own slot separately.
         if (extension.slot !== "sidebar") continue;
         const entrySource = extension.entry ?? extension.page;
         let entryPath: string | undefined;
@@ -8538,14 +7209,7 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
     return identity ? { ...identity } : undefined;
   }
 
-  /**
-   * Return the Host-only operation identity for one exact manifest auth Tool.
-   * It intentionally never reuses or publishes the cached authenticated
-   * account principal: auth status, login, and logout need one shared identity
-   * so a valid governed status-read → login/write chain can retain its receipt
-   * after login revokes the real account principal. Normal tools continue to
-   * use {@link getPluginOperationAccountIdentity} exclusively.
-   */
+  /** Auth tools use a host-only operation identity, never the cached account identity used by ordinary tools. */
   getPluginAuthOperationAccount(
     pluginId: string,
     generationId: string,
@@ -8581,16 +7245,7 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
     );
   }
 
-  /**
-   * Claim publication order for any auth lifecycle invocation. Starting login
-   * or logout immediately removes the current principal, so neither a failed
-   * nor partial transition can retain stale write authority. Every auth tool
-   * also receives one stable transition scope: status, login, and logout
-   * therefore serialize with admitted governed work and with each other. The
-   * caller must synchronously revoke grants for the returned hash before
-   * awaiting plugin execution and pass the epoch to
-   * {@link observePluginAuthResult}.
-   */
+  /** Claim auth publication order before execution; starting login or logout immediately removes current authority. */
   beginPluginAuthInvocation(
     pluginId: string,
     generationId: string,
@@ -8749,11 +7404,7 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
     return authInvalidation(existing, generationId, retainedTransitionAccount) ?? {};
   }
 
-  /**
-   * Fail closed on any unsuccessful auth transition. Its result is not
-   * authoritative, so the previously cached principal must be removed before
-   * the transition lease can release and admit queued governed work.
-   */
+  /** Failed auth transitions clear stale authority before releasing their lease to queued governed work. */
   invalidateFailedPluginAuthInvocation(
     pluginId: string,
     generationId: string,
@@ -8765,8 +7416,7 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
     );
     this.pluginAuthFailurePrincipals.delete(`${key}\0${invocationEpoch}`);
     if (!failurePrincipal) return {};
-    // A later completed auth result is authoritative. A later *started* status
-    // is not: it may still be queued behind governed work that must be denied.
+    // Only a later completed auth result supersedes failure; a later started status may still be queued.
     if ((this.pluginAuthPublishedEpochs.get(key) ?? -1) > invocationEpoch) {
       return {};
     }

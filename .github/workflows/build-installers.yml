@@ -3,6 +3,14 @@ name: Build Installers
 on:
   workflow_dispatch:
     inputs:
+      installer_scope:
+        description: Build all platforms for release, or as unsigned never-published validation (windows-disposable)
+        required: false
+        default: all
+        type: choice
+        options:
+          - all
+          - windows-disposable
       skip_code_sign:
         description: Build unsigned internal installers
         required: false
@@ -97,7 +105,7 @@ jobs:
   installers:
     name: ${{ matrix.name }}
     needs: release-profile
-    if: github.event_name == 'push' || inputs.contract_probe != 'true'
+    if: github.event_name == 'push' || inputs.installer_scope == 'windows-disposable' || inputs.contract_probe != 'true'
     # Matrix builds only produce workflow artifacts. The atomic publisher owns
     # the sole contents:write permission in its separate job.
     permissions:
@@ -240,7 +248,10 @@ jobs:
         run: |
           set -euo pipefail
           args=("--${{ matrix.target }}")
-          if [ "${{ github.event_name }}" = "push" ]; then
+          if [ "${{ inputs.installer_scope }}" = "windows-disposable" ]; then
+            args+=("--skip-code-sign" "--publish" "never")
+            echo "skip_sign=true" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event_name }}" = "push" ]; then
             # Public tags are currently unsigned by deliberate policy. This is
             # event-fixed, not inferred from secrets or tagged source output.
             args+=("--skip-code-sign")
@@ -260,14 +271,9 @@ jobs:
             # Linux installers ship x64 whatever the runner's arch.
             args+=("--arch" "x64")
           fi
-          # NO `--publish` here. The matrix runs three jobs in parallel and
-          # if each told electron-builder to publish directly to the same
-          # GitHub Release draft, the GitHub API contention produced partial
-          # uploads (some assets land, others don't) — observed in v0.2.1 +
-          # v0.2.2 release cycles. Instead each job uploads its build output
-          # as a workflow artifact, and a single `publish-release` job (below,
-          # `needs: installers`) assembles every platform's artifacts and
-          # uploads them atomically.
+          # Matrix jobs only upload workflow artifacts. Disposable validation
+          # explicitly uses publish=never; other builds use that script default.
+          # The separate publisher assembles all platforms for tag releases.
           node scripts/build-installers.mjs "${args[@]}"
       # Hard gate: every ELF and every .node in linux-unpacked, the AppImage
       # runtime, and the extracted deb and rpm payloads (plus their declared
@@ -605,7 +611,7 @@ jobs:
   publish-contract:
     name: Publish the signed contract bundle
     needs: release-profile
-    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.contract_probe == 'true')
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.contract_probe == 'true' && inputs.installer_scope != 'windows-disposable')
     runs-on: ubuntu-24.04-arm
     environment: release
     # id-token: write is the keyless signing identity; no other job has it.

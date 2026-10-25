@@ -13,11 +13,8 @@ export interface BoundSurface {
   detailTitle: string | null;
 }
 
-/**
- * A chat's target chip: the terminal or page its tools act on by default.
- * A pane chat's target is its pane, so its chip offers nothing to change it;
- * the rail's follows the window's active surface and offers `onRemove` (×).
- */
+/** A chat's target chip: the terminal or page its tools act on by default. A pane chat's target is its pane, so its chip
+ * offers nothing to change it; the rail's follows the window's active surface and offers `onRemove` (×). */
 export function BoundSurfaceChip({ surface, onRemove }: { surface: BoundSurface; onRemove?: () => void }) {
   const { t } = useTranslation();
   const Icon = surface.kind === "browser" ? Globe : Terminal;

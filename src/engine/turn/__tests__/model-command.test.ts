@@ -1,7 +1,3 @@
-/**
- * `/model` — show or switch the session's model through the loop's model
- * override, the same value the provider and the context budget read.
- */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { InputClassifier } from "../../../core/input-classifier.js";
 import { RouteEngine } from "../../../core/route-engine.js";
@@ -17,7 +13,6 @@ import type { ActiveChatRuntime } from "../../../shared/subscription-runtime.js"
 const state = vi.hoisted(() => ({
   configs: [] as ProviderConfig[],
   requests: [] as StreamTurnParams[],
-  /** What the route's `/models` endpoint answers when the command asks it; undefined = unreachable. */
   endpointModels: undefined as string[] | undefined,
   refreshes: 0,
 }));

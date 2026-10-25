@@ -25,13 +25,7 @@ export interface UseCheckpointViewResult {
   handleBranchFrom: (compactNum: number) => Promise<void>;
 }
 
-/**
- * Owns the checkpoint view-mode navigation handlers + the brief fork-success
- * toast. `viewMode` state itself lives at the ChatView composition root because
- * it is read by `useChatScroll` (auto-scroll suppression) and the transcript
- * slicing — this hook only sets it via `setViewMode`. Depends on the scroll
- * hook (`scrollChatToBottom`).
- */
+/** Keep viewMode at ChatView for transcript slicing and scroll suppression; this hook owns navigation and fork feedback. */
 export function useCheckpointView({
   api,
   currentSessionId,
@@ -44,7 +38,6 @@ export function useCheckpointView({
   scrollChatToBottom,
 }: UseCheckpointViewParams): UseCheckpointViewResult {
   const { t } = useTranslation();
-  // Brief fork-success toast (auto-dismisses after 3 s).
   const [forkToast, setForkToast] = useState<string | null>(null);
   const forkToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -55,15 +48,11 @@ export function useCheckpointView({
     };
   }, []);
 
-  // Checkpoint view-mode handlers.
   const handleEnterView = useCallback(async (compactNum: number) => {
     const result = await api.chatEnterCheckpointView?.(currentSessionId, compactNum);
     if (!result || "error" in result) return;
-    // messageIndexAtCreation is engine history message count — it does NOT
-    // map 1:1 to renderer entries (which include reasoning/tool_group/checkpoint entries).
-    // We cap to entries.length so the slice is always valid, accepting that in tool-heavy
-    // sessions the visible range may show slightly more entries than the exact checkpoint.
-    // A precise renderer↔engine index mapping can be added later if needed.
+    // Engine history counts do not map 1:1 to renderer entries; cap slices safely, accepting approximate ranges in tool-heavy
+    // sessions.
     const slicedRangeEnd = Math.min(result.messageIndexAtCreation, entries.length);
     setViewMode({ compactNum, slicedRangeEnd });
     scrollChatToBottom("auto");
@@ -86,18 +75,16 @@ export function useCheckpointView({
     if (!result || "error" in result) return;
     // Exit view-mode before loading the new session so it opens in live mode.
     setViewMode(null);
-    // Load the branched session
     if (!onLoadSession) return;
     const loaded = await onLoadSession(result.newSessionId);
     if (loaded === false) return;
-    // Show fork-success toast (shorter than default — single-line confirmation needs less time)
     if (forkToastTimerRef.current) clearTimeout(forkToastTimerRef.current);
     setForkToast(
       result.shouldAutoContinue
         ? t("chatView.forkSuccessAutoContinue", { compactNum })
         : t("chatView.forkSuccess", { compactNum }),
     );
-    forkToastTimerRef.current = setTimeout(() => setForkToast(null), SHORT_TOAST_TTL_MS); // single-line fork confirmation needs less read time
+    forkToastTimerRef.current = setTimeout(() => setForkToast(null), SHORT_TOAST_TTL_MS);
     if (result.shouldAutoContinue) {
       await onContinueFromLastUser?.(result.newSessionId);
     }

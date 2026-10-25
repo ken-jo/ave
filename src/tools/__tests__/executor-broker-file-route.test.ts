@@ -325,8 +325,7 @@ describe("executor canonical file workload-broker route", () => {
     await invoke(executor, tool.name, { path: "notes.txt" }, hostHome);
 
     const identities = approvalStore.lookupUserDecision.mock.calls.map((call) => call[4]);
-    // The brokered route keys on guest-normalized input; host-resolved memory
-    // scopes do not apply, so remembered decisions stay on exact args.
+    // Brokered routes use exact guest-normalized args; host-resolved memory scopes do not apply.
     expect(identities.every((identity) => identity?.memoryKey === undefined)).toBe(true);
     const keys = identities.map((identity) => identity?.key);
     expect(keys[0]).toMatch(/^read_file:workload:[0-9a-f]{64}$/);

@@ -192,12 +192,10 @@ export type RationaleRoundResult =
       readonly kind: "interrupted";
     }
   | {
-      /** Compatibility/test surface; production query-loop passes batch-decision. */
       readonly kind: "calls";
       readonly calls: readonly RationaleRoundCall[];
     }
   | {
-      /** Compatibility alias for older host wiring. */
       readonly kind: "provider-failure";
       readonly outcome: RationaleGenerationProviderFailureCause;
     };
@@ -210,12 +208,7 @@ export interface RationaleRoundResolution {
   readonly batchDecision: RationaleOnlyBatchDecision | null;
   readonly ticket: HostRationaleTicketSnapshot;
   readonly projection: RationaleUiAuditProjection;
-  /**
-   * True only on the reviewer auto-approve-on-aligned terminal: the ticket is
-   * already authorized (one-shot receipt minted) and the caller must SKIP the
-   * user modal and go straight to `createSealedResume`. False on every path
-   * that still requires the modal.
-   */
+  // True means a one-shot reviewer receipt already exists: skip the modal and createSealedResume.
   readonly autoApproved: boolean;
 }
 
@@ -291,11 +284,7 @@ function generationValue(
   return value;
 }
 
-/**
- * Host-owned coordinator for the PR(2) rationale path. It materializes control
- * records and modal/resume artifacts only; it never calls the provider or
- * executes a tool.
- */
+// The host coordinator creates control, modal, and resume artifacts; it never invokes providers or tools.
 export class RationaleHostCoordinator implements RationaleHostRuntime, RationaleResumeHostRuntime {
   readonly requestAnchor: RequestAnchor | null;
   readonly rationaleProvenance: RationaleEligibilityProvenance;
@@ -516,10 +505,7 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
       if (!anchorRoundReservation || this.#contexts.has(anchorRoundReservation.ticketId)) {
         return null;
       }
-      // `tryReserve` is deliberately idempotent for an identical retry. A
-      // coordinator recreated for the same batch must therefore consult the
-      // shared ticket store before rebuilding the control; otherwise a fresh
-      // coordinator could reopen the one-round anchor budget.
+      // Idempotent reservation retries must consult shared tickets so new coordinators cannot reopen the one-round anchor budget.
       const existingTicket = this.#ticketStore.get({
         sessionId: candidate.requestAnchor.sessionId,
         ticketId: anchorRoundReservation.ticketId,
@@ -756,11 +742,7 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
       return null;
     }
 
-    // Reviewer auto-approve-on-aligned terminal. Only a fresh + aligned +
-    // non-high reviewer re-evaluation qualifies; every other outcome falls
-    // through to the modal below. This mints the same one-shot allow-once
-    // receipt a user allow-once would, skipping user_pending and the modal, so
-    // the sealed-resume execution chokepoint downstream is unchanged.
+    // Only fresh, aligned, non-high re-evaluation may mint a reviewer one-shot receipt; every other case requires the modal.
     if (ready && reevaluation !== null &&
         isReviewerAutoApproveEligible(reevaluation)) {
       const receipt = this.#ticketStore.consumeReviewerAuthorizedOnce(
@@ -783,9 +765,7 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
         now: settledAt,
         autoApproved: true,
       });
-      // A failing projection audit fails closed exactly like the modal path:
-      // the exception propagates before `context.receipt` is published, so the
-      // minted receipt is unreachable and no resume can be sealed.
+      // Projection audit failure must block receipt publication and prevent sealing a resume.
       this.#commitProjectionAudit(context.sessionId, autoProjection, settledAt);
       context.snapshot = resolved;
       context.response = autoResponse;
@@ -829,9 +809,7 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
     try {
       display = createRationaleApprovalDisplayFromProjection(projection);
     } catch (error) {
-      // A projection/display contract drift must fail closed. `snapshot` is
-      // already the user_pending ticket, allowing abort() to retire it rather
-      // than stranding a non-modal approval state.
+      // Display-contract drift fails closed; keep the user_pending snapshot available for abort cleanup.
       try {
         this.abort(input.ticketId, settledAt);
       } catch (abortError) {
@@ -932,7 +910,6 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
       allowedChoices: ["allow-once", "deny-once"],
       toolName: metadata.toolName,
       toolCategory: metadata.category,
-      // The ticket already belongs to a conversation; carry it onto the card.
       sessionId: context.sessionId,
       reviewerVerdict: context.display.effectiveVerdict,
       evaluationContext: metadata.evaluationContext,

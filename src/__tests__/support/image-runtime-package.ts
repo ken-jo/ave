@@ -1,6 +1,6 @@
 import { writeFixtureFile } from "../../../test/scripts/gate-script-runner.js";
 
-/** Package shape for filesystem checks; these bytes are not executable addons. */
+/** These fixture bytes model package layout, not executable addons. */
 export function writeImageRuntimePackage(nodeModules: string, platform: string, arch = "x64"): void {
   const target = `${platform}-${arch}`;
   writeFixtureFile(nodeModules, "sharp/package.json", JSON.stringify({ main: "dist/index.cjs" }));

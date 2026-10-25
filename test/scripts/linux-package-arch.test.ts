@@ -1,9 +1,25 @@
+import { canCreateSymlinks } from "../../src/__tests__/support/symlink-capability.js";
 import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import { gzipSync } from "node:zlib";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+const fixtureModes = vi.hoisted(() => new Map<string, number>());
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return {
+    ...actual,
+    lstatSync: (path: string) => {
+      const stats = actual.lstatSync(path);
+      const mode = fixtureModes.get(path);
+      // The extracted fixtures carry Linux modes even on a host without them.
+      if (process.platform === "win32" && mode !== undefined) stats.mode = (Number(stats.mode) & ~0o777) | mode;
+      return stats;
+    },
+  };
+});
 import {
   appImagePayloadOffset,
   auditLinuxRelease,
@@ -18,23 +34,12 @@ afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: 
 
 const EM = { x64: 62, arm64: 183 } as const;
 
-/**
- * The audit labels each file by its host-relative path, which Windows spells
- * with `\`; the expectations below use the posix spelling of the Linux job.
- */
+// Normalize output paths for Windows.
 function posix(text: string): string {
   return text.split(sep).join("/");
 }
 
-/**
- * NTFS keeps no POSIX mode bits, so no file there is executable and the
- * audit's main-binary check fails every tree built on Windows.
- */
-const NO_EXEC_BIT_ON_WIN32 = process.platform === "win32"
-  ? ["linux-unpacked/: no executable ELF main binary at the app root"]
-  : [];
-
-/** A 64-byte ELF64 LE header: enough for the parser and for file(1). */
+// A minimal 64-byte ELF header is enough for the parser and file inspection.
 function elf(machine: number, type = 3): Buffer {
   const header = Buffer.alloc(64);
   header.set([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1, 0], 0);
@@ -47,20 +52,26 @@ function elf(machine: number, type = 3): Buffer {
 
 const MACHO_ARM64 = Buffer.from([0xcf, 0xfa, 0xed, 0xfe, 0x0c, 0x00, 0x00, 0x01, ...Buffer.alloc(56)]);
 
-/** file(1) stand-in that answers from the header the same way the real one does. */
 function fakeFile(path: string): string {
   const header = parseElfHeader(readFileSync(path));
   if (!header) return "data";
   return header.machine === EM.x64 ? "ELF 64-bit LSB shared object, x86-64" : "ELF 64-bit LSB shared object, ARM aarch64";
 }
 
+// Disable archive handling so Windows treats the placeholder as a physical file.
 function write(path: string, content: Buffer | string, mode = 0o644): void {
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, content);
-  chmodSync(path, mode);
+  const previous = process.noAsar;
+  process.noAsar = true;
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, content);
+    chmodSync(path, mode);
+  } finally {
+    process.noAsar = previous;
+  }
+  fixtureModes.set(path, mode);
 }
 
-/** A linux-unpacked tree whose every native binary is `arch`. */
 function unpackedApp(root: string, arch: keyof typeof EM): string {
   const app = join(root, arch === "x64" ? "linux-unpacked" : `linux-${arch}-unpacked`);
   write(join(app, "ave"), elf(EM[arch], 3), 0o755);
@@ -100,7 +111,6 @@ function appImage(machine: number, payload: Buffer = APPIMAGE_PAYLOAD): Buffer {
   return Buffer.concat([runtime, payload]);
 }
 
-/** exec stand-in: answers the deb/rpm metadata and "extracts" the AppImage payload tree. */
 function installerExec(calls: string[][], unsquash: (args: string[]) => void = (args) => appImagePayloadTree(args[args.indexOf("-d") + 1])) {
   return ((command: string, args: string[]) => {
     calls.push([command, ...args]);
@@ -128,8 +138,7 @@ describe("Linux package architecture audit", () => {
     const root = tempRoot();
     unpackedApp(root, "x64");
     const { violations, checked } = auditLinuxRelease(root, "x64", { fileCommand: fakeFile });
-    expect(violations.map(posix)).toEqual(NO_EXEC_BIT_ON_WIN32);
-    // main binary, crashpad, libffmpeg, two addons, rg, and the inflated uv
+    expect(violations.map(posix)).toEqual([]);
     expect(checked).toHaveLength(7);
   });
 
@@ -187,7 +196,7 @@ describe("Linux package architecture audit", () => {
       .toContain("no executable ELF main binary at the app root");
   });
 
-  it("never follows a symlink out of the tree", () => {
+  it.skipIf(!canCreateSymlinks())("never follows a symlink out of the tree", () => {
     const root = tempRoot();
     const app = unpackedApp(root, "x64");
     const outside = tempRoot();
@@ -196,7 +205,7 @@ describe("Linux package architecture audit", () => {
     symlinkSync(join(outside, "python3"), join(app, "resources/app.asar.unpacked/node_modules/node-pty/python3"));
     const after = auditLinuxRelease(root, "x64", { fileCommand: fakeFile });
     expect(after).toEqual(before);
-    expect(after.violations.map(posix)).toEqual(NO_EXEC_BIT_ON_WIN32);
+    expect(after.violations.map(posix)).toEqual([]);
   });
 
   it("checks the installers' declared arch and requires one of each", () => {

@@ -166,10 +166,7 @@ function setup(options: SetupOptions = {}) {
     readonly at: number;
   }> = [];
   const approvalRequests: Array<Omit<ApprovalRequest, "requireExplicit">> = [];
-  // Default reviewer is intentionally NOT auto-approve-eligible (scope
-  // "unclear"), so the many modal-path assertions below are unaffected by the
-  // reviewer auto-approve terminal. The auto-approve tests pass an explicit
-  // aligned reviewer via options.reviewer.
+  // Default to unclear scope so modal tests cannot auto-approve; auto-approval cases supply an aligned reviewer.
   const reviewer = options.reviewer ?? {
     async reevaluate(input) {
       return createReviewerScopeReevaluation({
@@ -401,7 +398,6 @@ describe("RationaleHostCoordinator", () => {
       kind: "rationale",
       allowedChoices: ["allow-once", "deny-once"],
       isReadOnly: false,
-      // The rationale card names the conversation the ticket belongs to.
       sessionId: materialized.control.anchor.sessionId,
     });
     expect(state.approvalRequests[0]).not.toHaveProperty("approvalCacheKey");
@@ -412,9 +408,7 @@ describe("RationaleHostCoordinator", () => {
       toolName: materialized.action.toolName,
       rationaleStatus: "ready",
     });
-    // The renderer receives only explanatory display facts. Replay-sensitive
-    // bindings remain in the host/audit projection and never cross the modal
-    // boundary.
+    // Send only display facts to the renderer; retain replay-sensitive bindings in host and audit projections.
     expect(modalArgs).not.toHaveProperty("ticketId");
     expect(modalArgs).not.toHaveProperty("anchorId");
     expect(modalArgs).not.toHaveProperty("actionDigest");
@@ -1114,14 +1108,11 @@ describe("RationaleHostCoordinator", () => {
         autoApproved: true,
       },
     });
-    // No user modal was ever opened.
     expect(state.approvalGate.requestAndWait).not.toHaveBeenCalled();
-    // Exactly one terminal projection audit, distinctly marked reviewer-auto.
     expect(state.projectionAudits.map(({ projection }) => [
       projection.terminalReason,
       projection.autoApproved,
     ])).toEqual([["allowed-once", true]]);
-    // The ticket is already terminal, so there is nothing left to prompt.
     expect(state.ticketStore.get({
       sessionId: materialized.control.anchor.sessionId,
       ticketId: materialized.control.ticketId,
@@ -1133,8 +1124,7 @@ describe("RationaleHostCoordinator", () => {
     )).toBeNull();
     expect(state.approvalGate.requestAndWait).not.toHaveBeenCalled();
 
-    // Execution still requires the host-minted one-shot receipt: the sealed
-    // resume is produced from the reviewer-authorized receipt, single-use.
+    // Execution requires a host-minted single-use receipt even after reviewer authorization.
     const sealed = await state.coordinator.createSealedResume({
       ticketId: materialized.control.ticketId,
       currentEligibilityContext: eligibilityContext,
@@ -1196,7 +1186,7 @@ describe("RationaleHostCoordinator", () => {
         ticket: { state: "allowed_once", terminalReason: "allowed-once" },
       });
       expect(state.approvalGate.requestAndWait).toHaveBeenCalledTimes(1);
-      // The user allow-once terminal is provenance-distinct from reviewer-auto.
+      // Preserve provenance differences between user allow-once and reviewer auto-approval.
       expect(state.projectionAudits.map(({ projection }) => [
         projection.terminalReason,
         projection.autoApproved,

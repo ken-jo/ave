@@ -1,13 +1,4 @@
-/**
- * Open and closed alert identities: `~/.ave/alerts/open.json`.
- *
- * An identity is open while its card (or, for a card-less level, its
- * lifetime) runs, and closed once the user dismissed or accepted it, until
- * the lifetime it had would have ended. Both tables persist so a restart can
- * neither bring back what the user closed nor forget what is still open. The
- * file holds alert ids, kind ids and enums only — never a key, a slot value
- * or rendered text.
- */
+/** Persist open and closed identities across restarts, containing ids and enums only; never keys, slots, or rendered text. */
 import { join } from "node:path";
 import type { AlertVisibility } from "../plugins/public-contract.js";
 import { createLogger } from "../lib/logger.js";
@@ -29,11 +20,11 @@ function isAlertPriority(value: unknown): value is AlertPriority {
   return value === "low" || value === "normal" || value === "high";
 }
 
-/** Open alerts per kind; a further raise evicts the lowest priority, then the oldest. */
+/** Evict the lowest priority, then oldest, when a kind exceeds its open cap. */
 const MAX_OPEN_PER_KIND = 3;
-/** Closed identities kept per plugin; the oldest leave first. */
+/** Evict the oldest closed identities when a plugin exceeds its cap. */
 export const MAX_CLOSED_PER_PLUGIN = 512;
-/** Refreshes one identity may take per window, so re-raising cannot pin a card on top. */
+/** Bound refreshes so repeated raises cannot pin cards to the top. */
 export const MAX_REFRESHES_PER_WINDOW = 6;
 export const REFRESH_WINDOW_MS = 10 * 60_000;
 
@@ -45,7 +36,6 @@ export interface OpenAlert {
   visibility: AlertVisibility;
   raisedAt: number;
   expiresAt: number;
-  /** Refresh times inside the current refresh window. */
   refreshes: number[];
 }
 
@@ -82,14 +72,13 @@ function hydrateClosed(value: unknown): ClosedAlert | null {
 
 export class AlertStore {
   private readonly openById = new Map<string, OpenAlert>();
-  /** Insertion order is closing order, which is what the per-plugin cap evicts by. */
+  /** Insertion order preserves closing order for cap eviction. */
   private readonly closedById = new Map<string, ClosedAlert>();
   private writes: Promise<void> = Promise.resolve();
   private writeQueued = false;
 
   constructor(private readonly dir: () => string) {}
 
-  /** Read the file; entries already past their lifetime are left behind. */
   async load(now: number): Promise<void> {
     const parsed = await readJsonFileOrEmpty<unknown>(join(this.dir(), STORE_FILE), () => null, (value) => value);
     if (!isRecord(parsed) || parsed.version !== STORE_VERSION) return;
@@ -116,10 +105,7 @@ export class AlertStore {
     return closed !== undefined && closed.until > now;
   }
 
-  /**
-   * Open a new identity. Returns the alerts it evicted from its kind to stay
-   * within {@link MAX_OPEN_PER_KIND}: the lowest priority, then the oldest.
-   */
+  /** Return evicted alerts in priority-then-age order. */
   add(entry: OpenAlert): OpenAlert[] {
     const sameKind = [...this.openById.values()].filter(
       (open) => open.pluginId === entry.pluginId && open.kindId === entry.kindId,
@@ -136,7 +122,7 @@ export class AlertStore {
     return evicted;
   }
 
-  /** Charge one refresh to an open identity; `false` when its window is spent, and nothing changes. */
+  /** A spent refresh window returns false without mutation. */
   refresh(alertId: string, now: number, update: { expiresAt: number; priority: AlertPriority }): boolean {
     const open = this.openById.get(alertId);
     if (!open) throw new Error(`AlertStore.refresh: ${alertId} is not open`);
@@ -147,7 +133,7 @@ export class AlertStore {
     return true;
   }
 
-  /** The user dismissed or accepted it: it stays closed until the lifetime it had would have ended. */
+  /** Answered identities remain closed until their original expiry. */
   close(alertId: string): OpenAlert | undefined {
     const open = this.openById.get(alertId);
     if (!open) return undefined;
@@ -162,7 +148,7 @@ export class AlertStore {
     return open;
   }
 
-  /** Withdrawn by its plugin: it leaves without closing, so a later raise opens it again. */
+  /** Withdrawal does not close an identity; a later raise may reopen it. */
   remove(alertId: string): OpenAlert | undefined {
     const open = this.openById.get(alertId);
     if (!open) return undefined;
@@ -171,7 +157,6 @@ export class AlertStore {
     return open;
   }
 
-  /** Every open alert past its lifetime, removed; closed entries past theirs are dropped too. */
   expire(now: number): OpenAlert[] {
     const expired = [...this.openById.values()].filter((open) => open.expiresAt <= now);
     for (const open of expired) this.openById.delete(open.alertId);
@@ -186,7 +171,7 @@ export class AlertStore {
     return expired;
   }
 
-  /** Every open alert of a plugin that is gone, removed. Closed identities stay: a reinstall must not reopen them. */
+  /** Retain closed identities on uninstall so reinstall cannot reopen them. */
   removePlugin(pluginId: string): OpenAlert[] {
     const removed = [...this.openById.values()].filter((open) => open.pluginId === pluginId);
     for (const open of removed) this.openById.delete(open.alertId);
@@ -194,16 +179,11 @@ export class AlertStore {
     return removed;
   }
 
-  /** Resolves once every queued write has settled. */
   flush(): Promise<void> {
     return this.writes;
   }
 
-  /**
-   * Queue one write of the tables as they are when it starts. Changes made
-   * while a write is already queued ride on that write, so a burst of changes
-   * costs one write of the final state, not one per change.
-   */
+  /** Coalesce queued mutations into one write of the latest tables. */
   private persist(): void {
     if (this.writeQueued) return;
     this.writeQueued = true;
@@ -216,7 +196,6 @@ export class AlertStore {
       };
       return writeJsonAtomic(this.dir(), STORE_FILE, file);
     }).catch((err: unknown) => {
-      // The in-memory tables still hold for this session.
       log.warn(`could not persist open alerts: ${errorMessage(err)}`);
     });
   }

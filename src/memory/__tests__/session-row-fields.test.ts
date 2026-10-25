@@ -1,12 +1,4 @@
-/**
- * The three fields a conversation ROW can change: its name, whether it is
- * archived, and whether it is marked unread.
- *
- * `saveSessionMetadata` writes the whole metadata file, so the risk these
- * tests exist for is a field-level update silently erasing everything it did
- * not mention — the project binding especially, which would detach a
- * conversation from its folder as a side effect of renaming it.
- */
+// Row updates must preserve unrelated fields because sidecar writes replace the entire metadata file.
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -41,7 +33,6 @@ describe("updateSessionRowFields", () => {
 
     const metadata = mm.loadSessionMetadata(SESSION);
     expect(metadata?.title).toBe("이름 바꾼 대화");
-    // The whole point: renaming must not detach the conversation.
     expect(metadata?.projectRoot).toBe("/ws/alpha");
     expect(metadata?.projectName).toBe("alpha");
   });
@@ -64,8 +55,7 @@ describe("updateSessionRowFields", () => {
 
     const metadata = mm.loadSessionMetadata(SESSION);
     expect(metadata?.archivedAt).toBeUndefined();
-    // `undefined` means "not mentioned", so unread must survive untouched —
-    // that distinction is what lets one call unarchive without also marking read.
+    // Undefined leaves unread unchanged, allowing unarchive without marking read.
     expect(metadata?.unreadSince).toBe("2026-08-27T01:00:00.000Z");
   });
 
@@ -95,7 +85,6 @@ describe("saveSessionTasks", () => {
       { id: "a", content: "scan folder", status: "completed" },
       { id: "b", content: "write report", status: "in_progress" },
     ]);
-    // Same guarantee as the row fields: the rest of the sidecar survives.
     expect(metadata?.projectRoot).toBe("/ws/alpha");
     expect(metadata?.title).toBe("plan");
   });
@@ -146,11 +135,9 @@ describe("findPaneSession", () => {
     await mm.saveSession(OLDER, [{ role: "user", content: "older" }]);
     await mm.saveSessionMetadata(OLDER, { sessionKind: "main", paneTabId: "browser:w-1" });
     expect(mm.findPaneSession("browser:w-1")).toBe(OLDER);
-    // A file written behind its back is not rescanned for...
     await mm.saveSession(NEWER, [{ role: "user", content: "newer" }]);
     writeFileSync(join(sessionStorePath(dir), `${NEWER}.meta.json`), JSON.stringify({ sessionKind: "main", paneTabId: "browser:w-9" }));
     expect(mm.findPaneSession("browser:w-9")).toBeUndefined();
-    // ...while its own writes and deletes are reflected at once.
     await mm.saveSessionMetadata(NEWER, { sessionKind: "main", paneTabId: "browser:w-1" });
     at(OLDER, 1_000);
     at(NEWER, 2_000);

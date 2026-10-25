@@ -1,23 +1,5 @@
-/**
- * The askpass broker (design §9.3).
- *
- * git asks for credentials by running `GIT_ASKPASS "<prompt>"` and reading
- * one line from its stdout. Ave points `GIT_ASKPASS` at a tiny helper that
- * forwards the prompt, together with a ticket, to this broker over a local
- * socket, and prints the broker's answer.
- *
- * A ticket is created for one `runGit` call and bound to one
- * (normalized host, source id). The broker answers with the stored token
- * only when git's prompt names that same host, so a redirect or a submodule
- * URL pointing somewhere else gets an empty answer, never the token. Tickets
- * are revoked when the git process exits.
- *
- * The helper runs as the app binary in Node mode (`ELECTRON_RUN_AS_NODE`),
- * so nothing extra ships with the app: the broker writes the helper script
- * and a launcher into a fresh `0700` directory when it starts and deletes
- * the directory when it closes. Each directory names the process that owns
- * it, so a broker starting later removes the ones a crashed run left behind.
- */
+/** Askpass tickets bind one git call to a host and source; other hosts never receive its token.
+ * Tickets expire with the process, and private helper directories are reclaimed after crashes. */
 import { randomBytes } from "node:crypto";
 import { chmod, lstat, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server, type Socket } from "node:net";
@@ -29,23 +11,20 @@ import { normalizeSourceHost } from "../net/source-url.js";
 
 const log = createMarketplaceLogger("marketplace-askpass");
 
-/** Username sent with a token; GitHub, GitLab and Gitea accept any non-empty name. */
+/** Token authentication requires a non-empty username. */
 export const TOKEN_USERNAME = "x-access-token";
 
 const MAX_REQUEST_BYTES = 16 * 1024;
 const BROKER_DIR_PREFIX = "ave-askpass-";
 const SOCKET_ROOT = "/tmp";
 const SOCKET_DIR_PREFIX = "ave-ask-";
-/** Written into every broker directory: the pid of the process that owns it. */
 const OWNER_FILE = "owner.pid";
 /** A directory with no readable owner yet may be one another process is still setting up. */
 const UNCLAIMED_GRACE_MS = 60_000;
 const CONNECTION_TIMEOUT_MS = 5_000;
 
 export interface AskpassTicket {
-  /** Environment for the git child: `AVE_ASKPASS_TICKET` and `AVE_ASKPASS_ENDPOINT`. */
   env: Record<string, string>;
-  /** True once the broker has answered a password prompt with a token for this ticket. */
   credentialOffered(): boolean;
   revoke(): void;
 }
@@ -57,16 +36,10 @@ interface TicketState {
 }
 
 export interface AskpassBrokerOptions {
-  /**
-   * The token for a normalized host as the call's source uses it, or null.
-   * Stored tokens are per host; the source id lets a token typed into the
-   * add dialog answer for that preview only.
-   */
+  /** Stored tokens are host-scoped; source ids restrict preview tokens to that preview. */
   getToken(host: string, sourceId: string): string | null;
-  /** Binary that runs the helper in Node mode; defaults to `process.execPath`. */
   nodeExecPath?: string;
   platform?: NodeJS.Platform;
-  /** Parent of the broker's private directory; defaults to the OS temp dir. */
   parentDir?: string;
 }
 
@@ -109,11 +82,7 @@ function launcherSource(platform: NodeJS.Platform, execPath: string, helperPath:
   return `#!/bin/sh\nELECTRON_RUN_AS_NODE=1\nexport ELECTRON_RUN_AS_NODE\nexec ${shellQuote(execPath)} ${shellQuote(helperPath)} "$@"\n`;
 }
 
-/**
- * The host a git credential prompt names, e.g. `Password for
- * 'https://x-access-token@github.com': ` → `github.com`. Null when the prompt
- * is not a credential prompt or names no parsable URL.
- */
+/** Null for non-credential prompts or URLs without a parseable host. */
 export function promptHost(prompt: string): { field: "username" | "password"; host: string } | null {
   const match = /^(Username|Password) for '([^']+)'/u.exec(prompt);
   if (!match) return null;
@@ -131,12 +100,7 @@ export function promptHost(prompt: string): { field: "username" | "password"; ho
 /** `sun_path` holds 104 bytes on macOS (108 on Linux), the closing NUL included. */
 const MAX_SOCKET_PATH_BYTES = 103;
 
-/**
- * Where the broker listens. The socket sits in the broker's directory unless
- * that path is too long for a unix socket (a deep home directory, an isolated
- * test home): then only the socket goes to a short private directory of its
- * own, removed with the broker.
- */
+/** Long Unix socket paths use a separate short private directory, removed with the broker. */
 async function brokerEndpoint(dir: string, platform: NodeJS.Platform): Promise<{ endpoint: string; socketDir: string | null }> {
   if (platform === "win32") return { endpoint: `\\\\.\\pipe\\ave-askpass-${randomBytes(12).toString("hex")}`, socketDir: null };
   const inDir = join(dir, "broker.sock");
@@ -156,11 +120,7 @@ function errorCode(error: unknown): string | undefined {
   return (error as NodeJS.ErrnoException).code;
 }
 
-/**
- * Whether a broker directory was left by a process that is gone. A pid the
- * system has since reused keeps its directory until that process exits too;
- * leaving a directory behind is harmless, removing a live one is not.
- */
+/** Preserve directories owned by live or reused pids; leaking one is safer than deleting a live broker. */
 async function leftBehind(dir: string, modifiedMs: number): Promise<boolean> {
   let owner: string;
   try {
@@ -181,7 +141,6 @@ async function leftBehind(dir: string, modifiedMs: number): Promise<boolean> {
   }
 }
 
-/** Removes this user's broker directories under `parent` whose owning process is gone. */
 async function sweepLeftBehind(parent: string, prefix: string): Promise<void> {
   let names: string[];
   try {
@@ -256,7 +215,6 @@ export class AskpassBroker {
     }
   }
 
-  /** Whether a token exists for `host` and `sourceId`, so a ticket would have something to answer with. */
   hasToken(host: string, sourceId: string): boolean {
     return this.getToken(host, sourceId) !== null;
   }
@@ -275,7 +233,6 @@ export class AskpassBroker {
     };
   }
 
-  /** Exposed for tests: the answer the broker gives for a ticket and prompt. */
   answer(ticketId: string, prompt: string): string {
     const ticket = this.tickets.get(ticketId);
     if (!ticket) return "";

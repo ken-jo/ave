@@ -1,22 +1,5 @@
-/**
- * The process-entry provenance gate, on every activation path
- * (docs/design/plugin-hostapi-protocol.md §9.7 P3, decision 35).
- *
- * Boot, post-boot add, prepared activation and restart all reach a plugin's
- * factory through `importPluginFactoryForLifecycle`, and each hands it the
- * evidence it verified itself. A `process` manifest passes only with a `git`
- * receipt whose artifact came through the `release` or `archive` rung with a
- * sha256 pin. The test process has no live OS sandbox, so an ADMITTED manifest
- * is then refused at spawn with `process-entry-unconfined` — which is what
- * tells "admitted, then refused at spawn" apart from "refused at the gate".
- *
- * Both hooks are observed rather than replaced: the gate and the out-of-process
- * factory run as they do in production, and count their calls.
- *
- * The precedence cases hold the other end: a directory with no receipt is
- * refused by the existing receipt checks before the gate or the factory is
- * reached, and on boot before its manifest is even read.
- */
+// Every activation path must verify its own process-entry provenance before spawning.
+// An admitted fixture fails with process-entry-unconfined, distinguishing admission from the sandbox check.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const reached = vi.hoisted(() => ({ gate: 0, factory: 0 }));
@@ -81,7 +64,6 @@ const PROCESS_MANIFEST: PluginManifest = {
   tools: [],
 };
 
-/** How the install on disk was made. `direct-release`: a pinned release served by a direct source. */
 type Provenance = ArtifactRung | "direct-release" | "v3" | "local-dev";
 
 function gitRecord(rung: ArtifactRung, sourceOrigin: GitInstallRecord["sourceOrigin"] = "custom"): GitInstallRecord {
@@ -98,7 +80,6 @@ function gitRecord(rung: ArtifactRung, sourceOrigin: GitInstallRecord["sourceOri
   };
 }
 
-/** A receipt over exactly the payload the directory holds now. */
 async function receiptFor(pluginDir: string, receiptId: string, provenance: Provenance): Promise<string> {
   const files = await listFilesRecursive(pluginDir, PLUGIN_RUNTIME_DIR_NAMES);
   if (provenance === "v3" || provenance === "local-dev") {
@@ -125,14 +106,12 @@ async function writeReceipt(cacheRoot: string, pluginDir: string, provenance: Pr
   await writeInstallReceipt(cacheRoot, JSON.parse(raw));
 }
 
-/** The process plugin's payload: its manifest and the executable it names. */
 async function writeProcessPayload(pluginDir: string): Promise<void> {
   await mkdir(join(pluginDir, "bin"), { recursive: true });
   await writeFile(join(pluginDir, "bin", "plugin"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
   await writeFile(join(pluginDir, "plugin.json"), JSON.stringify(agentPluginsDocument(PROCESS_MANIFEST)), "utf8");
 }
 
-/** An `entry` version of the same plugin, so restart has something running to replace. */
 async function writeEntryPayload(pluginDir: string): Promise<void> {
   await mkdir(pluginDir, { recursive: true });
   await writeFile(join(pluginDir, "entry.mjs"), "export default async () => ({ handlers: {} });\n", "utf8");
@@ -143,7 +122,6 @@ async function writeEntryPayload(pluginDir: string): Promise<void> {
   );
 }
 
-/** Replace the running `entry` payload with the `process` one, as an on-disk update would. */
 async function becomeProcessPlugin(pluginDir: string): Promise<void> {
   await rm(join(pluginDir, "entry.mjs"));
   await writeProcessPayload(pluginDir);
@@ -175,7 +153,6 @@ afterEach(async () => {
   await rm(fixture.rootDir, { recursive: true, force: true });
 });
 
-/** A runtime whose plans come from the registry, so every path verifies a receipt under its id. */
 async function registryRuntime(audit: unknown[] = []): Promise<PluginRuntime> {
   await writeTestPluginRegistry(fixture, [{ id: PLUGIN_ID, manifestPath, enabled: true }]);
   return makeTestPluginRuntime(fixture, {
@@ -184,13 +161,12 @@ async function registryRuntime(audit: unknown[] = []): Promise<PluginRuntime> {
   });
 }
 
-/** A runtime whose plan carries no registry id, so no path verifies anything. */
+/** Plans without registry IDs provide no verified receipt evidence. */
 async function unidentifiedRuntime(): Promise<PluginRuntime> {
   await writeTestPluginRegistry(fixture, []);
   return makeTestPluginRuntime(fixture, { installReceiptCacheRoot: cacheRoot, manifestPaths: [manifestPath] });
 }
 
-/** The variants the gate refuses, beside the provenance that sets them up. */
 const REFUSED: ReadonlyArray<[string, Provenance, boolean]> = [
   ["a tree-rung git receipt", "tree", false],
   ["a pinned release from a direct source", "direct-release", false],
@@ -198,7 +174,7 @@ const REFUSED: ReadonlyArray<[string, Provenance, boolean]> = [
   ["a local-dev receipt under dev unlock", "local-dev", true],
 ];
 
-/** Dev unlock is an unpackaged build with `AVE_DEV=1`; without it a local-dev receipt fails integrity first. */
+/** Local-dev receipt verification requires an unpackaged build with AVE_DEV=1. */
 function arrange(devUnlocked: boolean): void {
   if (!devUnlocked) return;
   setIsPackaged(false);
@@ -213,7 +189,6 @@ describe("boot", () => {
     const runtime = await registryRuntime(audit);
     await runtime.startAll();
     expect(reached.factory).toBe(1);
-    // The rung the gate read is the one the integrity audit records.
     expect(audit).toContainEqual({
       message: "plugin_integrity_verified",
       data: expect.objectContaining({ pluginId: PLUGIN_ID, installSource: "git", rung }),
@@ -278,7 +253,6 @@ describe("post-boot add", () => {
 describe("prepared activation", () => {
   const INSTALL_ID = "catalog-process-kit";
 
-  /** The staged tree and its receipt, as the marketplace hands them over. */
   async function prepared(provenance: Provenance) {
     const staging = join(fixture.rootDir, "staging");
     await writeProcessPayload(staging);
@@ -315,7 +289,6 @@ describe("prepared activation", () => {
 });
 
 describe("restart", () => {
-  /** An `entry` version running under a receipt, then replaced on disk by the `process` one. */
   async function runningThenProcess(
     makeRuntime: () => Promise<PluginRuntime>,
     provenance: Provenance,
@@ -359,13 +332,9 @@ describe("restart", () => {
   });
 });
 
-/**
- * Receipt integrity → the gate → routing → the sandbox check. A directory with
- * no receipt never reaches the gate: it is refused by the receipt checks, which
- * name the receipt, on every path that has no staged receipt of its own.
- */
+/** Receipt integrity precedes provenance, routing and confinement; missing receipts must fail before the gate. */
 describe("precedence: no receipt is a receipt refusal, never the gate's", () => {
-  /** The generation materialiser the fixture replaces, put back: it is what reads the receipt. */
+  /** Restore the production materializer so this case actually reads the receipt. */
   function withRealMaterialisation(runtime: PluginRuntime): PluginRuntime {
     delete (runtime as unknown as Record<string, unknown>).materializeImmutableRuntimeRoot;
     delete (runtime as unknown as Record<string, unknown>).removeUnpublishedRuntimeRoot;
@@ -400,8 +369,7 @@ describe("precedence: no receipt is a receipt refusal, never the gate's", () => 
     await runtime.startAll();
     await becomeProcessPlugin(pluginDir);
     await rm(installReceiptPath(cacheRoot, PLUGIN_ID));
-    // The entry plugin booted as a child (§9.8 A1), so boot itself reached the
-    // factory; what is under test is that the restart does not.
+    // Boot already called the child factory; restart must not call it again.
     reached.gate = 0;
     reached.factory = 0;
     await expect(runtime.restartPlugin(PLUGIN_ID, { throwOnFailure: true })).resolves.toBe("failed");
@@ -434,8 +402,7 @@ describe("precedence: no receipt is a receipt refusal, never the gate's", () => 
     expect(runtime.listPluginIds()).toContain(PLUGIN_ID);
     await becomeProcessPlugin(pluginDir);
     await rm(installReceiptPath(cacheRoot, PLUGIN_ID));
-    // The entry plugin booted as a child (§9.8 A1), so boot itself reached the
-    // factory; what is under test is that the restart does not.
+    // Boot already called the child factory; restart must not call it again.
     reached.gate = 0;
     reached.factory = 0;
     await expect(runtime.restartPlugin(PLUGIN_ID, { throwOnFailure: true })).rejects.toThrow(/ENOENT/);

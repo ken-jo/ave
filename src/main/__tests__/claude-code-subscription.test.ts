@@ -14,7 +14,7 @@ import {
   sanitizedClaudeCodeEnvironment,
 } from "../claude-code-subscription-client.js";
 import { claudeCodeMcpToolNames } from "../claude-code-conversation-runtime.js";
-import { createSubscriptionRuntimeNamespace as namespace } from "../../__tests__/support/subscription-runtime-namespace.js";
+import { claimFakeRuntimeDirectories, createSubscriptionRuntimeNamespace as namespace } from "../../__tests__/support/subscription-runtime-namespace.js";
 import { SubscriptionRuntimeService } from "../subscription-runtime-service.js";
 import type { CodexAppServerClient } from "../codex-app-server-client.js";
 import type { AcpSubscriptionRuntimeRegistry } from "../subscription-runtime-service.js";
@@ -24,7 +24,6 @@ import { claudeCodePrintArgs } from "../claude-code-stream.js";
 import { catalogChatModelIds } from "../../shared/model-catalog/vendor-models.js";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-
 
 function fakeCodexClient(): CodexAppServerClient {
   return {
@@ -117,7 +116,7 @@ describe("claude-code subscription contract", () => {
       stop: vi.fn(async () => undefined),
     } as unknown as ClaudeCodeSubscriptionClient;
     const service = await SubscriptionRuntimeService.create(async () => undefined, {
-      namespace: namespace(),
+      namespace: namespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
       codexClient: fakeCodexClient(),
       acpRegistry: { stopAll: vi.fn(async () => undefined) } as unknown as AcpSubscriptionRuntimeRegistry,
       claudeCodeClient: client,
@@ -149,7 +148,7 @@ describe("claude-code subscription contract", () => {
       stopAll: vi.fn(async () => undefined),
     } as unknown as AcpSubscriptionRuntimeRegistry;
     const service = await SubscriptionRuntimeService.create(async () => undefined, {
-      namespace: namespace(),
+      namespace: namespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
       codexClient: fakeCodexClient(),
       acpRegistry: registry,
       claudeCodeClient,
@@ -184,7 +183,7 @@ function connectedClaudeClient(): ClaudeCodeSubscriptionClient {
 async function claudeService() {
   const opened: ClaudeCodeConversationRuntimeOptions[] = [];
   const service = await SubscriptionRuntimeService.create(async () => undefined, {
-    namespace: namespace(),
+    namespace: namespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
     codexClient: fakeCodexClient(),
     acpRegistry: { stopAll: vi.fn(async () => undefined) } as unknown as AcpSubscriptionRuntimeRegistry,
     claudeCodeClient: connectedClaudeClient(),
@@ -247,8 +246,7 @@ describe("subscription credentials remain owned by the CLI", () => {
 
   it("signs in only with `claude auth login`: no other login, token or key path is spawned", () => {
     const text = modules.map(source).join("\n");
-    // Trusted launcher arguments precede auth commands; capability probes
-    // read help without opening another authentication path.
+    // Trusted launcher arguments precede auth commands; capability probes read help without opening another authentication path.
     const authCommands = [...text.matchAll(/"auth",\s*"([^"]+)"/gu)].map((match) => match[1]);
     expect(new Set(authCommands)).toEqual(new Set(["login", "logout", "status", "--help"]));
     expect(text).not.toMatch(/setup-token|--api-key|ANTHROPIC_API_KEY\s*[:=]|CLAUDE_CODE_OAUTH_TOKEN\s*[:=]/u);
@@ -268,8 +266,7 @@ describe("subscription credentials remain owned by the CLI", () => {
     }, platform, platform === "win32" ? "C:\\isolated\\claude-tmp" : "/isolated/claude-tmp");
     const leaked = Object.keys(env).filter((key) => /^(ANTHROPIC_|CLAUDE_)/iu.test(key) && key !== "CLAUDE_CONFIG_DIR");
     expect(leaked).toEqual([]);
-    // The one CLAUDE_ variable present is Ave's own: the isolated config dir,
-    // never the user's real one.
+    // The one CLAUDE_ variable present is Ave's own: the isolated config dir, never the user's real one.
     expect(env.CLAUDE_CONFIG_DIR).toBe(home);
     expect(env.HOME).toBe(home);
   });

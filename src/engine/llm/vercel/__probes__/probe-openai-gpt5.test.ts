@@ -1,9 +1,4 @@
-/**
- * Probe: OpenAI GPT-5.x routing + stream event ordering.
- *
- * Verifies that @ai-sdk/openai auto-routes gpt-5.x models to /v1/responses
- * and emits reasoning-delta → text-delta → tool-call → finish in order.
- */
+// Probe native response routing and reasoning, text, tool, and finish event order.
 import { describe, it, expect } from "vitest";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";

@@ -1,4 +1,3 @@
-/** Executable-registry mutation corpus shared by admission and real-shell checks. */
 export const TERMINAL_REGISTRY_COMMANDS: readonly string[] = [
   "functions+=(command_not_found_handler \"/usr/bin/printf handler-ran\"); no_such_ave_word",
   "functions[command_not_found_handler]='/usr/bin/printf handler-ran'; no_such_ave_word",
@@ -85,7 +84,6 @@ export const TERMINAL_REGISTRY_COMMANDS: readonly string[] = [
   "echo $(( functions = 1 )); no_such_ave_word"
 ];
 
-/** Formats whose numeric fields consume only fixed literals. */
 export const TERMINAL_PRINTF_DATA_COMMANDS: readonly string[] = [
   "printf '%d %s' 42 hello",
   "printf '%s %d' hello 42",
@@ -107,7 +105,6 @@ export const TERMINAL_PRINTF_DATA_COMMANDS: readonly string[] = [
   "printf '%%' 'PATH=0'",
 ];
 
-/** Formats with unchecked arithmetic, assignment, argument positions or grammar. */
 export const TERMINAL_PRINTF_UNCHECKED_COMMANDS: readonly string[] = [
   "printf '%d %s' 'PATH=0' hello",
   "printf '%s %d' hello 'PATH=0'",
@@ -134,7 +131,6 @@ export const TERMINAL_PRINTF_UNCHECKED_COMMANDS: readonly string[] = [
   "printf \"$format\" hello 42",
 ];
 
-/** Option operands and restricted option processing keep the rest as data. */
 export const TERMINAL_PRINT_DATA_COMMANDS: readonly string[] = [
   "print -u 1 -r -- hello",
   "print -ru1 -- hello",
@@ -151,7 +147,6 @@ export const TERMINAL_PRINT_DATA_COMMANDS: readonly string[] = [
   "print -R -rvPATH changed",
 ];
 
-/** Variable targets are parsed after flags before applying shared assignment policy. */
 export const TERMINAL_PRINT_TARGET_COMMANDS: readonly string[] = [
   "print -rvPATH changed",
   "print -nrvPATH changed",
@@ -166,7 +161,6 @@ export const TERMINAL_PRINT_TARGET_COMMANDS: readonly string[] = [
   "print -nrv\"$variable\" changed",
 ];
 
-/** Formatted output remains active after attached or separate option operands. */
 export const TERMINAL_PRINT_FORMAT_COMMANDS: readonly string[] = [
   "print -u 1 -f '%d' 'PATH=0'",
   "print -u1 -f '%d' 'PATH=0'",
@@ -183,7 +177,6 @@ export const TERMINAL_PRINT_FORMAT_COMMANDS: readonly string[] = [
   "print -Rf '%d' 'PATH=0'",
 ];
 
-/** Builtins and assignments that run code beyond the command's parsed words. */
 export const TERMINAL_CALLBACK_COMMANDS: readonly string[] = [
   ...TERMINAL_PRINT_FORMAT_COMMANDS,
   ...TERMINAL_PRINT_TARGET_COMMANDS,

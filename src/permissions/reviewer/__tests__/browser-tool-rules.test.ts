@@ -1,12 +1,4 @@
-/**
- * The agent browser tools' rule verdicts.
- *
- * A browser action is graded on what it touches — a page origin the approval
- * card names — not by the generic builtin network/write rules, which grade
- * any builtin without a URL or path HIGH (once-only at the gate, so the
- * session-scoped origin memory could never be used). A model-chosen URL
- * (navigate, tab_new) still goes through web_fetch's request screen.
- */
+// Browser actions grade their named page origin; model-chosen navigation URLs still pass the request screen.
 import { describe, expect, it } from "vitest";
 import { RuleBasedRiskClassifier } from "../risk-classifier.js";
 import { makeRiskClassifierContext } from "../../__tests__/test-helpers.js";

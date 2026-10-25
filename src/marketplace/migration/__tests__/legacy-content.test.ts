@@ -1,8 +1,3 @@
-/**
- * The content half of the first-boot migration (design §16.3): which legacy
- * activations are adopted from the official source, which legacy list entries
- * are dropped, and what makes the migration run again.
- */
 import { describe, expect, it, vi } from "vitest";
 import { MarketplaceError } from "../../errors.js";
 import { legacySelectedThemes, migrateLegacyContent, type LegacyActivations, type LegacyContentKind } from "../legacy-content.js";
@@ -58,7 +53,6 @@ describe("migrateLegacyContent", () => {
       ],
       failed: [],
     });
-    // Provider settings are the live activation either way: nothing to drop for them.
     expect(release).toHaveBeenCalledWith({ themes: ["aurora"], locales: ["ko"] });
   });
 

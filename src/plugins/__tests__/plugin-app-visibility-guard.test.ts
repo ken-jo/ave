@@ -1,4 +1,3 @@
-/** Pure Tool app-visibility and runtime invocation-scope enforcement. */
 import { afterEach, describe, expect, it } from "vitest";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -45,8 +44,7 @@ async function writeTempPlugin(opts: {
   return join(root, "plugin.json");
 }
 
-// Previously rejected on user plugins; must now be accepted on every
-// install policy so plugin authors can own their confirmation UX.
+// App-only confirmations are allowed under every install policy.
 const PREVIOUSLY_BLOCKED_VERBS = [
   "thing_delete",
   "thing_remove",
@@ -138,8 +136,7 @@ describe("callFromUi scope enforcement", () => {
   });
 
   it("throws when a method is model-visible but not app-visible", async () => {
-    // Build a runtime with a hand-crafted plugin map so we can exercise
-    // callFromUi without spinning up a real plugin entry file.
+    // Inject the plugin map to exercise UI invocation without launching an entry.
     const rt = new PluginRuntime({
       hostRoot: resolve(__dirname, "..", "..", ".."),
       manifestPaths: [],
@@ -148,7 +145,6 @@ describe("callFromUi scope enforcement", () => {
       plugins: Map<string, { manifest: unknown }>;
       methodMap: Map<string, { pluginId: string; handler: (p?: unknown) => Promise<unknown> }>;
     };
-    // foo_get is app-visible; foo_delete is model-only.
     internals.plugins.set("test.plugin", {
       manifest: {
         tools: [
@@ -184,7 +180,6 @@ describe("callFromUi scope enforcement", () => {
       plugins: Map<string, { manifest: unknown }>;
       methodMap: Map<string, { pluginId: string; handler: (p?: unknown) => Promise<unknown> }>;
     };
-    // foo_get is app-visible.
     internals.plugins.set("test.plugin", {
       manifest: {
         tools: [

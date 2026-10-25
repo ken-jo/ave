@@ -1,11 +1,3 @@
-/**
- * LLM provider lifecycle helpers.
- *
- * `buildProvider` (settings -> primary + fallback chain), `generateText`
- * (plugin one-shot), `pingProvider` (status probe), and `resolveVendorName`.
- * Extracted from `conversation-loop.ts`; the class keeps thin delegators that
- * forward `this.provider` / `this.deps`.
- */
 import { createProvider, secretKeyFor } from "../llm/provider-factory.js";
 import { FallbackProvider } from "../llm/vercel/fallback-chain.js";
 import type { LLMProvider, ProviderConfig } from "../llm/types.js";
@@ -31,30 +23,16 @@ import { clampBackgroundOutputTokenLimit } from "../llm/output-token-limit.js";
 
 export const AI_PROVIDER_PING_TIMEOUT_MS = 8_000;
 
-/**
- * System prompt {@link pingProvider} sends for its connectivity probe.
- *
- * Exported so a test double can recognise the probe turn by the exact prompt
- * the host actually sends, instead of a copied literal that would silently
- * drift if this text were ever edited.
- */
+// Export the probe prompt so fixtures recognize the actual request without a drifting copy.
 export const PROVIDER_PING_SYSTEM_PROMPT =
   "You are a connectivity probe. Reply with PONG only.";
 
-/** Optional host-owned constraints for a background one-shot generation. */
 export interface GenerateTextOptions {
-  /**
-   * Maximum generated output tokens requested by an internal background caller.
-   * Invalid values are ignored and valid values are clamped before transport.
-   */
+  // Validate and clamp internal output limits before transport.
   outputTokenLimit?: number;
 }
 
-/**
- * Keep the generic collector within its estimated token budget when a native
- * transport cannot enforce `outputTokenLimit` itself. No ellipsis is appended:
- * an extra marker could violate the cap.
- */
+// Native transports may need estimated local output bounds; adding an ellipsis would exceed the cap.
 function truncateTextToOutputTokenLimit(value: string, tokenLimit: number): string {
   if (estimateTokens(value) <= tokenLimit) return value;
   const codePoints = Array.from(value);
@@ -72,11 +50,7 @@ function truncateTextToOutputTokenLimit(value: string, tokenLimit: number): stri
   return codePoints.slice(0, low).join("");
 }
 
-/**
- * A model id accepted as an override: trimmed, non-empty, bounded and free of
- * control characters. Returns `undefined` for anything else so callers refuse
- * it rather than forwarding a malformed id to a transport.
- */
+/** Accept only trimmed, bounded model IDs without control characters; invalid IDs are never forwarded. */
 export function cleanModelOverride(value: string | undefined): string | undefined {
   if (typeof value !== "string") return undefined;
   const model = value.trim();
@@ -90,10 +64,7 @@ export function cleanModelOverride(value: string | undefined): string | undefine
   return model;
 }
 
-/**
- * Whether a subscription runtime honours a model override. Only a runtime with
- * a host-verified model picker does; the others own their default model.
- */
+// Only runtimes with host-verified model selection honor overrides.
 export function subscriptionAcceptsModelOverride(selection: SubscriptionChatRuntimeSelection): boolean {
   return selection.provider === "codex";
 }
@@ -102,22 +73,13 @@ function selectionWithModelOverride(
   selection: SubscriptionChatRuntimeSelection,
   modelOverride: string | undefined,
 ): SubscriptionChatRuntimeSelection {
-  // Only Codex exposes a host-verified model picker. ACP runtimes own their
-  // default model, so carrying an agent-profile override across that boundary
-  // would fabricate a model selection they do not support.
+  // Runtimes owning their default model must not receive unsupported profile selections.
   if (!subscriptionAcceptsModelOverride(selection)) return selection;
   const model = cleanModelOverride(modelOverride);
   return model ? Object.freeze({ ...selection, model }) : selection;
 }
 
-/**
- * Proves that a provider belongs to the active authentication boundary.
- *
- * Model equality is deliberately not part of this check: child profiles may
- * select a verified Codex model override while retaining the same
- * subscription-authenticated provider. The guard is about preventing a stale
- * API-key transport from being invoked after subscription activation.
- */
+/** Match the active authentication boundary, not model equality; stale API-key transports are forbidden. */
 export function providerMatchesActiveChatRuntime(
   provider: LLMProvider | null,
   activeChatRuntime: ActiveChatRuntime | undefined,
@@ -135,10 +97,7 @@ export function buildProvider(deps: ConversationLoopDeps): LLMProvider | null {
     if (activeChatRuntime?.kind === "subscription") {
       try {
         const selection = selectionWithModelOverride(activeChatRuntime, deps.modelOverride);
-        // A profile model is a transient Codex candidate. Preserve the active
-        // parent selection so the main-owned runtime can validate the
-        // candidate against its live subscription catalog and fall back only
-        // to that parent selection when the candidate is stale or unavailable.
+        // Validate profile candidates against the live subscription catalog; retain only the parent selection as fallback.
         const fallbackSelection = selection.model === activeChatRuntime.model
           ? undefined
           : activeChatRuntime;
@@ -153,22 +112,14 @@ export function buildProvider(deps: ConversationLoopDeps): LLMProvider | null {
         ) {
           return null;
         }
-        // Subscription transport failures get the same bounded transient
-        // retry semantics as API-key providers, but the chain is intentionally
-        // empty. This retries only the already-selected subscription runtime:
-        // it never consults API-key settings, builds another vendor provider,
-        // or lets credentials egress through a fallback path.
+        // Subscription retries stay on the selected runtime and never consult API-key fallbacks or credentials.
         return new FallbackProvider(candidate, [], () => "");
       } catch {
-        // A main-owned runtime bootstrap failure must never fall through to an
-        // API-key provider selected before subscription chat was enabled.
+        // Subscription bootstrap failure must not fall through to an earlier API-key provider.
         return null;
       }
     }
-    // The stored profile named a removed vendor and the load moved it to the
-    // default. Until the user picks a provider, the API route reads as not
-    // configured: a key saved for the default (possibly paid) vendor must not
-    // be used on their behalf.
+    // Removed-vendor profiles remain unconfigured until selection; stored default-vendor keys are not consent.
     if (llmSettings.retiredProvider) {
       return null;
     }
@@ -192,9 +143,7 @@ export function buildProvider(deps: ConversationLoopDeps): LLMProvider | null {
       ? marketplaceProviderPreset.baseUrl
       : block.baseUrl;
 
-    // Vertex AI uses service account / ADC — apiKey not required, but project is.
-    // Self-hosted/local OpenAI-compatible endpoints can also run without an
-    // API key when a baseUrl is configured.
+    // Project-authenticated routes require a project; configured self-hosted routes may be keyless.
     const isVertex = vendor === "vertex-ai";
     const canUseWithoutApiKey = marketplaceProviderPreset
       ? marketplaceProviderPreset.requiresApiKey === false && Boolean(effectiveBaseUrl?.trim())
@@ -232,9 +181,7 @@ export function buildProvider(deps: ConversationLoopDeps): LLMProvider | null {
       const primary = createLoopProvider({
         vendor,
         apiKey: providerApiKey,
-        // Sub-agent model override takes precedence over the vendor block's
-        // configured model; falls back to block.model when no override is set
-        // (parent loops and sub-agents without a resolved profile model).
+        // Child model overrides take precedence; absent overrides retain the configured vendor model.
         model: effectiveModel,
         ...(effectiveBaseUrl ? { baseUrl: effectiveBaseUrl } : {}),
         ...(block.vertexProject ? { vertexProject: block.vertexProject } : {}),
@@ -292,9 +239,7 @@ export async function generateText(
       throw new Error("LLM provider not configured");
     }
     if (abortSignal?.aborted) throw new Error("LLM generation aborted");
-    // Background/plugin surface: this caller owns the host ceiling, so it is
-    // applied here rather than in the shared transport, which also serves
-    // foreground chat and must not impose a plugin-sized bound on it.
+    // This background caller owns its ceiling; applying it in shared transport would also clamp chat.
     const outputTokenLimit = clampBackgroundOutputTokenLimit(options?.outputTokenLimit);
     const outputLimitController = outputTokenLimit === undefined
       ? undefined
@@ -339,8 +284,7 @@ export async function generateText(
       if (!outputLimitReached || abortSignal?.aborted) throw error;
     }
     if (abortSignal?.aborted) throw new Error("LLM generation aborted");
-    // Plugins and routines consume generateText() return verbatim — strip the
-    // suggested-replies block so it never reaches non-chat-stream callers.
+    // Strip reply markup because plugins and routines consume the returned text verbatim.
     return stripSuggestedReplies(text).trim();
 }
 

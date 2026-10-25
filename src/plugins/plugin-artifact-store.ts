@@ -1,32 +1,4 @@
-/**
- * PluginArtifactStore — artifact-management seam.
- *
- * Pulls the artifact-management responsibilities out of the
- * 1100-line `PluginMarketplaceService` god-class so:
- *
- *   1. `marketplace.ts` becomes an orchestrator (catalog → install order →
- *      registry write) and stops owning download/extract/cache plumbing.
- *   2. The MCP marketplace install consumer instantiates a parallel store
- *      rooted at `~/.ave/mcp/<slug>/` without copying the entire pipeline.
- *
- * What this module owns:
- *   - signed-zip download + envelope verification (delegates to
- *     `installFromMarketplace` in marketplace-installer.ts)
- *   - atomic stage → swap zip extraction (Windows-safe rename)
- *   - per-plugin install/rollback history journal (`history.json`)
- *   - per-version manifest snapshot under `cacheRoot/<slug>/<version>/`
- *
- * What it does NOT own (caller's domain):
- *   - the marketplace catalog / fetcher selection
- *   - `registry.json` updates
- *   - dependency resolution
- *   - per-plugin lifecycle locks
- *
- * The store is transport- and plugin-kind agnostic: callers supply
- * `installRoot` (where to extract) and `cacheRoot` (where to keep history
- * + version snapshots). Regular plugins point these at `~/.ave/plugins/`;
- * MCP consumers point them at `~/.ave/mcp/`.
- */
+/** Artifact storage owns atomic extraction, version snapshots and history for separate plugin-kind roots. */
 
 import AdmZip from "adm-zip";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
@@ -69,7 +41,6 @@ const log = createLogger("plugin-artifact-store");
 
 export interface ArtifactStoreHistoryEntry {
   version: string;
-  /** ISO timestamp. */
   installedAt: string;
 }
 
@@ -114,17 +85,9 @@ export class ArtifactRollbackError extends AggregateError {
 }
 
 export interface ArtifactStoreOptions {
-  /**
-   * Where artifacts are extracted (`{installRoot}/<slug>/...`). For
-   * regular plugins this is `~/.ave/plugins/`; for MCP servers it is
-   * `~/.ave/mcp/`.
-   */
+  /** Extraction root shared by consumers; each plugin kind supplies its own namespace. */
   installRoot: string;
-  /**
-   * Per-slug history + version snapshot root. For regular plugins this
-   * is `~/.ave/plugins/.cache/`; for MCP servers it is
-   * `~/.ave/mcp/.cache/`.
-   */
+  /** Per-ID history and version-snapshot root, separate from extraction. */
   cacheRoot: string;
   /** Resource ceilings shared by download, cache, and zip extraction. */
   artifactLimits?: Partial<MarketplaceArtifactLimits>;
@@ -142,7 +105,6 @@ export class PluginArtifactStore {
     this.artifactLimits = resolveMarketplaceArtifactLimits(options.artifactLimits);
   }
 
-  /** `{installRoot}/{slug}` — exposed for callers that need to know the path before download. */
   installDirFor(slug: string): string {
     const safeSlug = assertSafeArtifactSlug(slug);
     const installDir = resolve(this.installRoot, safeSlug);
@@ -160,10 +122,7 @@ export class PluginArtifactStore {
     return withMarketplaceArtifactResourceSlot(operation, { signal });
   }
 
-  /**
-   * Read selected root text files only after the same ZIP preflight used by
-   * extraction has bounded entry count, declared sizes, and compression ratio.
-   */
+  /** Apply extraction preflight ceilings before reading selected archive text files. */
   readRequiredRootTextFiles(
     slug: string,
     zipBuffer: Buffer,
@@ -221,35 +180,20 @@ export class PluginArtifactStore {
     return Object.freeze(result);
   }
 
-  /**
-   * Atomically extract `zipBuffer` into `{installRoot}/{slug}/`. The
-   * extraction is staged under a UUID-suffixed directory and swapped
-   * into place via Windows-safe rename — concurrent installers can't
-   * interleave on the same slug because the stage dir is unique.
-   *
-   * Throws if any zip entry escapes the install root (defense-in-depth
-   * against `..` traversal that slipped through `sanitizeZipEntryPath`).
-   */
+  /** Extract into a unique stage and swap atomically; validate every archive path before materialization. */
   async extractZip(slug: string, zipBuffer: Buffer): Promise<string[]> {
     return (await this.extractZipWithCommit(slug, zipBuffer, async () => undefined)).files;
   }
 
-  /**
-   * Extract and promote a zip, then run a caller-supplied commit action before
-   * deleting the previous install directory. If commit fails, restore the old
-   * directory or remove the fresh install so external state (for example MCP
-   * config registration) cannot fail after the executable payload changed.
-   */
+  /** Commit before deleting the predecessor; on failure restore it or remove the fresh install. */
   async extractZipWithCommit<T>(
     slug: string,
     zipBuffer: Buffer,
     commit: (installDir: string, files: string[]) => Promise<T>,
     options: {
-      /** Runs after verified extraction but before either live directory is renamed. */
+      /** Run after extraction and before live renames. */
       beforePromote?: (recoveryBackupDir: string) => Promise<void>;
-      /** Clears durable cleanup ownership after removal or tombstone staging. */
       onCommittedBackupResolved?: (obsoleteDir: string) => Promise<void>;
-      /** Prepare projections from the staged tree before promotion. */
       coordinateCommit?: (
         prepared: PreparedArtifactCommit<T>,
       ) => Promise<CoordinatedArtifactCommit<T>>;
@@ -266,7 +210,7 @@ export class PluginArtifactStore {
     if (!isResolvedPathWithin(this.installRoot, stageDir)) {
       throw new Error(`artifact slug "${slug}" escapes install root`);
     }
-    // A fresh random name: nothing is there, and nothing confined is granted it.
+    // A fresh stage has no existing entries or confined grants.
     await rm(stageDir, { recursive: true, force: true });
     await mkdir(stageDir, { recursive: true });
     const extractedFiles: string[] = [];
@@ -343,16 +287,12 @@ export class PluginArtifactStore {
           }
           throw renameErr;
         }
-        // Undo a promotion: the promoted root goes, the previous root comes back.
-        // The plugin's data directory is in exactly one of the two roots at this
-        // point; it must be in the one that survives BEFORE the other is removed,
-        // or the rollback itself destroys the state the swap was carrying.
+        // Move state into the surviving root before removing the failed promoted root.
         const discardPromotedRoot = async (cause: unknown, failedStep: string): Promise<never> => {
           if (hadOldDir) {
             try {
               await retryOnTransientFsLock(() => carryPluginStateDirs(installDir, oldDir, { onConflict: "reject" }));
-              // Complete any interrupted forward merge before reversing it:
-              // the original directory may still be in the old root.
+              // Complete an interrupted forward merge before reversing it to retain the original directory identity.
               if (existsSync(installDir)) await carryPluginSocketDirs(oldDir, installDir, { onConflict: "reject" });
               await carryPluginSocketDirs(installDir, oldDir, {
                 onConflict: "reject",
@@ -368,8 +308,7 @@ export class PluginArtifactStore {
             }
           }
           try {
-            // The candidate was activated before this commit and may still run
-            // with this path in its confinement; see removePluginTreeNowOrAtBoot.
+            // The activated candidate may still have confinement access to this root.
             await removePluginTreeNowOrAtBoot(
               installDir,
               this.installRoot,
@@ -396,17 +335,13 @@ export class PluginArtifactStore {
           throw cause;
         };
         if (hadOldDir) {
-          // The previous root went aside with the plugin's data directory inside
-          // it. Bring the state into the promoted root before the commit publishes
-          // a receipt for it — a receipt must never become durable for a root
-          // whose state still sits in a backup slated for removal.
+          // Carry predecessor data before the receipt commits; state must not remain in a backup scheduled for removal.
           try {
             await retryOnTransientFsLock(() => carryPluginStateDirs(oldDir, installDir, { onConflict: "reject" }), {
               onRetry: (attempt, code) =>
                 log.warn({ safeSlug, attempt, code }, "retrying plugin data carry into promoted root under fs lock"),
             });
-            // The socket directories the already-spawned candidate was granted
-            // live in the root that just went aside; see carryPluginSocketDirs.
+            // Carry sockets still granted to the candidate from the renamed root.
             await carryPluginSocketDirs(oldDir, installDir, {
               onConflict: "reject",
               onRetry: (attempt, code) =>
@@ -581,9 +516,7 @@ export class PluginArtifactStore {
       }
       archiveMembers.add(memberKey);
 
-      // ZIP external attributes preserve the Unix file type in the upper
-      // 16 bits. Reject links, devices, and sockets before either reading a
-      // required root file or materializing any archive member.
+      // Reject nonregular archive types from Unix mode bits before any root-file read or extraction.
       const unixMode = (entry.attr >>> 16) & 0xffff;
       const unixType = unixMode & 0o170000;
       const expectedType = entry.isDirectory ? 0o040000 : 0o100000;
@@ -626,11 +559,7 @@ export class PluginArtifactStore {
     return entries;
   }
 
-  /**
-   * The regular files a verified zip installs, by the paths extraction gives
-   * them, under the same preflight: what an update review fingerprints
-   * before anything is extracted (design §18.7.3).
-   */
+  /** Fingerprint verified archive files using the same extraction preflight and paths. */
   readZipPayloadFiles(slug: string, zipBuffer: Buffer): Array<{ path: string; data: Buffer }> {
     const safeSlug = assertSafeArtifactSlug(slug);
     const files: Array<{ path: string; data: Buffer }> = [];
@@ -642,7 +571,7 @@ export class PluginArtifactStore {
     return files.sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
   }
 
-  /** The receipt of a local development install: it has no artifact, signer or admission. */
+  /** Local-development receipts have no artifact, signer or admission. */
   async prepareInstallReceipt(
     slug: string,
     pluginRoot: string,
@@ -661,15 +590,7 @@ export class PluginArtifactStore {
     return restoreInstallReceiptRaw(this.cacheRoot, assertSafeArtifactSlug(slug), raw);
   }
 
-  /**
-   * Snapshot a currently-installed manifest under
-   * `{cacheRoot}/{slug}/{version}/plugin.json`. Used before overwrite
-   * by `installArtifact` so {@link findRollbackTarget} can return to a
-   * known-good prior version.
-   *
-   * Best-effort: a missing/unreadable manifest emits a warning but does
-   * not throw — the install path should not be blocked by cache hygiene.
-   */
+  /** Snapshot the installed manifest before replacement; cache-hygiene failures warn without blocking install. */
   async cacheVersionFromManifest(
     slug: string,
     manifestPath: string,
@@ -721,13 +642,7 @@ export class PluginArtifactStore {
     }
   }
 
-  /**
-   * Append a history entry. `history.json` is the order-of-record for
-   * which versions have been installed for a slug; rollback walks it
-   * newest → oldest.
-   *
-   * Best-effort: history file write failures don't block install.
-   */
+  /** History is chronological and best-effort; rollback walks newest first. */
   async appendHistory(slug: string, entry: ArtifactStoreHistoryEntry): Promise<void> {
     try {
       const safeSlug = assertSafeArtifactSlug(slug);
@@ -743,7 +658,6 @@ export class PluginArtifactStore {
     }
   }
 
-  /** Read all history entries for `slug` (chronological order). */
   async readHistory(slug: string): Promise<ArtifactStoreHistoryEntry[]> {
     try {
       const raw = await readFile(this.historyPath(slug), "utf-8");
@@ -754,16 +668,7 @@ export class PluginArtifactStore {
     }
   }
 
-  /**
-   * Walk history newest → oldest, return the first version that is
-   * (a) different from `currentVersion` and (b) has a cached manifest
-   * still on disk that parses as valid JSON with a matching `version`
-   * field. Returns `null` when no rollback target is available.
-   *
-   * Bad-input guards: empty/whitespace/non-string
-   * version dirs are skipped rather than surfaced as missing — they
-   * were never legal history entries to begin with.
-   */
+  /** Rollback skips the current version and unusable snapshots; malformed history versions are never replayable. */
   async findRollbackTarget(
     slug: string,
     currentVersion?: string,
@@ -792,18 +697,13 @@ export class PluginArtifactStore {
     return resolve(this.cacheRoot, assertSafeArtifactSlug(slug), "history.json");
   }
 
-  /**
-   * The predecessor's root after its generation retired and its data moved
-   * into the promoted root: payload only, which no confined process is
-   * granted. A runtime directory still there refuses the delete, and the
-   * caller tombstones the root for the next boot instead.
-   */
+  /** Only payload-only predecessors may be deleted immediately; leftover runtime directories require tombstoning. */
   private async removeCommittedBackup(path: string): Promise<void> {
     await assertPayloadOnlyPluginTree(path);
     await rm(path, { recursive: true, force: true });
   }
 
-  /** An extraction stage: payload only, granted to no confined process. */
+  /** Extraction stages are payload-only and granted to no confined process. */
   private async removeAbandonedStage(path: string): Promise<void> {
     await assertPayloadOnlyPluginTree(path);
     await rm(path, { recursive: true, force: true });

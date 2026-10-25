@@ -1,21 +1,4 @@
-/**
- * `PluginRuntime.readUiResource` — the host-side chokepoint of the plugin
- * CONTENT-serving seam (the plugin serves its own `ui://` card bytes; the host
- * relays them, and no longer resolves/reads a plugin-declared disk path).
- *
- * The provider (`plugin-ui-resource-provider.ts`) already enforced the serving
- * POLICY (own-namespace + declared-only). What is proven here is what only the
- * runtime can enforce:
- *   - the SAME fail-closed runtime gates `pluginRuntimeToolDelegate` applies to
- *     `tools/call` — an inactive or integrity-disabled plugin cannot render a card
- *     any more than it can run a tool (this path previously checked NEITHER);
- *   - the hook is BOUNDED — a plugin hook, unlike a file read, can hang or return
- *     an unbounded body: timeout + size cap, both fail-closed.
- *
- * The runtime is built with a hand-crafted plugins map (the same seam
- * `ui-action-ceiling.test.ts` uses) so the REAL method runs without a plugin entry
- * file. `ceilingMs` is a defaulted (= SOT) parameter used only as a test seam.
- */
+/** Card content uses the shared host ceiling and size bound; test seams may shorten only the deadline. */
 import { describe, expect, it, beforeEach, vi } from "vitest";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -31,7 +14,6 @@ const URI = `ui://${PLUGIN_ID}/card.html`;
 
 beforeEach(() => manifestIntegrityState.resetForTests());
 
-/** A runtime holding one loaded plugin whose instance serves (or doesn't) a card. */
 function runtimeWithCardPlugin(instance: Partial<RuntimePlugin>): PluginRuntime {
   const rt = new PluginRuntime({ hostRoot: HOST_ROOT, manifestPaths: [] });
   const internals = rt as unknown as {
@@ -116,7 +98,6 @@ describe("PluginRuntime.readUiResource — fail-closed runtime gates (parity wit
 describe("PluginRuntime.readUiResource — the hook is BOUNDED (a file read can't hang; a hook can)", () => {
   it("rejects at the ceiling when the hook never resolves (the render path does not hang)", async () => {
     const rt = runtimeWithCardPlugin({ readUiResource: () => new Promise<string>(() => {}) });
-    // small ceiling via the test seam — the SOT default (pluginUiResourceReadMs) is untouched
     await expect(rt.readUiResource(PLUGIN_ID, URI, 5)).rejects.toThrow(
       /exceeded global ceiling \(5ms\): com\.cards\.readUiResource/,
     );

@@ -33,9 +33,8 @@ import { TEST_IDS, chatSidePanelLauncherTestId } from "../../../../shared/test-i
 import type { AgentSpawnEvent } from "../../../../shared/subagent-events.js";
 import { A2ATaskState } from "../../../../shared/a2a.js";
 
-// Native transport and parent loops are fixtures. The production registrar,
-// sender guard, preload methods, runner ownership/read and child store remain
-// real, so a renderer-only mock cannot hide a refusal at the host boundary.
+// Native transport and parent loops are fixtures. The production registrar, sender guard, preload methods, runner
+// ownership/read and child store remain real, so a renderer-only mock cannot hide a refusal at the host boundary.
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 const listeners = new Map<string, Set<(...args: unknown[]) => void>>();
 let senderFrame: { url: string } | null = { url: "file:///index.html" };
@@ -141,8 +140,8 @@ async function setup() {
     await childStore.saveSession(child, [{ role: "assistant", content }]);
     await childStore.saveSessionMetadata(child, { sessionKind: "subagent", originSessionId: origin });
   }
-  // These reads require only the real isolated store; no child turn or provider
-  // execution is needed to exercise the runner's persisted transcript methods.
+  // These reads require only the real isolated store; no child turn or provider execution is needed to exercise the runner's
+  // persisted transcript methods.
   const runner = new SubAgentRunner({ subAgentMemoryManager: childStore } as ConstructorParameters<typeof SubAgentRunner>[0]);
   const read = vi.spyOn(runner, "getPersistedTranscript");
   const primaryLoop = parentLoop(primarySessionId);
@@ -230,8 +229,8 @@ describe("side-chat session transition boundary", () => {
     await api.sideChat!.new();
     expect(sideLoop.getSessionId()).toBe(replacementSessionId);
     await act(async () => { await result.current.send("New prompt"); });
-    // The send names the session this view shows, so the host moves back onto
-    // it rather than writing this view's prompt into the peer's new session.
+    // The send names the session this view shows, so the host moves back onto it rather than writing this view's prompt into
+    // the peer's new session.
     expect(sideLoop.getSessionId()).toBe(sideSessionId);
     expect(result.current.sessionId).toBe(sideSessionId);
     expect(result.current.entries.filter((entry) => entry.kind === "user").map((entry) => entry.text))

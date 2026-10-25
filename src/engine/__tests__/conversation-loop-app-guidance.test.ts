@@ -1,16 +1,5 @@
-/**
- * MCP-App guidance (`ui/message` arriving while a turn is in flight) — the engine half
- * of the turn policy.
- *
- * The host queues the app's text through the SAME round-boundary seam the user's own
- * "guide" uses (`queueGuidance`), because that is the race-safe injection point. But it
- * is NOT the user's guide: the text arrives wrapped in `<app-message source="app:…">`,
- * and from the round it lands on, the REST of the turn runs under the app's staged
- * origin — write/shell/network tools are forced to ask (permission manager) and tool
- * provenance is recorded as `app-emitted`.
- *
- * A user-typed guide must NOT trigger any of that; the control case below pins it.
- */
+// App guidance enters at round boundaries and stages the remaining turn origin.
+// User guidance must not inherit app permission requirements or provenance.
 import { describe, expect, it, vi } from "vitest";
 
 import { InputClassifier } from "../../core/input-classifier.js";
@@ -32,7 +21,6 @@ class FakeProvider implements LLMProvider {
   }
 }
 
-/** Two tool rounds, then end. Guidance queued mid-turn lands before round 1's tool. */
 function twoToolRounds(): FakeProvider {
   return new FakeProvider([
     [
@@ -93,8 +81,6 @@ function makeLoop(provider: LLMProvider, overrides: Record<string, unknown> = {}
   } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
   (loop as { provider: LLMProvider | null }).provider = provider;
 
-  // Record what the executor was handed per round — the two values that carry the
-  // turn's provenance into the permission stack.
   const execCalls: ExecCall[] = [];
   const executor = (loop as unknown as {
     toolExecutor: {
@@ -128,11 +114,8 @@ describe("MCP-app guidance downgrades the rest of the turn", () => {
     await turn;
 
     expect(execCalls).toHaveLength(2);
-    // Round 0 ran before the app spoke — still the user's turn.
     expect(execCalls[0]).toEqual({ overlayTriggerOrigin: null, trustOrigin: "llm-tool-arg",
     });
-    // Round 1 ran after the app's text entered the turn — the whole permission posture
-    // moves: staged origin (⇒ write/shell/network forced to ask) + app provenance.
     expect(execCalls[1]).toEqual({
       overlayTriggerOrigin: "app:acme-cards",
       trustOrigin: "app-emitted",

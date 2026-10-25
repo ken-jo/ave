@@ -1,12 +1,4 @@
-/**
- * The two host-only facts a sub-agent's approval ask carries to the gate.
- *
- * Presence of `childProvenance` is what makes an ask a candidate for parent
- * adjudication at all, so these tests are about who may state it and when: the
- * host attaches it from the tracked run, a child cannot supply or overwrite it,
- * and the two kinds of run that have no local parent to answer for them do not
- * get it.
- */
+// Only the host may attach child provenance from a tracked run; runs without a local parent get none.
 import { describe, it, expect, vi } from "vitest";
 import {
   buildSubAgentApprovalProvenanceForTest as buildSubAgentApprovalProvenance,
@@ -42,13 +34,12 @@ describe("sub-agent approval provenance", () => {
       background: false,
     });
 
-    // A head-only slice would have deleted the half a judgement turns on.
+    // Preserve both ends of task context; a head-only slice can omit the deciding detail.
     expect(provenance?.spawnTaskSummary).toContain("touch nothing outside docs/");
   });
 
   it("gives no provenance to a run whose origin is not a conversation", () => {
-    // Host-orchestrated runs label their origin with a work item, not a
-    // session: there is no parent turn behind it to answer for the call.
+    // Host-orchestrated runs have work-item origins, so no parent session can adjudicate them.
     expect(
       buildSubAgentApprovalProvenance({
         childSessionId: CHILD,
@@ -85,9 +76,7 @@ describe("sub-agent approval provenance", () => {
   });
 
   it("gives no provenance to a run reached over the A2A wire", () => {
-    // Its "task" is text a remote controller wrote and its origin is a
-    // host-minted id rather than a conversation, so there is no parent to
-    // answer for it and no framing worth asking a model to judge against.
+    // Remote-controller text has no local parent authority for model adjudication.
     expect(
       buildSubAgentApprovalProvenance({
         childSessionId: CHILD,
@@ -139,8 +128,7 @@ describe("sub-agent approval adapter", () => {
     childSessionId: CHILD,
     originSessionId: PARENT,
     spawnTaskSummary: "write the release notes",
-    // The host's execution posture, carried through to the gate: it is what
-    // decides whether a tier-3 escalation paints a dock or joins the queue.
+    // Execution posture decides whether escalation opens interactive UI or enters the queue.
     background: true,
   };
 
@@ -215,9 +203,7 @@ describe("sub-agent approval adapter", () => {
   });
 
   it("strips a forged run from an ask that was never eligible", async () => {
-    // The runs with no provenance are exactly the ones a forged field would
-    // smuggle into tier 2, since the gate's only entry condition is that the
-    // field is present at all.
+    // A forged provenance field must not admit parentless runs to parent adjudication.
     const base = makeBase();
     const gate = makeSubAgentApprovalAdapter(base, "wire agent", null);
 

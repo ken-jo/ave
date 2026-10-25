@@ -24,60 +24,19 @@ import { PERMISSION_REVIEWER_SYSTEM_PROMPT } from '../../src/shared/permission-r
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, '../..');
 
-/**
- * Fixed capture viewport. Chosen independently of any single existing
- * screenshot (the previously published docs-site captures had
- * inconsistent aspect ratios because each was cropped to its own target
- * element after capture — see README.md "Aspect ratio" section) — 1600x1000
- * gives enough width for the expanded work-mode rail plus a chat column
- * without clipping, and is large enough that per-key crops (locator
- * screenshots) still have full-resolution source pixels to crop from. A
- * scenario that needs a tighter frame overrides it per key — see the
- * `captureViewport` option below.
- */
+// Use a fixed viewport for consistent full-window capture proportions.
 export const CAPTURE_VIEWPORT = { width: 1600, height: 1000 } as const;
 
-/** Window size for one capture, in CSS pixels. */
 export interface CaptureViewport {
   width: number;
   height: number;
 }
 
-// ─── Scripted provider ────────────────────────────────────────────────────
-//
-// The conversational docs keys (streamed thinking, an in-flight tool call, an
-// ask-user card, a permission deferral) only exist while a model turn is in
-// flight, so before this the harness could not reach any of them and every
-// `chat-*` scenario carried a skip. Rather than branch the host on a test-only
-// provider, the harness starts a local OpenAI-compatible endpoint and points
-// the seeded settings at it: `openai-compatible` is an API-key-optional vendor
-// whose `baseUrl` is a normal user setting, and `selectProviderRuntimeFetch`
-// already grants that exact origin loopback access
-// (src/engine/llm/marketplace-provider-fetch.ts). Nothing under `src/` knows
-// this endpoint exists — it is the same code path a self-hosted endpoint takes.
-//
-// Fail-closed by construction: a chat-completions request leaves the handler as
-// the fixed connectivity-probe reply, a turn the script named, or an error.
-// There is no fourth branch, and none of the three improvises an answer to what
-// was asked. Every refused request is recorded on the handle, and the spec
-// asserts that list is empty, so a script that no longer matches the host's call
-// sequence fails the capture rather than producing a frame of the
-// transport-error state.
+// A local scripted provider makes in-flight conversation states deterministic without live credentials.
 
-/**
- * Model id the scripted endpoint serves.
- *
- * Nothing in the request handler reads the incoming `model` field — the endpoint
- * replays a script — so the value is free. It is not invisible, though: the
- * composer's status row prints
- * `<vendor> · <model>`, and a full-window capture of a `chat-*` key carries that
- * row into a published docs frame. So it is a neutral, self-describing name
- * rather than one that would put the capture harness's own identifiers on the
- * docs site.
- */
+// The scripted model id is visible in captures even though request matching ignores it.
 const SCRIPTED_PROVIDER_MODEL_ID = 'local-model';
 
-/** One streamed piece of a scripted assistant turn. */
 type ScriptedPart =
   | { kind: 'reasoning'; text: string }
   | { kind: 'text'; text: string }
@@ -86,69 +45,31 @@ type ScriptedPart =
       id: string;
       name: string;
       input: Record<string, unknown>;
-      /**
-       * Input fields holding a `seededCorpus` key, rewritten to that file's
-       * absolute path inside the isolated profile before the script is served.
-       * The profile lives in a per-run temp directory, so a scenario cannot
-       * write the absolute path itself; naming the field here keeps the
-       * substitution explicit instead of pattern-matching every string. An
-       * unknown key throws rather than reaching the host as a relative path
-       * the tool would reject.
-       */
+      // Rewrite only declared seeded-path fields because isolated absolute paths vary per run.
       seededPathFields?: readonly string[];
     };
 
-/**
- * Which caller a scripted response answers. The host sends three shapes of
- * request through the same provider, told apart by their system prompt: the
- * conversation turn, the permission reviewer's classification call
- * (`PERMISSION_REVIEWER_SYSTEM_PROMPT`, sent verbatim by
- * `LlmRiskClassifier.runProviderWithRetry`), and `pingProvider`'s connectivity
- * probe (`PROVIDER_PING_SYSTEM_PROMPT`). Both markers are imported from the
- * modules that define them, so an edit to either prompt moves this check with
- * it. The probe is answered inline, before the queue is consulted at all — it
- * fires on a renderer-driven status check whose timing a capture must not
- * depend on.
- *
- * A conversation turn is anything else. That is the right default rather than a
- * third exact match: the assistant system prompt is assembled per session from
- * memory, skills and tool descriptions, so there is no fixed string to compare
- * it against.
- */
+// Classify shared-provider calls by their system prompt to distinguish turns and review requests.
 type ScriptedCaller = 'assistant' | 'reviewer';
 
 export interface ScriptedTurn {
   parts: readonly ScriptedPart[];
-  /**
-   * Caller this entry answers. Checked against the classified request; a
-   * mismatch is an error, not a silent re-order, so a script that no longer
-   * matches the host's call sequence fails loudly.
-   */
+  // Caller mismatches fail rather than silently reorder the script.
   expect?: ScriptedCaller;
-  /** Delay between SSE chunks, so a capture can land mid-stream. */
   chunkDelayMs?: number;
 }
 
-/**
- * Wrapper around the transcript, because a Playwright fixture option cannot be
- * a bare array of objects: `isFixtureTuple` in playwright/lib/common/index.js
- * treats any `Array.isArray(value) && typeof value[1] === 'object'` as the
- * `[value, options]` registration tuple and silently keeps only `value[0]`.
- * A one-key object is never mistaken for that.
- */
+// Wrap transcript arrays so fixture registration cannot mistake them for value/options tuples.
 export interface ScriptedScript {
   turns: readonly ScriptedTurn[];
 }
 
 export interface ScriptedProviderHandle {
-  /** `http://127.0.0.1:<port>/v1` — what the seeded settings point at. */
   baseUrl: string;
-  /** Requests the endpoint refused. Non-empty means the script drifted. */
   readonly violations: readonly string[];
   close(): Promise<void>;
 }
 
-/** Rewrite each declared seeded-path field to its absolute path. */
 function resolveSeededPaths(
   turns: readonly ScriptedTurn[],
   aveHome: string,
@@ -187,21 +108,13 @@ function chunk(delta: Record<string, unknown>, finishReason: string | null): str
   });
 }
 
-/** Split on whitespace but keep it, so the replay streams word by word. */
 function streamSegments(text: string): string[] {
   return text.match(/\s+|\S+/g) ?? [];
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
-/**
- * A single scripted turn, as OpenAI-compatible SSE.
- *
- * `reasoning_content` is the field `@ai-sdk/openai-compatible` maps to a
- * `reasoning-delta` part (its chunk schema accepts `reasoning_content` and
- * `reasoning`), which `fullStreamToStreamEvent` turns into the host's
- * `reasoning_delta` event.
- */
+// Use the compatible reasoning field that the stream adapter translates into host reasoning events.
 async function writeTurn(
   res: http.ServerResponse,
   turn: ScriptedTurn,
@@ -270,14 +183,7 @@ async function readBody(req: http.IncomingMessage): Promise<string> {
   return Buffer.concat(parts).toString('utf-8');
 }
 
-/**
- * Start the scripted OpenAI-compatible endpoint on loopback.
- *
- * Bound to 127.0.0.1 with an ephemeral port: the guarded provider fetch the
- * host builds for a configured self-hosted base URL is locked to this exact
- * origin, so nothing else on the machine can be reached through it and it
- * reaches nothing else.
- */
+// Bind to one ephemeral loopback origin; guarded provider requests cannot reach other targets.
 async function startScriptedProvider(
   turns: readonly ScriptedTurn[],
 ): Promise<ScriptedProviderHandle> {
@@ -357,14 +263,7 @@ async function startScriptedProvider(
   };
 }
 
-/**
- * Seeded settings pointing the active vendor at the scripted endpoint.
- *
- * Built on top of `buildLlmSettings` so the vendor-block shape stays in
- * lockstep with the e2e suite's, with the base swapped for the harness's
- * locale and the one field `buildLlmSettings` does not model — `baseUrl` —
- * added for the selected vendor.
- */
+// Reuse seeded settings shape while replacing the selected provider base URL.
 function scriptedProviderSettings(
   baseUrl: string,
   locale: 'ko' | 'en',
@@ -387,98 +286,32 @@ export type ScreenshotFixtures = {
   app: ElectronApplication;
   mainWindow: Page;
   userDataDir: string;
-  /** `AVE_HOME` for the isolated profile — also one of the two default
-   *  allowed directories, so seeded files under it are readable by tools. */
+  // The isolated data home is an allowed tool root.
   aveHome: string;
-  /**
-   * Null unless the scenario declared `scriptedScript`. When present the app was
-   * launched against it and the spec asserts the handle recorded no refused
-   * request. A turn the script still holds when the capture ends is not
-   * checked — see the `violations` note in capture.spec.ts for why that
-   * direction is deliberately one-way.
-   */
+  // Scripted captures require no refused requests; held unconsumed entries may be intentional.
   scriptedProvider: ScriptedProviderHandle | null;
 };
 
 export type ScreenshotOptions = {
-  /**
-   * Ids of in-repository fixture plugins to install into the isolated profile
-   * before launch (e.g. `['viewfixture']`) — see `plugin-seed.ts`. Empty
-   * (default): no plugins, an empty registry. Set per-scenario via
-   * `test.use({ installPlugins: [...] })`.
-   */
+  // Install only explicitly requested repository fixtures; default to an empty plugin registry.
   installPlugins: readonly string[];
-  /**
-   * Keep the LLM permission reviewer ON. By default seeding plugins disables it
-   * (so panel mount-time read tools don't open the approval dock). The
-   * `plugin-permission-grant` scenario sets this true because its capture target
-   * IS that approval dock.
-   */
+  // Plugin seeding normally disables review; approval captures must explicitly keep it enabled.
   keepReviewer: boolean;
-  /**
-   * Transcript the local scripted endpoint replays, one entry per model call
-   * the scenario drives. Null (default) leaves the app on its normal seeded
-   * vendor with no endpoint running — the pre-existing behaviour for scenarios
-   * that never start a turn.
-   */
+  // Null leaves the normal seeded provider; scripts supply one entry per model call.
   scriptedScript: ScriptedScript | null;
-  /**
-   * `permissions.reviewer.mode` for the isolated profile, or null to leave the
-   * host default (`llm`, following the active vendor). Plugin scenarios do not
-   * set this — `seedFixturePlugins` already picks the mode their panel needs.
-   */
+  // Plugin seeding owns reviewer defaults unless the scenario overrides them.
   reviewerMode: 'disabled' | 'rule' | 'llm' | 'strict' | null;
-  /**
-   * Permission execution mode written to the isolated profile's
-   * `permissions.json`, or null to leave the host default (`default`).
-   *
-   * Only `auto` routes a foreground write/shell/network call through the
-   * reviewer before the approval dock opens
-   * (`PermissionManager.shouldRouteForegroundReviewer` requires
-   * `mode === "auto"`); under `default` such a call reaches the dock straight
-   * from the category rule, with no classification call in between.
-   */
+  // Foreground tool calls reach the reviewer only in auto execution mode.
   executionMode: 'default' | 'strict' | 'auto' | 'allow' | null;
-  /**
-   * Fabricated files written before launch, keyed by path relative to the
-   * isolated profile's Ave home. That directory is one of the two default
-   * allowed roots (`computeDefaultAllowedDirectories`), so a scripted
-   * `read_file` over one of these runs without an approval prompt and the
-   * frame shows invented content only.
-   */
+  // Seed fabricated files inside the isolated allowed data home so captures never need real user content.
   seededCorpus: Readonly<Record<string, string>>;
-  /**
-   * UI locale for the capture. The published docs images are Korean, so
-   * scenarios that replace one capture in Korean; `_smoke-settings-llm` and the
-   * plugin-panel keys keep the harness's original English.
-   */
+  // Capture documentation images in their published locale.
   uiLocale: 'ko' | 'en';
-  /**
-   * Window size for this capture, or null for {@link CAPTURE_VIEWPORT}.
-   *
-   * The default is sized for the widest screens the harness has to fit (the
-   * expanded work-mode rail plus a chat column). A key whose subject is a few
-   * transcript rows fills a fraction of that, and the docs site scales the
-   * whole frame down to its content width — so the subject arrives small
-   * inside a large empty background. Naming a smaller window keeps the app's
-   * real layout and just gives the subject less room to float in.
-   */
+  // Override the viewport for short subjects that would be unreadable in a scaled full-window capture.
   captureViewport: CaptureViewport | null;
 };
 
-/**
- * Electron launch fixture for the screenshot harness.
- *
- * Plugins come from the same in-repository fixtures the Playwright suite
- * seeds, installed when a scenario opts in via
- * `test.use({ installPlugins: [...] })` — see `plugin-seed.ts`. Scenarios with
- * no `installPlugins` get an empty plugin registry (host-only screens).
- *
- * Reuses `buildE2eBaseSettings` / `buildE2eSecrets` / `buildIsolatedElectronEnv`
- * from the existing e2e harness (test/e2e/ui/seeded-electron.ts) so the test
- * LLM-key seeding and settings-file shape stay in lockstep with the suite
- * this harness sits next to, instead of drifting via a second copy.
- */
+// Launch isolated capture profiles with only the scenario's requested repository fixtures.
 export const test = base.extend<ScreenshotFixtures & ScreenshotOptions>({
   installPlugins: [[], { option: true }],
   keepReviewer: [false, { option: true }],
@@ -501,23 +334,13 @@ export const test = base.extend<ScreenshotFixtures & ScreenshotOptions>({
     await handle.close();
   },
 
-  // The isolated profile lives under `os.tmpdir()`, and that is load-bearing
-  // rather than incidental: `baseAllowedDirectories()` puts the OS temp
-  // directory on every turn's allow-list, so a profile inside it makes the
-  // scenarios' `~/…` operands — `~` is this directory — already-allowed paths.
-  // Moving the profile out, which is what keeping the operator's account name
-  // out of published frames appeared to require, flipped that: the Layer 1
-  // out-of-allowed-dir gate fired first and short-circuited the reviewer, and
-  // `chat-permission-llm-review`, which captures a review still in flight,
-  // timed out on a card that run would never render. No profile path reaches a
-  // frame.
+  // Keep profiles under the OS temp root so seeded tool paths remain inside default scope.
   userDataDir: async ({}, use) => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ave-screenshot-'));
     await use(dir);
     try {
       fs.rmSync(dir, { recursive: true, force: true });
     } catch {
-      /* ignore */
     }
   },
 
@@ -537,10 +360,7 @@ export const test = base.extend<ScreenshotFixtures & ScreenshotOptions>({
 
     const aveHomeForTest = aveHome;
 
-    // `system.appMode` is intentionally omitted — DEFAULT_APP_MODE ("work",
-    // src/shared/initial-app-mode.ts) already matches the work-mode capture
-    // requirement, and readPersistedAppModeSync falls back to it when the
-    // settings file has no `system` block at all.
+    // Omit app mode to exercise the work-mode default.
     fs.writeFileSync(
       path.join(userDataDir, 'ave-settings.json'),
       `${JSON.stringify(
@@ -554,24 +374,18 @@ export const test = base.extend<ScreenshotFixtures & ScreenshotOptions>({
       )}\n`,
       'utf-8',
     );
-    // Seed a usable test LLM key so the composer is enabled for chat-* captures.
     fs.writeFileSync(
       path.join(userDataDir, 'ave-secrets.json'),
       JSON.stringify(buildE2eSecrets(), null, 2) + '\n',
       { encoding: 'utf-8', mode: 0o600 },
     );
-    // Plugin registry: empty by default, or the scenario's fixture plugins.
     if (reviewerMode) seedReviewerMode(aveHomeForTest, reviewerMode);
     if (executionMode) seedExecutionMode(aveHomeForTest, executionMode);
     await seedFixturePlugins(aveHomeForTest, installPlugins, {
       disableReviewer: !keepReviewer,
     });
 
-    // Seeded corpus is written AFTER the plugin install, not before: installing
-    // a plugin `rmSync`s its whole `plugins/<id>/` directory first (seed.ts), so
-    // a corpus file under a plugin's own data directory would be deleted out
-    // from under it. Ordinary corpus paths (`notes/...`) do not care either way,
-    // so one ordering serves both.
+    // Seed corpus after plugin installation because installation replaces the entire plugin directory.
     for (const [relative, contents] of Object.entries(seededCorpus)) {
       const target = path.join(aveHomeForTest, relative);
       fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
@@ -607,16 +421,11 @@ export const test = base.extend<ScreenshotFixtures & ScreenshotOptions>({
       state: 'visible',
       timeout: 60_000,
     });
-    // Same overlay-neutralization as test/e2e/ui/fixtures.ts mainWindow fixture:
-    // the plugin onboarding proposal card is state-dependent and not something
-    // any capture key wants floating over the shot.
+    // Suppress state-dependent onboarding overlays that are outside capture subjects.
     await win.addStyleTag({
       content: '[data-overlay-source="proposal"]{display:none !important;}',
     });
-    // Deterministic captures: kill CSS transitions/animations globally so a
-    // mid-tween frame is never captured, and hide the blinking caret. This is
-    // a page.addStyleTag applied at the fixture level (not a src/** change) —
-    // scoped to the screenshot harness only.
+    // Disable animation and caret blinking only in the capture harness for deterministic frames.
     await win.addStyleTag({
       content: `
         *, *::before, *::after {

@@ -1,12 +1,6 @@
 import { canonicalizePathForMatch, caseFoldForMatch } from "../permissions/sensitive-paths.js";
 
-/**
- * Default Ave workspace project root.
- *
- * The main process calls ensureWorkspaceCwd() during early boot, before IPC
- * handlers are registered, so process.cwd() here is the app-managed
- * ~/.ave/workspace anchor rather than an OS launch directory.
- */
+// Early boot anchors cwd at the managed workspace before IPC registration, independent of the OS launch directory.
 export function getDefaultWorkspaceRoot(): string {
   return process.cwd();
 }

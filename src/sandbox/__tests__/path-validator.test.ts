@@ -1,11 +1,5 @@
-/**
- * SandboxPathValidator (Tier A3) unit tests.
- *
- * Uses real tempdirs (os.tmpdir) + real symlinks to exercise the
- * realpath-based traversal defense. Tempdirs are cleaned up in
- * afterEach to keep the test environment hermetic.
- */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
 import {
   mkdtempSync,
   mkdirSync,
@@ -26,8 +20,7 @@ describe("validateSandboxPath", () => {
   const cleanup: string[] = [];
 
   beforeEach(() => {
-    // realpathSync resolves /var → /private/var on macOS so the assertions
-    // later in this file match canonicalized form.
+    // Canonicalize macOS /var before comparing resolved paths.
     sandboxCwd = realpathSync(mkdtempSync(join(tmpdir(), "ave-sandbox-")));
     outsideDir = realpathSync(mkdtempSync(join(tmpdir(), "ave-outside-")));
     cleanup.push(sandboxCwd, outsideDir);
@@ -65,7 +58,8 @@ describe("validateSandboxPath", () => {
     }
   });
 
-  it.each(["file", "directory"])("denies a dangling %s symlink before creating outside the sandbox", (kind) => {
+  it.for(["file", "directory"])("denies a dangling %s symlink before creating outside the sandbox", (kind, context) => {
+    if (kind === "file" && !canCreateSymlinks()) context.skip(); // File links require host permission.
     const link = join(sandboxCwd, "link");
     const target = join(outsideDir, "missing");
     symlinkSync(target, link, kind === "directory" ? dirLinkType : "file");
@@ -114,32 +108,25 @@ describe("validateSandboxPath", () => {
   });
 
   it("blocks symlink traversal when target is outside the sandbox", () => {
-    // Use a directory link so Windows can exercise the same realpath escape
-    // defense via junctions even when the user lacks symlink privilege.
+    // Use junctions to exercise Windows escapes without file-symlink privilege.
     const outsideTarget = join(outsideDir, "target");
     mkdirSync(outsideTarget);
 
-    // Plant a symlink/junction inside the sandbox that points outside.
     const symlinkInside = join(sandboxCwd, "escape");
     symlinkSync(outsideTarget, symlinkInside, dirLinkType);
 
-    // realpath follows the symlink → outside → denied.
     const result = validateSandboxPath(symlinkInside, sandboxCwd);
     expect(result.allowed).toBe(false);
     expect(result.reason).toContain("outside the sandbox boundary");
   });
 
   it("denies a relative path that traverses upward outside cwd", () => {
-    // `../../../etc/passwd` resolves against process.cwd() by default.
-    // We validate against sandboxCwd which is a fresh tempdir, so the
-    // result is outside the boundary.
     const result = validateSandboxPath("../../../etc/passwd", sandboxCwd);
     expect(result.allowed).toBe(false);
     expect(result.reason).toContain("outside the sandbox boundary");
   });
 
   it("validates a non-existent path via nearest existing parent realpath", () => {
-    // Path does not exist, but the absolute-path form is inside cwd → allowed.
     const phantom = join(sandboxCwd, "does-not-exist-yet", "file.txt");
     const result = validateSandboxPath(phantom, sandboxCwd);
     expect(result.allowed).toBe(true);
@@ -186,8 +173,6 @@ describe("validateSandboxPath", () => {
   });
 
   it("does not allow a sibling path that shares a name prefix", () => {
-    // Ensure the `/` trailing-slash guard prevents
-    // `/tmp/foo/abcd/...` from matching against `/tmp/foo/abc`.
     const parent = realpathSync(mkdtempSync(join(tmpdir(), "ave-prefix-")));
     cleanup.push(parent);
     const a = join(parent, "abc");
@@ -197,7 +182,6 @@ describe("validateSandboxPath", () => {
     const fileInAb = join(ab, "f.txt");
     writeFileSync(fileInAb, "x");
 
-    // Path inside `abcd` must NOT be considered within `abc`.
     const result = validateSandboxPath(fileInAb, a);
     expect(result.allowed).toBe(false);
   });
@@ -222,12 +206,7 @@ describe("validateSandboxPath boundary direction", () => {
   });
 
   it("does not read the boundary backwards", () => {
-    // The internal predicate took `(child, parent)` while every other
-    // containment helper in the tree takes `(parent, candidate)`. Both
-    // arguments are `string`, so a flip type-checks and silently inverts the
-    // sandbox: the parent would be tested for containment in the child. This
-    // pins the direction — a child of the sandbox is in, and the sandbox is NOT
-    // "inside" its own child.
+    // Pin parent/candidate argument direction because swapped strings still typecheck and invert containment.
     const child = join(sandboxCwd, "nested", "file.txt");
     mkdirSync(join(sandboxCwd, "nested"), { recursive: true });
     writeFileSync(child, "x");

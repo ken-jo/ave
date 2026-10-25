@@ -1,8 +1,3 @@
-/**
- * Catalog rows as the renderer shows them (design §15.1, §15.2): the state
- * chip of a card, the permission summary, the delivery rungs and the version
- * history. Pure functions over the aggregated rows and what is installed.
- */
 import type {
   AuthorityView,
   InstallActionView,
@@ -21,16 +16,12 @@ import type { RungOutcome } from "../../plugins/plugin-install-receipt.js";
 import type { NormalizedSourceUrl } from "../net/source-url.js";
 import type { SourceState } from "../sources/registry.js";
 
-/** Kinds whose packages run code on this computer (design §15.5). */
 export function runsCode(kind: PackageKind, components?: AgentPluginComponents): boolean {
   if (kind === "agent-plugin") return components === undefined || Object.keys(components.mcpServers).length > 0 || components.hooks.length > 0;
   return kind === "plugin" || kind === "mcp";
 }
 
-/**
- * The card's state (design §15.1). Only the bound source's row offers an
- * update; the same name from another source is a switch, never an update.
- */
+/** Same-named packages from other sources are switches, never updates. */
 export function rowState(row: CatalogRow, installed: InstalledPackage | null, rows: readonly CatalogRow[], sources: ReadonlySet<string>): PackageStateView {
   if (installed) {
     if (installed.sourceId !== row.sourceId) {
@@ -57,7 +48,6 @@ function record(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
 }
 
-/** The permissions a plugin asks for, read from the descriptor before any download (§15.2). */
 export function authorityView(authority: PluginAuthority): AuthorityView {
   const plugins = record(authority.pluginAccess)?.plugins;
   const filesystem = (["read", "write"] as const).flatMap((access) =>
@@ -86,7 +76,6 @@ function difference<T>(next: readonly T[], previous: readonly T[], key: (item: T
   return next.filter((item) => !seen.has(key(item)));
 }
 
-/** What an update adds and removes (design §15.6); null when nothing changes. */
 export function authorityDelta(previous: AuthorityView, next: AuthorityView): { added: AuthorityView; removed: AuthorityView } | null {
   const fields = ["capabilities", "networkHosts", "secrets", "pluginAccess", "dependencies"] as const;
   const grantKey = (grant: AuthorityView["filesystem"][number]): string => `${grant.access}:${grant.target}`;
@@ -111,14 +100,12 @@ export function authorityDelta(previous: AuthorityView, next: AuthorityView): { 
   return changed ? { added, removed } : null;
 }
 
-/** An update that widens what the plugin may reach needs an explicit decision (§15.6). */
+/** Widened plugin authority requires an explicit decision. */
 export function widensAuthority(delta: { added: AuthorityView } | null): boolean {
   if (!delta) return false;
   return delta.added.networkHosts.length > 0 || delta.added.secrets.length > 0 || delta.added.capabilities.length > 0 || delta.added.pluginAccess.length > 0 || delta.added.filesystem.length > 0;
 }
 
-/** The ladder as the plan will walk it (§6.2): release → archive → tree. */
-/** A download URL that is plain http; an unparsable one is not claimed to be. */
 function isHttpUrl(url: string): boolean {
   try {
     return new URL(url).protocol === "http:";
@@ -127,12 +114,7 @@ function isHttpUrl(url: string): boolean {
   }
 }
 
-/**
- * The Delivery rows (§15.2). A plain-http release or archive is labelled: it
- * is verified only by the sha256 the source pinned (§18.2.3). A release
- * without `url` is served from the source's own origin, http for an http
- * source.
- */
+/** Plain HTTP artifacts rely on the source-pinned hash; releases without URLs inherit source transport. */
 export function rungViews(artifact: PluginArtifactPins, packagePath: string, treeDeclared: boolean, sourceUrl: NormalizedSourceUrl): RungView[] {
   const release = artifact.release;
   const archive = artifact.archive;
@@ -153,33 +135,21 @@ export function rungViews(artifact: PluginArtifactPins, packagePath: string, tre
       unencrypted: release !== undefined && (release.url ? isHttpUrl(release.url) : sourceUrl.scheme === "http"),
     },
     { rung: "archive", declared: archive !== undefined, pinned: typeof archive?.sha256 === "string", detail: archiveHost, unencrypted: archive !== undefined && isHttpUrl(archive.url) },
-    // Read over the source's own git transport, which the source's badge describes.
     { rung: "tree", declared: treeDeclared, pinned: treeDeclared, detail: treeDeclared ? (artifact.tree ?? packagePath) : null, unencrypted: false },
   ];
 }
 
-/**
- * A folder source's one rung (§18.4.2): the built tree in the folder,
- * read in place; nothing is pinned or downloaded.
- */
+/** Folder delivery reads the built tree in place without pinning or downloads. */
 export function folderRungView(packagePath: string): RungView {
   return { rung: "folder", declared: true, pinned: false, detail: packagePath === "" ? null : packagePath, unencrypted: false };
 }
 
-/**
- * The ladder's outcome after a download. The used rung says whether its
- * bytes travelled over plain http on any hop, which a redirect can make true
- * for an https URL (§15.2, §18.2.3).
- */
+/** Actual transport includes every redirect hop, even for a declared HTTPS URL. */
 export function rungOutcomeViews(outcomes: readonly RungOutcome[], unencrypted: boolean): RungOutcomeView[] {
   return outcomes.map((item) => (item.outcome === "used" ? { ...item, unencrypted } : { ...item }));
 }
 
-/**
- * The Delivery rows once bytes are staged: the rung that delivered them is
- * labelled when they travelled over plain http, even though its declared URL
- * is https (a redirect the network gate admitted, §18.2.3).
- */
+/** Staged delivery labels reflect actual plaintext hops rather than the declared URL alone. */
 export function stagedRungViews(rungs: readonly RungView[], staged: { rung: string; unencrypted: boolean }): RungView[] {
   return rungs.map((item) => (item.rung === staged.rung && staged.unencrypted ? { ...item, unencrypted: true } : item));
 }
@@ -188,7 +158,6 @@ export function installActionView(action: InstallAction): InstallActionView {
   return { ...action };
 }
 
-/** Every listed version with why it is or is not offered (§15.2 Versions). */
 export function versionViews(row: CatalogRow, revocations: readonly Revocation[], context: VersionChoiceContext, installedVersion: string | null): VersionView[] {
   const candidate = row.choice.state === "candidate" ? row.choice.version.version : null;
   return row.package.versions.map((version) => ({
@@ -205,18 +174,15 @@ export function versionViews(row: CatalogRow, revocations: readonly Revocation[]
   }));
 }
 
-/** A source whose downloaded copy cannot be used (`SOURCE_LOCAL_DATA_DAMAGED`), scrubbed for the renderer. */
 export function brokenStatus(problem: MarketplaceError): SourceStatusView {
   const detail = parseMarketplaceErrorDetail("SOURCE_LOCAL_DATA_DAMAGED", problem.detail);
   return { state: "broken", message: scrubDiagnosticSecrets(problem.message), ...(detail ? { detail: scrubMarketplaceErrorDetail("SOURCE_LOCAL_DATA_DAMAGED", detail) } : {}) };
 }
 
-/** A source's status column (§15.4) from its state, whether a sync runs, and whether its snapshot is served. */
 export function sourceStatus(state: SourceState, syncing: boolean, cached: boolean, reviewable: boolean): SourceStatusView {
   if (syncing) return { state: "syncing" };
   const last = state.lastSync;
-  // A sync that found the copy damaged (its repository): the row offers Repair, as for a state that does not read.
-  // Checked before a pending review, which cannot be accepted from a repository git cannot open.
+  // Damaged repository state takes precedence over pending review, which cannot be accepted safely.
   if (last?.result === "SOURCE_LOCAL_DATA_DAMAGED") {
     const detail = parseMarketplaceErrorDetail(last.result, last.detail);
     return {

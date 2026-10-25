@@ -1,25 +1,5 @@
-/**
- * `PluginMcpHost` — one Ave plugin running as an MCP server behind a lean,
- * in-process RC client (mcp-alignment-design.md §3.1, the first-party arm of the
- * hybrid topology).
- *
- * Why this is NOT `McpClient`: design §0 decision (3) confines `mcp-client.ts`
- * to EXTERNAL/untrusted servers and the documented dual-era (pre-final)
- * fallback exception. A first-party plugin is RC-only — it never speaks the
- * legacy protocol — and registers with PLUGIN authority (its declared category,
- * natural tool name, `source:"plugin"`), not the external `category:"network"` +
- * `mcp_` namespace. Carrying the external client's dual-era branches into the
- * plugin path would be exactly the No-Fallback violation this initiative
- * removes, so the plugin path gets its own minimal RC client here.
- *
- * It speaks RC JSON-RPC over an injected {@link McpTransport}: a
- * {@link LoopbackTransport} for first-party plugins now, and (at the
- * `untrusted-stdio-isolation` milestone) a stdio transport for sandboxed
- * marketplace plugins — the SAME host, a different transport. Registration runs
- * through MCP discovery (`server/discover` + `tools/list`) and the reverse
- * projection {@link mcpToolToPluginTool}, so the authoritative `category` is
- * sourced from the tool's `ave/*` `_meta`, never a second manifest read.
- */
+/** Plugin hosts use stateless discovery and natural tool names with plugin authority.
+ * Transport injection permits loopback or stdio without external-server negotiation branches. */
 import type {
   JsonRpcRequest,
   JsonRpcResponse,
@@ -51,10 +31,8 @@ import {
 import { getAveAppVersion } from "../shared/app-version.js";
 
 const CLIENT_INFO = { name: "ave", version: getAveAppVersion() } as const;
-/** First-party host advertises elicitation; sampling/roots are deprecated (§8 SEP-2577). */
 const CLIENT_CAPABILITIES = { elicitation: { form: {}, url: {} }, extensions: {} } as const;
 
-/** RC `CallToolResult` (the `complete` branch this host consumes). */
 interface RcToolCallResult {
   resultType?: string;
   content: Array<{ type: string; text?: string; [key: string]: unknown }>;
@@ -65,7 +43,7 @@ interface RcToolCallResult {
       slot?: string;
       height?: number;
       title?: string;
-      // No `csp` — per spec it lives on the RESOURCE, not the tool result.
+      // CSP belongs to the resource, never the tool result.
     };
     [key: string]: unknown;
   };
@@ -91,11 +69,6 @@ export class PluginMcpHost {
     }
   }
 
-  /**
-   * Build a loopback-backed host for a first-party plugin: the plugin's tool
-   * runtime is supplied as `delegate` (what actually executes `tools/call`); the
-   * manifest is projected into the in-process {@link PluginMcpServer}.
-   */
   static loopback(
     manifest: PluginManifest,
     delegate: PluginToolDelegate,
@@ -116,7 +89,6 @@ export class PluginMcpHost {
     );
   }
 
-  /** Build the complete loopback Tool set without touching the live registry. */
   async prepareTools(): Promise<readonly Tool[]> {
     if (this.started) {
       throw new Error(`[plugin-mcp-host] '${this.pluginId}' already started`);
@@ -124,16 +96,11 @@ export class PluginMcpHost {
     return Object.freeze(await this.buildTools());
   }
 
-  /** Assignment-only publish half used by the bundle coordinator. */
   publishPrepared(_tools: readonly Tool[]): void {
     this.started = true;
   }
 
-  /**
-   * Discover + project the plugin's tools into canonical {@link Tool}s WITHOUT
-   * touching the ToolRegistry (so a prior registration survives a failed reload).
-   * On any failure it closes ONLY this host's own transport and rethrows.
-   */
+  /** Build without touching live registration; failure closes only this candidate transport. */
   private async buildTools(): Promise<Tool[]> {
     this.transport.onMessage((msg) => this.handleResponse(msg));
     this.transport.onClose((reason) => this.failAllPending(reason));
@@ -162,11 +129,7 @@ export class PluginMcpHost {
             `[plugin-mcp-host] plugin '${this.pluginId}' tool '${tool.name}' operation policy differs from its signed manifest`,
           );
         }
-        // Build FIRST — a structural hard failure THROWS here and aborts the
-        // whole build (rollback). A missing/invalid ave/category no longer
-        // hard-fails (host-classifies-risk: default-strict write-equivalent);
-        // the remaining authority hard failure is the RC protocol mismatch
-        // checked above.
+        // Structural protocol failures abort the build; tool risk uses the strict host-derived baseline.
         const registryTool = mcpToolToPluginTool(
           this.pluginId,
           tool,
@@ -175,9 +138,7 @@ export class PluginMcpHost {
           this.generationId,
         );
 
-        // THEN #1182 provider-strict lint, fail-soft per tool: a schema
-        // OpenAI/Azure would 400 on (e.g. an `array` property with no `items`) is
-        // dropped so one bad plugin tool can't take down every turn.
+        // Drop individually invalid provider schemas so one tool cannot break every turn.
         const violations = lintToolInputSchema(tool.inputSchema);
         if (violations.length > 0) {
           log.warn(
@@ -191,19 +152,13 @@ export class PluginMcpHost {
       }
       return tools;
     } catch (err) {
-      // Registry-read-only path: nothing was registered, so the PREVIOUS plugin
-      // registration (if any) is untouched. Close only this host's transport.
+      // Candidate failure must preserve the previous registration and close only this transport.
       await this.transport.close();
       throw err;
     }
   }
 
-  /**
-   * Close the transport WITHOUT unregistering tools — for a host SUPERSEDED by an
-   * atomic reload, where the new host's `replacePluginTools` swap already
-   * installed the replacement tools (calling `stop()` here would wrongly delete
-   * the freshly-installed set). Idempotent.
-   */
+  /** Superseded hosts close transport only; unregistering would remove the newly published tools. */
   async dispose(): Promise<void> {
     if (!this.started) {
       await this.transport.close();
@@ -213,15 +168,13 @@ export class PluginMcpHost {
     await this.transport.close();
   }
 
-  /** Execute one tool via `tools/call` over the transport (the reverse adapter's delegate). */
   private async invoke(
     name: string,
     args: Record<string, unknown>,
   ): Promise<McpToolCallOutput & { rawResult?: { value: unknown } }> {
     const result = (await this.request("tools/call", { name, arguments: args })) as RcToolCallResult;
 
-    // RC result discriminator (§8). MRTR / Tasks are later milestones — surface a
-    // real typed error rather than degrading silently (No-Fallback).
+    // Unsupported result branches fail with a typed error rather than silently degrade.
     if (result.resultType === "input_required") {
       throw new Error(
         `[plugin-mcp-host] tool '${name}' on '${this.pluginId}' returned resultType="input_required" — the MRTR input loop is not implemented yet (milestone mrtr-input-loop)`,
@@ -246,14 +199,9 @@ export class PluginMcpHost {
           slot: (uiMeta.slot as McpUiPayload["slot"]) ?? "chat",
           height: uiMeta.height,
           title: uiMeta.title,
-          // No `csp` — spec puts it on the RESOURCE, and main derives it there.
         }
       : undefined;
-    // Box the raw plugin return value iff the server included it (success path),
-    // so the reverse adapter can re-surface metadata.rawResult with presence
-    // preserved even when the value itself is undefined (a void plugin tool).
-    // Reads the SOLE `ave/rawResult` key; the legacy reverse-DNS `rawResult`
-    // dual-read was removed alongside the `_meta` vendor-namespace rename.
+    // Box raw results to preserve present-but-undefined values; read only the owned metadata key.
     const meta = result._meta;
     let rawResult: { value: unknown } | undefined;
     if (meta && Object.prototype.hasOwnProperty.call(meta, RAW_RESULT_META)) {
@@ -264,16 +212,7 @@ export class PluginMcpHost {
     return { text, uiPayload, rawResult, ...(images.length > 0 ? { images } : {}) };
   }
 
-  /**
-   * Fetch one of THIS plugin's declared `ui://` resources over the loopback
-   * transport (`resources/read`) — the plugin arm of the MCP App serving seam.
-   * Returns the HTML plus the resource's OWN `_meta.ui` (csp / permissions),
-   * from which main derives the sandbox-proxy CSP header. Mirrors
-   * {@link McpClient.readResource} so the render path is transport-agnostic.
-   *
-   * Fail-closed: the server rejects an undeclared / cross-namespace uri with a
-   * JSON-RPC error, which surfaces here as a rejected promise (never a body).
-   */
+  /** UI reads return resource-owned policy and reject undeclared or cross-namespace URIs. */
   async readUiResource(uri: string): Promise<McpUiResourceRead> {
     const result = (await this.request("resources/read", { uri })) as {
       contents?: Array<{ text?: string; _meta?: { ui?: McpUiResourceMeta } }>;
@@ -305,7 +244,6 @@ export class PluginMcpHost {
     });
   }
 
-  /** Stamp the three reserved RC `_meta` keys required on every request (§8). */
   private withRequestMeta(params: Record<string, unknown>): Record<string, unknown> {
     return {
       ...params,

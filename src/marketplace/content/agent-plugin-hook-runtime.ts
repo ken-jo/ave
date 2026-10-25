@@ -18,10 +18,9 @@ interface ActiveHooks {
   drained: Array<() => void>;
 }
 
-/** What an activation leaves: how to undo it inside its transaction, and when its predecessor is gone. */
+/** Rollback runs inside the transaction; retirement waits for the predecessor to drain. */
 export interface HookActivation {
   rollback(): Promise<void>;
-  /** Resolves once the replaced activation's hooks have drained (immediately when none was replaced). */
   retired: Promise<void>;
 }
 
@@ -30,7 +29,6 @@ export interface AgentPluginHookRuntimeOptions {
   dataDirForPackage?: (name: string) => Promise<string>;
 }
 
-/** Bind reviewed hook components to installed generations and the shared runner. */
 export class AgentPluginHookRuntime {
   private readonly active = new Map<string, ActiveHooks>();
   private trust: PluginHookTrustStore | undefined;
@@ -91,7 +89,6 @@ export class AgentPluginHookRuntime {
     publication.publish();
   }
 
-  /** As {@link AgentPluginMcpRuntime.approvals}, for each hook of the published generation, by index. */
   async approvals(name: string): Promise<Array<{ index: number; approvalDigest: string | null; approved: boolean; recordDigest: string | null }>> {
     const current = this.active.get(name);
     if (!current) return [];
@@ -102,7 +99,6 @@ export class AgentPluginHookRuntime {
     });
   }
 
-  /** Whether a hook of the package's current activation is running (the apply queue waits for none, §18.7.4). */
   hasCallsInFlight(name: string): boolean {
     return (this.active.get(name)?.leases ?? 0) > 0;
   }
@@ -141,7 +137,7 @@ export class AgentPluginHookRuntime {
     }
     if (item.content.components.hooks.length === 0) {
       if (!old) return { rollback: async () => undefined, retired: Promise.resolve() };
-      // Admission closes now; the old hooks drain outside this queue, and their files stay until then.
+      // Close admission now; retain old files until its running hooks drain.
       this.manager.removePluginGeneration(`agent-plugin/${item.name}`, old.activationId);
       this.active.delete(item.name);
       return { rollback: async () => { await this.restore(old); }, retired: this.waitForDrain(old) };
@@ -151,12 +147,12 @@ export class AgentPluginHookRuntime {
     const activationId = randomUUID();
     const projections = await this.projections(item, activationId);
     const trust = await this.trustStore();
-    // An approval of exactly this generation that predates approval digests gets the digest of these, its running bytes.
+    // Bind legacy approvals to the exact running generation bytes.
     for (const projection of projections) trust.recordDigest(projection);
     const newlyApproved = projections.filter((projection, index) => selected.has(index) && !trust.isApproved(projection));
     try {
       for (const projection of newlyApproved) trust.approve(projection);
-      // Approval carry-forward (§18.7.3): an unchanged hook keeps the approval it had in the active generation.
+      // Carry approval only when the active generation has identical hook bytes.
       const carried = carryApprovals(trust, old?.projections ?? [], projections);
       for (const { to } of carried) newlyApproved.push(to);
       assertCarriedApprovalsHold(trust, carried);
@@ -164,7 +160,6 @@ export class AgentPluginHookRuntime {
         { pluginId: `agent-plugin/${item.name}`, generationId: activationId });
       this.active.set(item.name, { item, activationId, projections, leases: 0, drained: [] });
       publication.publish();
-      // Admission to the replaced activation closes at publication (its lease source throws for it).
       if (old) this.manager.removePluginGeneration(`agent-plugin/${item.name}`, old.activationId);
     } catch (error) {
       if (old) this.active.set(item.name, old);
@@ -178,15 +173,11 @@ export class AgentPluginHookRuntime {
         for (const projection of newlyApproved) trust.revoke(projection);
         if (old) await this.restore(old);
       },
-      // The replaced hooks' runs end before its files may go.
       retired: old ? this.waitForDrain(old) : Promise.resolve(),
     };
   }
 
-  /**
-   * Called inside the content-store transaction: `rollback` undoes it there;
-   * `retired` resolves once the activation it replaced has drained.
-   */
+  /** Transactional rollback undoes activation; retirement resolves after replaced hooks drain. */
   async activate(item: InstalledAgentPluginRuntime, consents: readonly HookComponentConsent[] = []): Promise<HookActivation> {
     return this.serialize(() => this.publishOne(item, consents));
   }

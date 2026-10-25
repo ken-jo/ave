@@ -11,11 +11,8 @@ type PanelWidthSettingsKey = "sidebarWidth" | "sidePanelWidth";
 
 type SystemPatch = NonNullable<DeepPartial<AppSettings>["system"]>;
 
-/**
- * Per-panel configuration for {@link usePanelWidth}. One value per axis on
- * which the two edge-resizable shell panels (left navigation Sidebar, right
- * docked ChatSidePanel) actually differ; everything else is one code path.
- */
+/** Per-panel configuration for {@link usePanelWidth}. One value per axis on which the two edge-resizable shell panels (left
+ * navigation Sidebar, right docked ChatSidePanel) actually differ; everything else is one code path. */
 export interface PanelWidthPref {
   /** `SystemSettings` key this width is seeded from and persisted to. */
   readonly settingsKey: PanelWidthSettingsKey;
@@ -42,11 +39,8 @@ function passThroughWidth(px: number): number {
   return px;
 }
 
-/**
- * Primary (left) navigation sidebar. Width is clamped to the fixed
- * [SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH] box by the shared `clampSidebarWidth`,
- * matching the settings-store validation floor/ceiling.
- */
+/** Primary (left) navigation sidebar. Width is clamped to the fixed [SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH] box by the
+ * shared `clampSidebarWidth`, matching the settings-store validation floor/ceiling. */
 export const SIDEBAR_WIDTH_PREF: PanelWidthPref = {
   settingsKey: "sidebarWidth",
   defaultWidth: SIDEBAR_DEFAULT_WIDTH,
@@ -54,11 +48,8 @@ export const SIDEBAR_WIDTH_PREF: PanelWidthPref = {
   commitUpdatesState: true,
 };
 
-/**
- * Right-docked ChatSidePanel. Bounds live in the `EdgeResizeBar` wiring
- * (`sidePanelLayout`'s range for the tile) rather than here, so this pref
- * clamps nothing and its commit is persist-only.
- */
+/** Right-docked ChatSidePanel. Bounds live in the `EdgeResizeBar` wiring (`sidePanelLayout`'s range for the tile) rather
+ * than here, so this pref clamps nothing and its commit is persist-only. */
 export const SIDE_PANEL_WIDTH_PREF: PanelWidthPref = {
   settingsKey: "sidePanelWidth",
   defaultWidth: SIDE_PANEL_DEFAULT_WIDTH,
@@ -71,30 +62,12 @@ export interface UsePanelWidthResult {
   width: number;
   /** Update width during a drag — state only, no IPC (per-move). */
   setWidth: (px: number) => void;
-  /** Persist width to host settings (drag-end / keyboard step / double-click
-   *  reset — the shared EdgeResizeBar commits its reset width through this
-   *  same setter), no-op guarded. */
+  /** Persist width to host settings (drag-end / keyboard step / double-click reset — the shared EdgeResizeBar commits its
+   * reset width through this same setter), no-op guarded. */
   commitWidth: (px: number) => void;
 }
 
-/**
- * Owns the durable width of an edge-resizable shell panel. Both the left
- * navigation Sidebar and the right-docked ChatSidePanel drive the SAME
- * `EdgeResizeBar`/`useEdgeResize` primitive, so they run through this one hook
- * and differ only by the {@link PanelWidthPref} they pass.
- *
- * The width is a durable shell-layout preference (same family as appMode /
- * closeBehavior) persisted under `SystemSettings`: mount seed via
- * `getSettings()`, drag-end persist via `updateSettings()`. Durability comes
- * from that settings round-trip, not the mount location, so the width survives
- * ChatSidePanel's conditional unmount.
- *
- * Drag emits per-move `setWidth` (state only); release / keyboard / reset emits
- * `commitWidth` (at most one IPC write, guarded against a no-op like
- * `setAppMode`). No preload prime: the side panel boots closed, so there is no
- * frame-0 width flash — the async `getSettings()` seed lands before the user
- * can open the rail.
- */
+/** Persist width only on release, keyboard change or reset with no-op guards; per-move updates remain local. */
 export function usePanelWidth(api: AveApi, pref: PanelWidthPref): UsePanelWidthResult {
   const [width, setWidthState] = useState<number>(pref.defaultWidth);
   const persistedRef = useRef<number>(pref.defaultWidth);

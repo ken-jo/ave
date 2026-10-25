@@ -3,6 +3,7 @@ import "../../../../../test/renderer/setup.js";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { act, render, fireEvent, waitFor } from "@testing-library/react";
 import { TooltipProvider } from "../../../../components/ui/tooltip.js";
+import { buildHostShellExecutionPlan, getHostShellExecutionPlanAuditProjection } from "../../../../permissions/host-shell-execution-plan.js";
 import { ComposerStatusRow, InputActionBar } from "../InputActionBar.js";
 import type { RolePreset } from "../../../../data/role-presets.js";
 import type {
@@ -22,8 +23,7 @@ import { t } from "../../../../i18n/runtime.js";
 const mockPreset: RolePreset = { id: "default", name: "기본", systemPromptAdd: "", isDefault: true };
 const codingPreset: RolePreset = { id: "coding", name: "코딩", systemPromptAdd: "Code carefully." };
 
-// ThinkingButton (now part of the unified bar) reads its depth from the
-// renderer api on mount.
+// ThinkingButton (now part of the unified bar) reads its depth from the renderer api on mount.
 const getSettings = vi.fn();
 const updateSettings = vi.fn();
 const onSettingsUpdated = vi.fn(() => () => {});
@@ -31,13 +31,25 @@ const subscriptionUseApiForChat = vi.fn(async () => ({ ok: true }));
 // The permission card persists through the same two calls Settings → Permissions makes.
 const setMode = vi.fn();
 const reviewerDispatch = vi.fn();
+// The permission card's sandbox row reads the host-decided shell status.
+const sandboxCapability = vi.fn();
+type ShellStatusFixture = {
+  state: string;
+  setting: boolean;
+  envForced: boolean;
+  causes: string[];
+};
+const shellStatus = (overrides: Partial<ShellStatusFixture> = {}): { shell: ShellStatusFixture } => ({
+  shell: { state: "off", setting: false, envForced: false, causes: [], ...overrides },
+});
+sandboxCapability.mockResolvedValue(shellStatus());
 vi.mock("../../api-client.js", () => ({
   getApi: () => ({
     getSettings,
     updateSettings,
     onSettingsUpdated,
     subscriptionUseApiForChat,
-    permission: { setMode, reviewerDispatch },
+    permission: { setMode, reviewerDispatch, sandboxCapability },
   }),
 }));
 
@@ -48,11 +60,8 @@ const defaultStatusRow: InputStatusRow = {
   pendingApprovals: 0,
 };
 
-/**
- * The command menu is the OS's own; what the renderer owns is the payload it
- * hands main and what it runs when main names an id back. The persona rows
- * live in that payload now, so this is the bridge the persona tests drive.
- */
+/** The command menu is the OS's own; what the renderer owns is the payload it hands main and what it runs when
+ * main names an id back. The persona rows live in that payload now, so this is the bridge the persona tests drive. */
 function installNativeMenuMock() {
   const previous = (window as unknown as { ave?: unknown }).ave;
   let handler: ((action: DynamicNativeMenuAction) => void) | null = null;
@@ -92,8 +101,7 @@ const flattenItems = (items: NativeMenuItem[]): NativeMenuItem[] =>
 type BarProps = Parameters<typeof InputActionBar>[0];
 type RowProps = Parameters<typeof ComposerStatusRow>[0];
 
-// The dock draws the action row inside the box and the status row under it;
-// the tests render the same pair so every assertion keeps addressing one tree.
+// The dock draws the action row inside the box and the status row under it; the tests render the same pair so every assertion keeps addressing one tree.
 function renderBar(overrides: Partial<BarProps & RowProps> = {}) {
   const barProps: BarProps = {
     plugins: [],
@@ -165,8 +173,7 @@ describe("InputActionBar (unified bar)", () => {
     const attach = leading.querySelector("[data-testid='iab-attach-button']");
     expect(picker && attach).toBeTruthy();
     expect(picker!.compareDocumentPosition(attach!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    // The persona moved INTO the command menu; a second button beside it would
-    // split "what shapes the next message" across two controls again.
+    // The persona moved INTO the command menu; a second button beside it would split "what shapes the next message" across two controls again.
     expect(leading.querySelectorAll("button")).toHaveLength(2);
     // The ring is NO LONGER in the leading action cluster.
     expect(leading.querySelector("[data-testid='ring-slot']")).toBeNull();
@@ -179,8 +186,7 @@ describe("InputActionBar (unified bar)", () => {
     const send = trailing.querySelector("[data-testid='composer-send-button']");
     expect(help && send).toBeTruthy();
     expect(help!.compareDocumentPosition(send!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    // Reasoning/thinking is no longer in the trailing cluster — it is the
-    // status sub-row chip after the model cell (and opens the model card).
+    // Reasoning/thinking is no longer in the trailing cluster; it is the status sub-row chip after the model cell (and opens the model card).
     expect(trailing.querySelector("[data-testid='thinking-button']")).toBeNull();
     const statusRow = getByTestId("iab-status-row");
     expect(statusRow.querySelector("[data-testid='iab-status-reasoning']")).toBeTruthy();
@@ -217,8 +223,7 @@ describe("InputActionBar (unified bar)", () => {
     expect(onSend).toHaveBeenCalledTimes(1);
   });
 
-  // The turn control is ONE button, not a send button beside a cancel button.
-  // Which verb it carries is decided by the draft, not by `isBusy` alone.
+  // The turn control is ONE button, not a send button beside a cancel button. Which verb it carries is decided by the draft, not by `isBusy` alone.
   it("idle with an empty draft keeps a single disabled send button", () => {
     const { getByTestId, queryByTestId } = renderBar({
       isBusy: false,
@@ -228,18 +233,15 @@ describe("InputActionBar (unified bar)", () => {
     expect(queryByTestId("composer-cancel-button")).toBeNull();
     const send = getByTestId("composer-send-button") as HTMLButtonElement;
     expect(send.disabled).toBe(true);
-    // A disabled SOLID primary is a near-black disc at 50% opacity — the grey
-    // blob this redesign is replacing. With nothing to send the control goes
-    // quiet instead, matching the outline treatment of the leading cluster.
+    // A disabled SOLID primary is a near-black disc at 50% opacity; the grey blob this redesign is replacing.
+    // With nothing to send the control goes quiet instead, matching the outline treatment of the leading cluster.
     expect(send.className).toContain("bg-input-bar-subtle");
     expect(send.className).not.toContain("bg-primary");
   });
 
   it("goes quiet for a runtime block too, not just for an empty draft", () => {
-    // `isSendDisabled` also folds in the runtime blocks (no API key, runtime
-    // unavailable). The button cannot act in those states either, so it must
-    // not sit there as a disabled SOLID disc — the quiet treatment and the
-    // `disabled` attribute are driven by the same flag and cannot disagree.
+    // `isSendDisabled` also folds in the runtime blocks (no API key, runtime unavailable). The button cannot act in those states either, so it
+    // must not sit there as a disabled SOLID disc; the quiet treatment and the `disabled` attribute are driven by the same flag and cannot disagree.
     const { getByTestId } = renderBar({
       isBusy: false,
       hasDraft: true,
@@ -262,8 +264,7 @@ describe("InputActionBar (unified bar)", () => {
     });
     expect(queryByTestId("composer-send-button")).toBeNull();
     const stop = getByTestId("composer-cancel-button") as HTMLButtonElement;
-    // Stop stays clickable even though sending is blocked by the empty draft,
-    // and it is solid — it is the one thing the user can act on right now.
+    // Stop stays clickable even though sending is blocked by the empty draft, and it is solid; it is the one thing the user can act on right now.
     expect(stop.disabled).toBe(false);
     expect(stop.className).toContain("bg-primary");
     fireEvent.click(stop);
@@ -290,9 +291,8 @@ describe("InputActionBar (unified bar)", () => {
   it("the turn control carries no text label — icon plus accessible name only", () => {
     const { getByTestId } = renderBar({ hasDraft: true, isSendDisabled: false });
     const send = getByTestId("composer-send-button");
-    // The old markup shipped a "전송" span plus a ⏎ keycap whose background and
-    // text both resolved to `primary-foreground`, so the glyph read as an
-    // empty box. Nothing but the icon may live inside the button now.
+    // The old markup shipped a "전송" span plus a ⏎ keycap whose background and text both resolved to
+    // `primary-foreground`, so the glyph read as an empty box. Nothing but the icon may live inside the button now.
     expect(send.textContent?.trim()).toBe("");
     expect(send.querySelector("kbd")).toBeNull();
     expect(send.querySelector("svg")).not.toBeNull();
@@ -356,7 +356,6 @@ describe("InputActionBar (unified bar)", () => {
     }
   });
 
-  // ── Status sub-row ──────────────────────────────────────────────────────
   it("renders the status sub-row in reversed order: ring (left) before permission · model · dot", () => {
     const { getByTestId } = renderBar();
     const row = getByTestId("iab-status-row");
@@ -381,6 +380,26 @@ describe("InputActionBar (unified bar)", () => {
     expect(model.getAttribute("aria-label")).toBe("OpenAI · gpt-5.4");
   });
 
+  it("keeps the sandbox-off warning in the persistent chat status row", () => {
+    const { getByTestId } = renderBar({
+      statusRow: {
+        ...defaultStatusRow,
+        sandboxCapability: {
+          platform: "darwin", enabled: false, available: true, kind: "full", reason: "",
+          shellExecutionPlan: getHostShellExecutionPlanAuditProjection(buildHostShellExecutionPlan({
+            platform: "darwin", requestedSandbox: false,
+            activeCapability: { kind: "none", confidence: "verified", platform: "darwin", reason: "fixture" },
+          })),
+          runtime: { available: false, kind: "none", reason: "" },
+          confines: { filesystem: false, process: false, network: false },
+          shell: { state: "off", setting: false, envForced: false, causes: [] },
+        },
+      },
+    });
+    expect(getByTestId("iab-status-row")).toContainElement(getByTestId("sandbox-off-status"));
+    expect(getByTestId("sandbox-off-status")).toHaveTextContent("샌드박스 꺼짐");
+  });
+
   it("colors the permission text per mode (no pill/outline)", () => {
     const cases: Array<[InputStatusRow["permissionMode"], string]> = [
       ["default", "text-info"],
@@ -403,8 +422,7 @@ describe("InputActionBar (unified bar)", () => {
 
   it("draws no connection dot and no separator between the model chip and the reasoning bulb", () => {
     const { getByTestId } = renderBar();
-    // Model chip and bulb sit at the row's own gap: no "·" in between, and
-    // nothing at all after the bulb.
+    // Model chip and bulb sit at the row's own gap: no "·" in between, and nothing at all after the bulb.
     const model = getByTestId("iab-status-model");
     const bulb = getByTestId("iab-status-reasoning");
     expect(model.nextElementSibling).toBe(bulb);
@@ -415,7 +433,7 @@ describe("InputActionBar (unified bar)", () => {
     const { getByTestId } = renderBar({
       statusRow: { ...defaultStatusRow, permissionMode: "auto", pendingApprovals: 2 },
     });
-    // The count is its own button now — NOT appended to the permission label.
+    // The count is its own button now; NOT appended to the permission label.
     expect(getByTestId("iab-status-pending").textContent).toContain("2");
     expect(getByTestId("iab-status-permission").textContent).not.toContain("2");
     // …and it precedes the permission cell.
@@ -440,9 +458,8 @@ describe("InputActionBar (unified bar)", () => {
 });
 
 describe("status row with no connected provider", () => {
-  // Owner report: a fresh profile showed "gpt-5.4-mini" and Reasoning Medium
-  // in this row, and a picker with "OpenAI gpt-5.4-mini ✓", although no
-  // provider was connected. Main says "none"; the row must not invent a model.
+  // Owner report: a fresh profile showed "gpt-5.4-mini" and Reasoning Medium in this row, and a picker with
+  // "OpenAI gpt-5.4-mini ✓", although no provider was connected. Main says "none"; the row must not invent a model.
   const noProvider: InputStatusRow = {
     vendorModel: "",
     activeChatModel: { kind: "none", reason: "no-connected-provider" },
@@ -624,9 +641,8 @@ describe("model card (status-row model cell)", () => {
   });
 
   it("names the vendor in the card, where the status row no longer says it", async () => {
-    // The literal the catalogue holds for this vendor, not the same lookup the
-    // component makes — a derived expectation would agree with a wrong label.
-    // The suite renders in Korean (src/i18n/testing/vitest-ambient-intl.ts).
+    // The literal the catalogue holds for this vendor, not the same lookup the component makes; a derived
+    // expectation would agree with a wrong label. The suite renders in Korean (src/i18n/testing/vitest-ambient-intl.ts).
     const vendorLabel = "사용자 지정 (OpenAI 호환)";
     const { getByTestId, findByTestId } = renderBar({ onOpenModelSettings: vi.fn() });
     fireEvent.click(getByTestId("iab-status-model"));
@@ -646,9 +662,8 @@ describe("model card (status-row model cell)", () => {
   });
 
   it("colours the bulb by level, and draws no fill at all when off", async () => {
-    // Each permitted depth has its own yellow, and OFF is the absence of the
-    // fill layer rather than another colour — an unlit bulb has to be
-    // unmistakable, and any colour at level 0 reads as another depth.
+    // Each permitted depth has its own yellow, and OFF is the absence of the fill layer rather than
+    // another colour; an unlit bulb has to be unmistakable, and any colour at level 0 reads as another depth.
     const outputTokenLimit = Number.MAX_SAFE_INTEGER;
     const rungs = getLlmThinkingBudgetRungs(outputTokenLimit);
     const fillTokens = new Map(Array.from(
@@ -687,16 +702,13 @@ describe("model card (status-row model cell)", () => {
         expect(token).toBeDefined();
         const colour = fillTokens.get(token!);
         expect(colour).toBeTruthy();
-        // The fill is the FIRST layer, so the glyph's own lines draw over it.
-        // Painted on top, a solid colour swallows the bulb's outline and the
-        // control stops reading as a bulb at 12px.
+        // The fill is the FIRST layer, so the glyph's own lines draw over it. Painted on top, a solid colour swallows the bulb's outline and the control stops reading as a bulb at 12px.
         expect(layers[1]!.style.fill).toBe("");
         seen.add(colour!);
       }
       unmount();
     }
-    // Every canonical preset must render a distinct colour that exists in the
-    // stylesheet, even when that preset needs a larger output ceiling.
+    // Every canonical preset must render a distinct colour that exists in the stylesheet, even when that preset needs a larger output ceiling.
     expect(seen.size).toBe(rungs.length);
   });
 
@@ -705,8 +717,7 @@ describe("model card (status-row model cell)", () => {
     const { getByTestId, findByTestId, queryByTestId, unmount } = renderBar({ onOpenModelSettings, enableThinkingChat: true });
     const chip = getByTestId("iab-status-reasoning");
     expect(chip.getAttribute("data-level")).not.toBe("0");
-    // The level is drawn, not spelled: the gauge fill has to track the level,
-    // and the word must not come back as visible text beside it.
+    // The level is drawn, not spelled: the gauge fill has to track the level, and the word must not come back as visible text beside it.
     expect(getByTestId("iab-reasoning-gauge")).toBeTruthy();
     expect(chip.textContent).toBe("");
     expect(chip.getAttribute("aria-label")).toContain(":");
@@ -794,9 +805,8 @@ describe("model card (status-row model cell)", () => {
     // The plan's brand, never the runtime's own name.
     expect(checked[0]?.textContent).toContain("ChatGPT");
     expect(checked[0]?.textContent).not.toContain("Codex");
-    // The API model that happens to share the settings the API path still
-    // holds (vendor "openai-compatible", model "qwen3.8-27b-gguf") is listed
-    // as an alternative, not marked as the route the chat is actually on.
+    // The API model that happens to share the settings the API path still holds (vendor "openai-compatible",
+    // model "qwen3.8-27b-gguf") is listed as an alternative, not marked as the route the chat is actually on.
     expect(
       card
         .querySelector("[data-testid='model-quick-picker-option:openai-compatible:qwen3.8-27b-gguf']")
@@ -819,8 +829,7 @@ describe("model card (status-row model cell)", () => {
       return el;
     });
     expect(button.disabled).toBe(true);
-    // A disabled button never dispatches a click — nothing to guard against
-    // in the pick handler.
+    // A disabled button never dispatches a click; nothing to guard against in the pick handler.
     fireEvent.click(button);
     expect(updateSettings).not.toHaveBeenCalled();
     expect(subscriptionUseApiForChat).not.toHaveBeenCalled();
@@ -840,9 +849,8 @@ describe("model card (status-row model cell)", () => {
       return el;
     });
     const spans = option.querySelectorAll("span");
-    // The muted vendor column would otherwise be the only place the label
-    // appears, leaving the primary column visually empty — the label moves
-    // there instead when the runtime has no model of its own.
+    // The muted vendor column would otherwise be the only place the label appears, leaving the primary
+    // column visually empty; the label moves there instead when the runtime has no model of its own.
     expect(spans[0]?.textContent).toBe("");
     expect(spans[1]?.textContent).toBe("Kimi");
   });
@@ -892,5 +900,174 @@ describe("model card (status-row model cell)", () => {
     const reopened = await findByTestId("model-quick-picker");
     await waitFor(() => expect(reopened.querySelectorAll("[role='option']").length).toBe(2));
     expect(queryByTestId("model-quick-picker-no-pins")).toBeNull();
+  });
+});
+
+describe("permission card sandbox checkbox", () => {
+  beforeEach(() => {
+    sandboxCapability.mockReset();
+    updateSettings.mockReset();
+    sandboxCapability.mockResolvedValue(shellStatus());
+  });
+
+  async function openCard() {
+    const view = renderBar({});
+    fireEvent.click(view.getByTestId("iab-status-permission"));
+    await view.findByTestId("permission-quick-picker");
+    await waitFor(() =>
+      expect(view.getByTestId("permission-quick-picker-sandbox").getAttribute("data-state")).not.toBe("loading"),
+    );
+    return view;
+  }
+
+  it("sits at the foot of the card as a labelled checkbox whose status text describes it", async () => {
+    sandboxCapability.mockResolvedValue(shellStatus({ state: "on", setting: true }));
+    const { getByTestId, getByRole } = await openCard();
+    const card = getByTestId("permission-quick-picker");
+    expect(card.lastElementChild).toBe(getByTestId("permission-quick-picker-sandbox"));
+    const checkbox = getByRole("checkbox", { name: "샌드박스" });
+    expect(checkbox.getAttribute("aria-checked")).toBe("true");
+    const status = getByTestId("permission-quick-picker-sandbox-status");
+    expect(checkbox.getAttribute("aria-describedby")).toBe(status.id);
+    expect(status.textContent).toBe("켜짐 — 셸이 OS 샌드박스 안에서 실행됩니다.");
+  });
+
+  it("shows off unchecked", async () => {
+    const { getByRole, getByTestId } = await openCard();
+    expect(getByRole("checkbox", { name: "샌드박스" }).getAttribute("aria-checked")).toBe("false");
+    expect(getByTestId("permission-quick-picker-sandbox-status").textContent).toContain("꺼짐");
+  });
+
+  it.each([
+    [["missing-bwrap"], "bubblewrap(bwrap)이 없거나 실행할 수 없음"],
+    [["missing-socat"], "socat이 없거나 실행할 수 없음"],
+    [["missing-bwrap", "missing-socat"], "bubblewrap(bwrap)이 없거나 실행할 수 없음, socat이 없거나 실행할 수 없음"],
+    [["init-failed"], "샌드박스 시작 실패"],
+    [["ave-home-privacy-failed"], "AVE_HOME 비공개 보호를 확인할 수 없어 격리가 꺼져 있음"],
+    [["linux-runtime-probe-failed"], "bubblewrap을 실행할 수 없음 (시작 점검 실패)"],
+    [["windows-setup-incomplete"], "Windows 샌드박스 설정(srt-win)이 완료되지 않음"],
+    [["windows-shell-not-contained"], "Windows 셸은 샌드박스 밖에서 실행됨 (경로 ACL 부여가 안전하지 않음)"],
+    [["windows-sandbox-missing"], "이 설치본에 Windows 샌드박스(srt-win)가 없음 — Ave를 다시 설치하세요"],
+    [["shell-not-contained"], "활성 샌드박스가 셸을 격리하지 못해 셸 명령이 차단됨"],
+  ])("names the reason when the requested sandbox is unavailable (%j)", async (causes, reason) => {
+    sandboxCapability.mockResolvedValue(shellStatus({ state: "unavailable", setting: true, causes }));
+    const { getByRole, getByTestId } = await openCard();
+    expect(getByRole("checkbox", { name: "샌드박스" }).getAttribute("aria-checked")).toBe("true");
+    expect(getByTestId("permission-quick-picker-sandbox-status").textContent).toBe(`사용 불가: ${reason}`);
+  });
+
+  it("shows application repair guidance for an integrity failure", async () => {
+    sandboxCapability.mockResolvedValue(shellStatus({ state: "unavailable", setting: true, causes: ["windows-sandbox-integrity-failed"] }));
+    const { getByTestId } = await openCard();
+    expect(getByTestId("permission-quick-picker-sandbox-status")).toHaveTextContent(t("inputActionBar.sandboxCauseWindowsSandboxIntegrityFailed"));
+    expect(getByTestId("permission-quick-picker-sandbox-status")).not.toHaveTextContent(t("inputActionBar.sandboxCauseWindowsSetupIncomplete"));
+  });
+
+  it("disables the checkbox on a platform with no sandbox and says so", async () => {
+    sandboxCapability.mockResolvedValue(shellStatus({ state: "unsupported", causes: ["platform-unsupported"] }));
+    const { getByRole, getByTestId } = await openCard();
+    expect(getByRole("checkbox", { name: "샌드박스" }).hasAttribute("disabled")).toBe(true);
+    expect(getByTestId("permission-quick-picker-sandbox-status").textContent).toBe("사용 불가: 이 플랫폼에서는 지원되지 않음");
+  });
+
+  it("writes only the shell setting, then shows the pending-restart state the host reports", async () => {
+    sandboxCapability
+      .mockResolvedValueOnce(shellStatus())
+      .mockResolvedValue(shellStatus({ state: "pending-on", setting: true }));
+    updateSettings.mockResolvedValue({ ok: true });
+    const { getByRole, getByTestId } = await openCard();
+
+    fireEvent.click(getByRole("checkbox", { name: "샌드박스" }));
+
+    await waitFor(() => expect(getByTestId("permission-quick-picker-sandbox").getAttribute("data-state")).toBe("pending-on"));
+    expect(updateSettings).toHaveBeenCalledTimes(1);
+    expect(updateSettings).toHaveBeenCalledWith({ features: { osToolSandbox: true } });
+    expect(Object.keys(updateSettings.mock.calls[0]![0].features)).toEqual(["osToolSandbox"]);
+    expect(getByTestId("permission-quick-picker-sandbox-status").textContent)
+      .toBe("재시작 후 켜짐 — Ave를 다시 시작하기 전까지 셸은 샌드박스 없이 실행됩니다.");
+    // The card stays open: the pending line is the point of the click.
+    expect(getByTestId("permission-quick-picker")).toBeTruthy();
+  });
+
+  it("turning it off while on also only writes the shell setting and shows pending-off", async () => {
+    sandboxCapability
+      .mockResolvedValueOnce(shellStatus({ state: "on", setting: true }))
+      .mockResolvedValue(shellStatus({ state: "pending-off", setting: false }));
+    updateSettings.mockResolvedValue({ ok: true });
+    const { getByRole, getByTestId } = await openCard();
+
+    fireEvent.click(getByRole("checkbox", { name: "샌드박스" }));
+
+    await waitFor(() => expect(getByTestId("permission-quick-picker-sandbox").getAttribute("data-state")).toBe("pending-off"));
+    expect(updateSettings).toHaveBeenCalledWith({ features: { osToolSandbox: false } });
+    expect(getByRole("checkbox", { name: "샌드박스" }).getAttribute("aria-checked")).toBe("false");
+  });
+
+  it("keeps the stored state and says the save failed when the host refuses the write", async () => {
+    updateSettings.mockResolvedValue({ ok: false, error: "settings-write-failed" });
+    const { getByRole, findByTestId } = await openCard();
+
+    fireEvent.click(getByRole("checkbox", { name: "샌드박스" }));
+
+    expect((await findByTestId("permission-quick-picker-sandbox-error")).textContent).toBe("샌드박스 설정을 저장하지 못했습니다.");
+    expect(getByRole("checkbox", { name: "샌드박스" }).getAttribute("aria-checked")).toBe("false");
+    expect(sandboxCapability).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not offer a toggle the environment override would ignore", async () => {
+    sandboxCapability.mockResolvedValue(shellStatus({ state: "on", setting: false, envForced: true }));
+    const { getByRole, getByTestId } = await openCard();
+    const checkbox = getByRole("checkbox", { name: "샌드박스" });
+    expect(checkbox.getAttribute("aria-checked")).toBe("true");
+    expect(checkbox.hasAttribute("disabled")).toBe(true);
+    expect(getByTestId("permission-quick-picker-sandbox-forced").textContent).toContain("AVE_SANDBOX_ENABLED");
+  });
+
+  it("says the status could not be read instead of showing a guess", async () => {
+    sandboxCapability.mockRejectedValue(new Error("ipc down"));
+    const { getByTestId, getByRole } = await openCard();
+    expect(getByTestId("permission-quick-picker-sandbox").getAttribute("data-state")).toBe("error");
+    expect(getByTestId("permission-quick-picker-sandbox-status").textContent).toBe("샌드박스 상태를 읽지 못했습니다.");
+    expect(getByRole("checkbox", { name: "샌드박스" }).hasAttribute("disabled")).toBe(true);
+  });
+
+  it("shows a host status fault in red and still lets the user turn the setting off, which clears it", async () => {
+    sandboxCapability
+      .mockResolvedValueOnce(shellStatus({ state: "error", setting: true }))
+      .mockResolvedValue(shellStatus({ state: "off", setting: false }));
+    updateSettings.mockResolvedValue({ ok: true });
+    const { getByRole, getByTestId } = await openCard();
+    const checkbox = getByRole("checkbox", { name: "샌드박스" });
+    expect(checkbox.hasAttribute("disabled")).toBe(false);
+    const status = getByTestId("permission-quick-picker-sandbox-status");
+    expect(status.textContent).toBe("상태 오류 — Ave가 샌드박스 상태를 판단하지 못했습니다. 로그를 확인하세요.");
+    expect(status.className).toContain("text-destructive");
+
+    fireEvent.click(checkbox);
+
+    await waitFor(() => expect(getByTestId("permission-quick-picker-sandbox").getAttribute("data-state")).toBe("off"));
+    expect(updateSettings).toHaveBeenCalledWith({ features: { osToolSandbox: false } });
+  });
+
+  it("leads to the Settings setup when the Windows sandbox setup is incomplete", async () => {
+    sandboxCapability.mockResolvedValue(shellStatus({ state: "unavailable", setting: true, causes: ["windows-setup-incomplete"] }));
+    const onOpenPermissions = vi.fn();
+    const view = renderBar({ onOpenPermissions });
+    fireEvent.click(view.getByTestId("iab-status-permission"));
+    const link = await view.findByTestId("permission-quick-picker-sandbox-setup");
+    expect(link.textContent).toBe("설정에서 Windows 샌드박스 설정 열기");
+    fireEvent.click(link);
+    expect(onOpenPermissions).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(view.queryByTestId("permission-quick-picker")).toBeNull());
+  });
+
+  it("offers no setup link for causes the Settings setup cannot repair", async () => {
+    sandboxCapability.mockResolvedValue(shellStatus({ state: "unavailable", setting: true, causes: ["windows-sandbox-missing"] }));
+    const view = renderBar({ onOpenPermissions: vi.fn() });
+    fireEvent.click(view.getByTestId("iab-status-permission"));
+    await waitFor(() =>
+      expect(view.getByTestId("permission-quick-picker-sandbox").getAttribute("data-state")).toBe("unavailable"),
+    );
+    expect(view.queryByTestId("permission-quick-picker-sandbox-setup")).toBeNull();
   });
 });

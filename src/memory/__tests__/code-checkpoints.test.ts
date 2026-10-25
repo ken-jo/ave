@@ -39,7 +39,6 @@ describe("native file-tool code checkpoints", () => {
       expect((await new EditFileTool().execute({ path: file, oldText: "before", newText: "after" }, ctx)).isError).toBe(false);
     });
     await turn("second", async () => { await read(); await write("latest\n"); });
-    // Restore reads persisted state rather than requiring an active turn.
     expect(await restoreCodeCheckpoint(sessionId, "first")).toEqual({ ok: true });
     expect((await readFile(file)).equals(original)).toBe(true);
     expect(await restoreCodeCheckpoint(sessionId, "first")).toEqual({ ok: true });
@@ -50,7 +49,6 @@ describe("native file-tool code checkpoints", () => {
     const mutate = vi.fn(() => writeFile(file, "agent"));
     await expect(turn("admission-race", () => checkpointFileMutation([{
       path: file,
-      // Interleave a real filesystem write after the before-image was read.
       get content() { writeFileSync(file, "external"); return "agent"; },
     }], mutate))).rejects.toThrow("File changed before checkpointed mutation");
     expect(mutate).not.toHaveBeenCalled();

@@ -1,11 +1,4 @@
-/**
- * Application menu — the native menu bar template and its per-item builders.
- *
- * Menu items reflect live state (the always-on-top checkbox, the plugin
- * sidebar views), so every builder reads through `app-state.ts` / the plugin
- * runtime at call-time and the whole template is rebuilt via
- * `refreshApplicationMenu()` whenever that state changes.
- */
+// Menu builders read live state and rebuild when window or plugin state changes.
 import { app, Menu, type MenuItemConstructorOptions } from "electron";
 import { getLocale, t } from "../i18n/index.js";
 import { getPluginViewLabel } from "../shared/plugin-view-label.js";
@@ -21,19 +14,7 @@ function activateView(viewKey: string) {
   getMainWindow()?.webContents.send("ave:view:activate", { viewKey });
 }
 
-/**
- * Route a settings-open request to the INLINE settings panel. Settings no
- * longer detaches to its own BrowserWindow (settings-inline-overhaul), so every
- * main-process entry point — the app menu, the tray, and `ave://` MCP-login
- * deep links — funnels through here.
- *
- * Surfaces the main window (creating/restoring it if missing so the entry point
- * never dead-ends), then sends `ave:view:activate` with the requested tab. The
- * renderer runs this through the SAME `onOpenSettings(tab)` path used by in-app
- * affordances, so tab normalization + return-view capture are identical. When
- * the window was just (re)created its renderer may still be loading, so the
- * signal is deferred to `did-finish-load` in that case.
- */
+// Restore or create the main window, then activate inline settings; defer IPC until did-finish-load if needed.
 export function activateInlineSettings(tabInput: unknown = "llm"): void {
   const settingsTab = normalizeSettingsTab(tabInput);
   requestShowOrCreateMainWindow("settings-open");

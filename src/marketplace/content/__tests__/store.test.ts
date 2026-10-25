@@ -58,7 +58,6 @@ describe("content package store", () => {
   const seedRepos: FixtureRepo[] = [];
   let activated: Array<{ op: "activate" | "deactivate" | "approve"; key: string; content: ParsedContent | null; previous?: string | null; adopt?: boolean }>;
   let failActivation: boolean;
-  /** What the activations report as their predecessor's retirement. */
   let retirement: Promise<void>;
 
   const activation: ContentActivation = {
@@ -104,7 +103,6 @@ describe("content package store", () => {
     await cleanupTmpDir(root);
   });
 
-  /** A marketplace repository serving `packages` (kind, name, path) with the given files. */
   function market(packages: Array<{ kind: string; name: string; path: string }>, files: Record<string, string | Buffer>) {
     const listing = { "marketplace.json": text({ schemaVersion: 2, name: "acme", displayName: "Acme", packages }) };
     const key = JSON.stringify([packages, files]);
@@ -148,7 +146,6 @@ describe("content package store", () => {
   }
 
   const openStore = () => ContentStore.open({ root: join(root, "packages"), english: ENGLISH, activation, now: () => new Date(AT) });
-  /** The install directories a package has. */
   const installs = (kind: string, name: string): string[] => {
     const dir = join(root, "packages", kind, name, ".installs");
     return existsSync(dir) ? readdirSync(dir).sort() : [];
@@ -200,7 +197,6 @@ describe("content package store", () => {
       { path: `${packagePath}/ai.agent-connector.ave/hooks.json`, mode: "100644", content: hooksJson },
       { path: `${packagePath}/server/hook.sh`, mode: "100755", content: program },
     ], "publish");
-    // The real transport/export and shell prove executable-bit preservation.
     const syncer = await open(name, "acme", git.runner);
     const [row] = await rows(syncer);
     const staged = await stage(syncer, row!);
@@ -218,7 +214,6 @@ describe("content package store", () => {
       "themes/harbor/ave-package.json": descriptor("theme", "harbor", "1.0.0", { entry: "theme.json" }),
       "themes/harbor/theme.json": theme("Harbor"),
     });
-    // Keep one complete source-to-install/reload boundary over real transport.
     const syncer = await open(name, "acme", git.runner);
     const [row] = await rows(syncer);
     const staged = await stage(syncer, row!);
@@ -234,11 +229,9 @@ describe("content package store", () => {
       origin: {
         sourceId: "acme", sourceOrigin: "custom", commit: first, packagePath: "themes/harbor", version: "1.0.0", contentSha256: staged.contentSha256, installedAt: AT,
         installId, payloadDir: `theme/harbor/.installs/${installId}`,
-        // The consent baseline an automatic update is compared with (§18.7.3).
         consent: { kind: "theme", fields: { minAppVersion: staged.minAppVersion }, unknown: [] },
       },
     });
-    // Each install has a directory of its own; the descriptor is read at the version commit and never installed.
     expect(store.packageDir(entry)).toBe(join(root, "packages", "theme", "harbor", ".installs", installId));
     expect(existsSync(join(store.packageDir(entry), "theme.json"))).toBe(true);
     expect(existsSync(join(store.packageDir(entry), "ave-package.json"))).toBe(false);
@@ -248,7 +241,6 @@ describe("content package store", () => {
     const { loaded, broken } = await reopened.load();
     expect(broken).toEqual([]);
     expect(loaded.map((item) => item.content)).toEqual([staged.content]);
-    // The snapshot the install was planned from is kept while it is installed (§2.3).
     expect(await contentLedgerOrigins(join(root, "packages", "ledger.json"))()).toEqual([{ kind: "theme", name: "harbor", sourceId: "acme", commit: first }]);
 
     await expect(reopened.uninstall("theme", "harbor", { ...EMPTY_MARKETPLACE_POLICY, requiredInstalls: [{ kind: "theme", name: "harbor", source: "acme" }] }))
@@ -259,7 +251,6 @@ describe("content package store", () => {
     expect(JSON.parse(readFileSync(join(root, "packages", "ledger.json"), "utf8"))).toEqual({ version: 1, packages: [] });
     expect(await reopened.uninstall("theme", "harbor", EMPTY_MARKETPLACE_POLICY)).toBeNull();
 
-    // The first-boot migration's install tells the activation it is adopting (design §16.3).
     await reopened.install(staged, { adopt: true });
     expect(activated.at(-1)).toMatchObject({ op: "activate", key: "theme:harbor@1.0.0", adopt: true });
   });
@@ -282,7 +273,6 @@ describe("content package store", () => {
     retirement = new Promise<void>((resolve) => { retire = resolve; });
     const { action, entry } = await store.install(await stage(syncer, (await rows(syncer))[0]!));
     expect(action).toEqual({ action: "replace", direction: "upgrade", from: "1.0.0" });
-    // Activation is told what the install replaces.
     expect(activated.map((call) => call.previous)).toEqual([null, "1.0.0"]);
     expect(existsSync(join(store.packageDir(first.entry), "theme.json"))).toBe(true);
     expect(installs("theme", "harbor")).toEqual([first.entry.origin.installId, entry.origin.installId].sort());
@@ -336,7 +326,6 @@ describe("content package store", () => {
     const { loaded, broken } = await (await openStore()).load();
     expect(broken).toEqual([]);
     expect(loaded.map((item) => item.entry)).toEqual([first.entry]);
-    // The live directory was never moved: the failed reinstall's own directory is all that went.
     expect(installs("theme", "harbor")).toEqual([first.entry.origin.installId]);
   });
 
@@ -350,7 +339,6 @@ describe("content package store", () => {
     const first = await store.install(await stage(syncer, (await rows(syncer))[0]!));
     commit({ "themes/harbor/ave-package.json": descriptor("theme", "harbor", "1.1.0", { entry: "theme.json" }) });
     const staged = await stage(syncer, (await rows(syncer))[0]!);
-    // The first put records the new entry; the rollback's put of the previous one fails.
     const put = ContentLedger.prototype.put;
     let calls = 0;
     vi.spyOn(ContentLedger.prototype, "put").mockImplementation(function (this: ContentLedger, entry: LedgerEntry) {
@@ -364,12 +352,10 @@ describe("content package store", () => {
       vi.restoreAllMocks();
     }
     expect(calls).toBe(2);
-    // The new version's files are still removed.
     expect(installs("theme", "harbor")).toEqual([first.entry.origin.installId]);
   });
 
   it("keeps a language whose keys the app catalog no longer has, applying only the keys it still has", async () => {
-    // Written against an older catalog: "chat.retired" is gone from this app's English catalog.
     const { name } = market([{ kind: "language", name: "french", path: "languages/french" }], {
       ...language("french", "fr"),
       "languages/french/messages.json": text({ "chat.send": "Envoyer", "app.title": "Ave", "chat.retired": "Ancien" }),
@@ -380,7 +366,6 @@ describe("content package store", () => {
     expect(staged.content).toMatchObject({ messages: { "chat.send": "Envoyer", "app.title": "Ave" } });
     expect(await store.install(staged)).toMatchObject({ action: { action: "install" }, entry: { name: "french" } });
 
-    // A later app drops "app.title" as well: the installed package still loads, and the dropped keys never apply.
     const updated = await ContentStore.open({ root: join(root, "packages"), english: { "chat.send": "Send" }, activation, now: () => new Date(AT) });
     const { loaded, broken } = await updated.load();
     expect(broken).toEqual([]);
@@ -466,12 +451,11 @@ describe("content package store", () => {
     const { loaded, broken } = await store.load();
     expect(loaded).toEqual([]);
     expect(broken).toEqual([{ entry: expect.objectContaining({ name: "harbor" }) as LedgerEntry, problem: "the installed files changed after install" }]);
-    // Uninstall still works, and tells activation the content is unreadable.
     await store.uninstall("theme", "harbor", EMPTY_MARKETPLACE_POLICY);
     expect(activated.at(-1)).toMatchObject({ op: "deactivate", content: null });
   });
 
-  /** Turn the installed entry into a pre-F legacy install: `<version>/`, no install id, no consent baseline. */
+  /** Converts to a legacy version-directory install without an install id or consent baseline. */
   function makeLegacy(entry: LedgerEntry): LedgerEntry {
     const { installId: _installId, payloadDir: _payloadDir, consent: _consent, ...origin } = entry.origin;
     const legacy = { ...entry, origin };
@@ -491,7 +475,6 @@ describe("content package store", () => {
     expect(store.packageDir(legacy)).toBe(join(root, "packages", "theme", "harbor", "1.0.0"));
     expect((await store.load()).loaded.map((item) => item.entry)).toEqual([legacy]);
 
-    // Refreshing the same version writes a new install directory; the legacy one goes once the old activation retired.
     const refreshed = await store.install(await stage(syncer, (await rows(syncer))[0]!));
     expect(refreshed.entry.origin.payloadDir).toBe(`theme/harbor/.installs/${refreshed.entry.origin.installId}`);
     await vi.waitFor(() => expect(existsSync(join(root, "packages", "theme", "harbor", "1.0.0"))).toBe(false));
@@ -513,10 +496,8 @@ describe("content package store", () => {
     const store = await openStore();
     const first = await store.install(await stage(syncer, (await rows(syncer))[0]!));
     commit({ "themes/harbor/ave-package.json": descriptor("theme", "harbor", "1.1.0", { entry: "theme.json" }) });
-    // The app quits before the replaced activation retires: its directory is left behind.
     retirement = new Promise<void>(() => undefined);
     const second = await store.install(await stage(syncer, (await rows(syncer))[0]!));
-    // So are a stray legacy version directory and an install interrupted before its ledger write.
     mkdirSync(join(root, "packages", "theme", "harbor", "0.9.0"), { recursive: true });
     mkdirSync(join(root, "packages", "theme", "harbor", ".installs", "00000000-0000-4000-8000-000000000000"), { recursive: true });
     expect(installs("theme", "harbor")).toHaveLength(3);
@@ -566,14 +547,13 @@ describe("content package store", () => {
     const packagePath = "agent-plugins/review-plugin";
     const pluginJson = (version: string) => text({ $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json", name: "review-plugin", version, description: "Review" });
 
-    /** Publish `version` of an agent plugin whose hook may read a rules file, then stage and install it. */
     async function publish(store: ContentStore, version: string, rules: string, component: "hook") {
       const hooksJson = text({ version: 1, hooks: { PreToolUse: [{ hooks: [{ type: "command", command: ["./server/hook.sh"] }] }] } });
       const program = "#!/bin/sh\nexit 0\n";
       const files = [
         { path: "plugin.json", data: Buffer.from(pluginJson(version)) },
         { path: `ai.agent-connector.ave/${component}s.json`, data: Buffer.from(hooksJson) },
-        // Not executable: an executable bit does not survive install on Windows (see the hook test above), and the binding does not need it.
+        // Windows drops executable bits during install; this binding does not need one.
         { path: "server/hook.sh", data: Buffer.from(program) },
         { path: "skills/helper/assets/rules.txt", data: Buffer.from(rules) },
         { path: "skills/helper/SKILL.md", data: Buffer.from("---\nname: helper\ndescription: Helper\n---\nHelp.\n") },
@@ -599,13 +579,11 @@ describe("content package store", () => {
       await store.approveComponents("review-plugin", a.entry.origin.installId!, [a.consent]);
       expect(approvals()).toEqual(["agent-plugin:review-plugin@1.0.0"]);
 
-      // A required update installs B, changing only the rules file: the hook's declared digest stays, its approval digest moves.
       const b = await publish(store, "1.0.1", "rule two", "hook");
       expect(b.consent.digest).toBe(a.consent.digest);
       expect(b.consent.approvalDigest).not.toBe(a.consent.approvalDigest);
       const stale = { code: "PLAN_EXPIRED", detail: { reason: "package-changed" } };
       await expect(store.approveComponents("review-plugin", a.entry.origin.installId!, [a.consent])).rejects.toMatchObject(stale);
-      // B's install id with A's digest: the review did not show these bytes.
       await expect(store.approveComponents("review-plugin", b.entry.origin.installId!, [a.consent])).rejects.toMatchObject(stale);
       expect(approvals()).toEqual(["agent-plugin:review-plugin@1.0.0"]);
       await store.approveComponents("review-plugin", b.entry.origin.installId!, [b.consent]);
@@ -613,7 +591,6 @@ describe("content package store", () => {
     });
 
     it("binds by the generation alone: the same bytes installed again are another install, and the old review approves nothing", async () => {
-      // So a component whose approval digest is null, which no digest can bind, is bound all the same.
       const store = await openStore();
       const a = await publish(store, "1.0.0", "rule one", "hook");
       const { entry: b } = await store.install(a.staged);

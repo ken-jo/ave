@@ -1,9 +1,4 @@
-/**
- * Host-owned plugin UI token contract.
- *
- * The app runtime is the source of truth for plugin theme payload validation
- * and theme token broadcasts.
- */
+/** The app runtime owns plugin theme validation and broadcasts. */
 export const AVE_TOKEN_NAMES = [
   "--ave-bg",
   "--ave-surface",
@@ -36,8 +31,7 @@ export const AVE_TOKEN_NAMES = [
   "--ave-input-bar-focus",
   "--ave-input-bar-subtle",
   "--ave-input-bar-action",
-  // Derived tinted-surface tokens — pre-computed color-mix values shipped by the host.
-  // Plugins use these directly instead of reinventing color-mix derivations.
+  // Host-derived tinted surfaces let plugins use the same color mixes.
   "--ave-danger-bg-subtle",
   "--ave-focus-shadow",
   "--ave-primary-bg-strong",
@@ -91,81 +85,27 @@ export type AveThemeTokens = AveTokenMap;
 
 import { BUNDLE_IDS, isThemeId } from "./theme-bundles.js";
 
-/**
- * A theme identifier: a bundle compiled into the host
- * ({@link AVE_THEME_BUNDLE_IDS}) or the name of an installed theme package.
- * Every other theme, the ones the host used to compile in among them, is a
- * package under its own name.
- */
+/** A compiled bundle ID or an installed theme package name. */
 export type AveThemeBundleId = string;
 
-/**
- * The bundles compiled into the host, copied from the canonical list in
- * `theme-bundles.ts` (used by settings-store, plugins IPC and the renderer).
- * This re-export gives host consumers the stable name
- * `AVE_THEME_BUNDLE_IDS` without duplicating the array. Installed theme
- * packages add ids this list does not name.
- *
- * Spread + `Object.freeze` produces an immutable copy so that mutations
- * (e.g. `push`, `splice`) on this export cannot affect the canonical
- * `BUNDLE_IDS` array in `theme-bundles.ts`.
- */
+/** Freeze a copy so consumers cannot mutate the canonical bundle list; installed packages add IDs outside this list. */
 export const AVE_THEME_BUNDLE_IDS: readonly AveThemeBundleId[] = Object.freeze([...BUNDLE_IDS]);
 
-/**
- * Whether `id` has the form of a theme identifier: a compiled bundle id or a
- * theme package name. Accepts `unknown` at the boundary so callers need not
- * pre-cast IPC payloads or deserialized objects before validating.
- *
- */
 export function isAveThemeBundleId(id: unknown): id is AveThemeBundleId {
   return isThemeId(id);
 }
 
-/**
- * AveHostThemeEvent v2 — broadcast by the host on every theme change.
- *
- * **v2 migration**: legacy fields `colorScheme`, `reducedMotion`, and `fonts`
- * (previously on `AveThemePayload`) have been removed. Use `bundleId` + `shell`
- * instead.
- *
- * Emitted on the `"host.theme.changed"` event bus channel.
- */
+/** Broadcast on host.theme.changed; bundleId and shell carry theme identity and mode. */
 export interface AveHostThemeEvent {
-  /** Active theme: a compiled bundle id or an installed theme package name (e.g. `"moonstone"`, `"tokyo-night"`). */
   bundleId: AveThemeBundleId;
-  /** Shell color mode of the active bundle. */
   shell: "light" | "dark";
-  /** Resolved CSS custom property values for the active bundle. */
   tokens: AveTokenMap;
 }
 
-/**
- * @deprecated Legacy consumers should use {@link AveHostThemeEvent} instead.
- *
- * Legacy standalone payload type. Preserves the old contract exactly:
- * only `bundleId` (as `string`), `colorScheme`, `reducedMotion`, and `fonts`.
- * Does **not** extend `AveHostThemeEvent` — `shell` and `tokens` are NOT
- * part of this type, so older consumers that pass
- * `{ bundleId: "...", colorScheme: "dark" }` continue to compile without error.
- *
- * New consumers: use {@link AveHostThemeEvent} directly.
- * Migration: replace all `AveThemePayload` usages with `AveHostThemeEvent`.
- * These deprecated fields will be removed in a future cleanup PR.
- */
+/** @deprecated Use AveHostThemeEvent. This standalone legacy type retains only bundleId, colorScheme, reducedMotion, and fonts. */
 export interface AveThemePayload {
-  /**
-   * Active theme bundle identifier. Use {@link isAveThemeBundleId} to
-   * validate at runtime boundaries.
-   *
-   * @deprecated Migrate to {@link AveHostThemeEvent}.
-   */
   bundleId: string;
-  /**
-   * @deprecated No longer emitted by the host. Use `bundleId` + `shell`.
-   * Only `"light" | "dark"` — matches host `validateThemePayload` accept range.
-   * `"system"` is NOT part of the legacy contract and will be rejected by the host.
-   */
+  /** @deprecated No longer emitted. Legacy colorScheme accepts light or dark; system is rejected. */
   colorScheme?: "light" | "dark";
   /** @deprecated No longer emitted by the host. */
   reducedMotion?: boolean;

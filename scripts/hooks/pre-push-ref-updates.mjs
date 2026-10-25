@@ -13,7 +13,7 @@ const INTEGRATION_BRANCH_PREFIX = "refs/heads/integration/";
 
 /**
  * `integration/<category>` branches collect sub-branch PRs and reach the
- * default branch through one category PR whose CI runs everything. They are
+ * default branch through one category PR whose non-test-only CI runs everything. They are
  * not branch-protected; they advance through reviewed PR merges and
  * lead-run merges of main, so a direct push to one is the exceptional case
  * and is treated like a push to the default branch: full checks.
@@ -60,7 +60,7 @@ export function parseRemoteHeads(text) {
  * Integration branches are unprotected and CI does not run on PRs into
  * them; their tips advance through reviewed PR merges and lead-run merges of
  * main, every push behind those ran this hook (AGENTS.md forbids bypassing
- * it), and the category->main PR's full CI is the backstop before anything
+ * it), and the category->main PR's non-test-only full CI is the backstop before anything
  * reaches main. Feature branches are not candidates: nothing reviews what
  * lands on them. Default branch first, then by name, so the choice between
  * equally close bases is deterministic.
@@ -164,6 +164,30 @@ export function parsePrePushUpdates({ readable, text }) {
   }
 
   return { updates, complete: complete && updates.length === lines.length };
+}
+
+/**
+ * Name the branch a `HEAD` update pushes. Git reports the refspec's source as
+ * typed, so the everyday `git push origin HEAD` (and `HEAD:refs/heads/x`)
+ * arrives as local ref `HEAD`, and the classifier's branch-only fast tier
+ * treated it as a non-branch update: the full suite and build for an ordinary
+ * branch push. When HEAD is a branch whose tip is the pushed commit, the update
+ * is exactly that branch's push. A detached HEAD, or a branch that moved since,
+ * keeps `HEAD` and so stays on the full checks.
+ *
+ * `headBranch` returns `{ ref, sha }` for the branch HEAD names, or null.
+ */
+export function resolveHeadUpdates(parsed, headBranch) {
+  if (!parsed.updates.some((update) => update.localRef === "HEAD")) return parsed;
+  const branch = headBranch();
+  if (!branch || !branch.ref.startsWith("refs/heads/")) return parsed;
+  return {
+    ...parsed,
+    updates: parsed.updates.map((update) =>
+      update.localRef === "HEAD" && update.localSha.toLowerCase() === branch.sha.toLowerCase()
+        ? { ...update, localRef: branch.ref }
+        : update),
+  };
 }
 
 /**

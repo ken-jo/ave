@@ -1,22 +1,5 @@
-/**
- * Per-model price corrections — the control for `AVE_PRICING_OVERRIDE`.
- *
- * The built-in table holds public list prices. An organisation on negotiated
- * rates therefore sees the wrong number everywhere the app reports spend, and
- * the only fix was a JSON blob in an environment variable — which the person
- * running a packaged build cannot set.
- *
- * A table rather than a JSON field: the blob's shape is nested, and a text
- * area accepting nested JSON would ask the user to be a parser. Rows are
- * validated as they are typed, because `normalizePricingOverrides` drops a
- * malformed row silently and a control that let you save one would be telling
- * you it saved something it discarded.
- *
- * Reach note: this corrects REPORTED spend — the Usage tab and its CSV export.
- * That is exactly the reach the environment variable has always had; the live
- * composer badge prices from the shared table directly and is untouched by
- * either path.
- */
+/** Reject malformed pricing rows before saving because normalization silently drops them. Overrides correct reported spend
+ * and CSV export. */
 import { useCallback, useState } from "react";
 import { Button } from "../../../components/ui/button.js";
 import { Input } from "../../../components/ui/input.js";
@@ -34,11 +17,8 @@ import {
 import type { AppSettings } from "../types.js";
 import { useSettingsSnapshot } from "../hooks/use-settings-snapshot.js";
 
-/**
- * A row mid-edit. Rates are strings because "" and "1." are states a number
- * input passes through on the way to a value, and holding them as numbers
- * would round-trip them into `NaN` or `0` under the user's cursor.
- */
+/** A row mid-edit. Rates are strings because "" and "1." are states a number input passes through on the way to a value,
+ * and holding them as numbers would round-trip them into `NaN` or `0` under the user's cursor. */
 interface DraftRow {
   vendor: string;
   model: string;
@@ -101,9 +81,8 @@ export function PricingOverridesSection() {
   const applySnapshot = useCallback((s: AppSettings) => {
     const next = s.llm?.pricingOverrides ?? [];
     setSaved(next);
-    // Reseed the table only when the stored list actually moved — this runs on
-    // every settings broadcast, including ones caused by unrelated tabs, and
-    // must not wipe rows the user is halfway through entering.
+    // Reseed the table only when the stored list actually moved — this runs on every settings broadcast, including ones caused
+    // by unrelated tabs, and must not wipe rows the user is halfway through entering.
     setRows((current) => (
       JSON.stringify(toOverrides(current)) === JSON.stringify(next) ? current : toDraft(next)
     ));

@@ -52,8 +52,7 @@ describe("useNativeContextMenu", () => {
     const requestId = showNativeContextMenu.mock.calls[0]?.[0].requestId;
     expect(requestId).toEqual(expect.any(String));
     expect(event.preventDefault).toHaveBeenCalledOnce();
-    // The innermost target that answers owns the menu — an ancestor target
-    // must not replace this pending request with its own.
+    // The innermost target that answers owns the menu — an ancestor target must not replace this pending request with its own.
     expect(event.stopPropagation).toHaveBeenCalledOnce();
 
     act(() => actionHandler?.({ requestId: "stale-request", command: "message.copy" }));
@@ -82,8 +81,8 @@ describe("useNativeContextMenu", () => {
     expect(intersectsNode).toHaveBeenCalledWith(target);
     expect(event.preventDefault).not.toHaveBeenCalled();
     expect(showNativeContextMenu).not.toHaveBeenCalled();
-    // Yielding to the WebContents menu is still a decision — an ancestor must
-    // not overrule it by opening an application menu instead.
+    // Yielding to the WebContents menu is still a decision — an ancestor must not overrule it by opening an application menu
+    // instead.
     expect(event.stopPropagation).toHaveBeenCalledOnce();
 
     intersectsNode.mockReturnValue(false);

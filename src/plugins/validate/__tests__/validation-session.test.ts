@@ -1,17 +1,7 @@
-/**
- * The validation session's authority is the base envelope, and nothing the
- * user approved (`docs/design/plugin-hostapi-protocol.md` §9.7, S1).
- *
- * The validator has no user approvals to consult and must not read the user's
- * settings. So a plugin that declares a `userChosenDirectory` grant is
- * validated with its own root and data directory only — even on a machine
- * whose `settings.json` approves the very directory the grant names — and a
- * delegated worker that asks for that directory is refused by the same check
- * production applies.
- */
+/** Validation grants only the base envelope, never saved user approvals; delegated workers face the same bound. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-/** Every read of the user's permission settings; the validator makes none. */
+/** Validation must not read user permission settings. */
 const settingsReads = vi.hoisted(() => ({ count: 0 }));
 vi.mock("../../../permissions/permission-settings-store.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../permissions/permission-settings-store.js")>();
@@ -74,7 +64,6 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-/** A child written by hand: it answers construct, and the case speaks for it after. */
 function scriptedChild(): { link: ChildLink; sent: Frame[]; send: (frame: Frame) => void } {
   const hostToChild = new PassThrough();
   const childToHost = new PassThrough();
@@ -123,8 +112,7 @@ describe("the validation session's authority", () => {
     );
     const pluginRoot = join(root, "plugin");
     const pluginDataDir = join(pluginRoot, "data");
-    // The grant's config key names the approved directory, so a derivation
-    // that consulted the grant would admit it.
+    // The configured key is valid so an accidental saved-grant read would actually widen admission.
     const host = createValidationHost({
       "config.get": (key: string) => (key === "workspace" ? approved : undefined),
     });

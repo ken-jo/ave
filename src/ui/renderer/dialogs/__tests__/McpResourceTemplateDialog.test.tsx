@@ -63,8 +63,8 @@ describe("McpResourceTemplateDialog", () => {
   });
 
   it("treats whitespace as unfilled", () => {
-    // Main trims and then refuses an empty value, so a form that let spaces through
-    // would offer a submit button whose only outcome is a failure toast.
+    // Main trims and then refuses an empty value, so a form that let spaces through would offer a submit button whose only
+    // outcome is a failure toast.
     render(<McpResourceTemplateDialog onCancel={vi.fn()} onSubmit={vi.fn()} pending={pending()} />);
     fireEvent.change(screen.getByTestId("mcp-resource-template-input-path"), {
       target: { value: "   " },
@@ -168,8 +168,8 @@ describe("McpResourceTemplateDialog", () => {
   });
 
   it("strips invisible and reordering characters from the server's label", () => {
-    // The same treatment the picker row gets. A right-to-left override in a title can
-    // make the dialog appear to be asking about a different resource entirely.
+    // The same treatment the picker row gets. A right-to-left override in a title can make the dialog appear to be asking
+    // about a different resource entirely.
     const rtlOverride = String.fromCodePoint(0x202e);
     render(
       <McpResourceTemplateDialog

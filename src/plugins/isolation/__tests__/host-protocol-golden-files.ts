@@ -1,18 +1,8 @@
-/**
- * The golden files a recording wrote, as the conformance suites walk them.
- *
- * Shared by `host-protocol-golden.test.ts`, which writes the recordings, and
- * `host-protocol-schema-parity.test.ts`, which reads them back — so the reader
- * walks the same files the recorder wrote.
- */
+/** Share golden-file enumeration between recorders and schema readers. */
 import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 
-/**
- * Every golden file under `dir`, relative to it and `/`-separated on every
- * platform: the names are built from segments rather than by `relative`, which
- * answers with `\` on Windows.
- */
+/** Build POSIX-separated names from segments so Windows separators cannot change golden paths. */
 export function goldenFiles(dir: string): string[] {
   const out: string[] = [];
   const walk = (current: string, prefix: string): void => {

@@ -1,16 +1,4 @@
-/**
- * Error codes of the git marketplace (design §14, §18.8).
- *
- * Every failure the marketplace reports to the renderer carries one of these
- * codes; the renderer maps a code to its `gitMarketplace.*` sentence. A
- * failure without a code is a bug, not a user-facing state, so nothing here
- * has an "unknown" member.
- *
- * A failure may also carry a `detail`: why it happened and the values its
- * sentence names (host, ref, rule …). The reasons a code can carry are the
- * keys of {@link MARKETPLACE_ERROR_DETAIL_FIELDS}; a failure without a detail
- * renders its code's reason-less sentence.
- */
+/** Renderer failures use stable codes and validated details; uncoded failures are bugs. */
 import { CREDENTIAL_ISSUERS, scrubDiagnosticSecrets, type CredentialIssuer } from "../shared/dlp.js";
 import type { SourceWarningView } from "./sources/warnings.js";
 
@@ -54,25 +42,11 @@ export const MARKETPLACE_ERROR_CODES = [
 
 export type MarketplaceErrorCode = (typeof MARKETPLACE_ERROR_CODES)[number];
 
-/**
- * A detail field's type. Every string in a detail, an identifier as much as
- * a person's or a remote's text, is scrubbed wherever a detail leaves main or
- * is stored ({@link scrubMarketplaceStrings}): a grammar that admits a name
- * admits a token of the same shape, so no field is exempt. The scrubber
- * matches token shapes, not prefixes alone, so real names pass unchanged.
- */
-/** `credential-issuer`: one of {@link CREDENTIAL_ISSUERS}, the issuer a reserved prefix looks like (§18.8). */
+/** Scrub all detail strings, including identifiers, at storage and renderer boundaries. */
 type DetailFieldKind = "string" | "number" | "string[]" | "credential-issuer";
 
-/**
- * The reasons each code can carry, and the fields of each reason's detail
- * with their types. A detail is checked against this table wherever it
- * crosses a boundary (the IPC envelope, a source's `state.json`), so a reason
- * the code does not have, or a field of the wrong type, never reaches a
- * sentence.
- */
+/** Validate boundary details against each code reason and its allowed field types. */
 export const MARKETPLACE_ERROR_DETAIL_FIELDS = {
-  /** The install phase that failed (§9.2); `installing` is the final move into place. */
   GIT_RUNTIME_INSTALL_FAILED: {
     checking: {},
     downloading: {},
@@ -81,20 +55,7 @@ export const MARKETPLACE_ERROR_DETAIL_FIELDS = {
     "smoke-testing": {},
     installing: {},
   },
-  /**
-   * The address refusals of §18.3 #1–4 and #7: a `<helper>::` transport, a
-   * credential in the address, a metadata or unroutable address (entered or
-   * named by a catalog, on the address the connection would use), a
-   * catalog download to another service on this computer, and a folder in a
-   * deep link. None has a confirmation.
-   *
-   * The folder forms Ave cannot read (§18.3, §18.4.1 stage 1), each with
-   * what to enter instead: a relative path (`./x`, `C:foo`, `~user`), a
-   * Windows device path, a drive or UNC path on macOS or Linux, a `file:`
-   * URL naming another computer there, a UNC path without its share, a `..`
-   * that climbs above the drive, share or `/`, and a branch, folder field or
-   * sign-in given with a folder, which has none of them.
-   */
+  /** Unsafe addresses and unsupported folder forms are rejected without a confirmation override. */
   SOURCE_URL_REJECTED: {
     "credentials-in-url": {},
     "helper-transport": { scheme: "string" },
@@ -113,30 +74,15 @@ export const MARKETPLACE_ERROR_DETAIL_FIELDS = {
     "unc-credentials": {},
     "outside-root": {},
     "folder-options": {},
-    /** A *Choose folder…* selection main no longer holds (replaced, used for an add, or too old) or never made (§18.9). */
     "folder-pick-unknown": {},
   },
-  /**
-   * An id the user entered that has a credential's shape (§18.8): the
-   * renderer only ever sees it masked, so it could never be named again.
-   * `reserved-prefix`: it holds a credential format's prefix at a boundary
-   * (`glpat-…`), named with the issuer it looks like so the user knows what
-   * to change; `holds-credential`: a shape with no prefix to name.
-   * `stored-id-holds-credential`: a source an earlier build stored under
-   * such an id, named by its row's handle for anything but Remove.
-   */
+  /** Credential-shaped ids cannot be safely round-tripped; stored legacy ids use removal-only handles. */
   SOURCE_ID_INVALID: {
     "reserved-prefix": { prefix: "string", issuer: "credential-issuer" },
     "holds-credential": {},
     "stored-id-holds-credential": {},
   },
-  /**
-   * A package whose name, version or component name has a credential's
-   * shape (§18.8): `*-reserved-prefix` when it holds a credential format's
-   * prefix, named with its issuer, `*-holds-credential` for a shape with no
-   * prefix to name. A marketplace drops such a package with a diagnostic; a
-   * direct package, which is the whole source, fails with this reason.
-   */
+  /** Drop credential-shaped package identifiers with diagnostics; direct packages fail the whole source. */
   SOURCE_INDEX_INVALID: {
     "name-reserved-prefix": { prefix: "string", issuer: "credential-issuer" },
     "version-reserved-prefix": { prefix: "string", issuer: "credential-issuer" },
@@ -150,36 +96,25 @@ export const MARKETPLACE_ERROR_DETAIL_FIELDS = {
     "not-in-allow-list": { target: "string", policyPath: "string" },
     "https-required": { target: "string", policyPath: "string" },
     "private-network-blocked": { target: "string", address: "string", policyPath: "string" },
-    /** `allowLocalSources: false`: no folder is a source or a direct install (§18.6). */
     "local-sources-blocked": { target: "string", policyPath: "string" },
-    /** `allowDirectInstall: false`: packages install from marketplaces only (§12). */
     "direct-install-blocked": { target: "string", policyPath: "string" },
     "policy-invalid": { error: "string" },
   },
-  /**
-   * A target needs a confirmation the source does not hold (§18.2, §18.5):
-   * the reason is the warning, with the host (and the address it resolved
-   * to) or, for `internal-downloads`, the source whose catalog named the host.
-   */
+  /** Confirmation reasons name the target or catalog source requiring consent. */
   SOURCE_CONFIRMATION_REQUIRED: {
     unencrypted: { host: "string" },
     "token-unencrypted": { host: "string" },
     "internal-network": { host: "string", address: "string" },
     "this-computer": { host: "string", address: "string" },
     "internal-downloads": { source: "string", host: "string" },
-    /** A folder on another computer (§18.4.1 stage 2): the server, empty when the drive's mapping names none, and the folder. */
     "network-folder": { server: "string", path: "string" },
-    /** Updates from this plain-http source would install by themselves (§18.7.2): the source, by its label. */
     "unencrypted-updates": { source: "string" },
   },
-  /**
-   * `token-no-access`: the host answered "repository not found" after Ave
-   * offered the stored token, so the token may not reach the repository.
-   */
+  /** Repository-not-found after offering a token may mean that token lacks access. */
   SOURCE_AUTH_REQUIRED: {
     token: { host: "string" },
     "token-no-access": { host: "string" },
-    /** The host wants sign-in over plain http, and the source does not hold `token-unencrypted` (§18.2.2). */
+    /** Plain HTTP sign-in requires token-unencrypted consent. */
     "token-unencrypted": { host: "string" },
     ssh: { host: "string" },
   },
@@ -190,11 +125,7 @@ export const MARKETPLACE_ERROR_DETAIL_FIELDS = {
   SOURCE_REF_NOT_FOUND: {
     missing: { ref: "string", repository: "string", available: "string[]" },
   },
-  /**
-   * `not-found` and `not-found-ssh`: the host answered "repository not
-   * found" without a token from Ave. Hosts give that answer for a private
-   * repository too, so neither says which it is.
-   */
+  /** Without a token, repository-not-found does not distinguish private from missing. */
   SOURCE_UNREACHABLE: {
     offline: {},
     dns: { host: "string" },
@@ -206,15 +137,7 @@ export const MARKETPLACE_ERROR_DETAIL_FIELDS = {
     "not-found": { host: "string" },
     "not-found-ssh": { host: "string" },
   },
-  /**
-   * The source's downloaded copy under `marketplaces/<id>` (§2.1) cannot be
-   * used; Repair moves it aside and syncs the source again. The `state-*`
-   * reasons lost the pin, so Repair trusts the history the source serves
-   * then; `snapshot-*` and `repository-damaged` keep it. `repair-failed` is
-   * moving the copy aside failing with a pin kept, `repair-failed-unpinned`
-   * the same without a pin to keep, `repair-write-failed` writing the kept
-   * pin back; none loses a readable pin.
-   */
+  /** Repair preserves readable pins; state-loss repairs must trust the source current history. */
   SOURCE_LOCAL_DATA_DAMAGED: {
     "state-missing": { sourceId: "string" },
     "state-invalid": { sourceId: "string" },
@@ -226,32 +149,13 @@ export const MARKETPLACE_ERROR_DETAIL_FIELDS = {
     "repair-failed-unpinned": { sourceId: "string" },
     "repair-write-failed": { sourceId: "string" },
   },
-  /**
-   * `marketplaces/sources.json`, the list of sources the user added, cannot
-   * be read (`fsCode` is the fs error's code) or is not in the format Ave
-   * writes; the registry changes no source until it is fixed or deleted.
-   * No repair: the file is the user's data.
-   */
+  /** Unreadable user registry data blocks mutations; repair must never silently replace it. */
   SOURCE_LIST_UNREADABLE: {
     unreadable: { fsCode: "string" },
     invalid: {},
   },
-  /**
-   * A folder source, or a folder being added, cannot be read (§18.4): gone
-   * (`not-found`), refused by the system (`permission`, `io`, with the
-   * system's message), now pointing elsewhere than the folder that was
-   * added (`moved`), not a folder, spelled ambiguously on a case-sensitive
-   * volume, or changed while it was read. The last good snapshot stays
-   * served, and the next read tries again.
-   */
-  /**
-   * A repository that is already a source under any spelling of its address
-   * (`url` is the address being added, normalized), or a folder that
-   * overlaps a folder source (§18.4.4): the same directory, one inside it,
-   * or one containing it, by path or through an alias. A new id cannot
-   * resolve these; the sentence says which source and what to do. A taken
-   * id alone has no detail: choosing another id resolves it.
-   */
+  /** Failed folder reads keep serving the last good snapshot and retry on the next read. */
+  /** Address aliases and overlapping folders remain duplicates even under a new source id. */
   SOURCE_ID_TAKEN: {
     "repository-already-added": { url: "string", existingId: "string" },
     "folder-already-added": { path: "string", existingId: "string" },
@@ -266,15 +170,10 @@ export const MARKETPLACE_ERROR_DETAIL_FIELDS = {
     "not-a-directory": { path: "string" },
     "ambiguous-case": { path: "string" },
     "changed-during-read": { path: "string" },
-    /** The Windows folder classifier is missing or broken (§18.4.1 stage 2): Ave cannot tell whether `path` is on another computer. */
+    /** Classifier failure leaves network location unknown rather than guessed. */
     "classifier-unavailable": { path: "string" },
   },
-  /**
-   * A folder's file breaks a reading rule (§18.4.5, §5.4, §5.5): a link that
-   * leaves the folder or names another computer (never followed), a device,
-   * socket or FIFO, two names equal after NFC or ignoring case, or a limit.
-   * `path` is relative to the folder; `target` is the link's own text.
-   */
+  /** Reject escaping links, special files, normalized-name collisions and resource-limit violations. */
   CONTENT_RULE_VIOLATION: {
     "link-outside-folder": { path: "string", target: "string" },
     "link-to-network": { path: "string", target: "string" },
@@ -283,17 +182,11 @@ export const MARKETPLACE_ERROR_DETAIL_FIELDS = {
     "case-collision": { path: "string" },
     limit: { path: "string", limit: "string" },
   },
-  /** A folder plugin without a built tree (`plugin.json` and `dist/`, §18.4.2). */
+  /** Folder plugins require both plugin.json and a built dist tree. */
   NO_INSTALLABLE_ARTIFACT: {
     "folder-has-no-build": { name: "string" },
   },
-  /**
-   * `policy-changed`: the plan was made under another managed policy (§18.6).
-   * `package-changed`: an approval of an installed package's components named
-   * a generation, or digests, that are no longer installed (§18.7.5); or a
-   * plan's package is no longer installed as it was when the plan was made
-   * (§18.6).
-   */
+  /** Policy or installed-generation changes expire reviews, including component digest mismatches. */
   PLAN_EXPIRED: {
     "policy-changed": {},
     "package-changed": {},
@@ -311,10 +204,8 @@ type DetailOf<C extends keyof DetailFields> = {
   [R in keyof DetailFields[C]]: { reason: R } & { -readonly [F in keyof DetailFields[C][R]]: FieldValue<DetailFields[C][R][F]> };
 }[keyof DetailFields[C]];
 
-/** The detail a failure with code `C` may carry; `never` for a code without reasons. */
 export type MarketplaceErrorDetail<C extends MarketplaceErrorCode = MarketplaceErrorCode> = C extends keyof DetailFields ? DetailOf<C> : never;
 
-/** Every code that has reasons, paired with each of its reasons. */
 export const MARKETPLACE_ERROR_REASONS: ReadonlyArray<readonly [MarketplaceErrorCode, string]> = Object.entries(MARKETPLACE_ERROR_DETAIL_FIELDS).flatMap(
   ([code, reasons]) => Object.keys(reasons).map((reason) => [code as MarketplaceErrorCode, reason] as const),
 );
@@ -326,12 +217,7 @@ function fieldMatches(value: unknown, kind: DetailFieldKind): boolean {
   return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
 
-/**
- * `value` as the detail of a failure with `code`, or undefined when it is not
- * one: a code without reasons, a reason of another code, or a field that is
- * missing, extra or of the wrong type. The caller keeps the code and drops
- * the detail.
- */
+/** Invalid reason or detail fields are dropped while the failure code is retained. */
 export function parseMarketplaceErrorDetail<C extends MarketplaceErrorCode>(code: C, value: unknown): MarketplaceErrorDetail<C> | undefined;
 export function parseMarketplaceErrorDetail(code: string, value: unknown): MarketplaceErrorDetail | undefined;
 export function parseMarketplaceErrorDetail(code: string, value: unknown): MarketplaceErrorDetail | undefined {
@@ -349,13 +235,7 @@ export function parseMarketplaceErrorDetail(code: string, value: unknown): Marke
   return { ...record } as MarketplaceErrorDetail;
 }
 
-/**
- * `value` with every string in it, keys included, at any depth, scrubbed of credentials by
- * the one diagnostic scrubber (`scrubDiagnosticSecrets`). Main calls it on
- * everything the marketplace hands the renderer (each request's answer, each
- * broadcast, each failure's detail) and on a detail before it is stored, so
- * no string crosses unscrubbed and the renderer never scrubs.
- */
+/** Scrub every nested string and key before storage or renderer egress. */
 export function scrubMarketplaceStrings<T>(value: T): T {
   if (typeof value === "string") return scrubDiagnosticSecrets(value) as T;
   if (Array.isArray(value)) return value.map((item: unknown) => scrubMarketplaceStrings(item)) as T;
@@ -373,7 +253,6 @@ export function scrubMarketplaceStrings<T>(value: T): T {
   return value;
 }
 
-/** `detail`, checked to belong to `code`, with every string scrubbed ({@link scrubMarketplaceStrings}). */
 export function scrubMarketplaceErrorDetail<D extends MarketplaceErrorDetail>(code: MarketplaceErrorCode, detail: D): D {
   if (parseMarketplaceErrorDetail(code, detail) === undefined) throw new TypeError(`${JSON.stringify(detail)} is not a detail of ${code}`);
   return scrubMarketplaceStrings(detail);
@@ -397,18 +276,10 @@ export class MarketplaceError extends Error {
   }
 }
 
-/**
- * A warning an entered target (a source's own address) can need;
- * `internal-downloads` is about other hosts a catalog names, and
- * `unencrypted-updates` about turning automatic updates on.
- */
+/** Entered-target warnings exclude catalog downloads and enabling plaintext automatic updates. */
 export type EnteredTargetWarningView = SourceWarningView & { warning: Exclude<SourceWarningView["warning"], "internal-downloads" | "unencrypted-updates"> };
 
-/**
- * SOURCE_CONFIRMATION_REQUIRED for a source's own address, with every warning
- * it needs, so one confirmation step asks for all of them; `detail` is the
- * first.
- */
+/** Include all required target warnings in one confirmation; detail carries the first. */
 export class ConfirmationRequiredError extends MarketplaceError {
   constructor(
     message: string,
@@ -422,7 +293,6 @@ export class ConfirmationRequiredError extends MarketplaceError {
   }
 }
 
-/** The detail of one entered-target warning: the fields its sentence names. */
 function confirmationDetail(view: EnteredTargetWarningView): MarketplaceErrorDetail<"SOURCE_CONFIRMATION_REQUIRED"> {
   const host = view.host ?? "";
   switch (view.warning) {

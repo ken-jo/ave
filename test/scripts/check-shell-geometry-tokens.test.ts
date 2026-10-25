@@ -4,17 +4,7 @@ import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { runGateScript, writeFixtureFile as write } from "./gate-script-runner.js";
 
-/**
- * The gate exists to catch drift between the `:root` pixel tokens in
- * styles.css and their TypeScript mirrors in shared/shell-geometry.ts. A gate
- * that cannot fail is worse than no gate — it reports OK forever — so each
- * test here drives a fixture tree that is wrong in one specific way and
- * asserts the script says so.
- *
- * The commented-out cases are regressions, not hypotheticals: the first
- * version of this gate matched inside `/* … *\/`, so commenting a token out
- * read as OK and a historical value in a docstring read as a mismatch.
- */
+// Negative fixtures cover comment stripping and aliased geometry tokens.
 const SCRIPT = resolve(process.cwd(), "scripts/check-shell-geometry-tokens.mjs");
 const roots: string[] = [];
 
@@ -102,7 +92,6 @@ describe("check-shell-geometry-tokens", () => {
     expect(result.stderr).toContain("cannot read a mirror side");
   });
 
-  // ── comments are not declarations ────────────────────────────────────────
   it("does not accept a commented-out token as a live declaration", () => {
     const commented = css("8px", "4px").replace("--chrome-gap: 8px;", "/* --chrome-gap: 8px; */");
     const result = runGateScript(SCRIPT, createRoot(commented, ts("8", "4")));
@@ -128,7 +117,6 @@ describe("check-shell-geometry-tokens", () => {
     expect(result.stdout).toContain("[shell-geometry-tokens] OK pairs=6");
   });
 
-  // ── one level of var() alias ─────────────────────────────────────────────
   it("resolves a token written as a var() alias", () => {
     const result = runGateScript(SCRIPT, createRoot(css("8px", "4px", "var(--chrome-gap)"), ts("8", "4")));
 
@@ -151,7 +139,6 @@ describe("check-shell-geometry-tokens", () => {
     expect(result.stderr).toContain("aliases --nope, which does not resolve");
   });
 
-  // ── value shapes ─────────────────────────────────────────────────────────
   it("reads through !important and a missing final semicolon", () => {
     const awkward = ":root{\n  --chrome-gap-tight: 4px;\n  --shell-card-inset: var(--chrome-gap);\n  --shell-collapsed-rail-reserve: 64px;\n  --chrome-icon-button: 24px;\n  --chrome-gap-hair: 2px;\n  --chrome-gap: 8px !important\n}\n";
     const result = runGateScript(SCRIPT, createRoot(awkward, ts("8", "4")));

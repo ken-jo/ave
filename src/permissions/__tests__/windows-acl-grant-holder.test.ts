@@ -1,13 +1,4 @@
-/**
- * The holder-PID grant a confined Windows process holds for its lifetime, and
- * the rule that keeps a plugin's grant to its own directories.
- *
- * The ACL itself is not made here — `grantWindowsWorkerFilesystemAccess` is
- * recorded — so these cases pin the lifecycle: the grant names the holder's
- * pid, a failure revokes what was granted and stops the holder, release is
- * idempotent, and a holder that dies is reported. Whether srt-win's ACEs then
- * admit the `srt-sandbox` account is measured on a provisioned Windows host.
- */
+// Holder grants must name the holder PID, revoke on failure, report holder death and release idempotently. This suite records grant operations; native ACL admission needs a provisioned host.
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { mkdtempSync, rmSync } from "node:fs";

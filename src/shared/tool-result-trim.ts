@@ -1,47 +1,15 @@
-/**
- * Tool-result generic size cap — measurement only.
- *
- * Returns `truncated` info when a single tool_result content exceeds the
- * cap; otherwise returns the input unchanged. Used by
- * `ConversationHistory.append`/`.restore` to *mark* over-cap tool_result
- * messages with `meta.truncated`; provider sends use
- * `wire-serialize.prepareMarkedToolResultsForWire`, while session saves use
- * `MemoryManager.saveSession` to write a short JSONL stub plus a
- * file-backed artifact. In-memory content stays raw verbatim for UI,
- * inspection, offset reads, and literal search. Provider serialization
- * includes only a bounded head/tail preview and recovery instructions.
- */
+/** Measure and mark oversized results without changing in-memory content; wire serialization bounds previews and session saves use stubs plus artifacts. */
 
 import { estimateTokens } from "./token-estimate.js";
 
-/**
- * Single tool_result above this line count is capped. 100 lines comfortably
- * passes normal `ls -la`, `git status`, `git log -50` while catching the
- * thousands-of-lines payloads (`index_documents` returning a full corpus).
- */
 export const MAX_TOOL_RESULT_LINES = 100;
 
-/**
- * Single tool_result above this token count is capped. 2K tokens is roughly
- * 8KB of English / 5KB of Korean — enough head for the model to reason
- * about the result, but well below the 6K-token per-result smell threshold
- * for small-tier models (nano = 200K TPM Tier 1).
- */
 export const MAX_TOOL_RESULT_TOKENS = 2_000;
 
-/**
- * Hard byte ceiling — content above this size short-circuits the exact
- * line/token scan and is treated as oversized verbatim. Defends against
- * an adversarial plugin returning a 100MB+ payload that would otherwise
- * cost O(N) scans inside the host's event loop. Set well above any
- * realistic legitimate tool output (50MB ≈ a full PDF text dump).
- */
+/** Skip exact scans above the byte ceiling so adversarial payloads cannot monopolize the event loop. */
 export const HARD_BYTES_CEILING = 50_000_000;
 
-/**
- * Result of a trim measurement — `truncated` is undefined when the input
- * is within the cap (caller skips meta marking).
- */
+/** Undefined truncated means no metadata marking is needed. */
 export interface TrimmedToolResult {
   truncated?: {
     originalLines: number;
@@ -51,15 +19,8 @@ export interface TrimmedToolResult {
   };
 }
 
-/**
- * Measure a single tool_result content string against the cap. Pure: depends
- * only on inputs, no IO. Returns `{ truncated: undefined }` when the cap
- * is not exceeded (caller can short-circuit meta marking + allocation).
- */
 export function trimOversizedToolResult(content: string): TrimmedToolResult {
-  // Hard ceiling — skip exact scan for adversarial-sized payloads. We
-  // still need *some* count to fill the marker, so use a sentinel:
-  // `originalLines = -1` signals "scan skipped due to hard ceiling".
+  // Use originalLines:-1 to signal that the hard byte ceiling skipped exact scanning.
   if (content.length > HARD_BYTES_CEILING) {
     return {
       truncated: {
@@ -95,7 +56,6 @@ export function trimOversizedToolResult(content: string): TrimmedToolResult {
   };
 }
 
-/** Number of lines in `s`: newline count plus one, and zero for the empty string. */
 export function countLines(s: string): number {
   if (s.length === 0) return 0;
   let count = 1;

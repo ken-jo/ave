@@ -1,12 +1,4 @@
-/**
- * Host-renderer-only IPC for the Tailnet observer configuration.
- *
- * The renderer proposes a configuration; the host validates and persists it.
- * `apply` decides whether a listener comes up at all, which capability key
- * authorizes it, and whether remote control and the web surface are in scope,
- * so it carries the same live-keyboard-intent requirement as a share and never
- * routes through the renderer-writable settings store.
- */
+// Observer configuration and apply require local host authority; the host validates and persists all proposals.
 import { ipcMain } from "electron";
 import { CHANNELS } from "../../contract/app-contract.js";
 import { hasUserKeyboardIntentPayload, USER_KEYBOARD_REQUIRED } from "../../shared/chat-origin.js";
@@ -31,14 +23,7 @@ const UNAVAILABLE = Object.freeze({
   error: "tailnet-observer-unavailable" as const,
 });
 
-/**
- * The resolver's own kebab-case codes reach the renderer verbatim.
- *
- * That is the point of the surface: "why is my observer not up" was previously
- * answerable only from a main-process log. Every one of these codes is a
- * classification of the user's own proposal — no path, host, or credential
- * appears in any of them.
- */
+// Preserve stable resolver codes so the renderer can explain listener unavailability.
 function rejection(err: unknown): { ok: false; error: string } {
   const code = err instanceof Error ? err.message : "";
   return Object.freeze({
@@ -81,10 +66,7 @@ export function registerTailnetObserverHandlers(deps: IpcDeps): void {
     }
   });
 
-  // The port and the binary come from the host's own runtime state and probe,
-  // never from the payload: this route runs a command, and a caller-supplied
-  // target is the difference between "put my listener behind Serve" and
-  // "publish whatever port I name".
+  // Derive executable and port from host probes; renderer targets must never publish arbitrary listeners.
   ipcMain.handle(CHANNELS.tailnetObserver.configureServe, async (event, payload: unknown) => {
     if (!validateHostRendererSender(event)) {
       auditUnauthorized(deps.auditLogger, CHANNELS.tailnetObserver.configureServe, event);
@@ -99,10 +81,7 @@ export function registerTailnetObserverHandlers(deps: IpcDeps): void {
     }
   });
 
-  // One press stands in for a whole `apply` plus the Serve run, so it is gated
-  // like both. Nothing about the configuration comes from the payload: the host
-  // reads the environment and chooses the port itself, which is why this route
-  // can exist without widening what a renderer is allowed to propose.
+  // Quick setup requires both apply and command authority and derives all configuration in the host.
   ipcMain.handle(CHANNELS.tailnetObserver.guidedSetup, async (event, payload: unknown) => {
     if (!validateHostRendererSender(event)) {
       auditUnauthorized(deps.auditLogger, CHANNELS.tailnetObserver.guidedSetup, event);
@@ -117,9 +96,7 @@ export function registerTailnetObserverHandlers(deps: IpcDeps): void {
     }
   });
 
-  // The payload is one boolean and nothing else. Which account this admits is
-  // read from this desktop's own Tailscale probe, so a renderer can never
-  // assert that some other login is the owner's own device.
+  // Accept only the boolean choice; derive own-account identity from the desktop probe.
   ipcMain.handle(CHANNELS.tailnetObserver.setOwnDeviceAdmission, async (event, payload: unknown) => {
     if (!validateHostRendererSender(event)) {
       auditUnauthorized(deps.auditLogger, CHANNELS.tailnetObserver.setOwnDeviceAdmission, event);

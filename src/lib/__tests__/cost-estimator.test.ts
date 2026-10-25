@@ -38,7 +38,6 @@ describe("cost-estimator", () => {
 
   it("formatCostBadge renders reasonable strings", () => {
     expect(formatCostBadge(0.001)).toMatch(/^~\$/);
-    // Digits come from the shared `formatCost`; only the `~` is this badge's.
     expect(formatCostBadge(0.05)).toBe("~$0.050");
     expect(formatCostBadge(1.5)).toBe("~$1.50");
   });

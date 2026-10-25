@@ -353,10 +353,8 @@ async function removeTransactionStaged(paths: PluginPaths, journal: RemovalTrans
     await assertOwnedTransactionDirectory(paths, journal.transactionId);
     await removePluginTreeNowOrAtBoot(mapping.stagedPath, paths.pluginsRoot, removeOwnedPluginTree);
   }
-  // What remains is the host's own journal and the emptied staged/ directory.
   await rm(transactionDir(paths, journal.transactionId), { recursive: true, force: true });
 }
-
 
 async function restoreTransactionStaged(
   paths: PluginPaths,

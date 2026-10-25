@@ -4,9 +4,6 @@ import { readRepoFile } from "./test-helpers.js";
 
 describe("chat Thinking toggle styles", () => {
   it("is the reasoning range control, with no trace of the legacy inline checkbox", () => {
-    // Thinking on/off and depth are one range control (level 0 = off) in the
-    // composer's model card; the inline checkbox it replaced styled itself
-    // with hand-rolled `thinking-toggle-*` classes and a hard-coded white.
     const component = readRepoFile("src/ui/renderer/components/ReasoningSlider.tsx");
     const styles = readRepoFile("src/styles.css");
 
@@ -22,11 +19,7 @@ describe("chat Thinking toggle styles", () => {
   });
 
   it("defines one fill token per depth rung", () => {
-    // The gauge reads `var(--reasoning-fill-N)` for the level it is drawing.
-    // An undefined custom property is not an error: the fill resolves to
-    // nothing and the bulb renders unlit, which is the same picture as
-    // thinking being OFF. Check the complete preset ladder, including depths
-    // hidden by the default output ceiling, against the actual stylesheet.
+    // Check the full reasoning-color ladder; missing variables silently render enabled levels as off.
     const rungs = getLlmThinkingBudgetRungs(Number.MAX_SAFE_INTEGER);
     const styles = readRepoFile("src/styles.css");
 
@@ -36,9 +29,7 @@ describe("chat Thinking toggle styles", () => {
   });
 
   it("keeps the depth ramp inside the yellow window it documents", () => {
-    // The ramp's own comment says a step past hue 42 lands in orange, which is
-    // what `--warning` means elsewhere. Every used colour must stay in that
-    // window, so assert its hue rather than its lightness.
+    // Keep reasoning hues within their semantic range so they do not resemble warnings.
     const styles = readRepoFile("src/styles.css");
     const ramp = Array.from(styles.matchAll(/--reasoning-fill-\d+:\s*hsl\(var\((--p-yellow-\d+)\)\);/gu), (match) => {
       const m = styles.match(new RegExp(`${match[1]}:\\s*(\\d+)`, "u"));

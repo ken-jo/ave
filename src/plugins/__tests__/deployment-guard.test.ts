@@ -7,11 +7,7 @@ import type { PackageKey } from "../../marketplace/sources/policy.js";
 import { assertDisableAllowed, PluginDeploymentDeniedError, PluginDeploymentGuard } from "../deployment-guard.js";
 import { agentPluginsDocument, writeTestPluginRegistry, type TestRegistryEntry } from "./test-helpers.js";
 
-/**
- * Only the machine policy's `requiredInstalls` locks a plugin (design §10.1,
- * §10.2): an entry naming the plugin and the source it is bound to. No
- * manifest field and no registry `installSource` protects one.
- */
+/** Only machine-policy requiredInstalls can lock a plugin to its bound source. */
 describe("PluginDeploymentGuard", () => {
   let testDir: string;
   let registryPath: string;

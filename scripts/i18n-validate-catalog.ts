@@ -1,10 +1,4 @@
-/**
- * Build-time i18n catalog validation.
- *
- * Lazy generated locale chunks must still be complete before a build ships.
- * This script eagerly loads every supported catalog and fails on key drift
- * or placeholder/tag/slash-command drift.
- */
+// Eagerly validate lazy catalogs before shipping: keys, placeholders, tags and slash commands must agree.
 import { SUPPORTED_LOCALES } from "../src/i18n/locale.js";
 import { loadAllLocaleMessages } from "../src/i18n/messages/index.js";
 

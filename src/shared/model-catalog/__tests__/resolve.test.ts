@@ -36,7 +36,6 @@ describe("resolveCatalogKey", () => {
   });
 
   it("strips a month-day snapshot suffix (-MMDD) too", () => {
-    // OpenAI names snapshots gpt-3.5-turbo-0125 and gpt-4-0613; DeepSeek and Kimi do the same.
     const models = catalog({ openai: [entry("modelone")] });
     for (const suffix of ["0125", "1106", "0613", "0101", "1231"]) {
       expect(resolveCatalogKey(models, "openai", `modelone-${suffix}`)).toMatchObject({ id: "modelone", match: "date-suffix" });

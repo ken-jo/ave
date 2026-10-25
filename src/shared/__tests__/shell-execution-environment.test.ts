@@ -36,6 +36,17 @@ describe("shell execution environment", () => {
     expect(shellExecutionEnvironmentLines(fallback)).not.toContain(t("shellExecution.temporaryHome"));
   });
 
+  it("warns that a requested sandbox is unavailable, and only then", () => {
+    const fallback = buildHostShellExecutionPlan({
+      platform: "linux", requestedSandbox: true,
+      activeCapability: { reason: "Fixture sandbox unavailable", kind: "none", confidence: "verified", platform: "linux" },
+    });
+    expect(shellExecutionEnvironmentLines(fallback)[0]).toBe(t("shellExecution.sandboxUnavailable"));
+    expect(shellExecutionEnvironmentPrompt(fallback, true)).toContain(t("shellExecution.sandboxUnavailable"));
+    expect(shellExecutionEnvironmentLines(plan(false))).not.toContain(t("shellExecution.sandboxUnavailable"));
+    expect(shellExecutionEnvironmentLines(plan(true))).not.toContain(t("shellExecution.sandboxUnavailable"));
+  });
+
   it("does not promise an interactive approval surface to a headless turn", () => {
     const prompt = shellExecutionEnvironmentPrompt(plan(true), false);
     expect(prompt).toContain(t("shellExecution.noInteractiveApproval"));
@@ -51,5 +62,23 @@ describe("shell execution environment", () => {
     expect(projected).not.toContain("/private-user-home");
     expect(projected).not.toContain("private-test-value");
     expect(projected).toContain(t("shellExecution.currentUser"));
+  });
+
+  it("tells the model Bash is unavailable when shells run in Windows MXC containers, and only then", () => {
+    const mxc = buildHostShellExecutionPlan({
+      platform: "win32",
+      requestedSandbox: true,
+      shellSubstrate: "mxc",
+      activeCapability: {
+        reason: "Fixture MXC",
+        kind: "asrt",
+        confidence: "verified",
+        platform: "win32",
+        confines: { filesystem: true, process: true, network: true },
+      },
+    });
+    expect(shellExecutionEnvironmentPrompt(mxc, true)).toContain(t("shellExecution.mxcBashUnavailable"));
+    expect(shellExecutionEnvironmentPrompt(plan(true), true)).not.toContain(t("shellExecution.mxcBashUnavailable"));
+    expect(shellExecutionEnvironmentPrompt(plan(false), true)).not.toContain(t("shellExecution.mxcBashUnavailable"));
   });
 });

@@ -160,8 +160,7 @@ describe("main's active chat model", () => {
     expect(resolveMainActiveChatModel(settingsService)).toEqual({ kind: "none", reason: "retired-provider" });
   });
 
-  // The snapshot's answer and the transport's must agree, or the composer
-  // could name a model the next turn cannot reach (or hide one it can).
+  // Composer model selection must agree with the model the transport can reach.
   it.each<[string, "none" | "api", FakeSettingsInput]>([
     ["fresh profile", "none", {}],
     ["active vendor with a key and no model", "none", { secrets: { "llm.apiKey.openai": "sk-test" } }],

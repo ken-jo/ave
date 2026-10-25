@@ -5,13 +5,11 @@ const { join } = require("node:path");
 const { gunzipSync } = require("node:zlib");
 const { assertGraphicsRuntimeFiles } = require("./lib/graphics-runtime-files.cjs");
 const { assertSandboxRuntimeFiles } = require("./lib/sandbox-runtime-files.cjs");
+const { assertSrtWinVendor } = require("./lib/srt-win-integrity.cjs");
 const { assertImageRuntimeFiles } = require("./lib/image-runtime-files.cjs");
 const { assertRipgrepRuntimeFiles, RIPGREP_LICENSE_NOTICES } = require("./lib/ripgrep-runtime-files.cjs");
 
-// electron-builder's `context.arch` is the numeric Arch enum (1=x64, 3=arm64).
-// Native packages name their per-target artifacts by platform+arch (node-pty:
-// `prebuilds/win32-x64/`, better-sqlite3: `prebuilds/win32-x64.node`), so every
-// packaged-native assert below maps the enum through this one table.
+// Map the packager's numeric architecture enum to native artifact directory names.
 const ARCH_DIR_BY_ENUM = { 1: "x64", 3: "arm64" };
 
 function electronResourcesDir(context) {
@@ -77,33 +75,8 @@ function sha256Hex(buffer) {
   return createHash("sha256").update(buffer).digest("hex");
 }
 
-/**
- * Per-platform sandbox-runtime (ASRT) vendor binary prune + assertion.
- *
- * The top-level `asarUnpack: vendor/**` glob unpacks the whole vendor dir, then
- * this afterPack prunes the binaries the platform never executes (mac → no
- * srt-win + no seccomp; linux → no srt-win; win → no seccomp).
- *
- * Why the prune lives here and NOT in per-target `build.{mac,win,linux}.files`:
- * electron-builder REPLACES (not merges) the top-level `build.files` allow-list
- * with a platform `files` array when one is present. A negation-only platform
- * `files` array therefore drops the entire positive allow-list AND every base
- * negation, so electron-builder falls back to its default glob and the whole
- * repo root + raw node_modules leak into app.asar. We delete the wrong-platform
- * vendor dirs from the already-unpacked output here instead, sidestepping that
- * replace-not-merge footgun while keeping the top-level allow-list intact.
- *
- * After pruning we assert the result is a HARD invariant of the packed artifact
- * rather than an electron-builder config detail nobody re-checks:
- *   - the KEPT binary (the one this platform's backend spawns) must be present
- *     and executable;
- *   - the PRUNED binary must be absent (no dead weight shipped per platform).
- *
- * Resolution mirrors ASRT's getSrtWinPath()/seccomp resolver: the unpacked
- * vendor dir under `app.asar.unpacked`. We do NOT call the resolvers here (they
- * run in the app process at runtime, not in the packer), so this assertion is
- * independent + fails the build loudly if the prune drifts.
- */
+// Prune vendor binaries after unpacking: per-platform file arrays replace the root allow-list.
+// Assert that target executables remain and foreign-platform binaries are absent.
 function assertSandboxVendorBinaries(context) {
   const platform = context.electronPlatformName;
   const resourcesDir = electronResourcesDir(context);
@@ -116,15 +89,7 @@ function assertSandboxVendorBinaries(context) {
     "vendor",
   );
 
-  // Per-platform: [keptSubdir, keptBinaryBasename] + [prunedSubdir...].
-  // srt-win.exe (Windows) and apply-seccomp (Linux) are vendored per-arch under
-  // {x64,arm64}; the binary the host actually runs depends on the packed arch,
-  // so we assert the binary exists under AT LEAST the packed arch dir.
-  //
-  // ARCH_DIR_BY_ENUM maps only the two arch dirs ASRT vendors; any other/unknown
-  // value falls back to scanning all vendored arch dirs (null), which still
-  // asserts the binary is present + executable without a brittle dependency on
-  // builder-util.
+  // Check the packed architecture; unknown architectures scan all vendor directories.
   const arch = ARCH_DIR_BY_ENUM[context.arch] ?? null;
   const matrix = {
     win32: { keep: { dir: "srt-win", binary: "srt-win.exe" }, prune: ["seccomp"] },
@@ -134,9 +99,6 @@ function assertSandboxVendorBinaries(context) {
   const spec = matrix[platform];
   if (!spec) return;
 
-  // Prune the wrong-platform vendor dirs. The top-level allow-list packs all
-  // vendored binaries; we delete the ones this platform never executes here
-  // (rather than via per-target `files`, which would replace the allow-list).
   for (const pruned of spec.prune) {
     const prunedDir = join(vendorDir, pruned);
     rmSync(prunedDir, { recursive: true, force: true });
@@ -148,20 +110,20 @@ function assertSandboxVendorBinaries(context) {
   }
 
   assertSandboxRuntimeFiles(vendorDir, platform);
+  if (platform === "win32") {
+    // Check every shipped image, including an architecture the host cannot execute.
+    assertSrtWinVendor(vendorDir, readdirSync(join(vendorDir, "srt-win")));
+  }
 
   if (!spec.keep) return;
 
-  // KEPT binary must be present + executable under the packed arch (and, when
-  // arch is unknown, under any vendored arch dir).
   const keepRoot = join(vendorDir, spec.keep.dir);
   if (!existsSync(keepRoot)) {
     throw new Error(
       `packaged sandbox-runtime vendor binary missing for ${platform}: ${keepRoot} (kept binary directory absent)`,
     );
   }
-  // The kept binary is vendored once per arch; only the packed arch's copy
-  // runs, and a foreign-arch ELF in a cross-built Linux installer fails
-  // scripts/verify-linux-package-arch.mjs. Drop the other arch dirs.
+  // Keep only the packed architecture; foreign executables fail package architecture audits.
   if (arch) {
     for (const archDir of readdirSync(keepRoot)) {
       if (archDir !== arch) rmSync(join(keepRoot, archDir), { recursive: true, force: true });
@@ -174,8 +136,7 @@ function assertSandboxVendorBinaries(context) {
     if (!existsSync(binPath)) continue;
     found = true;
     const mode = statSync(binPath).mode;
-    // On Windows execute permission is implicit (no POSIX x-bit); assert the
-    // file is a regular non-empty file. On POSIX assert the owner-execute bit.
+    // Windows requires a regular non-empty file; POSIX also requires owner execute permission.
     if (platform === "win32") {
       if (statSync(binPath).size === 0) {
         throw new Error(`packaged srt-win binary is empty: ${binPath}`);
@@ -197,26 +158,7 @@ function assertSandboxVendorBinaries(context) {
   }
 }
 
-/**
- * Resolve the directory the PACKAGED node-pty will dlopen from, the same way
- * node-pty itself does.
- *
- * node-pty `lib/utils.js` `loadNativeModule()` is the single authority on where
- * the binding comes from: it tries `build/Release`, then `build/Debug`, then
- * `prebuilds/<platform>-<arch>`, and takes the first one that loads. node-pty is
- * N-API (ABI-stable, `node-addon-api` dependency), so the vendor prebuild is a
- * first-class load path under Electron — not a fallback for a missing
- * per-Electron-ABI compile.
- *
- * Which entry wins is platform-shaped, and no packaging step produces
- * `build/Release` on Windows/macOS: node-pty's own `install` script
- * (`node scripts/prebuild.js || node-gyp rebuild`) compiles only where no
- * prebuild ships (Linux), and release installers run electron-builder with
- * `-c.npmRebuild=false` (`scripts/build-installers.mjs --skip-native-rebuild`).
- * Asserting `build/Release` unconditionally therefore demanded an artifact that
- * only an install-time `electron-rebuild` produced — a per-Electron-ABI compile
- * this app does not need and no longer runs.
- */
+// Resolve the binding directory in loader order; available prebuilds need no ABI-specific rebuild.
 function resolveNodePtyBindingDir(context) {
   const platform = context.electronPlatformName;
   const ptyModuleRoot = join(
@@ -246,14 +188,7 @@ function resolveNodePtyBindingDir(context) {
   return resolved;
 }
 
-/**
- * node-pty's npm package carries prebuilds for darwin-{arm64,x64} and
- * win32-{arm64,x64}; asarUnpack packs all of them. Only
- * `prebuilds/<platform>-<arch>` can ever load (it is node-pty's own last
- * search dir), so the rest are dead weight — and on Linux, where node-pty
- * ships no prebuild and loads `build/Release`, they are Mach-O/PE `.node`
- * files that the Linux arch audit rightly refuses.
- */
+// Keep only the target prebuild; platforms compiling locally must not ship foreign binaries.
 function pruneForeignNodePtyPrebuilds(context) {
   const arch = ARCH_DIR_BY_ENUM[context.arch];
   if (!arch) return;
@@ -265,15 +200,7 @@ function pruneForeignNodePtyPrebuilds(context) {
   }
 }
 
-/**
- * node-pty ships a native `.node` addon (+ a `spawn-helper` exec on macOS) that
- * the main process resolves unbundled from `app.asar.unpacked/node_modules/
- * node-pty` (the package.json `asarUnpack` glob). Assert both are present and
- * (macOS) executable so a prune regression fails the BUILD loudly instead of
- * bricking the terminal at runtime with an `ERR_DLOPEN_FAILED` / missing
- * spawn-helper. Presence + exec bit AT THE LOADER'S RESOLVED DIRECTORY is the
- * correct packaged invariant; see resolveNodePtyBindingDir above.
- */
+// Assert native addons and required helpers in the loader-resolved unpacked directory.
 function assertNodePtyBinary(context) {
   const platform = context.electronPlatformName;
   pruneForeignNodePtyPrebuilds(context);
@@ -298,16 +225,7 @@ function assertNodePtyBinary(context) {
       throw new Error(`packaged node-pty native addon is empty: ${nodeAddon}`);
     }
   }
-  // macOS ONLY: node-pty forks its `spawn-helper` to set the controlling TTY,
-  // and it MUST be present + executable there. It is NOT a POSIX-wide artifact:
-  //   - node-pty's `binding.gyp` declares the `spawn-helper` target under
-  //     `['OS=="mac"', ...]`; the `OS!="win"` branch builds only `pty`.
-  //   - `src/unix/pty.cc` reads `helperPath` but only *uses* it inside
-  //     `#if defined(__APPLE__)`; the Linux path forkpty()s directly.
-  // Asserting it for every non-Windows platform made every Linux installer
-  // build fail at afterPack (the v0.4.5 and v0.4.6 tag builds never published).
-  // Windows is covered above by the conpty.node / conpty_console_list.node
-  // addon checks — no separate helper is expected there either.
+  // Only macOS requires spawn-helper to set the controlling terminal; Linux uses forkpty directly.
   if (platform === "darwin") {
     const helper = join(ptyRoot, "spawn-helper");
     if (!existsSync(helper)) {
@@ -315,17 +233,7 @@ function assertNodePtyBinary(context) {
         `packaged node-pty spawn-helper missing for ${platform}: ${helper}`,
       );
     }
-    // The npm-shipped prebuild is mode 644. Until 6c445205 the postinstall
-    // `electron-rebuild` compiled `build/Release` and node-gyp set the exec
-    // bit there; with that removed, `prebuilds/<platform>-<arch>` is what gets
-    // packaged and nothing else makes it executable. node-pty forks this to
-    // set the controlling TTY, so a non-executable copy means every terminal
-    // fails at runtime — and it took down the v0.6.0 tag build at this
-    // assertion.
-    //
-    // Set the bit rather than only asserting it: packaging is the last step
-    // that can, and the assertion below still catches a helper that is missing
-    // or that cannot be made executable.
+    // Published prebuild helpers may lack execute permission; packaging must set it before asserting.
     try {
       chmodSync(helper, 0o755);
     } catch (err) {
@@ -343,30 +251,12 @@ function assertNodePtyBinary(context) {
   }
 }
 
-/**
- * better-sqlite3 (#1500 / E3) ships a native addon that the main process
- * resolves unbundled from `app.asar.unpacked/node_modules/better-sqlite3` (the
- * package.json `asarUnpack` glob). E3's cross-session FTS5 search index is its
- * first runtime consumer, so a prune/asarUnpack regression would brick search
- * at runtime with an `ERR_DLOPEN_FAILED` (a `.node` cannot be dlopen'd from
- * inside app.asar). Assert presence + non-empty so the BUILD fails loudly.
- *
- * better-sqlite3 13 is N-API (ABI-stable) and ships per-platform PREBUILDS at
- * `prebuilds/<platform>-<arch>.node` — one file per target it supports — rather
- * than the per-Electron-ABI `build/Release/better_sqlite3.node` that
- * `electron-rebuild` used to compile at install time (nothing does now — the
- * only remaining caller is the pre-push ABI-drift repair in
- * `scripts/hooks/run-local-checks.mjs`). Its runtime loader (lib/binding.js) picks the
- * prebuild by platform+arch, so there is no `bindings`/`file-uri-to-path`
- * resolver walk to keep unpacked anymore. Presence of THIS target's prebuild is
- * the correct packaged invariant; the other 7 prebuilds are dead weight on this
- * installer (~14 MB) and are pruned here so only the loaded one ships.
- */
+// Native database bindings must remain unpacked and match the target platform and architecture.
+// Keep only the prebuild the runtime loads.
 function assertBetterSqlite3Binary(context) {
   const platform = context.electronPlatformName;
   const win = platform === "win32";
   const platformPrefix = platform === "darwin" ? "darwin" : win ? "win32" : "linux";
-  // better-sqlite3 names its prebuilds by platform+arch (e.g. win32-x64.node).
   const arch = ARCH_DIR_BY_ENUM[context.arch];
   if (!arch) {
     throw new Error(
@@ -393,9 +283,7 @@ function assertBetterSqlite3Binary(context) {
     throw new Error(`packaged better-sqlite3 prebuild is empty: ${prebuild}`);
   }
 
-  // Prune every prebuild this target never loads. better-sqlite3 ships 8
-  // per-platform prebuilds; only `${targetFile}` is dlopen'd by the packed
-  // binary, so the other 7 (~14 MB) are dead weight on this installer.
+  // Drop prebuilds this target cannot load.
   if (existsSync(prebuildsDir)) {
     for (const entry of readdirSync(prebuildsDir)) {
       if (entry === targetFile) continue;
@@ -403,8 +291,7 @@ function assertBetterSqlite3Binary(context) {
     }
   }
 
-  // Re-assert the target survived the prune (a globbing/name drift must fail the
-  // build here, not brick search at runtime).
+  // Assert the target survived pruning.
   if (!existsSync(prebuild) || statSync(prebuild).size === 0) {
     throw new Error(`packaged better-sqlite3 prebuild was pruned away: ${prebuild}`);
   }

@@ -1,19 +1,13 @@
 import { createContext, useContext, useEffect, useState } from "react";
 import { useTranslation } from "../../../i18n/react.js";
 
-
-
-
 const SavedToastContext = createContext<(() => void) | null>(null);
 
 export const SavedToastProvider = SavedToastContext.Provider;
 
 export function useNotifySaved(): () => void {
   const cb = useContext(SavedToastContext);
-  // No-op when no provider is mounted. In dev we surface a warning so a
-  // future regression (PluginConfigTab rendered standalone, a debug panel
-  // mounting a tab outside the settings dialog) becomes loud immediately
-  // instead of silently swallowing every save toast.
+  // Without a provider saving toasts is a no-op; warn in development so mis-mounted settings do not fail silently.
   if (cb == null) {
     if (typeof process !== "undefined" && process.env?.NODE_ENV !== "production") {
       // eslint-disable-next-line no-console
@@ -27,9 +21,6 @@ export function useNotifySaved(): () => void {
   }
   return cb;
 }
-
-
-
 
 export function SavedToastFloating({ at }: { at: number | null }) {
   const { t } = useTranslation();

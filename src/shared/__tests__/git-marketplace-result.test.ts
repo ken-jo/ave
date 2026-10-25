@@ -83,7 +83,6 @@ describe("the update status across the bridge (design §13.1)", () => {
     expect(parseUpdateStatus(without)).toBeNull();
     for (const bad of [
       { ...unmet, reason: "unknown" },
-      // Exactly an incompatible row names the Ave version it needs.
       { ...unmet, reason: "not-in-catalog" },
       { ...unmet, minAppVersion: null },
       { ...unmet, minAppVersion: 9 },

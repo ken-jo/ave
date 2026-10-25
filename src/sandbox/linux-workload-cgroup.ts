@@ -13,13 +13,7 @@ const DEFAULT_CLEANUP_POLL_MS = 20;
 const MAX_CREATE_ATTEMPTS = 4;
 const { isAbsolute, join, relative, resolve, sep } = pathPosix;
 
-/**
- * This script is trusted host code launched with an empty environment. The
- * delegated cgroup path and every workload argument are positional parameters;
- * none are interpolated into the script source. Target environment handoff is
- * intentionally outside this unwired foundation because putting secrets in
- * trampoline argv would expose them through process listings.
- */
+/** Pass delegated paths and arguments positionally with an empty environment; never interpolate script text or expose secrets in trampoline argv. */
 export const LINUX_CGROUP_ARGV_TRAMPOLINE = [
   "set -eu",
   "cgroup_dir=$1",
@@ -65,7 +59,7 @@ export interface LinuxWorkloadCgroupCapability {
 
 export interface LinuxWorkloadLimits {
   readonly memoryMaxBytes: number;
-  /** Defaults to zero so a workload cannot evade memory.max through swap. */
+  /** Default swap to zero so workloads cannot evade memory.max. */
   readonly memorySwapMaxBytes?: number | "max";
   readonly pidsMax: number;
   readonly cpuMax:
@@ -399,9 +393,7 @@ async function validateDelegatedRoot(
   }
   await assertDelegatedRootEmpty(deps.fs, canonicalRoot);
 
-  // Access checks on the parent do not prove that controller files can be
-  // configured on a child. Probe the exact writes this backend needs before
-  // issuing any capability, then remove the empty probe leaf.
+  // Probe exact child-controller writes before issuing capability; parent access checks are insufficient.
   const probeNonce = deps.process.randomUUID();
   if (!/^[0-9A-Za-z-]+$/.test(probeNonce)) {
     throw new Error("Host random UUID source returned an invalid value");
@@ -443,11 +435,7 @@ async function validateDelegatedRoot(
   };
 }
 
-/**
- * Issue a capability from explicit host bootstrap state. This function never
- * reads environment variables or accepts tool/model input, and consumers must
- * present the exact issued object rather than a structural copy.
- */
+/** Issue capabilities only from host bootstrap state and require the exact issued object, never a structural copy. */
 export async function issueLinuxWorkloadCgroupCapability(input: {
   readonly delegatedRoot: string;
   readonly generation: string;

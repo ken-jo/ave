@@ -1,13 +1,4 @@
-/**
- * OS tool sandbox boot-gate policy — decideSandboxGate + the host-classify
- * interlock predicate.
- *
- * These pure functions encode the EXPLICIT-vs-DEFAULT distinction the
- * default-on flip introduced: with `osToolSandbox` now shipping true, a host
- * that cannot activate the sandbox must DEGRADE (non-bricking) on the
- * default/settings path while the EXPLICIT `AVE_SANDBOX_ENABLED=1` opt-in stays
- * fail-closed (abort). Boot.ts owns the side effects; this is the branch choice.
- */
+/** Explicit sandbox activation fails closed; settings-based activation may degrade. */
 import { describe, expect, it } from "vitest";
 import {
   decideSandboxGate,
@@ -25,11 +16,9 @@ describe("decideSandboxGate", () => {
 
   it("activates when opted in (default OR explicit) and deps are present", () => {
     for (const platform of ["darwin", "linux", "win32"] as const) {
-      // default (settings) on
       expect(
         decideSandboxGate({ settingOn: true, explicitEnv: false, platform, depsOk: true }),
       ).toEqual({ action: "activate", reason: "deps-present" });
-      // explicit env on
       expect(
         decideSandboxGate({ settingOn: false, explicitEnv: true, platform, depsOk: true }),
       ).toEqual({ action: "activate", reason: "deps-present" });
@@ -73,8 +62,7 @@ describe("decideSandboxGate", () => {
   });
 
   it("Windows deps-missing always DEGRADES (non-bricking) — even for the explicit env opt-in", () => {
-    // Windows cannot abort: the one-time UAC setup is unreachable before boot
-    // reaches the consent UI, so a throw would permanently brick first-run.
+    // Windows must reach the consent UI before sandbox setup; aborting would block first run.
     expect(
       decideSandboxGate({ settingOn: true, explicitEnv: false, platform: "win32", depsOk: false }),
     ).toEqual({ action: "degrade", reason: "degrade-windows-not-installed" });
@@ -101,10 +89,7 @@ describe("shouldWarnHostClassifyInterlock", () => {
   });
 
   it("fires in the DEGRADED state (gate ON by default + sandbox could not activate)", () => {
-    // The degraded path leaves the sandbox inactive while the gate is on. Derive
-    // sandboxActive the way boot does (only "activate"-then-success sets it true)
-    // and confirm the interlock still warns — the regression the default-on flip
-    // would introduce if the old `!optIn` proxy were kept.
+    // A degraded sandbox must still trigger the host-classification warning.
     const decision = decideSandboxGate({
       settingOn: true,
       explicitEnv: false,
@@ -112,7 +97,7 @@ describe("shouldWarnHostClassifyInterlock", () => {
       depsOk: false,
     });
     expect(decision.action).toBe("degrade");
-    const sandboxActive = decision.action === "activate"; // false on degrade
+    const sandboxActive = decision.action === "activate";
     expect(
       shouldWarnHostClassifyInterlock({ hostClassifiesRisk: true, sandboxActive }),
     ).toBe(true);

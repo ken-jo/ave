@@ -1,10 +1,5 @@
 import { test, expect } from './fixtures';
 
-/**
- * Unified search smoke — the find shortcut (⌘F / Ctrl+F, use-search.ts) opens
- * the unified search panel, its input takes focus, accepts a query, and Escape
- * closes the panel again.
- */
 test('find shortcut opens unified search, accepts a query, and Escape closes it', async ({ mainWindow }) => {
   const panel = mainWindow.getByTestId('unified-search-panel');
   await expect(panel).toHaveCount(0);

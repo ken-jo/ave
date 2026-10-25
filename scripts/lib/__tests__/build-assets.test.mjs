@@ -76,9 +76,7 @@ test("resolveBuildAssets exposes one SOT for build and dev watched assets", () =
       ],
     );
     assert.equal(resolveBuildAssets(root, "runtime-script").length, 2);
-    // The capture window is three files that only work together — the page,
-    // its script and its preload. A build that copied two of them would fail
-    // at capture time rather than at build time.
+    // The capture page, script and preload must ship together.
     assert.equal(resolveBuildAssets(root, "audio-capture").length, 3);
   } finally {
     if (existsSync(root)) rmSync(root, { recursive: true, force: true });

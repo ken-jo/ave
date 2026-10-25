@@ -1,7 +1,9 @@
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { join } from "node:path";
 import type { TestContext } from "vitest";
 
+/** Probe through this module's filesystem import so suite symlink mocks apply. */
 export function requireSymlinkCapability(directory: string, type: "file" | "dir", skip: TestContext["skip"]): void {
   const root = mkdtempSync(join(directory, "symlink-probe-"));
   try {
@@ -17,4 +19,33 @@ export function requireSymlinkCapability(directory: string, type: "file" | "dir"
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+}
+
+// Collection-time symlink checks must use the real filesystem.
+const nodeRequire = createRequire(import.meta.url);
+const hostFs = nodeRequire("node:fs") as typeof import("node:fs");
+const { tmpdir } = nodeRequire("node:os") as typeof import("node:os");
+const hostPath = nodeRequire("node:path") as typeof import("node:path");
+
+const capabilities = new Map<string, boolean>();
+
+export function canCreateSymlinks(kind: "file" | "dir" | "junction" = "file"): boolean {
+  const cached = capabilities.get(kind);
+  if (cached !== undefined) return cached;
+  let available: boolean;
+  const root = hostFs.mkdtempSync(hostPath.join(tmpdir(), "ave-symlink-capability-"));
+  try {
+    const target = hostPath.join(root, "target");
+    if (kind === "file") hostFs.writeFileSync(target, "probe");
+    else hostFs.mkdirSync(target);
+    hostFs.symlinkSync(target, hostPath.join(root, "link"), kind);
+    available = true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EPERM") throw error;
+    available = false;
+  } finally {
+    hostFs.rmSync(root, { recursive: true, force: true, maxRetries: 3 });
+  }
+  capabilities.set(kind, available);
+  return available;
 }

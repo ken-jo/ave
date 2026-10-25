@@ -69,7 +69,6 @@ describe("model catalog document", () => {
     ];
     for (const [patch, reason] of cases) {
       const damaged = { ...document, provenance: { ...document.provenance, ...patch } };
-      // Still the same name: provenance is outside the hash.
       expect(modelCatalogSha256(damaged)).toBe(document.sha256);
       expect(() => verifyModelCatalogDocument(damaged), JSON.stringify(patch)).toThrow(reason);
     }

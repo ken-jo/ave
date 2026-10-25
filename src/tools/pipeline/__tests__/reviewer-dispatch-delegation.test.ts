@@ -1,19 +1,4 @@
-/**
- * Permission SOT V3 — reviewer-dispatch delegates the verdict→decision mapping.
- *
- * After P1-b the pipeline lanes no longer branch on `verdict.level` to build
- * the allow/deny/ask decision; they call
- * `PermissionManager.resolveReviewerDecision(verdict, lane)` and only wire the
- * human-facing message + deferred-queue metadata around the returned result.
- *
- * These tests prove the delegation contract:
- *   - `resolveReviewerDecision` is invoked with the reviewer verdict and the
- *     correct lane string,
- *   - the returned `permissionResult` is the SOT decision (verbatim for the
- *     allow lanes; deferred metadata layered on for a headless non-allow).
- * The exhaustive low/medium/high truth-table lives in
- * `permission-manager-resolve-reviewer-decision.test.ts`.
- */
+// Reviewer lanes delegate verdict mapping to PermissionManager.resolveReviewerDecision, adding only messages and deferred metadata.
 import { describe, it, expect, vi } from "vitest";
 import {
   dispatchReviewerForHeadless,
@@ -33,12 +18,7 @@ const evaluationContext = {} as PermissionEvaluationContext;
 const context = { trustOrigin: "user" } as unknown as ToolPermissionContext;
 const meta = {} as ToolCallMeta;
 
-/**
- * Minimal PermissionManager stub exposing only the surface the lanes touch.
- * `resolveReviewerDecision` is the REAL implementation (bound) so the
- * delegation return value is genuine SOT output; every other method is a
- * hand-stubbed spy.
- */
+// Keep decision resolution real while stubbing other manager methods.
 function makeStub(opts: {
   verdict: RiskVerdict;
   deferredId?: string;
@@ -122,7 +102,7 @@ describe("reviewer-dispatch delegates verdict→decision to PermissionManager (V
     const result = await dispatch(pm, "headless");
     expect(resolveSpy).toHaveBeenCalledWith(verdict, "headless");
     expect(result.allowed).toBe(false);
-    // SOT decision preserved verbatim; pipeline layers deferred metadata.
+    // Preserve the authority's decision while adding deferred metadata.
     expect(result.permissionResult).toMatchObject({
       decision: "deny",
       layer: 5,

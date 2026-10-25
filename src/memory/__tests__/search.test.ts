@@ -1,6 +1,3 @@
-/**
- * D5 — MemoryManager search tests.
- */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -26,7 +23,6 @@ describe("MemoryManager.searchMemoryEntries", () => {
   it("returns empty array for empty query", async () => {
     await mm.saveMemory("프로젝트 목표", "분기 매출 달성");
     const results = mm.searchMemoryEntries("");
-    // empty query matches all — cap 50
     expect(results.length).toBeGreaterThanOrEqual(1);
   });
 
@@ -238,8 +234,7 @@ describe("MemoryManager.searchSessions", () => {
     await mm.saveSession("a1b2c3d4-e5f6-7890-abcd-ef1234567890", [
       { role: "user", content: "hello world" },
     ]);
-    // Only < 2 code points is rejected upstream; 2 code points is served by the
-    // LIKE fallback (see the Korean 2-syllable tests below).
+    // Two Unicode code points use LIKE; trigram MATCH starts at three.
     expect(mm.searchSessions("")).toEqual([]);
     expect(mm.searchSessions("h")).toEqual([]);
     expect(mm.searchSessions("  ")).toEqual([]);
@@ -252,20 +247,16 @@ describe("MemoryManager.searchSessions", () => {
       { role: "user", content: "이번 분기 매출 목표를 검토합시다" },
       { role: "assistant", content: "회의 일정을 잡겠습니다" },
     ]);
-    // These 2-syllable queries are BELOW the FTS5 trigram floor (3 code points)
-    // — a MATCH-only impl would 0-hit them (the regression this guards).
     expect(mm.searchSessions("매출").map((r) => r.sessionId)).toEqual([id]);
     expect(mm.searchSessions("분기").map((r) => r.sessionId)).toEqual([id]);
     expect(mm.searchSessions("목표").map((r) => r.sessionId)).toEqual([id]);
     expect(mm.searchSessions("회의").map((r) => r.sessionId)).toEqual([id]);
-    // The excerpt is centred on the match.
     expect(mm.searchSessions("매출")[0].matchedMessage).toContain("매출");
   });
 
   it("matches a 2-char ASCII query case-insensitively via the LIKE fallback", async () => {
     const id = "a3b2c3d4-e5f6-7890-abcd-ef1234567892";
     await mm.saveSession(id, [{ role: "user", content: "Node.js Runtime notes" }]);
-    // "no" is 2 chars — LIKE branch — and must fold case like the old toLowerCase scan.
     expect(mm.searchSessions("no").map((r) => r.sessionId)).toEqual([id]);
     expect(mm.searchSessions("NO").map((r) => r.sessionId)).toEqual([id]);
   });
@@ -273,14 +264,12 @@ describe("MemoryManager.searchSessions", () => {
   it("keeps 3+ code-point Korean on the fast MATCH path", async () => {
     const id = "a4b2c3d4-e5f6-7890-abcd-ef1234567893";
     await mm.saveSession(id, [{ role: "user", content: "분기 보고서 초안을 작성했습니다" }]);
-    // 3 syllables → trigram MATCH (not LIKE).
     expect(mm.searchSessions("보고서").map((r) => r.sessionId)).toEqual([id]);
   });
 
   it("handles a Korean+ASCII mixed 2-code-point query", async () => {
     const id = "a5b2c3d4-e5f6-7890-abcd-ef1234567894";
     await mm.saveSession(id, [{ role: "user", content: "버전 v2 릴리스" }]);
-    // "v2" (2 code points, ASCII) via LIKE; also a mixed "전v"? keep the simple ASCII 2-char.
     expect(mm.searchSessions("v2").map((r) => r.sessionId)).toEqual([id]);
   });
 
@@ -289,8 +278,7 @@ describe("MemoryManager.searchSessions", () => {
     const decoyId = "a7b2c3d4-e5f6-7890-abcd-ef1234567896";
     await mm.saveSession(literalId, [{ role: "user", content: "growth was 5% this quarter" }]);
     await mm.saveSession(decoyId, [{ role: "user", content: "value 5X and 5Y only" }]);
-    // "5%" must match ONLY the literal "5%" row, not treat % as a wildcard that
-    // would also match "5X"/"5Y" in the decoy row.
+    // Escape percent so query text remains literal rather than a LIKE wildcard.
     const hits = mm.searchSessions("5%").map((r) => r.sessionId);
     expect(hits).toEqual([literalId]);
 
@@ -298,21 +286,19 @@ describe("MemoryManager.searchSessions", () => {
     const underscoreDecoy = "a9b2c3d4-e5f6-7890-abcd-ef1234567898";
     await mm.saveSession(underscoreId, [{ role: "user", content: "the a_b marker here" }]);
     await mm.saveSession(underscoreDecoy, [{ role: "user", content: "the axb variant here" }]);
-    // "a_" must match "a_b" literally, NOT wildcard-match "ax" in the decoy.
+    // Escape underscore so query text cannot match arbitrary characters.
     const uHits = mm.searchSessions("a_").map((r) => r.sessionId);
     expect(uHits).toContain(underscoreId);
     expect(uHits).not.toContain(underscoreDecoy);
   });
 
   it("skips files whose stem is not UUID-shaped", async () => {
-    // Write a non-UUID file directly into sessionsDir
     const { writeFileSync } = await import("node:fs");
     const { join } = await import("node:path");
     const sessionsDir = join(dir, "sessions");
     writeFileSync(join(sessionsDir, "../../etc-passwd.jsonl"), JSON.stringify({ role: "user", content: "secret hello data" }) + "\n");
     writeFileSync(join(sessionsDir, "notauuid.jsonl"), JSON.stringify({ role: "user", content: "hello leak" }) + "\n");
     const results = mm.searchSessions("hello");
-    // Non-UUID files should be skipped entirely
     const sessionIds = results.map((r) => r.sessionId);
     expect(sessionIds).not.toContain("../../etc-passwd");
     expect(sessionIds).not.toContain("notauuid");
@@ -323,7 +309,6 @@ describe("MemoryManager.searchSessions", () => {
     const { join } = await import("node:path");
     const sessionsDir = join(dir, "sessions");
     const bigId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
-    // Write >5MB file
     const bigLine = JSON.stringify({ role: "user", content: "hello " + "x".repeat(6_000_000) });
     writeFileSync(join(sessionsDir, `${bigId}.jsonl`), bigLine + "\n");
     const results = mm.searchSessions("hello");
@@ -367,13 +352,11 @@ describe("MemoryManager.searchSessions", () => {
   });
 });
 
-// ── FTS5 index behaviors (#1500 / E3) ────────────────────────────────────
 describe("MemoryManager.searchSessions — FTS5 escape + injection safety", () => {
   it("treats FTS5 operators in the query as literal text (no syntax error)", async () => {
     const id = "10000000-0000-4000-8000-000000000001";
     await mm.saveSession(id, [{ role: "user", content: "deploy AND rollback plan" }]);
-    // `AND` is an FTS5 operator; escaping forces a literal phrase match so the
-    // query is neither a syntax error nor a boolean AND across the corpus.
+    // Escape FTS operators as literal phrase text.
     const results = mm.searchSessions("deploy AND rollback");
     expect(results.map((r) => r.sessionId)).toEqual([id]);
   });
@@ -381,8 +364,7 @@ describe("MemoryManager.searchSessions — FTS5 escape + injection safety", () =
   it("does not throw on an unterminated double-quote in the query", async () => {
     const id = "10000000-0000-4000-8000-000000000002";
     await mm.saveSession(id, [{ role: "user", content: 'he said "hello there" loudly' }]);
-    // A raw `"hello` would be an unterminated FTS5 phrase; escaping doubles the
-    // quote so it is matched literally and the call returns rather than crashes.
+    // Double embedded quotes so malformed user phrases cannot become FTS syntax errors.
     expect(() => mm.searchSessions('"hello')).not.toThrow();
     const results = mm.searchSessions('"hello there"');
     expect(results.map((r) => r.sessionId)).toEqual([id]);
@@ -390,8 +372,7 @@ describe("MemoryManager.searchSessions — FTS5 escape + injection safety", () =
 
   it("matches a substring inside an unbroken token (trigram tokenizer)", async () => {
     const id = "10000000-0000-4000-8000-000000000003";
-    // A URL is one unbroken token; a whole-token tokenizer would miss `example`
-    // inside it. Trigram restores the old substring (indexOf) semantics.
+    // Trigrams preserve substring matches inside unbroken URLs and identifiers.
     await mm.saveSession(id, [{ role: "user", content: "see https://example.com/path" }]);
     expect(mm.searchSessions("example").map((r) => r.sessionId)).toEqual([id]);
   });
@@ -409,20 +390,16 @@ describe("MemoryManager.searchSessions — timestamp sourcing", () => {
   it("uses the session JSONL mtime, not the index-write time", async () => {
     const id = "60000000-0000-4000-8000-000000000001";
     await mm.saveSession(id, [{ role: "user", content: "timestamp keyword body" }]);
-    // Back-date the session file well into the past.
     const past = new Date("2020-01-02T03:04:05.000Z");
     const { utimesSync } = await import("node:fs");
     utimesSync(join(dir, "sessions", `${id}.jsonl`), past, past);
-    // Drop the index entirely so the boot check does a TRUE rebuild that reads
-    // the (now back-dated) mtime — verifyOrRebuildSearchIndex is a no-op on a
-    // healthy non-empty index, so the row must be gone for the rebuild to fire.
+    // Remove index rows to force boot rebuild; a healthy populated index does not rescan file mtimes.
     mm.closeSearchIndex();
     rmSync(join(dir, "search"), { recursive: true, force: true });
     await mm.verifyOrRebuildSearchIndex();
 
     const hit = mm.searchSessions("timestamp").find((r) => r.sessionId === id);
     expect(hit).toBeDefined();
-    // The reported timestamp must track the (past) file mtime, not "now".
     expect(new Date(hit!.timestamp).getUTCFullYear()).toBe(2020);
   });
 });
@@ -434,12 +411,9 @@ describe("MemoryManager.saveImportedSession", () => {
       { role: "user", content: "imported conversation body" },
       { role: "assistant", content: "reply" },
     ]);
-    // Imported sessions are brand-new MAIN sessions — they must appear in the
-    // default (main-kind) search/list surface and NOT under any routine scope.
     expect(mm.searchSessions("imported").map((r) => r.sessionId)).toEqual([id]);
     expect(mm.searchSessions("imported", { kind: "routine" })).toEqual([]);
     expect(mm.listSessions().map((s) => s.id)).toContain(id);
-    // Assert the persisted metadata sessionKind directly.
     const metaPath = join(dir, "sessions", `${id}.meta.json`);
     const meta = JSON.parse(readFileSync(metaPath, "utf-8"));
     expect(meta.sessionKind).toBe("main");
@@ -459,9 +433,7 @@ describe("MemoryManager.searchSessions — index maintenance", () => {
   it("re-indexes on metadata-only update so scope filters stay correct", async () => {
     const id = "20000000-0000-4000-8000-000000000002";
     await mm.saveSession(id, [{ role: "user", content: "scoped keyword content" }]);
-    // Tag it as a routine session AFTER the initial save (create-then-tag).
     await mm.saveSessionMetadata(id, { sessionKind: "routine", routineId: "r-1" });
-    // Default (main-kind) search must NOT see it; routine-scoped search must.
     expect(mm.searchSessions("scoped")).toEqual([]);
     expect(mm.searchSessions("scoped", { kind: "routine" }).map((r) => r.sessionId)).toEqual([id]);
   });
@@ -471,10 +443,8 @@ describe("MemoryManager.searchSessions — index maintenance", () => {
     await mm.saveSession(id, [{ role: "user", content: "durable rebuild keyword" }]);
     expect(mm.searchSessions("durable").map((r) => r.sessionId)).toEqual([id]);
 
-    // Corrupt the on-disk index (overwrite with junk) — search should now miss.
     const dbPath = join(dir, "search", "index.db");
     writeFileSync(dbPath, "not a sqlite database at all", "utf-8");
-    // Boot integrity check must detect corruption and rebuild from the JSONL SOT.
     await mm.verifyOrRebuildSearchIndex();
     expect(mm.searchSessions("durable").map((r) => r.sessionId)).toEqual([id]);
   });
@@ -482,7 +452,6 @@ describe("MemoryManager.searchSessions — index maintenance", () => {
   it("rebuilds a missing index from existing session files at boot", async () => {
     const id = "20000000-0000-4000-8000-000000000004";
     await mm.saveSession(id, [{ role: "user", content: "cold boot keyword" }]);
-    // Simulate a first boot with no index: delete the whole search dir.
     rmSync(join(dir, "search"), { recursive: true, force: true });
     await mm.verifyOrRebuildSearchIndex();
     expect(mm.searchSessions("cold").map((r) => r.sessionId)).toEqual([id]);

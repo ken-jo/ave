@@ -1,25 +1,5 @@
-/**
- * The managed git copy (design §9.2): `~/.ave/runtime/git/<version>/`.
- *
- *   checking → downloading(bytes) → verifying → extracting → smoke-testing → ready | failed(code)
- *
- * The archive is downloaded through the caller's gated fetch (§7.4) with its
- * sha256 and exact size pinned in managed-git-pins.ts, extracted into a
- * staging directory next to the target, smoke-tested there, marked ready, and
- * only then renamed into place. A failed or partial install never replaces a
- * working copy: the previous directory is moved aside and restored if the
- * final rename fails.
- *
- * Trust roots per platform, as measured on the pinned build (2026-09-23):
- *   - macOS: `git-remote-http` links the system libcurl (SecureTransport), so
- *     the keychain — including a corporate root in the System keychain — is
- *     used as is. No CA file is set.
- *   - Linux: the copy ships `ssl/cacert.pem` and reads no OS store; the runner
- *     gets a bundle of those roots plus the corporate roots corp-ca-extract.ts
- *     finds.
- *   - Windows: `http.sslBackend=schannel`, the Windows certificate store. The
- *     copy's own system config says the same but is not read (GIT_CONFIG_NOSYSTEM).
- */
+/** Download pinned, gated archives into adjacent staging, verify and smoke-test before publication; restore the working copy if replacement fails.
+ * Use system trust on macOS/Windows and shipped plus extracted corporate roots on Linux. */
 import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { createReadStream, createWriteStream, existsSync } from "node:fs";
@@ -31,6 +11,7 @@ import { renameDirectory } from "../../lib/transient-fs-lock-retry.js";
 import { canonicalZipEntryPathIdentity, sanitizeZipEntryPath } from "../../plugins/zip-entry-path.js";
 import { buildSafeChildEnv } from "../../tools/safe-env.js";
 import type { GitRuntimeProgress } from "../../shared/git-runtime.js";
+import { buildHostGitArgs } from "../../shared/host-git.js";
 import { MarketplaceError, isMarketplaceError, type MarketplaceErrorDetail } from "../errors.js";
 import { stallGuarded } from "../net/stall-guard.js";
 import type { ManagedGitInstall } from "./detect.js";
@@ -102,10 +83,7 @@ export async function findManagedGit(
   return { path: layout.executable, root, version };
 }
 
-/**
- * Runner settings for a managed copy. On Linux the CA bundle is rewritten on
- * each call so a corporate root added to the OS store reaches the next run.
- */
+/** Runner settings for a managed copy. On Linux the CA bundle is rewritten on each call so a corporate root added to the OS store reaches the next run. */
 export async function managedRunnerOptions(
   install: ManagedGitInstall,
   platform: NodeJS.Platform,
@@ -269,7 +247,7 @@ function runCopy(layout: ManagedGitLayout, args: string[], input?: string): Prom
   });
   if (layout.pathPrefix.length > 0) env.PATH = [...layout.pathPrefix, env.PATH ?? ""].join(process.platform === "win32" ? ";" : ":");
   return new Promise((resolve, reject) => {
-    const child = execFile(layout.executable, args, { env, timeout: SMOKE_TIMEOUT_MS, windowsHide: true, maxBuffer: 64 * 1024 }, (error, stdout) =>
+    const child = execFile(layout.executable, buildHostGitArgs(args), { env, timeout: SMOKE_TIMEOUT_MS, windowsHide: true, maxBuffer: 64 * 1024 }, (error, stdout) =>
       error ? reject(error) : resolve(String(stdout)),
     );
     if (input !== undefined) child.stdin?.end(input);

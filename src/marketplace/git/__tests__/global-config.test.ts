@@ -81,7 +81,6 @@ describe("generated global config", () => {
     );
     const git = await hostGitExecutable();
     const entries = await readCopiedCredentialConfig(git.path);
-    // git's config syntax treats the double quotes as quoting, not as part of the value.
     expect(entries).toContainEqual({ key: "credential.helper", value: "store --file=/tmp/creds with space" });
     expect(entries).toContainEqual({ key: "credential.https://Git.Corp.Example.helper", value: "corp-helper" });
     expect(entries.map((entry) => entry.key)).not.toContain("url.https://evil.example/.insteadof");
@@ -92,7 +91,6 @@ describe("generated global config", () => {
     expect(text).not.toContain("insteadOf");
     expect(text).not.toContain("extraHeader");
     expect(text).not.toContain("sslVerify");
-    // git reads back exactly what was copied, including the quoted value.
     const { execFileSync } = await import("node:child_process");
     const readBack = execFileSync(git.path, ["config", "--file", output, "--null", "--list"], {
       encoding: "utf8", env: gitFixtureEnv(dir),
@@ -107,15 +105,13 @@ describe("generated global config", () => {
   });
 
   it("keeps the copied order across sections, valueless keys and escaped values", async () => {
-    // git collects generic and per-URL helpers in file order, and an empty value
-    // resets the list: the reset must stay after the per-URL helper it clears.
+    // Empty helper values reset the list, so preserve ordering with per-URL helpers.
     const entries = [
       { key: "credential.helper", value: "manager" },
       { key: "credential.https://Dev.Example/a \"b\".usehttppath", value: "true" },
       { key: "credential.https://Dev.Example/a \"b\".helper", value: "store --file=C:\\creds\\x" },
       { key: "credential.helper", value: "" },
       { key: "http.sslcainfo", value: " /etc/corp #1; \"quoted\"\tpem " },
-      // git stores other control characters raw and reads them back the same.
       { key: "credential.https://Corp.Example.username", value: "a\u001bb\rc" },
     ];
     const output = join(dir, "generated");

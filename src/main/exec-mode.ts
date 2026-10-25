@@ -1,30 +1,5 @@
-/**
- * Headless one-shot CLI modes for the Electron main process.
- *
- * The process boots the ordinary host service graph and performs one action
- * without a window. It quits by default; an explicitly retained turn waits
- * for its caller to release the session before the ordinary shutdown cleanup.
- *
- *   --exec=<prompt>          run one conversation turn and stream its events
- *   --exec-operator-attestation=<absolute-path>
- *                            verify operator-owned Linux isolation evidence
- *   --set-secret=<key>       write one secret through the app's own store
- *
- * WHY ITS OWN FILE. `src/main.ts` registers Electron listeners and runs
- * `runEarlyBootEnv()` at module load, so nothing declared there can be imported
- * by a unit test. The parser, the exit-code mapping, and the headless approval
- * policy are exactly the parts that need direct tests, so they live here and
- * `main.ts` keeps only the branch that calls them.
- *
- * WHY THE HEAVY IMPORTS ARE DYNAMIC. `src/lib/logger.ts` imports
- * {@link execModeRequested} at module load — it is the only place that can
- * decide the console destination, because the logger is constructed from
- * `process.argv` when it is first imported. A static import of the turn
- * producer or the secret store here would therefore put the logger inside the
- * engine's own import graph, which is a cycle. The turn producer and the
- * secret-store error types are pulled in at the point of use instead, and this
- * module's static surface stays leaf-shaped.
- */
+// One-shot headless actions use normal host services and shutdown; retained turns wait for explicit release. Keep heavy imports dynamic because the
+// logger imports execModeRequested during module initialization.
 import { statSync } from "node:fs";
 import type { EventEmitter } from "node:events";
 import { basename, isAbsolute, resolve } from "node:path";
@@ -41,34 +16,26 @@ import type { TurnStopReason } from "../engine/turn/types.js";
 import type { PlatformConversationEvent } from "../engine/conversation-platform-protocol.js";
 import type { ExecutionMode } from "../shared/permission-mode.js";
 
-/** Exit code for a malformed command line, matching the `EX_USAGE` convention. */
+// Exit code for a malformed command line, matching the `EX_USAGE` convention.
 export const EXEC_USAGE_EXIT_CODE = 64;
 
-/**
- * Exit code when another Ave process already holds the single-instance lock.
- * `EX_TEMPFAIL`: the request was well-formed and may succeed once that process
- * exits, so a runner must not read it as an empty successful turn.
- */
+// Exit code when another Ave process already holds the single-instance lock. `EX_TEMPFAIL`: the request was well-formed and may succeed once that
+// process exits, so a runner must not read it as an empty successful turn.
 export const EXEC_LOCKED_EXIT_CODE = 75;
 
-/** Exit code for a turn that ended asking the operator a question. */
+// Exit code for a turn that ended asking the operator a question.
 const EXEC_INPUT_REQUIRED_EXIT_CODE = 2;
 
-/** Exit code for an unavailable local authorization surface (`EX_NOPERM`). */
+// Exit code for an unavailable local authorization surface (`EX_NOPERM`).
 export const EXEC_AUTHORIZATION_REQUIRED_EXIT_CODE = 77;
 
-/** Exit code for a turn that failed, or a boot that never reached the turn. */
+// Exit code for a turn that failed, or a boot that never reached the turn.
 export const EXEC_FAILURE_EXIT_CODE = 1;
 
-/** Exit code when an interactive launch fails before boot completes. */
+// Exit code when an interactive launch fails before boot completes.
 export const GUI_BOOT_FAILURE_EXIT_CODE = 1;
 
-/**
- * Stop reasons that mean the turn did not deliver an answer. `round-cap`,
- * `max_tokens` and `interrupted` are deliberately absent: each returns the
- * partial work the run actually produced, which a benchmark reads as a result
- * rather than as a crash.
- */
+// round-cap, max_tokens, and interrupted return partial work; they must not be classified as crashes.
 const FAILED_TURN_STOP_REASONS: ReadonlySet<TurnStopReason> = new Set<TurnStopReason>([
   "context-error",
   "stream-error",
@@ -77,25 +44,21 @@ const FAILED_TURN_STOP_REASONS: ReadonlySet<TurnStopReason> = new Set<TurnStopRe
 
 type ExecOutputFormat = "stream-json" | "json";
 
-/** The `--exec` request: one conversation turn on a machine-readable stream. */
+// The `--exec` request: one conversation turn on a machine-readable stream.
 interface ExecTurnRequest {
-  /** Inline prompt, or `null` when the prompt is the whole of stdin. */
+  // Inline prompt, or `null` when the prompt is the whole of stdin.
   readonly prompt: string | null;
   readonly cwd: string;
-  /**
-   * The permission mode the run asked for. `"default"` leaves the host's own
-   * configured policy alone; only `"allow"` is applied, and it still runs every
-   * Layer 0 check (sensitive paths, allowed directories) that the interactive
-   * app runs.
-   */
+  // The permission mode the run asked for. `"default"` leaves the host's own configured policy alone; only `"allow"` is applied, and it still runs every
+  // Layer 0 check (sensitive paths, allowed directories) that the interactive app runs.
   readonly approveMode: Extract<ExecutionMode, "default" | "allow">;
   readonly output: ExecOutputFormat;
   readonly maxRounds?: number;
-  /** Retain this session after a successful turn until the caller releases it. */
+  // Retain this session after a successful turn until the caller releases it.
   readonly keepAlive?: boolean;
 }
 
-/** The `--set-secret` request. The value never appears here — it is on stdin. */
+// The `--set-secret` request. The value never appears here — it is on stdin.
 interface ExecSecretRequest {
   readonly key: string;
 }
@@ -108,9 +71,9 @@ interface ExecWorkloadBrokerRequest {
 export interface ExecRequest {
   readonly secret: ExecSecretRequest | null;
   readonly turn: ExecTurnRequest | null;
-  /** Absolute signed evidence path; only valid for a turn and verified before boot. */
+  // Absolute signed evidence path; only valid for a turn and verified before boot.
   readonly operatorAttestationPath?: string;
-  /** Exclusive controller-to-workload transport, verified before the host boots. */
+  // Exclusive controller-to-workload transport, verified before the host boots.
   readonly workloadBroker?: ExecWorkloadBrokerRequest;
 }
 
@@ -122,30 +85,15 @@ export interface ExecDeps {
   readonly stdout: NodeJS.WritableStream;
   readonly stderr: NodeJS.WritableStream;
   readonly readStdin: () => Promise<string>;
-  /**
-   * Whether a directory is an authorized workspace project: the default
-   * workspace, one of `permissions.additionalDirectories`, or — while the
-   * exclusive workload-broker route is active — exactly the bound guest cwd.
-   * The session layer silently re-roots an unauthorized project at the default
-   * workspace, which a headless run must refuse instead of quietly working
-   * elsewhere; the run re-checks the root the session actually bound to.
-   */
+  // Headless projects must be explicitly authorized, including the exact broker cwd; refuse silent session re-rooting.
   readonly isAuthorizedProjectRoot: (projectRoot: string) => boolean;
-  /** Required for --exec-keep-alive; the caller owns the session's release. */
+  // Required for --exec-keep-alive; the caller owns the session's release.
   readonly waitForRelease?: () => Promise<void>;
-  /** Required before publishing completion for a retained session. */
+  // Required before publishing completion for a retained session.
   readonly flushTelemetry?: () => Promise<void>;
 }
 
-/**
- * Whether this launch is a headless one-shot run.
- *
- * Read from raw argv rather than from a parsed request because the logger asks
- * this question at import time, long before boot could hand anything a parsed
- * command line. A malformed headless command line still answers `true`: the
- * process is going to print a usage error and quit, and that diagnostic belongs
- * on stderr for the same reason the rest of the logs do.
- */
+// The logger reads raw argv at import time; even malformed headless requests must send diagnostics to stderr.
 export function execModeRequested(argv: readonly string[]): boolean {
   return argv.some(
     (arg) =>
@@ -162,15 +110,7 @@ export function execModeRequested(argv: readonly string[]): boolean {
   );
 }
 
-/**
- * The narrower question: whether this launch runs a TURN headlessly.
- *
- * `--set-secret` is headless too, which is what {@link execModeRequested}
- * answers and all a log destination needs to know. But it runs no model and
- * builds no prompt, so anything reasoning about what language a model should
- * answer in, or about a conversation existing at all, has to ask this instead —
- * otherwise the secret-writing CLI is treated as a conversation that has none.
- */
+// Turn detection excludes secret-writing mode, which has no model, prompt, or conversation.
 export function execTurnRequested(argv: readonly string[]): boolean {
   return argv.some((arg) => arg === "--exec" || arg.startsWith("--exec="));
 }
@@ -187,10 +127,7 @@ function parseMaxRounds(raw: string): number | { error: string } {
   return value;
 }
 
-/**
- * A relative `--exec-cwd` is the caller's, so it resolves against the launch
- * directory — never against wherever the process has been re-anchored to.
- */
+// A relative `--exec-cwd` is the caller's, so it resolves against the launch directory — never against wherever the process has been re-anchored to.
 function parseCwd(
   raw: string,
   launchCwd: string | null,
@@ -210,20 +147,7 @@ function parseCwd(
   return path;
 }
 
-/**
- * Parse the headless command line.
- *
- * Returns `null` when this is an ordinary interactive launch, a `{ error }`
- * for a command line the host will not run, and otherwise the request.
- *
- * `launchCwd` is the directory the process was started from, captured by the
- * caller BEFORE the workspace anchor moves the process to `~/.ave/workspace`
- * (and only for a headless launch — see `execModeRequested`); it is the
- * session root when `--exec-cwd` is absent and the base of a relative one.
- *
- * The workload broker is the brokered Linux route, so on native Windows its
- * flags are refused here; boot still fails closed if one ever slips through.
- */
+// Capture launchCwd before workspace anchoring to resolve the requested root; native Windows refuses Linux broker flags.
 export function parseExecFlags(
   argv: readonly string[],
   launchCwd: string | null,
@@ -385,8 +309,7 @@ export function parseExecFlags(
     );
   }
   if (!execRequested && secretKey === null) return null;
-  // Both requests read the WHOLE of stdin, so a run that combines them has to
-  // give the prompt inline. Refusing here beats consuming stdin for the secret
+  // Both requests read the WHOLE of stdin, so a run that combines them has to give the prompt inline. Refusing here beats consuming stdin for the secret
   // and then running a turn on an empty prompt.
   if (execRequested && prompt === null && secretKey !== null) {
     return usageError("--set-secret consumes stdin, so --exec needs an inline prompt");
@@ -425,7 +348,7 @@ export function parseExecFlags(
   };
 }
 
-/** Read the whole of stdin as UTF-8. A terminal with no piped input reads empty. */
+// Read the whole of stdin as UTF-8. A terminal with no piped input reads empty.
 export async function readAllStdin(): Promise<string> {
   if (process.stdin.isTTY) return "";
   process.stdin.setEncoding("utf-8");
@@ -434,7 +357,7 @@ export async function readAllStdin(): Promise<string> {
   return text;
 }
 
-/** Drop the single trailing newline a shell heredoc or `echo` adds. */
+// Drop the single trailing newline a shell heredoc or `echo` adds.
 function stripOneTrailingNewline(text: string): string {
   if (text.endsWith("\r\n")) return text.slice(0, -2);
   if (text.endsWith("\n")) return text.slice(0, -1);
@@ -514,12 +437,8 @@ async function runTurnRequest(deps: ExecDeps, request: ExecTurnRequest): Promise
       projectRoot: request.cwd,
       projectName: basename(request.cwd),
     });
-    // The pre-check above and the session's own authorizer must agree. If the
-    // session fell back to the default workspace, every later tool call would
-    // run somewhere the operator did not ask for, so stop before the turn.
-    // Dynamic for the same reason as the turn producer below: the resolver
-    // reaches the settings store and the logger, which would close a cycle
-    // through this module's `execModeRequested`.
+    // Recheck the session’s actual root before the turn so silent fallback cannot run tools elsewhere.
+    // Import its resolver dynamically to avoid the logger/settings cycle.
     const { sessionBoundProjectRootMatches } = await import("./project-root-authorization.js");
     const boundProjectRoot = deps.conversationLoop.getSessionProjectRoot();
     if (!sessionBoundProjectRootMatches(boundProjectRoot, request.cwd)) {
@@ -537,16 +456,14 @@ async function runTurnRequest(deps: ExecDeps, request: ExecTurnRequest): Promise
     };
     const result = await runStreamedTurn(deps.conversationLoop, prompt, sink, {
       ...STREAM_TURN_OPTIONS,
-      // The owner started this turn from the command line with nobody to ask.
-      // The authority is minted per turn: a retained session's later turns
-      // arrive through remote surfaces and never inherit it.
+      // The owner started this turn from the command line with nobody to ask. The authority is minted per turn: a retained session's later turns arrive
+      // through remote surfaces and never inherit it.
       unattendedAuthority: issueUnattendedTurnAuthority(),
       ...(request.maxRounds === undefined ? {} : { maxRounds: request.maxRounds }),
     });
     if (request.output === "json") {
-      // An authorization terminal is a control response, not a normal model
-      // result. Do not serialize `toolCalls`: they contain raw command/tool
-      // arguments and are unnecessary for an operator to resume safely.
+      // An authorization terminal is a control response, not a normal model result. Do not serialize `toolCalls`: they contain raw command/tool arguments and
+      // are unnecessary for an operator to resume safely.
       const authorizationRequired = authorizationRequiredStateForOutput(
         result.authorizationRequired,
       );
@@ -570,12 +487,8 @@ async function runTurnRequest(deps: ExecDeps, request: ExecTurnRequest): Promise
   }
 }
 
-/**
- * Perform the headless request and return the process exit code.
- *
- * A combined run applies the secret first: a container that starts the app once
- * needs the credential in place before the turn asks a provider for anything.
- */
+// Perform the headless request and return the process exit code. A combined run applies the secret first: a container that starts the app once needs the
+// credential in place before the turn asks a provider for anything.
 export async function runExecTurn(deps: ExecDeps, request: ExecRequest): Promise<number> {
   if (request.turn?.keepAlive && !deps.waitForRelease) {
     throw new Error("exec: retained session has no release owner");
@@ -597,8 +510,7 @@ export async function runExecTurn(deps: ExecDeps, request: ExecRequest): Promise
       deps.stderr.write(`exec: telemetry flush failed: ${errorMessage(err)}\n`);
       return EXEC_FAILURE_EXIT_CODE;
     }
-    // Register release before publishing completion. This is a CLI lifecycle
-    // record, not another conversation event or a process-exit notification.
+    // Register release before publishing completion. This is a CLI lifecycle record, not another conversation event or a process-exit notification.
     const released = deps.waitForRelease!();
     deps.stdout.write(`${JSON.stringify({ kind: "exec.completed", exitCode: code })}\n`);
     await released;
@@ -606,7 +518,7 @@ export async function runExecTurn(deps: ExecDeps, request: ExecRequest): Promise
   return code;
 }
 
-/** Release an explicitly retained session through the ordinary app quit path. */
+// Release an explicitly retained session through the ordinary app quit path.
 export function waitForExecRelease(signals: EventEmitter = process): Promise<void> {
   return new Promise((resolveRelease) => {
     const keepAlive = setInterval(() => {}, 60_000);

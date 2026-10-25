@@ -1,37 +1,4 @@
-/**
- * Validate a plugin directory without the app
- * (`docs/design/plugin-hostapi-protocol.md` §9.7 P2, §10.2).
- *
- * Three steps, each a list of report rows:
- *
- *  1. THE MANIFEST — the host's own schema and hardening pass, the protocol
- *     this build serves, and the first app version that served it.
- *  2. THE PROTOCOL — the plugin spawned as a plain child process the validator
- *     owns, attached to the validation-only session entry with the validation
- *     host, and driven through the sequence the host itself uses: construct
- *     first, then start, `onPublished`, `server/discover`, `tools/list`, each
- *     tool, an unknown-method probe, the stop hook alone, and stdin closed with
- *     no termination. An `entry` plugin runs in the reference runtime; a
- *     `process` plugin runs its own executable, launched as P3's
- *     `resolveProcessLaunch` builds it. No sandbox (decision 30): confinement
- *     is the host suite's to prove, and the report says so for a `process`
- *     plugin rather than implying it.
- *  3. SOURCE DRIFT — what the code names against what the manifest declares.
- *
- * EVERY AWAITED STEP IS BOUNDED, HERE. The session is driven directly, so the
- * runtime's own timeout owners never run, and the transport sets no timer on a
- * call without a deadline: without these bounds one silent child would hang
- * the validator and the CI job running it. The values are the runtime's
- * (`TOOL_TIMEOUT_POLICY`), so a plugin that passes here fits inside the bounds
- * the app applies. An expiry fails its row, aborts the run — which tears the
- * session down and ends the child — and every later row is reported not
- * exercised.
- *
- * CLEANUP IS UNCONDITIONAL. Whatever happened — a construct that never
- * answered, an opener that refused before any frame, a spawn that produced no
- * process — the finalizer ends the child through the CLI's own link, waits a
- * bounded time for its exit, and reports `protocol.teardown`.
- */
+/** Validate manifest, protocol and source drift; teardown always reports and releases owned child resources. */
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdtempSync, realpathSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -65,27 +32,17 @@ import {
 import { failed, notExercised, passed, type ReportRow } from "./report.js";
 import { scanSourceDrift } from "./source-drift.js";
 
-/** What `--fast` caps every protocol bound at, except the teardown wait. */
 const FAST_BOUND_MS = 1_000;
 
-/** How long a closed stdin may take to end the child (§10.1 item 3). */
+/** Bound the wait for stdin closure to end the child. */
 const STDIN_CLOSE_EXIT_MS = 5_000;
 
-/**
- * How long the finalizer waits for the exit after starting termination: the
- * kill grace plus 2 s for the SIGKILL and its `exit` event. Not capped by
- * `--fast` — a shorter wait would end before the escalation it reports on.
- */
+/** Teardown waits through signal escalation; fast mode must not cut it shorter. */
 export const VALIDATION_TEARDOWN_WAIT_MS = 5_000;
 
-/**
- * How long the finalizer collects output still in flight on an exited child's
- * pipes before releasing them. Short: it waits only on bytes already written,
- * or on a descendant that holds a pipe and is never waited for.
- */
+/** Bound post-exit pipe draining so descendants cannot hold the CLI open. */
 const VALIDATION_OUTPUT_DRAIN_MS = 500;
 
-/** `promise`'s value, or `undefined` once `ms` pass first. */
 async function within<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -100,10 +57,8 @@ async function within<T>(promise: Promise<T>, ms: number): Promise<T | undefined
   }
 }
 
-/** The method the unknown-method probe sends; no host or child serves it. */
 const UNKNOWN_METHOD = "ave/host/validate.unknownMethod";
 
-/** The MCP requests whose frames must carry MCP's per-request metadata. */
 const MCP_REQUEST_METHODS: ReadonlySet<string> = new Set([
   "server/discover",
   "tools/list",
@@ -111,54 +66,40 @@ const MCP_REQUEST_METHODS: ReadonlySet<string> = new Set([
   "resources/read",
 ]);
 
-/** A command line the validator spawns, unconfined. */
 export interface ValidationLaunch {
   readonly command: string;
   readonly args: readonly string[];
   readonly env: Readonly<Record<string, string>>;
 }
 
-/**
- * How the plugin's process is produced: the production factory's own launch
- * union (decision 33), so construct's `entryPath` is derived here exactly as
- * the factory derives it.
- */
+/** Use the production launch union so construct names the same executable or module. */
 type PluginLaunch = OutOfProcessPluginSpec["launch"];
 
-/**
- * What construct carries as `entryPath`: the plugin's real JS module for an
- * `entry` launch, the resolved command path for a `process` launch.
- */
+/** Construct names the plugin module for entry launches and executable for process launches. */
 function constructEntryPath(launch: PluginLaunch): string {
   return launch.kind === "entry" ? launch.entryPath : launch.command;
 }
 
-/** `tools/call` arguments by tool name, from `--tool-args`. */
 export type ToolArguments = Readonly<Record<string, Readonly<Record<string, unknown>>>>;
 
 export interface ProtocolCheckOptions {
   readonly pluginRoot: string;
   readonly pluginDataDir: string;
-  /** How the child was produced; construct's `entryPath` comes from it. */
   readonly pluginLaunch: PluginLaunch;
   readonly fast: boolean;
   readonly toolArgs: ToolArguments;
-  /** The child's stderr — its diagnostics, never the report. Drained when absent. */
+  /** Stderr is child diagnostics, never report output; always drain it. */
   readonly onChildStderr?: (chunk: Buffer) => void;
 }
 
 export interface ProtocolRun {
   readonly rows: readonly ReportRow[];
-  /** What the CLI's link recorded, from the spawn on. */
   readonly record: ValidationChildRecord;
-  /** The run's one cancellation, as handed to the session. */
   readonly signal: AbortSignal;
 }
 
-/** Thrown into the step sequence to stop it; the rows say why. */
 class RunHalted extends Error {}
 
-/** The protocol rows, in the order they run, before the always-reported teardown. */
 function plannedProtocolRows(manifest: PluginManifest): string[] {
   return [
     "protocol.construct",
@@ -176,7 +117,6 @@ function plannedProtocolRows(manifest: PluginManifest): string[] {
   ];
 }
 
-/** The runtime's `start` bound: the declared timeout clamped to the maximum, else the default. */
 function startBoundMs(manifest: PluginManifest): number {
   return Math.min(
     manifest.startupTimeoutMs ?? TOOL_TIMEOUT_POLICY.pluginStartupDefaultMs,
@@ -184,7 +124,6 @@ function startBoundMs(manifest: PluginManifest): number {
   );
 }
 
-/** Every line is one JSON object ended by `0x0A`, and nothing else is on stdout. */
 function stdoutDisciplineRow(stdout: readonly Buffer[]): ReportRow {
   const check = "protocol.stdout-discipline";
   const bytes = Buffer.concat(stdout);
@@ -210,7 +149,6 @@ function stdoutDisciplineRow(stdout: readonly Buffer[]): ReportRow {
   return passed(check, `${lines.length} line(s), each one JSON object ended by 0x0A`);
 }
 
-/** Every MCP request frame the host sent carries both keys MCP requires. */
 function requestMetaRow(hostFrames: ReadonlyArray<Record<string, unknown>>): ReportRow {
   const check = "protocol.request-meta";
   const requests = hostFrames.filter(
@@ -234,7 +172,6 @@ function requestMetaRow(hostFrames: ReadonlyArray<Record<string, unknown>>): Rep
   return passed(check, `${requests.length} MCP request frame(s), each with both _meta keys`);
 }
 
-/** `server/discover` speaks this MCP revision and advertises tools when there are any. */
 function discoverRow(manifest: PluginManifest, result: unknown): ReportRow {
   const check = "discover.capabilities";
   const body = result as { supportedVersions?: unknown; capabilities?: { tools?: unknown } } | undefined;
@@ -248,7 +185,6 @@ function discoverRow(manifest: PluginManifest, result: unknown): ReportRow {
   return passed(check, `speaks ${MCP_PROTOCOL_VERSION}`);
 }
 
-/** `tools/list` returns exactly the manifest's tools. */
 function toolsListRow(manifest: PluginManifest, result: unknown): ReportRow {
   const check = "tools.list";
   const listed = (result as { tools?: unknown } | undefined)?.tools;
@@ -261,18 +197,12 @@ function toolsListRow(manifest: PluginManifest, result: unknown): ReportRow {
   return passed(check, `${names.length} tool(s), exactly the manifest's`);
 }
 
-/** Whether a tool's input schema requires any property. */
 function requiresArguments(inputSchema: unknown): boolean {
   const required = (inputSchema as { required?: unknown } | undefined)?.required;
   return Array.isArray(required) && required.length > 0;
 }
 
-/**
- * Drive the protocol over a child that was spawned in the same turn.
- *
- * Takes the child rather than a command so a caller can hold the one
- * instance — which is how a test replaces its `kill` with Node's refusal path.
- */
+/** Accept an already-spawned child so callers can observe or inject signal behavior on that exact instance. */
 export async function runProtocolChecksOnChild(
   child: ChildProcess,
   manifest: PluginManifest,
@@ -298,11 +228,7 @@ export async function runProtocolChecksOnChild(
     throw new RunHalted(why);
   };
 
-  /**
-   * Race one operation against its bound. On expiry the row fails, the run is
-   * aborted — the session turns that into its teardown — and the sequence
-   * stops. A rejection is the caller's to read.
-   */
+  /** Deadline failure records a row, aborts the session and stops later checks. */
   const bounded = async <T>(check: string, boundMs: number, operation: () => Promise<T>): Promise<T> => {
     const ms = options.fast ? Math.min(boundMs, FAST_BOUND_MS) : boundMs;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -310,7 +236,7 @@ export async function runProtocolChecksOnChild(
       timer = setTimeout(() => settle({ expired: true }), ms);
     });
     const work = operation();
-    // Settles after an abort, with nobody waiting for it any more.
+    // Observe settlement after abort even when the caller stopped waiting.
     work.catch(() => undefined);
     try {
       const outcome = await Promise.race([work.then((value) => ({ value })), expired]);
@@ -341,9 +267,7 @@ export async function runProtocolChecksOnChild(
       );
     } catch (error) {
       if (error instanceof RunHalted) throw error;
-      // The session refuses a construct reply whose `pluginProtocol.requires`
-      // names a method it did not advertise: construct answered, and what it
-      // answered is the failure.
+      // Unsatisfied construct requirements fail at the session boundary.
       if (error instanceof IncompatibleHostProtocolError && "missingCapabilities" in error.detail) {
         report(passed("protocol.construct", "construct answered"));
         report(
@@ -386,8 +310,7 @@ export async function runProtocolChecksOnChild(
       report(passed(check, `${name} answered`));
     };
     await lifecycle("lifecycle.start", session.instance.start?.bind(session.instance), "start");
-    // Validator-only policy: the runtime awaits `onPublished` unbounded, so
-    // this bound is the validator refusing to hang on it, not parity.
+    // Only validation bounds onPublished; production runtime intentionally awaits it without this ceiling.
     await lifecycle(
       "lifecycle.on-published",
       session.instance.onPublished?.bind(session.instance),
@@ -443,7 +366,7 @@ export async function runProtocolChecksOnChild(
       report(failed("protocol.unknown-method", errorMessage(error)));
     }
 
-    // The stop hook alone: it neither closes the channel nor terminates.
+    // Stop runs the hook without closing or terminating the channel.
     if (!session.construction.lifecycleHooks.includes("stop")) {
       report(notExercised("lifecycle.stop", "the plugin implements no stop hook"));
     } else {
@@ -456,27 +379,20 @@ export async function runProtocolChecksOnChild(
       }
     }
 
-    // What a crashed host looks like to the child: stdin ends, and nothing
-    // else happens. The child must leave on its own.
+    // Stdin EOF simulates host loss; the child must exit without another action.
     record.note("close-input");
     session.channel.closeInput();
     const exit = await bounded("protocol.stdin-close", STDIN_CLOSE_EXIT_MS, () => session.channel.exited);
     report(passed("protocol.stdin-close", `exited on stdin close: ${exit}`));
-    // After an observed exit this releases the host side and terminates nothing.
+    // After observed exit release host resources without signaling.
     await session.teardown("validation finished");
 
-    // `exit` can arrive before the last of stdout has been read.
     await bounded("protocol.stdout-discipline", STDIN_CLOSE_EXIT_MS, () => record.stdoutEnded);
     report(stdoutDisciplineRow(record.stdout));
     report(requestMetaRow(record.hostFrames));
   };
 
-  /**
-   * Give up every handle the run holds on the child, so the run's end never
-   * waits on anyone else's. A descendant the plugin started inherits the
-   * child's pipes, and holds them open after the child itself has left: the
-   * CLI must not stay alive for as long as that descendant does.
-   */
+  /** Release every owned handle so descendant-held pipes cannot keep the CLI alive. */
   const releaseChild = (): void => {
     child.stdin?.destroy();
     child.stdout?.destroy();
@@ -484,20 +400,13 @@ export async function runProtocolChecksOnChild(
     child.unref();
   };
 
-  /**
-   * Runs on every path, including an opener that rejected with no session:
-   * abort the run (a live session tears down), start the link's one
-   * termination sequence unless the child already left, wait a bounded time
-   * for the exit, collect what is still in flight on its pipes for a bounded
-   * time, and release them.
-   */
+  /** Always abort, initiate one termination, await bounded exit, drain remaining bytes and release pipes. */
   const finalize = async (): Promise<ReportRow> => {
     controller.abort(new Error("validation finished"));
     if (record.exitObserved() === undefined) link.terminate("validation finished");
     const exit = await within(record.exited, VALIDATION_TEARDOWN_WAIT_MS);
     if (exit !== undefined) {
-      // The last bytes of an exited child are read after its `exit`; a pipe a
-      // descendant still holds never ends, and is cut at the bound.
+      // Bound draining because exited-child pipes can remain open in descendants.
       await within(Promise.all([record.stdoutEnded, stderrEnded]), VALIDATION_OUTPUT_DRAIN_MS);
     }
     releaseChild();
@@ -525,7 +434,6 @@ export async function runProtocolChecksOnChild(
   return { rows: [...ordered, teardownRow], record, signal: controller.signal };
 }
 
-/** Spawn `launch` as a plain, unconfined child and drive the protocol over it. */
 export async function runProtocolChecks(
   launch: ValidationLaunch,
   manifest: PluginManifest,
@@ -539,15 +447,11 @@ export async function runProtocolChecks(
   return await runProtocolChecksOnChild(child, manifest, options);
 }
 
-/** A JSON pointer into `plugin.json` for a field of the Ave extension. */
 function extensionPointer(...segments: string[]): string {
   return `#/extensions/${AVE_EXTENSION_NAMESPACE}/${segments.join("/")}`;
 }
 
-/**
- * The runtime's containment rule for an `entry`, on real paths: a relative
- * path to a file inside the plugin's own directory.
- */
+/** Apply realpath containment to relative entry files inside the plugin directory. */
 function entryLaunchRow(pluginRoot: string, entry: string): { row: ReportRow; launch?: PluginLaunch } {
   const entryPointer = extensionPointer("entry");
   const candidate = resolve(pluginRoot, entry);
@@ -567,14 +471,7 @@ function entryLaunchRow(pluginRoot: string, entry: string): { row: ReportRow; la
   return { row: passed("manifest.entry", entry, entryPointer), launch: { kind: "entry", entryPath } };
 }
 
-/**
- * A `process` entry resolved by the runtime's own builder against this
- * directory and the run's data directory: the command a regular file inside
- * the plugin, every `${PLUGIN_ROOT}/…` path an existing file or directory
- * inside it, every `${PLUGIN_DATA}…` path inside the data directory, the
- * declared names outside the reserved set — the rules hardening cannot check
- * without the files.
- */
+/** Resolve process launch with the runtime builder so rooted files and environment obey production rules. */
 function processLaunchRow(
   manifest: PluginManifest,
   pluginRoot: string,
@@ -592,7 +489,6 @@ function processLaunchRow(
   }
 }
 
-/** The manifest step: rows, and the manifest when it parsed. */
 async function checkManifest(
   pluginRoot: string,
   pluginDataDir: string,
@@ -644,12 +540,7 @@ async function checkManifest(
   return resolved.launch === undefined ? { rows, manifest } : { rows, manifest, launch: resolved.launch };
 }
 
-/**
- * What a `process` plugin's report says the validator did not prove, as rows
- * that are never passed: the app runs that executable only under an OS
- * sandbox that confines processes, and only from a sha256-pinned install —
- * neither of which a source directory run outside the app can show.
- */
+/** Source-directory validation proves neither runtime confinement nor pinned provenance; report both as unmeasured. */
 function processEntryRows(): ReportRow[] {
   const processPointer = extensionPointer("process");
   return [
@@ -670,7 +561,7 @@ function processEntryRows(): ReportRow[] {
   ];
 }
 
-/** The `sandbox.grants` row: declared grants are never applied here. */
+/** Never apply declared sandbox grants during validation. */
 function sandboxGrantsRow(manifest: PluginManifest): ReportRow {
   const grants = [...(manifest.sandbox?.read ?? []), ...(manifest.sandbox?.write ?? [])];
   if (grants.length === 0) {
@@ -684,24 +575,14 @@ function sandboxGrantsRow(manifest: PluginManifest): ReportRow {
 }
 
 export interface ValidateOptions {
-  /** The reference runtime's child entry (`ave-plugin-child-main.js`). */
   readonly childEntry: string;
-  /** Prepended to the child's `process.execPath` invocation. */
   readonly childExecArgs: readonly string[];
   readonly fast: boolean;
   readonly toolArgs: ToolArguments;
   readonly onChildStderr?: (chunk: Buffer) => void;
 }
 
-/**
- * The command line that runs the plugin, unconfined. An `entry` plugin runs in
- * the reference runtime, which constructs the plugin from the entry construct
- * names; a `process` plugin is its own resolved command and arguments.
- *
- * `ELECTRON_RUN_AS_NODE` because `process.execPath` is the Electron binary
- * when the validator itself runs under Electron, as it does in the app's test
- * runner; plain Node ignores it.
- */
+/** Run unconfined with node-mode enabled when the executable is the desktop binary. */
 function validationLaunch(options: ValidateOptions, launch: PluginLaunch): ValidationLaunch {
   if (launch.kind === "entry") {
     return {
@@ -710,30 +591,16 @@ function validationLaunch(options: ValidateOptions, launch: PluginLaunch): Valid
       env: buildSafeChildEnv({ ELECTRON_RUN_AS_NODE: "1" }),
     };
   }
-  // The pairs `resolveProcessLaunch` built — the declared ones, then the
-  // host-owned PLUGIN_ROOT and PLUGIN_DATA — over the same safe base the app's
-  // `env(1)` applies them to inside its wrap.
+  // Use declared pairs followed by authoritative host root/data pairs over the safe launch environment.
   return { command: launch.command, args: launch.args, env: buildSafeChildEnv({ ...launch.env }) };
 }
 
-/**
- * Validate the plugin in `dir`: the manifest, then the protocol over a child
- * the validator spawns, then the source drift.
- *
- * Both entry kinds reach the protocol step. A `process` plugin's own
- * executable is spawned unconfined, as decision 30 has the validator do, and
- * its report says confinement and provenance were not exercised; on win32,
- * where the app never runs one, its protocol step is not exercised and the
- * manifest and source checks still run.
- */
+/** Process validation without runtime support leaves protocol unmeasured while manifest and source checks still run. */
 export async function validatePluginDirectory(dir: string, options: ValidateOptions): Promise<ReportRow[]> {
   const pluginRoot = realpathSync(dir);
-  // Created before the manifest step: a `process` entry's `${PLUGIN_DATA}`
-  // paths resolve against it there, and the protocol step runs against it.
+  // Create temporary data before resolving process placeholder paths.
   const pluginDataDir = mkdtempSync(join(tmpdir(), "ave-plugin-validate-"));
-  // The child writes this directory. Until its exit is observed it may still
-  // be running, and a recursive delete would race it (a link swapped in
-  // mid-walk turns the delete onto outside files); the directory is then left.
+  // Leave data if exit was not observed; deleting a live child-writable tree permits link-swap escapes.
   let childMayStillRun = false;
   try {
     const checked = await checkManifest(pluginRoot, pluginDataDir);

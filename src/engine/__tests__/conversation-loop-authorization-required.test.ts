@@ -186,9 +186,7 @@ describe("ConversationLoop authorization-required terminal", () => {
       { inputOrigin: "user-keyboard", unattendedAuthority: issueUnattendedTurnAuthority() },
     );
 
-    // The same fixture ask that terminates a plain windowless turn is answered
-    // on the routine lane here: a structured denial the model sees, no
-    // approval request, and no authorization-required terminal.
+    // Routine turns receive a model-visible denial without requesting interactive approval.
     expect(result.stopReason).toBe("end_turn");
     expect(result.authorizationRequired).toBeUndefined();
     expect(providerCalls).toBe(2);
@@ -232,8 +230,7 @@ describe("ConversationLoop authorization-required terminal", () => {
       },
     )).rejects.toThrow(/unattended authority this host did not issue/);
 
-    // A genuine authority is spent by its first turn; the retained loop's
-    // later turns cannot reuse the same object.
+    // A retained loop cannot reuse an authority already spent by an earlier turn.
     const provider: LLMProvider = {
       vendor: "openai",
       async *streamTurn(): AsyncIterable<StreamEvent> {

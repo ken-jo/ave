@@ -1,23 +1,9 @@
-/**
- * PluginUiHostView unit tests.
- *
- * Covers the loading-state lifecycle for non-webview paths and the
- * useEffect guard that prevents `loading=true` when no webview is rendered.
- *
- * Note: the webview race-guard (handleWebviewRef + isLoading()) cannot be
- * exercised in jsdom because Electron's <webview> tag is a native custom
- * element without a hyphen (customElements.define rejects "webview"). The
- * race-guard itself is tested at the integration level via the Electron
- * e2e suite. These unit tests cover the useEffect logic paths that are
- * fully exercisable in jsdom.
- */
+/** Native webview behavior cannot be exercised in jsdom; customElements rejects the hyphenless tag. */
 import "../../../../test/renderer/setup.js";
 import { describe, it, expect, afterEach } from "vitest";
 import { render } from "@testing-library/react";
 import { PluginUiHostView } from "../../../plugin-ui-host.js";
 import type { PluginUiExtensionView } from "../../../plugin-ui-host.js";
-
-// ─── aveApi stub ────────────────────────────────────────────────────────────
 
 function stubAveApi(shellUrl = "file:///dist/src/plugin-ui-shell.html", preloadUrl = "file:///dist/src/plugin-preload.cjs") {
   (window as unknown as Record<string, unknown>).aveApi = {
@@ -29,8 +15,6 @@ function stubAveApi(shellUrl = "file:///dist/src/plugin-ui-shell.html", preloadU
 afterEach(() => {
   delete (window as unknown as Record<string, unknown>).aveApi;
 });
-
-// ─── Fixture ──────────────────────────────────────────────────────────────────
 
 function makeView(overrides: Partial<PluginUiExtensionView> = {}): PluginUiExtensionView {
   return {
@@ -48,8 +32,6 @@ function makeView(overrides: Partial<PluginUiExtensionView> = {}): PluginUiExten
   };
 }
 
-// ─── Tests ───────────────────────────────────────────────────────────────────
-
 describe("PluginUiHostView — loading state", () => {
   it("does NOT show loading overlay when view is null", () => {
     stubAveApi();
@@ -64,9 +46,8 @@ describe("PluginUiHostView — loading state", () => {
   });
 
   it("holds the loading overlay, not the not-found error, while the plugin prepares", () => {
-    // A plugin whose runtime is still starting has no registered view yet. The
-    // user picked this destination a moment ago; "not found" is the wrong
-    // answer to a wait, and it is what made a first-run panel look broken.
+    // A plugin whose runtime is still starting has no registered view yet. The user picked this destination a moment ago; "not
+    // found" is the wrong answer to a wait, and it is what made a first-run panel look broken.
     stubAveApi();
     const { getByText, queryByText } = render(<PluginUiHostView view={null} preparing />);
     expect(getByText("로딩 중...")).toBeTruthy();
@@ -105,10 +86,7 @@ describe("PluginUiHostView — loading state", () => {
   });
 
   it("names the plugin nowhere — the pane's frame does that", () => {
-    // The label and the description used to be a page header the host drew
-    // above the guest. Inside a pane they are the FRAME's title and its
-    // tooltip, so drawing them here too would name the plugin twice, 36px
-    // apart, and put a second box inside the frame's outline.
+    // The pane frame owns plugin title and description tooltip; do not repeat them above the guest.
     stubAveApi();
     const { container, queryByText } = render(<PluginUiHostView view={makeView()} />);
 

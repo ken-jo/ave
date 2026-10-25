@@ -1,10 +1,3 @@
-/**
- * Session-tasks IPC boundary — the conversation is named, never resolved.
- *
- * The window can hold several conversations at once, so an unnamed call has no
- * answer. These cover the rejection and the fact that no loop is consulted for
- * one, which is what keeps a clear from emptying a tile the caller never meant.
- */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { sessionUuid } from "../../../__tests__/support/session-uuid.js";
 import { CHANNELS } from "../../../contract/app-contract.js";
@@ -67,9 +60,7 @@ describe("session-tasks IPC", () => {
     expect(store.clear).toHaveBeenCalledWith(TILE_SESSION);
   });
 
-  // A refusal in the channel's own shape, not a throw: the panel's read is
-  // fire-and-forget, so a rejected promise would surface as an unhandled
-  // rejection rather than as an answer.
+  // Return a refusal envelope; the panel's fire-and-forget read would leave a rejected promise unhandled.
   it.each([
     ["nothing at all", undefined],
     ["whitespace", "   "],

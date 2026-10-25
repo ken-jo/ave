@@ -1,15 +1,4 @@
-/**
- * The `params` axis of every hostApi path, held to the signature it names.
- *
- * A request's params object is keyed by the member's parameter names (§3.3),
- * and those names live in two places: the member's declaration in
- * `public-contract.ts`, which plugin authors read, and the `params` list in
- * `HOSTAPI_PATH_CONTRACTS`, which the wire is built from. Nothing but this test
- * makes the two agree. Read with the TypeScript compiler, not a regex, because
- * a member can sit behind a named interface (`storage` is a `PluginStorage`),
- * inside an inline object type (`config`, `authRedirect`, `agentApproval`), or
- * be declared more than once as overloads (`openAuthWindow`).
- */
+/** Wire params must match actual member parameter names, including nested interfaces and overloads. */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -21,7 +10,6 @@ import { HOSTAPI_PATH_CONTRACTS, type HostApiPath } from "../host-api-wire.js";
 
 const PUBLIC_CONTRACT = fileURLToPath(new URL("../../public-contract.ts", import.meta.url));
 
-/** The shapes of node this walk reads, narrowed from the compiler's own. */
 interface NamedNode extends Node {
   readonly name?: { readonly text?: string };
 }
@@ -35,12 +23,7 @@ interface ContainerNode extends NamedNode {
   readonly typeName?: { readonly text?: string };
 }
 
-/**
- * Every declared parameter-name list, by dotted path, for the members of
- * `PluginHostApi`. One entry per path that resolves; a path whose overloads
- * disagree about their names throws, because the params object would then have
- * no single right key.
- */
+/** Enumerate each member signature; overloads with incompatible param names cannot share one wire shape. */
 function declaredParameterNames(sourceFile: SourceFile): Map<string, readonly string[]> {
   const declarations = new Map<string, ContainerNode>();
   for (const statement of sourceFile.statements as readonly ContainerNode[]) {
@@ -53,7 +36,6 @@ function declaredParameterNames(sourceFile: SourceFile): Map<string, readonly st
     }
   }
 
-  /** The members of an interface, an inline object type, or a named reference to either. */
   const membersOf = (node: ContainerNode | undefined): readonly MemberNode[] => {
     if (!node) return [];
     if (node.kind === SyntaxKind.InterfaceDeclaration || node.kind === SyntaxKind.TypeLiteral) {
@@ -97,8 +79,7 @@ let workDir: string;
 let declared: Map<string, readonly string[]>;
 
 beforeAll(() => {
-  // A one-file project: the walk reads syntax only, so nothing is resolved and
-  // no lib is loaded, which keeps the compiler's start-up to the one file.
+  // Read syntax in a one-file project without resolving imports or loading libraries.
   workDir = mkdtempSync(join(tmpdir(), "host-api-path-params-"));
   const tsconfig = join(workDir, "tsconfig.json");
   writeFileSync(
@@ -132,8 +113,7 @@ describe("the params axis", () => {
   });
 
   it("reads through a named interface, an inline object type and an overload set", () => {
-    // The three shapes a member hides behind. A walk that missed one would
-    // leave those paths compared against nothing, so each is pinned here.
+    // Positive controls cover every nested-member syntax so omissions cannot pass vacuously.
     expect(declared.get("storage.write")).toEqual(["relPath", "data", "encoding"]);
     expect(declared.get("authRedirect.wait")).toEqual(["options"]);
     expect(declared.get("openAuthWindow")).toEqual(["options"]);

@@ -1,16 +1,3 @@
-/**
- * Theme system v2 — ThemeProvider unit tests.
- *
- * Covers:
- *  - applyBundleToDocument() writes data-theme-bundle + data-shell + class
- *  - resolveSystemPair() picks the theme of a pair whose shell matches matchMedia
- *  - <ThemeProvider> hydrates bundleId from settings (v2 shape)
- *  - setBundle persists + updates DOM
- *  - followSystem (a theme with a declared pair) persists + tracks OS scheme
- *  - bundleToPluginTokens() returns correct token map
- *  - useTheme outside provider throws
- *  - useOptionalTheme returns null without provider
- */
 import "../../../../test/renderer/setup.js";
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { act, render, waitFor } from "@testing-library/react";
@@ -49,7 +36,6 @@ const INSTALLED_THEMES: ThemeBundle[] = [
 afterEach(() => {
   document.documentElement.removeAttribute("data-theme-bundle");
   document.documentElement.removeAttribute("data-shell");
-  // Remove all ave-bundle-* classes
   Array.from(document.documentElement.classList)
     .filter((c) => c.startsWith("ave-bundle-"))
     .forEach((c) => document.documentElement.classList.remove(c));
@@ -159,8 +145,8 @@ describe("<ThemeProvider>", () => {
         <Probe onValue={(v) => seen.push(v.bundleId)} />
       </ThemeProvider>,
     );
-    // The selected id and the DOM write land in separate commits: the bundle
-    // is applied after the commit that set the id, so wait for both.
+    // The selected id and the DOM write land in separate commits: the bundle is applied after the commit that set the id, so
+    // wait for both.
     await waitFor(() => {
       expect(seen).toContain("midnight");
       expect(document.documentElement.getAttribute("data-theme-bundle")).toBe("midnight");
@@ -208,8 +194,8 @@ describe("<ThemeProvider>", () => {
   });
 
   it("names as applied only the theme :root holds, at every commit of a switch", async () => {
-    // A layout effect runs before the provider's write: it sees what a consumer that
-    // copies the theme at commit (an MCP app's first context) would.
+    // A layout effect runs before the provider's write: it sees what a consumer that copies the theme at commit (an MCP app's
+    // first context) would.
     const seen: Array<{ applied: string; root: string | null }> = [];
     let setter: ((id: string) => void) | null = null;
     function Watch() {
@@ -382,8 +368,8 @@ describe("<ThemeProvider>", () => {
   });
 
   describe("a theme package updated in place (same id)", () => {
-    // Updating a theme in the marketplace reloads the installed content: the
-    // registry gets new bundle objects under the same ids.
+    // Updating a theme in the marketplace reloads the installed content: the registry gets new bundle objects under the same
+    // ids.
     const reload = (themes: ThemeBundle[]) => act(() => { applyInstalledContent(installedThemeContent(themes), NO_LANGUAGE_BRIDGE); });
 
     async function showing(id: string, themes: ThemeBundle[], followSystem = false) {

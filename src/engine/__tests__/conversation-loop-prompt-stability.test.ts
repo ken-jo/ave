@@ -1,9 +1,4 @@
-/**
- * The system prompt is a reusable prefix: two consecutive turns of one session
- * send it byte-for-byte identical, even though the clock moved, the input
- * changed, and the memory notes ranked against that input differ. What does
- * change per turn travels as a request-only row after the conversation.
- */
+// Keep the cached prompt stable; varying turn facts belong in request-only content.
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { InputClassifier } from "../../core/input-classifier.js";
@@ -55,14 +50,12 @@ function makeLoop(provider: LLMProvider): { loop: ConversationLoop; builder: Sys
   return { loop, builder };
 }
 
-/** The request-only text a row carries: its trailing `requestOnlyParts` parts. */
 function requestOnlyText(row: GenericMessage): string {
   const n = row.meta?.requestOnlyParts ?? 0;
   if (n === 0 || row.role !== "user" || typeof row.content === "string") return "";
   return row.content.slice(-n).map((p) => (p.type === "text" ? p.text : "")).join("\n");
 }
 
-/** The row as the next request repeats it: request-only parts removed. */
 function withoutRequestOnly(row: GenericMessage): GenericMessage {
   const n = row.meta?.requestOnlyParts ?? 0;
   if (n === 0 || row.role !== "user" || typeof row.content === "string") return row;
@@ -101,7 +94,6 @@ describe("system prompt stability across turns", () => {
     expect(Buffer.from(second.systemPrompt, "utf8").equals(Buffer.from(first.systemPrompt, "utf8"))).toBe(true);
     expect(first.systemPrompt).not.toContain("Time:");
     expect(first.systemPrompt).not.toContain("note ranked for");
-    // Stable host facts stay in the cached prompt; only the clock moved out.
     expect(first.systemPrompt).toContain("<environment>");
   });
 
@@ -124,7 +116,6 @@ describe("system prompt stability across turns", () => {
     expect(staged.systemPrompt).toBe(first.systemPrompt);
     expect(first.systemPrompt).not.toContain("Release planning");
     expect(first.systemPrompt).not.toContain("overlay-trigger-origin-guidance");
-    // Both now ride in the turn context of the turn they belong to.
     expect(requestOnlyText(second.messages.at(-1)!)).toContain("Release planning");
     expect(requestOnlyText(second.messages.at(-1)!)).not.toContain("overlay-trigger-origin-guidance");
     expect(requestOnlyText(staged.messages.at(-1)!)).toContain("<overlay-trigger-origin-guidance");
@@ -144,19 +135,16 @@ describe("system prompt stability across turns", () => {
     const [first, second] = provider.requests as [StreamTurnParams, StreamTurnParams];
     const firstUser = first.messages.at(-1)!;
     const secondUser = second.messages.at(-1)!;
-    // The turn context is extra content inside the turn's own user message,
-    // never a row of its own.
+    // Turn context belongs inside its user message, never in a separate user row.
     expect(firstUser.meta?.requestOnlyParts).toBe(1);
     expect(requestOnlyText(firstUser)).toContain("Time: ");
     expect(requestOnlyText(firstUser)).toContain("note ranked for: plan the release budget");
     expect(requestOnlyText(secondUser)).toContain("note ranked for: now draft the changelog");
-    // Minute precision: no seconds field before the offset.
     expect(requestOnlyText(firstUser)).toMatch(/Time: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}[+-]\d{2}:\d{2} /);
     expectAlternatingUserRows(first.messages);
     expectAlternatingUserRows(second.messages);
 
-    // The first request, without its request-only text, is an exact prefix of
-    // the second: the per-turn text never entered history.
+    // Request-only text must not enter persisted history or alter its reusable prefix.
     expect(second.messages.slice(0, first.messages.length)).toEqual(first.messages.map(withoutRequestOnly));
     expect(loop.history.getMessages().some((m) => m.meta?.requestOnlyParts !== undefined)).toBe(false);
   });

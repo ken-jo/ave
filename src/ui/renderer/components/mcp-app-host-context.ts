@@ -1,53 +1,4 @@
-/**
- * Build the STANDARD ext-apps `McpUiHostContext` for one MCP App card.
- *
- * This is the portability boundary. MCP Apps are 100% standard code: they read
- * `onhostcontextchanged` / `useHostStyles` / `applyHostStyleVariables` and expect
- * the FIXED `McpUiStyleVariableKey` vocabulary (`--color-background-primary`,
- * `--font-text-md-size`, …). The host's own theme tokens are the proprietary
- * `--ave-*` custom properties — those MUST NOT leak to a guest, or the app would
- * only work inside Ave. So this module translates the curated `--ave-*` token
- * map (from `bundleToPluginTokens`) into the standard style-variable keys and
- * emits nothing else Ave-specific.
- *
- * Kept React-free / DOM-free / pure so the real-<webview> e2e gate (which imports
- * the shipping renderer wiring) and unit tests can exercise it without a renderer.
- *
- * ─── Standard types re-declared locally ─────────────────────────────────────
- * The `McpUiTheme` / `McpUiStyleVariableKey` / `McpUiStyles` / `McpUiHostContext`
- * twins below are structurally identical to `@modelcontextprotocol/ext-apps`
- * `spec.types.ts`, but are NOT imported from the package. This is a drift-safety
- * / hygiene choice for TYPES, not a strict compile necessity: a plain type-only
- * import — `import type { McpUiHostContext } from "@modelcontextprotocol/ext-apps"`
- * — DOES typecheck (see the pin below and in
- * `__tests__/mcp-app-host-context.test.ts`), because `skipLibCheck` and the
- * package's `spec.types.js`-suffixed internal re-exports mostly paper over its
- * extensionless `export * from "./types"` chain for pure type positions.
- *
- * What genuinely and reliably fails under `moduleResolution: NodeNext` is
- * VALUE/member-level resolution through that same extensionless chain — e.g.
- * `AppBridge`'s base class `ProtocolWithEvents` is invisible to TypeScript here
- * (the concrete, load-bearing case documented in `mcp-app-bridge.ts`). Combining
- * several spec-type imports from the `/app-bridge` subpath alongside a VALUE
- * import of `AppBridge` from the same subpath did also throw real `TS2460`/
- * `TS2305` errors during this change — a symptom of the same extensionless-chain
- * fragility, just not a blanket "type imports never resolve" rule.
- *
- * Re-declaring the twins here avoids coupling this module's compile-time safety
- * to that resolution-order-dependent behavior, and keeps it free of any package
- * import so it stays trivially portable to the e2e gate. The same rationale the
- * host already applies to `McpUiResourceCsp` in `src/mcp/types.ts`.
- *
- * The drift risk that re-declaration creates is pinned, not asserted: the
- * `anti-drift pin` block in `__tests__/mcp-app-host-context.test.ts` extracts the
- * `McpUiStyleVariableKey` union members from the SHIPPED
- * `node_modules/@modelcontextprotocol/ext-apps/dist/src/spec.types.d.ts` and diffs
- * them against the members of the twin BELOW (read out of this file's own source), so
- * an upstream spec change fails the suite instead of silently drifting. It is a text
- * diff rather than a type-level check precisely because a value/member-level import
- * from that package does not resolve here — the pin cannot depend on the thing that is
- * broken.
- */
+/** Translate host theme tokens into standard MCP UI style variables; proprietary tokens must not leak to guests. */
 
 // `McpUiDisplayMode` is the ONE standard type NOT re-declared below: the host's
 // supported SET (`MCP_APP_AVAILABLE_DISPLAY_MODES`) and the predicate the
@@ -178,19 +129,7 @@ export interface McpUiHostContext {
   };
 }
 
-/**
- * Ordered `[Ave token → standard ext-apps style key]` pairs.
- *
- * A single Ave token may fan out to more than one standard key (see `--ave-ring`
- * below). Only keys whose source token is present in `tokens` are emitted, so any
- * subset is valid per the spec (`McpUiStyles` — "hosts MAY provide any subset").
- *
- * Accent approximation: Ave's brand accent is `--ave-primary`, but the standard
- * vocabulary has no dedicated brand/accent slot. The closest standard bucket is
- * "info", so `--ave-primary` → `--color-background-info` and the focus ring maps
- * to BOTH `--color-ring-primary` and `--color-ring-info` so apps keying on either
- * standard focus token pick up the Ave accent.
- */
+/** Emit only present source tokens; map primary accent to standard info colors and both primary/info focus rings. */
 const TOKEN_TO_STYLE_KEY: ReadonlyArray<readonly [string, McpUiStyleVariableKey]> = [
   // Neutrals
   ["--ave-bg", "--color-background-primary"],
@@ -212,7 +151,6 @@ const TOKEN_TO_STYLE_KEY: ReadonlyArray<readonly [string, McpUiStyleVariableKey]
   ["--ave-warning-fg", "--color-text-warning"],
   ["--ave-success", "--color-background-success"],
   ["--ave-success-fg", "--color-text-success"],
-  // Radius
   ["--ave-radius-xs", "--border-radius-xs"],
   ["--ave-radius-sm", "--border-radius-sm"],
   ["--ave-radius", "--border-radius-md"],
@@ -226,9 +164,8 @@ const TOKEN_TO_STYLE_KEY: ReadonlyArray<readonly [string, McpUiStyleVariableKey]
   ["--ave-weight-normal", "--font-weight-normal"],
   ["--ave-weight-medium", "--font-weight-medium"],
   ["--ave-weight-semibold", "--font-weight-semibold"],
-  // Font family — only present when the user set a custom family (ThemeProvider
-  // writes `--ave-font-family` on the document root). Absent from the curated
-  // bundle token map, so it is emitted only when the caller threads it in.
+  // Font family — only present when the user set a custom family (ThemeProvider writes `--ave-font-family` on the document
+  // root). Absent from the curated bundle token map, so it is emitted only when the caller threads it in.
   ["--ave-font-family", "--font-sans"],
 ];
 
@@ -250,11 +187,8 @@ export interface McpAppHostContextInput {
   displayMode: McpUiDisplayMode;
 }
 
-/**
- * Translate Ave host theme + locale + timezone into the standard
- * `McpUiHostContext`. Emits ONLY standard `McpUiStyleVariableKey` style
- * variables — never a `--ave-*` key.
- */
+/** Translate Ave host theme + locale + timezone into the standard `McpUiHostContext`. Emits ONLY standard
+ * `McpUiStyleVariableKey` style variables — never a `--ave-*` key. */
 export function buildMcpAppHostContext(input: McpAppHostContextInput): McpUiHostContext {
   const { shell, tokens, locale, timeZone, displayMode } = input;
 
@@ -283,9 +217,8 @@ export function buildMcpAppHostContext(input: McpAppHostContextInput): McpUiHost
   };
 
   if (Object.keys(variables).length > 0) {
-    // `McpUiStyles` is declared `Record<key, string | undefined>` but the spec
-    // states hosts MAY provide any subset, so a partial object is the intended
-    // shape. Narrow the accumulator to the standard type at this single point.
+    // `McpUiStyles` is declared `Record<key, string | undefined>` but the spec states hosts MAY provide any subset, so a
+    // partial object is the intended shape. Narrow the accumulator to the standard type at this single point.
     context.styles = { variables: variables as McpUiStyles };
   }
 

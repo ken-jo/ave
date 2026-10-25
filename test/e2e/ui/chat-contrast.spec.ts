@@ -3,39 +3,8 @@ import { BUNDLE_IDS } from '../../../src/shared/theme-bundles.js';
 import type { BundleId } from '../../../src/shared/theme-bundles.js';
 import { relativeLuminance } from '../../contrast-helpers.js';
 
-/**
- * Chat-surface text contrast — WCAG AA regression guard for every shipped
- * theme bundle.
- *
- * Why this spec was updated (2026-05-08):
- *   PR #613 replaced the tri-axis model (shell × chatTheme × codeTheme) with
- *   single-selection bundles. The previous spec iterated `data-theme` ×
- *   `data-chat-theme` attributes — those attributes are still written by
- *   ThemeProvider for SDK compat, but the authoritative selector is now
- *   `data-theme-bundle`. Iterating only the legacy axes produced a 12-combo
- *   matrix that was entirely a no-op (ThemeProvider v2 ignores those writes
- *   when a `data-theme-bundle` is already set). This spec now iterates every
- *   shipped bundle via `data-theme-bundle` — matching what ThemeProvider does
- *   at runtime.
- *
- * Strategy:
- *   1. Boot the Electron renderer (existing fixture).
- *   2. For every bundle in `BUNDLE_IDS` (length is the authoritative count;
- *      this spec self-extends when a new bundle is added to the registry):
- *      a. Write `data-theme-bundle="<id>"` on <html> — identical to ThemeProvider.
- *      b. Inject a synthetic assistant bubble with the runtime class chain
- *         (`prose prose-sm ave-prose`).
- *      c. Read computed color + painted background for body text and inline code.
- *      d. Assert WCAG AA contrast ratio >= 4.5:1.
- *   3. Assert row count == `BUNDLE_IDS.length` so a renderer-side filter or
- *      early-return regression that silently drops a bundle still fails here.
- */
+// Measure computed contrast for every shipped theme bundle, not legacy theme attributes.
 
-/* ───────────────────────────────────────────────────────────────────────
- *  WCAG contrast helpers (run inside page context)
- * ─────────────────────────────────────────────────────────────────────── */
-
-/** Parse "rgb(r, g, b)" / "rgba(r, g, b, a)" into RGBA in 0..1. */
 function rgbToTuple(input: string): [number, number, number, number] {
   const m = input.match(
     /rgba?\(\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)(?:\s*,\s*(\d+(?:\.\d+)?))?/,
@@ -63,10 +32,6 @@ function contrastRatio(fg: string, bg: string): number {
   return (hi + 0.05) / (lo + 0.05);
 }
 
-/* ───────────────────────────────────────────────────────────────────────
- *  Spec
- * ─────────────────────────────────────────────────────────────────────── */
-
 test.describe('Chat surface contrast — WCAG AA across all shipped theme bundles', () => {
   test('every bundle passes contrast >= 4.5:1 for body text and inline code', async ({
     mainWindow,
@@ -93,7 +58,6 @@ test.describe('Chat surface contrast — WCAG AA across all shipped theme bundle
     const rows: RowResult[] = [];
 
     for (const bundle of BUNDLE_IDS) {
-      // 1. Apply bundle — same write ThemeProvider v2 performs at runtime.
       await mainWindow.evaluate(
         ({ bundleId }: { bundleId: string }) => {
           document.documentElement.setAttribute('data-theme-bundle', bundleId);
@@ -101,7 +65,6 @@ test.describe('Chat surface contrast — WCAG AA across all shipped theme bundle
         { bundleId: bundle },
       );
 
-      // 2. Inject a fresh assistant bubble probe so style cascades re-resolve cleanly.
       await mainWindow.evaluate(() => {
         const PROBE_HOST_ID = '__ave_contrast_probe__';
         document.getElementById(PROBE_HOST_ID)?.remove();
@@ -129,7 +92,6 @@ test.describe('Chat surface contrast — WCAG AA across all shipped theme bundle
         document.body.appendChild(host);
       });
 
-      // 3. Read computed colors + backgrounds.
       const probe = await mainWindow.evaluate(() => {
         const body = document.getElementById('__ave_contrast_probe_body__');
         const code = document.getElementById('__ave_contrast_probe_code__');
@@ -193,13 +155,12 @@ test.describe('Chat surface contrast — WCAG AA across all shipped theme bundle
         tdRatio,
       };
       rows.push(row);
-      // 4.5 = WCAG AA Body Text minimum. td uses 0.88 alpha so allow 4.0 lower bound.
+      // Body text requires 4.5 contrast; translucent table cells allow a 4.0 floor.
       if (bodyRatio < 4.5 || codeRatio < 4.5 || strongRatio < 4.5 || thRatio < 4.5 || tdRatio < 4.0) {
         failures.push(row);
       }
     }
 
-    // 4. Cleanup probe so subsequent specs in the same worker don't see it.
     await mainWindow.evaluate(() => {
       document.getElementById('__ave_contrast_probe__')?.remove();
     });
@@ -266,9 +227,7 @@ test.describe('Chat surface contrast — WCAG AA across all shipped theme bundle
         { bundleId: bundle },
       );
 
-      // These are the production class chains from TranscriptRenderer and
-      // ChatComposerDock/Composer. Keeping the probe on the compiled utilities
-      // catches a token that exists in source but is missing from the runtime CSS.
+      // Use production class chains so missing compiled utilities cannot pass token-only checks.
       await mainWindow.evaluate(() => {
         const PROBE_HOST_ID = '__ave_semantic_contrast_probe__';
         document.getElementById(PROBE_HOST_ID)?.remove();

@@ -1,12 +1,4 @@
-/**
- * Host-owned read/write service for the Tailnet observer configuration.
- *
- * The renderer proposes; this decides. Every proposal is re-validated through
- * the same resolver the boot path uses and persisted to `~/.ave/tailnet/`,
- * never to the settings store — the authorization boundary must stay a value a
- * webpage cannot set, which was the property the env-only resolver was
- * protecting.
- */
+// Revalidate renderer proposals with the boot resolver and persist in the tailnet namespace; settings cannot grant this authority.
 import {
   chooseObserverPort,
   configureTailscaleServe,
@@ -37,56 +29,40 @@ import {
 export interface TailnetObserverConfigService {
   snapshot(): Promise<TailnetObserverSnapshot>;
   apply(config: TailnetObserverConfigView): Promise<void>;
-  /** Run the Serve command the owner has just been shown and approved. */
+  // Run the Serve command the owner has just been shown and approved.
   configureServe(): Promise<TailnetServeResult>;
-  /**
-   * Decide and start the whole recommended configuration in one operation.
-   *
-   * Everything the manual form asks for has one defensible answer for a
-   * first-time owner, and the two that could differ per machine — the port and
-   * the web origin — are things the host can read rather than ask about.
-   */
+  // Derive the recommended port and web origin from host state rather than asking the owner.
   guidedSetup(): Promise<TailnetGuidedSetupResult>;
-  /**
-   * Admit — or stop admitting — this desktop's own Tailscale account without an
-   * approval click, taking back what a previous admission granted.
-   */
+  // Admit — or stop admitting — this desktop's own Tailscale account without an approval click, taking back what a previous admission granted.
   setOwnDeviceAdmission(enabled: boolean): Promise<void>;
 }
 
 export interface TailnetObserverConfigServiceOptions {
-  /** Boot already knows whether paired-sharing setup failed; it cannot be re-derived. */
+  // Boot already knows whether paired-sharing setup failed; it cannot be re-derived.
   readonly pairedSharingBootstrapFailed: () => boolean;
-  /** @internal deterministic injection for tests. */
+  // @internal deterministic injection for tests.
   readonly readConfigFile?: () => Promise<TailnetObserverConfigFile | null>;
-  /** @internal deterministic injection for tests. */
+  // @internal deterministic injection for tests.
   readonly writeConfigFile?: (file: TailnetObserverConfigFile) => Promise<void>;
-  /** @internal deterministic injection for tests. */
+  // @internal deterministic injection for tests.
   readonly env?: NodeJS.ProcessEnv;
-  /** @internal deterministic injection for tests. */
+  // @internal deterministic injection for tests.
   readonly runtimeState?: typeof getTailnetObserverRuntimeState;
-  /** @internal deterministic injection for tests. */
+  // @internal deterministic injection for tests.
   readonly probeEnvironment?: () => Promise<TailscaleEnvironment>;
-  /** @internal deterministic injection for tests. */
+  // @internal deterministic injection for tests.
   readonly restartListener?: () => Promise<unknown>;
-  /** @internal deterministic injection for tests. */
+  // @internal deterministic injection for tests.
   readonly runServe?: typeof configureTailscaleServe;
-  /** @internal deterministic injection for tests. */
+  // @internal deterministic injection for tests.
   readonly choosePort?: typeof chooseObserverPort;
-  /** @internal deterministic injection for tests. */
+  // @internal deterministic injection for tests.
   readonly readOwnDeviceAdmission?: () => Promise<boolean>;
-  /** @internal deterministic injection for tests. */
+  // @internal deterministic injection for tests.
   readonly writeOwnDeviceAdmission?: (enabled: boolean) => Promise<void>;
 }
 
-/**
- * The file's own values with defaults filled in — never the merged result.
- *
- * A file that names no authorization gets the identity boundary here because
- * that is what the form offers first, not because the resolver would accept
- * the omission: `provenance.authorization` still reports `unset`, and enabling
- * the listener from such a file is refused until a choice is actually saved.
- */
+// Project file values, not merged overrides; displayed authorization defaults remain unset until explicitly saved.
 function savedView(file: TailnetObserverConfigFile | null): TailnetObserverConfigView {
   return Object.freeze({
     enabled: file?.enabled === true,
@@ -99,12 +75,8 @@ function savedView(file: TailnetObserverConfigFile | null): TailnetObserverConfi
   });
 }
 
-/**
- * The resolved configuration as a view.
- *
- * A resolution of `null` is not an absence of information — it is the observer
- * being OFF — so it flattens to a disabled view rather than to nothing.
- */
+// The resolved configuration as a view. A resolution of `null` is not an absence of information — it is the observer being OFF — so it flattens to a
+// disabled view rather than to nothing.
 function effectiveView(
   resolution: TailnetObserverResolution,
   saved: TailnetObserverConfigView,
@@ -124,18 +96,7 @@ function effectiveView(
   });
 }
 
-/**
- * Project a proposal onto the file schema.
- *
- * `false` and `""` become absent keys rather than persisted negatives, so the
- * file says only what was chosen — the same rule the resolver applies when it
- * projects the file onto the environment's vocabulary.
- *
- * `webOrigin` is not taken from the proposal. It is derived from the MagicDNS
- * name this desktop reports, because an origin retyped by hand is a value that
- * can disagree with the name Tailscale actually serves, and that disagreement
- * shows up as a bare `403` in a remote browser with nothing here to explain it.
- */
+// Persist only chosen values and derive webOrigin from the desktop’s reported DNS identity, never a retyped renderer value.
 function proposalToFile(
   config: TailnetObserverConfigView,
   derivedWebOrigin: string | null,
@@ -148,8 +109,7 @@ function proposalToFile(
     : {};
   return {
     ...(config.enabled ? { enabled: true } : {}),
-    // Authorization is always a chosen value, never a negative: the form has no
-    // "no boundary" position, so persisting it is persisting what was picked.
+    // Authorization is always a chosen value, never a negative: the form has no "no boundary" position, so persisting it is persisting what was picked.
     authorization: config.authorization,
     ...(config.port === DEFAULT_TAILNET_OBSERVER_PORT ? {} : { port: config.port }),
     ...(config.controllerEnabled ? { controllerEnabled: true } : {}),
@@ -158,7 +118,7 @@ function proposalToFile(
   };
 }
 
-/** Drop the CLI path: the renderer sees the command, never a bare binary path. */
+// Drop the CLI path: the renderer sees the command, never a bare binary path.
 function environmentView(environment: TailscaleEnvironment): TailscaleEnvironmentView {
   return Object.freeze({
     state: environment.state,
@@ -179,29 +139,13 @@ function guidedFailure(error: string, output: string | null = null): TailnetGuid
   return Object.freeze({ ok: false as const, error, output });
 }
 
-/**
- * The kebab-case code behind a rejected write or restart.
- *
- * The resolver refuses a configuration by throwing a named code, and every one
- * of them already has a sentence on the surface that asked. Anything else is a
- * host fault the owner cannot classify, and gets the generic code rather than
- * an error message repeated verbatim.
- */
+// Return recognized resolver codes or a generic host-fault code; never expose raw errors.
 function guidedErrorCode(err: unknown): string {
   const code = err instanceof Error ? err.message : "";
   return /^[a-z0-9-]+$/.test(code) ? code : "tailnet-observer-write-failed";
 }
 
-/**
- * What guided setup writes.
- *
- * The identity boundary because the pairing code is what turns an identity into
- * a share and an app capability needs a tailnet administrator; paired sharing
- * and the web surface because they are what the owner came here for; the
- * controller off because accepting remote commands is a separate decision the
- * owner has not been asked to make. `webOrigin` is ignored downstream — it is
- * derived from MagicDNS — and is present only to satisfy the complete view.
- */
+// Guided setup enables paired sharing and web access with identity authorization; remote control remains off until separately chosen.
 function recommendedConfig(port: number): TailnetObserverConfigView {
   return Object.freeze({
     enabled: true,
@@ -232,9 +176,8 @@ export function createTailnetObserverConfigService(
 
   const service: TailnetObserverConfigService = Object.freeze({
     async snapshot(): Promise<TailnetObserverSnapshot> {
-      // A damaged file is reported, not thrown. Throwing left the section with
-      // a Refresh button and no draft, so the one action that would have fixed
-      // it — saving a good configuration over the bad bytes — was unreachable.
+      // A damaged file is reported, not thrown. Throwing left the section with a Refresh button and no draft, so the one action that would have fixed it —
+      // saving a good configuration over the bad bytes — was unreachable.
       let file: TailnetObserverConfigFile | null = null;
       let configFileError: string | null = null;
       try {
@@ -272,13 +215,11 @@ export function createTailnetObserverConfigService(
     async apply(config: TailnetObserverConfigView): Promise<void> {
       const environment = await probeEnvironment();
       await writeConfigFile(proposalToFile(config, tailnetWebOriginFor(environment.dnsName)));
-      // The listener used to wait for the next launch, which is the step nobody
-      // knew to take: a toggle that does nothing for an hour reads as broken.
+      // The listener used to wait for the next launch, which is the step nobody knew to take: a toggle that does nothing for an hour reads as broken.
       await restartListener();
     },
 
-    // No restart: the listener reads this policy per request, so a running
-    // remote session is not dropped to change who may skip an approval click.
+    // No restart: the listener reads this policy per request, so a running remote session is not dropped to change who may skip an approval click.
     setOwnDeviceAdmission(enabled: boolean): Promise<void> {
       return writeOwnDeviceAdmission(enabled);
     },
@@ -302,16 +243,14 @@ export function createTailnetObserverConfigService(
 
     async guidedSetup(): Promise<TailnetGuidedSetupResult> {
       const environment = await probeEnvironment();
-      // Only `ready` can be set up. Every other state needs an action outside
-      // this app — install, sign in, start the daemon — and the surface that
-      // asked for this already knows the sentence for each one.
+      // Only `ready` can be set up. Every other state needs an action outside this app — install, sign in, start the daemon — and the surface that asked for
+      // this already knows the sentence for each one.
       if (environment.state !== "ready") {
         return guidedFailure("tailnet-guided-setup-not-ready");
       }
 
-      // A damaged file is not a reason to refuse: this writes a whole
-      // configuration over it, which is the same recovery the manual form
-      // offers, so there is nothing in the old bytes worth failing for.
+      // A damaged file is not a reason to refuse: this writes a whole configuration over it, which is the same recovery the manual form offers, so there is
+      // nothing in the old bytes worth failing for.
       let file: TailnetObserverConfigFile | null = null;
       try {
         file = await readConfigFile();
@@ -320,9 +259,8 @@ export function createTailnetObserverConfigService(
       }
 
       const preferred = file?.port ?? DEFAULT_TAILNET_OBSERVER_PORT;
-      // A port this process is already listening on is not a conflict — the
-      // restart below releases it — and probing it would move a working setup
-      // to a new port every time the owner pressed the button.
+      // A port this process is already listening on is not a conflict — the restart below releases it — and probing it would move a working setup to a new
+      // port every time the owner pressed the button.
       const port = runtimeState().listeningPort === preferred
         ? preferred
         : await choosePort(preferred);
@@ -337,9 +275,8 @@ export function createTailnetObserverConfigService(
         return guidedFailure(guidedErrorCode(err));
       }
 
-      // Serve already pointing at this exact port is the finished state, not a
-      // reason to run a command: re-running it is harmless but asks Tailscale
-      // for a certificate the owner may not be able to obtain.
+      // Serve already pointing at this exact port is the finished state, not a reason to run a command: re-running it is harmless but asks Tailscale for a
+      // certificate the owner may not be able to obtain.
       let serve: "configured" | "already-configured" = "already-configured";
       if (!(environment.serveConfigured && environment.serveTargetPort === port)) {
         const outcome = await service.configureServe();

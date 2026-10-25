@@ -1,19 +1,6 @@
 import { buildE2eBaseSettings, launchSeededElectron, teardownSeededElectron, MAIN_ENTRY, type SeededElectronContext } from "./seeded-electron";
-/**
- * Playwright E2E — Sandbox approval flow (PR-A4 R-2/R-3/R-4)
- *
- * Issue: #691 PR-A4
- *
- * Covers:
- *   1. HIGH verdict requires NL justification before Approve is enabled.
- *   2. LOW/MEDIUM verdict shows scope selector (session / persistent).
- *   3. Approval dock shows correct Korean sandbox isolation label for partial.
- *   4. PermissionsTab lists user approvals and allows revocation.
- *
- * Prerequisites: `bun run build` must produce dist/src/main/main.js.
- * Tests are automatically skipped when the dist is absent (same pattern
- * as deferred-queue-modal.spec.ts).
- */
+/** Playwright E2E; Sandbox approval flow (PR-A4 R-2/R-3/R-4) Issue: #691 PR-A4 Covers: 1. HIGH verdict requires NL justification before Approve is enabled. 2. LOW/MEDIUM verdict shows scope selector (session / persistent). 3. Approval dock shows correct Korean
+ * sandbox isolation label for partial. 4. PermissionsTab lists user approvals and allows revocation. Prerequisites: `bun run build` must produce dist/src/main/main.js. Tests are automatically skipped when the dist is absent (same pattern as deferred-queue-modal.spec.ts). */
 import { test, expect } from "@playwright/test";
 import { makeTestT } from "./i18n";
 import { openInlineSettings } from "./inline-settings.js";
@@ -23,14 +10,10 @@ import { resolve } from "node:path";
 import { TEST_IDS } from "../../../src/shared/test-ids.js";
 import { buildHostShellExecutionPlan, getHostShellExecutionPlanAuditProjection } from "../../../src/permissions/host-shell-execution-plan.js";
 
-// Locale-agnostic UI assertions: bind `t` to the locale this spec seeds via
-// buildE2eBaseSettings(true) (default "ko"). Asserting against catalog keys
-// instead of hard-coded Korean lets the suite flip its seed to the English
-// production default without rewriting these assertions. (#1212 follow-up.)
+// Locale-agnostic UI assertions: bind `t` to the locale this spec seeds via buildE2eBaseSettings(true) (default "ko"). Asserting against catalog keys
+// instead of hard-coded Korean lets the suite flip its seed to the English production default without rewriting these assertions. (#1212 follow-up.)
 const t = makeTestT("ko");
 const SESSION_ID = "e2000000-bb11-4cc2-8dd3-eeeeeeeeeeee";
-
-// ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function buildApprovalRequest(overrides: Record<string, unknown> = {}) {
   return {
@@ -55,8 +38,6 @@ function buildApprovalRequest(overrides: Record<string, unknown> = {}) {
     ...overrides,
   };
 }
-
-// ─── Test suite ──────────────────────────────────────────────────────────────
 
 test.describe("Sandbox approval flow", () => {
   test.skip(!existsSync(MAIN_ENTRY), "dist/src/main/main.js not built; run bun run build first");
@@ -87,10 +68,8 @@ test.describe("Sandbox approval flow", () => {
   });
 
   test("HIGH verdict shows a read-only audit reason and requires explicit Allow once", async () => {
-    // Inject a HIGH-verdict approval request via IPC
-    // Electron main-process `evaluate` is loaded as ESM in this build — the
-    // CommonJS `require()` shim is not available, so use the destructured
-    // `electron` arg (`BrowserWindow`) that Playwright already injects.
+    // Inject a HIGH-verdict approval request via IPC Electron main-process `evaluate` is loaded as ESM in this build; the CommonJS
+    // `require()` shim is not available, so use the destructured `electron` arg (`BrowserWindow`) that Playwright already injects.
     await app.evaluate(({ BrowserWindow }, req) => {
       const win = BrowserWindow.getAllWindows()[0];
       win?.webContents.send("ave:approval:request", req);
@@ -100,9 +79,8 @@ test.describe("Sandbox approval flow", () => {
     const dialog = page.getByRole("region", { name: t("toolApprovalDialog.toolApprovalTitle"), exact: true });
     await expect(dialog).toBeVisible({ timeout: 5000 });
 
-    // HIGH uses the host/reviewer reason and never asks the user to type in
-    // the approval surface. The explicit one-shot decision is immediately
-    // available while durable allow stays unavailable.
+    // HIGH uses the host/reviewer reason and never asks the user to type in the approval surface.
+    // The explicit one-shot decision is immediately available while durable allow stays unavailable.
     const approveBtn = page.getByTestId(TEST_IDS.approveButton);
     await expect(approveBtn).toBeEnabled();
     await expect(approveBtn).toHaveText(t("toolApprovalDialog.allowOnce"));
@@ -114,9 +92,8 @@ test.describe("Sandbox approval flow", () => {
   });
 
   test("LOW verdict shows exactly three decisions and Allow once is enabled without NL", async () => {
-    // Electron main-process `evaluate` is loaded as ESM in this build — the
-    // CommonJS `require()` shim is not available, so use the destructured
-    // `electron` arg (`BrowserWindow`) that Playwright already injects.
+    // Electron main-process `evaluate` is loaded as ESM in this build; the CommonJS `require()` shim is not
+    // available, so use the destructured `electron` arg (`BrowserWindow`) that Playwright already injects.
     await app.evaluate(({ BrowserWindow }, req) => {
       const win = BrowserWindow.getAllWindows()[0];
       win?.webContents.send("ave:approval:request", req);
@@ -143,9 +120,8 @@ test.describe("Sandbox approval flow", () => {
   });
 
   test("partial sandbox shows correct Korean label in approval dock", async () => {
-    // Electron main-process `evaluate` is loaded as ESM in this build — the
-    // CommonJS `require()` shim is not available, so use the destructured
-    // `electron` arg (`BrowserWindow`) that Playwright already injects.
+    // Electron main-process `evaluate` is loaded as ESM in this build; the CommonJS `require()` shim is not
+    // available, so use the destructured `electron` arg (`BrowserWindow`) that Playwright already injects.
     await app.evaluate(({ BrowserWindow }, req) => {
       const win = BrowserWindow.getAllWindows()[0];
       win?.webContents.send("ave:approval:request", req);
@@ -197,7 +173,7 @@ test.describe("Sandbox approval flow", () => {
     await testInfo.attach("explicit-host-approval", { body: await dock.screenshot(), contentType: "image/png" });
   });
 
-  test("PermissionsTab shows the exact permission decisions section", async () => {
+  test("PermissionsTab lists exact permission decisions in the unified rules list", async () => {
     // Pre-populate an approval record
     writeFileSync(
       resolve(tempHome, ".ave", "permissions", "user-approvals.json"),
@@ -217,12 +193,9 @@ test.describe("Sandbox approval flow", () => {
 
     const settingsPage = await openInlineSettings(app, page, "permissions");
 
-    // Permissions tab is selected by initialTab. Match the first section title
-    // rather than the empty-state copy, which deliberately shares the same
-    // exact-decision phrase.
-    const approvalsHeadingPrefix = t("permissionsTab.approvalsTitle", { count: 0 }).split("(")[0].trim();
+    // Exact decisions share the unified permission rules section with scoped rules.
     await expect(
-      settingsPage.locator(`:text(${JSON.stringify(approvalsHeadingPrefix)})`).first(),
+      settingsPage.getByText(t("permissionsTab.unifiedRulesTitle"), { exact: true }).first(),
     ).toBeVisible({ timeout: 5000 });
   });
 });

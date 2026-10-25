@@ -1,9 +1,4 @@
-/**
- * The card-size bounds SoT. `ui/notifications/size-changed` and the tool result's
- * `_meta.ui.height` are UNTRUSTED numbers, and CSS cannot bound them (the card's
- * containing block has an indefinite height, so `max-height: 100%` resolves to `none`).
- * These are the arithmetic bounds that actually hold.
- */
+/** Enforce arithmetic size bounds; percentage max-height is ineffective with an indefinite containing height. */
 import { describe, it, expect } from "vitest";
 import {
   clampMcpAppCardSize,

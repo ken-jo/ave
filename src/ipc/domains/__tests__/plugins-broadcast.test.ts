@@ -180,8 +180,7 @@ beforeEach(() => {
 describe("plugins IPC lifecycle broadcast", () => {
   it("serves the recorded bootstrap status to a renderer that mounted after boot", async () => {
     await setup();
-    // Boot's own emit: on a cold boot there is no window listening yet, which
-    // is why the record — not the send — is what the renderer can still read.
+    // Cold boot may have no window; retain the record for later renderer reads.
     notifyBootstrapStatus(null, {
       phase: "complete",
       installed: [],
@@ -249,7 +248,6 @@ describe("plugins IPC lifecycle broadcast", () => {
     expect(deps.clearAuthPartitionService).toHaveBeenCalledWith("persist:plugin-auth:samplehub");
     expect(deps.clearAuthPartitionService).toHaveBeenCalledWith("persist:plugin-auth:samplehub:tenant");
     expect(deps.forgetPluginAuthPartitionsService).toHaveBeenCalledWith("samplehub");
-    // Its MCP sign-ins are retired now that the registry no longer names it, not at the next start.
     expect(deps.mcpManager.reconcileBundledCredentials).toHaveBeenCalledWith("plugin", { removed: "samplehub" });
     expect(deps.mcpManager.reconcileBundledCredentials.mock.invocationCallOrder[0])
       .toBeGreaterThan(deps.pluginMarketplace.uninstall.mock.invocationCallOrder[0]!);
@@ -280,10 +278,7 @@ describe("plugins IPC lifecycle broadcast", () => {
   });
 
   it("removes plugin runtime BEFORE marketplace.uninstall (lifecycle §9 ordering)", async () => {
-    // Regression guard for Windows EBUSY on fts5.sqlite-shm/-wal: marketplace
-    // uninstall (rm files) must NOT run before runtime stop (close DB
-    // handles). If the order regresses, the plugin's worker still holds
-    // open SQLite WAL files when rm fires → EBUSY → half-deleted dir.
+    // Stop runtime database handles before deleting files or Windows can leave a half-removed package.
     const { deps } = await setup();
 
     await invoke("ave:plugins:uninstall", "samplehub");
@@ -294,20 +289,13 @@ describe("plugins IPC lifecycle broadcast", () => {
   });
 
   it("surfaces removePlugin failure as uninstall failure (does not silently mutate registry)", async () => {
-    // Production removePlugin (runtime/index.ts) currently swallows stop()
-    // and disposer errors via try/catch + log.error and never re-throws.
-    // This test guards a future tightening where removePlugin DOES throw
-    // (e.g. invariant violation, runtime map corruption): the IPC handler
-    // MUST surface that failure and NOT proceed to marketplace.uninstall —
-    // otherwise registry mutation happens while runtime tracking still
-    // references the plugin, leaving listPluginCards showing a ghost card.
+    // A runtime-removal failure must reach IPC instead of falling through to package deletion.
     const { deps, appWindows } = await setup();
     deps.pluginRuntime.removePluginWithCommit.mockRejectedValueOnce(new Error("dispose chain failed"));
 
     await expect(invoke("ave:plugins:uninstall", "samplehub")).rejects.toThrow("dispose chain failed");
 
     expect(deps.pluginMarketplace.uninstall).not.toHaveBeenCalled();
-    // Nothing was removed, so no sign-in is revoked.
     expect(deps.mcpManager.reconcileBundledCredentials).not.toHaveBeenCalled();
     for (const win of appWindows) {
       expect(win.webContents.send).toHaveBeenCalledWith(
@@ -318,11 +306,7 @@ describe("plugins IPC lifecycle broadcast", () => {
   });
 
   it("surfaces marketplace.uninstall non-idempotent failure (EACCES) after removePlugin succeeds", async () => {
-    // After removePlugin already torn down runtime tracking, if marketplace
-    // rm fails with a non-idempotent error (permission denied, IO error),
-    // the user sees an explicit failure broadcast rather than silent ghost
-    // state. removePlugin still ran — this is the expected partial-success
-    // outcome, surfaced honestly.
+    // If file removal fails after runtime shutdown, broadcast the partial failure rather than ghost state.
     const { deps, appWindows } = await setup();
     deps.pluginMarketplace.uninstall.mockRejectedValueOnce(new Error("EACCES: permission denied"));
 

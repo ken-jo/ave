@@ -1,22 +1,4 @@
-/**
- * The validator's own link to the child it spawned
- * (`docs/design/plugin-hostapi-protocol.md` §9.7 P2).
- *
- * The CLI owns the process, so it owns what is known about it — independently
- * of any session, from the moment of the spawn: every byte the child wrote to
- * stdout (the stdout-discipline check reads these, not decoded frames, because
- * the decoder drops a bad line by design), every frame the host wrote to it
- * (the request-metadata check reads the host side), the exit once observed,
- * every fault on the live child, and every signal sent to it. The finalizer
- * reads these after a run whose session never opened, or already closed.
- *
- * Same split as the production link: `exit`, or an `error` from a spawn that
- * produced no process, is the child gone; an `error` while it has a pid is a
- * fault — Node emits one when a signal could not be delivered — and never a
- * release. `terminate` starts one sequence — SIGTERM, then one SIGKILL after
- * {@link VALIDATION_KILL_GRACE_MS} if no exit was seen — and at most once, so
- * the transport's `close` and the CLI's finalizer cannot start two.
- */
+/** The validator owns one child termination sequence; session close and finalizer must not duplicate it. */
 import type { ChildProcess } from "node:child_process";
 import { PassThrough } from "node:stream";
 import type { ChildLink } from "../isolation/plugin-child-transport.js";
@@ -24,11 +6,7 @@ import { FRAME_BYTES_MAX } from "../isolation/host-api-wire.js";
 import { StdioFrameDecoder } from "../../mcp/stdio-framing.js";
 import { terminateChildProcess } from "../../tools/terminate-child-process.js";
 
-/**
- * Production's grace between SIGTERM and SIGKILL (`out-of-process-plugin.ts`,
- * the confined child's link). The helper's own 2 s default is not used: the
- * validator ends a plugin the way the app does.
- */
+/** Use the production signal grace so validator termination matches the app. */
 export const VALIDATION_KILL_GRACE_MS = 3_000;
 
 interface ValidationTimelineEntry {
@@ -36,34 +14,19 @@ interface ValidationTimelineEntry {
   readonly event: string;
 }
 
-/** What the CLI knows about its child, recorded from the spawn on. */
 export interface ValidationChildRecord {
-  /** Every chunk the child wrote to stdout, as written. */
   readonly stdout: Buffer[];
-  /** Every frame the host wrote to the child, in order. */
   readonly hostFrames: Array<Record<string, unknown>>;
-  /** Every signal the link sent, in order. */
   readonly signalsSent: NodeJS.Signals[];
-  /** Every fault the live child reported. */
   readonly terminationFaults: string[];
-  /** The reason of each termination sequence started — at most one. */
   readonly terminations: string[];
-  /**
-   * What happened, in order and when (`performance.now()`):
-   * `terminate:<reason>`, `signal:<name>`, `fault:<reason>`, `exit:<reason>`,
-   * and the entries the run adds.
-   */
+  /** Record termination, signal, fault and exit events in monotonic time order. */
   readonly timeline: ValidationTimelineEntry[];
-  /** Add an entry to {@link timeline}. */
   readonly note: (event: string) => void;
-  /** The exit, once observed. */
   readonly exitObserved: () => string | undefined;
-  /** Settles with the exit's reason, and on nothing else. */
+  /** Only observed exit settles this promise. */
   readonly exited: Promise<string>;
-  /**
-   * Settles when the child's stdout has ended. Node reports `exit` before the
-   * last bytes are read, so a check on every byte waits for this too.
-   */
+  /** Await stdout end as well as exit when checking every raw byte. */
   readonly stdoutEnded: Promise<void>;
 }
 
@@ -72,15 +35,11 @@ export interface ValidationChildLink {
   readonly record: ValidationChildRecord;
 }
 
-/** The child's pid when the spawn produced a process, else `undefined`. */
 function processId(child: ChildProcess): number | undefined {
   return typeof child.pid === "number" && child.pid > 0 ? child.pid : undefined;
 }
 
-/**
- * Wrap a freshly spawned child. Call it in the same turn as the spawn, before
- * anything can have been written or emitted.
- */
+/** Wrap in the spawn turn before any output, fault or exit can be missed. */
 export function createValidationChildLink(child: ChildProcess): ValidationChildLink {
   const { stdin, stdout } = child;
   if (!stdin || !stdout) {
@@ -124,9 +83,7 @@ export function createValidationChildLink(child: ChildProcess): ValidationChildL
     for (const handler of faultHandlers) handler(reason);
   });
 
-  // Child → host. The raw bytes are kept beside the transport's decoder, and a
-  // pass-through hands the transport every byte from the first, however late
-  // it starts reading.
+  // Record raw child bytes before forwarding every byte to the decoder, even if reading begins late.
   const input = new PassThrough();
   stdout.on("data", (chunk: Buffer) => {
     record.stdout.push(chunk);
@@ -139,20 +96,16 @@ export function createValidationChildLink(child: ChildProcess): ValidationChildL
     });
   });
 
-  // Host → child. Decoded as the child decodes it, so the request-metadata
-  // check reads what was actually sent. Ending this ends the child's stdin and
-  // nothing else.
+  // Record actual outgoing frames; ending this stream closes only child stdin.
   const output = new PassThrough();
   const hostDecoder = new StdioFrameDecoder(FRAME_BYTES_MAX);
   output.on("data", (chunk: Buffer) => {
     record.hostFrames.push(...hostDecoder.push(chunk));
   });
   output.pipe(stdin);
-  // A write to a child that already left is EPIPE on its stdin. The exit is
-  // what reports that, through `gone`, so the pipe error itself is not news.
+  // An EPIPE after child exit adds no new outcome; gone reports the exit.
   stdin.on("error", () => undefined);
 
-  // Every signal goes through here, so `signalsSent` is the whole list.
   const signalled = {
     get exitCode() {
       return child.exitCode;

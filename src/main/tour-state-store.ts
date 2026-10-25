@@ -1,5 +1,3 @@
-
-
 import { openFeatureNamespace } from "./storage/feature-namespace.js";
 import { isStringArray } from "../shared/is-record.js";
 
@@ -15,7 +13,7 @@ export const DEFAULT_TOUR_STATE: TourState = {
   dismissedAt: null,
 };
 
-/** `~/.ave/onboarding/` namespace — owns `tour-state.json`. */
+// `~/.ave/onboarding/` namespace — owns `tour-state.json`.
 const ns = openFeatureNamespace("onboarding");
 const TOUR_STATE_FILE = "tour-state.json";
 
@@ -34,33 +32,23 @@ function normaliseState(raw: unknown): TourState {
   return { lastSeenScenario, completedScenarios, dismissedAt };
 }
 
-/**
- * Read the persisted tour state. Any read/parse error falls back to the
- * default — this is a user-preference store, not a security boundary, so
- * a missing/corrupt file should never block the host from booting.
- */
+// Read the persisted tour state. Any read/parse error falls back to the default — this is a user-preference store, not a security boundary, so a
+// missing/corrupt file should never block the host from booting.
 export async function readTourState(): Promise<TourState> {
-  // openFeatureNamespace.readJson already returns the fallback on a missing
-  // or corrupt file; `normaliseState` then defends against a structurally
+  // openFeatureNamespace.readJson already returns the fallback on a missing or corrupt file; `normaliseState` then defends against a structurally
   // valid-but-wrong-shaped payload (manual edits, schema drift).
   const parsed = await ns.readJson<unknown>(TOUR_STATE_FILE, DEFAULT_TOUR_STATE);
   return normaliseState(parsed);
 }
 
-/**
- * Persist the tour state to disk. The feature-namespace helper creates the
- * `~/.ave/onboarding/` directory with 0o700 + writes the file atomically
- * with 0o600 to match the Storage Namespace per Feature rule.
- */
+// Persist the tour state to disk. The feature-namespace helper creates the `~/.ave/onboarding/` directory with 0o700 + writes the file atomically with
+// 0o600 to match the Storage Namespace per Feature rule.
 export async function writeTourState(next: TourState): Promise<void> {
   await ns.writeJson(TOUR_STATE_FILE, normaliseState(next));
 }
 
-/**
- * Mark `scenarioId` as completed. Idempotent: re-marking a scenario does
- * not duplicate it in `completedScenarios`. Also updates
- * `lastSeenScenario` because completion implies the user saw it.
- */
+// Mark `scenarioId` as completed. Idempotent: re-marking a scenario does not duplicate it in `completedScenarios`. Also updates `lastSeenScenario`
+// because completion implies the user saw it.
 export async function markScenarioComplete(scenarioId: string): Promise<TourState> {
   if (!scenarioId || typeof scenarioId !== "string") {
     throw new Error("invalid-scenario-id");

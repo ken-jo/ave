@@ -1,16 +1,4 @@
-/**
- * Boot step — routine engine, conversation loop, late bindings, and the
- * agent-loop-dependent services (§4.5 + §7, extracted from boot.ts C18).
- *
- * This is the densest late-binding block: it builds the per-routine
- * ConversationLoop factory, registers the manifest-driven plugin IPC bridges,
- * assembles the interactive ConversationLoop, injects the late-binding refs the
- * plugin runtime holds (loop / callLlm / pluginCallLlm), starts the preference
- * refresh service, constructs the SubAgentRunner (reusing the loop's dep set),
- * and finally the WorkBoardEngine + reporter that depend on the runner + one-
- * shot LLM caller. The mutable event-bridge disposer is stored on the context
- * so shutdown and plugin refresh can replace its subscriptions post-boot.
- */
+/** Wire loop-dependent services late; retain the event-bridge disposer for refresh and shutdown. */
 import type { BrowserWindow } from "electron";
 import { createRoutineEngine } from "../routine.js";
 import { MAIN_CHAT_GROUP_ID, MAX_CHAT_GROUPS } from "../../contract/app-contract.js";
@@ -65,12 +53,7 @@ import type { ApprovalSurface } from "../../shared/authorization-required.js";
 
 const log = createLogger("ave");
 
-/**
- * The predicate behind `ConversationLoopDeps.sessionHeldElsewhere` for one
- * loop among many: true when a DIFFERENT loop in `loops()` currently holds
- * `sessionId`. Both sides are read lazily because the loops are created
- * after the predicate is handed out.
- */
+/** Read loops lazily and report only sessions held by a different loop. */
 export function sessionHeldByOtherLoop(
   loops: () => Iterable<ConversationLoop>,
   self: () => ConversationLoop,
@@ -91,11 +74,7 @@ export interface SubscriptionChatLoopBindings {
   ) => LLMProvider | null;
 }
 
-/**
- * Main-process-only subscription provider factory. It
- * intentionally owns no runtime paths and accepts only a settings-normalized
- * selection; the shared runtime service owns credential and transport state.
- */
+/** Accept normalized settings only; the shared runtime owns credentials and transport. */
 export function createSubscriptionChatLoopBindings(input: {
   readonly shellOpenExternal: (url: string) => Promise<void>;
   readonly auditLogger: Pick<AuditLogger, "log">;
@@ -229,16 +208,13 @@ export async function wireConversation(
     mainWindow,
     subscriptionProviderFactory,
   } = ctx;
-  // `/<skill-name>` typed by the user routes to the model (which reads the
-  // skill with skill_load) instead of failing as an unknown command.
+  // User-typed skill names route to the model for skill_load.
   const isSkillName = (name: string): boolean =>
     ctx.skillStore?.listCatalogSync().some((skill) => skill.name === name) ?? false;
 
   const { sideChatMemoryManager, subAgentMemoryManager } = isolatedMemoryManagers;
 
-  // One host-owned, no-tool lane for every automatic memory transformation.
-  // The resolver is intentionally late: queued review work follows the current
-  // active login/model after a provider change rather than retaining a stale one.
+  // Resolve the active provider when queued memory review runs, not when it is queued.
   const memoryReviewer = new MemoryReviewerService({
     resolveActiveChatOneShot: () => lateBinding.llmCallerRef.fn,
   });
@@ -271,13 +247,10 @@ export async function wireConversation(
     createConversationLoop: (input) => createRoutineConversationLoop(
       routineLoopDeps,
       { scope: input.scope }),
-    // Permission policy Layer 4 — snapshot the live plugin runtime's active id set so
-    // routines with `scope.pluginIds.mode === "inherit"` are normalized
-    // to a concrete allow-list at fire time (never at loop-construction).
+    // Resolve inherited routine scope from the live active set at fire time.
     getActivePluginIds: () => pluginRuntime.listPluginIds(),
   });
-  // Durable routine-scope pruning is best-effort during boot. Keep the newly
-  // constructed engine fail-closed even when that persistence cleanup failed.
+  // Keep routine scope fail-closed even if durable pruning fails.
   const retainedWorkspaceRoots = readPermissionSettings().permissions.additionalDirectories;
   for (const root of removedWorkspaceRoots) {
     routineEngine.revokeWorkspaceRoot(root, {
@@ -286,10 +259,7 @@ export async function wireConversation(
     });
   }
 
-  // §4.2 Step 7: manifest-driven renderer event bridge — one per main window.
-  // Several main windows may be open, so adding a window never disposes
-  // another window's bridge. Each bridge unsubscribes itself on `closed`
-  // (`registerPluginEventBridge`); a refresh forgets closed windows.
+  // Maintain one event bridge per live window; adding a window must not dispose other bridges.
   const pluginEventBridges = new Map<BrowserWindow, () => void>();
   ctx.addPluginEventBridgeWindow = (win: BrowserWindow | null) => {
     if (!win) return;
@@ -309,7 +279,6 @@ export async function wireConversation(
   };
   ctx.addPluginEventBridgeWindow(mainWindow);
 
-  // §4.5 + Agent 6: PostTurnHookChain.
   const { postTurnHookChain } = createPostTurnHookChain({
     memoryManager,
     idleScheduler,
@@ -318,15 +287,8 @@ export async function wireConversation(
     auditLogger: bootAuditLogger,
   });
 
-  // ApprovalGate already constructed above (before initPluginRuntime) so the
-  // plugin HostApi factory could wire `agentApproval` to the live gate.
-
-  // §4.5: ConversationLoop.
   let conversationLoop!: ConversationLoop;
-  // The primary loop and every chat-group loop share one memory manager, so
-  // any of them can be asked for a session another one is holding. Each loop
-  // gets the predicate that looks at all the OTHERS; `groupLoops` is filled by
-  // `resolveChatGroupLoop` below.
+  // Main and group loops share storage, so held-session checks must inspect every other loop.
   const groupLoops = new Map<string, ConversationLoop>();
   const sessionHeldElsewhereFor = (self: () => ConversationLoop) =>
     sessionHeldByOtherLoop(() => [conversationLoop, ...groupLoops.values()], self);
@@ -358,10 +320,7 @@ export async function wireConversation(
     hookRunner,
     scriptHookManager,
     getAdditionalDirectories: () => readPermissionSettings().permissions.additionalDirectories,
-    // Dialog-driven session-add grants must broadcast so multi-window
-    // PermissionsTab views refresh. Boot hands the loop a callback rather than
-    // letting the engine import ipc; every interactive/background loop gets the
-    // SAME callback, so a permission mutation on any of them is reported.
+    // Every loop shares the permission-mutation broadcast callback without importing IPC.
     broadcastPermissionConfigChanged: () => broadcastPermissionConfigChangedFromHost(ctx.host.desktop?.getAppWindows() ?? []),
     pluginRuntime,
     pluginOperationGrants,
@@ -379,15 +338,7 @@ export async function wireConversation(
     ...rationaleBindings,
   });
 
-  // Side-chat (workspace rail) — a SECOND ConversationLoop with an ISOLATED
-  // MemoryManager rooted at `~/.ave/side-chat/`. The dir path is resolved
-  // through openFeatureNamespace (storage-namespace SOT) rather than a raw
-  // join, so side-chat data lives in its own domain directory and can be
-  // cleared/backed-up as a unit. The loop shares the same settingsService
-  // (model inheritance) and permissionManager/approvalGate (permission
-  // inheritance) as the main chat but never mixes sessions with it — the
-  // isolated store guarantees `chat.sessions` (main) never lists a side-chat
-  // session. Its own history/sessionId keep the two streams fully independent.
+  // Side chat uses its own feature namespace while sharing main-chat model and permission policy.
   let sideChatConversationLoop!: ConversationLoop;
   const sideChatRationaleBindings = createLoopRationaleBindings({
     service: rationaleHostService,
@@ -396,8 +347,7 @@ export async function wireConversation(
     scriptHookManager,
     getLoop: () => sideChatConversationLoop,
   });
-  // The pane chats' loops, keyed by window and tab; declared before the rail
-  // loop so both share one held-session check over the side-chat store.
+  // Declare pane loops before the rail so both can check held sessions in their shared store.
   const paneLoops = new Map<string, { windowId: number; tabId: string; loop: ConversationLoop }>();
   const sideSessionHeldElsewhereFor = (self: () => ConversationLoop) =>
     sessionHeldByOtherLoop(() => [sideChatConversationLoop, ...[...paneLoops.values()].map((entry) => entry.loop)], self);
@@ -432,10 +382,7 @@ export async function wireConversation(
   });
   ctx.sideChatConversationLoop = sideChatConversationLoop;
 
-  // A terminal or web pane's own chat is its own conversation on its own loop,
-  // so pane chats and the rail stream at the same time. Each pane loop gets its
-  // own rationale bindings (a closure over itself) and, through the factory,
-  // its own post-turn chain over the shared side-chat store.
+  // Each pane owns a loop, rationale bindings, and post-turn chain for concurrent streaming.
   const paneKey = (windowId: number, tabId: string) => `${windowId}\u0000${tabId}`;
   ctx.paneChatLoops = {
     resolve: (windowId, tabId) => {
@@ -472,18 +419,8 @@ export async function wireConversation(
   };
   ctx.sideChatMemoryManager = sideChatMemoryManager;
 
-  // Tiled chat groups — the main area can hold several conversations at once.
-  //
-  // A conversation IS a ConversationLoop: the loop holds the live history and
-  // runs exactly one turn at a time, so four tiles that can each be streaming
-  // means four loops, not four views of one. They share the MAIN memory manager
-  // — every tile is an ordinary main-chat session and belongs in the same
-  // session list — and differ only in which session each is holding.
-  //
-  // What they deliberately do NOT share is the window-wide singletons the
-  // primary loop drives: `idleScheduler` and `memoryCaptureService` fire once
-  // per window, and handing each group its own copy would multiply idle
-  // maintenance by the number of open tiles. Same reasoning as the side chat.
+  // Each streaming tile needs its own loop; main-chat tiles share the main session store.
+  // Only the primary loop drives window-wide idle and memory-capture services.
   const resolveChatGroupLoop = (chatGroupId: string): ConversationLoop => {
     if (chatGroupId === MAIN_CHAT_GROUP_ID) return conversationLoop;
     const existing = groupLoops.get(chatGroupId);
@@ -500,9 +437,7 @@ export async function wireConversation(
       scriptHookManager,
       getLoop: () => groupLoop,
     });
-    // Its own post-turn chain over the SAME store: each group persists its own
-    // turns, and a chain shared with another group would attribute them to
-    // whichever session that group happened to be holding.
+    // Each group needs its own post-turn chain to attribute persistence to the right session.
     const { postTurnHookChain: groupPostTurnHookChain } = createPostTurnHookChain({
       memoryManager,
       settingsService,
@@ -547,11 +482,7 @@ export async function wireConversation(
     return groupLoop;
   };
   ctx.resolveChatGroupLoop = resolveChatGroupLoop;
-  // The other half of the ceiling: a closed tile's loop leaves the map, so
-  // the count is of tiles that exist, not of tiles that ever existed. A
-  // renderer never reuses an id within its lifetime, and `chat.ts` releases
-  // every group when the renderer navigates or dies, so a name that comes
-  // back after a reload builds a fresh loop rather than finding this one.
+  // Remove closed tile loops; reloads must create fresh loops rather than reuse stale state.
   ctx.releaseChatGroupLoop = (chatGroupId: string): void => {
     const loop = groupLoops.get(chatGroupId);
     if (!loop) return;
@@ -559,23 +490,14 @@ export async function wireConversation(
     groupLoops.delete(chatGroupId);
   };
 
-  // Which conversation a session belongs to, for the surfaces that are handed
-  // a session id by something outside the chat domain — an MCP app card, a
-  // notification. They must not read the primary loop as "the current
-  // session": with several tiles open that answer is wrong for all but one of
-  // them. A session no live loop holds has no owner, and `undefined` says so.
+  // Resolve session ownership across live loops; the primary loop cannot represent every tile.
   ctx.findLoopBySessionId = (sessionId: string): ConversationLoop | undefined =>
     [conversationLoop, ...groupLoops.values()]
       .find((loop) => loop.getSessionId() === sessionId);
 
-  // Which loop a tile is running, for surfaces the owner drives from window
-  // chrome and that name the tile they meant. `groupLoops` holds the tiles
-  // that exist; a name that is not in it, and is not the primary, is a tile
-  // this window does not have.
+  // Chrome actions target an existing tile by id; missing ids have no loop.
   ctx.findChatGroupLoop = (chatGroupId: string): ConversationLoop | undefined =>
     chatGroupId === MAIN_CHAT_GROUP_ID ? conversationLoop : groupLoops.get(chatGroupId);
-
-
 
   lateBinding.conversationLoopRef.fn = conversationLoop;
   lateBinding.llmCallerRef.fn = createCallLlm(conversationLoop);
@@ -598,8 +520,7 @@ export async function wireConversation(
     memoryReviewer,
     isIdleConsolidationEnabled: () => settingsService.get("features")?.idleMemoryConsolidation ?? false,
   });
-  // This is the only IDLE_SCAN listener for provider-backed memory maintenance.
-  // It serializes preference refresh before derived long-term consolidation.
+  // One idle listener serializes preference refresh before memory consolidation.
   const memoryMaintenanceCoordinator = new MemoryMaintenanceCoordinator({
     memoryCaptureService,
     idleScheduler,
@@ -611,13 +532,7 @@ export async function wireConversation(
   });
   memoryMaintenanceCoordinator.start();
 
-  // Sub-agent runs persist to an ISOLATED MemoryManager rooted at
-  // `~/.ave/subagent/` (resolved via openFeatureNamespace, the storage-
-  // namespace SOT — no hand-rolled mkdir/mode bits). Reusing the main
-  // `memoryManager` here is exactly what leaked orphan sub-agent JSONL into
-  // the main `~/.ave/sessions/` list; a dedicated store keeps sub-agent
-  // transcripts out of `chat.sessions` and gives same-instance resume its own
-  // addressable namespace. Mirrors the sideChatMemoryManager wiring above.
+  // Use a dedicated feature namespace so sub-agent transcripts stay out of the main session list.
   const subAgentMessagingNamespace = openFeatureNamespace("subagent-messaging");
   const subAgentMessageMailbox = new SubAgentMessageMailbox(
     subAgentMessagingNamespace,
@@ -642,17 +557,14 @@ export async function wireConversation(
         messageId,
       ),
   });
-  // The bus cannot observe "the parent turn just released the loop" from the
-  // inside. Without this subscription, a message stored mid-turn that never
-  // reached a round boundary waits for the user's next manual turn.
+  // Wake pending messages after the parent releases its turn, even without a round boundary.
   conversationLoop.onTurnSettled((sessionId) => {
     subAgentMessageBus.notifyTurnSettled(sessionId);
   });
   const agentMessageMailbox = new A2AAgentMessageMailbox(
     subAgentMessagingNamespace,
   );
-  // Parent → child directives share the messaging namespace with the two child
-  // mailboxes and keep their own file: one domain directory, one store per edge.
+  // Keep one messaging domain directory and a separate store for each edge.
   const parentDirectiveMailbox = new ParentDirectiveMailbox(
     subAgentMessagingNamespace,
   );
@@ -679,9 +591,7 @@ export async function wireConversation(
     },
   });
 
-  // Workflow system tools — late bindings now that ConversationLoop exists.
-  // SubAgentRunner reuses the parent loop's deps (LLM, registry, gates) but
-  // a fresh ConversationLoop is constructed per spawn inside the runner.
+  // Reuse parent dependencies, but construct a fresh loop for each sub-agent.
   subAgentRunnerRef.fn = new SubAgentRunner({
     parentDeps: {
       settingsService,
@@ -721,48 +631,32 @@ export async function wireConversation(
     agentMessageBus,
     parentDirectiveMailbox,
   });
-  // skill_load returns the skill body as its tool_result (never a user-role
-  // message, never the system prompt) and records the read in the
-  // per-conversation SkillOverlay registry that authorizes skill_read. See
-  // src/tools/skill-load.ts and main/skill-overlay.ts.
+  // Skill bodies are tool results; skill_load records authorization for later skill_read calls.
 
-  // WorkBoardEngine — plan→approve→execute orchestration for one work item.
-  // Wired here, right after the SubAgentRunner exists, because the engine
-  // reuses the runner (via the late-bound subAgentRunnerRef closure) for both
-  // child phases. emitProgress mirrors emitAgentSpawn — it pushes a
-  // WorkBoardRunEvent to the renderer over the WORK_BOARD.runProgress channel.
+  // Create the Work Board engine after its runner dependency exists.
   const workBoardEngine: WorkBoardEngine = createWorkBoardEngine({
     store: workBoardStore,
     getRunner: () => subAgentRunnerRef.fn,
     approvalGate,
     getAgentProfile: (name) => agentProfileStore.load(name),
     emitProgress: (event) => {
-      // Fan the per-phase WorkBoardRunEvent out to every open window (mirroring
-      // the itemChanged broadcast in the work-board IPC domain) so detached
-      // panels show the live running indicator in lock-step. sendToWindow's
-      // destroyed-check + send-race swallow is reused per window.
+      // Broadcast run progress to every open window so detached panels stay current.
       fanOutToAllWindows(ctx.host.desktop?.getAppWindows() ?? [], WORK_BOARD.runProgress, event, {
         logger: log,
       },
       );
     },
-    // Self-improvement: after a run completes, append a one-line
-    // learning to the item's project work memory. appendMemory enforces the
-    // hard line cap; the engine fires this swallow-on-error so it never fails a run.
+    // Append bounded project learnings best-effort; memory failures must not fail a run.
     onRunComplete: ({ itemId, title, projectRoot }) =>
       appendMemory(workBoardStorage, [
         `${localDateKey(new Date())}: autonomous run completed — #${itemId} ${title}`,
         ],
         projectRoot ? { projectRoot } : undefined,
       ),
-    // Persist each run's plan+execute conversation to sessions/<id>/<runId>.jsonl
-    // so run context survives restart and accumulates across re-runs.
+    // Persist each run’s conversations so context survives restart and accumulates across reruns.
     transcriptStorage: workBoardStorage,
   });
 
-  // Work Board reporter — host-native daily/weekly reports. Reuses the
-  // work-board namespace storage (the same activity.jsonl + memories/ the store
-  // writes) and the host one-shot LLM caller wired above.
   const workBoardReporter: WorkBoardReporter = createWorkBoardReporter({
     store: workBoardStore,
     storage: workBoardStorage,

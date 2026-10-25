@@ -1,16 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { cn } from "../utils.js";
 
-/**
- * The theme's own type scale (`text-body`, `text-body-sm`, `text-caption`,
- * `text-micro`) must be classified as FONT SIZE, not as text colour.
- *
- * Before this was registered, tailwind-merge dropped the colour utility a
- * component variant had supplied, so every solid Button carrying a type-scale
- * class rendered its label in the ambient colour — dark on near-black, i.e.
- * an unreadable blank pill (the composer send button, the edit bubble's save
- * button).
- */
+/** Classify theme text-scale utilities as font sizes so merging preserves text colors. */
 describe("cn — theme type scale vs colour", () => {
   for (const size of ["text-body", "text-body-sm", "text-caption", "text-micro"]) {
     it(`keeps a colour utility alongside ${size}`, () => {

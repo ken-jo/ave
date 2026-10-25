@@ -256,13 +256,7 @@ function normalizeMailbox(raw: unknown): NormalizedParentMailbox {
   };
 }
 
-/**
- * Durable, parent-session-keyed mailbox for A2A child messages.
- *
- * No timer is created here. Messages remain until acknowledged by a receiving
- * turn; GUIDE_MAX_* bounds and a tracked-parent ceiling make overflow fail
- * closed without inventing the ph3 wire TTL.
- */
+// Keep child reports until receiving-turn acknowledgment; bounded overflow fails closed without a timer.
 export class SubAgentMessageMailbox {
   private statePromise: Promise<LoadedParentMailbox> | null = null;
   private mutationTail: Promise<void> = Promise.resolve();

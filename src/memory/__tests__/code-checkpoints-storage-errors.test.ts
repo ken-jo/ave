@@ -219,7 +219,6 @@ describe("checkpoint storage recovery", () => {
     const warn = vi.spyOn(console, "warn");
     faults.failImage = stage === "image";
     faults.failIndex = stage === "index";
-    // Each load must fail after one completed image, including the settling load.
     faults.imageWrites = 0;
     await turn("failed", async () => {
       expect(await readFile(ledger, "utf8")).toBe(legacy);
@@ -234,7 +233,6 @@ describe("checkpoint storage recovery", () => {
     await turn("retry");
     expect(JSON.parse(await readFile(ledger, "utf8")).version).toBe(2);
     expect(await restore("failed")).toEqual({ ok: false, error: "code-checkpoint-unavailable" });
-    // Inspect recovered originals without crossing the unavailable turn.
     const recovered = JSON.parse(await readFile(ledger, "utf8")).turns[0];
     expect(recovered.messageId).toBe("legacy");
     expect(recovered.changes).toHaveLength(2);

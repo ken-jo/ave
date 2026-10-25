@@ -3,17 +3,8 @@ import type { InstanceViewKey } from "../../../shared/view-key.js";
 import { mintTabId } from "./workspace-tabs.js";
 import { publishLiveWebTabs, webSurfaceLocation, withdrawLiveWebTabs } from "./web-surfaces.js";
 
-/**
- * The terminals and web pages that live in the MAIN area, as panes — the
- * window-level counterpart of a side panel's tab store.
- *
- * A surface is the same thing wherever it sits: a terminal tab is a PTY keyed
- * by its tab id, a browser tab is a guest in the web-surface layer keyed by its
- * tab id. Moving one between a side panel and a pane moves its RECORD between
- * this store and that group's tab store; the PTY and the guest stay where they
- * are. Which pane shows a surface is the pane's content (`ViewLocation`), not
- * this store's business.
- */
+/** Move surface records between stores without moving tab-id-keyed PTYs or guests; pane content independently chooses which
+ * surface is shown. */
 export type MainSurfaceKind = "terminal" | "browser";
 
 export interface MainSurface {
@@ -23,10 +14,8 @@ export interface MainSurface {
   ordinal: number;
   /** A browser surface's host-set url; null for a terminal or a blank page. */
   url: string | null;
-  /**
-   * A terminal's working directory: where the shell last said it was, or —
-   * before it has said — where a reopened one is to start. Null when unknown.
-   */
+  /** A terminal's working directory: where the shell last said it was, or — before it has said — where a reopened one is to
+   * start. Null when unknown. */
   cwd?: string | null;
 }
 
@@ -73,8 +62,8 @@ export interface MainSurfacesStore {
 
 export function useMainSurfaces(): MainSurfacesStore {
   const [surfaces, setSurfaces] = useState<readonly MainSurface[]>([]);
-  // Mirrors the committed list so a call in the same event as a create (the
-  // create returns before React re-renders) still finds what it made.
+  // Mirrors the committed list so a call in the same event as a create (the create returns before React re-renders) still
+  // finds what it made.
   const surfacesRef = useRef<readonly MainSurface[]>([]);
   const closedRef = useRef<ClosedSurface[]>([]);
 
@@ -115,8 +104,7 @@ export function useMainSurfaces(): MainSurfacesStore {
   const close = useCallback((tabId: string) => {
     const surface = release(tabId);
     if (surface) {
-      // Where the page actually was (links and in-page routes move it without
-      // the address row), not where it was first pointed.
+      // Where the page actually was (links and in-page routes move it without the address row), not where it was first pointed.
       const url = surface.kind === "browser" ? webSurfaceLocation(tabId) ?? surface.url : surface.url;
       closedRef.current = [{ kind: surface.kind, url, cwd: surface.cwd ?? null }, ...closedRef.current].slice(0, CLOSED_SURFACE_MEMORY);
     }

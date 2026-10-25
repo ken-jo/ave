@@ -2,7 +2,6 @@ import { StringDecoder } from "node:string_decoder";
 
 export type JsonLineReadFailure = "frame-too-large" | "invalid-json";
 
-/** Incremental JSONL framing with a byte ceiling on each individual line. */
 export class JsonLineReader {
   private readonly decoder = new StringDecoder("utf8");
   private buffer = "";

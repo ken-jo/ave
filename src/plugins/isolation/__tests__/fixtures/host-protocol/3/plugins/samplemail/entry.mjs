@@ -1,8 +1,4 @@
-/**
- * The hostApi surface `samplemail` reaches (plugin-hostapi-protocol.md §9.2) — the
- * UI-action members — each called once so the golden transcript beside this
- * file shows every frame that surface puts on the wire.
- */
+/** Call each mail UI-action member once to record its actual wire frames. */
 export const createPlugin = async (context) => {
   const api = context.hostApi;
   return {

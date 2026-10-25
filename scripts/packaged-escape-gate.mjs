@@ -1,32 +1,6 @@
 #!/usr/bin/env node
-/**
- * Admission's packaged gate for escape 3 (`docs/design/plugin-hostapi-protocol.md`
- * §9.8 A2, Gates (ii); decision 53): the Electron claim measured on the build
- * that ships, not on the development executable.
- *
- * Two halves, both against the unpacked executable electron-builder produced:
- *
- *  1. THE PROBES. The adversarial fixture's `probeElectron()` runs under the
- *     packaged executable with `ELECTRON_RUN_AS_NODE=1` — exactly what the
- *     production factory spawns for a plugin child — as a script from a
- *     temporary root outside the checkout. It must report the four shapes of
- *     table row 3: a version string (the trap), `require("electron")`
- *     `MODULE_NOT_FOUND`, `import("electron")` an inert namespace, the planted
- *     package a path string, and no usable API in any form.
- *  2. THE CONTROL. The packaged application's own main process, launched
- *     through Playwright with `ELECTRON_RUN_AS_NODE` removed, an isolated
- *     `--user-data-dir` and `AVE_HOME`, and asked with `app.evaluate` for
- *     `typeof BrowserWindow`, `typeof session.defaultSession` and
- *     `typeof ipcMain`: `"function"`, `"object"`, `"object"`. Without the
- *     variable the packaged executable starts the application rather than a
- *     helper script, so the development helper (`control-electron-main.cjs`)
- *     is never packaged evidence.
- *
- * A control that cannot launch fails the gate rather than passing it.
- *
- * Linux runs this under `xvfb-run -a` inside a D-Bus session with an unlocked
- * keyring, as the packaged smoke does, because the control is a full app.
- */
+// Measure escape probes against the packaged executable and compare the packaged main-process control.
+// Use isolated scratch profiles and no checkout module resolution.
 import { spawn } from "node:child_process";
 import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -87,7 +61,6 @@ function expectEqual(actual, expected, what) {
   }
 }
 
-/** Run `executable` with `args` and `env`, and return its exit and output. */
 function run(executable, args, env, timeoutMs) {
   return new Promise((resolvePromise, reject) => {
     const child = spawn(executable, args, { env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
@@ -111,11 +84,7 @@ function run(executable, args, env, timeoutMs) {
   });
 }
 
-/**
- * The probes, from a temporary root: the fixture's entry and its planted
- * package copied there, beside a runner that calls `probeElectron()`. Outside
- * the checkout, no `node_modules` is reachable by walking up from it.
- */
+// Run copied probes outside the checkout so ancestor dependency resolution cannot mask missing isolation.
 async function measureProbes(executable, scratch) {
   const pluginRoot = join(scratch, "plugin");
   mkdirSync(pluginRoot, { recursive: true });
@@ -161,7 +130,6 @@ async function measureProbes(executable, scratch) {
   return report;
 }
 
-/** The packaged application's own main process, evaluated in place. */
 async function measureControl(executable, scratch) {
   const userDataDir = join(scratch, "user-data");
   mkdirSync(userDataDir, { recursive: true });
@@ -174,11 +142,7 @@ async function measureControl(executable, scratch) {
   mkdirSync(env.HOME, { recursive: true });
   const args = prepareElectronLaunchArgs([`--user-data-dir=${userDataDir}`], env, { profileName: "Ave" });
   if (process.platform === "linux") args.push("--disable-gpu", "--no-sandbox", "--password-store=gnome-libsecret");
-  // A build signed with an identity the login keychain has never seen asks the
-  // user for keychain access the first time `safeStorage` runs, and that
-  // prompt holds the main process until someone answers. The mock keychain is
-  // Chromium's own test switch for exactly this; the measurement is about the
-  // main process's API, not about the keychain.
+  // Use the test keychain switch so an interactive credential prompt cannot block API measurement.
   if (process.platform === "darwin") args.push("--use-mock-keychain");
   const app = await electron.launch({ executablePath: executable, args, env, timeout: CONTROL_TIMEOUT_MS });
   try {
@@ -191,8 +155,7 @@ async function measureControl(executable, scratch) {
     return reported;
   } finally {
     await app.close();
-    // An isolated launch (temporary AVE_HOME and --user-data-dir) must not
-    // claim `ave://` in HKCU; prove it, and undo a claim if one appears.
+    // Isolated launches must not claim the user's protocol handler; verify and undo any owned claim.
     assertNoWindowsProtocolClaim(executable);
   }
 }

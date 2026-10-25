@@ -1,19 +1,7 @@
-/**
- * The warning a budget resting on a guess owes the user.
- *
- * When no source knows the served model's capacity, compaction is budgeted
- * against the conservative fallback window. That is a silent misconfiguration:
- * a 229K-window deployment gets compacted at a third of its real capacity and
- * nothing in the UI says why. The host says it once, naming the model and the
- * setting that fixes it.
- *
- * Separate file because it mocks the logger for the whole module registry, and
- * the compaction suites next door run the code paths that log through it.
- */
+// Warn once when compaction uses an unknown-capacity fallback; isolate logger mocks from other suites.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-// `vi.mock` is hoisted above every import, so the double it hands back has to
-// be hoisted with it.
+// Hoisted mocks require hoisted doubles before imports evaluate.
 const logged = vi.hoisted(() => ({
   warn: vi.fn(),
   info: vi.fn(),
@@ -29,8 +17,6 @@ vi.mock("../../../lib/logger.js", () => ({
 
 const requests = vi.hoisted(() => ({ bodies: [] as Record<string, unknown>[] }));
 
-// A chat round's provider whose request is captured, then refused, so a turn
-// runs through the conversation loop without a live service.
 vi.mock("../../llm/provider-factory.js", async (importOriginal) => {
   const { VercelUnifiedProvider } = await import("../../llm/vercel/adapter.js");
   return {
@@ -106,8 +92,7 @@ describe("context budget — unknown context window", () => {
   });
 
   it("warns for a self-hosted model a built-in row used to describe", () => {
-    // The hand-kept table seeded this deployment's 262,144 window until slice
-    // 7. A self-hosted window comes from the endpoint's report or the user.
+    // Self-hosted capacity comes from the endpoint or user, never a guessed name prefix.
     const budget = contextBudgetForCurrentRuntime(loopOnModel("Qwen3.6-35B-A3B-NVFP4"));
 
     expect(budget.contextWindowSource).toBe("fallback");
@@ -126,7 +111,6 @@ describe("context budget — prompt cap and named catalog entry", () => {
   }
 
   it("bounds the threshold by the model's prompt cap and says so", () => {
-    // GPT-5.2: 400K window, 272K prompt. Before: 288,000 from the window.
     const budget = contextBudgetForCurrentRuntime(loopOn("openai", "gpt-5.2"));
     expect(budget.contextWindowSource).toBe("model-catalog");
     expect(budget.preflight).toBe(217_600);
@@ -174,8 +158,7 @@ describe("reasoning — effort levels nobody states", () => {
   }
 
   it("warns once per route when an Azure deployment's levels are unstated", () => {
-    // An Azure deployment alias never matches the catalog by name, so until
-    // the user names the entry, thinking sends no effort and no summary.
+    // Deployment aliases do not establish reasoning controls without a declared model entry.
     const route = { identity: "azure-foundry/my-gpt54-deployment", vendor: "azure-foundry", model: "my-gpt54-deployment" };
     const unstated = plan("azure-foundry", "my-gpt54-deployment");
     expect(unstated).toMatchObject({ kind: "none", source: "host-fallback" });
@@ -240,7 +223,6 @@ describe("reasoning — a chat round on a model whose levels nobody states", () 
   const reasoningWarnings = () => logged.warn.mock.calls.map((call) => String(call[0])).filter((line) => line.startsWith("reasoning:"));
 
   it("sends no effort and says so, naming the setting that supplies the levels", async () => {
-    // gpt-5.1-codex is not in the catalog: thinking is on, but no effort or summary goes out.
     const body = await roundOn("gpt-5.1-codex");
     expect(body.reasoning).toBeUndefined();
     expect(reasoningWarnings()).toHaveLength(1);
@@ -248,7 +230,6 @@ describe("reasoning — a chat round on a model whose levels nobody states", () 
   });
 
   it("sends the effort and says nothing when the endpoint's report names the parameter", async () => {
-    // The Responses wire's parameter is `reasoning`; the report states it.
     const body = await roundOn("gpt-5.1-codex", undefined, ["tools", "reasoning"]);
     expect(body.reasoning).toMatchObject({ effort: "medium" });
     expect(reasoningWarnings()).toHaveLength(0);

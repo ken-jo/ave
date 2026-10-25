@@ -1,8 +1,3 @@
-/**
- * The folder reader's rules (design §18.4.5), with the recording volume:
- * links are judged by their text before any call touches their target, a
- * swap still in place after a read fails it, and names are NFC.
- */
 import { describe, expect, it } from "vitest";
 import { FakeVolume, marketplaceRefusal as failure, TEST_FOLDER_LIMITS } from "../../__tests__/fixtures/folder-fs.js";
 import { resolveFolderRoot } from "../../net/source-input.js";
@@ -26,7 +21,6 @@ describe("links inside a folder (§18.4.5)", () => {
     const tree = await treeOf(volume, "/m");
     const pkg = await tree.packageAt("skills/note", "skill");
     expect(text(pkg.files)).toEqual({ "SKILL.md": "real skill\n", "notes.md": "shared notes\n" });
-    // The link's own path is never opened: the target's canonical path is.
     expect(volume.paths("open")).not.toContain("/m/skills/note/notes.md");
     expect(volume.paths("open")).toContain("/m/shared/notes.md");
   });
@@ -69,7 +63,6 @@ describe("links inside a folder (§18.4.5)", () => {
       .link("C:\\m\\skills\\note\\z.md", "Z:\\loot.md");
     const tree = await treeOf(volume, "C:\\m");
     expect(await failure(tree.packageAt("skills/note", "skill"))).toMatchObject({ detail: { reason: "link-to-network" } });
-    // Only the drive letter's mapping was asked; nothing on the drive was touched.
     expect(volume.calls.filter((call) => call.path.startsWith("Z:")).map((call) => call.op)).toEqual(["queryDosDevice"]);
 
     const loop = new FakeVolume("linux").file("/m/skills/note/SKILL.md", "s").link("/m/skills/note/x", "y").link("/m/skills/note/y", "x");
@@ -94,7 +87,6 @@ describe("swaps during a read (§18.4.5)", () => {
     const tree = await treeOf(volume, "/m");
     let swapped = false;
     volume.hook = (call) => {
-      // After skills/note was enumerated, before its file is reached: skills/note becomes a link to the outside directory.
       if (!swapped && call.op === "lstat" && call.path === "/m/skills/note/SKILL.md") {
         swapped = true;
         volume.remove("/m/skills/note").link("/m/skills/note", "/outside/note");
@@ -103,7 +95,7 @@ describe("swaps during a read (§18.4.5)", () => {
     const error = await failure(tree.packageAt("skills/note", "skill"));
     expect(error).toMatchObject({ code: "SOURCE_LOCAL_UNREADABLE", detail: { reason: "changed-during-read" } });
     expect(swapped).toBe(true);
-    // The outside file was opened through the swapped ancestor, then discarded by the parent-chain recheck.
+    // An ancestor swap may expose bytes, but the parent-chain recheck must discard them.
     expect(volume.paths("open")).toContain("/m/skills/note/SKILL.md");
     expect(JSON.stringify(error)).not.toContain("OUTSIDE SECRET");
   });
@@ -119,16 +111,14 @@ describe("swaps during a read (§18.4.5)", () => {
         phase = "swapped";
         volume.remove("/m/skills/note").link("/m/skills/note", "/outside/note");
       } else if (phase === "swapped" && call.op === "close") {
-        // A concurrent writer restores the directory between the read and the recheck.
         phase = "restored";
         volume.remove("/m/skills/note").alias("/m/skills/note", "/m/.restore");
       }
     };
-    // The original directory node, kept so the restore puts back the same identity.
     volume.alias("/m/.restore", "/m/skills/note");
     const pkg = await tree.packageAt("skills/note", "skill");
     expect(phase).toBe("restored");
-    // The documented residual: a concurrent local writer in the chosen folder can redirect one read.
+    // A concurrent local writer that restores the original identity can redirect one read undetected.
     expect(text(pkg.files)["SKILL.md"]).toBe("OUTSIDE\n");
   });
 });
@@ -175,13 +165,12 @@ describe("names and skipped entries (§18.4.5)", () => {
     const pkg = await (await treeOf(plugin, "/m")).packageAt("plugins/alpha", "plugin");
     expect(pkg.files.map((file) => [file.path, file.executable])).toEqual([["dist/index.js", true], ["plugin.json", false]]);
     expect(pkg.notInstalled).toEqual(["node_modules/", "package.json", "src/"]);
-    // What is not installed is never read.
     expect(plugin.paths("open").some((path) => path.includes("/src/") || path.includes("node_modules"))).toBe(false);
   });
 });
 
 describe("a link into a skipped entry (§18.4.5)", () => {
-  /** Calls that would read or list beneath `.git`: an lstat of the typed component is how its spelling is learned. */
+  /** Allow component lstat for spelling; reject reads or enumeration beneath .git. */
   const beneath = (volume: FakeVolume, dir: string) => volume.calls.filter((call) => call.path.startsWith(dir) && call.op !== "lstat");
 
   it("refuses a link whose target lies in .git as link-to-skipped, and never opens or lists anything there", async () => {

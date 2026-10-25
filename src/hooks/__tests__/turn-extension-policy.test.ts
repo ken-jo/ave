@@ -1,8 +1,4 @@
-/**
- * A Tailnet controller may request a conversation turn, but cannot use that
- * turn to execute owner-configured hook code. This covers every public hook
- * dispatch boundary independently of the ConversationLoop wiring.
- */
+// Remote turn requests cannot execute owner-configured hook code; every dispatch boundary enforces this.
 import { describe, expect, it, vi } from "vitest";
 
 import { HookRunner } from "../hook-runner.js";
@@ -57,8 +53,7 @@ function deniedHook(event: HookConfigEntry["event"]): HookConfigEntry {
   return {
     id: `${event}#tailnet-regression`,
     event,
-    // If the policy guard regresses, this command exits non-zero and the
-    // dispatch is denied. A passing test proves it was not run at all.
+    // A guard regression runs this nonzero-exit command and denies dispatch.
     command: [process.execPath, "-e", "process.exit(1)"],
     timeoutMs: 1_000,
     source: "config",

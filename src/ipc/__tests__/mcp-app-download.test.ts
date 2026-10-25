@@ -1,13 +1,4 @@
-/**
- * `ave:mcp:ui-download-file` — the gated IPC behind the MCP-app `ondownloadfile` handler.
- *
- * Three things are asserted here and nowhere else:
- *   1. An UNAUTHORIZED sender is refused (the channel writes a file).
- *   2. The user's save dialog is the authorization — a CANCEL writes nothing and is NOT
- *      an error.
- *   3. What the app can talk the host into writing is only what the app already had:
- *      a `resource_link` never becomes a fetch.
- */
+// A save dialog grants write authority; cancellation writes nothing and resource links never trigger fetches.
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import type { IpcMainInvokeEvent } from "electron";
 import { mkdtempSync, readFileSync } from "node:fs";
@@ -33,7 +24,6 @@ vi.mock("electron", () => ({
   shell: { openPath: vi.fn() },
 }));
 
-/** The host renderer frame (what `validateHostRendererSender` accepts). */
 const auditLog = vi.fn();
 
 function makeDeps() {
@@ -97,7 +87,6 @@ describe("ave:mcp:ui-download-file", () => {
 
       expect(result).toMatchObject({ ok: false, error: "unauthorized-frame" });
     }
-    // Nothing even reached the dialog.
     expect(showSaveDialog).not.toHaveBeenCalled();
   });
 
@@ -109,7 +98,6 @@ describe("ave:mcp:ui-download-file", () => {
 
     expect(result).toEqual({ ok: true, disposition: "saved" });
     expect(readFileSync(target, "utf8")).toBe("a,b\n1,2\n");
-    // The dialog is pre-filled with the SANITIZED name, never a path from the app.
     const options = showSaveDialog.mock.calls[0]![0] as { defaultPath: string };
     expect(options.defaultPath).toBe("report.csv");
   });
@@ -119,7 +107,6 @@ describe("ave:mcp:ui-download-file", () => {
 
     const result = await invoke(hostFrameEvent(), "github", csvParams);
 
-    // `ok: true` — the bridge handler maps this to `{}`, never `{ isError: true }`.
     expect(result).toEqual({ ok: true, disposition: "cancelled" });
   });
 
@@ -129,7 +116,6 @@ describe("ave:mcp:ui-download-file", () => {
     });
 
     expect(result).toMatchObject({ ok: false, error: "resource-link-unsupported" });
-    // No dialog, no fetch, no write.
     expect(showSaveDialog).not.toHaveBeenCalled();
   });
 

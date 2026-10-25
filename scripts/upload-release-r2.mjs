@@ -1,25 +1,6 @@
 #!/usr/bin/env node
-/**
- * Upload a tag's installers to the Cloudflare R2 release channel.
- *
- *   node scripts/upload-release-r2.mjs --dir <staging> --tag v<version> [--dry-run]
- *
- * The plan (object keys, order, content types, cache headers) comes from
- * lib/release-channel.mjs and is derived from `package.json` `build.publish`.
- * `--dry-run` prints it as JSON and needs no credentials or network.
- *
- * A real run needs R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY and
- * R2_BUCKET, and fails before any request when one is unset or empty. It uses
- * the AWS CLI against R2's S3-compatible endpoint
- * `https://<R2_ACCOUNT_ID>.r2.cloudflarestorage.com` with region `auto`.
- *
- * Versioned objects are written with `If-None-Match: *`. A version already in
- * the bucket is left alone when its bytes are identical (a re-run) and is a
- * failure when they differ: a year-long immutable cache entry and the feed's
- * sha512 would otherwise disagree.
- *
- * This file is only an entry point and runs unconditionally.
- */
+// Derive the upload plan from the shared release channel; dry runs need no credentials or network.
+// Versioned objects are immutable: identical reruns pass and different bytes fail.
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";

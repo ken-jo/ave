@@ -1,13 +1,4 @@
-/**
- * The git every marketplace call runs (design §9.1, §9.3), as one object.
- *
- * The configured mode picks the executable. For it this builds the
- * generated global config (only the credential and TLS entries copied from
- * the user's system and global config), the Ave-owned empty directory, the
- * askpass broker that answers with stored tokens and, for a managed copy,
- * its environment. The runner is kept until `invalidate()`: a mode change or
- * a managed install calls it, and the next call detects again.
- */
+/** Keeps an isolated runner until invalidated by a runtime change or managed install. */
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { GitRuntimeMode } from "../../shared/git-runtime-mode.js";
@@ -20,14 +11,10 @@ import { MANAGED_GIT, type ManagedGitPins } from "./managed-git-pins.js";
 import { GitRunner, type GitCommands, type GitRemote, type GitRunnerOptions } from "./run-git.js";
 
 export interface MarketplaceGitOptions {
-  /** Holds the generated global config and the empty directory. */
   envRoot: string;
-  /** `~/.ave/runtime/git`, where managed copies live. */
   runtimeRoot: string;
   mode: () => GitRuntimeMode;
-  /** The token for a normalized host and source, read at each prompt (see AskpassBrokerOptions.getToken). */
   getToken: (host: string, sourceId: string) => string | null;
-  /** Corporate roots added to a managed copy's CA bundle; null when there are none. */
   corporateRootsPem: () => Promise<string | null>;
   resolveProxy?: GitRunnerOptions["resolveProxy"];
   platform?: NodeJS.Platform;
@@ -40,7 +27,6 @@ interface BuiltRunner {
   copied: readonly CopiedConfigEntry[];
 }
 
-/** A copied entry that names a credential helper: `credential.helper` or `credential.<url>.helper`. */
 function isHelperEntry(entry: CopiedConfigEntry): boolean {
   return entry.value !== "" && (entry.key === "credential.helper" || (entry.key.startsWith("credential.") && entry.key.endsWith(".helper")));
 }
@@ -114,30 +100,20 @@ export class MarketplaceGit {
     return this.built;
   }
 
-  /** The runner for the detected git; GIT_RUNTIME_MISSING or GIT_RUNTIME_TOO_OLD when there is none. */
   async runner(): Promise<GitRunner> {
     return (await this.current()).runner;
   }
 
-  /**
-   * One object for the syncer and every repository: each command runs on the
-   * runner detected at that moment, so installing git or changing the mode
-   * needs no new syncer (whose per-source locks must outlive the switch).
-   */
+  /** Resolve the current runner per command while retaining the syncer and its source locks. */
   readonly commands: GitCommands = {
     run: async (args, options) => (await this.runner()).run(args, options),
   };
 
-  /** The address check of a remote, without a git command (see {@link GitRunner.preflight}). */
   async preflight(remote: GitRemote): Promise<void> {
     await (await this.runner()).preflight(remote);
   }
 
-  /**
-   * Whether an OS credential helper will answer for `host` (design §9.3,
-   * §15.5): a copied `credential.helper`, or a `credential.<url>.helper`
-   * whose URL names the host.
-   */
+  /** A generic helper or a matching per-host helper counts as available credentials. */
   async credentialHelperFor(host: string): Promise<boolean> {
     const { copied } = await this.current();
     return copied.some((entry) => {
@@ -152,7 +128,6 @@ export class MarketplaceGit {
     });
   }
 
-  /** Detect again on the next call (mode changed, managed git installed). */
   invalidate(): void {
     this.built = null;
   }

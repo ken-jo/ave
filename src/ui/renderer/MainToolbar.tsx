@@ -7,18 +7,7 @@ import { ToolbarStatusPill } from "./components/ToolbarStatusPill.js";
 import { BootstrapStatusPill, type BootstrapStatusPillProps } from "./components/BootstrapStatusPill.js";
 import { PluginUpdatesPill, type PluginUpdatesPillProps } from "./components/PluginUpdatesPill.js";
 
-/**
- * Every interactive control in the toolbar lives inside the window-control
- * band (see CustomTitleBar). The band is an Electron drag region in its empty
- * zones, so each control must opt OUT of dragging or it would be un-clickable.
- * `NoDrag` wraps a control with `WebkitAppRegion: "no-drag"`.
- *
- * The search / star / export controls + the collapse toggle no longer live
- * here — they moved into the floating sidebar's CLUSTER STRIP next to the
- * traffic lights (see Sidebar.tsx). This band now hosts only the right-aligned
-   * controls: the lifecycle status pills (app update, plugin updates,
-   * managed-plugin bootstrap), the Dev badge, and the Chat/Work mode toggle.
- */
+/** Every toolbar control must opt out of the title band's drag region to remain clickable. */
 function NoDrag({ children, className }: { children: React.ReactNode; className?: string }) {
   return (
     <span
@@ -33,9 +22,6 @@ function NoDrag({ children, className }: { children: React.ReactNode; className?
   );
 }
 
-
-
-
 import type { UpdateState } from "../../shared/update-state.js";
 export type AppUpdateBadgeState = UpdateState;
 
@@ -47,16 +33,12 @@ export type AppUpdateBadgeState = UpdateState;
  */
 export type AppMode = "chat" | "work";
 
-
-
-
 function isDevMode(): boolean {
   return (window as unknown as { __aveDevMode?: boolean }).__aveDevMode === true;
 }
 
 export interface MainToolbarProps {
-  /** Current location path. Rendered on the band's leading edge, immediately
-   *  after the sidebar-clearance reserve. */
+  /** Current location path. Rendered on the band's leading edge, immediately after the sidebar-clearance reserve. */
   viewNav: ViewPathNavProps;
   streaming: boolean;
   hasApiKey: boolean | null;
@@ -67,9 +49,8 @@ export interface MainToolbarProps {
   onOpenDevTools?: () => void;
   /** Latest app-update state from the main process. */
   appUpdateState?: AppUpdateBadgeState;
-  /** When true, the user-initiated download/install IPC is in flight —
-   *  disables the badge to prevent rapid double-clicks during the IPC
-   *  round-trip window. */
+  /** When true, the user-initiated download/install IPC is in flight — disables the badge to prevent rapid double-clicks
+   * during the IPC round-trip window. */
   appUpdateInFlight?: boolean;
   /** Triggered when the badge is in "available" state and clicked. */
   onDownloadAppUpdate?: () => void | Promise<void>;
@@ -199,9 +180,6 @@ export function MainToolbar({
   );
 }
 
-
-
-
 function AppModeToggle({ mode, onToggle }: { mode: AppMode; onToggle: (mode: AppMode) => void }) {
   const { t } = useTranslation();
   const segment = (value: AppMode, label: string, ariaLabel: string) => {
@@ -256,9 +234,8 @@ function AppUpdateBadge({
   onSkip,
 }: {
   state: AppUpdateBadgeState;
-  /** When true, an IPC action (download/install) is in flight — disables
-   *  the button to prevent rapid double-click during the round-trip
-   *  window before the main process broadcasts the next state. */
+  /** When true, an IPC action (download/install) is in flight — disables the button to prevent rapid double-click during the
+   * round-trip window before the main process broadcasts the next state. */
   inFlight?: boolean;
   onDownload?: () => void | Promise<void>;
   onInstall?: () => void | Promise<void>;

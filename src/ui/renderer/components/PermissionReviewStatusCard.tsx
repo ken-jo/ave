@@ -11,9 +11,8 @@ function statusLabel(entry: PermissionReviewEntry): string {
   if (entry.status === "reviewing") return t("permissionReviewStatusCard.reviewing");
   if (entry.status === "auto_approved") return t("permissionReviewStatusCard.autoApproved");
   if (entry.status === "failed") return t("permissionReviewStatusCard.failed");
-  // A parent agent answered this one. Without these two the fall-through below
-  // would label a decided call "approval required", which is the opposite of
-  // what happened.
+  // A parent agent answered this one. Without these two the fall-through below would label a decided call "approval
+  // required", which is the opposite of what happened.
   if (entry.status === "parent_approved") {
     return t("permissionReviewStatusCard.parentApproved");
   }

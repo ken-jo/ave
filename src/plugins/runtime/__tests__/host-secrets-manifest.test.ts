@@ -1,10 +1,4 @@
-/**
- * #893 — Manifest `hostSecrets.read[]` validator unit tests.
- *
- * Verifies that `parsePluginJson()` rejects allowlist entries that don't
- * match the allowed host LLM secret key patterns (`manifest_schema` failure)
- * and accepts a well-formed allowlist unchanged.
- */
+/** Host-secret declarations must match the shared key grammar even with permissive schema input. */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -33,8 +27,7 @@ describe("manifest hostSecrets.read[] validator (#893)", () => {
     await rm(workDir, { recursive: true, force: true });
   });
 
-  // Permissive envelope — the host-side cross-field check is what this suite
-  // exercises, rather than the host schema.
+  // Bypass schema strictness to exercise the host cross-field reader.
   const makeValidator = permissiveManifestValidatorFactory({
     namespaceProperties: {
       entry: { type: "string" },
@@ -90,24 +83,19 @@ describe("manifest hostSecrets.read[] validator (#893)", () => {
     expect(valid, JSON.stringify(validator.errors, null, 2)).toBe(true);
   });
 
-  // ── one predicate, and it may not be looser than the JSON schema ──
-  //
-  // The runtime gate exists as defence-in-depth against a manifest installing
-  // "a wider allowlist than the schema permits". That claim is only true if the
-  // TS predicate accepts NOTHING the vendored schema rejects.
+  // The host key predicate must accept nothing the authoritative schema rejects.
   it("never accepts a hostSecrets.read key the vendored JSON schema rejects", async () => {
     const validator = await buildManifestValidator();
     const corpus = [
       "llm.apiKey.openai",
       "llm.apiKey.open-router",
       "llm.marketplaceProvider.future-router.apiKey",
-      // The pre-consolidation TS copies routed this through a helper that
-      // `.trim()`s, so they accepted padded ids the schema never allowed.
+      // Padded keys must not be accepted through trimming.
       "llm.marketplaceProvider.  future-router  .apiKey",
       "llm.marketplaceProvider.\tfuture-router.apiKey",
       "llm.marketplaceProvider.\nfuture-router.apiKey",
       "llm.marketplaceProvider.future router.apiKey",
-      // Neither TS copy enforced the schema's per-item length bound.
+      // Host checks must enforce per-item length bounds.
       `llm.apiKey.${"a".repeat(200)}`,
       "llm.apiKey.Claude",
       "webApiKey.tavily",
@@ -219,9 +207,7 @@ describe("manifest hostSecrets.read[] validator (#893)", () => {
       );
     });
 
-    // Leading dots are rejected at AJV pattern level (the host schema's
-    // id pattern requires a leading letter), so the host-side check never
-    // sees them. We still want to verify the AJV path rejects.
+    // Leading-dot IDs fail in the schema before host cross-field checks.
     it("rejects ids with leading dots", async () => {
       const path = await writeManifestWithId(".com.example.foo");
       await expect(parsePluginJson(path, makeValidator())).rejects.toThrow(
@@ -244,13 +230,7 @@ describe("manifest hostSecrets.read[] validator (#893)", () => {
     });
   });
 
-  // ── #1939: the two COLLECTION-level bounds ──
-  //
-  // `isAllowedHostSecretKey` judges one entry at a time, so it can see neither
-  // `maxItems` nor `uniqueItems`. AJV enforces both from the vendored schema,
-  // and `findHostSecretReadListViolation` enforces them again on the host
-  // side. Every case below drives a real producer, `parsePluginJson` on a
-  // manifest file.
+  // Collection maxItems and uniqueness need their own host checks; item predicates cannot enforce them.
   describe("hostSecrets.read[] collection bounds (#1939)", () => {
     const readSchema = (
       aveSchemaProperties(manifestSchema).hostSecrets as {
@@ -258,7 +238,6 @@ describe("manifest hostSecrets.read[] validator (#893)", () => {
       }
     ).properties.read;
 
-    /** `count` distinct, individually well-formed host-secret keys. */
     function distinctKeys(count: number): string[] {
       return Array.from(
         { length: count },
@@ -266,25 +245,20 @@ describe("manifest hostSecrets.read[] validator (#893)", () => {
       );
     }
 
-    // Pins the hand-declared TS constant to the JSON schema it mirrors, so a
-    // schema edit that is not carried into TS fails here instead of silently
-    // splitting the two paths.
+    // Keep collection limits synchronized with the schema.
     it("declares the same maxItems the vendored JSON schema declares", () => {
       expect(readSchema.maxItems).toBe(HOST_SECRET_READ_MAX_ITEMS);
       expect(readSchema.uniqueItems).toBe(true);
     });
 
-    // Guards the negative cases below: an over-limit rejection must come from
-    // the count, not from a generated key the per-item predicate dislikes.
+    // Ensure generated keys pass item checks so count failures test the intended bound.
     it("generates fixture keys that are individually allowed", () => {
       for (const key of distinctKeys(HOST_SECRET_READ_MAX_ITEMS + 1)) {
         expect(isAllowedHostSecretKey(key), key).toBe(true);
       }
     });
 
-    // Manifest path, host-side leg only: `makeValidator()` is deliberately
-    // permissive (no maxItems/uniqueItems), so these two exercise the TS mirror
-    // rather than AJV.
+    // The permissive validator makes these host collection checks independently observable.
     it("rejects a manifest over maxItems at the host check", async () => {
       const path = await writeManifest({
         hostSecrets: { read: distinctKeys(HOST_SECRET_READ_MAX_ITEMS + 1) },
@@ -303,7 +277,6 @@ describe("manifest hostSecrets.read[] validator (#893)", () => {
       );
     });
 
-    // Manifest path, AJV leg.
     it("rejects both bounds against the vendored schema too", async () => {
       const validator = await buildManifestValidator();
       const base = {

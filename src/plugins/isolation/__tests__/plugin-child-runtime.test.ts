@@ -1,15 +1,4 @@
-/**
- * The child runtime, driven over in-memory paired streams — the pattern
- * `stdio-server-loop`'s own tests already use, so the transport is real framing
- * over real streams without a subprocess.
- *
- * Two directions are proven here. Host → plugin is the MCP arm that already
- * exists: the child stands up a `PluginMcpServer` over `StdioServerLoop` and
- * answers `server/discover` and `tools/call` end to end. Plugin → host is the
- * `ave/host/*` half: a JSON-RPC request and reply, a marshalling gate on both
- * sides, an error identity that survives, and a subscription lifetime that
- * releases on BOTH sides whichever one dies first.
- */
+/** Exercise real child runtime and dispatch over paired streams; verify both subscription lifetimes. */
 import { describe, expect, it, vi } from "vitest";
 import { PassThrough } from "node:stream";
 import { homedir } from "node:os";
@@ -71,7 +60,6 @@ interface Harness {
   readonly toChild: PassThrough;
   readonly fromChild: PassThrough;
   readonly childNotifications: HostApiNotification[];
-  /** Every `ave/host/*` request the child sent, in order. */
   readonly requests: HostApiRequest[];
   readonly call: (
     path: string,
@@ -80,11 +68,7 @@ interface Harness {
   ) => Promise<unknown>;
 }
 
-/**
- * Wire a real dispatcher to a real child runtime. The channel is in-memory
- * because multiplexing the reverse direction onto the stdio pipes is a
- * transport decision that has not been made yet; everything above it is real.
- */
+/** Use paired in-memory pipes while retaining real framing, runtime and dispatcher. */
 async function harness(
   options: {
     table?: Record<string, unknown>;
@@ -109,12 +93,10 @@ async function harness(
 
   const hostLogs: { message: string; meta?: unknown }[] = [];
   host = new HostApiDispatcher({
-    // Captured, not dropped: a sink that discards is what shipped, and a
-    // test that discards could not tell the difference.
+    // Capture host diagnostics so silently discarded failures cannot pass.
     log: (message, meta) => hostLogs.push({ message, meta }),
     pluginId: PLUGIN_ID,
     reportUnknownField: () => {},
-    // `ave/instance/shutdown`, answered by the child runtime itself.
     shutdownChild: (subscriptionId) => child.runShutdownHandler(subscriptionId),
     isActive: options.isActive ?? (() => true),
     notifications: { deliver: (notification) => child.deliver(notification) },
@@ -195,9 +177,7 @@ describe("the child serves its plugin over framed stdio", () => {
   });
 
   it("refuses a tool result the boundary cannot carry", async () => {
-    // A Map is a successful JSON round-trip into `{}` — no exception, no
-    // symptom, wrong value. `LoopbackTransport` refuses it on the in-process
-    // arm; the child refuses it here so a plugin gets the same answer on both.
+    // Reject Map before JSON silently converts it to an empty object.
     const { toChild, fromChild } = await harness({
       instance: { handlers: { echo_back: () => new Map([["a", 1]]) } },
     });
@@ -256,8 +236,7 @@ describe("the hostApi stub builder", () => {
   it("refuses to hand the plugin a stub with a member missing", () => {
     expect(() =>
       createChildHostApiStub(PLUGIN_ID, (path) =>
-        // A builder that skipped a member would give the plugin a TypeError at
-        // some unrelated call site instead of a failure that names the gap.
+        // Every declared path needs a diagnostic stub rather than an unrelated missing-function TypeError.
         path === "getSecret" ? (undefined as never) : () => undefined,
       ),
     ).toThrow(/missing 'getSecret'/u);
@@ -283,11 +262,7 @@ describe("the hostApi stub the child hands the plugin", () => {
   });
 
   it("throws from an unwired member instead of resolving undefined", async () => {
-    // Built through the stub builder with NOTHING wired, rather than by naming a
-    // member on a live runtime: stubs land group by group, so an assertion that
-    // named one would stop testing the refusal the moment that member was wired.
-    // What is under test is the composition — every declared path, nested,
-    // resolving to the throwing default.
+    // Build the unwired nested surface from contracts so every missing group receives the throwing default.
     const stub = createChildHostApiStub(PLUGIN_ID, (path) =>
       unimplementedChildMember(PLUGIN_ID, path),
     ) as unknown as Record<string, (...args: unknown[]) => unknown>;
@@ -298,11 +273,7 @@ describe("the hostApi stub the child hands the plugin", () => {
   });
 
   it("hands the plugin the HOST's home, not the one this process would read", async () => {
-    // The point of the field, stated as a control: the fixture names a home
-    // that is deliberately NOT this process's, so a child that fell back to
-    // `homedir()` would answer with something else and the equality below
-    // would fail. Without the second assertion the first would still pass on a
-    // machine where the two happened to match.
+    // Carry the host user home explicitly; a sandbox homedir fallback would return the wrong path.
     let seen: { userHome: string; aveHome: string } | null = null;
     await startPluginChildRuntime({
       input: new PassThrough(),
@@ -360,8 +331,7 @@ describe("the hostApi stub the child hands the plugin", () => {
           },
         }),
       ).rejects.toThrow(new RegExp(`missing '${field}'`, "u"));
-      // The refusal happens BEFORE the plugin exists. A plugin constructed with
-      // the field undefined would already have joined it into a path.
+      // Refuse missing host path fields before constructing the plugin.
       expect(factoryRan).toBe(false);
     },
   );
@@ -435,14 +405,12 @@ describe("a hostApi call crosses the reverse channel and settles", () => {
     await expect(call("hasRoutineBySource", [new Date()])).rejects.toThrow(
       /cannot cross the boundary/u,
     );
-    // Not sent: the failure belongs to the caller, not to the transport.
+    // Refuse before send so the caller owns the error.
     expect(handle).not.toHaveBeenCalled();
   });
 
   it("sends the method and a params object keyed by the member's own names, and no identity", async () => {
-    // The connection is the identity (§2.4): a request that also named the
-    // plugin or its generation would carry a field the host must ignore, and a
-    // field the host ignores is one an author will try to set.
+    // Connection identity is authoritative; requests carry neither plugin nor generation identities.
     const { call, requests } = await harness({
       table: {
         ...HOSTAPI_DISPATCH_TABLE,
@@ -462,7 +430,6 @@ describe("a hostApi call crosses the reverse channel and settles", () => {
 });
 
 describe("a subscription releases on both sides, whichever side dies", () => {
-  /** A host handler that adopts the child-allocated id — the shape all four take. */
   function subscriptionTable(teardown: () => void) {
     return {
       ...HOSTAPI_DISPATCH_TABLE,
@@ -488,7 +455,6 @@ describe("a subscription releases on both sides, whichever side dies", () => {
 
   it("delivers host events to the plugin's handler", async () => {
     const { host, subscription, received } = await subscribe(() => {});
-    // The host handler reaches the child through the same scope it registered on.
     const table = HOSTAPI_DISPATCH_TABLE;
     expect(table.onEvent.status).toBe("unimplemented");
     host.handleNotification({
@@ -516,7 +482,6 @@ describe("a subscription releases on both sides, whichever side dies", () => {
       params: { subscriptionId: subscription.subscriptionId },
     });
 
-    // Disposing again is a no-op on both sides rather than a second teardown.
     subscription.dispose();
     expect(teardown).toHaveBeenCalledTimes(1);
   });
@@ -525,16 +490,13 @@ describe("a subscription releases on both sides, whichever side dies", () => {
     const teardown = vi.fn();
     const { child, host } = await subscribe(teardown);
 
-    // The child is gone: no release ever arrives, and the host must not wait
-    // for one. This is the leak the in-process version cannot have and the
-    // out-of-process version gets for free only if the host is told.
+    // Child death must release host registrations without cooperation.
     expect(host.childGone()).toBe(1);
 
     expect(host.openSubscriptionCount).toBe(0);
     expect(teardown).toHaveBeenCalledTimes(1);
     expect(teardown).toHaveBeenCalledWith("peer-gone");
-    // The child's own ledger dies with its process; asserting it here documents
-    // that nothing in the host's cleanup depends on the child cooperating.
+    // Host cleanup must not depend on the child ledger surviving.
     expect(child.openSubscriptionCount).toBe(1);
   });
 
@@ -546,7 +508,7 @@ describe("a subscription releases on both sides, whichever side dies", () => {
     expect(child.hostGone()).toBe(1);
 
     expect(child.openSubscriptionCount).toBe(0);
-    // No release notification: there is no host left to receive one.
+    // Do not notify a host that is already gone.
     expect(childNotifications).toHaveLength(before);
   });
 
@@ -573,9 +535,7 @@ describe("a subscription releases on both sides, whichever side dies", () => {
   it("reports an event for a subscription that is already gone", async () => {
     const { child, subscription } = await subscribe(() => {});
     subscription.dispose();
-    // An event that crossed before the release did is a real ordering artifact,
-    // not an error — but it is REPORTED rather than dropped in silence, because
-    // "no handler ran" is exactly the symptom a leak or a mis-keyed id produces.
+    // Report notifications racing release; silent drops can mask leaks or mis-keyed IDs.
     const outcome: NotificationOutcome = child.deliver({
       jsonrpc: "2.0",
       method: "notifications/ave/subscription",
@@ -614,10 +574,7 @@ describe("a subscription releases on both sides, whichever side dies", () => {
 });
 
 describe("a signal cancels the request it was passed with, and nothing else", () => {
-  /**
-   * A host member that runs until its request is cancelled, the way `callLlm`
-   * does — and records the signal the dispatcher handed it.
-   */
+  /** Use a cancellable host operation and record its actual signal. */
   function cancellableTable(observed: { signal?: AbortSignal; finish?: (value: string) => void }) {
     return {
       ...HOSTAPI_DISPATCH_TABLE,
@@ -642,8 +599,7 @@ describe("a signal cancels the request it was passed with, and nothing else", ()
     controller.abort(new Error("the plugin changed its mind"));
 
     expect(observed.signal?.aborted).toBe(true);
-    // The call settles through the host's reply, and the name a plugin checks
-    // for a cancellation survives the wire.
+    // Settle through the host reply while preserving AbortError identity.
     await expect(pending).rejects.toMatchObject({ name: "AbortError" });
   });
 
@@ -664,14 +620,12 @@ describe("a signal cancels the request it was passed with, and nothing else", ()
         params: { requestId: wired.requests[0].id, reason: "the plugin changed its mind" },
       },
     ]);
-    // The signal itself never crossed: the request carries the prompt alone.
+    // Only prompt data crosses; signals remain local.
     expect(wired.requests[0].params).toEqual({ prompt: "hi" });
   });
 
   it("cancels work started for a child that has since died", async () => {
-    // The host is working on behalf of a process that no longer exists. Not
-    // aborting leaves the request in flight with nowhere to deliver its answer,
-    // and that holds whether or not the plugin passed a signal.
+    // Abort host work when the child dies even when no signal was supplied.
     const observed: { signal?: AbortSignal; finish?: (value: string) => void } = {};
     const wired = await harness({ table: cancellableTable(observed) });
     void wired.call("callLlm", ["hi"]).catch(() => undefined);
@@ -694,9 +648,7 @@ describe("a signal cancels the request it was passed with, and nothing else", ()
 
     controller.abort(new Error("too late"));
 
-    // No cancellation: the request already settled, so the listener is gone. A
-    // listener that stayed attached would keep the settled call's closure alive
-    // for as long as the plugin holds the signal.
+    // Remove abort listeners when calls settle so signals cannot retain completed closures.
     expect(wired.childNotifications).toHaveLength(before);
   });
 

@@ -1,14 +1,4 @@
-/**
- * AgentProfileStore — user-defined sub-agent profile discovery.
- *
- * Profiles live under `~/.ave/agents/` as markdown files with frontmatter.
- * Supported layouts:
- *   - `~/.ave/agents/<name>.md`
- *   - `~/.ave/agents/<name>/AGENTS.md`
- *
- * The body is used as the sub-agent profile prompt when `agent_spawn` is
- * invoked with `agentName`.
- */
+// Profiles support <name>.md and <name>/AGENTS.md under the agents namespace; their bodies become agent_spawn prompts.
 import { readFile, readdir, realpath } from "node:fs/promises";
 import { resolve, join, relative, isAbsolute } from "node:path";
 import type { Dirent } from "node:fs";
@@ -72,7 +62,7 @@ export function parseAgentFrontmatter(raw: string): {
 
 export class AgentProfileStore {
   private readonly userDir: string;
-  /** Agent profiles installed as marketplace packages: name → the package directory holding AGENTS.md. A user profile of the same name wins. */
+  // Agent profiles installed as marketplace packages: name → the package directory holding AGENTS.md. A user profile of the same name wins.
   private packageDirs = new Map<string, string>();
   private agentPluginProfiles = new Map<string, LoadedAgentProfile>();
 
@@ -80,12 +70,12 @@ export class AgentProfileStore {
     this.userDir = opts.userDir ?? userAgentsDir();
   }
 
-  /** Replace the installed agent packages; the installed-content service calls this after each load. */
+  // Replace the installed agent packages; the installed-content service calls this after each load.
   setInstalledPackages(packages: ReadonlyArray<{ name: string; dir: string }>): void {
     this.packageDirs = new Map(packages.filter((item) => AGENT_NAME_ALLOWLIST.test(item.name)).map((item) => [item.name, item.dir]));
   }
 
-  /** Replace profiles supplied by verified agent plugin package bytes. */
+  // Replace profiles supplied by verified agent plugin package bytes.
   setInstalledAgentPlugins(packages: readonly InstalledAgentPlugin[]): void {
     const next = new Map<string, LoadedAgentProfile>();
     for (const { name: packageName, content } of packages) {
@@ -140,7 +130,7 @@ export class AgentProfileStore {
     };
   }
 
-  /** The AGENTS.md of an installed package, realpath-contained in its directory. */
+  // The AGENTS.md of an installed package, realpath-contained in its directory.
   private async readPackageProfile(name: string, dir: string): Promise<LoadedAgentProfile | null> {
     try {
       const realDir = await realpath(dir);
@@ -155,7 +145,7 @@ export class AgentProfileStore {
     }
   }
 
-  /** User agents, then installed package agents a user agent does not shadow. */
+  // User agents, then installed package agents a user agent does not shadow.
   async list(): Promise<LoadedAgentProfile[]> {
     const byName = new Map<string, LoadedAgentProfile>();
     for (const profile of await this.listUser()) byName.set(profile.name, profile);
@@ -167,7 +157,7 @@ export class AgentProfileStore {
     return [...byName.values(), ...this.agentPluginProfiles.values()];
   }
 
-  /** The file of the user's own agent with this name, or null: an installed package of that name would never apply. */
+  // The file of the user's own agent with this name, or null: an installed package of that name would never apply.
   async userProfileFile(name: string): Promise<string | null> {
     return (await this.listUser()).find((profile) => profile.name === name)?.filePath ?? null;
   }

@@ -19,7 +19,7 @@ export interface SubscriptionUsageCollector {
   readonly values: SubscriptionUsageTelemetry[];
 }
 
-/** Mutable engine fields calibrated only from terminal Codex provider reports. */
+// Only terminal subscription provider reports may calibrate these context fields.
 export interface SubscriptionContextTelemetryTarget {
   readonly lastRoundInputProjection: { readonly totalTokens: number } | null;
   lastRoundProviderInputTokens: number;
@@ -41,8 +41,7 @@ function estimateLocalSubscriptionUsage(params: {
   const inputTokens = Number.isSafeInteger(params.inputTokens) && params.inputTokens >= 0
     ? params.inputTokens
     : 0;
-  // Generated reasoning contributes to output even when the next request does
-  // not replay it. Input projection would silently omit that generated work.
+  // Count generated reasoning as output even when it is absent from the next request.
   const outputTokens = estimateTokens(serializeMessageForEstimation(params.assistant));
   return normalizeSubscriptionUsageTelemetry({
     provider: params.provider,
@@ -55,7 +54,6 @@ function estimateLocalSubscriptionUsage(params: {
   });
 }
 
-/** Collects provider reports or a local estimate of generated output per round. */
 export function createSubscriptionUsageCollector(): SubscriptionUsageCollector {
   const segments: SubscriptionUsageTelemetry[] = [];
   return {
@@ -90,11 +88,7 @@ export function createSubscriptionUsageCollector(): SubscriptionUsageCollector {
   };
 }
 
-/**
- * Records each subscription round while allowing only a terminal Codex provider
- * report to calibrate engine context state. The caller resets the provider
- * baseline before each stream, so a telemetry-less final round remains local.
- */
+// Reset the baseline each stream; only terminal provider reports calibrate context, not local telemetry.
 export function recordSubscriptionRoundTelemetry(
   target: SubscriptionContextTelemetryTarget,
   collector: SubscriptionUsageCollector,
@@ -126,7 +120,6 @@ export function recordSubscriptionRoundTelemetry(
   }
 }
 
-/** Keeps subscription telemetry separate from API usage and price calculations. */
 export function aggregateSubscriptionUsage(segments: readonly SubscriptionUsageTelemetry[]) {
   return segments.reduce((total, segment) => ({
     inputTokens: total.inputTokens + segment.inputTokens,

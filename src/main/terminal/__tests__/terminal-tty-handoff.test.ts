@@ -1,16 +1,11 @@
-/**
- * The workspace terminal's own-tty grant (terminal-tty-handoff.ts), EXECUTED:
- * the real patched ASRT profile, the real node-pty, the real fifo handoff.
- *
- * Without the grant a sandboxed zsh cannot turn off ECHO, so each typed line
- * shows twice, and cannot set its foreground process group, so job control is
- * off. With it, the shell owns its own terminal and still cannot set another.
- */
+/** The workspace terminal's own-tty grant (terminal-tty-handoff.ts), EXECUTED: the real patched ASRT profile, the real node-pty, the real fifo handoff. Without the grant a sandboxed zsh
+ * cannot turn off ECHO, so each typed line shows twice, and cannot set its foreground process group, so job control is off. With it, the shell owns its own terminal and still cannot set another. */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { closeSync, constants, mkdtempSync, openSync, readSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { IPty } from "node-pty";
+import { TEST_COMMAND_ID } from "../../../__tests__/support/egress-fixture.js";
 import { waitForTerminal } from "../../../__tests__/support/terminal-markers.js";
 
 import {
@@ -101,8 +96,7 @@ describe("the fifo handoff (real fifo)", () => {
     const handoff = await createTerminalTtyHandoff();
     try {
       await expect(handoff.deliver("exec true\n", { timeoutMs: 50 })).rejects.toThrow(/did not take its command/);
-      // The give-up opened and closed the read end once; a late write would
-      // now block or land. Read with a fresh reader and a short-lived writer.
+      // The give-up opened and closed the read end once; a late write would now block or land. Read with a fresh reader and a short-lived writer.
       const fifo = handoff.trampoline.args[0]!;
       const readFd = openSync(fifo, constants.O_RDONLY | constants.O_NONBLOCK);
       try {
@@ -132,8 +126,6 @@ describe("terminalNeedsOwnTtyGrant", () => {
     expect(terminalNeedsOwnTtyGrant("win32")).toBe(false);
   });
 });
-
-// ─── real sandbox, real pty ────────────────────────────────────────────────
 
 let home: string;
 let previousAveHome: string | undefined;
@@ -190,8 +182,8 @@ async function startShell(grantOwnTty: boolean): Promise<Shell> {
   const ownTty = ownPtySlavePath(pty);
   const filesystem = { allowWrite: [workDir], denyRead: [], denyWrite: getDefaultSensitiveWriteDenyPaths() };
   const { argv, env } = grantOwnTty
-    ? await wrapTerminalCommand("exec /bin/zsh -f -i", { filesystem, ownTty })
-    : await wrapWorkerCommand("exec /bin/zsh -f -i", { filesystem });
+    ? await wrapTerminalCommand("exec /bin/zsh -f -i", { commandId: TEST_COMMAND_ID, filesystem, ownTty })
+    : await wrapWorkerCommand("exec /bin/zsh -f -i", { commandId: TEST_COMMAND_ID, filesystem });
   const childEnv: Record<string, string> = { PATH: "/usr/bin:/bin", HOME: workDir, TERM: "xterm-256color", PS1: "%# " };
   for (const [key, value] of Object.entries(env)) {
     if (value !== undefined && (/PROXY$/i.test(key) || key === "SANDBOX_RUNTIME" || key === "TMPDIR")) childEnv[key] = value;
@@ -225,8 +217,7 @@ describe("a sandboxed shell on its own pty (macOS)", () => {
       if (!canRun) return;
       const shell = await startShell(true);
       try {
-        // Keep this real: terminal echo, tty access and job control require
-        // the confined shell and its actual foreground process group.
+        // Keep this real: terminal echo, tty access and job control require the confined shell and its actual foreground process group.
         await shell.type("echo marker\r", (out) => lines(out, "marker") === 1);
         await shell.type("stty -a >/dev/null && echo STTY_OK || echo STTY_DENIED\r", (out) => lines(out, "STTY_OK") + lines(out, "STTY_DENIED") === 1);
         expect(lines(shell.output(), "STTY_OK"), shell.output()).toBe(1);
@@ -291,7 +282,7 @@ describe("a sandboxed shell on its own pty (macOS)", () => {
   it.runIf(process.platform === "darwin")("refuses a malformed tty at the wrap", async () => {
     if (!canRun) return;
     await expect(
-      wrapTerminalCommand("true", { filesystem: { allowWrite: [home], denyRead: [], denyWrite: getDefaultSensitiveWriteDenyPaths() }, ownTty: "/dev/ttys*" }),
+      wrapTerminalCommand("true", { commandId: TEST_COMMAND_ID, filesystem: { allowWrite: [home], denyRead: [], denyWrite: getDefaultSensitiveWriteDenyPaths() }, ownTty: "/dev/ttys*" }),
     ).rejects.toThrow(/not a pty slave/);
   });
 });

@@ -1,10 +1,3 @@
-/**
- * Tool pipeline — host-classifies-risk enforced-category resolution + shadow log.
- *
- * Extracted from `executor.ts` (C7 decomposition). Pure aside from the audit
- * shadow-log sink it is handed. The executor owns the `hostClassifiesRisk`
- * provider + the shared AuditLogger and passes their resolved values in.
- */
 import type { Tool } from "../base.js";
 import type { ToolCategory } from "../types.js";
 import type { AuditLogger } from "../../audit/audit-logger.js";
@@ -12,21 +5,8 @@ import { inspectHostRisk } from "../../permissions/reviewer/host-risk-inspector.
 import { emitRiskShadowLog } from "../../permissions/reviewer/risk-shadow-log.js";
 import { maxOperationRisk, type GovernedRiskFloor } from "../plugin-operation-governance.js";
 
-/**
- * Permission policy host-classifies-risk — resolve the EFFECTIVE category the
- * policy pipeline will enforce for this invocation, and emit the shadow log.
- *
- * Shadow mode (always on): compute the host-derived category from host-owned
- * signals ({@link inspectHostRisk}) and log it against the declared category
- * so divergence can be reconciled across plugins before enforcement flips.
- *
- * Enforcement: when `hostClassifiesRisk` is `false` (the unset/disabled
- * fallback — the SHIPPED default is `true`, see settings-store.ts), the DECLARED
- * category is returned unchanged — behaviour is identical to before this helper
- * existed. When it is `true`, the host-derived category is returned
- * (default-strict: never below the declared level is NOT asserted here — the
- * inspector itself never classifies down to read without positive evidence).
- */
+// Always log host/declared category divergence; enforce host classification only while enabled.
+// Read classification requires positive evidence from the inspector.
 export function resolveEnforcedCategory(args: {
   tool: Tool;
   declaredCategory: ToolCategory;
@@ -45,23 +25,12 @@ export function resolveEnforcedCategory(args: {
     auditLogger,
     operationFloor,
   } = args;
-  // Only plugin/MCP tools carry an UNTRUSTED declared category worth
-  // re-deriving. `meta` control-flow primitives (which route through
-  // `decisionOverride`, not the category matrix) and builtins (trusted, known
-  // categories the inspector cannot re-derive — it would default-strict a
-  // read-only builtin to write) are self-consistent: their host-derived
-  // category IS the declared one. Skipping inspection for them means they
-  // never diverge, so they produce no shadow-log noise on every invocation.
+  // Reclassify untrusted plugin/external declarations; trusted builtins and meta control flow retain their declared category.
   const eligibleForHostDerivation =
     (tool.source === "plugin" || tool.source === "mcp") &&
     declaredCategory !== "meta";
 
-  // The inspector reads ONLY `source` + `finalInput`. It used to also take the
-  // tool's `pathFields` and the Layer-1 `allowedDirectories`; both were inert —
-  // the containment answer they fed was discarded because a path argument is
-  // write-equivalent either way. Passing an input no consumer reads is how a
-  // signal rots, so the producer stopped computing them. Layer-1 containment is
-  // still enforced, by `isPathAllowed`, on the enforcement path.
+  // Risk inspection uses source and finalInput; Layer-1 path containment remains separately enforced by isPathAllowed.
   const hostDerivedCategory = eligibleForHostDerivation
     ? inspectHostRisk({ source: tool.source, finalInput })
     : declaredCategory;
@@ -75,8 +44,7 @@ export function resolveEnforcedCategory(args: {
       declaredCategory,
       hostDerivedCategory,
       enforced,
-      // Same id as the post-exec effect shadow for THIS invocation → the
-      // category shadow and the effect shadow join on this key.
+      // Join category and effect audit for this invocation using the same correlationId.
       correlationId,
     },
     auditLogger,

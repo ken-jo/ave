@@ -1,19 +1,4 @@
-/**
- * The view-key vocabulary.
- *
- * These tests exist because the key space used to be defined twice — a regex
- * in the main process, nothing at all in the renderer — and the renderer's
- * "nothing at all" meant an unrecognized string was rendered as a plugin view
- * rather than rejected. So the assertions here are mostly about what the
- * parser REFUSES.
- *
- * The table used to carry a `detachable` column and a per-built-in window title,
- * with a derived allow-list regex for the detach IPC. Detach is retired: every
- * destination renders inline, there is no second window to open, and the keys that
- * named one (`mcp-app:<hex>:<cardId>`) named a detached card instance. The cases
- * below therefore pin the surviving question — what a key IS — and, for the
- * namespaced forms, that a key naming a window is no longer a key at all.
- */
+/** A parsed view key must name a renderable inline destination; reject detached-instance forms. */
 import { describe, expect, it } from "vitest";
 import {
   BUILTIN_VIEWS,
@@ -65,29 +50,19 @@ describe("parseViewKey", () => {
     ["mcp-app:6162", "one with no card"],
     ["mcp-app:6162:", "an empty card id"],
   ])("refuses the retired detached-card key %j (%s)", (raw) => {
-    // These named a card's instance in its own window. Nothing mints them and
-    // nothing can render one, so the parser must not hand back a destination for a
-    // place the app cannot go — every caller here treats a parsed key as somewhere
-    // it may navigate.
     expect(parseViewKey(raw)).toBeNull();
     expect(isInlineViewKey(raw)).toBe(false);
     expect(parseInlineViewKey(raw)).toBeNull();
   });
 
   it("accepts a UI extension id the manifest schema permits", () => {
-    // `ui[].id` is a bare `string` in schemas/plugin-manifest.schema.json, so
-    // this key ships today and renders inline. Parsing must not be the place
-    // that decides it is illegal — that would break a working plugin.
+    // Manifest view ids are unrestricted strings; parsing must remain structural rather than add a stricter charset.
     const key = "plugin:my-plugin:MainView";
     expect(parseViewKey(key)).toMatchObject({ kind: "plugin", viewId: "MainView" });
     expect(isInlineViewKey(key)).toBe(true);
   });
 
   it("parses structurally odd plugin keys rather than refusing them", () => {
-    // Structurally parseable and rendered inline. These used to be pinned as
-    // "parseable but never allowed to open a window"; with no window to open, what
-    // is left to pin is that parsing stayed STRUCTURAL and did not quietly acquire
-    // the retired allow-list's stricter charset.
     for (const raw of ["plugin:../evil:view", "plugin:my-plugin:../evil", "plugin:-bad:view"]) {
       expect(parseViewKey(raw)).not.toBeNull();
       expect(isInlineViewKey(raw)).toBe(true);
@@ -138,7 +113,6 @@ describe("isInstanceViewKey", () => {
     for (const key of ["home", "settings", "work-board", "plugin:a:b", "terminal:1"]) {
       expect(isInstanceViewKey(key)).toBe(false);
     }
-    // They are inline places all the same: a pane can be AT one.
     expect(isInlineViewKey("terminal")).toBe(true);
     expect(isInlineViewKey("web")).toBe(true);
   });

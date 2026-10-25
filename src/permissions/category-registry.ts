@@ -1,31 +1,4 @@
-/**
- * Permission policy Layer 3 — Category Registry (Open-Closed pattern).
- *
- * Five canonical tool categories (`read | write | shell | network | meta`)
- * are described by {@link ToolCategoryDescriptor}s registered into a single
- * module-scoped map. PermissionManager.checkDetailed() looks up the
- * descriptor for the invocation's category and consults `decisionFor()`
- * for the {mode, source, headless} tuple.
- *
- * Design source: docs/architecture/permission-policy-design.md §3
- * Layer 3 + decision matrix table.
- *
- * Why a registry instead of a giant switch — a single source of truth
- * that:
- *   1. PermissionManager consults for every host-side category decision.
- *   2. #885 v6 — plugin `category` is REMOVED from the contract (Q3); the
- *      effective category is host-derived per invocation (`inspectHostRisk`).
- *      Filesystem path args are declared via `_meta["ave/pathFields"]`.
- *      `meta` remains host-only.
- *   3. The reviewer classifier can score against `riskWeight`, the input
- *      to its baseline `final = max(rule, llm)` composition.
- *   4. Audit-schema consumers can iterate to enumerate the full decision
- *      matrix for forensics.
- *
- * Trust boundary: descriptor `decisionFor()` MUST be a pure function of
- * its inputs — no global state, no async I/O. Plugin code never executes
- * here. Only the host `registerStandardCategories()` populates the map.
- */
+// Only the host registers categories and derives per-call risk; descriptors are pure and perform no I/O or plugin execution. Registry weights feed review and the shared matrix feeds permission/audit consumers (docs/architecture/permission-policy-design.md).
 import type { ToolCategory, ToolSource } from "../tools/types.js";
 
 export type CategoryDecision = "allow" | "ask" | "deny" | "reviewer" | "override";
@@ -38,13 +11,9 @@ export interface CategoryDecisionInput {
 
 export interface ToolCategoryDescriptor {
   name: ToolCategory;
-  /** 0..1 — rule classifier baseline weight. */
+  // 0..1 — rule classifier baseline weight.
   riskWeight: number;
-  /**
-   * Pure function — given mode/source/headless, returns the lane the
-   * executor should follow. Builtin `meta` returns the `"override"` sentinel
-   * so the host reads `tool.decisionOverride`; external `meta` is denied.
-   */
+  // Pure function — given mode/source/headless, returns the lane the executor should follow. Builtin `meta` returns the `"override"` sentinel so the host reads `tool.decisionOverride`; external `meta` is denied.
   decisionFor: (input: CategoryDecisionInput) => CategoryDecision;
 }
 
@@ -80,24 +49,7 @@ export function clearCategoryRegistry(): void {
   _registry.clear();
 }
 
-/**
- * Standard 5-axis registration. Boot wires this once before any tool
- * registration so {@link getToolCategoryDescriptor} cannot miss.
- *
- * Decision lanes (permission-policy-design.md §3 matrix table):
- *
- *   - read    — built-in: allow / plugin: allow (scope-checked elsewhere)
- *               strict mode forces ask, including headless.
- *   - write   — default+strict: ask / auto: reviewer at executor / allow: allow+audit /
- *               default+auto headless: reviewer / strict headless: ask
- *   - shell   — default+strict: ask / auto: reviewer at executor / allow: allow.
- *               Bash AST validation is executor-owned.
- *               default+auto headless: reviewer / strict headless: ask
- *   - network — default+strict: ask / auto: reviewer at executor / allow: allow+audit /
- *               default+auto headless: reviewer / strict headless: ask.
- *   - meta    — host-only. Builtins use the `decisionOverride` sentinel;
- *               external sources are denied defensively.
- */
+// Register before tools. Strict asks even for reads/headless; mutating categories ask by default, review in auto/headless and allow only after hard gates. Meta is host-only, with builtin override handling and external sources denied; shell AST validation belongs to the executor.
 export function registerStandardCategories(): void {
   registerToolCategory({
     name: "read",
@@ -145,9 +97,5 @@ export function registerStandardCategories(): void {
   });
 }
 
-// Auto-register at module import — tests and ad-hoc callers that
-// instantiate PermissionManager directly (without going through
-// boot/conversation.ts) still get a populated registry. Boot still
-// invokes registerStandardCategories() explicitly; these calls are
-// idempotent.
+// Auto-register at module import — tests and ad-hoc callers that instantiate PermissionManager directly (without going through boot/conversation.ts) still get a populated registry. Boot still invokes registerStandardCategories explicitly; these calls are idempotent.
 registerStandardCategories();

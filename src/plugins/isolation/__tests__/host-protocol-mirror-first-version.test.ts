@@ -1,11 +1,4 @@
-/**
- * `HOST_PROTOCOL_FIRST_APP_VERSION` is read off the release history
- * (`docs/design/plugin-hostapi-protocol.md` decision 29): for each protocol
- * this build serves, it is the lowest app version the published schema mirror
- * records for that protocol. A literal that drifted from the mirror would let
- * the validator pass a `minAppVersion` an older app cannot load, or refuse one
- * it can.
- */
+/** The first app version serving each protocol must match release history or minimum-version admission becomes incorrect. */
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";

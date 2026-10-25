@@ -47,7 +47,6 @@ export interface PluginUninstallLifecycleDeps {
   drainPluginInstallLockOperationsService: (pluginId: string) => Promise<void>;
   refreshPluginEventBridge?: () => void;
   emitHostEvent?: (type: "plugin.uninstalled", payload: { pluginId: string }) => void;
-  /** The registry no longer names the plugin: called once, right after its removal commits. */
   onRegistryRemovalCommitted?: (pluginId: string) => void;
   log?: WarnLogger;
 }
@@ -90,9 +89,7 @@ async function cleanupPluginCache(pluginId: string, cacheRoot: string): Promise<
   const root = path.resolve(cacheRoot);
   const target = path.resolve(root, safeSegment);
   if (target === root || !target.startsWith(root + path.sep)) return;
-  // The cache holds receipts, version caches and retained generations: no
-  // confined process is granted a write path here, and this runs only after
-  // the plugin's runtime retirement completed (finishCommittedPluginCleanup).
+  // Delete cache only after runtime retirement; no confined process may hold a writable grant into it.
   await assertPayloadOnlyPluginTree(target);
   await rm(target, { recursive: true, force: true });
 }
@@ -319,10 +316,7 @@ export async function recoverPendingPluginUninstallCleanups(
   return Object.freeze(unresolved);
 }
 
-/**
- * Runs inside the marketplace install lock. A removed plugin may not be
- * reinstalled until every Host-owned residual-state checkpoint is complete.
- */
+/** Hold the install lock until all host residual-state checkpoints complete so reinstall cannot race cleanup. */
 export async function ensurePluginStateReadyForInstall(
   pluginId: string,
   deps: PluginUninstallLifecycleDeps,

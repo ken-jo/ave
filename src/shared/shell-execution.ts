@@ -107,10 +107,7 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
   if (!analysis.ok) throw new ShellExecutionError(analysis.reason);
   const initial: ShellState = { cwd, dialect: "bash", unicodeEscapes: facts.unicodeEscapes, prefixAssignmentRhs: facts.prefixAssignmentRhs, variables: new Map(Object.entries(facts.environment)), arrays: new Map(), exported: new Set(Object.keys(facts.environment)), functions: new Map(), readonlyVariables: new Set(), unsetVariables: new Set(), backquote: false, fromPipe: false, activeFunctions: [] };
   initial.variables.set("PWD", cwd);
-  // Filesystem effects cross process scopes even when variables/cwd do not.
-  // Once a possibly executed operation can mutate it, a pre-execution stat
-  // cannot decide a later chdir's outcome. This flag belongs to this analysis,
-  // not to the clonable shell-variable state or a cross-call cache.
+  // Filesystem effects cross process scopes; after possible mutation, pre-execution stat cannot prove a later chdir outcome. Keep this flag analysis-local.
   let filesystemMayChange = false;
   let steps = 0;
   let nextExecutionBoundary = 0;
@@ -285,8 +282,7 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
       decline("unresolved executed command", effective.words[0]);
     }
     const verb = stripCommandPath(head);
-    // Builtins match only their exact name; a path, `.exe` or case variant is
-    // an external program even when it normalizes to a builtin's name.
+    // Builtin recognition requires exact spelling; normalized paths, case variants, and .exe names are external programs.
     const shellBuiltin = head === verb && effective.wrappers.every((wrapper) => wrapper === "command" || wrapper === "time");
     const commandState = cloneState(assigned);
     for (const assignment of node.assignments) commandState.exported.add(assignment.name);
@@ -305,7 +301,11 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
         const target = staticShellWord(transition.path);
         if (target === undefined) decline("unresolved wrapper working directory", transition.path);
         checkPath(target, transition.path.source.raw, commandState, "write");
-        commandState.cwd = resolveShellFilesystemPath(target, commandState.cwd!);
+        try { commandState.cwd = resolveShellFilesystemPath(target, commandState.cwd!); }
+        catch (error) {
+          if (!(error instanceof Error) || !("code" in error)) throw error;
+          decline("cannot resolve wrapper working directory", transition.path);
+        }
         commandState.variables.set("PWD", commandState.cwd);
       }
     }
@@ -387,8 +387,7 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
       });
     }
     if (state.dialect === "posix" && shellBuiltin && [":", "export", "readonly", "set", "unset", "exit"].includes(verb)) {
-      // POSIX special builtins retain their prefix assignments. Expansion of
-      // their outer argv still used the incoming state above.
+      // Special builtins retain prefix assignments, but outer argv expansion uses incoming state.
       for (const assignment of node.assignments) setScalar(state, assignment.name, assigned.variables.get(assignment.name));
     }
     if (!functionBody && (!shellBuiltin || !["echo", "printf", "tr", "true", "false", ":", "pwd", "cd", "test", "[", "break", "set", "export", "readonly", "unset", "read"].includes(verb))) {
@@ -430,8 +429,7 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
           continue;
         }
         if (state.readonlyVariables.has(name)) decline("unset of a readonly variable");
-        // A command-prefix binding is temporary; unsetting it does not unset
-        // the parent binding in the selected Bash contracts.
+        // Unsetting a temporary command-prefix binding does not unset its parent binding.
         if (state.dialect === "posix" || !node.assignments.some((assignment) => assignment.name === name)) {
           state.variables.delete(name); state.unsetVariables.add(name); state.arrays.delete(name); state.exported.delete(name);
         }
@@ -462,8 +460,7 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
       const line = text?.split("\n")[0];
       const value = raw && simple && names.length === 1 && line !== undefined
         ? implicitReply ? line : line.replace(/^[ \t]+|[ \t]+$/g, "") : undefined;
-      // Bash 3.2 and 5.x differ when read writes a command-prefix variable.
-      // Without a dedicated capability proof neither outcome grants authority.
+      // Interpreter versions differ when read writes a command-prefix variable; neither outcome grants authority without capability proof.
       for (const name of names) setScalar(state, name,
         node.assignments.some((assignment) => assignment.name === name) ? undefined : value);
       return [{ state, status: "unknown" }];
@@ -488,13 +485,18 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
       if (target === undefined) decline("unresolved working-directory destination", effective.words[1]);
       const label = targetWord?.source.raw ?? head;
       const next = pathResolve(state.cwd!, target);
-      const destination = physical ? resolveShellFilesystemPath(target, state.cwd!) : next;
-      // cd -L collapses logical .. before chdir; -P follows actual links.
+      let destination = next;
+      if (physical) {
+        try { destination = resolveShellFilesystemPath(target, state.cwd!); }
+        catch (error) {
+          if (!(error instanceof Error) || !("code" in error)) throw error;
+          decline("cannot resolve working-directory destination", targetWord);
+        }
+      }
+      // Logical cd collapses .., but original components must still be searchable; physical cd follows links.
       checkPath(destination, label, state, "write");
       let observedDirectory = false;
       try {
-        // Bash still requires the original components to name a searchable
-        // directory: a missing `new/..` is not proven by an existing parent.
         const original = isAbsolute(target) ? target : `${state.cwd!}/${target}`;
         observedDirectory = statSync(original).isDirectory();
         accessSync(original, constants.X_OK);
@@ -511,8 +513,7 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
   };
   const inspectCommand = (node: ShellCommand, incoming: ShellState, depth: number, context: ExecutionContext): StateResult[] => {
     const results = executeCommand(node, incoming, depth, context);
-    // Opening a redirect can fail before a builtin/function changes shell state.
-    // Such I/O outcomes are not established by path admission.
+    // Path admission does not prove redirect I/O success; a failed open prevents the whole body, including state changes and control transfers.
     return node.redirects.length
       ? uniqueResults([...results, { state: cloneState(incoming), status: "failure" }])
       : results;
@@ -526,8 +527,6 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
       case "redirected": {
         markRedirectEffects(node.redirects);
         inspectRedirects(node.redirects, state, depth);
-        // A failed open prevents the entire body, including state changes and
-        // lexical control transfers, from running.
         return uniqueResults([...walk(node.body, cloneState(state), depth + 1, context),
           { state: cloneState(state), status: "failure" }]);
       }

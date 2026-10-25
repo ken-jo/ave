@@ -37,16 +37,10 @@ async function readWebviewHostChrome(page: Page): Promise<string[]> {
   });
 }
 
-/**
- * Regression guard for the shared plugin bootstrap path:
- * host renderer <webview> mount → main registration/preload/session policy →
- * plugin shell guest webContents creation.
- */
+// Exercise guest creation through production registration, preload and session policy.
 test('embedded plugin view creates a plugin shell webview guest', async ({ app, mainWindow }) => {
   const pluginViews = await listPluginViews(mainWindow);
-  // Any sidebar view can render inline — whether a view detaches is decided by
-  // the app's mode (appMode), not the plugin, so there is no per-view embedded
-  // flag to filter on. Work mode (the inline path) activates it in place.
+  // App mode decides detachment; plugin views have no per-view embedded flag.
   const embeddedView = pluginViews.find((view) => view.kind === 'embedded-module');
 
   test.skip(!embeddedView, 'No plugin view available in this build');
@@ -123,11 +117,7 @@ test('embedded plugin views share the flat inline host chrome', async ({ app, ma
 });
 
 test('the retired detach channel is not on the preload surface', async ({ mainWindow }) => {
-  // This spec used to drive `window.aveApi.window.openDetached` to open a plugin view
-  // in a detached window. That channel is gone, and a spec that still called it would
-  // fail for the uninformative reason that a function is undefined. What is worth
-  // asserting instead is the removal itself, at the boundary an untrusted renderer
-  // actually sees.
+  // Assert the removed window API at the untrusted renderer boundary.
   const present = await mainWindow.evaluate(
     () => typeof (window.aveApi.window as Record<string, unknown>).openDetached,
   );

@@ -1,31 +1,5 @@
-/**
- * McpResourceTemplateDialog — fill in a server-declared URI template.
- *
- * Sibling of {@link McpPromptArgsDialog} and shaped like it deliberately: a template is
- * the OTHER user-controlled primitive that needs input before a round trip, and the
- * three rules that dialog documents hold here for the same reasons.
- *
- *   - names are VALIDATED, not just displayed. `resources/templates/list` output is a
- *     cast, not a check. Here the host has already derived `variables` at discovery, so
- *     this form re-checks the SHAPE rather than re-deriving the list — the derivation
- *     stays in one place (`mcp-resource-template-bounds.ts`) and a form that disagreed
- *     with the expansion would offer fields main then drops.
- *   - collected values live in a `Map`, never a plain object, so a variable named
- *     `toString` cannot read off `Object.prototype` (`(…).trim is not a function` during
- *     render — and this dialog mounts outside the error boundary). `Object.fromEntries`
- *     converts at the boundary because it DEFINES own properties; plain assignment would
- *     hand `__proto__` to the prototype setter and swallow that one field.
- *   - the bounds MATCH main's, from the one shared module, because a field the user can
- *     fill that main then drops is worse than no field at all.
- *
- * What is NOT like the prompt dialog: every variable is REQUIRED. RFC 6570 Level 1 would
- * expand a missing one to nothing, which silently points at the directory above — a
- * different resource than the user asked for, and one they cannot see they asked for. So
- * main refuses that expansion, and this form will not submit it either.
- *
- * The user does not see or type a URI. They fill fields; main expands. That is what stops
- * anything typed here from moving the read off the path the server published.
- */
+/** Validate host-derived variables and shared bounds; use Map and Object.fromEntries against prototype keys. Require every
+ * variable and let main expand the URI so omitted fields or user input cannot redirect the resource read. */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "../../../components/ui/button.js";
 import {
@@ -91,14 +65,14 @@ export function McpResourceTemplateDialog({
     [pending],
   );
 
-  // A fresh template starts from an empty form — never inherit the previous one's
-  // answers, which could send one server's input to another's.
+  // A fresh template starts from an empty form — never inherit the previous one's answers, which could send one server's
+  // input to another's.
   useEffect(() => {
     setValues(new Map());
   }, [pending]);
 
-  // Every variable is required (see the header): an unfilled one is a refusal in main.
-  // A template with no usable field is not runnable at all rather than submitted empty.
+  // Every variable is required (see the header): an unfilled one is a refusal in main. A template with no usable field is
+  // not runnable at all rather than submitted empty.
   const runnable =
     fields.length > 0
     && fields.every((name) => (values.get(name) ?? "").trim().length > 0);

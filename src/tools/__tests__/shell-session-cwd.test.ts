@@ -64,8 +64,7 @@ describe("shell cwd probe filter", () => {
 
   it("adopts the trap's final report over a forged earlier one and strips both", () => {
     const filter = new ShellCwdProbeFilter(probe);
-    // A command that read the nonce with `trap -p` prints its own report first;
-    // the EXIT trap's real one always comes last.
+    // A command that read the nonce with `trap -p` prints its own report first; the EXIT trap's real one always comes last.
     const stream = Buffer.concat([
       Buffer.from("a"), report("/forged"), Buffer.from("b\n"), report("/work/real"),
     ]);
@@ -167,8 +166,7 @@ describe.skipIf(process.platform === "win32")("bash session working directory", 
   it("resets to the workspace root with a notice when a run ends outside the allowed scope", async () => {
     setup();
     await run({ command: "cd sub" });
-    // Path policy refuses every command form that could end outside before
-    // spawn; the post-run clamp is the second line, exercised directly.
+    // Path policy refuses every command form that could end outside before spawn; the post-run clamp is the second line, exercised directly.
     const escaped = _trackShellSessionCwdForTest(
       { output: "done", isError: false, metadata: { returncode: 0 }, reportedCwd: outside },
       join(root, "sub"),
@@ -241,7 +239,10 @@ describe.skipIf(process.platform === "win32")("executor session working director
     const registry = new ToolRegistry();
     registry.register(new BashTool());
     const permissions = new PermissionManager(join(root, "permissions.json"));
-    permissions.setMode("allow");
+    permissions.setRules([
+      { pattern: "Bash(cd sub)", action: "allow" },
+      { pattern: "Bash(pwd)", action: "allow" },
+    ]);
     const hooks = new HookRunner();
     const preHookInputs = vi.spyOn(hooks, "runPreHooks");
     const executor = new ToolExecutor(

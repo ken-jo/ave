@@ -1,48 +1,23 @@
 
-
-
-
 import { resolve } from "node:path";
 import { aveHome } from "../shared/ave-home.js";
 
 export interface PluginPaths {
   /** Absolute path to `registry.json` — sits at the root of `pluginsRoot`. */
   registryPath: string;
-  /**
-   * Directory where every plugin lives — `<pluginsRoot>/<id>/plugin.json`.
-   * `installSource` is metadata only; admin / user / local-dev entries
-   * all share this root (no physical user/managed split).
-   */
+  /** Every install source shares <pluginsRoot>/<id>; installSource does not select a different directory. */
   pluginsRoot: string;
-  /** Per-plugin version cache for rollback (§9.6). */
+  /** Per-plugin rollback version cache. */
   cacheRoot: string;
 }
 
 export interface ResolvePluginPathsInput {
-  /**
-   * Override for the plugins root. When omitted, defaults to
-   * `aveHome()/plugins`.
-   *
-   * Tests use this for sandbox isolation. There is no env fallback —
-   * if an override is needed, callers must pass it explicitly.
-   */
+  /** Explicit injection overrides aveHome()/plugins; there is no environment override. */
   pluginsRoot?: string;
-  /** Optional cache root override. Defaults to `<pluginsRoot>/.cache`. */
   cacheRoot?: string;
 }
 
-/**
- * Resolve the plugin path layout.
- *
- * Final shape:
- *   - `aveHome()/plugins/registry.json`
- *   - `aveHome()/plugins/<id>/plugin.json`
- *   - `aveHome()/plugins/.cache/`
- *
- * Override is via the `pluginsRoot` argument only (constructor injection).
- * By design `registryPath` is always `pluginsRoot/registry.json` so registry
- * entries can hold paths relative to `dirname(registryPath)`.
- */
+/** Keep registry.json at pluginsRoot so stored manifest paths resolve relative to its directory. */
 export function resolvePluginPaths(input: ResolvePluginPathsInput = {}): PluginPaths {
   const pluginsRoot = resolve(
     input.pluginsRoot ?? resolve(aveHome(), "plugins"),
@@ -55,17 +30,7 @@ export function resolvePluginPaths(input: ResolvePluginPathsInput = {}): PluginP
   };
 }
 
-/**
- * Normalize a `manifestPath` registry entry value into the registry-relative
- * form every install writes. POSIX-style separators.
- *
- * Behaviour:
- *  - input may be absolute or relative to `dirname(registryPath)`
- *  - returns POSIX-separated relative path when the manifest lives under
- *    the registry's directory tree (the only valid shape)
- *  - returns the absolute path with POSIX separators otherwise — runtime
- *    will reject those entries via the trust-root check
- */
+/** Normalize contained paths to registry-relative POSIX form; trust-root enforcement remains with runtime. */
 export function toRegistryRelativeManifestPath(
   registryPath: string,
   manifestPath: string,

@@ -1,10 +1,10 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { analyzeShell } from "../shell-analysis.js";
-import { inspectShellExecution } from "../shell-execution.js";
+import { inspectShellExecution, ShellExecutionError } from "../shell-execution.js";
 import { inspectEmbeddedShellPrograms } from "../../tools/shell-path-policy.js";
 
 const fixtures: string[] = [];
@@ -31,6 +31,24 @@ function native(command:string,cwd:string,env:Record<string,string>):string[] {
   const output=result.stdout.toString("utf8");expect(output.endsWith("\0")).toBe(true);
   return output.slice(0,-1).split("\0");
 }
+
+describe.skipIf(process.platform !== "win32")("ambiguous junction cwd", () => {
+  it.each([
+    "cd -P link/../..; cat ordinary.txt",
+    "env -C link/../.. cat ordinary.txt",
+  ])("declines ambiguous junction cwd before emitting a child: %s", command => {
+    const { cwd, environment } = fixture();
+    const target = join(cwd, "a", "b");
+    mkdirSync(target, { recursive: true });
+    symlinkSync(target, join(cwd, "link"), "junction");
+    const children: string[] = [];
+    expect(() => inspectShellExecution(command, cwd, { dialect: "bash", environment }, {
+      path() {},
+      command(event) { if (event.argv[0] === "cat") children.push(event.cwd!); },
+    })).toThrow(ShellExecutionError);
+    expect(children).toEqual([]);
+  });
+});
 
 describe.skipIf(process.platform==="win32")("typed shell execution and native arguments",()=>{
   it.each([

@@ -1,18 +1,4 @@
-/**
- * Tier-2 (parent-adjudication) contract surface — the types, settings, and
- * host-only request fields the lane is built on, before any lane exists.
- *
- * Nothing here exercises an adjudication: the stage that consumes these lands
- * separately. What these pin is the shape it will be handed, and the two
- * properties that a later stage must not be able to weaken:
- *
- *   (a) the verdict ceiling cannot be raised to "high" by any settings file;
- *   (b) the host-only request fields never reach the renderer.
- *
- * (b) is worth a test while the fields have no reader precisely because that
- * is when the leak would be invisible — the fields are removed from the
- * renderer payload by a destructuring that no failing behaviour would flag.
- */
+// Settings cannot raise the parent verdict ceiling to HIGH; host-only adjudication fields must never reach the renderer.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -88,10 +74,7 @@ describe("reviewer.parentAdjudication settings block", () => {
 
   it("refuses to raise the ceiling to high, however the file spells it", () => {
     const dir = resources.makeTmpDir("ave-parent-adj-");
-    // A hand-edited file is the whole threat model for this field: HIGH is the
-    // band the user reserved for themselves, and no on-disk value may hand it
-    // to an agent. Both a plausible spelling and a nonsense one land on the
-    // shipped default rather than anywhere wider.
+    // A hand-edited file is the whole threat model for this field: HIGH is the band the user reserved for themselves, and no on-disk value may hand it to an agent. Both a plausible spelling and a nonsense one land on the shipped default rather than anywhere wider.
     for (const maxVerdict of ["high", "HIGH", "critical", 3, null]) {
       const p = writeSettings(dir, {
         ...BASE_REVIEWER,
@@ -156,9 +139,7 @@ describe("features.subAgentParentAdjudication", () => {
 
 describe("parent-agent answerer", () => {
   it("has an audit token of its own", () => {
-    // The point of the answerer dimension is that a reviewer can tell who
-    // decided a call. A parent answer rendering as `desk` would erase exactly
-    // the fact the row exists to record.
+    // The point of the answerer dimension is that a reviewer can tell who decided a call. A parent answer rendering as `desk` would erase exactly the fact the row exists to record.
     expect(approvalAnswererAuditToken("parent-agent")).toBe("parent-agent");
     expect(approvalAnswererAuditToken("desk")).toBe("desk");
   });
@@ -205,8 +186,7 @@ describe("host-only child provenance fields", () => {
     expect(sent.id).toBe("child-req-1");
     expect(sent).not.toHaveProperty("childProvenance");
     expect(sent).not.toHaveProperty("parentAdjudicationEligible");
-    // Nothing about the child leaks through a nested value either: the
-    // renderer must not be able to reconstruct which conversation is blocked.
+    // Nothing about the child leaks through a nested value either: the renderer must not be able to reconstruct which conversation is blocked.
     expect(JSON.stringify(sent)).not.toContain("conv-child");
 
     gate.disposeAll();
@@ -216,9 +196,7 @@ describe("host-only child provenance fields", () => {
   it("still asks the renderer — the fields decide nothing on their own", async () => {
     const { wc, gate } = makeGate();
 
-    // `parentAdjudicationEligible` is a caller assertion, not an authority.
-    // Until a stage reads it, an eligible request behaves exactly like any
-    // other ask, which is what makes the flag-off path byte-identical.
+    // `parentAdjudicationEligible` is a caller assertion, not an authority. Until a stage reads it, an eligible request behaves exactly like any other ask, which is what makes the flag-off path byte-identical.
     const promise = gate.requestAndWait(makeRequest());
     expect(wc.send).toHaveBeenCalledTimes(1);
 

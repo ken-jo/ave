@@ -1,8 +1,4 @@
-/**
- * Frames its construct reply with a `Content-Length:` header, as a server
- * written for the old stdio framing would. The decoder drops the header lines
- * and still reads the frame; only the raw bytes show the header was there.
- */
+/** Emit an old Content-Length header; only raw-byte checks reveal it because the decoder can skip it. */
 import { constructed, speak, WITHHOLD } from "./speak.mjs";
 
 speak({

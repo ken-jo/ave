@@ -1,25 +1,5 @@
-/**
- * Ave-owned stdio MCP shim for ACP subscription runtimes.
- *
- * The external ACP runtime starts this process with two ephemeral environment
- * values created by the main process. This shim then exposes only MCP
- * `tools/list` and `tools/call`; it does not expose a filesystem, terminal,
- * browser, resource, prompt, sampling, or permission capability.
- *
- * The loopback HTTP bridge is intentionally narrow and versioned:
- *
- * - `GET /v1/tools` with `Authorization: Bearer <token>` returns
- *   `{ tools: [{ name, description, inputSchema }] }`.
- * - `POST /v1/tools/call` with the same header and JSON
- *   `{ name, arguments }` returns
- *   `{ content: [{ type: "text", text }], isError: boolean }`.
- *
- * The main process owns that bridge, binds it only to `127.0.0.1`, validates
- * each call against the currently exposed Ave ToolSchema set, and emits at
- * most one sanitized Ave tool-call event for the active provider round. This
- * child never executes a tool itself. Consequently every accepted invocation
- * continues through Ave ToolExecutor, permissions, approvals, and audit.
- */
+// Expose only tools/list and tools/call through the ephemeral authenticated loopback bridge; this child never executes tools. Main validates against the
+// active schema set and emits at most one sanitized call per provider round.
 import { request as httpRequest, type RequestOptions } from "node:http";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -97,11 +77,8 @@ function safeToolError(text: string): BridgeCallResult {
 const BRIDGE_UNAVAILABLE = safeToolError("Ave host tool bridge is unavailable.");
 const INVALID_TOOL_REQUEST = safeToolError("Invalid Ave tool request.");
 
-/**
- * Read only the ephemeral bridge connection values supplied by the main
- * process. The URL must be an exact loopback HTTP origin: allowing an arbitrary
- * hostname here would turn an ACP runtime launch descriptor into an SSRF path.
- */
+// Read only the ephemeral bridge connection values supplied by the main process. The URL must be an exact loopback HTTP origin: allowing an arbitrary
+// hostname here would turn an ACP runtime launch descriptor into an SSRF path.
 export function readSubscriptionToolMcpServerConfig(
   environment: NodeJS.ProcessEnv = process.env,
 ): SubscriptionToolMcpServerConfig {
@@ -391,11 +368,8 @@ function requestBridge(
   });
 }
 
-/**
- * HTTP-only client for the parent-owned loopback bridge. Its public methods
- * turn all network, response-shape, and bound failures into safe MCP results;
- * untrusted ACP runtime output never determines a host tool execution.
- */
+// HTTP-only client for the parent-owned loopback bridge. Its public methods turn all network, response-shape, and bound failures into safe MCP results;
+// untrusted ACP runtime output never determines a host tool execution.
 export class SubscriptionToolBridgeClient {
   constructor(private readonly config: SubscriptionToolMcpServerConfig) {}
 
@@ -430,7 +404,7 @@ export class SubscriptionToolBridgeClient {
   }
 }
 
-/** Create the minimal MCP server; callers must connect it to a stdio transport. */
+// Create the minimal MCP server; callers must connect it to a stdio transport.
 export function createSubscriptionToolMcpServer(
   config: SubscriptionToolMcpServerConfig,
 ): Server {
@@ -447,7 +421,6 @@ export function createSubscriptionToolMcpServer(
   return server;
 }
 
-/** Start the shim when this compiled module is launched as the MCP command. */
 export async function runSubscriptionToolMcpServer(
   environment: NodeJS.ProcessEnv = process.env,
 ): Promise<void> {
@@ -468,8 +441,7 @@ export function isSubscriptionToolMcpServerEntrypoint(
 }
 
 if (isSubscriptionToolMcpServerEntrypoint()) {
-  // MCP reserves stdout for JSON-RPC. Do not log bridge failures or environment
-  // details; a non-zero exit is enough for the ACP client to fail closed.
+  // MCP reserves stdout for JSON-RPC. Do not log bridge failures or environment details; a non-zero exit is enough for the ACP client to fail closed.
   void runSubscriptionToolMcpServer().catch(() => {
     process.exitCode = 1;
   });

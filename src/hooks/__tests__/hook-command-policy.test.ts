@@ -9,13 +9,56 @@ import { runOneHookScript, type RunnableHook } from "../script-hook-runner.js";
 import { ScriptHookManager } from "../script-hook-manager.js";
 import type { ScriptHookStdin } from "../script-hook-types.js";
 import { ApprovalGate, type ApprovalRequest } from "../../permissions/approval-gate.js";
-import { __resetSandboxRequestedAtBootForTest, getHostShellExecutionPlan, setSandboxRequestedAtBoot } from "../../permissions/sandbox-capability.js";
+import {
+  __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, getHostShellExecutionPlan,
+  setActiveSandboxCapability, setShellSandboxRequestedAtBoot,
+} from "../../permissions/sandbox-capability.js";
+import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { resolveTurnExtensionPolicy, turnExtensionPolicyContext } from "../../shared/turn-extension-policy.js";
 
+const sandboxedHost = vi.hoisted(() => ({ active: false }));
 vi.mock("../../permissions/asrt-sandbox.js", async (original) => ({
   ...await original<typeof import("../../permissions/asrt-sandbox.js")>(),
   isAsrtSandboxActive: () => false,
 }));
+
+// The partial Windows sandbox plan requires a per-invocation permit; an unavailable sandbox does not. Override only the plan's platform probe so the hook still runs on this host.
+const plans = vi.hoisted(() => ({ windowsPartial: false }));
+vi.mock("../../permissions/sandbox-capability.js", async (original) => {
+  const actual = await original<typeof import("../../permissions/sandbox-capability.js")>();
+  return {
+    ...actual,
+    getHostShellExecutionPlan: (mode?: Parameters<typeof actual.getHostShellExecutionPlan>[0]) => {
+      if (sandboxedHost.active) {
+        return { ...actual.getHostShellExecutionPlan(mode), mode: "asrt", sandboxed: true, requiresExplicitUserApproval: false };
+      }
+      if (!plans.windowsPartial) return actual.getHostShellExecutionPlan(mode);
+      const platform = process.platform;
+      setProcessPlatform("win32");
+      try {
+        return actual.getHostShellExecutionPlan(mode);
+      } finally {
+        setProcessPlatform(platform);
+      }
+    },
+  };
+});
+const permits = vi.hoisted(() => ({ minted: 0, consumed: [] as boolean[] }));
+vi.mock("../../permissions/host-shell-execution-permit.js", async (original) => {
+  const actual = await original<typeof import("../../permissions/host-shell-execution-permit.js")>();
+  return {
+    ...actual,
+    mintHostShellExecutionPermit: (input: Parameters<typeof actual.mintHostShellExecutionPermit>[0]) => {
+      permits.minted += 1;
+      return actual.mintHostShellExecutionPermit(input);
+    },
+    consumeHostShellExecutionPermit: (input: Parameters<typeof actual.consumeHostShellExecutionPermit>[0]) => {
+      const consumed = actual.consumeHostShellExecutionPermit(input);
+      permits.consumed.push(consumed);
+      return consumed;
+    },
+  };
+});
 
 const COMMAND = resolve(__dirname, "../../../test/fixtures/hooks/contract-command.cjs");
 const hook = { id: "config:PreToolUse#0.0", hookType: "pre" as const, hookPath: COMMAND, command: ["node", COMMAND, "echo"] };
@@ -23,10 +66,25 @@ const payload: ScriptHookStdin = { hookType: "pre", toolName: "read_file", sourc
   input: {}, sessionId: "hook-policy-session", trustOrigin: "user-keyboard" };
 const roots: string[] = [];
 afterEach(async () => {
+  sandboxedHost.active = false;
+  plans.windowsPartial = false;
+  __resetActiveSandboxCapabilityForTest();
+  permits.minted = 0;
+  permits.consumed.length = 0;
   vi.restoreAllMocks();
   __resetSandboxRequestedAtBootForTest();
   for (const root of roots.splice(0)) await cleanupTmpDir(root);
 });
+
+// The Windows partial-ASRT plan: requested sandbox, srt-win active, process confinement absent.
+function windowsPartialPlan(): void {
+  plans.windowsPartial = true;
+  setShellSandboxRequestedAtBoot(true);
+  setActiveSandboxCapability({
+    kind: "asrt", confidence: "verified", platform: "win32", reason: "srt-win partial",
+    confines: { filesystem: true, process: false, network: true },
+  });
+}
 
 function policy(choice: "allow-once" | "deny-once" = "deny-once") {
   const root = mkdtempSync(join(tmpdir(), "ave-hook-policy-"));
@@ -78,12 +136,28 @@ describe("hook command permission admission", () => {
       .toMatchObject({ decision: "deny", rawStdout: "", reason: expect.stringContaining("hook command denied") });
   });
 
+  it("admits a hook through a wildcard allow on a sandbox-capable host", async () => {
+    sandboxedHost.active = true;
+    const p = policy();
+    // An interpreter prefix is never an allowable wildcard; a plain command's is.
+    p.permissionManager.setRules([{ pattern: "Bash(printf *)", action: "allow" }]);
+    const command = { ...hook, command: ["printf", "ready"] };
+    const admitted = await p.authorizeCommand(command, payload, process.cwd());
+    expect(admitted.decision, admitted.reason).toBe("allow");
+    expect(p.requestAndWait).not.toHaveBeenCalled();
+    // The same rule does not admit it where no sandbox is available.
+    sandboxedHost.active = false;
+    expect((await p.authorizeCommand(command, payload, process.cwd())).decision).toBe("deny");
+    expect(p.requestAndWait).toHaveBeenCalledOnce();
+  });
+
   it("invalidates an automatic admission when an ask rule replaces its allow", async () => {
     const p = policy();
-    p.permissionManager.setRules([{ pattern: "Bash(node *)", action: "allow" }]);
+    // Exact: without a sandbox-capable host a wildcard allow does not admit a plain shell.
+    p.permissionManager.setRules([{ pattern: "Bash(node --version)", action: "allow" }]);
     const admitted = await p.authorizeCommand({ ...hook, command: ["node", "--version"] }, payload, process.cwd());
     expect(admitted.decision).toBe("allow");
-    p.permissionManager.setRules([{ pattern: "Bash(node *)", action: "ask" }]);
+    p.permissionManager.setRules([{ pattern: "Bash(node --version)", action: "ask" }]);
     expect(admitted.assertAllowed).toBeTypeOf("function");
     expect(() => admitted.assertAllowed!()).toThrow("Hook command permission changed");
   });
@@ -128,17 +202,27 @@ describe("hook command permission admission", () => {
     expect(JSON.parse(result.rawStdout).reason).toBe("received");
   });
 
-  it("requires a genuine one-shot receipt when the requested sandbox is unavailable", async () => {
-    setSandboxRequestedAtBoot(true);
+  it("follows the normal rules, without a one-shot receipt, when the requested sandbox is unavailable", async () => {
+    // A requested-but-unavailable sandbox is a plain shell under the normal permission rules, as for the bash tool (design I3 in host-shell-execution-plan.ts); it records its fallback reason instead.
+    setShellSandboxRequestedAtBoot(true);
+    expect(getHostShellExecutionPlan()).toMatchObject({
+      mode: "plain", fallbackReason: "requested-sandbox-unavailable", requiresExplicitUserApproval: false,
+    });
     const p = policy("allow-once");
     p.permissionManager.setRules([{ pattern: "Bash(node *)", action: "allow" }]);
     const result = await runOneHookScript(hook, payload, { authorizeCommand: p.authorizeCommand });
-    expect(result).toMatchObject({ decision: "deny", rawStdout: "", reason: expect.stringContaining("approval receipt is invalid") });
-    expect(p.requestAndWait).toHaveBeenCalledWith(expect.objectContaining({ hostShellExecutionPermitBinding: expect.any(Object) }));
+    expect(result.decision, result.reason).toBe("allow");
+    expect(JSON.parse(result.rawStdout).reason).toBe("received");
+    // The hook's own approval is asked once, with no host-execution permit to bind.
+    expect(p.requestAndWait).toHaveBeenCalledOnce();
+    expect(p.requestAndWait).not.toHaveBeenCalledWith(expect.objectContaining({ hostShellExecutionPermitBinding: expect.anything() }));
   });
 
   it("consumes a real gate-approved host execution receipt before spawning", async () => {
-    setSandboxRequestedAtBoot(true);
+    windowsPartialPlan();
+    expect(getHostShellExecutionPlan()).toMatchObject({
+      mode: "plain", fallbackReason: "windows-partial-shell-acl-unsafe", requiresExplicitUserApproval: true,
+    });
     const p = policy();
     p.permissionManager.setRules([{ pattern: "Bash(node *)", action: "allow" }]);
     const wc = { isDestroyed: vi.fn(() => false), send: vi.fn() };
@@ -153,12 +237,25 @@ describe("hook command permission admission", () => {
     const result = await pending;
     expect(result.decision, result.reason).toBe("allow");
     expect(JSON.parse(result.rawStdout).reason).toBe("received");
+    // The gate-signed approval is minted into one permit and consumed before spawn.
+    expect(permits).toMatchObject({ minted: 1, consumed: [true] });
+  });
+
+  it("refuses a host execution receipt the approval gate did not sign", async () => {
+    windowsPartialPlan();
+    // An allow-once that did not come through the gate carries no valid receipt.
+    const p = policy("allow-once");
+    p.permissionManager.setRules([{ pattern: "Bash(node *)", action: "allow" }]);
+    const result = await runOneHookScript(hook, payload, { authorizeCommand: p.authorizeCommand });
+    expect(result).toMatchObject({ decision: "deny", rawStdout: "", reason: expect.stringContaining("approval receipt is invalid") });
+    expect(p.requestAndWait).toHaveBeenCalledWith(expect.objectContaining({ hostShellExecutionPermitBinding: expect.any(Object) }));
+    expect(permits.consumed).toEqual([false]);
   });
 
   it("refuses to spawn after the admitted sandbox generation changes", async () => {
     const authorizeCommand = async () => {
       const plan = getHostShellExecutionPlan();
-      setSandboxRequestedAtBoot(true);
+      setShellSandboxRequestedAtBoot(true);
       return { decision: "allow" as const, reason: "approved", plan };
     };
     expect(await runOneHookScript(hook, payload, { authorizeCommand }))

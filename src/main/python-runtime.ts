@@ -1,15 +1,4 @@
-/**
- * PythonRuntimeBootstrapper — host-managed plugin Python runtime coordinator
- *
- * Host-managed Python plugins use this coordinator during plugin start
- * preparation. The app boot path wires the coordinator only; packaged uv
- * materialization, Python acquisition, and dependency sync happen lazily when
- * a plugin with an accessible lockfile needs a non-ready runtime.
- *
- * Plugins that need Python dependencies must ship their lockfile in the
- * installed plugin/manifest directory (or declare a relative lockfile path in
- * plugin.json). The host must not reach into sibling plugin source checkouts.
- */
+// Prepare Python lazily when a plugin needs a non-ready runtime. Lockfiles must ship inside the installed plugin; never resolve through sibling source checkouts.
 
 import { spawn } from "node:child_process";
 import * as fs from "node:fs/promises";
@@ -32,8 +21,6 @@ import { resolveBundledUvBinaryPath } from "./uv-runtime.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 const log = createLogger("python-runtime");
 
-
-
 export type BootstrapPhase =
   | "pending"
   | "installing-python"
@@ -42,14 +29,6 @@ export type BootstrapPhase =
   | "ready"
   | "error";
 
-/**
- * Progress of the Python runtime's own install — uv, the interpreter, the
- * dependency set. Named for the runtime it describes because the app has a
- * second, unrelated bootstrap: `AppBootstrapStatus`
- * (`src/shared/bootstrap-status.ts`) reports managed marketplace install to the
- * renderer. Two types called `BootstrapStatus` meant a reader had to open the
- * import to learn which bootstrap a status belonged to.
- */
 export interface PythonRuntimeBootstrapStatus {
   phase: BootstrapPhase;
   msg: string;
@@ -67,15 +46,9 @@ interface ReadySentinel {
   pythonVersion: string;
 }
 
-
-
 const aveRuntimeDir = (): string => path.join(aveHome(), "runtime");
 const UV_STDERR_TAIL_LIMIT_CHARS = 12_000;
-// Co-locate uv cache with the venv so hardlinks from cache → site-packages stay
-// on the same physical volume. NTFS hardlinks fail cross-volume with EXDEV
-// (issue #713) when ~/.ave and %LOCALAPPDATA% live on different drives via
-// junction / OneDrive redirect / profile migration.
-
+// Keep the cache beside the venv: hardlinks fail across volumes, including junctions and redirected profiles.
 
 const LOCK_FILE_RESOURCE_NAME = "python-requirements.lock";
 const runtimeSetupLocks = new Map<string, Promise<RuntimeResult>>();
@@ -90,37 +63,25 @@ function summarizeUvCommand(args: string[]): string {
 }
 
 export interface PythonRuntimeBootstrapperOptions {
-  /**
-   * Test/embedding injection: absolute plugin.json paths whose directory may
-   * contain the Python requirements lockfile.
-   */
+  // Test/embedding injection: absolute plugin.json paths whose directory may contain the Python requirements lockfile.
   pluginManifestPaths?: string[];
-  /** Test/embedding injection: plugin root directories to scan directly. */
+  // Test/embedding injection: plugin root directories to scan directly.
   pluginRoots?: string[];
-  /** Registry to inspect for installed plugin manifest paths. */
+  // Registry to inspect for installed plugin manifest paths.
   registryPath?: string;
-  /** Mostly for tests; defaults to python-requirements.lock. */
+  // Mostly for tests; defaults to python-requirements.lock.
   lockFileName?: string;
-  /** Mostly for tests; defaults to ~/.ave/runtime/uv. */
+  // Mostly for tests; defaults to ~/.ave/runtime/uv.
   uvRuntimeDir?: string;
-  /** Runtime root. Host-managed Python envs use ~/.ave/runtime/python-envs/<lockHash>. */
+  // Runtime root. Host-managed Python envs use ~/.ave/runtime/python-envs/<lockHash>.
   runtimeDir?: string;
-  /** Exact lockfile selected by a plugin prepare path. */
+  // Exact lockfile selected by a plugin prepare path.
   lockFilePath?: string;
-  /**
-   * Asks the OS what proxy reaches a URL, in Chromium's PAC form
-   * (`"DIRECT"`, `"PROXY host:port"`). Main supplies it — this module is
-   * loaded by tests, so it cannot import `electron` itself.
-   *
-   * Absent means the caller resolved nothing, and `uv` runs with no proxy
-   * variables, exactly as it does today. That is not a fallback transport:
-   * "no proxy" is a real answer for most machines, and the one caller that
-   * can ask always does.
-   */
+  // Main injects the OS PAC resolver so this module stays independent of the desktop runtime; absent resolution supplies no proxy variables.
   resolveOsProxy?: (url: string) => Promise<string>;
-  /** Force uv pip sync even when a ready sentinel exists. */
+  // Force uv pip sync even when a ready sentinel exists.
   forceSetup?: boolean;
-  /** Optional observer for status surfaces that need scoped progress. */
+  // Optional observer for status surfaces that need scoped progress.
   onStatus?: (status: PythonRuntimeBootstrapStatus) => void;
 }
 
@@ -140,16 +101,7 @@ export function buildPipSyncFallbackArgs(
   return [...buildPipSyncArgs(lockFile, pythonPath), "--no-cache", "--link-mode", "copy"];
 }
 
-// ─── PythonRuntimeBootstrapper ───────────────────────
-
-/**
- * The hosts `uv` reaches while provisioning: the package index, the file CDN
- * it redirects to, and the two origins a managed CPython is downloaded from.
- *
- * They are probed rather than assumed because a machine can route some of them
- * through a proxy and reach the rest directly, and `NO_PROXY` is how that is
- * said to a subprocess.
- */
+// Probe each provisioning origin because OS proxy routing may mix direct and proxied hosts.
 const UV_EGRESS_PROBE_URLS = [
   "https://pypi.org/simple/",
   "https://files.pythonhosted.org/",
@@ -157,24 +109,8 @@ const UV_EGRESS_PROBE_URLS = [
   "https://astral.sh/",
 ] as const;
 
-/**
- * The proxy environment for the uv subprocess, derived from what the OS says.
- *
- * DERIVED, never inherited. Reading the host's own `HTTP_PROXY` would take the
- * value from whatever shell launched the app rather than from the machine's
- * configuration — two sources for one fact, and the ambient one can carry
- * credentials in its userinfo. Chromium's resolver answers from the
- * configuration itself and never returns credentials.
- *
- * Three shapes come back:
- *   - every host DIRECT ⇒ no variables at all, which is what this returns
- *     today on a machine with no proxy;
- *   - one proxy, some hosts direct ⇒ that proxy plus `NO_PROXY` naming them;
- *   - two or more DIFFERENT proxies ⇒ nothing. Per-host routing cannot be said
- *     in these variables, and guessing one of them would send part of the
- *     traffic somewhere the configuration did not choose. Failing visibly is
- *     the honest outcome; the caller logs it.
- */
+// Derive proxy variables from OS configuration, never inherited shell variables that may contain credentials.
+// Use NO_PROXY for direct hosts; refuse multiple distinct proxies because environment variables cannot represent per-host routing.
 export function uvProxyEnvFromPacResolutions(
   resolutions: ReadonlyArray<readonly [url: string, pac: string]>,
 ): Record<string, string> {
@@ -200,7 +136,7 @@ export function uvProxyEnvFromPacResolutions(
 }
 
 export class PythonRuntimeBootstrapper {
-  /** Resolved once — see {@link PythonRuntimeBootstrapper.uvEgressEnv}. */
+  // Resolved once — see {@link PythonRuntimeBootstrapper.uvEgressEnv}.
   private uvEgressEnvOnce: Promise<Record<string, string>> | null = null;
   private mainWindow: BrowserWindow | null = null;
 
@@ -234,31 +170,20 @@ export class PythonRuntimeBootstrapper {
     return path.join(this.venvDir(), ".ready");
   }
 
-
-
-
   async ensureReady(mainWindow: BrowserWindow | null): Promise<RuntimeResult> {
     this.mainWindow = mainWindow;
     this.getCurrentUvTarget();
     const pythonPath = this.getPythonPath();
     const result: RuntimeResult = { pythonPath, venvPath: this.venvDir() };
 
-    // Repair file modes on existing files (#717 follow-up). Pre-fix, files
-    // created with default umask 0o644 are world-readable on shared corp
-    // hosts. The mode-on-write hardening only affects NEW writes; existing
-    // installs need a one-shot chmod sweep on each boot to migrate. Idempotent
-    // (chmod to already-correct mode is a no-op). Best-effort — failure must
-    // not block boot. Windows: fs.chmod is a no-op for mode bits, harmless.
+    // Repair existing file modes best-effort at boot; mode-on-write cannot harden older files and Windows mode bits are inert.
     await this.repairLegacyFileModes();
 
     return this.ensureSetupOnce(result);
   }
 
-  /**
-   * Prepare the runtime after a plugin is installed in the current session.
-   * Returns null when the manifest has no accessible lockfile so non-Python
-   * plugins do not turn install into a Python bootstrap attempt.
-   */
+  // Prepare the runtime after a plugin is installed in the current session. Returns null when the manifest has no accessible lockfile so non-Python
+  // plugins do not turn install into a Python bootstrap attempt.
   async ensureReadyForPluginManifest(
     manifestPath: string,
     mainWindow: BrowserWindow | null,
@@ -296,8 +221,6 @@ export class PythonRuntimeBootstrapper {
     return bootstrapper.ensureReady(mainWindow);
   }
 
-  // ─── private: sentinel ────────────────────────────
-
   private async checkSentinel(): Promise<boolean> {
     try {
       await fs.access(this.readySentinelPath());
@@ -315,8 +238,6 @@ export class PythonRuntimeBootstrapper {
     };
     await fs.writeFile(this.readySentinelPath(), JSON.stringify(data, null, 2), { encoding: "utf8", mode: 0o600 });
   }
-
-  // ─── private: setup pipeline ─────────────────────
 
   private async ensureSetupOnce(result: RuntimeResult): Promise<RuntimeResult> {
     const lockKey = path.resolve(this.runtimeDir());
@@ -351,14 +272,12 @@ export class PythonRuntimeBootstrapper {
     const uvBin = this.getUvBinaryPath();
     await this.log(`[python-runtime] uv binary: ${uvBin}`);
 
-    // Step 1: uv 바이너리 존재 확인
     try {
       await fs.access(uvBin);
     } catch {
       throw new Error(t("be_pythonRuntime.errUvBinaryNotFound", { uvBin }));
     }
 
-    // Step 2: Python 3.12 설치
     this.sendStatus({ phase: "installing-python", msg: t("be_pythonRuntime.statusInstallingPython"), pct: 10 });
     await this.log("[python-runtime] Step 1: uv python install 3.12");
     const uvVersion = await this.runUv(uvBin, [
@@ -367,7 +286,6 @@ export class PythonRuntimeBootstrapper {
       UV_PYTHON_INSTALL_DIR: this.pythonInstallDir(),
     });
 
-    // Step 3: venv 생성
     this.sendStatus({ phase: "installing-python", msg: t("be_pythonRuntime.statusCreatingVenv"), pct: 30 });
     await this.log("[python-runtime] Step 2: uv venv");
     await this.runUv(uvBin, [
@@ -376,10 +294,7 @@ export class PythonRuntimeBootstrapper {
       UV_PYTHON_INSTALL_DIR: this.pythonInstallDir(),
     });
 
-    // Step 4: pip sync (requirements.lock)
-    // uv 0.7.3 이후 `pip sync`는 lock 파일을 받아 그대로 동기화하므로 `--frozen`은
-    // 받지 않음 (uv 0.7.x: error: unexpected argument '--frozen'). lock 파일 자체가
-    // pinning 역할이라 의미적으로도 redundant.
+    // pip sync consumes the pinned lockfile directly and does not accept --frozen.
     this.sendStatus({ phase: "installing-deps", msg: t("be_pythonRuntime.statusInstallingDeps"), pct: 40 });
     await this.log("[python-runtime] Step 3: uv pip sync");
     const lockFile = await this.findLockFile();
@@ -400,12 +315,10 @@ export class PythonRuntimeBootstrapper {
       });
     }
 
-    // Step 5: import 검증
     this.sendStatus({ phase: "verifying", msg: t("be_pythonRuntime.statusVerifying"), pct: 85 });
     await this.log("[python-runtime] Step 4: import verification");
     const pythonVersion = await this.verifyImports();
 
-    // Step 6: sentinel 기록
     const uvVersionStr = uvVersion.trim().split("\n")[0] ?? "unknown";
     await this.writeSentinel(uvVersionStr, pythonVersion);
     await this.log(`[python-runtime] .ready sentinel written — python: ${pythonVersion}`);
@@ -413,16 +326,12 @@ export class PythonRuntimeBootstrapper {
     this.sendStatus({ phase: "ready", msg: t("be_pythonRuntime.statusReady"), pct: 100 });
   }
 
-  // ─── private: Python path ─────────────────────────
-
   getPythonPath(): string {
     if (process.platform === "win32") {
       return path.join(this.venvDir(), "Scripts", "python.exe");
     }
     return path.join(this.venvDir(), "bin", "python");
   }
-
-  // ─── private: uv binary path ──────────────────────
 
   private getUvBinaryPath(): string {
     return resolveBundledUvBinaryPath({
@@ -434,8 +343,6 @@ export class PythonRuntimeBootstrapper {
   private getCurrentUvTarget(): UvTarget {
     return resolveUvTarget(process.platform, process.arch);
   }
-
-  // ─── private: lock file 위치 ──────────────────────
 
   private async lockCandidatesFromManifest(
     manifestPath: string,
@@ -519,32 +426,12 @@ export class PythonRuntimeBootstrapper {
     return path.join(aveRuntimeDir(), "python-envs", `${uvTarget.dir}-py312-${lockHash}`);
   }
 
-  // ─── private: 실행 헬퍼 ──────────────────────────
-
-  /**
-   * Run a uv command. These are SETUP-ONLY spawns (uv python install / venv /
-   * pip sync) that run at boot BEFORE the ASRT sandbox is initialized, so they
-   * are NOT routed through the sandbox — they legitimately need PyPI egress to
-   * materialize the runtime before any plugin worker exists. The long-lived
-   * plugin worker (the real network-egress doer) is a separate spawn path that
-   * a follow-up wires through {@link wrapWorkerCommand}; do not re-add a sandbox
-   * branch here (it would always plain-spawn — the gate is not yet active).
-   */
-  /**
-   * What `uv` needs to reach the internet the way this machine does.
-   *
-   * Resolved once per bootstrapper: the answer cannot change mid-provision,
-   * and the probe is four IPC round-trips.
-   */
+  // Provision dependencies before worker confinement; persistent workers use the governed spawn path.
+  // Resolve network configuration once per bootstrapper so it cannot change mid-provision.
   private uvEgressEnv(): Promise<Record<string, string>> {
     this.uvEgressEnvOnce ??= (async () => {
       const env: Record<string, string> = {
-        // uv 0.7.3 `--native-tls` / `UV_NATIVE_TLS`: read the platform's own
-        // certificate store rather than uv's bundled Mozilla roots. The same
-        // principle as the proxy above — the machine's trust decisions are the
-        // machine's to make. NOT `SSL_CERT_FILE`: that REPLACES the trust set
-        // with one file, so pointing it at a private root would make every
-        // public index fail verification.
+        // Use native TLS trust; a corporate-only SSL_CERT_FILE would replace public roots and break package downloads.
         UV_NATIVE_TLS: "1",
       };
       const resolve = this.options.resolveOsProxy;
@@ -577,9 +464,7 @@ export class PythonRuntimeBootstrapper {
   ): Promise<string> {
     const egressEnv = await this.uvEgressEnv();
     return new Promise((resolve, reject) => {
-      // Whitelist-only env — only the uv subprocess needs PATH/HOME/locale.
-      // uv only needs PATH + HOME + locale + tmp dirs. Callers supply
-      // UV_PYTHON_INSTALL_DIR via extraEnv.
+      // Whitelist-only env — only the uv subprocess needs PATH/HOME/locale. uv only needs PATH + HOME + locale + tmp dirs. Callers supply UV_PYTHON_INSTALL_DIR via extraEnv.
       const allowedEnvKeys = new Set<string>([
         "PATH",
         "HOME",
@@ -591,9 +476,7 @@ export class PythonRuntimeBootstrapper {
         "TMP",
         "SYSTEMROOT",
         "NODE_ENV",
-        // Issue #713 escape hatches: let users override cache location and
-        // hardlink mode via OS env when their drive layout still trips uv
-        // (e.g. ~/.ave itself bridging volumes via subpath junctions).
+        // Allow cache-location and hardlink-mode overrides for layouts that still cross volumes through junctions.
         "UV_CACHE_DIR",
         "UV_LINK_MODE",
       ]);
@@ -602,20 +485,18 @@ export class PythonRuntimeBootstrapper {
         const value = process.env[key];
         if (value !== undefined) env[key] = value;
       }
-      // Derived from the OS, not inherited from this process: the allow-list
-      // above deliberately does NOT carry the ambient proxy variables.
+      // Derived from the OS, not inherited from this process: the allow-list above deliberately does NOT carry the ambient proxy variables.
       Object.assign(env, egressEnv);
       Object.assign(env, extraEnv);
       // uv가 interactive prompt를 띄우지 않도록
       env.UV_NO_PROGRESS = "1";
-      // Default uv cache co-located with the Ave runtime; user-provided
-      // UV_CACHE_DIR (via the whitelist above or extraEnv) takes precedence.
+      // Default uv cache co-located with the Ave runtime; user-provided UV_CACHE_DIR (via the whitelist above or extraEnv) takes precedence.
       if (env.UV_CACHE_DIR === undefined) {
         env.UV_CACHE_DIR = this.uvCacheDir();
       }
 
       assertManagedChildProcessAdmissionOpen("python-runtime:uv");
-      const proc = spawn(uvBin, args, { env, stdio: ["ignore", "pipe", "pipe"] });
+      const proc = spawn(uvBin, args, { windowsHide: true, env, stdio: ["ignore", "pipe", "pipe"] });
       trackManagedChildProcess(proc, { label: "python-runtime:uv" });
 
       let stdout = "";
@@ -667,15 +548,11 @@ export class PythonRuntimeBootstrapper {
     });
   }
 
-  /**
-   * Run a python command for import verification. SETUP-ONLY (see {@link runUv}
-   * — runs at boot before the ASRT sandbox is active, so it is not sandboxed).
-   */
+  // Import verification is setup-only and runs before worker confinement; see runUv.
   private runPython(pythonBin: string, args: string[]): Promise<string> {
     return new Promise((resolve, reject) => {
-      // Whitelist-only env — same rationale as runUv(). Only OS-essential
-      // variables propagate into the verification subprocess so that no
-      // host secrets (OPENAI_API_KEY, AWS creds, …) are leaked.
+      // Whitelist-only env — same rationale as runUv(). Only OS-essential variables propagate into the verification subprocess so that no host secrets
+      // (OPENAI_API_KEY, AWS creds, …) are leaked.
       const allowedEnvKeys = new Set<string>([
         "PATH",
         "HOME",
@@ -694,7 +571,7 @@ export class PythonRuntimeBootstrapper {
         if (value !== undefined) safeEnv[key] = value;
       }
       assertManagedChildProcessAdmissionOpen("python-runtime:python");
-      const proc = spawn(pythonBin, args, { env: safeEnv, stdio: ["ignore", "pipe", "pipe"] });
+      const proc = spawn(pythonBin, args, { windowsHide: true, env: safeEnv, stdio: ["ignore", "pipe", "pipe"] });
       trackManagedChildProcess(proc, { label: "python-runtime:python" });
 
       let stdout = "";
@@ -725,8 +602,6 @@ export class PythonRuntimeBootstrapper {
     });
   }
 
-  // ─── private: import 검증 ─────────────────────────
-
   private async verifyImports(): Promise<string> {
     const pythonBin = this.getPythonPath();
     const verifyScript = [
@@ -741,8 +616,6 @@ export class PythonRuntimeBootstrapper {
     return version;
   }
 
-  // ─── private: IPC 상태 발행 ───────────────────────
-
   private sendStatus(status: PythonRuntimeBootstrapStatus): void {
     try {
       this.options.onStatus?.(status);
@@ -756,8 +629,6 @@ export class PythonRuntimeBootstrapper {
     }
   }
 
-  // ─── private: 로그 ───────────────────────────────
-
   private async ensureDirs(): Promise<void> {
     // ~/.ave/<feature>/ namespace rule: directories owner-only (0o700).
     await fs.mkdir(this.runtimeDir(), { recursive: true, mode: 0o700 });
@@ -766,12 +637,8 @@ export class PythonRuntimeBootstrapper {
     await fs.mkdir(this.uvCacheDir(), { recursive: true, mode: 0o700 });
   }
 
-  /**
-   * One-shot chmod sweep for files created by older installs (umask default
-   * 0o644). Idempotent — chmod to already-correct mode is a no-op. Skipped
-   * on Windows where mode bits are meaningless. Each chmod is best-effort;
-   * failure for one file does not skip the others.
-   */
+  // One-shot chmod sweep for files created by older installs (umask default 0o644). Idempotent — chmod to already-correct mode is a no-op. Skipped on
+  // Windows where mode bits are meaningless. Each chmod is best-effort; failure for one file does not skip the others.
   private async repairLegacyFileModes(): Promise<void> {
     if (process.platform === "win32") return;
 
@@ -780,9 +647,8 @@ export class PythonRuntimeBootstrapper {
       { path: this.readySentinelPath(), mode: 0o600 },
       { path: this.setupLogPath(), mode: 0o600 },
     ];
-    // Directories: 0o700 (owner-only rwx). Pre-fix dirs created at default
-    // 0o755 are world-traversable — minor info leak (directory listing only,
-    // not contents), but tightening matches the namespace rule.
+    // Directories: 0o700 (owner-only rwx). Pre-fix dirs created at default 0o755 are world-traversable — minor info leak (directory listing only, not
+    // contents), but tightening matches the namespace rule.
     const dirTargets: Array<{ path: string; mode: number }> = [
       { path: this.runtimeDir(), mode: 0o700 },
       { path: this.venvDir(), mode: 0o700 },
@@ -800,21 +666,13 @@ export class PythonRuntimeBootstrapper {
       }
     }
 
-    // Materialized uv binaries: walk `<uvRuntimeDir>/<arch>/<sha>/<bin>`
-    // and chmod each to 0o700. Pre-fix legacy installs left these at 0o755
+    // Materialized uv binaries: walk `<uvRuntimeDir>/<arch>/<sha>/<bin>` and chmod each to 0o700. Pre-fix legacy installs left these at 0o755
     // (world-read+exec). Owner-only is the contract going forward.
     const uvRuntimeDir = this.options.uvRuntimeDir ?? path.join(this.runtimeDir(), "uv");
     await this.repairLegacyUvBinaryModes(uvRuntimeDir);
   }
 
-  /**
-   * Walk the materialized uv binary tree and chmod each binary to 0o700.
-   * The binary basename is derived from `resolveUvTarget(process.platform,
-   * process.arch).bin` — currently `"uv"` on POSIX, `"uv.exe"` on Windows.
-   * Note: this method only runs on POSIX (caller early-returns on win32),
-   * but resolving the basename programmatically guards against future
-   * cross-platform symmetry refactors silently missing `uv.exe`.
-   */
+  // Derive the binary basename from the platform target so mode repair cannot drift from runtime resolution.
   private async repairLegacyUvBinaryModes(uvRuntimeDir: string): Promise<void> {
     const binBasename = resolveUvTarget(process.platform, process.arch).bin;
     let archDirs: string[];
@@ -833,8 +691,7 @@ export class PythonRuntimeBootstrapper {
       } catch (err) {
         const code = (err as NodeJS.ErrnoException).code;
         if (code !== "ENOENT") {
-          // Parity with outer warn — pre-fix this catch was silent and a
-          // permission-denied arch dir disappeared without trace.
+          // Parity with outer warn — pre-fix this catch was silent and a permission-denied arch dir disappeared without trace.
           log.warn(`repairLegacyUvBinaryModes readdir(${archPath}) failed: ${(err as Error).message}`);
         }
         continue;

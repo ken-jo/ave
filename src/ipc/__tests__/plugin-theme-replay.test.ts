@@ -33,7 +33,6 @@ import type { IpcDeps } from "../types.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { setInstalledThemeIds } from "../../shared/plugin-theme-cache.js";
 
-// Every theme but the compiled Moonstone and Gallery is an installed package.
 beforeEach(() => {
   setInstalledThemeIds(["tokyo-night", "midnight", "forest", "violet-light", "violet-dark"]);
 });
@@ -174,7 +173,6 @@ function registerHandlersWithPlugin(webContentsId: number): {
   return { deps, pluginRuntime };
 }
 
-/** Denial rows written by the single authority (plugins/emit-denial-audit.ts). */
 function emitDenialRows(deps: IpcDeps): Array<{
   sessionId: string;
   type: string;
@@ -473,7 +471,6 @@ describe("plugin theme IPC handlers", () => {
     recordValidatedTheme({ bundleId: "midnight", shell: "dark", tokens: { "--ave-bg": "#0d0d12" } });
     const getTheme = getRegisteredHandler("ave:plugin:get-theme");
     expect(getTheme(pluginEvent(1701))).toEqual({ ok: true, theme: { bundleId: "midnight", shell: "dark", tokens: { "--ave-bg": "#0d0d12" } } });
-    // The dock's own document is not a plugin frame (floating-dock-theme.test.ts covers what main sends it).
     expect(getTheme({ sender: { id: 77 }, senderFrame: { url: "file:///tmp/ave/floating-dock-window.html" } })).toBe(UNAUTHORIZED_FRAME);
   });
 
@@ -781,10 +778,7 @@ describe("plugin theme IPC handlers", () => {
     });
   });
   it("audits a capability-denied emit through the production plugin emit IPC handler", () => {
-    // Producer is the real handler `registerPluginsHandlers` wires onto
-    // `ave:plugin:emit-event` — the channel plugin-preload.ts:117 invokes from
-    // a plugin webview. The fixture manifest declares no `emittedEvents`, the
-    // default for a manifest that has not opted into a gated namespace.
+    // The real emit-event handler receives a manifest with no declared emittedEvents.
     const { deps, pluginRuntime } = registerHandlersWithPlugin(1709);
     const emitEvent = getRegisteredHandler("ave:plugin:emit-event");
 

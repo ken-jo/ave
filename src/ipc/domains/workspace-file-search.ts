@@ -1,29 +1,16 @@
-/**
- * Composer `@file` search over the current workspace roots.
- *
- * Walks each root with the file tools' own walker (`collectFiles`, which skips
- * Layer-0 sensitive entries and the default skip dirs), ranks by the query, and
- * re-checks every returned path with `assertReadableFilePath` — the same guard
- * `read_file` and the preview use — so a symlink, a stale root or a sensitive
- * target can never be offered. The query is the only renderer input.
- */
+// Search current workspace roots and recheck every result with the read guard.
 import { collectFiles } from "../../tools/file-tools.js";
 import { assertReadableFilePath } from "../../tools/file-read-core.js";
 
-/** Max characters of query accepted from the renderer. */
 export const WORKSPACE_FILE_QUERY_MAX_CHARS = 200;
-/** Rows returned per query. */
 const MAX_MATCHES = 50;
-/** Files listed per root before the walk stops (the listing is cached). */
 const MAX_FILES_PER_ROOT = 20_000;
-/** A root's listing is reused for this long, so typing does not rescan. */
 const LISTING_TTL_MS = 10_000;
 
 export interface WorkspaceFileMatch {
   path: string;
   relativePath: string;
   root: string;
-  /** Size at listing time, for the attachment chip. */
   bytes: number;
 }
 
@@ -34,7 +21,7 @@ interface CachedListing {
 }
 
 const listingCache = new Map<string, CachedListing>();
-/** One walk per root at a time: keystrokes against a cold cache share it. */
+// Share one cold-cache walk per root across concurrent keystrokes.
 const listingsInFlight = new Map<string, Promise<CachedListing>>();
 
 async function listRoot(root: string, now: number): Promise<CachedListing> {
@@ -60,7 +47,6 @@ async function walkRoot(root: string, now: number): Promise<CachedListing> {
   return entry;
 }
 
-/** True when every character of `needle` appears in `hay` in order. */
 function isSubsequence(needle: string, hay: string): boolean {
   let i = 0;
   for (let j = 0; j < hay.length && i < needle.length; j += 1) {
@@ -122,7 +108,6 @@ export async function searchWorkspaceFiles(args: {
   return { matches, truncated };
 }
 
-/** Test seam: forget cached listings. */
 export function clearWorkspaceFileSearchCache(): void {
   listingCache.clear();
   listingsInFlight.clear();

@@ -1,30 +1,4 @@
-/**
- * Layer 1 path policy — allowed directories module.
- *
- * Spec ref: docs/architecture/permission-policy-design.md §3 Layer 1.
- *
- * Setting (~/.ave/settings.json):
- * ```jsonc
- * {
- *   "permissions": {
- *     "additionalDirectories": ["~/workspace/ave"]
- *   }
- * }
- * ```
- *
- * Default at runtime: `process.cwd()` ∪ `~/.ave/` ∪ the verified
- * application scratch directory (`shared/ave-scratch.ts`) MINUS Layer 0
- * deny paths (Layer 0 always wins; ~/.ave/secrets is denied even if the
- * caller's allowed list contains ~/.ave/). The platform temp roots are NOT
- * a Layer 1 default; the conversation loop adds them to its per-turn base
- * set (`base-allowed-directories.ts`), which is a separate, stated tradeoff.
- *
- * Frozen-canonical contract: callers MUST pre-canonicalize the input
- * path via `canonicalizePathForMatch` from `./sensitive-paths.js` and
- * then `caseFoldForMatch` for darwin/win32 case-insensitive prefix
- * compare. This module performs ONLY string prefix logic — never calls
- * `realpath` again (closes TOCTOU race).
- */
+// Sensitive-path denies always override allowed roots; temp grants join the separate per-turn base set. Callers canonicalize and case-fold once; prefix checks must not resolve paths again (docs/architecture/permission-policy-design.md).
 import { resolve as pathResolve, sep as pathSep } from "node:path";
 import {
   canonicalizePathForMatch,
@@ -36,17 +10,7 @@ import { expandLeadingTilde } from "../shared/home-tilde.js";
 import { aveHome } from "../shared/ave-home.js";
 import { verifyAveScratchDir } from "../shared/ave-scratch.js";
 
-/**
- * Directory addition pre-flight result.
- *
- * `ok: true` ⇒ caller may persist the directory to settings.
- * `ok: false` ⇒ caller MUST surface `reason` to the user (Layer 0
- * sensitive directory, root, or empty input).
- *
- * Even an `ok: true` result may carry `adjacencyWarnings[]` (e.g.
- * `.env`, `.git`, `.ssh`, `credentials`, `node_modules/.cache` adjacent)
- * which the renderer SHOULD render as a red banner with explicit opt-in.
- */
+// Directory addition pre-flight result. `ok: true` ⇒ caller may persist the directory to settings. `ok: false` ⇒ caller MUST surface `reason` to the user (Layer 0 sensitive directory, root, or empty input). Even an `ok: true` result may carry `adjacencyWarnings[]` (e.g. `.env`, `.git`, `.ssh`, `credentials`, `node_modules/.cache` adjacent) which the renderer SHOULD render as a red banner with explicit opt-in.
 export type ValidateDirectoryResult =
   | { ok: true; canonicalPath: string; adjacencyWarnings: string[] }
   | { ok: false; reason: string; adjacencyWarnings: string[] };
@@ -66,24 +30,12 @@ function normalizePolicySeparators(p: string): string {
   return p.replace(/\\/g, "/");
 }
 
-/**
- * Compute the host-default allow-list at boot.
- *
- * Default = `process.cwd()` ∪ `homedir()/.ave` ∪ the application scratch
- * directory (only while `verifyAveScratchDir` holds: a directory the app
- * created with `0o700` and still owns) MINUS Layer 0 deny paths.
- * Returns canonicalized + case-folded entries ready to be passed to
- * {@link isPathAllowed}.
- */
+// Compute the host-default allow-list at boot. Default = `process.cwd` ∪ `homedir/.ave` ∪ the application scratch directory (only while `verifyAveScratchDir` holds: a directory the app created with `0o700` and still owns) MINUS Layer 0 deny paths. Returns canonicalized + case-folded entries ready to be passed to isPathAllowed.
 export function computeDefaultAllowedDirectories(cwd: string = process.cwd()): string[] {
   return computeDefaultAllowedDirectoryEntries(cwd, true);
 }
 
-/**
- * Runtime filesystem roots for native tools. Unlike the Layer 1 matching
- * scope, these keep the OS canonical case so `realpath`-based sandbox checks
- * can validate the same directories without lowercasing path segments.
- */
+// Runtime filesystem roots for native tools. Unlike the Layer 1 matching scope, these keep the OS canonical case so `realpath`-based sandbox checks can validate the same directories without lowercasing path segments.
 export function computeDefaultRuntimeAllowedDirectories(cwd: string = process.cwd()): string[] {
   return computeDefaultAllowedDirectoryEntries(cwd, false);
 }
@@ -98,9 +50,7 @@ function computeDefaultAllowedDirectoryEntries(cwd: string, foldCase: boolean): 
     const folded = caseFoldForMatch(canonical);
     const value = foldCase ? folded : canonical;
     if (isFilesystemRootPath(folded)) continue;
-    // Layer 0 always wins — if a default candidate is itself sensitive,
-    // skip it (the more-specific deny patterns inside still hard-block
-    // any leaf access, so excluding the default is mostly hygiene).
+    // Layer 0 always wins — if a default candidate is itself sensitive, skip it (the more-specific deny patterns inside still hard-block any leaf access, so excluding the default is mostly hygiene).
     if (isSensitivePath(folded)) continue;
     if (seen.has(folded)) continue;
     seen.add(folded);
@@ -109,27 +59,12 @@ function computeDefaultAllowedDirectoryEntries(cwd: string, foldCase: boolean): 
   return out;
 }
 
-/**
- * Sanitize a user-provided allow-list (e.g. from
- * `permissions.additionalDirectories` in settings.json).
- *
- * - Resolves `~` to `homedir()`.
- * - Canonicalizes via {@link canonicalizePathForMatch} + case-fold.
- * - Drops any entry that hits Layer 0 (sensitive path).
- * - De-duplicates.
- *
- * NOTE: this DOES NOT include the host defaults. Callers should
- * `[...computeDefaultAllowedDirectories(), ...sanitizeAllowedDirectories(...)]`
- * to assemble the final scope.
- */
+// Sanitize a user-provided allow-list (e.g. from `permissions.additionalDirectories` in settings.json). - Resolves `~` to `homedir`. - Canonicalizes via canonicalizePathForMatch + case-fold. - Drops any entry that hits Layer 0 (sensitive path). - De-duplicates. this DOES NOT include the host defaults. Callers should `[...computeDefaultAllowedDirectories,...sanitizeAllowedDirectories(...)]` to assemble the final scope.
 export function sanitizeAllowedDirectories(input: readonly string[] | undefined): string[] {
   return sanitizeAllowedDirectoryEntries(input, true);
 }
 
-/**
- * Runtime filesystem roots for native tools. Applies the same validation as
- * {@link sanitizeAllowedDirectories} but preserves canonical OS case.
- */
+// Runtime filesystem roots for native tools. Applies the same validation as sanitizeAllowedDirectories but preserves canonical OS case.
 export function sanitizeRuntimeAllowedDirectories(input: readonly string[] | undefined): string[] {
   return sanitizeAllowedDirectoryEntries(input, false);
 }
@@ -157,18 +92,7 @@ function sanitizeAllowedDirectoryEntries(
   return out;
 }
 
-/**
- * Layer 1 prefix check.
- *
- * `canonicalPath` MUST already be canonicalized + case-folded by the
- * caller (frozen-canonical contract). `scope.directories` MUST come from
- * {@link sanitizeAllowedDirectories} or {@link computeDefaultAllowedDirectories}.
- *
- * Returns `true` iff `canonicalPath === dir` OR `canonicalPath` starts
- * with `dir + "/"` (segment-aligned). Pure string compare — no realpath.
- *
- * ALWAYS returns `false` for empty input (deny-by-default).
- */
+// Layer 1 prefix check. `canonicalPath` MUST already be canonicalized + case-folded by the caller (frozen-canonical contract). `scope.directories` MUST come from sanitizeAllowedDirectories or computeDefaultAllowedDirectories. Returns `true` iff `canonicalPath === dir` OR `canonicalPath` starts with `dir + "/"` (segment-aligned). Pure string compare — no realpath. ALWAYS returns `false` for empty input (deny-by-default).
 export function isPathAllowed(
   canonicalPath: string,
   scope: { directories: readonly string[] },
@@ -178,52 +102,25 @@ export function isPathAllowed(
   for (const dir of scope.directories) {
     if (!dir) continue;
     if (canonicalPath === dir) return true;
-    // Use forward-slash separator since canonicalizePathForMatch
-    // already collapsed duplicates and uses POSIX form internally.
+    // Use forward-slash separator since canonicalizePathForMatch already collapsed duplicates and uses POSIX form internally.
     const sep = "/";
     if (canonicalPath.startsWith(dir + sep)) return true;
-    // Edge case: directories may end with the platform separator on
-    // win32 — accept either form.
+    // Edge case: directories may end with the platform separator on win32 — accept either form.
     if (pathSep !== sep && canonicalPath.startsWith(dir + pathSep)) return true;
   }
   return false;
 }
 
-/**
- * What a path operand is about to be used FOR. Layer 1 confines the two
- * asymmetrically: a write or an execution changes the machine and stays inside
- * the authorized directories, while a read only observes it and is bounded by
- * the Layer 0 deny-list alone.
- */
+// What a path operand is about to be used FOR. Layer 1 confines the two asymmetrically: a write or an execution changes the machine and stays inside the authorized directories, while a read only observes it and is bounded by the Layer 0 deny-list alone.
 export type PathEffect = "read" | "write";
 
-/**
- * The Layer 1 scope plus the one user setting that changes its shape.
- *
- * `blockReadsOutsideWorkingDirectories` restores the pre-asymmetry behaviour:
- * every effect is confined to `directories`. It ships OFF, so a read reaches
- * anywhere the Layer 0 deny-list permits.
- */
+// The Layer 1 scope plus the one user setting that changes its shape. `blockReadsOutsideWorkingDirectories` restores the pre-asymmetry behaviour: every effect is confined to `directories`. It ships OFF, so a read reaches anywhere the Layer 0 deny-list permits.
 export interface PathScopePolicy {
   readonly directories: readonly string[];
   readonly blockReadsOutsideWorkingDirectories: boolean;
 }
 
-/**
- * Does the directory boundary answer this effect at all?
- *
- * This is the ONE statement of the read/write asymmetry. Two enforcement paths
- * apply it against two different boundary predicates — the tool path scope asks
- * {@link isPathAllowed}, the shell path policy asks `validateSandboxPath` — and
- * writing "a read is not confined" separately in each is how the two would come
- * to disagree about `ls /`. Both ask this instead and then run their own
- * boundary only when it says yes.
- *
- * A read is answered `false` (not confined) without consulting any directory
- * list, deliberately. The read boundary is Layer 0 (`isSensitivePath`), which
- * runs first in both paths and is unaffected; a directory list is the WRITE
- * boundary, and answering a read with it is what refused `ls /`.
- */
+// Directory scope confines writes, not reads; both tool and shell paths use this predicate. Sensitive-path hard blocks run first for every effect.
 export function pathEffectIsConfined(
   effect: PathEffect,
   blockReadsOutsideWorkingDirectories: boolean,
@@ -231,17 +128,7 @@ export function pathEffectIsConfined(
   return effect === "write" || blockReadsOutsideWorkingDirectories;
 }
 
-/**
- * Layer 1, asked with the effect the operand carries.
- *
- * Every caller that used to ask {@link isPathAllowed} for an enforcement
- * decision over a tool's declared path fields asks this instead, so "reads are
- * not confined" is a property of the predicate rather than a branch each call
- * site remembers to write.
- *
- * `canonicalPath` still obeys the frozen-canonical contract of
- * {@link isPathAllowed}.
- */
+// Keep effect-aware read exemption in this shared predicate; canonicalPath still obeys the frozen-canonical contract.
 export function isPathAllowedForEffect(
   canonicalPath: string,
   scope: PathScopePolicy,
@@ -252,32 +139,7 @@ export function isPathAllowedForEffect(
   return isPathAllowed(canonicalPath, scope);
 }
 
-/**
- * Pick the grant scope to auto-suggest in the "out-of-allowed-dir" approval
- * dialog (§3 Layer 1 M3 strengthening).
- *
- * Spec rule: NEVER suggest a broader common-prefix. Two cases:
- *
- *   - **`isDirectory: false`** (the request path is a *file*, e.g.
- *     `read_file ~/Documents/notes.md`): suggest the *immediate parent*
- *     directory (`~/Documents/`). Granting the file itself is too narrow
- *     because the next file in the same dir would re-prompt.
- *   - **`isDirectory: true`** (the request path IS a directory, e.g.
- *     `list_files /Users/example`): suggest the *requested path itself*.
- *     The previous "always parent" heuristic over-granted to one level
- *     above (e.g. suggesting `/Users` for a `/Users/example` request gave
- *     access to every user's home — visible bug in prod approval cards).
- *
- * Returns `null` if the chosen scope is already covered by `currentAllowed`,
- * is a Layer 0 sensitive directory, or has no parent (filesystem root).
- *
- * @param canonicalPath request path (already canonicalized + case-folded).
- * @param currentAllowed scope from settings (already canonicalized).
- * @param isDirectory whether the request path IS the target directory.
- *                    Caller (executor.ts) determines this via `statSync`;
- *                    falls back to `false` (file-style) when stat fails or
- *                    the parameter is omitted, preserving legacy behavior.
- */
+// Suggest only the requested directory or a file's immediate parent, never a broader prefix. Return null for covered, sensitive or root scopes; failed stat defaults to file-style suggestion. Inputs are already canonical/case-folded.
 export function pickClosestParent(
   canonicalPath: string,
   currentAllowed: readonly string[],
@@ -298,21 +160,7 @@ export function pickClosestParent(
   return parent;
 }
 
-/**
- * Pre-flight check before persisting a directory to
- * `additionalDirectories`. Surfaces three classes of problem:
- *
- * 1. Hard reject: empty / sensitive / filesystem root → `ok: false`.
- * 2. Soft warn: directory contains adjacent `.env` / `.git` / `.ssh` /
- *    `credentials` / `node_modules/.cache` → `ok: true` + warnings.
- *
- * Renderer is expected to render warnings as a red banner with an
- * explicit "I understand" checkbox before enabling the persist button.
- *
- * NOTE: this only inspects the directory PATH itself. It does NOT do a
- * filesystem walk to count files — tree-size preview (§3 Layer 1 M3
- * point 4) is a separate pass at the renderer layer.
- */
+// Pre-flight check before persisting a directory to `additionalDirectories`. Surfaces three classes of problem: 1. Hard reject: empty / sensitive / filesystem root → `ok: false`. 2. Soft warn: directory contains adjacent `.env` / `.git` / `.ssh` / `credentials` / `node_modules/.cache` → `ok: true` + warnings. Renderer is expected to render warnings as a red banner with an explicit "I understand" checkbox before enabling the persist button. this only inspects the directory PATH itself. It does NOT do a filesystem walk to count files — tree-size preview (Layer 1 M3 point 4) is a separate pass at the renderer layer.
 export function validateDirectoryAddition(rawPath: string): ValidateDirectoryResult {
   const adjacencyWarnings: string[] = [];
   if (typeof rawPath !== "string" || rawPath.trim().length === 0) {
@@ -339,9 +187,7 @@ export function validateDirectoryAddition(rawPath: string): ValidateDirectoryRes
     };
   }
 
-  // Adjacency hints — pure string heuristics on the basename / path
-  // segments. We don't `readdir` the target; that is a renderer concern
-  // (preview) and would also be a TOCTOU surface.
+  // Adjacency hints — pure string heuristics on the basename / path segments. We don't `readdir` the target; that is a renderer concern (preview) and would also be a TOCTOU surface.
   const lowerFolded = normalizePolicySeparators(folded).toLowerCase();
   for (const basename of ADJACENCY_WARNING_BASENAMES) {
     if (
@@ -377,15 +223,7 @@ export function isFilesystemRootPath(foldedPath: string): boolean {
   return /^\/\/(?![?.]\/)[^/]+\/[^/]+$/i.test(trimmed);
 }
 
-/**
- * Assemble the live allow-list scope from defaults + user
- * additions, with Layer 0 sensitive paths filtered out.
- *
- * This is the canonical entry point used by the executor to construct
- * the `scope` argument to {@link isPathAllowed}. Order: defaults first,
- * then user additions (to keep the leaf-parent computation
- * deterministic).
- */
+// Assemble the live allow-list scope from defaults + user additions, with Layer 0 sensitive paths filtered out. This is the canonical entry point used by the executor to construct the `scope` argument to isPathAllowed. Order: defaults first, then user additions (to keep the leaf-parent computation deterministic).
 export function buildAllowedScope(
   userAdditions: readonly string[] | undefined,
   cwd: string = process.cwd(),
@@ -402,11 +240,7 @@ export function buildAllowedScope(
   return { directories };
 }
 
-/**
- * Assemble runtime filesystem roots for native tool sandbox checks. This is
- * intentionally separate from {@link buildAllowedScope}: Layer 1 matching uses
- * case-folded strings, while native tools need canonical OS paths.
- */
+// Assemble runtime filesystem roots for native tool sandbox checks. This is intentionally separate from buildAllowedScope: Layer 1 matching uses case-folded strings, while native tools need canonical OS paths.
 export function buildRuntimeAllowedDirectories(
   userAdditions: readonly string[] | undefined,
   cwd: string = process.cwd(),
@@ -423,5 +257,3 @@ export function buildRuntimeAllowedDirectories(
   }
   return directories;
 }
-
-// ─── helpers ─────────────────────────────────────────

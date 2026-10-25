@@ -1,10 +1,4 @@
-/**
- * Single source of truth for the file-picker deny-list. Imported by both
- * the renderer (`src/ui/renderer/types/attachments.ts`) and the main
- * process (`src/ipc/domains/attach.ts`) so the two sides cannot drift.
- *
- * Lowercase comparison.
- */
+/** Renderer and main share this picker deny-list; compare extensions in lowercase. */
 export const DENY_EXTENSIONS = [
   "exe",
   "bat",

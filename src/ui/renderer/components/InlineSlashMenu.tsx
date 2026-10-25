@@ -1,16 +1,5 @@
-/**
- * InlineSlashMenu — the caret-anchored dropdown for type-to-filter "/" usage.
- *
- * Rendered in a portal with `position: fixed`, anchored to the textarea box and
- * growing UPWARD (bottom pinned just above the textarea). Portaling sidesteps
- * the two `overflow-hidden` ancestors of the composer; anchoring to the box
- * (not the glyph) matches how chat composers surface slash menus and avoids the
- * need for caret-pixel measurement.
- *
- * Focus stays in the textarea — selection happens on `mousedown` (preventing
- * the default focus shift), and keyboard nav is driven by Composer.handleKeyDown
- * through the useInlineSlashMenu state. This component is purely presentational.
- */
+/** Portal past composer overflow clipping; retain textarea focus by selecting on mousedown and handling keyboard input in
+ * Composer. */
 import { useRef } from "react";
 import { createPortal } from "react-dom";
 import type { RefObject } from "react";

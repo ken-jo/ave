@@ -6,7 +6,7 @@ import { CHANNELS } from "../../contract/app-contract.js";
 import { stageLocalAgentPlugin } from "../../marketplace/content/store.js";
 import { deriveAgentPluginComponents } from "../../marketplace/content/agent-plugin-components.js";
 import { compareSemver } from "../../shared/semver-compare.js";
-import { isAsrtSandboxActive } from "../../permissions/asrt-sandbox.js";
+import { isPluginWorkerConfinementActive } from "../../permissions/asrt-sandbox.js";
 import type { ComponentConsent } from "../../shared/git-marketplace.js";
 import type { StudioConnectorConfirmation, StudioLocalPreview, StudioResult, StudioWriteRequest } from "../../shared/plugin-studio.js";
 import { PluginStudioStore } from "../../studio/store.js";
@@ -45,7 +45,6 @@ function result<T>(run: () => Promise<T>): Promise<StudioResult<T>> {
     message: error instanceof Error ? error.message : "Studio operation failed" }));
 }
 
-/** One host-renderer domain for draft operations and local package review. */
 export function registerPluginStudioHandlers(deps: IpcDeps, content: () => Promise<InstalledContentRuntime | null>): void {
   const store = new PluginStudioStore((serverId) => {
     if (!deps.mcpManager) throw new Error("Connector manager is unavailable");
@@ -80,7 +79,7 @@ export function registerPluginStudioHandlers(deps: IpcDeps, content: () => Promi
     return { previewId, name: staged.plan.name, version: staged.plan.version, description: manifest.description,
       files: files.map(({ path, data }) => ({ path, text: studioFileText(data) })),
       components: deriveAgentPluginComponents(files),
-      hookConfinement: isAsrtSandboxActive()
+      hookConfinement: isPluginWorkerConfinementActive()
         ? process.platform === "win32" ? "unavailable" : "sandboxed" : "user-permissions",
       treeDigest: staged.contentSha256, expiresAt: new Date(expires).toISOString() };
   };
@@ -195,7 +194,7 @@ export function registerPluginStudioHandlers(deps: IpcDeps, content: () => Promi
       if ("kind" in item) {
         if (item.kind !== "hook" || !Number.isInteger(item.index) || typeof item.digest !== "string"
           || components.hooks[item.index]?.digest !== item.digest || seenHooks.has(item.index)
-          || (isAsrtSandboxActive() && process.platform === "win32")) {
+          || (isPluginWorkerConfinementActive() && process.platform === "win32")) {
           throw new Error("Hook approval does not match the reviewed package or available confinement");
         }
         seenHooks.add(item.index);

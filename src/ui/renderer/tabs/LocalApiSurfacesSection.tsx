@@ -1,17 +1,4 @@
-/**
- * Local-owner controls for the loopback API and the A2A route families.
- *
- * All four gates are read as `settings || env` at boot, and all four already
- * had a settings key — what they did not have was anywhere to set it. A
- * packaged app cannot be launched with `AVE_LOCAL_API=1`, so for the user the
- * app ships to these were unreachable, and the CLI companion and every A2A
- * route with them.
- *
- * The switches write the settings key and nothing else. Because the host reads
- * them once at boot, the section says a change waits for the next launch
- * rather than implying the surface came up; and because the environment wins
- * over the saved value, it names any variable that is currently forcing one on.
- */
+/** Boot-only API gates require restart; show environment overrides beside the stored setting. */
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "../../../i18n/react.js";
 import { Switch } from "../../../components/ui/switch.js";
@@ -123,8 +110,7 @@ export function LocalApiSurfacesSection() {
   /** Where the inbound receiver is listening this launch, when it is. */
   const [receiverPort, setReceiverPort] = useState<number | null>(null);
 
-  // Read on its own: the runtime's state must not hide the switches, and a
-  // failed read of it claims nothing.
+  // Read on its own: the runtime's state must not hide the switches, and a failed read of it claims nothing.
   const readRemoteA2ARuntime = useCallback(() => {
     void getApi().remoteA2a.status().then((result) => {
       setRemoteA2AStartFailure(!result.ok && result.error === "a2a-remote-start-failed"
@@ -164,8 +150,8 @@ export function LocalApiSurfacesSection() {
   const toggle = useCallback(async (path: GateRow["path"], next: boolean) => {
     if (busy !== null) return;
     setBusy(path);
-    // Optimistic, then reverted on refusal: the switch is the only feedback
-    // the user gets for a change whose effect is a launch away.
+    // Optimistic, then reverted on refusal: the switch is the only feedback the user gets for a change whose effect is a
+    // launch away.
     setGates((current) => ({ ...current, [path]: next }));
     const result = await getApi().updateSettings(patchFor(path, next));
     if (isIpcErrorResult(result)) {

@@ -1,31 +1,6 @@
-/**
- * Token cost math — browser-safe, shared by the engine's usage accounting and
- * the renderer's cost surfaces so both price one request with one formula.
- *
- * Holds no prices. Who states a model's rates (a user correction, the model
- * catalog, or nobody) is decided in `shared/model-pricing.ts`; this module
- * turns rates and usage into USD:
- *   - prompt-size tiers replace the base rates for a whole request;
- *   - Anthropic bills prompt-cache reads and writes as additive lines
- *     (`anthropicCacheRates` derives missing cache rates at 0.1× / 1.25×
- *     input), everyone else counts the cache inside the prompt;
- *   - a reported reasoning subset of output is priced at the reasoning rate
- *     when one is stated.
- *
- * IMPORTANT: this module must stay pure — no `process.env`, no Node-only
- * imports.
- */
+/** Keep cost math pure and browser-safe so accounting and renderer surfaces use the same formula. */
 
-/**
- * The vendor classes a price correction can name and cost math distinguishes
- * (Anthropic's additive cache lines against everyone else's included cache),
- * in the order a picker should offer them. Any other vendor prices as
- * `openai-compatible`.
- *
- * One list: the type is derived from it and the membership test reads it, so a
- * vendor cannot be addable in the UI but unrecognised by `toPricingVendor`, or
- * vice versa.
- */
+/** The vendor list defines both picker order and accepted correction vendors; unknown vendors use openai-compatible pricing. */
 export const PRICING_VENDORS = [
   "claude",
   "openai",
@@ -45,11 +20,7 @@ export function toPricingVendor(vendor: string): PricingVendor {
     : "openai-compatible";
 }
 
-/**
- * A price tier: once a request's prompt exceeds `afterInputTokens`, the rates
- * it states replace the base rates for that whole request. A rate the tier
- * does not state keeps the base rate.
- */
+/** A crossed prompt tier replaces rates for the whole request; omitted rates retain base values. */
 export interface TokenRateTier {
   afterInputTokens: number;
   inputPer1M?: number;
@@ -62,46 +33,18 @@ export interface TokenRateTier {
 export interface TokenRates {
   inputPer1M: number;
   outputPer1M: number;
-  /**
-   * Cache read price ($/1M tokens). Anthropic bills prompt-cache hits as a
-   * separate additive line; OpenAI/Azure-compatible providers report cached
-   * tokens as a subset of prompt tokens and price that subset at this rate
-   * when published. Undefined → caller treats cache reads as ordinary input.
-   */
+  /** Cache-read rate in USD per million tokens; separate cache lines are additive, while included cache is split out of prompt usage. Undefined uses the input rate. */
   cacheReadPer1M?: number;
-  /**
-   * Cache write price ($/1M tokens). Anthropic only — 5m TTL ~1.25× input,
-   * 1h TTL ~2× input. This single field assumes the dominant TTL.
-   * Undefined → caller treats cache writes as ordinary input.
-   */
+  /** Cache-write rate in USD per million tokens; explicit rates override the default short-TTL ratio. Undefined uses the input rate. */
   cacheWritePer1M?: number;
-  /**
-   * Reasoning-token price ($/1M tokens), when the model bills reasoning apart
-   * from the rest of its output. The reasoning tokens a provider reports are
-   * part of the output count; they are priced at this rate and the remainder
-   * at `outputPer1M`. Undefined → reasoning is ordinary output.
-   */
+  /** Reasoning tokens are a subset of output; price that subset separately when a rate is stated. */
   reasoningPer1M?: number;
   /** A thinking-mode rate covers all output when the request reports positive reasoning tokens. */
   reasoningRateScope?: "output";
-  /** Prompt-size tiers, ascending by `afterInputTokens` (the model catalog's `cost.tiers`). */
   tiers?: readonly TokenRateTier[];
 }
 
-/**
- * Anthropic prompt cache per-1M rates resolved against explicit rates. When
- * the rates omit `cacheReadPer1M` / `cacheWritePer1M`, the publicly-documented
- * Anthropic ratios are applied:
- *
- *   - read  = 0.1× input    (Sonnet $3 → $0.30, Opus $15 → $1.50, Haiku $1 → $0.10)
- *   - write = 1.25× input   (5m TTL — same ratio across Sonnet/Opus/Haiku)
- *
- * 1h-TTL deployments (write rate 2× input) require an explicit
- * `cacheWritePer1M` in the rates. This helper is the single place these
- * ratios are encoded; engine cost math (`engine/llm/pricing.ts:computeCost`)
- * and the renderer billing badge (`TokenCostBadge.tsx`) both consume it so the
- * published ratios stay in sync without duplication.
- */
+/** Missing cache rates use 0.1 times input for reads and 1.25 times input for short-TTL writes; longer TTLs require an explicit write rate. */
 export function anthropicCacheRates(
   pricing: Pick<TokenRates, "inputPer1M" | "cacheReadPer1M" | "cacheWritePer1M">,
 ): { read: number; write: number } {
@@ -116,23 +59,10 @@ export interface UsageForCost {
   outputTokens: number;
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
-  /**
-   * The part of `outputTokens` the provider reports as reasoning (AI SDK
-   * `outputTokenDetails.reasoningTokens`). Priced at `reasoningPer1M` when the
-   * rates state one; otherwise it is ordinary output.
-   */
   reasoningTokens?: number;
 }
 
-/**
- * Normalize AI SDK v6 usage into the provider-cost contract above.
- *
- * AI SDK reports `inputTokens` as total prompt tokens and puts cache details
- * under `inputTokenDetails`. Anthropic cost math needs fresh input plus
- * additive cache lines, while OpenAI/Gemini style providers already include
- * cache inside prompt tokens. Their cached subset is split inside
- * `computeCost`, not at this normalization boundary.
- */
+/** Normalize additive-cache usage to fresh input plus cache lines; leave included-cache usage inside prompt tokens until computeCost. */
 export function normalizeAiSdkUsageForCost<T extends UsageForCost | undefined>(
   usage: T,
   vendor: string,
@@ -147,25 +77,14 @@ export function normalizeAiSdkUsageForCost<T extends UsageForCost | undefined>(
   };
 }
 
-/**
- * The prompt size a request's price tier is chosen by: every prompt token the
- * provider read, cached or not. Cache-additive usage (after
- * {@link normalizeAiSdkUsageForCost}) counts fresh input apart from the cache
- * lines, so they are added back; everyone else reports the cache inside the
- * prompt count already.
- */
+/** Tier selection counts all prompt tokens, including cache; add separate cache lines back to fresh input. */
 export function promptTokensForTier(usage: UsageForCost, vendor: string): number {
   const input = nonNegative(usage.inputTokens);
   if (toPricingVendor(vendor) !== "claude") return input;
   return input + nonNegative(usage.cacheReadTokens) + nonNegative(usage.cacheWriteTokens);
 }
 
-/**
- * The rates in force for a request whose prompt is `promptTokens` long: the
- * highest tier the prompt exceeds (strictly — a prompt exactly at the boundary
- * is billed at the rates below it), with any rate the tier does not state kept
- * from the base. No tiers, or a prompt within the first, is the base.
- */
+/** Use the highest strictly exceeded threshold; equality stays in the lower tier and omitted rates keep base values. */
 export function ratesForPrompt(rates: TokenRates, promptTokens: number): TokenRates {
   let tier: TokenRateTier | undefined;
   for (const candidate of rates.tiers ?? []) {
@@ -184,26 +103,11 @@ export function ratesForPrompt(rates: TokenRates, promptTokens: number): TokenRa
 }
 
 function nonNegative(n: number | undefined): number {
-  // Token usage is monotonic, so a negative or non-finite value is malformed
-  // upstream data; letting it through would produce negative USD and pollute
-  // the usage dashboard.
+  // Reject negative or non-finite usage to prevent malformed upstream data from producing negative costs.
   return typeof n === "number" && Number.isFinite(n) && n > 0 ? n : 0;
 }
 
-/**
- * Compute cost (USD) for one request's usage against per-1M rates.
- *
- * Vendor argument selects how `inputTokens` and the cache fields combine —
- * see {@link UsageForCost} for the semantic asymmetry between Anthropic
- * (cache-additive) and everyone else (cache-included). The price tier is
- * chosen by the request's whole prompt ({@link promptTokensForTier}), so a
- * caller must price each provider request on its own: a turn's sum of rounds
- * is not one prompt.
- *
- * Lives here (not in `engine/llm/pricing.ts`) so renderer-side billing UI
- * (`TokenCostBadge`) consumes the same formula without pulling Node-only
- * imports. The engine module re-exports for back-compat.
- */
+/** Price each provider request separately; a turn total is not one prompt for tier selection. */
 export function computeCost(
   usage: UsageForCost,
   pricing: TokenRates,
@@ -232,10 +136,7 @@ export function computeCost(
       outputCost()
     );
   }
-  // The provider's prompt count already includes the cache, so adding the
-  // cache lines on top would double-count. Split the prompt into fresh, cache
-  // read and cache write instead, so a published cache rate shows in every
-  // cost surface; a cache rate the rates do not state is the input rate.
+  // Included cache must be split from prompt usage, never added on top; absent cache rates use the input rate.
   const cachedRead = Math.min(input, cacheRead);
   const cachedWrite = Math.min(input - cachedRead, cacheWrite);
   const freshInput = input - cachedRead - cachedWrite;

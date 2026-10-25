@@ -1,18 +1,4 @@
-/**
- * `ave:home-docs:*` — the `~/.ave` reference docs and their pending packaged
- * updates, as something the user can act on.
- *
- * The seeder has always left a `<file>.new` marker beside a doc the user
- * edited, and boot has always fired one notification about it. Nothing read
- * those markers back, so the only way to answer one was to open the directory
- * and diff two files by hand. These handlers are that answer: read the offer,
- * take it, keep your own, or have the model combine the two.
- *
- * Only `AGENTS.md` accepts an action. Markers for skills and prompts are
- * listed so the user can see they exist; acting on one is a different decision
- * (a skill is loaded on demand, not composed into every turn) and it is not
- * made here by accident.
- */
+// Expose pending packaged-document updates as explicit keep, apply, or merge actions.
 import { ipcMain } from "electron";
 import { auditUnauthorized, UNAUTHORIZED_FRAME, validateHostRendererSender } from "../gated.js";
 import { CHANNELS } from "../../contract/app-contract.js";
@@ -35,19 +21,15 @@ import type { AuditLogger } from "../../audit/audit-logger.js";
 
 const log = createLogger("home-docs-ipc");
 
-/** How a `~/.ave` path is spelled for the user, on every platform. */
 function displayPath(relativePath: string): string {
   return `~/.ave/${relativePath.split("\\").join("/")}`;
 }
 
 interface HomeDocUpgradeMarkerView {
-  /** Path relative to `~/.ave`, and the handle every action takes. */
   markerPath: string;
-  /** The live doc this offer would replace, relative to `~/.ave`. */
   sourcePath: string;
   markerDisplayPath: string;
   sourceDisplayPath: string;
-  /** Whether this marker's actions are wired. Only the agent context's are. */
   actionable: boolean;
 }
 
@@ -55,7 +37,6 @@ export interface HomeDocsStatus {
   agentsDisplayPath: string;
   customDisplayPath: string;
   markers: HomeDocUpgradeMarkerView[];
-  /** A merge waiting for review, or `null`. Survives an app restart. */
   mergedContent: string | null;
 }
 
@@ -78,9 +59,7 @@ export function registerHomeDocsHandlers(deps: IpcDeps): void {
       auditUnauthorized(auditLogger, CHANNELS.homeDocs.upgradeMarkersList, event);
       return UNAUTHORIZED_FRAME;
     }
-    // Re-scanned rather than read off the boot snapshot: the user may have
-    // answered several offers since launch, and a stale list would let them
-    // apply a marker that is already gone.
+    // Re-scan markers on each request; the user may have resolved offers since boot.
     const status: HomeDocsStatus = {
       agentsDisplayPath: displayPath(AGENTS_DOC_NAME),
       customDisplayPath: displayPath(AGENTS_CUSTOM_DOC_NAME),
@@ -130,11 +109,7 @@ export function registerHomeDocsHandlers(deps: IpcDeps): void {
     if (content === null) return { ok: false, error: "unknown-upgrade-marker" } as const;
 
     try {
-      // Keep-latest is what makes this replacement safe to perform at all: the
-      // user's own sentences move to `agents.custom.md` first and the prompt
-      // keeps reading them. Bytes this app shipped are not their content, so
-      // moving those would hand the model the same reference twice with one
-      // copy mislabelled as the user's own instruction.
+      // Preserve user sentences in agents.custom.md before replacement; do not duplicate shipped reference text there.
       const current = memoryManager.getAgentsMd();
       const movedToCustom =
         keepLatest() && current.trim().length > 0 && !isShippedAgentsMdContent(current);
@@ -201,10 +176,7 @@ export function registerHomeDocsHandlers(deps: IpcDeps): void {
       return { ok: false, error: "invalid-marker-path" } as const;
     }
 
-    // What the merge is BETWEEN depends on where the user's content currently
-    // lives. Under keep-latest it is `agents.custom.md` against the packaged
-    // doc; without it, the user's edits are the live doc itself, so a merge
-    // only means something when a marker offers a newer version to merge with.
+    // Merge against custom content under keep-latest; otherwise require a newer marker for the edited live doc.
     const packaged = typeof markerPath === "string"
       ? readAveHomeDocUpgradeMarker(markerPath)
       : memoryManager.getAgentsMd();
@@ -250,9 +222,7 @@ export function registerHomeDocsHandlers(deps: IpcDeps): void {
     const merged = mergeService.readMerged();
     if (merged === null) return { ok: false, error: "no-merge-artifact" } as const;
 
-    // Compare-and-swap against what the caller last saw, the same guard the
-    // memory-index editor uses: the merge waited on a provider call, and an
-    // edit that landed during that wait must not vanish under the answer.
+    // Compare-and-swap against the reviewed content so provider latency cannot overwrite concurrent edits.
     const applied = keepLatest()
       ? await memoryManager.updateAgentsCustomMdIfUnchanged(expectedContent, merged)
       : await memoryManager.updateAgentsMdIfUnchanged(expectedContent, merged);

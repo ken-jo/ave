@@ -12,11 +12,7 @@ vi.mock("../managed-child-processes.js", () => ({ spawnManaged: vi.fn() }));
 
 const HOST = process.platform;
 const HOST_EXEC_PATH = process.execPath;
-// Copies standard input to both standard output and standard error. Node gives
-// a child socket pairs, not pipes, for "pipe" stdio; on Linux reopening one by
-// path (`tee /dev/stderr` -> /proc/self/fd/2) fails with ENXIO, so the program
-// must write to the inherited descriptor. GNU sed writes `w /dev/stderr` to
-// descriptor 2; the macOS sed opens /dev/stderr, which duplicates it.
+// Node pipe stdio uses socket pairs; Linux reopening /dev/stderr can fail with ENXIO, so write the inherited descriptor.
 const BOTH_STREAMS = { command: "/usr/bin/sed", args: ["-n", "-e", "p", "-e", "w /dev/stderr"] } as const;
 const roots: string[] = [];
 
@@ -336,6 +332,20 @@ describe.skipIf(HOST === "win32" || (HOST !== "darwin" && typeof process.execve 
     expect(result.error).toBeUndefined();
     expect(result.status).toBe(0);
     expect(result.stdout).toBe(input);
+  });
+
+  // The flag is a property of the open file description, so the program reads what the bootstrap left: Electron 45 opens stderr while it starts, which
+  // sets O_NONBLOCK, and execve keeps it. Linux reports it in fdinfo (octal).
+  it.runIf(HOST === "linux")("hands the native program blocking standard output and error", async () => {
+    const O_NONBLOCK = 0o4000;
+    const result = await runPlan(spawnPlan("/bin/sh", ["-c", "for fd in 1 2; do grep '^flags:' /proc/self/fdinfo/$fd; done"], {
+      env: {}, stdio: ["pipe", "pipe", "pipe"],
+    }));
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(0);
+    const flags = result.stdout.trim().split("\n").map((line) => Number.parseInt(line.replace(/^flags:\s*/u, ""), 8));
+    expect(flags).toHaveLength(2);
+    expect(flags.map((value) => (value & O_NONBLOCK) === 0)).toEqual([true, true]);
   });
 
   it("preserves the requested working directory", async () => {

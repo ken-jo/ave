@@ -6,10 +6,8 @@ import { ToolApprovalContent } from "../ToolApprovalContent.js";
 import type { ReviewerSuggestion } from "../../hooks/use-permission-signals.js";
 import type { ApprovalRequest } from "../../types.js";
 
-/**
- * The reviewer suggestion is offered where the user is already deciding, so it
- * is answerable in the same place and the same gesture as the ask itself.
- */
+/** The reviewer suggestion is offered where the user is already deciding, so it is answerable in the same place and the
+ * same gesture as the ask itself. */
 function approvalRequest(
   parentEscalation?: ApprovalRequest["parentEscalation"],
 ): ApprovalRequest {
@@ -63,8 +61,8 @@ describe("ToolApprovalContent reviewer-suggestion band", () => {
   });
 
   it("says which of the two patterns the host saw", () => {
-    // "always allow" and "many one-off approvals" are different habits, and the
-    // sentence that names the wrong one reads as the app guessing.
+    // "always allow" and "many one-off approvals" are different habits, and the sentence that names the wrong one reads as the
+    // app guessing.
     render(
       <ToolApprovalContent
         conversationLabel="conversation"
@@ -133,8 +131,7 @@ describe("ToolApprovalContent reviewer-suggestion band", () => {
   });
 
   it("takes second place to the escalation band that accounts for this ask", () => {
-    // Request context the user needs in order to decide comes before standing
-    // advice they may ignore.
+    // Request context the user needs in order to decide comes before standing advice they may ignore.
     render(
       <ToolApprovalContent
         conversationLabel="conversation"

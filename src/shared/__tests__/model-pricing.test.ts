@@ -1,11 +1,4 @@
-/**
- * Pricing through the model catalog (issue #2501, slice 5): the order of the
- * price sources, what each records, prompt-size tiers at their boundaries,
- * cache and reasoning rates, and the paths where no price is known.
- *
- * Runs against the bundled snapshot the test setup installs, so the figures
- * below are the snapshot of 2026-10-12's.
- */
+/** Rates come from the bundled snapshot; review fixtures when it changes. */
 import { describe, expect, it } from "vitest";
 import { knownModelPricing, parseResolvedModelPricing, resolveModelPricing } from "../model-pricing.js";
 import { computeCost, promptTokensForTier, ratesForPrompt, type TokenRates } from "../pricing-data.js";
@@ -41,14 +34,12 @@ describe("parseResolvedModelPricing", () => {
   });
 
   it("reads back a price an older build recorded from the hand-kept table", () => {
-    // Builds before slice 7 priced dated Claude ids from the table; their
-    // persisted turns keep that answer.
+    // Persisted turns retain their recorded table-price provenance.
     const recorded = { source: "pricing-catalog", rates: { inputPer1M: 1, outputPer1M: 5 } };
     expect(parseResolvedModelPricing(recorded)).toEqual(recorded);
   });
 
   it("reads an older build's long-context surcharge as the tier it priced as", () => {
-    // The table stated gpt-5.4's long-context price as multipliers past 272K.
     const recorded = parseResolvedModelPricing({
       source: "pricing-catalog",
       rates: { inputPer1M: 2.5, outputPer1M: 15, cacheReadPer1M: 0.25,
@@ -60,7 +51,6 @@ describe("parseResolvedModelPricing", () => {
         tiers: [{ afterInputTokens: 272_000, inputPer1M: 5, outputPer1M: 22.5, cacheReadPer1M: 0.5, cacheWritePer1M: 5 }] },
     });
     const tableRates = knownModelPricing(recorded!)!.rates;
-    // The figures the surcharge form produced (issue #900), cache included.
     expect(computeCost({ inputTokens: 272_000, outputTokens: 10_000 }, tableRates, "openai")).toBeCloseTo(0.83, 5);
     expect(computeCost({ inputTokens: 300_000, outputTokens: 10_000 }, tableRates, "openai")).toBeCloseTo(1.725, 5);
     expect(computeCost({ inputTokens: 300_000, outputTokens: 0, cacheReadTokens: 100_000, cacheWriteTokens: 50_000 }, tableRates, "openai"))
@@ -113,9 +103,7 @@ describe("resolveModelPricing — source order and provenance", () => {
     "claude-3-sonnet-20240229",
     "claude-3-haiku-20240307",
   ])("answers unknown for the retired id %s the catalog does not list", (model) => {
-    // The hand-kept table priced these before slice 7. The catalog's anthropic
-    // provider lists no entry documented to be the same model, so no alias
-    // joins them: the price is unknown, never $0, until a correction states it.
+    // Undocumented aliases have unknown prices, never zero.
     expect(resolveModelPricing("claude", model)).toEqual({ source: "unknown" });
   });
 
@@ -130,7 +118,6 @@ describe("resolveModelPricing — source order and provenance", () => {
   });
 
   it("treats a catalog entry with no price as unknown, not free", () => {
-    // `gpt-image-1` is listed with no cost at all.
     expect(activeModelCatalog().providers.openai?.models["gpt-image-1"]?.cost).toBeUndefined();
     expect(resolveModelPricing("openai", "gpt-image-1")).toEqual({ source: "unknown" });
   });
@@ -141,8 +128,7 @@ describe("resolveModelPricing — source order and provenance", () => {
   });
 
   it("does not price a self-hosted route from a public entry, even a named one", () => {
-    // `catalogModel` names an endpoint's model for its limits; the public
-    // price is not what the user's own endpoint costs.
+    // A named catalog entry supplies limits, not the user endpoint’s price.
     expect(CATALOG_PROVIDERS_BY_VENDOR["openai-compatible"]).toEqual([]);
     expect(resolveModelPricing("openai-compatible", "gpt-5.4").source).toBe("unknown");
   });
@@ -163,7 +149,7 @@ describe("resolveModelPricing — source order and provenance", () => {
 describe("computeCost — prompt-size tiers", () => {
   it("uses base rates through 100,000 prompt tokens and the tier above", () => {
     const haiku = rates("claude", "claude-haiku-5-5");
-    // Cache-additive usage counts fresh input apart from the cache; the tier reads the whole prompt.
+    // Tier size includes cached input even when usage reports fresh input separately.
     const at = { inputTokens: 60_000, cacheReadTokens: 40_000, outputTokens: MILLION };
     const over = { ...at, inputTokens: 60_001 };
     expect(promptTokensForTier(at, "claude")).toBe(100_000);
@@ -179,7 +165,6 @@ describe("computeCost — prompt-size tiers", () => {
 
   it("chooses a cache-included route's tier by the whole prompt", () => {
     const pro = rates("gemini", "gemini-2.5-pro");
-    // 150K fresh + 60K cached = 210K prompt: over 200K, so the tier's rates.
     const usage = { inputTokens: 210_000, cacheReadTokens: 60_000, outputTokens: 0 };
     expect(computeCost(usage, pro, "gemini")).toBeCloseTo(0.15 * 2.5 + 0.06 * 0.25, 9);
   });
@@ -221,7 +206,6 @@ describe("computeCost — cache and reasoning rates", () => {
 
   it("prices cache reads at the published rate on a cache-included route", () => {
     const pro = rates("gemini", "gemini-2.5-pro");
-    // 100K prompt, half of it cached: within the base tier.
     expect(computeCost({ inputTokens: 100_000, cacheReadTokens: 50_000, outputTokens: 0 }, pro, "gemini"))
       .toBeCloseTo(0.05 * 1.25 + 0.05 * 0.125, 9);
   });
@@ -229,7 +213,6 @@ describe("computeCost — cache and reasoning rates", () => {
   it("prices a reported cache write at the catalog's write rate on a cache-included route", () => {
     const gpt = rates("openai", "gpt-5.6");
     expect(gpt.cacheWritePer1M).toBe(5);
-    // 200K prompt: 100K fresh, 50K read from cache, 50K written to it — within the base tier.
     expect(computeCost({ inputTokens: 200_000, cacheReadTokens: 50_000, cacheWriteTokens: 50_000, outputTokens: 0 }, gpt, "openai"))
       .toBeCloseTo(0.1 * 4 + 0.05 * 0.4 + 0.05 * 5, 9);
   });
@@ -275,7 +258,6 @@ describe("resolveModelPricing — the endpoint's own price report", () => {
   });
 
   it("prices a route that does not establish the catalog's model from its report, not the name match", () => {
-    // An Azure deployment named like a catalog model, and a custom OpenAI endpoint.
     expect(resolveModelPricing("azure-foundry", "gpt-4o", [], { reported: report })).toMatchObject({ source: "endpoint-report" });
     expect(resolveModelPricing("openai", "gpt-5.4", [], { baseUrl: "https://proxy.invalid/v1", reported: report }))
       .toMatchObject({ source: "endpoint-report" });

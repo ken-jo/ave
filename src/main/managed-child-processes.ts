@@ -42,18 +42,7 @@ export interface TrackManagedChildProcessOptions {
   killProcessGroup?: boolean;
 }
 
-/**
- * Spawn a child process and register it with the managed-children
- * tracker in one step. Prefer this helper over raw `spawn(...) +
- * trackManagedChildProcess(...)` so that newly added callsites cannot
- * silently regress force-kill coverage on Quit.
- *
- * `trackOptions.killProcessGroup` defaults to true when `options.detached`
- * is true on POSIX — detached children form their own process group that
- * tree-kill via SIGTERM/SIGKILL does not reach by default. Callers can
- * still override the inference (e.g. for child processes whose lifetime
- * is fully managed by an external supervisor).
- */
+// Spawn and track together to preserve quit cleanup; detached POSIX children default to group-kill unless an external supervisor owns them.
 export function spawnManaged(
   command: string,
   args: ReadonlyArray<string>,
@@ -62,11 +51,9 @@ export function spawnManaged(
 ): ChildProcess {
   const label = trackOptions.label ?? "child-process";
   assertManagedChildProcessAdmissionOpen(label);
-  // ESLint-style guardrail: callers MUST go through this helper. Direct
-  // `spawn()` imports outside of `managed-child-processes.ts` should be
-  // flagged by a future lint rule (`no-restricted-imports` allowlisting
-  // this module only).
-  const child = spawn(command, args, spawnOptions);
+  // ESLint-style guardrail: callers MUST go through this helper. Direct `spawn()` imports outside of `managed-child-processes.ts` should be flagged by a
+  // future lint rule (`no-restricted-imports` allowlisting this module only).
+  const child = spawn(command, args, { windowsHide: true, ...spawnOptions });
   const inferredGroupKill =
     spawnOptions.detached === true && process.platform !== "win32";
   trackManagedChildProcess(child, {
@@ -110,8 +97,7 @@ export function trackManagedChildProcess(
     entry.dispose();
   };
   const onError = (): void => {
-    // A spawn failure has no live pid and will never emit a meaningful exit.
-    // Signal-delivery errors on an already spawned process are not termination
+    // A spawn failure has no live pid and will never emit a meaningful exit. Signal-delivery errors on an already spawned process are not termination
     // evidence; retain those children for the shutdown force-kill/drain sweep.
     if (typeof child.pid !== "number" || child.pid <= 0) entry.dispose();
   };
@@ -148,13 +134,7 @@ export function getManagedChildProcessCount(): number {
   return managedChildren.size;
 }
 
-/**
- * Resolve the process group id for a tracked child. Returns `undefined`
- * on Windows (where the concept does not apply) or when the caller did
- * not opt into group-kill semantics. The id is the same as the child pid
- * because `spawn(..., { detached: true })` makes the child the leader of
- * a new process group.
- */
+// Detached POSIX children lead their own process group; Windows and non-group-kill callers have no group ID.
 function resolveProcessGroupId(
   child: ChildProcess,
   options: TrackManagedChildProcessOptions,
@@ -165,8 +145,7 @@ function resolveProcessGroupId(
   return child.pid;
 }
 
-// Emergency shutdown may be followed immediately by process exit. It cannot
-// depend on another event-loop turn; ordinary cancellation uses the async path.
+// Emergency shutdown may be followed immediately by process exit. It cannot depend on another event-loop turn; ordinary cancellation uses the async path.
 export function forceKillManagedChildProcesses(reason: string): number {
   let killed = 0;
   let directChildCount = 0;
@@ -193,9 +172,7 @@ export function forceKillManagedChildProcesses(reason: string): number {
       killed += 1;
       log.warn({ pid: pid ?? null, label, killProcessGroup, reason }, "shutdown: force killed managed child process");
     } catch (err) {
-      // ESRCH = already dead = expected (silently dispose).
-      // EPERM = unkillable foreign uid = real problem (log error).
-      // Anything else = unknown filesystem/kernel state (log warn).
+      // ESRCH = already dead = expected (silently dispose). EPERM = unkillable foreign uid = real problem (log error). Anything else = unknown filesystem/kernel state (log warn).
       const code = (err as NodeJS.ErrnoException).code;
       const logFields = {
         pid: child.pid ?? null,
@@ -206,8 +183,7 @@ export function forceKillManagedChildProcesses(reason: string): number {
         err: errorMessage(err),
       };
       if (code === "ESRCH") {
-        // Already gone — count it as effectively killed for accounting,
-        // do not pollute the warn channel.
+        // Already gone — count it as effectively killed for accounting, do not pollute the warn channel.
         killed += 1;
       } else if (code === "EPERM") {
         log.error(logFields, "shutdown: managed child process force kill blocked by EPERM");
@@ -230,12 +206,7 @@ export interface ManagedChildDrainResult {
   unresolvedCount: number;
 }
 
-/**
- * Graceful-shutdown backstop: force-kill every child that remained after its
- * runtime stop hook, then wait a bounded interval for definitive exit/close.
- * Unlike the emergency synchronous sweep, entries stay owned until their
- * lifecycle event fires so ASRT and disposable-HOME finalizers can run first.
- */
+// Force-kill remaining children but retain ownership until bounded exit/close waits finish, allowing confinement and disposable-HOME finalizers to run.
 export async function forceKillAndDrainManagedChildProcesses(
   reason: string,
   timeoutMs = 1_000,
@@ -325,18 +296,7 @@ export async function forceKillAndDrainManagedChildProcesses(
   return { killedCount, unresolvedCount: unresolved.length };
 }
 
-/**
- * Terminate one tracked child and its descendants/process group. On Windows,
- * await the returned completion before releasing resources owned by the tree.
- * An abort or cancel resolves when tree termination settles, taking up to about
- * 2 × `TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs` in the worst case.
- *
- * Long-running authentication processes are cancelled independently of app
- * shutdown, so relying on the global shutdown sweep would leave a provider
- * browser/device flow alive after an explicit user cancellation or timeout.
- * This intentionally uses the exact same tree-kill semantics as the shutdown
- * path and never forwards child output into the log.
- */
+// Await Windows tree termination before releasing owned resources; cancellation has the same bounded tree-kill semantics as shutdown.
 export function forceKillManagedChildProcess(child: ChildProcess, reason: string): void | Promise<void> {
   const pending = pendingTreeKills.get(child);
   const entry = [...managedChildren].find((candidate) => candidate.child === child);
@@ -363,8 +323,7 @@ export function forceKillManagedChildProcess(child: ChildProcess, reason: string
   const finish = (): void => {
     if (entry && managedChildren.has(entry)) {
       if (entry.processGroupId !== undefined && processGroupExists(entry.processGroupId)) {
-        // Signal delivery is not proof of termination, including EPERM failures.
-        // Keep the original group handle until disappearance is observed.
+        // Signal delivery is not proof of termination, including EPERM failures. Keep the original group handle until disappearance is observed.
         scheduleProcessGroupDisposal(entry);
       } else if (process.platform !== "win32" || !isKillable(entry) || (child.pid ?? 0) <= 0) {
         entry.dispose();
@@ -374,8 +333,7 @@ export function forceKillManagedChildProcess(child: ChildProcess, reason: string
   try {
     const completion = pending ?? forceKillProcessTree(child, entry?.killProcessGroup ?? false, entry?.processGroupId);
     if (completion) {
-      // This public boundary always handles failures, including fire-and-forget
-      // transport callbacks. Awaiters observe completion without rejection leaks.
+      // This public boundary always handles failures, including fire-and-forget transport callbacks. Awaiters observe completion without rejection leaks.
       const handled = completion.then(finish, (err: unknown) => { handleError(err); finish(); });
       pendingTreeKills.set(child, handled);
       void handled.then(() => {
@@ -412,8 +370,7 @@ function scheduleProcessGroupDisposal(entry: ManagedChildProcess): void {
     }
     const elapsed = Date.now() - (entry.disposalStartedAt ?? Date.now());
     if (elapsed >= PROCESS_GROUP_RETENTION_WARNING_MS && !entry.retentionWarningEmitted) {
-      // Root exit does not end the lifetime of its surviving descendants.
-      // Warn once while retaining cancellation and shutdown ownership.
+      // Root exit does not end the lifetime of its surviving descendants. Warn once while retaining cancellation and shutdown ownership.
       entry.retentionWarningEmitted = true;
       log.warn({
         label: entry.label,
@@ -429,19 +386,7 @@ function scheduleProcessGroupDisposal(entry: ManagedChildProcess): void {
   entry.disposeTimer.unref?.();
 }
 
-/**
- * Probe whether a detached process group is still around.
- *
- * `process.kill(-pgid, 0)` returns iff signal 0 was delivered successfully.
- * Errors map as:
- *   - ESRCH → group is gone (true negative)
- *   - EPERM → group exists but is owned by a foreign uid (still around,
- *     conservatively keep polling)
- *   - anything else (EINVAL on some BSDs, generic Error from NaN pid) →
- *     treat as "still around" so we err on the side of completing the
- *     disposal poll rather than prematurely freeing the entry while the
- *     group is actually alive.
- */
+// Only ESRCH proves a group is gone; permission and unexpected probe errors conservatively keep disposal polling.
 function processGroupExists(processGroupId: number): boolean {
   try {
     process.kill(-processGroupId, 0);
@@ -505,8 +450,7 @@ function forceKillProcessTree(
   }
   const pid = child.pid;
   const completion = (async () => {
-    // No runtime Windows descendant snapshot is available. Retry the full tree
-    // before terminating the root, which would lose its ancestry information.
+    // No runtime Windows descendant snapshot is available. Retry the full tree before terminating the root, which would lose its ancestry information.
     for (let attempt = 1; attempt <= 2; attempt += 1) {
       if (attempt > 1 && (child.exitCode != null || child.signalCode != null)) break;
       const result = await runWindowsTreeKill(pid);

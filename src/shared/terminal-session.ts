@@ -27,17 +27,13 @@ export type TerminalDataEvent = TerminalSessionRef & { readonly chunk: string };
 export type TerminalExitEvent = TerminalSessionRef & { readonly exitCode: number; readonly signal?: number };
 
 export interface TerminalApi {
-  /** Idempotent per lane; an existing session retains its cwd and geometry.
-   * Replay events arrive before the reply identifies their incarnation.
-   * Manual reserves logical ownership; Agent requires that existing tab. */
+  /** Existing lane sessions retain cwd and geometry; replay can precede the incarnation reply. Manual reserves ownership, while Agent requires an existing tab. */
   spawn(request: TerminalSpawnRequest): Promise<TerminalSpawnResult>;
   /** Input, resize and block reads reject a replaced/closed incarnation. */
   input(ref: TerminalSessionRef, data: string): Promise<TerminalMutationResult>;
   resize(ref: TerminalSessionRef, cols: number, rows: number): Promise<TerminalMutationResult>;
-  /** Trusted tab close: cancel pending launches and terminate BOTH lanes.
-   * It addresses the logical tab, intentionally including its current shells. */
+  /** Trusted tab closure cancels pending launches and terminates both lanes by logical tab ID. */
   kill(tabId: string): Promise<TerminalMutationResult>;
-  /** integrated is the same observation as session.shellIntegration. */
   listBlocks(ref: TerminalSessionRef): Promise<
     | { readonly ok: true; readonly session: TerminalSessionInfo; readonly integrated: boolean; readonly blocks: TerminalBlockSummary[] }
     | { readonly ok: false; readonly error: string }

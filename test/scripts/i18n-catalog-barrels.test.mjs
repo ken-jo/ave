@@ -1,13 +1,4 @@
-/**
- * Self-test for the i18n barrel gate.
- *
- * The gate exists because the committed barrels had silently stopped matching
- * their assembler: a fragment's import and spread lines were hand-inserted at
- * two different wrong positions in the same file, which no key-set validation
- * could see. A gate nobody has watched fail is a gate nobody can trust, so this
- * pins both outcomes — and, more importantly, pins that the gate NOTICES a
- * fragment that the barrels do not account for.
- */
+// Key sets cannot detect barrel order; include both positive and negative order fixtures.
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -16,7 +7,6 @@ import test from "node:test";
 import { buildI18nCatalogArtifacts } from "../../scripts/i18n-catalog-artifacts.mjs";
 import { findDivergentBarrels } from "../../scripts/check-i18n-catalog-barrels.mjs";
 
-/** A throwaway `src/i18n/messages` tree holding the named fragments. */
 function fixtureMessagesDir(fragmentNames) {
   const root = mkdtempSync(join(tmpdir(), "ave-i18n-barrels-"));
   mkdirSync(join(root, "generated"));
@@ -31,7 +21,6 @@ function fixtureMessagesDir(fragmentNames) {
   return root;
 }
 
-/** Write the assembler's output, i.e. put the fixture in its correct state. */
 function assemble(root) {
   for (const { path, content } of buildI18nCatalogArtifacts(root).artifacts) {
     writeFileSync(path, content, "utf-8");
@@ -52,8 +41,7 @@ test("passes when the barrels are what the assembler writes", () => {
 });
 
 test("fails when a barrel is hand-edited into the wrong fragment order", () => {
-  // The exact shape of the defect this gate was written for: the fragment is
-  // present and the key set is unchanged, only its POSITION moved.
+  // Reordering alone leaves the key set unchanged.
   const root = fixtureMessagesDir(["alpha", "beta", "gamma"]);
   try {
     assemble(root);
@@ -81,8 +69,6 @@ test("fails when a new fragment is not reflected in the barrels", () => {
     assemble(root);
     assert.deepEqual(findDivergentBarrels(root).divergent, []);
 
-    // Someone adds a surface and forgets to re-run the assembler. Both barrels
-    // are now short a fragment.
     writeFileSync(
       join(root, "generated", "omega.ts"),
       'export const en = { "omega.key": "text" } as const;\n'
@@ -127,9 +113,7 @@ test("reports a missing barrel instead of treating it as a match", () => {
 });
 
 test("orders fragments by code unit, independent of directory order", () => {
-  // `readdirSync` order is not guaranteed; the sort is what makes the output
-  // reproducible. Names chosen so case and code-unit order disagree with a
-  // case-insensitive reading: "Zulu" (0x5a) sorts before "alpha" (0x61).
+  // Filesystem order is unspecified; code-unit order places Z before a.
   const root = fixtureMessagesDir(["alpha", "Zulu", "beta"]);
   try {
     assert.deepEqual(buildI18nCatalogArtifacts(root).fragments, ["Zulu", "alpha", "beta"]);

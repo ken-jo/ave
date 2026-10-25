@@ -75,9 +75,7 @@ function sharedLoopDeps() {
 
 describe("subscription chat boot wiring", () => {
   it("forwards the boot-configured tracer through every loop factory", () => {
-    // The factories copy deps by name. A tracer handed over as a spread key
-    // passed TypeScript and reached no loop — the packaged app wrote AI SDK
-    // spans with no `ave.turn` parent while this suite stayed green.
+    // Assert tracing at the loop boundary; a spread dependency can typecheck without reaching a loop.
     const tracer = { startActiveSpan: vi.fn(), startSpan: vi.fn() };
     const shared = sharedLoopDeps();
 

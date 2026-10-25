@@ -1,3 +1,4 @@
+import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
 import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll, vi } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import {
@@ -56,13 +57,12 @@ function ctx(): ToolExecutionContext {
   return { cwd: workDir, extraAllowedDirectories: [], metadata: { sessionId } };
 }
 
-/** Read through read_file so the session may change the file afterwards. */
+// Record the session read required before mutation.
 async function readFirst(path: string): Promise<void> {
   const read = await new ReadFileTool().execute({ path, offset: 0, limit: 50 }, ctx());
   expect(read.isError, read.output).toBe(false);
 }
 
-/** The line texts of a numbered read_file result, prefixes and header removed. */
 function readLines(output: string): string[] {
   return output.split("\n").slice(1).map((line) => line.replace(/^ *\d+\t/, ""));
 }
@@ -612,10 +612,9 @@ describe("file native tools", () => {
 
     expect(result.isError).toBe(false);
     const parsed = parse(result.output);
-    // Sidecar model: output carries path + bytes only; no inline before/after.
+    // Diff bodies contain metadata only; full pre/post images live in sidecars.
     expect(parsed.path).toMatch(/snap\.txt$/);
     expect(typeof parsed.bytes).toBe("number");
-    // Small file: both sides under WRITE_DIFF_PREVIEW_LIMIT — not truncated.
     expect(parsed.truncated).toBeUndefined();
     expect(parsed.hasSidecar).toBeUndefined();
   });
@@ -644,7 +643,6 @@ describe("file native tools", () => {
     const parsed = parse(result.output);
     expect(parsed.truncated).toBe(true);
     expect(parsed.bytes).toBe(Buffer.byteLength(big, "utf8"));
-    // Sidecar model: no inline after field — full content lives in sidecar file.
     expect(parsed.after).toBeUndefined();
   });
 
@@ -758,9 +756,7 @@ describe("file native tools", () => {
     }
   });
 
-  // The boundary is what the agent may CHANGE. A read is bounded by the
-  // Layer 0 deny-list instead, so a file outside it is readable without a
-  // grant — and refusing it here was what refused `ls /`.
+  // Directory boundaries confine mutations; outside reads remain subject to the sensitive-path deny-list.
   it("reads a path outside the sandbox boundary", async () => {
     const outside = mkdtempSync(join(tmpdir(), "ave-file-tools-outside-read-"));
     try {
@@ -793,8 +789,7 @@ describe("file native tools", () => {
     }
   });
 
-  // Layer 0 is not part of the asymmetry: widening reads widened the DIRECTORY
-  // boundary, not the deny-list.
+  // Wider directory reads must not relax the sensitive-path deny-list.
   it("still refuses a read of a Layer 0 protected path", async () => {
     const result = await new ReadFileTool().execute(
       { path: join(homedir(), ".ssh", "id_rsa") },
@@ -1003,7 +998,7 @@ describe("apply_patch tool", () => {
     expect(existsSync(join(workDir, "README.md"))).toBe(true);
   });
 
-  it("refuses two sections that reach one file through a symlink", async () => {
+  it.skipIf(!canCreateSymlinks())("refuses two sections that reach one file through a symlink", async () => {
     await readFirst("src/a.ts");
     symlinkSync(join(workDir, "src", "a.ts"), join(workDir, "alias.ts"));
     const result = await new ApplyPatchTool().execute(patchOf(
@@ -1029,10 +1024,7 @@ describe("apply_patch tool", () => {
 describe("WriteFileTool pre-image guard (MAJOR 1)", () => {
   let testHome: string;
 
-  /**
-   * Record a file as read without going through read_file, for pre-images
-   * read_file would refuse to show (binary) or show only in windows.
-   */
+  // Record binary or windowed pre-images that read_file cannot show in full.
   async function markRead(path: string, session: string): Promise<void> {
     const bytes = readFileSync(path);
     recordFileRead(session, await fileReadKey(path), {
@@ -1044,7 +1036,6 @@ describe("WriteFileTool pre-image guard (MAJOR 1)", () => {
 
   beforeEach(() => {
     testHome = mkdtempSync(join(tmpdir(), "ave-write-guard-"));
-    // Redirect sidecar writes to isolated temp dir (mirrors write-diff-cache.test.ts pattern).
     process.env.AVE_HOME = testHome;
   });
 
@@ -1054,12 +1045,9 @@ describe("WriteFileTool pre-image guard (MAJOR 1)", () => {
   });
 
   it("skips pre-image read and sets skipSidecar for a file exceeding MAX_TEXT_FILE_BYTES", async () => {
-    // Write a real file that exceeds MAX_TEXT_FILE_BYTES (2_000_000).
-    // We fill 2.1MB with repeated ASCII so stat() reports the actual size.
-    // ESM module namespaces are not re-configurable, so vi.spyOn(node:fs/promises)
-    // does not work in this suite — real file is the correct approach.
+    // Use a real oversized file; ESM filesystem exports cannot be reconfigured with spyOn.
     const bigPath = join(workDir, "big.txt");
-    const chunk = "x".repeat(1024); // 1 KiB
+    const chunk = "x".repeat(1024);
     const buf = Buffer.alloc(2_100_000);
     buf.fill(chunk);
     writeFileSync(bigPath, buf);
@@ -1072,20 +1060,16 @@ describe("WriteFileTool pre-image guard (MAJOR 1)", () => {
 
     expect(result.isError).toBe(false);
     const body = parse(result.output);
-    // hasSidecar must be false — skipSidecar was set for the oversized pre-image.
     expect(body.hasSidecar).toBeUndefined();
-    // File was still overwritten with new content.
     expect(readFileSync(bigPath, "utf8")).toBe("new content");
   });
 
   it("skips pre-image read and sets skipSidecar for a binary pre-existing file", async () => {
-    // Write a file with null bytes (binary signature).
     const binPath = join(workDir, "image.bin");
     writeFileSync(binPath, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x00, 0x00, 0x00]));
     await markRead(binPath, "s2");
 
-    // Use after content > WRITE_DIFF_PREVIEW_LIMIT (4096) so truncated=true fires.
-    // Without the binary guard, hasSidecar would be true. The guard must suppress it.
+    // Exceed the preview limit to prove binary pre-images suppress otherwise eligible sidecars.
     const largeAfter = "x".repeat(4097);
     const result = await new WriteFileTool().execute(
       { path: binPath, content: largeAfter },
@@ -1094,12 +1078,9 @@ describe("WriteFileTool pre-image guard (MAJOR 1)", () => {
 
     expect(result.isError).toBe(false);
     const body = parse(result.output);
-    // truncated=true because afterBytes > WRITE_DIFF_PREVIEW_LIMIT.
     expect(body.truncated).toBe(true);
-    // hasSidecar must be false — binary pre-image triggers skipSidecar, so
-    // writeDiffSidecar is never called even though afterBytes > preview limit.
+    // Binary pre-images must suppress sidecar writes even above the preview limit.
     expect(body.hasSidecar).toBe(false);
-    // File was still written with new text content.
     expect(readFileSync(binPath, "utf8")).toBe(largeAfter);
   });
 
@@ -1114,8 +1095,6 @@ describe("WriteFileTool pre-image guard (MAJOR 1)", () => {
     );
 
     expect(result.isError).toBe(false);
-    // Small file: sidecar is NOT written unless content exceeds WRITE_DIFF_PREVIEW_LIMIT.
-    // The important invariant: no crash, and the file content is updated.
     expect(readFileSync(txtPath, "utf8")).toBe("after content");
   });
 });

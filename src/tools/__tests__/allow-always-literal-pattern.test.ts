@@ -1,14 +1,5 @@
-/**
- * "Allow always" is an exact Store-B decision, keyed by the canonical
- * (tool, args, source, trustOrigin, approvalCacheKey, working directory) tuple.
- * Cache keys and legacy `rememberPattern` values must never become glob-matched Store-A
- * rules: a literal `*` or `?` in a user-approved target is data, not syntax
- * that widens the grant to siblings.
- *
- * These drive the real executor plus the real user-approval store. The gate
- * fixture models ToolApprovalContent's production ordering by recording the
- * exact persistent tuple before resolving `allow-always`.
- */
+// Always-grants match the exact (tool, args, source, trustOrigin, approvalCacheKey, directory) tuple.
+// Literal wildcards in cache keys or legacy rememberPattern values must never widen grants into glob rules.
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -39,12 +30,7 @@ interface Harness {
   rules: () => { pattern: string; action: string }[];
 }
 
-/**
- * @param approvalCacheKey - what the tool reports as the identity of this
- *   call. The file tools return `path:<resolved path>` here, so this is the
- *   real shape of the higher-priority derivation.
- * @param rememberPattern - what the approval card sends back on "always".
- */
+// File-tool approvalCacheKey values use path:<resolved path>; rememberPattern comes from the approval card.
 function harness(
   dir: string,
   auditLogger: AuditLogger,
@@ -76,8 +62,7 @@ function harness(
   const permMgr = new PermissionManager(permissionsFile);
   permMgr.setMode("auto");
   permMgr.setInteractiveAutoApprove("low");
-  // A non-LOW verdict is what routes the call to the approval modal instead of
-  // auto-approving it, which is the only lane that persists an always-grant.
+  // Only a non-LOW verdict reaches the approval modal that persists an always-grant.
   permMgr.setReviewer({
     classifier: { classify: vi.fn(() => ({ level: "medium" as const, reason: "needs confirmation" })) },
     cache: new VerdictCache(join(dir, "reviewer-cache.jsonl")),
@@ -85,9 +70,7 @@ function harness(
   });
 
   const requestAndWait = vi.fn(async (req: ApprovalRequestInput) => {
-    // The production IPC record uses the gate's frozen directory identity.
-    // This gate double receives that same host-issued scope from the reviewer;
-    // omitting it would create a legacy unscoped record that cannot be reused.
+    // Persist the host-issued frozen directory identity; unscoped legacy records cannot be reused.
     const workingDirectory = req.reviewerApprovalBasis?.workingDirectory;
     expect(workingDirectory).toBeDefined();
     await recordApproval(
@@ -135,8 +118,7 @@ function harness(
 
 function call(executor: ToolExecutor, id: string, path: string) {
   return executor.executeAll(
-    // Keep the network target deterministically LOW so the test isolates exact
-    // identity instead of exercising the independent risk-escalation guard.
+    // A LOW network target isolates exact identity from the independent risk-escalation guard.
     [{ id, name: TOOL_NAME, input: { path, url: "https://api.openai.com" } }],
     { sessionId: "sess-wildcard", permissionContext: { trustOrigin: "user-keyboard" } },
   );

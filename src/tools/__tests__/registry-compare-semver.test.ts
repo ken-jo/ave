@@ -1,20 +1,11 @@
-/**
- * Unit tests for compareSemver — the version-precedence comparator used by
- * ToolRegistry.listVersions (sort) and pickLatest (reduce to newest).
- *
- * Regression focus: pre-release precedence. The previous implementation split
- * on /[.+-]/ and lumped the pre-release tag into the numeric-segment array, so
- * `1.0.0` vs `1.0.0-beta` compared "0"(default) vs "beta" lexically and wrongly
- * returned `1.0.0 < 1.0.0-beta` — i.e. "pick latest" preferred the beta over
- * the final release.
- */
+// Release versions outrank prereleases; numeric prerelease identifiers compare numerically.
 import { describe, it, expect } from "vitest";
 import { compareSemver } from "../../shared/semver-compare.js";
 
 describe("compareSemver", () => {
   it("orders plain numeric cores", () => {
     expect(Math.sign(compareSemver("1.0.0", "2.0.0"))).toBe(-1);
-    expect(Math.sign(compareSemver("1.2.0", "1.10.0"))).toBe(-1); // numeric, not lexical
+    expect(Math.sign(compareSemver("1.2.0", "1.10.0"))).toBe(-1);
     expect(Math.sign(compareSemver("1.0.1", "1.0.0"))).toBe(1);
     expect(Math.sign(compareSemver("1.0.0", "1.0.0"))).toBe(0);
   });
@@ -30,11 +21,11 @@ describe("compareSemver", () => {
   });
 
   it("orders pre-release identifiers per semver precedence", () => {
-    expect(Math.sign(compareSemver("1.0.0-alpha", "1.0.0-beta"))).toBe(-1); // lexical
-    expect(Math.sign(compareSemver("1.0.0-alpha", "1.0.0-alpha.1"))).toBe(-1); // fewer fields lower
-    expect(Math.sign(compareSemver("1.0.0-alpha.1", "1.0.0-alpha.2"))).toBe(-1); // numeric
-    expect(Math.sign(compareSemver("1.0.0-rc.2", "1.0.0-rc.10"))).toBe(-1); // numeric, not lexical
-    expect(Math.sign(compareSemver("1.0.0-1", "1.0.0-alpha"))).toBe(-1); // numeric < alphanumeric
+    expect(Math.sign(compareSemver("1.0.0-alpha", "1.0.0-beta"))).toBe(-1);
+    expect(Math.sign(compareSemver("1.0.0-alpha", "1.0.0-alpha.1"))).toBe(-1);
+    expect(Math.sign(compareSemver("1.0.0-alpha.1", "1.0.0-alpha.2"))).toBe(-1);
+    expect(Math.sign(compareSemver("1.0.0-rc.2", "1.0.0-rc.10"))).toBe(-1);
+    expect(Math.sign(compareSemver("1.0.0-1", "1.0.0-alpha"))).toBe(-1);
     expect(Math.sign(compareSemver("1.0.0-beta", "1.0.0-beta"))).toBe(0);
   });
 
@@ -46,7 +37,7 @@ describe("compareSemver", () => {
   it("sorting a mixed list picks the final release as newest", () => {
     const versions = ["1.0.0-alpha", "1.0.0", "1.0.0-beta", "0.9.0", "1.0.0-rc.1"];
     const sorted = [...versions].sort((a, b) => compareSemver(a, b));
-    expect(sorted[sorted.length - 1]).toBe("1.0.0"); // newest
-    expect(sorted[0]).toBe("0.9.0"); // oldest
+    expect(sorted[sorted.length - 1]).toBe("1.0.0");
+    expect(sorted[0]).toBe("0.9.0");
   });
 });

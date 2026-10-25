@@ -137,8 +137,6 @@ describe("Tailnet Web session store", () => {
 
     expect(store.resolvePairingEntryMutation(entry.cookieToken, entry.csrfToken)).toBe(true);
     expect(store.resolvePairingEntryMutation(entry.cookieToken, "x".repeat(43))).toBe(false);
-    // A share-less entry carries no authority, so nothing that needs one may
-    // accept it — that is the whole reason it is a separate record kind.
     expect(store.resolve(entry.cookieToken)).toBeNull();
     expect(store.resolveMutation(entry.cookieToken, entry.csrfToken)).toBeNull();
     expect(store.issuePageCsrf(entry.cookieToken, { actorId: ACTOR, pairedShare: BINDING })).toBeNull();

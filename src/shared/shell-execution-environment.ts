@@ -2,12 +2,16 @@ import type { HostShellExecutionPlanAuditProjection } from "../permissions/host-
 import { t } from "../i18n/runtime.js";
 
 type ShellEnvironmentPlan = Pick<HostShellExecutionPlanAuditProjection,
-  "platform" | "mode" | "capability" | "requiresExplicitUserApproval">;
+  "platform" | "mode" | "substrate" | "capability" | "requiresExplicitUserApproval" | "fallbackReason">;
 
 /** Public descriptions of the selected child, never the host's environment values. */
 export function shellExecutionEnvironmentLines(plan: ShellEnvironmentPlan): readonly string[] {
   if (plan.mode === "blocked") return [t("shellExecution.blocked")];
   return [
+    // When requested confinement is unavailable, report the unsandboxed route wherever the plan is shown.
+    ...(plan.fallbackReason === "requested-sandbox-unavailable"
+      ? [t("shellExecution.sandboxUnavailable")]
+      : []),
     t("shellExecution.location", { platform: plan.platform }),
     plan.mode === "asrt" ? t("shellExecution.temporaryHome") : t("shellExecution.hostHome"),
     plan.mode === "asrt" ? t("shellExecution.isolatedAuthentication") : t("shellExecution.hostAuthentication"),
@@ -30,6 +34,8 @@ export function shellExecutionEnvironmentPrompt(plan: ShellEnvironmentPlan, inte
     ...shellExecutionEnvironmentLines(plan),
     confinement,
     t("shellExecution.defaultRoute"),
+    // Bash cannot start in Windows containers; model guidance and tool refusal must agree.
+    ...(plan.mode === "asrt" && plan.substrate === "mxc" ? [t("shellExecution.mxcBashUnavailable")] : []),
     interactive ? t("shellExecution.hostRequest") : t("shellExecution.noInteractiveApproval"),
     t("shellExecution.pipelineStatus"),
     "</shell-execution-environment>",

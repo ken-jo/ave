@@ -29,10 +29,8 @@ describe("AgentProfileStore", () => {
   });
 
   it("packages built-in staff-perspective profiles (executor, researcher, planner, explorer)", async () => {
-    // resources/agents/*.md is the seed source copied into ~/.ave/agents/
-    // on first boot. Loading via AgentProfileStore against the resources
-    // directory exercises the same parser the runtime uses, catching
-    // frontmatter regressions before the file ever lands on a user disk.
+    // resources/agents/*.md is the seed source copied into ~/.ave/agents/ on first boot. Loading via AgentProfileStore against the resources directory
+    // exercises the same parser the runtime uses, catching frontmatter regressions before the file ever lands on a user disk.
     const here = fileURLToPath(new URL(".", import.meta.url));
     const repoRoot = resolve(here, "../../..");
     const resourcesAgentsDir = join(repoRoot, "resources", "agents");

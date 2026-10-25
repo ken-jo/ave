@@ -27,10 +27,8 @@ const STABLE_COMMAND_ACTIONS: QuickAction[] = [];
 const STABLE_PLUGINS: PluginEntry[] = [];
 const STABLE_SELECT_PLUGIN = () => {};
 
-// One composer serves both chat surfaces. The suite below runs once per
-// surface, so a behaviour that regresses on one placement only cannot hide
-// behind the other: the harness reads the surface the enclosing `describe.each`
-// selected.
+// One composer serves both chat surfaces. The suite below runs once per surface, so a behaviour that regresses on one
+// placement only cannot hide behind the other: the harness reads the surface the enclosing `describe.each` selected.
 const SURFACES: ComposerSurface[] = ["main", "side"];
 let harnessSurface: ComposerSurface = "main";
 
@@ -95,9 +93,8 @@ function Harness({
   const stableOnWarning = useCallback((message: string) => {
     warnRef.current?.(message);
   }, []);
-  // In an effect, not during render: a render-phase call fires on discarded renders too.
-  // Benign here (stable setter, assignment only), but the tests read it after `settle()`
-  // so an effect costs nothing.
+  // In an effect, not during render: a render-phase call fires on discarded renders too. Benign here (stable setter,
+  // assignment only), but the tests read it after `settle()` so an effect costs nothing.
   useEffect(() => { exposeSetAttachments?.(setAttachments); }, [exposeSetAttachments]);
 
   return (
@@ -233,8 +230,8 @@ describe.each(SURFACES)("Composer [%s]", (surface) => {
     expect(screen.getByTestId("composer-limit-warning")).toBeTruthy();
   });
 
-  // Long text normally becomes a `paste` attachment chip with a marker token in
-  // the textarea. Ctrl/⌘+Shift+V asks for the original text instead.
+  // Long text normally becomes a `paste` attachment chip with a marker token in the textarea. Ctrl/⌘+Shift+V asks for the
+  // original text instead.
   const LONG_PASTE = "a".repeat(PASTE_INLINE_MAX_CHARS + 20);
 
   function textClipboardData(text: string): DataTransfer {
@@ -258,8 +255,7 @@ describe.each(SURFACES)("Composer [%s]", (surface) => {
     render(<Harness />);
     const textarea = screen.getByTestId(TEST_IDS.composerTextarea) as HTMLTextAreaElement;
 
-    // The chord arrives as a keydown; the paste that follows carries no
-    // modifier state of its own.
+    // The chord arrives as a keydown; the paste that follows carries no modifier state of its own.
     fireEvent.keyDown(textarea, { key: "v", code: "KeyV", ctrlKey: true, shiftKey: true });
     const notConsumed = fireEvent.paste(textarea, { clipboardData: textClipboardData(LONG_PASTE) });
 
@@ -288,8 +284,7 @@ describe.each(SURFACES)("Composer [%s]", (surface) => {
     const { rerender } = render(<Harness disabled />);
     const textarea = screen.getByTestId(TEST_IDS.composerTextarea) as HTMLTextAreaElement;
 
-    // Chord + paste while the composer is disabled: the paste is refused, and
-    // the chord must be spent rather than left armed.
+    // Chord + paste while the composer is disabled: the paste is refused, and the chord must be spent rather than left armed.
     fireEvent.keyDown(textarea, { key: "v", code: "KeyV", metaKey: true, shiftKey: true });
     fireEvent.paste(textarea, { clipboardData: textClipboardData(LONG_PASTE) });
     await act(async () => { await Promise.resolve(); });
@@ -307,8 +302,7 @@ describe.each(SURFACES)("Composer [%s]", (surface) => {
     render(<Harness />);
     const textarea = screen.getByTestId(TEST_IDS.composerTextarea) as HTMLTextAreaElement;
 
-    // Chord pressed, but the paste never arrives — the OS swallowed the
-    // accelerator, say — and focus moves on.
+    // Chord pressed, but the paste never arrives — the OS swallowed the accelerator, say — and focus moves on.
     fireEvent.keyDown(textarea, { key: "v", code: "KeyV", metaKey: true, shiftKey: true });
     fireEvent.blur(textarea);
 
@@ -492,16 +486,13 @@ describe.each(SURFACES)("Composer [%s]", (surface) => {
   });
 
   it("composer renders textarea (send button moved to BottomActionRow per v6 layout)", () => {
-    // v6: input-bar = textarea only. Send 버튼은 BottomActionRow 로 이전.
-    // 본 테스트는 Composer 의 textarea-only contract 만 검증. Send disable 동작
-    // 검증은 BottomActionRow 의 isSendDisabled prop 단위로 별도 (ChatView 통합).
+    // v6: input-bar = textarea only. Send 버튼은 BottomActionRow 로 이전. 본 테스트는 Composer 의 textarea-only contract 만 검증. Send
+    // disable 동작 검증은 BottomActionRow 의 isSendDisabled prop 단위로 별도 (ChatView 통합).
     render(<Harness />);
     const textarea = screen.getByTestId(TEST_IDS.composerTextarea) as HTMLTextAreaElement;
     expect(textarea).toBeTruthy();
     expect(screen.queryByTestId("composer-send-button")).toBeNull();
   });
-
-  // --- Suggested Reply (ghost text) ---
 
   it("renders ghost text when value empty + best != null", () => {
     render(
@@ -574,7 +565,6 @@ describe.each(SURFACES)("Composer [%s]", (surface) => {
       fireEvent.keyDown(ta, { key: "Tab", shiftKey: false });
     });
     expect(ta.value).toBe("네 확인했습니다");
-    // After accept, ghost should disappear.
     expect(screen.queryByTestId("suggested-replies-ghost")).toBeNull();
   });
 
@@ -671,8 +661,6 @@ describe.each(SURFACES)("Composer [%s]", (surface) => {
     expect(screen.queryByTestId("suggested-replies-ghost")).toBeNull();
   });
 
-  // --- animation + telemetry ---
-
   it("ArrowUp/Down never intercept caret movement — there is nothing to cycle through", () => {
     render(
       <Harness
@@ -697,9 +685,8 @@ describe.each(SURFACES)("Composer [%s]", (surface) => {
       />,
     );
     const ghost = screen.getByTestId("suggested-replies-ghost");
-    // Tailwind's `transition-opacity` + `motion-safe:animate-in` baked into the
-    // component. Asserting the class names is a regression guard so future
-    // styling refactors don't silently drop the animation.
+    // Tailwind's `transition-opacity` + `motion-safe:animate-in` baked into the component. Asserting the class names is a
+    // regression guard so future styling refactors don't silently drop the animation.
     expect(ghost.className).toContain("transition-opacity");
     expect(ghost.className).toContain("animate-in");
   });
@@ -733,16 +720,12 @@ describe.each(SURFACES)("Composer [%s]", (surface) => {
     // Set up: push + dismiss → latch is set.
     await act(async () => { pushSuggestedReply("첫"); });
     await act(async () => { dismissSuggestedReplies(); });
-    // Type then send.
     fireEvent.change(ta, { target: { value: "hi" } });
     await act(async () => { fireEvent.keyDown(ta, { key: "Enter" }); });
     expect(onSendCb).toHaveBeenCalledTimes(1);
-    // After clear, a fresh push should NOT be dismissed.
     await act(async () => { pushSuggestedReply("둘"); });
-    // We assert via the public surface: rendering a new Harness with the new
-    // snapshot should display the ghost. (Direct hook inspection would need
-    // an extra harness; the latch-clear is already covered by the
-    // use-suggested-replies test.)
+    // We assert via the public surface: rendering a new Harness with the new snapshot should display the ghost. (Direct hook
+    // inspection would need an extra harness; the latch-clear is already covered by the use-suggested-replies test.)
     expect(onSendCb).toHaveBeenCalled();
   });
 });
@@ -778,9 +761,8 @@ describe("Composer — @ resource mention", () => {
         { serverId: "eng-mcp", resources: [{ uri: "doc:2", name: "runbook.md" }] },
       ],
     }));
-    // Empty by DEFAULT so the resource cases keep counting only resource rows: a fixture
-    // that quietly added a template row would change what "the menu has two rows" means
-    // in every test above without any of them mentioning templates.
+    // Empty by DEFAULT so the resource cases keep counting only resource rows: a fixture that quietly added a template row
+    // would change what "the menu has two rows" means in every test above without any of them mentioning templates.
     const listResourceTemplates = overrides?.listResourceTemplates
       ?? vi.fn(async () => ({ ok: true, servers: [] }));
     const attachResourceTemplate = overrides?.attachResourceTemplate ?? vi.fn(async () => ({
@@ -858,16 +840,14 @@ describe("Composer — @ resource mention", () => {
     expect(ta.value).toBe("look at [Resource #1] ");
     expect(ta.value).not.toContain("mcp-resource");
     expect(ta.value).not.toContain("BODY");
-    // …and the chip exists, which is what carries the payload to the send path.
-    // A chip exists, which is what carries the payload to the send path — the marker
-    // in the body and this chip are the pair the marker-sync effect keeps together.
+    // …and the chip exists, which is what carries the payload to the send path. A chip exists, which is what carries the
+    // payload to the send path — the marker in the body and this chip are the pair the marker-sync effect keeps together.
     expect(screen.getByTestId("attachment-chip")).toBeTruthy();
   });
 
   it("does not discard what the user typed while the read was in flight", async () => {
-    // The read is asynchronous. Splicing into the text as it was when Enter was pressed
-    // would silently throw away every keystroke since — the marker lands, and the
-    // sentence the user was in the middle of writing disappears.
+    // The read is asynchronous. Splicing into the text as it was when Enter was pressed would silently throw away every
+    // keystroke since — the marker lands, and the sentence the user was in the middle of writing disappears.
     let resolveRead: ((value: unknown) => void) | undefined;
     const attachResource = vi.fn(() => new Promise((resolve) => { resolveRead = resolve; }));
     installMcpApi({ attachResource: attachResource as never });
@@ -909,8 +889,8 @@ describe("Composer — @ resource mention", () => {
     });
 
     expect(ta.value).toBe("different sentence entirely [Resource #1] ");
-    // A chip exists, which is what carries the payload to the send path — the marker
-    // in the body and this chip are the pair the marker-sync effect keeps together.
+    // A chip exists, which is what carries the payload to the send path — the marker in the body and this chip are the pair
+    // the marker-sync effect keeps together.
     expect(screen.getByTestId("attachment-chip")).toBeTruthy();
   });
 
@@ -965,8 +945,7 @@ describe("Composer — @ resource mention", () => {
     expect(ta.value).not.toContain("[Resource #");
   });
 
-  // ── URI templates: the row that opens a form instead of attaching ───────────────
-  //
+    //
   // The property worth testing at this level is that accepting a template row reads
   // NOTHING until the user has filled the form — and that when they do, what leaves the
   // renderer is the template plus values, never a URI.
@@ -979,8 +958,7 @@ describe("Composer — @ resource mention", () => {
     await settle();
 
     await openMenu(ta, "see @proj");
-    // The row says it is a template, because "Enter attaches the resource" is not what
-    // happens here.
+    // The row says it is a template, because "Enter attaches the resource" is not what happens here.
     expect(screen.getByTestId("resource-mention-template-badge-0")).toBeTruthy();
 
     await act(async () => { fireEvent.keyDown(ta, { key: "Enter" }); });
@@ -1119,8 +1097,7 @@ describe("Composer — @ resource mention", () => {
     await act(async () => { fireEvent.keyDown(ta, { key: "Enter" }); });
     await act(async () => { await Promise.resolve(); });
 
-    // Old code: silent return, no dialog. Current: the template row does not need the
-    // resource channel at all.
+    // Old code: silent return, no dialog. Current: the template row does not need the resource channel at all.
     expect(screen.getByTestId("mcp-resource-template-dialog")).toBeTruthy();
     expect(onWarning).not.toHaveBeenCalled();
   });
@@ -1148,9 +1125,8 @@ describe("Composer — @ resource mention", () => {
   });
 
   it("reports rather than silently doing nothing when a channel is absent", async () => {
-    // The other pairing. Kept alongside the one above because it is what catches a
-    // "guard both kinds on both channels" mutation: that would block the resource row
-    // too, turning the positive assertion at the end red.
+    // The other pairing. Kept alongside the one above because it is what catches a "guard both kinds on both channels"
+    // mutation: that would block the resource row too, turning the positive assertion at the end red.
     const { attachResource } = installMcpApi({ listResourceTemplates: templateCatalogue() as never });
     (window as unknown as { ave: { mcp: Record<string, unknown> } })
       .ave.mcp.attachResourceTemplate = undefined;
@@ -1222,9 +1198,8 @@ describe("Composer — @ resource mention", () => {
   });
 
   it("still offers resources when the template channel is absent", async () => {
-    // Both catalogues share one `Promise.all`, so a missing method would throw into the
-    // catch that empties the whole catalogue — and the user would lose their RESOURCES
-    // because TEMPLATES were unavailable. The guard degrades instead.
+    // Both catalogues share one `Promise.all`, so a missing method would throw into the catch that empties the whole catalogue
+    // — and the user would lose their RESOURCES because TEMPLATES were unavailable. The guard degrades instead.
     installMcpApi();
     (window as unknown as { ave: { mcp: Record<string, unknown> } })
       .ave.mcp.listResourceTemplates = undefined;
@@ -1237,9 +1212,8 @@ describe("Composer — @ resource mention", () => {
   });
 
   it("still offers resources when the template fetch REJECTS", async () => {
-    // The sibling of the case above, and the one a bare `Promise.all` would fail: a
-    // rejecting half takes the whole join down into the catch that empties the catalogue.
-    // Each half absorbs its own failure instead.
+    // The sibling of the case above, and the one a bare `Promise.all` would fail: a rejecting half takes the whole join down
+    // into the catch that empties the catalogue. Each half absorbs its own failure instead.
     installMcpApi({
       listResourceTemplates: vi.fn(async () => {
         throw new Error("template channel exploded");
@@ -1254,9 +1228,8 @@ describe("Composer — @ resource mention", () => {
   });
 
   it("disables a template the host will not fetch, and says why", async () => {
-    // Listed but not fillable: every expansion of a literal `https:` template is one the
-    // host refuses. Offering it normally spends a dialog AND a round-trip to fail with a
-    // message that blames the server for a host-side rule.
+    // Listed but not fillable: every expansion of a literal `https:` template is one the host refuses. Offering it normally
+    // spends a dialog AND a round-trip to fail with a message that blames the server for a host-side rule.
     const { attachResourceTemplate } = installMcpApi({
       listResourceTemplates: vi.fn(async () => ({
         ok: true,
@@ -1290,13 +1263,7 @@ describe("Composer — @ resource mention", () => {
   });
 
   it("tells the user what Enter does on the row they are actually on", async () => {
-    // The footer is one sentence for a menu holding two kinds of row. Fixed text makes it
-    // false half the time, and an icon on the row does not change what the sentence says.
-    //
-    // Driven by ARROW KEYS through ONE mixed menu, not by filtering to a single-kind menu
-    // — a review pointed out that the filtered version passes identically with `items[0]`
-    // in place of `items[activeIndex]`, so it pinned "the hint varies by kind" rather
-    // than the title's claim. Here the list never changes; only the active row does.
+    // Move the active row within one mixed menu to prove the hint follows activeIndex rather than the first row.
     installMcpApi({ listResourceTemplates: templateCatalogue() as never });
     render(<Harness />);
     const ta = screen.getByTestId(TEST_IDS.composerTextarea) as HTMLTextAreaElement;
@@ -1322,8 +1289,8 @@ describe("Composer — @ resource mention", () => {
   });
 
   it("still offers templates when the RESOURCE fetch rejects", async () => {
-    // The mirror of the two template-side cases. Each half absorbs its own failure, so
-    // this direction has to hold too — and before the per-half catch it did not.
+    // The mirror of the two template-side cases. Each half absorbs its own failure, so this direction has to hold too — and
+    // before the per-half catch it did not.
     installMcpApi({
       listResources: vi.fn(async () => { throw new Error("resource channel exploded"); }) as never,
       listResourceTemplates: templateCatalogue() as never,
@@ -1339,8 +1306,8 @@ describe("Composer — @ resource mention", () => {
   });
 
   it("says so rather than swallowing a submit while another read is in flight", async () => {
-    // The form has already taken the user's values and closed. A silent return loses
-    // typed work with no explanation — survivable for a picker row, not for a form.
+    // The form has already taken the user's values and closed. A silent return loses typed work with no explanation —
+    // survivable for a picker row, not for a form.
     let resolveRead: ((value: unknown) => void) | undefined;
     const attachResource = vi.fn(() => new Promise((resolve) => { resolveRead = resolve; }));
     const { attachResourceTemplate } = installMcpApi({
@@ -1375,9 +1342,8 @@ describe("Composer — @ resource mention", () => {
   });
 
   it("lists templates alongside resources in one menu", async () => {
-    // One list to the user. Both catalogues are fetched together for that reason — two
-    // effects would each set the catalogue and the later one would erase the other's
-    // rows, which reads as "my templates disappear sometimes".
+    // One list to the user. Both catalogues are fetched together for that reason — two effects would each set the catalogue
+    // and the later one would erase the other's rows, which reads as "my templates disappear sometimes".
     installMcpApi({ listResourceTemplates: templateCatalogue() as never });
     render(<Harness />);
     const ta = screen.getByTestId(TEST_IDS.composerTextarea) as HTMLTextAreaElement;
@@ -1390,9 +1356,8 @@ describe("Composer — @ resource mention", () => {
   });
 
   it("does not spend the chip-strip limit on resources", async () => {
-    // Two caps, two lanes. `ATTACH_MAX_COUNT` bounds how many chips stay legible; the
-    // per-turn resource bound is about how much server text a turn carries. Five
-    // attached documents must not be what stops the user adding a screenshot.
+    // Two caps, two lanes. `ATTACH_MAX_COUNT` bounds how many chips stay legible; the per-turn resource bound is about how
+    // much server text a turn carries. Five attached documents must not be what stops the user adding a screenshot.
     installMcpApi();
     const resources: Attachment[] = Array.from({ length: 5 }, (_, i) => ({
       id: `r${i}`,
@@ -1474,8 +1439,8 @@ describe("Composer — @ resource mention", () => {
   });
 
   it("still blocks a sixth IMAGE while five resources are attached", async () => {
-    // The half that proves a partition rather than a raised number: resources do not
-    // consume the chip-strip lane, and the chip-strip lane is still enforced.
+    // The half that proves a partition rather than a raised number: resources do not consume the chip-strip lane, and the
+    // chip-strip lane is still enforced.
     installMcpApi();
     const five: Attachment[] = Array.from({ length: 5 }, (_, i) => ({
       ...img1, id: `i${i}`, n: i + 1,
@@ -1491,8 +1456,8 @@ describe("Composer — @ resource mention", () => {
         initialAttachments={[...five, ...resources]}
       />,
     );
-    // Five images fill the chip-strip lane, so the warning is on — the resources did
-    // not consume it, and they did not suppress it either.
+    // Five images fill the chip-strip lane, so the warning is on — the resources did not consume it, and they did not suppress
+    // it either.
     expect(screen.getByTestId("composer-limit-warning")).toBeTruthy();
   });
 });

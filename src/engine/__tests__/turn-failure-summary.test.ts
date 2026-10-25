@@ -54,8 +54,6 @@ describe("turn failure summary", () => {
     const produced = deriveTurnFailureSummary({ classifierCategory: "rate-limit" });
     expect(toSafeTurnFailureSummary(produced)).toEqual(produced);
 
-    // A forged summary crossing the boundary keeps only the two whitelisted
-    // fields, truncated: the embedded token-like tail cannot flow verbatim.
     const forged = toSafeTurnFailureSummary({
       category: "provider",
       summary: `provider said ${"x".repeat(300)} token sk-FAKE-TOKEN-1234567890 end`,
@@ -68,11 +66,9 @@ describe("turn failure summary", () => {
     expect(JSON.stringify(forged)).not.toContain("secret.ts");
     expect(JSON.stringify(forged)).not.toContain("sk-FAKE-TOKEN-1234567890");
 
-    // Control characters are stripped rather than delivered to a provider.
     expect(toSafeTurnFailureSummary({ category: "network", summary: "a\u0000b\u001f\u007fc" }))
       .toEqual({ category: "network", summary: "abc" });
 
-    // Fail closed: unknown category, wrong shapes, or empty sanitized text.
     expect(toSafeTurnFailureSummary({ category: "stack-trace", summary: "x" })).toBeUndefined();
     expect(toSafeTurnFailureSummary({ category: "provider", summary: 5 })).toBeUndefined();
     expect(toSafeTurnFailureSummary({ category: "provider", summary: "\u0000\u0001" })).toBeUndefined();

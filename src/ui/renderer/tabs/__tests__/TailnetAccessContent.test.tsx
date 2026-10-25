@@ -81,8 +81,8 @@ function makeApi(options: { observerUnavailable?: boolean; sharingDisabled?: boo
   }));
   const createCurrentConversationShare = vi.fn(async () => ({ ok: true as const }));
   const api = {
-    // The bridge is always there — the preload exposes it unconditionally. What
-    // varies is whether the host can answer, which is what the reader sees.
+    // The bridge is always there — the preload exposes it unconditionally. What varies is whether the host can answer, which
+    // is what the reader sees.
     tailnetObserver: {
       snapshot: vi.fn(async () =>
         options.observerUnavailable === true
@@ -128,11 +128,7 @@ afterEach(() => {
 });
 
 describe("TailnetAccessContent", () => {
-  // This content is rendered INSIDE a `ConnectionRow` whose label is
-  // `remoteSurfacesTab.tailnetSectionTitle`. A section heading equal to that
-  // label names nothing the reader did not already have, one line above it —
-  // and both the unavailable state and the setup card used to render exactly
-  // that string.
+  // ConnectionRow already names the section; inner content must not repeat its heading.
   it("gives no section inside the row the row's own label as its heading", async () => {
     expect(t("tailnetSetup.sectionTitle")).not.toBe(t("remoteSurfacesTab.tailnetSectionTitle"));
     expect(t("tailnetAccessTab.disabledTitle")).not.toBe(t("remoteSurfacesTab.tailnetSectionTitle"));
@@ -140,16 +136,14 @@ describe("TailnetAccessContent", () => {
     const { api } = makeApi({ sharingDisabled: true });
     render(<TailnetAccessContent api={api} />);
 
-    // The unavailable state names itself, and the setup card names the step it
-    // performs — neither restates the row.
+    // The unavailable state names itself, and the setup card names the step it performs — neither restates the row.
     await screen.findByText(t("tailnetAccessTab.disabledTitle"));
     expect(screen.getByText(t("tailnetSetup.sectionTitle"))).toBeTruthy();
     expect(screen.queryByText(t("remoteSurfacesTab.tailnetSectionTitle"))).toBeNull();
   });
 
-  // The setup flow owns the observer anchor now: the full listener form is
-  // reachable only through it, so a deep link to the section has to land on the
-  // thing a reader can actually act on.
+  // The setup flow owns the observer anchor now: the full listener form is reachable only through it, so a deep link to the
+  // section has to land on the thing a reader can actually act on.
   it("puts the guided setup surface at the observer anchor", async () => {
     const { api } = makeApi({ observerUnavailable: true });
     const { container } = render(<TailnetAccessContent api={api} />);
@@ -157,16 +151,15 @@ describe("TailnetAccessContent", () => {
     await screen.findByTestId("tailnet-access-create-invitation");
     const anchor = container.querySelector("[data-settings-section='remote-tailnet-observer']");
     expect(anchor).not.toBeNull();
-    // The host could not answer for the observer. The section says so in one
-    // sentence at the anchor rather than taking the tab down with it.
+    // The host could not answer for the observer. The section says so in one sentence at the anchor rather than taking the tab
+    // down with it.
     expect(await screen.findByTestId("tailnet-setup-error")).toBeInTheDocument();
     expect(container.querySelectorAll("[data-settings-section='remote-tailnet-observer']"))
       .toHaveLength(1);
   });
 
-  // The finished panel ends with "now let someone in", and the one-use code
-  // that does it already has a home below. Focus moves there rather than a
-  // second minting control appearing inside the flow.
+  // The finished panel ends with "now let someone in", and the one-use code that does it already has a home below. Focus
+  // moves there rather than a second minting control appearing inside the flow.
   it("moves the reader to the invitation control when setup asks for a code", async () => {
     const { api } = makeApi();
     render(<TailnetAccessContent api={api} />);

@@ -60,7 +60,6 @@ class CallerAbortProvider implements LLMProvider {
   }
 }
 
-
 function buildLoop(
   provider: LLMProvider | null,
   activeChatRuntime: { kind: "api" } | { kind: "subscription"; provider: "codex"; model?: string } = { kind: "api" },
@@ -130,7 +129,6 @@ describe("ConversationLoop.generateText", () => {
     const provider = new FakeProvider([
       { type: "text_delta", text: "first" },
       { type: "message_complete", stopReason: "end_turn" },
-      // 아래는 읽히면 안 됨
       { type: "text_delta", text: "-should-not-appear" },
     ]);
     const loop = buildLoop(provider);

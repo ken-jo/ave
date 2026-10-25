@@ -1,9 +1,4 @@
-/**
- * Production release prep — unit tests for auto-updater / crash-reporter / telemetry.
- *
- * All three modules default OFF and must produce zero side-effects when the
- * user hasn't opted in. These tests lock in that invariant.
- */
+// Release services must have no side effects until the user opts in.
 import { beforeEach, describe, it, expect, vi } from "vitest";
 import type { BrowserWindow, IpcMainInvokeEvent } from "electron";
 
@@ -80,7 +75,7 @@ function fakeAuditLogger() {
 function createTestAutoUpdater(
   testDeps: Omit<AutoUpdaterDeps, "auditLogger" | "getWindows" | "getDialogParent"> & {
     auditLogger?: AuditLogger;
-    /** The single open main window most tests need. */
+    // The single open main window most tests need.
     mainWindow: BrowserWindow;
   },
 ) {
@@ -88,10 +83,7 @@ function createTestAutoUpdater(
   return createAutoUpdater({
     getWindows: () => [mainWindow],
     getDialogParent: () => mainWindow,
-    // Default to the signed / self-installable path plus a no-op guide opener so
-    // existing install tests exercise quitAndInstall deterministically (the real
-    // codesign probe would otherwise return false on an unsigned CI runner).
-    // Tests targeting the unsigned fallback override canSelfInstall/openExternal.
+    // Stub signing and guide opening so unsigned runners can exercise self-install; fallback tests override these seams.
     canSelfInstall: () => true,
     openExternal: () => {},
     ...deps,
@@ -200,8 +192,7 @@ describe("auto-updater", () => {
     svc.start();
     svc.start();
     svc.stop();
-    // If start() stacked timers, stop() would leave dangling intervals — but we
-    // primarily assert no throw and no extra checks are made when disabled.
+    // If start() stacked timers, stop() would leave dangling intervals — but we primarily assert no throw and no extra checks are made when disabled.
     expect(u.checks).toBe(0);
   });
 
@@ -240,7 +231,6 @@ describe("auto-updater", () => {
     });
   });
 
-  // ── Negative-path coverage for the three MAJOR review findings ────────
   it("downloadNow rejects when current state is not 'available'", async () => {
     const fw = fakeWindow();
     const u = fakeUpdater();
@@ -394,8 +384,7 @@ describe("auto-updater", () => {
     await svc.triggerCheck();
     u.emit("update-downloaded", { version: "3.0.0" });
     const result = await svc._testOnly.installNow();
-    // Reactive safety net: a throwing quitAndInstall must not leave a dead
-    // button — it opens the homepage guide and signals manual install.
+    // Reactive safety net: a throwing quitAndInstall must not leave a dead button — it opens the homepage guide and signals manual install.
     expect(result).toEqual({ ok: false, reason: "manual-install-required" });
     expect(opened).toEqual(["https://ave.agent-connector.ai"]);
     expect(isAppUpdateInstallRequested()).toBe(false);
@@ -415,8 +404,7 @@ describe("auto-updater", () => {
     await svc.triggerCheck();
     u.emit("update-downloaded", { version: "3.0.0" });
     const result = await svc._testOnly.installNow();
-    // Proactive: an unsigned macOS build can't self-install, so quitAndInstall
-    // is never attempted — open the guide and tell the renderer.
+    // Proactive: an unsigned macOS build can't self-install, so quitAndInstall is never attempted — open the guide and tell the renderer.
     expect(result).toEqual({ ok: false, reason: "manual-install-required" });
     expect(u.installs).toBe(0);
     expect(opened).toEqual(["https://ave.agent-connector.ai"]);
@@ -456,9 +444,8 @@ describe("auto-updater", () => {
   });
 
   it("refuses a feed version that is older than the running build", async () => {
-    // Measured on a v0.9.0 install: the feed reported 0.8.0 as its latest and
-    // the badge offered it. `allowDowngrade = false` did not prevent that, so
-    // the host compares against its own version instead of trusting the feed.
+    // Measured on a v0.9.0 install: the feed reported 0.8.0 as its latest and the badge offered it. `allowDowngrade = false` did not prevent that, so the
+    // host compares against its own version instead of trusting the feed.
     const fw = fakeWindow();
     const u = fakeUpdater();
     const svc = createTestAutoUpdater({
@@ -476,8 +463,7 @@ describe("auto-updater", () => {
   });
 
   it("refuses a feed version equal to the running build", async () => {
-    // "Not strictly newer" is the rule, not "not older": re-offering the build
-    // already installed is the same dead-end for the user.
+    // "Not strictly newer" is the rule, not "not older": re-offering the build already installed is the same dead-end for the user.
     const fw = fakeWindow();
     const u = fakeUpdater();
     const svc = createTestAutoUpdater({
@@ -494,8 +480,7 @@ describe("auto-updater", () => {
   });
 
   it("refuses an older version that arrives already downloaded", async () => {
-    // Both offers reach the user through the same broadcast, so the comparison
-    // lives there rather than on the available event alone.
+    // Both offers reach the user through the same broadcast, so the comparison lives there rather than on the available event alone.
     const fw = fakeWindow();
     const u = fakeUpdater();
     const svc = createTestAutoUpdater({
@@ -512,9 +497,8 @@ describe("auto-updater", () => {
   });
 
   it("refuses every offer when the running version cannot be compared", async () => {
-    // `getAveAppVersion()` resolves to the "unknown" sentinel when the app's
-    // own package.json cannot be read. An update that cannot be SHOWN to be
-    // newer is not one to put in front of the user.
+    // `getAveAppVersion()` resolves to the "unknown" sentinel when the app's own package.json cannot be read. An update that cannot be SHOWN to be newer is
+    // not one to put in front of the user.
     const fw = fakeWindow();
     const u = fakeUpdater();
     const svc = createTestAutoUpdater({
@@ -643,8 +627,7 @@ describe("auto-updater", () => {
     u.emit("update-available", { version: "4.0.0" });
     const result = await svc._testOnly.downloadNow();
     expect(result.ok).toBe(false);
-    // Final state should be back to "available" so the badge invites a retry,
-    // not stuck spinning on a "downloading" pill with no progress events.
+    // Final state should be back to "available" so the badge invites a retry, not stuck spinning on a "downloading" pill with no progress events.
     const last = fw.sent[fw.sent.length - 1]!;
     expect(last.payload).toMatchObject({ kind: "available", version: "4.0.0" });
   });
@@ -658,9 +641,8 @@ describe("auto-updater", () => {
       updaterFactory: () => u,
     });
     await svc.triggerCheck();
-    // State is still idle — a stray progress event (delta probe, blockmap
-    // fetch) MUST NOT promote the badge to "downloading" with version=""
-    // because the tooltip would render "v 다운로드 중 — N%" (broken).
+    // State is still idle — a stray progress event (delta probe, blockmap fetch) MUST NOT promote the badge to "downloading" with version="" because the
+    // tooltip would render "v 다운로드 중 — N%" (broken).
     const before = fw.sent.length;
     u.emit("download-progress", { percent: 10, transferred: 1, total: 10 });
     expect(fw.sent.length).toBe(before);
@@ -725,8 +707,7 @@ describe("crash-reporter", () => {
   });
 
   it("keeps local dumps but sends nothing when the launch has no remote reporting", () => {
-    // A headless one-shot run. Both remote paths are opted IN through settings
-    // here, so the only thing that can be closing them is the launch itself.
+    // A headless one-shot run. Both remote paths are opted IN through settings here, so the only thing that can be closing them is the launch itself.
     const userData = createUserDataRoot();
     const started: Array<{ uploadToServer?: boolean; submitURL?: string }> = [];
     const pathsSet: string[] = [];

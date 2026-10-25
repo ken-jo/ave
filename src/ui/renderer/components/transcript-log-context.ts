@@ -1,12 +1,5 @@
-/**
- * Whether a component renders inside the main chat transcript's `role="log"`.
- *
- * The log is itself a polite live region that reads additions and text
- * changes. A live region nested inside it is read twice or swallowed,
- * depending on the screen reader, so status cards that are their own live
- * region elsewhere (the side chat and side panel share the transcript
- * renderer without a log) drop their live attributes inside it.
- */
+/** Suppress nested live-region attributes inside the transcript log to avoid duplicate or swallowed screen-reader
+ * announcements. */
 import { createContext, useContext } from "react";
 
 export const TranscriptLogContext = createContext(false);

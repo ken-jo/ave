@@ -1,13 +1,4 @@
-/**
- * Onboarding highlight identity — host cross-field checks.
- *
- * The JSON schema bounds the list and the shape of each `id`; what it cannot
- * express is that two entries must not carry the SAME id. `<pluginId>:<id>` is
- * the key the user's answer is stored under, so a duplicate would let one
- * card's "never" silence a card the user was never shown. The count is
- * re-checked here for the reason `hostSecrets` re-checks its own bounds: a
- * plugin using older contract files must not widen what it declares.
- */
+/** Host readers reject duplicate highlights and unknown destinations before load; older schema copies cannot widen them. */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -31,7 +22,6 @@ const highlight = (id: string, action: Record<string, unknown> = { kind: "none" 
   action,
 });
 
-/** A highlight whose accept moves the settings view to `path`. */
 const settingsHighlight = (path: unknown) =>
   highlight("open-the-switch", { kind: "settings", path });
 
@@ -46,8 +36,7 @@ describe("manifest onboarding.highlights cross-field checks", () => {
     await rm(workDir, { recursive: true, force: true });
   });
 
-  // Permissive envelope — the host-side cross-field check is what this suite
-  // exercises, NOT the vendored JSON schema (covered by the host-SOT suite).
+  // Use a permissive envelope to isolate host cross-field checks.
   const makeValidator = permissiveManifestValidatorFactory({
     namespaceProperties: {
       entry: { type: "string" },
@@ -112,14 +101,11 @@ describe("manifest onboarding.highlights cross-field checks", () => {
     ["a section nothing anchors", "permissions/turn-it-on"],
     ["a third path segment", "permissions/permissions-os-sandbox/on"],
     ["a trailing separator", "permissions/"],
-    // The real schema shapes these out first; the registry check is what
-    // still refuses them when a permissive envelope lets the string through,
-    // which is the case a plugin using older contract files is in.
+    // Host registry checks still refuse invalid destinations admitted by a stale or permissive schema.
     ["a tab segment opening with a digit", "2fa"],
     ["a section segment opening with a digit", "llm/2fa"],
   ])("rejects a settings action naming %s", async (_case, path) => {
-    // Rejected at LOAD, not at accept: a card whose destination does not exist
-    // would still render, still be answered "yes", and then do nothing.
+    // Reject missing destinations at load so accepted cards cannot lead nowhere.
     const manifestPath = await writeManifest({
       onboarding: { highlights: [settingsHighlight(path)] },
     });

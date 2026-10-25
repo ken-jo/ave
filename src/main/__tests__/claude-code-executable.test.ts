@@ -27,17 +27,15 @@ afterEach(async () => {
   expect(spawn).not.toHaveBeenCalled();
   vi.restoreAllMocks();
   vi.clearAllMocks();
-  // A test may leave its sealed read-only copy undiscarded; the async removal
-  // clears the Windows read-only attribute that the synchronous one refuses.
+  // A test may leave its sealed read-only copy undiscarded; the async removal clears the Windows read-only attribute that the synchronous one refuses.
   for (const root of roots.splice(0)) await cleanupTmpDir(root);
 });
 
-function fixture(platform: NodeJS.Platform = process.platform) {
+async function fixture(platform: NodeJS.Platform = process.platform) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "ave-subscription-executable-")));
   roots.push(root);
   normalizeFixtureAncestorPermissions(root);
-  const runtime = join(root, "runtime");
-  mkdirSync(runtime, { mode: 0o700 });
+  const runtime = await locations.createPrivateDirectory(join(root, "runtime"));
   const bin = join(root, "bin");
   const source = writeNativeExecutable(join(bin, platform === "win32" ? "claude.exe" : "claude"), nativeExecutableBytes(platform));
   utimesSync(source, fixtureTimestamp, fixtureTimestamp);
@@ -45,8 +43,8 @@ function fixture(platform: NodeJS.Platform = process.platform) {
   return { root, runtime, bin, source, discovery };
 }
 
-function npmFixture(platform: NodeJS.Platform = process.platform) {
-  const base = fixture(platform);
+async function npmFixture(platform: NodeJS.Platform = process.platform) {
+  const base = await fixture(platform);
   const packageRoot = join(base.bin, "node_modules", "@anthropic-ai", "claude-code");
   mkdirSync(packageRoot, { recursive: true, mode: 0o700 });
   const script = join(packageRoot, "cli.js");
@@ -81,7 +79,7 @@ function changeBytesKeepingMetadata(path: string): void {
 
 describe("subscription executable admission", () => {
   it("maps a guarded package location rejection to the npm guidance error", async () => {
-    const { root, runtime, source } = fixture();
+    const { root, runtime, source } = await fixture();
     const rejected = new locations.CodexExecutableLocationError("Rejected package fixture");
     rejected.routeKind = "guarded-script";
     const client = new ClaudeCodeSubscriptionClient({ runtimeHome: runtime, workspaceDir: root,
@@ -99,7 +97,7 @@ describe("subscription executable admission", () => {
   });
 
   it("maps a rejected location to the unsafe-location code before probing", async () => {
-    const { root, runtime, source } = fixture();
+    const { root, runtime, source } = await fixture();
     const rejected = new locations.CodexExecutableLocationError("Rejected fixture location");
     const client = new ClaudeCodeSubscriptionClient({
       runtimeHome: runtime, workspaceDir: root, candidates: () => [source],
@@ -113,7 +111,7 @@ describe("subscription executable admission", () => {
   });
 
   it("uses native ancestor rules for every native launch input and private directory", async () => {
-    const { runtime, source, discovery } = fixture();
+    const { runtime, source, discovery } = await fixture();
     const executableLocation = vi.spyOn(locations, "assertCodexExecutableLocation").mockResolvedValue();
     const privateDirectory = vi.spyOn(locations, "assertCodexPrivateRuntimeDirectory").mockResolvedValue();
     const proof = await pinClaudeCodeExecutable(source, runtime, discovery);
@@ -127,7 +125,7 @@ describe("subscription executable admission", () => {
   });
 
   it("pins a hash and a sealed private native copy with no-follow opens", async () => {
-    const { runtime, source, discovery } = fixture();
+    const { runtime, source, discovery } = await fixture();
     const open = vi.spyOn(fs, "open");
     const proof = await pinClaudeCodeExecutable(source, runtime, discovery);
     expect(proof.executable).not.toBe(source);
@@ -148,7 +146,7 @@ describe("subscription executable admission", () => {
   });
 
   it("refuses the next verification after installed bytes change despite matching path and metadata", async () => {
-    const { runtime, source, discovery } = fixture();
+    const { runtime, source, discovery } = await fixture();
     const proof = await pinClaudeCodeExecutable(source, runtime, discovery);
     const pinnedBytes = readFileSync(proof.executable);
     changeBytesKeepingMetadata(source);
@@ -157,7 +155,7 @@ describe("subscription executable admission", () => {
   });
 
   it("refuses modified private bytes even after permissions and modification time are restored", async () => {
-    const { runtime, source, discovery } = fixture();
+    const { runtime, source, discovery } = await fixture();
     const proof = await pinClaudeCodeExecutable(source, runtime, discovery);
     utimesSync(proof.executable, fixtureTimestamp, fixtureTimestamp);
     await expect(proof.verify()).resolves.toBeUndefined();
@@ -166,14 +164,14 @@ describe("subscription executable admission", () => {
   });
 
   it.skipIf(process.platform === "win32").each(["file", "parent"] as const)("rejects a writable %s before any executable runs", async (target) => {
-    const { runtime, source, bin, discovery } = fixture();
+    const { runtime, source, bin, discovery } = await fixture();
     chmodSync(target === "file" ? source : bin, 0o777);
     await expect(pinClaudeCodeExecutable(source, runtime, discovery)).rejects.toThrow("writable by another account");
     expect(readdirSync(runtime)).toEqual([]);
   });
 
   it.skipIf(process.platform === "win32")("rejects an untrusted intermediate symbolic-link owner", async () => {
-    const { root, runtime, source, discovery } = fixture();
+    const { root, runtime, source, discovery } = await fixture();
     const relay = join(root, "relay");
     const launcher = join(root, "launcher");
     symlinkSync(source, relay);
@@ -190,7 +188,7 @@ describe("subscription executable admission", () => {
   });
 
   it.skipIf(process.platform === "win32")("rejects an unsafe intermediate symbolic-link parent", async () => {
-    const { root, runtime, source, discovery } = fixture();
+    const { root, runtime, source, discovery } = await fixture();
     const unsafe = join(root, "unsafe");
     mkdirSync(unsafe, { mode: 0o700 });
     const relay = join(unsafe, "relay");
@@ -202,13 +200,13 @@ describe("subscription executable admission", () => {
   });
 
   it("rejects a generic shell launcher instead of trying to execute it", async () => {
-    const { source, runtime, discovery } = fixture();
+    const { source, runtime, discovery } = await fixture();
     writeFileSync(source, "#!/bin/sh\necho unsupported\n");
     await expect(pinClaudeCodeExecutable(source, runtime, discovery)).rejects.toThrow("Unsupported subscription launcher");
   });
 
   it.skipIf(process.platform === "win32").each(["file", "parent"] as const)("refuses an unsafe %s before the client's first probe without trying another candidate", async (target) => {
-    const { root, runtime, source, bin, discovery } = fixture();
+    const { root, runtime, source, bin, discovery } = await fixture();
     const trustedAlternative = writeNativeExecutable(join(root, "trusted", "claude"));
     chmodSync(target === "file" ? source : bin, 0o777);
     const probe = vi.fn(() => { throw new Error("Unexpected qualification probe"); });
@@ -231,7 +229,7 @@ describe("subscription executable admission", () => {
 
 describe("subscription package launch inputs", () => {
   it("uses guarded package routes and native interpreter routes without splitting the batch", NATIVE_PROBE_HEAVY_TEST, async () => {
-    const { launcher, runtime, discovery } = npmFixture("win32");
+    const { launcher, runtime, discovery } = await npmFixture("win32");
     const executableLocation = vi.spyOn(locations, "assertCodexExecutableLocation").mockResolvedValue();
     const privateDirectory = vi.spyOn(locations, "assertCodexPrivateRuntimeDirectory").mockResolvedValue();
     const batches = vi.spyOn(locations, "assertCodexLocations").mockResolvedValue();
@@ -248,7 +246,7 @@ describe("subscription package launch inputs", () => {
   });
 
   it.skipIf(process.platform === "win32")("pins a package script and a private native interpreter through a protected launcher link", async () => {
-    const { launcher, runtime, discovery, script, interpreter } = npmFixture();
+    const { launcher, runtime, discovery, script, interpreter } = await npmFixture();
     const proof = await pinClaudeCodeExecutable(launcher, runtime, discovery);
     expect(proof.args.slice(0, 2)).toEqual(["--no-global-search-paths", "--import"]);
     expect(proof.args[2]).toMatch(/^file:/);
@@ -260,7 +258,7 @@ describe("subscription package launch inputs", () => {
   });
 
   it("resolves a batch-only installation to its package entry and a private native interpreter without a shell", NATIVE_PROBE_HEAVY_TEST, async () => {
-    const { launcher, runtime, discovery, script, interpreter } = npmFixture("win32");
+    const { launcher, runtime, discovery, script, interpreter } = await npmFixture("win32");
     expect(claudeCodeNpmShimTarget(launcher)).toBe(script);
     const proof = await pinClaudeCodeExecutable(launcher, runtime, discovery);
     expect(proof.args.slice(0, 2)).toEqual(["--no-global-search-paths", "--import"]);
@@ -274,7 +272,7 @@ describe("subscription package launch inputs", () => {
   });
 
   it.skipIf(process.platform === "win32")("pins the absolute shebang interpreter instead of another interpreter from the search path", async () => {
-    const fixture = npmFixture();
+    const fixture = await npmFixture();
     const bytes = nativeExecutableBytes();
     bytes[bytes.length - 1] = 47;
     const exactInterpreter = writeNativeExecutable(join(fixture.root, "exact-interpreter", "node"), bytes);
@@ -295,33 +293,33 @@ describe("subscription package launch inputs", () => {
   });
 
   it.each(["script", "dependency", "interpreter", "launcher"] as const)("refuses a changed %s after package verification", async (target) => {
-    const fixture = npmFixture("win32");
+    const fixture = await npmFixture("win32");
     const proof = await pinClaudeCodeExecutable(fixture.launcher, fixture.runtime, fixture.discovery);
     changeBytesKeepingMetadata(fixture[target]);
     await expect(proof.verify()).rejects.toThrow("Subscription executable changed");
   });
 
   it("refuses a package with a different declared identity", async () => {
-    const fixture = npmFixture("win32");
+    const fixture = await npmFixture("win32");
     writeFileSync(join(fixture.packageRoot, "package.json"), JSON.stringify({ name: "unrelated-package" }));
     await expect(pinClaudeCodeExecutable(fixture.launcher, fixture.runtime, fixture.discovery)).rejects.toThrow("Invalid subscription package");
   });
 
   it("refuses a package script that requires a shell interpreter", async () => {
-    const fixture = npmFixture("win32");
+    const fixture = await npmFixture("win32");
     writeFileSync(fixture.script, "#!/bin/sh\necho unsupported\n");
     await expect(pinClaudeCodeExecutable(fixture.launcher, fixture.runtime, fixture.discovery)).rejects.toThrow("Unsupported subscription interpreter");
   });
 
   it.skipIf(process.platform === "win32")("refuses an untrusted interpreter before creating an artifact", async () => {
-    const fixture = npmFixture("win32");
+    const fixture = await npmFixture("win32");
     chmodSync(fixture.interpreter, 0o777);
     await expect(pinClaudeCodeExecutable(fixture.launcher, fixture.runtime, fixture.discovery)).rejects.toThrow("writable by another account");
     expect(readdirSync(fixture.runtime)).toEqual([]);
   });
 
   it.skipIf(process.platform === "win32")("refuses links from the pinned package to external code", async () => {
-    const fixture = npmFixture("win32");
+    const fixture = await npmFixture("win32");
     symlinkSync(fixture.interpreter, join(fixture.packageRoot, "external.js"));
     await expect(pinClaudeCodeExecutable(fixture.launcher, fixture.runtime, fixture.discovery)).rejects.toThrow("contains a symbolic link");
   });

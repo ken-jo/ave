@@ -6,11 +6,8 @@ import { useRef } from "react";
 import type { ChatEntry } from "../../../../lib/chat-stream-state.js";
 import { useChatScroll } from "../use-chat-scroll.js";
 
-/**
- * A tile that leaves the view is kept mounted but hidden (`display:none`), which
- * zeroes its viewport's geometry and `scrollTop`. Showing it again must put the
- * transcript back where the user left it, not at the top or the bottom.
- */
+/** A tile that leaves the view is kept mounted but hidden (`display:none`), which zeroes its viewport's geometry and
+ * `scrollTop`. Showing it again must put the transcript back where the user left it, not at the top or the bottom. */
 
 const ENTRIES = [
   { kind: "user", text: "question", createdAt: 1 },
@@ -64,9 +61,8 @@ describe("useChatScroll — a hidden tile shown again", () => {
     });
     vi.stubGlobal("cancelAnimationFrame", vi.fn());
     const geometry: Geometry = { scrollHeight: 2400, clientHeight: 600 };
-    // Geometry has to exist before the hook's layout effects measure it, so it
-    // is installed on the prototype for the first commit and moved onto the
-    // element right after.
+    // Geometry has to exist before the hook's layout effects measure it, so it is installed on the prototype for the first
+    // commit and moved onto the element right after.
     const proto = HTMLDivElement.prototype;
     const restore = [
       Object.getOwnPropertyDescriptor(proto, "scrollHeight"),

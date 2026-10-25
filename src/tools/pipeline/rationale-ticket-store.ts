@@ -176,11 +176,8 @@ export function createRationaleTicketCasExpectation(
   }, "RationaleTicketCasExpectation");
 }
 
-/**
- * Host-owned process-lifetime store. Active ticket/control records are removed
- * on every terminal transition; minimal tombstones prevent replay recreation.
- * It intentionally exposes no PermissionCheckResult or direct-allow API.
- */
+// Remove active records at every terminal transition; minimal tombstones prevent replay recreation.
+// Expose no permission decision or direct-allow API.
 export class InProcessRationaleTicketStore {
   readonly #entries = new Map<string, HostRationaleTicketSnapshot>();
   readonly #activeBySession = new Map<string, Set<string>>();
@@ -378,16 +375,8 @@ export class InProcessRationaleTicketStore {
     return this.#consumeOnce(expectation, now, "allow-once", "allow-once-consumed");
   }
 
-  /**
-   * Reviewer auto-approve-on-aligned terminal. Mirrors {@link consumeAllowOnce}
-   * exactly — same one-shot receipt kind, same CAS/authenticity guarantees,
-   * same single-use terminal — but is minted by the host reviewer (fresh +
-   * aligned + non-high) instead of a user modal, and is driven from the
-   * `rationale_ready` state through the distinct `reviewer-authorize-once`
-   * transition so the store audit trail records the provenance. A second
-   * consume fails CAS because the first drives the ticket to its terminal
-   * `allowed_once` state.
-   */
+  // Fresh, aligned, non-high review consumes one-shot authority from rationale_ready with distinct audit provenance.
+  // A second consume must fail CAS after the allowed_once terminal.
   consumeReviewerAuthorizedOnce(
     expectation: RationaleTicketCasExpectation,
     now = Date.now(),
@@ -400,11 +389,7 @@ export class InProcessRationaleTicketStore {
     );
   }
 
-  /**
-   * The one-shot allow-once CAS shared by the user and reviewer terminals:
-   * transition, mint and validate the receipt, then commit the terminal
-   * `allowed_once` state with the provenance-specific audit operation.
-   */
+  // User and reviewer terminals share transition, receipt mint/validation, and terminal commit with distinct audit provenance.
   #consumeOnce(
     expectation: RationaleTicketCasExpectation,
     now: number,

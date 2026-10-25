@@ -1,37 +1,4 @@
-/**
- * One-shot, idempotent migration of a legacy plugin-owned board into the
- * host-owned `work-board` feature namespace.
- *
- * Before the work-board host domain existed, the board lived under a plugin's
- * own namespace at `~/.ave/plugins/<pluginId>/data/board.json`. The host now owns
- * this state under `~/.ave/work-board/board.json` (see {@link WorkBoardStore}
- * and the storage-namespace rule in CLAUDE.md).
- *
- * The host stays plugin-agnostic: rather than hard-coding a specific plugin id
- * (which would couple app runtime to a concrete plugin — see the
- * app-plugin-decoupling audit), this step SCANS `~/.ave/plugins/&#42;/board.json`
- * (each plugin's `data/board.json`) and adopts the single legacy board it finds. Naming the source by directory
- * discovery, not by literal, keeps the migration generic.
- *
- * Migration policy:
- *   - Runs only when the destination `work-board/board.json` is ABSENT *and*
- *     exactly one legacy `plugins/&#42;/board.json` is PRESENT. The presence of a
- *     destination file is the idempotency marker — once the host board exists
- *     (whether created here, by the first `WorkBoardStore` write, or a prior
- *     migration), this step is a no-op forever.
- *   - When more than one legacy board is found the migration is skipped (the
- *     host cannot disambiguate which plugin owned the canonical board) and the
- *     ambiguity is logged.
- *   - The legacy file is COPIED (not moved) so there is zero data loss: a
- *     failed/aborted boot can re-attempt, and the plugin's own copy is left
- *     untouched for forensic comparison.
- *   - Any failure is non-fatal — it logs and returns so boot continues. The
- *     host store falls back to an empty board, never a broken one.
- *
- * The destination write goes through {@link openFeatureNamespace} so the
- * `0o700` dir / `0o600` file / atomic tmpfile+rename contract is enforced by
- * the storage SOT helper — this step never hand-rolls `fs` writes.
- */
+/** Copy exactly one valid legacy board only when the host board is absent; use feature-namespace atomic writes. */
 import { readFile, readdir } from "node:fs/promises";
 import type { Dirent } from "node:fs";
 import { join } from "node:path";
@@ -44,13 +11,7 @@ const log = createLogger("ave");
 
 const BOARD_FILE = "board.json";
 
-/**
- * Minimal structural check that a parsed legacy value is actually a board: a
- * non-null object carrying an `items` array. Rejects parseable-but-wrong-shape
- * JSON (`[]`, `"x"`, `42`, `null`, `{ items: "x" }`) so it is never adopted as
- * the host board — the store would otherwise back it up and seed empty on the
- * next read, masking the bad migration behind a "success" log line.
- */
+/** Reject parseable values without an items array so invalid migration cannot masquerade as success. */
 function isBoardShape(value: unknown): value is { items: unknown[] } {
   return (
     typeof value === "object" &&
@@ -60,12 +21,7 @@ function isBoardShape(value: unknown): value is { items: unknown[] } {
   );
 }
 
-/**
- * Discover every `~/.ave/plugins/<id>/data/board.json` that exists on disk.
- * Returns absolute paths. A missing plugins root yields an empty list (nothing
- * to migrate). Probes each candidate with a read rather than a stat→read pair
- * so there is no TOCTOU window.
- */
+/** Read candidates directly to avoid stat/read races; a missing plugin root means no migration. */
 async function findLegacyPluginBoards(pluginsRoot: string): Promise<string[]> {
   let entries: Dirent[];
   try {
@@ -77,47 +33,35 @@ async function findLegacyPluginBoards(pluginsRoot: string): Promise<string[]> {
   const found: string[] = [];
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
-    // Plugins persist via the host PluginStorage API, which resolves to the
-    // plugin's `data/` subdir — so the legacy board lives at
-    // `plugins/<id>/data/board.json`, not at the plugin-dir root.
+    // Plugin storage resolves under data/, not the plugin directory root.
     const candidate = join(pluginsRoot, entry.name, "data", BOARD_FILE);
     try {
       await readFile(candidate, "utf-8");
       found.push(candidate);
     } catch (err) {
       if (!isMissingPathError(err)) throw err;
-      // No board.json in this plugin dir — skip.
     }
   }
   return found.sort();
 }
 
-/**
- * Migrate a legacy plugin board into the work-board namespace exactly once.
- * Idempotent and non-fatal. Returns `true` when a migration copy was performed
- * this call, `false` otherwise (already migrated, no/ambiguous legacy board,
- * or an error swallowed for boot continuity).
- */
+/** Return true only for a performed copy; ambiguity, existing state, and errors leave boot running. */
 export async function migrateLegacyPluginBoardToWorkBoard(): Promise<boolean> {
   const ns = openFeatureNamespace("work-board");
   const destPath = join(ns.dir, BOARD_FILE);
   const pluginsRoot = join(aveHome(), "plugins");
 
   try {
-    // Idempotency guard — if the host board already exists we never touch it.
-    // try-read instead of existsSync to avoid a TOCTOU stat→read race.
+    // Read directly rather than testing existence to avoid a stat/read race.
     try {
       await readFile(destPath, "utf-8");
-      // Destination present → already migrated (or host already wrote one).
       return false;
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-      // ENOENT — destination absent, proceed to scan for a legacy source.
     }
 
     const legacyBoards = await findLegacyPluginBoards(pluginsRoot);
     if (legacyBoards.length === 0) {
-      // No legacy plugin board to migrate — nothing to do.
       return false;
     }
     if (legacyBoards.length > 1) {
@@ -131,11 +75,7 @@ export async function migrateLegacyPluginBoardToWorkBoard(): Promise<boolean> {
     const legacyPath = legacyBoards[0];
     const legacyRaw = await readFile(legacyPath, "utf-8");
 
-    // Parse to validate it is well-formed JSON before adopting it as the host
-    // board. A corrupt legacy file is treated as "nothing to migrate" rather
-    // than copied verbatim (the host store would otherwise back it up + reset
-    // on first read). Re-serialized through writeJson so the destination is
-    // written with the namespace permission + atomic-write contract.
+    // Parse before adoption and write through the namespace helper for atomic permissions-safe persistence.
     let parsed: unknown;
     try {
       parsed = JSON.parse(legacyRaw);
@@ -147,11 +87,6 @@ export async function migrateLegacyPluginBoardToWorkBoard(): Promise<boolean> {
       return false;
     }
 
-    // Shape-validate before adopting. Parseable-but-wrong-shape values
-    // (`[]`, `"x"`, `42`, `{ items: "x" }`) would otherwise be written
-    // verbatim and then silently seed an empty board on the store's next
-    // read while this step logged success. A board is an object with an
-    // `items` array; anything else is treated as "nothing to migrate".
     if (
       !isBoardShape(parsed)
     ) {

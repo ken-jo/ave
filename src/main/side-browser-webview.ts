@@ -25,10 +25,7 @@ const log = createLogger("ave");
 
 export type SideBrowserAttachResult = "ignored" | "accepted" | "blocked";
 
-/**
- * Protocol + embedded-credential rule, delegated to the shared authority
- * (src/shared/external-url.ts) rather than re-implemented here.
- */
+// Protocol + embedded-credential rule, delegated to the shared authority (src/shared/external-url.ts) rather than re-implemented here.
 function isHttpUrl(value: string): boolean {
   return validateExternalUrl(value).ok;
 }
@@ -53,8 +50,7 @@ function permissionDetails(contents: WebContents | null, permission: string, det
 
 export function installSideBrowserPartitionPolicy(): void {
   const sideBrowserSession = session.fromPartition(AVE_SIDE_BROWSER_PARTITION);
-  // Sign-in pages (Google, Microsoft) refuse UAs that carry `Electron/` as an
-  // embedded browser; present the same vanilla Chromium/Edge UA as the link
+  // Sign-in pages (Google, Microsoft) refuse UAs that carry `Electron/` as an embedded browser; present the same vanilla Chromium/Edge UA as the link
   // viewer so logins in the in-app browser work and persist.
   sideBrowserSession.setUserAgent(buildPersistentBrowserUserAgent());
   sideBrowserSession.setPermissionRequestHandler((contents, permission, callback, details) => {
@@ -75,7 +71,7 @@ export function installSideBrowserPartitionPolicy(): void {
   });
 }
 
-/** Download prompts one page origin may raise within {@link DOWNLOAD_RATE_WINDOW_MS}. */
+// Download prompts one page origin may raise within {@link DOWNLOAD_RATE_WINDOW_MS}.
 export const DOWNLOAD_PROMPTS_PER_ORIGIN = 3;
 export const DOWNLOAD_RATE_WINDOW_MS = 60_000;
 
@@ -90,23 +86,8 @@ function originOf(url: string): string {
   }
 }
 
-/**
- * The side browser's `will-download` policy. Downloads work as in a normal
- * browser, through the native Save dialog, with three limits so a page cannot
- * use them to badger the user or write files unseen:
- *
- * - No `setSavePath` is ever called, so Electron always shows the Save dialog
- *   and the user picks (or cancels) the destination. Nothing opens the file
- *   once it is saved.
- * - One pending Save dialog per side browser (per guest or popup
- *   `WebContents`): a download requested while that browser's dialog is still
- *   open is cancelled.
- * - At most {@link DOWNLOAD_PROMPTS_PER_ORIGIN} prompts per page origin within
- *   {@link DOWNLOAD_RATE_WINDOW_MS}; further requests are cancelled and logged.
- *
- * A prompt stops being pending once the user picked a path (the item reports
- * a save path) or the item finished (saved, cancelled or interrupted).
- */
+// Downloads always use native Save with no automatic path or launch.
+// Permit one pending dialog per guest/popup and rate-limit prompts per origin to prevent attention flooding.
 export function createSideBrowserDownloadPolicy(options: {
   now?: () => number;
   warn?: (fields: Record<string, unknown>, message: string) => void;
@@ -148,11 +129,8 @@ export function isSideBrowserContents(contents: WebContents): boolean {
   return contents.session === session.fromPartition(AVE_SIDE_BROWSER_PARTITION);
 }
 
-/**
- * Preferences forced on every remote-content surface of the side browser: the
- * `<webview>` guest at attach time and every popup window it opens. Remote
- * pages never get a preload, Node, or a nested `<webview>`.
- */
+// Preferences forced on every remote-content surface of the side browser: the `<webview>` guest at attach time and every popup window it opens. Remote
+// pages never get a preload, Node, or a nested `<webview>`.
 function hardenRemoteWebPreferences(prefs: Record<string, unknown>): void {
   delete prefs.preload;
   delete prefs.preloadURL;
@@ -185,12 +163,7 @@ export function configureSideBrowserWebviewAttach(input: {
   return "accepted";
 }
 
-/**
- * Whether a side-browser page may open `url` as a new window. Blank popup
- * requests are ambiguous: a script URL can arrive as `about:blank` and execute
- * without a cancellable navigation event. Only concrete http(s) URLs are safe
- * to admit here. Blank guest bootstraps use the separate attach policy.
- */
+// Admit concrete HTTP(S) popup URLs only: a script can execute through about:blank without cancellable navigation; guest bootstraps use attach policy.
 export function isSideBrowserPopupUrlAllowed(url: string): boolean {
   return isHttpUrl(url);
 }
@@ -202,29 +175,15 @@ function sideBrowserPopupOptions(owner: BrowserWindow): BrowserWindowConstructor
     width: 520,
     height: 720,
     autoHideMenuBar: true,
-    // A child of the main window whose side panel opened it, so it closes
-    // with that window instead of outliving it as a stray top-level window.
+    // A child of the main window whose side panel opened it, so it closes with that window instead of outliving it as a stray top-level window.
     parent: owner,
-    // Native frame on purpose: the app's hidden-titlebar chrome relies on an
-    // in-page titlebar that a remote page does not have.
+    // Native frame on purpose: the app's hidden-titlebar chrome relies on an in-page titlebar that a remote page does not have.
     webPreferences: webPreferences as BrowserWindowConstructorOptions["webPreferences"],
   };
 }
 
-/**
- * Install the side-browser guards on a remote-content `WebContents` — the
- * `<webview>` guest, and recursively every popup it (or a popup) opens.
- *
- * Popups are top-level `BrowserWindow`s (type `"window"`), so the global
- * webview guard in `main.ts` never sees them; these listeners are their only
- * gate. The popup's session is inherited from its opener (that is what keeps
- * `window.opener` working for OAuth `postMessage`); a child that somehow lands
- * on any other session is closed instead of trusted.
- *
- * `owner` is the main window whose side panel hosts the guest. Every popup in
- * the chain is parented to it, so closing that window closes them; once it is
- * gone, no further popup opens.
- */
+// Guard guests and every popup recursively; global webview guards do not cover top-level popup windows.
+// Require inherited session identity and parent popups to the owning main window; close foreign-session children.
 export function attachSideBrowserWebview(contents: WebContents, owner: BrowserWindow): void {
   markAsLinkOwned(contents);
   observeBrowserWorkspaceGuest(contents, owner);

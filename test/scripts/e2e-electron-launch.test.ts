@@ -2,10 +2,7 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import { describe, expect, it } from "vitest";
 
-// Every Playwright Electron launch in the e2e and screenshot suites goes
-// through `launchElectron` (test/e2e/ui/seeded-electron.ts), which puts
-// `--use-mock-keychain` in front on macOS. A spec that calls Playwright's
-// launcher directly would open the owner's login Keychain and prompt them.
+// The shared launcher substitutes keychain access to prevent real prompts.
 const ROOT = process.cwd();
 const HARNESS = "test/e2e/ui/seeded-electron.ts";
 const SUITES = ["test/e2e", "test/screenshots"];
@@ -18,12 +15,7 @@ function sourceFiles(dir: string): string[] {
   });
 }
 
-/**
- * Playwright's Electron launcher is `_electron` (imported, destructured, or
- * reached through the module namespace as `pw._electron`); any mention of the
- * identifier outside the harness, or any `electron.launch(` call, is a launch
- * that skips the harness's switches.
- */
+// Scan direct launches and aliases so callers cannot bypass the shared launcher.
 const DIRECT_LAUNCH = /\b_electron\b|\b_?electron\.launch\(/;
 
 describe("e2e Electron launches", () => {
@@ -43,8 +35,7 @@ describe("e2e Electron launches", () => {
 
   it("all go through the harness launcher", () => {
     const direct = SUITES.flatMap((suite) => sourceFiles(resolve(ROOT, suite)))
-      // Compared in the posix spelling HARNESS uses, so Windows's `\` paths
-      // still exclude the harness itself.
+      // This harness requires POSIX process behavior.
       .map((path) => relative(ROOT, path).split(sep).join("/"))
       .filter((path) => path !== HARNESS)
       .filter((path) => DIRECT_LAUNCH.test(readFileSync(path, "utf8")));

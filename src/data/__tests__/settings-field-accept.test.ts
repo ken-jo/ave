@@ -30,8 +30,7 @@ describe("acceptField", () => {
   });
 
   it("says nothing about a field nobody has written", () => {
-    // Absent is the ordinary case of an unset setting; warning about it would
-    // make a clean profile look broken.
+    // Unset settings are normal and must not warn.
     warn.mockClear();
     const target = { hardwareAcceleration: true };
 

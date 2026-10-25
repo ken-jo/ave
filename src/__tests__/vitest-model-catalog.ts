@@ -1,14 +1,4 @@
-/**
- * Test setup — installs the bundled model catalog, as boot does.
- *
- * Model resolution reads the catalog the process installed and throws when
- * none was (`src/shared/model-catalog/active.ts`). The desktop and headless
- * hosts install it in `bootstrapCoreServices`, and the renderer before it
- * mounts; a test file is its own process for this purpose, so it gets the
- * same verified snapshot here. Installed as a loader: a file that never
- * resolves a model never parses the document. A test that needs a different
- * catalog installs its own and restores this one afterwards.
- */
+/** Install the verified catalog lazily per test context; tests replacing it must restore the default. */
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";

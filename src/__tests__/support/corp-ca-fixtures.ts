@@ -1,19 +1,5 @@
-/**
- * Certificate fixtures for the corporate-CA tests.
- *
- * Throwaway self-signed certificates, generated once for the test suite and
- * never trusted by anything. They are real certificates on purpose: the
- * acquisition pipeline parses every candidate with `X509Certificate` and reads
- * the subject off it, so a hand-written PEM-shaped string proves nothing about
- * what would be injected on a user's machine.
- *
- * The common names are chosen so both the extraction tests and the runtime
- * tests can share this one set: {@link CORP_CA_PEM} and {@link CORP_CA_G2_PEM}
- * carry `DEFAULT_CORP_CA_COMMON_NAME` as a prefix, which is the name a test
- * that resolves the default configuration will search for.
- */
+/** Use real, untrusted certificates because acquisition parses X509 subjects. */
 
-/** CN=Corporate Root CA, O=Example Corp. */
 export const CORP_CA_PEM = `-----BEGIN CERTIFICATE-----
 MIIDYTCCAkmgAwIBAgIULfTi5U5zbPkWOxKz15PeAvlDy60wDQYJKoZIhvcNAQEL
 BQAwQDELMAkGA1UEBhMCVVMxFTATBgNVBAoMDEV4YW1wbGUgQ29ycDEaMBgGA1UE
@@ -37,11 +23,7 @@ XSmO04hdUOrA1YQ1KfCLLmBSwRwo5GroxwwSgtE/wGPPbII92xcQmCS9eQ6toLfx
 -----END CERTIFICATE-----
 `;
 
-/**
- * CN=Corporate Root CA G2 — a second, DIFFERENT certificate that matches the
- * same search. Organizations roll their root over and leave both deployed, so
- * "one name, several certificates" is the normal case, not an edge case.
- */
+/** Two matching roots model certificate rollover with both roots deployed. */
 export const CORP_CA_G2_PEM = `-----BEGIN CERTIFICATE-----
 MIIDZzCCAk+gAwIBAgIUK6BrgDzWAPxzjVprCQFu0TeUavQwDQYJKoZIhvcNAQEL
 BQAwQzELMAkGA1UEBhMCVVMxFTATBgNVBAoMDEV4YW1wbGUgQ29ycDEdMBsGA1UE
@@ -65,7 +47,6 @@ MskSs8z6nvebrfENPbhD25LBy4GSwyyRm3Ksx3xbG4q9jX7qhkWnfqTiZxQ0L3wG
 -----END CERTIFICATE-----
 `;
 
-/** CN=Unrelated Public Root — the kind of anchor a system bundle is full of. */
 export const PUBLIC_ROOT_PEM = `-----BEGIN CERTIFICATE-----
 MIIDaTCCAlGgAwIBAgIUNl60WAR+jlZ1qYIPjQHAuTOME7MwDQYJKoZIhvcNAQEL
 BQAwRDELMAkGA1UEBhMCVVMxFTATBgNVBAoMDFB1YmxpYyBUcnVzdDEeMBwGA1UE
@@ -89,11 +70,7 @@ yfNeLca0QToeWizTTw==
 -----END CERTIFICATE-----
 `;
 
-/**
- * CN=Some Other Name, but O=Corporate Root CA Holdings. Searching the whole
- * subject instead of the CN attribute would inject this certificate for a user
- * who typed the name of their CA — which is why the selector reads the CN only.
- */
+/** A matching organization name must not substitute for a matching CN. */
 export const ORG_ONLY_PEM = `-----BEGIN CERTIFICATE-----
 MIIDeTCCAmGgAwIBAgIUF2MMQA//tRxgVywTtEW4UOMX84gwDQYJKoZIhvcNAQEL
 BQAwTDELMAkGA1UEBhMCVVMxIzAhBgNVBAoMGkNvcnBvcmF0ZSBSb290IENBIEhv

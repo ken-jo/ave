@@ -1,8 +1,4 @@
-/**
- * Permission policy — hook-system boot wiring tests.
- *
- * Spec ref: docs/architecture/permission-policy-design.md §3 Layer 6.
- */
+/** Hook trust policy: docs/architecture/permission-policy-design.md, Layer 6. */
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import {
   existsSync,
@@ -78,7 +74,6 @@ describe("wireHookSystem permission hook policy", () => {
     expect(result.trust.disabledHooks.map((h) => h.fileName)).toEqual([
       "post-bad.sh",
     ]);
-    // Disabled file moved to .disabled/
     const disabledFiles = readdirSync(join(hooksDir, ".disabled"));
     expect(disabledFiles).toContain("post-bad.sh");
   });

@@ -57,8 +57,8 @@ function applyLayout(layout: MainLayoutSnapshot, chatGroups: ChatGroupsForLayout
   }
   // The saved tree's nodes have the pane tree's shape; the parser checked them.
   chatGroups.restore({ tree: layout.tree as PaneNode, focusedId: layout.focusedId, panelOpenIds: layout.panelOpenIds, thumbnailOpenIds: layout.thumbnailOpenIds, content });
-  // Panes whose conversation is already mounted (the main one, at least) take
-  // their side tabs now; the rest take them when they mount.
+  // Panes whose conversation is already mounted (the main one, at least) take their side tabs now; the rest take them when
+  // they mount.
   for (const paneId of Object.keys(layout.sideTabs)) {
     const sink = getSideTabsSink(paneId);
     if (!sink) continue;
@@ -66,17 +66,8 @@ function applyLayout(layout: MainLayoutSnapshot, chatGroups: ChatGroupsForLayout
   }
 }
 
-/**
- * Save the main window's layout as it changes, and put it back at launch
- * (`shared/main-layout.ts` holds the shape and its rules).
- *
- * Restore: the saved value is checked once more here. A refused one is logged
- * with the rule it broke, and the window stays in the default layout.
- * Save: nothing is written until the restore has run, or the first write would
- * replace the saved layout with the default one before it was read. After
- * that, any change is written once the layout holds still. A snapshot that
- * fails its own rules is a bug here; it is reported and not written.
- */
+/** Validate before restore/save and wait for restoration before writing defaults; invalid snapshots are reported without
+ * persistence. */
 export function useMainLayout(api: AveApi, chatGroups: ChatGroupsForLayout, mainSurfaces: MainSurfacesForLayout): void {
   // The saved layout is the primary window's (`shared/main-window-role.ts`):
   // two windows restoring one layout would both claim its terminal ids, and
@@ -142,8 +133,8 @@ export function useMainLayout(api: AveApi, chatGroups: ChatGroupsForLayout, main
       });
       return snapshot;
     };
-    // What the window holds as the restore settles is what is already saved
-    // (or the default, which needs no saving): only a change after it is written.
+    // What the window holds as the restore settles is what is already saved (or the default, which needs no saving): only a
+    // change after it is written.
     if (lastWrittenRef.current === null) lastWrittenRef.current = JSON.stringify(current());
     const write = () => {
       timer = null;

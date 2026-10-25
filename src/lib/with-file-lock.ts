@@ -1,50 +1,10 @@
-/**
- * Cross-process file lock helper — wraps `proper-lockfile`.
- *
- * Usage:
- *   const result = await withFileLock("/path/to/file.json", async () => {
- *     // read-modify-write
- *     return result;
- *   });
- *
- * - Acquires a `.lock` lockfile next to `path` before calling `fn`.
- * - Releases unconditionally in a finally block.
- * - Stale lock detection: `stale` option (default 10 s) auto-removes locks
- *   left behind by crashed processes.
- * - `retries` option: default 5 attempts with exponential back-off (proper-lockfile built-in).
- */
+/** Acquire the sibling cross-process lock and release in finally; recover stale holders with bounded retries. */
 import lockfile from "proper-lockfile";
 import { mkdir, open } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { errorMessage } from "../shared/error-message.js";
 
-/**
- * Serialize `fn` against every other call for the same path IN THIS PROCESS.
- *
- * NOT a lock, and named so that no one reads it as one. Five modules had this
- * exact six-line promise chain, and three of them called it `withFileLock` --
- * the name of the cross-process lock defined below in this same file. A reader
- * who sees `await withFileLock(this.filePath, ...)` in a store and assumes the
- * imported helper is wrong about what is protecting the file.
- *
- * WHAT IT GIVES: read-modify-write on a JSON store cannot interleave with
- * another read-modify-write issued from the same module instance. That is the
- * whole guarantee.
- *
- * WHAT IT DOES NOT GIVE: anything at all against a second process -- the CLI, a
- * utility process, a plugin child, a second app instance -- or against another
- * copy of the same module loaded into a different JS realm. The queue is a
- * module-local Map; a second realm gets a second Map and the two writers do not
- * see each other. Callers relying on this are relying on the file having ONE
- * writer process, which is a real property of the host-owned `~/.ave` stores
- * and is stated here so it can be checked rather than assumed.
- *
- * Use {@link withFileLock} instead when a second process can write the file.
- *
- * A rejected `fn` does not wedge the queue: the chain stored for the next
- * caller swallows both settlement paths, while the rejection itself is returned
- * to the caller that produced it.
- */
+/** This queue orders only one module instance in one process; use withFileLock for cross-process writers. Return failures to their callers without poisoning later work. */
 export async function withInProcessFileQueue<T>(
   filePath: string,
   fn: () => Promise<T>,
@@ -60,18 +20,9 @@ export async function withInProcessFileQueue<T>(
 
 const inProcessFileQueues = new Map<string, SerialQueue>();
 
-/** Runs `work` after every previously queued `work` has settled. */
 export type SerialQueue = <T>(work: () => Promise<T>) => Promise<T>;
 
-/**
- * One in-process FIFO. The promise chain that every "mutex" in the tree was
- * re-typing by hand: a caller's `work` starts only after the previous caller's
- * `work` has settled, in submission order, and a rejection is handed back to
- * the caller that produced it without wedging the queue for the next one.
- *
- * Same scope caveat as {@link withInProcessFileQueue}: this orders callers
- * inside ONE module instance of ONE process and nothing else.
- */
+/** Keep FIFO order within one module instance; a rejected task must not wedge later tasks. */
 export function createSerialQueue(): SerialQueue {
   let tail: Promise<void> = Promise.resolve();
   return <T>(work: () => Promise<T>): Promise<T> => {
@@ -83,23 +34,11 @@ export function createSerialQueue(): SerialQueue {
 
 
 export interface FileLockOptions {
-  /**
-   * Duration in ms after which a lock is considered stale (crashed process).
-   * Defaults to 10_000 ms.
-   */
   stale?: number;
-  /**
-   * Number of retry attempts when lock is already held.
-   * Defaults to 5 (proper-lockfile exponential back-off).
-   */
   retries?: number;
 }
 
-/**
- * The protected callback completed, but proper-lockfile could not confirm
- * release. Callers that durably committed inside the callback may reconcile
- * their exact output before deciding whether the operation succeeded.
- */
+/** The callback completed but release is unconfirmed; durable writers may reconcile their exact output. */
 export class FileLockReleaseError<T> extends Error {
   readonly callbackCompleted = true;
 
@@ -113,12 +52,7 @@ export class FileLockReleaseError<T> extends Error {
   }
 }
 
-/**
- * Acquire a cross-process file lock on `targetPath`, execute `fn`, then
- * release the lock. Touch the target inside the lock so callbacks are
- * guaranteed that it exists. The touch must not precede acquisition: on
- * Windows, a waiting caller's open can block the holder's rename onto the target.
- */
+/** Touch the target only after acquiring the lock; a waiting Windows open can block the holder's replacement. */
 export async function withFileLock<T>(
   targetPath: string,
   fn: () => Promise<T>,
@@ -126,16 +60,9 @@ export async function withFileLock<T>(
 ): Promise<T> {
   const { stale = 10_000, retries = 5 } = opts;
 
-  // The lock directory is created beside the target.
   await mkdir(dirname(targetPath), { recursive: true });
 
-  // proper-lockfile's default `onCompromised` THROWS from inside an fs
-  // callback — an uncaught exception that takes down the process. Its
-  // periodic refresh can also stat the lock after release has removed it (the
-  // stat is issued before `released` is set and its ENOENT branch never checks
-  // it), reporting a lock already given up as compromised. A compromise after
-  // release starts is therefore ignored; one while `fn` runs means exclusion
-  // was lost, and is handed to this caller instead of crashing.
+  // Ignore compromise only after release starts; loss of exclusion during the callback must reject its caller, never crash from a filesystem callback.
   let releasing = false;
   let compromised: { readonly error: unknown } | undefined;
   const release = await lockfile.lock(targetPath, {
@@ -153,19 +80,13 @@ export async function withFileLock<T>(
   });
   const releaseLock = async (): Promise<void> => {
     releasing = true;
-    // A compromised lock is already dropped by proper-lockfile; releasing it
-    // again would only report ERELEASED.
     if (compromised !== undefined) throw compromised.error;
     await release();
   };
 
   let result: T;
   try {
-    // Touch the target only while holding the lock (realpath: false never
-    // stats it). On Windows an open handle makes a holder's rename onto the
-    // target fail with EPERM, so an unlocked touch from a waiting caller
-    // could break the holder's atomic replace. `open(..., "a")` creates it
-    // if absent without overwriting existing content.
+    // Create the target without overwriting only after lock acquisition; an unlocked Windows open can block replacement.
     const handle = await open(targetPath, "a", 0o600);
     await handle.close();
     result = await fn();

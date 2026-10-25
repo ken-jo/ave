@@ -1,18 +1,4 @@
-/**
- * Session-goal IPC handlers — `ave:session-goal:*`.
- *
- * Read + the three answers the composer chip can give (pause, resume,
- * dismiss), plus the main -> renderer `changed` push so the chip's round
- * counter follows the revival loop without polling.
- *
- * Registering a goal is deliberately NOT here: `/goal` is dispatched in the
- * main-process slash switch, where it is already bound to keyboard origin.
- *
- * `sessionId` is REQUIRED, for the same reason it is in the session-tasks
- * domain: the window can hold several conversations at once, so "the current
- * session" is not a fact main can answer, and resolving an absent id against
- * the primary loop would pause or clear a goal the caller never named.
- */
+// Require a session id; goal controls must not resolve an ambiguous default conversation.
 import { ipcMain } from "electron";
 import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized } from "../gated.js";
 import { CHANNELS } from "../../contract/app-contract.js";

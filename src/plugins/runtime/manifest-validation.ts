@@ -1,18 +1,8 @@
-/**
- * Manifest validation — host-owned schema SOT + host cross-field MUST/SHOULD
- * checks. The manifest shape is validated against the host-owned
- * `schemas/plugin-manifest.schema.json`.
- *
- * Exported for unit testing and reuse by the PluginRuntime class.
- */
+/** Validate authored documents against the bundled host schema, then apply host cross-field checks. */
 
 import { readFile } from "node:fs/promises";
 import type { ValidateFunction } from "ajv";
-// Host-owned manifest-shape source. The schema is imported as a
-// bundler-visible JSON module so it inlines into the packaged main bundle —
-// no runtime disk read, so no electron-builder `files`/asar gap can leave the
-// packaged app unable to resolve it. Plugin repositories vendor this schema
-// at an app release tag alongside the public contract.
+// Bundle the host schema as JSON so packaged runtime never depends on a repository filesystem path.
 import manifestSchema from "../../../schemas/plugin-manifest.schema.json" with { type: "json" };
 import {
   AGENT_PLUGINS_SCHEMA_URL,
@@ -63,30 +53,15 @@ import { sandboxDeclarationProblem } from "../sandbox-authority.js";
 import { HOST_PROTOCOL_FIRST_APP_VERSION, HOST_PROTOCOL_VERSIONS_SERVED } from "../isolation/host-api-wire.js";
 import { isRecord } from "../../shared/is-record.js";
 
-// Re-exported here so manifest/plugin-loading consumers can import the
-// minAppVersion gate error + IPC code alongside the other manifest contracts.
-/**
- * Stable SemVer pattern (MAJOR.MINOR.PATCH, no leading zeros, no pre-release,
- * no build metadata). This TS const mirrors the `version` / `minAppVersion`
- * pattern in the host-owned `schemas/plugin-manifest.schema.json` (the SOT) and
- * the per-plugin `publish.yml` tag-validation step. Updating any of those copies
- * MUST update the others (cross-repo, see `host-plugin-contract-sync` rule).
- */
+/** Stable SemVer permits no prerelease, build metadata or leading zeros; keep schema and publish validation aligned. */
 const STABLE_SEMVER_RE =
   /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
 
-/** `requires.hostProtocol`, mirroring its `pattern` in the manifest schema. */
 const HOST_PROTOCOL_VERSION_RE = /^[1-9][0-9]*$/;
-// The Tool._meta key that carries a signed operation policy. Error paths name
-// the same constant so a namespace rename cannot leave a stale key in messages.
+// Reuse the metadata key in both policy lookup and diagnostic paths.
 const OPERATION_POLICY_META_KEY = "ave/operationPolicy" as const;
 
-// #893 — the allow-listed host-secret key shapes a manifest's
-// `hostSecrets.read[]` may name have ONE definition,
-// `isAllowedHostSecretKey` (src/shared/marketplace-package-assets.ts). It mirrors the JSON-schema
-// constraint as defence-in-depth so a plugin manifest cannot install a wider
-// allowlist than the schema permits — a claim that only holds while there is a
-// single definition, so do NOT re-derive the shape here.
+// Use the shared host-secret key predicate so schema defense in depth cannot drift.
 const log = createLogger("plugin-runtime");
 
 export function formatUnknownErrorMessage(err: unknown): string {
@@ -102,11 +77,7 @@ export function formatUnknownErrorMessage(err: unknown): string {
   return String(err);
 }
 
-/**
- * Extension fields the current manifest no longer has. An installed manifest
- * from an earlier release may still carry one, so drop it before validation
- * and warn once per plugin. New packages must omit retired fields.
- */
+/** Drop retired extension fields before validation and warn once; new packages must omit them. */
 const RETIRED_EXTENSION_FIELDS = ["installPolicy", "publisher", "notificationEvents"] as const;
 const retiredFieldsWarned = new Set<string>();
 
@@ -135,17 +106,7 @@ export function getDeclaredEmittedEvents(manifest: Pick<PluginManifest, "emitted
   ];
 }
 
-/**
- * The proposal kinds a plugin is authorized to post — read off its installed
- * manifest, the same way {@link getDeclaredEmittedEvents} reads its emit
- * authorization. There is no separate capability string and no separate grant
- * record: the declaration IS the grant, and the installed manifest is what the
- * user approved (its canonical hash is pinned into the registry at install).
- *
- * FAIL-CLOSED AND ALL-OR-NOTHING. A malformed block returns the EMPTY list
- * rather than the entries that happened to parse. A partially-honoured consent
- * declaration would grant slots the user never read a label for.
- */
+/** Malformed proposal declarations grant nothing, including otherwise-valid entries. */
 export function getDeclaredWorkProposalKinds(
   manifest: Pick<PluginManifest, "workProposals">,
   pluginId?: string,
@@ -185,12 +146,7 @@ export function getDeclaredWorkProposalKinds(
   return ids;
 }
 
-// ─── Alert declarations ─────────────────────────────────────────────────────
-//
-// The schema bounds every field; these readers re-check each bound (a plugin
-// built against a stale schema must not widen what it declares, the rule
-// `hostSecrets` follows) and add the cross-field rules the schema cannot
-// state: template references, unused slots, duplicate ids and `to` keys.
+// Recheck bounds and cross-field references because declarations themselves grant authority.
 
 const MAX_ALERT_KINDS = 12;
 const MAX_ALERT_SUGGESTIONS = 4;
@@ -209,14 +165,13 @@ const LIST_SLOT_MAX_ITEMS = 5;
 const LIST_SLOT_ITEM_MAX = 120;
 const INHERIT_VALUE_MAX = 64;
 
-/** Thrown inside the readers below; never escapes them. */
 class DeclarationRefused extends Error {}
 
 function refuse(why: string): never {
   throw new DeclarationRefused(why);
 }
 
-/** Length in code points, the unit JSON Schema's `maxLength` counts. */
+/** JSON Schema lengths count code points, not UTF-16 units. */
 function codePointLength(text: string): number {
   let n = 0;
   for (const _ of text) n += 1;
@@ -265,7 +220,6 @@ function checkBoundedInteger(value: unknown, at: string, max: number): void {
   }
 }
 
-/** A top-level plugin config key an inheritance may read or write. */
 function checkConfigKey(value: unknown, at: string): void {
   if (
     typeof value !== "string"
@@ -276,7 +230,7 @@ function checkConfigKey(value: unknown, at: string): void {
   }
 }
 
-/** Whether `value` survives the plugin-config sanitiser unchanged, so writing it later cannot fail or reshape it. */
+/** Inheritance values must survive config sanitization unchanged. */
 function isStoredConfigValue(value: unknown): boolean {
   try {
     return canonicalJSON(sanitizePluginConfig({ value })) === canonicalJSON({ value });
@@ -285,11 +239,7 @@ function isStoredConfigValue(value: unknown): boolean {
   }
 }
 
-/**
- * The `{slot}` references in one template, or a refusal when a brace is not
- * part of a well-formed reference — a stray brace would otherwise render as
- * literal text the plugin could shape into something that reads like a slot.
- */
+/** Refuse stray braces so malformed template text cannot masquerade as a slot. */
 function templateReferences(text: string, at: string): string[] {
   const refs: string[] = [];
   for (const match of text.matchAll(/\{([^{}]*)\}|[{}]/g)) {
@@ -341,14 +291,13 @@ function checkAlertKind(kind: unknown, at: string): AlertKindDeclaration {
     checkBoolean(os.defaultEnabled, `${where} osNotification.defaultEnabled`);
     checkBoolean(os.bypassFocusGate, `${where} osNotification.bypassFocusGate`, true);
     const body = checkLocaleText(os.body, `${where} osNotification.body`, 80, { singleLine: true });
-    // Static text: a brace would read as a slot the host never fills.
+    // Static text cannot contain slot-like braces.
     if (Object.values(body).some((text) => /[{}]/.test(text))) {
       refuse(`${where} osNotification.body names a slot; it must be static text`);
     }
   }
   if (kind.actionLabel !== undefined) checkLocaleText(kind.actionLabel, `${where} actionLabel`, 24, { singleLine: true });
 
-  // Slot kind by name; only text and list slots may appear in a template.
   const slotKinds = new Map<string, "text" | "list" | "ref">();
   if (kind.slots !== undefined) {
     if (!isRecord(kind.slots)) refuse(`${where} slots is not an object`);
@@ -384,7 +333,7 @@ function checkAlertKind(kind: unknown, at: string): AlertKindDeclaration {
       for (const ref of templateReferences(text, `${where} ${field}.${locale}`)) {
         const slotKind = slotKinds.get(ref);
         if (slotKind === undefined) refuse(`${where} ${field}.${locale} names undeclared slot '{${ref}}'`);
-        // A ref reaches the model only as the host's wrapped footer line.
+        // References reach the model only through the host-wrapped footer.
         if (slotKind === "ref") refuse(`${where} ${field}.${locale} names ref slot '{${ref}}'; ref slots are never templated`);
         if (locale === "en") usedInEnglish.add(ref);
       }
@@ -457,15 +406,11 @@ function checkAlertsBlock(block: unknown): DeclaredAlerts {
     if (new Set(block.suggestions).size !== block.suggestions.length) refuse("suggestions repeats a source");
     suggestions = block.suggestions as string[];
   }
-  // A copy, so what was checked is what is granted even if the manifest
-  // object is edited after load.
+  // Copy validated declarations so later manifest mutation cannot widen grants.
   return structuredClone({ kinds, suggestions });
 }
 
-/**
- * Read results by block object: a refused block warns once, and the gates
- * that consult it on every call do not re-validate it.
- */
+/** Cache per-block results so refusals warn once and per-call gates do not revalidate. */
 const declaredAlertsByBlock = new WeakMap<object, DeclaredAlerts | null>();
 
 function readDeclaredAlerts(manifest: Pick<PluginManifest, "alerts">, pluginId: string | undefined): DeclaredAlerts | null {
@@ -490,11 +435,7 @@ function readDeclaredAlerts(manifest: Pick<PluginManifest, "alerts">, pluginId: 
   return result;
 }
 
-/**
- * The alert kinds a plugin is authorized to raise, read off its installed
- * manifest. As {@link getDeclaredWorkProposalKinds}: the declaration is the
- * grant, and a block malformed in any entry grants nothing.
- */
+/** Any malformed alert entry invalidates the whole consent declaration. */
 export function getDeclaredAlertKinds(
   manifest: Pick<PluginManifest, "alerts">,
   pluginId?: string,
@@ -502,14 +443,7 @@ export function getDeclaredAlertKinds(
   return readDeclaredAlerts(manifest, pluginId)?.kinds ?? [];
 }
 
-/**
- * The overlay sources `triggerConversation` accepts from this plugin, or
- * `null` when its manifest has no `alerts` block and the call is not scoped.
- *
- * FAIL-CLOSED: a manifest that carries the block counts as declared even
- * when the block is refused, and then declares no source at all, so a
- * deliberately broken block cannot lift the limit.
- */
+/** No alerts block means unscoped; a refused block grants no source and cannot remove the limit. */
 export function getDeclaredSuggestionSources(
   manifest: Pick<PluginManifest, "alerts">,
   pluginId?: string,
@@ -542,11 +476,7 @@ function checkConfigInherits(list: unknown): readonly ConfigInheritDeclaration[]
   return structuredClone(list) as ConfigInheritDeclaration[];
 }
 
-/**
- * The plugin's `configInherits` entries: `[]` when it declares none, `null`
- * when the list is refused. A refused list applies nothing, so it can never
- * count as a completed migration either.
- */
+/** A refused inheritance list applies nothing and cannot count as completed migration. */
 export function getDeclaredConfigInherits(
   manifest: Pick<PluginManifest, "configInherits">,
   pluginId?: string,
@@ -572,18 +502,7 @@ export function getDeclaredConfigInherits(
   return result;
 }
 
-/**
- * Compile the host-owned plugin manifest schema into an AJV validator.
- *
- * The manifest-shape source is `schemas/plugin-manifest.schema.json`, imported
- * as a bundler-visible JSON module. If the schema cannot be compiled, plugin
- * loading must fail closed.
- *
- * AJV uses `strict`, `strictRequired:false`, `allErrors`, `allowUnionTypes`,
- * and `ajv-formats`. Test-time assertions pin the resulting accept/reject
- * behavior against this compiled validator
- * (`manifest-validator-host-sot.test.ts`).
- */
+/** Compile only the bundled host schema; packaged loading has no plugin-schema fallback. */
 export async function buildManifestValidator(): Promise<ValidateFunction> {
   try {
     const AjvCtor = resolveAjv();
@@ -596,27 +515,14 @@ export async function buildManifestValidator(): Promise<ValidateFunction> {
     resolveAddFormats()(ajv);
     return ajv.compile(manifestSchema);
   } catch (err) {
-    // Fail closed — an uncompilable schema aborts plugin loading rather than
-    // degrading to an unvalidated (permissive) load path.
+    // Schema compilation failure must abort loading, never admit unvalidated manifests.
     throw new Error(
       `Host plugin manifest validator failed to compile: ${formatUnknownErrorMessage(err)}`,
     );
   }
 }
 
-/**
- * Materialize a validated manifest into the pure form every host consumer reads
- * (SoT §2.3). Two defaulting sites, both pure (no IO):
- *   1. a tool that omits `_meta.ui.visibility` gets the STANDARD SEP-1865
- *      default `["model","app"]`; an explicit `[]` is REJECTED (R6 fail-closed —
- *      never widened to dual). `tool-visibility.ts` depends on this being the
- *      sole tool-visibility defaulting step, so output tools ALWAYS carry an
- *      explicit non-empty `_meta.ui.visibility`.
- *   2. `name` defaults to `id` when the (schema-optional) manifest omits it, so
- *      a parsed manifest always carries a name at runtime.
- * Formerly a standalone exported helper in `../types.js`; inlined here as the
- * single load-time materializer now that no other consumer needs it.
- */
+/** Materialize visibility and name defaults once, without I/O, before downstream consumers read them. */
 function materializeManifest(manifest: PluginManifest): PluginManifest {
   const DUAL = ["model", "app"] as const;
   const tools = manifest.tools.map((t): Tool => {
@@ -638,14 +544,7 @@ function materializeManifest(manifest: PluginManifest): PluginManifest {
   return { ...manifest, tools, name: manifest.name ?? manifest.id };
 }
 
-/**
- * Map an internal field path onto the place in the file an author actually has
- * to edit. The internal manifest is flat and the document is not, so a bare
- * "entry" would send someone looking at a top level that does not have it.
- *
- * Derived from {@link AGENT_PLUGINS_TOP_LEVEL_FIELDS} rather than a second list
- * of its own: one definition of what "portable" means, so the two cannot drift.
- */
+/** Map internal flat field paths to the authored namespace using the shared portable-field definition. */
 function onDiskFieldPath(fieldPath: string): string {
   if (fieldPath === "id") return "name";
   const root = fieldPath.split(/[.[]/, 1)[0] ?? fieldPath;
@@ -655,28 +554,16 @@ function onDiskFieldPath(fieldPath: string): string {
 
 const documentSha256ByManifest = new WeakMap<PluginManifest, string>();
 
-/**
- * Tie a manifest to the `plugin.json` document it was read from. The
- * registry's `manifestSha256` pins that document (every installer hashes the
- * file as authored), not the flat projection the runtime works with, so a
- * gate that compares a running plugin against its pin needs the document's
- * digest, which the projection cannot reproduce.
- */
+/** Associate each projection with the authored document digest; registry pins cannot be reproduced from flattened fields. */
 export function recordManifestDocument(manifest: PluginManifest, document: unknown): void {
   documentSha256ByManifest.set(manifest, sha256Hex(canonicalJSON(document)));
 }
 
-/** The canonical sha256 of the document `manifest` was read from; null when it was not read from one. */
 export function manifestDocumentSha256(manifest: PluginManifest): string | null {
   return documentSha256ByManifest.get(manifest) ?? null;
 }
 
-/**
- * The `process` rules the manifest schema does not express (§9.7 P3, one
- * source each): the reserved environment names, the path rules for `args` and
- * `env` values, and the app-version floor. The command's own shape — inside
- * the plugin root, no `=` — is the schema's `pattern`.
- */
+/** Process validation owns reserved env names, rooted paths and minimum versions beyond schema command shape. */
 function checkProcessEntryShape(
   processRaw: unknown,
   minAppVersion: unknown,
@@ -727,44 +614,21 @@ function checkProcessEntryShape(
     fail(
       "requires.minAppVersion",
       `a plugin with a 'process' entry must require Ave ${PROCESS_ENTRY_FIRST_APP_VERSION} or newer, the first release that runs one`,
-      // The example also declares protocol 3, so it names that protocol's floor.
       `"requires": { "minAppVersion": "${HOST_PROTOCOL_FIRST_APP_VERSION["3"]}", "hostProtocol": "3" }`,
     );
   }
 }
 
-/**
- * Parse and fully validate a plugin.json manifest file.
- *
- * The file on disk is an Agent Plugins 1.0.0 document; every host consumer
- * reads the flat {@link PluginManifest}. This is the sole boundary between the
- * two: {@link flattenAgentPluginsManifest} projects the document, the AJV
- * validation runs against the *document* (so the schema stays the SOT for what
- * an author writes), and everything after that works on the projection.
- *
- * Runs the Host-owned AJV schema validation, then materializes each tool's surface
- * visibility and the `name` default via `materializeManifest` (SoT §3.1), then
- * runs host cross-field MUST checks against the pure `Tool[]`. Returns the
- * fully-materialized {@link PluginManifest} every host consumer reads. Throws
- * with a descriptive message on any failure.
- */
+/** Validate the authored document before returning the flat manifest every host consumer reads. */
 export async function parsePluginJson(
   path: string,
   validator: ValidateFunction,
 ): Promise<PluginManifest> {
-  // Detailed, per-field error messages shaped as
-  //   "Invalid plugin manifest '<pluginId>' at '<fieldPath>': <reason>. Example: <correction>"
   const raw = await readFile(path, "utf-8");
-  // `doc` is the file as authored — the Agent Plugins 1.0.0 shape the schema
-  // describes, and therefore the thing the validator must see. `parsed` is the
-  // flat internal projection every check below and every consumer downstream
-  // reads. Validating the document rather than the projection keeps the schema
-  // honest as the SOT for what a plugin author writes (and keeps the host
-  // agreeing with the CI job that validates the same file with the same schema).
+  // Validate doc, not its flat projection; the host and CI must enforce the same document schema.
   let doc: unknown;
   let parsed: PluginManifest;
-  // Taken before anything below edits `doc` (retired fields are dropped from
-  // it in place): the registry pins the file as authored.
+  // Hash before dropping retired fields so the registry still pins authored bytes.
   let authoredSha256: string;
   try {
     doc = JSON.parse(raw) as unknown;
@@ -793,11 +657,7 @@ export async function parsePluginJson(
     throw new Error("Host plugin manifest validator is required");
   }
 
-  // Agent Plugins 1.0.0 is explicit that a client reports and ignores unknown
-  // top-level fields rather than refusing the plugin over another vendor's
-  // data. The projection already drops them; this is the "reports" half, kept
-  // here rather than inside the projection so that projection stays pure and
-  // can be vendored unchanged.
+  // Report and ignore unknown portable top-level fields without interpreting another vendor namespace.
   const foreign = foreignManifestTopLevelFields(doc);
   if (foreign.length > 0) {
     log.warn(
@@ -823,19 +683,9 @@ export async function parsePluginJson(
       )
     ) {
       try {
-        // Normalize IN PLACE rather than replacing `parsed.networkAccess`.
-        // `parsed` is a shallow projection of the document, so this object is
-        // the same one the document holds — and the AJV run below validates the
-        // DOCUMENT. Replacing the field would normalize only the projection and
-        // leave validation looking at the raw value, which the schema's
-        // lowercase-hostname rule would then reject: a manifest that loads today
-        // would stop loading, and the normalization step would be doing nothing.
+        // Normalize shared networkAccess in place so the document and projection observe the same result.
         (networkAccessRaw as { allowedDomains: string[] }).allowedDomains =
-          // `allowLoopback` admits the `localhost` / `127.0.0.1` / `::1`
-          // literals a plugin uses to declare a local endpoint (a user-run
-          // inference server or proxy). Declaring one is not reachability —
-          // `host-fetch-guard.ts` still decides that — but the literal has to
-          // survive normalization or the declaration cannot be written at all.
+          // Preserve explicit loopback literals; hostFetch still decides whether connections are allowed.
           normalizeAllowedHosts(allowedDomainsRaw, { allowLoopback: true });
       } catch (err) {
         fail(
@@ -845,10 +695,7 @@ export async function parsePluginJson(
         );
       }
     }
-    // `authCookiePartition` names only the `<sub>` segment of this plugin's own
-    // auth partition; the host composes `persist:plugin-auth:<pluginId>:<sub>`.
-    // Reject a colon so a declaration cannot smuggle extra partition segments
-    // (or escape into another namespace) past the host's composition.
+    // Reject colons in partition suffixes so declarations cannot inject extra host-composed segments.
     const authCookieRaw = (networkAccessRaw as { authCookiePartition?: unknown })
       .authCookiePartition;
     if (authCookieRaw !== undefined) {
@@ -903,12 +750,7 @@ export async function parsePluginJson(
   dropRetiredExtensionFields(doc, parsed, pid, path);
 
   if (!validator(doc)) {
-    // Enrich the error so users can act on it. Pre-fix AJV's default text
-    // for additional-properties was "/ must NOT have additional properties"
-    // — never named WHICH property was rejected, leaving users stuck (#737).
-    // Now we name the offending field(s) and append a reinstall hint when
-    // it's the additional-property case (typical when the host schema tightens
-    // and a stale plugin install carries a deprecated field).
+    // Name offending additional properties so stale installs produce actionable reinstall guidance.
     const rawAjvErrors = validator.errors ?? [];
     const ajvErrors = rawAjvErrors;
     const additionalProps: string[] = [];
@@ -927,11 +769,7 @@ export async function parsePluginJson(
           )?.additionalProperty;
           return `${e.instancePath || "/"} unknown property: '${extra ?? "?"}'`;
         }
-        // Preserve AJV's `params` for non-additionalProperties errors so
-        // users see the actionable detail (allowed enum values, expected
-        // type, regex pattern, etc.). Pre-fix dropped params silently —
-        // a `pattern` mismatch on `version` would say "must match pattern"
-        // without showing the pattern itself.
+        // Preserve schema params so enum, type, pattern and bounds errors retain useful details.
         const base = `${e.instancePath || "/"} ${e.message ?? ""}`.trim();
         const params =
           e.params &&
@@ -954,8 +792,7 @@ export async function parsePluginJson(
   if (typeof parsed.id !== "string" || parsed.id.length === 0) {
     fail("id", "must be a non-empty string", `"id": "meeting-recorder"`);
   }
-  // Defence in depth for callers using a partial validator: the authoritative
-  // schema accepts kebab-case only, so every dotted form is invalid.
+  // Recheck kebab-case under permissive validators as defense in depth.
   if (typeof parsed.id === "string" && parsed.id.includes(".")) {
     fail(
       "id",
@@ -963,11 +800,7 @@ export async function parsePluginJson(
       `"id": "meeting-recorder"`,
     );
   }
-  // Stable SemVer only — same regex as the host schema and the per-plugin
-  // publish.yml tag-validation step. Anchored on both ends so `1.2.3.4`,
-  // pre-release tags (`1.2.3-rc1`), build metadata (`1.2.3+abc`), and
-  // leading zeros (`01.2.3`) all fail at this gate instead of slipping
-  // through and tripping the publish workflow later.
+  // Require anchored stable SemVer to match schema and release-tag validation.
   if (
     typeof parsed.version !== "string" ||
     !STABLE_SEMVER_RE.test(parsed.version)
@@ -978,9 +811,7 @@ export async function parsePluginJson(
       `"version": "1.0.0"`,
     );
   }
-  // Exactly one way to produce the plugin's process. The schema's `oneOf`
-  // says the same; this is the loud, field-named copy for a validator that is
-  // more permissive than the host's own.
+  // Require exactly one entry form even when a partial validator omits oneOf.
   const hasEntry = (parsed as { entry?: unknown }).entry !== undefined;
   const processRaw: unknown = (parsed as { process?: unknown }).process;
   if (hasEntry && processRaw !== undefined) {
@@ -1008,15 +839,7 @@ export async function parsePluginJson(
       `"tools": [{ "name": "sample_ping", "inputSchema": { "type": "object", "properties": {} } }]`,
     );
   }
-  // #885 Phase R — pure v6 only. Each `tools[]` entry MUST be an MCP Tool OBJECT.
-  // A pre-v6 manifest declared `tools` as a list of name STRINGS (paired with the
-  // now-removed `toolSchemas`/`uiActions` maps). Reject it here with an actionable
-  // message instead of letting it fall through to the downstream tool-name loop,
-  // which would spread a bare string into a nameless object and throw the
-  // confusing "Invalid tool name 'undefined'" (security-review nitpick a). The
-  // The host schema rejects that legacy shape. Keep this host-side guard
-  // as a loud, author-facing error if validation is ever invoked with a custom
-  // validator that is accidentally more permissive than the Host source of truth.
+  // Every tools entry must be a pure Tool object; permissive legacy validators cannot admit strings.
   const preV6ToolIdx = (parsed.tools as unknown[]).findIndex(
     (t) => typeof t !== "object" || t === null || Array.isArray(t),
   );
@@ -1038,11 +861,7 @@ export async function parsePluginJson(
       `"description": "One-line summary of what this plugin does."`,
     );
   }
-  // #885 v6 — materialize each tool's `_meta.ui.visibility` (and the `name`
-  // default) into the pure `PluginManifest` every host check below reads (the
-  // standard `["model","app"]` default is filled in here, an explicit `[]` is
-  // rejected). From here on all tool checks read `manifest.tools: Tool[]` —
-  // never `parsed.tools`.
+  // Materialize name and tool visibility once; all later checks read the normalized manifest.
   const manifest = materializeManifest(parsed);
 
   const sandboxProblem = sandboxDeclarationProblem(manifest);
@@ -1050,19 +869,10 @@ export async function parsePluginJson(
     fail("sandbox", `${sandboxProblem} — manifest_schema`, `"sandbox": { "read": [] }`);
   }
 
-  // Contribution paths and owner-local IDs are security-bearing cross-field
-  // contracts that JSON Schema alone cannot normalize or collision-check.
-  // Validate them before any runtime or subsystem can observe the manifest.
+  // Validate contribution path and owner-ID collisions before any subsystem observes the manifest.
   resolvePluginContributionDeclarations(manifest);
 
-  // Tool names exposed to LLMs must satisfy TOOL_NAME_PATTERN (the schema's
-  // `tools[].name` rule — kept as defence-in-depth against an accidentally stale
-  // compiled Host validator, same rationale as the hostSecrets/version re-checks).
-  // One pass also builds the by-name index reused by auth cross-field checks and
-  // REJECTS duplicates: the old three-map shape got name-uniqueness for free
-  // (object keys), but two `tools[]` objects may now share a `name`, which would
-  // throw at runtime in the loader methodMap and make auth lookups ambiguous
-  // (u2 §1.4.1).
+  // Recheck tool-name syntax and duplicates before runtime registration or auth lookup.
   const byName = new Map<string, Tool>();
   for (let i = 0; i < manifest.tools.length; i += 1) {
     const tool = manifest.tools[i];
@@ -1084,8 +894,7 @@ export async function parsePluginJson(
     byName.set(name, tool);
   }
 
-  // Signed operation restrictions are colocated on each pure MCP Tool. This
-  // preserves manifest==wire and prevents a second tool-name keyed action map.
+  // Keep signed operation restrictions on each Tool; do not add a second name-keyed action map.
   const operationPolicies = new Map<string, PluginToolOperationPolicy>();
   for (const [toolName, tool] of byName) {
     const policy = tool._meta?.[OPERATION_POLICY_META_KEY];
@@ -1200,11 +1009,7 @@ export async function parsePluginJson(
     }
   }
 
-
-  // `startupTimeoutMs` 는 *plugin instance.start() lifecycle hook 의 timeout* 만
-  // 통제한다 — manifest 의 tool name list 자동 invoke 메커니즘 (runManifestStartupTools,
-  // 2026-05-14 폐기) 의 잔재가 아님. plugin self-start 가 SoT 인 모델에서 host runtime
-  // 의 `Promise.race` 에 묶이는 유일한 시간 가드.
+  // startupTimeoutMs bounds only the instance start hook, never automatic tool invocation.
   if (parsed.startupTimeoutMs !== undefined) {
     if (
       typeof parsed.startupTimeoutMs !== "number" ||
@@ -1219,25 +1024,11 @@ export async function parsePluginJson(
     }
   }
 
-  // #885 v6 — auth trio visibility (u2-host-consumers §1.2). Enforces that each
-  // auth-lifecycle tool is app-only-visibility — never model-visible — with ONE
-  // intra-object array read per auth ref. This single rule consolidates the pre-v6
-  // #1554 leak guard (auth must never be model-callable) and the pre-v6
-  // auth-must-be-app-visible check (a dual method is now ONE object with visibility
-  // ["model","app"], so the old overlap shape no longer exists). Each ref must name
-  // a declared tool whose visibility is EXACTLY ["app"]: `exactlyApp` folds app ∈
-  // vis (UI-invokable) AND model ∉ vis (#1554: never model-callable). A dual
-  // ["model","app"] auth tool is REJECTED — that IS the load-bearing #1554
-  // invariant ("a 'model' tool NEVER reaches the app-only dispatch path"), now
-  // enforced at declaration time. `toolVisibility` is a pure reader
-  // (normalize already materialized any omitted visibility to dual UPSTREAM), so
-  // an auth tool that forgot to declare visibility arrives here as explicit dual
-  // → fails `exactlyApp` → rejected (fail-closed; a silently-defaulted auth tool
-  // must never become model-callable). See architecture.md §9.4a.
+  // Auth tools require exactly app visibility and never the dual default; see architecture.md §9.4a.
   if (manifest.auth) {
     for (const key of ["statusTool", "loginTool", "logoutTool"] as const) {
       const ref = manifest.auth[key];
-      if (ref === undefined) continue; // logoutTool is optional
+      if (ref === undefined) continue;
       if (typeof ref !== "string") {
         fail(
           `auth.${key}`,
@@ -1253,8 +1044,7 @@ export async function parsePluginJson(
           `add a tools[] entry named '${ref}' with "_meta": { "ui": { "visibility": ["app"] } }`,
         );
       }
-      // `fail()` returns never; re-assert the binding — narrowing through the
-      // local `fail` arrow is lossy in this file (see the hostSecrets re-assert).
+      // Reassert narrowing lost through the local never-returning fail callback.
       const authTool: Tool = tool as Tool;
       const vis = toolVisibility(authTool);
       const exactlyApp = vis.length === 1 && vis[0] === "app";
@@ -1267,28 +1057,12 @@ export async function parsePluginJson(
       }
     }
 
-    // architecture.md §9.4a: when `auth` is declared, the renderer's
-    // `usePluginAuthStatuses` hook subscribes to `${manifest.id}.auth.changed`
-    // (literal id, NO `_`↔`-` normalization). R3 (0.5.2) — the host now
-    // AUTO-DERIVES that exact event name and registers the renderer bridge
-    // whenever `auth` is present (`collectPluginEventTypes` in
-    // boot/steps/ipc-bridge.ts), so the author no longer has to re-list the
-    // fixed derived string in emittedEvents[]. The old soft-warn that nagged
-    // for a missing `${id}.auth.changed` declaration is therefore removed —
-    // even an author who declares the WRONG (underscore-mirrored) form still
-    // gets the correct dash-form bridge from the host, eliminating the #131
-    // regression class entirely.
+    // The host derives the dashed manifest-ID auth event even when the plugin omits or misspells its declaration.
 
-    // NOTE (#885 v6): the old #1554 `auth ∉ tools[]` hard-fail is folded into
-    // the `exactlyApp` visibility check above — an auth tool declared with
-    // model-visibility (the pure-form analog of "appears in tools[]") is
-    // rejected by `exactlyApp` (`model ∉ vis` required). No separate leak guard.
+    // exactlyApp already rejects model-visible auth tools; no separate leak guard is needed.
   }
 
-  // hostSecrets.read[] schema enforcement. Re-check at host load time so a
-  // plugin using older vendored contract files cannot widen its allowlist by adding a
-  // non-`llm.apiKey.*` entry. Reason tag is `manifest_schema` to mirror the
-  // host's other supply-chain-visibility audit tags.
+  // Recheck host-secret declarations at load so stale schema copies cannot widen grants.
   const hostSecretsRaw: unknown = (parsed as { hostSecrets?: unknown })
     .hostSecrets;
   if (hostSecretsRaw !== undefined) {
@@ -1322,9 +1096,7 @@ export async function parsePluginJson(
             `"hostSecrets": { "read": ["llm.apiKey.openai"] }`,
           );
         }
-        // `fail()` returns `never`, but TS's narrowing through the
-        // arrow-function call path is sometimes lossy — re-assert via a
-        // local typed binding so the regex test below sees `key: string`.
+        // Reassert key as string after the local fail callback loses narrowing.
         const keyStr: string = key as string;
         if (!isAllowedHostSecretKey(keyStr)) {
           fail(
@@ -1334,10 +1106,7 @@ export async function parsePluginJson(
           );
         }
       }
-      // Collection bounds. AJV already enforces `maxItems`/`uniqueItems` from
-      // the vendored schema on this path, so this is defence-in-depth — but it
-      // is what makes the "no wider allowlist than the schema permits" claim
-      // above true rather than approximately true (#1939).
+      // Recheck collection count and uniqueness; per-key predicates cannot enforce list bounds.
       const violation = findHostSecretReadListViolation(readArr as string[]);
       if (violation) {
         fail(
@@ -1353,13 +1122,7 @@ export async function parsePluginJson(
     }
   }
 
-  // Onboarding highlight identity. The schema bounds the LIST and the shape of
-  // each `id`; what it cannot express is that two entries must not carry the
-  // SAME id. That is not cosmetic here: `<pluginId>:<id>` is the key the user's
-  // answer is stored under, so a duplicate would let one card's "never show
-  // this" silence a different card the user never saw. The count is re-checked
-  // alongside it for the same reason `hostSecrets` re-checks its own bounds — a
-  // plugin using older contract files must not widen what it declares.
+  // Reject duplicate highlight identity and recheck bounds before granting onboarding behavior.
   const onboardingRaw: unknown = (parsed as { onboarding?: unknown }).onboarding;
   const highlightsRaw: unknown =
     onboardingRaw && typeof onboardingRaw === "object" && !Array.isArray(onboardingRaw)
@@ -1386,11 +1149,7 @@ export async function parsePluginJson(
       }
       seenHighlightIds.add(id);
 
-      // Onboarding `settings` destinations. The schema can only say the path
-      // is a kebab segment or a pair of them; only the host knows which tabs
-      // and sections this build ships. Validating here rather than at accept
-      // time is what makes the destination trustworthy: a card whose action
-      // points nowhere would render, be answered "yes", and then do nothing.
+      // Resolve highlight settings destinations at load; schema syntax alone cannot prove a tab exists.
       const action: unknown = (highlightsRaw[i] as { action?: unknown })?.action;
       const actionPath: unknown =
         action && typeof action === "object" && !Array.isArray(action) &&
@@ -1407,12 +1166,7 @@ export async function parsePluginJson(
     }
   }
 
-  // Plugin↔app minimum-version gate — re-validate the format at host load even
-  // though the host schema has the same `pattern` (same rationale as
-  // hostSecrets above: a plugin using older contract files must not
-  // smuggle a non-SemVer `minAppVersion`). The host enforces compatibility at
-  // install + load against this value, so a malformed string would make the
-  // `compareSemver` gate fail-closed silently — fail loud here instead.
+  // Reject malformed minimum versions loudly before compatibility comparison.
   const requiresRaw: unknown = (parsed as { requires?: unknown }).requires;
   if (requiresRaw && typeof requiresRaw === "object" && !Array.isArray(requiresRaw)) {
     const minAppVersionRaw: unknown = (requiresRaw as { minAppVersion?: unknown }).minAppVersion;
@@ -1425,9 +1179,7 @@ export async function parsePluginJson(
         );
       }
     }
-    // The host protocol gate reads this value at every load, so a malformed
-    // one must fail here, loudly, rather than as an "unserved version" that
-    // names a version nobody declared.
+    // Reject malformed protocol declarations before they can appear as unsupported versions.
     const hostProtocolRaw: unknown = (requiresRaw as { hostProtocol?: unknown }).hostProtocol;
     if (hostProtocolRaw !== undefined) {
       if (typeof hostProtocolRaw !== "string" || !HOST_PROTOCOL_VERSION_RE.test(hostProtocolRaw)) {
@@ -1440,10 +1192,7 @@ export async function parsePluginJson(
     }
   }
 
-  // The package id `host` is the host's own: host alert kinds stage the
-  // source `overlay:host--<kind>`, which a plugin named `host` would mint for
-  // its own kinds. The marketplace validators refuse the name too; this
-  // covers every other way a manifest reaches the loader.
+  // Reserve host so plugin declarations cannot impersonate host-owned alert sources.
   if (parsed.id === ALERT_RESERVED_PACKAGE_ID) {
     fail(
       "id",
@@ -1452,9 +1201,7 @@ export async function parsePluginJson(
     );
   }
 
-  // Alert and config-inheritance declarations are read here once so a refused
-  // block is reported when the plugin loads, not first at a raise. A refusal
-  // does not fail the load: the block grants nothing, as `workProposals`.
+  // Read alert and inheritance grants once at load; malformed blocks warn and grant nothing without dropping the plugin.
   getDeclaredAlertKinds(parsed, pid);
   getDeclaredConfigInherits(parsed, pid);
   documentSha256ByManifest.set(manifest, authoredSha256);

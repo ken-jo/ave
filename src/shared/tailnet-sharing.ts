@@ -1,12 +1,4 @@
-/**
- * Renderer-safe wire contract for local-owner Tailnet pairing and sharing.
- *
- * Pairing identifies a Tailnet account but grants no access by itself. A
- * current-conversation share is a separate, explicit local-owner action. This
- * module deliberately contains only opaque identifiers and summaries: raw
- * Tailnet logins, raw conversation ids, pairing bindings, and invitation codes
- * never appear in a snapshot or change event.
- */
+/** Pairing identifies an account but grants no access; sharing requires a separate owner action. Snapshots exclude raw logins, conversation IDs, pairing bindings, and invitation codes. */
 import { hasUserKeyboardIntent, type UserKeyboardIntent } from "./chat-origin.js";
 import { UUID_PATTERN } from "./uuid.js";
 import { hasExactKeys, isRecord } from "./is-record.js";
@@ -54,11 +46,7 @@ export interface TailnetSharingShareSummary {
   readonly expiresAt: number;
 }
 
-/**
- * Owner-visible projection only. It is intentionally not a durable grant or
- * remote authorization object; the main process resolves current conversation
- * and revocation epochs internally.
- */
+/** Owner projections are not grants; main resolves the active conversation and revocation epochs internally. */
 export interface TailnetSharingSnapshot {
   readonly invitations: readonly TailnetSharingInvitationSummary[];
   readonly pairings: readonly TailnetSharingPairingSummary[];
@@ -111,11 +99,7 @@ export type TailnetSharingCreateInvitationResult =
   | { readonly ok: true; readonly invitation: TailnetSharingCreatedInvitation }
   | TailnetSharingFailure;
 
-/**
- * The only owner-control surface exposed to the trusted Electron renderer.
- * Every mutation has a preload-minted live keyboard intent. The renderer never
- * names a conversation/session; main resolves the active one at execution.
- */
+/** Every mutation requires live preload keyboard intent; main resolves the active conversation rather than accepting its ID from renderer. */
 export interface TailnetSharingOwnerApi {
   snapshot(): Promise<TailnetSharingSnapshotResult>;
   createInvitation(duration?: TailnetInvitationDurationPreset): Promise<TailnetSharingCreateInvitationResult>;
@@ -237,11 +221,7 @@ function parseShareSummary(value: unknown): TailnetSharingShareSummary | null {
   });
 }
 
-/**
- * Rebuild the safe projection instead of returning the wire object directly.
- * This makes an accidental future raw-code/raw-login field non-observable to
- * renderer callers even if a main-process producer is broadened incorrectly.
- */
+/** Rebuild the safe projection so future producer fields cannot leak raw codes or logins. */
 export function parseTailnetSharingSnapshot(value: unknown): TailnetSharingSnapshot | null {
   if (!isRecord(value) || !hasExactKeys(value, ["invitations", "pairings", "shares"])
     || !Array.isArray(value.invitations)

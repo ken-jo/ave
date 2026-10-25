@@ -8,22 +8,14 @@ import type { ElectronApplication, Page } from 'playwright';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MAIN_ENTRY = resolve(HERE, '../../..', 'dist/src/main/main.js');
 
-/**
- * The toolbar update pill (design §15.6): an update installs only through its
- * review — commit range, version and authority change — so the pill opens that
- * review in Settings → Marketplace instead of installing. One update opens its
- * package sheet; several open the Installed view, where each shows its update.
- *
- * Network-free: the main process's update list is injected as the broadcast
- * the marketplace background sends (`marketplace:updates-available`).
- */
+// Update controls open authority review; opening review must not install.
+// Seed main-process update state for network-free coverage.
 
 type PackageUpdate = {
   key: { sourceId: string; kind: 'plugin' | 'skill' | 'agent' | 'mcp'; name: string };
   displayName: string;
   from: string;
   to: string;
-  /** The update's state (design §18.7.5); main sends only states that need the user. */
   state: 'automatic' | 'waiting' | 'needs-review' | 'manual' | 'failed' | 'applied' | 'applied-not-running' | 'approval-pending';
 };
 
@@ -59,7 +51,6 @@ test.describe('update pill → review (design §15.6)', () => {
   test('several updates open the Installed view, and nothing installs from the pill', async ({ app, mainWindow }) => {
     await injectUpdatesAvailable(app, [meeting, proofread]);
     await expect(pill(mainWindow)).toBeVisible({ timeout: 10_000 });
-    // The band shows a count; the list is the hover text.
     await expect(pill(mainWindow)).toHaveAttribute('title', /Meeting → 1\.1\.0/);
     await expect(pill(mainWindow)).toHaveAttribute('title', /Proofread → 0\.3\.0/);
 
@@ -69,7 +60,7 @@ test.describe('update pill → review (design §15.6)', () => {
     await expect(mainWindow.getByTestId('git-marketplace')).toBeVisible({ timeout: 15_000 });
     await expect(mainWindow.getByTestId('git-marketplace:installed')).toHaveAttribute('aria-selected', 'true');
     await expect(mainWindow.getByTestId('git-marketplace:sheet')).toHaveCount(0);
-    // A review is not an install: the pill stays until the list changes.
+    // Opening review does not install or clear the update indicator.
     await expect(pill(mainWindow)).toBeVisible();
 
     await closeInlineSettings(app, mainWindow);
@@ -114,7 +105,6 @@ test.describe('update pill → review (design §15.6)', () => {
       )
       .toEqual({ meeting: '1.1.0', 'skill:proofread': '0.3.0' });
 
-    // The same versions arriving again stay hidden; a newer one shows.
     await injectUpdatesAvailable(app, [meeting]);
     await expect(pill(mainWindow)).toHaveCount(0);
     await injectUpdatesAvailable(app, [{ ...meeting, to: '1.2.0' }]);

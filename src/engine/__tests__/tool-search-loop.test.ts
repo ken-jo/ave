@@ -1,17 +1,3 @@
-/**
- * Tool-Exposure / Deferral gate — ConversationLoop integration (#1176).
- *
- * Mirrors request-plugin.test's RecordingProvider harness.
- *
- * Verifies the post-#1176 semantics:
- *   1. Below EAGER_TOOL_EXPOSURE_CEILING (the common case), an active plugin's
- *      whole tool suite is exposed eagerly — no `tool_search` discovery, empty
- *      catalog, deferred/loaded ratio 0.
- *   2. Active/inactive (enabled) gating drops a disabled plugin's tools from
- *      both the loaded schemas and the catalog.
- *   3. At/above the ceiling the turn falls back to per-tool deferral, and
- *      builtins are never counted toward the ceiling.
- */
 import { describe, it, expect, vi } from "vitest";
 
 import { InputClassifier } from "../../core/input-classifier.js";
@@ -63,13 +49,10 @@ function makeLoop(opts: {
   provider: LLMProvider;
   headless?: boolean;
   auditLogger?: AuditLogger;
-  /** Plugin ids reported inactive by the runtime mock (enabled === false). */
   inactivePluginIds?: Set<string>;
-  /** Extra synthetic plugin tools to register (e.g. to cross the ceiling). */
   extraMeetingTools?: number;
 }): ConversationLoop {
   const toolRegistry = new ToolRegistry();
-  // tool_search builtin (statically registered; visible with builtins).
   toolRegistry.register(
     createDynamicTool({
       name: TOOL_SEARCH_TOOL_NAME,
@@ -106,8 +89,6 @@ function makeLoop(opts: {
       execute: async () => ({ output: "mcp", isError: false }),
     }),
   );
-  // Synthetic extra meeting tools — used by the ceiling test to push the
-  // eligible count past EAGER_TOOL_EXPOSURE_CEILING.
   for (let i = 0; i < (opts.extraMeetingTools ?? 0); i += 1) {
     toolRegistry.register(
       readonlyPluginTool(`meeting_extra_${i}`, "com.example.meeting"),
@@ -142,8 +123,7 @@ function makeLoop(opts: {
       ],
       isPluginEnabled: (pluginId: string) => !inactive.has(pluginId),
     },
-    // Active plugin scope is host-selected. Natural-language keywords do not
-    // activate plugins or preload Tool schemas.
+    // Plugin scope is host-selected; natural-language keywords cannot activate tools.
     forcedActivePluginIds: ["com.example.meeting"],
     headless: opts.headless,
     ...(opts.auditLogger ? { auditLogger: opts.auditLogger } : {}),
@@ -156,8 +136,6 @@ function makeLoop(opts: {
 describe("ConversationLoop — eager active-plugin tool exposure (#1176)", () => {
   it("exposes the active plugin's whole suite eagerly with zero tool_search (indexer-like)", async () => {
     const provider = new RecordingProvider([
-      // The model can call meeting_stop directly — it is already loaded, so it
-      // must NOT need a tool_search round to discover it.
       [
         { type: "tool_call", id: "tu-1", name: "meeting_stop", input: {} },
         { type: "message_complete", stopReason: "tool_use" },
@@ -173,13 +151,9 @@ describe("ConversationLoop — eager active-plugin tool exposure (#1176)", () =>
     });
     expect(result.text).toBe("완료");
 
-    // Round 0: the full meeting suite is loaded up front (both tools), so the
-    // model never has to call tool_search.
     expect(provider.observedToolNames[0]).toContain("meeting_start");
     expect(provider.observedToolNames[0]).toContain("meeting_stop");
-    // Other plugins are out of scope and stay absent.
     expect(provider.observedToolNames[0]).not.toContain("email_list");
-    // Zero tool_search calls were issued across the turn.
     const searchCalls = loop
       .getHistory()
       .getMessages()
@@ -210,13 +184,8 @@ describe("ConversationLoop — eager active-plugin tool exposure (#1176)", () =>
 
     expect(captured).toHaveLength(1);
     const exposure = captured[0];
-    // Loaded eligible in eager mode: meeting_start + meeting_stop (plugin) AND
-    // mcp_fetch (MCP is in scope for a non-headless main turn and loads eagerly
-    // too). Builtins (tool_search) are loaded but never counted.
     expect(exposure.deferralEligibleLoadedCount).toBe(3);
-    // Nothing deferred — the catalog is empty in eager mode.
     expect(exposure.deferredCatalogCount).toBe(0);
-    // ratio = deferred / (deferred + eligible-loaded) = 0 / 3 = 0.
     expect(exposure.deferredLoadedRatio).toBe(0);
   });
 });
@@ -237,11 +206,8 @@ describe("ConversationLoop — active/inactive plugin gating (#1176)", () => {
       inputOrigin: "user-keyboard",
     });
 
-    // The meeting plugin is inactive → its tools are absent from the loaded
-    // schema entirely (they are not deferred to a catalog — they are gone).
     expect(provider.observedToolNames[0]).not.toContain("meeting_start");
     expect(provider.observedToolNames[0]).not.toContain("meeting_stop");
-    // tool_search (builtin) is still present — builtins are unaffected.
     expect(provider.observedToolNames[0]).toContain(TOOL_SEARCH_TOOL_NAME);
   });
 
@@ -252,7 +218,7 @@ describe("ConversationLoop — active/inactive plugin gating (#1176)", () => {
         { type: "message_complete", stopReason: "end_turn" },
       ],
     ]);
-    const loop = makeLoop({ provider }); // active
+    const loop = makeLoop({ provider });
     await loop.runTurn("회의 정리해줘", undefined, undefined, {
       inputOrigin: "user-keyboard",
     });
@@ -260,15 +226,7 @@ describe("ConversationLoop — active/inactive plugin gating (#1176)", () => {
     expect(provider.observedToolNames[0]).toContain("meeting_stop");
   });
 
-  // NOTE: this loop is built with `forcedActivePluginIds: ["com.example.meeting"]`,
-  // which re-adds the plugin to `activePluginIds` on EVERY turn regardless of
-  // `lastTurnScope`. `onPluginDisabled` (which only deletes from `lastTurnScope`)
-  // therefore cannot change the outcome here — deleting its body leaves this test
-  // green. The disabled-plugin drop is owned solely by the per-turn
-  // `isPluginEnabled` gate in `resolveToolScope`; the call is asserted below only
-  // to pin that it stays harmless on the forced-scope path. Carried-forward
-  // invalidation itself is covered by request-plugin.test.ts, which uses a loop
-  // with no forced scope so `lastTurnScope` is actually load-bearing.
+  // Forced scope bypasses carry-forward; only the per-turn enabled check can drop disabled tools.
   it("re-disabling a forced-active plugin drops its tools even though onPluginDisabled cannot prune forced scope", async () => {
     const provider = new RecordingProvider([
       [
@@ -287,9 +245,6 @@ describe("ConversationLoop — active/inactive plugin gating (#1176)", () => {
     });
     expect(provider.observedToolNames[0]).toContain("meeting_start");
 
-    // The user toggles the plugin inactive. The disable hook fires too, but
-    // forced scope means the drop below comes entirely from the per-turn
-    // isPluginEnabled gate.
     inactivePluginIds.add("com.example.meeting");
     loop.onPluginDisabled("com.example.meeting");
     await loop.runTurn("계속 진행해줘", undefined, undefined, {
@@ -302,12 +257,8 @@ describe("ConversationLoop — active/inactive plugin gating (#1176)", () => {
 
 describe("ConversationLoop — deferral ceiling (#1176)", () => {
   it("falls back to deferral at/above the eligible-tool ceiling", async () => {
-    // meeting suite base = 2 (meeting_start + meeting_stop). Add enough extra
-    // meeting tools to cross EAGER_TOOL_EXPOSURE_CEILING. With deferral on, the
-    // Meeting tools must be deferred into the catalog, so the model needs
-    // tool_search to reach meeting_stop.
-    // Headless excludes MCP so the eligible count is exactly the meeting suite.
-    const extra = EAGER_TOOL_EXPOSURE_CEILING; // 2 + 200 = 202 eligible >= 200
+    // Exclude MCP in headless mode to make the plugin-only ceiling count exact.
+    const extra = EAGER_TOOL_EXPOSURE_CEILING;
     const provider = new RecordingProvider([
       [
         {
@@ -337,11 +288,9 @@ describe("ConversationLoop — deferral ceiling (#1176)", () => {
     });
     expect(result.text).toBe("완료");
 
-    // Deferral on: plugin Tool schemas are discovered through tool_search.
     expect(provider.observedToolNames[0]).not.toContain("meeting_start");
     expect(provider.observedToolNames[0]).not.toContain("meeting_stop");
     expect(provider.observedToolNames[0]).toContain(TOOL_SEARCH_TOOL_NAME);
-    // After tool_search the next round sees meeting_stop.
     expect(provider.observedToolNames[1]).toContain("meeting_stop");
   });
 
@@ -380,10 +329,7 @@ describe("ConversationLoop — deferral ceiling (#1176)", () => {
   });
 
   it("does NOT count builtins toward the ceiling (eager just below it)", async () => {
-    // Headless (no MCP): base meeting suite = 2; add (ceiling - 3) extra →
-    // eligible = ceiling - 1 (199 when ceiling is 200). Many builtins exist
-    // (tool_search etc.) but the turn must stay eager because builtins are
-    // excluded from the count.
+    // Builtins do not count toward the eager ceiling.
     const extra = EAGER_TOOL_EXPOSURE_CEILING - 3;
     const provider = new RecordingProvider([
       [
@@ -405,8 +351,6 @@ describe("ConversationLoop — deferral ceiling (#1176)", () => {
     });
     expect(result.text).toBe("완료");
 
-    // Eager (eligible = ceiling - 1 < ceiling): meeting_stop loaded directly,
-    // no tool_search needed.
     expect(provider.observedToolNames[0]).toContain("meeting_start");
     expect(provider.observedToolNames[0]).toContain("meeting_stop");
     const searchCalls = loop
@@ -419,8 +363,7 @@ describe("ConversationLoop — deferral ceiling (#1176)", () => {
   });
 
   it("treats exactly the ceiling as the deferral boundary", async () => {
-    // Headless (no MCP): base meeting suite = 2; add (ceiling - 2) → eligible =
-    // exactly ceiling → deferral on (>= is inclusive).
+    // Deferral begins inclusively at the ceiling.
     const extra = EAGER_TOOL_EXPOSURE_CEILING - 2;
     const provider = new RecordingProvider([
       [
@@ -437,7 +380,6 @@ describe("ConversationLoop — deferral ceiling (#1176)", () => {
       inputOrigin: "user-keyboard",
     });
 
-    // Deferral on at exactly the ceiling: plugin Tools are not loaded yet.
     expect(provider.observedToolNames[0]).not.toContain("meeting_start");
     expect(provider.observedToolNames[0]).not.toContain("meeting_stop");
     expect(provider.observedToolNames[0]).toContain(TOOL_SEARCH_TOOL_NAME);
@@ -458,7 +400,6 @@ describe("ConversationLoop — headless MCP scope (#1176 eager)", () => {
     });
 
     expect(result.text).toBe("no mcp");
-    // Headless excludes MCP entirely; meeting suite is eager.
     expect(provider.observedToolNames[0]).not.toContain("mcp_fetch");
     expect(provider.observedToolNames[0]).toContain("meeting_start");
     expect(provider.observedToolNames[0]).toContain("meeting_stop");

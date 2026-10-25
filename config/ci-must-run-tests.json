@@ -1,5 +1,5 @@
 {
-  "$comment": "Tests every affected-only pull-request run executes whatever changed: security, permissions, sandbox, contract, IPC channel and naming. An entry ending in '/' selects every collected Vitest file under that prefix; any other entry is one collected Vitest file. scripts/run-ci-suite.mjs refuses an entry that selects nothing. Full runs (every non-PR event, category merges from integration/* into main, and untrusted selections for PRs into non-integration bases) run the whole suite anyway. PRs into integration/* always keep the best traced selection and this nonempty must-run set, even when discovery fails. The \"out-of-process\" group lists every test that runs repo code in a child process through tsx or bundles it with esbuild, itself or through a test helper it imports: the import graph cannot see what that child or bundle loads, so these run on every pull request (test/scripts/run-ci-suite.test.ts fails when one is missing).",
+  "$comment": "Tests every affected-only pull-request run executes whatever changed: security, permissions, sandbox, contract, IPC channel and naming. An entry ending in '/' selects every collected Vitest file under that prefix; any other entry is one collected Vitest file. scripts/run-ci-suite.mjs refuses an entry that selects nothing. Full runs (every non-PR event, category merges from integration/* into main, and untrusted selections for PRs into non-integration bases) run the whole suite anyway. PRs into integration/* always keep the best traced selection and this nonempty must-run set, even when discovery fails. The \"out-of-process\" group lists every test that runs repo code in a child process through tsx or bundles it with esbuild, itself or through a test helper it imports: the import graph cannot see what that child or bundle loads, so these run on every pull request (test/scripts/run-ci-suite.test.ts fails when one is missing). The \"tree-invariants\" group lists every test that reads the tracked tree with `git ls-files` and asserts an invariant over it (the must-run set itself, pre-push tiers, repository identity, documentation readers): a test-only change can break one of those invariants without touching the suite, so they run on every pull request and main push (test/scripts/run-ci-suite.test.ts fails when one is missing).",
   "groups": {
     "permissions": [
       "src/permissions/"
@@ -60,6 +60,7 @@
       "src/data/__tests__/settings-store-shared-secret-lease.test.ts",
       "src/engine/__tests__/conversation-loop-kill-durability.test.ts",
       "src/engine/telemetry/__tests__/tracing.test.ts",
+      "src/ipc/domains/__tests__/preview-document.test.ts",
       "src/main/__tests__/codex-conversation-runtime.test.ts",
       "src/plugins/__tests__/registry-atomicity.test.ts",
       "src/plugins/isolation/__tests__/host-protocol-schema-parity.test.ts",
@@ -68,8 +69,17 @@
       "src/tools/__tests__/archive-entry-reader-bundle.test.ts",
       "src/tools/__tests__/file-tools.test.ts",
       "src/tools/__tests__/image-preparation.test.ts",
+      "src/tools/__tests__/preview-document-process.test.ts",
       "test/scripts/main-bundle-budget.test.ts",
+      "test/scripts/preview-document-bundle.test.ts",
       "test/scripts/protocol-client-check.test.ts"
+    ],
+    "tree-invariants": [
+      "test/scripts/pre-push-markdown-policy.test.ts",
+      "test/scripts/pre-push-source-policy.test.ts",
+      "test/scripts/pre-push-tier.test.ts",
+      "test/scripts/repository-identity.test.ts",
+      "test/scripts/run-ci-suite.test.ts"
     ]
   }
 }

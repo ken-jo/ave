@@ -58,8 +58,8 @@ import {
 import { formatRelativeSessionTime } from "../../../shared/format-time.js";
 import { isSuggestionsSession, sessionDisplayTitle } from "../../../shared/suggestions-session.js";
 
-// A nav row draws the same glyph the pane header draws for the view it opens —
-// one map, so a row and the header it produces cannot disagree.
+// A nav row draws the same glyph the pane header draws for the view it opens — one map, so a row and the header it
+// produces cannot disagree.
 const WorkBoardIcon = BUILTIN_VIEW_ICONS["work-board"];
 const RoutinesIcon = BUILTIN_VIEW_ICONS.routines;
 const InsightsIcon = BUILTIN_VIEW_ICONS.insights;
@@ -91,25 +91,12 @@ const SESSION_FAMILY_LABEL_KEYS: Record<SessionFamily, string> = {
   "side-chat": "sidebar.sideChatConversation",
 };
 
-// ─── Types ───────────────────────────────────────────────────────────────────
-
 export interface SidebarProps {
   activeView: InlineViewKey;
-  /** Called with the selected key — same contract as handleViewSelect, which
-   *  also accepts the `plugin-doctor:<id>` pseudo-key that is intercepted
-   *  before it can become a location. Hence `string`, not `ViewKey`. */
+  /** Called with the selected key — same contract as handleViewSelect, which also accepts the `plugin-doctor:<id>` pseudo-key
+   * that is intercepted before it can become a location. Hence `string`, not `ViewKey`. */
   onSelect: (viewKey: string) => void;
-  /**
-   * Open the row's view in a NEW pane instead of the focused one.
-   *
-   * Absent where a new pane has no meaning — chat mode draws one pane and
-   * nothing of the others, so a second one there would be a place the user
-   * cannot see. The rows read this as "is there such a gesture at all": the
-   * menu row and the modifier chord both disappear with it, the same way the
-   * split control disappears from a pane header. Whether the CANVAS has room is
-   * a different question, asked at the moment the gesture is made, and its
-   * answer arrives as a message rather than as a missing menu row.
-   */
+  /** Hide new-pane gestures in chat mode; report capacity refusals when invoked in work mode. */
   onSelectInNewPane?: (viewKey: string) => void;
   /** Plugin views from usePluginMarketplace — same list passed to the main content region. */
   pluginViews: PluginUiExtension[];
@@ -140,11 +127,8 @@ export interface SidebarProps {
    */
   modelConfigured?: boolean | null;
   onOpenSettings: () => void;
-  /**
-   * Start a conversation. Always offered: the window decides where it goes —
-   * the focused tile when it is idle, a tile of its own beside it when that
-   * one is mid-turn — so the sidebar has no turn state to gate it on.
-   */
+  /** Start a conversation. Always offered: the window decides where it goes — the focused tile when it is idle, a tile of its
+   * own beside it when that one is mid-turn — so the sidebar has no turn state to gate it on. */
   onNewChat: () => void;
   /**
    * Collapse state is owned by the shell (App.tsx). The collapse/expand toggle
@@ -167,13 +151,13 @@ export interface SidebarProps {
   width?: number;
   /** Per-move drag update of the sidebar width (state only). */
   onWidthChange?: (px: number) => void;
-  /** Drag-end / keyboard commit of the sidebar width (persist). Also drives
-   *  the resize bar's double-click reset (commits SIDEBAR_DEFAULT_WIDTH). */
+  /** Drag-end / keyboard commit of the sidebar width (persist). Also drives the resize bar's double-click reset (commits
+   * SIDEBAR_DEFAULT_WIDTH). */
   onWidthCommit?: (px: number) => void;
   /** Open the unified search overlay — second button in the cluster strip. */
   onOpenUnifiedSearch: () => void;
-  /** Route path + history. The sidebar renders only the HISTORY half in its
-   *  cluster strip; App renders the path half on the canvas. */
+  /** Route path + history. The sidebar renders only the HISTORY half in its cluster strip; App renders the path half on the
+   * canvas. */
   viewNav: ViewPathNavProps;
   /** Recent main-chat sessions shown under the current project group. */
   sessions?: SessionSummary[];
@@ -183,11 +167,8 @@ export interface SidebarProps {
   currentSessionId?: string;
   /** Load a selected session from the project conversation list. */
   onLoadSession?: (sessionId: string) => boolean | void | Promise<boolean | void>;
-  /**
-   * Open a work-board item from its conversation row. A run's session lives
-   * in the sub-agent namespace and cannot be loaded into a chat tile, so the
-   * row opens the item on the board — where its run transcripts already are.
-   */
+  /** Open a work-board item from its conversation row. A run's session lives in the sub-agent namespace and cannot be loaded
+   * into a chat tile, so the row opens the item on the board — where its run transcripts already are. */
   onOpenWorkBoardItem?: (itemId: number) => void;
   /**
    * Open a side chat from its row: the conversation it belongs to in the
@@ -214,7 +195,6 @@ export interface SidebarProps {
   isProjectPinned?: (projectRoot: string | undefined) => boolean;
   /** Pin/unpin a project — persists immediately (SystemSettings). */
   onToggleProjectPin?: (projectRoot: string) => void;
-  /** What a conversation row can do to itself — see ConversationRowActions. */
   conversationActions?: ConversationRowActions;
   /** What a project row can do to itself — see ProjectRowActions. */
   projectActions?: ProjectRowActions;
@@ -228,31 +208,18 @@ export interface SidebarProps {
   pendingAnswerSessionIds?: ReadonlySet<string>;
   /** A plugin or host request names no conversation and is waiting — the Plugins row carries the dot. */
   pluginRequestPending?: boolean;
-  /**
-   * Cards waiting in the dedicated Suggestions conversation — the count its row
-   * carries. Derived from the window's card queue.
-   */
+  /** Cards waiting in the dedicated Suggestions conversation — the count its row carries. Derived from the window's card
+   * queue. */
   suggestionsPendingCount?: number;
 }
 
-// ─── Platform bridge (darwin traffic-light line) ───────────────────────────────
-// On macOS the OS draws the traffic lights at `TRAFFIC_LIGHT_POSITION`
-// (shared/shell-geometry.ts), ≈12px across, so their visual centre sits on the
-// band's own centre line. The floating card is anchored at
-// `--shell-card-top-darwin` so the cluster strip's centre lands on that line;
-// the strip carries `CLUSTER_LEAD_PAD_DARWIN` of left clearance so its leftmost
-// button starts a full gap past where the lights end, whether the strip
-// rides on the card surface or stands
-// out bare in the band when collapsed.
-// Returns false when the preload bridge is absent (jsdom / Storybook / SSR) —
-// no native chrome to align against there.
+// Align the sidebar cluster with native-control centers using shared pixel geometry; without a preload bridge no native
+// alignment applies.
 export function isDarwinPlatform(): boolean {
   return (
     (window as unknown as { avePlatform?: { isDarwin: boolean } }).avePlatform?.isDarwin ?? false
   );
 }
-
-// ─── NavItem ─────────────────────────────────────────────────────────────────
 
 /**
  * Per-section hover tone. Primary nav reads as the main surface (`accent`);
@@ -292,11 +259,10 @@ interface NavItemProps {
   label: string;
   icon: React.ReactNode;
   isActive: boolean;
-  /** The event is passed because HOW the row was clicked decides where the view
-   *  opens — a plain click replaces the focused pane, meta/ctrl opens a new one. */
+  /** The event is passed because HOW the row was clicked decides where the view opens — a plain click replaces the focused
+   * pane, meta/ctrl opens a new one. */
   onClick: (event: MouseEvent<HTMLButtonElement>) => void;
-  /** Right-click. The row's own menu, so the modifier chord above is not the
-   *  only way to discover the second destination. */
+  /** Right-click. The row's own menu, so the modifier chord above is not the only way to discover the second destination. */
   onContextMenu?: (event: MouseEvent<HTMLButtonElement>) => void;
   collapsed: boolean;
   /** Hover tone for the inactive state. Defaults to the primary `accent` surface. */
@@ -309,11 +275,8 @@ interface NavItemProps {
   trailingSlot?: React.ReactNode;
   /** `menuitem` when the row sits inside a NavGroup flyout. */
   role?: "menuitem";
-  /**
-   * A badge pinned to the icon's corner, drawn in both the expanded row and
-   * the collapsed rail — unlike `trailingSlot`, which only the row has room
-   * for. This is how an entry stays alerting after the sidebar collapses.
-   */
+  /** A badge pinned to the icon's corner, drawn in both the expanded row and the collapsed rail — unlike `trailingSlot`,
+   * which only the row has room for. This is how an entry stays alerting after the sidebar collapses. */
   iconBadge?: React.ReactNode;
 }
 
@@ -412,8 +375,6 @@ function NavItem({
 
   return btn;
 }
-
-// ─── NavGroup ────────────────────────────────────────────────────────────────
 
 /** Sidebar nav groups: "features" holds the built-in views, "plugins" the installed plugin rows. */
 type SidebarGroup = "features" | "plugins";
@@ -605,60 +566,32 @@ function FailedPluginNavItem({
     </span>
   );
 
+  const renderItem = (itemIcon: ReactNode) => (
+    <NavItem
+      viewKey={viewKey}
+      label={label}
+      icon={itemIcon}
+      isActive={false}
+      {...rowHandlers(viewKey)}
+      collapsed={collapsed}
+
+      role={role}
+      data-testid={sidebarViewTestId(viewKey)}
+      data-viewkey={viewKey}
+      title={title}
+      tooltipLabel={title}
+      trailingSlot={collapsed ? undefined : trailingSlot}
+    />
+  );
+
   return (
-    <Suspense
-      fallback={
-        <NavItem
-          viewKey={viewKey}
-          label={label}
-          icon={<Wrench className="h-4 w-4 text-destructive" />}
-          isActive={false}
-          {...rowHandlers(viewKey)}
-          collapsed={collapsed}
-
-          role={role}
-          data-testid={sidebarViewTestId(viewKey)}
-          data-viewkey={viewKey}
-          title={title}
-          tooltipLabel={title}
-          trailingSlot={collapsed ? undefined : trailingSlot}
-        />
-      }
-    >
-      <NavItem
-        viewKey={viewKey}
-        label={label}
-        icon={icon}
-        isActive={false}
-        {...rowHandlers(viewKey)}
-        collapsed={collapsed}
-
-        role={role}
-        data-testid={sidebarViewTestId(viewKey)}
-        data-viewkey={viewKey}
-        title={title}
-        tooltipLabel={title}
-        trailingSlot={collapsed ? undefined : trailingSlot}
-      />
+    <Suspense fallback={renderItem(<Wrench className="h-4 w-4 text-destructive" />)}>
+      {renderItem(icon)}
     </Suspense>
   );
 }
 
-// ─── InactivePluginNavItem ───────────────────────────────────────────────────
-
-/**
- * An installed plugin the user switched off, holding the sidebar slot it would
- * occupy when active.
- *
- * Deliberately NOT styled as a failure. `enabled: false` is a choice the user
- * made, so it gets no destructive colour, no wrench, and no Doctor — those
- * would tell the user something is broken and invite a repair for a plugin
- * that is working exactly as configured. What it does get is presence: before
- * this row existed, an inactive plugin rendered nowhere in the app while the
- * marketplace still listed it as installed, which is the same dead end as a
- * silently dropped one. Selecting it opens Plugin Settings, where the toggle
- * that turned it off is.
- */
+/** Disabled plugins retain a sidebar settings shortcut without failure styling or repair actions. */
 function InactivePluginNavItem({
   plugin,
   rowHandlers,
@@ -687,53 +620,37 @@ function InactivePluginNavItem({
     </span>
   );
 
+  const renderItem = (itemIcon: ReactNode) => (
+    <NavItem
+      viewKey={viewKey}
+      label={label}
+      icon={itemIcon}
+      isActive={false}
+      {...rowHandlers(viewKey)}
+      collapsed={collapsed}
+
+      role={role}
+      data-testid={sidebarViewTestId(viewKey)}
+      data-viewkey={viewKey}
+      title={title}
+      tooltipLabel={title}
+      trailingSlot={collapsed ? undefined : trailingSlot}
+    />
+  );
+
   return (
-    <Suspense
-      fallback={
-        <NavItem
-          viewKey={viewKey}
-          label={label}
-          icon={<PowerOff className="h-4 w-4 text-muted-foreground" />}
-          isActive={false}
-          {...rowHandlers(viewKey)}
-          collapsed={collapsed}
-
-          role={role}
-          data-testid={sidebarViewTestId(viewKey)}
-          data-viewkey={viewKey}
-          title={title}
-          tooltipLabel={title}
-          trailingSlot={collapsed ? undefined : trailingSlot}
-        />
-      }
-    >
-      <NavItem
-        viewKey={viewKey}
-        label={label}
-        icon={
-          <span className="relative h-4 w-4">
-            <IconComponent className="h-4 w-4 text-muted-foreground" />
-            <span className="absolute -right-1 -top-1 flex h-3 w-3 items-center justify-center rounded-full bg-muted text-muted-foreground">
-              <PowerOff className="h-2 w-2" aria-hidden="true" />
-            </span>
+    <Suspense fallback={renderItem(<PowerOff className="h-4 w-4 text-muted-foreground" />)}>
+      {renderItem(
+        <span className="relative h-4 w-4">
+          <IconComponent className="h-4 w-4 text-muted-foreground" />
+          <span className="absolute -right-1 -top-1 flex h-3 w-3 items-center justify-center rounded-full bg-muted text-muted-foreground">
+            <PowerOff className="h-2 w-2" aria-hidden="true" />
           </span>
-        }
-        isActive={false}
-        {...rowHandlers(viewKey)}
-        collapsed={collapsed}
-
-        role={role}
-        data-testid={sidebarViewTestId(viewKey)}
-        data-viewkey={viewKey}
-        title={title}
-        tooltipLabel={title}
-        trailingSlot={collapsed ? undefined : trailingSlot}
-      />
+        </span>,
+      )}
     </Suspense>
   );
 }
-
-// ─── PluginNavItem ────────────────────────────────────────────────────────────
 
 function PluginNavItem({
   view,
@@ -799,8 +716,6 @@ function PluginNavItem({
   );
 }
 
-// ─── Project sessions ───────────────────────────────────────────────────────
-
 // One page of conversation rows. The lists have no upper bound, so the sidebar
 // shows a page and offers the next one — revealed by scrolling in the flat
 // Chats list, opened by a button in each Projects group. Neither CAPS the list,
@@ -810,18 +725,8 @@ const SESSION_PAGE_SIZE = 6;
 /** How far ahead of the scroller's edge the next page is prepared. */
 const SESSION_REVEAL_MARGIN = "200px 0px";
 
-/**
- * A conversation list that grows as it is scrolled.
- *
- * Only a page of rows is rendered at first. A zero-height sentinel sits after
- * the last rendered row: once it enters the scroller the reader has consumed
- * everything rendered, so the next page is revealed — repeating until the whole
- * list is on screen.
- *
- * This is the FLAT list's behaviour. A grouped list cannot use it: one group
- * cascading to fill the viewport would push its sibling groups below the fold,
- * so the Projects tab pages each group behind its own control instead.
- */
+/** Flat lists reveal pages at a sentinel; project groups use separate paging controls so one group cannot push all siblings
+ * below the fold. */
 function RevealingSessionList({
   sessions,
   renderRow,
@@ -837,23 +742,16 @@ function RevealingSessionList({
   const [visibleCount, setVisibleCount] = useState(SESSION_PAGE_SIZE);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   const total = sessions.length;
-  // The list SHRINKS under the window whenever the archive toggle hides rows
-  // again, so what is rendered is the revealed count reconciled with the list
-  // that exists now — never a count carried over from a longer one.
+  // The list SHRINKS under the window whenever the archive toggle hides rows again, so what is rendered is the revealed
+  // count reconciled with the list that exists now — never a count carried over from a longer one.
   const shown = Math.max(SESSION_PAGE_SIZE, Math.min(visibleCount, total));
   const hasMore = shown < total;
 
   useEffect(() => {
     const sentinel = sentinelRef.current;
     if (!sentinel) return;
-    // The list scrolls inside the sidebar card's Radix viewport, not the
-    // document, so THAT element is the observer root — measured against the
-    // document viewport the sentinel counts as visible from the start and the
-    // whole list would unroll at once.
-    // Rebuilt on every reveal: IntersectionObserver reports CHANGES, so an
-    // observer carried across a reveal stays silent while the sentinel is still
-    // in view, and the list would stop growing one page short of filling the
-    // scroller.
+    // Observe within the sidebar scroller and rebuild after reveal; an unchanged visible sentinel otherwise emits no new
+    // intersection event.
     const observer = new IntersectionObserver(
       (entries) => {
         if (!entries.some((entry) => entry.isIntersecting)) return;
@@ -888,10 +786,8 @@ function useWorkspaceProjects(enabled: boolean): ProjectIdentity[] {
     void window.ave?.workspace?.listRoots?.().then((result) => {
       if (cancelled || !result?.ok) return;
       const roots = Array.isArray(result.roots) ? result.roots : [];
-      // fallbackName is only a safety net for a root with no resolvable
-      // basename (near-unreachable in practice) — the default project is
-      // filtered out of every display surface anyway, so its exact string
-      // value is never shown.
+      // fallbackName is only a safety net for a root with no resolvable basename (near-unreachable in practice) — the default
+      // project is filtered out of every display surface anyway, so its exact string value is never shown.
       setProjects(workspaceRootsToProjects(result.defaultRoot, roots, t("sidebar.projectsLabel")));
     }).catch(() => {
       // Keep the localized fallback; the sidebar must remain usable without the workspace bridge.
@@ -904,25 +800,9 @@ function useWorkspaceProjects(enabled: boolean): ProjectIdentity[] {
   return projects;
 }
 
-/**
- * A single conversation row — shared by both the per-project grouped list and
- * the ungrouped "no project" flat list below, so the two surfaces render
- * byte-identical session buttons.
- *
- * Structured as a `<div role group>` wrapping TWO sibling buttons (the main
- * "load this session" click target + the pin toggle) rather than one button
- * with a nested interactive child — nesting a real button inside a button is
- * invalid HTML and would only ever fire the outer element's click handler.
- * The `data-testid`/`aria-current`/click semantics stay on the inner "load"
- * button, unchanged from the prior single-button structure.
- */
-/**
- * What a conversation row can do to ITSELF.
- *
- * One object rather than eight loose props: these arrive together, they are
- * offered together in one menu, and a row that has some of them but not others
- * would show a menu with holes in it.
- */
+/** Use sibling load and pin buttons; nested buttons are invalid and would route clicks to the outer button. */
+/** What a conversation row can do to ITSELF. One object rather than eight loose props: these arrive together, they are
+ * offered together in one menu, and a row that has some of them but not others would show a menu with holes in it. */
 export interface ConversationRowActions {
   isArchived: (sessionId: string) => boolean;
   isUnread: (sessionId: string) => boolean;
@@ -934,8 +814,7 @@ export interface ConversationRowActions {
   onShare: (sessionId: string) => void | Promise<void>;
   onCopy: (sessionId: string) => void | Promise<void>;
   onDelete: (sessionId: string) => void | Promise<void>;
-  /** Import a conversation. Acts on the LIST, not on any row — see the Chats
-   *  tab's own context menu. */
+  /** Import a conversation. Acts on the LIST, not on any row — see the Chats tab's own context menu. */
   onImport?: () => void | Promise<void>;
 }
 
@@ -980,8 +859,7 @@ function InlineRename({
       className="min-w-0 flex-1 rounded-sm border border-input bg-background px-1 py-0.5 text-[12px] text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
       onChange={(event) => setValue(event.target.value)}
       onClick={(event) => event.stopPropagation()}
-      // Blur abandons rather than commits. A rename that lands because focus
-      // moved is a rename the user never confirmed.
+      // Blur abandons rather than commits. A rename that lands because focus moved is a rename the user never confirmed.
       onBlur={onCancel}
       onKeyDown={(event) => {
         if (event.key === "Enter") {
@@ -1022,11 +900,8 @@ function SessionRow({
   session: SessionSummary;
   active: boolean;
   onLoadSession?: (sessionId: string) => boolean | void | Promise<boolean | void>;
-  /**
-   * Which conversation family this row is. `main` is the ordinary chat row and
-   * the only one with the main store's actions behind it; every other family
-   * draws its own glyph and offers exactly one thing — open.
-   */
+  /** Which conversation family this row is. `main` is the ordinary chat row and the only one with the main store's actions
+   * behind it; every other family draws its own glyph and offers exactly one thing — open. */
   family?: SessionFamily;
   /** A side chat, drawn indented under the conversation it belongs to. */
   nested?: boolean;
@@ -1036,20 +911,15 @@ function SessionRow({
   isPinned?: boolean;
   /** Toggle this conversation's pin — omitted entirely hides the pin affordance. */
   onTogglePin?: () => void | Promise<void>;
-  /** Open this row's actions menu. Wired to BOTH the right-click and the
-   *  trailing entry button, so the two cannot offer different things. */
+  /** Open this row's actions menu. Wired to BOTH the right-click and the trailing entry button, so the two cannot offer
+   * different things. */
   onOpenMenu?: (event: MouseEvent<HTMLElement>) => void;
   /** Marked unread — drawn as a dot plus a heavier title. */
   unread?: boolean;
-  /**
-   * This conversation's turn is parked on a request, on screen or not — the
-   * yellow dot says "interrupted here, something is waiting for an answer".
-   */
+  /** This conversation's turn is parked on a request, on screen or not — the yellow dot says "interrupted here, something is
+   * waiting for an answer". */
   pendingAnswer?: boolean;
-  /**
-   * Suggestions waiting in this conversation — drawn as a count. Only the
-   * dedicated Suggestions conversation has any.
-   */
+  /** Suggestions waiting in this conversation — drawn as a count. Only the dedicated Suggestions conversation has any. */
   pendingCount?: number;
   /** A turn is running here — the kind glyph gives way to a pulsing dot. */
   responding?: boolean;
@@ -1070,17 +940,14 @@ function SessionRow({
       data-session-family={family}
       className={[
         "group relative flex w-full min-w-0 items-center rounded-md transition-colors",
-        // A nested row is a child of the conversation above it. The indent is
-        // the whole statement of that, so it is on the row rather than a
-        // wrapper: the row still spans the list and still highlights edge to
-        // edge, it just starts further in.
+        // A nested row is a child of the conversation above it. The indent is the whole statement of that, so it is on the row
+        // rather than a wrapper: the row still spans the list and still highlights edge to edge, it just starts further in.
         nested ? "pl-4" : "",
         active
           ? "bg-primary/(--opacity-subtle) text-primary"
           : "text-muted-foreground hover:bg-muted hover:text-foreground",
-        // Archived rows stay READABLE. Dimming them to the point of illegibility
-        // would make the archive a place things go to be lost, which is what
-        // delete is for.
+        // Archived rows stay READABLE. Dimming them to the point of illegibility would make the archive a place things go to be
+        // lost, which is what delete is for.
         archived ? "opacity-70" : "",
       ].filter(Boolean).join(" ")}
       data-archived={archived ? "true" : undefined}
@@ -1113,9 +980,8 @@ function SessionRow({
           </button>
         ) : null}
         {responding ? (
-          /* A turn is running here. The pulse is the signal; with reduced
-             motion the dot stands still and the label carries it. Same square
-             as the glyph, hidden the same way under the pin. */
+          /** A turn is running here. The pulse is the signal; with reduced motion the dot stands still and the label carries it. Same
+           * square as the glyph, hidden the same way under the pin. */
           <span
             role="img"
             aria-label={t("sidebar.sessionResponding")}
@@ -1136,8 +1002,7 @@ function SessionRow({
           <FamilyIcon
             className={[
               "h-3.5 w-3.5",
-              // Hidden — not removed. The glyph keeps reserving the square so the
-              // swap costs no layout.
+              // Hidden — not removed. The glyph keeps reserving the square so the swap costs no layout.
               isPinned ? "invisible" : "group-hover:invisible group-focus-within:invisible",
             ].join(" ")}
             data-testid={`sidebar-conversation-glyph-${session.id}`}
@@ -1237,11 +1102,8 @@ function SessionRow({
   );
 }
 
-/**
- * The conversation list, exported because a chat GROUP renders the same list in
- * its own sidebar. One list component, so the window's sidebar and a group's
- * sidebar cannot show two different pictures of the same conversations.
- */
+/** The conversation list, exported because a chat GROUP renders the same list in its own sidebar. One list component, so
+ * the window's sidebar and a group's sidebar cannot show two different pictures of the same conversations. */
 function ProjectSessionList({
   collapsed,
   sessions,
@@ -1295,11 +1157,8 @@ function ProjectSessionList({
   onToggleProjectPin?: (projectRoot: string) => void;
   conversationActions?: ConversationRowActions;
   projectActions?: ProjectRowActions;
-  /**
-   * The card's scroll viewport. The Chats list reveals itself against THIS
-   * scroller, so the list has to be handed the element rather than hunt for an
-   * ancestor by selector.
-   */
+  /** The card's scroll viewport. The Chats list reveals itself against THIS scroller, so the list has to be handed the
+   * element rather than hunt for an ancestor by selector. */
   scrollViewportRef: RefObject<HTMLDivElement | null>;
   /** Collapsed rail: expand the sidebar so the folders can be shown. */
   onExpandSidebar?: () => void;
@@ -1334,20 +1193,18 @@ function ProjectSessionList({
   const confirmAddProject = async (): Promise<void> => {
     await applyAddOutcome(await confirmPendingFolder());
   };
-  // The one command a right-click offers wherever there is no project row —
-  // the Projects tab trigger, its empty area, and the collapsed rail icon.
+  // The one command a right-click offers wherever there is no project row — the Projects tab trigger, its empty area, and
+  // the collapsed rail icon.
   const addProjectMenuHandlers = (): NativeContextMenuHandlers => ({
     "project.add": () => void addProject(),
   });
-  // Reveal the project folder in the OS file manager (real capability:
-  // workspace.reveal).
+  // Reveal the project folder in the OS file manager (real capability: workspace.reveal).
   const revealProject = (projectRoot: string) => {
     if (!projectRoot) return;
     void window.ave?.workspace?.reveal?.(projectRoot);
   };
-  // Remove a picked (non-default) project from the workspace root list (real
-  // capability: workspace.removeRoot). Refresh the sidebar list on success so
-  // the removed project disappears immediately.
+  // Remove a picked (non-default) project from the workspace root list (real capability: workspace.removeRoot). Refresh the
+  // sidebar list on success so the removed project disappears immediately.
   const removeProject = async (project: ProjectIdentity): Promise<void> => {
     if (!project.projectRoot || project.isDefault) return;
     try {
@@ -1364,8 +1221,8 @@ function ProjectSessionList({
   const isSessionPinned = (sessionId: string) => Boolean(isSessionStarred?.(sessionId));
   const fallbackProjects = useWorkspaceProjects(projectsProp === undefined);
   const workspaceProjects = projectsProp ?? fallbackProjects;
-  // Which row is mid-rename. One id for BOTH kinds of row: renaming two things
-  // at once is not a state the user can be in, so it is not a state to model.
+  // Which row is mid-rename. One id for BOTH kinds of row: renaming two things at once is not a state the user can be in, so
+  // it is not a state to model.
   const [renamingKey, setRenamingKey] = useState<string | null>(null);
   // Archived rows are out of the way by default and one click from being back.
   const [showArchived, setShowArchived] = useState(false);
@@ -1402,24 +1259,16 @@ function ProjectSessionList({
     return byParent;
   }, [sessions]);
 
-  // Every row that stands on its own line in the list: the conversations, the
-  // routine runs, the work-board runs, and the side chats with no parent here.
-  // A nested side chat is drawn by its parent's row, so it is not one of these.
+  // Every row that stands on its own line in the list: the conversations, the routine runs, the work-board runs, and the
+  // side chats with no parent here. A nested side chat is drawn by its parent's row, so it is not one of these.
   const topLevelSessions = useMemo(() => {
     const nestedIds = new Set(
       [...sideChatsByParent.values()].flat().map((session) => session.id),
     );
     return sessions.filter((session) => !nestedIds.has(session.id));
   }, [sessions, sideChatsByParent]);
-  // Named (real, user-visible) projects — the default/base-directory binding
-  // is EXCLUDED here so it is never rendered as a project group or a
-  // pickable entry: "no explicit project" is the normal state for a
-  // conversation, not a synthetic "Current Project" bucket (2026-07 "remove
-  // Current Project labeling" refinement). `workspaceProjects` still carries
-  // the default entry (other internal consumers need it for execution
-  // context), so it is filtered out ONLY at this display boundary. Pinned
-  // projects sort to the top (stable — order among unpinned/pinned groups is
-  // otherwise unchanged).
+  // Exclude the default workspace only at the display boundary; preserve stable order within pinned and unpinned named
+  // projects.
   const namedProjects = useMemo(() => {
     const configured = workspaceProjects.filter((project) => !project.isDefault);
     return sortWithPinnedFirst(configured, (project) => Boolean(isProjectPinned?.(project.projectRoot)));
@@ -1435,18 +1284,8 @@ function ProjectSessionList({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- isSessionPinned is derived fresh each render from isSessionStarred (a stable-enough dep); listing it would require useCallback ceremony for no behavioral benefit.
     [topLevelSessions, namedProjects, isSessionStarred],
   );
-  // Every conversation NOT scoped to a named project — no projectRoot at all
-  // (the common case once "no explicit project" stops persisting default
-  // metadata), or a projectRoot that doesn't match any named project.
-  // Sessions persisted BEFORE this refinement tagged every session with the
-  // default workspace root/"workspace" name (no isDefault guard); those no
-  // longer reach this component with that metadata at all — `handleChatSessions`
-  // (src/ipc/handlers/chat.ts) strips projectRoot/projectName at the read
-  // chokepoint whenever the stored root is the default workspace root, so a
-  // legacy session arrives here exactly like a normal "no explicit project"
-  // one (no projectRoot) rather than a phantom named group. Rendered as a
-  // plain, ungrouped list — the conventional "general chats" pattern — rather
-  // than wrapped in a fake project header. Pinned conversations sort first.
+  // Display unscoped and unmatched-root sessions as plain chats; main strips legacy default-workspace metadata at the read
+  // boundary.
   const ungroupedSessions = useMemo(() => {
     const plain = topLevelSessions.filter(
       (session) => !session.projectRoot || !namedProjects.some((project) => projectRootEquals(project.projectRoot, session.projectRoot)),
@@ -1481,7 +1320,6 @@ function ProjectSessionList({
   const hasNamedProjects = sessionsByProject.length > 0;
   const hasUngroupedSessions = ungroupedSessions.length > 0;
 
-
   const conversationMenuHandlers = (session: SessionSummary): NativeContextMenuHandlers => {
     const actions = conversationActions;
     const archived = actions?.isArchived(session.id) ?? false;
@@ -1492,16 +1330,14 @@ function ProjectSessionList({
         ? {
             [unread ? "conversation.mark-read" : "conversation.mark-unread"]: () =>
               void actions.onSetUnread(session.id, !unread),
-            // The Suggestions conversation's name comes from the catalog, so a
-            // rename would store a string no surface shows.
+            // The Suggestions conversation's name comes from the catalog, so a rename would store a string no surface shows.
             ...(isSuggestionsSession(session.id)
               ? {}
               : { "conversation.rename": () => setRenamingKey(`session:${session.id}`) }),
             "conversation.share": () => void actions.onShare(session.id),
             "conversation.copy": () => void actions.onCopy(session.id),
-            // Archived rows leave the list, and every unrequested card is
-            // addressed to the Suggestions conversation — archiving it would
-            // hide every suggestion and its count. Main refuses it too.
+            // Archived rows leave the list, and every unrequested card is addressed to the Suggestions conversation — archiving it
+            // would hide every suggestion and its count. Main refuses it too.
             ...(isSuggestionsSession(session.id) && !archived
               ? {}
               : {
@@ -1520,16 +1356,14 @@ function ProjectSessionList({
     } as NativeContextMenuHandlers;
   };
 
-  // Where one family's row lands when it is clicked. Every family but `main`
-  // opens the surface that already owns its transcript; `main` has no entry
-  // here because it loads into the tile through `onLoadSession`.
+  // Where one family's row lands when it is clicked. Every family but `main` opens the surface that already owns its
+  // transcript; `main` has no entry here because it loads into the tile through `onLoadSession`.
   const openFamilyRow = (session: SessionSummary): (() => void) | undefined => {
     switch (session.family) {
       case "main":
         return undefined;
       case "routine":
-        // A routine run IS a session in the main store — the routine panel
-        // opens it by loading it, and so does this row.
+        // A routine run IS a session in the main store — the routine panel opens it by loading it, and so does this row.
         return () => void onLoadSession?.(session.id);
       case "work-board":
         return session.workBoardItemId === undefined
@@ -1567,9 +1401,8 @@ function ProjectSessionList({
 
   const renderSessionRow = (listed: SessionSummary) => {
     if (listed.family !== "main") return renderFamilyRow(listed, false);
-    // The dedicated Suggestions conversation is named from the catalog by its
-    // id, in the language in use now, and carries the number of suggestions
-    // waiting in it.
+    // The dedicated Suggestions conversation is named from the catalog by its id, in the language in use now, and carries the
+    // number of suggestions waiting in it.
     const suggestions = isSuggestionsSession(listed.id);
     const session = suggestions ? { ...listed, title: sessionDisplayTitle(listed.id, listed.title, t) } : listed;
     const sideChats = sideChatsByParent.get(session.id);
@@ -1607,9 +1440,8 @@ function ProjectSessionList({
     );
   };
 
-  // Archived conversations leave the default listing. They are not deleted, so
-  // the toggle below brings them straight back — the reason archive is worth
-  // having as something distinct from delete.
+  // Archived conversations leave the default listing. They are not deleted, so the toggle below brings them straight back —
+  // the reason archive is worth having as something distinct from delete.
   const visibleSessions = (list: SessionSummary[]) =>
     showArchived || !conversationActions
       ? list
@@ -1619,15 +1451,14 @@ function ProjectSessionList({
     conversationActions && sessions.some((session) => conversationActions.isArchived(session.id)),
   );
 
-  // The folder's own actions, built once. The row's right-click and its
-  // trailing button both call this, so the two can never offer different sets.
+  // The folder's own actions, built once. The row's right-click and its trailing button both call this, so the two can never
+  // offer different sets.
   const projectMenuHandlers = (project: ProjectIdentity): NativeContextMenuHandlers => {
     const root = project.projectRoot;
     const archived = Boolean(projectActions?.isArchived(root));
     return {
-      // Offered while a turn runs too: the window starts the conversation
-      // beside a busy tile rather than in it, so a running turn is no reason
-      // to take the folder's own first action away.
+      // Offered while a turn runs too: the window starts the conversation beside a busy tile rather than in it, so a running
+      // turn is no reason to take the folder's own first action away.
       "project.new-chat": () => void onNewChatForProject?.({
         ...(root ? { projectRoot: root } : {}),
         projectName: project.projectName,
@@ -1643,8 +1474,7 @@ function ProjectSessionList({
           }
         : {}),
       ...(root ? { "project.reveal": () => revealProject(root) } : {}),
-      // Also offered ON a row: someone hunting for "add a project"
-      // right-clicks the nearest project-looking thing.
+      // Also offered ON a row: someone hunting for "add a project" right-clicks the nearest project-looking thing.
       ...addProjectMenuHandlers(),
       ...(root && !project.isDefault
         ? { "project.remove": () => void removeProject(project) }
@@ -1654,8 +1484,8 @@ function ProjectSessionList({
   const pinnedLabelFor = (root: string) =>
     isProjectPinned?.(root) ? "project.unpin" : "project.pin";
 
-  // Archived FOLDERS leave the listing on the same terms archived
-  // conversations do, and answer to the same toggle — one archive, one switch.
+  // Archived FOLDERS leave the listing on the same terms archived conversations do, and answer to the same toggle — one
+  // archive, one switch.
   const visibleProjects = showArchived || !projectActions
     ? sessionsByProject
     : sessionsByProject.filter(({ project }) => !projectActions.isArchived(project.projectRoot));
@@ -1735,8 +1565,7 @@ function ProjectSessionList({
         onContextMenu={(event) => openNativeContextMenu(event, "project", addProjectMenuHandlers())}
       >
         {pendingWarning ? (
-          /* Same acknowledgement text the composer selector shows for the same
-             `pickRoot` warning — one flow, one wording. */
+          /** Same acknowledgement text the composer selector shows for the same `pickRoot` warning — one flow, one wording. */
           <div
             data-testid="sidebar-project-root-warning"
             className="space-y-2 rounded-md border border-destructive bg-destructive/(--opacity-muted) p-2 text-[11px]"
@@ -1770,8 +1599,7 @@ function ProjectSessionList({
           </div>
         ) : null}
         {hasNamedProjects ? visibleProjects.map(({ project, projectSessions }) => {
-          // Archived rows leave the list BEFORE it is paged, so a page is a
-          // page of rows the reader can actually see.
+          // Archived rows leave the list BEFORE it is paged, so a page is a page of rows the reader can actually see.
           const groupSessions = visibleSessions(projectSessions);
           const groupKey = project.projectRoot ?? project.projectName;
           const groupExpanded = expandedProjects.has(groupKey);
@@ -1895,30 +1723,8 @@ function onActiveSidebarTabChangeGuard(value: string, onActiveTabChange: (tab: S
   if (isSidebarTab(value)) onActiveTabChange(value);
 }
 
-// ─── ClusterStrip ──────────────────────────────────────────────────────────
-//
-// The horizontal button cluster that sits ON the OS traffic-light LINE, RIGHT
-// AFTER the lights:
-//   [펼침/닫힘 collapse toggle] → [검색 search] → [뒤로 back] → [앞으로 forward]
-//
-// Pin / export / import USED to sit here. They act on a CONVERSATION, and the
-// part that owns the conversation is the chat group, so they moved into its
-// header (the pane frame) and into each row's context menu. What took their
-// place navigates ROUTES, which is what this sidebar owns. See DESIGN.md
-// "Workbench model".
-// Always rendered (both expanded + collapsed). When the surrounding card is
-// expanded it forms the card's top strip; when collapsed it stands bare in the
-// band. Each control is a `--chrome-icon-button` square (~4px pad around the
-// 16px glyph) with `--chrome-gap-hair` gaps so the hover-highlight box hugs
-// the icon and never pops out of the band; the whole strip is a single
-// `--chrome-control-height` items-center row, which is what centres every
-// glyph on the lights' line.
-//
-// `leadClearance` left-pads the FIRST button past the OS traffic lights on
-// darwin by `CLUSTER_LEAD_PAD_DARWIN` — the lights' right edge plus a gap,
-// re-expressed from the card's own left edge, which is where this padding is
-// measured from. Both halves of that derivation live in
-// `shared/shell-geometry.ts`, so the pad follows the lights if they ever move.
+// Keep route navigation in the sidebar cluster and conversation mutations in pane headers; cluster placement stays fixed
+// across collapse.
 function ClusterStrip({
   collapsed,
   leadClearance,
@@ -1934,8 +1740,8 @@ function ClusterStrip({
   /** The toggle button — where focus returns when an overlaying card closes. */
   toggleRef: RefObject<HTMLButtonElement | null>;
   onOpenUnifiedSearch: () => void;
-  /** Route history. Only the history half renders here — the path half names
-   *  the content, so it belongs on the canvas, not in the chrome. */
+  /** Route history. Only the history half renders here — the path half names the content, so it belongs on the canvas, not in
+   * the chrome. */
   viewNav: ViewPathNavProps;
 }) {
   const { t } = useTranslation();
@@ -2002,8 +1808,6 @@ function ClusterStrip({
   );
 }
 
-// ─── Sidebar ─────────────────────────────────────────────────────────────────
-
 export function Sidebar({
   activeView,
   onSelect,
@@ -2050,9 +1854,8 @@ export function Sidebar({
 }: SidebarProps) {
   const { t } = useTranslation();
   const resizable = !collapsed && Boolean(onWidthChange && onWidthCommit);
-  // Card element ref — EdgeResizeBar applies the live drag width directly to
-  // this node's style (rAF-coalesced) so dragging never re-renders the whole
-  // Sidebar tree, mirroring ChatSidePanel's drag-perf pattern.
+  // Card element ref — EdgeResizeBar applies the live drag width directly to this node's style (rAF-coalesced) so dragging
+  // never re-renders the whole Sidebar tree, mirroring ChatSidePanel's drag-perf pattern.
   const cardRef = useRef<HTMLDivElement | null>(null);
   // Collapse/expand animates the card width; an active resize drag must not. The
   // drag writes width live to `cardRef` below, so a width tween would lag the
@@ -2060,22 +1863,7 @@ export function Sidebar({
   // is the single gate that suppresses the transition for the drag path alone.
   const [isResizing, setIsResizing] = useState(false);
   const openRowMenu = useNativeContextMenu();
-  /**
-   * The two destinations a row that names a view offers, as one pair.
-   *
-   * A plain click puts the view in the FOCUSED pane, over the conversation that
-   * pane holds. Meta (Ctrl off macOS) puts it in a new pane instead — the
-   * platform chord for "open that somewhere else" — and the row's own context
-   * menu names both, which is the whole reason the menu exists: a chord nobody
-   * has been told about is not a gesture, it is a secret.
-   *
-   * `open` is for the one row whose plain click is not a bare `onSelect`
-   * (Settings, which also names a page); `after` is the flyout's dismissal,
-   * which both destinations owe equally. `newPane: false` is for a row whose
-   * key is a SHORTCUT rather than a location — the Doctor and switched-off
-   * plugin rows, which lead to a settings page and are not views of their own,
-   * so there is nothing of theirs to put in a pane.
-   */
+  /** Expose focused-pane and new-pane actions together; settings shortcuts have no independent view to open in another pane. */
   const viewRowHandlers = useCallback((
     viewKey: string,
     { open, after, newPane = true }: {
@@ -2089,8 +1877,7 @@ export function Sidebar({
       else onSelect(viewKey);
       after?.();
     };
-    // Absent in chat mode, where there is no second pane to open into. The
-    // chord and the menu row go with it, together.
+    // Absent in chat mode, where there is no second pane to open into. The chord and the menu row go with it, together.
     const openBeside = newPane && onSelectInNewPane
       ? () => {
         onSelectInNewPane(viewKey);
@@ -2128,8 +1915,8 @@ export function Sidebar({
     [onWidthCommit],
   );
 
-  // The collapsed rail shows icons only; `compact` mirrors `collapsed`. There is
-  // no hover-expand — the card is a consistent floating panel in every mode.
+  // The collapsed rail shows icons only; `compact` mirrors `collapsed`. There is no hover-expand — the card is a consistent
+  // floating panel in every mode.
   const compact = collapsed;
   const hasPluginEntries = pluginViews.length > 0
     || failedPluginCards.length > 0
@@ -2142,19 +1929,12 @@ export function Sidebar({
     pluginViews.some((view) => toViewKey(view) === activeView)
     || failedPluginCards.some((plugin) => toPluginDoctorViewKey(plugin.id) === activeView)
     || inactivePluginCards.some((plugin) => toPluginSettingsViewKey(plugin.id) === activeView);
-  // The rail's projects icon opens INTO the expanded card (the groups open a
-  // flyout instead): `onToggleCollapse` is the shell's only lever, and from
-  // the collapsed state toggling is expanding.
+  // The rail's projects icon opens INTO the expanded card (the groups open a flyout instead): `onToggleCollapse` is the
+  // shell's only lever, and from the collapsed state toggling is expanding.
   const expandSidebar = useCallback(() => {
     if (collapsed) onToggleCollapse();
   }, [collapsed, onToggleCollapse]);
-  // Overlaying, the card is a transient surface over the content: it takes
-  // focus when it opens, and Escape or a pointer down on the content beside
-  // it collapses it through the shell's own lever, so the toggle, the key,
-  // and the click are one action. The listeners subscribe once per open and
-  // read the latest toggle through a ref, so the shell's inline callback
-  // never re-subscribes them. Focus returns to the toggle on close — the
-  // control the user reached the card from.
+  // Overlay dismissal uses the shell toggle and returns focus to it; listeners read the latest callback through a ref.
   const asideRef = useRef<HTMLElement | null>(null);
   const toggleRef = useRef<HTMLButtonElement | null>(null);
   const onToggleCollapseRef = useRef(onToggleCollapse);
@@ -2176,8 +1956,8 @@ export function Sidebar({
     const onPointerDown = (event: PointerEvent) => {
       const target = event.target;
       if (!(target instanceof Node) || aside.contains(target)) return;
-      // Portaled surfaces (menus, dialogs, tooltips) mount outside the shell
-      // column; a pick inside one is not a click beside the card.
+      // Portaled surfaces (menus, dialogs, tooltips) mount outside the shell column; a pick inside one is not a click beside the
+      // card.
       if (!aside.parentElement?.contains(target)) return;
       collapse();
     };
@@ -2186,18 +1966,16 @@ export function Sidebar({
     return () => {
       document.removeEventListener("keydown", onKeyDown);
       document.removeEventListener("pointerdown", onPointerDown);
-      // Hand focus back only when the card had it (or dropped it to the body
-      // as its rows unmounted). A mode flip that leaves the card open as a
-      // pushed sibling keeps focus where the user put it.
+      // Hand focus back only when the card had it (or dropped it to the body as its rows unmounted). A mode flip that leaves the
+      // card open as a pushed sibling keeps focus where the user put it.
       const active = document.activeElement;
       const cardHadFocus = !active || active === document.body || aside.contains(active);
       const toggle = toggleRef.current;
       if (cardHadFocus && toggle?.isConnected) toggle.focus({ preventScroll: true });
     };
   }, [overlayOpen]);
-  // Subscription readiness is distinct from API-key presence: when a login
-  // runtime is selected, never describe its verification state as an API-key
-  // problem or invite the user to configure an unrelated credential.
+  // Subscription readiness is distinct from API-key presence: when a login runtime is selected, never describe its
+  // verification state as an API-key problem or invite the user to configure an unrelated credential.
   const runtimeUnavailable = subscriptionRuntimePolicy ? subscriptionRuntimePolicy.chatUnavailable : subscriptionUnavailable;
   const runtimePending = subscriptionRuntimePolicy ? subscriptionRuntimePolicy.chatPending : subscriptionPending;
   const settingsNeedsApiKey = hasApiKey === false && !runtimeUnavailable && !runtimePending;
@@ -2208,29 +1986,13 @@ export function Sidebar({
   const darwinTopClearance = isDarwinPlatform();
 
   const navListId = "sidebar-nav-list";
-  // The scroller the conversation list reveals itself against, handed down
-  // rather than looked up: the list is inside this viewport by construction.
+  // The scroller the conversation list reveals itself against, handed down rather than looked up: the list is inside this
+  // viewport by construction.
   const navScrollViewportRef = useRef<HTMLDivElement | null>(null);
 
   return (
-    // The sidebar is a FLOATING-CARD shell. The <aside> is a TRANSPARENT
-    // positioning container anchored next to the traffic lights; it never paints
-    // a surface itself. Two zones live inside:
-    //   1. The CLUSTER STRIP (toggle → search → star → export) — ALWAYS rendered,
-    //      sitting on the traffic-light line.
-    //   2. The card SURFACE wrapper — carries `bg-card`/border/shadow/rounded and
-    //      holds the strip + nav body when EXPANDED. When COLLAPSED the surface
-    //      retracts (body removed) and the cluster pops OUT into the bare band
-    //      with NO surface behind it. The strip's screen position is identical in
-    //      both states; the only visual delta is the card surface behind it.
-    // The cluster strip must share the traffic lights' CENTRE LINE, which is
-    // also the band's. `--shell-card-top-darwin` is that constraint solved
-    // rather than a number someone picked: a `--chrome-control-height` strip
-    // centres on a `--chrome-band-height` band only at half their difference,
-    // and a hand-written inset stopped being right the moment the band went
-    // 44px -> 36px (the icons then sat 4px BELOW the lights).
-    // win/linux + non-Electron have no OS lights to align against, so they
-    // take `--shell-card-top`.
+    // Keep the cluster fixed on the native-control centerline while the card surface retracts; pixel chrome geometry must not
+    // scale with text.
     <aside
       ref={asideRef}
       data-testid="primary-sidebar"
@@ -2238,21 +2000,17 @@ export function Sidebar({
       role="navigation"
       aria-label={t("sidebar.ariaLabel")}
       className={[
-        // The card's air, from the same `--shell-card-inset*` tokens the docked
-        // side panel's wrapper uses — the two cards are the same shape and have
-        // to sit on the same lines, and the chat group's bottom edge is lined up
-        // against this one.
+        // The card's air, from the same `--shell-card-inset*` tokens the docked side panel's wrapper uses — the two cards are the
+        // same shape and have to sit on the same lines, and the chat group's bottom edge is lined up against this one.
         "absolute left-(--shell-card-inset) bottom-(--shell-card-inset-bottom) flex min-h-0 flex-col",
-        // Pushed, the card sits under the docked panels' band; overlaying, it
-        // is the floating surface of the moment and must cover everything the
-        // tile draws, the work panel floating at its right edge included.
+        // Pushed, the card sits under the docked panels' band; overlaying, it is the floating surface of the moment and must cover
+        // everything the tile draws, the work panel floating at its right edge included.
         overlayOpen ? "z-50" : "z-30",
         darwinTopClearance ? "top-(--shell-card-top-darwin)" : "top-(--shell-card-top)",
         collapsed && "pointer-events-none",
       ].join(" ")}
-      // The aside overlays the Electron drag band. Mark it no-drag so its controls
-      // stay clickable; the OS traffic lights still own their hit region to the
-      // left of the cluster.
+      // The aside overlays the Electron drag band. Mark it no-drag so its controls stay clickable; the OS traffic lights still
+      // own their hit region to the left of the cluster.
       style={{
         // @ts-expect-error — Electron-specific CSS extension
         WebkitAppRegion: "no-drag",
@@ -2267,8 +2025,8 @@ export function Sidebar({
         ref={cardRef}
         data-testid="sidebar-card"
         data-surface={collapsed ? "bare" : "card"}
-        // Overlaying, the card receives focus when it opens (see the overlay
-        // effect) — programmatically only, never in the Tab order.
+        // Overlaying, the card receives focus when it opens (see the overlay effect) — programmatically only, never in the Tab
+        // order.
         tabIndex={overlayOpen ? -1 : undefined}
         className={[
           "flex min-h-0 flex-col outline-none motion-reduce:transition-none",
@@ -2289,11 +2047,7 @@ export function Sidebar({
               // — itself `flex-1` — fills top-to-bottom in chat mode instead of
               // hugging content height.
               "w-auto items-start flex-1 min-h-0 pointer-events-none [&>*]:pointer-events-auto"
-            : // Expanded: `relative` anchors the inner-edge resize handle;
-              // `flex-1 min-h-0` stretches the card to the aside's bottom so the
-              // surface reaches near the window bottom instead of collapsing to
-              // content height. Width comes from the inline style below (durable,
-              // user-resized) instead of the former fixed `w-56`.
+            : // Anchor the resize handle relatively and stretch the card to the aside bottom; persisted inline width owns sizing.
               "ave-surface-raised relative flex-1 min-h-0 overflow-hidden rounded-2xl bg-card",
         ].join(" ")}
         style={collapsed ? undefined : { width: `${width}px` }}
@@ -2341,15 +2095,7 @@ export function Sidebar({
       <div
         className={
           collapsed
-            ? // Collapsed: a compact icon-rail card BELOW the bare cluster,
-              // pinned to the aside's left edge (`--shell-card-inset`). Its width
-              // is `--shell-collapsed-rail-width` — the main content's collapsed
-              // left padding (`--shell-collapsed-rail-reserve`) minus that inset
-              // and one gutter — so the rail ends a gutter before the content
-              // at every type scale. The cluster strip above keeps its own lead
-              // clearance to clear the OS lights; the rail does NOT inherit that
-              // clearance. `mt-2.5` gives the rail card top margin below the
-              // band so it is not flush against the cluster strip in chat mode.
+            ? // Collapsed rail width excludes the sidebar inset and one gutter; it must not inherit the cluster's native-control clearance.
               "ave-surface-raised mt-2.5 w-(--shell-collapsed-rail-width) flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl bg-card"
             : "flex min-h-0 flex-1 flex-col overflow-hidden"
         }
@@ -2492,8 +2238,7 @@ export function Sidebar({
                     {(close) => {
                       const pick: ViewRowHandlerFactory = (viewKey) =>
                         viewRowHandlers(viewKey, { after: close });
-                      // A Doctor or switched-off row names a settings PAGE, not
-                      // a view, so it offers only the one destination.
+                      // A Doctor or switched-off row names a settings PAGE, not a view, so it offers only the one destination.
                       const pickShortcut: ViewRowHandlerFactory = (viewKey) =>
                         viewRowHandlers(viewKey, { after: close, newPane: false });
                       return (

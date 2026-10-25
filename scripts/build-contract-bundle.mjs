@@ -1,21 +1,6 @@
 #!/usr/bin/env node
-/**
- * Build the contract bundle a tag publishes under `contract/<tag>/`.
- *
- *   node scripts/build-contract-bundle.mjs --out <dir> --tag <tag> [--commit <sha>] [--allow-dirty]
- *
- * The public marketplace verifies plugins against these files only, never
- * against an Ave checkout. Three files are copies of the source at the commit;
- * two are the marketplace checker and the agent-plugin component extractor,
- * bundled with Bun from this checkout by the recipe below. `bundle.json` names
- * the tag, the commit and every file's sha256 and size; `SHA256SUMS` covers
- * all six in `sha256sum -c` format. Signing `SHA256SUMS` is the workflow's job.
- *
- * The output is byte-reproducible for one commit and one Bun version: a tag's
- * objects are write-once, so a rerun must produce the bytes it published.
- * The checkout must be clean at the commit; `--allow-dirty` is for local
- * development and is never passed by the release workflow.
- */
+// Publish reproducible contract bytes from a clean commit; signing belongs to the workflow.
+// --allow-dirty is for local development only.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, readdirSync, writeFileSync } from "node:fs";
@@ -24,14 +9,13 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-/** Copied byte-for-byte from the commit, in bundle order. */
+// Copy from commit objects without changing bytes.
 export const CONTRACT_COPIES = Object.freeze({
   "public-contract.ts": "src/plugins/public-contract.ts",
   "plugin-manifest.schema.json": "schemas/plugin-manifest.schema.json",
   "protocol.schema.json": "schemas/plugin-host-protocol/3/protocol.schema.json",
 });
 
-/** Bundled with the recipe below. */
 export const CONTRACT_BUILDS = Object.freeze({
   "marketplace-check.js": "src/marketplace/repository-check.ts",
   "agent-plugin-components.js": "src/marketplace/content/agent-plugin-components.ts",
@@ -40,11 +24,8 @@ export const CONTRACT_BUILDS = Object.freeze({
 export const BUNDLE_MANIFEST = "bundle.json";
 export const BUNDLE_SUMS = "SHA256SUMS";
 
-/**
- * The checker bundle recipe, run by `bun -e` with the checkout as cwd so Bun's
- * source labels are relative to it. The host logger's worker transport is
- * replaced by a silent logger: the checker never logs through the host.
- */
+// Run the bundler from the checkout for relative source labels.
+// Replace the host logger transport: this checker must not log through the host.
 const BUN_RECIPE = String.raw`
 import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
@@ -80,7 +61,7 @@ process.stdout.write(Buffer.from(await result.outputs[0].arrayBuffer()));
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
-/** A published bundle must not expose or depend on the checkout that built it. */
+// Published bundles must not depend on or expose the build checkout.
 export function embeddedBuildPaths(bytes) {
   const source = bytes.toString();
   const paths = [];
@@ -97,10 +78,7 @@ function bunBuild(root, entry) {
   return execFileSync("bun", ["-e", BUN_RECIPE, root, entry], { cwd: root, maxBuffer: 64 * 1024 * 1024 });
 }
 
-/**
- * Write the bundle into `out` (which must be empty or absent) and return
- * `bundle.json`'s object.
- */
+// The output directory must be empty or absent.
 export function buildContractBundle({ root = ROOT, out, tag, commit, allowDirty = false }) {
   if (typeof out !== "string" || out === "") throw new Error("[build-contract-bundle] --out is required");
   if (typeof tag !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(tag)) {
@@ -121,8 +99,7 @@ export function buildContractBundle({ root = ROOT, out, tag, commit, allowDirty 
     writeFileSync(join(out, name), bytes);
     files[name] = { sha256: sha256(bytes), bytes: bytes.length };
   };
-  // Copies come from the commit's objects, so an edited working tree cannot
-  // leak into them even under --allow-dirty.
+  // Read commit objects even with --allow-dirty so working-tree edits cannot leak.
   for (const [name, path] of Object.entries(CONTRACT_COPIES)) write(name, git(root, ["show", `${resolved}:${path}`]));
   for (const [name, entry] of Object.entries(CONTRACT_BUILDS)) {
     const bytes = bunBuild(root, entry);

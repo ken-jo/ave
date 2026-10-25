@@ -1,26 +1,5 @@
-/**
- * AuditPanel.
- *
- * The audit log + the HMAC chain integrity verdict, drawn inline in the
- * Permissions tab's Audit Log section. It is a region of the pane that holds
- * Settings — the width is the pane's, and the entry list scrolls inside a
- * bounded height so the section below stays reachable. Driven by:
- *   - `window.ave.permission.auditShow(N)` — recent entries.
- *   - `window.ave.permission.auditVerify()` — chain check.
- *
- * Spec ref: docs/architecture/permission-policy-design.md §3
- * Layer 7, §3 Layer 8 (`/permission audit show|verify`).
- *
- * The panel is filterable by decision type (allow/ask/deny/deferred/
- * mode_change/manifest_violation) and by tool name (substring). Each
- * row is collapsed to a single line with an expand toggle that shows
- * the full discriminated-union shape.
- *
- * Tamper-evidence indicator at the top:
- *   - Green check: chain intact + all daily seals match.
- *   - Yellow warning: chain ok but at least one seal is missing/null.
- *   - Red warning: chain broken — first broken file + line index shown.
- */
+/** Audit entries and chain-verification results stay inside the settings pane; see
+ * docs/architecture/permission-policy-design.md. */
 import { useCallback, useEffect, useMemo, useState, type ReactElement } from "react";
 import { Badge } from "../../../../components/ui/badge.js";
 import { Button } from "../../../../components/ui/button.js";

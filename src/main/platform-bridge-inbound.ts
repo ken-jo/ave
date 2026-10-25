@@ -1,15 +1,5 @@
-/**
- * Restricted inbound command boundary for provider chat bridges.
- *
- * This is deliberately a core, not a listener: a provider adapter owns its
- * credentials and HTTP server, then gives this gateway only an exact raw body
- * and headers. The adapter MUST verify its provider signature before it returns
- * a decoded envelope. The gateway never parses an unverified provider body.
- *
- * No provider is enabled by constructing this module. `enabled` defaults to
- * false, and a disabled gateway invokes neither verifier nor authorization.
- * Its only command is a text message send through the common host-owned port.
- */
+// Adapters must verify provider signatures before decoding; this gateway never parses unverified bodies. Disabled gateways invoke neither verification
+// nor authorization; enabled traffic uses the common command port.
 import { randomUUID } from "node:crypto";
 import {
   createPlatformBridgeActor,
@@ -22,7 +12,7 @@ import { UUID_PATTERN } from "../shared/uuid.js";
 import { SHA256_HEX, sha256Hex } from "../lib/hex-digest-equal.js";
 import { requirePositiveInteger } from "../shared/safe-integer.js";
 
-/** Mirrors the receipt store's own owner grammar so both agree on validity. */
+// Mirrors the receipt store's own owner grammar so both agree on validity.
 const DEFAULT_MAX_RAW_BODY_BYTES = 64 * 1024;
 const DEFAULT_MAX_TEXT_CHARS = 24_000;
 const MAX_PROVIDER_CHARS = 64;
@@ -30,57 +20,48 @@ const DEFAULT_MAX_INBOUND_REQUESTS_PER_WINDOW = 12;
 const DEFAULT_INBOUND_REQUEST_WINDOW_MS = 60_000;
 const DEFAULT_MAX_TRACKED_INBOUND_AUTHORIZED_PAIRS = 128;
 const MAX_IDENTIFIER_CHARS = 256;
-// Tabs and line breaks are normal message text. The rest of C0 controls and
-// DEL make ambiguous provider identifiers, logs, and command prefixes.
+// Tabs and line breaks are normal message text. The rest of C0 controls and DEL make ambiguous provider identifiers, logs, and command prefixes.
 
-/** Raw request material passed to the provider-owned verifier only. */
+// Raw request material passed to the provider-owned verifier only.
 export interface PlatformBridgeRawWebhookRequest {
   readonly rawBody: Uint8Array;
-  /** Preserved only for signature verification; never persisted by this core. */
+  // Preserved only for signature verification; never persisted by this core.
   readonly headers?: Readonly<Record<string, string | readonly string[] | undefined>>;
 }
 
-/**
- * The sole provider-specific ingress extension point.
- *
- * `verify` receives bytes before any body parsing performed by this module.
- * It is responsible for provider signature / timestamp / replay checks, then
- * may parse those verified bytes and return a decoded candidate envelope.
- */
+// The sole provider-specific ingress extension point. `verify` receives bytes before any body parsing performed by this module. It is responsible for
+// provider signature / timestamp / replay checks, then may parse those verified bytes and return a decoded candidate envelope.
 export interface PlatformBridgeWebhookVerifier {
   verify(request: Readonly<PlatformBridgeRawWebhookRequest>): Promise<unknown> | unknown;
 }
 
-/** Exact normalized data a verified provider adapter may present to the host. */
+// Exact normalized data a verified provider adapter may present to the host.
 export interface PlatformBridgeVerifiedEnvelope {
-  /** Canonical lowercase provider tag selected by the verifier. */
+  // Canonical lowercase provider tag selected by the verifier.
   readonly provider: string;
-  /** Provider delivery identifier, used only through a durable digest. */
+  // Provider delivery identifier, used only through a durable digest.
   readonly deliveryId: string;
-  /** Provider-native opaque channel identifier, never persisted in plaintext. */
+  // Provider-native opaque channel identifier, never persisted in plaintext.
   readonly channelId: string;
-  /** Provider-native opaque sender identifier, never persisted in plaintext. */
+  // Provider-native opaque sender identifier, never persisted in plaintext.
   readonly senderId: string;
-  /** A bounded text-only user message. Attachments and command envelopes are absent. */
+  // A bounded text-only user message. Attachments and command envelopes are absent.
   readonly text: string;
 }
 
-/**
- * Host-owned pairing result. All fields are produced locally by the pairing
- * registry, never copied from a provider webhook payload.
- */
+// Host-owned pairing result. All fields are produced locally by the pairing registry, never copied from a provider webhook payload.
 export interface PlatformBridgeInboundAuthorization {
-  /** SHA-256 identity digest for the paired provider account/channel. */
+  // SHA-256 identity digest for the paired provider account/channel.
   readonly actorDigest: string;
-  /** SHA-256 of the private target conversation; safe for receipt persistence. */
+  // SHA-256 of the private target conversation; safe for receipt persistence.
   readonly conversationDigest: string;
-  /** Host-private durable pairing/share binding. */
+  // Host-private durable pairing/share binding.
   readonly bridgeBinding: PlatformBridgeBinding;
-  /** Host-private revocation guard for this binding. */
+  // Host-private revocation guard for this binding.
   readonly bridgeGuard: PlatformBridgeGuard;
 }
 
-/** Resolve an already-verified provider envelope to a currently paired owner. */
+// Resolve an already-verified provider envelope to a currently paired owner.
 export type PlatformBridgeInboundAuthorizer = (
   envelope: Readonly<PlatformBridgeVerifiedEnvelope>,
 ) => Promise<PlatformBridgeInboundAuthorization | null | undefined>
@@ -88,13 +69,13 @@ export type PlatformBridgeInboundAuthorizer = (
   | null
   | undefined;
 
-/** Structural compatibility contract shared with Tailnet durable receipts. */
+// Structural compatibility contract shared with Tailnet durable receipts.
 export type PlatformBridgeReceiptStore = Pick<
   TailnetControllerReceiptStore,
   "reserve" | "releaseReserved" | "settle"
 >;
 
-/** Stable, provider-safe admission outcomes. They contain no webhook plaintext. */
+// Stable, provider-safe admission outcomes. They contain no webhook plaintext.
 export type PlatformBridgeInboundResult =
   | "accepted"
   | "duplicate"
@@ -114,54 +95,38 @@ export type PlatformBridgeInboundResult =
   | "rate-limited";
 
 export interface PlatformBridgeInboundGateway {
-  /**
-   * Verify first, then normalize and authorize a provider webhook delivery.
-   * This method deliberately accepts neither a pre-parsed body nor a command
-   * union, which prevents providers from reaching attachment/session/cancel
-   * paths by construction.
-   */
+  // Verify raw webhook bytes before normalization; refusing pre-parsed bodies and command unions keeps attachment, session, and cancel paths unreachable.
   handleWebhook(request: PlatformBridgeRawWebhookRequest): Promise<PlatformBridgeInboundResult>;
 }
 
 export interface CreatePlatformBridgeInboundGatewayOptions {
   readonly verifier: PlatformBridgeWebhookVerifier;
   readonly authorize: PlatformBridgeInboundAuthorizer;
-  /** Reuses the existing plaintext-free durable command receipt protocol. */
+  // Reuses the existing plaintext-free durable command receipt protocol.
   readonly receiptStore: PlatformBridgeReceiptStore;
-  /** Same process-local turn lease used by Desktop, Web, CLI, and Tailnet. */
+  // Same process-local turn lease used by Desktop, Web, CLI, and Tailnet.
   readonly commandPort: ConversationCommandPort;
-  /** Explicit opt-in only. Defaults to false. */
+  // Explicit opt-in only. Defaults to false.
   readonly enabled?: boolean;
-  /** Limits copied bytes before the provider verifier is invoked; defaults to 64 KiB. */
+  // Limits copied bytes before the provider verifier is invoked; defaults to 64 KiB.
   readonly maxRawBodyBytes?: number;
-  /** Limits the normalized text message; defaults to 24,000 UTF-16 code units. */
+  // Limits the normalized text message; defaults to 24,000 UTF-16 code units.
   readonly maxTextChars?: number;
-  /** New, non-duplicate inbound messages per authorized pair in one fixed window. */
+  // New, non-duplicate inbound messages per authorized pair in one fixed window.
   readonly maxInboundRequestsPerWindow?: number;
-  /** Fixed in-memory admission window for each authorized pair; defaults to one minute. */
+  // Fixed in-memory admission window for each authorized pair; defaults to one minute.
   readonly inboundRequestWindowMs?: number;
-  /** Hard cap on anonymized authorized-pair buckets retained in this process. */
+  // Hard cap on anonymized authorized-pair buckets retained in this process.
   readonly maxTrackedInboundAuthorizedPairs?: number;
-  /**
-   * Host-minted receipt owner identity. Supply a value that outlives a single
-   * gateway instance so a reservation made before a reconnect is still settled
-   * by its own owner afterwards; a per-instance identity would leave that
-   * record permanently `outcome-unknown`. Never provider-influenced.
-   */
+  // Use a host-owned receipt identity that survives reconnects; per-gateway identities strand reservations as outcome-unknown.
   readonly receiptOwnerId?: string;
-  /** Host clock hook for deterministic embedding/tests; defaults to Date.now. */
+  // Host clock hook for deterministic embedding/tests; defaults to Date.now.
   readonly now?: () => number;
-  /** Fixed observability messages only; never receives webhook values. */
+  // Fixed observability messages only; never receives webhook values.
   readonly log?: (message: string) => void;
 }
 
-/**
- * Build one disabled-by-default, provider-neutral inbound gateway.
- *
- * The receipt state receives only SHA-256 digests of the provider delivery,
- * message intent, and target conversation. Neither text nor provider account
- * identifiers are logged or written by this module.
- */
+// Keep inbound gateways disabled by default; persist only delivery, intent, and conversation digests, never text or account identifiers.
 export function createPlatformBridgeInboundGateway(
   options: CreatePlatformBridgeInboundGatewayOptions,
 ): PlatformBridgeInboundGateway {
@@ -243,8 +208,7 @@ export function createPlatformBridgeInboundGateway(
 
   return {
     async handleWebhook(request): Promise<PlatformBridgeInboundResult> {
-      // Disabled is intentionally checked before reading, copying, verifying,
-      // parsing, authorizing, or durably recording any provider material.
+      // Disabled is intentionally checked before reading, copying, verifying, parsing, authorizing, or durably recording any provider material.
       if (!enabled) return "disabled";
 
       const copiedRequest = copyRawWebhookRequest(request, maxRawBodyBytes);
@@ -260,8 +224,7 @@ export function createPlatformBridgeInboundGateway(
 
       const envelope = normalizeVerifiedEnvelope(verified, maxTextChars);
       if (envelope === undefined) return "invalid-envelope";
-      // Slash text is never a platform command. This check is after verified
-      // normalization but before pairing, receipts, and turn admission.
+      // Slash text is never a platform command. This check is after verified normalization but before pairing, receipts, and turn admission.
       if (envelope.text.trimStart().startsWith("/")) return "slash-command-rejected";
 
       let authorization: PlatformBridgeInboundAuthorization | undefined;
@@ -280,14 +243,12 @@ export function createPlatformBridgeInboundGateway(
           bridgeGuard: authorization.bridgeGuard,
         });
       } catch {
-        // A host-minted authorization that cannot mint a restricted actor is a
-        // local authorization failure, not a provider-visible implementation detail.
+        // A host-minted authorization that cannot mint a restricted actor is a local authorization failure, not a provider-visible implementation detail.
         return "authorization-denied";
       }
 
-      // Scope the durable delivery key to the already-hashed authorized actor.
-      // A provider delivery id never crosses an authorization-pair boundary,
-      // and neither a provider account nor channel is retained in plaintext.
+      // Scope the durable delivery key to the already-hashed authorized actor. A provider delivery id never crosses an authorization-pair boundary, and
+      // neither a provider account nor channel is retained in plaintext.
       const keyDigest = receiptKeyDigest(envelope, authorization.actorDigest);
       let reservation;
       try {
@@ -324,18 +285,15 @@ export function createPlatformBridgeInboundGateway(
         return "receipt-unavailable";
       }
 
-      // Pairing can be revoked while a synchronous durable write is in
-      // progress. Release rather than leave an unactioned delivery blocked.
+      // Pairing can be revoked while a synchronous durable write is in progress. Release rather than leave an unactioned delivery blocked.
       if (!isAuthorizationCurrent(authorization)) {
         return releaseReservation(keyDigest)
           ? "authorization-revoked"
           : "command-outcome-unknown";
       }
 
-      // Idempotency intentionally precedes this in-memory budget: a retry of
-      // an already-admitted delivery remains a stable duplicate even after the
-      // pair reaches its cap. A rejected new delivery never occupies a durable
-      // receipt, so it can be retried after the window recovers.
+      // Idempotency intentionally precedes this in-memory budget: a retry of an already-admitted delivery remains a stable duplicate even after the pair
+      // reaches its cap. A rejected new delivery never occupies a durable receipt, so it can be retried after the window recovers.
       if (!inboundRateLimiter.accept(inboundRateLimitKeyDigest(authorization))) {
         return releaseReservation(keyDigest)
           ? "rate-limited"
@@ -346,14 +304,11 @@ export function createPlatformBridgeInboundGateway(
       try {
         submission = submit.call(options.commandPort, actor, {
           kind: "message.send",
-          // The envelope is text-only by type. No attachment, public-turn,
-          // session, provenance, activation, persona, or cancellation field
-          // can be provider-supplied on this path.
+          // The envelope is text-only by type. No attachment, public-turn, session, provenance, activation, persona, or cancellation field can be provider-supplied on this path.
           payload: { input: envelope.text },
         });
       } catch {
-        // A throw can happen after an adapter admitted work. Preserve the
-        // receipt and make any retry explicitly unknown instead of replaying.
+        // A throw can happen after an adapter admitted work. Preserve the receipt and make any retry explicitly unknown instead of replaying.
         outcomeUnknownKeys.add(keyDigest);
         report(options.log, "platform bridge command admission threw; inbound replay is blocked");
         return "command-outcome-unknown";
@@ -364,8 +319,7 @@ export function createPlatformBridgeInboundGateway(
           : "command-outcome-unknown";
       }
 
-      // Completion is intentionally not returned to the provider. The common
-      // safe projector/delivery adapter exposes bounded progress separately.
+      // Completion is intentionally not returned to the provider. The common safe projector/delivery adapter exposes bounded progress separately.
       try {
         const completion = submission.completion;
         if (!completion || typeof completion.then !== "function") {
@@ -376,8 +330,7 @@ export function createPlatformBridgeInboundGateway(
           () => settle(keyDigest),
         );
       } catch {
-        // A malformed host adapter can still have admitted a turn. Keep its
-        // durable reservation so a retry cannot duplicate that uncertain work.
+        // A malformed host adapter can still have admitted a turn. Keep its durable reservation so a retry cannot duplicate that uncertain work.
         outcomeUnknownKeys.add(keyDigest);
         report(options.log, "platform bridge completion registration failed; inbound replay is blocked");
         return "command-outcome-unknown";
@@ -398,8 +351,7 @@ function copyRawWebhookRequest(
     if (candidate.rawBody.byteLength > maxRawBodyBytes) return "too-large";
     const headers = copyWebhookHeaders(candidate.headers);
     if (headers === "invalid") return "invalid";
-    // The verifier receives an immutable-by-caller copy. It may parse this
-    // copy only after provider verification; the core never parses raw bytes.
+    // The verifier receives an immutable-by-caller copy. It may parse this copy only after provider verification; the core never parses raw bytes.
     return Object.freeze({
       rawBody: new Uint8Array(candidate.rawBody),
       ...(headers === undefined
@@ -571,12 +523,8 @@ function receiptKeyDigest(
   ].join("\u0000"));
 }
 
-/**
- * This map key is an additional digest over host-owned pairing material.
- * It never retains a provider login, provider channel, raw delivery id, or
- * even the actor digest by itself. A changed local bridge/route generation
- * receives a separate bounded bucket.
- */
+// This map key is an additional digest over host-owned pairing material. It never retains a provider login, provider channel, raw delivery id, or even
+// the actor digest by itself. A changed local bridge/route generation receives a separate bounded bucket.
 function inboundRateLimitKeyDigest(
   authorization: PlatformBridgeInboundAuthorization,
 ): string {
@@ -594,7 +542,7 @@ function inboundRateLimitKeyDigest(
 }
 
 interface InboundRateLimiter {
-  /** Accept one new reserved delivery for an anonymized authorized pair. */
+  // Accept one new reserved delivery for an anonymized authorized pair.
   accept(authorizedPairDigest: string): boolean;
 }
 
@@ -608,12 +556,10 @@ function createInboundRateLimiter(
   return {
     accept(authorizedPairDigest): boolean {
       const timestamp = readRateLimitTimestamp(now);
-      // A broken clock must fail closed; admitting unbounded remote work is
-      // worse than temporarily rejecting a webhook delivery.
+      // A broken clock must fail closed; admitting unbounded remote work is worse than temporarily rejecting a webhook delivery.
       if (timestamp === undefined) return false;
 
-      // The map contains only a domain-separated digest. Expired entries are
-      // removed before capacity is checked, keeping retained state bounded.
+      // The map contains only a domain-separated digest. Expired entries are removed before capacity is checked, keeping retained state bounded.
       for (const [key, bucket] of buckets) {
         if (timestamp - bucket.startedAt >= windowMs) buckets.delete(key);
       }
@@ -653,11 +599,8 @@ function intentDigest(envelope: PlatformBridgeVerifiedEnvelope): string {
   }));
 }
 
-/**
- * The receipt store admits only a UUID owner, and rejects the whole file when
- * it sees anything else. Validate here so a bad host value fails at gateway
- * construction instead of at the first reservation.
- */
+// The receipt store admits only a UUID owner, and rejects the whole file when it sees anything else. Validate here so a bad host value fails at gateway
+// construction instead of at the first reservation.
 function receiptOwnerId(value: string | undefined): string {
   if (value === undefined) return randomUUID();
   if (typeof value !== "string" || !UUID_PATTERN.test(value)) {

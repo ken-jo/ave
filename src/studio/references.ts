@@ -54,7 +54,7 @@ async function skillFiles(name: string, entry: string): Promise<Array<{ path: st
   return files;
 }
 
-/** Resolve identities against current stores at the call boundary; never take a model-supplied filesystem path. */
+/** Resolve identities from current stores at the boundary; never accept model-supplied paths. */
 export async function resolveStudioReferences(input: StudioWriteRequest, sources: StudioReferenceSources): Promise<Array<{ path: string; data: Buffer; origin: StudioOrigin }>> {
   const copied: Array<{ path: string; data: Buffer; origin: StudioOrigin }> = [];
   const references = input.references ?? [];

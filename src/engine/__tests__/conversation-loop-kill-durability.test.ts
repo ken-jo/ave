@@ -1,11 +1,4 @@
-/**
- * The owner's report, reproduced with a real process: a turn is streaming,
- * the process is SIGKILLed (no `finally`, no quit handler, nothing), and the
- * session is reopened. Every completed round and tool result must be there,
- * plus the text that was streaming, marked interrupted, with Continue offered.
- * A tool that was running when the process died shows as interrupted with an
- * unknown result — it is never run again.
- */
+// A killed process must retain completed work and partial text without rerunning interrupted tools.
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -34,7 +27,6 @@ afterEach(async () => {
   child = undefined;
 });
 
-/** Start the writer and resolve once `ready` matches a stdout line; resolves the exit after the kill. */
 function startWriter(mode: "stream" | "tool-hang", ready: RegExp): { ready: Promise<void>; exited: Promise<NodeJS.Signals | null> } {
   home = mkdtempSync(join(tmpdir(), "ave-kill-durability-"));
   const proc = spawn(
@@ -70,7 +62,6 @@ function reopen(): GenericMessage[] {
 
 describe("SIGKILL mid-turn", () => {
   it("keeps every completed round, every tool result, and the streaming text", async () => {
-    // ~40 chunks at 25 ms, with at least one snapshot of them on disk.
     const writer = startWriter("stream", /CHUNK_SNAPSHOT_SAVED\n[\s\S]*STREAMED 40\n|STREAMED 40\n[\s\S]*CHUNK_SNAPSHOT_SAVED\n/);
     await writer.ready;
     child!.kill("SIGKILL");
@@ -89,12 +80,7 @@ describe("SIGKILL mid-turn", () => {
     }
     const partial = messages[1 + TOOL_ROUNDS * 2];
     expect(partial).toMatchObject({ role: "assistant", meta: { interrupted: true, interruptedBy: "host-exit" } });
-    // The snapshot is a prefix of the stream: chunk-0 … chunk-k in order, k >= 0.
-    // The first snapshot is taken on the first delta, so it may hold chunk-0
-    // alone; the next cannot start until one 1 s throttle interval later, which
-    // is about when chunk 40 is streamed, so how far past chunk-0 the recovered
-    // text reaches depends on scheduling and is not part of the guarantee.
-    // Each chunk is `chunk-<n> `; the stored text is trimmed at its end.
+    // Recovery guarantees an ordered stream prefix; throttle scheduling determines its length.
     const content = String(partial.content);
     const chunks = content.split(" ");
     expect(chunks.length).toBeGreaterThanOrEqual(1);
@@ -121,7 +107,6 @@ describe("SIGKILL mid-turn", () => {
       content: "",
       meta: { interrupted: true, interruptedBy: "host-exit" },
     });
-    // Earlier rounds intact.
     const results = messages.filter((m) => m.role === "tool_result");
     expect(results).toHaveLength(TOOL_ROUNDS + 1);
     const completed = results.find((m) => m.toolUseId === "batch-completed");

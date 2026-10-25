@@ -17,16 +17,7 @@ import {
 } from "./tool-input-paths.js";
 import { isRecord } from "../../../shared/is-record.js";
 
-/**
- * How many pages a session's web list keeps that were merely MENTIONED by a
- * result — third-party links a search page quoted, not pages the turn asked
- * for. Pages named in a call's own arguments are never bounded: they are what
- * the conversation actually visited, and the list is meant to show all of
- * them. Exported because the chat preview model bounds its Browser tab by the
- * same rule: the tab and the activity lists are two views of one set of pages,
- * and a bound that lived on only one side would let a single link-heavy result
- * grow the other without limit.
- */
+/** Keep every argument-named page and bound only result-mentioned links; preview and activity lists share the same limit. */
 export const TOOL_ACTIVITY_MENTIONED_URL_LIMIT = 5;
 const TERMINAL_TOOL_PATTERN = /(^|[._:-])(shell|bash|cmd|powershell|terminal|exec|run)([._:-]|$)/i;
 const BROWSER_TOOL_PATTERN = /(browser|playwright|screenshot|chrome|viewport|open_url|web_page|web_fetch|web_search|web_patch|fetch)/i;
@@ -64,9 +55,8 @@ export function looksLikeUrl(value: string): boolean {
 export function looksLikeFilePath(value: string): boolean {
   const trimmed = value.trim();
   if (!trimmed || looksLikeUrl(trimmed)) return false;
-  // A glob is a tool argument, never a concrete file. The preview derivation
-  // has always excluded it; without the same guard here an activity row for
-  // `src/**` can never resolve against the preview model.
+  // A glob is a tool argument, never a concrete file. The preview derivation has always excluded it; without the same guard
+  // here an activity row for `src/**` can never resolve against the preview model.
   if (isGlobPattern(trimmed)) return false;
   return /^[A-Za-z]:[\\/]/.test(trimmed) ||
     trimmed.startsWith("~/") ||
@@ -77,17 +67,8 @@ export function looksLikeFilePath(value: string): boolean {
     /\.[A-Za-z0-9]{1,12}$/.test(trimmed);
 }
 
-/**
- * Every http(s) URL reachable in a tool's arguments or result, with trailing
- * prose punctuation trimmed (`(https://x/y)` in a summary is the page, not the
- * bracket). Shared with `preview/preview-targets.ts`: two collectors would give
- * the Browser tab and the activity lists different page lists for the same turn.
- *
- * Bounded at four levels of nesting, which is the shape a tool's arguments and
- * a decoded JSON result actually take. A URL buried deeper than that is inside
- * a payload the tool is carrying rather than a page it fetched, and the bound
- * is also what stops a pathological result from walking without end.
- */
+/** Collect shared HTTP(S) targets with trailing prose trimmed; stop after four nesting levels to bound pathological payload
+ * walks. */
 export function collectUrls(value: unknown, depth = 0): string[] {
   if (depth > 4 || value == null) return [];
   if (typeof value === "string") {
@@ -127,16 +108,8 @@ export interface FileChange {
   counterpart?: string;
 }
 
-/**
- * The change a file-changing call made to each path it named. The call's
- * own name settles it for every builtin (`delete_file` deletes, `move_file`
- * moves, an edit modifies); a patch body settles it per header; a `write_file`
- * stays `write` because its output never says whether the path existed.
- * `move_file` names two paths — the one that stopped existing and the one that
- * started — so both are listed, each pointing at the other. Shared with the
- * chat preview model so the file tab and the activity lists label a change
- * the same way.
- */
+/** Share file-change classification with preview targets; moves list both endpoints, and writes do not infer whether a file
+ * already existed. */
 export function collectFileChanges(tool: Pick<ToolEntryItem, "name" | "category" | "input">): FileChange[] {
   const operation = classifyFileChange(tool);
   if (!operation) return [];
@@ -189,11 +162,8 @@ export function formatUrlOrigin(value: string): string {
   }
 }
 
-/**
- * Where a transcript URL came from. `argument` means the turn asked for the
- * page by name — the URL was in the call's own input. `result` means a page
- * named it: third-party text.
- */
+/** Where a transcript URL came from. `argument` means the turn asked for the page by name — the URL was in the call's own
+ * input. `result` means a page named it: third-party text. */
 type TranscriptUrlOrigin = "argument" | "result";
 
 export interface TranscriptUrl {
@@ -209,21 +179,8 @@ const URL_ORIGIN_RANK: Record<TranscriptUrlOrigin, number> = {
   argument: 1,
 };
 
-/**
- * Which call owns each fetched page, and which pages make the list at all —
- * most recent first.
- *
- * A URL named in a call's ARGUMENTS outranks the same URL merely mentioned in a
- * result, so a page a `web_fetch` actually retrieved is credited to that fetch
- * and not to the `web_search` that happened to list it; at equal rank the
- * latest call wins, which is what puts a page revisited late in the session at
- * the top. Pages the turn asked for are all kept; pages a result merely
- * mentioned are bounded to the {@link TOOL_ACTIVITY_MENTIONED_URL_LIMIT} most
- * recent, so one link-heavy result (a search page quoting a hundred links) does
- * not become a hundred rows in a list meant to show what the conversation
- * actually visited. Shared by the activity lists and the chat preview model's
- * Browser tab so both show one set of pages.
- */
+/** Argument URLs outrank result mentions, with latest call winning ties; keep all visited pages and bound result-only links
+ * through the shared limit. */
 export function resolveTranscriptUrls(entries: ChatEntry[]): TranscriptUrl[] {
   const credited = new Map<string, TranscriptUrl & { producedAt: number }>();
   let producedAt = 0;

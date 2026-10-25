@@ -1,11 +1,4 @@
-/**
- * The repository was re-created from a rewritten history on 2026-10-17. A clone
- * made before then still holds the old commits, and a new branch pushed from it
- * is not a non-fast-forward, so the server would accept it and store the old
- * history's objects. The pre-push guard refuses any update that shares no
- * history with the remote's default branch, and skips (saying why) when that
- * branch is unknown.
- */
+// Refuse updates unrelated to the remote default history; report when that base is unknown.
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -41,8 +34,7 @@ function sandbox() {
     return git(dir, ["rev-parse", "HEAD"]);
   };
   const update = (localSha: string, ref = "refs/heads/feat/x") => ({ localRef: ref, localSha, remoteRef: ref, remoteSha: ZERO });
-  // git writes loose objects read-only, and on Windows the synchronous rmSync
-  // refuses read-only files; the async removal clears the attribute.
+  // Async removal clears read-only loose-object attributes on Windows.
   return { root, env, git, run, init, commit, update, cleanup: () => cleanupTmpDir(root) };
 }
 
@@ -81,7 +73,7 @@ describe("checkSharedHistory against real repositories", () => {
       s.git(s.root, ["clone", "-q", remote, writer]);
       s.git(writer, ["config", "user.name", "Fixture"]);
       s.git(writer, ["config", "user.email", "fixture@example.invalid"]);
-      // main moves on after the writer cloned: its tip is not in the writer's store.
+      // The live main tip is absent from the writer object store.
       const moved = s.commit(seed, "b.txt", "b\n");
       s.git(seed, ["push", "-q", remote, "main"]);
       s.git(writer, ["checkout", "-qb", "feat/x"]);

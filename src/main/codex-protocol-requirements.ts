@@ -1,12 +1,4 @@
-/**
- * The app-server protocol surface Ave depends on, checked against the JSON
- * Schema a user-installed `codex` binary generates for itself.
- *
- * Every entry names a request, notification or server request Ave sends or
- * handles, and the request shapes and literals it relies on. A binary
- * whose generated schema lacks any of them cannot run Ave's integration, so
- * the check reports every missing item and never guesses a substitute.
- */
+// Reject installed runtimes whose generated schema lacks any request, notification, field, or literal the integration requires.
 
 type JsonSchema = Record<string, unknown>;
 
@@ -14,31 +6,31 @@ type SchemaType = "string" | "boolean" | "integer" | "number" | "array" | "objec
 
 interface ValueRequirement {
   readonly type?: SchemaType;
-  /** String literals, or the `type` discriminators of object alternatives. */
+  // String literals, or the `type` discriminators of object alternatives.
   readonly values?: readonly string[];
   readonly value?: boolean;
   readonly fields?: readonly FieldRequirement[];
-  /** Every item shape the client can put in this array. */
+  // Every item shape the client can put in this array.
   readonly items?: readonly ValueRequirement[];
-  /** A value passed through as arbitrary JSON. */
+  // A value passed through as arbitrary JSON.
   readonly anyJson?: boolean;
 }
 
 interface FieldRequirement extends ValueRequirement {
-  /** Dotted path below the containing object; each segment is a property name. */
+  // Dotted path below the containing object; each segment is a property name.
   readonly path: string;
-  /** The client can omit this field while retaining the rest of the object. */
+  // The client can omit this field while retaining the rest of the object.
   readonly optional?: boolean;
-  /** This key is a map entry rather than a declared protocol field. */
+  // This key is a map entry rather than a declared protocol field.
   readonly mapEntry?: boolean;
-  /** Report parameter children without adding an envelope segment to their paths. */
+  // Report parameter children without adding an envelope segment to their paths.
   readonly inlineDiagnostics?: boolean;
 }
 
 interface MethodRequirement {
   readonly method: string;
   readonly fields?: readonly FieldRequirement[];
-  /** Separate request shapes, each of which must fit a complete union branch. */
+  // Separate request shapes, each of which must fit a complete union branch.
   readonly variants?: readonly (readonly FieldRequirement[])[];
 }
 
@@ -150,7 +142,7 @@ export const CODEX_PROTOCOL_REQUIREMENTS: CodexProtocolRequirements = Object.fre
   ]),
 });
 
-/** The generated schema documents a check reads, keyed by their file names. */
+// The generated schema documents a check reads, keyed by their file names.
 export interface CodexGeneratedSchemas {
   readonly clientRequest: unknown;
   readonly serverNotification: unknown;
@@ -171,7 +163,7 @@ function definitionsOf(document: JsonSchema): Record<string, unknown> {
   return isSchema(document.definitions) ? document.definitions : {};
 }
 
-/** One union branch contains all its intersecting constraints, never its siblings. */
+// One union branch contains all its intersecting constraints, never its siblings.
 interface SchemaBranch {
   readonly constraints: readonly JsonSchema[];
   readonly choices: readonly { readonly schema: JsonSchema; readonly index: number }[];
@@ -273,7 +265,7 @@ function methodsOf(document: JsonSchema): Map<string, SchemaBranch[]> {
   return methods;
 }
 
-/** Group dotted paths before checking so sibling fields share one object branch. */
+// Group dotted paths before checking so sibling fields share one object branch.
 function nestedFields(fields: readonly FieldRequirement[]): FieldRequirement[] {
   const grouped = new Map<string, FieldRequirement>();
   for (const field of fields) {
@@ -359,11 +351,8 @@ function missingShape(
     ?? [`${path}${requirement.anyJson ? " (arbitrary JSON)" : requirement.type ? ` (type ${requirement.type})` : ""}`];
 }
 
-/**
- * List every requirement the generated schemas do not satisfy, as stable
- * strings such as `request thread/start.environments`. An empty list means
- * the declared request shapes and incoming method names match.
- */
+// List every requirement the generated schemas do not satisfy, as stable strings such as `request thread/start.environments`. An empty list means the
+// declared request shapes and incoming method names match.
 export function missingCodexProtocolRequirements(
   schemas: CodexGeneratedSchemas,
   requirements: CodexProtocolRequirements = CODEX_PROTOCOL_REQUIREMENTS,

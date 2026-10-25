@@ -1,18 +1,6 @@
 import type { ThemeBundle } from "./types.js";
 
-/**
- * Moonstone (문스톤) — the default light shell: a weightless white canvas with a
- * soft periwinkle sheen.
- *
- * Pure-white canvas, near-black #121317 ink, and a soft periwinkle accent
- * family (#b7bfd9 tints for fills/focus, #dfe3ef selection) — the blue glow of
- * a moonstone gem drifting across white. Radius leans pill-ward (0.75rem, set
- * in the CSS block) and depth is carried by premium, softly-diffused layered
- * shadows so surfaces feel lifted, not flat.
- *
- * Description is a plain literal (not a `t()` key) so this bundle ships without
- * touching the generated locale catalogs.
- */
+/** Description stays a plain literal so the compiled bundle does not depend on generated locale catalogs. */
 export const moonstoneBundle: ThemeBundle = {
   id: "moonstone",
   name: "Moonstone",

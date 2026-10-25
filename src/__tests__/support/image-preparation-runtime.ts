@@ -4,7 +4,6 @@ import {
   buildMainBoundaryBundle, childBundleDir, repositoryRoot,
 } from "../../plugins/isolation/__tests__/child-entry-bundle.js";
 
-/** Emit only the image child, using the shipped bundle's dependency boundary. */
 export async function buildImagePreparationEntry(cacheName: string): Promise<string> {
   const directory = childBundleDir(cacheName);
   await buildMainBoundaryBundle({

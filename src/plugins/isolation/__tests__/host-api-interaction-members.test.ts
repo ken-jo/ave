@@ -1,20 +1,4 @@
-/**
- * The members that put something in front of the user, or decide whether an
- * action is permitted, driven END TO END: a real child runtime over paired
- * streams, a real dispatcher, a real envelope, and a fake `hostApi` standing in
- * for the host implementations.
- *
- * The distinction this file exists to hold is the one a data read does not have:
- *
- *   ANSWERED vs NOT DELIVERED. `agentApproval.request` resolving `"deny-once"`
- *   is a user who said no. A throw from the same call is a question the user
- *   never saw. If those two ever became the same value the plugin observes, a
- *   broken approval chain would look exactly like a cautious user — and the
- *   plugin would do the safe-looking wrong thing forever without a symptom.
- *   {@link outcomeOf} classifies every call into one of the two, and the tests
- *   assert the classification rather than the value, so a change that starts
- *   answering `"deny-once"` on a delivery failure fails here.
- */
+/** Exercise user interactions through the real child and dispatcher; distinguish refusal from a user choice. */
 import { describe, expect, it, vi } from "vitest";
 import { PassThrough } from "node:stream";
 import { EffectBoundaryDeniedError } from "../../../permissions/effect-enforcement.js";
@@ -64,7 +48,6 @@ const COOKIES: AuthWindowCookie[] = [
   { name: "SID", value: "abc", domain: "portal.example.com", secure: true },
 ];
 
-/** What the fake host was asked to do, in the order it was asked. */
 interface HostImplementations {
   openExternalUrl: (url: string) => Promise<void>;
   openAuthWindow: (options: unknown) => Promise<unknown>;
@@ -123,16 +106,11 @@ function defaultImplementations(): HostImplementations {
 interface Harness {
   readonly child: PluginChildRuntime;
   readonly host: HostApiDispatcher;
-  /** The plugin's view of the hostApi — the stub, not the host object. */
   readonly hostApi: PluginHostApi;
   readonly impl: HostImplementations;
 }
 
-/**
- * A real child talking to a real dispatcher. The channel is in-memory because
- * multiplexing the reverse direction onto the stdio pipes is a transport
- * decision that has not been made; everything above it is production code.
- */
+/** Use in-memory transport while keeping child runtime and dispatch behavior real. */
 async function harness(
   overrides: Partial<HostImplementations> = {},
   options: { isActive?: () => boolean; bindPaths?: boolean } = {},
@@ -167,12 +145,10 @@ async function harness(
 
   const hostLogs: { message: string; meta?: unknown }[] = [];
   host = new HostApiDispatcher({
-    // Captured, not dropped: a sink that discards is what shipped, and a
-    // test that discards could not tell the difference.
+    // Capture host diagnostics so silently discarded failures cannot pass.
     log: (message, meta) => hostLogs.push({ message, meta }),
     pluginId: PLUGIN_ID,
     reportUnknownField: () => {},
-    // `ave/instance/shutdown`, answered by the child runtime itself.
     shutdownChild: (subscriptionId) => child.runShutdownHandler(subscriptionId),
     isActive: options.isActive ?? (() => true),
     notifications: { deliver: (notification) => child.deliver(notification) },
@@ -203,10 +179,7 @@ async function harness(
   return { child, host, hostApi: child.hostApi, impl };
 }
 
-/**
- * The only two things a plugin can observe, named so a test asserts WHICH of
- * them happened rather than what the value was.
- */
+/** Observe whether the call resolved or threw, not just the returned value. */
 type Outcome =
   | { readonly kind: "answered"; readonly value: unknown }
   | { readonly kind: "failed"; readonly code: HostApiWireErrorCode };
@@ -222,7 +195,6 @@ async function outcomeOf(work: Promise<unknown>): Promise<Outcome> {
   }
 }
 
-/** Invoke one member through the child stub with the given positional args. */
 function invoke(
   hostApi: PluginHostApi,
   path: InteractionHostApiPath,
@@ -238,7 +210,6 @@ function invoke(
   return member(...args);
 }
 
-/** Representative arguments for each member, used by the table-driven checks. */
 const REDIRECT_HANDLE = "8f1c2e5a-0000-4000-8000-aaaaaaaaaaaa";
 
 const SAMPLE_ARGS: Record<InteractionHostApiPath, readonly unknown[]> = {
@@ -258,7 +229,6 @@ const SAMPLE_ARGS: Record<InteractionHostApiPath, readonly unknown[]> = {
   "authRedirect.open": [],
   "authRedirect.wait": [{ handle: REDIRECT_HANDLE }],
   "authRedirect.close": [{ handle: REDIRECT_HANDLE }],
-  // Takes nothing: the user's answer is the whole payload, in one direction.
   pickFolders: [],
   triggerConversation: [
     {
@@ -294,9 +264,7 @@ describe("the group carries exactly the members whose refusal is an answer", () 
   });
 
   it("relays them because their CONTRACT says plain JSON, not because it assumed so", () => {
-    // The relay in the child does no encoding. That is only correct while every
-    // one of these declares `plain-json` in and `plain-json`/`void` out, so the
-    // claim is asserted against the SOT rather than restated.
+    // Assert plain-JSON contracts against the shared table before using an unencoded relay.
     for (const path of INTERACTION_HOSTAPI_PATHS) {
       const contract = HOSTAPI_PATH_CONTRACTS[path];
       expect(contract.arguments, path).toBe("plain-json");
@@ -306,9 +274,7 @@ describe("the group carries exactly the members whose refusal is an answer", () 
   });
 
   it("refuses to build a relay for a member whose contract stopped being plain JSON", () => {
-    // Tamper-equivalent, held permanently: swap in a contract that declares an
-    // encoded argument and the stub builder must refuse rather than quietly
-    // send the argument unencoded.
+    // A contract gaining an encoded axis must fail stub construction until an encoder exists.
     const original = HOSTAPI_PATH_CONTRACTS.clearAuthPartition;
     const contracts = HOSTAPI_PATH_CONTRACTS as unknown as Record<
       string,
@@ -356,10 +322,7 @@ describe("the group carries exactly the members whose refusal is an answer", () 
   });
 
   it("leaves the shipped table unbound, so nothing is implemented by accident", async () => {
-    // The routing SOT is empty and the default table has no plugin instance to
-    // bind to. Every one of the seven reached without the binding must refuse,
-    // not answer — a handler published into the shipped table would be one that
-    // opens a window or asks for an approval on behalf of nobody in particular.
+    // Static dispatch has no plugin identity; interaction handlers require per-incarnation binding.
     const { hostApi } = await harness({}, { bindPaths: false });
     for (const path of INTERACTION_HOSTAPI_PATHS) {
       expect(
@@ -406,10 +369,7 @@ describe("arguments reach the host exactly as the plugin passed them", () => {
   }
 
   it("does not re-validate a URL the host is the one to judge", async () => {
-    // `openExternalUrl` is validated host-side (`validateExternalUrl` + the
-    // webView routing). A boundary pre-check would be a second, weaker copy, so
-    // the proof is that a URL the host WOULD reject still arrives at the host —
-    // and that the host's rejection is what the plugin sees.
+    // URL policy belongs to the host; the boundary must deliver its refusal without duplicating validation.
     const openExternalUrl = vi.fn(async (url: string) => {
       if (!url.startsWith("https:")) throw new Error(`refused scheme: ${url}`);
     });
@@ -422,9 +382,7 @@ describe("arguments reach the host exactly as the plugin passed them", () => {
   });
 
   it("passes an omitted optional argument as omitted, not as a value", async () => {
-    // `agentApproval.respond` takes nonce/hmac only when the gate issued them.
-    // Substituting anything for an absent one would hand the gate a
-    // confused-deputy field the plugin never received.
+    // Preserve absent approval nonce/hmac fields; never invent issuer fields the plugin did not receive.
     const approvalRespond = vi.fn(async () => {});
     const { hostApi } = await harness({ approvalRespond });
     await invoke(hostApi, "agentApproval.respond", ["req-9", "deny-once"]);
@@ -446,9 +404,7 @@ describe("results come back in the shape each contract declares", () => {
   });
 
   it("returns the final-url shape when the plugin asked for it", async () => {
-    // Two overloads over one implementation. The boundary must carry whichever
-    // the HOST produced; deciding the branch on the wire would be a second copy
-    // of a rule that lives in the host.
+    // Carry whichever overload result the host produced; do not reimplement branch selection on the wire.
     const answer: OpenAuthWindowFinalUrlResult = {
       cookies: COOKIES,
       finalUrl: "https://portal.example.com/landing",
@@ -482,9 +438,7 @@ describe("results come back in the shape each contract declares", () => {
   });
 
   it("refuses a void-declared member whose host implementation answered something", async () => {
-    // The contract says nothing comes back. A host that starts returning a value
-    // means the child's stub and the host's handler disagree about the member,
-    // and the disagreement has to be loud rather than dropped on the floor.
+    // Do not discard nonvoid results; signature drift must be visible.
     const { hostApi } = await harness({
       clearAuthPartition: (async () => "wiped") as unknown as HostImplementations["clearAuthPartition"],
     });
@@ -513,12 +467,9 @@ describe("every error identity each contract lists survives the wire", () => {
       "triggerConversation",
       "agentApproval.request",
     ]);
-    // `agentApproval.respond` resolves host-owned approval machinery; gating it
-    // with that same machinery would be circular, so its contract lists nothing.
+    // Approval responses cannot require the same approval they resolve.
     expect(HOSTAPI_PATH_CONTRACTS["agentApproval.respond"].errors).toEqual([]);
-    // `authRedirect.wait` mutates nothing — it reports what already arrived at
-    // a listener the OPEN already answered for. A mutating-effect gate cannot
-    // fire on it, so a denial is not among its error identities.
+    // Waiting on an existing redirect mutates nothing and has no mutating-effect denial.
     expect(HOSTAPI_PATH_CONTRACTS["authRedirect.wait"].errors).toEqual([]);
   });
 
@@ -543,9 +494,7 @@ describe("every error identity each contract lists survives the wire", () => {
   }
 
   it("keeps a host internal opaque rather than inventing a code for it", async () => {
-    // `agentApproval.respond`'s contract lists no member error, so an issuer or
-    // scope violation is a host internal on the wire — deliberately opaque,
-    // because a host internal is not a contract.
+    // Issuer and scope violations are opaque host internals, outside the member error contract.
     const { hostApi } = await harness({
       approvalRespond: async () => {
         throw new Error("approval origin mismatch");
@@ -583,9 +532,7 @@ describe("a refusal and a lost question are never the same observation", () => {
   }
 
   it("never turns a failure to deliver the question into a denial", async () => {
-    // The defect this whole group is shaped around: a plugin that cannot tell
-    // "the user said no" from "the user was never asked" will treat a broken
-    // approval chain as a permanent, silent no.
+    // A broken approval chain must differ from a user declining the request.
     const failures: Array<[string, () => Promise<never>]> = [
       [
         "the effect gate refused the call",
@@ -613,7 +560,6 @@ describe("a refusal and a lost question are never the same observation", () => {
         invoke(hostApi, "agentApproval.request", SAMPLE_ARGS["agentApproval.request"]),
       );
       expect(outcome.kind, label).toBe("failed");
-      // Not merely "failed": the plugin must never have been handed a choice.
       expect(outcome, label).not.toHaveProperty("value");
     }
   });
@@ -672,15 +618,7 @@ describe("a refusal and a lost question are never the same observation", () => {
 
 describe("an approval that blocks on a human", () => {
   it("waits as long as the person does, and still delivers their answer", async () => {
-    // §7.5: the boundary imposes NO call timeout of its own. A deadline here
-    // would abandon a gate entry that is still pending in the host — the plugin
-    // would give up while the modal is still on screen, and the answer the user
-    // eventually gave would have nowhere to arrive.
-    //
-    // Fake timers are what make that testable rather than asserted: a deadline
-    // of ANY length fires while the clock is advanced, so a boundary that grew
-    // one turns this red instead of passing because the test happened to
-    // release the human faster than the timeout.
+    // The boundary adds no timeout while a host approval gate is pending.
     vi.useFakeTimers();
     try {
       let release!: (choice: ApprovalChoice) => void;
@@ -705,8 +643,6 @@ describe("an approval that blocks on a human", () => {
           throw error;
         },
       );
-      // Well past the gate's own five-minute user wait, which is the only
-      // deadline this call is allowed to have.
       await vi.advanceTimersByTimeAsync(10 * 60_000);
       expect(settled, "the call must still be waiting on the human").toBe(false);
 
@@ -715,8 +651,7 @@ describe("an approval that blocks on a human", () => {
         kind: "answered",
         value: "deny-once",
       });
-      // A blocking call must not have opened a lifetime on either side; the
-      // reply settles it, and a leaked registration would outlive the modal.
+      // A modal reply ends the call without opening any subscription lifetime.
       expect(host.openSubscriptionCount).toBe(0);
     } finally {
       vi.useRealTimers();

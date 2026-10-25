@@ -1,23 +1,4 @@
-/**
- * Gate 4 (runtime-state admission) is ONE authority — `checkRuntimeAdmission`.
- *
- * Two production entry points ask "may this plugin do anything right now":
- * the loopback `tools/call` delegate (`pluginRuntimeToolDelegate`) and card
- * serving (`PluginRuntime.readUiResource`). Until this test they each spelled the
- * predicate out by hand, expression for expression, linked only by a comment that
- * said "gate parity with pluginRuntimeToolDelegate" — so either copy could drift
- * and admit what the other refuses.
- *
- * WHAT IS DRIVEN HERE: both arms are the REAL producers over ONE real
- * `PluginRuntime` whose state (registry-enabled, per-session activation, ALS
- * session, manifest-integrity kill switch) the matrix sets through the real
- * mutators. Nothing re-implements the predicate.
- *
- * WHY IT CAN FAIL: each row carries an EXPECTED verdict as well as the equality
- * assertion. Equality alone would be vacuous the day both arms lose the gate
- * together; the expected column is what makes "delete the gate" red rather than
- * a still-agreeing pair of `null`s.
- */
+/** Tool and card admission share one runtime predicate; assert expected verdicts as well as parity. */
 import { describe, expect, it, beforeEach, vi } from "vitest";
 import * as admission from "../runtime-admission.js";
 import { dirname, resolve } from "node:path";
@@ -36,14 +17,13 @@ const OTHER_SESSION = "session-B";
 
 beforeEach(() => manifestIntegrityState.resetForTests());
 
-/** Refusal reasons as the two arms report them, or `null` when Gate 4 admitted. */
+/** Null means runtime admission succeeded. */
 type Verdict = "inactive" | "integrity-disabled" | null;
 
 function classify(message: string): Verdict {
   if (/is inactive/.test(message)) return "inactive";
   if (/disabled after a manifest integrity violation/.test(message)) return "integrity-disabled";
-  // Anything else is a POST-gate failure (e.g. the generation is not pinned in
-  // this hand-built fixture) — which is itself proof that Gate 4 admitted.
+  // A later failure still proves this admission gate passed.
   return null;
 }
 
@@ -61,7 +41,6 @@ function runtimeWithPlugin(): PluginRuntime {
   return rt;
 }
 
-/** ARM 1 — the real loopback `tools/call` delegate. */
 async function toolsCallVerdict(rt: PluginRuntime): Promise<Verdict> {
   const delegate = pluginRuntimeToolDelegate(rt, PLUGIN_ID, new Set([URI]), "g1");
   const outcome = await delegate(TOOL, {});
@@ -69,7 +48,6 @@ async function toolsCallVerdict(rt: PluginRuntime): Promise<Verdict> {
   return classify(outcome.content.map((c) => c.text ?? "").join("\n"));
 }
 
-/** ARM 2 — the real card-serving path. */
 async function readUiVerdict(rt: PluginRuntime): Promise<Verdict> {
   try {
     await rt.readUiResource(PLUGIN_ID, URI);
@@ -82,9 +60,7 @@ async function readUiVerdict(rt: PluginRuntime): Promise<Verdict> {
 interface Row {
   readonly name: string;
   readonly enabled: boolean;
-  /** Session id the plugin is session-activated for, if any. */
   readonly activatedFor?: string;
-  /** ALS session id the call runs under, if any. */
   readonly callingSession?: string;
   readonly integrityViolation?: boolean;
   readonly expected: Verdict;
@@ -151,20 +127,18 @@ function underSession<T>(sessionId: string | undefined, fn: () => Promise<T>): P
 describe("Gate 4 runtime admission — tools/call and readUiResource share one predicate", () => {
   for (const row of ROWS) {
     it(`${row.name} → ${row.expected ?? "admitted"} on BOTH arms`, async () => {
-      // ONE runtime in ONE state, asked by both production entry points — the
-      // exact question a hand-copied predicate can answer two ways.
+      // Ask both production paths against the same runtime state.
       const rt = await stateFor(row);
       const { toolsCall, readUi } = await underSession(row.callingSession, async () => ({
         toolsCall: await toolsCallVerdict(rt),
         readUi: await readUiVerdict(rt),
       }));
 
-      // The equality that names the finding…
       expect({ arm: "tools/call", verdict: toolsCall }).toEqual({
         arm: "tools/call",
         verdict: readUi,
       });
-      // …and the verdict that keeps the equality from being vacuous.
+      // Expected verdicts prevent two equally broken predicates from passing parity.
       expect(toolsCall).toBe(row.expected);
       expect(readUi).toBe(row.expected);
     });

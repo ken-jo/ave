@@ -1,10 +1,4 @@
-/**
- * The marketplace service over isolated copies of prepared repositories
- * (design §7.2 add flow, §8.1 direct packages, §13 plans, §15 views): what
- * the user previews is what is added, what a plan shows is what installs,
- * a plan is used once, and every install lands in its kind's installer.
- * Named preview/add and install/update cases retain real HTTP transport.
- */
+/** Service orchestration uses isolated repositories; named boundary cases retain real HTTP transport. */
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
@@ -47,22 +41,24 @@ import type { SyncProgressView } from "../../../shared/git-marketplace.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { nodeFolders } from "../../__tests__/fixtures/folder-fs.js";
 import { UNREACHABLE_OFFICIAL } from "../../__tests__/fixtures/official.js";
+import { setProcessPlatform } from "../../../__tests__/support/process-platform.js";
+import { setAveHomePrivacyAtBoot, _resetAveHomePrivacyForTest } from "../../../shared/ave-home.js";
+import { setPluginWorkerConfinementRequestedAtBoot, __resetSandboxRequestedAtBootForTest } from "../../../permissions/sandbox-capability.js";
 
 
-/** The preview's id; a confirmation step here is a test failure. */
 function previewIdOf(view: SourcePreviewResultView): string {
   if (view.type === "confirm") throw new Error(`preview asked for ${view.warnings.map((item) => item.warning).join(", ")}`);
   return view.previewId;
 }
 
 const AT = new Date("2026-09-24T00:00:00.000Z");
+const ORIGINAL_PLATFORM = process.platform;
 const SURFACES = { "surface-sunken": "228 30% 97%", surface: "0 0% 100%", "surface-raised": "0 0% 100%", "surface-overlay": "0 0% 100%", "border-subtle": "228 24% 94%", "border-strong": "228 18% 84%" };
 const INSTALLATION = "3f1c2b8e-6a4d-4e2f-9b1a-0c5d7e8f9a0b";
 const skill = (name: string, body: string) => `---\nname: ${name}\ndescription: ${name} things.\n---\n${body}\n`;
 
 class FakeManager {
   configs = new Map<string, McpServerConfig>();
-  /** Server ids the governance policy refuses. */
   blocked = new Set<string>();
   validateConfig(config: McpServerConfig) {
     return this.blocked.has(config.id) ? { valid: false as const, reason: `Unapproved server: '${config.id}'`, layer: 1 } : { valid: true as const };
@@ -95,9 +91,7 @@ describe("MarketplaceService", () => {
   let service: MarketplaceService;
   let store: ContentStore;
   let catalogChanged: number;
-  /** Run when the service reports a catalog change, as the background update check is started. */
   let afterCatalogChanged: (() => void) | null;
-  /** Run when a sync publishes a new snapshot of a source. */
   let afterSourceSynced: ((sourceId: string) => void) | null;
   let legacyRuns: Array<(name: string) => OfficialPlugin | null>;
   let legacyReport: LegacyPluginReport;
@@ -107,25 +101,20 @@ describe("MarketplaceService", () => {
   let adopting: boolean[];
   let feeds: RevocationFeed[];
   let feedFails: boolean;
-  /** Whether an OS credential helper answers for a host (the preview's note, §9.3). */
   let helperAnswers: boolean;
   let pluginPort: PluginInstallerPort;
   let warnings: string[];
   let progress: SyncProgressView[];
-  /** Calls into the revocation gates' feed, failed ones included. */
   let feedCalls: number;
-  /** Holds the feed call with this number (1-based) until the test lets it go. */
   let feedHold: { at: number; wait: () => Promise<void> } | null;
-  /** The app's shutdown as the IPC domain has it: the service's events pass `marketplaceEvents` over it. */
+  /** Events cross the same abort boundary as the IPC domain. */
   let shutdown: AbortController;
-  /** What reached the renderer, by kind, through that boundary. */
   let sent: { syncProgress: number; installProgress: number; catalogChanged: number };
-  /** What the service itself sent, before the boundary: after an abort it sends nothing either. */
+  /** Counts pre-boundary sends to catch effects after abort. */
   let emitted: { syncProgress: number; installProgress: number; catalogChanged: number };
-  /** Holds the next sync's pruning (its `retainedCommits` read), or the next content activation, until the test lets it go. */
   let pruneHold: (() => Promise<void>) | null;
   let activateHold: (() => Promise<void>) | null;
-  /** Runs inside a content install, after the plan's first feed and before the store changes. */
+  /** Runs between the first revocation check and the content-store write. */
   let duringContentInstall: (() => Promise<void>) | null;
 
   beforeAll(async () => {
@@ -173,14 +162,12 @@ describe("MarketplaceService", () => {
     await build();
   });
 
-  /** The service over `root`, under `policy`; a test that needs a managed or a local official source builds again. */
   async function build(load: PolicyLoad | PolicySource = policyLoad({}), official?: OfficialMarketplace, runner: Pick<GitRunner, "run" | "preflight"> = fixtureGit) {
     manager = new FakeManager();
     const policy = "check" in load ? load : policySource(load);
     const gate = new NetworkGate({ policy, allowLoopback: true, transport: createPinnedFetch() });
     const marketplaces = join(root, "marketplaces");
     const registry = await SourceRegistry.open({ root: marketplaces, policy, now: () => now, official: official ?? UNREACHABLE_OFFICIAL });
-    // Exactly as the IPC domain wires them, with counters for the broadcasts.
     const events = marketplaceEvents(shutdown.signal, {
       syncProgress: (item) => {
         sent.syncProgress += 1;
@@ -211,8 +198,6 @@ describe("MarketplaceService", () => {
         await takeHold("prune");
         return new Set();
       },
-      // As the app wires it: the raw callback a published snapshot fires, inside the sync's operation,
-      // through the event boundary.
       onCatalogChanged: (sourceId) => {
         events.onCatalogChanged();
         afterSourceSynced?.(sourceId);
@@ -349,16 +334,15 @@ describe("MarketplaceService", () => {
   }
 
   afterEach(async () => {
+    _resetAveHomePrivacyForTest();
+    __resetSandboxRequestedAtBootForTest();
+    setProcessPlatform(ORIGINAL_PLATFORM);
     service.close();
     for (const repo of repos) await removeFixtureRepo(repo);
     repos = [];
     await cleanupTmpDir(root);
   });
 
-  /**
-   * A marketplace listing a skill and an MCP server, and the theme `harbor`
-   * when `theme`; `indexName` is `ave` when it stands in for the official source.
-   */
   function market(skillVersion = "1.0.0", indexName = "acme-tools", options: { theme?: boolean } = {}) {
     counter += 1;
     const name = `market-${counter}`;
@@ -399,7 +383,6 @@ describe("MarketplaceService", () => {
       const published = publishedSeeds.get(key);
       if (published) {
         const filter = (source: string, target: string) => {
-          // Keep this copy's origin and its immutable object files.
           if (source === join(published.work, ".git", "config")) return false;
           const object = source.startsWith(`${join(published.bare, "objects")}${sep}`) || source.startsWith(`${join(published.work, ".git", "objects")}${sep}`);
           return !(object && existsSync(target) && statSync(source).isFile());
@@ -415,7 +398,6 @@ describe("MarketplaceService", () => {
     return { name, url: server.url(name), publish, repo };
   }
 
-  /** Publish `policy/revocations.json` in a marketplace made by `market`. */
   function createRevocations(market: { repo: FixtureRepo }, revocations: unknown[]) {
     market.repo.commit({ "policy/revocations.json": text({ schemaVersion: 1, revocations }) }, "revoke");
   }
@@ -426,8 +408,17 @@ describe("MarketplaceService", () => {
     return service.addSource({ previewId: previewIdOf(preview) });
   }
 
+  it("returns an install plan while home privacy refuses extension starts", async () => {
+    const { url } = market();
+    await addMarket(url);
+    setProcessPlatform("win32");
+    setPluginWorkerConfinementRequestedAtBoot(true);
+    setAveHomePrivacyAtBoot({ enforcement: "none", home: root, category: "read-back-failed", reason: "fixture" });
+    await expect(service.planInstall({ sourceId: "acme-tools", kind: "skill", name: "review" }))
+      .resolves.toMatchObject({ hookConfinement: "user-permissions", version: "1.0.0" });
+  });
+
   it("previews a marketplace, adds it under the suggested id, and lists its packages", async () => {
-    // Real HTTP and child processes prove the complete preview/add boundary.
     await build(policyLoad({}), undefined, git.runner);
     const { url } = market();
     const preview = await service.previewSource({ input: url, auth: "none" });
@@ -442,7 +433,6 @@ describe("MarketplaceService", () => {
     });
     const added = await service.addSource({ previewId: previewIdOf(preview) });
     expect(added).toMatchObject({ id: "acme-tools", origin: "custom", packageCount: 2, status: { state: "up-to-date" }, canRemove: true });
-    // The preview is used up.
     await expect(service.addSource({ previewId: previewIdOf(preview) })).rejects.toMatchObject({ code: "PLAN_EXPIRED" });
 
     const catalog = await service.catalog({});
@@ -456,7 +446,6 @@ describe("MarketplaceService", () => {
   });
 
   it("installs a skill from its plan, offers the update after a new publish, and uninstalls it", async () => {
-    // Keep one complete install/update path over the real transport too.
     await build(policyLoad({}), undefined, git.runner);
     const { url, publish } = market();
     await addMarket(url);
@@ -466,7 +455,6 @@ describe("MarketplaceService", () => {
     const changedBefore = catalogChanged;
     await expect(service.executeInstall(plan.planId)).resolves.toEqual({ key, version: "1.0.0", action: { action: "install" }, rungs: [], connectionWarning: null });
     expect(catalogChanged).toBe(changedBefore + 1);
-    // Single use.
     await expect(service.executeInstall(plan.planId)).rejects.toMatchObject({ code: "PLAN_EXPIRED" });
     expect(store.list().map((entry) => `${entry.kind}:${entry.name}@${entry.version}`)).toEqual(["skill:review@1.0.0"]);
     expect((await service.catalog({ installedOnly: true })).entries.map((entry) => entry.state)).toEqual([{ state: "installed", version: "1.0.0" }]);
@@ -497,17 +485,13 @@ describe("MarketplaceService", () => {
     await service.refresh("acme-tools");
     expect(await service.updates()).toEqual([{ key, displayName: "review", from: "1.0.0", to: "1.1.0" }]);
 
-    // Hidden: the catalog stops listing it, the installed package still hears of its update.
     await service.setEnabled("acme-tools", false);
     expect((await service.catalog({})).entries).toEqual([]);
     expect(await service.updates()).toEqual([{ key, displayName: "review", from: "1.0.0", to: "1.1.0" }]);
 
-    // The Installed view shows it with its update; the browse list does not.
     expect((await service.catalog({ installedOnly: true })).entries.map((entry) => [entry.key.name, entry.state])).toEqual([["review", { state: "update", from: "1.0.0", to: "1.1.0" }]]);
-    // The offered update opens; its plan asks for the source to be shown first (§7.3).
     expect((await service.detail(key)).entry.key).toEqual(key);
     await expect(service.planUpdate(key)).rejects.toMatchObject({ code: "SOURCE_DISABLED", message: "source acme-tools is hidden; show it again to install or update from it" });
-    // A package the hidden source lists but that is not installed from it is not listed at all.
     await expect(service.planInstall({ sourceId: "acme-tools", kind: "mcp", name: "notes" })).rejects.toMatchObject({ code: "PACKAGE_INCOMPATIBLE" });
 
     await service.setEnabled("acme-tools", true);
@@ -530,11 +514,9 @@ describe("MarketplaceService", () => {
     expect(first.report.installed).toEqual([defaults[0]]);
     expect(first.report.skipped).toEqual([{ key: defaults[1], reason: "corp does not list skill missing" }]);
     expect(first.notice).toEqual({ forYou: [{ sourceId: "corp", kind: "skill", name: "review" }], required: [], unmanaged: [], lostGrants: [], revoked: [] , autoUpdated: [] });
-    // No official snapshot yet: the migration waits for one.
     expect(legacyRuns).toEqual([]);
     expect(store.list().map((entry) => `${entry.kind}:${entry.name}@${entry.origin.sourceId}`)).toEqual(["skill:review@corp"]);
 
-    // Uninstalling a default is final: the next boot installs nothing.
     await service.uninstall({ sourceId: "corp", kind: "skill", name: "review" });
     const second = await service.applyBootInstalls(defaults, applied);
     expect(second.report).toEqual({ installed: [], skipped: [], failed: [] });
@@ -546,7 +528,6 @@ describe("MarketplaceService", () => {
     const { url } = market();
     service.close();
     await build(policyLoad({ additional: [{ transport: "git", id: "corp", url: normalizeSourceUrl(url), auth: { kind: "none" } }] }));
-    // corp syncs for real once, so that losing its state file later leaves it broken.
     await service.refresh("corp");
     const synced = { status: "ok" as const, pinnedCommit: "a".repeat(40), changed: false };
     const offline = { status: "failed" as const, code: "SOURCE_UNREACHABLE" as const, message: "network is unreachable", detail: { reason: "offline" as const }, pinnedCommit: null };
@@ -564,11 +545,9 @@ describe("MarketplaceService", () => {
       sync.mockImplementation(async () => offline);
       expect(await service.discover()).toEqual({ result: "offline", reached: [] });
 
-      // Offline only when every source says so: another failure makes it partial, with nothing reached.
       sync.mockImplementation(async (id) => (id === "corp" ? dns : offline));
       expect(await service.discover()).toEqual({ result: "partial", reached: [] });
 
-      // A broken source is not offline: every source that syncs being offline still leaves it partial, which shows the sources.
       rmSync(join(root, "marketplaces", "corp", "state.json"));
       expect((await service.listSources()).find((item) => item.id === "corp")!.status).toMatchObject({ state: "broken" });
       sync.mockImplementation(async () => offline);
@@ -592,7 +571,6 @@ describe("MarketplaceService", () => {
     await service.refresh();
     const first = await service.applyBootInstalls([], applied);
     expect(legacyRuns).toHaveLength(1);
-    // The lookup reads the official snapshot: this fixture lists skills, not plugins.
     expect(legacyRuns[0]!("review")).toBeNull();
     expect(first.notice).toEqual({ forYou: [], required: [], unmanaged: ["sampleportal"], lostGrants: [{ plugin: "meeting", keys: ["llm.apiKey.openai"] }], revoked: [] , autoUpdated: [] });
 
@@ -614,9 +592,7 @@ describe("MarketplaceService", () => {
     expect(contentReports).toEqual([{ adopted: [{ source: "ave", kind: "theme", name: "harbor" }], failed: [] }]);
     expect(store.list().map((entry) => `${entry.kind}:${entry.name}@${entry.origin.sourceId}`)).toEqual(["theme:harbor@ave"]);
     expect(adopting).toEqual([true]);
-    // `retired` is not listed: it stays in the legacy list.
     expect(released).toEqual([{ themes: ["harbor"], locales: [] }]);
-    // Adopting content is not news to the user.
     expect(first.notice).toBeNull();
 
     await service.applyBootInstalls([], applied);
@@ -804,7 +780,6 @@ describe("MarketplaceService", () => {
       yanked: { reason: "Legacy field pin: receipt grant evidence only. Not installable.", at: AT.toISOString() },
       publishedAt: AT.toISOString(),
     });
-    /** A marketplace listing `fixturepin` with exactly these versions, newest first. */
     async function pinned(versions: (head: string) => unknown[]) {
       const source = market();
       const head = source.repo.commit({ "notes/readme.txt": "fixture\n" }, "a commit a real version can name");
@@ -877,7 +852,6 @@ describe("MarketplaceService", () => {
     await addMarket(other.url);
     await service.executeInstall((await service.planInstall({ sourceId: "acme-tools", kind: "skill", name: "review" })).planId);
     await service.executeInstall((await service.planInstall({ sourceId: "acme-tools", kind: "mcp", name: "notes" })).planId);
-    // After each install the gates are fed again from what is installed.
     expect(feeds.at(-1)).toEqual({ rules: [], unreadable: [] });
 
     createRevocations(other, [{ kind: "skill", name: "review", versions: "*", reason: "not ours to revoke", at: "2026-09-24T00:00:00Z", action: "uninstall" }]);
@@ -888,7 +862,6 @@ describe("MarketplaceService", () => {
     ]);
     const before = feeds.length;
     await service.refresh();
-    // The sync's first feed carries each package's own source's rules.
     const fed = feeds[before]!;
     expect(fed.unreadable).toEqual([]);
     expect(fed.rules.map((rule) => `${rule.sourceId}/${rule.kind}/${rule.name}:${rule.action}`).sort()).toEqual([
@@ -896,14 +869,12 @@ describe("MarketplaceService", () => {
       "acme-tools/skill/review:disable",
     ]);
 
-    // The sync removed the MCP server (no load gate) and left the gated skill installed; the boot notice reports it.
     const { notice } = await service.applyBootInstalls([], await AppliedDefaults.open(join(root, "packages", "default-installs.json")));
     expect(notice?.revoked).toEqual([
       { key: { sourceId: "acme-tools", kind: "mcp", name: "notes" }, version: "2.0.0", reason: "exfiltrates notes", outcome: "uninstalled" },
     ]);
     expect(manager.configs.has("notes")).toBe(false);
     expect(store.list().map((entry) => `${entry.kind}:${entry.name}`)).toEqual(["skill:review"]);
-    // What stays installed keeps its rule; the removed server's is gone.
     expect(feeds.at(-1)!.rules.map((rule) => `${rule.kind}/${rule.name}`)).toEqual(["skill/review"]);
   });
 
@@ -946,7 +917,6 @@ describe("MarketplaceService", () => {
     service.close();
     await build(withdrawn);
     expect(await requiredNames()).toEqual({ ...healthy, required: [] });
-    // The source's metadata breaks: the installs and the policy are untouched.
     writeFileSync(join(root, "marketplaces", "acme-tools", "state.json"), "{broken");
     const damaged = { acmeReads: false, installed: ["notes", "review"] };
     expect(await requiredNames()).toEqual({ ...damaged, required: [] });
@@ -963,7 +933,6 @@ describe("MarketplaceService", () => {
       "needs a newer app",
     );
     const corp = market("1.0.0", "corp");
-    // The organization's sources; corp is never reached, so it has no snapshot.
     const managed = (id: string, url: string) => ({ transport: "git" as const, id, url: normalizeSourceUrl(url), auth: { kind: "none" as const } });
     const additional = [managed("acme-tools", acme.url), managed("beta-tools", beta.url), managed("corp", corp.url)];
     service.close();
@@ -988,7 +957,6 @@ describe("MarketplaceService", () => {
       { key: { sourceId: "acme-tools", kind: "plugin", name: "absent" }, sourceLabel: "Acme Tools", reason: "not-in-catalog", minAppVersion: null, installedFrom: null },
       { key: { sourceId: "beta-tools", kind: "skill", name: "review" }, sourceLabel: "Acme Tools", reason: "incompatible", minAppVersion: "9.0.0", installedFrom: null },
     ]);
-    // The boot pass skips the same four for the same reasons.
     const boot = await service.applyBootInstalls([], await AppliedDefaults.open(join(root, "packages", "default-installs.json")));
     expect(boot.report.skipped.map((item) => `${item.key.name}: ${item.reason}`)).toEqual([
       "notes: source nowhere is not one of the app's sources",
@@ -997,7 +965,6 @@ describe("MarketplaceService", () => {
       "review: needs Ave 9.0.0",
     ]);
 
-    // Met, or one its source can provide: not listed, and the boot pass installs the second.
     service.close();
     const met = policyLoad({
       additional,
@@ -1020,16 +987,14 @@ describe("MarketplaceService", () => {
       { id: "ave", url: official.url, mirrors: [], auth: { kind: "none" } },
     );
     await service.refresh("ave");
-    // Shown, it can provide the package: nothing is unmet, the boot pass installs it.
     expect((await service.autoUpdateContext()).unmetRequired).toEqual([]);
     await service.setEnabled("ave", false);
-    // Hidden before the requirement is met: a cached candidate is no proof it can be met.
+    // A hidden source cannot satisfy a requirement merely through cached candidates.
     expect((await service.autoUpdateContext()).unmetRequired).toEqual([
       { key: { sourceId: "ave", kind: "skill", name: "review" }, sourceLabel: "Acme Tools", reason: "source-hidden", minAppVersion: null, installedFrom: null },
     ]);
     const boot = await service.applyBootInstalls([], await AppliedDefaults.open(join(root, "packages", "default-installs.json")));
     expect(boot.report).toEqual({ installed: [], skipped: [{ key: { source: "ave", kind: "skill", name: "review" }, reason: "source ave is hidden" }], failed: [] });
-    // Shown again: met at the next boot pass, and no longer listed.
     await service.setEnabled("ave", true);
     const shown = await service.applyBootInstalls([], await AppliedDefaults.open(join(root, "packages", "default-installs.json")));
     expect(shown.report.installed).toEqual([{ source: "ave", kind: "skill", name: "review" }]);
@@ -1046,7 +1011,6 @@ describe("MarketplaceService", () => {
     const held = new Promise<void>((resolve) => { release = resolve; });
     let entered!: () => void;
     const inside = new Promise<void>((resolve) => { entered = resolve; });
-    // An update of review holds its package lock.
     const holder = service.asOneOperation(async () => {
       entered();
       await held;
@@ -1055,7 +1019,6 @@ describe("MarketplaceService", () => {
     const removal = vi.spyOn(store, "uninstall");
     const fed = feeds.length;
     const refresh = service.refresh();
-    // The sync fed the revocation: enforcement has reached the uninstall, which waits for the lock.
     while (feeds.length === fed) await new Promise<void>((resolve) => setImmediate(resolve));
     for (let i = 0; i < 50; i += 1) await new Promise<void>((resolve) => setImmediate(resolve));
     expect(removal).not.toHaveBeenCalled();
@@ -1067,11 +1030,7 @@ describe("MarketplaceService", () => {
     expect(store.list()).toEqual([]);
   });
 
-  /**
-   * The feed judges 1.0.0 revoked (`=1.0.0`) while an update to 2.0.0 owns the package; the update
-   * lands before enforcement gets the lock. With `widened`, once the update is past its own check the
-   * source revokes every release, and a second sync publishes that before enforcement's turn.
-   */
+  /** Holds enforcement across an update; widened revocations arrive before enforcement obtains the lock. */
   async function reviseWhileRevoking(widened: boolean): Promise<{ removedVersions: string[]; done: Promise<void> }> {
     const acme = market();
     await addMarket(acme.url);
@@ -1088,9 +1047,7 @@ describe("MarketplaceService", () => {
     const inside = new Promise<void>((resolve) => { entered = resolve; });
     feedHold = { at: feedCalls + 1, wait: async () => { entered(); await held; } };
     const refresh = service.refresh("acme-tools");
-    // The enforcement feed has read 1.0.0 as installed and is held there.
     await inside;
-    // The update takes the package lock, then waits for that feed before it installs 2.0.0.
     const installing = service.executeInstall(plan.planId);
     await vi.waitFor(() => expect((service as unknown as { pendingBindings: Map<string, unknown> }).pendingBindings.size).toBe(1));
     let widening: Promise<void> = Promise.resolve();
@@ -1131,16 +1088,13 @@ describe("MarketplaceService", () => {
     const held = new Promise<void>((resolve) => { release = resolve; });
     let entered!: () => void;
     const inside = new Promise<void>((resolve) => { entered = resolve; });
-    // Another operation holds review's package lock and changes nothing.
     const holder = service.asOneOperation(async () => { entered(); await held; }, [{ kind: "skill", name: "review" }]);
     await inside;
     const removal = vi.spyOn(store, "uninstall");
     const before = feeds.length;
-    // This sync's feed revokes the installed 1.0.0; its enforcement waits for the lock.
     const first = service.refresh("acme-tools");
-    // A sync takes longer than waitFor's one-second default on a slow disk (Windows).
+    // Real syncs can exceed the default wait on slow Windows disks.
     await vi.waitFor(() => expect(feeds.length).toBeGreaterThan(before), { timeout: 20_000 });
-    // The source withdraws the rule, and a second sync publishes that snapshot while the first still waits.
     createRevocations(acme, []);
     let published!: () => void;
     const publishedNew = new Promise<void>((resolve) => { published = resolve; });
@@ -1169,11 +1123,9 @@ describe("MarketplaceService", () => {
     await inside;
     const removal = vi.spyOn(store, "uninstall");
     const before = feeds.length;
-    // This sync's feed revokes 1.0.0; its enforcement waits for the lock.
     const refresh = service.refresh("acme-tools");
-    // A sync takes longer than waitFor's one-second default on a slow disk (Windows).
+    // Real syncs can exceed the default wait on slow Windows disks.
     await vi.waitFor(() => expect(feeds.length).toBeGreaterThan(before), { timeout: 20_000 });
-    // The next read of the source's revocations, the one under the lock, fails.
     const syncer = (service as unknown as { options: { syncer: { readRevocations: (...args: unknown[]) => Promise<unknown> } } }).options.syncer;
     vi.spyOn(syncer, "readRevocations").mockRejectedValueOnce(new Error("snapshot is not valid JSON"));
     release();
@@ -1206,7 +1158,6 @@ describe("MarketplaceService", () => {
     const held = new Promise<void>((resolve) => { release = resolve; });
     let entered!: () => void;
     const inside = new Promise<void>((resolve) => { entered = resolve; });
-    // A removal of review holds its package lock, and removes it once released.
     const holder = service.asOneOperation(async (lease) => {
       entered();
       await held;
@@ -1259,7 +1210,6 @@ describe("MarketplaceService", () => {
     const key = { sourceId: "acme-tools", kind: "skill" as const, name: "review" };
     await service.executeInstall((await service.planInstall(key)).planId);
     const switching = await service.planInstall({ sourceId: "other-tools", kind: "skill", name: "review", switchSource: true });
-    // An update from the bound source lands first.
     acme.publish("2.0.0");
     await service.refresh("acme-tools");
     await service.executeInstall((await service.planInstall(key)).planId);
@@ -1280,13 +1230,11 @@ describe("MarketplaceService", () => {
     const plan = await service.planInstall({ sourceId: "other-tools", kind: "skill", name: "review", switchSource: true });
     let fedMidSwitch: RevocationFeed | undefined;
     duringContentInstall = async () => {
-      // A sync finishing while the switch runs feeds and enforces again.
       await service.enforceRevocations();
       fedMidSwitch = feeds.at(-1);
     };
     await service.executeInstall(plan.planId);
 
-    // The source being left never judged the package while it moved, and nothing removed it.
     expect(fedMidSwitch).toEqual({ rules: [], unreadable: [] });
     expect(store.list().map((entry) => `${entry.name}@${entry.version}:${entry.origin.sourceId}`)).toEqual(["review@1.1.0:other-tools"]);
     expect(feeds.at(-1)).toEqual({ rules: [], unreadable: [] });
@@ -1304,7 +1252,7 @@ describe("MarketplaceService", () => {
     await service.uninstall({ sourceId: "acme-tools", kind: "skill", name: "review" });
     expect(feeds.at(-1)).toEqual({ rules: [], unreadable: [] });
 
-    // The feed before the install lands; the one after fails. The install is done, so it resolves.
+    // A feed failure after the install commits must not reject the completed install.
     duringContentInstall = async () => {
       feedFails = true;
     };
@@ -1332,7 +1280,6 @@ describe("MarketplaceService", () => {
       autoUpdated: [],
     });
     expect(service.takeRevocationNotice()).toBeNull();
-    // The boot notice does not repeat what was already reported.
     const { notice } = await service.applyBootInstalls([], await AppliedDefaults.open(join(root, "packages", "default-installs.json")));
     expect(notice?.revoked ?? []).toEqual([]);
   });
@@ -1427,7 +1374,6 @@ describe("MarketplaceService", () => {
     await service.executeInstall(plan.planId);
     expect(store.list().map((entry) => entry.name)).toEqual(["summarize"]);
 
-    // A new commit names a new version, and that is an update.
     repo.commit({ "SKILL.md": skill("summarize", "Summarize the thread briefly.") }, "edit");
     await service.refresh(added.id);
     expect((await service.catalog({ sourceId: added.id })).entries[0]!.state).toMatchObject({ state: "update" });
@@ -1449,11 +1395,7 @@ describe("MarketplaceService", () => {
     // Assembled here so no whole token sits in the source.
     const TOKEN = `glp${"at-"}${"abcd1234".repeat(3)}`;
 
-    /**
-     * Rename the added `acme-tools` source, its data and (with `ledger` / `mcpRecords`) its content and server
-     * installs to TOKEN, as an earlier build stored them, and reopen. The server manager's configs survive the
-     * reopen, as a running app's would.
-     */
+    /** Reopens legacy token-shaped source ids with surviving installs and server configs. */
     async function storeUnderToken(options: {
       ledger?: boolean;
       mcpRecords?: boolean;
@@ -1488,7 +1430,6 @@ describe("MarketplaceService", () => {
       return moved;
     }
 
-    /** Every file under `dir`, path to bytes: what a refusal must leave as it was. */
     function filesUnder(dir: string): Record<string, string> {
       const files: Record<string, string> = {};
       for (const entry of readdirSync(dir, { recursive: true, withFileTypes: true })) {
@@ -1524,7 +1465,6 @@ describe("MarketplaceService", () => {
       const preview = await service.previewSource({ input: m.url, auth: "none" });
       const error = await service.addSource({ previewId: previewIdOf(preview), id: "again" }).catch((caught: unknown) => caught);
       expect(error).toMatchObject({ code: "SOURCE_ID_TAKEN", detail: { reason: "repository-already-added", existingId: handle } });
-      // The stored id never leaves, not even to be masked: the message names the handle too.
       expect(String((error as Error).message)).toContain(handle);
       expect(JSON.stringify({ message: (error as Error).message, detail: (error as { detail: unknown }).detail })).not.toContain(TOKEN);
     });
@@ -1546,11 +1486,9 @@ describe("MarketplaceService", () => {
 
       await service.enforceRevocations();
 
-      // A server has no gate, so either action removes it: the install the stored id names, not a view's handle.
       expect(manager.configs.has("notes")).toBe(false);
       expect(readFileSync(records, "utf8")).not.toContain('"notes"');
       const notice = service.takeRevocationNotice();
-      // The notice is a view: it carries the handle, before any scrubbing, and names nothing left to remove.
       expect(notice?.revoked).toEqual([{ key: { sourceId: expect.stringMatching(/^ave-legacy-[0-9a-f]{32}$/u), kind: "mcp", name: "notes" }, version: "2.0.0", reason: "unsafe server", outcome: "uninstalled" }]);
       expect(JSON.stringify(notice)).not.toContain(TOKEN);
       expect(scrubMarketplaceStrings(notice)).toEqual(notice);
@@ -1592,15 +1530,12 @@ describe("MarketplaceService", () => {
         expect(existsSync(moved)).toBe(false);
         expect(store.list()).toHaveLength(1);
       }
-      // The answer carries no stored id before any scrubbing: its key and its label are the handle.
       const raw = await service.catalog({ installedOnly: true });
       expect(JSON.stringify(raw)).not.toContain(TOKEN);
-      // What the renderer holds: the answer as it crosses, scrubbed.
       const answer = scrubMarketplaceStrings(raw);
       const entry = answer.entries.find((item) => item.key.name === "review")!;
       expect(entry.key.sourceId).toMatch(/^ave-legacy-[0-9a-f]{32}$/u);
       expect(JSON.stringify(answer)).not.toContain(TOKEN);
-      // A masked id names nothing; the handle names the installed record.
       await expect(service.uninstall({ sourceId: "[REDACTED:TOKEN]", kind: "skill", name: "review" })).rejects.toMatchObject({ code: "PACKAGE_ID_CONFLICT" });
       expect(store.list()).toHaveLength(1);
       await expect(service.uninstall({ ...entry.key, sourceId: entry.key.sourceId! })).resolves.toMatchObject({ key: entry.key });
@@ -1630,7 +1565,6 @@ describe("MarketplaceService", () => {
     await service.executeInstall((await service.planInstall(key)).planId);
     const sourceDir = join(root, "marketplaces", "ave");
     rmSync(join(sourceDir, "state.json"));
-    // A link inside the source's directory, to data that is not the marketplace's.
     const outside = join(root, "outside");
     mkdirSync(outside);
     writeFileSync(join(outside, "canary"), "kept\n");
@@ -1642,7 +1576,6 @@ describe("MarketplaceService", () => {
       message: "state.json of source ave is missing while its synced data remains",
       detail: damaged,
     });
-    // Refresh cannot help, and says so with the same code.
     await expect(service.refresh("ave")).rejects.toMatchObject({ code: "SOURCE_LOCAL_DATA_DAMAGED", detail: damaged });
 
     const repaired = (await service.repairSource("ave")).find((item) => item.id === "ave")!;
@@ -1690,7 +1623,6 @@ describe("MarketplaceService", () => {
     } finally {
       removal.mockRestore();
     }
-    // Still damaged, still repairable.
     expect((await service.listSources()).find((item) => item.id === "acme-tools")!.status).toMatchObject({ state: "broken", detail: { reason: "state-missing" } });
     await expect(service.repairSource("acme-tools")).resolves.toEqual(expect.arrayContaining([expect.objectContaining({ id: "acme-tools", status: { state: "up-to-date" } })]));
   });
@@ -1708,18 +1640,17 @@ describe("MarketplaceService", () => {
       await build(policyLoad({}), undefined, pinned.runner);
       const run = vi.spyOn(pinned.runner, "run");
       const { url } = market();
-      // A name the fixture's resolver answers; git cannot resolve it, so every connection goes through the pin.
+      // Only the pinned resolver knows this host, exposing any unpinned connection.
       const named = url.replace("127.0.0.1", "market.test");
       server.seen.length = 0;
 
       const asked = await service.previewSource({ input: named, auth: "none" });
       expect(asked).toEqual({ type: "confirm", warnings: [{ warning: "unencrypted", host: "market.test", address: null }] });
-      // No git command, no lookup, no request before the answer.
       expect(run).not.toHaveBeenCalled();
       expect(lookups).toEqual([]);
       expect(server.seen).toEqual([]);
 
-      // A helper is configured for the host, but over http without token-unencrypted it is never asked (§7.4).
+      // HTTP cannot consult the credential helper without token-unencrypted consent.
       helperAnswers = true;
       const preview = await service.previewSource({ input: named, auth: "none", acknowledge: ["unencrypted"] });
       expect(preview).toMatchObject({ type: "marketplace", badges: ["unencrypted"], credentialHelper: false });
@@ -1730,7 +1661,6 @@ describe("MarketplaceService", () => {
       const stored = JSON.parse(readFileSync(join(root, "marketplaces", "sources.json"), "utf8")) as { sources: Array<{ id: string; acknowledged?: unknown }> };
       expect(stored.sources.find((entry) => entry.id === added.id)?.acknowledged).toEqual({ url: normalizeSourceUrl(named).url, warnings: ["unencrypted"] });
 
-      // The name now answers an internal address: the sync asks before connecting to it.
       answers = ["10.0.0.5"];
       server.seen.length = 0;
       const after = (await service.refresh(added.id)).find((item) => item.id === added.id)!;
@@ -1741,7 +1671,6 @@ describe("MarketplaceService", () => {
       });
       expect(server.seen).toEqual([]);
 
-      // *Allow…* adds the confirmation and syncs again (the fixture answers on loopback again).
       answers = ["127.0.0.1"];
       const allowed = await service.acknowledgeSource(added.id, ["internal-network"]);
       expect(allowed).toMatchObject({ acknowledged: ["unencrypted", "internal-network"], badges: ["unencrypted", "internal-network"], status: { state: "up-to-date" } });
@@ -1779,7 +1708,6 @@ describe("MarketplaceService", () => {
     await expect(service.executeInstall(plan.planId)).rejects.toMatchObject({ code: "PLAN_EXPIRED", detail: { reason: "policy-changed" } });
     expect(store.list()).toEqual([]);
 
-    // A file the organization broke leaves only the official source; fixing it brings the rest back.
     writeFileSync(path, "{ this is not the policy any more, it does not parse }");
     await expect(service.previewSource({ input: url, auth: "none" })).rejects.toMatchObject({ code: "SOURCE_POLICY_BLOCKED", detail: { reason: "policy-invalid" } });
     write({ requireHttps: false });
@@ -1799,12 +1727,10 @@ describe("MarketplaceService", () => {
     await expect(refused).rejects.toMatchObject({ code: "SOURCE_POLICY_BLOCKED", detail: { reason: "policy-invalid" } });
     const error = ((await refused.catch((caught: unknown) => caught)) as MarketplaceError).detail as { error: string };
     expect(error.error).toContain("marketplaces.requiredInstalls[1]: requires skill/review from corp, but marketplaces.requiredInstalls[0] requires it from ave");
-    // Nothing of the invalid policy applies: no managed source, nothing required.
     expect((await service.listSources()).map((source) => source.id)).toEqual([OFFICIAL_MARKETPLACE.id]);
     expect((await service.autoUpdateContext()).requiredInstalls).toEqual([]);
   });
 
-  /** The managed policy file the next two groups rewrite while operations run. */
   const policyPath = () => join(root, "ave-policy.json");
   const write = (marketplaces: unknown) => writeFileSync(policyPath(), JSON.stringify({ version: 1, managed: true, marketplaces }));
 
@@ -1819,7 +1745,6 @@ describe("MarketplaceService", () => {
       write({});
       await build(await FilePolicySource.open(policyPath()));
       const { url } = market();
-      // As the background update check does: started from the notice, run after the operation ended.
       const later = gate();
       let recheck: Promise<unknown> | null = null;
       afterCatalogChanged = () => {
@@ -1840,7 +1765,6 @@ describe("MarketplaceService", () => {
       let recheck: Promise<unknown> | null = null;
       afterCatalogChanged = () => {
         if (recheck) return;
-        // Started at once, while the add that reported the change is still running.
         write({ block: ["host:127.0.0.1"] });
         recheck = service.previewSource({ input: url, auth: "none" });
       };
@@ -1856,17 +1780,14 @@ describe("MarketplaceService", () => {
       const order: string[] = [];
       let recheck: Promise<unknown> | null = null;
       afterCatalogChanged = () => {
-        // Started at once, while the uninstall that reported the change still holds the package lock:
-        // it is not that uninstall's work, so it is neither refused nor let in beside it.
+        // A callback-triggered operation must wait for the existing lease rather than inherit it.
         recheck ??= service.asOneOperation(async () => {
           order.push("recheck holds the package");
           return store.list().length;
         }, [{ kind: "skill", name: "review" }]);
         order.push("change reported");
       };
-      // The uninstall runs under a caller's lease, which holds the package a while after it.
       await service.asOneOperation(async (lease) => {
-        // A main-side caller holding the lease names the install by its stored identity.
         await service.uninstallInstalled(key, { lease });
         for (let i = 0; i < 20; i += 1) await new Promise<void>((resolve) => setImmediate(resolve));
         order.push("holder returns");
@@ -1886,7 +1807,6 @@ describe("MarketplaceService", () => {
       const key = { sourceId: "corp", kind: "skill" as const, name: "review" };
       await service.executeInstall((await service.planInstall(key)).planId);
 
-      // The real scheduler, over the service; the check signals when it calls `updates()`.
       let entered: () => void = () => {};
       const checkEntered = new Promise<void>((resolve) => (entered = resolve));
       const published: unknown[] = [];
@@ -1921,19 +1841,15 @@ describe("MarketplaceService", () => {
         log: { info: () => {}, warn: () => {} },
       });
       await background.started;
-      // The boot discovery reached corp, so an update it offered would be shown.
       expect(published).toEqual([]);
       publish("1.1.0");
 
-      // The sync publishes corp's new snapshot; meanwhile the organization drops corp from the policy,
-      // and the snapshot asks for an update check, as the app's callback does.
       let check: Promise<void> | null = null;
       afterSourceSynced = (sourceId) => {
         if (sourceId !== "corp" || check) return;
         policy.change(policyLoad({}));
         check = background.recheck();
       };
-      // The sync's operation stays open until the check has called the service.
       await service.asOneOperation(async () => {
         await service.refresh("corp");
         await checkEntered;
@@ -1941,7 +1857,6 @@ describe("MarketplaceService", () => {
       expect(check).not.toBeNull();
       await check;
 
-      // The check refreshed the policy on its own: corp is gone, and no update is offered from it.
       expect(policy.load).toMatchObject({ ok: true, policy: { additional: [] } });
       expect(published).toEqual([]);
       expect(await service.updates()).toEqual([]);
@@ -1955,7 +1870,6 @@ describe("MarketplaceService", () => {
       const later = gate();
       let leftBehind: Promise<unknown> | null = null;
       await service.asOneOperation(async () => {
-        // Not awaited: it outlives the operation that started it.
         leftBehind = later.opened.then(() => service.previewSource({ input: url, auth: "none" }));
       });
 
@@ -1967,7 +1881,7 @@ describe("MarketplaceService", () => {
 
   describe("policy refresh under overlapping operations (§12)", () => {
 
-    /** The policy file as the service's source; each check is numbered and can be held once it has read the file. */
+    /** Each policy read can be held after reading, to expose overlapping refreshes. */
     function heldPolicy(file: FilePolicySource) {
       let checks = 0;
       const holds = new Map<number, { entered: () => void; wait: Promise<void> }>();
@@ -2001,7 +1915,6 @@ describe("MarketplaceService", () => {
       return { source, hold, checks: () => checks };
     }
 
-    /** An http preview's outcome; reaching git means the gate let it through under the policy in force. */
     const preview = () =>
       service.previewSource({ input: "http://public.example.test/repo", auth: "none", acknowledge: ["unencrypted"] }).then(
         () => ({ code: "PREVIEWED" }),
@@ -2026,10 +1939,7 @@ describe("MarketplaceService", () => {
       return { file, held, preflight };
     }
 
-    /**
-     * Each refresh is held after its read while the next operation arrives, so every operation
-     * overlaps another's refresh, for `rounds` operations.
-     */
+    /** Holds each refresh while the next operation arrives, forcing overlapping refreshes. */
     async function overlapping(held: ReturnType<typeof heldPolicy>, rounds: number) {
       let current = held.hold(1);
       const outcomes = [preview()];
@@ -2054,7 +1964,6 @@ describe("MarketplaceService", () => {
       expect(catalogChanged).toBe(1);
     });
 
-    /** The real update scheduler over the service, as the IPC domain starts it. */
     function scheduler() {
       return startMarketplaceBackground({
         service: async () => service,
@@ -2076,17 +1985,14 @@ describe("MarketplaceService", () => {
       const { held } = await start({});
       const first = held.hold(1);
       const background = scheduler();
-      // The boot pass's enforcement holds the first refresh.
       await first.reached;
       const discover = vi.spyOn(service, "discover");
       const checked = background.checkNow();
-      // Check now's discovery waits for the refresh after the one running.
       await vi.waitFor(() => expect(discover).toHaveBeenCalledOnce());
       const listed = vi.spyOn(pluginPort, "list");
       background.stop();
       first.release();
       await background.started;
-      // Check now still answers, with what the scheduler knew when it stopped.
       await checked;
       expect({ checks: held.checks(), listed: listed.mock.calls.length }).toEqual({ checks: 1, listed: 0 });
     });
@@ -2123,7 +2029,6 @@ describe("MarketplaceService", () => {
       await background.started;
       const next = held.hold(held.checks() + 1);
       const rechecked = background.recheck();
-      // The recheck's own refresh is reading the policy.
       await next.reached;
       const listed = vi.spyOn(pluginPort, "list");
       background.stop();
@@ -2170,7 +2075,7 @@ describe("MarketplaceService", () => {
       first.release();
       await background.started;
       expect(warnings.slice(before)).toEqual([]);
-      // The change itself is not the caller's to cancel: the gate already restricts to the official source.
+      // Caller cancellation cannot undo an already-restrictive policy change.
       expect(file.load.ok).toBe(false);
     });
 
@@ -2200,11 +2105,9 @@ describe("MarketplaceService", () => {
       const first = held.hold(1);
       const older = preview();
       await first.reached;
-      // Strict again before the held read applies; this operation began after that read, so it waits for the next.
       write({ requireHttps: true });
       const newer = preview();
       first.release();
-      // The older operation began before the file went strict again and runs under what its refresh read.
       expect(await older).toEqual(REACHED_GIT);
       expect(await newer).toEqual(HTTPS_REQUIRED);
       expect(preflight).toHaveBeenCalledTimes(1);
@@ -2217,13 +2120,11 @@ describe("MarketplaceService", () => {
       const first = held.hold(1);
       const early = preview();
       await first.reached;
-      // Changed while the first refresh runs: everything arriving now shares one queued refresh.
       write({ requireHttps: true });
       const second = held.hold(2);
       const during = [preview(), preview(), preview(), preview()];
       first.release();
       await second.reached;
-      // Arriving while that one runs: one more queued refresh between them.
       const third = held.hold(3);
       const later = [preview(), preview(), preview(), preview()];
       second.release();
@@ -2244,12 +2145,7 @@ describe("MarketplaceService", () => {
     await expect(service.deleteToken("github.com")).resolves.toEqual({ host: "github.com" });
   });
 
-  /**
-   * The update scheduler over this real service, stopped while a stage of the
-   * service waits — the wait then fulfilling or rejecting: the service sends no
-   * further progress and starts no further stage (sync, enforcement, the boot
-   * installs' catalog), and the scheduler publishes and writes nothing more.
-   */
+  /** Aborting at a service await must prevent all subsequent stages and scheduler effects. */
   const SERVICE_WAITS = [
     ["the boot's enforcement of the revocations on disk", { feed: 1 }],
     ["the discovery's sync", { sync: true }],
@@ -2299,13 +2195,11 @@ describe("MarketplaceService", () => {
       log: { info: vi.fn(), warn: vi.fn() },
     };
     const background = startMarketplaceBackground(input);
-    // The domain's shutdown hook: one abort closes the event boundary and stops the scheduler.
     shutdown.signal.addEventListener("abort", () => background.stop(), { once: true });
     try {
       await vi.waitFor(() => expect(release).not.toBeNull());
       const counts = () => ({
         sent: { ...sent },
-        // The service's own stages stop on the signal: it sends nothing more, even before the boundary.
         emitted: { syncProgress: emitted.syncProgress, installProgress: emitted.installProgress },
         progress: progress.length,
         syncs: sync.mock.calls.length,
@@ -2328,14 +2222,7 @@ describe("MarketplaceService", () => {
     }
   });
 
-  /**
-   * The same over the real syncer and installers, nothing substituted: the
-   * official source is a served fixture, its sync prunes for real, and the
-   * boot installs its default skill. Held inside, stopped, then let go: the
-   * sync and the install with its record finish, and none of the events they
-   * send — sync progress, install progress, catalog changes from the syncer,
-   * the service or the revocation sink — reaches the renderer.
-   */
+  /** In-flight syncs and installs finish durably after shutdown, but their events must not reach the renderer. */
   const REAL_WAITS = [
     ["the official sync's pruning", "prune"],
     ["the boot's default content install", "activate"],
@@ -2390,11 +2277,9 @@ describe("MarketplaceService", () => {
       if (ending === "fulfils") release!();
       else fail!(new Error("shutdown interrupted it"));
       await background.started;
-      // Let the held work's own continuations run out.
       await new Promise((resolve) => setTimeout(resolve, 50));
       expect(counts()).toEqual(before);
       if (hold === "activate" && ending === "fulfils") {
-        // The install in progress finished, with its record.
         expect(store.list().map((entry) => `${entry.kind}:${entry.name}`)).toEqual(["skill:review"]);
         expect((await AppliedDefaults.open(appliedPath)).get({ kind: "skill", name: "review", source: "ave" })).toMatchObject({ result: "installed" });
       }
@@ -2417,14 +2302,12 @@ describe("MarketplaceService", () => {
     const scheduler = new AbortController();
     const admitted = vi.spyOn(service as unknown as { enforceRevocationsNow: (signal?: AbortSignal) => Promise<void> }, "enforceRevocationsNow");
     const queued = service.enforceRevocations(scheduler.signal);
-    // Admitted to its operation, it waits in the enforcement queue behind the first.
     await vi.waitFor(() => expect(admitted).toHaveBeenCalledOnce());
     const reason = new Error("the update scheduler has stopped");
     scheduler.abort(reason);
     releaseFirst();
     await first;
     await expect(queued).rejects.toBe(reason);
-    // Only the enforcement that had started fed the gates.
     expect(feedCalls).toBe(1);
   });
 });

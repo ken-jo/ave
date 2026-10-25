@@ -1,13 +1,4 @@
-/**
- * What the session list calls each row.
- *
- * A work-board run is a sub-agent session whose `originSessionId` names a
- * work-board item. The memory manager is the one place that turns that origin
- * into `workBoardItemId`, so the sidebar, the IPC handler and the runner all
- * agree on which sessions are runs — and which are not (a chat's own
- * sub-agents, the briefing runs). `sessionFamilyOf` is the one place that turns
- * a store plus a row into the family the sidebar draws.
- */
+// Derive work-board item identity from host-written origin once so all session-list consumers agree.
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -115,8 +106,6 @@ describe("sessionFamilyOf", () => {
   });
 
   it("has no family for a sub-agent that is not an item's run", () => {
-    // Those are reachable inside their parent conversation's sub-agent tab;
-    // a row beside the conversation would say the same thing twice.
     expect(sessionFamilyOf("subagent", { sessionKind: "subagent" })).toBeNull();
   });
 

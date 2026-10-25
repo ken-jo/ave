@@ -25,28 +25,12 @@ interface TokenProgressRingProps {
   budget: number;
   contextBudget?: number;
   tpmLimit?: number;
-  /**
-   * Cost estimate for the next request. Rendered inside the click-detail
-   * popover as part of the single flat usage surface — there is no separate
-   * cost badge sibling in the action row (the amount lives behind the ring,
-   * revealed on click).
-   */
+  /** Keep next-request cost in the ring's detail popover so the action row has one usage surface. */
   costEstimate?: EstimateBreakdown;
-  /** Color class for the cost line, mirrors the former badge's tier color. */
   costClass?: string;
 }
 
-/**
- * TokenProgressRing — square SVG circular progress indicator for token usage.
- *
- * Interaction model:
- *   - HOVER → a tooltip showing the usage percent ONLY.
- *   - CLICK → a popover with the full usage breakdown plus the cost/amount,
- *     rendered as a single flat surface (no box-in-box).
- *
- * Color tiers: emerald < 50%, amber 50-80%, rose > 80%. Sized square at 26px
- * to match the sibling toolbar buttons (h-[26px] w-[26px]).
- */
+/** Hover shows usage percent; click reveals the full usage/cost breakdown in one popover. */
 export function TokenProgressRing({
   used,
   budget,
@@ -72,7 +56,7 @@ export function TokenProgressRing({
 
   const radius = 9;
   const strokeWidth = 2.5;
-  const size = 26; // square, matches sibling h-[26px] w-[26px] buttons
+  const size = 26;
   const cx = size / 2;
   const circumference = 2 * Math.PI * radius;
   const fillOffset = circumference * (1 - pct / 100);

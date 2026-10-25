@@ -1,9 +1,10 @@
 // Scoped pre-push tiers for change sets the fast source tier cannot trace.
 //
-// Every pull request's CI runs the full suite and the build (scripts/run-ci-suite.mjs
-// and ci.yml), so the local hook runs them only on request (run-local-checks.mjs
+// Every pull request's CI runs the build and the test scope scripts/run-ci-suite.mjs
+// picks (the full suite, or affected tests only for a test-only or trusted diff),
+// so the local hook runs the full suite only on request (run-local-checks.mjs
 // lists the cases). Every other push runs a scoped tier, and its log line says
-// "full suite deferred to CI". pre-push-source-policy.mjs still decides what the
+// FULL_SUITE_DEFERRED. pre-push-source-policy.mjs still decides what the
 // fast tier can trace; CI reuses it unchanged, and its "full checks" wording is
 // CI's decision for a non-integration base. This module decides what the hook
 // runs instead of the full suite for the rest:
@@ -54,7 +55,9 @@ import { namedRepositoryPaths, namesChangedPath } from "../run-ci-suite.mjs";
 
 const FAST_TIER = "fast";
 export const GLOBAL_INPUT_TIER = "global-input";
-export const FULL_SUITE_DEFERRED = "full suite deferred to CI";
+/** Every scoped tier defers what it skipped to CI; CI then runs the full suite
+ *  or only the affected tests (a test-only diff never runs it whole). */
+export const FULL_SUITE_DEFERRED = "remaining tests and build deferred to CI, whose scope scripts/run-ci-suite.mjs picks";
 
 /** The middle tier's lockfile sanity check: exits nonzero on drift and writes nothing. */
 export const FROZEN_LOCKFILE_ARGS = Object.freeze(["install", "--frozen-lockfile", "--dry-run"]);

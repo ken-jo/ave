@@ -1,24 +1,7 @@
-/**
- * #B1 — `bridge.config` + `bridge.storage` round-trip contract.
- *
- * Verifies that the plugin webview preload's namespaced bridge:
- *   - exposes `config.{get,set}` and `storage.{get,set}` on `window.avePlugin`
- *   - routes each through its dedicated IPC channel (no dotted-name silent fail)
- *   - resolves to the unwrapped `value` on `{ ok: true, value }`
- *   - resolves to `undefined` on `{ ok: true }` / `{ ok: true, value: undefined }`
- *   - rejects with `Error(error)` on `{ ok: false, error }`
- *
- * Pre-#B1, plugin UI code that called `bridge.callTool("hostApi.config.get", …)`
- * silently failed: the dotted-name format is rejected by every supported LLM
- * provider's tool-name regex, AND no host dispatcher routed it. This test
- * locks the new dedicated-channel contract so a regression to the dotted name
- * cannot reintroduce that silent-fail.
- */
+/** Config and storage use dedicated channels; dotted tool names have no dispatcher. */
 import { readFileSync } from "node:fs";
 
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-
-// ─── Capture contextBridge registrations ─────────────────────────────────────
 
 const exposed = new Map<string, unknown>();
 const mockInvoke = vi.fn();
@@ -26,8 +9,6 @@ const mockOn = vi.fn();
 const mockRemoveListener = vi.fn();
 const originalIsMainFrame = Object.getOwnPropertyDescriptor(process, "isMainFrame");
 
-// Plugin preload uses NAMED imports — see plugin-preload.test.ts for the
-// reasoning. Mock matches that contract.
 vi.mock("electron", () => {
   const contextBridge = {
     exposeInMainWorld: (key: string, value: unknown) => {
@@ -43,7 +24,6 @@ vi.mock("electron", () => {
 });
 
 beforeAll(async () => {
-  // The bridge is intentionally installed only for Electron's top frame.
   Object.defineProperty(process, "isMainFrame", { configurable: true, value: true });
   await import("../plugin-preload.js");
 });
@@ -126,11 +106,7 @@ describe("plugin-preload bridge.config namespace (#B1)", () => {
   });
 
   it("does NOT route through callTool with dotted name (C2 regression guard)", async () => {
-    // Pre-#B1, plugin code called `bridge.callTool("hostApi.config.get", …)`
-    // which silently failed (dotted name banned by tool-name regex + no
-    // dispatcher). The fix uses dedicated `ave:plugin:config:*` channels.
-    // Lock that contract: the channel name must NOT contain "callTool",
-    // "hostApi.", or any dotted method name.
+    // Dedicated config channels must not regress to dotted tool calls.
     mockInvoke.mockResolvedValueOnce({ ok: true, value: 1 });
     await getConfig().get("k");
     const channel = mockInvoke.mock.calls.at(-1)?.[0] as string;
@@ -195,20 +171,7 @@ describe("plugin-preload bridge.storage namespace (#B1)", () => {
   });
 });
 
-// ─── webview registration lifecycle ──────────────────────────────────────────
-//
-// `getWebContentsId()` THROWS on an Electron <webview> that is not yet attached
-// and dom-ready. `plugin-ui-host.tsx` used to call it from `did-start-loading`
-// and from a microtask queued in the ref callback — both run before attachment
-// — so every plugin panel mount threw repeatedly (measured: 90 identical
-// uncaught exceptions over 27s on a cold boot), and the resulting re-render
-// churn is visible as flicker.
-//
-// This reads the source rather than rendering the component on purpose: jsdom
-// has no Electron <webview>, so a rendered test would only exercise a stand-in
-// element this test defined itself, and would prove nothing about the real
-// throw. The invariant that broke is structural — which events may lead to the
-// call — so that is what is asserted.
+// getWebContentsId throws before attachment. Inspect event wiring because jsdom cannot reproduce native webview attachment.
 describe("plugin UI host — webview registration lifecycle", () => {
   const source = readFileSync(
     new URL("../plugin-ui-host.tsx", import.meta.url),
@@ -230,8 +193,7 @@ describe("plugin UI host — webview registration lifecycle", () => {
 
   it("still registers on did-attach, and retries only on guest events", () => {
     expect(source).toMatch(/addEventListener\(\s*"did-attach"/);
-    // Both can only fire after the guest is attached, so they are safe retries
-    // for the case where the did-attach listener was bound too late.
+    // These events fire after attachment and can safely retry a missed attach listener.
     expect(source).toMatch(/addEventListener\(\s*"dom-ready"/);
     expect(source).toMatch(/addEventListener\(\s*"did-finish-load"/);
   });

@@ -1,8 +1,4 @@
-/**
- * Permission policy P4 Area C — manifest integrity proxy tests.
- *
- * Spec ref: docs/architecture/permission-policy-design.md §3.5.
- */
+// Permission policy Area C — manifest integrity proxy tests. docs/architecture/permission-policy-design.md.
 import { describe, expect, it, beforeEach, vi } from "vitest";
 import * as nodeFs from "node:fs";
 import {

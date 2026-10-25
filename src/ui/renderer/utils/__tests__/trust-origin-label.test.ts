@@ -32,8 +32,7 @@ describe("trustOriginLabel", () => {
       expect(label.length).toBeGreaterThan(0);
       expect(label).not.toBe(origin);
     }
-    // A missing provenance must stay visibly unknown; never silently inherit a
-    // newly added external-surface label.
+    // A missing provenance must stay visibly unknown; never silently inherit a newly added external-surface label.
     expect(trustOriginLabel(undefined)).not.toBe(trustOriginLabel("surface-user"));
     expect(trustOriginLabel(undefined)).not.toBe("surface-user");
     expect(trustOriginLabel("tailnet-surface")).not.toBe(trustOriginLabel("surface-user"));

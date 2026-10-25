@@ -1,7 +1,4 @@
-/**
- * Shared by the validator suites: one report row by its check name, or a
- * failure that lists the checks the report did carry.
- */
+/** Require the named report row; failures list actual checks to reveal missing coverage. */
 import type { ReportRow } from "../report.js";
 
 export function row(rows: readonly ReportRow[], check: string): ReportRow {

@@ -1,9 +1,4 @@
-/**
- * `PluginMarketplaceService.uninstall()` — the removal transaction stages the
- * live directory and every path the registry row owns (recovery backups and
- * pending cleanups), commits the registry removal, and restores all of it when
- * the registry moved underneath.
- */
+/** Uninstall must restore every staged registry-owned path if the registry changes before removal commits. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
@@ -100,10 +95,7 @@ describe("PluginMarketplaceService uninstall()", () => {
     expect((JSON.parse(await readFile(registryPath, "utf-8")) as { plugins: unknown[] }).plugins).toEqual([]);
   });
 
-  // A confined plugin writes inside its data root, so it can take its owner's
-  // access away there: `chmod 000` on a directory, and on macOS the
-  // user-immutable flag. The uninstall must still remove the whole tree, and
-  // must not leave a committed transaction behind for boot to retry.
+  // A child can remove access to its data with chmod or immutable flags; uninstall must still finish.
   it.runIf(process.platform !== "win32")(
     "removes a plugin whose data holds a directory it made unreadable or, on macOS, immutable",
     async () => {

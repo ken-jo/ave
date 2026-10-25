@@ -36,7 +36,6 @@ describe("platform conversation protocol", () => {
       event: input.event,
     });
     expect(listener).toHaveBeenCalledWith(envelope);
-    // Rich owner detail can never become an accidental reconnect protocol.
     expect(timeline.read("main-session").events).toEqual([]);
   });
 
@@ -88,10 +87,8 @@ describe("platform conversation protocol", () => {
       kind: "turn.failed",
       failure: { category: "provider", summary: "The model provider returned an error." },
     });
-    // The raw owner message never crosses the projection.
     expect(JSON.stringify(projected)).not.toContain("sk-FAKE-TOKEN-123");
 
-    // A summary that fails closed re-validation is dropped, not forwarded.
     const forged = projectSharedConversationEvent({
       kind: "turn.error",
       failure: {
@@ -102,7 +99,6 @@ describe("platform conversation protocol", () => {
     });
     expect(forged).toEqual({ kind: "turn.failed" });
 
-    // A legacy event without a summary still projects the bare failure.
     expect(projectSharedConversationEvent({
       kind: "turn.error",
       ownerDetail: { message: "raw" },
@@ -118,9 +114,7 @@ describe("platform conversation protocol", () => {
   });
 
   it("never projects a turn's user input to shared surfaces", () => {
-    // The submitting chat platform already shows the sender their own message;
-    // sharing it back would duplicate every remote turn and hand other
-    // surfaces' input text to safe-projection observers.
+    // Sharing the submitting platform its own input duplicates it and exposes it to other observers.
     expect(projectSharedConversationEvent({
       kind: "user.message",
       origin: "platform-bridge",

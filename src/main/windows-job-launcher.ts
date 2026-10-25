@@ -11,11 +11,8 @@ export function resolveWindowsJobLauncher(): string {
   return binary;
 }
 
-/**
- * PID and lifecycle events belong to the helper. Keep stdin open until disposal;
- * ending it or calling kill() releases the job. Never expose it as command input.
- * Target launch failures emit a diagnostic and exit 125, not a spawn error event.
- */
+// PID and lifecycle events belong to the helper. Keep stdin open until disposal; ending it or calling kill() releases the job. Never expose it as
+// command input. Target launch failures emit a diagnostic and exit 125, not a spawn error event.
 export function spawnWindowsJobProcess(
   executable: string,
   args: string[],

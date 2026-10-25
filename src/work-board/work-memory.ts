@@ -1,22 +1,4 @@
-/**
- * Work-flow memory for the host Work Board (the "Memory" pillar).
- *
- * Markdown files under `memories/` in the work-board namespace
- * (`~/.ave/work-board/memories/`), with per-project copies under
- * `memories/projects/<project-key>/` when a project root is supplied:
- *   - `USER.md`   — who the user is (role, focus). Seeded once, never
- *                   auto-overwritten; the user edits it freely.
- *   - `MEMORY.md` — learned work-flow patterns (recurring topics, throughput,
- *                   deadline-slip tendencies). Bounded by a HARD LINE CAP with
- *                   NO auto-compaction (deliberate): once the cap is hit the
- *                   oldest *body* lines are dropped (FIFO), but nothing is
- *                   summarised or rewritten behind the user's back.
- *
- * All reads/writes go through the host {@link WorkBoardStorage} seam — no `fs`,
- * no fallback paths. This is the same module the legacy board plugin shipped,
- * re-aimed at the host storage surface now that the board is a first-class
- * host domain (architecture.md §10.0.3).
- */
+/** Seed user profiles once and never overwrite edits; learned memory drops oldest body lines without summarization. */
 import type { WorkBoardStorage } from "./storage.js";
 import { workBoardProjectStorageKey } from "./project-storage.js";
 
@@ -25,13 +7,9 @@ export const USER_FILE = "memories/USER.md";
 export const MEMORY_FILE = "memories/MEMORY.md";
 const PROJECT_MEMORIES_DIR = "memories/projects";
 
-/**
- * Hard cap on `MEMORY.md` length. When an append would exceed this, the oldest
- * body lines are dropped to fit (FIFO) — no compaction/summarisation.
- */
+/** Cap total memory lines by evicting oldest body lines only. */
 export const MEMORY_LINE_CAP = 200;
 
-/** Seed contents for `USER.md` on first run. User-editable thereafter. */
 export const USER_MD_SEED = `# User Profile
 
 > This file helps the personal Work Board understand your work flow.
@@ -48,10 +26,6 @@ const MEMORY_MD_HEADER = `# Work Flow Memory
 > A hard line cap is enforced: oldest lines are removed first, with no automatic summarization or compaction.
 `;
 
-/**
- * Narrow slice of {@link WorkBoardStorage} this module depends on. `mkdir`
- * ensures the `memories/` subdir exists before the first write.
- */
 export type MemoryStorage = Pick<
   WorkBoardStorage,
   "readText" | "write" | "exists" | "mkdir"
@@ -93,24 +67,16 @@ async function readMemoryAt(storage: MemoryStorage, memoryFile: string): Promise
   return MEMORY_MD_HEADER;
 }
 
-/**
- * Read `USER.md`, seeding it on first run. The seed is written once; subsequent
- * calls return whatever the user has since edited.
- */
+/** Seed only when absent; subsequent reads preserve user edits. */
 export async function readOrSeedUser(storage: MemoryStorage): Promise<string> {
   return readOrSeedUserAt(storage, MEMORIES_DIR, USER_FILE);
 }
 
-/** Read `MEMORY.md`, returning the header-only baseline when absent. */
 export async function readMemory(storage: MemoryStorage): Promise<string> {
   return readMemoryAt(storage, MEMORY_FILE);
 }
 
-/**
- * Append one or more memory lines, then enforce the hard line cap. The header
- * block is always preserved; only the oldest *body* lines are dropped (FIFO)
- * when the total would exceed {@link MEMORY_LINE_CAP}. No summarisation.
- */
+/** Always retain the header while evicting oldest body lines; never summarize behind the user's back. */
 export async function appendMemory(
   storage: MemoryStorage,
   lines: string | string[],
@@ -125,8 +91,6 @@ export async function appendMemory(
   const paths = memoryPaths(options);
   const existing = await readMemoryAt(storage, paths.memoryFile);
   const allLines = existing.split("\n");
-  // Split off the header block so caps only ever evict learned body lines,
-  // never the legend.
   const headerLines = MEMORY_MD_HEADER.replace(/\n$/, "").split("\n");
   const headerLen = headerLines.length;
   const head = allLines.slice(0, headerLen);
@@ -141,11 +105,7 @@ export async function appendMemory(
   await storage.write(paths.memoryFile, out);
 }
 
-/**
- * Render a short, prompt-ready work-flow context string for report prompts:
- * the user profile followed by the learned memory body. Bounded by `maxLines`
- * (default 40) so it never blows the report prompt budget.
- */
+/** Bound profile and learned-memory context by maxLines before report prompting. */
 export async function renderWorkContext(
   storage: MemoryStorage,
   maxLines = 40,

@@ -1,19 +1,3 @@
-/**
- * Tutorial-C — `ave:tour:*` IPC handler tests.
- *
- * Mirrors the shape of the other domain handler tests: vitest fakes
- * `electron.ipcMain.handle` so each `registerTourHandlers` call lands in
- * a `Map<channel, handler>`, then the test invokes the handler with a
- * fabricated `IpcMainInvokeEvent` shape.
- *
- * Covers:
- *   - `get-state` returns the default when no file is on disk.
- *   - `mark-complete` persists + returns the new state.
- *   - `dismiss` persists + returns the new state with `dismissedAt` set.
- *   - `start` fans out `ave:tour:start` to every BrowserWindow returned
- *     by `getAppWindows`.
- *   - Invalid `scenarioId` payloads return `invalid-scenario-id`.
- */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { join } from "node:path";

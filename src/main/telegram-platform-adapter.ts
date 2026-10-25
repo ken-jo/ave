@@ -1,11 +1,4 @@
-/**
- * Telegram's deliberately narrow provider wire boundary.
- *
- * This module owns only Telegram's authenticated webhook shape and its
- * text-only Bot API delivery request. It neither starts an HTTP listener nor
- * decides which Telegram account is paired to a conversation; those remain
- * host-owned lifecycle and authorization concerns.
- */
+// Owns authenticated provider wire shapes only; lifecycle and paired-account authorization remain host-owned.
 import { performance } from "node:perf_hooks";
 import type {
   PlatformBridgeVerifiedEnvelope,
@@ -33,12 +26,7 @@ import { sleep } from "../shared/abortable-deadline.js";
 import { TELEGRAM_BOT_TOKEN_PATH_GRAMMAR } from "../shared/telegram-connection.js";
 
 const MAX_TELEGRAM_BOT_TOKEN_CHARS = 256;
-/**
- * Telegram measures `sendMessage` text in UTF-16 code units, the same unit its
- * MessageEntity offsets use. Counting Unicode code points instead lets an
- * emoji-heavy reply reach 8,192 units, which the Bot API rejects with
- * 400 "message is too long" — and a rejected send closes the delivery channel.
- */
+// Message limits use UTF-16 code units; code-point counts undercount emoji and can cause delivery rejection.
 const MAX_TELEGRAM_TEXT_UTF16_UNITS = 4_096;
 const DEFAULT_MIN_TELEGRAM_DELIVERY_INTERVAL_MS = 1_000;
 // Telegram FAQ documents an approximate free broadcast limit of 30 messages/s.
@@ -47,19 +35,16 @@ const DEFAULT_MIN_TELEGRAM_GLOBAL_INTERVAL_MS = Math.ceil(
   1_000 / FREE_TELEGRAM_GLOBAL_MESSAGES_PER_SECOND,
 );
 const DEFAULT_TELEGRAM_REQUEST_TIMEOUT_MS = 15_000;
-/** Bound on an honored Bot API `retry_after` hint; anything longer is capped. */
+// Bound on an honored Bot API `retry_after` hint; anything longer is capped.
 const MAX_TELEGRAM_RETRY_AFTER_MS = 30_000;
-/** Provider-supplied error descriptions are truncated before they may be logged. */
+// Provider-supplied error descriptions are truncated before they may be logged.
 const MAX_LOGGED_DESCRIPTION_CHARS = 120;
-/** Network errno-style codes are the only free-form error detail admitted to a log. */
+// Network errno-style codes are the only free-form error detail admitted to a log.
 const SAFE_NETWORK_ERROR_CODE = /^[A-Z][A-Z0-9_]{1,31}$/;
 
 const ALLOWED_UPDATE_KEYS = new Set(["update_id", "message"]);
 const ALLOWED_CALLBACK_UPDATE_KEYS = new Set(["update_id", "callback_query"]);
-// The exact fields a private-chat button press carries. `message` and
-// `chat_instance` are admitted for PRESENCE only — a press on a real card
-// always echoes the card message — and are never read: the host keeps its own
-// nonce→card record, so nothing routing-relevant is taken from the wire.
+// Accept message and chat_instance only as presence markers; route button presses through host-owned nonce records.
 const ALLOWED_CALLBACK_QUERY_KEYS = new Set([
   "id",
   "from",
@@ -67,24 +52,10 @@ const ALLOWED_CALLBACK_QUERY_KEYS = new Set([
   "chat_instance",
   "data",
 ]);
-/**
- * The host mints callback tokens from this grammar and the parser re-applies
- * it on the way back in, so a forged update carrying structured data — JSON,
- * tool names, separators — dies here rather than reaching a handler.
- */
+// The host mints callback tokens from this grammar and the parser re-applies it on the way back in, so a forged update carrying structured data — JSON,
+// tool names, separators — dies here rather than reaching a handler.
 const OPAQUE_CALLBACK_TOKEN = /^[A-Za-z0-9_-]{1,64}$/;
-// Metadata the parser never reads, admitted so an ordinary DM is not rejected
-// for HOW it was composed:
-//
-// - `entities` preserves ordinary URL/formatting messages;
-// - `reply_to_message` and `quote` are what Telegram's default swipe gesture
-//   attaches in a private chat. Rejecting them killed the message rather than
-//   ignoring the decoration, and admitting them changes nothing that is read:
-//   the sender, chat, and text checks below are untouched, and the quoted
-//   material never enters the envelope.
-//
-// Everything else — attachments, forwards, sender-chat, web-app, and every
-// other message form — is still rejected by omission.
+// Ignore ordinary formatting and reply metadata without reading quoted content; attachments, forwards, and unknown forms remain rejected.
 const ALLOWED_TEXT_MESSAGE_KEYS = new Set([
   "message_id",
   "date",
@@ -110,12 +81,7 @@ const OUTBOUND_STATUS_TEXT: Readonly<Record<string, string>> = Object.freeze({
   "turn-completed": "Ave: completed",
 });
 
-/**
- * Display labels for the closed share-safe failure categories carried on a
- * `turn-failed` status. Same pattern as `OUTBOUND_STATUS_TEXT`: a fixed table
- * keyed by an already-classified value, never a match over raw error text.
- * Typed over the closed union so a new category cannot ship without a label.
- */
+// Map closed failure categories to fixed text; a new category must supply a label without matching raw errors.
 const FAILURE_CATEGORY_TEXT: Readonly<Record<TurnFailureCategory, string>> = Object.freeze({
   provider: "provider error",
   auth: "auth error",
@@ -142,16 +108,7 @@ const TRANSIENT_STATUSES = new Set<TelegramStatusMessage["status"]>([
   "compaction-completed",
 ]);
 
-/**
- * Verify one Telegram Update that THIS host already fetched over its own
- * authenticated outbound `getUpdates` call.
- *
- * Authenticity here comes from TLS to api.telegram.org plus the bot token on
- * that outbound request — not from a signature over these bytes, because the
- * bytes are host-produced rather than attacker-presented. The shape allow-list
- * is still applied, so a compromised or unexpected Bot API response cannot
- * widen the envelope.
- */
+// Host-polled updates derive authenticity from the authenticated TLS fetch, then still pass the strict shape allowlist.
 export function createTelegramPollingVerifier(): PlatformBridgeWebhookVerifier {
   return Object.freeze({
     verify(request: Readonly<unknown>): PlatformBridgeVerifiedEnvelope | undefined {
@@ -162,26 +119,19 @@ export function createTelegramPollingVerifier(): PlatformBridgeWebhookVerifier {
   });
 }
 
-/** A Telegram Bot API destination already paired by the host. */
+// A Telegram Bot API destination already paired by the host.
 export interface TelegramDeliveryChannel {
-  /** Canonical decimal positive safe integer, never a group/channel id. */
+  // Canonical decimal positive safe integer, never a group/channel id.
   readonly chatId: string;
-  /**
-   * Opaque host-only identity minted for one delivery attachment. It never
-   * crosses the Telegram wire and fences an old in-flight attachment.
-   */
+  // Opaque host-only identity minted for one delivery attachment. It never crosses the Telegram wire and fences an old in-flight attachment.
   readonly deliveryLease?: string;
 }
 
-/** One pending safe projection entry, exactly matching the generic queue hook. */
+// One pending safe projection entry, exactly matching the generic queue hook.
 export type TelegramDeliveryQueueEntry = PlatformBridgeDeliveryQueuedMessage;
 
-/**
- * Coalesce a pending Telegram queue without looking at a raw conversation
- * timeline. Adjacent text deltas retain their exact order but are packed into
- * Bot API-sized UTF-16 chunks. Only adjacent transient progress statuses are
- * collapsed; approval and terminal statuses remain visible.
- */
+// Coalesce a pending Telegram queue without looking at a raw conversation timeline. Adjacent text deltas retain their exact order but are packed into
+// Bot API-sized UTF-16 chunks. Only adjacent transient progress statuses are collapsed; approval and terminal statuses remain visible.
 export function coalesceTelegramDeliveryQueue(
   queued: readonly TelegramDeliveryQueueEntry[],
   incoming: TelegramDeliveryQueueEntry,
@@ -217,8 +167,7 @@ export function coalesceTelegramDeliveryQueue(
       if (codePoint === undefined) break;
       const width = codePoint > 0xffff ? 2 : 1;
       if (!isUnsafeTelegramCodePoint(codePoint) && !(codePoint >= 0xd800 && codePoint <= 0xdfff)) {
-        // Chunk before, never inside, a surrogate pair: a split pair is neither
-        // valid text nor within the unit bound the Bot API actually applies.
+        // Chunk before, never inside, a surrogate pair: a split pair is neither valid text nor within the unit bound the Bot API actually applies.
         if (pendingTextUnits + width > maxUnits) flushText();
         pendingText += text.slice(index, index + width);
         pendingTextUnits += width;
@@ -255,9 +204,7 @@ export function coalesceTelegramDeliveryQueue(
             && previous.message.status === "awaiting-local-approval"
             && previous.message.tool === normalized.message.tool
           ) {
-            // One approval card is one notice. A repeated identical wait for
-            // the same tool keeps the newest cursor instead of sending the
-            // same rate-limited message again.
+            // One approval card is one notice. A repeated identical wait for the same tool keeps the newest cursor instead of sending the same rate-limited message again.
             output[output.length - 1] = normalized;
           } else {
             output.push(normalized);
@@ -267,9 +214,8 @@ export function coalesceTelegramDeliveryQueue(
       case "snapshot":
         flushText();
         flushStatus();
-        // One reconnect snapshot stays one Bot API message. Splitting it would
-        // replay the retained window as several rate-limited sends on every
-        // inbound message, so the newest bounded window is kept instead.
+        // One reconnect snapshot stays one Bot API message. Splitting it would replay the retained window as several rate-limited sends on every inbound
+        // message, so the newest bounded window is kept instead.
         output.push(freezeQueueEntry(normalized.cursor, {
           ...normalized.message,
           text: safeTrailingText(normalized.message.text, maxUnits),
@@ -281,53 +227,31 @@ export function coalesceTelegramDeliveryQueue(
   flushStatus();
   return Object.freeze(output);
 }
-/** Configuration for Telegram's strictly text-only outbound transport. */
+// Configuration for Telegram's strictly text-only outbound transport.
 export interface CreateTelegramOutboundTransportOptions {
-  /** Bot API token. It is used only as validated path material and never logged. */
+  // Bot API token. It is used only as validated path material and never logged.
   readonly botToken: string;
-  /**
-   * The transport every outbound send runs on. REQUIRED, and deliberately
-   * without a default.
-   *
-   * It used to fall back to the ambient `fetch`, which is Node's — a stack
-   * that reads neither the machine's proxy configuration nor its trust store.
-   * A caller that forgot one therefore went out direct, on a path the user
-   * never chose, and one that cannot complete at all where the direct route
-   * is intercepted. Requiring it makes forgetting the transport a compile
-   * error rather than a silent route change.
-   */
+  // Require the injected OS-aware transport; ambient fetch would silently bypass machine proxy and trust configuration.
   readonly fetch: typeof globalThis.fetch;
-  /** Optional host-owned re-pair/revocation fence checked before wire delivery. */
+  // Optional host-owned re-pair/revocation fence checked before wire delivery.
   readonly isChannelCurrent?: (
     channel: Readonly<TelegramDeliveryChannel>,
     generation: number,
   ) => boolean;
-  /** Minimum spacing for calls to one Telegram chat; defaults to one second. */
+  // Minimum spacing for calls to one Telegram chat; defaults to one second.
   readonly minIntervalMs?: number;
-  /** Bound one Bot API request so a hung network cannot hold a chat gate forever. */
+  // Bound one Bot API request so a hung network cannot hold a chat gate forever.
   readonly requestTimeoutMs?: number;
-  /** Injectable clock for deterministic lifecycle tests. */
+  // Injectable clock for deterministic lifecycle tests.
   readonly now?: () => number;
-  /** Injectable delay seam for deterministic lifecycle tests. */
+  // Injectable delay seam for deterministic lifecycle tests.
   readonly wait?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
-  /**
-   * Host log sink for SAFE egress failure classification lines. It receives
-   * only coarse failure detail (network code, HTTP status, Bot API error_code,
-   * a truncated description) — never the bot token, the request URL, the chat
-   * id, or any message text.
-   */
+  // Host log sink for SAFE egress failure classification lines. It receives only coarse failure detail (network code, HTTP status, Bot API error_code, a
+  // truncated description) — never the bot token, the request URL, the chat id, or any message text.
   readonly log?: (message: string) => void;
 }
 
-/**
- * The single classification of every way one Telegram send can fail.
- *
- * `terminal` covers host-side lifecycle and precondition failures that carry
- * no wire detail; the wire kinds carry only the coarse, share-safe fields the
- * policy and log line below are allowed to see. All failure construction goes
- * through `telegramDeliveryFailure`, so retry semantics and log content cannot
- * drift between call sites.
- */
+// Construct all delivery failures through one safe classifier so retry behavior and log detail cannot drift.
 type TelegramSendFailureClass =
   | { readonly kind: "terminal"; readonly code: TelegramTerminalSendFailureCode }
   | { readonly kind: "network"; readonly networkCode?: string }
@@ -348,12 +272,7 @@ type TelegramTerminalSendFailureCode =
   | "unrenderable-message"
   | "internal-error";
 
-/**
- * The one failure chokepoint: map a classification to the generic delivery
- * failure contract (transient or not, bounded retry-after), emit at most one
- * safe log line, and mint the single generic error the projection fan-out may
- * observe. The error message is always `telegram-delivery-failed`.
- */
+// Classify bounded retries, log at most one safe line, and expose only the generic telegram-delivery-failed error.
 function telegramDeliveryFailure(
   classification: TelegramSendFailureClass,
   log?: (message: string) => void,
@@ -372,7 +291,7 @@ function telegramDeliveryFailure(
   );
 }
 
-/** One policy table: which failures are transient, and their kebab-case reason. */
+// One policy table: which failures are transient, and their kebab-case reason.
 function telegramSendFailurePolicy(
   classification: TelegramSendFailureClass,
 ): PlatformBridgeDeliverySendFailure {
@@ -402,11 +321,8 @@ function telegramSendFailurePolicy(
   }
 }
 
-/**
- * One log formatter for wire failures. Terminal classifications return
- * `undefined`: they carry no wire detail, and their reason code still reaches
- * the bridge log through the delivery adapter's close-reason callback.
- */
+// One log formatter for wire failures. Terminal classifications return `undefined`: they carry no wire detail, and their reason code still reaches the
+// bridge log through the delivery adapter's close-reason callback.
 function formatTelegramSendFailureLog(
   classification: TelegramSendFailureClass,
 ): string | undefined {
@@ -430,13 +346,7 @@ function formatTelegramSendFailureLog(
   }
 }
 
-/**
- * Build one outbound Telegram transport.
- *
- * It accepts only the already-safe projection messages from the generic bridge
- * delivery adapter, renders statuses as fixed text, and sends no Bot API
- * feature that could add rich interaction or reveal local state.
- */
+// Accept only safe projections, render statuses as fixed text, and exclude interactions or features that reveal local state.
 export function createTelegramOutboundTransport(
   options: CreateTelegramOutboundTransportOptions,
 ): PlatformBridgeDeliveryTransport<TelegramDeliveryChannel> {
@@ -511,9 +421,8 @@ export function createTelegramOutboundTransport(
         }
         assertTelegramDeliveryCurrent(channel, sendOptions, isChannelCurrent);
 
-        // Telegram's free broadcast budget is bot-wide, not just per-chat.
-        // Hold this gate only through request launch; a slow response must not
-        // unnecessarily serialize unrelated private DMs.
+        // Telegram's free broadcast budget is bot-wide, not just per-chat. Hold this gate only through request launch; a slow response must not unnecessarily
+        // serialize unrelated private DMs.
         const globalGate = acquireTelegramGlobalGate(globalGateState);
         releaseGlobalGate = globalGate.release;
         await globalGate.previous;
@@ -533,8 +442,7 @@ export function createTelegramOutboundTransport(
         if (text === undefined) {
           throw telegramDeliveryFailure({ kind: "terminal", code: "unrenderable-message" });
         }
-        // Mark launch rather than success: a failing Bot API cannot be hammered
-        // by a retry loop, and both free-rate budgets use one monotonic sample.
+        // Mark launch rather than success: a failing Bot API cannot be hammered by a retry loop, and both free-rate budgets use one monotonic sample.
         const launchedAt = readTelegramNow(now);
         lastDeliveryAttemptAt.set(chatId, launchedAt);
         lastGlobalDeliveryAttemptAt = launchedAt;
@@ -560,8 +468,7 @@ export function createTelegramOutboundTransport(
         try {
           response = await responsePromise;
         } catch (error) {
-          // A channel-driven abort is host lifecycle; only a timer expiry on
-          // this request's own controller is a wire timeout worth reporting.
+          // A channel-driven abort is host lifecycle; only a timer expiry on this request's own controller is a wire timeout worth reporting.
           if (sendOptions.signal.aborted) {
             throw telegramDeliveryFailure({ kind: "terminal", code: "aborted" });
           }
@@ -580,9 +487,8 @@ export function createTelegramOutboundTransport(
         if (responseFailure !== undefined) throw telegramDeliveryFailure(responseFailure, log);
         assertTelegramDeliveryCurrent(channel, sendOptions, isChannelCurrent);
       } catch (error) {
-        // Every classified failure re-throws unchanged; anything else stays
-        // one generic error so a projection fan-out failure can never reveal
-        // the bot token, the endpoint, a response body, or provider detail.
+        // Every classified failure re-throws unchanged; anything else stays one generic error so a projection fan-out failure can never reveal the bot token,
+        // the endpoint, a response body, or provider detail.
         if (readPlatformBridgeDeliverySendFailure(error) !== undefined) throw error;
         throw telegramDeliveryFailure({ kind: "terminal", code: "internal-error" });
       } finally {
@@ -620,12 +526,8 @@ function readRawBody(request: unknown): Uint8Array | undefined {
   return rawBody instanceof Uint8Array ? rawBody : undefined;
 }
 
-/**
- * Decode one Telegram Update into the exact envelope the shared ingress core
- * admits, or `undefined` for anything else. Exported so the polling ingress
- * uses the same definition of "a safe Telegram text message" as the webhook
- * path; forking it would let the two ingresses drift.
- */
+// Decode one Telegram Update into the exact envelope the shared ingress core admits, or `undefined` for anything else. Exported so the polling ingress
+// uses the same definition of "a safe Telegram text message" as the webhook path; forking it would let the two ingresses drift.
 export function parseTelegramTextUpdate(
   rawBody: Uint8Array,
 ): PlatformBridgeVerifiedEnvelope | undefined {
@@ -670,29 +572,17 @@ export function parseTelegramTextUpdate(
   });
 }
 
-/**
- * One verified inline-keyboard press, reduced to the three facts the host
- * needs: which query to acknowledge, who pressed, and the opaque token the
- * host minted. Deliberately NOT a `PlatformBridgeVerifiedEnvelope`: a press is
- * a decision signal, never conversation input, so it must not be submittable
- * through the shared ingress gateway.
- */
+// Button presses carry only acknowledgement ID, verified actor, and opaque token; they are decisions, never conversation input.
 export interface TelegramCallbackQueryEnvelope {
   readonly provider: "telegram";
-  /** Provider-issued id, echoed back verbatim to `answerCallbackQuery`. */
+  // Provider-issued id, echoed back verbatim to `answerCallbackQuery`.
   readonly callbackQueryId: string;
   readonly senderId: string;
-  /** Opaque host-minted token; the grammar admits nothing structured. */
+  // Opaque host-minted token; the grammar admits nothing structured.
   readonly data: string;
 }
 
-/**
- * Decode one Telegram `callback_query` update, or `undefined` for anything
- * else. Same posture as {@link parseTelegramTextUpdate} and applied at the
- * same ingress parse point: a strict key allow-list, fail-closed on every
- * unknown shape, and nothing free-form admitted — the callback data must match
- * the host's own opaque token grammar.
- */
+// Fail closed on unknown callback shapes and require the host token grammar; admit no free-form callback content.
 export function parseTelegramCallbackQueryUpdate(
   rawBody: Uint8Array,
 ): TelegramCallbackQueryEnvelope | undefined {
@@ -741,8 +631,7 @@ function isSafeTelegramText(value: unknown): value is string {
   for (let index = 0; index < value.length;) {
     const codePoint = value.codePointAt(index);
     if (codePoint === undefined || isUnsafeTelegramCodePoint(codePoint)) return false;
-    // A lone surrogate is not a Unicode scalar value. Telegram normally cannot
-    // send one, but rejecting it keeps the decoded envelope well formed.
+    // A lone surrogate is not a Unicode scalar value. Telegram normally cannot send one, but rejecting it keeps the decoded envelope well formed.
     if (codePoint >= 0xd800 && codePoint <= 0xdfff) return false;
     index += codePoint > 0xffff ? 2 : 1;
   }
@@ -803,11 +692,9 @@ function normalizeTelegramQueueEntry(value: unknown): TelegramDeliveryQueueEntry
   if (kind === "status") {
     const status = readOwnDataValue(message, "status");
     if (!isTelegramStatus(status)) throw new TypeError("telegram-delivery-queue-entry-invalid");
-    // A failure summary that fails re-validation is dropped, not fatal: the
-    // bare status still reaches the reader.
+    // A failure summary that fails re-validation is dropped, not fatal: the bare status still reaches the reader.
     const failure = toSafeTurnFailureSummary(readOwnDataValue(message, "failure"));
-    // Same drop-not-fatal rule for the approval tool identifier: it is only
-    // admitted on the approval wait status and against the one shared grammar.
+    // Same drop-not-fatal rule for the approval tool identifier: it is only admitted on the approval wait status and against the one shared grammar.
     const tool = readOwnDataValue(message, "tool");
     const safeTool = status === "awaiting-local-approval" && isSharedApprovalToolIdentifier(tool)
       ? tool
@@ -1028,26 +915,15 @@ function telegramOutboundText(message: unknown): string | undefined {
   return undefined;
 }
 
-/**
- * Render `<category>: <short summary>` from an already-safe failure summary,
- * or `undefined` (fail closed to the bare status text) for anything else. The
- * shared fail-closed sanitizer is the one validation authority; this function
- * only adds the display label lookup.
- */
+// Render `<category>: <short summary>` from an already-safe failure summary, or `undefined` (fail closed to the bare status text) for anything else. The
+// shared fail-closed sanitizer is the one validation authority; this function only adds the display label lookup.
 function telegramFailureText(value: unknown): string | undefined {
   const failure = toSafeTurnFailureSummary(value);
   if (failure === undefined) return undefined;
   return `${FAILURE_CATEGORY_TEXT[failure.category]}: ${failure.summary}`;
 }
 
-/**
- * Render `tool <identifier> (waiting for approval)` for the approval wait, or
- * `undefined` (fail closed to the bare status text) for anything else. The
- * shared grammar predicate is the one validation authority; this function
- * only adds the display template. It deliberately does not say WHERE to
- * approve: the desk card is always live, and when the remote-approval
- * coordinator holds a current route it follows up with its own button card.
- */
+// Render approval-wait identifiers only after shared grammar validation; do not prescribe approval location because available surfaces vary.
 function telegramApprovalToolText(status: unknown, tool: unknown): string | undefined {
   if (status !== "awaiting-local-approval" || !isSharedApprovalToolIdentifier(tool)) {
     return undefined;
@@ -1055,7 +931,7 @@ function telegramApprovalToolText(status: unknown, tool: unknown): string | unde
   return `tool ${tool} (waiting for approval)`;
 }
 
-/** Last bound before the wire: Telegram rejects the whole send past this. */
+// Last bound before the wire: Telegram rejects the whole send past this.
 function boundedOutboundText(value: string): string {
   let output = "";
   let unitCount = 0;
@@ -1073,12 +949,7 @@ function boundedOutboundText(value: string): string {
   return output;
 }
 
-/**
- * Turn one Bot API response into the response classification, or `undefined`
- * on success. It reads only coarse, share-safe fields: the HTTP status, the
- * Bot API `error_code`, a defensively truncated `description`, and a bounded
- * `retry_after` hint. The response body is never propagated whole.
- */
+// Classify only coarse status fields, truncated descriptions, and bounded retry hints; never propagate the full response body.
 async function classifyTelegramSendResponse(
   response: unknown,
 ): Promise<Extract<TelegramSendFailureClass, { kind: "response" }> | undefined> {
@@ -1118,18 +989,15 @@ async function classifyTelegramSendResponse(
   };
 }
 
-/** Bot API `error_code` mirrors HTTP status grammar; anything else is dropped. */
+// Bot API `error_code` mirrors HTTP status grammar; anything else is dropped.
 function readHttpLikeCode(value: unknown): number | undefined {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 100 && value <= 599
     ? value
     : undefined;
 }
 
-/**
- * Reduce a provider-supplied description to one short printable line: control
- * characters and quotes are dropped, and the length is hard-capped so a
- * hostile description cannot flood or restructure the log.
- */
+// Reduce a provider-supplied description to one short printable line: control characters and quotes are dropped, and the length is hard-capped so a
+// hostile description cannot flood or restructure the log.
 function safeLoggedDescription(value: unknown): string | undefined {
   if (typeof value !== "string" || value.length === 0) return undefined;
   let output = "";
@@ -1146,11 +1014,8 @@ function safeLoggedDescription(value: unknown): string | undefined {
   return output.length === 0 ? undefined : output;
 }
 
-/**
- * Extract only an errno-style code (for example a refused or reset connection
- * constant) from a network failure. Error messages are never read: a runtime
- * network error message can embed the request URL, which embeds the token.
- */
+// Extract only an errno-style code (for example a refused or reset connection constant) from a network failure. Error messages are never read: a runtime
+// network error message can embed the request URL, which embeds the token.
 function readSafeNetworkErrorCode(error: unknown): string | undefined {
   let current: unknown = error;
   for (let depth = 0; depth < 4 && current !== null && typeof current === "object"; depth += 1) {

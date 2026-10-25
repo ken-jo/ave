@@ -729,6 +729,10 @@ export const CHANNELS = {
   },
   preview: {
     readFile: "ave:preview:read-file",
+    // Table documents (csv/tsv/xlsx/xls/ods): main parses with the same read
+    // guard as readFile and returns a bounded grid of display strings — never
+    // the file bytes. INTERNAL: absent from PUBLIC_CHANNELS.
+    readDocument: "ave:preview:read-document",
   },
   workspace: {
     pickRoot: "ave:workspace:pick-root",
@@ -894,14 +898,17 @@ export const CHANNEL_GESTURE: Record<string, "required" | "none"> = {
   [PERMISSIONS.setMode]: "required",
   [PERMISSIONS.addRule]: "required",
   [PERMISSIONS.removeRule]: "required",
+  [PERMISSIONS.removeScopedRule]: "required",
   [PERMISSIONS.policySet]: "required",
   [PERMISSIONS.dirDispatch]: "required",
   [PERMISSIONS.reviewerDispatch]: "required",
+  [PERMISSIONS.judgeSet]: "required",
   [PERMISSIONS.deferredResolve]: "required",
   [PERMISSIONS.approvalSentenceSelect]: "required",
   [PERMISSIONS.userApprovalRecord]: "required",
   [PERMISSIONS.userApprovalRevoke]: "required",
   [PERMISSIONS.sandboxWindowsInstall]: "required",
+  [PERMISSIONS.approveExtensionsWithoutIsolation]: "required",
   // Local-owner Tailnet sharing: all mutations are host-renderer-only and
   // require a current keyboard intent. The snapshot and change hint carry no
   // externally callable mutation capability, so they are deliberately omitted.

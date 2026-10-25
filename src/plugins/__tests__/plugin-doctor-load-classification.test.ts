@@ -1,21 +1,4 @@
-/**
- * Plugin Doctor — runtime load-failure classification on plugin cards.
- *
- * The Doctor auto-repairs a plugin that failed to LOAD by reinstalling the
- * latest marketplace version, but only when the cause is reinstall-fixable.
- * These tests pin the classification the settings UI reads off `listPluginCards`:
- *   - a stale/pre-v6/schema-invalid on-disk manifest → `manifest-validation-error`
- *     (reinstall-fixable) plus the underlying field detail, and
- *   - a too-new `requires.minAppVersion` → `incompatible-app-version`
- *     (NOT reinstall-fixable — a reinstall re-fetches the same too-new package).
- *   - a `requires.hostProtocol` this app does not serve → `incompatible-host-protocol`
- *     (NOT reinstall-fixable, and refused before the plugin's code runs).
- *   - a `process` entry without a pinned install → `process-entry-requires-pinned-artifact`
- *     (NOT reinstall-fixable; every activation path is covered by
- *     `process-entry-provenance-gate.test.ts`).
- *   - a version its bound source revoked → `plugin-revoked` with that source's
- *     reason (design §10.4); other plugins still load.
- */
+/** Only manifest-validation failures are reinstall-fixable; version, protocol, provenance and revocation refusals are not. */
 import { afterEach, describe, expect, it } from "vitest";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -58,8 +41,7 @@ describe("PluginRuntime Doctor load-failure classification", () => {
     if (fixture) await rm(fixture.rootDir, { recursive: true, force: true });
   });
 
-  // No receipt cache root, so nothing is verified and the gate has no
-  // evidence: the unpinned refusal, which a reinstall cannot repair.
+  // Without a receipt cache root, admission has no provenance evidence.
   it("keeps an unpinned process extension failed at boot with a stable Doctor diagnosis", async () => {
     fixture = await makeTestPluginRuntimeFixture();
     await writeProcessEntry(fixture);
@@ -89,8 +71,7 @@ describe("PluginRuntime Doctor load-failure classification", () => {
       id: "p-prev6",
       tools: ["p_prev6_ping"],
       entrySource: makeTestPluginEntrySource({ p_prev6_ping: JSON.stringify("hi") }),
-      // Unknown top-level property rejected by the current host schema — this is
-      // the shape a manifest shipped before #885 Phase R now fails validation on.
+      // Unknown top-level fields must fail the current host schema.
       manifest: { startupTools: [] },
     });
     await writeTestPluginRegistry(fixture, [{ id: "p-prev6", manifestPath, enabled: true }]);
@@ -105,13 +86,7 @@ describe("PluginRuntime Doctor load-failure classification", () => {
   });
 
   it("classifies an installed unknown-vendor pathFields `_meta` manifest as reinstall-fixable (fail-closed → Doctor-repairable)", async () => {
-    // An installed plugin whose on-disk manifest carries `pathFields` under a
-    // `_meta` vendor prefix the host does not own must FAIL to load (fail-closed —
-    // the schema's `_meta` is additionalProperties:false, so the key is rejected,
-    // never silently accepted-but-ungated), and that failure must classify as the
-    // reinstall-fixable `manifest-validation-error` kind so the Plugin Doctor can
-    // repair it by reinstalling: a broken-until-repaired plugin, never a
-    // silently-ungated one.
+    // Unknown _meta vendor keys must fail closed and classify as reinstall-fixable manifest-validation-error.
     fixture = await makeTestPluginRuntimeFixture();
     const { manifestPath } = await writeTestPlugin(fixture, {
       id: "p-unknown-meta",
@@ -123,8 +98,7 @@ describe("PluginRuntime Doctor load-failure classification", () => {
             name: "p_unknown_ping",
             description: "Unknown-vendor _meta path tool.",
             inputSchema: { type: "object", properties: { path: { type: "string" } } },
-            // Cast: an unknown vendor key is not part of the `_meta` type; it is
-            // forced on to reproduce such a manifest on disk.
+            // Force an unknown vendor key onto the typed fixture to exercise on-disk validation.
             _meta: { ui: { visibility: ["model"] }, [`${UNKNOWN_META_PREFIX}pathFields`]: ["path"] } as never,
           },
         ],
@@ -139,7 +113,6 @@ describe("PluginRuntime Doctor load-failure classification", () => {
     expect(card?.loadStatus).toBe("failed");
     expect(card?.installFailureKind).toBe("manifest-validation-error");
     expect(card?.installFailureMessage).toMatch(/schema validation failed/);
-    // The rejection is specifically about the unknown key.
     expect(card?.installFailureMessage).toContain(`${UNKNOWN_META_PREFIX}pathFields`);
   });
 
@@ -166,8 +139,7 @@ describe("PluginRuntime Doctor load-failure classification", () => {
     const refused = await writeTestPlugin(fixture, {
       id: "p-protocol",
       tools: ["p_protocol_ping"],
-      // Importing this entry throws, so a gate that ran after the import would
-      // report a load crash instead of the refusal.
+      // A throwing entry proves the refusal runs before code import.
       entrySource: "throw new Error('the entry of a refused plugin was imported');\n",
       manifest: { requires: { capabilities: [], hostProtocol: "2" } },
     });

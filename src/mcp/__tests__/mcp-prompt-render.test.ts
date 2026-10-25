@@ -1,10 +1,4 @@
-/**
- * `prompts/get` render — pure-logic tests.
- *
- * The rendered text is SERVER-authored, so the render must be inert and honest:
- * non-text blocks become explicit placeholders (never silently dropped), roles
- * cannot smuggle markup or newlines, and the output is hard-bounded.
- */
+/** Server-authored prompts stay inert, bounded and explicit about non-text content. */
 import { describe, it, expect } from "vitest";
 
 import { renderMcpPrompt } from "../mcp-prompt-render.js";

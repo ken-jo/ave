@@ -1,15 +1,4 @@
-/**
- * "The environment is deciding this setting" notice — one implementation.
- *
- * Every env-backed setting has the same two-part surface: a control that shows
- * the stored value, and a line telling the user the running app is ignoring it
- * because a variable is set. Each settings tab used to hand-roll that line —
- * the `includes()` test, the variable lookup, the missing-variable fallback,
- * the `-forced` test id, the muted-text classes — so the wording and the
- * behaviour could drift per tab, and every newly surfaced variable meant
- * copying the block again. It is one component now: the tab supplies only what
- * genuinely differs (which setting, which sentence, which test id).
- */
+/** Show the stored value beside the environment override notice; the override decides the running value. */
 import { useEffect, useState } from "react";
 import { envVarForSettingsPath } from "../../../shared/env-backed-settings.js";
 import { useTranslation } from "../../../i18n/react.js";
@@ -20,20 +9,7 @@ export interface EnvForcedSettingsReader {
   envForcedSettings: () => Promise<readonly string[]>;
 }
 
-/**
- * The settings paths the environment is currently forcing.
- *
- * The host is the authority — it is the process that can see its own
- * environment — so this is an IPC read, not a renderer-side re-derivation of
- * ENV_BACKED_SETTINGS. Returns `[]` until the answer arrives, which renders no
- * notice: claiming "the environment decides this" before knowing would be the
- * one wrong thing to show.
- *
- * `api` is optional because the settings tabs disagree on how they get one:
- * some receive it as a prop (and their tests never initialize the global), the
- * rest reach for the module-level accessor. Taking it as an argument lets both
- * kinds share this hook instead of keeping their own copy of the fetch.
- */
+/** Read forced settings from main's environment authority; show no notice until the snapshot arrives. */
 export function useEnvForcedSettings(api?: EnvForcedSettingsReader): readonly string[] {
   const [paths, setPaths] = useState<readonly string[]>([]);
   useEffect(() => {
@@ -58,12 +34,8 @@ export interface EnvForcedNoticeProps {
   readonly className?: string;
 }
 
-/**
- * Render the notice, or nothing.
- *
- * Nothing is also the answer when the path is forced but no variable is known
- * for it: a sentence naming an empty variable tells the user less than silence.
- */
+/** Render the notice, or nothing. Nothing is also the answer when the path is forced but no variable is known for it: a
+ * sentence naming an empty variable tells the user less than silence. */
 export function EnvForcedNotice({
   settingsPath,
   forcedPaths,

@@ -1,15 +1,4 @@
-/**
- * JSON parsing for files read from marketplace repositories.
- *
- * `JSON.parse` keeps the last of two equal keys, so `{"name":"a","name":"b"}`
- * would mean one thing to a reviewer reading the file and another to the app.
- * Marketplace files are rejected instead (design §2.2: duplicate keys reject
- * the index). Nesting depth is bounded and `__proto__` keys are refused.
- *
- * This is a preset of the one strict grammar in `shared/strict-json.ts`: text
- * input, depth 64, no size budgets, ordinary objects, and a located
- * {@link StrictJsonError} so a publisher can find the offending byte.
- */
+/** Reject duplicate and __proto__ keys; bound nesting to keep reviewer and runtime interpretations aligned. */
 import { parseStrictJsonText } from "../../shared/strict-json.js";
 
 export class StrictJsonError extends Error {

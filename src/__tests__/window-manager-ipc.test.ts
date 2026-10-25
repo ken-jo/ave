@@ -1,15 +1,6 @@
-/**
- * Security regression tests for WindowManager IPC handlers.
- *
- * Every surviving handler is host-only and state-mutating, so each must reject a
- * sender that is not the host renderer and audit the attempt. The detach handlers and
- * their viewKey allow-list are retired; the assertion that no handler is registered
- * for those channels is what keeps them from reappearing unnoticed.
- */
+/** State-mutating window handlers must reject and audit non-host senders; retired channels must remain absent. */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { IpcMainInvokeEvent } from "electron";
-
-// ── Electron mock ──────────────────────────────────────────────────────────
 
 const handleMap = new Map<string, (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown>();
 const listenerMap = new Map<string, (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown>();
@@ -36,16 +27,11 @@ vi.mock("electron", () => ({
   },
 }));
 
-// ── Module imports (after mock) ────────────────────────────────────────────
-
 import { UNAUTHORIZED_FRAME } from "../ipc-bridge.js";
 import { CHAT_SIDE_PANEL_WIDTH } from "../main/main-window-bounds.js";
 import { MAIN_WINDOW_WIDTH } from "../shared/shell-geometry.js";
 import { hostFrameEvent } from "./test-helpers.js";
 
-// ── Helpers ────────────────────────────────────────────────────────────────
-
-/** Build an event with an unauthorized (remote) sender frame. */
 function unauthorizedEvent(): IpcMainInvokeEvent {
   return {
     senderFrame: { url: "https://evil.example.com/pwn" },
@@ -53,14 +39,9 @@ function unauthorizedEvent(): IpcMainInvokeEvent {
   } as unknown as IpcMainInvokeEvent;
 }
 
-/** Build an event with a trusted file:// sender frame. */
-
-/** Minimal AuditLogger mock. */
 function makeAuditLogger() {
   return { log: vi.fn() };
 }
-
-// ── IPC handler security ───────────────────────────────────────────────────
 
 describe("WindowManager IPC — validateSender guard", () => {
   let WindowManager: typeof import("../main/window-manager.js").WindowManager;
@@ -73,7 +54,6 @@ describe("WindowManager IPC — validateSender guard", () => {
     listenerMap.clear();
     fromWebContents.mockReset();
     vi.resetModules();
-    // Re-import so handleMap gets freshly registered handlers
     const mod = await import("../main/window-manager.js?t=" + Date.now());
     appState = await import("../main/app-state.js");
     appState.resetMainWindowsForTests();
@@ -93,18 +73,12 @@ describe("WindowManager IPC — validateSender guard", () => {
     "ave:mcp:close-detached",
     "ave:mcp:detached-payload",
   ])("registers no handler for the retired channel %s", (channel) => {
-    // Detach is retired. A handler reappearing here would be a live IPC entry point
-    // into window machinery that no longer exists, which is exactly the regression
-    // worth failing on — the channel constants are gone, so re-adding one is a
-    // deliberate act and this list is where it shows up.
+    // Retired detach channels must never regain live handlers.
     expect(handleMap.has(channel)).toBe(false);
   });
 
   describe("ave:window:resize-for-mode", () => {
-    // The resize now uses a manual easeOut tween (the native `setBounds`
-    // animate flag is macOS-only). The mock window starts at bounds far from
-    // any target so the tween runs; tests flush timers and assert the LAST
-    // setBounds call lands EXACTLY on the target.
+    // Native animated bounds work only on macOS; flush the manual tween and assert its final target.
     let nextWindowId = 7;
     function makeMainWindow() {
       let bounds = { x: 0, y: 0, width: 100, height: 100 };
@@ -125,12 +99,10 @@ describe("WindowManager IPC — validateSender guard", () => {
       fromWebContents.mockReturnValue(main);
     }
 
-    /** Drive the manual tween to completion. */
     function flushTween() {
       vi.runAllTimers();
     }
 
-    /** Last bounds passed to setBounds (the final, exact landing point). */
     function lastBounds(main: ReturnType<typeof makeMainWindow>) {
       const calls = main.setBounds.mock.calls;
       return calls[calls.length - 1]?.[0] as {
@@ -139,8 +111,7 @@ describe("WindowManager IPC — validateSender guard", () => {
     }
 
     beforeEach(() => {
-      // Fake timers so the ~16ms tween interval is deterministic and the
-      // final-target landing can be flushed synchronously.
+      // Fake timers make tween completion deterministic.
       vi.useFakeTimers();
     });
 
@@ -166,8 +137,6 @@ describe("WindowManager IPC — validateSender guard", () => {
     });
 
     it("returns main-window-not-found when the sender is not a registered main window", async () => {
-      // A window exists for the sender, but it is not one of the app's main
-      // windows (a popup or viewer): it must not be resized.
       fromWebContents.mockReturnValue(makeMainWindow());
       const handler = handleMap.get("ave:window:resize-for-mode")!;
       const result = await handler(hostFrameEvent(), "work");
@@ -180,10 +149,7 @@ describe("WindowManager IPC — validateSender guard", () => {
       const handler = handleMap.get("ave:window:resize-for-mode")!;
       const result = await handler(hostFrameEvent(), "work");
       expect(result).toEqual({ ok: true });
-      // The tween emits intermediate setBounds frames; flush it to completion.
       flushTween();
-      // workArea 1920×1080 → centered 1243×768 (golden ratio). The LAST setBounds
-      // call must land EXACTLY on the target (intermediate interpolated frames allowed).
       expect(lastBounds(main)).toEqual({ x: 339, y: 156, width: 1243, height: 768 });
     });
 
@@ -194,9 +160,6 @@ describe("WindowManager IPC — validateSender guard", () => {
       const result = await handler(hostFrameEvent(), "chat");
       expect(result).toEqual({ ok: true });
       flushTween();
-      // chat mode uses computeInitialMainWindowBounds — a right-docked,
-      // narrower-than-work bounds (not centered, not 800 wide). The final
-      // landing bounds must match that geometry exactly.
       const bounds = lastBounds(main);
       expect(bounds.width).toBeLessThan(800);
       expect(bounds.x + bounds.width).toBeLessThanOrEqual(1920);
@@ -211,8 +174,6 @@ describe("WindowManager IPC — validateSender guard", () => {
       expect(openResult).toEqual({ ok: true });
       flushTween();
       const expanded = lastBounds(main);
-      // The window grows by exactly the side panel's reserve, anchored on its
-      // right edge inside the work area.
       expect(expanded.width).toBe(MAIN_WINDOW_WIDTH + CHAT_SIDE_PANEL_WIDTH);
       expect(expanded.height).toBe(840);
       expect(expanded.x + expanded.width).toBe(1910);
@@ -248,13 +209,10 @@ describe("WindowManager IPC — validateSender guard", () => {
       const main = makeMainWindow();
       useAsSender(main);
       const handler = handleMap.get("ave:window:resize-for-mode")!;
-      // Start a work tween, advance partway, then switch to chat mid-flight.
       await handler(hostFrameEvent(), "work");
       vi.advanceTimersByTime(48); // a few frames in, not yet settled
       await handler(hostFrameEvent(), "chat");
       flushTween();
-      // The latest (chat) target wins: final bounds are the chat geometry,
-      // never the abandoned work 1243×768.
       const bounds = lastBounds(main);
       expect(bounds.width).toBeLessThan(800);
       expect(bounds).not.toEqual({ x: 339, y: 156, width: 1243, height: 768 });
@@ -274,8 +232,6 @@ describe("WindowManager IPC — validateSender guard", () => {
       await handler(hostFrameEvent(), "chat");
       flushTween();
 
-      // The second window's request neither moved the first window nor
-      // cancelled its tween: the first still lands on the work geometry.
       expect(lastBounds(first)).toEqual({ x: 339, y: 156, width: 1243, height: 768 });
       expect(lastBounds(second).width).toBeLessThan(800);
     });

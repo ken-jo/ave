@@ -205,11 +205,9 @@ describe("SpotlightTour", () => {
     expect(card.getAttribute("data-step-index")).toBe("0");
   });
 
-  // U6 — when a Radix Dialog is already mounted, the tour.start broadcast
-  // is queued. The MutationObserver inside SpotlightTour flushes the
-  // queued scenario when every dialog closes.
+  // U6 — when a Radix Dialog is already mounted, the tour.start broadcast is queued. The MutationObserver inside
+  // SpotlightTour flushes the queued scenario when every dialog closes.
   it("U6 — queues tour.start when a modal dialog is already open", async () => {
-    // Mount a stand-in modal first.
     const modal = document.createElement("div");
     modal.setAttribute("role", "dialog");
     modal.setAttribute("data-state", "open");
@@ -221,8 +219,6 @@ describe("SpotlightTour", () => {
     fireStart("test-scenario");
     // Tour must NOT mount yet — a modal is open.
     expect(queryByTestId("spotlight-tour:card")).toBeNull();
-    // Close the modal. The MutationObserver should pick this up and
-    // flush the queued scenario.
     await act(async () => {
       modal.setAttribute("data-state", "closed");
       // Give the observer one microtask to fire.
@@ -233,9 +229,8 @@ describe("SpotlightTour", () => {
     document.body.removeChild(modal);
   });
 
-  // A question card is a turn waiting on the user exactly as an approval card
-  // is. A tour backdrop over it hides the thing that has to be answered before
-  // anything else can move, so the tour queues behind one too.
+  // A question card is a turn waiting on the user exactly as an approval card is. A tour backdrop over it hides the thing
+  // that has to be answered before anything else can move, so the tour queues behind one too.
   it("queues tour.start while a user-question card is waiting for an answer", async () => {
     const question = document.createElement("div");
     question.setAttribute("data-testid", TEST_IDS.questionOverlay);
@@ -255,9 +250,8 @@ describe("SpotlightTour", () => {
     expect((await findByTestId("spotlight-tour:card")).getAttribute("data-step-index")).toBe("0");
   });
 
-  // U8 — auto-advance on declared completion trigger. Typing in the
-  // composer matching the step's input selector should fire `handleNext`
-  // automatically without the user clicking 다음.
+  // U8 — auto-advance on declared completion trigger. Typing in the composer matching the step's input selector should fire
+  // `handleNext` automatically without the user clicking 다음.
   it("U8 — input trigger auto-advances when the user types in the anchor", async () => {
     const SCENARIO_WITH_INPUT_TRIGGER: TourScenario = {
       id: "input-scenario",
@@ -291,7 +285,6 @@ describe("SpotlightTour", () => {
     fireStart("input-scenario");
     let card = await findByTestId("spotlight-tour:card");
     expect(card.getAttribute("data-step-index")).toBe("0");
-    // Fire an input event on the anchor.
     act(() => {
       fireEvent.input(composer, { target: { value: "hello" } });
     });
@@ -339,15 +332,7 @@ describe("SpotlightTour", () => {
     }
   });
 
-  // 2026-05-19 — "스팟하이라이트 시퀀스가 2번 노출" regression. The Z chain
-  // side-effect + React 18 StrictMode dev double-mount + the modal-queue
-  // flush path can all deliver the same `tour.start` scenario id more
-  // than once. Without a same-scenario guard the second broadcast re-runs
-  // `setActiveScenarioId(id)`, which retriggers the
-  // `useEffect [activeScenarioId]` reset (stepIndex → 0, dismissedRef
-  // cleared), visibly re-mounting the tour at step 0 mid-flight. This
-  // spec advances the tour to step 1 and then re-fires the same scenario
-  // id; the tour must stay on step 1.
+  // Duplicate tour-start broadcasts must not reset an active scenario's step or dismissed state.
   it("ignores a duplicate tour.start for the already-active scenario", async () => {
     const { api, fireStart } = spotlightTourHarness();
     const { findByTestId } = render(
@@ -356,13 +341,11 @@ describe("SpotlightTour", () => {
     fireStart("test-scenario");
     let card = await findByTestId("spotlight-tour:card");
     expect(card.getAttribute("data-step-index")).toBe("0");
-    // Advance past step 0 so a regression to "reset on duplicate" is
-    // observable in the assertion below.
+    // Advance past step 0 so a regression to "reset on duplicate" is observable in the assertion below.
     fireEvent.click(await findByTestId("spotlight-tour:next"));
     card = await findByTestId("spotlight-tour:card");
     expect(card.getAttribute("data-step-index")).toBe("1");
-    // Duplicate broadcast for the same scenario must be a no-op — no
-    // re-mount, no step reset.
+    // Duplicate broadcast for the same scenario must be a no-op — no re-mount, no step reset.
     fireStart("test-scenario");
     card = await findByTestId("spotlight-tour:card");
     expect(card.getAttribute("data-step-index")).toBe("1");
@@ -408,17 +391,7 @@ function stubRect(el: HTMLElement, width: number, height: number): void {
     }) as DOMRect;
 }
 
-/**
- * The highlight is carried by the element a step is about, not by coordinates
- * copied from it. These specs hold that contract from the DOM: the mark lands
- * on the anchor and only the anchor, it follows the step, and it is gone the
- * moment the tour is.
- *
- * jsdom lays nothing out, so none of these assert pixels — a geometry
- * assertion here would pass without measuring anything. What they assert is
- * the mechanism: which node is marked, and whether the card is placed by the
- * shared popover against that node or by arithmetic of the tour's own.
- */
+/** jsdom cannot assert geometry; verify that only the live anchor carries the mark and that cleanup removes it. */
 describe("SpotlightTour anchoring", () => {
   const mountedAnchors: HTMLElement[] = [];
 
@@ -534,9 +507,8 @@ describe("SpotlightTour anchoring", () => {
     expect(marked()).toEqual([a]);
     a.remove();
     expect(marked()).toEqual([]);
-    // The ring is a layer of its own, so it has to be told: the tour watches
-    // the document and re-resolves the anchor, and with nothing left to point
-    // at the ring goes with it rather than floating where the anchor was.
+    // The ring is a layer of its own, so it has to be told: the tour watches the document and re-resolves the anchor, and with
+    // nothing left to point at the ring goes with it rather than floating where the anchor was.
     await waitFor(() => {
       expect(queryByTestId("spotlight-tour:ring")).toBeNull();
     });
@@ -568,24 +540,13 @@ describe("SpotlightTour anchoring", () => {
     fireStart("test-scenario");
     const card = await findByTestId("spotlight-tour:card");
     expect(marked()).toEqual([]);
-    // The anchorless card centres itself against the viewport, which is the
-    // one placement the tour still computes for itself.
+    // The anchorless card centres itself against the viewport, which is the one placement the tour still computes for itself.
     expect(card.style.position).toBe("fixed");
     expect(card.style.marginLeft).toBe("auto");
     expect(card.closest("[data-radix-popper-content-wrapper]")).toBeNull();
   });
 
-  // The reported bug: the card landed in the wrong place, and whether it
-  // landed right depended on how long the translated copy was — the old
-  // placement compared the space below the anchor against a hard-coded
-  // 200px card height, so any body longer than that guess put the card
-  // where it did not fit.
-  //
-  // The fix removes the guess: the card is the shared popover's content,
-  // anchored to the same element the mark is on, and Radix owns the flip.
-  // jsdom cannot measure that, so this asserts the mechanism — with copy far
-  // longer than the old constant the card is still the popover content of the
-  // marked anchor, and its placement is not computed by the tour.
+  // Use the shared anchored popover rather than guessed card height; jsdom verifies wiring, not collision measurements.
   it("keeps a long-copy card attached to its anchor rather than placing it by a height guess", async () => {
     const [anchor] = mountAnchors(["a"]);
     const longBody =
@@ -613,32 +574,21 @@ describe("SpotlightTour anchoring", () => {
     fireStart("long-copy-scenario");
     const card = await findByTestId("spotlight-tour:card");
     expect(card.textContent).toContain("앵커에 붙어 있어야 한다");
-    // The marked element and the popover's anchor are the same node — the
-    // component resolves it once and hands that node to both.
+    // The marked element and the popover's anchor are the same node — the component resolves it once and hands that node to
+    // both.
     expect(marked()).toEqual([anchor]);
-    // The card is the popover's content, so the popper positions it against
-    // the anchor on every layout change.
+    // The card is the popover's content, so the popper positions it against the anchor on every layout change.
     expect(card.closest("[data-radix-popper-content-wrapper]")).not.toBeNull();
-    // …and the tour computes no placement of its own for it: no viewport
-    // coordinates, and nothing derived from a card-height constant.
+    // …and the tour computes no placement of its own for it: no viewport coordinates, and nothing derived from a card-height
+    // constant.
     expect(card.style.position).toBe("");
     expect(card.style.top).toBe("");
     expect(card.style.bottom).toBe("");
   });
 });
 
-/**
- * The ring is a portaled layer placed against the anchor, not a shadow the
- * anchor paints. It has to be: the anchors the tour points at sit inside a
- * chain of `overflow: hidden` ancestors that clips a shadow drawn outside the
- * border box, under a route canvas whose `isolation: isolate` traps any
- * z-index put on the anchor below the tour's own backdrop.
- *
- * jsdom paints nothing, so what these specs hold is the wiring: a ring node
- * exists for an anchored step, it is sized from the anchor's own box, and it
- * neither takes a role that would read as a blocking dialog nor leaves the
- * anchor unusable.
- */
+/** Portal the ring beyond clipping/isolation and size it from the anchor; keep the anchor usable and avoid a
+ * blocking-dialog role. */
 describe("SpotlightTour ring", () => {
   const mounted: HTMLElement[] = [];
   let clicks = 0;
@@ -683,26 +633,23 @@ describe("SpotlightTour ring", () => {
     mountAnchor("a", { width: 300, height: 44 });
     const { findByTestId } = renderTour();
     const ring = await findByTestId("spotlight-tour:ring");
-    // The ring stands off the anchor's edge by a fixed inset on every side, so
-    // it reads as a highlight around the control rather than a border on it.
+    // The ring stands off the anchor's edge by a fixed inset on every side, so it reads as a highlight around the control
+    // rather than a border on it.
     const width = Number.parseFloat(ring.style.width);
     const height = Number.parseFloat(ring.style.height);
     expect(width).toBeGreaterThan(300);
     expect(height).toBeGreaterThan(44);
     expect(width - 300).toBe(height - 44);
-    // Placed by the popper against the live anchor — the tour computes no
-    // coordinates of its own for it.
+    // Placed by the popper against the live anchor — the tour computes no coordinates of its own for it.
     expect(ring.closest("[data-radix-popper-content-wrapper]")).not.toBeNull();
     expect(ring.style.top).toBe("");
     expect(ring.style.left).toBe("");
   });
 
-  // A control that grows mid-step — the composer gaining a line — must take
-  // the ring with it. jsdom ships no ResizeObserver, so the spec supplies a
-  // driveable one and fires it the way the browser would.
+  // A control that grows mid-step — the composer gaining a line — must take the ring with it. jsdom ships no ResizeObserver,
+  // so the spec supplies a driveable one and fires it the way the browser would.
   it("re-sizes the ring when the anchor grows", async () => {
-    // The popper observes elements of its own, so entries are keyed by target
-    // and only the anchor's are fired.
+    // The popper observes elements of its own, so entries are keyed by target and only the anchor's are fired.
     type ObserverCallback = (entries: Array<{ target: Element }>) => void;
     const observed: Array<{ target: Element; cb: ObserverCallback }> = [];
     class DriveableResizeObserver {
@@ -761,8 +708,7 @@ describe("SpotlightTour ring", () => {
     await findByTestId("spotlight-tour:ring");
     expect(anchor.getAttribute("data-tour-highlight")).toBe("true");
     expect(anchor.style.pointerEvents).toBe("");
-    // The stylesheet is the other half of that claim: a rule keyed on the mark
-    // used to disable the very control a step asks the user to type into.
+    // Marked tour anchors must remain editable.
     const styles = readStyles();
     expect(styles).not.toContain("[data-tour-highlight");
     expect(styles).toContain(".ave-tour-ring");
@@ -783,8 +729,7 @@ describe("SpotlightTour ring", () => {
     const styles = readStyles();
     const ringRule = ruleBody(styles, ".ave-tour-ring");
     expect(ringRule).toContain("100vmax hsl(var(--overlay) / var(--opacity-emphatic))");
-    // The dim reaches past the ring's own shadows, so it has to be the last
-    // layer or it would paint over them.
+    // The dim reaches past the ring's own shadows, so it has to be the last layer or it would paint over them.
     expect(ringRule.indexOf("--shadow-spotlight")).toBeLessThan(
       ringRule.indexOf("100vmax"),
     );
@@ -807,15 +752,14 @@ describe("SpotlightTour ring", () => {
     const card = await findByTestId("spotlight-tour:card");
     expect(card.className).toContain("ave-tour-card");
     const styles = readStyles();
-    // The popper copies its content's computed z-index onto the wrapper it
-    // positions, so these two numbers are what decide which layer wins.
+    // The popper copies its content's computed z-index onto the wrapper it positions, so these two numbers are what decide
+    // which layer wins.
     expect(ruleBody(styles, ".ave-tour-ring")).toContain("z-index: 51");
     expect(ruleBody(styles, ".ave-tour-card")).toContain("z-index: 52");
   });
 
-  // The ring covers the lit anchor, so it is what a press over the anchor
-  // lands on. It must hand that press to the anchor as focus and keep the tour
-  // open — the backdrop's dismiss stays for presses that miss.
+  // The ring covers the lit anchor, so it is what a press over the anchor lands on. It must hand that press to the anchor as
+  // focus and keep the tour open — the backdrop's dismiss stays for presses that miss.
   it("hands a press on the anchor to the anchor as focus, without dismissing", async () => {
     const anchor = mountAnchor("a");
     const { findByTestId, queryByTestId } = renderTour();
@@ -826,8 +770,7 @@ describe("SpotlightTour ring", () => {
     });
     expect(document.activeElement).toBe(anchor);
     expect(queryByTestId("spotlight-tour:card")).not.toBeNull();
-    // It never fires the control it covers — a tour must not press the button
-    // it is explaining.
+    // It never fires the control it covers — a tour must not press the button it is explaining.
     expect(clicks).toBe(0);
   });
 
@@ -845,8 +788,8 @@ describe("SpotlightTour ring", () => {
   });
 
   it("takes the pointer only over the anchor, leaving the dim to the backdrop", () => {
-    // A shadow is not hit-tested, so the ring's own box — the anchor plus its
-    // inset — is the whole of its hit area, however far the dim reaches.
+    // A shadow is not hit-tested, so the ring's own box — the anchor plus its inset — is the whole of its hit area, however
+    // far the dim reaches.
     expect(ruleBody(readStyles(), ".ave-tour-ring")).toContain("pointer-events: auto");
   });
 

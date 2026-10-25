@@ -1,22 +1,4 @@
-/**
- * Electron main for the MCP-App handshake e2e.
- *
- * Deliberately thin: every security-relevant piece below is the REAL production
- * module, so this test cannot pass against a reimplementation.
- *   - MCP_APP_CUSTOM_SCHEME             (main/mcp-app-protocol.ts)
- *   - installMcpAppPartitionPolicy      (main/html-preview-partition.ts)
- *       → installs the CDN gate, the `ave-mcp-app://` protocol handler that
- *         serves the sandbox-proxy document with its CSP response header, and
- *         the relay preload via session.setPreloads()
- *   - createMcpAppProxySession          (main/mcp-app-protocol.ts)
- *
- * Only the MCP server is stubbed: we hand the app HTML in directly instead of
- * doing a `resources/read`. Everything from the transport down is production.
- *
- * This is bundled INTO `dist/src/main/` so that `__dirname`-relative preload
- * resolution (`../mcp-app-preload.cjs`) lands on the real built preload, exactly
- * as it does in production.
- */
+// Use production protocol, partition policy and preload modules so security wiring is exercised directly.
 import { app, BrowserWindow, protocol } from "electron";
 import { readFileSync, writeFileSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -32,11 +14,9 @@ import { mcpAppPartitionName } from "../../../../src/shared/mcp-app-partition.js
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SERVER_ID = "e2e-mcp-server";
 
-// Must run before app.ready — same as production (early-boot-env.ts).
+// Register before app readiness, as production does.
 protocol.registerSchemesAsPrivileged([MCP_APP_CUSTOM_SCHEME]);
 
-// Surface every renderer/webview console line so the spec can assert on the
-// handshake markers emitted by host.ts and inner-app.ts.
 app.on("web-contents-created", (_e, contents) => {
   contents.on("console-message", (...args: unknown[]) => {
     const first = args[0] as { message?: string } | undefined;
@@ -51,12 +31,10 @@ app.on("web-contents-created", (_e, contents) => {
 });
 
 app.whenReady().then(() => {
-  // Real production path: CDN gate + protocol handler + relay preload.
   installMcpAppPartitionPolicy(SERVER_ID);
   const proxyUrl = createMcpAppProxySession(SERVER_ID);
 
-  // The "app HTML" an MCP server would have returned from resources/read. It is
-  // a stock ext-apps App (see inner-app.ts) — no Ave code, no shim.
+  // Serve the stock guest document without host transport shims.
   const innerJs = readFileSync(join(HERE, "mcp-app-handshake-inner.js"), "utf-8");
   const innerHtml = `<!doctype html><html><head><meta charset="utf-8"></head><body><script>${innerJs}</script></body></html>`;
 

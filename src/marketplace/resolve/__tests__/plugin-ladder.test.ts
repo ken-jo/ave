@@ -36,7 +36,6 @@ import { nodeFolders } from "../../__tests__/fixtures/folder-fs.js";
 import { gitAccess } from "../../sources/source-tree.js";
 import { UNREACHABLE_OFFICIAL } from "../../__tests__/fixtures/official.js";
 
-/** Every expected input the ladder hands the manifest rules, observed rather than replaced. */
 const checkedAgainst = vi.hoisted(() => [] as unknown[]);
 vi.mock("../manifest-rules.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../manifest-rules.js")>();
@@ -85,10 +84,9 @@ function descriptor(name: string, version: string, artifact: Record<string, unkn
 const marketIndex = (packages: unknown[]) => `${JSON.stringify({ schemaVersion: 2, name: "acme", displayName: "Acme", packages })}\n`;
 
 
-/** The source as the gate judges its catalog's downloads: no confirmations held. */
 const catalogOf = (url: NormalizedSourceUrl): CatalogSource => ({ id: "acme", label: "acme", url, acknowledged: new Set() });
 
-/** Archive URLs must be https (schema); the loopback fixture speaks http, so the pinned transport is handed the http URL. */
+/** Map declared HTTPS archives to the HTTP loopback fixture at the transport boundary. */
 const pinned = createPinnedFetch();
 const loopbackTransport: AddressCheckedFetch = (url, init, select) => pinned(url.replace(/^https:\/\/127\.0\.0\.1:/u, "http://127.0.0.1:"), init, select);
 
@@ -195,7 +193,6 @@ describe("plugin artifact ladder (design §6.2)", () => {
     );
   }
 
-  /** A marketplace with one plugin `alpha` at plugins/alpha whose descriptor declares `artifact`. */
   function market(repo: FixtureRepo, artifact: Record<string, unknown>, extra: Record<string, string> = {}, auth?: PluginAuthority): string {
     return repo.commit(
       {
@@ -214,7 +211,6 @@ describe("plugin artifact ladder (design §6.2)", () => {
     const zip = pluginZip("alpha", "1.0.0");
     server.file(releasePath, zip);
     const commit = market(repo, { release: { repo: "acme/alpha", sha256: sha(zip) } });
-    // Keep catalog transport and the release download together in one real case.
     const { gate, syncer } = await open(name, "custom", git.runner);
     const plan = planPluginInstall(await row(syncer));
     expect(plan).toMatchObject({ snapshotCommit: commit, versionCommit: commit, packagePath: "plugins/alpha", version: "1.0.0" });
@@ -241,13 +237,11 @@ describe("plugin artifact ladder (design §6.2)", () => {
     await ladder(syncer, gate, plan, false, { artifacts });
     expect(readdirSync(kept)).toEqual([`${sha(zip)}.zip`]);
 
-    // Offline: the release answers 404, and the kept bytes still carry the pin.
     server.file(releasePath, null);
     const again = await ladder(syncer, gate, plan, false, { artifacts });
     expect(again.rungs).toEqual([{ rung: "release", outcome: "used" }]);
     expect(again.zipBuffer.equals(zip)).toBe(true);
     expect(again.artifactSha256).toBe(sha(zip));
-    // Kept bytes carry the declared transport: this release comes from the http source's own origin.
     expect(again.unencrypted).toBe(true);
     expect(server.seen.some((request) => request.path.startsWith(`/${name}/`))).toBe(false);
   });
@@ -297,7 +291,6 @@ describe("plugin artifact ladder (design §6.2)", () => {
       { rung: "archive", outcome: "skipped", reason: "NOT_DECLARED" },
       { rung: "tree", outcome: "used" },
     ]);
-    // The descriptor is not installed, and the digest is the §6.4 formula over what is.
     const expected = createHash("sha256")
       .update(`100644 ${sha(ENTRY_JS)} dist/index.js\n100644 ${sha(pluginJson("alpha", "1.0.0"))} plugin.json\n`)
       .digest("hex");
@@ -309,7 +302,6 @@ describe("plugin artifact ladder (design §6.2)", () => {
     const zip = pluginZip("alpha", "1.0.0");
     server.file("/archives/alpha-1.0.0.zip", zip);
     const httpsOrigin = server.origin.replace("http:", "https:");
-    // The declared https URL answers with a redirect to the same bytes over plain http.
     const redirecting: AddressCheckedFetch = async (url, init, select) =>
       url === `${httpsOrigin}/moved/alpha-1.0.0.zip`
         ? new Response(null, { status: 302, headers: { location: `${server.origin}/archives/alpha-1.0.0.zip` } })
@@ -327,7 +319,6 @@ describe("plugin artifact ladder (design §6.2)", () => {
     expect(redirected.artifactSha256).toBe(sha(zip));
     expect(redirected.unencrypted).toBe(true);
 
-    // The same bytes with no http hop are not labelled.
     const direct = await run(`${httpsOrigin}/archives/alpha-1.0.0.zip`);
     expect(direct.rung).toBe("archive");
     expect(direct.unencrypted).toBe(false);
@@ -364,7 +355,6 @@ describe("plugin artifact ladder (design §6.2)", () => {
       return zip.toBuffer();
     }
 
-    /** A marketplace whose `alpha` publishes a process entry: no Windows, 0.14.0, the given pins. */
     function processMarket(repo: FixtureRepo, artifact: Record<string, unknown>, platforms: string[], extra: Record<string, string> = {}): void {
       const described = { schemaVersion: 2, kind: "plugin", name: "alpha", version: "1.0.0", minAppVersion: "0.14.0", hostProtocol: "3", platforms, payload: { authority: processAuthority, artifact } };
       repo.commit({
@@ -374,7 +364,6 @@ describe("plugin artifact ladder (design §6.2)", () => {
       }, "publish alpha");
     }
 
-    /** The row on an app that can select the version wherever this suite runs. */
     async function processRow(syncer: SourceSyncer, origin: "custom" | "direct" = "custom"): Promise<CatalogRow> {
       const result = await syncer.sync("acme");
       expect(result, JSON.stringify(result)).toMatchObject({ status: "ok" });
@@ -431,14 +420,12 @@ describe("plugin artifact ladder (design §6.2)", () => {
         schemaVersion: 2, kind: "plugin", name: "alpha", version, minAppVersion: "0.14.0", hostProtocol: "3", platforms: ["darwin", "linux"],
         payload: { authority: processAuthority, artifact: { release: { repo: "acme/alpha", sha256: pin } } },
       })}\n`;
-      // 1.0.0 is an entry: a direct source installs it from its pinned release as before.
       server.file(releaseOf("1.0.0"), entryZip);
       repo.commit({ "ave-package.json": directDescriptor("1.0.0", sha(entryZip)) }, "entry");
       const { gate, syncer } = await open(name, "direct");
       const first = await ladder(syncer, gate, planPluginInstall(await processRow(syncer, "direct")), true);
       expect(first.rungs).toEqual([{ rung: "release", outcome: "used" }]);
 
-      // The update to a process entry is refused where the staged manifest shows it.
       const updated = new AdmZip(zip);
       updated.updateFile("plugin.json", Buffer.from(processJson().replace('"version": "1.0.0"', '"version": "2.0.0"')));
       const updatedZip = updated.toBuffer();
@@ -459,7 +446,6 @@ describe("plugin artifact ladder (design §6.2)", () => {
 
     it("stops with process-entry-requires-pinned-artifact when only the tree rung can reach it", async () => {
       const { repo, name } = fixture();
-      // The release is declared without a pin, so the ladder skips it and falls to the tree.
       processMarket(repo, { release: { repo: "acme/alpha" } }, ["darwin", "linux"], {
         "plugins/alpha/plugin.json": processJson("./dist/plugin"),
         "plugins/alpha/dist/plugin": "#!/bin/sh\nexit 0\n",
@@ -501,7 +487,6 @@ describe("plugin artifact ladder (design §6.2)", () => {
 
   it("stops with PACKAGE_COMPAT_UNDECLARED when the staged plugin.json does not declare requires.minAppVersion", async () => {
     const { repo, name } = fixture();
-    // The schema cannot express the broken manifest this test stages.
     const undeclared = pluginZip("alpha", "1.0.0", authority({ requires: {} as unknown as PluginAuthority["requires"] }));
     server.file(releasePath, undeclared);
     market(repo, { release: { repo: "acme/alpha", sha256: sha(undeclared) } });
@@ -583,7 +568,7 @@ describe("plugin artifact ladder (design §6.2)", () => {
     const after = await ladder(syncer, gate, plan);
     expect(plan.versionCommit).toBe(first);
     expect(after.artifactSha256).toBe(before.artifactSha256);
-    // The zip carries entry times; the content is what must not move.
+    // Ignore archive timestamp variation; payload bytes must remain unchanged.
     expect(new AdmZip(after.zipBuffer).readAsText("dist/index.js")).toBe(ENTRY_JS);
   });
 
@@ -610,7 +595,6 @@ describe("plugin artifact ladder (design §6.2)", () => {
                 commit: base,
                 minAppVersion: "0.14.0",
                 hostProtocol: "3",
-                // The index widens what the descriptor at `base` declares.
                 authority: authority({ capabilities: ["notes:read", "notes:write"] }),
                 artifact: { tree: "plugins/alpha" },
                 publishedAt: AT,
@@ -700,7 +684,7 @@ describe("plugin artifact ladder (design §6.2)", () => {
       ["https://api.github.com/repos/acme/alpha/releases/tags/v1.0.0", "application/vnd.github+json", "Bearer ghp_test"],
       ["https://api.github.com/repos/acme/alpha/releases/assets/42", "application/octet-stream", "Bearer ghp_test"],
     ]);
-    // Security review P2: the api.github.com request is governed by the repository's rules.
+    // Release API requests must still obey the source repository policy.
     expect(checked).toEqual(["https://github.com/acme/alpha/releases/download/v1.0.0/alpha-1.0.0.zip"]);
     void gate;
   });
@@ -736,7 +720,6 @@ describe("plugin artifact ladder (design §6.2)", () => {
     expect(hidden).toMatchObject({ code: "SOURCE_AUTH_REQUIRED" });
     expect((hidden as LadderError).rungs[0]).toMatchObject({ rung: "release", outcome: "failed", code: "SOURCE_AUTH_REQUIRED" });
 
-    // A source that signs in with no token: a 404 is a missing asset.
     const missing = await run(false);
     expect(missing).toMatchObject({ code: "NO_INSTALLABLE_ARTIFACT" });
     expect((missing as LadderError).rungs[0]).toMatchObject({ rung: "release", outcome: "failed", code: "SOURCE_UNREACHABLE" });
@@ -794,7 +777,6 @@ describe("plugin artifact ladder (design §6.2)", () => {
     expect(staged.rungs).toEqual([{ rung: "release", outcome: "used" }]);
     expect(seen).toEqual(["https://git.acme.example/acme/alpha/releases/download/v1.0.0/alpha-1.0.0.zip"]);
 
-    // The schema already refuses a leading "." segment; the ladder refuses the rest.
     for (const bad of ["acme/..", "acme/."]) {
       const error = await run(await planFor(bad)).catch((caught: unknown) => caught);
       expect(error).toBeInstanceOf(LadderError);

@@ -1,6 +1,3 @@
-/**
- * permissions-store unit tests — readPermissionsFile parse/error handling
- */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const { atomicWriteMock, readFileMock } = vi.hoisted(() => ({
@@ -13,7 +10,8 @@ vi.mock("../../lib/atomic-file.js", async () => ({
   writeUtf8FileAtomicSync: atomicWriteMock,
 }));
 
-vi.mock("../../lib/with-file-lock.js", () => ({
+vi.mock("../../lib/with-file-lock.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../lib/with-file-lock.js")>()),
   withFileLock: async <T>(_filePath: string, fn: () => Promise<T>): Promise<T> => fn(),
 }));
 
@@ -73,9 +71,7 @@ describe("readPermissionsFile", () => {
   });
 
   it("preserves P2 grant tier on a version:1 file (additive field, no version bump)", async () => {
-    // P2 keeps version:1 — `tier` is an additive optional field. A v1 file with
-    // tiered allow rules must load unchanged (bumping the version would make
-    // readPermissionsFile reject it and lose every saved rule).
+    // keeps version:1 — `tier` is an additive optional field. A v1 file with tiered allow rules must load unchanged (bumping the version would make readPermissionsFile reject it and lose every saved rule).
     const tiered = {
       version: 1,
       rules: [

@@ -1827,10 +1827,10 @@ auto-resolve. 검증 실패 시 일반 write 규칙으로 폴백 (sound-by-const
 
 **선택 surface:** `/permission reviewer mode disabled|rule|llm|strict`,
 `/permission reviewer fallback deny|rule`,
-`/permission reviewer interactive off|low`. Reviewer provider/model 은
-별도 slash surface 가 아니며 지능 설정의 active LLM provider/model 을 따른다.
-`permissions.reviewer.provider/model` 은 이전 버전 호환용 persisted field 이고
-사용자-facing SOT 가 아니다. 변경은 settings.json 에 persist + selective
+`/permission reviewer interactive off|low`. Reviewer 모델은 별도 slash surface 가
+아니며 권한 설정의 `permissions.judge.model` 을 따르고, 비워 두면 지능 설정의 active
+LLM provider/model 을 따른다. 이전 `permissions.reviewer.provider/model` 키는 로드 시
+버려진다. 변경은 settings.json 에 persist + selective
 verdict-cache invalidation.
 
 **Cost optimization:** `~/.ave/permissions/reviewer-cache.jsonl` —
@@ -2017,37 +2017,143 @@ Layer 0–8 의 permission policy 는 _어떤 도구 호출을 허용/거부_ �
 
 - **백엔드**: macOS 는 Seatbelt 프로파일, Linux 는 bwrap+seccomp — 둘 다
   capability SOT 에서 단일 `kind: "asrt"` 로 보고된다.
+- **Linux 중첩 namespace 금지 (ASRT 0.0.80)**: 샌드박스 안의 명령은 자기
+  user namespace 도, mount namespace 도 만들 수 없다. seccomp helper 가 그
+  호출을 막는다. helper 가 체인에 없으면 bubblewrap 0.8 이상에
+  `--disable-userns` 를 넘긴다. worker control socket 을 하나라도 등록하면
+  `allowAllUnixSockets` 가 켜지므로 helper 는 그때마다 체인에서 빠진다. 그래서
+  그런 방식으로 스스로를 격리하는 것은 Ave 샌드박스 안에서 실패한다:
+  Chromium 이나 Electron 의 namespace 샌드박스, rootless podman 이나 buildah,
+  중첩 bubblewrap, `unshare -U`. plugin worker 는 영향받지 않는다.
+  `ELECTRON_RUN_AS_NODE` 로 Node 로 실행되어 Chromium 샌드박스를 띄우지 않기
+  때문이다. Ave 는 `allowNestedUserNamespaces` 를 켜지 않는다. wrap
+  hardener(`linux-sandbox-wrap.ts`)는 arity 표에 있는 bubblewrap 옵션만
+  받는다. 설치된 wrapper 에 표에 없는 옵션이 생기면
+  `linux-sandbox-wrap.test.ts` 가 실패한다.
+- **Windows 목록 순위 (ASRT 0.0.80)**: ASRT 는 `srt-win` 에 넘기기 전에
+  파일시스템 목록의 순위를 JavaScript 에서 매긴다. `denyWrite` 경로 또는 그
+  아래의 write grant 는 read grant 로 넘어가고, `credentials.files` 항목 또는
+  그 아래의 grant 는 빠진다. 그래서 Ave 의 write floor 경로 아래에 있는
+  workspace 나 plugin root 는 macOS·Linux 처럼 Windows 에서도 읽기 전용이다.
+  `windows-sandbox-logic.test.ts` 가 이 순위를 고정한다. NSIS drift guard 는
+  `srt-win` 의 Rust 소스만 본다.
 - **Spawn 모델**: ASRT 는 워크로드를 직접 spawn 하지 않는다. `wrapToolCommand`
   가 OS-confined wrapper 의 `{ argv, env }` 를 반환하고 host(`tools/shell-tools.ts`)
   가 `shell: false` 로 직접 spawn 한다.
 - **Filesystem jail (per-wrap)**: write-jail 은 owner plugin sandbox root ∪
   허용 디렉토리로 canonicalize 한 union (bare cwd 아님). read-jail 은
   `denyRead: [$HOME]` 후 cwd + write paths 만 re-allow 한다.
-- **Network floor (shared, deny-by-default)**: ASRT 의 loopback proxy network
-  floor 는 _모듈-레벨 SHARED config_ 를 읽으므로, egress 는
-  boot 에서 `strictAllowlist: true` + 모든 로드된 plugin manifest 의
-  `networkAccess.allowedDomains` UNION 을 SHARED config 로 설정해 강제한다
-  (loopback proxy 가 strict-union 바닥). 이는 _per-worker_ 격리가 아니라
-  UNION allow-list 다 — sandboxed process 는 _임의의_ 로드된 plugin 이 선언한
-  도메인에 도달할 수 있다. Ave 1st-party plugin 신뢰 모델 하에서 허용되며,
-  true per-worker 격리는 per-process proxy 를 갖춘 future ASRT 가 필요하다.
-- **Gate**: `osToolSandbox` feature flag (Settings → 권한) 또는
-  `AVE_SANDBOX_ENABLED=1`. `osToolSandbox` 기본값은 **전 플랫폼 OFF(opt-in)**다.
-  [settings-defaults.ts의 결정 주석](../../../src/data/settings-defaults.ts#L237-L254)에
-  따라 호스트, 워커, 플러그인 자식 프로세스는 이 설정이 꺼져 있으면 OS 샌드박스
-  없이 실행되고, 켜져 있으면 같은 활성화 정책을 따른다. Settings 토글 또는
-  명시적 환경 변수로 활성화한다.
+- **Network (호출별 결정, deny-by-default)**: ASRT 는 `strictAllowlist: false` +
+  빈 `allowedDomains` 로 돌고, ask callback(`permissions/egress-ask.ts`)이 모든
+  연결을 그 연결을 연 호출 기준으로 결정한다. 호출의 신원은 proxy username 이
+  아니라 호출별 proxy listener(macOS 는 그 wrap 의 Seatbelt 프로필만 닿는
+  loopback 포트, Linux 는 그 bwrap 에 바인드한 소켓 경로)다. plugin 워커는 자기
+  익스텐션이 선언한 도메인과 모델 엔드포인트만, 셸 호출은 허용(grant)된 호스트만
+  닿고 나머지는 승인 카드로 묻는다(한 번 / 이 대화 / 이 워크스페이스 / 항상).
+  작업 공간 터미널은 탭을 소유한 창의 배너에서 묻는다(한 번 / 이 탭 / 항상).
+  터미널의 "한 번"은 해당 연결만 허용하고, "이 탭"은 셸이 종료될 때까지 유지되며
+  같은 탭에서 셸을 다시 띄워도 이전 grant 는 끝난다. "이 워크스페이스" 범위는 없다.
+  link-local·메타데이터·unspecified 주소는 묻지 않고 거절하고, loopback·
+  `*.localhost`·사설망(RFC1918/CGNAT/ULA)은 경고와 함께 최대 "이 대화"까지만
+  허용한다(이름은 해석된 주소로도 판정). 콜백은 두 단계로 묻는다(patch part 5).
+  이름 단계는 해석·경로 조회보다 먼저라, 이름만으로 정해지는 거절(귀속 실패,
+  목록 밖 워커, 묻기 꺼짐, 물을 곳 없음, 예약 주소 리터럴)은 DNS 질의도
+  프록시 조회도 없이 끝난다. 승인 카드(터미널은 탭 배너)도 이름으로 띄우고,
+  리터럴 주소나 로컬망 이름으로 분류할 수 없으면 임시로 `public` 으로 본다.
+  그 답은 grant 로 쓰지 않고 보류하며, grant 는 두 단계 모두 출처(셸/터미널)와 목적지 네트워크 분류
+  (`public`/`local`/`unverified`)별로 맞춘다. 한 번·대화·탭·워크스페이스·항상
+  모든 범위에서 일치 검사·목록·사용 추적·취소가 두 필드를 유지한다. 설정에는
+  출처를 표시하고, 취소할 때 네트워크 분류를 보존한다.
+  버전 1 저장 파일에서 `network` 가 없는 기존 grant 는 `public` 에만 적용하며,
+  유효하게 기록된 분류는 그대로 사용하고 명시한 분류가 잘못되면 거절한다.
+  영구 grant (이 워크스페이스 / 항상)는 `public` 에만 적용할 수 있고, 분류를 기록해도 `local`·`unverified`
+  에 적용할 수는 없다. 이름 단계 허용 뒤에만 이름을 한 번 해석해 그 주소로 고정(pin)하고
+  해석 단계에서 다시 판정한다(카드가 보여준 분류와 실제 분류가 다르면 카드를 다시
+  띄운다). upstream proxy 에는 이름 대신 주소로 CONNECT 한다.
+  이 호스트가 해석하지 못한 이름과, upstream 을 거치는 이름 기반 평문 HTTP
+  (absolute-form 대상이라 upstream 이 이름을 해석하므로 pin 불가)는 원격 upstream 이면 이름 그대로 넘기고
+  `unverified`(최대 "이 대화")로 묻고, 이 호스트의 upstream(cntlm/px 등)이면
+  신뢰 설정 `upstreamProxy.resolvesNames` 가 없는 한 사유와 함께 거절한다.
+  상위 프록시의 출처(owner 결정 2026-10-20)는 main 소유 설정 `upstreamProxy`
+  (설정 → 권한 → OS 도구 샌드박스, permissions `upstreamProxySet` 채널로만
+  기록, `settings:update` 는 거절, 수동 자격 증명은 비밀 저장소에 프록시의
+  스킴·정규화된 호스트·실제 포트에 묶어 두어 그곳에만 보내고, 그중 하나가 바뀌면
+  알림과 함께 삭제)다. 명시한 포트는 URL 정규화 전에 보존하고, 생략한 경우에만
+  HTTP 는 1080, HTTPS 는 443 을 쓴다. 스킴을 생략하면 HTTP 다. 기본값
+  "시스템 설정 사용"은 앱 프로세스의 `HTTPS_PROXY`/`HTTP_PROXY`/`ALL_PROXY`/
+  `NO_PROXY`(대소문자 모두, 소문자 우선)가 있으면 그것을, 없으면
+  `session.resolveProxy`(OS 설정·PAC·WPAD)를 따른다. `NO_PROXY` 와 수동 우회 목록은
+  [현재 curl master `lib/proxy.c`](https://github.com/curl/curl/blob/master/lib/proxy.c)를
+  따라 도메인·IP 리터럴·CIDR 범위를 쉼표로 구분하며, 항목 앞뒤의 스페이스·탭은
+  허용하지만 공백만으로 항목을 구분하지 않는다. 이전 버전은 다르다.
+  [curl 8.7.1 `lib/noproxy.c`](https://github.com/curl/curl/blob/curl-8_7_1/lib/noproxy.c)는
+  공백으로 구분한 항목을 허용하고, IPv6 CIDR 의 `/0` 과 바이트 중간에서 끝나는
+  접두사 일치 처리도 다르다. 도메인 앞의 점 하나는 무시하며
+  도메인과 그 하위 도메인이 일치한다. `*.` 는 와일드카드가 아니며, 전체 값이
+  앞뒤 공백 없이 정확히 `*` 일 때만 모두 우회한다(긴 목록 속 `*` 항목은 해당 없음).
+  `host:port` 는 지원하지 않고 IPv6 항목에는 대괄호를 쓰지 않는다. 이 호스트 자신의 목적지를
+  직접 연결하는 정책은 이 목록과 별도로 유지된다. PAC 는 목적지마다 다른
+  목록을 줄 수 있으므로 carried patch part 4 가 정적 `parentProxy` 대신 목적지별
+  route hook(`SandboxManager.setParentProxyRouter`, 구현은
+  `src/permissions/upstream-proxy.ts`)을 묻고, 각 경로를 위 규칙대로 판정한 뒤
+  순서대로 시도한다. 다음 경로로 넘어가는 것은 연결 실패뿐이며, upstream 의
+  모든 HTTP 응답은 non-2xx 도 포함해 최종 답이다. non-2xx CONNECT 응답은
+  "upstream proxy refused the connection (HTTP <status>)" 로 거절하고, 평문 HTTP
+  응답은 407 을 제외하고 그대로 전달한다. 같은 경로의 다음 주소나 다음 프록시,
+  DIRECT 로 재시도하지 않는다. 407 은 "upstream proxy requires authentication" 으로
+  거절하고(NTLM/Kerberos 는 cntlm·px 같은 로컬 도우미 + `resolvesNames`; 이 신뢰
+  설정은 설정이나 환경 변수로 지정한 프록시에만 적용되고 PAC·WPAD 답의 프록시에는
+  적용되지 않는다), `resolveProxy` 는 동시에 최대 4 개만 평가하며,
+  SOCKS 항목은 `egress-route` 감사 행과 함께 건너뛴다. 답은 (scheme, host,
+  port)별 45 초 캐시다. 상위 프록시 설정 변경 시 경로 세대를 올리고 캐시를 비우며 열린
+  샌드박스 연결(직접 연결 포함)을 모두 닫는다. 진행 중인 승인·DNS·경로 조회는
+  세대를 캡처하고, 비동기 프록시 준비 뒤를 포함해 직접 또는 상위 연결을 열기
+  직전에 다시 확인한다. 세대가 바뀌면 현재 설정으로 경로를 다시 계획하며,
+  허용한 목적지 분류가 같을 때만 답을 재사용하고 분류가 바뀌면 다시 묻는다.
+  거절은 최종 답이며, 설정이 계속 바뀌면 연결을 거절한다. 재시작 없이 적용되고
+  이전 설정으로 열린 터널이 남지 않는다. 샌드박스
+  프로세스의 환경에는 Ave 의 호출별 프록시만 보이고 상위 프록시나 자격 증명은
+  들어가지 않는다.
+  macOS 프로필의 각 규칙은 같은 부모 디렉터리를 가진 `subpath`·`literal` 필터를
+  부모마다 정규식 하나로 접는다. 정규식은 같은 경로에 맞고, 감쌀 때마다 프로필을
+  다시 컴파일하는 sandbox-exec 는 몇 배 빨리 컴파일한다.
+  `patches/@anthropic-ai%2Fsandbox-runtime@0.0.80.patch` 를 재생성할 때는
+  첫 `diff --git` 앞의 설명을 보관하고
+  `bun patch @anthropic-ai/sandbox-runtime@0.0.80` 을 실행한다. 설치된 패키지의
+  `dist` 를 수정해 checkout 밖에 비교용 사본을 남긴 뒤
+  `bun patch --commit node_modules/@anthropic-ai/sandbox-runtime` 을 실행한다.
+  갱신한 설명을 생성된 diff 앞에 복원하고 `bun install --lockfile-only` 로 최종
+  패치의 lockfile 메타데이터를 갱신하거나 확인한다. 수정한 manifest·lockfile·패치를
+  포함한 일회용 clean checkout 에서 `bun install --frozen-lockfile` 을 실행한 다음
+  `diff -r <saved-dist> node_modules/@anthropic-ai/sandbox-runtime/dist` 에 차이가
+  없는지 확인해 수정한 배포 파일의 재현성을 검증한다.
+  Linux 는 lane 소켓을 비공개 디렉터리에 두고 wrap 마다 tmpfs 로 가린 뒤 자기
+  소켓만 다시 바인드한다.
+- **Gate**: 두 범위가 하나의 ASRT 런타임을 공유한다. 셸 샌드박스
+  (`osToolSandbox`, Settings → 권한, 또는 `AVE_SANDBOX_ENABLED=1`)는 호스트 셸
+  (bash·PowerShell 도구, 작업 공간 터미널)을, 익스텐션 격리
+  (`pluginWorkerConfinement`, 또는 `AVE_PLUGIN_WORKER_CONFINEMENT=1`)는 플러그인
+  워커·플러그인 자식 프로세스·플러그인 훅·MCP stdio 서버를 격리한다. 둘 다 기본값은
+  **전 플랫폼 OFF(opt-in)**다
+  ([settings-defaults.ts의 결정 주석](../../../src/data/settings-defaults.ts#L216-L262)).
+  어느 한쪽이 켜지면 ASRT 가 초기화되고, 각 spawn 경로는 자기 범위만 읽는다.
+  설정 파일에 `pluginWorkerConfinement` 불리언이 없으면(분리 이전 빌드가 쓴 파일, 다운그레이드
+  후 재업그레이드 포함) 로드할 때 저장된 `osToolSandbox` 에서 유도한다. `osToolSandbox: true`
+  였던 설치는 두 범위가 모두 켜지고, 나머지 설치는 둘 다 꺼진 상태로 남는다.
   `hostClassifiesRisk`는 **전 플랫폼 default ON**이다. 파일시스템 격리가 실제로
   활성화되지 않으면 플러그인 읽기의 승인 생략 대신 실행 전 승인을 요청한다.
   활성 불가 시 동작은 on-signal 출처로 갈린다:
-  **EXPLICIT** (`AVE_SANDBOX_ENABLED=1`, 명시적 power-user/CI 강제) +
+  **EXPLICIT** (`AVE_SANDBOX_ENABLED=1` 또는 `AVE_PLUGIN_WORKER_CONFINEMENT=1`, 명시적 power-user/CI 강제) +
   mac/linux 의존성 누락 또는 초기화 실패 → boot **fail-closed abort** (no-fallback 보존);
   **settings-on** (env 없이 토글로 ON) → **graceful degrade**
   (loud `log.warn` + `isAsrtSandboxActive()=false` + boot 계속, non-bricking).
   Windows (srt-win 미설치) 는 explicit 이어도 항상 degrade (first-run brick
   방지). 결정은 `src/boot/steps/sandbox-gate.ts` `decideSandboxGate(
-  skip|activate|degrade|abort)` 한 곳. host-classify가 켜져 있고 실제
-  `sandboxActive`가 꺼져 있으면 interlock 경고를 표시한다(degrade 경로 포함).
+  skip|activate|degrade|abort)` 한 곳. host-classify가 켜져 있는데 익스텐션 격리가 실제로
+  활성화되지 않았으면(`sandboxActive && workerRequested` 가 거짓, degrade 경로와 셸 범위만
+  켜진 경우 포함) interlock 경고를 표시한다. 잔여 위험이 플러그인 코드이기 때문이다.
+  `AVE_SANDBOX_ENABLED=1` 만 설정하고 익스텐션 격리를 요청하지 않으면 익스텐션 프로세스가
+  격리되지 않는다는 경고도 기록한다.
   Gate는 호스트 부팅 시
   _정확히 한 번_ 결정되며 runtime 변경 채널은 없다.
 - **Read-relaxation ↔ plugin effect-boundary FILESYSTEM-CONTAINMENT 커플링
@@ -2059,7 +2165,7 @@ Layer 0–8 의 permission policy 는 _어떤 도구 호출을 허용/거부_ �
   의존하므로, 해당 `Tool.workerId` 가 host-owned `spawnWorker` 경로로
   ASRT-wrapped 상태일 때만 허용된다. macOS/Linux plugin workers 는
   ASRT-wrapped UDS path 를 쓰고, Windows plugin workers 는 UDS 대신 TCP
-  control channel 을 유지하되 ASRT 0.0.76 의 공개
+  control channel 을 유지하되 ASRT 0.0.80 의 공개
   `grantWindowsAcl`/`revokeWindowsAcl` primitive 를 worker 별 holder PID 로
   적용한 뒤 srt-win wrapped command 로 실행한다. ordinary plugin
   tools/degraded/off/egress-only synthetic substrate 에서는 known-safe
@@ -2075,7 +2181,7 @@ Layer 0–8 의 permission policy 는 _어떤 도구 호출을 허용/거부_ �
   activation 성공/degrade 율 모니터링용. **Rollback**: Settings → 권한 'OS 도구
   샌드박스' 토글(per-host opt-out) + `hostClassifiesRisk` 토글(relaxation off).
 - **Windows (srt-win)**: 동일 gate 에 합류한다 (`AVE_SANDBOX_WINDOWS` 별도
-  opt-in 제거). ASRT 0.0.76 srt-win 은 dedicated `srt-sandbox` user ACL backend
+  opt-in 제거). ASRT 0.0.80 srt-win 은 dedicated `srt-sandbox` user ACL backend
   로 filesystem rules 를 적용하고 WFP + loopback proxy 로 egress 를 제한하는
   **filesystem+network partial** 샌드박스다. process 격리는 제공하지 않는다.
   플러그인 사이의 격리도 제공하지 않는다: 모든 confined process (모든 플러그인의
@@ -2530,8 +2636,9 @@ ThemeProvider.tsx (renderer)
   host context 를 만든다. 그래서 앱은 한 테마의 shell 과 다른 테마의 토큰을 함께 받지 않는다.
 - HTML preview 는 스냅샷이다 (§6.6.5).
 
-**sandboxed preload**: sandboxed frame 에서 도는 preload 는 `electron` 과 Node 모듈
-`events`, `timers`, `url` 만 require 할 수 있다. 그런 frame 은 플로팅 독 창, plugin webview,
+**sandboxed preload**: sandboxed frame 에서 도는 preload 는 `electron`(과 그 하위 경로
+`electron/renderer`, `electron/common`)만 require 할 수 있고, Electron 45 부터는 `Buffer`,
+`setImmediate`, `clearImmediate` 전역 없이 돈다. 그런 frame 은 플로팅 독 창, plugin webview,
 MCP 앱 webview 다. 독의 plugin shell / preload URL 처럼 디스크에서 경로를 풀어야 하는 값은
 main 이 풀어 창 인자(`additionalArguments`, `src/shared/floating-dock-args.ts`)로 넘긴다.
 preload 마다 파일과 sandbox 모드는 표 하나(`src/shared/preload-bundles.json`)에서 온다.
@@ -3154,14 +3261,11 @@ Plugin 도구/워커 spawn 도 §6.3.9 의 OS 실행 샌드박스(ASRT) 경로�
 샌드박스가 켜지면(gate, DEFAULT-OFF) host 가 spawn 하는 child argv 를 ASRT
 wrapper(macOS Seatbelt / Linux bwrap)로 감싼다.
 
-- **Network egress floor**: deny-by-default. egress 허용 도메인은 boot 에서
-  로드된 _모든_ plugin manifest 의 `networkAccess.allowedDomains` UNION 으로
-  계산되어 ASRT SHARED config 에 `strictAllowlist: true` 와 함께 설정된다
-  (loopback proxy strict-union 바닥). manifest 에 도메인을 선언하지 않은
-  plugin 의 sandboxed 자식은 네트워크 egress 가 없다. 단 이는 _per-worker_
-  격리가 아니라 UNION 이므로, sandboxed 자식은 임의의 로드된 plugin 이 선언한
-  도메인에 도달 가능하다 (Ave 1st-party 신뢰 모델 하에서 허용; per-worker
-  격리는 future ASRT 필요).
+- **Network egress**: deny-by-default. 각 plugin 워커는 자기 익스텐션 manifest 의
+  `networkAccess.allowedDomains` 와 설정된 모델 엔드포인트에만 닿는다(다른
+  익스텐션의 도메인이나 셸 허용은 닿지 않는다). 워커의 신원은 그 워커의 proxy
+  listener 로 정해지고, manifest 에 도메인을 선언하지 않은 plugin 의 sandboxed
+  자식은 모델 엔드포인트 외 egress 가 없다.
 - **Windows (srt-win, fs+network partial)**: §6.3.9 와 동일 — 동일 gate,
   fs+network partial capability, win32-not-ready 시 non-bricking 신호
   (hard-throw 안 함).

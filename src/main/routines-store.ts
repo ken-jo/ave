@@ -1,16 +1,4 @@
-/**
- * RoutinesStore v2 — persistent backing for the `routine_schedule` LLM tool.
- *
- * Persists routines to `~/.ave/routine/routines.json`. Mutations are serialized
- * by `withInProcessFileQueue`, which orders read-modify-write against other
- * writers IN THIS PROCESS only -- see its docstring. (The mirrored store this
- * comment used to name, `RemindersStore`, is not in the tree.) Concurrent add/dismiss operations
- * cannot corrupt the file.
- *
- * The store is intentionally pure — it does not own a timer. The
- * {@link RoutinesScheduler} (separate module) drives the polling loop and
- * fires execution events when a scheduled routine's next-fire time arrives.
- */
+// Serialize read-modify-write operations within this process only; the scheduler owns timers and dispatch.
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { isValidCronExpression } from "../routines/cron-evaluator.js";
@@ -21,8 +9,7 @@ import { isStringArray } from "../shared/is-record.js";
 import { isValidPluginId } from "../plugins/public-contract.js";
 const log = createLogger("ave");
 
-// Re-export from shared so callers that import from routines-store continue
-// to work unchanged, while the renderer imports from shared/ (no Node built-ins).
+// Re-export from shared so callers that import from routines-store continue to work unchanged, while the renderer imports from shared/ (no Node built-ins).
 export {
   MAX_PERSISTED_ROUTINES,
   MAX_LLM_SESSION_ROUTINES,
@@ -45,22 +32,19 @@ import { MAX_PERSISTED_ROUTINES, MAX_LLM_SESSION_ROUTINES, MAX_ROUTINE_SOURCE_LE
 import { openFeatureNamespace } from "./storage/feature-namespace.js";
 import { withInProcessFileQueue } from "../lib/with-file-lock.js";
 
-/**
- * Routine validation bounds. The store validates every routine it persists;
- * the `routine_schedule` tool validates the same fields before it calls the
- * store, and imports these so the two cannot disagree about a limit.
- */
+// Routine validation bounds. The store validates every routine it persists; the `routine_schedule` tool validates the same fields before it calls the
+// store, and imports these so the two cannot disagree about a limit.
 
-/** Maximum allowed distance into the future for schedule.at (parity with RemindersStore). */
+// Maximum allowed distance into the future for schedule.at (parity with RemindersStore).
 export const MAX_FUTURE_OFFSET_MS = 5 * 365.25 * 24 * 60 * 60 * 1000;
 
-/** Maximum cron expression length (prevents regex DoS). */
+// Maximum cron expression length (prevents regex DoS).
 export const MAX_CRON_EXPR_LENGTH = 256;
 
-/** Minimum interval in ms (1 minute — prevents sub-minute polling spam). */
+// Minimum interval in ms (1 minute — prevents sub-minute polling spam).
 export const MIN_INTERVAL_MS = 60_000;
 
-/** The plugin-id-bearing fields of one stored routine, by field path. */
+// The plugin-id-bearing fields of one stored routine, by field path.
 function storedRoutinePluginIds(record: Record<string, unknown>): Array<[string, unknown[]]> {
   const fields: Array<[string, unknown[]]> = [];
   const attention = record.needsAttention;
@@ -78,12 +62,8 @@ function storedRoutinePluginIds(record: Record<string, unknown>): Array<[string,
   return fields;
 }
 
-/**
- * The first stored plugin id of `record` the plugin contract rejects, or
- * null. Such a routine was written by a build with a looser grammar: it is
- * held back (never run, never rewritten) and reported, not dropped, so one
- * legacy record cannot hide the others or vanish from disk.
- */
+// The first stored plugin id of `record` the plugin contract rejects, or null. Such a routine was written by a build with a looser grammar: it is held
+// back (never run, never rewritten) and reported, not dropped, so one legacy record cannot hide the others or vanish from disk.
 function invalidStoredRoutine(record: unknown): StoredInvalidRoutine | null {
   if (!record || typeof record !== "object" || Array.isArray(record)) return null;
   const routine = record as Record<string, unknown>;
@@ -96,10 +76,7 @@ function invalidStoredRoutine(record: unknown): StoredInvalidRoutine | null {
   }
   return null;
 }
-/**
- * Validate a record loaded from disk. Rejects tampered / corrupted entries
- * so a single bad record cannot infect the scheduler tick.
- */
+// Validate a record loaded from disk. Rejects tampered / corrupted entries so a single bad record cannot infect the scheduler tick.
 function isValidRecord(r: unknown): r is RoutineRecord {
   if (!r || typeof r !== "object") return false;
   const x = r as Record<string, unknown>;
@@ -165,7 +142,7 @@ function validateScheduleAt(at: string): { ok: true } | { ok: false; error: stri
   return { ok: true };
 }
 
-/** An invalid routine plus the exact stored value it is carried through writes with. */
+// An invalid routine plus the exact stored value it is carried through writes with.
 interface StoredInvalidRoutine extends InvalidRoutine {
   readonly raw: unknown;
 }
@@ -173,12 +150,11 @@ interface StoredInvalidRoutine extends InvalidRoutine {
 export interface RoutinesFile {
   version: 2;
   routines: RoutineRecord[];
-  /** Held-back records, written back unchanged after the valid ones. */
+  // Held-back records, written back unchanged after the valid ones.
   invalid: StoredInvalidRoutine[];
 }
 
-// Consolidated under ~/.ave/routine/ namespace (single directory for all
-// routine data). Resolved through the feature-namespace helper so the
+// Consolidated under ~/.ave/routine/ namespace (single directory for all routine data). Resolved through the feature-namespace helper so the
 // `~/.ave/<feature>/` location stays the single source of truth.
 const defaultPath = (): string => join(openFeatureNamespace("routine").dir, "routines.json");
 
@@ -216,8 +192,7 @@ function readFileOrEmpty(filePath: string): Promise<RoutinesFile> {
     for (const record of file.routines as unknown[]) {
       const held = invalidStoredRoutine(record);
       if (held) invalid.push(held);
-      // Filter out tampered/corrupted or non-canonical records so a single bad
-      // entry cannot cause the scheduler tick to throw and stall all routines.
+      // Filter out tampered/corrupted or non-canonical records so a single bad entry cannot cause the scheduler tick to throw and stall all routines.
       else if (isCanonicalRecord(record)) routines.push(record);
     }
     return { version: 2, routines, invalid };
@@ -225,15 +200,13 @@ function readFileOrEmpty(filePath: string): Promise<RoutinesFile> {
 }
 
 async function writeFileAtomic(filePath: string, data: RoutinesFile): Promise<void> {
-  // Delegates the 0o700-dir / 0o600-file / tmpfile+rename contract to the
-  // feature-namespace SOT helper. The injectable `filePath` (tests pass a
-  // temp path) is preserved — the helper enforces the permission boundary on
-  // whatever parent directory the path resolves to.
+  // Delegates the 0o700-dir / 0o600-file / tmpfile+rename contract to the feature-namespace SOT helper. The injectable `filePath` (tests pass a temp path)
+  // is preserved — the helper enforces the permission boundary on whatever parent directory the path resolves to.
   const stored = { version: data.version, routines: [...data.routines, ...data.invalid.map((held) => held.raw)] };
   await writeFileAtomicAtPath(filePath, `${JSON.stringify(stored, null, 2)}\n`);
 }
 
-/** Deep clone a RoutineRecord to prevent callers from mutating shared cache refs. */
+// Deep clone a RoutineRecord to prevent callers from mutating shared cache refs.
 function cloneRecord(r: RoutineRecord): RoutineRecord {
   return {
     ...r,
@@ -285,21 +258,21 @@ export class RoutinesStore {
   }
 
   list(): RoutineRecord[] {
-    // M5: deep clone to prevent callers from mutating shared cache refs
+    // Clone deeply so callers cannot mutate the cached state.
     return this.cache.map(cloneRecord);
   }
 
-  /** Active routines = not dismissed. */
+  // Active routines = not dismissed.
   listActive(): RoutineRecord[] {
     return this.cache.filter((r) => !r.dismissedAt).map(cloneRecord);
   }
 
-  /** Stored routines held back because they name a plugin id the contract rejects. */
+  // Stored routines held back because they name a plugin id the contract rejects.
   listInvalid(): InvalidRoutine[] {
     return this.invalidCache.map(({ id, field, value, reason }) => ({ id, field, value, reason }));
   }
 
-  /** What the routine list shows: the active routines and the invalid ones to repair. */
+  // What the routine list shows: the active routines and the invalid ones to repair.
   listForDisplay(): RoutineListResult {
     return { routines: this.listActive(), invalid: this.listInvalid() };
   }
@@ -307,7 +280,6 @@ export class RoutinesStore {
   async add(input: AddRoutineInput): Promise<RoutineRecord> {
     if (!this.loaded) await this.load();
 
-    // Validate and normalize `at` to canonical ISO string when provided.
     let normalizedAt: string | undefined;
     if (input.schedule?.at !== undefined) {
       const validation = validateScheduleAt(input.schedule.at);
@@ -319,9 +291,7 @@ export class RoutinesStore {
       normalizedAt = new Date(input.schedule.at).toISOString();
     }
 
-    // Validate that non-cron repeats always have schedule.at.
-    // Without it, RoutinesScheduler.isDue() can never match and the routine
-    // silently never fires — a hard error is strictly better than silent failure.
+    // Non-cron repeats require schedule.at or the scheduler can never fire them.
     if (input.schedule?.repeat) {
       const kind = input.schedule.repeat.kind;
       if (kind !== "cron" && !input.schedule.at) {
@@ -331,7 +301,6 @@ export class RoutinesStore {
       }
     }
 
-    // Validate cron expression when repeat.kind === 'cron'.
     if (input.schedule?.repeat?.kind === "cron") {
       const expr = (input.schedule.repeat as { kind: "cron"; expression: string }).expression;
       if (typeof expr !== "string" || expr.length > MAX_CRON_EXPR_LENGTH) {
@@ -346,7 +315,6 @@ export class RoutinesStore {
       }
     }
 
-    // Validate intervalMs bounds when repeat.kind === 'interval'.
     if (input.schedule?.repeat?.kind === "interval") {
       const intervalMs = (input.schedule.repeat as { kind: "interval"; intervalMs: number }).intervalMs;
       if (!Number.isFinite(intervalMs) || intervalMs < MIN_INTERVAL_MS || intervalMs > MAX_FUTURE_OFFSET_MS) {
@@ -356,7 +324,6 @@ export class RoutinesStore {
       }
     }
 
-    // Validate execution-mode-specific required fields.
     if (input.execution === "llm-session") {
       if (!input.prePrompt || input.prePrompt.trim().length === 0) {
         throw new Error(
@@ -372,9 +339,8 @@ export class RoutinesStore {
       }
     }
 
-    // Idempotency identity — validate the optional `source` marker length cap
-    // (SOT). Empty/whitespace-only collapses to unset so it never matches a
-    // real suggestion marker in hasRoutineBySource.
+    // Idempotency identity — validate the optional `source` marker length cap (SOT). Empty/whitespace-only collapses to unset so it never matches a real
+    // suggestion marker in hasRoutineBySource.
     let normalizedSource: string | undefined;
     if (input.source !== undefined) {
       if (typeof input.source !== "string" || input.source.length > MAX_ROUTINE_SOURCE_LENGTH) {
@@ -385,8 +351,7 @@ export class RoutinesStore {
       const trimmedSource = input.source.trim();
       normalizedSource = trimmedSource.length > 0 ? trimmedSource : undefined;
     }
-    // Permission policy Layer 4 — `scope` is the canonical shape. When omitted, default
-    // to deny-all so new call sites cannot accidentally expose plugins.
+    // Permission policy Layer 4 — `scope` is the canonical shape. When omitted, default to deny-all so new call sites cannot accidentally expose plugins.
     const inputScope = input.scope;
     let normalizedPluginIds: RoutineScope["pluginIds"] =
       inputScope?.pluginIds ?? { mode: "deny-all" };
@@ -416,7 +381,6 @@ export class RoutinesStore {
       directories: inputScope?.directories ? [...inputScope.directories] : [],
     };
 
-    // Build schedule with normalized `at`.
     const normalizedSchedule: typeof input.schedule = input.schedule
       ? {
           ...input.schedule,
@@ -497,11 +461,8 @@ export class RoutinesStore {
     });
   }
 
-  /**
-   * Permanently remove a deleted workspace root from every persisted routine
-   * scope. The whole read/mutate/write transaction shares the store file lock,
-   * so a concurrent routine mutation cannot resurrect a stale directory.
-   */
+  // Permanently remove a deleted workspace root from every persisted routine scope. The whole read/mutate/write transaction shares the store file lock, so
+  // a concurrent routine mutation cannot resurrect a stale directory.
   async revokeWorkspaceRoot(
     root: string,
     options?: { preserveRoots?: readonly string[] },
@@ -548,11 +509,8 @@ export class RoutinesStore {
     });
   }
 
-  /**
-   * Patch a subset of mutable fields on a routine record.
-   * Only the fields present in `patch` are written; undefined values are ignored.
-   * Returns the updated record, or null if not found.
-   */
+  // Patch a subset of mutable fields on a routine record. Only the fields present in `patch` are written; undefined values are ignored. Returns the
+  // updated record, or null if not found.
   async update(
     id: string,
     patch: Partial<Pick<RoutineRecord, "lastFiredMinuteUTC" | "lastFiredAt" | "lastResultAcknowledgedAt" | "lastRoutineSessionId" | "dismissedAt">>,
@@ -578,11 +536,8 @@ export class RoutinesStore {
     });
   }
 
-  /**
-   * Mark a routine as fired. Completed one-shots without attention are dismissed.
-   * For repeating routines, advances the next-fire time using the cron evaluator.
-   * Returns the updated record.
-   */
+  // Mark a routine as fired. Completed one-shots without attention are dismissed. For repeating routines, advances the next-fire time using the cron
+  // evaluator. Returns the updated record.
   async markFired(id: string, missingPluginIds: string[] = []): Promise<RoutineRecord | null> {
     if (!this.loaded) await this.load();
     return withInProcessFileQueue(this.filePath, async () => {
@@ -605,8 +560,7 @@ export class RoutinesStore {
         // A partial run stays visible for review and removal, but is not due again.
         if (missingPluginIds.length === 0) r.dismissedAt = firedAt;
       } else advanceRepeatingSchedule(r, firedAt);
-      // cron routines: next-fire is re-computed by the scheduler each tick —
-      // no need to advance `at` here.
+      // cron routines: next-fire is re-computed by the scheduler each tick — no need to advance `at` here.
       await writeFileAtomic(this.filePath, file);
       this.cache = file.routines;
       this.invalidCache = file.invalid;
@@ -614,7 +568,7 @@ export class RoutinesStore {
     });
   }
 
-  /** Keep a skipped routine visible without creating a result or consuming a one-shot. */
+  // Keep a skipped routine visible without creating a result or consuming a one-shot.
   async markPluginsMissing(id: string, missingPluginIds: string[], minuteUTC?: string): Promise<void> {
     if (!this.loaded) await this.load();
     await withInProcessFileQueue(this.filePath, async () => {
@@ -632,8 +586,6 @@ export class RoutinesStore {
     });
   }
 }
-
-// ─── Next-fire helpers ────────────────────────────────────────────────────────
 
 function advanceRepeatingSchedule(routine: RoutineRecord, now: string): void {
   const schedule = routine.schedule;
@@ -671,14 +623,7 @@ function advanceWeekly(atIso: string): string {
   return d.toISOString();
 }
 
-/**
- * Advance by one calendar month, clamping to the last day of the target month
- * so 31-day routines don't skip February.
- *
- * originalDay is captured once before the loop so that multi-month advances
- * (e.g. Jan 31 skipped while app was offline) correctly restore the original
- * day each month rather than drifting toward 28 after a Feb clamp.
- */
+// Keep the original calendar day across skipped months so February clamping does not permanently shift a 31st-day schedule.
 function advanceMonthly(atIso: string): string {
   const d = new Date(atIso);
   const originalDay = d.getUTCDate(); // capture once — never re-read from d

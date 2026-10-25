@@ -27,11 +27,8 @@ const mockUninstall = vi.fn(async () => ({
   error: "unauthorized-frame",
   message: "제거 권한이 없습니다.",
 }));
-/**
- * The git marketplace a Doctor repair goes through. `bind(name)` makes the
- * catalog list that plugin as installed from `ave` at 1.0.0; without it the
- * plugin has no bound source.
- */
+/** The git marketplace a Doctor repair goes through. `bind(name)` makes the catalog list that plugin as installed from
+ * `ave` at 1.0.0; without it the plugin has no bound source. */
 const market = {
   listCatalog: vi.fn(),
   listSources: vi.fn(),
@@ -580,8 +577,7 @@ describe("PluginConfigTab", () => {
     await waitFor(() => {
       expect(screen.getByTestId("plugin-config:doctor-panel:meeting")).toBeInTheDocument();
     });
-    // Its own diagnosis, not "update the app": a newer app may have dropped
-    // the version rather than lacking it.
+    // Its own diagnosis, not "update the app": a newer app may have dropped the version rather than lacking it.
     expect(screen.getByText("다른 Ave 프로토콜용 익스텐션")).toBeInTheDocument();
     expect(screen.queryByText("앱 업데이트 필요")).toBeNull();
     expect(await screen.findByText(/마켓플레이스에서 2.0.0 버전 검토/)).toBeInTheDocument();
@@ -992,8 +988,7 @@ describe("PluginConfigTab", () => {
 
 describe("PluginConfigTab — §9.2 Track B configSchema rendering", () => {
   it("renders the typed form when manifest declares configSchema and routes secrets through setSecret", async () => {
-    // Override the cards mock with a plugin that declares a typed schema
-    // including one secret key.
+    // Override the cards mock with a plugin that declares a typed schema including one secret key.
     const mockCardsTyped = vi.fn(async () => [
       {
         id: "with-schema",
@@ -1045,14 +1040,14 @@ describe("PluginConfigTab — §9.2 Track B configSchema rendering", () => {
     // Legacy raw-KV editor must NOT render — the "+ 추가" button is the marker.
     expect(screen.queryByText("+ 추가")).toBeNull();
 
-    // Type a secret value, click its dedicated 저장 button. setSecret MUST
-    // be called (NOT pluginConfig.set with the cleartext value).
+    // Type a secret value, click its dedicated 저장 button. setSecret MUST be called (NOT pluginConfig.set with the cleartext
+    // value).
     const secretInputs = document.querySelectorAll('input[type="password"]');
     expect(secretInputs.length).toBe(1);
     fireEvent.change(secretInputs[0], { target: { value: "sk-LIVE" } });
     const saveButtons = screen.getAllByRole("button", { name: /저장/ });
-    // The first 저장 button belongs to the secret row; the form-level
-    // 저장 lives further down. We click the secret one explicitly via test id.
+    // The first 저장 button belongs to the secret row; the form-level 저장 lives further down. We click the secret one explicitly
+    // via test id.
     const secretSaveBtn = document.querySelector(
       '[data-testid="pcfg:with-schema:apiKey:save"]',
     ) as HTMLButtonElement;
@@ -1071,9 +1066,8 @@ describe("PluginConfigTab — §9.2 Track B configSchema rendering", () => {
   });
 
   it("falls back to the legacy raw key/value editor when manifest has NO configSchema", async () => {
-    // Use the original mock from the outer `beforeEach`. Re-install here
-    // explicitly because this describe block does not share the parent's
-    // hooks.
+    // Use the original mock from the outer `beforeEach`. Re-install here explicitly because this describe block does not share
+    // the parent's hooks.
     Object.defineProperty(window, "ave", {
       value: {
         plugins: { cards: mockCards },
@@ -1162,9 +1156,8 @@ describe("PluginConfigTab — auth UI", () => {
   });
 
   it("keeps the switch for a disabled plugin whose runtime is retired, so it can be re-enabled", async () => {
-    // What the runtime reports after a disable: the generation is retired, so
-    // nothing is loaded (`runtimeLoaded: false`), and the card is `disabled`.
-    // The switch is the only way back to enabled.
+    // What the runtime reports after a disable: the generation is retired, so nothing is loaded (`runtimeLoaded: false`), and
+    // the card is `disabled`. The switch is the only way back to enabled.
     let enabled = false;
     const disabledCard = () => ({
       id: "retired-plugin",
@@ -1512,10 +1505,8 @@ it("opens a requested plugin under the existing anchor and updates its unseen ba
   await waitFor(() => expect(screen.queryByTestId("alert-unseen:meeting")).toBeNull());
 });
 
-/**
- * The Doctor's arm and confinement, and a running plugin's refused attempt
- * (`docs/design/plugin-hostapi-protocol.md` §9.8 A1, decisions 51 and 52).
- */
+/** The Doctor's arm and confinement, and a running plugin's refused attempt (`docs/design/plugin-hostapi-protocol.md` §9.8
+ * A1, decisions 51 and 52). */
 describe("PluginConfigTab — where a plugin runs, and a refused attempt", () => {
   function showCards(cards: unknown[]): void {
     Object.defineProperty(window, "ave", {
@@ -1702,9 +1693,8 @@ describe("PluginConfigTab — where a plugin runs, and a refused attempt", () =>
     });
 
     it("keeps a newer card list when an older read answers after it", async () => {
-      // The first save's re-read is held; the second save commits and its
-      // re-read answers first with the refusal cleared. The held read then
-      // answers with the older, refused snapshot, which must not win.
+      // The first save's re-read is held; the second save commits and its re-read answers first with the refusal cleared. The
+      // held read then answers with the older, refused snapshot, which must not win.
       let answerOlderRead!: (cards: unknown[]) => void;
       const cards = vi.fn()
         .mockResolvedValueOnce([loaded])

@@ -1,8 +1,4 @@
-/**
- * First-run sample seed contract: seed once on a genuinely fresh board, skip
- * (but still mark) when migrated or already-populated, and never re-seed after
- * the marker is written — even if the user later empties the board.
- */
+/** Seed once only on genuinely fresh boards; migration, existing content, and later user deletion must not reseed. */
 import { describe, it, expect } from "vitest";
 import {
   seedSampleWorkBoard,
@@ -18,7 +14,6 @@ import type {
 
 const NOW = Date.parse("2026-06-16T00:00:00.000Z");
 
-/** Mutable in-memory store implementing the narrow SampleSeedStore surface. */
 function makeStore(initial: WorkItemResolved[] = []) {
   const items = [...initial];
   let nextId = items.reduce((m, i) => Math.max(m, i.id), 0) + 1;
@@ -50,7 +45,6 @@ function makeStore(initial: WorkItemResolved[] = []) {
   return store;
 }
 
-/** In-memory marker storage (readJson/writeJson). */
 function makeMarker(): Pick<WorkBoardStorage, "readJson" | "writeJson"> & {
   files: Record<string, unknown>;
 } {
@@ -74,15 +68,12 @@ describe("seedSampleWorkBoard", () => {
     expect(r.seeded).toBe(true);
     expect(r.count).toBe(3);
     expect(store.items).toHaveLength(3);
-    // One completed sample demonstrates the agentic output end-state.
     const completed = store.items.find((i) => i.status === "completed");
     expect(completed?.output).toBeTruthy();
     expect(completed?.runStatus).toBe("completed");
-    // The high-priority planned sample is due inside the 24h due-soon window.
     const planned = store.items.find((i) => i.priority === "high");
     expect(planned?.due_at).toBeTruthy();
     expect(Date.parse(planned!.due_at!) - NOW).toBeLessThan(24 * 60 * 60_000);
-    // Marker records the decision.
     expect(marker.files[SAMPLE_SEEDED_FILE]).toMatchObject({ seeded: true, count: 3 });
   });
 
@@ -91,7 +82,6 @@ describe("seedSampleWorkBoard", () => {
     const marker = makeMarker();
     await seedSampleWorkBoard({ store, marker, alreadyMigrated: false, now: () => NOW });
 
-    // Simulate the user deleting every demo item.
     store.items.length = 0;
     const second = await seedSampleWorkBoard({ store, marker, alreadyMigrated: false, now: () => NOW });
 

@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- **OS 샌드박스 설정이 둘로 나뉘었습니다.** 설정 → 권한의 "셸 샌드박스"(`osToolSandbox`)는
+  Bash·PowerShell 명령과 작업 공간 터미널만, 새 "익스텐션 격리"(`pluginWorkerConfinement`)는
+  익스텐션 워커·프로세스·훅과 MCP stdio 서버를 격리합니다. 한쪽을 켜도 다른 쪽은 격리되지
+  않습니다. 이전에 OS 도구 샌드박스를 켜 두었다면 업데이트 후 두 설정이 모두 켜진 상태로
+  유지되고, 꺼 두었다면 둘 다 꺼진 상태로 남습니다.
+- **`AVE_SANDBOX_ENABLED=1`은 이제 셸만 격리합니다.** 이 환경 변수로 익스텐션 프로세스까지
+  격리하던 실행 스크립트는 `AVE_PLUGIN_WORKER_CONFINEMENT=1`을 함께 설정해야 합니다. 설정하지
+  않으면 시작할 때 경고가 기록됩니다.
+
 ## v0.14.0 — 2026-10-16
 
 - **Ave의 웹사이트와 배포 주소.** Ave의 웹사이트는 `ave.agent-connector.ai`,

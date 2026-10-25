@@ -1,13 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-// Replace the real ext-apps `AppBridge` with a fake that records the capabilities it
-// was constructed with and which handlers were present at `connect()` time. This lets
-// us assert the two structural invariants of the wiring seam without standing up a real
-// transport/handshake: (1) capabilities are DERIVED from the active handler set, and
-// (2) every handler is registered BEFORE connect().
-//
-// Defined via `vi.hoisted` because the `vi.mock` factory below is hoisted above normal
-// top-level declarations — a plain `class` would be in its temporal dead zone.
+// Record capabilities and handlers at connect time; hoist the fixture because mock factories run before local
+// declarations.
 const { FakeAppBridge } = vi.hoisted(() => {
   class FakeAppBridge {
     capabilities: Record<string, unknown>;
@@ -89,13 +83,7 @@ beforeEach(() => {
 describe("createMcpAppBridge — capabilities are derived from the single active-handler set", () => {
   it("advertises exactly the capabilities whose handlers are wired, nothing else", () => {
     const { bridge } = build();
-    // onreadresource → serverResources, oncalltool → serverTools, onmessage →
-    // message.text, ondownloadfile → downloadFile, onopenlink → openLinks. The sandbox +
-    // size handlers advertise nothing — and neither does `onrequestdisplaymode`:
-    // ext-apps' `McpUiHostCapabilities` has NO display-mode key, so that handler
-    // advertises itself through the host context's `availableDisplayModes` instead.
-    // No sampling leaks in — a capability without a wired handler would be a latent,
-    // silent bug.
+    // Advertise only wired capabilities; display modes use host-context availableDisplayModes, not a capability key.
     expect((bridge as unknown as FakeBridge).capabilities).toEqual({
       serverResources: {},
       serverTools: {},

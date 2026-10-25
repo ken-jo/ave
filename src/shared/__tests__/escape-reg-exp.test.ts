@@ -10,8 +10,7 @@ describe("escapeRegExp", () => {
   });
 
   it("stops a crafted value from matching more than itself", () => {
-    // The callers build patterns out of a plugin id, a tool alias or a path.
-    // Unescaped, `a.c` would also match `abc`.
+    // Escape literal ids and paths; otherwise a.c also matches abc.
     expect(new RegExp(`^${escapeRegExp("a.c")}$`).test("abc")).toBe(false);
     expect(new RegExp(`^${escapeRegExp("a.c")}$`).test("a.c")).toBe(true);
     expect(new RegExp(`^${escapeRegExp(".*")}$`).test("anything")).toBe(false);

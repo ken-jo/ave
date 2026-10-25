@@ -4,7 +4,9 @@ import {
   copyNativeExecutableFile, discardCodexExecutableArtifact, hashExecutableFile, openExecutableFile,
   verifyCodexExecutableArtifact, type CodexExecutableArtifact,
 } from "./codex-executable-artifact.js";
-import { assertCodexExecutableLocation, assertCodexPrivateRuntimeDirectory, type CodexLocationRequest } from "./codex-executable-location.js";
+import {
+  assertCodexExecutableLocation, assertCodexPrivateRuntimeDirectory, createPrivateObjects, createPrivateTempDirectory, type CodexLocationRequest,
+} from "./codex-executable-location.js";
 import { isNativeExecutableFile } from "./native-executable-format.js";
 import { cliExecutableCandidates, type CliDiscoveryEnvironment } from "./user-cli-discovery.js";
 import { copySubscriptionPackageArtifact } from "./subscription-package-artifact.js";
@@ -39,14 +41,14 @@ async function isNativeFile(
   } finally { await file.close(); }
 }
 
-/** The shim is only an install marker. Its batch contents are never executed. */
+// The shim is only an install marker. Its batch contents are never executed.
 export function claudeCodeNpmShimTarget(shim: string, platform: NodeJS.Platform = process.platform): string {
   const paths = platform === "win32" ? win32 : { basename, dirname, join };
   if (paths.basename(shim).toLowerCase() !== "claude.cmd") throw new Error("Invalid subscription launcher");
   return paths.join(paths.dirname(shim), "node_modules", "@anthropic-ai", "claude-code", "cli.js");
 }
 
-/** Admit all launch inputs before the first probe and retain a content proof. */
+// Admit all launch inputs before the first probe and retain a content proof.
 export async function pinClaudeCodeExecutable(
   candidate: string,
   runtimeDirectory: string,
@@ -105,11 +107,15 @@ export async function pinClaudeCodeExecutable(
   }
   const interpreterHash = await contentHash(interpreter, "native");
   await assertCodexPrivateRuntimeDirectory(runtimeDirectory, routeKind);
-  const directory = await fs.mkdtemp(join(runtimeDirectory, "executable-"));
+  const directory = await createPrivateTempDirectory(join(runtimeDirectory, "executable-"));
   try {
     await assertCodexPrivateRuntimeDirectory(directory, routeKind);
-    const primary = await copyNativeExecutableFile(interpreter,
-      join(directory, discovery.platform === "win32" ? "runtime.exe" : "runtime"), discovery.platform, process.arch, "native");
+    const primary = await createPrivateObjects(async (created) => {
+      const copy = await copyNativeExecutableFile(interpreter,
+        join(directory, discovery.platform === "win32" ? "runtime.exe" : "runtime"), discovery.platform, process.arch, "native");
+      created.push(copy.executable);
+      return copy;
+    });
     if (primary.contentHash !== interpreterHash) throw new Error("Subscription interpreter changed");
     const packageArtifact = root === null || script === null ? null : await copySubscriptionPackageArtifact(root, script, directory);
     const artifact: CodexExecutableArtifact = Object.freeze({ ...primary, companion: null });

@@ -1,19 +1,4 @@
-/**
- * `ave:plugins:install-result` producer -> consumer contract.
- *
- * The payload used to be spelled out inline at the producer sites and
- * re-declared by three consumers, and the two halves disagreed in both
- * directions: the producer attached a `message` field that no consumer
- * declared — so the toast rendered the raw code `incompatible-app-version`
- * instead of the localized copy the producer's own comment promised — while
- * two consumers declared a `preparing` flag no producer ever set.
- *
- * Every payload here comes out of the REAL producer
- * (`buildInstallFailureResult`, sole constructor of the shape, called by the
- * install IPC handlers) and is delivered to the REAL consumer (the mounted
- * `useStatusBarInstall` hook) over the same subscription the preload bridge
- * feeds. No field of a payload is written by hand.
- */
+/** Build fixture payloads with the real install-result producer to catch producer/consumer field drift. */
 import "../../../../../../test/renderer/setup.js";
 import { describe, expect, it, vi } from "vitest";
 import { act, renderHook } from "@testing-library/react";
@@ -31,10 +16,6 @@ import type { PluginInstallResultPayload } from "../../../../../contract/app-con
 import type { AveApi } from "../../../types.js";
 import { useStatusBarInstall } from "../use-status-bar-install.js";
 
-/**
- * Mount the real hook, push one real producer payload through the real
- * install-result subscription, and return the toast copy the user would see.
- */
 function toastCopyFor(payload: PluginInstallResultPayload): string {
   let deliver: ((p: PluginInstallResultPayload) => void) | null = null;
   const api = {
@@ -83,9 +64,6 @@ describe("install-result payload", () => {
   });
 
   it("shows localized copy for an app-version failure, never the bare IPC code", () => {
-    // The user-visible regression: the toast used to render `payload.error`
-    // directly, so an incompatible plugin reported the literal string
-    // "incompatible-app-version".
     expect(toastCopyFor(APP_VERSION_FAILURE()))
       .not.toContain(INCOMPATIBLE_APP_VERSION_CODE);
   });

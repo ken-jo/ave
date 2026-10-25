@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { viewLocationBreadcrumb, type BreadcrumbDeps } from "../view-location.js";
 
-// Labels come back as their catalogue keys, so the assertions read which key
-// each crumb reuses rather than one locale's rendering of it.
+// Labels come back as their catalogue keys, so the assertions read which key each crumb reuses rather than one locale's
+// rendering of it.
 const deps = (sessionProject?: BreadcrumbDeps["sessionProject"]): BreadcrumbDeps => ({
   t: ((key: string) => key) as BreadcrumbDeps["t"],
   pluginViewLabel: () => undefined,

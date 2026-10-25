@@ -3,19 +3,7 @@
  * https://github.com/HKUDS/OpenHarness/blob/main/src/openharness/sandbox/path_validator.py
  * Copyright (c) 2025 OpenHarness Contributors
  *
- * SandboxPathValidator (Tier A3) — symlink-safe path boundary check.
- *
- * Every file tool that touches disk should call {@link validateSandboxPath}
- * before any read/write. The validator:
- *   1. Expands `~` to the user's home directory.
- *   2. Resolves the path to an absolute form.
- *   3. If the path exists, follows symlinks via `realpathSync` so that
- *      symlink traversal attempts cannot escape the boundary.
- *   4. Checks whether the canonicalized path is contained within the
- *      sandbox cwd or any entry in `extraAllowed`.
- *
- * Uses Node stdlib only (`node:fs`, `node:path`, `node:os`) — zero
- * external dependencies.
+ * Resolve symlinks before checking sandbox and extra-root containment.
  */
 import { existsSync, lstatSync, realpathSync } from "node:fs";
 import {
@@ -32,15 +20,7 @@ export interface SandboxValidationResult {
   reason: string;
 }
 
-/**
- * Validates that `path` is within `cwd` or one of the `extraAllowed` roots.
- *
- * Returns `{ allowed: true, reason: "" }` on success, or
- * `{ allowed: false, reason: <explanation> }` on failure.
- *
- * Non-existent paths are validated through the nearest existing parent
- * so future-create paths still inherit symlink boundary checks.
- */
+/** Resolve missing paths through their nearest existing parent so future creation cannot bypass link containment. */
 export function validateSandboxPath(
   path: string,
   cwd: string,
@@ -66,8 +46,7 @@ export function validateSandboxPath(
       reason: `path ${resolved} is outside the sandbox boundary (${resolvedCwd})`,
     };
   } catch (error) {
-    // Filesystem resolution is an external boundary: disappearing entries,
-    // inaccessible directories and process-backed links cannot be authorized.
+    // Resolution failures, disappearing entries, and process-backed links cannot authorize access.
     if (error instanceof PathResolutionError) {
       return { allowed: false, reason: error.message };
     }
@@ -119,8 +98,7 @@ function canonicalize(path: string): string {
   const suffix: string[] = [];
   let cursor = absolute;
   while (!existsSync(cursor)) {
-    // A dangling link exists as an entry even though its target does not. It
-    // cannot be treated as a new file beneath the link's parent directory.
+    // A dangling link is not a new file under its parent; its entry already exists.
     const entry = readPathEntry(cursor);
     if (entry?.isSymbolicLink()) return resolveExistingPath(cursor);
     const parent = dirname(cursor);
@@ -135,20 +113,7 @@ function canonicalize(path: string): string {
   return suffix.length > 0 ? join(canonicalParent, ...suffix) : canonicalParent;
 }
 
-/**
- * `(parent, child)` — the argument order every other containment predicate in
- * this tree uses. It read `(child, parent)` until the two orders were noticed
- * side by side; a reader who copies the wrong one inverts a sandbox boundary
- * without the types objecting, since both arguments are `string`.
- *
- * The containment question itself is {@link isPathWithin}. What stays here is
- * the case policy, which is this layer's and not the storage layer's: macOS and
- * Windows are case-insensitive by default, so a tool asking for `/Users/example/PROJ`
- * inside a sandbox rooted at `/Users/example/proj` is asking for a path the
- * filesystem will hand it either way. {@link canonicalize} has usually already
- * settled the casing via `realpathSync.native`; this covers the paths that do
- * not exist yet and so cannot be canonicalised.
- */
+/** Use parent/candidate order and case-insensitive Windows/macOS checks for paths realpath cannot resolve yet. */
 function isWithin(parent: string, child: string): boolean {
   return isPathWithin(normalizeForBoundaryCompare(parent), normalizeForBoundaryCompare(child));
 }

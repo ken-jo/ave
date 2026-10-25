@@ -1,13 +1,5 @@
 // @vitest-environment jsdom
-/**
- * Alert cards in the overlay queue.
- *
- * An alert is a plugin's insertion card the host rendered from the kind's
- * declared templates. It sits in its priority band — high above normal above
- * low — a re-raise of the same identity refreshes the card and moves it to the
- * top of its band, and main can withdraw a card it staged. Closing an alert
- * card is reported, so main keeps its identity closed.
- */
+/** Alert cards refresh within priority bands and report dismissal so the host closes their identity. */
 import "../../../../../test/renderer/setup.js";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { createRef } from "react";

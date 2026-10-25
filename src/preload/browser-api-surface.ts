@@ -7,7 +7,7 @@ import {
   type BrowserTabsApi,
 } from "../shared/browser-surface.js";
 
-/** The host renderer's private browser capabilities. Remote guests receive none. */
+/** Private browser capabilities are unavailable to remote guests. */
 export function buildBrowserTabsApiSurface(): BrowserTabsApi {
   return {
     bindTab: (request) => ipcRenderer.invoke(CHANNELS.browser.bindTab, request),

@@ -1,10 +1,4 @@
-/**
- * Browser-safe contract for the Codex subscription connection.
- *
- * This deliberately represents connection state only. ChatGPT access and
- * refresh tokens stay inside the local Codex App Server credential store and
- * must never be added to Ave settings, IPC payloads, telemetry, or logs.
- */
+/** Connection state only; runtime-managed tokens must never enter app settings, IPC, telemetry, or logs. */
 
 export type CodexSubscriptionConnectionState =
   | "connected"
@@ -13,31 +7,18 @@ export type CodexSubscriptionConnectionState =
 
 export type CodexSubscriptionLoginMethod = "browser" | "device-code";
 
-/**
- * The oldest `codex` CLI whose app-server accepts Ave's hardened launch
- * arguments and exposes every request, field and notification Ave uses.
- * Chosen by generating each published version's protocol schema and
- * starting it with Ave's argv; see `src/main/codex-user-runtime.ts`.
- */
+/** Minimum CLI version must support the hardened launch arguments and protocol fields used by main/codex-user-runtime.ts. */
 export const CODEX_CLI_MINIMUM_VERSION = "0.152.0";
 
 export interface CodexSubscriptionStatus {
-  /**
-   * `not-configured`: no `codex` CLI was found and none was chosen.
-   * `unavailable`: one was found but it cannot run Ave's integration.
-   */
+  /** Not configured means no executable selected; unavailable means the integration cannot run. */
   runtime: "ready" | "unavailable" | "not-configured";
   connection: CodexSubscriptionConnectionState;
   /** Present only for Codex-managed ChatGPT authentication. */
   planType: string | null;
-  /** Present while a managed login is awaiting completion. */
   pendingLogin: CodexSubscriptionLoginMethod | null;
-  /**
-   * Short-lived device code retained only in the main-process session so the
-   * settings view can recover after a tab change. It is never an auth token.
-   */
+  /** Device codes are short-lived main-session state, never authentication tokens. */
   pendingDeviceCode: string | null;
-  /** The resolved CLI's reported version, once it has been read. */
   version: string | null;
 }
 

@@ -1,10 +1,4 @@
-/**
- * Boot step: feed the revocation registry from the marketplace snapshots on
- * disk (design §10.4), before plugins load and before the renderer asks for
- * installed content, so both load gates see the last synced revocations on
- * the first boot pass. Nothing here touches the network; the marketplace
- * feeds the registry again after each sync.
- */
+/** Seed revocations from disk before plugin and renderer load gates; marketplace sync refreshes them later. */
 import { join } from "node:path";
 import type { AuditLogger } from "../../audit/audit-logger.js";
 import { createLogger } from "../../lib/logger.js";
@@ -19,10 +13,8 @@ import { errorMessage } from "../../shared/error-message.js";
 const log = createLogger("revocation-bootstrap");
 
 export interface RevocationBootstrapInput {
-  /** `~/.ave`. */
   home: string;
   appVersion: string;
-  /** The plugin registry, whose entries carry each git install's origin. */
   pluginRegistryPath: string;
   bootAuditLogger: AuditLogger;
 }
@@ -35,11 +27,7 @@ function audit(logger: AuditLogger, line: string): void {
   }
 }
 
-/**
- * Resolves on every path. An install list or snapshot that cannot be read is
- * logged as an error and leaves the packages it covers without revocations
- * until the marketplace feeds the registry again; it never stops boot.
- */
+/** Unreadable snapshots leave covered packages without revocations until sync; log errors and continue boot. */
 export async function feedRevocationsFromSnapshots(input: RevocationBootstrapInput): Promise<void> {
   const packagesRoot = join(input.home, "packages");
   const readers: Array<[string, OriginReader]> = [

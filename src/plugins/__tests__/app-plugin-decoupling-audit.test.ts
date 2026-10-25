@@ -7,37 +7,13 @@ import { RETIRED_PLUGIN_IDS, RETIRED_PLUGIN_PATTERNS, retiredPluginId, retiredPl
 const SRC_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const SOURCE_EXTENSIONS = new Set([".ts", ".tsx"]);
 
-/**
- * Retired plugin ids, from the one list the retired-name gate also reads. A
- * live plugin id must not be hard-coded in app runtime either, but those are
- * found by review; a retired one is found here and by the gate.
- */
+/** Retired IDs come from the naming gate inventory; live IDs still require review. */
 const FORBIDDEN_PLUGIN_IDS = RETIRED_PLUGIN_PATTERNS;
 
-/**
- * Directories where literal plugin-id references are by-design allowed:
- *   - `onboarding/` — discovery cards, tour scenarios, plugin-recommendation
- *     matrices. The whole purpose of these files is to *recommend specific
- *     plugins* to a fresh user; that recommendation list MUST mention
- *     concrete plugin ids. The rule the host-runtime decoupling test
- *     guards (host does not *invoke* a plugin by hardcoded id) is a
- *     different concern from onboarding's recommendation data tables.
- *   - `i18n/` — the translation catalog (seed + generated fragments). These
- *     are pure display copy: onboarding tour / recommendation strings that
- *     were extracted out of `onboarding/` during the i18n migration legitimately
- *     name plugins (e.g. "select agents from the meeting plugin"). Naming a
- *     plugin in UI copy is the same allowed concern as onboarding above — never
- *     a runtime invocation of a plugin by hardcoded id.
- */
+/** Onboarding recommendations and display copy may name plugins; runtime dispatch may not hardcode IDs. */
 const ALLOWED_DIRS = new Set(["onboarding", "i18n"]);
 
-/**
- * No file is exempt. `plugins/isolation/out-of-process-plugins.ts` used to
- * name plugin ids as the routing census of the process boundary; since
- * Admission (`docs/design/plugin-hostapi-protocol.md` §9.8 A1, decision 50)
- * routing has no input and that census is gone, so every source file is held
- * to the same rule.
- */
+/** Every runtime source file is checked; routing has no plugin-ID exemptions. */
 
 function listSourceFiles(dir: string): string[] {
   const entries = readdirSync(dir);

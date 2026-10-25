@@ -1,11 +1,3 @@
-/**
- * Shared work-board test fixtures.
- *
- * The due-soon and report unit tests both need a board reader stub returning a
- * fixed `ok` list (both consume the narrow `{ list(): Promise<WorkItemListResult> }`
- * seam). The implementation lives here once rather than being copy-pasted into
- * each test — the check:test-duplicates gate forbids duplicate helper bodies.
- */
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,20 +10,13 @@ import { ToolRegistry } from "../../tools/registry.js";
 import { createDynamicTool } from "../../tools/base.js";
 import type { ToolCategory } from "../../shared/permission-review-status.js";
 
-/** Board reader stub returning a fixed `ok` list (structurally satisfies the
- * narrow reader interfaces used by the due-soon scanner and the reporter). */
 export function okListReader(
   items: WorkItemResolved[],
 ): { list(): Promise<WorkItemListResult> } {
   return { list: async () => ({ status: "ok", items }) };
 }
 
-/**
- * In-memory {@link TranscriptStorage} standing in for the work-board namespace
- * dir. Shared by the run-transcript unit tests and the engine's flooding
- * regression (both assert against the persisted JSONL) — the check:test-
- * duplicates gate forbids duplicate helper bodies, so it lives here once.
- */
+/** Use in-memory transcript storage to assert persisted JSONL without touching a feature namespace. */
 export function memTranscriptStorage(): TranscriptStorage & { files: Record<string, string> } {
   const files: Record<string, string> = {};
   return {
@@ -53,15 +38,7 @@ export function projectReportPath(files: Record<string, string>, kind: "daily" |
   return Object.keys(files).find((key) => key.startsWith("reports/projects/") && key.includes(`/${kind}/`));
 }
 
-/**
- * A {@link WorkBoardStore} over a board file in its own scratch directory,
- * with the teardown that removes it.
- *
- * The engine suites drive a real store rather than a stub — persistence is
- * what they assert — and each test takes a fresh board, so `cleanup` is
- * returned rather than registered: the suites call it in a `finally` around
- * the run they are asserting on.
- */
+/** Return cleanup to the caller, which must invoke it in finally around the real-board run. */
 export function tempBoardStore(): {
   store: WorkBoardStore;
   cleanup: () => Promise<void>;
@@ -73,14 +50,6 @@ export function tempBoardStore(): {
   };
 }
 
-/**
- * An {@link ApprovalGate} that answers every request with `choice` and keeps
- * what it was asked.
- *
- * The engine treats the gate as a one-shot oracle, so the scripted choice is
- * the whole seam; the recorded requests are how a suite asserts on what the
- * engine put in front of the user.
- */
 export function scriptedApprovalGate(choice: ApprovalChoice): {
   gate: ApprovalGate;
   requests: unknown[];
@@ -95,15 +64,7 @@ export function scriptedApprovalGate(choice: ApprovalChoice): {
   return { gate, requests };
 }
 
-/**
- * The parent {@link ToolRegistry} a work-board run is scoped from — one tool
- * per permission category, plus a plugin-owned read tool.
- *
- * The plan phase derives its grant from `requiredTier(category)`, so a suite
- * asserting what plan mode receives needs a registry whose categories are the
- * variable. It is a real registry rather than a stub: the derivation reads the
- * same `listAll()` the runner narrows, and a stub would let the two drift.
- */
+/** Use the real registry with every permission category and a plugin read tool so scope derivation cannot drift from execution. */
 export function boardParentToolRegistry(): ToolRegistry {
   const registry = new ToolRegistry();
   const tool = (name: string, category: ToolCategory, pluginId?: string) =>
@@ -112,8 +73,6 @@ export function boardParentToolRegistry(): ToolRegistry {
       description: name,
       source: pluginId ? "plugin" : "builtin",
       category,
-      // The registry requires a meta tool to say how it is decided; the other
-      // categories may not carry an override at all.
       ...(category === "meta" ? { decisionOverride: "ask" as const } : {}),
       ...(pluginId ? { pluginId } : {}),
       jsonSchema: { type: "object" },
@@ -126,8 +85,6 @@ export function boardParentToolRegistry(): ToolRegistry {
     tool("run_shell", "shell"),
     tool("web_fetch", "network"),
     tool("agent_spawn", "meta"),
-    // A plugin's own read tool. Plan mode grants it because of the category it
-    // declares — the host names no plugin anywhere in the derivation.
     tool("sample_lookup", "read", "sample-plugin"),
   ]);
   return registry;

@@ -1,13 +1,5 @@
 import { unavailableSecretEncryption } from "../../__tests__/support/host-runtime.js";
-/**
- * Boot-time sync appMode reader tests.
- *
- * Guards the writer/reader path agreement: `SettingsService` (writer) persists
- * `system.appMode` to `<userData>/ave-settings.json`, and
- * `readPersistedAppModeSync` (reader, called before the async bootstrap assigns
- * `services`) must read from the same file so a mode saved via the UI is the
- * one restored on the next launch.
- */
+// The boot reader must use the same settings file the UI writes.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

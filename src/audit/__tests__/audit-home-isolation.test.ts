@@ -1,17 +1,4 @@
-/**
- * The audit writers a test builds with their defaults stay inside that test's
- * Ave home.
- *
- * `ConversationLoop` and the tool executor build an `AuditLogger` when their
- * caller passes none, and its directory defaults to `<aveHome()>/audit`. A
- * test that relied on that default once wrote the developer's real
- * `~/.ave/audit` and contended for its lock with the running app
- * (`ECOMPROMISED` on `<date>.jsonl.lock`). These pin both halves of the fix:
- * the default lands in the test file's own home, and a test with no home is
- * refused before its directory is created. A scratch account stands in for
- * the person's (`os.userInfo()` is mocked), so a guard that stopped working
- * would create a scratch directory and nothing of the developer's.
- */
+/** Default audit writers must use isolated test homes; missing test homes fail before directory creation. */
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { userInfo } from "node:os";
 import { dirname, join } from "node:path";
@@ -44,10 +31,6 @@ afterEach(() => {
   }
 });
 
-/**
- * A test that lost its AVE_HOME, on a scratch account whose HOME is its own:
- * the default home is then the account's `~/.ave`.
- */
 function homelessOnScratchAccount(): string {
   const home = scratch();
   mkdirSync(join(home, ".ave"));

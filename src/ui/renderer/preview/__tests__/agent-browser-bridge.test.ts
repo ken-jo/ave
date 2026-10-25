@@ -1,8 +1,4 @@
-/**
- * Each tab operation from main is carried out by exactly one chat view's
- * store: the one holding the tab, or for a new tab the one showing the
- * conversation it is for.
- */
+/** Each browser operation targets exactly one owning store; new tabs go beside the requesting conversation. */
 import { describe, expect, it, vi } from "vitest";
 import { bindGuestToTab, closeBrowserTab, registerBrowserTabHost, navigateBrowserTabAsUser, routeBrowserTabOp, type BrowserTabHost } from "../agent-browser-bridge.js";
 import type { AveApi } from "../../types.js";

@@ -111,8 +111,7 @@ describe("model-complexity-map", () => {
       for (const vendor of LLM_VENDORS) {
         for (const level of MODEL_COMPLEXITY_LEVELS) {
           const resolved = resolveModelForComplexity(vendor, level);
-          // Handshake-only vendors map to the empty model, which resolves to
-          // null (parent-model fallback) rather than an empty-string id.
+          // Handshake-only vendors resolve to parent-model fallback, never an empty model id.
           expect(resolved).toBe(MODEL_COMPLEXITY_MAP[vendor][level] || null);
         }
       }
@@ -142,10 +141,7 @@ describe("model-complexity-map", () => {
   });
 
   describe("per-vendor sanity (concrete pinned tiers)", () => {
-    // Anchor the picks so a future contributor who flips the catalog has
-    // to come through here and re-justify the tier choice. These are the
-    // tiers the staff-facing agent profiles depend on; cross-PR drift
-    // would silently shift the user's sub-agent model.
+    // Tier changes alter sub-agent model choice; update expectations deliberately.
     it("claude tiers: haiku=low, sonnet=mid, opus=high", () => {
       expect(MODEL_COMPLEXITY_MAP.claude).toEqual({
         low: "claude-haiku-5-5",

@@ -4,18 +4,12 @@
 
 import type { ApprovalRequest } from "../permissions/approval-gate.js";
 
-/** Default maximum number of pending approval requests held in the queue. */
 export const DEFAULT_APPROVAL_QUEUE_MAX = 50;
 
 export type ApprovalQueueAction =
   | { type: "push"; req: ApprovalRequest; max?: number }
   | { type: "shift" }
-  /**
-   * Remove requests the host has already settled without the renderer's
-   * answer (timed out, or cancelled with the turn they belonged to). Their
-   * cards answer nothing any more; kept, the dock would show a prompt whose
-   * buttons reach nothing.
-   */
+  /** Remove host-settled prompts whose buttons can no longer answer anything. */
   | { type: "drop"; ids: readonly string[] }
   | { type: "clear" };
 
@@ -26,9 +20,7 @@ export function approvalQueueReducer(
   switch (action.type) {
     case "push": {
       const max = action.max ?? DEFAULT_APPROVAL_QUEUE_MAX;
-      // Drop-newest when cap reached. The user is already looking at the
-      // head-of-queue; dropping the tail (this new request) preserves their
-      // focus and prevents DOS via queue flooding.
+      // Drop the newest request at capacity to preserve the current prompt and resist flooding.
       if (state.length >= max) {
         return state;
       }
@@ -42,8 +34,7 @@ export function approvalQueueReducer(
       return next.length === state.length ? state : next;
     }
     case "clear":
-      // Administrative queue reset only. User-facing approvals are decided
-      // one request at a time so unseen requests are never bulk-approved.
+      // Queue reset is administrative only; user approvals must remain individual.
       return [];
   }
 

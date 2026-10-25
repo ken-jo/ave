@@ -1,9 +1,4 @@
-/**
- * Which updates apply by themselves (design §18.7.2): every precondition,
- * then the switches in order; required installs override the switches, the
- * skips and the approval-carrying precondition, never revocation or
- * compatibility (those decide whether an update is offered at all).
- */
+/** Required policy overrides user switches, skips and approval carry, never revocation or compatibility. */
 import { describe, expect, it } from "vitest";
 import { UPDATE_PACKAGE_STATES, type UpdateReason } from "../../../shared/git-marketplace.js";
 import {
@@ -48,7 +43,6 @@ function classify(
 describe("classifyUpdate: the preconditions (§18.7.2)", () => {
   it("applies an upgrade with nothing to review from a default-on source", () => {
     expect(classify(facts())).toEqual({ state: "automatic", reasons: [] });
-    // A folder's refresh applies like an upgrade (§18.7.6).
     expect(classify(facts({ change: "refresh" }))).toEqual({ state: "automatic", reasons: [] });
   });
 
@@ -84,12 +78,11 @@ describe("classifyUpdate: the preconditions (§18.7.2)", () => {
     const unknown = facts({ consent: [{ field: "minAppVersion", checkpoint: "catalog", before: "unknown", after: "0.13.0" }] });
     expect(classify(unknown)).toEqual({ state: "needs-review", reasons: ["baseline-unknown"] });
     expect(classify(facts({ consent: [{ field: "*", checkpoint: "catalog", before: "unknown", after: null }] }))).toEqual({ state: "needs-review", reasons: ["baseline-unknown"] });
-    // A review comes first, and says why it is not automatic either.
     expect(classify(facts({ ...changed, enabled: false }))).toEqual({ state: "needs-review", reasons: ["consent-changed", "disabled"] });
   });
 
   it("the approval invariant: an equal fingerprint whose approved component would not carry is needs-review, never automatic", () => {
-    // A remote MCP server approved before the approval digest existed: its record digest is null, so nothing can carry it.
+    // A legacy null approval digest cannot carry approval to new bytes.
     const input = facts({ consent: [], unconfirmedApprovals: ["mcpServer:search"] });
     for (const policy of ["user", "on"] as const) {
       expect(classify(input, { policy, settings: { autoUpdatePackages: { notes: "on" } } })).toEqual({ state: "needs-review", reasons: ["approval-unconfirmed"] });
@@ -127,7 +120,6 @@ describe("the switches (§18.7.2)", () => {
   it("required-ness is the policy's entries and the package's identity: that kind and name from that source", () => {
     const policy = { requiredInstalls: [{ source: "acme", kind: "plugin" as const, name: "notes" }] };
     expect(requiresPackage(policy, { sourceId: "acme", kind: "plugin", name: "notes" })).toBe(true);
-    // The same name from another source is not the required one: the policy's update replaces it.
     expect(requiresPackage(policy, { sourceId: "other", kind: "plugin", name: "notes" })).toBe(false);
     expect(requiresPackage(policy, { sourceId: "acme", kind: "skill", name: "notes" })).toBe(false);
     expect(requiresPackage(policy, { sourceId: null, kind: "plugin", name: "notes" })).toBe(false);
@@ -154,7 +146,7 @@ describe("the switches (§18.7.2)", () => {
     expect(originDefault({ origin: "custom", http: true })).toBe(false);
     expect(originDefault({ origin: "direct", http: true })).toBe(false);
     expect(resolveSourceSwitch("user", {}, { id: "lan", origin: "custom", http: true })).toEqual({ effective: false, override: null, lockedByPolicy: false, required: false });
-    // Turned on, it still needs `unencrypted-updates` (the precondition above).
+    // User enablement still requires plaintext automatic-update consent.
     const http = facts({}, { http: true });
     expect(classify(http, { settings: { autoUpdateSources: { acme: "on" } } })).toEqual({ state: "manual", reasons: ["unencrypted-updates"] });
     expect(classify(facts({}, { http: true, acknowledgedUnencryptedUpdates: true }), { settings: { autoUpdateSources: { acme: "on" } } })).toEqual({ state: "automatic", reasons: [] });
@@ -172,7 +164,6 @@ describe("required installs (§18.7.2)", () => {
     expect(classify(required(), { skipped: true })).toEqual({ state: "automatic", reasons: [] });
     expect(classify(required({ change: "switch" }))).toEqual({ state: "automatic", reasons: [] });
     expect(classify(required(), { attempts: 5 })).toEqual({ state: "automatic", reasons: [] });
-    // A changed MCP digest applies too: the server installs unapproved and the package becomes approval-pending (service).
     expect(classify(required({ consent: [{ field: "mcpServer:search", checkpoint: "staged", before: "a".repeat(64), after: "b".repeat(64) }], unconfirmedApprovals: ["hook:0"] })))
       .toEqual({ state: "automatic", reasons: [] });
   });

@@ -1,9 +1,3 @@
-/**
- * The browser page actions and the snapshot ref table, over a fake CDP
- * session: ref minting and stability, re-render following, stale refs,
- * the snapshot cap, sensitive-field refusal, cancellation, and the
- * cross-origin redirect guard of navigate.
- */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { tmpdir } from "node:os";
@@ -37,7 +31,7 @@ function ax(nodeId: string, role: string, name: string, extra: Partial<AXNode> =
   return { nodeId, role: { type: "role", value: role }, name: { type: "computedString", value: name }, ...extra };
 }
 
-/** A page: a root with the given children (each a leaf). */
+// A page: a root with the given children (each a leaf).
 function page(children: AXNode[]): AXNode[] {
   return [
     ax("root", "RootWebArea", "Fixture", { childIds: children.map((child) => child.nodeId) }),
@@ -48,7 +42,7 @@ function page(children: AXNode[]): AXNode[] {
 class FakeCdp implements CdpSession {
   frameTree = { frame: { id: "main", loaderId: "loader-1", url: "https://a.example/form", securityOrigin: "https://a.example" }, childFrames: [] as unknown[] };
   hit = { backendNodeId: 0, frameId: "main" };
-  /** How far the page is scrolled, as the layout metrics report it. */
+  // How far the page is scrolled, as the layout metrics report it.
   scroll = { x: 0, y: 0 };
   readonly events = new EventEmitter();
   onEvent(listener: (method: string, params: Record<string, unknown>) => void): () => void {
@@ -58,9 +52,9 @@ class FakeCdp implements CdpSession {
   nodes: AXNode[] = [];
   attributes = new Map<number, Record<string, string>>();
   readonly calls: Array<{ method: string; params?: Record<string, unknown> }> = [];
-  /** A mouse press gives the page focus after this many focus checks (Infinity: never). */
+  // A mouse press gives the page focus after this many focus checks (Infinity: never).
   focusLag = 0;
-  /** Text inserts lost (focus moved away) before one lands. */
+  // Text inserts lost (focus moved away) before one lands.
   dropTexts = 0;
   private focusedNode: number | undefined;
   private pressed = false;
@@ -120,12 +114,7 @@ class FakeCdp implements CdpSession {
   }
 }
 
-/**
- * Run `work` with setTimeout, clearTimeout and Date on a fake clock, stepping
- * it until `work` settles. The budgets these tests exercise (press, dispatch,
- * focus, echo) are clock waits; on a fake clock they run in no real time and
- * `Date.now()` differences still measure them.
- */
+// Advance timer and Date together so press, dispatch, focus, and echo budgets measure the same simulated time.
 async function onFakeClock<T>(work: () => Promise<T>, maxMs = 30_000): Promise<T> {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
   try {
@@ -157,8 +146,7 @@ function target(cdp: FakeCdp, options: { tabId?: string; url?: string; signal?: 
       injected.push(cdp.calls.length);
       return inject();
     },
-    // One page alone: its window's press lock and delivery check are the
-    // adapter's, covered with the window router below.
+    // One page alone: its window's press lock and delivery check are the adapter's, covered with the window router below.
     press: (run) => run(),
     releaseFocus: () => {
       released.push(cdp.calls.length);
@@ -786,23 +774,17 @@ describe("focused field and document replacement", () => {
   });
 });
 
-/** Where the fixture's window content sits on screen, and where its page sits in that window. */
+// Where the fixture's window content sits on screen, and where its page sits in that window.
 const HOST_CONTENT = { x: 1000, y: 500, windowId: 1 };
 const PAGE_IN_WINDOW = { x: 40, y: 60 };
 
-/**
- * The window's one touch sequence, as measured with two pages in one window:
- * a lone sequence reaches the page that sent it; a touch start sent while
- * another page's sequence is open joins that sequence and lands in that page;
- * the tap is derived after the sequence ends. Each page reports what reaches
- * it as native input events, marked with the debugger bit.
- */
+// Measure two guests in one window: overlapping touch starts join the first page’s sequence; native marked events identify the real recipient.
 class WindowTouchRouter {
   private open: FixtureGuest | null = null;
-  /** Touch dispatches are held unanswered (a page busy in its touch handler) until `wake`. */
+  // Touch dispatches are held unanswered (a page busy in its touch handler) until `wake`.
   hang = false;
   private held: Array<() => void> = [];
-  /** The busy page answers: the held dispatches are delivered, in order. */
+  // The busy page answers: the held dispatches are delivered, in order.
   wake(): void {
     this.hang = false;
     for (const deliver of this.held.splice(0)) deliver();
@@ -837,14 +819,11 @@ class WindowTouchRouter {
   }
 }
 
-/** What the router needs of a page: where its native touch input is reported. */
+// What the router needs of a page: where its native touch input is reported.
 interface FixtureGuest { report(input: { type: string; _modifiers: number }): void }
 
-/**
- * The renderer's answer to a focus release: the page lets go of keyboard
- * focus. Without it every press that took focus would wait out the release
- * budget for a page that never lets go.
- */
+// The renderer's answer to a focus release: the page lets go of keyboard focus. Without it every press that took focus would wait out the release budget
+// for a page that never lets go.
 const focusReleases = new WeakMap<BrowserTabRegistry<never>, Map<number, FakeCdp>>();
 function modelFocusRelease(registry: BrowserTabRegistry<never>, guestId: number, cdp: FakeCdp): void {
   let pages = focusReleases.get(registry);
@@ -1017,8 +996,7 @@ describe("tap placement", () => {
   it("never presses at an earlier measurement when a later pointer move gets no echo", async () => {
     const { cdp, actions, approve, echo } = adapterFixture();
     cdp.nodes = page([ax("f", "textbox", "Field", { backendDOMNodeId: 5, value: { type: "string", value: "" } })]);
-    // The page never reports focus, so typing presses again; only the first
-    // pointer move is echoed.
+    // The page never reports focus, so typing presses again; only the first pointer move is echoed.
     cdp.focusLag = Number.POSITIVE_INFINITY;
     const live = await approve("browser_type");
     const ref = /\[ref=(e\d+)\]/.exec((await actions.snapshot(live, {})).text)![1]!;
@@ -1040,15 +1018,14 @@ describe("tap placement", () => {
 });
 
 describe("one press at a time in a window", () => {
-  // A window left wedged by one test would refuse the next test's presses:
-  // every busy page answers before the next test.
+  // A window left wedged by one test would refuse the next test's presses: every busy page answers before the next test.
   const routers: WindowTouchRouter[] = [];
   afterEach(async () => {
     for (const router of routers.splice(0)) router.wake();
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
 
-  /** Two pages of one window, each with a link to press. */
+  // Two pages of one window, each with a link to press.
   async function twoPages() {
     const router = new WindowTouchRouter();
     routers.push(router);
@@ -1134,13 +1111,12 @@ describe("one press at a time in a window", () => {
     expect(c.guest.touches).toEqual([]);
   }, 15_000);
 
-  /** Page A's touch start and its closing cancel both go unanswered: A's sequence stays open. */
+  // Page A's touch start and its closing cancel both go unanswered: A's sequence stays open.
   async function wedgedByA() {
     const fixture = await twoPages();
     fixture.router.hang = true;
-    // A's press runs out its press budget and then its closing cancel's
-    // dispatch budget. Those are clock waits, so they run on a fake clock;
-    // everything after the wedge runs on real time.
+    // A's press runs out its press budget and then its closing cancel's dispatch budget. Those are clock waits, so they run on a fake clock; everything
+    // after the wedge runs on real time.
     await expect(onFakeClock(() => fixture.pages[0].click())).rejects.toMatchObject({ code: "input-not-delivered" });
     return fixture;
   }

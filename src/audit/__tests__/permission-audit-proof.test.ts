@@ -28,9 +28,7 @@ import {
   PERMISSION_AUDIT_SELF_TEST_SCHEMA,
 } from "../permission-audit-proof.js";
 
-// The proof reads its authority through the external key and verifies owner-only
-// files from POSIX uid and mode bits. Neither exists on Windows, so the proof and
-// the self-test refuse there before reading or creating anything.
+// Refuse on Windows before IO because the proof requires POSIX ownership and mode checks.
 const posixOnly = it.skipIf(process.platform === "win32");
 
 const DATE = "2026-09-18";
@@ -269,7 +267,6 @@ describe("packaged permission audit self-test", () => {
 
   it("rejects a reused profile before creating audit authority", async () => {
     writeFileSync(join(process.env.AVE_HOME!, "existing"), "occupied", { mode: 0o600 });
-    // Windows refuses at the owner check on AVE_HOME, before the fresh-profile check.
     await expect(createPermissionAuditSelfTest(CHALLENGE)).rejects.toThrow(
       process.platform === "win32" ? /POSIX owner verification/ : /fresh AVE_HOME/,
     );

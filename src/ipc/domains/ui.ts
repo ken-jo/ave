@@ -1,7 +1,3 @@
-/**
- * UI domain IPC handlers.
- * Covers native host UI surfaces that must escape renderer DOM clipping.
- */
 import { BrowserWindow, Menu, ipcMain, type IpcMainInvokeEvent, type MenuItemConstructorOptions } from "electron";
 import {
   NATIVE_CONTEXT_MENU_COMMANDS,
@@ -45,10 +41,7 @@ const NATIVE_LAYOUT: Record<
     ["workspace.open", "workspace.reveal"],
     ["workspace.copy-path", "workspace.copy-relative-path"],
   ],
-  // Grouped by what the action COSTS to undo, cheapest first: open, then
-  // labelling, then things that leave the window, then archive, and removal
-  // last and alone. VS Code's context-menu guidance is to group similar
-  // actions and keep the destructive one out of the group above it.
+  // Order menu groups by undo cost, keeping destructive removal last and separate.
   project: [
     ["project.new-chat"],
     ["project.pin", "project.unpin", "project.edit", "project.reveal"],
@@ -74,8 +67,6 @@ const NATIVE_LAYOUT: Record<
     ["command.activate"],
     ["command.copy"],
   ],
-  // Same destination, two places to put it — one section, because neither is
-  // an alternative to the other in the way a pin is to an unpin.
   "view-row": [
     ["view.open", "view.open-in-new-pane"],
   ],
@@ -96,9 +87,6 @@ const NATIVE_LABEL: Record<NativeContextMenuCommand, () => string> = {
   "project.pin": () => t("sidebar.pinProject"),
   "project.unpin": () => t("sidebar.unpinProject"),
   "project.edit": () => t("sidebar.projectMenuEdit"),
-  // Names the actual file manager, the way workspace.reveal already does. A
-  // generic "reveal folder" made the same action read differently depending on
-  // which menu you opened it from.
   "project.reveal": () =>
     t(process.platform === "darwin"
       ? "chatPreviewRail.revealInFinder"
@@ -141,12 +129,7 @@ function cleanCoordinate(value: unknown): number | null {
   return Math.max(0, Math.min(100_000, Math.round(value)));
 }
 
-/**
- * An accelerator is a key spec, not text: anything outside this shape is
- * dropped rather than handed to Electron, which throws on a malformed one and
- * would take the whole menu down with it. At least one modifier is required so
- * a row can never claim a bare keystroke the app itself may want.
- */
+// Validate accelerators before native menu creation; require a modifier so rows cannot claim bare app keys.
 const ACCELERATOR_PATTERN = /^(?:(?:CommandOrControl|CmdOrCtrl|Command|Cmd|Control|Ctrl|Alt|Option|AltGr|Shift|Super|Meta)\+)+[A-Za-z0-9]$/;
 
 function normalizeNativePayload(value: unknown): NativeContextMenuPayload | null {
@@ -190,8 +173,6 @@ function normalizeNativePayload(value: unknown): NativeContextMenuPayload | null
 }
 
 function hostWindowForUiEvent(event: IpcMainInvokeEvent): BrowserWindow | null {
-  // Host-renderer frames only: this used to re-type the plugin-shell rejection
-  // by hand instead of asking the guard that owns it.
   if (!validateHostRendererSender(event)) return null;
   const window = BrowserWindow.fromWebContents(event.sender);
   if (!window || window.isDestroyed()) return null;
@@ -208,7 +189,6 @@ function sendNativeAction(event: IpcMainInvokeEvent, action: NativeContextMenuAc
   event.sender.send(UI.nativeContextAction, action);
 }
 
-/** Popped-up menus, held until the OS reports them closed. */
 const liveDynamicMenus = new Set<Menu>();
 
 function sendDynamicMenuAction(
@@ -219,12 +199,7 @@ function sendDynamicMenuAction(
   event.sender.send(UI.dynamicMenuAction, action);
 }
 
-/**
- * A dynamic menu carries rows main did not author, so nothing here trusts the
- * payload's shape: a row is kept only if it has an id and something to draw
- * after sanitising, the tree is bounded in depth and total rows, and an id is
- * echoed back verbatim rather than interpreted.
- */
+// Sanitize untrusted rows, bound depth and count, and return ids only for selectable leaves.
 function buildDynamicMenuItems(
   event: IpcMainInvokeEvent,
   requestId: string,
@@ -243,11 +218,7 @@ function buildDynamicMenuItems(
     const label = sanitizeNativeMenuLabel(item.label);
     if (label.length === 0) continue;
     const id = item.id;
-    // Children are drawn before the parent claims its own slot, so a container
-    // whose subtree did not survive the budget can be dropped whole. Demoting
-    // it to a leaf instead would draw a row that reports a choice the renderer
-    // registered no callback for: the menu closes, nothing runs, and the reply
-    // consumes the pending request so the NEXT choice is dead too.
+    // Drop categories whose children exceed the budget; never demote them into unregistered actions.
     const declaresSubmenu = Array.isArray(item.submenu) && item.submenu.length > 0;
     const submenu = declaresSubmenu
       ? buildDynamicMenuItems(event, requestId, item.submenu, depth + 1, budget)
@@ -264,8 +235,6 @@ function buildDynamicMenuItems(
         ? { accelerator: item.accelerator }
         : {}),
       enabled: item.enabled !== false,
-      // A row with children opens them; only a leaf reports a choice. A leaf
-      // that carries a state is drawn as a radio item showing it.
       ...(submenu.length > 0
         ? { submenu }
         : {
@@ -304,9 +273,7 @@ function buildDynamicMenu(
     template.push(...items);
   }
   if (template.length === 0) return null;
-  // The clamped coordinates travel with the menu: the raw payload's are a DOM
-  // rect the renderer never bounded, and a clipped composer reports a negative
-  // left edge, which would pop the menu off every display.
+  // Clamp coordinates so clipped composer rectangles cannot place menus offscreen.
   return { menu: Menu.buildFromTemplate(template), x, y };
 }
 
@@ -364,9 +331,7 @@ export function registerUiHandlers(deps: IpcDeps): void {
     const built = buildDynamicMenu(event, payload);
     if (!built) return { ok: false, error: "invalid-dynamic-menu" };
 
-    // Electron does not retain a popped-up menu for the caller, so the local
-    // binding is the only reference keeping it alive; release it when the OS
-    // closes the menu rather than when this handler returns.
+    // Retain the native menu until the OS closes it; handler return must not release its only reference.
     liveDynamicMenus.add(built.menu);
     built.menu.popup({
       window,

@@ -1,8 +1,4 @@
-/**
- * The tree digest (design §6.4): sha256 over `"<mode> <sha256(file)> <path>\n"`
- * for every installed file, sorted by path bytes. A tree-rung plugin, a
- * folder package and installed content are all named by it.
- */
+/** SHA-256 of mode, file hash and path lines sorted by path bytes names every installed tree. */
 import { createHash } from "node:crypto";
 import { sha256Hex } from "../../lib/hex-digest-equal.js";
 

@@ -1,10 +1,4 @@
-/**
- * `routine_schedule` tool — `source` marker stamping.
- *
- * Verifies that the LLM-facing `source` field is threaded through to the
- * persisted record (the accept-path that stamps the idempotency identity), and
- * that the length cap is enforced at the tool boundary.
- */
+// Persist source as idempotency identity and enforce its length at the tool boundary.
 import { describe, it, expect } from "vitest";
 
 import { createRoutineScheduleTool } from "../routine-schedule.js";
@@ -87,7 +81,6 @@ describe("routine_schedule tool — source marker", () => {
       );
       expect(result.isError).toBe(true);
       expect(result.output).toContain("source must be at most");
-      // Nothing should have been persisted.
       expect(store.list()).toHaveLength(0);
     } finally {
       await cleanup();
@@ -100,8 +93,7 @@ describe("routine_schedule tool — validation bounds shared with the store", ()
     const { store, cleanup } = tempRoutinesStore();
     try {
       const tool = createRoutineScheduleTool(store);
-      // A valid expression of exactly `length` characters: a minute list padded
-      // with repeats of the same minute (whitespace would be trimmed away).
+      // Repeated minute entries preserve exact length; whitespace would be trimmed.
       const cronOfLength = (length: number): string => {
         let minutes = (length - " 9 * * 1".length) % 2 === 0 ? "00" : "0";
         while (minutes.length + " 9 * * 1".length < length) minutes += ",0";

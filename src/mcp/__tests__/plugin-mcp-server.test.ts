@@ -42,8 +42,6 @@ describe("PluginMcpServer — RC server methods (#1230 §3.1)", () => {
       cacheScope: "private",
       supportedVersions: ["2026-07-28"],
       serverInfo: { name: "FS", version: "1.0.0" },
-      // `false` until a real notification emitter exists — the loopback
-      // transport is request/response-only, so `true` was unfulfillable.
       capabilities: { tools: { listChanged: false } },
     });
   });
@@ -56,11 +54,9 @@ describe("PluginMcpServer — RC server methods (#1230 §3.1)", () => {
       tools: Array<{ name: string; _meta: Record<string, unknown> }>;
     };
     expect(res.resultType).toBe("complete");
-    // `CacheableResult` fields are REQUIRED on list results (final schema).
     expect(res.ttlMs).toBe(3_600_000);
     expect(res.cacheScope).toBe("private");
     expect(res.tools.map((t) => t.name)).toEqual(["fs_read"]);
-    // #885 v6 — visibility is emitted explicitly; category is REMOVED from the wire.
     expect((res.tools[0]._meta as { ui: { visibility: string[] } }).ui.visibility).toEqual(["model"]);
     expect(res.tools[0]._meta["ave/category"]).toBeUndefined();
   });
@@ -73,7 +69,6 @@ describe("PluginMcpServer — RC server methods (#1230 §3.1)", () => {
     expect(res.result).toEqual({
       resultType: "complete",
       content: [{ type: "text", text: "file-body" }],
-      // Every result carries the reserved serverInfo identity (spec SHOULD).
       _meta: { "io.modelcontextprotocol/serverInfo": { name: "FS", version: "1.0.0" } },
     });
   });
@@ -174,7 +169,6 @@ describe("PluginMcpServer — resources/read + resources/list (ui:// serving sea
       req("resources/read", { uri: "ui://other-plugin/card.html", ...RC_META }),
     );
     expect(res.result).toBeUndefined();
-    // Resource-not-found rides -32602 since the final revision (-32002 is burned).
     expect(res.error?.code).toBe(-32602);
   });
 

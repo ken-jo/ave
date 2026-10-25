@@ -1,22 +1,9 @@
-/**
- * The generated `GIT_CONFIG_GLOBAL` file (design §9.3).
- *
- * Marketplace git calls never read the user's own configuration: a
- * `url.*.insteadOf`, `http.extraHeader`, `http.sslVerify=false`,
- * `core.sshCommand` or alias there could redirect a fetch, leak a header or
- * run a program. Credential helpers are the exception worth keeping, so the
- * OS keychain and `gh auth git-credential` still answer for their hosts.
- *
- * The file is built from the system and global levels in the order git reads
- * them (system first), because Apple's and Homebrew's git configure the
- * keychain helper at the system level and `GIT_CONFIG_NOSYSTEM=1` would
- * otherwise drop it. Only these keys are copied:
- *
- *   credential.helper, credential.<url>.<key>, http.sslcainfo, http.sslbackend
- */
+/** The generated `GIT_CONFIG_GLOBAL` file (design §9.3). Marketplace git calls never read the user's own configuration: a `url.*.insteadOf`, `http.extraHeader`, `http.sslVerify=false`, `core.sshCommand` or alias there could redirect a fetch, leak a header or run a program. Credential helpers are the exception worth keeping, so the OS keychain and `gh auth
+ * git-credential` still answer for their hosts. The file is built from the system and global levels in the order git reads them (system first), because Apple's and Homebrew's git configure the keychain helper at the system level and `GIT_CONFIG_NOSYSTEM=1` would otherwise drop it. Only these keys are copied: credential.helper, credential.<url>.<key>, http.sslcainfo, http.sslbackend */
 import { execFile } from "node:child_process";
 import { writeFileAtomicAtPath } from "../../main/storage/feature-namespace.js";
 import { buildSafeChildEnv } from "../../tools/safe-env.js";
+import { buildHostGitArgs } from "../../shared/host-git.js";
 
 export interface GitConfigEntry {
   key: string;
@@ -32,14 +19,8 @@ export interface CopiedConfigEntry {
 
 const COPIED_TOP_LEVEL_KEYS = new Set(["credential.helper", "http.sslcainfo", "http.sslbackend"]);
 
-/**
- * Keep only the keys above. Section and variable names arrive lowercased from
- * `git config --list`; a subsection (the URL in `credential.<url>.helper`)
- * keeps its case. git refuses any of these keys without a value, and an odd
- * user config must not stop the marketplace: a valueless helper becomes the
- * empty value that resets the helper list, and any other valueless key is
- * dropped (an empty `http.sslCAInfo` would fail every TLS connection).
- */
+/** Keep only the keys above. Section and variable names arrive lowercased from `git config --list`; a subsection (the URL in `credential.<url>.helper`) keeps its case. git refuses any of these keys without a value, and an
+ * odd user config must not stop the marketplace: a valueless helper becomes the empty value that resets the helper list, and any other valueless key is dropped (an empty `http.sslCAInfo` would fail every TLS connection). */
 export function selectCopiedEntries(entries: readonly GitConfigEntry[]): CopiedConfigEntry[] {
   return entries
     .filter(({ key }) => {
@@ -68,17 +49,14 @@ export function parseNullConfigList(output: string): GitConfigEntry[] {
 
 function runConfig(gitPath: string, args: string[], env: Record<string, string>): Promise<{ ok: boolean; stdout: string }> {
   return new Promise((resolve) => {
-    execFile(gitPath, args, { env, windowsHide: true, timeout: 10_000, maxBuffer: 1024 * 1024 }, (error, stdout) =>
+    execFile(gitPath, buildHostGitArgs(args), { env, windowsHide: true, timeout: 10_000, maxBuffer: 1024 * 1024 }, (error, stdout) =>
       resolve({ ok: !error, stdout: String(stdout) }),
     );
   });
 }
 
-/**
- * Read the entries the generated file keeps. A level that does not exist or
- * cannot be read contributes nothing: an unreadable user config must not stop
- * the marketplace, it only means no credential helper answers.
- */
+/** Read the entries the generated file keeps. A level that does not exist or cannot be read contributes
+ * nothing: an unreadable user config must not stop the marketplace, it only means no credential helper answers. */
 export async function readCopiedCredentialConfig(gitPath: string): Promise<CopiedConfigEntry[]> {
   const env = buildSafeChildEnv({ LC_ALL: "C", GIT_TERMINAL_PROMPT: "0" });
   if (process.env.XDG_CONFIG_HOME) env.XDG_CONFIG_HOME = process.env.XDG_CONFIG_HOME;
@@ -90,14 +68,8 @@ export async function readCopiedCredentialConfig(gitPath: string): Promise<Copie
   return selectCopiedEntries(entries);
 }
 
-/**
- * Write the generated config to `outputPath` (replacing it atomically), one
- * section block per entry so git reads the entries back in the order they
- * were copied. Order matters: git collects `credential.helper` and
- * `credential.<url>.helper` in file order and an empty value resets the list,
- * while `git config --add` would file a value under an earlier section of the
- * same name. Values are quoted and escaped the way git reads them back.
- */
+/** Write the generated config to `outputPath` (replacing it atomically), one section block per entry so git reads the entries back in the order they were copied. Order matters: git collects `credential.helper` and
+ * `credential.<url>.helper` in file order and an empty value resets the list, while `git config --add` would file a value under an earlier section of the same name. Values are quoted and escaped the way git reads them back. */
 export async function writeGeneratedGlobalConfig(outputPath: string, entries: readonly CopiedConfigEntry[]): Promise<void> {
   await writeFileAtomicAtPath(outputPath, entries.map(formatConfigEntry).join(""));
 }
