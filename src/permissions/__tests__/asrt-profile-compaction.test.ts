@@ -30,9 +30,17 @@ import { asrtCanInitialize, expandFoldedPathFilter, pathFilter, profileOfWrapped
 const darwin = process.platform === "darwin";
 /** Names that are regex syntax, case, spacing, non-ASCII and a newline. */
 const NAMES = [
-  "plain", "plainx", "a.b", "a+b", "a[1]", "a*", "a(b)|c", "sp ace", "ünï", "new\nline",
+  "plain", "plainx", "a.b", "aXb", "a+b", "a[1]", "a*", "a(b)|c", "sp ace", "ünï", "new\nline",
   "q?", "$x", "^y", "{z}", "back\\slash", "Mixed",
 ];
+/**
+ * Probed but never denied: each sits beside a denied name it would match if
+ * the fold left a character unescaped or dropped an anchor (`plainx` beside
+ * `plain`, `aXb` beside `a.b`, `Mixed` a name of its own). Every other name,
+ * every regex metacharacter among them, is a deny filter.
+ */
+const CONTROL_NAMES = new Set(["plainx", "aXb", "Mixed"]);
+const DENIED_NAMES = NAMES.filter((name) => !CONTROL_NAMES.has(name));
 const deny = (operations: string, filters: Iterable<string>): string =>
   `(version 1)(allow default)(deny ${operations}\n${[...filters].map((filter) => `  ${filter}`).join("\n")})`;
 
@@ -99,7 +107,7 @@ describe("folded path filters", () => {
     const probes: string[] = [];
     const subpaths = new Set<string>();
     const literals = new Set<string>();
-    NAMES.forEach((name, index) => {
+    NAMES.forEach((name) => {
       for (const dir of [join(dirs, name), join(dirs, `${name}x`), join(dirs, name, "deep")]) {
         mkdirSync(dir, { recursive: true });
         writeFileSync(join(dir, "f"), "bytes");
@@ -111,11 +119,13 @@ describe("folded path filters", () => {
         writeFileSync(file, "bytes");
         probes.push(file);
       }
-      if (index % 4 !== 3) {
+      if (!CONTROL_NAMES.has(name)) {
         subpaths.add(pathFilter("subpath", join(dirs, name)));
         literals.add(pathFilter("literal", join(files, name)));
       }
     });
+    expect(subpaths.size).toBe(DENIED_NAMES.length);
+    expect(DENIED_NAMES).toEqual(expect.arrayContaining(["a.b", "a+b", "$x", "^y", "a*", "q?", "{z}", "a[1]", "a(b)|c"]));
     const separate = new Set([...subpaths, ...literals]);
     const folded = compactPathFilters(separate);
     expect(folded.filter((filter) => filter.startsWith("(regex ")).length).toBe(2);
@@ -136,7 +146,7 @@ describe("folded path filters", () => {
       const dir = join(root, `create-${variant}`);
       mkdirSync(dir);
       const probes = NAMES.flatMap((name) => [join(dir, name), join(dir, `${name}x`), join(dir, name.toUpperCase())]);
-      const filters = new Set(NAMES.filter((_, index) => index % 4 !== 3).map((name) => pathFilter("literal", join(dir, name))));
+      const filters = new Set(DENIED_NAMES.map((name) => pathFilter("literal", join(dir, name))));
       if (variant === "separate") for (const filter of filters) separate.add(filter);
       const profile = deny("file-write-create", variant === "separate" ? filters : compactPathFilters(filters));
       const create = 'for p do if /usr/bin/touch -- "$p" 2>/dev/null; then echo 1; /bin/rm -f -- "$p"; else echo 0; fi; done';
@@ -144,7 +154,7 @@ describe("folded path filters", () => {
     }
     expect(outcomes[0]!.filter((decision) => decision === "0").length).toBeGreaterThan(NAMES.length / 2);
     expect(outcomes[1]).toEqual(outcomes[0]);
-    expect(separate.size).toBe(NAMES.filter((_, index) => index % 4 !== 3).length);
+    expect(separate.size).toBe(DENIED_NAMES.length);
   });
 });
 
