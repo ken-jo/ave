@@ -4,18 +4,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { InputClassifier } from "../../core/input-classifier.js";
-import { RouteEngine } from "../../core/route-engine.js";
 import { ConversationLoop } from "../conversation-loop.js";
 import type { GenericMessage, LLMProvider, StreamEvent, StreamTurnParams } from "../llm/types.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { createDynamicTool } from "../../tools/base.js";
 import { MemoryManager } from "../../memory/memory-manager.js";
-import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
 import { serializeHistoryMessage } from "../../shared/chat-history.js";
 import { historyToEntries } from "../../ui/renderer/utils/history.js";
 import { computeToolActivity } from "../../ui/renderer/utils/tool-activity.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { endTurnScript } from "./conversation-loop-test-helpers.js";
+import { makeBasicConversationLoopDeps } from "./support/conversation-loop-fixtures.js";
 
 const SESSION_ID = "b5a06893-46a9-493a-8a3e-f277ba673230";
 
@@ -41,17 +40,10 @@ function buildLoop(
   toolRegistry: ToolRegistry,
   provider: LLMProvider,
 ): ConversationLoop {
-  const loop = new ConversationLoop({
-    settingsService: {
-      get: () => fakeLlmSettings(),
-      getSecret: () => "test-key",
-    },
-    systemPromptBuilder: { build: () => "system" },
-    inputClassifier: new InputClassifier(),
-    routeEngine: new RouteEngine(),
+  const loop = new ConversationLoop(makeBasicConversationLoopDeps({
     toolRegistry,
     memoryManager,
-  } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+  }));
   (loop as { provider: LLMProvider | null }).provider = provider;
   (loop as { sessionId: string }).sessionId = SESSION_ID;
   return loop;
@@ -92,7 +84,7 @@ describe("transcript durability", () => {
     await withTmpMemory(async (memoryManager) => {
       let onDiskAtStreamStart: GenericMessage[] = [];
       const provider = new ScriptedProvider(
-        [[{ type: "text_delta", text: "hi" }, { type: "message_complete", stopReason: "end_turn" }]],
+        endTurnScript("hi"),
         () => {
           onDiskAtStreamStart = persisted(memoryManager);
         },

@@ -12,6 +12,7 @@ import { AuditLogger } from "../../audit/audit-logger.js";
 import { EAGER_TOOL_EXPOSURE_CEILING } from "../../shared/tool-exposure-policy.js";
 import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
 import type { TurnDecisionEvent } from "../turn/types.js";
+import { endTurnScript } from "./conversation-loop-test-helpers.js";
 
 type CapturedToolExposure = {
   loadedToolCount: number;
@@ -164,12 +165,7 @@ describe("ConversationLoop — eager active-plugin tool exposure (#1176)", () =>
   });
 
   it("emits an empty catalog and a 0 deferred ratio in eager mode", async () => {
-    const provider = new RecordingProvider([
-      [
-        { type: "text_delta", text: "ok" },
-        { type: "message_complete", stopReason: "end_turn" },
-      ],
-    ]);
+    const provider = new RecordingProvider(endTurnScript("ok"));
     const auditLogger = new AuditLogger();
     const captured: CapturedToolExposure[] = [];
     vi.spyOn(auditLogger, "logTurn").mockImplementation(
@@ -192,12 +188,7 @@ describe("ConversationLoop — eager active-plugin tool exposure (#1176)", () =>
 
 describe("ConversationLoop — active/inactive plugin gating (#1176)", () => {
   it("hides a disabled plugin's tools from both schema and catalog", async () => {
-    const provider = new RecordingProvider([
-      [
-        { type: "text_delta", text: "ok" },
-        { type: "message_complete", stopReason: "end_turn" },
-      ],
-    ]);
+    const provider = new RecordingProvider(endTurnScript("ok"));
     const loop = makeLoop({
       provider,
       inactivePluginIds: new Set(["com.example.meeting"]),
@@ -212,12 +203,7 @@ describe("ConversationLoop — active/inactive plugin gating (#1176)", () => {
   });
 
   it("re-exposes the suite once the plugin is active again", async () => {
-    const provider = new RecordingProvider([
-      [
-        { type: "text_delta", text: "ok" },
-        { type: "message_complete", stopReason: "end_turn" },
-      ],
-    ]);
+    const provider = new RecordingProvider(endTurnScript("ok"));
     const loop = makeLoop({ provider });
     await loop.runTurn("회의 정리해줘", undefined, undefined, {
       inputOrigin: "user-keyboard",
@@ -365,12 +351,7 @@ describe("ConversationLoop — deferral ceiling (#1176)", () => {
   it("treats exactly the ceiling as the deferral boundary", async () => {
     // Deferral begins inclusively at the ceiling.
     const extra = EAGER_TOOL_EXPOSURE_CEILING - 2;
-    const provider = new RecordingProvider([
-      [
-        { type: "text_delta", text: "ok" },
-        { type: "message_complete", stopReason: "end_turn" },
-      ],
-    ]);
+    const provider = new RecordingProvider(endTurnScript("ok"));
     const loop = makeLoop({
       provider,
       extraMeetingTools: extra,
@@ -388,12 +369,7 @@ describe("ConversationLoop — deferral ceiling (#1176)", () => {
 
 describe("ConversationLoop — headless MCP scope (#1176 eager)", () => {
   it("keeps MCP tools out of a headless turn (eager mode, no MCP in scope)", async () => {
-    const provider = new RecordingProvider([
-      [
-        { type: "text_delta", text: "no mcp" },
-        { type: "message_complete", stopReason: "end_turn" },
-      ],
-    ]);
+    const provider = new RecordingProvider(endTurnScript("no mcp"));
     const loop = makeLoop({ provider, headless: true });
     const result = await loop.runTurn("회의 정리해줘", undefined, undefined, {
       inputOrigin: "user-keyboard",

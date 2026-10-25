@@ -1,8 +1,6 @@
 // Wire stubbing must bound per-round growth while keeping older results verbatim in memory.
 import { afterEach, describe, expect, it } from "vitest";
 
-import { InputClassifier } from "../../core/input-classifier.js";
-import { RouteEngine } from "../../core/route-engine.js";
 import { ConversationLoop } from "../conversation-loop.js";
 import { estimateMessagesTokens } from "../auto-compact.js";
 import type { LLMProvider, StreamEvent, StreamTurnParams,
@@ -10,6 +8,7 @@ import type { LLMProvider, StreamEvent, StreamTurnParams,
 import { ToolRegistry } from "../../tools/registry.js";
 import { createDynamicTool } from "../../tools/base.js";
 import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
+import { makeBasicConversationLoopDeps } from "./support/conversation-loop-fixtures.js";
 
 // Match the loop protect window so plateau assertions cross the same boundary.
 const INTRA_TURN_PRESERVE_RECENT_RESULTS = 16;
@@ -71,18 +70,10 @@ describe("ConversationLoop intra-turn tool-result stubbing (issue #1171)", () =>
 
     const TOOL_ROUNDS = 24;
     const provider = new RecordingToolLoopProvider(TOOL_ROUNDS);
-    const loop = new ConversationLoop({
-      settingsService: {
-        get: () => fakeLlmSettings(),
-        getSecret: () => "test-key",
-      },
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       toolRegistry,
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
       disableSessionPersistence: true,
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as { provider: LLMProvider | null }).provider = provider;
 
     await loop.runTurn("deep tool loop", undefined, undefined, {
@@ -135,18 +126,14 @@ describe("ConversationLoop intra-turn tool-result stubbing (issue #1171)", () =>
       activeChatRuntime: { kind: "subscription" as const, provider: "kimi-code" as const },
     };
     const provider = new KimiSubscriptionToolLoopProvider(17);
-    const loop = new ConversationLoop({
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       settingsService: {
         get: () => settings,
         getSecret: () => "test-key",
       },
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
       toolRegistry,
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
       disableSessionPersistence: true,
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as { provider: LLMProvider | null }).provider = provider;
 
     await loop.runTurn("deep tool loop", undefined, undefined, {
