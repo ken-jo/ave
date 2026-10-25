@@ -289,6 +289,13 @@ export function pdfAssetDirectory(path: string): string {
   return `${path.replace(/[\\/]+$/, "")}/`;
 }
 
+let pdfGetDocumentOverride: typeof import("pdfjs-dist/legacy/build/pdf.mjs").getDocument | undefined;
+
+export function _setPdfGetDocumentForTest(getDocument: typeof pdfGetDocumentOverride): void {
+  if (process.env.NODE_ENV !== "test") throw new Error("PDF document factory override is test-only");
+  pdfGetDocumentOverride = getDocument;
+}
+
 async function pdf(bytes: Buffer, index: number): Promise<PreviewPageDocument> {
   if (!bytes.subarray(0, 1024).includes(Buffer.from("%PDF-"))) corrupt();
   const { createCanvas, library } = await loadPdfRuntime();
@@ -299,7 +306,7 @@ async function pdf(bytes: Buffer, index: number): Promise<PreviewPageDocument> {
   try {
     // pdf.js 6 has no eval-based paths (the former isEvalSupported option is gone);
     // the child also runs with --disallow-code-generation-from-strings.
-    task = library.getDocument({
+    task = (pdfGetDocumentOverride ?? library.getDocument)({
       data: new Uint8Array(bytes), disableFontFace: true, useSystemFonts: false,
       useWorkerFetch: false, isOffscreenCanvasSupported: false, isImageDecoderSupported: false,
       maxImageSize: PAGE_PREVIEW_LIMITS.maxPixels, canvasMaxAreaInBytes: PAGE_PREVIEW_LIMITS.maxPixels * 4,

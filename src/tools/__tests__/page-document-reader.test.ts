@@ -3,13 +3,14 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { crc32 } from "node:zlib";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { pdfFixture, presentationFixture } from "../../__tests__/support/page-document-fixtures.js";
 import { offsetWorkbook } from "../../__tests__/support/table-document-fixtures.js";
 import { createZipFixture, zipCentralOffset } from "../../__tests__/support/zip-fixtures.js";
 import { PREVIEW_DOCUMENT_LIMITS } from "../../shared/preview-document.js";
 import { PAGE_PREVIEW_LIMITS } from "../../shared/preview-page-document.js";
-import { parsePageDocument, pdfAssetDirectory } from "../page-document-reader.js";
+import { _setPdfGetDocumentForTest, parsePageDocument, pdfAssetDirectory } from "../page-document-reader.js";
+import { TableDocumentError } from "../table-document-error.js";
 import { CFB_MAGIC } from "../workbook-container.js";
 import { readPageDocumentResponse } from "../preview-page-protocol.js";
 
@@ -158,6 +159,30 @@ describe("page document previews", () => {
       zip.updateFile(part, Buffer.from(zip.readAsText(part).replace(/<p:sldIdLst>[\s\S]*?<\/p:sldIdLst>/, replacement)));
       await expect(parsePageDocument(zip.toBuffer(), "pptx", 0)).rejects.toMatchObject({ code: "page-not-found" });
     }
+  });
+
+  it("classifies a synchronous document factory error as a corrupt document", async () => {
+    const getDocument = vi.fn(() => { throw new Error("Document factory failed synchronously"); });
+    _setPdfGetDocumentForTest(getDocument);
+    try {
+      const result = parsePageDocument(pdfFixture(), "pdf", 0);
+      await expect(result).rejects.toBeInstanceOf(TableDocumentError);
+      await expect(result).rejects.toMatchObject({ code: "corrupt-document" });
+      expect(getDocument).toHaveBeenCalledOnce();
+    } finally { _setPdfGetDocumentForTest(undefined); }
+  });
+
+  it("preserves the encrypted classification when cleanup has no loading task", async () => {
+    const error = new Error("Document requires a password");
+    error.name = "PasswordException";
+    const getDocument = vi.fn(() => { throw error; });
+    _setPdfGetDocumentForTest(getDocument);
+    try {
+      const result = parsePageDocument(pdfFixture(), "pdf", 0);
+      await expect(result).rejects.toBeInstanceOf(TableDocumentError);
+      await expect(result).rejects.toMatchObject({ code: "encrypted" });
+      expect(getDocument).toHaveBeenCalledOnce();
+    } finally { _setPdfGetDocumentForTest(undefined); }
   });
 
   it("renders a real PDF page into a bounded image with extractable text", async () => {
