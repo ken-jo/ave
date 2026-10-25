@@ -5,6 +5,7 @@ import { ArrowUp, Brain, Check, ChevronRight, HelpCircle, Lightbulb, Paperclip, 
 import { Button } from "../../../components/ui/button.js";
 import { Checkbox } from "../../../components/ui/checkbox.js";
 import { Popover, PopoverContent, PopoverTrigger } from "../../../components/ui/popover.js";
+import { SandboxRestartDialog } from "./SandboxRestartDialog.js";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../../components/ui/tooltip.js";
 import { t } from "../../../i18n/runtime.js";
 import { useTranslation } from "../../../i18n/react.js";
@@ -416,6 +417,7 @@ function PermissionQuickPicker({
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
+  const [sandboxRestartOpen, setSandboxRestartOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const permissionLabel = t(PERMISSION_LABEL_KEYS[permissionMode]);
 
@@ -452,7 +454,9 @@ function PermissionQuickPicker({
 
   const title = t("inputActionBar.permissionPickerTitle");
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <>
+    <SandboxRestartDialog open={sandboxRestartOpen} onOpenChange={setSandboxRestartOpen} />
+    <Popover open={open} onOpenChange={(next) => { if (!sandboxRestartOpen) setOpen(next); }}>
       <PopoverTrigger asChild>
         <button
           type="button"
@@ -500,10 +504,12 @@ function PermissionQuickPicker({
           </button>
         ) : null}
         <SandboxCheckboxRow
+          onRestartRequired={() => setSandboxRestartOpen(true)}
           onOpenPermissions={onOpenPermissions ? () => { setOpen(false); onOpenPermissions(); } : undefined}
         />
       </PopoverContent>
     </Popover>
+    </>
   );
 }
 
@@ -558,7 +564,7 @@ const SANDBOX_STATUS_TONE: Record<ShellSandboxStatusInfo["state"], string> = {
 
 /** The shell sandbox checkbox at the foot of the permission card (design I3: a silent off or a sandbox that did not start is visible here and one click away). The host decides the state; `sandboxCapability().shell`; and this row renders
  * it; a click writes `features.osToolSandbox` and nothing else, the same write Settings → Permissions makes for the shell toggle. The sandbox starts once at boot, so a change shows as pending until a restart instead of claiming it applied. */
-function SandboxCheckboxRow({ onOpenPermissions }: { onOpenPermissions?: () => void }) {
+function SandboxCheckboxRow({ onOpenPermissions, onRestartRequired }: { onOpenPermissions?: () => void; onRestartRequired: () => void }) {
   const { t } = useTranslation();
   const checkboxId = useId();
   const statusId = useId();
@@ -572,6 +578,7 @@ function SandboxCheckboxRow({ onOpenPermissions }: { onOpenPermissions?: () => v
       const info = await getApi().permission.sandboxCapability();
       setStatus(info.shell);
       setLoadFailed(false);
+      return info.shell;
     } catch (error) {
       console.warn("[ave] sandbox status read failed: %s", errorMessage(error));
       setLoadFailed(true);
@@ -595,7 +602,8 @@ function SandboxCheckboxRow({ onOpenPermissions }: { onOpenPermissions?: () => v
         setSaveFailed(true);
         return;
       }
-      await refresh();
+      const next = await refresh();
+      if (next?.state === "pending-on" || next?.state === "pending-off") onRestartRequired();
     } catch (error) {
       console.warn("[ave] sandbox toggle failed: %s", errorMessage(error));
       setSaveFailed(true);

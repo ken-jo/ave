@@ -67,6 +67,7 @@ function installApi(
     return { ok: true as const, active: [], disabled, totalDisabled: disabled.length };
   });
   const ave = {
+    relaunchApp: vi.fn<() => Promise<import("../../../../shared/app-relaunch.js").AppRelaunchResult>>(async () => ({ ok: true })),
     permission: {
       egressGrantsList: vi.fn(async () => ({ ok: true as const, grants: [] })),
       egressGrantRevoke: vi.fn(async () => ({ ok: true as const })),
@@ -150,10 +151,11 @@ function installApi(
     },
   };
   (globalThis as unknown as { window: typeof window }).window.ave = ave as never;
-  installMockAveApi({
+  const api = installMockAveApi({
     settings: { features: { osToolSandbox: false } },
     envForcedSettings,
   });
+  api.relaunchApp = ave.relaunchApp;
   return ave;
 }
 
@@ -921,6 +923,91 @@ describe("PermissionsTab — OS sandbox toggle and capability rendering", () => 
     };
   }
 
+  async function togglePending(scope: "shell" | "worker", state: "pending-on" | "pending-off" = "pending-on") {
+    const api = installApi([[]]);
+    const base = await api.permission.sandboxCapability();
+    const initiallyEnabled = state === "pending-off";
+    api.permission.sandboxCapability.mockResolvedValue({
+      ...base, workerRestartPending: false,
+      shell: { state: initiallyEnabled ? "on" : "off", setting: initiallyEnabled, envForced: false, causes: [] },
+    } as never);
+    settingsApi().getSettings.mockResolvedValue({ features: { osToolSandbox: initiallyEnabled, pluginWorkerConfinement: initiallyEnabled } });
+    settingsApi().updateSettings.mockResolvedValue({ ok: true });
+    await renderPermissionsTab();
+    api.permission.sandboxCapability.mockResolvedValue({
+      ...base, workerRestartPending: scope === "worker",
+      shell: { state: scope === "shell" ? state : "off", setting: !initiallyEnabled, envForced: false, causes: [] },
+    } as never);
+    await act(async () => { fireEvent.click(screen.getByTestId(scope === "shell" ? "os-sandbox-toggle" : "worker-confinement-toggle")); });
+    await screen.findByRole("dialog", { name: t("permissionsTab.sandboxRestartTitle") });
+    return api;
+  }
+
+  it("prompts for a shell change and Later preserves the pending restart action", async () => {
+    const api = await togglePending("shell");
+    const later = screen.getByRole("button", { name: t("permissionsTab.sandboxRestartLater") });
+    expect(later).toHaveFocus();
+    fireEvent.click(later);
+    expect(screen.queryByRole("dialog", { name: t("permissionsTab.sandboxRestartTitle") })).toBeNull();
+    expect(api.relaunchApp).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: t("permissionsTab.sandboxRestartNow") }));
+    expect(screen.getByRole("dialog", { name: t("permissionsTab.sandboxRestartTitle") })).toBeTruthy();
+    expect(api.relaunchApp).not.toHaveBeenCalled();
+  });
+
+  it("confirms a pending shell disable before invoking relaunch", async () => {
+    const api = await togglePending("shell", "pending-off");
+    expect(api.relaunchApp).not.toHaveBeenCalled();
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: t("permissionsTab.sandboxRestartNow") })); });
+    expect(api.relaunchApp).toHaveBeenCalledExactlyOnceWith();
+  });
+
+  it("prompts for pending worker confinement and restarts only on confirmation", async () => {
+    const api = await togglePending("worker");
+    expect(api.relaunchApp).not.toHaveBeenCalled();
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: t("permissionsTab.sandboxRestartNow") })); });
+    expect(api.relaunchApp).toHaveBeenCalledExactlyOnceWith();
+    expect(settingsApi().updateSettings).toHaveBeenCalledWith({ features: { pluginWorkerConfinement: true } });
+  });
+
+  it("allows a pending worker disable to be deferred", async () => {
+    const api = await togglePending("worker", "pending-off");
+    fireEvent.click(screen.getByRole("button", { name: t("permissionsTab.sandboxRestartLater") }));
+    expect(screen.queryByRole("dialog", { name: t("permissionsTab.sandboxRestartTitle") })).toBeNull();
+    expect(api.relaunchApp).not.toHaveBeenCalled();
+    expect(settingsApi().updateSettings).toHaveBeenCalledWith({ features: { pluginWorkerConfinement: false } });
+  });
+
+  it("clears the restart action without prompting when the shell returns to its boot value", async () => {
+    const api = await togglePending("shell");
+    fireEvent.click(screen.getByRole("button", { name: t("permissionsTab.sandboxRestartLater") }));
+    api.permission.sandboxCapability.mockResolvedValue({
+      ...await api.permission.sandboxCapability(), workerRestartPending: false,
+      shell: { state: "off", setting: false, envForced: false, causes: [] },
+    } as never);
+    await act(async () => { fireEvent.click(screen.getByTestId("os-sandbox-toggle")); });
+    expect(screen.queryByRole("dialog", { name: t("permissionsTab.sandboxRestartTitle") })).toBeNull();
+    expect(screen.queryByRole("button", { name: t("permissionsTab.sandboxRestartNow") })).toBeNull();
+    expect(api.relaunchApp).not.toHaveBeenCalled();
+  });
+
+  it("does not prompt when worker confinement returns to its boot value", async () => {
+    const api = await togglePending("worker");
+    fireEvent.click(screen.getByRole("button", { name: t("permissionsTab.sandboxRestartLater") }));
+    api.permission.sandboxCapability.mockResolvedValue({ ...await api.permission.sandboxCapability(), workerRestartPending: false } as never);
+    await act(async () => { fireEvent.click(screen.getByTestId("worker-confinement-toggle")); });
+    expect(screen.queryByRole("dialog", { name: t("permissionsTab.sandboxRestartTitle") })).toBeNull();
+    expect(screen.queryByRole("button", { name: t("permissionsTab.sandboxRestartNow") })).toBeNull();
+    expect(api.relaunchApp).not.toHaveBeenCalled();
+  });
+
+  it("keeps a refused restart open with the localized reason", async () => {
+    const api = await togglePending("shell");
+    api.relaunchApp.mockResolvedValue({ ok: false, error: "update-install-in-progress" });
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: t("permissionsTab.sandboxRestartNow") })); });
+    expect(screen.getByRole("dialog", { name: t("permissionsTab.sandboxRestartTitle") })).toHaveTextContent(t("permissionsTab.sandboxRestartUpdateBusy"));
+  });
+
   it("rolls back optimistic enable when settings IPC returns an error", async () => {
     const api = installApi([[]]);
     settingsApi().updateSettings.mockResolvedValueOnce({
@@ -1022,7 +1109,7 @@ describe("PermissionsTab — OS sandbox toggle and capability rendering", () => 
     expect(screen.queryByTestId("os-sandbox-forced")).toBeNull();
   });
 
-  it("renders platform potential, runtime reason, and restart note as separate branches", async () => {
+  it("renders platform and runtime status without a restart action when unchanged", async () => {
     const api = installApi([[]]);
     api.permission.sandboxCapability.mockResolvedValueOnce({
       platform: "linux" as NodeJS.Platform,
@@ -1048,7 +1135,7 @@ describe("PermissionsTab — OS sandbox toggle and capability rendering", () => 
     expect(screen.getByTestId("os-sandbox-runtime-reason")).toHaveTextContent(
       t("permissionsTab.osSandboxKindFull"),
     );
-    expect(screen.getByText(/변경 사항은 앱을 재시작한 후 적용됩니다/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: t("permissionsTab.sandboxRestartNow") })).toBeNull();
   });
 
   it("says the environment is deciding the sandbox when the variable is set", async () => {

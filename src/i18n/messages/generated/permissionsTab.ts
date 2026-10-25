@@ -1,5 +1,15 @@
 // i18n fragment. Source: src/ui/renderer/tabs/PermissionsTab.tsx.
 export const en = {
+  "permissionsTab.sandboxRestartTitle": "Restart Ave to apply the sandbox change?",
+  "permissionsTab.sandboxRestartDescription": "Running agents and shells will stop when Ave restarts.",
+  "permissionsTab.sandboxRestartLater": "Later",
+  "permissionsTab.sandboxRestartNow": "Restart now",
+  "permissionsTab.sandboxRestartUnauthorized": "This window cannot restart Ave.",
+  "permissionsTab.sandboxRestartGestureRequired": "Click Restart now again to confirm.",
+  "permissionsTab.sandboxRestartPluginBusy": "An extension installation is in progress. Try again when it finishes.",
+  "permissionsTab.sandboxRestartUpdateBusy": "An app update is being installed. Wait for it to finish.",
+  "permissionsTab.sandboxRestartUnsupported": "Restart is unavailable in this host. Restart Ave manually.",
+  "permissionsTab.sandboxRestartFailed": "Ave could not restart. Try again.",
   "permissionsTab.osSandboxWindowsHelperIntegrityError": "The Windows sandbox helper failed its integrity check. Ave blocked it from running. Reinstall Ave to restore the verified helper.",
   // Reviewer interactive options
   "permissionsTab.interactiveAutoApproveLabel": "Automatic approval threshold",
@@ -169,7 +179,6 @@ export const en = {
   "permissionsTab.osSandboxCapabilityLinux": "Linux (bwrap via ASRT): shell isolation is enabled by default when the runtime probe passes. Sandboxed shell commands write only within project and temporary roots, with policy files protected. Network egress is deny-by-default: each command gets its own proxy socket, and a host is reached only when you allow it (or, for extension processes, when their extension declares it).",
   "permissionsTab.osSandboxCapabilityOther": "This platform's sandbox confines filesystem and process actions; network containment is not guaranteed.",
   "permissionsTab.osSandboxCapabilityWindows": "Windows: where Windows offers Microsoft Execution Containers, each agent shell command runs in its own container (no administrator install). Extensions use srt-win via ASRT: when the OS sandbox is ON, filesystem access and network egress are confined. ASRT provisions a dedicated srt-sandbox user for filesystem ACL rules and uses WFP filters plus the loopback proxy for egress. Process isolation is not available on Windows. This confines processes against your files and network, not extensions against each other: every sandboxed process, every extension included, runs as the same srt-sandbox user. The sandbox defaults to off on Windows until shell isolation is ready; while it is off, tools run unconfined. The persistent status reports the actual host shell execution plan.",
-  "permissionsTab.osSandboxRestartNote": "Changes take effect after restarting the app — the ASRT sandbox is initialized at startup.",
   "permissionsTab.osSandboxEnvForced": "The environment variable {envVar} is currently turning the sandbox on for this run, whatever is saved here.",
   "permissionsTab.osSandboxDetectionReason": "Startup check: {reason}",
   "permissionsTab.osSandboxPotentialReason": "Platform potential: {reason}",
@@ -379,6 +388,16 @@ export const en = {
   "permissionsTab.osSandboxWindowsSharedIdentity": "Extensions share one proxy identity: the proxy cannot tell which extension process opened a connection the way it can for a contained shell command.",
 } as const;
 export const ko: Record<keyof typeof en, string> = {
+  "permissionsTab.sandboxRestartTitle": "샌드박스 변경 사항을 적용하려면 Ave를 다시 시작할까요?",
+  "permissionsTab.sandboxRestartDescription": "Ave를 다시 시작하면 실행 중인 에이전트와 셸이 중지됩니다.",
+  "permissionsTab.sandboxRestartLater": "나중에",
+  "permissionsTab.sandboxRestartNow": "지금 다시 시작",
+  "permissionsTab.sandboxRestartUnauthorized": "이 창에서는 Ave를 다시 시작할 수 없습니다.",
+  "permissionsTab.sandboxRestartGestureRequired": "지금 다시 시작을 다시 클릭해 확인해 주세요.",
+  "permissionsTab.sandboxRestartPluginBusy": "확장 설치가 진행 중입니다. 완료된 후 다시 시도해 주세요.",
+  "permissionsTab.sandboxRestartUpdateBusy": "앱 업데이트를 설치 중입니다. 완료될 때까지 기다려 주세요.",
+  "permissionsTab.sandboxRestartUnsupported": "이 호스트에서는 다시 시작할 수 없습니다. Ave를 직접 다시 시작해 주세요.",
+  "permissionsTab.sandboxRestartFailed": "Ave를 다시 시작하지 못했습니다. 다시 시도해 주세요.",
   "permissionsTab.osSandboxWindowsHelperIntegrityError": "Windows 샌드박스 도우미의 무결성 검사에 실패하여 Ave가 실행을 차단했습니다. Ave를 다시 설치하여 검증된 도우미를 복원하세요.",
   "permissionsTab.interactiveAutoApproveLabel": "자동 허용 위험도",
   "permissionsTab.interactiveOffLabel": "끔",
@@ -524,7 +543,6 @@ export const ko: Record<keyof typeof en, string> = {
   "permissionsTab.osSandboxCapabilityLinux": "Linux(bwrap via ASRT): 실행 환경 검증을 통과하면 기본으로 셸을 격리합니다. 격리된 셸 명령은 프로젝트와 임시 경로 안에서만 쓰며 정책 파일은 보호됩니다. 네트워크 송신은 기본 차단이며, 명령마다 전용 프록시 소켓을 받고 사용자가 허용한 호스트(익스텐션 프로세스는 그 익스텐션이 선언한 호스트)에만 연결됩니다.",
   "permissionsTab.osSandboxCapabilityOther": "이 플랫폼의 샌드박스는 파일시스템과 프로세스 동작을 격리하며, 네트워크 격리는 보장되지 않습니다.",
   "permissionsTab.osSandboxCapabilityWindows": "Windows: Windows 가 Microsoft Execution Containers 를 제공하면 에이전트 셸 명령은 명령마다 별도 컨테이너에서 실행됩니다(관리자 설치 불필요). 익스텐션은 ASRT 의 srt-win 을 사용합니다: OS 샌드박스가 켜지면 파일시스템 접근과 네트워크 송신을 격리합니다. ASRT 는 전용 srt-sandbox 사용자를 생성해 파일시스템 ACL 규칙을 적용하고, WFP 필터와 loopback proxy 로 송신을 제한합니다. Windows 에서는 프로세스 격리는 지원되지 않습니다. 이 격리는 사용자의 파일과 네트워크로부터의 격리이며 익스텐션끼리의 격리는 아닙니다: 모든 익스텐션을 포함한 모든 샌드박스 프로세스가 같은 srt-sandbox 사용자로 실행됩니다. Windows에서는 셸 격리가 준비될 때까지 샌드박스가 기본으로 꺼져 있으며, 꺼져 있는 동안 도구는 격리 없이 실행됩니다. 지속 상태 표시는 실제 호스트 셸 실행 계획을 따릅니다.",
-  "permissionsTab.osSandboxRestartNote": "변경 사항은 앱을 재시작한 후 적용됩니다 — ASRT 샌드박스는 시작 시 초기화됩니다.",
   "permissionsTab.osSandboxEnvForced": "환경 변수 {envVar} 가 여기에 저장된 값과 관계없이 이번 실행에서 샌드박스를 켜고 있습니다.",
   "permissionsTab.osSandboxDetectionReason": "시작 시 점검: {reason}",
   "permissionsTab.osSandboxPotentialReason": "플랫폼 잠재 지원: {reason}",

@@ -98,6 +98,7 @@ export async function createNodeBootHost(options: NodeBootHostOptions): Promise<
     singleHopNetworkFetch,
     llmFetch: createSafeLlmFetch(networkFetch),
     exit: (code) => process.exit(code),
+    relaunch: () => { throw new Error("relaunch-unsupported"); },
     close: () => dispatcher.destroy(),
   };
 }

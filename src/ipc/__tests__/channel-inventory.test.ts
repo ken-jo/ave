@@ -260,6 +260,7 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:alerts:set-kind",
         "ave:alerts:set-os-notifications-enabled",
         "ave:app:info",
+        "ave:app:relaunch",
         "ave:approval:pending",
         "ave:approval:respond",
         "ave:ask-user-question:pending",
