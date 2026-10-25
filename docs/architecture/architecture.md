@@ -2092,7 +2092,9 @@ group rather than by the user. Admission (`assertCodexLocations` in
    - an object the user already owns is kept, without asking for
      `WRITE_OWNER`;
    - an object owned by `S-1-5-32-544` is given to the user, on a handle that
-     re-reads the owner before it sets it;
+     re-reads the owner before it sets it. For a non-reparse directory, that
+     same write sets a protected owner-only DACL with inheritable full control;
+     files and reparse points use an ownership-only write;
    - an object with any other owner refuses its request, and nothing in that
      request changes. A claim is sent in requests of at most 128 paths and
      24,576 characters of JSON-encoded paths. When it spans several requests,
@@ -2129,7 +2131,8 @@ with its own owner rule:
   bytes are written only after that step. If it fails, the step removes what it
   made; a later failure removes the copy without following a link.
 - **`AVE_HOME` is created by the user, or admitted only on a strict DACL.**
-  When `AVE_HOME` or its `secrets` directory does not exist yet,
+  When `AVE_HOME`, its `secrets` directory, or its `subscription-runtimes`
+  directory does not exist yet,
   `ensureAveHomePrivate` in `src/shared/ave-home.ts` has its protecting step
   create it with the user as owner and an owner-only protected DACL, so no
   grant for the token's default owner is left behind. Before it changes an
@@ -2144,6 +2147,11 @@ with its own owner rule:
   root, but it does not take ownership of it. `isOwnerOnlyDacl` in
   `src/shared/ave-home.ts` applies this rule. It takes an elevated
   Administrators token as its sign that the default owner is `S-1-5-32-544`.
+  On a non-elevated boot, only an existing non-reparse `subscription-runtimes`
+  root owned by `S-1-5-32-544` is claimed for the token user before DACL protection,
+  with the owner rechecked on the same non-following handle; other foreign owners
+  remain refused. A failed claim refuses privacy as `owner-claim-failed`, naming
+  the path and advising one elevated run or an owner repair.
 
 Any other owner is refused. A change to any of these rules changes the security
 contract for all of them.
