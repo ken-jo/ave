@@ -230,6 +230,50 @@ requirements keep their own authority.
 | Ordinary | Parser refusal, budget exhaustion, opaque bindings, retained file-execution provenance, or an opaque package/code-runner prefix | `ordinaryAsk` / `ordinaryShellAsk` at layer 6 without `forceModal`; applicable rules and saved grants may satisfy it |
 | Normal | Neither a floor nor an ordinary reason | Existing category, mode, rules and grants |
 
+The path scan checks a glob argument's literal directory prefix, before its
+first wildcard, as well as its expansions, so a wildcard below a protected
+entry (`~/.mozilla/firefox/*/log*ns.json`) is a floor whatever the profile or
+file name. Relative paths, including recursive-search roots, resolve against
+every working directory that a static `cd`, `chdir` or `pushd` earlier in the
+same input may leave in force. A change is never assumed to fail or to be
+undone by a subshell, so after `;`, `||`, a pipeline or a subshell each earlier
+directory stays a candidate (`(cd ~) && grep -r x .` searches the home as far
+as the scan knows). Only the right side of `&&` narrows: it runs after the left
+succeeded, so a static `cd` on the left is its whole working directory
+(`cd src && grep -r x ..` searches the project, not its parent). A
+command-local directory option moves that one command, on top of its earlier
+candidates: `env -C`/`--chdir`, `git -C`/`--work-tree`, `make -C`/`--directory`,
+`tar -C`/`--directory`, `ninja`/`meson`/`cargo`/`go -C`, `just -d`,
+`npm -C`/`--prefix`, `pnpm -C`/`--dir`/`--prefix`, `yarn`/`bun --cwd`,
+`uv --directory`/`--project` and `poetry -C`/`-P`; a non-static value is an
+ordinary ask like a non-static `cd`. Whole-tree readers count as recursive
+searches whose root at or above a protected entry is a floor: `grep -r`/`rg`,
+archive creation (`tar c`/`r`/`u`, `zip -r`), recursive copies (`cp -r`/`-a`,
+`rsync -r`/`-a`, `scp -r`, remote operands excluded), and `find`, `fd` or
+`du -a`, and `ls` (with or without `-R`) when every match is handed to a
+program (`-exec`, `fd -x`) or to an `xargs` stage. A plain `find`/`fd`/`du`/`ls`
+still only lists names. A recursive reader behind `xargs` takes roots from its
+input, which the scan cannot see: it is a floor when a feeding stage names a
+static path at or above a protected entry (`echo ~ | xargs grep -r x`), when
+the directory the stages run in is (`cd ~ && git ls-files | xargs rg foo`), or
+after a non-static cd; otherwise (`git ls-files | xargs rg foo`, roots from a
+file or a substitution) it is an ordinary ask that the sandboxed lane leaves to
+the OS floor. A root list read from a file (`tar -T`, `--files-from`) is an
+ordinary ask. A metadata lister (`ls`, `du`, `stat`, `tree`, `eza`/`exa`,
+`lsd`) reads no file content, so a glob whose expansion only reaches a
+protected directory (`ls ~/Library/Application\ Support/*`, `du -sh ~/Library/*`)
+is an ordinary ask too; a glob whose literal prefix is protected
+(`ls ~/.ssh/*`), a lister feeding `xargs`, a lister given a file-input option
+(`tree --fromfile`/`--hintro`/`--infofile`/`--gitfile`, `du --files0-from`/`-X`/
+`--exclude-from`, `lsd --config-file`), and every content read stay a floor. A directory
+change whose target is not static is an ordinary ask: a variable, substitution,
+glob or `~user` target, `cd -` or a stack reference before the input changed
+directory, an `eval` whose text is not static or changes directory, a
+reassigned `HOME`, or `CDPATH`/`cdable_vars`/`autocd`. The ordinary ask does
+not stop the sandboxed automatic lane, whose OS floor still confines reads. A
+later relative recursive search is a floor in every lane, because its root
+cannot be ruled out.
+
 Ordinary asks remain rememberable under the existing approval-scope and risk
 requirements. A parser refusal cannot establish a `Bash(...)` allow-rule match,
 but it does not invalidate an otherwise applicable tool allow rule or saved
@@ -1253,7 +1297,43 @@ floor still protects sessions from confined plugin, MCP and terminal processes.
 The builtin projection retains other sensitive paths, nested exclusions and
 trusted custom read denies; a conflicting protected ancestor suppresses the
 session grant. `getBuiltinShellReadPolicy` composes broad invocation reads for
-both shell dialects without denying the real home as a whole. Read candidates
+both shell dialects without denying the real home as a whole. The protected
+floor that stands in for a whole-home deny is the anchored row set of
+`SENSITIVE_PATH_ENTRIES` in
+[sensitive-paths.ts](../../src/permissions/sensitive-paths.ts); the host guard
+and every OS sandbox wrap project the same rows, so each one is denied on macOS,
+Linux and Windows. Besides SSH, cloud, git and package-manager credentials and
+shell histories, the floor covers keychains and keyrings
+(`~/Library/Keychains`, `~/.local/share/keyrings`, `~/.local/share/kwalletd`),
+password managers (`~/.password-store`, `~/.config/op`, and the 1Password 7/8
+group containers `~/Library/Group Containers/2BUA8C4S2C.com.{agilebits,1password}`),
+the macOS cookie jar (`~/Library/Cookies`), the Safari container
+(`~/Library/Containers/com.apple.Safari`), Thunderbird profiles
+(`~/Library/Thunderbird`, `~/.thunderbird`, `%APPDATA%\Thunderbird`) and whole
+browser profile roots. On macOS these are the `Google` vendor parent under
+`~/Library/Application Support` (every Chrome channel, so a new channel is
+covered too), Edge and its Beta/Dev/Canary channels, Brave, Chromium, Arc,
+Vivaldi, Opera, Opera GX and Firefox. On Linux they are `~/.mozilla`,
+`~/.config/<browser>` including the `google-chrome-beta`/`-unstable` and
+`microsoft-edge-beta`/`-dev` channels, the snap homes
+`~/snap/{firefox,chromium,brave,thunderbird}` and the Flatpak homes under
+`~/.var/app` for Firefox, Chromium, Chrome, Brave, Edge and Thunderbird. On
+Windows they are `%LOCALAPPDATA%\<vendor>\User Data` including Chrome
+Beta/Dev/SxS and Edge Beta/Dev/SxS, `%APPDATA%\Opera Software` and
+`%APPDATA%\Mozilla\Firefox\Profiles`, beside the Windows Credential
+Manager, DPAPI, Crypto and Vault rows. Firefox and Linux Chromium profiles keep
+their decrypting key (`key4.db`, the `Local State` key) beside the store. The
+macOS keychain databases are encrypted under the login password instead; they
+are rows for parity with main, whose builtin shell denies the whole real HOME.
+The earlier Keychains/Cookies exclusion was written under that whole-home deny,
+and keeping it without the deny would leave them more exposed than on main.
+As on main, keychain-backed credential helpers fail inside the sandboxed shell:
+git `osxkeychain`, `security`, docker credential helpers, the 1Password `op`
+CLI, `pass`, and keychain-based `codesign`. They still work in an approved
+unsandboxed run. The `Google` parent also hides the other Google app data
+there (for example Android Studio settings and GoogleUpdater) from sandboxed
+commands.
+A floored read fails visibly with the native permission error. Read candidates
 cannot reopen another protected deny; write
 grants and the sensitive write-deny floor remain intact.
 Removing a read-deny pattern alone

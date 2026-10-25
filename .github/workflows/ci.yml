@@ -735,6 +735,7 @@ jobs:
           src/permissions/__tests__/sandbox-git-controls.integration.test.ts
           src/permissions/__tests__/egress-terminal-background.integration.test.ts
           src/permissions/__tests__/allowed-directories.test.ts
+          src/permissions/__tests__/asrt-sandbox.test.ts
           src/permissions/__tests__/permission-manager-meta-override.test.ts
           src/tools/__tests__/registry-meta-governance.test.ts
           src/tools/__tests__/executor-rationale-batch.test.ts

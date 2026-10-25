@@ -1028,9 +1028,6 @@ export function isAsrtSandboxActive(): boolean {
  *   - the cwd / working tree, the plugin's own sandbox root, system dirs
  *     (`/usr`, `/lib`, `/bin`), `$TMPDIR` — a legit tool/worker needs these.
  *     They are never on this list.
- *   - macOS Keychain DBs (~/Library/Keychains) and browser cookie stores — these
- *     are encrypted-at-rest and outside ASRT's filesystem threat model; consciously
- *     excluded so a future reader knows they were not forgotten.
  *
  * PLATFORM: every entry is a LITERAL absolute path (NO glob chars). On macOS the
  * stripped path is a recursive seatbelt subpath; on Linux bwrap deny-binds the
