@@ -268,15 +268,7 @@ describe("PythonRuntimeBootstrapper", () => {
     // `uv` is the only child here that touches the network: it downloads a CPython build and the locked wheels. The import verifier runs entirely offline,
     // so it gets no egress environment at all — the asymmetry is the point, and asserting it keeps a later edit from widening the grant.
     const manifestPath = "/installed/local-indexer/plugin.json";
-    mockedAccess
-      .mockRejectedValueOnce(Object.assign(new Error("ENOENT"), { code: "ENOENT" }))
-      .mockResolvedValueOnce(undefined)
-      .mockResolvedValueOnce(undefined);
-    mockedSpawn
-      .mockReturnValueOnce(makeSpawnMock("uv 0.7.3\n"))
-      .mockReturnValueOnce(makeSpawnMock(""))
-      .mockReturnValueOnce(makeSpawnMock(""))
-      .mockReturnValueOnce(makeSpawnMock("3.12.3\n"));
+    setupPythonRuntimeSetupSpawns();
 
     const resolveOsProxy = vi.fn(async (url: string) =>
       url.includes("astral.sh") ? "DIRECT" : "PROXY proxy.example.com:8080");
@@ -315,17 +307,7 @@ describe("PythonRuntimeBootstrapper", () => {
     const manifestPath = "/installed/local-indexer/plugin.json";
     const lockFilePath = "/installed/local-indexer/python-requirements.lock";
     // access 첫 호출(sentinel): ENOENT, 이후 uv binary, plugin-adjacent lockfile: OK
-    mockedAccess
-      .mockRejectedValueOnce(Object.assign(new Error("ENOENT"), { code: "ENOENT" })) // sentinel 없음
-      .mockResolvedValueOnce(undefined) // uv binary 존재
-      .mockResolvedValueOnce(undefined); // lock file 존재 (plugin manifest dir)
-
-    // spawn 호출들: python install, venv, pip sync, python verify
-    mockedSpawn
-      .mockReturnValueOnce(makeSpawnMock("uv 0.7.3\n")) // uv python install
-      .mockReturnValueOnce(makeSpawnMock(""))             // uv venv
-      .mockReturnValueOnce(makeSpawnMock(""))             // uv pip sync
-      .mockReturnValueOnce(makeSpawnMock("3.12.3\n"));   // python -c verify
+    setupPythonRuntimeSetupSpawns();
 
     const bootstrapper = new PythonRuntimeBootstrapper({ pluginManifestPaths: [manifestPath] });
     const win = makeBrowserWindow();
@@ -438,15 +420,7 @@ describe("PythonRuntimeBootstrapper", () => {
     mockedReadFile.mockResolvedValueOnce(JSON.stringify({
       python: { managedBy: "ave", requirementsLock: "requirements/python.lock" },
     }));
-    mockedAccess
-      .mockRejectedValueOnce(Object.assign(new Error("ENOENT"), { code: "ENOENT" })) // sentinel 없음
-      .mockResolvedValueOnce(undefined) // uv binary 존재
-      .mockResolvedValueOnce(undefined); // declared lock file 존재
-    mockedSpawn
-      .mockReturnValueOnce(makeSpawnMock("uv 0.7.3\n"))
-      .mockReturnValueOnce(makeSpawnMock(""))
-      .mockReturnValueOnce(makeSpawnMock(""))
-      .mockReturnValueOnce(makeSpawnMock("3.12.3\n"));
+    setupPythonRuntimeSetupSpawns();
 
     const bootstrapper = new PythonRuntimeBootstrapper({ pluginManifestPaths: [manifestPath] });
     await bootstrapper.ensureReady(makeBrowserWindow());
@@ -533,15 +507,7 @@ describe("PythonRuntimeBootstrapper", () => {
     mockedReadFile.mockResolvedValueOnce(JSON.stringify({
       python: { requirementsLock: "/outside/python.lock" },
     }));
-    mockedAccess
-      .mockRejectedValueOnce(Object.assign(new Error("ENOENT"), { code: "ENOENT" }))
-      .mockResolvedValueOnce(undefined)
-      .mockResolvedValueOnce(undefined);
-    mockedSpawn
-      .mockReturnValueOnce(makeSpawnMock("uv 0.7.3\n"))
-      .mockReturnValueOnce(makeSpawnMock(""))
-      .mockReturnValueOnce(makeSpawnMock(""))
-      .mockReturnValueOnce(makeSpawnMock("3.12.3\n"));
+    setupPythonRuntimeSetupSpawns();
 
     const bootstrapper = new PythonRuntimeBootstrapper({ pluginManifestPaths: [manifestPath] });
     await bootstrapper.ensureReady(makeBrowserWindow());
