@@ -16,7 +16,19 @@ import { canonicalizePathForMatch, caseFoldForMatch } from "./sensitive-paths.js
 const PROTECTED_ROOT_ENTRIES = [
   ".bashrc", ".zshrc", ".profile", ".bash_profile", ".zprofile", ".gitconfig",
   ".git", ".git/hooks", ".git/config", ".git/modules", ".vscode",
+  ".husky", ".claude/settings.json", ".claude/settings.local.json", ".idea/workspace.xml",
 ] as const;
+
+/** Host write tools floor the same control files at any depth below a granted root. */
+export function protectedControlEntryFor(root: string, path: string): string | undefined {
+  if (!isCanonicalPathWithin(root, path)) return undefined;
+  const fold = (value: string) => process.platform === "win32" ? value.toLowerCase() : value;
+  const segments = fold(path.slice(root.length)).split("/").filter(Boolean);
+  return PROTECTED_ROOT_ENTRIES.find((entry) => {
+    const parts = fold(entry).split("/");
+    return segments.some((_, index) => parts.every((part, offset) => segments[index + offset] === part));
+  });
+}
 
 /** Directory depth of nested repository discovery; the admitted root is depth zero. */
 export const SANDBOX_GIT_SCAN_DEPTH = 3;

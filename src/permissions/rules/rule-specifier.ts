@@ -105,6 +105,9 @@ function parseBash(text: string, body: string): RuleSpecifier {
 
 function parseEdit(text: string, body: string): RuleSpecifier {
   let path = body.replace(/\\/g, "/").normalize("NFC");
+  if (path.split("/").some((segment) => segment.includes("**") && segment !== "**")) {
+    throw new RuleSpecifierError(text, "** must be a whole path segment");
+  }
   let recursive = false;
   if (path.endsWith("/**")) {
     recursive = true;
@@ -143,7 +146,7 @@ function parseWebFetch(text: string, body: string): RuleSpecifier {
     throw new RuleSpecifierError(text, "invalid host (only a leading *. wildcard is supported)");
   }
   if (subdomains && labels.length < 2) {
-    throw new RuleSpecifierError(text, "a *. wildcard needs at least a registrable domain (e.g. *.example.com)");
+    throw new RuleSpecifierError(text, "a *. wildcard needs at least two labels after *. (e.g. *.example.com)");
   }
   return { kind: "webfetch", host, subdomains, ...(port === undefined ? {} : { port }) };
 }

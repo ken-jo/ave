@@ -6,10 +6,10 @@ import { PermissionManager, type PermissionRule } from "../permission-manager.js
 import { editDepthCandidates, evaluateScopedRules, type ScopedRuleSubject } from "../rules/scoped-rule-matcher.js";
 import { canonicalRuleSpecifier, matchesWebFetchHost, parseRuleSpecifier } from "../rules/rule-specifier.js";
 import { projectRulesLocation } from "../rules/project-rule-files.js";
-import { foldCanonicalPathSeparators } from "../sensitive-paths.js";
+import { caseFoldForMatch, foldCanonicalPathSeparators } from "../sensitive-paths.js";
 import { ToolExecutor } from "../../tools/executor.js";
 import { ToolRegistry } from "../../tools/registry.js";
-import { WriteFileTool, ReadFileTool } from "../../tools/file-tools.js";
+import { WriteFileTool, ReadFileTool, createFileTools } from "../../tools/file-tools.js";
 import { runWithToolExecutionCwd } from "../../tools/execution-context.js";
 import { userPermissionContext } from "../../tools/__tests__/tool-context-fixture.js";
 import { mcpToolToTool } from "../../mcp/mcp-tool-adapter.js";
@@ -41,8 +41,88 @@ const edit = (...paths: string[]): ScopedRuleSubject => ({ kind: "edit", cwd: pr
 const network = (url: string): ScopedRuleSubject => ({ kind: "webfetch", url });
 const mcp = (tool = "lookup", nonDestructive = true): ScopedRuleSubject => ({ kind: "mcp", server: "catalog", tool, nonDestructive });
 const evaluate = (subject: ScopedRuleSubject, rules: PermissionRule[]) => evaluateScopedRules(subject, project, rules);
+const PROTECTED_FILE_CALLS = [
+  { name: "delete_file", input: { path: "src/secret/keep.txt" } },
+  { name: "move_file", input: { sourcePath: "src/public.txt", destinationPath: "src/secret/moved.txt" } },
+  { name: "move_file", input: { sourcePath: "src/secret/keep.txt", destinationPath: "src/moved.txt" } },
+  { name: "copy_path", input: { sourcePath: "src/public.txt", destinationPath: "src/secret/copied.txt" } },
+  { name: "copy_path", input: { sourcePath: "src/secret/keep.txt", destinationPath: "src/copied.txt" } },
+  { name: "extract_archive", input: { archivePath: "src/public.txt", destinationPath: "src/secret/extracted" } },
+] as const;
 
 describe("scoped permission rules", () => {
+  it("builds an Edit subject for every registered canonical write with paths", () => {
+    const tools = createFileTools().filter((tool) => tool.category === "write" && tool.pathFields?.length);
+    expect(tools.length).toBeGreaterThan(0);
+    for (const tool of tools) {
+      const input = { path: "src/a.txt", sourcePath: "src/a.txt", destinationPath: "src/b.txt", archivePath: "src/a.tar", patch: "*** Begin Patch\n*** Add File: src/a.txt\n+hello\n*** End Patch" };
+      expect(scopedRuleSubjectFor(tool, input, project), tool.name).toMatchObject({ kind: "edit", cwd: project, paths: expect.arrayContaining([expect.any(String)]) });
+    }
+  });
+
+  it.each((["allow", "always-allow"] as const).flatMap((mode) => PROTECTED_FILE_CALLS.map((call) => ({ mode, ...call }))))("denies $name $input in $mode mode", async ({ mode, name, input }) => {
+    const tools = createFileTools();
+    const registry = new ToolRegistry();
+    for (const tool of tools) registry.register(tool);
+    if (mode === "allow") manager.setMode("allow");
+    else for (const tool of tools) await manager.addAlwaysAllowedPersist(tool.name);
+    await manager.loadRulesFromFile();
+    await manager.addRulePersist({ pattern: "Edit(src/secret/**)", action: "deny" }, { kind: "user" });
+    mkdirSync(join(project, "src", "secret"));
+    writeFileSync(join(project, "src", "secret", "keep.txt"), "keep");
+    writeFileSync(join(project, "src", "public.txt"), "public");
+    const requestAndWait = vi.fn(async () => ({ choice: "deny-once" }));
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit);
+    const checkDetailed = vi.spyOn(manager, "checkDetailed");
+    const [result] = await runWithToolExecutionCwd(project, () => executor.executeAll([
+      { id: "protected-file", name, input },
+    ], { sessionId: "protected-files", permissionContext: userPermissionContext() }));
+    expect(result).toMatchObject({ is_error: true, content: expect.stringContaining("Edit(src/secret/**)") });
+    expect(checkDetailed.mock.lastCall?.[4]?.ruleSubject).toMatchObject({
+      kind: "edit", paths: Object.values(input),
+      targets: expect.arrayContaining(Object.values(input).map((path) => ({
+        filePath: join(project, path), canonicalPath: caseFoldForMatch(foldCanonicalPathSeparators(join(project, path))),
+        runtimePath: foldCanonicalPathSeparators(join(project, path)),
+      }))),
+    });
+    expect(readFileSync(join(project, "src", "secret", "keep.txt"), "utf8")).toBe("keep");
+    expect(requestAndWait).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ".git/hooks/pre-commit", ".git/config", ".husky/pre-commit",
+    ".claude/settings.json", ".claude/settings.local.json",
+    ".vscode/tasks.json", ".vscode/settings.json", ".vscode/launch.json", ".idea/workspace.xml",
+  ])("keeps broad Edit grants below the write floor for %s", async (path) => {
+    await manager.ensureProjectRulesLoaded(project);
+    manager.setMode("allow");
+    for (const pattern of ["Edit(**)", `Edit(${foldCanonicalPathSeparators(project)}/**)`]) {
+      await manager.addRulePersist(allow(pattern), { kind: "user" });
+      expect(manager.checkDetailed("write_file", "builtin", "write", null, {
+        ruleSubject: edit(path), projectRulesCwd: project,
+      })).toMatchObject({ decision: "ask", forceModal: true });
+    }
+  });
+
+  it("keeps relative recursive and single-segment rules within the project", () => {
+    for (const pattern of ["Edit(**)", "Edit(*.txt)"]) {
+      expect(evaluate(edit(join(directory, "outside.txt")), [allow(pattern)]).decision).toBeUndefined();
+      expect(evaluate(edit(join(directory, "project-evil", "outside.txt")), [allow(pattern)]).decision).toBeUndefined();
+    }
+  });
+
+  it.each(["user", "project"] as const)("fails closed when a stored %s Edit rule has a partial recursive segment", async (kind) => {
+    await manager.addRulePersist(allow("Edit(src/**)"), kind === "user" ? { kind } : { kind, projectCwd: project });
+    const file = kind === "user" ? join(directory, "permissions.json") : projectRulesLocation(directory, project).filePath;
+    writeFileSync(file, readFileSync(file, "utf8").replace("Edit(src/**)", "Edit(src**)"));
+    const restarted = new PermissionManager(join(directory, "permissions.json"));
+    await restarted.loadRulesFromFile();
+    await restarted.ensureProjectRulesLoaded(project);
+    expect(restarted.checkDetailed("write_file", "builtin", "write", null, {
+      ruleSubject: edit("src/a.ts"), projectRulesCwd: project,
+    })).toMatchObject({ decision: "ask", forceModal: true });
+  });
+
   it("round-trips relative globs, normalized separators and ports", () => {
     for (const pattern of ["Edit(src/**/*.ts)", "Edit(src/a?.ts)", "WebFetch(domain:*.example.com:8443)", "Mcp(catalog:lookup)"]) {
       expect(canonicalRuleSpecifier(pattern)).toBe(pattern);

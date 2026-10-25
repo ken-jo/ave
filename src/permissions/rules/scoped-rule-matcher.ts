@@ -7,13 +7,14 @@ import { expandLeadingTilde } from "../../shared/home-tilde.js";
 import { isPathWithin } from "../../plugins/plugin-storage-containment.js";
 import { caseFoldForMatch, foldCanonicalPathSeparators, isSensitivePath } from "../sensitive-paths.js";
 import { validateDirectoryAddition } from "../allowed-directories.js";
+import { protectedControlEntryFor } from "../sandbox-write-policy.js";
 import type { PermissionRule } from "../permission-manager.js";
 import { projectRootFor } from "./project-rule-files.js";
 import { formatRuleSpecifier, isRuleSpecifier, matchesMcpTool, matchesWebFetchHost, parseRuleSpecifier, type RuleSpecifier } from "./rule-specifier.js";
 
 export type ScopedRuleSubject =
   | { kind: "edit"; paths: readonly string[]; cwd: string; targets?: readonly { filePath: string; canonicalPath: string }[] }
-  | { kind: "webfetch"; url: string; privateNetwork?: boolean }
+  | { kind: "webfetch"; url: string; privateNetwork?: boolean; requiresSiteApproval?: boolean }
   | { kind: "mcp"; server: string; tool: string; nonDestructive: boolean };
 
 export interface ScopedRuleEvaluation {
@@ -40,8 +41,11 @@ function editPaths(subject: Extract<ScopedRuleSubject, { kind: "edit" }>, root: 
     }
     const canonical = foldCanonicalPathSeparators(resolved);
     const sensitive = isSensitivePath(caseFoldForMatch(lexical), "write") ?? isSensitivePath(caseFoldForMatch(canonical), "write");
+    const projectRoot = foldCanonicalPathSeparators(root);
+    const control = protectedControlEntryFor(projectRoot, lexical) ?? protectedControlEntryFor(projectRoot, canonical);
     return { lexical, canonical, floor: sensitive
       ? `Sensitive write path: ${sensitive}`
+      : control !== undefined ? `Protected control path: ${control}`
       : (isWithinRoot(root, lexical) || path.split(/[\\/]/).includes("..")) && !isWithinRoot(root, canonical) ? "Write path escapes the project" : undefined };
   });
 }
@@ -57,6 +61,7 @@ function editPattern(spec: Extract<RuleSpecifier, { kind: "edit" }>, root: strin
 
 function matchesEdit(spec: Extract<RuleSpecifier, { kind: "edit" }>, path: string, root: string, action: PermissionRule["action"]): boolean {
   const relative = !isAbsolute(spec.path) && !/^[A-Za-z]:\//.test(spec.path);
+  // Relative patterns already start at root/ and require a root-contained canonical anchor below.
   if (relative && !isWithinRoot(root, path)) return false;
   const pattern = editPattern(spec, root);
   const wildcard = pattern.search(/[*?]/);
@@ -85,13 +90,13 @@ export function evaluateScopedRules(
       paths = editPaths(subject, root);
       floor = paths.find((path) => path.floor)?.floor;
     } else if (subject.kind === "webfetch") {
+      grantable = subject.requiresSiteApproval !== true;
       destination = new URL(subject.url);
       if (!["http:", "https:"].includes(destination.protocol) || destination.username || destination.password) {
         floor = "Network target requires explicit approval";
       }
     } else {
-      // Owner decision (#69, option B): an unannotated MCP tool follows its
-      // mode; only an MCP allow rule cannot grant it (see below).
+      // Unannotated tools follow server rules and mode without scoped grants.
       grantable = subject.nonDestructive;
     }
   } catch {
