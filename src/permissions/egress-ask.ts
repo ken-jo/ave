@@ -142,7 +142,7 @@ function grantSubject(token: string, owner: ShellEgressOwner | TerminalEgressOwn
     : { token, sessionId: undefined, tabId: owner.tabId, projectRoot: undefined, origin: "terminal" };
 }
 
-// The project a shell call's "This project" grant keys on: the repository root of its working directory, the same root a project `Bash(...)` rule applies to (D1/D3). A working directory that no longer resolves offers no project scope.
+// The project a shell call's "This project" grant keys on: the repository root of its working directory, the same root a project `Bash(...)` rule applies to (D1/D3). A working directory that cannot be captured (a relative path) offers no project scope; a missing absolute one keys on its own path, which is never wider than the directory.
 function egressProjectRoot(cwd: string | undefined): string | undefined {
   if (cwd === undefined) return undefined;
   try {

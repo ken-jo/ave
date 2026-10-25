@@ -261,7 +261,7 @@ describe("executor broker shell route", () => {
     });
     expect(checkDetailed.mock.calls[0]?.[4]).toMatchObject({
       hostShellExecutionPlan: { sandboxed: false },
-      shellExecution: { runsSandboxed: true, sandboxAvailable: false },
+      shellExecution: { runsSandboxed: true },
     });
     expect(localSpawn).not.toHaveBeenCalled();
   });

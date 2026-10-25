@@ -72,7 +72,7 @@ describe("host shell invocation authorization", () => {
     expect(execute).not.toHaveBeenCalled();
     if (change === "remove allow") {
       expect(cards).toHaveLength(1);
-      // OWNER ITEM: main locked the explicit-host card to allow-once/deny-once; #77/#90 let the bash card offer rules. No dated decision picks one; this follows #90.
+      // A bash card is not narrowed to once/deny: the gate offers the five choices for its exact rule (owner 2026-10-25, D3).
       expect(cards[0]?.allowedChoices).toBeUndefined();
       expect(cards[0]).toMatchObject({ requireExplicit: true });
     } else {

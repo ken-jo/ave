@@ -43,15 +43,15 @@ afterEach(() => {
   cleanupTmpDir(directory);
 });
 
-function authorizedContext(cwd: string, command = "touch marker", rulePatterns: readonly string[] = ["Bash(touch *)"]) {
+function authorizedContext(cwd: string, command = "touch marker", rulePatterns: readonly string[] = ["Bash(touch marker)"]) {
   const plan = getHostShellExecutionPlan("host");
   const input = { command, cwd, executionMode: "host" as const, justification: "Run in the approved directory", timeoutSeconds: 10 };
   const manager = new PermissionManager(join(directory, "permissions.json"));
   manager.setRules(rulePatterns.map((pattern) => ({ pattern, action: "allow" as const })));
   const decision = manager.checkDetailed("bash", "builtin", "shell", null, {
     hostShellExecutionPlan: plan, ruleSubject: { kind: "shell", dialect: "bash", command: input.command, cwd: join(directory, cwd) },
-    // An explicit host retry on a sandbox-capable host, where a wildcard allow may issue the rule proof (without a sandbox only an exact one can).
-    shellExecution: { runsSandboxed: false, sandboxAvailable: true },
+    // An explicit host retry runs without a sandbox, so only an exact Bash(<command>) allow issues the rule proof (owner 2026-10-25, D2).
+    shellExecution: { runsSandboxed: false },
   });
   const binding = buildHostShellExecutionPermitBinding({
     plan, toolName: "bash", toolUseId: "cwd-spawn", rawInput: input, executionCwd: directory, extraAllowedDirectories: [],
@@ -61,8 +61,8 @@ function authorizedContext(cwd: string, command = "touch marker", rulePatterns: 
   return { input, context: { cwd: directory, extraAllowedDirectories: [], metadata: { toolUseId: "cwd-spawn" }, hostShellExecutionPlan: plan, hostShellExecutionPermit: permit } };
 }
 
-// A bare tool rule does not admit a shell; Bash(...) rules cover each command.
-const COMPOUND_RULES = ["Bash(printf *)", "Bash(exit *)"];
+// A bare tool rule does not admit a shell; exact Bash(...) rules cover each command.
+const COMPOUND_RULES = ["Bash(printf command-ran)", "Bash(printf C)", "Bash(exit 0)", "Bash(exit 197)"];
 
 describe("host cwd races after permit consumption", () => {
   it("preserves an ordinary exit 197 and the command's output", async () => {

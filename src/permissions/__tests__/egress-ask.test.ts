@@ -1,8 +1,8 @@
 // The egress ask callback's decision table (egress-ask.ts): who opened the connection decides whether it is allowed outright, refused, or asked about, and every answer is the literal `true` or a deny with a reason, with one audit row each.
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SandboxAskCallback, SandboxAskContext } from "@anthropic-ai/sandbox-runtime";
 import type { SandboxEgressDecisionAuditEntry } from "../../audit/sandbox-audit.js";
 import {
@@ -22,6 +22,22 @@ import { EGRESS_GRANT_SCOPE_LADDERS } from "../../shared/egress-grant-scopes.js"
 
 const matchingScopes = Object.values(EGRESS_GRANT_SCOPE_LADDERS).flat();
 
+// Real git checkouts: a shell call's "This project" keys on the repository root of its working directory (projectRuleRoot), so the owner contexts name directories that resolve.
+function gitCheckout(root: string): string {
+  mkdirSync(join(root, ".git", "objects"), { recursive: true });
+  mkdirSync(join(root, ".git", "refs"), { recursive: true });
+  writeFileSync(join(root, ".git", "HEAD"), "ref: refs/heads/main\n");
+  return root;
+}
+const WORK = realpathSync(mkdtempSync(join(tmpdir(), "ave-egress-ask-work-")));
+const PROJECT = gitCheckout(join(WORK, "project"));
+const PROJECT_SUBDIR = join(PROJECT, "packages", "app");
+mkdirSync(PROJECT_SUBDIR, { recursive: true });
+const OTHER = gitCheckout(join(WORK, "other"));
+afterAll(() => {
+  rmSync(WORK, { recursive: true, force: true });
+});
+
 const SHELL_TOKEN = "5".repeat(32);
 const WORKER_TOKEN = "6".repeat(32);
 const TERMINAL_TOKEN = "7".repeat(32);
@@ -34,7 +50,7 @@ const interactiveShell: ShellEgressOwner = {
   kind: "shell",
   toolName: "bash",
   toolUseId: "toolu_1",
-  context: { sessionId: "session-1", workspaceRoot: "/work/project", approvalSurface: "interactive" },
+  context: { sessionId: "session-1", workspaceRoot: PROJECT, approvalSurface: "interactive" },
 };
 
 // A connection as ASRT decides it: who, and what the destination resolved to.
@@ -143,8 +159,8 @@ describe("egress ask callback — attribution", () => {
       expect(await ask({ host: "two.example", port: 443 }, { ...listener(OTHER_SHELL_TOKEN), identity: "username" })).toBe(true);
       expect(await ask({ host: "three.example", port: 443 }, listener(TERMINAL_TOKEN))).toBe(true);
       expect(asked.map((request) => request.scopes)).toEqual([
-        ["once", "conversation", "workspace", "always"],
-        ["once", "conversation"],
+        ["once", "session", "project", "always"],
+        ["once", "session"],
         ["once", "tab"],
       ]);
     } finally {
@@ -222,7 +238,7 @@ describe.each(["win32", "darwin"] as const)("egress grant reuse after %s identit
     setProcessPlatform(originalPlatform);
   });
 
-  it.each(["workspace", "always"] as const)("rechecks a persisted %s grant against the current identity", async (scope) => {
+  it.each(["project", "always"] as const)("rechecks a persisted %s grant against the current identity", async (scope) => {
     const destination = { host: "github.com", port: 443 };
     const strongAsk = bothPhases(rawCallback(egressIdentityStrength));
     answer = async () => ({ allow: true, scope });
@@ -243,7 +259,7 @@ describe.each(["win32", "darwin"] as const)("egress grant reuse after %s identit
     askEnabled = true;
     answer = async () => ({ allow: false, reason: "denied by the user" });
     expect(await handleProxyAsk(destination, weak)).toEqual({ allow: false, reason: "denied by the user" });
-    expect(asked.at(-1)?.scopes).toEqual(["once", "conversation"]);
+    expect(asked.at(-1)?.scopes).toEqual(["once", "session"]);
     expect(audit.at(-1)).toMatchObject({ decision: "deny", basis: "prompt", scope: null });
 
     // The stored grant remains usable when the channel is strong again.
@@ -256,14 +272,14 @@ describe.each(["win32", "darwin"] as const)("egress grant reuse after %s identit
 
     // A narrower grant still covers this conversation on the shared channel.
     noteAsrtUnixSocketPolicy(platform === "darwin");
-    answer = async () => ({ allow: true, scope: "conversation" });
+    answer = async () => ({ allow: true, scope: "session" });
     expect(await handleProxyAsk(destination, weak)).toBe(true);
-    expect(audit.at(-1)).toMatchObject({ decision: "allow", basis: "prompt", scope: "conversation" });
+    expect(audit.at(-1)).toMatchObject({ decision: "allow", basis: "prompt", scope: "session" });
     const beforeReuse = asked.length;
     answer = async () => ({ allow: false, reason: "denied by the user" });
     expect(await handleProxyAsk(destination, weak)).toBe(true);
     expect(asked).toHaveLength(beforeReuse);
-    expect(audit.at(-1)).toMatchObject({ decision: "allow", basis: "grant", scope: "conversation" });
+    expect(audit.at(-1)).toMatchObject({ decision: "allow", basis: "grant", scope: "session" });
     expect(await handleProxyAsk(destination, { ...weak, attributionKey: SHELL_TOKEN }))
       .toEqual({ allow: false, reason: "denied by the user" });
   });
@@ -271,7 +287,7 @@ describe.each(["win32", "darwin"] as const)("egress grant reuse after %s identit
   it("preserves tab ownership and the terminal origin when a persistent grant cannot be reused", async () => {
     const destination = { host: "github.com", port: 443 };
     const terminalSubject = {
-      token: TERMINAL_TOKEN, sessionId: undefined, tabId: TERMINAL_TAB, workspaceRoot: undefined, origin: "terminal" as const,
+      token: TERMINAL_TOKEN, sessionId: undefined, tabId: TERMINAL_TAB, projectRoot: undefined, origin: "terminal" as const,
     };
     await grants.grant("always", ["once", "tab", "always"], terminalSubject, destination);
     const handleProxyAsk = bothPhases(rawCallback(egressIdentityStrength));
@@ -319,8 +335,8 @@ describe("egress ask callback — plugin workers", () => {
   });
 
   it("never lets a shell grant reach a worker (I4)", async () => {
-    await grants.grant("always", ["once", "conversation", "workspace", "always"], {
-      token: SHELL_TOKEN, sessionId: undefined, tabId: undefined, workspaceRoot: undefined, origin: "shell" as const,
+    await grants.grant("always", ["once", "session", "project", "always"], {
+      token: SHELL_TOKEN, sessionId: undefined, tabId: undefined, projectRoot: undefined, origin: "shell" as const,
     }, { host: "github.com", port: 443 });
     const ask = callback();
     expect(await ask({ host: "github.com", port: 443 }, listener(SHELL_TOKEN))).toBe(true);
@@ -353,7 +369,7 @@ describe("egress ask callback — workspace terminal tab (design F)", () => {
     vi.useRealTimers();
   });
 
-  it("asks in the tab with This tab in place of This conversation, always (a terminal is never background)", async () => {
+  it("asks in the tab with This tab in place of This session, always (a terminal is never background)", async () => {
     const ask = callback();
     expect(await ask({ host: "GitHub.com", port: 443 }, listener(TERMINAL_TOKEN)))
       .toEqual({ allow: false, reason: "denied by the user" });
@@ -434,7 +450,7 @@ describe("egress ask callback — workspace terminal tab (design F)", () => {
   });
 
   it("a conversation grant never covers a terminal, and a terminal's Always never covers a shell call, nor the reverse", async () => {
-    await grants.grant("conversation", ["conversation"], { token: SHELL_TOKEN, sessionId: "session-1", tabId: undefined, workspaceRoot: undefined, origin: "shell" as const },
+    await grants.grant("session", ["session"], { token: SHELL_TOKEN, sessionId: "session-1", tabId: undefined, projectRoot: undefined, origin: "shell" as const },
       { host: "github.com", port: 443 });
     const ask = callback();
     expect(await ask({ host: "github.com", port: 443 }, listener(TERMINAL_TOKEN))).toEqual({ allow: false, reason: "denied by the user" });
@@ -446,10 +462,10 @@ describe("egress ask callback — workspace terminal tab (design F)", () => {
     answer = async () => ({ allow: false, reason: "denied by the user" });
     expect(await ask({ host: "registry.npmjs.org", port: 443 }, listener(SHELL_TOKEN))).toEqual({ allow: false, reason: "denied by the user" });
     expect(asked).toHaveLength(3);
-    // Always and This workspace from a shell call's card: no terminal tab.
+    // Always and This project from a shell call's card: no terminal tab.
     answer = async () => ({ allow: true, scope: "always" });
     expect(await ask({ host: "pypi.org", port: 443 }, listener(SHELL_TOKEN))).toBe(true);
-    answer = async () => ({ allow: true, scope: "workspace" });
+    answer = async () => ({ allow: true, scope: "project" });
     expect(await ask({ host: "crates.io", port: 443 }, listener(SHELL_TOKEN))).toBe(true);
     answer = async () => ({ allow: false, reason: "denied by the user" });
     expect(await ask({ host: "pypi.org", port: 443 }, listener(TERMINAL_TOKEN))).toEqual({ allow: false, reason: "denied by the user" });
@@ -458,7 +474,7 @@ describe("egress ask callback — workspace terminal tab (design F)", () => {
     expect((await grants.listPersistent()).map((grant) => [grant.scope, grant.origin, grant.host])).toEqual([
       ["always", "terminal", "registry.npmjs.org"],
       ["always", "shell", "pypi.org"],
-      ["workspace", "shell", "crates.io"],
+      ["project", "shell", "crates.io"],
     ]);
   });
 
@@ -479,7 +495,7 @@ describe("egress ask callback — workspace terminal tab (design F)", () => {
   });
 
   it("a local destination's This tab grant is offered and kept; a persistent grant never covers it", async () => {
-    await grants.grant("always", ["always"], { token: TERMINAL_TOKEN, sessionId: undefined, tabId: undefined, workspaceRoot: undefined, origin: "terminal" as const },
+    await grants.grant("always", ["always"], { token: TERMINAL_TOKEN, sessionId: undefined, tabId: undefined, projectRoot: undefined, origin: "terminal" as const },
       { host: "127.0.0.1", port: 8080 });
     answer = async () => ({ allow: true, scope: "tab" });
     const ask = callback();
@@ -602,7 +618,7 @@ describe("egress ask callback — workspace terminal tab (design F)", () => {
   });
 
   it("denies without a banner when asks are off, but keeps granted hosts", async () => {
-    await grants.grant("tab", ["tab"], { token: TERMINAL_TOKEN, sessionId: undefined, tabId: TERMINAL_TAB, workspaceRoot: undefined, origin: "terminal" as const },
+    await grants.grant("tab", ["tab"], { token: TERMINAL_TOKEN, sessionId: undefined, tabId: TERMINAL_TAB, projectRoot: undefined, origin: "terminal" as const },
       { host: "registry.npmjs.org", port: 443 });
     askEnabled = false;
     const ask = callback();
@@ -617,9 +633,9 @@ describe("egress ask callback — workspace terminal tab (design F)", () => {
     expect(await callback()({ host: "github.com", port: 443 }, listener(TERMINAL_TOKEN)))
       .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.noSurface });
     requesterPresent = true;
-    answer = async () => ({ allow: true, scope: "conversation" });
+    answer = async () => ({ allow: true, scope: "session" });
     expect(await callback()({ host: "github.com", port: 443 }, listener(TERMINAL_TOKEN)))
-      .toEqual({ allow: false, reason: `${EGRESS_DENY_REASONS.failed}: egress grant: scope conversation was not offered` });
+      .toEqual({ allow: false, reason: `${EGRESS_DENY_REASONS.failed}: egress grant: scope session was not offered` });
   });
 
   it("refuses a terminal identity that only the proxy username vouches for on a kernel-channel host", async () => {
@@ -636,12 +652,12 @@ describe("egress ask callback — shell calls", () => {
       .toEqual({ allow: false, reason: "denied by the user" });
     expect(asked).toEqual([{
       origin: "shell",
-      workspaceRoot: "/work/project",
+      workspaceRoot: PROJECT,
       sessionId: "session-1",
       toolName: "bash",
       toolUseId: "toolu_1",
       destination: { host: "github.com", port: 443 },
-      scopes: ["once", "conversation", "workspace", "always"],
+      scopes: ["once", "session", "project", "always"],
       network: "public",
       abortSignal: undefined,
     }]);
@@ -656,11 +672,11 @@ describe("egress ask callback — shell calls", () => {
     });
   });
 
-  it("caps the scopes at This conversation where the identity is shared", async () => {
+  it("caps the scopes at This session where the identity is shared", async () => {
     strength = "shared";
     const ask = callback();
     await ask({ host: "github.com", port: 443 }, { attributionKey: SHELL_TOKEN, identity: "username", addresses: [], resolution: "pinned" });
-    expect(asked[0]?.scopes).toEqual(["once", "conversation"]);
+    expect(asked[0]?.scopes).toEqual(["once", "session"]);
   });
 
   it("offers only the scopes the call can hold", async () => {
@@ -692,8 +708,8 @@ describe("egress ask callback — shell calls", () => {
     expect(asked).toHaveLength(4);
   });
 
-  it("This conversation covers every call in that conversation, not another conversation", async () => {
-    answer = async () => ({ allow: true, scope: "conversation" });
+  it("This session covers every call in that conversation, not another conversation", async () => {
+    answer = async () => ({ allow: true, scope: "session" });
     const ask = callback();
     expect(await ask({ host: "github.com", port: 443 }, listener(SHELL_TOKEN))).toBe(true);
     expect(await ask({ host: "github.com", port: 443 }, listener(OTHER_SHELL_TOKEN))).toBe(true);
@@ -703,8 +719,8 @@ describe("egress ask callback — shell calls", () => {
     expect(await ask({ host: "github.com", port: 443 }, listener(OTHER_SHELL_TOKEN))).not.toBe(true);
   });
 
-  it("This workspace covers calls in that workspace from any conversation, and persists", async () => {
-    answer = async () => ({ allow: true, scope: "workspace" });
+  it("This project covers calls in that workspace from any conversation, and persists", async () => {
+    answer = async () => ({ allow: true, scope: "project" });
     expect(await callback()({ host: "github.com", port: 443 }, listener(SHELL_TOKEN))).toBe(true);
     owners.set(OTHER_SHELL_TOKEN, { ...interactiveShell, context: { ...interactiveShell.context, sessionId: "session-2" } });
     // A fresh store (an app restart) reads the grant back from disk.
@@ -712,8 +728,31 @@ describe("egress ask callback — shell calls", () => {
     answer = async () => ({ allow: false, reason: "denied by the user" });
     const restarted = callback();
     expect(await restarted({ host: "github.com", port: 443 }, listener(OTHER_SHELL_TOKEN))).toBe(true);
-    owners.set(OTHER_SHELL_TOKEN, { ...interactiveShell, context: { ...interactiveShell.context, workspaceRoot: "/work/other" } });
+    owners.set(OTHER_SHELL_TOKEN, { ...interactiveShell, context: { ...interactiveShell.context, workspaceRoot: OTHER } });
     expect(await restarted({ host: "github.com", port: 443 }, listener(OTHER_SHELL_TOKEN))).not.toBe(true);
+  });
+
+  it("offers the owner's five choices on a kernel-channel host and keys This project on the repository root", async () => {
+    // Owner 2026-10-25 (D1): Deny plus once, session, project and always; no once/always cap.
+    owners.set(SHELL_TOKEN, { ...interactiveShell, context: { ...interactiveShell.context, workspaceRoot: PROJECT_SUBDIR } });
+    answer = async () => ({ allow: true, scope: "project" });
+    expect(await callback()({ host: "pypi.org", port: 443 }, listener(SHELL_TOKEN))).toBe(true);
+    expect(asked[0]?.scopes).toEqual(["once", "session", "project", "always"]);
+    expect(await grants.listPersistent()).toEqual([expect.objectContaining({ scope: "project", origin: "shell", projectRoot: PROJECT, host: "pypi.org" })]);
+    // A later call from the repository root, in another conversation, is covered; another repository is asked again.
+    owners.set(OTHER_SHELL_TOKEN, { ...interactiveShell, context: { ...interactiveShell.context, sessionId: "session-2", workspaceRoot: PROJECT } });
+    answer = async () => ({ allow: false, reason: "denied by the user" });
+    expect(await callback()({ host: "pypi.org", port: 443 }, listener(OTHER_SHELL_TOKEN))).toBe(true);
+    expect(asked).toHaveLength(1);
+    owners.set(OTHER_SHELL_TOKEN, { ...interactiveShell, context: { ...interactiveShell.context, workspaceRoot: OTHER } });
+    expect(await callback()({ host: "pypi.org", port: 443 }, listener(OTHER_SHELL_TOKEN))).not.toBe(true);
+    expect(asked).toHaveLength(2);
+  });
+
+  it("offers no This project when the call's working directory is not an absolute path", async () => {
+    owners.set(SHELL_TOKEN, { ...interactiveShell, context: { ...interactiveShell.context, workspaceRoot: "relative/dir" } });
+    await callback()({ host: "pypi.org", port: 443 }, listener(SHELL_TOKEN));
+    expect(asked[0]?.scopes).toEqual(["once", "session", "always"]);
   });
 
   it("Always covers every workspace and persists", async () => {
@@ -751,7 +790,7 @@ describe("egress ask callback — shell calls", () => {
   });
 
   it("denies without asking when asks are off, but keeps granted hosts", async () => {
-    await grants.grant("always", ["always"], { token: SHELL_TOKEN, sessionId: undefined, tabId: undefined, workspaceRoot: undefined, origin: "shell" as const },
+    await grants.grant("always", ["always"], { token: SHELL_TOKEN, sessionId: undefined, tabId: undefined, projectRoot: undefined, origin: "shell" as const },
       { host: "registry.npmjs.org", port: 443 });
     askEnabled = false;
     const ask = callback();
@@ -780,9 +819,9 @@ describe("egress ask callback — shell calls", () => {
       ...interactiveShell,
       context: { sessionId: undefined, workspaceRoot: undefined, approvalSurface: "interactive" },
     });
-    answer = async () => ({ allow: true, scope: "workspace" });
+    answer = async () => ({ allow: true, scope: "project" });
     const unoffered = await callback()({ host: "github.com", port: 443 }, listener(SHELL_TOKEN));
-    expect(unoffered).toEqual({ allow: false, reason: `${EGRESS_DENY_REASONS.failed}: egress grant: scope workspace was not offered` });
+    expect(unoffered).toEqual({ allow: false, reason: `${EGRESS_DENY_REASONS.failed}: egress grant: scope project was not offered` });
     const { writeFileSync } = await import("node:fs");
     writeFileSync(join(dir, "shell-egress-hosts.json"), "{ not json");
     grants = new EgressGrantStore(join(dir, "shell-egress-hosts.json"));
@@ -866,32 +905,32 @@ describe("egress ask callback — local, private and reserved destinations", () 
   ])("asks about %s as a local destination, shown as %s, with no persistent scope", async (host, shown) => {
     await callback()({ host, port: 8080 }, listener(SHELL_TOKEN));
     expect(asked).toHaveLength(1);
-    expect(asked[0]).toMatchObject({ destination: { host: shown, port: 8080 }, scopes: ["once", "conversation"], network: "local" });
+    expect(asked[0]).toMatchObject({ destination: { host: shown, port: 8080 }, scopes: ["once", "session"], network: "local" });
   });
 
   it("asks by name, then shows the card again when the name resolves to a private address, and refuses a reserved one", async () => {
-    answer = async () => ({ allow: true, scope: "conversation" });
+    answer = async () => ({ allow: true, scope: "session" });
     expect(await callback()({ host: "nas.example", port: 445 }, listener(SHELL_TOKEN, ["10.20.30.40"]))).toBe(true);
     // The name card (public) came first; its answer was held, not granted, because the name turned out to be private: the local card decided.
     expect(asked.map((request) => [request.network, request.scopes])).toEqual([
-      ["public", ["once", "conversation", "workspace", "always"]],
-      ["local", ["once", "conversation"]],
+      ["public", ["once", "session", "project", "always"]],
+      ["local", ["once", "session"]],
     ]);
-    expect(audit.map((row) => [row.decision, row.basis, row.scope])).toEqual([["allow", "prompt", "conversation"]]);
+    expect(audit.map((row) => [row.decision, row.basis, row.scope])).toEqual([["allow", "prompt", "session"]]);
     expect(await callback()({ host: "meta.example", port: 80 }, listener(SHELL_TOKEN, ["169.254.169.254"])))
       .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.reserved });
     expect(asked.map((request) => request.destination.host)).toEqual(["nas.example", "nas.example", "meta.example"]);
-    expect(await grants.matchingScope({ token: SHELL_TOKEN, sessionId: "session-1", tabId: undefined, workspaceRoot: "/work/project", origin: "shell" as const }, { host: "meta.example", port: 80 }, matchingScopes))
+    expect(await grants.matchingScope({ token: SHELL_TOKEN, sessionId: "session-1", tabId: undefined, projectRoot: PROJECT, origin: "shell" as const }, { host: "meta.example", port: 80 }, matchingScopes))
       .toBeUndefined();
   });
 
   it("turns an answer given by name into the grant it chose when the name resolves to what the card said", async () => {
-    answer = async () => ({ allow: true, scope: "workspace" });
+    answer = async () => ({ allow: true, scope: "project" });
     expect(await callback()({ host: "github.com", port: 443 }, listener(SHELL_TOKEN, ["140.82.112.3"]))).toBe(true);
     expect(asked).toHaveLength(1);
-    expect(audit.map((row) => [row.decision, row.basis, row.scope])).toEqual([["allow", "prompt", "workspace"]]);
-    expect(await grants.matchingScope({ token: OTHER_SHELL_TOKEN, sessionId: "session-2", tabId: undefined, workspaceRoot: "/work/project", origin: "shell" as const }, { host: "github.com", port: 443 }, matchingScopes))
-      .toBe("workspace");
+    expect(audit.map((row) => [row.decision, row.basis, row.scope])).toEqual([["allow", "prompt", "project"]]);
+    expect(await grants.matchingScope({ token: OTHER_SHELL_TOKEN, sessionId: "session-2", tabId: undefined, projectRoot: PROJECT, origin: "shell" as const }, { host: "github.com", port: 443 }, matchingScopes))
+      .toBe("project");
   });
 
   it("writes no grant and no audit row for a name-phase allow the resolved phase never confirms", async () => {
@@ -899,7 +938,7 @@ describe("egress ask callback — local, private and reserved destinations", () 
     const raw = rawCallback();
     expect(await raw({ host: "github.com", port: 443 }, { attributionKey: SHELL_TOKEN, identity: "listener", phase: "name" })).toBe(true);
     expect(audit).toEqual([]);
-    expect(await grants.matchingScope({ token: SHELL_TOKEN, sessionId: "session-1", tabId: undefined, workspaceRoot: "/work/project", origin: "shell" as const }, { host: "github.com", port: 443 }, matchingScopes))
+    expect(await grants.matchingScope({ token: SHELL_TOKEN, sessionId: "session-1", tabId: undefined, projectRoot: PROJECT, origin: "shell" as const }, { host: "github.com", port: 443 }, matchingScopes))
       .toBeUndefined();
   });
 
@@ -922,7 +961,7 @@ describe("egress ask callback — local, private and reserved destinations", () 
   });
 
   it("matches grants by origin in the name phase: a shell's Always grant does not let a terminal through, nor a tab grant a shell", async () => {
-    await grants.grant("always", ["always"], { token: SHELL_TOKEN, sessionId: undefined, tabId: undefined, workspaceRoot: undefined, origin: "shell" as const },
+    await grants.grant("always", ["always"], { token: SHELL_TOKEN, sessionId: undefined, tabId: undefined, projectRoot: undefined, origin: "shell" as const },
       { host: "github.com", port: 443 });
     const raw = rawCallback();
     const byName = (token: string) => raw({ host: "github.com", port: 443 }, { attributionKey: token, identity: "listener", phase: "name" });
@@ -950,28 +989,28 @@ describe("egress ask callback — local, private and reserved destinations", () 
     // Each connection had its own banner: "once" is not held for the next.
     expect(asked).toHaveLength(2);
     expect(audit.map((row) => [row.decision, row.basis, row.scope])).toEqual([["allow", "prompt", "once"], ["allow", "prompt", "once"]]);
-    expect(await grants.matchingScope({ token: TERMINAL_TOKEN, sessionId: undefined, tabId: TERMINAL_TAB, workspaceRoot: undefined, origin: "terminal" as const }, { host: "github.com", port: 443 }, matchingScopes))
+    expect(await grants.matchingScope({ token: TERMINAL_TOKEN, sessionId: undefined, tabId: TERMINAL_TAB, projectRoot: undefined, origin: "terminal" as const }, { host: "github.com", port: 443 }, matchingScopes))
       .toBeUndefined();
   });
 
   it("does not let an Always grant for a name cover it once it resolves to a private address", async () => {
-    await grants.grant("always", ["always"], { token: SHELL_TOKEN, sessionId: undefined, tabId: undefined, workspaceRoot: undefined, origin: "shell" as const },
+    await grants.grant("always", ["always"], { token: SHELL_TOKEN, sessionId: undefined, tabId: undefined, projectRoot: undefined, origin: "shell" as const },
       { host: "rebind.example", port: 443 });
     expect(await callback()({ host: "rebind.example", port: 443 }, listener(SHELL_TOKEN, ["93.184.215.14"]))).toBe(true);
     expect(asked).toHaveLength(0);
     expect(await callback()({ host: "rebind.example", port: 443 }, listener(SHELL_TOKEN, ["192.168.0.10"])))
       .toEqual({ allow: false, reason: "denied by the user" });
     expect(asked).toHaveLength(1);
-    expect(asked[0]).toMatchObject({ network: "local", scopes: ["once", "conversation"] });
+    expect(asked[0]).toMatchObject({ network: "local", scopes: ["once", "session"] });
   });
 
   it("treats a name the upstream proxy resolves as unverified: at most this conversation, and an Always grant does not cover it", async () => {
-    await grants.grant("always", ["always"], { token: SHELL_TOKEN, sessionId: undefined, tabId: undefined, workspaceRoot: undefined, origin: "shell" as const },
+    await grants.grant("always", ["always"], { token: SHELL_TOKEN, sessionId: undefined, tabId: undefined, projectRoot: undefined, origin: "shell" as const },
       { host: "intranet.corp.test", port: 443 });
     expect(await callback()({ host: "intranet.corp.test", port: 443 }, listener(SHELL_TOKEN, [], "upstream")))
       .toEqual({ allow: false, reason: "denied by the user" });
     expect(asked).toHaveLength(1);
-    expect(asked[0]).toMatchObject({ destination: { host: "intranet.corp.test", port: 443 }, scopes: ["once", "conversation"], network: "unverified" });
+    expect(asked[0]).toMatchObject({ destination: { host: "intranet.corp.test", port: 443 }, scopes: ["once", "session"], network: "unverified" });
     // The same name, resolved and pinned here, is public: the grant covers it.
     expect(await callback()({ host: "intranet.corp.test", port: 443 }, listener(SHELL_TOKEN, ["93.184.215.14"]))).toBe(true);
     expect(asked).toHaveLength(1);
@@ -979,7 +1018,7 @@ describe("egress ask callback — local, private and reserved destinations", () 
 
   it("keeps a local-network name local even when the upstream resolves it", async () => {
     await callback()({ host: "nas.local", port: 445 }, listener(SHELL_TOKEN, [], "upstream"));
-    expect(asked[0]).toMatchObject({ network: "local", scopes: ["once", "conversation"] });
+    expect(asked[0]).toMatchObject({ network: "local", scopes: ["once", "session"] });
   });
 
   it("refuses a context without a phase, or a resolved phase without the resolved addresses (contract violation)", async () => {
@@ -994,7 +1033,7 @@ describe("egress ask callback — local, private and reserved destinations", () 
   });
 
   it("never lets a persistent grant cover a local destination", async () => {
-    await grants.grant("always", ["always"], { token: SHELL_TOKEN, sessionId: undefined, tabId: undefined, workspaceRoot: undefined, origin: "shell" as const },
+    await grants.grant("always", ["always"], { token: SHELL_TOKEN, sessionId: undefined, tabId: undefined, projectRoot: undefined, origin: "shell" as const },
       { host: "127.0.0.1", port: 8080 });
     expect(await callback()({ host: "127.0.0.1", port: 8080 }, listener(SHELL_TOKEN))).toEqual({ allow: false, reason: "denied by the user" });
     expect(asked).toHaveLength(1);

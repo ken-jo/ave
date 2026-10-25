@@ -112,6 +112,6 @@ describe("Windows substrate helpers", () => {
 
   it("caps egress grants at the conversation for a shared identity only", () => {
     expect(maxEgressGrantScope("kernel-channel")).toBe("always");
-    expect(maxEgressGrantScope("shared")).toBe("conversation");
+    expect(maxEgressGrantScope("shared")).toBe("session");
   });
 });

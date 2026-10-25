@@ -1,5 +1,5 @@
-/** Host shells use normal rules when isolation is off or unavailable; unavailable requests retain warning metadata.
- * Explicit host retries ask unless an allow rule matches; sensitive and exfiltration floors still force approval, and deny rules always win. */
+/** Host shells without isolation (off or unavailable) run unasked only on an exact Bash(<command>) rule (owner 2026-10-25, D2); unavailable requests retain warning metadata.
+ * Explicit host retries ask unless an exact allow rule matches; sensitive and exfiltration floors still force approval, and deny rules always win. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, symlinkSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -108,14 +108,13 @@ async function run(input: {
   return { result: result!, cards, execute, decision: check.mock.results[0]?.value, pm };
 }
 
-const PRINTF_ALLOW: PermissionRule[] = [{ pattern: "Bash(printf *)", action: "allow" }];
 const PRINTF_DENY: PermissionRule[] = [{ pattern: "Bash(printf *)", action: "deny" }];
 const CURL_ALLOW: PermissionRule[] = [{ pattern: "Bash(curl *)", action: "allow" }];
 
 describe("explicit unsandboxed retry (executionMode host)", () => {
   it("runs without a prompt when a matching allow rule covers the command", async () => {
     const { result, cards, execute } = await run({
-      substrate: "sandbox-active", rules: PRINTF_ALLOW, command: "printf rule-approved",
+      substrate: "sandbox-active", rules: [{ pattern: "Bash(printf rule-approved)", action: "allow" }], command: "printf rule-approved",
       executionMode: "host", answer: "deny-once",
     });
     expect(cards).toHaveLength(0);
@@ -131,7 +130,7 @@ describe("explicit unsandboxed retry (executionMode host)", () => {
   it("binds the rule approval to the resolved working directory of a relative cwd", async () => {
     mkdirSync(join(dir, "sub"));
     const { result, cards, execute } = await run({
-      substrate: "sandbox-active", rules: PRINTF_ALLOW, command: "printf in-subdir",
+      substrate: "sandbox-active", rules: [{ pattern: "Bash(printf in-subdir)", action: "allow" }], command: "printf in-subdir",
       executionMode: "host", answer: "deny-once", cwd: "sub",
     });
     expect(cards).toHaveLength(0);
@@ -147,7 +146,7 @@ describe("explicit unsandboxed retry (executionMode host)", () => {
     const current = join(dir, "current");
     symlinkSync(first, current, "junction");
     const pm = new PermissionManager(join(dir, "permissions.json"));
-    await pm.addRulePersist({ pattern: "Bash(touch *)", action: "allow" }, { kind: "project", projectCwd: first });
+    await pm.addRulePersist({ pattern: "Bash(touch marker)", action: "allow" }, { kind: "project", projectCwd: first });
     await pm.addRulePersist({ pattern: "Bash(touch *)", action: "deny" }, { kind: "project", projectCwd: second });
 
     const { result, cards, execute } = await run({
@@ -168,9 +167,9 @@ describe("explicit unsandboxed retry (executionMode host)", () => {
 
   it("rejects a minted rule permit when the allow rule is revoked before spawn", async () => {
     const { result, cards, execute } = await run({
-      substrate: "sandbox-active", rules: PRINTF_ALLOW, command: "printf revoked",
+      substrate: "sandbox-active", rules: [{ pattern: "Bash(printf revoked)", action: "allow" }], command: "printf revoked",
       executionMode: "host", answer: "deny-once",
-      beforeExecute: (pm) => pm.removeRulePersist(PRINTF_ALLOW[0]!, { kind: "user" }),
+      beforeExecute: (pm) => pm.removeRulePersist({ pattern: "Bash(printf revoked)", action: "allow" }, { kind: "user" }),
     });
     expect(cards).toHaveLength(0);
     expect(execute).toHaveBeenCalledOnce();
@@ -180,7 +179,7 @@ describe("explicit unsandboxed retry (executionMode host)", () => {
 
   it.each(["project", "user"] as const)("rejects a minted permit after a second %s rule writer adds a deny without reloading", async (scope) => {
     const { result, cards, execute } = await run({
-      substrate: "sandbox-active", rules: [{ pattern: "Bash(touch *)", action: "allow" }], command: "touch marker",
+      substrate: "sandbox-active", rules: [{ pattern: "Bash(touch marker)", action: "allow" }], command: "touch marker",
       executionMode: "host", answer: "deny-once",
       beforeExecute: async () => {
         const other = new PermissionManager(join(dir, "permissions.json"));
@@ -196,7 +195,7 @@ describe("explicit unsandboxed retry (executionMode host)", () => {
   });
 
   // The research names the hazard: a remembered approval given for a sandboxed/default run must not silently cover the unsandboxed retry.
-  // Only an allow rule may (I3). The remembered-approval key carries the sealed plan, and the explicit-host gate never consults approval memory.
+  // Only an exact allow rule may (D2). The remembered-approval key carries the sealed plan, and the explicit-host gate never consults approval memory.
   it("keeps a default run's remembered approval apart from the unsandboxed retry", async () => {
     const first = await run({
       substrate: "sandbox-off", rules: [], command: "printf granted",
@@ -212,7 +211,7 @@ describe("explicit unsandboxed retry (executionMode host)", () => {
       executionMode: "host", answer: "deny-once", pm: first.pm,
     });
     expect(retry.cards).toHaveLength(1);
-    // OWNER ITEM: main locked the explicit-host card to allow-once/deny-once; #77/#90 let the bash card offer rules. No dated decision picks one; this follows #90.
+    // A bash card is not narrowed to once/deny: the gate offers the five choices for its exact rule (owner 2026-10-25, D3).
     expect(retry.cards[0]?.allowedChoices).toBeUndefined();
     expect(retry.cards[0]).toMatchObject({
       executionPlan: { executionRequest: "host", requiresExplicitUserApproval: true },
@@ -229,7 +228,7 @@ describe("explicit unsandboxed retry (executionMode host)", () => {
       executionMode: "host", answer: "allow-once",
     });
     expect(cards).toHaveLength(1);
-    // OWNER ITEM: main locked the explicit-host card to allow-once/deny-once; #77/#90 let the bash card offer rules. No dated decision picks one; this follows #90.
+    // A bash card is not narrowed to once/deny: the gate offers the five choices for its exact rule (owner 2026-10-25, D3).
     expect(cards[0]?.allowedChoices).toBeUndefined();
     expect(cards[0]).toMatchObject({
       requireExplicit: true,

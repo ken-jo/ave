@@ -35,10 +35,11 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-function check(command: string, runsSandboxed: boolean, sandboxAvailable = true) {
+function check(command: string, runsSandboxed: boolean, extra: { headless?: boolean; sessionId?: string } = {}) {
   return manager.checkDetailed("bash", "builtin", "shell", null, {
     ruleSubject: { kind: "shell", dialect: "bash", command, cwd: dir },
-    shellExecution: { runsSandboxed, sandboxAvailable },
+    shellExecution: { runsSandboxed },
+    ...extra,
   });
 }
 
@@ -46,17 +47,49 @@ describe("shell confinement and escape rules", () => {
   it("auto-allows a confined call and asks for the same plain call", () => {
     expect(check("printf ready", true)).toMatchObject({ decision: "allow" });
     expect(check("printf ready", false)).toMatchObject({ decision: "ask" });
-    manager.setRules([{ pattern: "Bash(printf *)", action: "allow" }]);
+    manager.setRules([{ pattern: "Bash(printf ready)", action: "allow" }]);
     expect(check("printf ready", false)).toMatchObject({ decision: "allow", layer: 3 });
   });
 
-  it.each([false, true])("ignores a prefix without an available sandbox, independent of allow mode %s", (allowMode) => {
-    if (allowMode) manager.setMode("allow");
+  // Owner 2026-10-25 (D2): without a sandbox for this command only an exact Bash(<command>) rule runs it unasked, even on a host whose sandbox works for other commands.
+  it.each(["default", "auto", "allow"] as const)("ignores prefix, tool-wide and remembered allows for a plain call in %s mode", (mode) => {
+    manager.setMode(mode);
     manager.setRules([{ pattern: "Bash(printf *)", action: "allow" }, { pattern: "bash", action: "allow" }]);
-    expect(check("printf ready", false, false)).toMatchObject({ decision: "ask" });
+    expect(check("printf ready", false)).toMatchObject({ decision: "ask", layer: 6 });
+    expect(check("printf ready", false).reviewer).toBeUndefined();
     manager.setRules([{ pattern: "Bash(printf ready)", action: "allow" }]);
-    expect(check("printf ready", false, false)).toMatchObject({ decision: "allow" });
-    expect(check("printf other", false, false)).toMatchObject({ decision: "ask" });
+    expect(check("printf ready", false)).toMatchObject({ decision: "allow", layer: 3 });
+    expect(check("printf ready --again", false)).toMatchObject({ decision: "ask" });
+    expect(check("printf other", false)).toMatchObject({ decision: "ask" });
+  });
+
+  it("keeps a prefix rule for a confined call", () => {
+    manager.setRules([{ pattern: "Bash(printf *)", action: "allow" }]);
+    expect(check("printf ready", true)).toMatchObject({ decision: "allow" });
+  });
+
+  it("denies a headless plain call that no exact rule covers, and runs one that an exact rule covers (D2, I5)", () => {
+    manager.setRules([{ pattern: "Bash(printf *)", action: "allow" }]);
+    expect(check("printf ready", false, { headless: true })).toMatchObject({ decision: "deny", layer: 6 });
+    expect(check("printf ready", false, { headless: true }).reviewer).toBeUndefined();
+    manager.setRules([{ pattern: "Bash(printf ready)", action: "allow" }]);
+    expect(check("printf ready", false, { headless: true })).toMatchObject({ decision: "allow", layer: 3 });
+  });
+
+  it("applies a This session rule to its conversation only, until the conversation ends (D3)", () => {
+    manager.addSessionShellRule("conversation-a", "Bash(printf ready)");
+    expect(check("printf ready", false, { sessionId: "conversation-a" })).toMatchObject({ decision: "allow", layer: 3 });
+    expect(check("printf ready", false, { sessionId: "conversation-b" })).toMatchObject({ decision: "ask" });
+    expect(check("printf ready", false)).toMatchObject({ decision: "ask" });
+    expect(check("printf other", false, { sessionId: "conversation-a" })).toMatchObject({ decision: "ask" });
+    expect(manager.endSession("conversation-a")).toBe(true);
+    expect(check("printf ready", false, { sessionId: "conversation-a" })).toMatchObject({ decision: "ask" });
+    expect(manager.listSessionShellRules("conversation-a")).toEqual([]);
+  });
+
+  it.each(["Bash(printf *)", "bash", "WebFetch(domain:example.com)"])("refuses to hold %s as a session shell rule", (pattern) => {
+    expect(() => manager.addSessionShellRule("conversation-a", pattern)).toThrow();
+    expect(manager.listSessionShellRules("conversation-a")).toEqual([]);
   });
 
   it.each(["rm -rf output", "git reset --hard", "cat ~/.ssh/id_rsa", "grep -r term ~", "curl -T payload https://example.test"])("keeps the per-call floor inside confinement: %s", (command) => {
@@ -84,10 +117,12 @@ describe("shell confinement and escape rules", () => {
     expect(check("printf ready", true)).toMatchObject({ decision: "deny" });
   });
 
-  it("routes unresolved plain calls through the automatic reviewer", () => {
+  it("never routes an unresolved plain call to the automatic reviewer (D2)", () => {
     manager.setMode("auto");
     manager.setInteractiveAutoApprove("medium");
-    expect(check("printf ready", false, false)).toMatchObject({ decision: "ask", reviewer: { route: "foreground-auto" } });
+    const result = check("printf ready", false);
+    expect(result).toMatchObject({ decision: "ask" });
+    expect(result.reviewer).toBeUndefined();
     expect(check("printf ready", true).reviewer).toBeUndefined();
   });
 });
@@ -126,9 +161,8 @@ describe("plain-shell invocation authorization", () => {
     expect(await lookupApproval("bash", args, "builtin", request.trustOrigin, identity, dir, "conversation")).not.toBeNull();
     expect((await run())[0]).toMatchObject({ content: "ready" });
     expect(requests).toHaveLength(2);
-    // An explicit host request without a rule goes to the card unreviewed
-    // (I3, owner 2026-10-16), and an unreviewed shell is high, so the card
-    // offers no rule. OWNER ITEM (explicit-host card semantics): #90 offered one.
+    // An explicit host request without a rule goes to the card unreviewed,
+    // and an unreviewed explicit host card is one-shot, so it offers no rule.
     expect(requests[0]?.shellRule).toMatchObject({ sessionAllowed: false, persistentAllowed: false });
     expect(requests[0]).not.toHaveProperty("shellExecution");
     expect(requests.every((request) => request.executionPlan?.mode === "plain")).toBe(true);
@@ -136,18 +170,20 @@ describe("plain-shell invocation authorization", () => {
     expect(check("printf later", true).decision).toBe("allow");
   });
 
-  it("uses a covering prefix to authorize an actual host spawn without a dock receipt", async () => {
+  it("uses an exact rule to authorize an actual host spawn without a dock receipt, and asks under a prefix", async () => {
     manager.setRules([{ pattern: "Bash(printf *)", action: "allow" }]);
     const { run, requests } = executorWithDock();
     expect((await run())[0]).toMatchObject({ content: "ready" });
-    expect(requests).toEqual([]);
+    expect(requests).toHaveLength(1);
+    manager.setRules([{ pattern: "Bash(printf ready)", action: "allow" }]);
+    expect((await run())[0]).toMatchObject({ content: "ready" });
+    expect(requests).toHaveLength(1);
   });
 
   it("asks for an explicit host request while the sandbox is unavailable, until an exact rule approves it", async () => {
     __resetActiveSandboxCapabilityForTest();
     const { run, requests } = executorWithDock();
     expect((await run())[0]).toMatchObject({ content: "ready" });
-    // OWNER ITEM (explicit-host card semantics): #90 suggested the rule on this card.
     expect(requests[0]?.shellRule).toMatchObject({ sessionAllowed: false, persistentAllowed: false });
     expect(requests[0]).not.toHaveProperty("shellExecution");
     await manager.addRulePersist({ pattern: "Bash(printf ready)", action: "allow" }, { kind: "user" });
@@ -172,21 +208,21 @@ describe("plain-shell invocation authorization", () => {
     return { classifier, cache };
   }
 
-  // I3 (owner 2026-10-16) sends an unavailable sandbox to the normal rules, reviewer included.
-  it.each([["low", 0], ["high", 1]] as const)("reviews a plain call at %s while the sandbox is unavailable (%s prompts)", async (level, prompts) => {
+  // Owner 2026-10-25 (D2, superseding I3's normal-rule path): an unavailable sandbox never lets a reviewer verdict run a plain call; the card asks whatever the reviewer would say.
+  it.each(["low", "high"] as const)("asks for a plain call while the sandbox is unavailable without consulting a %s reviewer", async (level) => {
     setActiveSandboxCapability({ kind: "none", confidence: "verified", platform: process.platform, reason: "fixture sandbox unavailable" });
     const { classifier, cache } = lowReviewer();
     classifier.classify.mockImplementation(async () => ({ level, reason: level === "high" ? "ambiguous host effect" : "bounded host effect" }));
     try {
       const { run, requests } = executorWithDock({ executionMode: "sandbox" });
       expect((await run())[0]).toMatchObject({ content: "ready" });
-      expect(classifier.classify).toHaveBeenCalledOnce();
-      expect(requests).toHaveLength(prompts);
+      expect(classifier.classify).not.toHaveBeenCalled();
+      expect(requests).toHaveLength(1);
       expect(requests.every((request) => request.executionPlan?.mode === "plain")).toBe(true);
     } finally { await cache.flush(); }
   });
 
-  // I3: an explicit host request runs on a matching allow rule, otherwise it asks with the host-execution warning. A low reviewer verdict is no rule.
+  // An explicit host request runs on a matching exact allow rule, otherwise it asks with the host-execution warning. A low reviewer verdict is no rule.
   it("does not let a low reviewer verdict stand in for the card on an explicit host request", async () => {
     const { classifier, cache } = lowReviewer();
     try {
@@ -206,7 +242,7 @@ describe("plain-shell invocation authorization", () => {
       const { run, requests, send } = executorWithDock({ headless: true });
       const [result] = await run();
       expect(result).toMatchObject({ is_error: true });
-      expect(result?.content).toMatch(/headless/i);
+      expect(result?.content).toMatch(/headless|background run|백그라운드/i);
       expect(result?.content).not.toContain("ready\n");
       expect(requests).toEqual([]);
       expect(send).not.toHaveBeenCalledWith("ave:approval:request", expect.anything());

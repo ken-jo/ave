@@ -26,7 +26,7 @@ import {
 } from "../permission-manager.js";
 
 // An explicit host retry on a host whose sandbox is available: the route invocation authorization passes, so a wildcard allow may match (without a sandbox only an exact allow can).
-const HOST_ROUTE_ON_SANDBOX_HOST = { runsSandboxed: false, sandboxAvailable: true } as const;
+const HOST_ROUTE_ON_SANDBOX_HOST = { runsSandboxed: false } as const;
 
 function windowsPlan() {
   return buildHostShellExecutionPlan({
@@ -222,14 +222,14 @@ describe("Windows partial-shell execution permit", () => {
   });
 });
 
-describe("explicit host execution permit from a matching allow rule (design I3)", () => {
+describe("explicit host execution permit from a matching exact allow rule (D2)", () => {
   let directory: string;
   let pm: PermissionManager;
   beforeEach(() => {
     directory = mkdtempSync(join(tmpdir(), "ave-rule-permit-"));
     mkdirSync(join(directory, "subdir"));
     pm = new PermissionManager(join(directory, "permissions.json"));
-    pm.setRules([{ pattern: "Bash(echo *)", action: "allow" }]);
+    pm.setRules([{ pattern: "Bash(echo one-shot)", action: "allow" }, { pattern: "Bash(echo other)", action: "allow" }]);
   });
   afterEach(() => cleanupTmpDir(directory));
 
@@ -318,10 +318,8 @@ describe("explicit host execution permit from a matching allow rule (design I3)"
       ruleSubject: { kind: "shell", dialect: "bash", command: "echo one-shot", cwd: "/repo" },
     });
     // Allow mode does not admit a plain shell outside the sandbox: it still
-    // needs an allow rule or approval, and the mode issues no rule proof.
-    // OWNER ITEM: ip2 #90 keeps allow mode from admitting a plain shell; I3
-    // (owner 2026-10-16) sends sandbox-off/unavailable shells to the normal
-    // rules, where allow mode allows. No dated decision covers allow mode here.
+    // needs an exact Bash(<command>) rule or approval, and the mode issues no
+    // rule proof (owner 2026-10-25, D2).
     expect(modeAllow).toMatchObject({ decision: "ask", layer: 6 });
     expect(isIssuedShellAllowRuleDecision(modeAllow)).toBe(false);
   });
@@ -341,7 +339,7 @@ describe("explicit host execution permit from a matching allow rule (design I3)"
     expect(permit).toBeDefined();
 
     pm.setRules(change === "remove allow" ? [] : [
-      { pattern: "Bash(echo *)", action: "allow" },
+      { pattern: "Bash(echo one-shot)", action: "allow" },
       { pattern: "Bash(echo *)", action: "deny" },
     ]);
     expect(consumeIssuedShellAllowRuleDecision(outstanding, {
@@ -364,7 +362,7 @@ describe("explicit host execution permit from a matching allow rule (design I3)"
     expect(sandboxedPlan).toMatchObject({ mode: "asrt", executionRequest: "default" });
     const decision = pm.checkDetailed("bash", "builtin", "shell", null, {
       ruleSubject: { kind: "shell", dialect: "bash", command: binding.command, cwd },
-      hostShellExecutionPlan: sandboxedPlan, shellExecution: { runsSandboxed: true, sandboxAvailable: true },
+      hostShellExecutionPlan: sandboxedPlan, shellExecution: { runsSandboxed: true },
     });
     expect(decision).toMatchObject({ decision: "allow", layer: 3 });
     expect(isIssuedShellAllowRuleDecision(decision, pm)).toBe(false);
@@ -406,7 +404,7 @@ describe("explicit host execution permit from a matching allow rule (design I3)"
 
   it("does not grant execution while an in-process policy mutation is still writing", async () => {
     const binding = hostBinding();
-    await pm.addRulePersist({ pattern: "Bash(echo *)", action: "allow" }, { kind: "user" });
+    await pm.addRulePersist({ pattern: "Bash(echo one-shot)", action: "allow" }, { kind: "user" });
     const permit = mintHostShellExecutionPermit({
       plan: binding.plan, approvalDecision: undefined, allowRuleDecision: ruleDecision(), permissionManager: pm, binding,
     });
@@ -457,7 +455,7 @@ describe("explicit host execution permit from a matching allow rule (design I3)"
     const binding = hostBinding();
     const decision = ruleDecision();
     const other = new PermissionManager(join(directory, "other-permissions.json"));
-    other.setRules([{ pattern: "Bash(echo *)", action: "allow" }]);
+    other.setRules([{ pattern: "Bash(echo one-shot)", action: "allow" }]);
     expect(mintHostShellExecutionPermit({
       plan: binding.plan, approvalDecision: undefined, allowRuleDecision: decision, permissionManager: other, binding,
     })).toBeUndefined();
@@ -493,7 +491,7 @@ describe("explicit host execution permit from a matching allow rule (design I3)"
 
   it.each(["project", "user"] as const)("revokes outstanding decisions and permits after another %s rule writer persists a deny without a reload", async (scope) => {
     const binding = hostBinding();
-    await pm.addRulePersist({ pattern: "Bash(echo *)", action: "allow" }, scope === "project"
+    await pm.addRulePersist({ pattern: "Bash(echo one-shot)", action: "allow" }, scope === "project"
       ? { kind: "project", projectCwd: binding.resolvedCwd } : { kind: "user" });
     const outstanding = ruleDecision();
     const permit = mintHostShellExecutionPermit({
@@ -560,7 +558,7 @@ describe("explicit host execution permit from a matching allow rule (design I3)"
   it.each(["project", "user"])("rejects a dangling intermediate component in the %s rule store", (scope) => {
     if (scope === "user") {
       pm = new PermissionManager(join(directory, "store", "permissions.json"));
-      pm.setRules([{ pattern: "Bash(echo *)", action: "allow" }]);
+      pm.setRules([{ pattern: "Bash(echo one-shot)", action: "allow" }]);
     }
     const binding = hostBinding();
     const outstanding = ruleDecision();

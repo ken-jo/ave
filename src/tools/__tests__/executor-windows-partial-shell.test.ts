@@ -169,10 +169,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     expect(executed.mock.calls[0][0].hostShellExecutionPermit).toBeDefined();
     const checkedContext = checkDetailed.mock.calls[0]?.[4];
     expect(checkedContext?.hostShellExecutionPlan).toBe(executed.mock.calls[0][0].hostShellExecutionPlan);
-    expect(checkedContext?.shellExecution).toEqual({
-      runsSandboxed: false,
-      sandboxAvailable: sandbox === "active",
-    });
+    expect(checkedContext?.shellExecution).toEqual({ runsSandboxed: false });
     expect(result[0].is_error).toBeUndefined();
   });
 
@@ -271,35 +268,25 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     expect(reviewerInput?.hostShellExecutionPlan).toBe(executedPlan);
     expect(checkDetailed.mock.calls[0]?.[4]).toMatchObject({
       hostShellExecutionPlan: executedPlan,
-      shellExecution: { runsSandboxed: true, sandboxAvailable: true },
+      shellExecution: { runsSandboxed: true },
     });
     expect(reviewerInput?.approvalCacheKey).toContain(
       "host-shell-execution-plan-cache/v4:",
     );
   });
 
-  // OWNER ITEM (explicit-host card semantics): main gave the Windows Plan B
-  // shell a one-shot explicit modal that bypassed the foreground reviewer and
-  // durable memory ("bypasses foreground reviewer and durable memory with a
-  // one-shot explicit modal"); #90 sends it through the normal reviewer and a
-  // card that may offer rules. No dated owner decision picks one; this follows #90.
-  it("reviews a Plan B shell in the foreground lane and raises an unlocked card on a high verdict", async () => {
+  // Owner 2026-10-25 (D2/D3): a Plan B shell runs without a sandbox, so with no exact Bash(<command>) rule it goes to the five-choice card in every mode, allow mode included, and never to the reviewer.
+  it.each(["default", "auto", "allow"] as const)("asks for a Plan B shell in %s mode without consulting the reviewer", async (mode) => {
     partialWindowsAsrt();
     const execute = vi.fn();
     const registry = new ToolRegistry();
     registry.register(shellProbe(execute));
-    const pm = pmReturning({
-      decision: "ask",
-      reason: "reviewer handles this",
-      layer: 6,
-      reviewer: { route: "foreground-auto" },
-    });
+    const pm = new PermissionManager("/tmp/nonexistent-windows-partial-plan-b.json");
+    pm.setMode(mode);
+    pm.setInteractiveAutoApprove("medium");
+    pm.setRules([{ pattern: "Bash(echo *)", action: "allow" }, { pattern: "bash", action: "allow" }]);
     pm.setReviewer({ classifier: {} as never, cache: {} as never, deferredQueue: {} as never });
-    pm.dispatchReviewer = vi.fn(async () => ({
-      verdict: { level: "high" as const, reason: "ambiguous host effect" },
-      cacheReason: "miss-not-found" as const,
-      outcome: "fresh" as const,
-    })) as never;
+    pm.dispatchReviewer = vi.fn() as never;
     const requestAndWait = vi.fn(async (request: { id: string }) => ({
       requestId: request.id,
       choice: "deny-once" as const,
@@ -309,10 +296,12 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
       { sessionId: "partial-shell", permissionContext: permissionContext() },
     );
 
-    expect(pm.dispatchReviewer).toHaveBeenCalledTimes(1);
+    expect(pm.dispatchReviewer).not.toHaveBeenCalled();
     expect(requestAndWait).toHaveBeenCalledTimes(1);
-    const request = requestAndWait.mock.calls[0]?.[0] as { allowedChoices?: string[]; executionPlan?: { fallbackReason: string; requiresExplicitUserApproval: boolean } };
+    const request = requestAndWait.mock.calls[0]?.[0] as { allowedChoices?: string[]; reviewerVerdict?: unknown; executionPlan?: { fallbackReason: string; requiresExplicitUserApproval: boolean } };
+    // A bash card is not narrowed to once/deny: the gate offers the five choices for its exact rule.
     expect(request.allowedChoices).toBeUndefined();
+    expect(request.reviewerVerdict).toBeUndefined();
     expect(request.executionPlan).toMatchObject({ fallbackReason: "windows-partial-shell-acl-unsafe", requiresExplicitUserApproval: true });
     expect(execute).not.toHaveBeenCalled();
     expect(result[0]?.is_error).toBe(true);
@@ -601,10 +590,9 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     expect(result[0]?.is_error).toBe(true);
   });
 
-  // Design I3 (owner 2026-10-16): a requested-but-unavailable sandbox warns and continues under the normal rules; reviewer, approval memory and allow
-  // decisions included; exactly like sandbox-off, while the sealed plan keeps `requested-sandbox-unavailable` so the card, result and audit can say so.
+  // Owner 2026-10-25 (D2, superseding I3's normal-rule path): a requested-but-unavailable sandbox runs a shell plain, so only an exact Bash(<command>) rule runs it unasked; a reviewer never does. The sealed plan keeps `requested-sandbox-unavailable` so the card, result and audit can say so.
   it.each(["darwin", "linux", "win32"] as const)(
-    "routes requested-unavailable %s shells through the normal reviewer lane with the fallback recorded",
+    "runs a requested-unavailable %s shell on its exact rule, with the fallback recorded, and asks without one",
     async (platform) => {
       requestedSandboxUnavailable(platform);
       let observedPlan: import("../../permissions/host-shell-execution-plan.js").HostShellExecutionPlan | undefined;
@@ -613,39 +601,28 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
       });
       const registry = new ToolRegistry();
       registry.register(shellProbe(execute));
-      const pm = pmReturning({
-        decision: "ask",
-        reason: "reviewer handles this",
-        layer: 6,
-        reviewer: { route: "foreground-auto" },
-      });
+      const pm = new PermissionManager(`/tmp/nonexistent-requested-unavailable-${platform}.json`);
+      pm.setMode("auto");
       pm.setReviewer({ classifier: {} as never, cache: {} as never, deferredQueue: {} as never });
-      let reviewerInput: import("../../permissions/permission-manager.js").ReviewerDispatchInput | undefined;
-      pm.dispatchReviewer = vi.fn(async (_toolName, input) => {
-        reviewerInput = input;
-        return {
-          verdict: { level: "low" as const, reason: "reviewed uncontained shell" },
-          cacheReason: "miss-not-found" as const,
-          outcome: "fresh" as const,
-        };
-      }) as never;
-      const requestAndWait = vi.fn();
-      const result = await new ToolExecutor(
-        registry,
-        undefined,
-        pm,
-        undefined,
-        { requestAndWait } as never,
-      ).executeAll(
-        [{ id: `requested-unavailable-${platform}`, name: "bash", input: { command: "echo reviewed" } }],
+      pm.dispatchReviewer = vi.fn() as never;
+      const requestAndWait = vi.fn(async (request: { id: string }) => ({ requestId: request.id, choice: "deny-once" as const }));
+      const executor = new ToolExecutor(registry, undefined, pm, undefined, { requestAndWait } as never);
+      const run = (id: string) => executor.executeAll(
+        [{ id, name: "bash", input: { command: "echo reviewed" } }],
         { sessionId: `requested-unavailable-${platform}`, permissionContext: permissionContext() },
       );
 
-      expect(pm.dispatchReviewer).toHaveBeenCalledTimes(1);
-      expect(requestAndWait).not.toHaveBeenCalled();
+      const asked = await run(`requested-unavailable-${platform}-ask`);
+      expect(requestAndWait).toHaveBeenCalledTimes(1);
+      expect(execute).not.toHaveBeenCalled();
+      expect(asked[0]?.is_error).toBe(true);
+
+      pm.setRules([{ pattern: "Bash(echo reviewed)", action: "allow" }]);
+      const result = await run(`requested-unavailable-${platform}-rule`);
+      expect(pm.dispatchReviewer).not.toHaveBeenCalled();
+      expect(requestAndWait).toHaveBeenCalledTimes(1);
       expect(execute).toHaveBeenCalledTimes(1);
       expect(execute.mock.calls[0]?.[0].hostShellExecutionPermit).toBeUndefined();
-      expect(reviewerInput?.hostShellExecutionPlan).toBe(observedPlan);
       expect(observedPlan).toMatchObject({
         platform,
         requestedSandbox: true,
@@ -662,9 +639,9 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     },
   );
 
-  // Design I3 (owner 2026-10-16): an unavailable requested sandbox runs under the normal rules with no one-shot permit. #90 expected a permit here.
+  // An unavailable requested sandbox needs no one-shot permit: once the policy allows (for a plain shell only an exact Bash(<command>) rule can, D2), the pipeline runs it without a card.
   it.each(["darwin", "linux", "win32"] as const)(
-    "runs requested-unavailable %s shells on an ordinary allow without a card or permit",
+    "runs requested-unavailable %s shells on a policy allow without a card or permit",
     async (platform) => {
       requestedSandboxUnavailable(platform);
       let observedPlan: import("../../permissions/host-shell-execution-plan.js").HostShellExecutionPlan | undefined;
@@ -678,7 +655,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
       const result = await new ToolExecutor(
         registry,
         undefined,
-        pmReturning({ decision: "allow", reason: "allow mode", layer: 6 }),
+        pmReturning({ decision: "allow", reason: "exact allow rule", layer: 3 }),
         undefined,
         gate,
       ).executeAll(
@@ -727,7 +704,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
       expect(execute).toHaveBeenCalledTimes(1);
       expect(checkDetailed.mock.calls[0]?.[4]).toMatchObject({
         hostShellExecutionPlan: observedPlan,
-        shellExecution: { runsSandboxed: false, sandboxAvailable: false },
+        shellExecution: { runsSandboxed: false },
       });
       expect(observedPlan).toMatchObject({
         platform,
