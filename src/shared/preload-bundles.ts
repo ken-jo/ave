@@ -6,8 +6,9 @@
  *
  * Kept as JSON beside this module because the webpack config and the gate
  * are plain Node scripts. A sandboxed frame's preload can require only
- * `electron`, `events`, `timers` and `url`, and no files
- * (https://www.electronjs.org/docs/latest/tutorial/sandbox#preload-scripts).
+ * `electron` (and its `electron/renderer` / `electron/common` subpaths), no
+ * files, and since Electron 45 runs without `Buffer`, `setImmediate` and
+ * `clearImmediate` (https://www.electronjs.org/docs/latest/tutorial/sandbox#preload-scripts).
  *
  * `build`: `webpack` bundles `entry` to `dist/src/<file>` (one config per id,
  * named by the id); `copy` ships `entry` as it is (`scripts/lib/build-assets.mjs`).

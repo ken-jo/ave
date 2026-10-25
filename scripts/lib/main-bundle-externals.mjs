@@ -60,23 +60,26 @@ export const MAIN_BUNDLE_EXTERNALS = [
   // resolve from node_modules normally. If either side of the pair is
   // dropped, the runtime vendor smoke (scripts/asrt-runtime-smoke.mjs) fails.
   "@anthropic-ai/sandbox-runtime",
-  // ── OpenTelemetry SDK — CommonJS behind a split ESM boundary ─────────
+  // ── OpenTelemetry SDK — loaded lazily, resolved by Node ─────────────
   // `tracing.ts` loads the SDK lazily with `import()` so a run without
-  // AVE_TELEMETRY never pays for it. The SDK packages ship CommonJS only,
-  // and a split ESM chunk that wraps a CommonJS module exposes just
-  // `default`: `NodeTracerProvider`, `resourceFromAttributes` and
-  // `OTLPTraceExporter` all read as undefined and the first packaged run
-  // with telemetry on threw at boot. External, they resolve through Node's
-  // own CommonJS interop — the same path vitest exercises.
+  // AVE_TELEMETRY never pays for it. A split ESM chunk that wraps a CommonJS
+  // module exposes just `default` (`resourceFromAttributes` and
+  // `OTLPTraceExporter` read as undefined and the first packaged run with
+  // telemetry on threw at boot), and SDK 3.x picks its Node implementation
+  // through the `#platform` subpath import under the `node` condition.
+  // External, both resolve through Node itself — the same path vitest
+  // exercises.
   // `@opentelemetry/api` is not a chunk problem (it is imported statically)
-  // but a copy problem: `provider.register()` installs the context manager
-  // into the api's global registry, and a bundled `ai` / `@ai-sdk/otel` would
-  // read a second, inlined api whose noop context manager never nests the AI
-  // SDK spans under `ave.turn`. One node_modules copy keeps one registry.
+  // but a copy problem: `tracing.ts` installs the context manager into the
+  // api's global registry, and a bundled `ai` / `@ai-sdk/otel` would read a
+  // second, inlined api whose noop context manager never nests the AI SDK
+  // spans under `ave.turn`. One node_modules copy keeps one registry.
   // (`src/engine/telemetry/__tests__/tracing.test.ts` bundles through this
-  // boundary and catches a dropped SDK, resources or exporter entry.)
+  // boundary and catches a dropped SDK, context manager, resources or
+  // exporter entry.)
   "@opentelemetry/api",
-  "@opentelemetry/sdk-trace-node",
+  "@opentelemetry/sdk-trace",
+  "@opentelemetry/context-async-hooks",
   "@opentelemetry/resources",
   "@opentelemetry/exporter-trace-otlp-http",
 ];

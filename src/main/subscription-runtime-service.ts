@@ -7,6 +7,7 @@
  * boundary.
  */
 import { join } from "node:path";
+import { claimPrivateOwnership } from "./codex-executable-location.js";
 import type { StreamEvent, ToolSchema } from "../engine/llm/types.js";
 import {
   ACP_SUBSCRIPTION_PROVIDER_IDS,
@@ -428,6 +429,12 @@ export interface SubscriptionRuntimeServiceCreateOptions {
     options: ConstructorParameters<typeof ClaudeCodeConversationRuntime>[0],
   ) => ClaudeCodeConversationRuntime;
   readonly audit?: SubscriptionRuntimeAuditSink;
+  /**
+   * Test seam for a namespace whose directories do not exist. Production
+   * claims every runtime directory for the current account (see
+   * {@link claimPrivateOwnership}).
+   */
+  readonly claimRuntimeDirectories?: (paths: readonly string[]) => Promise<void>;
 }
 
 export interface GetSubscriptionRuntimeServiceOptions {
@@ -1124,9 +1131,19 @@ export class SubscriptionRuntimeService {
       namespace.childDir(claudeDirs.workspaceDir),
       namespace.childDir(claudeDirs.runtimeTempDir),
     ]);
+    const codexRuntimeDirectory = await namespace.childDir("codex-v3-home/runtime");
+    // These directories persist across launches. Claiming them on every start
+    // returns one an earlier elevated run left owned by Administrators to the
+    // current account, instead of refusing it from then on. One owned by any
+    // other account is refused unchanged, so start fails rather than adopt a
+    // directory someone else made.
+    await (options.claimRuntimeDirectories ?? claimPrivateOwnership)([
+      codexHome, codexRuntimeDirectory, codexSqlite, loginWorkspace, loginTemp, textWorkspace, textTemp,
+      claudeHome, claudeWorkspace, claudeTemp,
+    ]);
     const codexRuntimeLocator: CodexRuntimeLocator = options.codexRuntimeLocator ?? new CodexUserRuntimeLocator({
       runtimeHome: codexHome,
-      runtimeDirectory: await namespace.childDir("codex-v3-home/runtime"),
+      runtimeDirectory: codexRuntimeDirectory,
       sqliteHome: codexSqlite,
       workspaceDir: loginWorkspace,
       runtimeTempDir: loginTemp,

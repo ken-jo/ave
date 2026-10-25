@@ -12,6 +12,11 @@ export interface WindowsAclRequest {
   readonly paths: readonly string[];
   readonly capSids: readonly string[];
   readonly skipPackage: boolean;
+  /**
+   * Make the current account the owner of every path before reading it. The
+   * host takes the owner from its own token; a request never names one.
+   */
+  readonly setOwner: boolean;
 }
 
 /** The fixed process a host runs: the script travels in `args`, never in a request. */
@@ -135,7 +140,7 @@ export class WindowsAclHost implements WindowsAclTransport {
         bytes: 0,
         timer: setTimeout(() => this.fail(child, new WindowsAclHostError("Windows ACL host timed out")), limits.timeoutMs),
       };
-      const line = `${asciiJson({ id: request.id, paths: request.paths, capSids: request.capSids, skipPackage: request.skipPackage })}\n`;
+      const line = `${asciiJson({ id: request.id, paths: request.paths, capSids: request.capSids, skipPackage: request.skipPackage, setOwner: request.setOwner })}\n`;
       try {
         child.stdin!.write(line, (error) => {
           if (error) this.fail(child, error);

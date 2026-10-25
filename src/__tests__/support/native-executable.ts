@@ -2,7 +2,7 @@ import type * as ChildProcessModule from "node:child_process";
 import { windowsPowerShellEnv } from "../../shared/windows-powershell-env.js";
 import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
-import { chmodSync, mkdirSync, mkdtempSync, promises as fs, realpathSync, type Stats, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, promises as fs, realpathSync, type Stats, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, win32 } from "node:path";
 import { tmpdir } from "node:os";
 import { vi } from "vitest";
@@ -100,12 +100,13 @@ export function normalizeFixtureAncestorPermissions(root: string): void {
     if (!insideTemp || insideTemp === ".." || insideTemp.startsWith(`..${win32.sep}`) || isAbsolute(insideTemp)) {
       throw new Error("Private fixture must be inside the test temporary directory");
     }
+    // Only the access list changes: the fixture root is an ancestor of the
+    // private directories, which the product's own helper makes and owns.
     const script = [
       "$ErrorActionPreference = 'Stop'",
       "$ProgressPreference = 'SilentlyContinue'",
       "$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User",
       "$acl = [System.Security.AccessControl.DirectorySecurity]::new()",
-      "$acl.SetOwner($sid)",
       "$acl.SetAccessRuleProtection($true, $false)",
       "$rule = [System.Security.AccessControl.FileSystemAccessRule]::new($sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')",
       "$acl.AddAccessRule($rule)",
@@ -216,6 +217,8 @@ export function fakeFixtureAclTransport(execFile: typeof ChildProcessModule.exec
             })),
             // No desktop-package exemption: fixtures are owner-only.
             desktopPackage: request.skipPackage ? { status: "skipped" } : { status: "unavailable", reason: "mapping-not-found" },
+            // Fixture objects are the current account's own, so a claim keeps each owner.
+            ...request.setOwner ? { claims: request.paths.map((path) => ({ path, previousOwner: currentSid, outcome: "kept" })) } : {},
           },
         });
       } catch (cause) {
@@ -234,11 +237,17 @@ export function fakeFixtureAcl(actual: typeof ChildProcessModule): typeof ChildP
   return actual;
 }
 
-export function codexExecutableArtifactFixture(home: string): CodexExecutableArtifact {
-  const parent = join(home, "runtime");
-  mkdirSync(parent, { recursive: true, mode: 0o700 });
-  const directory = mkdtempSync(join(parent, "artifact-"));
+/** A private artifact made as the product makes one: through its ownership helpers. */
+export async function codexExecutableArtifactFixture(home: string): Promise<CodexExecutableArtifact> {
+  // Loaded here: this module is also loaded from a mocked process module's factory.
+  const { createPrivateDirectory, createPrivateObjects, createPrivateTempDirectory } = await import("../../main/codex-executable-location.js");
+  const parent = await createPrivateDirectory(join(home, "runtime"));
+  const directory = await createPrivateTempDirectory(join(parent, "artifact-"));
   const bytes = nativeExecutableBytes();
-  const executable = writeNativeExecutable(join(directory, process.platform === "win32" ? "codex.exe" : "codex"), bytes, 0o500);
+  const executable = await createPrivateObjects(async (created) => {
+    const path = writeNativeExecutable(join(directory, process.platform === "win32" ? "codex.exe" : "codex"), bytes, 0o500);
+    created.push(path);
+    return path;
+  });
   return { executable, contentHash: createHash("sha256").update(bytes).digest("hex"), companion: null };
 }

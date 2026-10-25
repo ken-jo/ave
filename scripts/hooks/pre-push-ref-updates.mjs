@@ -13,7 +13,7 @@ const INTEGRATION_BRANCH_PREFIX = "refs/heads/integration/";
 
 /**
  * `integration/<category>` branches collect sub-branch PRs and reach the
- * default branch through one category PR whose CI runs everything. They are
+ * default branch through one category PR whose non-test-only CI runs everything. They are
  * not branch-protected; they advance through reviewed PR merges and
  * lead-run merges of main, so a direct push to one is the exceptional case
  * and is treated like a push to the default branch: full checks.
@@ -60,7 +60,7 @@ export function parseRemoteHeads(text) {
  * Integration branches are unprotected and CI does not run on PRs into
  * them; their tips advance through reviewed PR merges and lead-run merges of
  * main, every push behind those ran this hook (AGENTS.md forbids bypassing
- * it), and the category->main PR's full CI is the backstop before anything
+ * it), and the category->main PR's non-test-only full CI is the backstop before anything
  * reaches main. Feature branches are not candidates: nothing reviews what
  * lands on them. Default branch first, then by name, so the choice between
  * equally close bases is deterministic.
