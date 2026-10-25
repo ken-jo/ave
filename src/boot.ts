@@ -226,6 +226,11 @@ export async function bootstrap(
   // step sets the DACL every file created underneath will inherit.
   const homePrivacy = ensureAveHomePrivate();
   setAveHomePrivacyAtBoot(homePrivacy);
+  if (homePrivacy.enforcement === "win32-dacl") {
+    for (const repair of homePrivacy.repairs ?? []) {
+      log.info(`boot: ${repair.path} owner-only DACL re-applied; removed principals: ${repair.removedPrincipals.join(", ")}`);
+    }
+  }
   if (homePrivacy.enforcement === "none") {
     log.error(
       `boot: ${homePrivacy.failedPath ?? homePrivacy.home} could not be restricted to this account (${homePrivacy.category}: ${homePrivacy.reason}) — extension confinement is refused because private directory protection is unverified`,

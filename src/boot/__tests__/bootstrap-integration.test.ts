@@ -5,13 +5,14 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 // Use a hoisted recorder so mock factories can record construction order.
 const h = vi.hoisted(() => {
+  const base = `${process.env.TMPDIR}/ave-boot-test`;
   const order: string[] = [];
   const captured: Record<string, unknown> = { shutdownHooks: [] as string[] };
   const rec = (label: string) => {
     order.push(label);
   };
   const disposer = () => () => {};
-  return { order, captured, rec, disposer };
+  return { base, order, captured, rec, disposer };
 });
 
 // Use a real event emitter so listener-ceiling assertions observe actual runtime warnings.
@@ -25,7 +26,7 @@ vi.mock("electron", async () => {
   h.captured["appEvents"] = appEvents;
   return {
     app: {
-      getPath: vi.fn(() => "/tmp/ave-boot-test"),
+      getPath: vi.fn(() => h.base),
       isPackaged: false,
       on: vi.fn((event: string, listener: (...a: unknown[]) => void) =>
         appEvents.on(event, listener),
@@ -205,7 +206,7 @@ vi.mock("../steps/plugin-runtime.js", () => ({
       pluginPaths: {
         registryPath: "/tmp/ave-boot-test/plugins/registry.json",
         pluginsRoot: "/tmp/ave-boot-test/plugins",
-        cacheRoot: "/tmp/ave-boot-test/plugins/.cache",
+        cacheRoot: `${h.base}/plugins/.cache`,
       },
       loopbackManager: {
         prepareGeneration: vi.fn(),
@@ -500,7 +501,7 @@ vi.mock("../../plugins/plugin-paths.js", () => ({
   resolvePluginPaths: vi.fn(() => ({
     pluginsRoot: "/tmp/ave-boot-test/plugins",
     registryPath: "/tmp/ave-boot-test/registry.json",
-    cacheRoot: "/tmp/ave-boot-test/cache",
+    cacheRoot: `${h.base}/cache`,
   })),
 }));
 
@@ -601,7 +602,7 @@ import { wireModelCatalogRefresh } from "../steps/model-catalog-refresh.js";
 
 // Both boots need a scratch AVE_HOME because marketplace setup removes retired caches.
 const savedAveHome = process.env["AVE_HOME"];
-process.env["AVE_HOME"] = "/tmp/ave-boot-test/ave-home";
+process.env["AVE_HOME"] = `${h.base}/ave-home`;
 afterAll(() => {
   if (savedAveHome === undefined) delete process.env["AVE_HOME"];
   else process.env["AVE_HOME"] = savedAveHome;

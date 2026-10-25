@@ -5,6 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { ensureAveHomePrivate, aveHome, win32SystemBinary, readWindowsDirectoryDacls, setAveHomePrivacyAtBoot, assertAveHomePrivacyForConfinement, _resetAveHomePrivacyForTest, type WindowsDirectoryDacl, type WindowsAccessRule } from "../ave-home.js";
 import { useTempPaths } from "../../__tests__/test-helpers.js";
+import { windowsPowerShellEnv } from "../windows-powershell-env.js";
 
 const OWNER_SID = "S-1-5-21-1004336348-11-77-1417";
 const OWNER_RULE: WindowsAccessRule = { sid: OWNER_SID, accessControlType: 0, fileSystemRights: 2032127,
@@ -104,16 +105,45 @@ describe("ensureAveHomePrivate", () => {
     expect(ensureAveHomePrivate(dir, { platform: "win32", readDacls: readWindowsDirectoryDacls }))
       .toEqual({ enforcement: "none", home: dir, failedPath: runtimeRoot, category: "owner-claim-failed", reason });
   });
-  it.each(["S-1-5-18", "S-1-5-32-544", "S-1-1-0"])("rejects an extra well-known principal %s", (sid) => {
+  it("fails closed when home read-back still contains a foreign principal", () => {
+    const sid = "S-1-5-18";
     const { result, dir } = check((entry) => ({ ...entry, rules: [OWNER_RULE, { ...OWNER_RULE, sid }] }));
     expect(result).toMatchObject({ enforcement: "none", failedPath: dir, category: "extra-principals", extraPrincipals: [{ sid }] });
   });
-  it.each(["example\\guest", undefined])("retains optional account resolution %s", (account) => {
-    const sid = "S-1-5-21-100-200-300-9999";
-    expect(check((entry) => ({ ...entry, rules: [OWNER_RULE, { ...OWNER_RULE, sid, account }] })).result)
-      .toMatchObject({ category: "extra-principals", extraPrincipals: [{ sid, ...(account ? { account } : {}) }] });
+  it("fails closed when home read-back still contains an Administrators grant", () => {
+    const sid = "S-1-5-32-544";
+    const { result, dir } = check((entry) => ({ ...entry, rules: [OWNER_RULE, { ...OWNER_RULE, sid }] }));
+    expect(result).toMatchObject({ enforcement: "none", failedPath: dir, category: "extra-principals", extraPrincipals: [{ sid }] });
   });
-  it("refuses an extra principal on the subscription runtime root", () => {
+  it("fails closed when home read-back still contains an Everyone grant", () => {
+    const sid = "S-1-1-0";
+    const { result, dir } = check((entry) => ({ ...entry, rules: [OWNER_RULE, { ...OWNER_RULE, sid }] }));
+    expect(result).toMatchObject({ enforcement: "none", failedPath: dir, category: "extra-principals", extraPrincipals: [{ sid }] });
+  });
+  it("fails closed when secrets read-back still contains a foreign deny", () => {
+    const sid = "S-1-5-32-545";
+    const { result, dir } = check((entry, index) => index === 1
+      ? { ...entry, rules: [{ ...OWNER_RULE, sid, accessControlType: 1 }, OWNER_RULE] } : entry);
+    expect(result).toMatchObject({ enforcement: "none", failedPath: join(dir, "secrets"), category: "extra-principals", extraPrincipals: [{ sid }] });
+  });
+  it("reports removed principals after successful protection of all three directories", () => {
+    const sid = "S-1-5-32-545";
+    const { result, dir } = check((entry) => ({ ...entry, removedPrincipals: [sid] }));
+    expect(result).toEqual({ enforcement: "win32-dacl", home: dir, sid: OWNER_SID,
+      repairs: [dir, join(dir, "secrets"), join(dir, "subscription-runtimes")].map((path) => ({ path, removedPrincipals: [sid] })) });
+  });
+  it("retains a resolved foreign account name", () => {
+    const sid = "S-1-5-21-100-200-300-9999";
+    const account = "example\\guest";
+    expect(check((entry) => ({ ...entry, rules: [OWNER_RULE, { ...OWNER_RULE, sid, account }] })).result)
+      .toMatchObject({ category: "extra-principals", extraPrincipals: [{ sid, account }] });
+  });
+  it("retains a foreign SID without an account name", () => {
+    const sid = "S-1-5-21-100-200-300-9999";
+    expect(check((entry) => ({ ...entry, rules: [OWNER_RULE, { ...OWNER_RULE, sid }] })).result)
+      .toMatchObject({ category: "extra-principals", extraPrincipals: [{ sid }] });
+  });
+  it("fails closed when subscription runtime read-back still contains a foreign principal", () => {
     const sid = "S-1-5-32-545";
     const { result, dir } = check((entry, index) => index === 2
       ? { ...entry, rules: [OWNER_RULE, { ...OWNER_RULE, sid }] }
@@ -121,21 +151,49 @@ describe("ensureAveHomePrivate", () => {
     expect(result).toMatchObject({ enforcement: "none", category: "extra-principals",
       failedPath: join(dir, "subscription-runtimes"), extraPrincipals: [{ sid }] });
   });
-  it.each([
-    { protected: false }, { rules: [] }, { rules: [{ ...OWNER_RULE, isInherited: true }] },
-    { rules: [{ ...OWNER_RULE, inheritanceFlags: 2 }] }, { rules: [{ ...OWNER_RULE, propagationFlags: 1 }] },
-    { rules: [{ ...OWNER_RULE, fileSystemRights: 1179785 }] }, { rules: [{ ...OWNER_RULE, accessControlType: 1 }] },
-    { ownerSid: "S-1-5-18" }, { rules: undefined }, { currentUserSid: undefined },
-    { rules: [{ ...OWNER_RULE, sid: "SY" }] },
-  ])("fails closed for invalid structured evidence %j", (patch) => {
-    expect(check((entry) => ({ ...entry, ...patch })).result.enforcement).toBe("none");
+  it("fails closed for an unprotected DACL", () => {
+    expect(check((entry) => ({ ...entry, protected: false })).result.enforcement).toBe("none");
   });
-  it.each([0, 1])("retains read-back failures for directory %i", (index) => {
-    const { result, dir } = check((entry, at) => at === index ? { path: entry.path, error: "read failed" } : entry);
-    expect(result).toMatchObject({ enforcement: "none", failedPath: index ? join(dir, "secrets") : dir, category: "read-back-failed" });
+  it("fails closed for an empty DACL", () => {
+    expect(check((entry) => ({ ...entry, rules: [] })).result.enforcement).toBe("none");
   });
-  it("retains the permission command category", () => {
-    expect(check((entry) => ({ path: entry.path, category: "icacls-failed", error: "command failed" })).result)
+  it("fails closed for an inherited owner rule", () => {
+    expect(check((entry) => ({ ...entry, rules: [{ ...OWNER_RULE, isInherited: true }] })).result.enforcement).toBe("none");
+  });
+  it("fails closed for incomplete inheritance flags", () => {
+    expect(check((entry) => ({ ...entry, rules: [{ ...OWNER_RULE, inheritanceFlags: 2 }] })).result.enforcement).toBe("none");
+  });
+  it("fails closed for restricted propagation", () => {
+    expect(check((entry) => ({ ...entry, rules: [{ ...OWNER_RULE, propagationFlags: 1 }] })).result.enforcement).toBe("none");
+  });
+  it("fails closed for incomplete owner rights", () => {
+    expect(check((entry) => ({ ...entry, rules: [{ ...OWNER_RULE, fileSystemRights: 1179785 }] })).result.enforcement).toBe("none");
+  });
+  it("fails closed for an owner deny rule", () => {
+    expect(check((entry) => ({ ...entry, rules: [{ ...OWNER_RULE, accessControlType: 1 }] })).result.enforcement).toBe("none");
+  });
+  it("fails closed for an unaccepted owner SID", () => {
+    expect(check((entry) => ({ ...entry, ownerSid: "S-1-5-18" })).result.enforcement).toBe("none");
+  });
+  it("fails closed for missing rules", () => {
+    expect(check((entry) => ({ ...entry, rules: undefined })).result.enforcement).toBe("none");
+  });
+  it("fails closed for a missing current user SID", () => {
+    expect(check((entry) => ({ ...entry, currentUserSid: undefined })).result.enforcement).toBe("none");
+  });
+  it("fails closed for a nonnumeric rule SID", () => {
+    expect(check((entry) => ({ ...entry, rules: [{ ...OWNER_RULE, sid: "SY" }] })).result.enforcement).toBe("none");
+  });
+  it("retains a home read-back failure", () => {
+    const { result, dir } = check((entry, index) => index === 0 ? { path: entry.path, error: "read failed" } : entry);
+    expect(result).toMatchObject({ enforcement: "none", failedPath: dir, category: "read-back-failed" });
+  });
+  it("retains a secrets read-back failure", () => {
+    const { result, dir } = check((entry, index) => index === 1 ? { path: entry.path, error: "read failed" } : entry);
+    expect(result).toMatchObject({ enforcement: "none", failedPath: join(dir, "secrets"), category: "read-back-failed" });
+  });
+  it("retains the permission replacement failure category", () => {
+    expect(check((entry) => ({ path: entry.path, category: "icacls-failed", error: "Directory permissions could not be replaced" })).result)
       .toMatchObject({ enforcement: "none", category: "icacls-failed" });
   });
   it("refuses a missing descriptor", () => {
@@ -156,9 +214,13 @@ describe("ensureAveHomePrivate", () => {
     const dir = home();
     expect(ensureAveHomePrivate(dir, { platform: "darwin", readDacls: () => { throw new Error("unexpected DACL read"); } }))
       .toEqual({ enforcement: "posix-mode", home: dir });
-    if (process.platform !== "win32") expect(statSync(dir).mode & 0o777).toBe(0o700);
   });
-  it("passes untrusted paths and the icacls path only through one JSON environment value", () => {
+  it.runIf(process.platform !== "win32")("creates POSIX directories with owner-only mode", () => {
+    const dir = home();
+    ensureAveHomePrivate(dir);
+    expect(statSync(dir).mode & 0o777).toBe(0o700);
+  });
+  it("passes untrusted paths only through one JSON environment value", () => {
     vi.stubEnv("SystemRoot", "C:\\Windows");
     const paths = ["odd’; Write-Output x; 'path", "secret"];
     const results = paths.map(descriptor);
@@ -167,8 +229,7 @@ describe("ensureAveHomePrivate", () => {
     const [, args, options] = vi.mocked(execFileSync).mock.calls.at(-1)!;
     expect(args!.join(" ")).not.toContain(paths[0]);
     const env = (options as { env: NodeJS.ProcessEnv }).env;
-    expect(JSON.parse(env.AVE_DACL_REQUEST!)).toEqual({ paths, protect: false, icacls: join("C:\\Windows", "System32", "icacls.exe") });
-    // The system root reaches the child only inside the request, never as a second variable.
+    expect(JSON.parse(env.AVE_DACL_REQUEST!)).toEqual({ paths, protect: false });
     expect(Object.keys(env).filter((name) => name.startsWith("AVE_DACL_"))).toEqual(["AVE_DACL_REQUEST"]);
   });
   it("lets Windows PowerShell rebuild its own module path", () => {
@@ -202,29 +263,79 @@ describe("ensureAveHomePrivate", () => {
     vi.mocked(execFileSync).mockReturnValueOnce("{}");
     expect(() => readWindowsDirectoryDacls([home()])).toThrow("invalid result set");
   });
-  it.each([false, true])("checks immediate child explicit grants (extra=%s)", (extra) => {
+  it("accepts inherited foreign grants on immediate children", () => {
     const dir = home();
     const child = join(dir, "secrets", "token");
     const result = ensureAveHomePrivate(dir, { platform: "win32", readDacls: (paths) => [
       ...paths.map(descriptor), { ...descriptor(child), child: true, rules: [
-        { ...OWNER_RULE, isInherited: true }, { ...OWNER_RULE, sid: "S-1-5-18", isInherited: !extra },
+        { ...OWNER_RULE, isInherited: true }, { ...OWNER_RULE, sid: "S-1-5-18", isInherited: true },
       ] },
     ] });
-    expect(result).toMatchObject(extra ? { enforcement: "none", category: "extra-principals", failedPath: child } : { enforcement: "win32-dacl" });
+    expect(result).toMatchObject({ enforcement: "win32-dacl" });
   });
-  it.runIf(process.platform === "win32").each(["home", "secrets", "file", "directory"])("reports retained explicit extra entries on the real %s DACL", (target) => {
+  it("refuses explicit foreign grants on immediate children", () => {
+    const dir = home();
+    const child = join(dir, "secrets", "token");
+    const result = ensureAveHomePrivate(dir, { platform: "win32", readDacls: (paths) => [
+      ...paths.map(descriptor), { ...descriptor(child), child: true, rules: [
+        { ...OWNER_RULE, isInherited: true }, { ...OWNER_RULE, sid: "S-1-5-18", isInherited: false },
+      ] },
+    ] });
+    expect(result).toMatchObject({ enforcement: "none", category: "extra-principals", failedPath: child });
+  });
+  it.runIf(process.platform === "win32")("reapplies owner-only DACLs after foreign inheritable grants on all three protected directories", () => {
+    const dir = home();
+    const paths = [dir, join(dir, "secrets"), join(dir, "subscription-runtimes")];
+    const sid = "S-1-5-32-545";
+    const first = ensureAveHomePrivate(dir);
+    expect(first, refusal(first)).toMatchObject({ enforcement: "win32-dacl" });
+    for (const path of paths) {
+      execFileSync(win32SystemBinary("icacls"), [path, "/grant", `*${sid}:(OI)(CI)RX`, "/L", "/q"], { encoding: "utf-8", windowsHide: true });
+    }
+    const result = ensureAveHomePrivate(dir);
+    expect(result, refusal(result)).toMatchObject({ enforcement: "win32-dacl",
+      repairs: paths.map((path) => ({ path, removedPrincipals: [sid] })) });
+    const descriptors = readWindowsDirectoryDacls(paths);
+    expect(descriptors).toHaveLength(3);
+    for (const entry of descriptors) {
+      expect(entry).toMatchObject({ protected: true, rules: [{ ...OWNER_RULE, sid: entry.currentUserSid, account: expect.any(String) }] });
+    }
+  });
+  it.runIf(process.platform === "win32")("removes a foreign explicit deny from the home DACL", () => {
+    const dir = home();
+    const sid = "S-1-5-32-545";
+    const first = ensureAveHomePrivate(dir);
+    expect(first, refusal(first)).toMatchObject({ enforcement: "win32-dacl" });
+    execFileSync(win32SystemBinary("icacls"), [dir, "/deny", `*${sid}:(OI)(CI)RX`, "/L", "/q"], { encoding: "utf-8", windowsHide: true });
+    try {
+      const result = ensureAveHomePrivate(dir);
+      expect(result, refusal(result)).toMatchObject({ enforcement: "win32-dacl", repairs: [{ path: dir, removedPrincipals: [sid] }] });
+      const [entry] = readWindowsDirectoryDacls([dir]);
+      expect(entry).toMatchObject({ protected: true, rules: [{ ...OWNER_RULE, sid: entry.currentUserSid, account: expect.any(String) }] });
+    } finally {
+      execFileSync(win32SystemBinary("icacls"), [dir, "/remove:d", `*${sid}`, "/L", "/q"], { encoding: "utf-8", windowsHide: true });
+    }
+  });
+  function checkChildRefusal(name: string, createChild: (path: string) => void): void {
     const dir = home();
     const protectedHome = ensureAveHomePrivate(dir);
     expect(protectedHome, refusal(protectedHome)).toMatchObject({ enforcement: "win32-dacl" });
-    const path = target === "home" ? dir : target === "secrets" ? join(dir, "secrets") : join(dir, "secrets", target);
-    if (target === "file") writeFileSync(path, "private");
-    if (target === "directory") mkdirSync(path);
+    const path = join(dir, "secrets", name);
+    createChild(path);
     execFileSync(win32SystemBinary("icacls"), [path, "/grant", "*S-1-1-0:R", "/q"], { encoding: "utf-8", windowsHide: true });
+    const before = sddl(path);
     const result = ensureAveHomePrivate(dir);
     expect(result).toMatchObject({ enforcement: "none", failedPath: path, category: "extra-principals",
       extraPrincipals: [expect.objectContaining({ sid: "S-1-1-0", account: expect.any(String) })] });
+    expect(sddl(path)).toBe(before);
     setAveHomePrivacyAtBoot(result);
     expect(() => assertAveHomePrivacyForConfinement()).toThrow(path);
+  }
+  it.runIf(process.platform === "win32")("reports a foreign explicit grant on a secrets child file without rewriting it", () => {
+    checkChildRefusal("file", (path) => writeFileSync(path, "private"));
+  });
+  it.runIf(process.platform === "win32")("reports a foreign explicit grant on a secrets child directory without rewriting it", () => {
+    checkChildRefusal("directory", (path) => mkdirSync(path));
   });
   it.runIf(process.platform === "win32")("blocks later home grants from reaching subscription runtimes and new children", () => {
     const dir = home();
@@ -254,12 +365,21 @@ describe("ensureAveHomePrivate", () => {
     readWindowsDirectoryDacls(["C:\\home"], true);
     const args = vi.mocked(execFileSync).mock.calls.at(-1)![1] as readonly string[];
     const command = args.at(-1)!;
-    const write = command.indexOf("& $icacls");
+    const write = command.indexOf("[HomeDirectoryDacl]::Reapply($path, $identity.User, $elevated)");
     expect(write).toBeGreaterThan(-1);
     expect(command.indexOf("[System.IO.FileAttributes]::ReparsePoint")).toBeLessThan(write);
     expect(command.indexOf("'Directory is owned by another account'")).toBeLessThan(write);
     expect(command).toContain("$owner -ne $sid -and -not ($elevated -and $owner -eq 'S-1-5-32-544')");
-    expect(command.slice(write, command.indexOf("\n", write))).toContain("'/L'");
+    expect(command).toContain("NtOpenFile(out handle, 0x00040000 | 0x00020000, ref attributes, out io, 3, 0x00004000)");
+    expect(command).toContain("CreateFile(parentPath, 0x00100001, 7, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero)");
+    expect(command).toContain("Root = parent.DangerousGetHandle(), Name = memory");
+    expect(command).toContain("Marshal.StringToHGlobalUni(leaf)");
+    expect(command).toContain("Attributes = 0x1040");
+    expect(command.indexOf('if (status == unchecked((int)0xC000050B)) throw new InvalidOperationException("Directory is a link or junction")')).toBeLessThan(command.indexOf("result = SetSecurityInfo(handle, 1, 0x80000004"));
+    expect(command.indexOf('if (!information.Directory) throw new InvalidOperationException("Path is not a directory")')).toBeLessThan(command.indexOf("result = SetSecurityInfo(handle, 1, 0x80000004"));
+    expect(command.indexOf('if (ownerSid != user.Value && !(elevated && ownerSid == "S-1-5-32-544"))')).toBeLessThan(command.indexOf("result = SetSecurityInfo(handle, 1, 0x80000004"));
+    expect(command).toContain('new RawSecurityDescriptor("D:P(A;OICI;FA;;;" + user.Value + ")")');
+    expect(command.lastIndexOf("$readBack = Read-Dacl $path $false")).toBeGreaterThan(write);
   });
   it("claims only the requested runtime root before writing its DACL", () => {
     const dir = home();
@@ -268,14 +388,14 @@ describe("ensureAveHomePrivate", () => {
     ensureAveHomePrivate(dir, { platform: "win32", readDacls: readWindowsDirectoryDacls });
     const [, args, options] = vi.mocked(execFileSync).mock.calls.at(-1)!;
     const request = JSON.parse((options as { env: NodeJS.ProcessEnv }).env.AVE_DACL_REQUEST!);
-    expect(request).toEqual({ paths: [dir, join(dir, "secrets"), runtimeRoot], protect: true, claimableRuntimeRoot: runtimeRoot, icacls: win32SystemBinary("icacls") });
+    expect(request).toEqual({ paths: [dir, join(dir, "secrets"), runtimeRoot], protect: true, claimableRuntimeRoot: runtimeRoot });
     const command = (args as readonly string[]).at(-1)!;
     const guard = command.indexOf("if ($path -eq $request.claimableRuntimeRoot -and -not $elevated -and $owner -eq 'S-1-5-32-544')");
     const claim = command.indexOf("[RuntimeRootOwnership]::ClaimFromAdministrators($path, $identity.User)");
     expect(guard).toBeGreaterThan(command.indexOf("if ($request.protect)"));
     expect(guard).toBeGreaterThan(command.indexOf("[System.IO.FileAttributes]::ReparsePoint"));
     expect(claim).toBeGreaterThan(guard);
-    expect(claim).toBeLessThan(command.indexOf("& $icacls"));
+    expect(claim).toBeLessThan(command.indexOf("[HomeDirectoryDacl]::Reapply($path, $identity.User, $elevated)"));
     expect(command).toContain("CreateFile(path, 0x00080000 | 0x00020000, 7, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero)");
     expect(command).toContain('new SecurityIdentifier(owner).Value != "S-1-5-32-544"');
     expect(command.indexOf("GetSecurityInfo(handle, 1, 1")).toBeLessThan(command.indexOf("SetSecurityInfo(handle, 1, 1"));
@@ -294,16 +414,62 @@ describe("ensureAveHomePrivate", () => {
   function sddl(path: string): string {
     return execFileSync(win32SystemBinary("WindowsPowerShell/v1.0/powershell"), [
       "-NoProfile", "-NonInteractive", "-Command",
-      "[System.IO.Directory]::GetAccessControl($env:AVE_TEST_TARGET).GetSecurityDescriptorSddlForm('Owner, Access')",
-    ], { env: { ...process.env, AVE_TEST_TARGET: path }, encoding: "utf-8", windowsHide: true }).trim();
+      "(Get-Acl -LiteralPath $env:AVE_TEST_TARGET).GetSecurityDescriptorSddlForm('Owner, Access')",
+    ], { env: windowsPowerShellEnv({ ...process.env, AVE_TEST_TARGET: path }), encoding: "utf-8", windowsHide: true }).trim();
   }
-  it.runIf(process.platform === "win32").each(["home", "secrets"])("refuses a %s junction and leaves its target's DACL unchanged", (which) => {
+  function protectWithoutCompilation(dir: string): ReturnType<typeof ensureAveHomePrivate> {
+    return ensureAveHomePrivate(dir, { platform: "win32", readDacls: (paths, protect, claimableRuntimeRoot) => {
+      vi.mocked(execFileSync).mockReturnValueOnce(JSON.stringify(paths.map(descriptor)));
+      readWindowsDirectoryDacls(paths, protect, claimableRuntimeRoot);
+      const [, args, options] = vi.mocked(execFileSync).mock.calls.at(-1)!;
+      const command = (args as readonly string[]).at(-1)!.replaceAll("Add-Type -TypeDefinition", "throw 'Unexpected permission writer compilation'; Add-Type -TypeDefinition");
+      const output = execFileSync(win32SystemBinary("WindowsPowerShell/v1.0/powershell"), [
+        ...(args as readonly string[]).slice(0, -1), command,
+      ], options as { env: NodeJS.ProcessEnv; encoding: "utf-8"; windowsHide: boolean });
+      return JSON.parse(output);
+    } });
+  }
+  it.runIf(process.platform === "win32")("skips writer compilation for newly created owner-only directories", () => {
     const dir = home();
+    const result = protectWithoutCompilation(dir);
+    expect(result, refusal(result)).toMatchObject({ enforcement: "win32-dacl", home: dir });
+    expect(result).not.toHaveProperty("repairs");
+  });
+  it.runIf(process.platform === "win32")("skips writer compilation for already protected owner-only directories", () => {
+    const dir = home();
+    expect(ensureAveHomePrivate(dir)).toMatchObject({ enforcement: "win32-dacl" });
+    const result = protectWithoutCompilation(dir);
+    expect(result, refusal(result)).toMatchObject({ enforcement: "win32-dacl", home: dir });
+    expect(result).not.toHaveProperty("repairs");
+  });
+  it.runIf(process.platform === "win32")("protects and repairs a home reached through a parent junction", () => {
+    const fixture = home();
+    const target = join(dirname(fixture), "parent-target");
+    const parent = join(dirname(fixture), "parent-junction");
+    mkdirSync(target);
+    symlinkSync(target, parent, "junction");
+    const dir = join(parent, "home");
+    vi.stubEnv("AVE_HOME", dir);
+    try {
+      const before = sddl(target);
+      expect(ensureAveHomePrivate()).toMatchObject({ enforcement: "win32-dacl", home: dir });
+      execFileSync(win32SystemBinary("icacls"), [dir, "/grant", "*S-1-5-32-545:(OI)(CI)RX", "/L", "/q"], { encoding: "utf-8", windowsHide: true });
+      const result = ensureAveHomePrivate();
+      expect(result, refusal(result)).toMatchObject({ enforcement: "win32-dacl", home: dir,
+        repairs: [{ path: dir, removedPrincipals: ["S-1-5-32-545"] }] });
+      const entries = readWindowsDirectoryDacls([dir, join(dir, "secrets"), join(dir, "subscription-runtimes")]);
+      expect(entries).toHaveLength(3);
+      for (const entry of entries) {
+        expect(entry).toMatchObject({ protected: true, rules: [{ ...OWNER_RULE, sid: entry.currentUserSid, account: expect.any(String) }] });
+      }
+      expect(sddl(target)).toBe(before);
+    } finally {
+      rmdirSync(parent);
+    }
+  });
+  function checkJunctionRefusal(dir: string, link: string): void {
     const target = join(dirname(dir), "target");
     mkdirSync(target);
-    const link = which === "home" ? dir : join(dir, "secrets");
-    if (which === "secrets") expect(ensureAveHomePrivate(dir)).toMatchObject({ enforcement: "win32-dacl" });
-    if (which === "secrets") rmdirSync(link);
     symlinkSync(target, link, "junction");
     try {
       const before = sddl(target);
@@ -314,6 +480,17 @@ describe("ensureAveHomePrivate", () => {
     } finally {
       rmdirSync(link);
     }
+  }
+  it.runIf(process.platform === "win32")("refuses a home junction and leaves its target DACL unchanged", () => {
+    const dir = home();
+    checkJunctionRefusal(dir, dir);
+  });
+  it.runIf(process.platform === "win32")("refuses a secrets junction and leaves its target DACL unchanged", () => {
+    const dir = home();
+    expect(ensureAveHomePrivate(dir)).toMatchObject({ enforcement: "win32-dacl" });
+    const link = join(dir, "secrets");
+    rmdirSync(link);
+    checkJunctionRefusal(dir, link);
   });
   it.runIf(process.platform === "win32")("refuses an existing home owned by another account and leaves its DACL unchanged", (context) => {
     requireRestorePrivilege(context);
@@ -356,23 +533,27 @@ describe("ensureAveHomePrivate", () => {
     expect(error).toBe("Owner changed during the claim");
     expect(sddl(dir)).toBe(before);
   });
-  it.runIf(process.platform === "win32")("changes a link itself, not its target, when the permission command runs with /L", () => {
-    // The race the refusal above cannot close: a link swapped in after the check.
+  it.runIf(process.platform === "win32")("refuses a swapped junction on the write handle and leaves its target DACL unchanged", () => {
     const dir = home();
     const target = join(dirname(dir), "target");
     mkdirSync(target);
     symlinkSync(target, dir, "junction");
     try {
       const before = sddl(target);
-      const sid = execFileSync(win32SystemBinary("WindowsPowerShell/v1.0/powershell"), ["-NoProfile", "-NonInteractive", "-Command",
-        "[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value"], { encoding: "utf-8", windowsHide: true }).trim();
-      execFileSync(win32SystemBinary("icacls"), [dir, "/inheritance:r", "/grant:r", `*${sid}:(OI)(CI)F`, "/L", "/q"], { encoding: "utf-8", windowsHide: true });
+      vi.mocked(execFileSync).mockReturnValueOnce(JSON.stringify([descriptor(dir)]));
+      readWindowsDirectoryDacls([dir], true);
+      const args = vi.mocked(execFileSync).mock.calls.at(-1)![1] as readonly string[];
+      const source = args.at(-1)!.split("Add-Type -TypeDefinition @'\n").at(-1)!.split("\n'@;")[0];
+      const error = execFileSync(win32SystemBinary("WindowsPowerShell/v1.0/powershell"), ["-NoProfile", "-NonInteractive", "-Command",
+        `Add-Type -TypeDefinition @'\n${source}\n'@\ntry { [HomeDirectoryDacl]::Reapply($env:AVE_TEST_TARGET, [System.Security.Principal.WindowsIdentity]::GetCurrent().User, $false) } catch { [Console]::Write($_.Exception.GetBaseException().Message) }`,
+      ], { env: { ...process.env, AVE_TEST_TARGET: dir }, encoding: "utf-8", windowsHide: true });
+      expect(error).toBe("Directory is a link or junction");
       expect(sddl(target)).toBe(before);
     } finally {
       rmdirSync(dir);
     }
   });
-  it.runIf(process.platform === "win32").each(["ordinary", "curly’quote", "'; Write-Output x; '"])("protects and reads back a real directory named %s", (name) => {
+  function checkRealDirectory(name: string): void {
     const dir = join(home(), name);
     const before = vi.mocked(execFileSync).mock.calls.length;
     const result = ensureAveHomePrivate(dir);
@@ -390,5 +571,14 @@ describe("ensureAveHomePrivate", () => {
     }
     writeFileSync(join(dir, "settings.json"), "{}");
     expect(readFileSync(join(dir, "settings.json"), "utf-8")).toBe("{}");
+  }
+  it.runIf(process.platform === "win32")("protects and reads back a directory with an ordinary name", () => {
+    checkRealDirectory("ordinary");
+  });
+  it.runIf(process.platform === "win32")("protects and reads back a directory with a curly quote", () => {
+    checkRealDirectory("curly’quote");
+  });
+  it.runIf(process.platform === "win32")("protects and reads back a directory with shell punctuation", () => {
+    checkRealDirectory("'; Write-Output x; '");
   });
 });

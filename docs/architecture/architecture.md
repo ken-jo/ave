@@ -2126,16 +2126,28 @@ with its own owner rule:
   step changes the owner or DACL of an object that already exists. The image's
   bytes are written only after that step. If it fails, the step removes what it
   made; a later failure removes the copy without following a link.
-- **`AVE_HOME` is created by the user, or admitted only on a strict DACL.**
+- **`AVE_HOME` has its owner-only DACL re-applied at boot.**
   When `AVE_HOME`, its `secrets` directory, or its `subscription-runtimes`
   directory does not exist yet,
   `ensureAveHomePrivate` in `src/shared/ave-home.ts` has its protecting step
   create it with the user as owner and an owner-only protected DACL, so no
-  grant for the token's default owner is left behind. Before it changes an
-  existing directory's DACL, the step refuses a link or junction and an owner
-  this rule does not accept, and nothing inside a refused directory is
-  touched; the permission command then acts on a link itself (`icacls /L`),
-  never on its target. An existing `AVE_HOME` the app did not create may be
+  grant for the token's default owner is left behind. At every boot it checks
+  each of these three directories' DACLs and replaces any that differ from one protected, inheritable
+  full-control allow entry for the current user, removing all other explicit
+  allow and deny entries. This repairs grants stamped by the elevated
+  Windows sandbox on profile children; removed SIDs are reported in boot diagnostics.
+  Creation failures, links or junctions, non-directory paths, and unaccepted
+  owners remain refusals before the write, and nothing inside a refused directory
+  is touched. The write rechecks attributes and ownership on a handle opened with
+  `NtOpenFile`'s `OBJ_DONT_REPARSE` and `FILE_OPEN_FOR_BACKUP_INTENT`, relative to a
+  parent handle opened with normal link traversal. The leaf handle excludes delete
+  sharing and receives the DACL write, so a leaf link swap cannot redirect it;
+  reparse points in enclosing components remain accepted. An already owner-only,
+  protected DACL skips writer compilation and replacement, including after creation.
+  Read-back and `isOwnerOnlyDacl` verification still fail closed if protection
+  did not take effect. The immediate children of `secrets/` are scanned read-only;
+  their foreign explicit allow entries remain reported and are never removed.
+  An existing `AVE_HOME` the app did not create may be
   owned by `S-1-5-32-544` only when the current token's default owner is
   `S-1-5-32-544`. Its DACL must then be protected and hold exactly one entry,
   the user's own full-control grant, inherited by files and folders and not
