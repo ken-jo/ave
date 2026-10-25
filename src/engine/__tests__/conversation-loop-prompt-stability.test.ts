@@ -1,14 +1,12 @@
 // Keep the cached prompt stable; varying turn facts belong in request-only content.
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { InputClassifier } from "../../core/input-classifier.js";
-import { RouteEngine } from "../../core/route-engine.js";
 import { ConversationLoop } from "../conversation-loop.js";
 import type { GenericMessage, LLMProvider, StreamEvent, StreamTurnParams } from "../llm/types.js";
 import { ToolRegistry } from "../../tools/registry.js";
-import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
 import { SystemPromptBuilder } from "../../prompts/system-prompt-builder.js";
 import { makePromptMemorySource } from "../../prompts/__tests__/test-helpers.js";
+import { makeBasicConversationLoopDeps } from "./support/conversation-loop-fixtures.js";
 
 class RecordingProvider implements LLMProvider {
   readonly vendor = "claude" as const;
@@ -34,18 +32,10 @@ function makeLoop(provider: LLMProvider): { loop: ConversationLoop; builder: Sys
     }),
     toolRegistry: new ToolRegistry(),
   });
-  const loop = new ConversationLoop({
-    settingsService: {
-      get: () => fakeLlmSettings(),
-      getSecret: () => "test-key",
-    },
+  const loop = new ConversationLoop(makeBasicConversationLoopDeps({
     systemPromptBuilder: builder,
-    inputClassifier: new InputClassifier(),
-    routeEngine: new RouteEngine(),
-    toolRegistry: new ToolRegistry(),
-    memoryManager: { saveSession: () => {}, listSessions: () => [] },
     disableSessionPersistence: true,
-  } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+  }));
   (loop as { provider: LLMProvider | null }).provider = provider;
   return { loop, builder };
 }

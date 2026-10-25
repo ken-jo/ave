@@ -16,6 +16,10 @@ import type {
   ResourceAttachment,
 } from "../../types/attachments.js";
 
+function compose(raw: string, attachments: Attachment[] = []) {
+  return composeOutgoing({ raw, activePreset: null, attachments });
+}
+
 const img1: ImageAttachment = {
   id: "i1",
   n: 1,
@@ -47,22 +51,14 @@ const paste3: PasteAttachment = {
 
 describe("composeOutgoing", () => {
   it("returns plain text + empty attachments when no attachments", () => {
-    const r = composeOutgoing({
-      raw: "hello",
-      activePreset: null,
-      attachments: [],
-    });
+    const r = compose("hello");
     expect(r.text).toBe("hello");
     expect(r.attachments).toEqual([]);
   });
 
   it("preserves [Image #N] markers in body and emits vision parts", () => {
     const list: Attachment[] = [img1];
-    const r = composeOutgoing({
-      raw: "see [Image #1]",
-      activePreset: null,
-      attachments: list,
-    });
+    const r = compose("see [Image #1]", list);
     expect(r.text).toContain("[Image #1]");
     expect(r.attachments).toEqual([
       {
@@ -78,22 +74,14 @@ describe("composeOutgoing", () => {
 
   it("augments [File #N] marker with absolute path", () => {
     const list: Attachment[] = [file2];
-    const r = composeOutgoing({
-      raw: "use [File #2] please",
-      activePreset: null,
-      attachments: list,
-    });
+    const r = compose("use [File #2] please", list);
     expect(r.text).toContain("/Users/example/Desktop/budget-2026.pdf");
     expect(r.attachments).toEqual([]);
   });
 
   it("inline-expands [Pasted text #N +X lines] marker", () => {
     const list: Attachment[] = [paste3];
-    const r = composeOutgoing({
-      raw: "analyse [Pasted text #3 +3 lines] thanks",
-      activePreset: null,
-      attachments: list,
-    });
+    const r = compose("analyse [Pasted text #3 +3 lines] thanks", list);
     expect(r.text).toContain("Pasted text #3");
     expect(r.text).toContain("line1\nline2\nline3");
     expect(r.text).not.toContain("[Pasted text #3 +3 lines]");
@@ -102,11 +90,7 @@ describe("composeOutgoing", () => {
 
   it("handles mixed attachments in one turn", () => {
     const list: Attachment[] = [img1, file2, paste3];
-    const r = composeOutgoing({
-      raw: "compare [Image #1] with [File #2] then [Pasted text #3 +3 lines]",
-      activePreset: null,
-      attachments: list,
-    });
+    const r = compose("compare [Image #1] with [File #2] then [Pasted text #3 +3 lines]", list);
     expect(r.text).toContain("[Image #1]");
     expect(r.text).toContain("/Users/example/Desktop/budget-2026.pdf");
     expect(r.text).toContain("line1\nline2\nline3");
@@ -116,11 +100,7 @@ describe("composeOutgoing", () => {
 
   it("exposes paste and file expansions to the canonical outgoing token estimate", () => {
     const raw = "compare [File #2] with [Pasted text #3 +3 lines]";
-    const r = composeOutgoing({
-      raw,
-      activePreset: null,
-      attachments: [file2, paste3],
-    });
+    const r = compose(raw, [file2, paste3]);
 
     expect(estimateOutgoingUserMessageTokens(r.text, r.attachments))
       .toBeGreaterThan(estimateOutgoingUserMessageTokens(raw, r.attachments));
@@ -136,11 +116,7 @@ describe("composeOutgoing", () => {
       lines: 1,
       chars: 27,
     };
-    const r = composeOutgoing({
-      raw: "see [Pasted text #9 +1 lines]",
-      activePreset: null,
-      attachments: [dollarPaste],
-    });
+    const r = compose("see [Pasted text #9 +1 lines]", [dollarPaste]);
     expect(r.text).toContain("match $1 keep $& and $$ raw");
   });
 
@@ -154,11 +130,7 @@ describe("composeOutgoing", () => {
       chars: 14,
     };
     // Marker in body has +99 lines (user edit) but parseMarkers + the expansion regex must still match.
-    const r = composeOutgoing({
-      raw: "before [Pasted text #7 +99 lines] after",
-      activePreset: null,
-      attachments: [paste],
-    });
+    const r = compose("before [Pasted text #7 +99 lines] after", [paste]);
     expect(r.text).toContain("actual content");
     expect(r.text).not.toContain("[Pasted text #7 +99 lines]");
   });
@@ -196,11 +168,7 @@ describe("composeOutgoing — resource attachments", () => {
   };
 
   it("sends the fence as its OWN part and never in the message text", () => {
-    const r = composeOutgoing({
-      raw: "summarize [Resource #5] please",
-      activePreset: null,
-      attachments: [resource],
-    });
+    const r = compose("summarize [Resource #5] please", [resource]);
 
     // The marker stays where the user typed it; the content does not join it.
     expect(r.text).toBe("summarize [Resource #5] please");
@@ -217,20 +185,12 @@ describe("composeOutgoing — resource attachments", () => {
     // The renderer is not a second author on server content: it forwards exactly what
     // the host framed. Main may redact the provider-bound copy when privacy redaction
     // is enabled, but a composer must never trim or re-wrap this provenance fence.
-    const r = composeOutgoing({
-      raw: "[Resource #5]",
-      activePreset: null,
-      attachments: [resource],
-    });
+    const r = compose("[Resource #5]", [resource]);
     expect(r.attachments[0]).toEqual({ type: "text", text: resource.text });
   });
 
   it("carries images and resources together, in that order", () => {
-    const r = composeOutgoing({
-      raw: "[Image #1] [Resource #5]",
-      activePreset: null,
-      attachments: [img1, resource],
-    });
+    const r = compose("[Image #1] [Resource #5]", [img1, resource]);
     expect(r.attachments.map((p) => p.type)).toEqual(["image", "text"]);
   });
 
@@ -240,11 +200,7 @@ describe("composeOutgoing — resource attachments", () => {
       id: `r${i}`,
       n: 10 + i,
     }));
-    const r = composeOutgoing({
-      raw: many.map((m) => `[Resource #${m.n}]`).join(" "),
-      activePreset: null,
-      attachments: many,
-    });
+    const r = compose(many.map((m) => `[Resource #${m.n}]`).join(" "), many);
     expect(countResourceAttachmentFences(r.attachments)).toBe(3);
   });
 });

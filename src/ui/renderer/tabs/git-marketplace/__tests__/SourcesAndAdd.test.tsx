@@ -387,6 +387,12 @@ describe("GitRuntimeCard", () => {
   });
 });
 
+async function checkSource(input: string) {
+  fireEvent.change(screen.getByTestId("git-marketplace:add:url"), { target: { value: input } });
+  await waitFor(() => expect(screen.getByTestId("git-marketplace:add:check")).toBeEnabled());
+  fireEvent.click(screen.getByTestId("git-marketplace:add:check"));
+}
+
 function serverJsonPreview(select: { package?: number } | undefined) {
   return {
       ok: true,
@@ -541,9 +547,7 @@ describe("confirmations, badges and Allow… (§18.5)", () => {
     addDialog(fake);
 
     await waitFor(() => expect(fake.gitRuntime.status).toHaveBeenCalled());
-    fireEvent.change(screen.getByTestId("git-marketplace:add:url"), { target: { value: "http://git.corp.example/team" } });
-    await waitFor(() => expect(screen.getByTestId("git-marketplace:add:check")).toBeEnabled());
-    fireEvent.click(screen.getByTestId("git-marketplace:add:check"));
+    await checkSource("http://git.corp.example/team");
 
     const warnings = await screen.findByTestId("git-marketplace:add:warnings");
     expect(warnings).toHaveAttribute("data-tone", "warning");
@@ -566,9 +570,7 @@ describe("confirmations, badges and Allow… (§18.5)", () => {
     addDialog(fake);
 
     await waitFor(() => expect(fake.gitRuntime.status).toHaveBeenCalled());
-    fireEvent.change(screen.getByTestId("git-marketplace:add:url"), { target: { value: "http://a.example/m" } });
-    await waitFor(() => expect(screen.getByTestId("git-marketplace:add:check")).toBeEnabled());
-    fireEvent.click(screen.getByTestId("git-marketplace:add:check"));
+    await checkSource("http://a.example/m");
     await screen.findByTestId("git-marketplace:add:warnings");
     fireEvent.click(screen.getByTestId("git-marketplace:add:warnings:continue"));
     await waitFor(() => expect(fake.market.previewSource).toHaveBeenCalledTimes(2));
@@ -638,9 +640,7 @@ describe("confirmations, badges and Allow… (§18.5)", () => {
     addDialog(fake);
 
     await waitFor(() => expect(fake.gitRuntime.status).toHaveBeenCalled());
-    fireEvent.change(screen.getByTestId("git-marketplace:add:url"), { target: { value: "http://first.example/m" } });
-    await waitFor(() => expect(screen.getByTestId("git-marketplace:add:check")).toBeEnabled());
-    fireEvent.click(screen.getByTestId("git-marketplace:add:check"));
+    await checkSource("http://first.example/m");
     await waitFor(() => expect(fake.market.previewSource).toHaveBeenCalledTimes(1));
 
     // Edited while the first check is still on its way, then the first answer arrives.
@@ -669,9 +669,7 @@ describe("confirmations, badges and Allow… (§18.5)", () => {
     const { rerender } = render(dialog(true));
 
     await waitFor(() => expect(fake.gitRuntime.status).toHaveBeenCalled());
-    fireEvent.change(screen.getByTestId("git-marketplace:add:url"), { target: { value: "http://first.example/m" } });
-    await waitFor(() => expect(screen.getByTestId("git-marketplace:add:check")).toBeEnabled());
-    fireEvent.click(screen.getByTestId("git-marketplace:add:check"));
+    await checkSource("http://first.example/m");
     await waitFor(() => expect(screen.getByTestId("git-marketplace:add:check")).toBeDisabled());
 
     // Closed while checking, then reopened from a link with another address.

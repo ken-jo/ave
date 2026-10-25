@@ -21,9 +21,36 @@ function sinkPath(date = new Date()): string {
 export async function emitSandboxAudit(
   entry: SandboxAuditEntry | SandboxEgressDenyAuditEntry | SandboxEgressDecisionAuditEntry | SandboxEgressRouteAuditEntry,
 ): Promise<void> {
-  const path = sinkPath();
+  // Stay async: a path that cannot be resolved must reach the caller's
+  // `.catch` as a rejection, never as a synchronous throw. The tracking below
+  // still runs synchronously, before the first await.
+  const write = appendSandboxAudit(sinkPath(), entry);
+  // Call sites fire this without awaiting so a slow disk never delays a tool.
+  // Track the write anyway, so whoever retires the audit directory can wait
+  // for it instead of racing a late mkdir/append.
+  const tracked: Promise<void> = write.then(() => undefined, () => undefined).finally(() => {
+    pendingSandboxAuditWrites.delete(tracked);
+  });
+  pendingSandboxAuditWrites.add(tracked);
+  await write;
+}
+
+const pendingSandboxAuditWrites = new Set<Promise<void>>();
+
+async function appendSandboxAudit(path: string, entry: object): Promise<void> {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   await appendFile(path, `${JSON.stringify(entry)}\n`, { mode: 0o600 });
+}
+
+/**
+ * Wait until every sandbox audit write started before or during this call has
+ * settled. Failures stay with the caller of {@link emitSandboxAudit}; this only
+ * waits. Lifecycle owners await it before removing the audit directory.
+ */
+export async function flushSandboxAudit(): Promise<void> {
+  while (pendingSandboxAuditWrites.size > 0) {
+    await Promise.all([...pendingSandboxAuditWrites]);
+  }
 }
 
 export function sandboxAuditSinkPath(): string {

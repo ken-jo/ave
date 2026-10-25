@@ -4,8 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
-import { InputClassifier } from "../../core/input-classifier.js";
-import { RouteEngine } from "../../core/route-engine.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { gateMutatingEffect } from "../../permissions/effect-enforcement.js";
 import {
@@ -13,13 +11,13 @@ import {
   issueAuthorizationRequiredControl,
   issueUnattendedTurnAuthority,
 } from "../../shared/authorization-required.js";
-import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
 import { createAgentSpawnTool } from "../../tools/agent-spawn.js";
 import { createDynamicTool } from "../../tools/base.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { ConversationLoop } from "../conversation-loop.js";
 import type { LLMProvider, StreamEvent } from "../llm/types.js";
 import type { SubAgentRunner, SubAgentSpawnResult } from "../subagent-runner.js";
+import { makeBasicConversationLoopDeps } from "./support/conversation-loop-fixtures.js";
 
 let temporaryDirectory: string | undefined;
 
@@ -71,25 +69,14 @@ describe("ConversationLoop authorization-required terminal", () => {
     });
     const requestAndWait = vi.fn();
     const notificationFire = vi.fn();
-    const loop = new ConversationLoop({
-      settingsService: {
-        get: () => fakeLlmSettings(),
-        getSecret: () => "test-key",
-      },
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       toolRegistry: registry,
-      memoryManager: {
-        saveSession: () => {},
-        listSessions: () => [],
-      },
       permissionManager,
       approvalGate: { requestAndWait },
       approvalSurface: "unavailable",
       notificationService: { fire: notificationFire },
       disableSessionPersistence: true,
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as unknown as { provider: LLMProvider | null }).provider = provider;
 
     const onTurnSummary = vi.fn();
@@ -158,25 +145,14 @@ describe("ConversationLoop authorization-required terminal", () => {
       forceModal: true,
     });
     const requestAndWait = vi.fn();
-    const loop = new ConversationLoop({
-      settingsService: {
-        get: () => fakeLlmSettings(),
-        getSecret: () => "test-key",
-      },
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       toolRegistry: registry,
-      memoryManager: {
-        saveSession: () => {},
-        listSessions: () => [],
-      },
       permissionManager,
       approvalGate: { requestAndWait },
       approvalSurface: "unavailable",
       notificationService: { fire: vi.fn() },
       disableSessionPersistence: true,
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as unknown as { provider: LLMProvider | null }).provider = provider;
 
     const result = await loop.runTurn(
@@ -202,23 +178,12 @@ describe("ConversationLoop authorization-required terminal", () => {
   it("refuses an unattended authority this host did not issue, and a replay of one it did", async () => {
     const registry = new ToolRegistry();
     temporaryDirectory = mkdtempSync(join(tmpdir(), "ave-loop-auth-"));
-    const loop = new ConversationLoop({
-      settingsService: {
-        get: () => fakeLlmSettings(),
-        getSecret: () => "test-key",
-      },
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       toolRegistry: registry,
-      memoryManager: {
-        saveSession: () => {},
-        listSessions: () => [],
-      },
       permissionManager: new PermissionManager(join(temporaryDirectory, "permissions.json")),
       approvalSurface: "unavailable",
       disableSessionPersistence: true,
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
 
     await expect(loop.runTurn(
       "write the file",
@@ -293,22 +258,11 @@ describe("ConversationLoop authorization-required terminal", () => {
         yield { type: "message_complete", stopReason: "end_turn" };
       },
     };
-    const loop = new ConversationLoop({
-      settingsService: {
-        get: () => fakeLlmSettings(),
-        getSecret: () => "test-key",
-      },
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       toolRegistry: registry,
-      memoryManager: {
-        saveSession: () => {},
-        listSessions: () => [],
-      },
       approvalSurface: "unavailable",
       disableSessionPersistence: true,
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as unknown as { provider: LLMProvider | null }).provider = provider;
 
     const result = await loop.runTurn(
@@ -384,19 +338,8 @@ describe("ConversationLoop authorization-required terminal", () => {
       reason: "fixture permits the invocation before its effect is known",
       layer: 3,
     });
-    const loop = new ConversationLoop({
-      settingsService: {
-        get: () => fakeLlmSettings(),
-        getSecret: () => "test-key",
-      },
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       toolRegistry: registry,
-      memoryManager: {
-        saveSession: () => {},
-        listSessions: () => [],
-      },
       permissionManager,
       approvalGate,
       approvalSurface: "unavailable",
@@ -406,7 +349,7 @@ describe("ConversationLoop authorization-required terminal", () => {
       },
       forcedActivePluginIds: new Set(["effect-probe-plugin"]),
       disableSessionPersistence: true,
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as unknown as { provider: LLMProvider | null }).provider = provider;
 
     const result = await loop.runTurn(
@@ -505,24 +448,13 @@ describe("ConversationLoop authorization-required terminal", () => {
       reason: "fixture pre-authorized spawn",
       layer: 3,
     });
-    const loop = new ConversationLoop({
-      settingsService: {
-        get: () => fakeLlmSettings(),
-        getSecret: () => "test-key",
-      },
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       toolRegistry: registry,
-      memoryManager: {
-        saveSession: () => {},
-        listSessions: () => [],
-      },
       permissionManager,
       approvalSurface: "unavailable",
       supportsA2AParentDelivery: true,
       disableSessionPersistence: true,
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as unknown as { provider: LLMProvider | null }).provider = provider;
 
     const result = await loop.runTurn(
