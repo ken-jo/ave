@@ -28,10 +28,7 @@ const OWNER_ONLY_SENTINEL = "OWNER_ONLY_SECRET_DO_NOT_EXPOSE";
 const WEB_ORIGIN = "https://ave.example.ts.net";
 const PNG = Buffer.from("iVBORw0KGgo=", "base64");
 
-// Node's fetch follows the Fetch Standard bad-port list. The OS can hand a
-// transient listener one of these ports (notably 6000), so reserve a port the
-// test client can actually reach instead of producing a nondeterministic HTTP
-// boundary failure.
+// Avoid Fetch-blocked ephemeral ports so a reachable listener does not fail before HTTP.
 const FETCH_BAD_TEST_PORTS = new Set([
   1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42, 43, 53, 69, 77, 79,
   87, 95, 101, 102, 103, 104, 109, 110, 111, 113, 115, 117, 119, 123, 135,
@@ -876,7 +873,6 @@ describe("Tailnet observer HTTP boundary", () => {
     });
     expect(claimInvitation).toHaveBeenCalledWith(code, PAIRED_ACTOR_ID);
 
-    // Pairing alone still has no observe/control authority.
     const snapshot = await fetch(url(server, "/tailnet/v1/conversation/snapshot"), {
       headers: observerHeaders(),
     });
@@ -905,12 +901,7 @@ describe("Tailnet observer HTTP boundary", () => {
   });
 
   it("does not let a rotated login header multiply tracked identities on one connection", async () => {
-    // S-5: Tailscale-User-Login is a client-supplied claim. A local caller
-    // that rotates it across many values on a single connection must not be
-    // able to mint a fresh tracked-identity bucket per value -- the limiter
-    // pins the bucket to whichever login the connection first authorized
-    // with, so this flood can only ever consume one of the
-    // MAX_TRACKED_RATE_IDENTITIES (128) slots.
+    // Pin rate-limit identity to the connection's first authorized login; rotating headers must not allocate more buckets.
     const { server } = await fixture({ maxRequestsPerWindow: 500, requestWindowMs: 60_000 });
     const agent = new HttpAgent({ keepAlive: true, maxSockets: 1 });
     try {
@@ -927,9 +918,6 @@ describe("Tailnet observer HTTP boundary", () => {
       agent.destroy();
     }
 
-    // A different identity, on its own connection, must still be admitted:
-    // the header-rotation flood above could not have exhausted the
-    // tracked-identity map.
     const legitimate = await requestTailnetGet(
       server,
       "/tailnet/v1/status",
@@ -939,22 +927,13 @@ describe("Tailnet observer HTTP boundary", () => {
   });
 
   it("keeps serving a previously-tracked identity when the identity map is at capacity", async () => {
-    // S-5: the old limiter returned false for every caller once
-    // MAX_TRACKED_RATE_IDENTITIES (128) buckets were tracked, including
-    // callers with an existing, well-behaved bucket. A caller that is
-    // already tracked must always be served from its own bucket regardless
-    // of how full the map is, and a brand-new identity arriving at capacity
-    // must be admitted by evicting the oldest tracked bucket rather than
-    // being refused outright.
+    // At capacity, serve existing buckets and evict the oldest bucket to admit a new identity.
     const { server } = await fixture({ maxRequestsPerWindow: 500, requestWindowMs: 60_000 });
     const legitimateHeaders = tailnetRoleHeaders(["observer"], "genuine-owner@example.com");
 
     const first = await requestTailnetGet(server, "/tailnet/v1/status", legitimateHeaders);
     expect(first.status).toBe(200);
 
-    // Fill the remaining 127 slots with distinct identities, each on its
-    // own fresh connection, bringing the map to exactly 128 tracked
-    // identities without evicting the one tracked above.
     for (let i = 0; i < 127; i += 1) {
       const response = await requestTailnetGet(
         server,
@@ -967,8 +946,6 @@ describe("Tailnet observer HTTP boundary", () => {
     const second = await requestTailnetGet(server, "/tailnet/v1/status", legitimateHeaders);
     expect(second.status).toBe(200);
 
-    // One more genuinely new identity pushes the map past capacity; it must
-    // still be admitted (via eviction), never denied outright.
     const overflow = await requestTailnetGet(
       server,
       "/tailnet/v1/status",
@@ -1091,8 +1068,6 @@ describe("Tailnet observer HTTP boundary", () => {
       headers: { ...controllerHeaders(), "content-type": "application/json" },
       body: JSON.stringify(command),
     })).status).toBe(202);
-    // Let the detached completion persist its terminal receipt before the new
-    // server simulates a restart with a newly minted public scope.
     await Promise.resolve();
     await Promise.resolve();
 
@@ -1530,8 +1505,6 @@ describe("Tailnet identity authorization", () => {
 
   it("accepts a Serve identity with no tailnet policy grant at all", () => {
     expect(isAuthorizedTailnetObserver(IDENTITY_HEADERS as never, IDENTITY)).toBe(true);
-    // No capability header participates, so the role names cannot be what
-    // separates observing from controlling in this mode.
     expect(isAuthorizedTailnetController(IDENTITY_HEADERS as never, IDENTITY)).toBe(true);
     expect(isAuthorizedTailnetObserver({}, IDENTITY)).toBe(false);
     expect(isAuthorizedTailnetObserver({ "tailscale-user-login": "   " }, IDENTITY)).toBe(false);
@@ -1618,7 +1591,6 @@ describe("Tailnet Web root and browser pairing", () => {
     expect(cookieToken).toBeTypeOf("string");
     expect(csrfToken).toBeTypeOf("string");
 
-    // The pairing cookie carries no share, so it is not a Web session.
     const snapshot = await fetch(url(server, "/tailnet/v2/web/snapshot"), {
       headers: webSessionHeaders(cookieToken!, csrfToken!),
     });
@@ -1666,8 +1638,6 @@ describe("Tailnet Web root and browser pairing", () => {
     expect(await accepted.json()).toMatchObject({ ok: true, pending: true });
     expect(claimInvitation).toHaveBeenCalledWith(CODE, PAIRED_ACTOR_ID);
 
-    // The native route is a separate boundary and stays shut to browsers even
-    // now that a browser path to redemption exists.
     const nativeFromBrowser = await fetch(url(server, "/tailnet/v2/pairing/claim"), {
       method: "POST",
       headers: {
@@ -1703,8 +1673,6 @@ describe("Tailnet Web root and browser pairing", () => {
     expect(page.body).not.toContain("<form");
     expect(page.body).not.toContain("/tailnet/v2/web/pairing/claim");
 
-    // Only the transcription was skipped. The pairing is pending, so the page
-    // this device is waiting on is still one the desktop has to grant.
     const cookieToken = /__Host-ave-tailnet-v2=([A-Za-z0-9_-]{43})/
       .exec(responseHeader(page.headers["set-cookie"]))?.[1];
     expect(cookieToken).toBeTypeOf("string");
@@ -1734,8 +1702,6 @@ describe("Tailnet Web root and browser pairing", () => {
       ...NAVIGATION_HEADERS,
     });
     expect(page.status).toBe(200);
-    // The approval already happened — saying otherwise would have this page
-    // contradict the control that let the device in without one.
     expect(page.body).toContain("대화를 공유하기를 기다리는 중");
     expect(page.body).not.toContain("승인을 기다리는 중");
     expect(page.body).toContain("같은 Tailscale 계정으로 확인되었습니다");
@@ -1764,9 +1730,7 @@ describe("Tailnet Web root and browser pairing", () => {
       });
       expect(page.status).toBe(200);
       expect(page.body).toContain(sentence);
-      // A pairing this desktop already holds is not a device to ask for a code.
       expect(page.body).not.toContain("<form");
-      // And it was never this desktop's own account, so the page must not say so.
       expect(page.body).not.toContain("같은 Tailscale 계정으로 확인되었습니다");
       expect(page.body).toContain("이 데스크톱에 연결되어 있습니다");
     }
@@ -1800,7 +1764,6 @@ describe("Tailnet Web root and browser pairing", () => {
   });
 
   it("asks for a code when the desktop cannot say whose device this is", async () => {
-    // What main answers when the probe read no login of its own.
     const deviceStatus = vi.fn(async () => ({ pairing: "none" as const, ownDevice: false }));
     const sharing = pairedSharing({ observe: false, control: false });
     const { server } = await fixture({

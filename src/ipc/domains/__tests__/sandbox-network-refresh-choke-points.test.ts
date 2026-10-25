@@ -1,24 +1,9 @@
-/**
- * ASRT sandbox live-refresh choke-point coverage.
- *
- * Settings-write paths can change a vendor baseUrl and must all trigger
- * `refreshSandboxNetworkConfig` when they do:
- *
- *   1. ave:settings:update  (settings.ts)
- *   2. ave:chat:retry-effort (chat.ts — spreads prevBlock; guard fires if
- *      prevBlock.baseUrl differs from post-restore value, which is always a
- *      no-op in normal usage but the wiring is present for future-safety)
- *
- * Each test asserts:
- *   - refreshSandboxNetworkConfig IS called when a vendor baseUrl changed.
- *   - refreshSandboxNetworkConfig is NOT called when baseUrl is unchanged.
- */
+// Every settings path that changes a provider address must refresh sandbox network configuration.
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   makeAppIpcInvoker,
 } from "./test-helpers.js";
 
-// ── shared electron mock ──────────────────────────────────────────────────────
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 
 vi.mock("electron", () => ({
@@ -36,13 +21,9 @@ vi.mock("../../../boot/dev-flags.js", () => ({
   isE2eTestRuntime: vi.fn(() => false),
 }));
 
-// Hoisted virtual mock for conversation-loop — chat.ts imports it at load time.
 vi.mock("../../../engine/conversation-loop.js", () => ({}), { virtual: true });
 
-// Use the shared invoker from test-helpers rather than a local duplicate.
 const invoke = makeAppIpcInvoker(handlers);
-
-// ── CHOKE POINT 1: ave:settings:update ──────────────────────────────────────
 
 describe("ASRT choke-point 1 — ave:settings:update (settings.ts)", () => {
   beforeEach(() => {
@@ -68,7 +49,6 @@ describe("ASRT choke-point 1 — ave:settings:update (settings.ts)", () => {
           return {};
         }),
         patch: vi.fn(async () => {
-          // Simulate the patch applying the new baseUrl
           currentBaseUrl = newBaseUrl;
           return { ok: true };
         }),
@@ -118,8 +98,6 @@ describe("ASRT choke-point 1 — ave:settings:update (settings.ts)", () => {
     expect(refreshSandboxNetworkConfig).not.toHaveBeenCalled();
   });
 });
-
-// ── CHOKE POINT 2: marketplace provider preset install/uninstall ─────────────
 
 describe("ASRT choke-point 2 — marketplace provider preset mutations (settings.ts)", () => {
   beforeEach(() => {
@@ -180,10 +158,7 @@ describe("ASRT choke-point 2 — marketplace provider preset mutations (settings
   }
 
   it("calls refreshSandboxNetworkConfig when the active preset is uninstalled", async () => {
-    // A preset's address lives only in the preset registry. Comparing the
-    // before and after signatures against the POST-mutation registry made the
-    // uninstalled host missing from both — equal signatures, no refresh, and
-    // the host stayed inside the sandbox allow-list.
+    // Capture the pre-mutation registry signature or uninstall loses the old host from both comparisons.
     const { deps, refreshSandboxNetworkConfig } = makePresetDeps();
     const { registerSettingsHandlers } = await import("../settings.js");
     registerSettingsHandlers(deps as never);
@@ -193,8 +168,6 @@ describe("ASRT choke-point 2 — marketplace provider preset mutations (settings
     expect(refreshSandboxNetworkConfig).toHaveBeenCalledTimes(1);
   });
 });
-
-// ── CHOKE POINT 3: ave:chat:retry-effort (chat.ts) ──────────────────────────
 
 describe("ASRT choke-point 3 — ave:chat:retry-effort (chat.ts)", () => {
   beforeEach(() => {
@@ -246,19 +219,15 @@ describe("ASRT choke-point 3 — ave:chat:retry-effort (chat.ts)", () => {
   }
 
   it("does NOT call refreshSandboxNetworkConfig when retry-effort leaves baseUrl unchanged", async () => {
-    // retry-effort spreads prevBlock (which has baseUrl) — net change is zero.
     const { deps, refreshSandboxNetworkConfig } = makeChatDeps("https://same.openai.azure.com");
 
     const { registerChatHandlers } = await import("../chat.js");
     registerChatHandlers(deps as never);
 
-    // retry-effort will be guarded — since the spread preserves baseUrl and
-    // the restore also restores it, refreshSandboxNetworkConfig should NOT fire.
-    // (The handler may fail internally due to minimal mock; we only assert the side-effect.)
+    // An unchanged provider address must not trigger sandbox network refresh.
     try {
       await invoke("ave:chat:retry-effort", { enableThinking: true, thinkingBudgetTokens: 10000 });
     } catch {
-      // Acceptable: the minimal mock doesn't fully wire conversationLoop internals.
     }
 
     expect(refreshSandboxNetworkConfig).not.toHaveBeenCalled();

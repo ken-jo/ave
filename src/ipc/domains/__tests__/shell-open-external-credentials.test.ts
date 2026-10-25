@@ -1,19 +1,4 @@
-/**
- * `ave:shell:open-external` — embedded-credential rule, exercised through the
- * REAL producer/consumer chain rather than a hand-composed fixture.
- *
- * PRODUCER: `createOnOpenLink` — the production `onopenlink` callback an MCP
- * app's `ui/open-link` request lands on. McpAppView binds its `openLink` dep to
- * `getApi().openExternalUrl(url)` (McpAppView.tsx), which the preload forwards
- * verbatim to this channel; here that dep is bound to the real IPC invoker so
- * the app-supplied string travels the same route.
- *
- * CONSUMER: the actual `registerSettingsHandlers` ipcMain handler, with
- * `shell.openExternal` spied. The assertion is on what the consumer would have
- * handed to electron — `https://trusted.example@evil.tld/` reads as
- * "trusted.example" to a user but navigates to evil.tld, so it must never reach
- * the spy.
- */
+// Exercise credential rejection through the real link producer and shell IPC consumer.
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { CHANNELS } from "../../../contract/app-contract.js";
 import { makeAppIpcInvoker } from "./test-helpers.js";
@@ -51,7 +36,6 @@ function makeDeps() {
   };
 }
 
-/** Register the real handlers, then drive them through the real MCP-app producer. */
 async function openLinkFromMcpApp(url: string): Promise<{ isError?: boolean }> {
   const { registerSettingsHandlers } = await import("../settings.js");
   registerSettingsHandlers(makeDeps() as never);

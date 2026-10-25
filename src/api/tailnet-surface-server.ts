@@ -1,17 +1,5 @@
-/**
- * Dedicated Tailnet observer listener with an optional narrow controller.
- *
- * This is intentionally separate from the loopback Local API and A2A
- * listeners: it has no bearer secret, no dispatcher, no owner-stream adapter,
- * and no command route unless the boot-only controller option is supplied.
- * Tailscale Serve terminates Tailnet ingress and injects the identity and
- * app-capability headers this listener verifies — against whichever
- * authorization boundary the host configured — before exposing only the
- * bounded shared projection.
- *
- * IMPORTANT: any local process able to reach loopback can forge these headers.
- * Tailscale protects the network hop; it does not replace the local boundary.
- */
+// Loopback observer ingress trusts injected identity headers only at the configured authorization boundary.
+// Local processes can forge those headers; network isolation does not replace the local boundary.
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
   createServer,
@@ -86,54 +74,29 @@ const TAILNET_ATTACHMENT_SCOPE_HEADER = "x-ave-tailnet-scope";
 const WEB_MAX_SESSION_LIFETIME_MS = 60 * 60_000;
 
 export interface TailnetControllerOptions {
-  /** Same host-owned port used by Desktop and loopback chat.send. */
   readonly commandPort: ConversationCommandPort;
-  /** Durable plaintext-free idempotency fence owned by the main process. */
   readonly receiptStore: TailnetControllerReceiptStore;
-  /** Ephemeral P3 image staging; defaults to a bounded in-memory store. */
   readonly attachmentStore?: TailnetAttachmentStagingStore;
 }
 
-/** One-use pairing redemption is distinct from observer/controller grants. */
 export interface TailnetPairingOptions {
   claimInvitation(
     code: string,
     actorId: TailnetShareActorId,
   ): Promise<{ readonly expiresAt: number } | null>;
-  /**
-   * What the desktop holds for the identity behind this request, pairing its
-   * own device without a code along the way.
-   *
-   * A boolean was not enough to say the true thing on the page. "Paired" and
-   * "approved" are different states, and so are "no pairing yet" and "paired,
-   * with nothing shared to it" — a page that cannot tell them apart tells a
-   * device that was let straight in that it is waiting to be let in, and asks a
-   * device that already redeemed a code to redeem another one.
-   *
-   * Only the state crosses this boundary. The pending pairing's deadline stays
-   * where it is enforced: the browser is told what it is waiting for, and the
-   * desktop is where the approval and the expiry both live.
-   */
+  // Pairing and approval are separate states; only state crosses this boundary, while the desktop enforces expiry.
   deviceStatus?(
     login: string,
     actorId: TailnetShareActorId,
   ): Promise<TailnetPairingDeviceStatus>;
 }
 
-/** The desktop's answer about one device, in the pairing store's own words. */
 export interface TailnetPairingDeviceStatus {
   readonly pairing: "none" | "pending" | "active";
-  /**
-   * Whether the host recognised this request as the desktop's own Tailscale
-   * account. Presentation only: it decides whether the page explains why no
-   * code was asked for, never what the device may reach.
-   */
+  // Own-account recognition affects presentation only and grants no authority.
   readonly ownDevice: boolean;
 }
-/**
- * Same-origin browser adapter. It is intentionally opt-in and requires the
- * paired sharing boundary; v1 native routes never accept browser context headers.
- */
+// Browser access requires paired sharing and same-origin checks; native routes reject browser context.
 export interface TailnetWebOptions {
   readonly origin: string;
   readonly sessions?: TailnetWebSessionStore;
@@ -142,39 +105,23 @@ export interface TailnetWebOptions {
 export interface TailnetSurfaceServerOptions {
   /** Must be the literal 127.0.0.1; a Tailnet IP is never a direct bind. */
   readonly host?: string;
-  /** Dedicated nonzero fixed port so a persistent Tailscale Serve target stays valid. */
   readonly port: number;
-  /** Which boundary a Tailnet request must clear before it reaches this listener. */
   readonly authorization: TailnetAuthorization;
   readonly projectionStore: SharedConversationProjectionStore;
-  /** Current main session identity; owner history is never consulted. */
   readonly getCurrentConversationId: () => string;
-  /** The host activity coordinator remains authoritative for busy state. */
   readonly isConversationBusy: () => boolean;
-  /** Optional bounded connection cap. */
   readonly maxConnections?: number;
-  /** Reconnect boundary that re-evaluates Tailnet policy/capability headers. */
   readonly maxStreamLifetimeMs?: number;
-  /** Per authenticated human identity; bounds status/snapshot/command floods. */
   readonly maxRequestsPerWindow?: number;
-  /** Isolated Web read budget; accommodates bounded SSE surfaces refreshing once per second. */
   readonly maxWebReadRequestsPerWindow?: number;
-  /** Fixed in-memory rate window, defaults to one minute. */
   readonly requestWindowMs?: number;
-  /**
-   * Explicitly enabled narrow remote control. It only accepts a typed
-   * `conversation.send` command; no attachment, session, policy, or approval
-   * command is registered here.
-   */
+  // Remote control accepts only conversation.send; no attachment, session, policy, or approval commands.
   readonly controller?: TailnetControllerOptions;
-  /** P2 explicit pairing/share gate. Its presence disables unpaired v1 access. */
+  // Enabling paired sharing disables unpaired native access.
   readonly pairedSharing?: TailnetPairedShareAuthorizer;
 
-  /** Diagnostics only; no header, capability, or identity value is passed here. */
   readonly log?: (message: string) => void;
-  /** Present only with pairedSharing; enables the separate pairing-cap route. */
   readonly pairing?: TailnetPairingOptions;
-  /** Explicit same-origin Tailnet browser adapter; never enables CORS. */
   readonly web?: TailnetWebOptions;
 
 }
@@ -185,17 +132,14 @@ export interface TailnetSurfaceServer {
   close(): Promise<void>;
 }
 
-/** Public envelope deliberately omits internal session, turn, and event ids. */
 export interface TailnetObserverEvent {
   readonly version: typeof SHARED_CONVERSATION_PROTOCOL_VERSION;
-  /** Anonymous cursor scoped to the current share epoch. */
   readonly cursor: number;
   readonly emittedAt: number;
   readonly event: SharedConversationEventEnvelope["event"];
   readonly scope: string;
 }
 
-/** Public snapshot deliberately omits the host's persisted conversation id. */
 export interface TailnetObserverSnapshot {
   readonly version: typeof SHARED_CONVERSATION_PROTOCOL_VERSION;
   readonly cursor: number;
@@ -208,7 +152,6 @@ export interface TailnetObserverSnapshot {
 
 interface TailnetObserverScope {
   readonly conversationId: string;
-  /** Random public epoch; never derived from a persisted session id. */
   readonly value: string;
 }
 
@@ -219,14 +162,12 @@ type TailnetControllerCommand =
       readonly id: string;
       readonly type: "conversation.send";
       readonly input: string;
-      /** One-time P3 image staging handles, never bytes or paths. */
       readonly attachmentIds?: readonly string[];
       readonly scope: string;
     }
   | {
       readonly id: string;
       readonly type: "turn.cancel-own";
-      /** Opaque public handle returned for a prior paired send. */
       readonly turnId: string;
       readonly scope: string;
     };
@@ -253,14 +194,7 @@ interface TailnetControllerBroker {
 }
 
 interface TailnetRequestLimiter {
-  /**
-   * `login` is a client-supplied identity claim (see the header-trust note
-   * at the top of this file); `socket` is the raw connection it arrived on,
-   * which a caller cannot swap out mid-request. The limiter pins its bucket
-   * key to whichever login a socket first authorized with, so rotating the
-   * header on later requests over the same connection cannot mint new
-   * tracked identities.
-   */
+  // Pin the rate bucket to the socket's first authorized login so rotating header claims cannot mint buckets.
   accept(login: string, socket: Socket): boolean;
 }
 interface TailnetWebRuntime {
@@ -275,7 +209,6 @@ interface TailnetStreamSessionGuard {
 
 interface TailnetWebRequestAuthorization {
   readonly login: string;
-  /** Request-local only; never stored or returned by the server. */
   readonly cookieToken: string;
   readonly pairedShare: TailnetPairedShareAuthorization;
   readonly scope: TailnetObserverScope;
@@ -289,7 +222,6 @@ interface TailnetWebPageState {
   readonly canControl: boolean;
 }
 
-/** Testable header validator for the Tailscale Serve observer contract. */
 export function isAuthorizedTailnetObserver(
   headers: IncomingHttpHeaders,
   authorization: TailnetAuthorization,
@@ -297,7 +229,6 @@ export function isAuthorizedTailnetObserver(
   return authorizedTailnetLogin(headers, authorization, "observer") !== undefined;
 }
 
-/** Testable header validator for the explicitly enabled controller contract. */
 export function isAuthorizedTailnetController(
   headers: IncomingHttpHeaders,
   authorization: TailnetAuthorization,
@@ -305,15 +236,7 @@ export function isAuthorizedTailnetController(
   return authorizedTailnetLogin(headers, authorization, "controller") !== undefined;
 }
 
-/**
- * The human identity behind a request, or nothing.
- *
- * Under `tailnet-identity` the role argument is not consulted: separating an
- * observer from a controller is what Ave's own share permission decides, and
- * pairing is what turns an identity into a share at all. Under
- * `app-capability` the tailnet policy file states the roles and every one of
- * them must be granted for the matching key.
- */
+// Identity mode uses local pairing/share authority; capability mode requires every requested role from policy.
 function authorizedTailnetLogin(
   headers: IncomingHttpHeaders,
   authorization: TailnetAuthorization,
@@ -345,10 +268,7 @@ function authorizedTailnetLogin(
     ? login
     : undefined;
 }
-/**
- * Accept only a canonical Tailscale HTTPS origin configured at boot. The
- * listener never derives an origin from Host or proxy headers.
- */
+// Accept only the boot-configured canonical HTTPS origin; never derive it from request headers.
 export function isTailnetWebOrigin(value: unknown): value is string {
   if (typeof value !== "string" || value.length === 0 || value.length > 512) return false;
   try {
@@ -368,7 +288,6 @@ export function isTailnetWebOrigin(value: unknown): value is string {
   }
 }
 
-/** Start the dedicated literal-loopback Tailnet observer listener. */
 export function startTailnetSurfaceServer(
   options: TailnetSurfaceServerOptions,
 ): Promise<TailnetSurfaceServer> {
@@ -443,8 +362,7 @@ export function startTailnetSurfaceServer(
         attachmentStore!,
         options.log,
       );
-  // The Runtime owns this bounded projection. Starting is idempotent, but a
-  // transport closing must never stop a future SNS/CLI adapter's subscription.
+  // Closing a transport must not stop the runtime projection subscription used by other adapters.
   options.projectionStore.start();
   const currentScope = createScopeTracker(options.getCurrentConversationId);
 
@@ -486,8 +404,6 @@ export function startTailnetSurfaceServer(
       }
     });
   });
-  // Bound incomplete headers/request bodies and total sockets without adding a
-  // second, transport-specific application API.
   server.maxConnections = maxConnections + DEFAULT_MAX_CONNECTIONS;
   server.headersTimeout = 10_000;
   server.requestTimeout = 60_000;
@@ -500,8 +416,6 @@ export function startTailnetSurfaceServer(
       if (settled) return;
       settled = true;
       server.removeListener("error", onError);
-      // This path is normally an EADDRINUSE before listen completes. Keep the
-      // unexpected-bound-port path leak-free as well.
       if (server.listening) server.close();
       reject(error);
     };
@@ -567,8 +481,6 @@ async function route(
   const attachmentRoute = path === "/tailnet/v3/attachments";
   const pairingRoute = path === "/tailnet/v2/pairing/claim";
   const pairingEnabled = pairingRoute && options.pairing !== undefined && options.pairedSharing !== undefined;
-  // The tailnet host name is the whole address a person is given, so the root
-  // is the web document rather than a 404 they have no way to interpret.
   const webDocumentRoute = path === "/tailnet/v2/web" || path === "/";
   const webSnapshotRoute = path === "/tailnet/v2/web/snapshot";
   const webEventsRoute = path === "/tailnet/v2/web/events";
@@ -585,8 +497,7 @@ async function route(
     && !pairingEnabled
     && !(webRoute && web !== undefined)
   ) {
-    // Drain an unknown write request before replying so it cannot retain one
-    // of the bounded loopback sockets until the server request timeout.
+    // Drain unknown writes before replying so they cannot occupy bounded sockets until timeout.
     if (method !== "GET") req.resume();
     sendJson(res, 404, { ok: false, error: "not-found" });
     return;
@@ -632,9 +543,7 @@ async function route(
     );
     return;
   }
-  // The native observer endpoints are for CLI/adapter use only. A browser must
-  // use the session + CSRF v2 Web boundary and cannot bypass it via injected
-  // Tailscale Serve headers.
+  // Native endpoints reject browsers; browser access requires the session and CSRF boundary.
   if (isTailnetNativeBrowserRequest(req.headers)) {
     req.resume();
     sendJson(res, 403, { ok: false, error: "browser-observer-not-ready" });
@@ -646,7 +555,6 @@ async function route(
     return;
   }
   if (hasRequestBody(req)) {
-    // Never leave a chunked GET body consuming a bounded observer socket.
     res.setHeader("connection", "close");
     req.resume();
     sendJson(res, 400, { ok: false, error: "request-body-not-allowed" });
@@ -866,8 +774,7 @@ async function routeTailnetWebDocument(
     return;
   }
 
-  // Tabs share the HttpOnly cookie but retain their own page-local CSRF token.
-  // Only a stale or differently authorized existing cookie is replaced.
+  // Tabs share an HttpOnly cookie but keep page-local CSRF tokens; replace only stale or reauthorized cookies.
   const previousCookie = readTailnetWebCookie(req.headers);
   let issued;
   try {
@@ -882,8 +789,6 @@ async function routeTailnetWebDocument(
         pairedShare: pairedShare.pairedShare,
       });
     } else {
-      // Unconditional: the cookie may be a pairing entry, which resolves to no
-      // session yet still occupies a record until its own expiry.
       if (previousCookie !== undefined) web.sessions.revoke(previousCookie);
       issued = web.sessions.issue({
         actorId: pairedShare.actorId,
@@ -907,22 +812,7 @@ async function routeTailnetWebDocument(
   }));
 }
 
-/**
- * Serve the pairing page to a browser that has no share yet.
- *
- * Reaching this listener at all already proves a Tailscale identity; what is
- * missing is the pairing that turns that identity into a share. The page is
- * given its own share-less cookie and CSRF secret so the redemption POST can
- * carry the same same-origin proof every other web route requires.
- *
- * Which of its three states it opens in is the desktop's answer, not a guess:
- * no pairing asks for a code, a pending one waits for the approval, and an
- * approved one waits for a conversation to be shared to it. The owner's own
- * device is paired here rather than asked to carry a 56-character code between
- * two of its owner's screens, and — when the owner has turned own-device
- * admission on — arrives already approved, which is the state this page has to
- * be able to say out loud.
- */
+// Issue share-less cookie/CSRF credentials for pairing only; desktop state selects code, approval, or share waiting.
 async function sendTailnetWebPairingDocument(
   req: IncomingMessage,
   res: ServerResponse,
@@ -930,8 +820,6 @@ async function sendTailnetWebPairingDocument(
   web: TailnetWebRuntime,
 ): Promise<void> {
   if (options.pairing === undefined) {
-    // No route on this listener can redeem a code, so an entry form would be a
-    // dead end. Name the state the operator has to fix instead of drawing one.
     sendTailnetWebJson(res, web, 403, { ok: false, error: "pairing-share-required" });
     return;
   }
@@ -967,15 +855,7 @@ async function sendTailnetWebPairingDocument(
   );
 }
 
-/**
- * Ask the desktop what it holds for the identity behind this request.
- *
- * The role check is the one the code path uses, so a capability-mode tailnet
- * still states who may ask to pair at all. An identity this listener cannot
- * establish, or a desktop that cannot answer, reads as `none` and gets the
- * ordinary code form: that is the correct outcome, not a fallback — nothing
- * about this identity has been established, so there is nothing to report.
- */
+// Unknown identity or failed desktop lookup yields no pairing state and grants no authority.
 const UNPAIRED_DEVICE: TailnetPairingDeviceStatus = Object.freeze({
   pairing: "none" as const,
   ownDevice: false,
@@ -1161,8 +1041,7 @@ async function routeTailnetWebCommand(
     sendTailnetWebJson(res, web, decoded.status, { ok: false, error: decoded.error });
     return;
   }
-  // Body reads can race an owner revocation or active-conversation switch. A
-  // second session + Tailnet + P2 check precedes the only side effect.
+  // Recheck session, identity, and share after body reads; revocation or conversation switches may race the read.
   const reauthorized = authorizeTailnetWebRequest(
     req,
     res,
@@ -1357,8 +1236,7 @@ function sameTailnetWebSessionAuthority(
 }
 
 function isTailnetNativeBrowserRequest(headers: IncomingHttpHeaders): boolean {
-  // Undici-based CLIs attach sec-fetch-mode: cors. Browser-context fields,
-  // unlike that transport hint alone, are sufficient to reject ambient access.
+  // A transport mode hint alone is insufficient; reject requests carrying browser-context fields.
   return hasHeader(headers, "origin")
     || hasHeader(headers, "sec-fetch-site")
     || hasHeader(headers, "sec-fetch-dest")
@@ -1485,16 +1363,6 @@ function sendTailnetWebDocumentResponse(
 function clearTailnetWebCookie(): string {
   return WEB_COOKIE_NAME + "=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0";
 }
-/**
- * The states the pairing page can be served in.
- *
- * `awaiting` is not a second page: it is the state the code-entry page already
- * moves itself into once a claim is accepted, rendered up front for a device
- * that never had to type a code. What it is waiting for is the part that has to
- * be said accurately — a device the desktop has already approved is not waiting
- * for an approval, and saying so is the page contradicting the control that let
- * it in.
- */
 type TailnetWebPairingState =
   | { readonly kind: "code-entry"; readonly csrfToken: string }
   | {
@@ -1503,13 +1371,6 @@ type TailnetWebPairingState =
       readonly ownDevice: boolean;
     };
 
-/**
- * Said by the rendered page and by the page a claim has just moved, so the two
- * cannot become two accounts of the same moment. The claim POST answers 202 for
- * a pairing that is `pending`, which is why that path names the approval text
- * directly; the reload is what moves the page on once the approval happens,
- * rather than leaving the sentence to go stale on screen.
- */
 const WEB_PAIRING_AWAITING_APPROVAL_TEXT = "데스크톱에서 승인을 기다리는 중…";
 const WEB_PAIRING_AWAITING_SHARE_TEXT = "데스크톱에서 대화를 공유하기를 기다리는 중…";
 const WEB_PAIRING_RELOAD_MS = 5_000;
@@ -1872,11 +1733,7 @@ function renderTailnetWebDocument(nonce: string, state: TailnetWebPageState): st
   ].join("\n");
 }
 
-/**
- * Narrow native-controller ingress. Browser control deliberately waits for a
- * separate same-origin UI + CSRF session; accepting an Origin header here
- * would make a Tailnet capability vulnerable to ambient browser requests.
- */
+// Native control rejects Origin headers; browsers require a separate same-origin CSRF session.
 async function routeControllerCommand(
   req: IncomingMessage,
   res: ServerResponse,
@@ -1973,12 +1830,6 @@ async function routeControllerCommand(
       return;
   }
 }
-/**
-/**
- * Native P3 image ingress. This route is deliberately separate from the JSON
- * command endpoint so command receipts and safe projections never contain raw
- * binary, filenames, local paths, or content-type parameters.
- */
 async function routeTailnetAttachmentUpload(
   req: IncomingMessage,
   res: ServerResponse,
@@ -1992,8 +1843,6 @@ async function routeTailnetAttachmentUpload(
     sendJson(res, 405, { ok: false, error: "method-not-allowed" });
     return;
   }
-  // Native routes never accept an ambient browser request, even when a caller
-  // can arrange Tailnet headers in that browser context.
   if (isTailnetNativeBrowserRequest(req.headers)) {
     req.resume();
     sendJson(res, 403, { ok: false, error: "browser-controller-not-ready" });
@@ -2056,9 +1905,7 @@ async function routeTailnetAttachmentUpload(
     return;
   }
 
-  // Body reads are deliberately followed by the same authoritative pairing and
-  // scope checks. A revoke/conversation switch while a client uploads cannot
-  // leave a usable staged object behind.
+  // Recheck pairing and scope after uploads so revoked or switched shares cannot retain usable staged objects.
   let latestScope: TailnetObserverScope;
   try {
     latestScope = currentScope();
@@ -2106,7 +1953,6 @@ async function routeTailnetAttachmentUpload(
   });
 }
 
-/** Same staging boundary as native upload, behind the paired Web CSRF session. */
 async function routeTailnetWebAttachmentUpload(
   req: IncomingMessage,
   res: ServerResponse,
@@ -2224,11 +2070,7 @@ function isTailnetAttachmentCurrent(
   }
 }
 
-/**
- * Pairing remains a separate capability from observing or controlling a
- * conversation. Redeeming a code only creates a pending record; a local owner
- * must still activate it and create a scoped share.
- */
+// Redeeming a code creates a pending pairing; the local owner must approve and create a scoped share.
 async function routePairingClaim(
   req: IncomingMessage,
   res: ServerResponse,
@@ -2240,7 +2082,6 @@ async function routePairingClaim(
     sendJson(res, 405, { ok: false, error: "method-not-allowed" });
     return;
   }
-  // Reject this ambient browser request before it consumes a capability bucket.
   if (isTailnetNativeBrowserRequest(req.headers)) {
     req.resume();
     sendJson(res, 403, { ok: false, error: "browser-pairing-not-ready" });
@@ -2258,7 +2099,6 @@ async function routePairingClaim(
     sendJson(res, 429, { ok: false, error: "tailnet-rate-limited" });
     return;
   }
-  // This native/CLI exchange must not become an ambient browser capability.
   if (isTailnetNativeBrowserRequest(req.headers)) {
     req.resume();
     sendJson(res, 403, { ok: false, error: "browser-pairing-not-ready" });
@@ -2292,15 +2132,7 @@ async function routePairingClaim(
   });
 }
 
-/**
- * Redeem a one-use invitation code from the browser.
- *
- * This is a second path to pairing, not a relaxation of the first: the native
- * `/tailnet/v2/pairing/claim` still refuses browser context outright, and this
- * route earns its browser access by clearing the full same-origin web boundary
- * — Fetch Metadata, Origin, and a page CSRF secret bound to a cookie this
- * server itself just issued.
- */
+// Browser pairing claims require Fetch Metadata, Origin, and cookie-bound CSRF; native claims still reject browsers.
 async function routeTailnetWebPairingClaim(
   req: IncomingMessage,
   res: ServerResponse,
@@ -2576,9 +2408,7 @@ function createTailnetControllerBroker(
     throw new Error("tailnet controller requires a reservable conversation command port");
   }
   const ownerId = randomUUID();
-  // A persistence failure after reserve must remain blocked for this broker
-  // too. The durable state is intentionally left reserved, so a restart also
-  // returns outcome-unknown rather than replaying a possibly executed command.
+  // Keep failed receipt persistence blocked locally and reserved durably so restart cannot replay uncertain work.
   const outcomeUnknownKeys = new Set<string>();
   const settle = (keyDigest: string): void => {
     try {
@@ -2601,8 +2431,6 @@ function createTailnetControllerBroker(
 
   return {
     async submit(login, command, privateConversationId, pairedShare): Promise<ControllerSubmitResult> {
-      // P1 direct grants intentionally remain send-only. P3 public handles,
-      // ownership cancellation, and binary staging are all paired-share-only.
       if (command.type === "turn.cancel-own" && pairedShare === undefined) {
         return "turn-not-found";
       }
@@ -2663,8 +2491,6 @@ function createTailnetControllerBroker(
             return "accepted";
           }
         } catch {
-          // The command port may have reached the process-local abort edge before
-          // an adapter fault. Preserve its receipt rather than risk a replay.
           outcomeUnknownKeys.add(keyDigest);
           log?.("controller cancellation admission threw; replay is blocked");
           return "command-outcome-unknown";
@@ -2693,9 +2519,7 @@ function createTailnetControllerBroker(
       try {
         submission = submit.call(commandPort, actor, {
           kind: "message.send",
-          // The remote wire type cannot claim provenance, persona, activation,
-          // session selection, path access, or raw bytes. The host mints all of
-          // those boundaries and accepts only one-time staged image parts.
+          // The host owns provenance, persona, session selection, and paths; the wire accepts only staged image handles.
           payload: {
             input: command.input,
             ...(claim === undefined ? {} : { attachments: claim.attachments }),
@@ -2703,8 +2527,7 @@ function createTailnetControllerBroker(
           ...(publicTurn === undefined ? {} : { publicTurn }),
         });
       } catch {
-        // We cannot prove a thrown adapter did not admit the lease, so preserve
-        // the reserved receipt and block a replay rather than duplicating work.
+        // An adapter throw cannot prove the lease was never admitted; retain the reservation to prevent duplicate work.
         if (claim !== undefined) attachmentStore.release(claim);
         outcomeUnknownKeys.add(keyDigest);
         log?.("controller command admission threw; replay is blocked");
@@ -2718,14 +2541,10 @@ function createTailnetControllerBroker(
       try {
         if (claim !== undefined) attachmentStore.commit(claim);
       } catch {
-        // The turn may already own copied canonical parts, so do not make the
-        // receipt replayable if staging cleanup itself faults.
         outcomeUnknownKeys.add(keyDigest);
         log?.("controller attachment commit failed; replay is blocked");
         return "command-outcome-unknown";
       }
-      // The safe timeline carries completion/failure. Both are known outcomes;
-      // only a failed durable settlement becomes outcome-unknown on replay.
       void submission.completion.then(
         () => settle(keyDigest),
         () => settle(keyDigest),
@@ -2788,20 +2607,12 @@ function createTailnetRequestLimiter(
   windowMs: number,
 ): TailnetRequestLimiter {
   const buckets = new Map<string, { startedAt: number; count: number }>();
-  // A raw TCP connection is not something a caller can forge or swap out
-  // mid-request, unlike the Tailscale-User-Login header. Pinning the bucket
-  // key to whichever login a socket first authorized with means later
-  // requests on that same connection cannot mint additional tracked
-  // identities by sending a different header value -- the number of
-  // distinct identities one caller can register is bounded by how many
-  // sockets it holds open, which the listener already caps separately via
-  // maxConnections. The map holds only digests, never raw logins.
+  // Pin identity to the socket's first authorized login; connection caps bound the number of buckets.
+  // Store only login digests.
   const pinnedIdentity = new WeakMap<Socket, string>();
   return {
     accept(login, socket): boolean {
       const now = Date.now();
-      // The map never retains a login, and stale buckets are evicted before a
-      // new identity can consume one of the fixed slots.
       for (const [key, bucket] of buckets) {
         if (now - bucket.startedAt >= windowMs) buckets.delete(key);
       }
@@ -2813,14 +2624,7 @@ function createTailnetRequestLimiter(
       const current = buckets.get(key);
       if (current === undefined) {
         if (buckets.size >= MAX_TRACKED_RATE_IDENTITIES) {
-          // Refusing every caller here would itself be a self-inflicted
-          // outage: capacity is now bounded by real distinct connections,
-          // not by how many header values a caller can send, so a flood of
-          // genuinely new identities still deserves service. Evict the
-          // longest-tracked bucket (Map iteration order is insertion order)
-          // to make room -- the accepted cost is that identity's window
-          // resets a little early, never that a caller earning a fresh
-          // bucket is turned away outright.
+          // Evict the oldest bucket at capacity; accepting an early window reset avoids denying every new identity.
           const oldestKey = buckets.keys().next().value;
           if (oldestKey !== undefined) buckets.delete(oldestKey);
         }
@@ -2912,7 +2716,6 @@ function isJsonContentType(value: string | undefined): boolean {
   return value?.split(";", 1)[0]?.trim().toLowerCase() === "application/json";
 }
 
-/** Exact image media types only; parameters belong to neither the wire nor the SOT normalizer. */
 function tailnetAttachmentMimeType(value: string | undefined): string | undefined {
   const mimeType = value?.trim().toLowerCase();
   return mimeType === "image/png"
@@ -3149,7 +2952,6 @@ function sendSnapshotRequired(res: ServerResponse, scope: string, latestCursor: 
     latestCursor,
   });
 }
-/** The shared JSON envelope plus the no-store / nosniff headers every tailnet response carries. */
 function sendJson(res: ServerResponse, status: number, payload: unknown, extraHeaders: Readonly<Record<string, string>> = {}): void {
   sendJsonResponse(res, status, payload, {
     "cache-control": "no-store",

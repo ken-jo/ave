@@ -1,10 +1,3 @@
-/**
- * Diagnostics domain IPC handlers (#1499 E2) — unit tests.
- *   - unauthorized sender → UNAUTHORIZED_FRAME (fail-closed) on all 3 channels
- *   - crash-list → metadata
- *   - logs:tail → redacted recent lines, level filter, clamp
- *   - export → build + save-dialog path (dialog mocked)
- */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -38,15 +31,10 @@ import { fixtureSecret } from "../../../audit/__tests__/secret-fixtures.js";
 let tmp: string;
 let auditLogger: AuditLogger;
 const REJECT_EVENT = { senderFrame: { url: "https://evil.example.com" } };
-// A plugin UI shell is a file:// frame (so it passes the base validateSender)
-// but must be rejected by validateHostRendererSender at these host channels.
+// Plugin shells pass the base sender check but must fail the host-renderer guard.
 const PLUGIN_SHELL_EVENT = {
   senderFrame: { url: "file:///C:/app/resources/plugin-ui-shell.html" },
 };
-// A trusted host renderer frame — validateHostRendererSender accepts a file://
-// frame that is NOT the plugin-ui-shell. Note: unlike the base validateSender,
-// this guard fails closed on a null/empty frame URL, so the happy-path tests
-// MUST supply a concrete host frame (they previously passed `null`).
 const ACCEPT_EVENT = { senderFrame: { url: "file:///C:/app/resources/index.html" } };
 
 function makeDeps(overrides?: { includeCrashDumps?: boolean }): IpcDeps {
@@ -59,8 +47,6 @@ function makeDeps(overrides?: { includeCrashDumps?: boolean }): IpcDeps {
     auditLogger,
     settingsService: {
       getAll: () => ({
-        // A vendor the store recognises — SettingsService coerces an unknown
-        // provider name at the file boundary, so no handler is handed one.
         llm: { provider: "claude", streamSmoothing: "none", fallbackChain: [], vendors: {} },
         chat: { autoCompact: true },
         telemetry: { enabled: false },
@@ -156,7 +142,6 @@ describe("ave:logs:tail", () => {
     const secret = fixtureSecret("opaque-", "pass-12345");
     const lines: string[] = [];
     for (const value of [`Custom ${secret}`, `[REDACTED:TOKEN] ${secret}`, `Digest username="O'Neil", response="${secret}"`]) {
-      // The record itself, then records whose message is a serialized record, nested up to three deep.
       let message = JSON.stringify({ Authorization: value });
       lines.push(message);
       for (let depth = 0; depth < 3; depth++) {
@@ -224,7 +209,6 @@ describe("ave:logs:tail", () => {
 
 describe("ave:diagnostics:crash-list", () => {
   it("returns crash-dump metadata", async () => {
-    // Handler resolves <userData>/crash-dumps; app.getPath mock points near tmp.
     const crashDir = join(tmp, "..", "userData", "crash-dumps");
     mkdirSync(crashDir, { recursive: true });
     writeFileSync(join(crashDir, "x.dmp"), "y", "utf-8");
@@ -260,8 +244,7 @@ describe("ave:diagnostics:export", () => {
   });
 
   it("persisted setting false + renderer arg true → crash-dump binary NOT included (M2)", async () => {
-    // The persisted setting is authoritative; a renderer that sends
-    // includeCrashDumps:true can never widen past the disabled setting.
+    // Persisted crash-dump consent cannot be widened by renderer arguments.
     handlers.clear();
     registerDiagnosticsHandlers(makeDeps({ includeCrashDumps: false }));
     const crashDir = join(tmp, "..", "userData", "crash-dumps");
@@ -318,16 +301,11 @@ describe("ave:diagnostics:export", () => {
     const payload = JSON.parse(exportRow!.input ?? "{}");
     expect(payload.includeCrashDumps).toBe(false);
     expect(payload.bytes).toBeGreaterThan(0);
-    // Destination path is recorded (redacted) for forensics.
     expect(typeof payload.path).toBe("string");
   });
 
   it("rejects a malformed day key rather than exporting a bundle with its audit section missing", async () => {
-    // The bundle builder catches a throwing audit section so an unreadable
-    // store cannot fail the whole export — which means an invalid key reaching
-    // it costs the bundle its audit trail while the export still reports ok.
-    // The key is validated here at the boundary, through the same function
-    // `ave:audit:search` validates with.
+    // Validate the audit key before export; section-level error isolation would otherwise hide a missing audit trail.
     const out = join(tmp, "bundle-bad-date.zip");
     showSaveDialog.mockResolvedValue({ canceled: false, filePath: out });
     await expect(

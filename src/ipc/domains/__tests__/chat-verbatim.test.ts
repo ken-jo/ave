@@ -1,10 +1,3 @@
-/**
- * ave:chat:get-verbatim-tool-result IPC handler unit tests.
- *
- * Strategy: register the chat IPC handlers with a minimal mock conversationLoop,
- * then invoke the verbatim handler directly to cover all branches.
- */
-
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import path from "node:path";
 import os from "node:os";
@@ -17,7 +10,6 @@ import {
   MCP_RESOURCE_FENCE_OPEN,
 } from "../../../shared/mcp-resource-bounds.js";
 
-// ─── Mock electron ────────────────────────────────────────────────────────────
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 
 vi.mock("electron", () => ({
@@ -28,7 +20,6 @@ vi.mock("electron", () => ({
   },
 }));
 
-// ─── Mock audit/DLP (not under test) ─────────────────────────────────────────
 vi.mock("../../../audit/dlp-filter.js", () => ({
   redactForLLM: vi.fn((s: string) => ({ redacted: s, totalCount: 0, counts: {} })),
   redactFsPath: vi.fn((s: string) => s),
@@ -46,25 +37,7 @@ vi.mock("../../../lib/logger.js", () => ({
 vi.mock("../../../shared/chat-history.js", () => ({
   serializeHistoryMessage: vi.fn((m: unknown, i: number) => ({ ...m as object, index: i })),
 }));
-// Authorize one extra explicit project (on top of whatever the real settings
-// file already grants) so the "explicit project persists metadata" test below
-// can exercise the REAL resolveAuthorizedWorkspaceProject/listAuthorizedWorkspaceProjects
-// path end-to-end instead of stubbing the authorization decision itself.
-// Preserves every other field via importOriginal — only additionalDirectories
-// is extended, so the default-only tests elsewhere in this file are unaffected.
-// Built via the real, OS-native `path.resolve` (not a hardcoded Windows-style
-// literal) so it round-trips identically through BOTH of the two independent
-// canonicalization systems this test's authorization path touches:
-// `sanitizeRuntimeAllowedDirectories`/`canonicalizePathForMatch` (real
-// `path.resolve()` + `realpathSync` — genuinely OS-native, correctly so,
-// since it backs real filesystem permission scoping) and
-// `projectRootEquals`/`projectRootKey` (pure string normalization). A
-// drive-letter literal like "C:\\workspace\\explicit-project" is absolute on
-// Windows but NOT on POSIX, so `path.resolve()` silently prefixes
-// `process.cwd()` to it on Linux — the two systems then disagree on the
-// canonical form and `resolveAuthorizedWorkspaceProject` fails to find the
-// entry, making the "explicit project persists metadata" assertion below
-// flip to 0 calls on Linux CI while passing on a Windows dev machine.
+// Authorize an explicit project so metadata tests exercise the real workspace authority.
 const EXPLICIT_TEST_PROJECT_ROOT = path.resolve(os.tmpdir(), "ave-explicit-project-fixture");
 vi.mock("../../../permissions/permission-settings-store.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../permissions/permission-settings-store.js")>();
@@ -83,9 +56,6 @@ vi.mock("../../../permissions/permission-settings-store.js", async (importOrigin
   };
 });
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-/** A minimal GenericMessage-compatible tool_result message */
 function makeToolResultMsg(opts: {
   toolUseId: string;
   content: string;
@@ -137,11 +107,7 @@ function makeConversationLoop(
     getSessionKind: vi.fn(() => "main"),
     getSessionRoutineId: vi.fn(() => null),
     getSessionRoutineTitle: vi.fn(() => null),
-    // markMainActiveAfterTurn calls this unconditionally (no duck-typing —
-    // it's a real, always-present ConversationLoop method). Defaults to
-    // `false` (not the default project) so the existing "persists project
-    // identity" expectations in this file keep working unchanged; override
-    // per-test via `loop.getSessionProjectIsDefault.mockReturnValue(true)`.
+    // Default false models an explicit project; override for default-project cases.
     getSessionProjectIsDefault: vi.fn(() => false),
     getHistory: vi.fn(() => history),
     hasProvider: vi.fn(() => true),
@@ -178,8 +144,6 @@ function makeMinimalDeps(
       loadSession: vi.fn(),
       loadToolResultArtifact: vi.fn(() => null),
       loadSessionMetadata: vi.fn(() => null),
-      // Session loads now also rebuild the sub-agent panel rows from disk.
-      // No sub-agents in these fixtures, so an empty list is the honest stub.
       listSubAgentSessionsForOrigin: vi.fn(() => []),
       saveSessionMetadata: vi.fn(),
       rehydrateToolResultArtifacts: vi.fn((_sessionId: string, messages: unknown[]) => messages),
@@ -231,8 +195,6 @@ class SessionMutationGate<T> {
     });
   }
 }
-
-// ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe("ave:chat:get-verbatim-tool-result", () => {
   const CHANNEL = "ave:chat:get-verbatim-tool-result";
@@ -333,8 +295,7 @@ describe("ave:chat:get-verbatim-tool-result", () => {
   });
 
   it("returns null for non-compacted tool_result (meta.compactedAt not set)", async () => {
-    // A tool_result that was never compacted should NOT be served via this IPC.
-    // Only messages that have gone through the compact pipeline are valid callers.
+    // Only compacted tool results may use this IPC.
     const loop = makeConversationLoop(SESSION_ID, [
       makeToolResultMsg({ toolUseId: "tu-1", content: "verbatim content no compact" }),
     ]);
@@ -385,8 +346,6 @@ describe("ave:chat:get-verbatim-tool-result", () => {
   });
 
   it("returns verbatim for compacted tool_result that still has verbatim content", async () => {
-    // compactedAt is set (message went through compact) but content is still the
-    // verbatim (in-memory, not yet serialized as stub).
     const content = "verbatim still present\nline two";
     const loop = makeConversationLoop(SESSION_ID, [
       makeToolResultMsg({
@@ -628,8 +587,6 @@ describe("ave:chat:get-sub-agent-transcript", () => {
 
     const result = invokeRegisteredHandler(handlers, CHANNEL, {
       originSessionId: SESSION_ID,
-      // Well-formed, and even carrying this parent's origin tag — the only
-      // thing wrong with it is that the transcript never named it.
       childSessionId: "sub-6e7c039b-cafeb2d0-9bb2-4190-8f4f-26b2ebe2e507",
     }, "main");
 
@@ -650,13 +607,7 @@ describe("ave:chat active main state", () => {
   });
 
   it("does NOT persist project metadata for a plain new chat (no explicit project — the default binding)", async () => {
-    // 2026-07 "remove Current Project labeling": a session created with no
-    // explicit project runs against the default/base-directory binding
-    // internally (conversationLoop.newConversation still applies it for tool
-    // access — unaffected by this test) but must NOT be tagged with it in
-    // session metadata. "No project" (null fields) is the normal persisted
-    // state, so the sidebar renders it ungrouped and Insights buckets it
-    // under "No project" rather than a synthetic "default" label.
+    // Default-directory tool access must not label new sessions with an explicit project.
     const loop = makeConversationLoop("d1c00b95-b0af-4bd6-8179-4210161fffc3", []);
     const deps = await setupHandlers(loop);
 
@@ -666,10 +617,7 @@ describe("ave:chat active main state", () => {
   });
 
   it("persists the resolved project identity when the user explicitly selects a real project", async () => {
-    // Contrast case: an EXPLICIT (non-default) project selection still
-    // persists metadata at creation — mirrors startRoutineConversation — so
-    // the Insights "프로젝트별 대화" group-by can join it immediately without
-    // waiting for the first turn to complete.
+    // Explicit project selection persists metadata at creation for immediate project grouping.
     mkdirSync(EXPLICIT_TEST_PROJECT_ROOT, { recursive: true });
     const explicitProjectRoot = realpathSync(EXPLICIT_TEST_PROJECT_ROOT);
     const loop = makeConversationLoop("d1c00b95-b0af-4bd6-8179-4210161fffc3", []);
@@ -680,12 +628,9 @@ describe("ave:chat active main state", () => {
     expect(deps.memoryManager.saveSessionMetadata).toHaveBeenCalledTimes(1);
     const [savedId, savedMeta] = (deps.memoryManager.saveSessionMetadata as any).mock.calls[0];
     expect(savedId).toBe("d1c00b95-b0af-4bd6-8179-4210161fffc3");
-    // sanitizeRuntimeAllowedDirectories normalizes the authorized root's
-    // slash/case form — compare case/separator-insensitively rather than
-    // asserting the exact literal input string.
+    // Compare roots without slash/case sensitivity because authorization normalizes them.
     expect(savedMeta.sessionKind).toBe("main");
-    // The root is the durable identity. Ignore the renderer-provided label and
-    // persist the display name resolved from the authorized project registry.
+    // Persist the registry-owned display name; renderer labels cannot choose project identity.
     expect(savedMeta.projectName).toBe(path.basename(explicitProjectRoot));
     expect((savedMeta.projectRoot as string).toLowerCase().replace(/\\/g, "/")).toBe(
       explicitProjectRoot.toLowerCase().replace(/\\/g, "/"),
@@ -875,7 +820,6 @@ describe("ave:chat:fork", () => {
 
     const forkPromise = invokeRegisteredHandler(handlers, "ave:chat:fork", undefined, "main") as Promise<unknown>;
 
-    // The mutation lease is visible before the deferred fork factory starts.
     await expect(invokeRegisteredHandler(handlers, "ave:chat:send", {
       input: "must not enter fork",
       inputOrigin: "user-keyboard",
@@ -985,8 +929,6 @@ describe("ave:chat:continue-last-user", () => {
 
 describe("ave:chat:send provenance", () => {
   it("classifies imported trigger envelopes as plugin-emitted and forwards originSource", async () => {
-    // No parser mock: the staged-origin table parses the real envelope, so this
-    // asserts the actual source-tag derivation rather than a stub of it.
     const loop = makeConversationLoop("f54c7bda-1854-4991-8708-8d60d079368a", []);
     loop.runTurn.mockResolvedValue({ text: "ok", toolCalls: [], stopReason: "end_turn" });
     await setupHandlers(loop);
@@ -1056,9 +998,7 @@ summarize the repo
     expect(loop.runTurn).not.toHaveBeenCalled();
   });
 
-  // The binding is bidirectional. A staged envelope in the text with a
-  // non-staged claimed origin would launder server/plugin-authored text into a
-  // fully trusted turn: no force-ask, no untrusted framing, no provenance card.
+  // Require staged provenance in both directions so server-authored envelopes cannot become trusted keyboard input.
   it("rejects a staged envelope sent under a non-staged origin", async () => {
     const loop = makeConversationLoop("f54c7bda-1854-4991-8708-8d60d079368a", []);
     await setupHandlers(loop);
@@ -1075,14 +1015,7 @@ rm -rf everything
     expect(loop.runTurn).not.toHaveBeenCalled();
   });
 
-  // The per-turn bound on resource attachments. Three properties, and each of them
-  // was wrong in the first cut of this feature:
-  //   - it counts FENCES, not parts, so the answer does not depend on how the renderer
-  //     packaged them (twelve joined into one part used to count as one);
-  //   - it REFUSES rather than trimming, because a silently-dropped attachment leaves
-  //     the model answering from fewer documents than the user believes it read;
-  //   - it lives at the turn-entry chokepoint, so the replay paths and `sidechat send`
-  //     — neither of which passes through this gate — are covered by the same check.
+  // Count resource fences across parts; reject overflow rather than truncate, excluding user-authored text.
   const resourceFence = (i: number) =>
     `${MCP_RESOURCE_FENCE_OPEN} server="s" uri="file:///f${i}">
 B${i}
@@ -1136,8 +1069,6 @@ B${i}
     loop.runTurn.mockResolvedValue({ text: "ok", toolCalls: [], stopReason: "end_turn" });
     await setupHandlers(loop);
 
-    // One part carrying twelve attachments — the natural way to put fences beside the
-    // user's own words, and what the prefix test counted as a single attachment.
     const joined = Array.from({ length: 12 }, (_, i) => resourceFence(i)).join("\n\n");
     await expect(invokeRegisteredHandler(handlers, "ave:chat:send", {
       input: "summarize these",
@@ -1148,11 +1079,7 @@ B${i}
     expect(loop.runTurn).not.toHaveBeenCalled();
   });
 
-  // The other direction, and a deliberate decision rather than an oversight: the bound
-  // governs what the HOST attached, so the user's own message text is never counted.
-  // A developer pasting an Ave transcript excerpt — which contains these fences
-  // verbatim — must not have their message refused and be told to remove resources
-  // they never attached, with no way to find out why.
+  // Attachment limits apply to host-attached resources; user-pasted fences remain ordinary text.
   it("never refuses a turn for fences the user typed themselves", async () => {
     const loop = makeConversationLoop("f54c7bda-1854-4991-8708-8d60d079368a", []);
     loop.runTurn.mockResolvedValue({ text: "ok", toolCalls: [], stopReason: "end_turn" });
@@ -1167,8 +1094,6 @@ B${i}
 
     expect(result).not.toMatchObject({ ok: false });
     expect(loop.runTurn).toHaveBeenCalledTimes(1);
-    // The text reaches the model verbatim — a fence the user typed frames their own
-    // words as less trusted, which costs a forger nothing.
     expect(loop.runTurn.mock.calls[0][0]).toContain(MCP_RESOURCE_FENCE_OPEN);
   });
 
@@ -1521,8 +1446,6 @@ B${i}
       await invokeRegisteredHandler(handlers, "ave:chat:edit-resend", "row-old-text", "contact alice@example.com", "main");
 
       expect(editLoop.runTurn.mock.calls[0]?.[0]).toBe("contact [REDACTED:EMAIL]");
-      // Every frame carries the tiled chat group it belongs to, so a second
-      // tile's stream cannot be mistaken for this one's.
       expect(sent.filter(({ payload }) => (payload as { type?: string }).type === "redact_notice"))
         .toEqual([
           {
@@ -1592,9 +1515,7 @@ B${i}
         return {};
       });
 
-      // DLP turns the source header into a non-parseable placeholder. The
-      // replay must fail closed rather than treat the originally app-authored
-      // message as user-keyboard input with its force-ask gate removed.
+      // If DLP destroys the source header, replay must fail closed rather than infer keyboard provenance.
       await expect(invokeRegisteredHandler(handlers, "ave:chat:continue-last-user", { sessionId: "1a75feb0-5469-4d73-8f2e-484c2e309d77" }, "main"))
         .rejects.toThrow("missing-app-envelope");
       expect(stagedLoop.runTurn).not.toHaveBeenCalled();
@@ -1787,8 +1708,6 @@ describe("sub-agent parent mailbox on manual turns", () => {
       undefined,
       expect.objectContaining({
         inputOrigin: "user-keyboard",
-        // The drained report is prefixed with the host's judgment instruction
-        // and still ends with the entry's canonical, unwrapped text.
         initialGuidance: expect.stringMatching(/\[Sub-Agent: Researcher\]\nfinished$/),
         approvalReasonPrefix: "[Sub-Agent: Researcher]",
         subAgentReport: {},
@@ -1852,8 +1771,6 @@ describe("sub-agent parent mailbox on manual turns", () => {
     let reentrantNew: Promise<unknown> | undefined;
     const runner = {
       peekParentMailbox: vi.fn(() => {
-        // This re-entrant mutation observes whether trackStreamTurn published
-        // its lease before executing the mailbox factory.
         reentrantNew = invokeRegisteredHandler(handlers, "ave:chat:new", undefined, "main") as Promise<unknown>;
         peekEntered.resolve(undefined);
         return peekGate.promise;
@@ -1892,8 +1809,7 @@ describe("sub-agent parent mailbox on manual turns", () => {
     }]);
     await ackEntered.promise;
 
-    // ACK is part of the same lease, so switching sessions is still forbidden
-    // after the LLM turn has returned but before durable removal completes.
+    // Hold the lease through durable ACK removal, even after the model turn returns.
     await expect(invokeRegisteredHandler(handlers, "ave:chat:new", undefined, "main")).resolves.toEqual({
       ok: false,
       error: "streaming-active",
@@ -1939,8 +1855,6 @@ describe("sub-agent autonomous parent wake", () => {
     await wakeHandler!("a1bdc27a-c758-4a74-8955-5e9188412366");
 
     expect(loop.runTurn).toHaveBeenCalledWith(
-      // The wake turn's input IS the report, prefixed once with the host's
-      // judgment instruction so the parent cannot end the turn ignoring it.
       expect.stringMatching(/\[Sub-Agent: Researcher\]\nfinished$/),
       expect.any(Object),
       undefined,
@@ -2019,8 +1933,7 @@ describe("sub-agent autonomous parent wake", () => {
 
     const wakePromise = wakeHandler!("a1bdc27a-c758-4a74-8955-5e9188412366");
 
-    // trackStreamTurn publishes the lease synchronously, before its deferred
-    // factory begins mailbox I/O.
+    // Publish the lease synchronously before deferred mailbox I/O.
     await expect(invokeRegisteredHandler(handlers, "ave:chat:send", {
       input: "concurrent user message",
       inputOrigin: "user-keyboard",
@@ -2211,21 +2124,7 @@ describe("sub-agent autonomous parent wake", () => {
 
 });
 
-/**
- * The REPLAY paths and an attached resource.
- *
- * `continueFromLastUserTurn` folds every text part of the stored turn into the prompt
- * body. A resource turn has TWO text parts — the user's words and the host's fence — so
- * after the fold nothing is left in `attachments`, and both things that keyed on that
- * emptiness broke: the turn's tool trust origin fell to the untainted bucket, and the
- * transcript row lost the `displayText` that keeps the server's body out of the user's
- * own bubble.
- *
- * This is the CALLER half. The engine half (deriving taint from the material) and the
- * transport half (forwarding the option) are pinned in their own suites; without this
- * one, deleting the two lines in `chat.ts` that read the prior row leaves the whole
- * suite green and the defect returns exactly as first reported.
- */
+// Replay folds resource fences into turn text; preserve provenance and the user's original display text.
 describe("ave:chat:continue-last-user — a resource turn's row", () => {
   const SESSION_ID = "7d9d1608-67c6-43cf-8379-e8bd1a188e3e";
   const FENCE = [
@@ -2246,22 +2145,14 @@ describe("ave:chat:continue-last-user — a resource turn's row", () => {
   }
 
   it("carries the prior row's displayText into the replayed turn", async () => {
-    // Terminal user message: the channel fails closed otherwise, which is the shape a
-    // Retry actually replays.
     const loop = makeConversationLoop(SESSION_ID, [
       { role: "assistant", content: "earlier" },
       resourceTurn({ displayText: "summarize [Resource #1]" }),
     ]);
     await setupHandlers(loop);
-    // Stubbed AFTER `setupHandlers`, which calls `vi.clearAllMocks()` — stubbing before
-    // it puts the stub on the wrong side of that call.
+    // Install the mock after setup clears mocks.
     loop.runTurn.mockResolvedValue({ text: "ok", toolCalls: [], stopReason: "end_turn" });
 
-    // PRECONDITION, asserted rather than assumed. This test guards a field the handler
-    // reads off the stored row, so a red here has two possible causes: the handler
-    // stopped forwarding it, or the fixture never had it. Checking the input first makes
-    // a future failure name which — the difference between a regression and a flake, on
-    // a test whose whole job is to be believed when it goes red.
     const seeded = loop.getHistory().getMessages();
     expect((seeded[seeded.length - 1] as { meta?: { displayText?: string } }).meta?.displayText)
       .toBe("summarize [Resource #1]");
@@ -2270,19 +2161,13 @@ describe("ave:chat:continue-last-user — a resource turn's row", () => {
 
     expect(loop.runTurn).toHaveBeenCalledTimes(1);
     const options = loop.runTurn.mock.calls[0][3] as { displayText?: string };
-    // The row the user sees stays the row they wrote. Without this the persisted
-    // content — which now HAS the fence folded into it — is what renders in their
-    // bubble on reload.
+    // Reload must render the user's original row text, excluding folded resource fences.
     expect(options.displayText).toBe("summarize [Resource #1]");
     expect(options.displayText).not.toContain("SERVER BODY");
-    // The fold itself is unchanged and still documented: the fence is in the turn text,
-    // which is why the TAINT has to be derived from the material (pinned elsewhere).
     expect(loop.runTurn.mock.calls[0][0]).toContain(MCP_RESOURCE_FENCE_OPEN);
   });
 
   it("forwards no displayText when the prior row had none", async () => {
-    // The counterweight: a version that always forwarded something would satisfy the
-    // case above while giving every ordinary replayed turn a second copy of its text.
     const loop = makeConversationLoop(SESSION_ID, [
       { role: "assistant", content: "earlier" },
       { role: "user", content: "an ordinary question" },
@@ -2386,7 +2271,6 @@ describe("an interrupt send while a turn is running", () => {
     }, "main") as Promise<unknown>;
     await turnEntered.promise;
 
-    // Expired keyboard intent: no userActivation.
     await expect(invokeRegisteredHandler(handlers, CHANNELS.chat.send, {
       input: "second", inputOrigin: "user-keyboard", interrupt: true,
     }, "main")).resolves.toEqual({ ok: false, error: "user-keyboard-required" });
@@ -2405,7 +2289,6 @@ describe("an interrupt send while a turn is running", () => {
     }, "main") as Promise<unknown>;
     await turnEntered.promise;
 
-    // Admitted at the door, refused later while resolving its persona prompt.
     const second = await invokeRegisteredHandler(handlers, CHANNELS.chat.send, {
       input: "second", inputOrigin: "user-keyboard", userActivation: true, interrupt: true,
       personaPromptId: "persona-that-does-not-exist",

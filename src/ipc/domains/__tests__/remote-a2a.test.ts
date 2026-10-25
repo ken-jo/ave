@@ -167,12 +167,10 @@ describe("remote A2A IPC rejection boundary", () => {
       remoteA2AStartFailureReason: "a2a-remote-outbound-config-incomplete",
     } as never);
 
-    // Still a refusal: nothing behind the surface started.
     await expect(invokeFileIpcHandler(handlers, channel, payload)).resolves.toEqual({
       ok: false,
       error: "a2a-remote-start-failed",
       reason: "a2a-remote-outbound-config-incomplete",
-      // Only the status channel reports where the runtime stands.
       ...(channel === CHANNELS.remoteA2a.status ? { receiverPort: null } : {}),
     });
   });

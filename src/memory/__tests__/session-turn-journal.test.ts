@@ -1,8 +1,3 @@
-/**
- * Storage half of mid-turn durability: append-as-you-go rows, the in-flight
- * sidecar, torn-line tolerance, and the recovery a load performs when the
- * process that ran the last turn died.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as fsPromises from "node:fs/promises";
 import { appendFileSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
@@ -64,7 +59,6 @@ describe("appendSessionProgress", () => {
 
   it("rewrites instead of appending when history no longer extends what is on disk", async () => {
     await mm.saveSession(SESSION, [user, round1]);
-    // Compaction / a rolled-back injection replaced the prefix.
     const compacted = row("u1b", { role: "user", content: "요약된 질문" });
     expect(await mm.appendSessionProgress(SESSION, [compacted, result1])).toBe("rewritten");
     expect(mm.loadSession(SESSION)).toEqual([compacted, result1]);
@@ -157,13 +151,10 @@ describe("appendSessionProgress", () => {
 describe("torn final line", () => {
   it("skips a half-written last line on load and terminates it before the next append", async () => {
     await mm.saveSession(SESSION, [user, round1]);
-    // A process killed mid-write leaves an unterminated fragment.
     appendFileSync(transcriptPath(), '{"role":"tool_result","toolUseId":"call-1","con');
     expect(mm.loadSession(SESSION)).toEqual([user, round1]);
 
-    // A fresh process (no write state) appends after a rewrite; one already
-    // holding state rewrites because the file changed under it. Either way the
-    // next record must not fuse with the fragment.
+    // Repair the torn final line before either a fresh append or a stale-writer rewrite.
     const fresh = new MemoryManager({ aveDir: dir });
     await fresh.saveSession(SESSION, mm.loadSession(SESSION) ?? []);
     expect(await fresh.appendSessionProgress(SESSION, [user, round1, result1])).toBe("appended");
@@ -181,12 +172,7 @@ describe("torn final line", () => {
 });
 
 describe("in-flight sidecar recovery", () => {
-  /**
-   * The files a process leaves when it dies mid-turn: the rows it appended and
-   * the in-flight sidecar, with nobody in THIS process holding the journal
-   * open (that registry is process-local, so a test writes the sidecar the way
-   * the dead process did rather than opening a journal it would then own).
-   */
+  // Write an orphan sidecar directly; opening a local journal would register a live owner and suppress recovery.
   async function crashMidTurn(rows: unknown[], partial?: { messageId: string; content: string }): Promise<void> {
     await mm.saveSession(SESSION, [user]);
     await mm.appendSessionProgress(SESSION, rows);
@@ -213,7 +199,6 @@ describe("in-flight sidecar recovery", () => {
     const committed = row("a2-partial", { role: "assistant", content: "완성된 두 번째 라운드" });
     await crashMidTurn([user, round1, result1, committed], { messageId: "a2-partial", content: "완성된" });
     const reloaded = new MemoryManager({ aveDir: dir }).loadSession(SESSION) as Array<Record<string, any>>;
-    // Plain answer last → the turn had finished; nothing synthesized.
     expect(reloaded).toEqual([user, round1, result1, committed]);
   });
 
@@ -227,13 +212,11 @@ describe("in-flight sidecar recovery", () => {
       meta: { toolDisplay: { cancelled: true } },
     });
     expect(String(synthetic?.content)).toMatch(/unknown|알 수 없/);
-    // …and the tail says where the turn stopped.
     expect(reloaded[reloaded.length - 1]).toMatchObject({
       role: "assistant",
       content: "",
       meta: { interrupted: true, interruptedBy: "host-exit" },
     });
-    // Deterministic: a second reader names the synthesized rows identically.
     const again = new MemoryManager({ aveDir: dir }).loadSession(SESSION) as Array<Record<string, any>>;
     expect(again.map((m) => m.meta.messageId)).toEqual(reloaded.map((m) => m.meta.messageId));
   });

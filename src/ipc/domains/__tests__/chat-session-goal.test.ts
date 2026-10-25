@@ -1,12 +1,4 @@
-/**
- * Stop means stop — including the goal.
- *
- * A running goal takes the turn lease back the moment a turn settles, so a
- * Stop that only interrupts the turn would be undone a tick later and read as
- * the app ignoring the button. `ave:chat:abort` therefore pauses the goal of
- * the conversation that group is holding, before it interrupts. `pause`, not
- * clear: the rounds already spent are kept, so resuming carries on.
- */
+// Stop pauses the goal too, or goal revival immediately reacquires the turn lease.
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { CHANNELS } from "../../../contract/app-contract.js";
 import { invokeRegisteredHandler } from "../../../__tests__/test-helpers.js";
@@ -82,7 +74,6 @@ describe("ave:chat:abort and the session goal", () => {
 
     expect(abortCurrentTurn).toHaveBeenCalledTimes(1);
     expect(sessionGoalStore.get(SESSION)).toMatchObject({ status: "paused", round: 2 });
-    // And it carries on from there when the user says so.
     expect(await sessionGoalStore.resume(SESSION)).toMatchObject({ status: "running", round: 2 });
   });
 

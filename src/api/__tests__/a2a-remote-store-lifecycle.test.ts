@@ -359,12 +359,10 @@ describe("a Task action that provably never left the process releases the Task",
     await f.store.transition(first.attemptId, [from], "NOT_SENT", { outcomeCode, deletePayload: true });
 
     await expect(f.store.taskActionDisposition("task_handle_123456", operation, "owner")).resolves.toEqual({ kind: "none" });
-    // The marker is on disk before anything reads it as released: a restart
-    // still sees a never-sent attempt, not one to reconcile.
+    // Persist the release marker before exposing it so restart recovery treats the attempt as never sent.
     const restarted = reopen(f);
     await expect(restarted.getAttempt(first.attemptId)).resolves.toMatchObject({ stage: "NOT_SENT", outcomeCode });
     await expect(restarted.taskActionDisposition("task_handle_123456", operation, "owner")).resolves.toEqual({ kind: "none" });
-    // And the retry is a fresh operation the journal accepts.
     await expect(restarted.prepare(action(operation, 2))).resolves.toMatchObject({ ok: true, duplicate: false });
   });
 
@@ -387,7 +385,6 @@ describe("a Task action that provably never left the process releases the Task",
     const first = action("continue", 1);
     await f.store.prepare(first);
     await f.store.resolveCas(first.attemptId, resolved(first));
-    // The mark that precedes every socket write is durable from here on.
     await f.store.transition(first.attemptId, ["resolved"], "in-flight");
 
     const restarted = reopen(f);
@@ -395,7 +392,7 @@ describe("a Task action that provably never left the process releases the Task",
       stage: "outcome-unknown",
       outcomeCode: "restart-in-flight-ambiguous",
     });
-    // May have been sent: never released, never retried on its own.
+    // Potentially sent attempts must never be released or retried automatically.
     await expect(restarted.taskActionDisposition("task_handle_123456", "continue", "owner")).resolves.toEqual({
       kind: "blocked",
       outcome: "restart-in-flight-ambiguous",
@@ -475,7 +472,6 @@ describe("the remote agent's reply in the Task projection", () => {
 
     expect(projectA2ARemoteReply({ message: { ...agentMessage("my own words"), role: "ROLE_USER" } as never })).toBeNull();
     expect(projectA2ARemoteReply({ task: { id: "t", status: { state: "TASK_STATE_WORKING" } } as never })).toBeNull();
-    // A file is named, never linked or fetched.
     expect(projectA2ARemoteReply({ message: { ...agentMessage("x"), parts: [{ url: "https://files.example.test/a.pdf", filename: "a.pdf" }] } as never })?.text)
       .toBe("[a.pdf]");
   });

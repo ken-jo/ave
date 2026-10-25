@@ -1,4 +1,3 @@
-/** Host-renderer-only terminal IPC. Logical close owns both execution lanes. */
 import { BrowserWindow, ipcMain, type IpcMainInvokeEvent } from "electron";
 import { CHANNELS } from "../../contract/app-contract.js";
 import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized } from "../gated.js";

@@ -50,11 +50,7 @@ export interface A2ARequestHandler {
   id: string;
   card: A2AAgentCardTemplate;
   handle(method: A2ADirectJsonRpcMethod, params: A2AJsonObject): Promise<A2ADirectJsonRpcResult>;
-  /**
-   * Optional raw-wire path for profiles whose contract binds exact HTTP body
-   * bytes or response headers. The ph3 loopback handlers intentionally omit
-   * this seam and continue through {@link handle} unchanged.
-   */
+  // Optional raw-wire handlers bind exact body bytes or headers; other handlers use the parsed envelope.
   handleWire?(
     request: Readonly<A2AJsonRpcRequest>,
     context: Readonly<A2AWireRequestContext>,
@@ -92,7 +88,6 @@ export interface A2AHttpRouterAuditEvent {
 }
 
 export interface A2AHttpRouter {
-  /** Stable, sorted handler ids exposed by this immutable boot snapshot. */
   readonly handlerIds: readonly string[];
   isPublicAgentCardRequest(path: string, method: string): boolean;
   tryHandle(
@@ -119,7 +114,6 @@ function hasCoreA2AResponseHeader(headers: Readonly<Record<string, string>> | un
   );
 }
 
-/** Every A2A response carries the protocol version alongside the shared JSON envelope. */
 function sendJson(
   res: ServerResponse,
   status: number,

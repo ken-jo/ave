@@ -115,11 +115,7 @@ describe("markMainActiveAfterTurn project metadata", () => {
   });
 
   it("does NOT persist project metadata when the session's project is the default binding (no explicit selection)", async () => {
-    // 2026-07 "remove Current Project labeling": a "no explicit project"
-    // session must keep null project fields in metadata even after a turn
-    // completes — getSessionProjectIsDefault() is the signal that
-    // distinguishes "just running against the ambient default directory"
-    // from "user explicitly picked this project".
+    // Default-directory access must not persist explicit project metadata after a turn.
     const saveSessionMetadata = vi.fn(async () => {});
     const markMainActiveResume = vi.fn(async () => {});
     const deps = {
@@ -246,14 +242,7 @@ describe("handleChatSessions project filters", () => {
 });
 
 describe("handleChatSessions legacy default-root metadata scrub", () => {
-  // Pre-PR, markMainActiveAfterTurn persisted projectRoot (= the default
-  // workspace root)/projectName ("workspace") for EVERY session with no
-  // isDefault guard. Sidebar.tsx's namedProjects excludes the default root
-  // from the known-projects list, so a legacy session's default root falls
-  // into the "unknown project" fallback and renders as a ghost named group
-  // in both the sidebar and Insights (both read through this handler). The
-  // fix scrubs at this one read chokepoint rather than patching every
-  // reader — heals both consumers from a single source.
+  // Legacy default tags must not create a separate named project in the sidebar.
   const DEFAULT_ROOT = "C:\\Users\\example\\.ave\\workspace";
 
   it("strips projectRoot/projectName from a legacy session tagged with the default workspace root", async () => {
@@ -363,7 +352,6 @@ describe("handleChatSessions federated families", () => {
     const { deps, listWorkBoardRunSessions, listSessionsPage } = makeDeps();
     const { sessions } = await handleChatSessions(deps, { families: [...ALL_FAMILIES] });
     expect(listWorkBoardRunSessions).toHaveBeenCalledWith(expect.objectContaining({ limit: 20 }));
-    // A federated request reads every kind the main store holds in one scan.
     expect(listSessionsPage).toHaveBeenCalledWith(expect.objectContaining({ kind: "all" }));
     expect(sessions.map((s) => [s.id, s.family])).toEqual([
       ["sub-a1", "work-board"],
@@ -386,9 +374,6 @@ describe("handleChatSessions federated families", () => {
       projectName: "alpha",
       modifiedAt: "2026-09-03T11:00:00.000Z",
     });
-    // The plan child of the same item folds into the newer row; the run whose
-    // item is gone has nowhere to open; a plain spawned agent is not a run of
-    // an item and belongs to no family the list shows.
     expect(sessions.some((s) => ["sub-a0", "sub-gone", "sub-plain"].includes(s.id))).toBe(false);
   });
 

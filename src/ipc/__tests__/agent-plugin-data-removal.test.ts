@@ -1,9 +1,4 @@
-/**
- * An agent plugin's data directory is written by its bundled MCP servers and
- * hooks, which may not have exited when the package is uninstalled. Once
- * confined processes may run, the directory is renamed into the namespace's
- * tombstones for the next boot's sweep instead of deleted recursively.
- */
+// Confined servers may outlive uninstall; rename their data to tombstones for the next boot sweep.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { existsSync, mkdtempSync } from "node:fs";
 import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";

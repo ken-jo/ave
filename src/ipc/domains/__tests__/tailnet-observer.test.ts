@@ -156,8 +156,7 @@ describe("Tailnet observer configuration IPC boundary", () => {
       .resolves.toEqual({ ok: true });
     expect(accepted.apply).toHaveBeenCalledWith(CONFIG);
 
-    // The resolver's kebab code is what makes "why is it not up" answerable in
-    // the app; it must survive the boundary rather than flatten to a generic.
+    // Preserve the resolver's stable error code across IPC for localized status explanations.
     await setup({
       apply: async () => {
         throw new Error("tailnet-web-origin-missing-or-invalid");
@@ -205,7 +204,6 @@ describe("Tailnet observer configuration IPC boundary", () => {
       await expect(invokeFileIpcHandler(handlers, CHANNELS.tailnetObserver.configureServe, {}))
         .resolves.toEqual({ ok: false, error: "user-keyboard-required" });
 
-      // Nothing is executed by a caller that could not prove it was the owner.
       expect(service.configureServe).not.toHaveBeenCalled();
     });
 

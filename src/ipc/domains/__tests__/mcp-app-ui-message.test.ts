@@ -1,15 +1,3 @@
-/**
- * `ave:mcp:ui-message` — the gated MCP-App `ui/message` (`onmessage`) IPC.
- *
- * The host's TURN POLICY lives here, so this is where it is proved:
- *   - an unauthorized sender frame is rejected BEFORE anything else runs
- *   - notification meta → NotificationService, NEVER the conversation
- *   - plain text + an ACTIVE turn → `queueGuidance` carrying the app envelope
- *     (`app:<serverId>`), not the user's own guide
- *   - plain text + NO active turn → a USER-GATED staging card; the model is not woken
- *   - the card's session ≠ the live session → notification-only fallback
- *   - the outcome never carries conversation content back to the app
- */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { makeAppIpcInvoker } from "./test-helpers.js";
 import { OVERLAY_V1 } from "../../../shared/ipc-channels.js";
@@ -29,12 +17,10 @@ vi.mock("electron", () => ({
 
 const CHANNEL = "ave:mcp:ui-message";
 const SESSION = "session-live";
-/** A conversation held by a SECOND tile — open, but not the primary loop's. */
 const TILE_SESSION = "session-second-tile";
 const invoke = makeAppIpcInvoker(handlers);
 
 const textParams = (text: string) => ({ role: "user", content: [{ type: "text", text }] });
-/** `ave/notification` is the ONE key — there is no legacy alias to accept. */
 const notificationParams = (meta: unknown) => ({
   role: "user",
   content: [{ type: "text", text: "popup body in content", _meta: { "ave/notification": meta } }],
@@ -43,8 +29,7 @@ const notificationParams = (meta: unknown) => ({
 async function setup(opts?: { queueGuidance?: () => string; sessionId?: string }) {
   handlers.clear();
   vi.clearAllMocks();
-  // The rate limiter is a module singleton shared with the plugin overlay gate; a fresh
-  // serverId per test keeps its per-key budget out of the way.
+  // Rate limits are module-wide; unique server ids isolate per-test budgets.
   const serverId = `acme-cards-${Math.random().toString(36).slice(2, 10)}`;
 
   const send = vi.fn();
@@ -57,8 +42,6 @@ async function setup(opts?: { queueGuidance?: () => string; sessionId?: string }
     getSessionId: vi.fn(() => primarySession),
     queueGuidance,
   };
-  // The window holds two conversations. `findLoopBySessionId` is how a surface
-  // handed a session id finds the loop that owns it; anything else is unheld.
   const tileLoop = {
     getSessionId: vi.fn(() => TILE_SESSION),
     queueGuidance: tileQueueGuidance,
@@ -93,7 +76,6 @@ async function setup(opts?: { queueGuidance?: () => string; sessionId?: string }
   return { deps, serverId, send, queueGuidance, tileQueueGuidance, fire };
 }
 
-/** Overlay pushes staged to the renderer (the user-gated cards). */
 function stagedCards(send: ReturnType<typeof vi.fn>) {
   return send.mock.calls.filter(([channel]) => channel === OVERLAY_V1.show).map(([, item]) => item);
 }
@@ -149,23 +131,17 @@ describe("ave:mcp:ui-message — path A: notification meta", () => {
     );
 
     expect(result).toEqual({ ok: true, disposition: "notified" });
-    // Attributed to the source app — the app's words never occupy the whole title.
     expect(fire).toHaveBeenCalledWith({
       kind: "plugin",
       title: `app:${serverId} · Build failed`,
       body: "3 tests red",
     });
-    // The conversation is untouched: no guidance, no staged card.
     expect(queueGuidance).not.toHaveBeenCalled();
     expect(stagedCards(send)).toHaveLength(0);
   });
 
   it("an app cannot set `bypassFocusGate` or promote itself to `urgent`", async () => {
-    // The phishing shape: a card fires an urgent, non-silent OS popup with an
-    // attacker-chosen title WHILE the user is looking straight at Ave, skipping the
-    // focus gate and burning the shared per-kind cooldown slot. `bypassFocusGate` is an
-    // opt-in MANIFEST signal (reviewable, covered by manifestSha256) — never a wire field
-    // an untrusted iframe gets to set, and a claimed severity buys no urgency either.
+    // Only a reviewed manifest may bypass the notification focus gate; message metadata cannot grant that capability.
     const { serverId, fire } = await setup();
 
     const result = await invoke(
@@ -184,7 +160,6 @@ describe("ave:mcp:ui-message — path A: notification meta", () => {
     const fired = fire.mock.calls[0]?.[0] as Record<string, unknown>;
     expect(fired).not.toHaveProperty("bypassFocusGate");
     expect(fired).not.toHaveProperty("urgent");
-    // …and it cannot masquerade as a host alert: the host owns the front of the title.
     expect(fired.title).toBe(`app:${serverId} · Ave 보안 경고`);
   });
 });
@@ -198,7 +173,6 @@ describe("ave:mcp:ui-message — path B: turn policy", () => {
     expect(result).toEqual({ ok: true, disposition: "queued" });
     const queued = queueGuidance.mock.calls[0]?.[0];
     expect(queued).toBe(`<app-message source="app:${serverId}">\nsummarize this card\n</app-message>`);
-    // Queued as guidance — NOT staged, so no second surface claims the same message.
     expect(stagedCards(send)).toHaveLength(0);
   });
 
@@ -218,20 +192,16 @@ describe("ave:mcp:ui-message — path B: turn policy", () => {
     const result = await invoke(CHANNEL, serverId, SESSION, textParams("open the invoice"));
 
     expect(result).toEqual({ ok: true, disposition: "staged" });
-    // The app may NOT autonomously wake the model: the only thing that happened is a
-    // card pushed to the renderer, carrying the prompt the USER must confirm.
+    // Idle app messages stage a user-confirmed card and must not wake the model autonomously.
     const cards = stagedCards(send);
     expect(cards).toHaveLength(1);
     expect(cards[0]).toMatchObject({
       source: { kind: "app", serverId },
-      // The card names the conversation it came from, so the renderer can put
-      // it in the ONE tile holding that conversation rather than in all of them.
       originSessionId: SESSION,
       summary: "open the invoice",
       pendingPrompt: `<app-message source="app:${serverId}">\nopen the invoice\n</app-message>`,
       running: false,
     });
-    // queueGuidance was the ATOMIC active-turn check; it queued nothing.
     expect(queueGuidance).toHaveReturnedWith("no-active-turn");
     expect(fire).not.toHaveBeenCalled();
   });
@@ -257,7 +227,6 @@ describe("ave:mcp:ui-message — path B: turn policy", () => {
     expect(tileQueueGuidance.mock.calls[0]?.[0]).toBe(
       `<app-message source="app:${serverId}">\nsummarize this card\n</app-message>`,
     );
-    // The primary conversation never saw a message addressed to another tile.
     expect(queueGuidance).not.toHaveBeenCalled();
     expect(fire).not.toHaveBeenCalled();
   });
@@ -274,8 +243,7 @@ describe("ave:mcp:ui-message — path B: turn policy", () => {
   });
 
   it("neutralizes app text that closes the provenance fence (mid-turn guidance path)", async () => {
-    // The guidance path needs no user click, so this is the shortest route from an
-    // untrusted iframe to the model's context. The forged closing tag must not survive.
+    // Guidance needs no click, so forged closing tags must not escape untrusted framing.
     const { serverId, queueGuidance } = await setup({ queueGuidance: () => "queued" });
 
     await invoke(
@@ -294,9 +262,7 @@ describe("ave:mcp:ui-message — path B: turn policy", () => {
   it("staged card summary takes the SAME display sanitizer the plugin overlay path takes", async () => {
     const { serverId, send } = await setup({ queueGuidance: () => "no-active-turn" });
 
-    // `<untrusted-*>` wrappers stripped, and the display cap (2 000) applied — the same
-    // `deriveOverlaySummaryForDisplay` rule, on the same OverlayCard, for the LESS
-    // trusted source. The full text still rides pendingPrompt.
+    // Display strips untrusted wrappers and caps the summary; pendingPrompt retains the complete text.
     await invoke(
       CHANNEL,
       serverId,
@@ -350,7 +316,6 @@ describe("ave:mcp:ui-message — bounds + result shape", () => {
   it("rate-limits a spamming app through the SAME limiter as plugin overlay triggers", async () => {
     const { serverId, queueGuidance } = await setup({ queueGuidance: () => "queued" });
 
-    // TRIGGER_CONVERSATION_RATE_LIMIT_MAX_CALLS = 6 per 60s per key.
     for (let i = 0; i < 6; i++) {
       await expect(invoke(CHANNEL, serverId, SESSION, textParams(`m${i}`))).resolves.toMatchObject({ ok: true });
     }

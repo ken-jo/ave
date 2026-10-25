@@ -552,9 +552,7 @@ describe("session tool output artifacts", () => {
     expect(existsSync(data)).toBe(true);
   });
 
-  // Windows refuses to rename a directory while a file inside it is open
-  // (EPERM), so the capture directory cannot be swapped out from under an
-  // open capture there.
+  // Windows cannot rename a directory containing an open file, so skip this swap race there.
   it.skipIf(process.platform === "win32")("rejects directory replacement during capture without deleting the replacement", async () => {
     const capture = store.start(SESSION_ID, "directory-race");
     capture.append(Buffer.from("before"));

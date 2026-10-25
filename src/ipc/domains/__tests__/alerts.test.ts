@@ -1,7 +1,3 @@
-/**
- * The alerts domain forwards the user's answer on a card and the staged cards,
- * and nothing else: an answer it cannot name is refused before the service.
- */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { IpcMainInvokeEvent } from "electron";
 import { hostFrameEvent, pluginShellFrameEvent } from "../../../__tests__/test-helpers.js";
@@ -49,8 +45,6 @@ describe("alerts IPC", () => {
   });
 
   it("serves the staged cards, and none without a service", () => {
-    // The cards are addressed to the dedicated Suggestions conversation, so a
-    // non-empty snapshot makes it exist — without moving it up the list.
     const memoryManager = { touchSessionTranscript: vi.fn() };
     expect(register(service, { memoryManager })(ALERTS.listOpen)).toEqual([card]);
     expect(memoryManager.touchSessionTranscript).toHaveBeenCalledWith(SUGGESTIONS_SESSION_ID, { bump: false });
@@ -110,7 +104,6 @@ describe("retaining predecessor removal", () => {
       catalog: vi.fn(async () => ({ entries: [entry] })),
       getRetirementEntry: vi.fn(async () => retirement),
       uninstallInstalled: vi.fn(async (request: unknown) => ({ key: request, keptDataDir: null })),
-      // Removal enters one marketplace operation before its plugin locks (lock order: alert-predecessor.test.ts).
       asOneOperation: vi.fn(async <T,>(fn: () => Promise<T>) => fn()),
     };
     const deps = { pluginMarketplace: { listInstalledPackages: vi.fn(async () => installed) },
