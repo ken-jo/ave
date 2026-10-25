@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, rmdirSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { ensureAveHomePrivate, aveHome, win32SystemBinary, readWindowsDirectoryDacls, setAveHomePrivacyAtBoot, assertAveHomePrivacyForConfinement, _resetAveHomePrivacyForTest, type WindowsDirectoryDacl, type WindowsAccessRule } from "../ave-home.js";
 import { useTempPaths } from "../../__tests__/test-helpers.js";
@@ -48,6 +48,12 @@ describe("win32SystemBinary", () => {
     expect(win32SystemBinary("icacls", {})).toBe("icacls");
   });
 });
+/** A refused result with the DACL it was refused for: owner, entries and inheritance flags. */
+function refusal(result: ReturnType<typeof ensureAveHomePrivate>): string {
+  if (result.enforcement !== "none" || result.failedPath === undefined) return JSON.stringify(result);
+  return JSON.stringify({ result, dacl: readWindowsDirectoryDacls([result.failedPath]) });
+}
+
 describe("ensureAveHomePrivate", () => {
   const home = useTempPaths("ave-home-privacy-", ".ave");
   function check(change: (entry: WindowsDirectoryDacl, index: number) => WindowsDirectoryDacl = (entry) => entry) {
@@ -138,6 +144,15 @@ describe("ensureAveHomePrivate", () => {
     // The system root reaches the child only inside the request, never as a second variable.
     expect(Object.keys(env).filter((name) => name.startsWith("AVE_DACL_"))).toEqual(["AVE_DACL_REQUEST"]);
   });
+  it("lets Windows PowerShell rebuild its own module path", () => {
+    vi.stubEnv("SystemRoot", "C:\\Windows");
+    // A module path inherited from PowerShell 7 names that edition's modules, not 5.1's.
+    vi.stubEnv("PSModulePath", "C:\\Program Files\\PowerShell\\7\\Modules");
+    vi.mocked(execFileSync).mockReturnValueOnce(JSON.stringify([descriptor("C:\\home")]));
+    readWindowsDirectoryDacls(["C:\\home"]);
+    const env = (vi.mocked(execFileSync).mock.calls.at(-1)![2] as { env: NodeJS.ProcessEnv }).env;
+    expect(Object.keys(env).filter((name) => name.toLowerCase() === "psmodulepath")).toEqual([]);
+  });
   it("retains a per-path read error in one process", () => {
     vi.stubEnv("SystemRoot", "C:\\Windows");
     const dir = home();
@@ -147,6 +162,13 @@ describe("ensureAveHomePrivate", () => {
     vi.mocked(execFileSync).mockReturnValueOnce(JSON.stringify(results));
     expect(readWindowsDirectoryDacls(paths)).toEqual(results);
     expect(vi.mocked(execFileSync).mock.calls.slice(before)).toHaveLength(1);
+  });
+  it("reports a directory the protecting step could not create", () => {
+    const dir = home();
+    const result = ensureAveHomePrivate(dir, { platform: "win32", readDacls: (paths) => [
+      { path: paths[0]!, category: "directory-failed", error: "Access is denied" }, descriptor(paths[1]!),
+    ] });
+    expect(result).toMatchObject({ enforcement: "none", failedPath: dir, category: "directory-failed", reason: "Access is denied" });
   });
   it("rejects a malformed read-back result set", () => {
     vi.stubEnv("SystemRoot", "C:\\Windows");
@@ -165,7 +187,9 @@ describe("ensureAveHomePrivate", () => {
   });
   it.runIf(process.platform === "win32").each(["home", "secrets", "file", "directory"])("reports retained explicit extra entries on the real %s DACL", (target) => {
     const dir = home();
-    expect(ensureAveHomePrivate(dir).enforcement).toBe("win32-dacl");
+    // The message carries the whole result, so a refusal shows its category and reason.
+    const protectedHome = ensureAveHomePrivate(dir);
+    expect(protectedHome, refusal(protectedHome)).toMatchObject({ enforcement: "win32-dacl" });
     const path = target === "home" ? dir : target === "secrets" ? join(dir, "secrets") : join(dir, "secrets", target);
     if (target === "file") writeFileSync(path, "private");
     if (target === "directory") mkdirSync(path);
@@ -176,11 +200,85 @@ describe("ensureAveHomePrivate", () => {
     setAveHomePrivacyAtBoot(result);
     expect(() => assertAveHomePrivacyForConfinement()).toThrow(path);
   });
+  it("refuses a link and an unaccepted owner before the permission command writes", () => {
+    vi.stubEnv("SystemRoot", "C:\\Windows");
+    vi.mocked(execFileSync).mockReturnValueOnce(JSON.stringify([descriptor("C:\\home")]));
+    readWindowsDirectoryDacls(["C:\\home"], true);
+    const args = vi.mocked(execFileSync).mock.calls.at(-1)![1] as readonly string[];
+    const command = args.at(-1)!;
+    const write = command.indexOf("& $icacls");
+    expect(write).toBeGreaterThan(-1);
+    expect(command.indexOf("[System.IO.FileAttributes]::ReparsePoint")).toBeLessThan(write);
+    expect(command.indexOf("'Directory is owned by another account'")).toBeLessThan(write);
+    // The same owner rule as isOwnerOnlyDacl.
+    expect(command).toContain("$owner -ne $sid -and -not ($elevated -and $owner -eq 'S-1-5-32-544')");
+    expect(command.slice(write, command.indexOf("\n", write))).toContain("'/L'");
+  });
+  it("reports the first refused path and touches none inside it", () => {
+    const dir = home();
+    const result = ensureAveHomePrivate(dir, { platform: "win32", readDacls: (paths) => [
+      { path: paths[0]!, category: "reparse-point", error: "Directory is a link or junction" },
+      { path: paths[1]!, category: "reparse-point", error: "An enclosing directory was refused" },
+    ] });
+    expect(result).toMatchObject({ enforcement: "none", failedPath: dir, category: "reparse-point" });
+  });
+
+  /** Owner and access entries of a real directory, read on that directory itself. */
+  function sddl(path: string): string {
+    return execFileSync(win32SystemBinary("WindowsPowerShell/v1.0/powershell"), [
+      "-NoProfile", "-NonInteractive", "-Command",
+      "[System.IO.Directory]::GetAccessControl($env:AVE_TEST_TARGET).GetSecurityDescriptorSddlForm('Owner, Access')",
+    ], { env: { ...process.env, AVE_TEST_TARGET: path }, encoding: "utf-8", windowsHide: true }).trim();
+  }
+  it.runIf(process.platform === "win32").each(["home", "secrets"])("refuses a %s junction and leaves its target's DACL unchanged", (which) => {
+    const dir = home();
+    const target = join(dirname(dir), "target");
+    mkdirSync(target);
+    const link = which === "home" ? dir : join(dir, "secrets");
+    if (which === "secrets") expect(ensureAveHomePrivate(dir)).toMatchObject({ enforcement: "win32-dacl" });
+    if (which === "secrets") rmdirSync(link);
+    symlinkSync(target, link, "junction");
+    try {
+      const before = sddl(target);
+      const result = ensureAveHomePrivate(dir);
+      expect(result).toMatchObject({ enforcement: "none", failedPath: link, category: "reparse-point" });
+      expect(sddl(target)).toBe(before);
+      expect(existsSync(join(target, "secrets"))).toBe(false);
+    } finally {
+      rmdirSync(link);
+    }
+  });
+  it.runIf(process.platform === "win32")("refuses an existing home owned by another account and leaves its DACL unchanged", () => {
+    const dir = home();
+    mkdirSync(dir);
+    execFileSync(win32SystemBinary("icacls"), [dir, "/setowner", "*S-1-5-18", "/q"], { encoding: "utf-8", windowsHide: true });
+    const before = sddl(dir);
+    const result = ensureAveHomePrivate(dir);
+    expect(result).toMatchObject({ enforcement: "none", failedPath: dir, category: "invalid-owner-grant", reason: "Directory is owned by another account" });
+    expect(sddl(dir)).toBe(before);
+    expect(existsSync(join(dir, "secrets"))).toBe(false);
+  });
+  it.runIf(process.platform === "win32")("changes a link itself, not its target, when the permission command runs with /L", () => {
+    // The race the refusal above cannot close: a link swapped in after the check.
+    const dir = home();
+    const target = join(dirname(dir), "target");
+    mkdirSync(target);
+    symlinkSync(target, dir, "junction");
+    try {
+      const before = sddl(target);
+      const sid = execFileSync(win32SystemBinary("WindowsPowerShell/v1.0/powershell"), ["-NoProfile", "-NonInteractive", "-Command",
+        "[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value"], { encoding: "utf-8", windowsHide: true }).trim();
+      execFileSync(win32SystemBinary("icacls"), [dir, "/inheritance:r", "/grant:r", `*${sid}:(OI)(CI)F`, "/L", "/q"], { encoding: "utf-8", windowsHide: true });
+      expect(sddl(target)).toBe(before);
+    } finally {
+      rmdirSync(dir);
+    }
+  });
   it.runIf(process.platform === "win32").each(["ordinary", "curly’quote", "'; Write-Output x; '"])("protects and reads back a real directory named %s", (name) => {
     const dir = join(home(), name);
     const before = vi.mocked(execFileSync).mock.calls.length;
     const result = ensureAveHomePrivate(dir);
-    expect(result.enforcement).toBe("win32-dacl");
+    expect(result, refusal(result)).toMatchObject({ enforcement: "win32-dacl" });
     expect(vi.mocked(execFileSync).mock.calls.slice(before)).toHaveLength(1);
     const descriptors = readWindowsDirectoryDacls([dir, join(dir, "secrets")]);
     console.info(`Verified relocated private directory DACL JSON: ${JSON.stringify(descriptors)}`);
@@ -189,7 +287,8 @@ describe("ensureAveHomePrivate", () => {
       expect(entry).toMatchObject({ protected: true, rules: [expect.objectContaining({
         ...OWNER_RULE, sid: (result as { sid: string }).sid,
       })] });
-      expect([entry.currentUserSid, ...(entry.elevated ? ["S-1-5-32-544"] : [])]).toContain(entry.ownerSid);
+      // The call created both directories, so the current user owns them even on an elevated token.
+      expect(entry.ownerSid).toBe(entry.currentUserSid);
     }
     writeFileSync(join(dir, "settings.json"), "{}");
     expect(readFileSync(join(dir, "settings.json"), "utf-8")).toBe("{}");

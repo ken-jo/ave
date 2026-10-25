@@ -1421,6 +1421,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     ["en", "read-back-failed"], ["ko", "read-back-failed"],
     ["en", "not-protected"], ["ko", "not-protected"],
     ["en", "extra-principals"], ["ko", "extra-principals"],
+    ["en", "reparse-point"], ["ko", "reparse-point"],
   ] as const)("names the private directory and reason in %s for %s without elevated setup", async (locale, category) => {
     const previousLocale = getLocale();
     setLocale(locale);
@@ -1443,7 +1444,12 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
         expect(notice).toHaveTextContent("S-1-5-21-100-200-300-9999");
         expect(notice).toHaveTextContent(t("permissionsTab.homePrivacyExtraPrincipals", { principals: "S-1-1-0 (Everyone), S-1-5-21-100-200-300-9999" }));
       } else {
-        expect(notice).toHaveTextContent(category === "icacls-failed" ? t("permissionsTab.homePrivacyIcaclsFailed") : category === "read-back-failed" ? t("permissionsTab.homePrivacyReadBackFailed") : t("permissionsTab.homePrivacyNotProtected"));
+        expect(notice).toHaveTextContent({
+          "icacls-failed": t("permissionsTab.homePrivacyIcaclsFailed"),
+          "read-back-failed": t("permissionsTab.homePrivacyReadBackFailed"),
+          "not-protected": t("permissionsTab.homePrivacyNotProtected"),
+          "reparse-point": t("permissionsTab.homePrivacyReparsePoint"),
+        }[category]);
       }
       expect(screen.queryByTestId("os-sandbox-windows-install")).toBeNull();
       expect(ave.permission.sandboxWindowsInstall).not.toHaveBeenCalled();

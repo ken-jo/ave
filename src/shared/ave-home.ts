@@ -1,8 +1,9 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { checkResolvedAveHome } from "./ave-home-test-guard.js";
+import { windowsPowerShellEnv } from "./windows-powershell-env.js";
 
 /**
  * Single source of truth for the Ave user-data root.
@@ -87,7 +88,8 @@ export type AveHomePrivacyFailureCategory =
   | "read-back-failed"
   | "extra-principals"
   | "not-protected"
-  | "invalid-owner-grant";
+  | "invalid-owner-grant"
+  | "reparse-point";
 
 export interface AveHomePrincipal {
   sid: string;
@@ -168,22 +170,56 @@ export function readWindowsDirectoryDacls(paths: readonly string[], protect = fa
           protected = $acl.AreAccessRulesProtected; child = $child; rules = $rules }
       } catch { @{ path = $path; error = $_.Exception.Message } }
     }
+    $refused = $null;
     $results = @(foreach ($path in $request.paths) {
+      # Each later path lies inside the first: once one is refused, none is touched.
+      if ($null -ne $refused) { @{ path = $path; category = $refused; error = 'An enclosing directory was refused' }; continue }
       if ($request.protect) {
-        & $icacls $path '/inheritance:r' '/grant:r' ('*' + $sid + ':(OI)(CI)F') '/q' | Out-Null;
-        if ($LASTEXITCODE -ne 0) { @{ path = $path; category = 'icacls-failed'; error = 'Directory permission command failed' }; continue }
+        # GetAttributes reads the entry itself, never a link's target.
+        $attributes = $null;
+        try { $attributes = [System.IO.File]::GetAttributes($path) } catch [System.IO.FileNotFoundException], [System.IO.DirectoryNotFoundException] {}
+        if ($null -eq $attributes) {
+          # A directory this call creates is owned by the token user from the start, with
+          # the same protected owner-only DACL icacls then grants. A token whose default
+          # owner is Administrators would otherwise own it as that group, and a parent's
+          # CREATOR OWNER entry would leave an explicit Administrators grant behind.
+          try {
+            $security = [System.Security.AccessControl.DirectorySecurity]::new();
+            $security.SetOwner($identity.User);
+            $security.SetAccessRuleProtection($true, $false);
+            $security.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($identity.User, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow'));
+            [System.IO.Directory]::CreateDirectory($path, $security) | Out-Null;
+            $attributes = [System.IO.File]::GetAttributes($path);
+          } catch { $refused = 'directory-failed'; @{ path = $path; category = $refused; error = $_.Exception.Message }; continue }
+        }
+        # icacls follows a link, so an existing link is refused before anything is
+        # written, and so is an owner the home rule does not accept (isOwnerOnlyDacl).
+        if (($attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+          $refused = 'reparse-point'; @{ path = $path; category = $refused; error = 'Directory is a link or junction' }; continue
+        }
+        if (($attributes -band [System.IO.FileAttributes]::Directory) -eq 0) {
+          $refused = 'directory-failed'; @{ path = $path; category = $refused; error = 'Path is not a directory' }; continue
+        }
+        $owner = (Get-Acl -LiteralPath $path).GetOwner([System.Security.Principal.SecurityIdentifier]).Value;
+        if ($owner -ne $sid -and -not ($elevated -and $owner -eq 'S-1-5-32-544')) {
+          $refused = 'invalid-owner-grant'; @{ path = $path; category = $refused; error = 'Directory is owned by another account' }; continue
+        }
+        # /L acts on a link itself, so a link swapped in after the check above is
+        # changed in place of its target.
+        & $icacls $path '/inheritance:r' '/grant:r' ('*' + $sid + ':(OI)(CI)F') '/L' '/q' | Out-Null;
+        if ($LASTEXITCODE -ne 0) { $refused = 'icacls-failed'; @{ path = $path; category = $refused; error = 'Directory permission command failed' }; continue }
       }
       Read-Dacl $path $false
     });
-    if ($request.paths.Count -gt 1 -and (Test-Path -LiteralPath $request.paths[1])) {
+    if ($null -eq $refused -and $request.paths.Count -gt 1 -and (Test-Path -LiteralPath $request.paths[1])) {
       try {
         # Immediate children only; deeper entries inherit from the verified, protected secrets/ DACL.
         $results += @(Get-ChildItem -LiteralPath $request.paths[1] -Force | ForEach-Object { Read-Dacl $_.FullName $true });
       } catch { $results += @{ path = $request.paths[1]; error = $_.Exception.Message } }
     }
     ConvertTo-Json -InputObject @($results) -Depth 5 -Compress`,
-  ], { encoding: "utf-8", windowsHide: true, env: { ...process.env,
-    AVE_DACL_REQUEST: JSON.stringify({ paths, protect, icacls: win32SystemBinary("icacls") }) } });
+  ], { encoding: "utf-8", windowsHide: true, env: windowsPowerShellEnv({ ...process.env,
+    AVE_DACL_REQUEST: JSON.stringify({ paths, protect, icacls: win32SystemBinary("icacls") }) }) });
   const results: unknown = JSON.parse(output);
   if (!Array.isArray(results) || results.length < paths.length) {
     throw new Error("Directory DACL read-back returned an invalid result set");
@@ -192,8 +228,12 @@ export function readWindowsDirectoryDacls(paths: readonly string[], protect = fa
 }
 
 function isOwnerOnlyDacl(descriptor: WindowsDirectoryDacl, sid: string): boolean {
-  // An elevated token may create an Administrators-owned object. The grant
-  // still belongs only to the token user; group Allow entries are never accepted.
+  // A home this app creates is owned by the user ("Windows object ownership"
+  // in docs/architecture/architecture.md, the AVE_HOME item). One that already
+  // exists, chosen by the user or left by an earlier run, may be
+  // Administrators-owned under an elevated token. The grant still belongs only
+  // to the token user; group Allow entries are never accepted. The protecting
+  // step applies the same owner rule before it changes the DACL.
   const ownerValid = descriptor.ownerSid === sid ||
     (descriptor.elevated === true && descriptor.ownerSid === "S-1-5-32-544");
   const rule = descriptor.rules?.[0];
@@ -315,11 +355,10 @@ export function ensureAveHomePrivate(
   let path = home;
   let category: AveHomePrivacyFailureCategory = "directory-failed";
   try {
-    mkdirSync(home, { recursive: true, mode: 0o700 });
-    for (path of [home, join(home, "secrets")]) {
-      category = "directory-failed";
-      mkdirSync(path, { recursive: true, mode: 0o700 });
-    }
+    // The protecting step creates the home and its secrets directory itself, so
+    // each is owned by the current user from the start ("Windows object
+    // ownership" in docs/architecture/architecture.md). Only the parent is made here.
+    mkdirSync(dirname(home), { recursive: true });
     category = "read-back-failed";
     path = home;
     const paths = [home, join(home, "secrets")];

@@ -1997,15 +1997,46 @@ group rather than by the user. Admission (`assertCodexLocations` in
    account refuses start and is left as it is.
 2. **Outside a private root, the owner must be the current user or a trusted
    system principal.** This covers a private root's ancestors (among them
-   `AVE_HOME` and `subscription-runtimes`, which `mkdir` creates and nothing
-   claims) and an executable's location. The trusted principals are SYSTEM
+   `AVE_HOME` and `subscription-runtimes`, which admission does not claim) and an executable's location. The trusted principals are SYSTEM
    (`S-1-5-18`), `S-1-5-32-544` and TrustedInstaller. Admission also accepts
    the sandbox principals and capability SIDs it identifies. This does not
    depend on the token's default owner. Write access there is judged by the
    access entries, not by the owner.
 
-Any other owner is refused. A change to either rule changes the security
-contract for both.
+Two other places create or protect owner-sensitive objects themselves, each
+with its own owner rule:
+
+- **The Windows sandbox helper copy is created with its final security
+  descriptor.** `prepareSrtWinExecutable` in
+  `src/permissions/srt-win-integrity.ts` picks a random, unpublished
+  `ave-srt-win-` name, and one PowerShell step creates the directory there with
+  the token user as owner and a protected DACL: full control for the user,
+  read and execute for SYSTEM, `S-1-5-32-544` and `S-1-5-32-545`. Anything
+  already at that path, a link included, refuses creation. The empty image and
+  the owner marker are then created new inside it, each with its own
+  descriptor, and each owner is read on the handle that created the file. No
+  step changes the owner or DACL of an object that already exists. The image's
+  bytes are written only after that step. If it fails, the step removes what it
+  made; a later failure removes the copy without following a link.
+- **`AVE_HOME` is created by the user, or admitted only on a strict DACL.**
+  When `AVE_HOME` or its `secrets` directory does not exist yet,
+  `ensureAveHomePrivate` in `src/shared/ave-home.ts` has its protecting step
+  create it with the user as owner and an owner-only protected DACL, so no
+  grant for the token's default owner is left behind. Before it changes an
+  existing directory's DACL, the step refuses a link or junction and an owner
+  this rule does not accept, and nothing inside a refused directory is
+  touched; the permission command then acts on a link itself (`icacls /L`),
+  never on its target. An existing `AVE_HOME` the app did not create may be
+  owned by `S-1-5-32-544` only when the current token's default owner is
+  `S-1-5-32-544`. Its DACL must then be protected and hold exactly one entry,
+  the user's own full-control grant, inherited by files and folders and not
+  itself inherited; no system principal is granted. The app protects such a
+  root, but it does not take ownership of it. `isOwnerOnlyDacl` in
+  `src/shared/ave-home.ts` applies this rule. It takes an elevated
+  Administrators token as its sign that the default owner is `S-1-5-32-544`.
+
+Any other owner is refused. A change to any of these rules changes the security
+contract for all of them.
 
 ## Documentation Language Policy
 
