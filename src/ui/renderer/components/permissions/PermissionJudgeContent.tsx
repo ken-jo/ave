@@ -37,11 +37,8 @@ type JudgeModel = NonNullable<PermissionJudgeSettings["model"]>;
 /** The non-model row: no choice stored, so the reviewer follows its fallback. */
 const UNSET_MODEL_VALUE = "unset::";
 
-/**
- * The chat model chooser, offering the models the host can run the reviewer
- * on (`snapshot.modelOptions`, the connected API routes). A stored model the
- * host no longer offers stays visible, marked, so the choice is not hidden.
- */
+/** The chat model chooser, offering the models the host can run the reviewer on (`snapshot.modelOptions`, the
+ * connected API routes). A stored model the host no longer offers stays visible, marked, so the choice is not hidden. */
 function JudgeModelSelect({ id, snapshot, value, unsetLabel, placeholder, unavailableLabel, onChange }: {
   id: string;
   snapshot: PermissionJudgeSnapshot | null;
@@ -180,8 +177,7 @@ export function PermissionJudgeContent() {
           },
         } : stage),
       };
-      // Send only what changed. A stored value the host rejected (an
-      // unavailable model, a rejected chain) stays as stored unless edited.
+      // Send only what changed. A stored value the host rejected (an unavailable model, a rejected chain) stays as stored unless edited.
       const saved = snapshot?.settings;
       const wire = (settings: Partial<PermissionJudgeSettings>) => JSON.stringify(serializePermissionJudgeSettingsPatch(settings));
       const patch = Object.fromEntries((Object.keys(settingsToSave) as Array<keyof PermissionJudgeSettings>)

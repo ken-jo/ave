@@ -31,12 +31,8 @@ export interface BundledWrapInput {
   args: readonly string[];
   sandboxHome: { path: string; env: Record<string, string> };
   allowWrite: readonly string[];
-  /**
-   * The directories of the process's own plugin it reads, re-allowed inside
-   * the plugins-root deny: a hook's generation root, a bundled server's
-   * payload root. Empty for a server that belongs to no plugin, which then
-   * reads nothing under the root.
-   */
+  /** The directories of the process's own plugin it reads, re-allowed inside the plugins-root deny: a hook's generation root,
+   * a bundled server's payload root. Empty for a server that belongs to no plugin, which then reads nothing under the root. */
   ownPluginReads: readonly string[];
   /** Host-owned principal whose private temporary directory the process receives. */
   tempPrincipal: SandboxTempPrincipal;
@@ -44,25 +40,17 @@ export interface BundledWrapInput {
   egressOwner: WorkerEgressOwner;
 }
 
-/** Apply the same sensitive-path floors and egress policy to bundled processes. */
-/**
- * The wrapped launch, and the egress token it carries. The caller spawns the
- * process itself, so it owns the token too: `egress.release()` once the process
- * has exited, or when the spawn fails.
- */
+/** Apply the same sensitive-path floors and egress policy to bundled processes. The wrapped launch, and the egress token it carries. The
+ * caller spawns the process itself, so it owns the token too: `egress.release()` once the process has exited, or when the spawn fails. */
 export async function wrapBundledCommand(input: BundledWrapInput): Promise<{ argv: string[]; env: NodeJS.ProcessEnv; egress: EgressInvocation }> {
   if (process.platform === "win32") {
-    // The macOS and Linux wrap: allow paths in the command. Windows has no
-    // per-exec allow; its bundled processes go through
-    // `spawnWindowsBundledProcess`, and reaching here is a caller's mistake.
+    // The macOS and Linux wrap: allow paths in the command. Windows has no per-exec allow; its
+    // bundled processes go through `spawnWindowsBundledProcess`, and reaching here is a caller's mistake.
     throw new Error("wrapBundledCommand is the macOS and Linux wrap; a Windows bundled process is spawned by spawnWindowsBundledProcess");
   }
   const tmpDir = process.env.TMPDIR ?? process.env.TEMP ?? process.env.TMP;
-  // The principal's own temp directory, set as its TMPDIR inside the wrap
-  // (ASRT's own assignment would otherwise name the shared root) and granted
-  // alone; the read floor denies the shared temp and HOME roots, so no other
-  // principal's temp files or HOME can be read either, and the process HOME
-  // re-allowed here is its own — as `confined-child.ts` does for its children.
+  // The principal's own temp directory, set as its TMPDIR inside the wrap (ASRT's own assignment would otherwise name the shared root) and granted alone; the read floor denies the
+  // shared temp and HOME roots, so no other principal's temp files or HOME can be read either, and the process HOME re-allowed here is its own; as `confined-child.ts` does for its children.
   const temp = ensureSandboxTempPrincipalDir(input.tempPrincipal);
   const launch = sandboxTempEnvLaunch(temp.dir, input.command, input.args);
   const cmdline = [launch.command, ...launch.args].map(shellQuote).join(" ");
@@ -73,20 +61,17 @@ export async function wrapBundledCommand(input: BundledWrapInput): Promise<{ arg
       commandId: egress.token,
       filesystem: {
         allowWrite: [temp.dir, input.sandboxHome.path, ...input.allowWrite],
-        // An ancestor grant can re-emit a protected deny after the exact hook
-        // file carve-out. User hooks need only their own temporary directory.
+        // An ancestor grant can re-emit a protected deny after the exact hook file carve-out. User hooks need only their own temporary directory.
         allowRead: [temp.dir, input.sandboxHome.path, ...input.ownPluginReads, ...input.allowWrite,
           ...(tmpDir && input.tempPrincipal.kind !== "hook" ? [tmpDir] : [])],
         ...(input.tempPrincipal.kind === "hook" ? { floorPierces: input.ownPluginReads } : {}),
         denyRead: getDefaultSensitiveReadDenyPaths(),
         denyWrite: getDefaultSensitiveWriteDenyPaths(),
-        // Bundled hooks and MCP stdio servers are plugin-owned (or third-party)
-        // code, and every root they write into is one the host created: a
-        // plugin's data root, a server's sandbox root, the process HOME.
+        // Bundled hooks and MCP stdio servers are plugin-owned (or third-party) code, and every root they
+        // write into is one the host created: a plugin's data root, a server's sandbox root, the process HOME.
         pinWriteRoots: true,
-        // And none of them reads another plugin's directories: a hook writes its
-        // plugin's data root, which that plugin's child reads, so a hook that
-        // could read a neighbour's data could hand it to the child.
+        // And none of them reads another plugin's directories: a hook writes its plugin's data root, which
+        // that plugin's child reads, so a hook that could read a neighbour's data could hand it to the child.
         denyPluginsRoot: true,
       },
     });
@@ -123,39 +108,13 @@ export interface WindowsBundledSpawn {
   /** The program's input and output, through the stdio relay (`confined-child.ts`). */
   readonly stdin: Writable;
   readonly stdout: Readable;
-  /**
-   * Revoke the filesystem grant and remove the throwaway HOME. Idempotent; the
-   * HOME removal stays retryable, as `createSandboxProcessHome` documents. Call
-   * it on the child's exit and again on its close. ASRT's per-command cleanup is
-   * the caller's, as it is for {@link wrapBundledCommand}.
-   */
+  /** Revoke the filesystem grant and remove the throwaway HOME. Idempotent; the HOME removal stays retryable, as `createSandboxProcessHome`
+   * documents. Call it on the child's exit and again on its close. ASRT's per-command cleanup is the caller's, as it is for {@link wrapBundledCommand}. */
   readonly releaseHold: () => void;
 }
 
-/**
- * Start a bundled hook or MCP stdio server under srt-win.
- *
- * The macOS and Linux wrap puts allow paths in the command; srt-win has no
- * such per-exec allow, so reachability is an ACL grant held against a holder
- * process for the process's lifetime (`windows-acl-grant-holder.ts`, as a
- * plugin child's and a worker's are): READ on `allowRead`, the throwaway HOME
- * and every write root; WRITE on `allowWrite` and the HOME. When the command is
- * a program the host keeps under `<AVE_HOME>/runtime` (the uv Ave
- * materializes there for an `uvx` server), that directory is granted READ as
- * well — on macOS and Linux nothing denies it, and without it the account could
- * not even open the program. The wrap carries the deny floor only, and the
- * program runs through the stdio relay, which gives it a real stdin, its
- * intended environment and its working directory.
- *
- * What the Windows path does NOT carry over: `denyPluginsRoot` and
- * `pinWriteRoots` are allow-list notions with no srt-win counterpart, so a
- * bundled process here, like every Windows sandboxed process, shares the one
- * `srt-sandbox` identity with every plugin (decision 64): confined against the
- * host, not against other plugins.
- *
- * A grant lost while the process runs ends the process. Any failure before the
- * process is handed back releases everything this call took and rethrows.
- */
+/** Windows holds lifetime ACL grants for allowed reads/writes, private home, and bundled runtime binaries; relay stdio with the intended environment and cwd.
+ * It shares one sandbox identity without per-plugin root pinning; lost grants stop the process, and any launch failure releases all acquired resources. */
 export async function spawnWindowsBundledProcess(input: {
   readonly label: string;
   readonly command: string;

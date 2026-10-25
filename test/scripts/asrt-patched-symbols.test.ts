@@ -1,19 +1,10 @@
-/**
- * The bun patch on @anthropic-ai/sandbox-runtime is dist JavaScript edited by
- * hand. A version bump that re-rolls it can apply cleanly and still drop a
- * piece, and nothing else notices: the terminal's own-tty grant degrades to a
- * plain deny, the ask callback loses the attribution key that tells a plugin
- * worker's connection from a shell's, or an invocation loses the listener
- * that identifies it. So each symbol the patch adds is
- * asserted on the INSTALLED package, the bytes Ave actually loads, on every OS
- * the suite runs on.
- */
+/** The bun patch on @anthropic-ai/sandbox-runtime is dist JavaScript edited by hand. A version bump that re-rolls it can apply cleanly and still drop a piece, and nothing else notices: the terminal's own-tty grant degrades to a plain deny, the ask callback loses
+ * the attribution key that tells a plugin worker's connection from a shell's, or an invocation loses the listener that identifies it. So each symbol the patch adds is asserted on the INSTALLED package, the bytes Ave actually loads, on every OS the suite runs on. */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-// Test seams: imported by file path, never from the package entry (see the
-// export-surface case below).
+// Test seams: imported by file path, never from the package entry (see the export-surface case below).
 import {
   setDestinationResolverForTesting,
   setListenerQuarantineForTesting,
@@ -42,9 +33,8 @@ function functionBody(source: string, signature: RegExp): string {
   return next === -1 ? rest : rest.slice(0, next);
 }
 
-// Type-level half of the check: `check:typecheck-tests` fails if the patched
-// declarations are missing. The callback must stay assignable with one
-// parameter (existing callers) and must see the context with two.
+// Type-level half of the check: `check:typecheck-tests` fails if the patched declarations are missing. The
+// callback must stay assignable with one parameter (existing callers) and must see the context with two.
 const oneParameter: SandboxAskCallback = async ({ host }) => host === "example.com";
 const twoParameters: SandboxAskCallback = async (_params, context?: SandboxAskContext) =>
   context?.attributionKey === "token" && context.identity === "listener";
@@ -54,10 +44,7 @@ const ttysOption: WrapOptions["ttys"] = ["/dev/ttys001"];
 /** The documentation address every `*.example.invalid` test name resolves to. */
 const TEST_ADDRESS = "203.0.113.10";
 
-/**
- * The proxy resolves each destination name once, before asking; test names
- * answer with a documentation address so the callback and dial are reached.
- */
+/** The proxy resolves each destination name once, before asking; test names answer with a documentation address so the callback and dial are reached. */
 async function testResolver(name: string): Promise<Array<{ address: string; family: number }>> {
   if (name.endsWith(".example.invalid")) return [{ address: TEST_ADDRESS, family: 4 }];
   const { lookup } = await import("node:dns/promises");
@@ -102,8 +89,7 @@ describe("patched @anthropic-ai/sandbox-runtime", () => {
     expect(create).toContain("identity = publishOwnedDirectory(entry)");
     expect(create).toContain("identity = { dev: stat.dev, ino: stat.ino, kind, fd }");
     expect(create).toContain("bwrapMountPoints.set(dest, identity)");
-    // Directories: identity from a descriptor on a private name, then moved
-    // onto an exclusive reservation.
+    // Directories: identity from a descriptor on a private name, then moved onto an exclusive reservation.
     expect(functionBody(linux, /\nfunction directoryIdentity\(/u))
       .toContain("fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW");
     expect(functionBody(linux, /\nfunction directoryIdentity\(/u))
@@ -207,16 +193,14 @@ describe("patched @anthropic-ai/sandbox-runtime", () => {
     expect(byName).toMatch(/askSandboxCallback\(sandboxAskCallback, host, port, \{ attributionKey, identity, phase: 'name' \}, denied\)/u);
     // Nothing in the name phase resolves or routes.
     expect(byName).not.toMatch(/planDestination|resolveAddresses|routesFor|destinationResolver/u);
-    // Only an invocation listener's filter says 'listener'; the shared front
-    // end's default is the forgeable username.
+    // Only an invocation listener's filter says 'listener'; the shared front end's default is the forgeable username.
     expect(byName.startsWith("async function decideByName(port, host, sandboxAskCallback, encodedCommand, explain, identity = 'username')")).toBe(true);
-    // Ave runs non-strict with an empty allowlist, so the callback is the gate:
-    // without one the request is refused.
+    // Ave runs non-strict with an empty allowlist, so the callback is the gate: without one the request is refused.
     expect(byName).toMatch(/if \(!sandboxAskCallback\) \{\n[^\n]*\n\s+return denied\('host is not on the allow list'\);/u);
     const resolved = functionBody(manager, /\nasync function confirmResolvedDestination\(/u);
     expect(resolved).toMatch(/phase: 'resolved',\s+addresses: plan\.addresses\.map\(a => a\.address\),\s+resolution: plan\.viaUpstream \? 'upstream' : 'pinned',/u);
     const ask = functionBody(manager, /\nasync function askSandboxCallback\(/u);
-    // 0.0.80 allows only on a literal `true` (#591); the patch must not loosen it.
+    // 0.0.80 allows only on a literal `true` ; the patch must not loosen it.
     expect(ask).toMatch(/if \(answer === true\)/u);
     // When it throws, the request is refused.
     expect(ask).toMatch(/catch \(error\) \{\n[\s\S]{0,200}?return denied\('permission prompt failed'\);\n\s+\}\n\}/u);
@@ -246,8 +230,7 @@ describe("patched @anthropic-ai/sandbox-runtime", () => {
     expect(steps).toMatch(
       /if \(getPlatform\(\) === 'windows' &&\s+runtimeConfig\.windows\?\.externalConfinement === 'embedder'\) \{[\s\S]*?\}\s+else if \(getPlatform\(\) === 'windows'\) \{\s+\/\/ Resolve once/u,
     );
-    // initialize() checks dependencies before those steps; that check must not
-    // demand srt-win either, or the proxy never starts where it is needed.
+    // initialize() checks dependencies before those steps; that check must not demand srt-win either, or the proxy never starts where it is needed.
     const deps = functionBody(manager, /\nfunction checkDependenciesCommon\(/u);
     expect(deps).toMatch(
       /else if \(platform === 'windows' &&\s+config\?\.windows\?\.externalConfinement === 'embedder'\) \{[\s\S]*?return \{ done: \{ errors, warnings \} \};\s+\}\s+else if \(platform === 'windows'\) \{\s+let srtWin;/u,
@@ -328,17 +311,10 @@ describe("patched @anthropic-ai/sandbox-runtime", () => {
   });
 });
 
-/**
- * Behavioural half: through the real proxy, the key a wrap's proxy username
- * names reaches the ask callback's second argument. The proxy URL (with the
- * per-process credential) is read out of the wrapped command and used only
- * inside this process.
- */
+/** Behavioural half: through the real proxy, the key a wrap's proxy username names reaches the ask callback's second
+ * argument. The proxy URL (with the per-process credential) is read out of the wrapped command and used only inside this process. */
 describe.runIf(process.platform === "darwin" || process.platform === "linux")("ask callback attribution through the proxy", () => {
-  /**
-   * CONNECT `destination` through a host-side proxy front end (a port, or a
-   * Linux socket path); `proxy` gives only the credential.
-   */
+  /** CONNECT `destination` through a host-side proxy front end (a port, or a Linux socket path); `proxy` gives only the credential. */
   async function connectThrough(
     front: number | string,
     proxy: URL,
@@ -363,8 +339,7 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
       });
       socket.on("close", () => resolve(head.split("\r\n")[0] ?? ""));
       socket.on("error", (error: NodeJS.ErrnoException) => {
-        // A refused or reset connection is the answer for an ended listener
-        // (macOS keeps the port and drops the socket; Linux removes the path).
+        // A refused or reset connection is the answer for an ended listener (macOS keeps the port and drops the socket; Linux removes the path).
         if (["ECONNRESET", "ECONNREFUSED", "EPIPE", "ENOENT"].includes(error.code ?? "")) resolve("");
         else reject(error);
       });
@@ -470,11 +445,8 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
     return front!;
   }
 
-  /**
-   * The resolved-phase asks: what a destination resolved to and how it is
-   * reached, asked only after a name-phase allow. A refusal the proxy makes
-   * before that (a route, an address) shows up as no resolved ask.
-   */
+  /** The resolved-phase asks: what a destination resolved to and how it is reached, asked only after a
+   * name-phase allow. A refusal the proxy makes before that (a route, an address) shows up as no resolved ask. */
   function resolvedAsks(asked: Array<{ host: string; context: SandboxAskContext | undefined }>): Array<{ host: string; context: SandboxAskContext | undefined }> {
     return asked.filter((entry) => entry.context?.phase === "resolved");
   }
@@ -502,8 +474,7 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
       expect(spelled, "wrapped command carries no attributed proxy URL").toBeTypeOf("string");
       const proxy = new URL(spelled!);
       expect(proxy.username.startsWith("srt.")).toBe(true);
-      // On Linux the URL names the relay inside the sandbox's network
-      // namespace; the host side listens on the proxy's own port.
+      // On Linux the URL names the relay inside the sandbox's network namespace; the host side listens on the proxy's own port.
       const port = SandboxManager.getProxyPort();
       expect(port).toBeTypeOf("number");
       expect(await connectThrough(port!, proxy, decodeURIComponent(proxy.username))).toMatch(/^HTTP\/1\.1 403/u);
@@ -549,14 +520,12 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
       // Its own key on its own listener: asked, as the listener's.
       expect(await connectThrough(firstFront, proxy, ownName)).toMatch(/^HTTP\/1\.1 403/u);
       expect(asked).toEqual([{ host: "unlisted.example.invalid", context: { attributionKey: first, identity: "listener", phase: "name" } }]);
-      // Another key on this listener, and this key on another's: never asked.
-      // The proxy username is `srt.` plus the base64 of the commandId.
+      // Another key on this listener, and this key on another's: never asked. The proxy username is `srt.` plus the base64 of the commandId.
       expect(ownName).toBe(`srt.${Buffer.from(first).toString("base64")}`);
       const secondName = `srt.${Buffer.from(second).toString("base64")}`;
       expect(await connectThrough(firstFront, proxy, secondName)).toMatch(/^HTTP\/1\.1 403/u);
       expect(await connectThrough(frontOf(secondListener), proxy, ownName)).toMatch(/^HTTP\/1\.1 403/u);
-      // A hop through its own listener onto a proxy front end: refused before
-      // the callback, for the shared port and (macOS) the other listener's.
+      // A hop through its own listener onto a proxy front end: refused before the callback, for the shared port and (macOS) the other listener's.
       const hops = [`127.0.0.1:${SandboxManager.getProxyPort()}`, `localhost:${SandboxManager.getProxyPort()}`];
       if (secondListener.port !== undefined) hops.push(`127.0.0.1:${secondListener.port}`, `[::1]:${secondListener.port}`);
       for (const hop of hops) {
@@ -602,11 +571,8 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
     }
   });
 
-  /**
-   * A stand-in upstream proxy: answers every CONNECT 200 and keeps the tunnel
-   * open, except a CONNECT whose authority is in `disconnect`, closed without
-   * an HTTP answer (a transport failure).
-   */
+  /** A stand-in upstream proxy: answers every CONNECT 200 and keeps the tunnel open, except a
+   * CONNECT whose authority is in `disconnect`, closed without an HTTP answer (a transport failure). */
   async function fakeUpstream(disconnect: readonly string[] = []): Promise<{ port: number; connects: string[]; close: () => Promise<void> }> {
     const { createServer } = await import("node:net");
     const connects: string[] = [];
@@ -703,8 +669,7 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
       const name = `srt.${Buffer.from(commandId).toString("base64")}`;
       const front = frontOf(listener);
       const proxyPort = SandboxManager.getProxyPort()!;
-      // A name that answers a public address to the check and this host's
-      // loopback to any later lookup (the upstream's, or a second one here).
+      // A name that answers a public address to the check and this host's loopback to any later lookup (the upstream's, or a second one here).
       const rebind = rebinding("rebind.example.test", ["198.51.100.7", "127.0.0.1"]);
       setDestinationResolverForTesting(rebind.resolver);
       expect(await connectThrough(front, proxy, name, `rebind.example.test:${proxyPort}`)).toMatch(/^HTTP\/1\.1 200/u);
@@ -722,9 +687,8 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
         throw Object.assign(new Error("getaddrinfo ENOTFOUND"), { code: "ENOTFOUND" });
       });
       expect(await connectThrough(front, proxy, name, "split.example.test:443")).toMatch(/^HTTP\/1\.1 403/u);
-      // Plain HTTP by name through an upstream on this host that is not
-      // trusted to resolve names: the absolute-form target would let it
-      // resolve the name, so it is refused; a literal goes.
+      // Plain HTTP by name through an upstream on this host that is not trusted to resolve names:
+      // the absolute-form target would let it resolve the name, so it is refused; a literal goes.
       setDestinationResolverForTesting(testResolver);
       expect(await plainHttpThrough(front, proxy, name, "http://plain.example.invalid/")).toMatch(/^HTTP\/1\.1 403/u);
       expect(upstream.connects).toHaveLength(1);
@@ -885,9 +849,7 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
     try {
       const setup = await withUpstream(test, { http: url, https: url }, true);
       if (setup === undefined) return;
-      // The check (planDestination: the one route this destination takes)
-      // sees a remote address; the dial's lookup, the next call, gets this
-      // host's loopback.
+      // The check (planDestination: the one route this destination takes) sees a remote address; the dial's lookup, the next call, gets this host's loopback.
       let calls = 0;
       setDestinationResolverForTesting(async (name) => {
         if (name !== "proxy.rebind.test") return corpResolver(name);
@@ -960,8 +922,7 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
     const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");
     try {
       try {
-        // An IP rule lets a name use this loopback address (the guard refuses
-        // loopback for a name otherwise), so the pinned dial has a target.
+        // An IP rule lets a name use this loopback address (the guard refuses loopback for a name otherwise), so the pinned dial has a target.
         await SandboxManager.initialize(
           {
             network: { allowedDomains: [`127.0.0.1:${canaryPort}`], deniedDomains: [] },
@@ -1076,11 +1037,7 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
     }
   });
 
-  /**
-   * An upstream that records each request's first line and its
-   * Proxy-Authorization header, and answers `status` to every request
-   * (`200` keeps a CONNECT tunnel open).
-   */
+  /** An upstream that records each request's first line and its Proxy-Authorization header, and answers `status` to every request (`200` keeps a CONNECT tunnel open). */
   async function recordingUpstream(status: 200 | 403 | 407 | 502 | 503 | 504): Promise<{ port: number; requests: Array<{ line: string; authorization: string | undefined }>; close: () => Promise<void> }> {
     const { createServer } = await import("node:net");
     const requests: Array<{ line: string; authorization: string | undefined }> = [];
@@ -1630,8 +1587,7 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
           { network: { allowedDomains: [], deniedDomains: [] }, filesystem: { denyRead: [], allowWrite: [], denyWrite: [] } },
           async ({ host }, context) => {
             asked.push({ host, context });
-            // What Ave's callback does for an unattributed connection, a worker
-            // off its list, asks turned off or no one to ask: refused by name.
+            // What Ave's callback does for an unattributed connection, a worker off its list, asks turned off or no one to ask: refused by name.
             if (context?.phase === "name" && !host.startsWith("allowed.")) return { allow: false, reason: "refused by name" };
             return true;
           },

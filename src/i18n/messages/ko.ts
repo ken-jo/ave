@@ -1,8 +1,5 @@
-/**
- * Korean message catalog. Mirrors every key in {@link ./en}; the
- * `Record<MessageKey, string>` annotation makes a missing key a build error so
- * translations stay complete as new keys are added.
- */
+/** Korean message catalog. Mirrors every key in {@link ./en}; the `Record<MessageKey, string>`
+ * annotation makes a missing key a build error so translations stay complete as new keys are added. */
 import type { SeedMessageKey } from "./en.js";
 
 export const ko: Record<SeedMessageKey, string> = {
@@ -217,7 +214,6 @@ export const ko: Record<SeedMessageKey, string> = {
 
   "constants.reasoningEffortCustom": "사용자 지정",
 
-  // ── Settings → Appearance → Language ──────────────────────────────
   "settings.appearance.language.title": "언어",
   "settings.appearance.language.description":
     "앱 전체에서 사용할 언어를 선택하세요. 변경 사항은 즉시 적용됩니다.",
@@ -242,7 +238,6 @@ export const ko: Record<SeedMessageKey, string> = {
   "mainDialog.cancelButton": "취소",
   "mainDialog.importConversationTitle": "대화 가져오기",
 
-  // ── E4 — 시작 / 전역 단축키 설정 탭 ────────────────────────────────
   "settingsContent.tabStartup": "시작",
   "startupTab.title": "시작 및 단축키",
   "startupTab.description":

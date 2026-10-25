@@ -91,12 +91,8 @@ type ElicitationSchemaParseResult =
   | { supported: false; fields: [] };
 
 const INTEGER_INPUT_RE = /^[+-]?\d+$/;
-/**
- * Shown for an enum member whose natural label would be blank (the empty
- * string). The member is still offered — dropping it, or rejecting the whole
- * schema over it, would leave the user unable to answer a request the resolver
- * considers perfectly valid.
- */
+/** Shown for an enum member whose natural label would be blank (the empty string). The member is still offered; dropping it, or
+ * rejecting the whole schema over it, would leave the user unable to answer a request the resolver considers perfectly valid. */
 const EMPTY_ENUM_OPTION_LABEL = '""';
 
 const UNSUPPORTED_ELICITATION_SCHEMA: ElicitationSchemaParseResult = { supported: false, fields: [] };
@@ -278,12 +274,8 @@ function RationaleTextList({
   );
 }
 
-/**
- * Rationale approvals expose only the narrow, HMAC-bound display contract.
- * Never reuse the normal request/args review path here: its payload can carry
- * audit-only identifiers and model-provided text that do not belong in the
- * decision card.
- */
+/** Rationale approvals expose only the narrow, HMAC-bound display contract. Never reuse the normal request/args review
+ * path here: its payload can carry audit-only identifiers and model-provided text that do not belong in the decision card. */
 function RationaleApprovalCard({
   display,
 }: {
@@ -381,14 +373,8 @@ function RationaleApprovalCard({
   );
 }
 
-/**
- * Dock label for every cause the parent-adjudication stage can end on.
- *
- * Keyed by the host's own union, so a cause added there fails to compile until
- * this dock has a sentence for it. That is deliberate: the band exists because
- * the user never saw the stage run, and an unlabelled cause would leave exactly
- * that gap open.
- */
+/** Dock label for every cause the parent-adjudication stage can end on. Keyed by the host's own union, so a cause added there fails to compile until this dock
+ * has a sentence for it. That is deliberate: the band exists because the user never saw the stage run, and an unlabelled cause would leave exactly that gap open. */
 const PARENT_ESCALATION_CAUSE_KEY: Record<ParentEscalationCause, string> = {
   "parent-escalated": "toolApprovalDialog.parentEscalationCauseParentEscalated",
   timeout: "toolApprovalDialog.parentEscalationCauseTimeout",
@@ -401,18 +387,8 @@ const PARENT_ESCALATION_CAUSE_KEY: Record<ParentEscalationCause, string> = {
   "repeated-denial": "toolApprovalDialog.parentEscalationCauseRepeatedDenial",
 };
 
-/**
- * Tells the user that a stage they never saw already ran on this ask, and how
- * it ended.
- *
- * Reading order is the trust order: the host-owned cause first, then the two
- * pieces of text a model wrote — the child's title and the parent's sentence —
- * both quoted and attributed, because model text rendered as dock prose reads
- * like an instruction from the app rather than a quote from a party to the
- * request. The reason arrives already bounded by the adjudicator that parsed
- * it; cutting it again here would silently drop the end of a sentence whose
- * point is usually at the end.
- */
+/** Tells the user that a stage they never saw already ran on this ask, and how it ended. Reading order is the trust order: the host-owned cause first, then the two pieces of text a model wrote; the child's title and the parent's sentence; both quoted and attributed, because model
+ * text rendered as dock prose reads like an instruction from the app rather than a quote from a party to the request. The reason arrives already bounded by the adjudicator that parsed it; cutting it again here would silently drop the end of a sentence whose point is usually at the end. */
 function ParentEscalationBand({ notice }: { notice: ParentEscalationNotice }) {
   const { t: tBand } = useTranslation();
   const reason = notice.reason.trim();
@@ -466,16 +442,8 @@ function ParentEscalationBand({ notice }: { notice: ParentEscalationNotice }) {
   );
 }
 
-/**
- * Offers to hand the reviewing over to the LLM reviewer, at the moment the
- * user is answering yet another ask by hand.
- *
- * The suggestion is about the run of approvals the user just made, not about
- * this one request, so it is deliberately quieter than every other band here:
- * it must never read as part of what is being asked. Enabling is one gesture
- * and the failure of that gesture stays inside the band, because the decision
- * the card exists for has to remain answerable either way.
- */
+/** Offers to hand the reviewing over to the LLM reviewer, at the moment the user is answering yet another ask by hand. The suggestion is about the run of approvals the user just made, not about this one request, so it is deliberately
+ * quieter than every other band here: it must never read as part of what is being asked. Enabling is one gesture and the failure of that gesture stays inside the band, because the decision the card exists for has to remain answerable either way. */
 function ReviewerSuggestionBand({ suggestion }: { suggestion: ReviewerSuggestion }) {
   const { t: tBand } = useTranslation();
   return (
@@ -535,11 +503,8 @@ function ReviewerSuggestionBand({ suggestion }: { suggestion: ReviewerSuggestion
 }
 
 
-/**
- * What "remember" on this card will actually cover. Read only from the
- * host-derived `approvalMemory` on the request — never inferred from args —
- * so the copy cannot promise a narrower scope than the store will apply.
- */
+/** What "remember" on this card will actually cover. Read only from the host-derived `approvalMemory` on the
+ * request; never inferred from args; so the copy cannot promise a narrower scope than the store will apply. */
 function rememberScopeText(
   t: (key: string, params?: Record<string, string>) => string,
   request: Pick<ApprovalRequest, "toolName" | "approvalMemory">,
@@ -576,13 +541,8 @@ function rememberScopeText(
   }
 }
 
-/**
- * The exact command a `terminal_run` card types (as the card's input row
- * shows it), the terminal it types into and the directory its shell is in —
- * the last two sealed by the host before the card was shown. Named the way
- * the terminal's tab is labelled when it is the window's active terminal
- * (the usual target), else by its id.
- */
+/** The exact command a `terminal_run` card types (as the card's input row shows it), the terminal it types into and the directory its shell is in; the last two
+ * sealed by the host before the card was shown. Named the way the terminal's tab is labelled when it is the window's active terminal (the usual target), else by its id. */
 function terminalTargetText(
   t: (key: string, params?: Record<string, string>) => string,
   request: Pick<ApprovalRequest, "approvalMemory" | "args">,
@@ -596,14 +556,8 @@ function terminalTargetText(
   return t("toolApprovalDialog.terminalTarget", { command, terminal, cwd: memory.scope.cwd });
 }
 
-/**
- * Facts about a `terminal_run` command a reader could miss in its text: each
- * character that could pass for another, by code point (a look-alike reads as
- * the letter it imitates; words in one script, such as Korean filenames, are
- * not listed — see terminalCommandLookalikes), and a terminal directory
- * outside the allowed folders (the command still runs there, inside the
- * terminal's sandbox).
- */
+/** Facts about a `terminal_run` command a reader could miss in its text: each character that could pass for another, by code point (a look-alike reads as the letter it imitates; words in one
+ * script, such as Korean filenames, are not listed; see terminalCommandLookalikes), and a terminal directory outside the allowed folders (the command still runs there, inside the terminal's sandbox). */
 function terminalCommandNotes(
   t: (key: string, params?: Record<string, string>) => string,
   request: Pick<ApprovalRequest, "approvalMemory" | "args" | "evaluationContext">,
@@ -624,10 +578,8 @@ function terminalCommandNotes(
   }
   const context = request.evaluationContext;
   if (context) {
-    // Both sides are in the allowed-directory check's form (realpath,
-    // case-folded where the file system folds case): the host resolved the
-    // terminal's directory when it sealed the target, and the list is kept
-    // that way (allowed-directories.ts).
+    // Both sides are in the allowed-directory check's form (realpath, case-folded where the file system folds case): the
+    // host resolved the terminal's directory when it sealed the target, and the list is kept that way (allowed-directories.ts).
     const target = memory.scope.cwdForMatch;
     const inside = context.allowedDirectories.some((dir) => {
       const root = dir.endsWith("/") ? dir.slice(0, -1) : dir;
@@ -638,16 +590,8 @@ function terminalCommandNotes(
   return notes;
 }
 
-/**
- * Whether this card's remember button records for this app session only
- * (browser scopes) rather than persistently. Host-derived from the request's
- * `approvalMemory`, the same predicate the record handler enforces.
- */
-/**
- * The page a browser call acts on, and whose tab it is. Shown on every
- * browser card, including the one-shot cards of the user's own tabs, which
- * have no remember line to carry it.
- */
+/** Whether this card's remember button records for this app session only (browser scopes) rather than persistently. Host-derived from the request's `approvalMemory`, the same predicate the record
+ * handler enforces. The page a browser call acts on, and whose tab it is. Shown on every browser card, including the one-shot cards of the user's own tabs, which have no remember line to carry it. */
 function browserTargetText(
   t: (key: string, params?: Record<string, string>) => string,
   request: Pick<ApprovalRequest, "approvalMemory">,
@@ -665,11 +609,8 @@ function isSessionOnlyRemember(request: Pick<ApprovalRequest, "approvalMemory"> 
   return memory?.kind === "key" && isSessionOnlyApprovalMemoryScope(memory.scope);
 }
 
-/**
- * The dock's message for a refused shell-rule save: the mapped reason for the
- * host's error code, plus the host's detail for a rejected rule or a storage
- * failure so the user can tell an invalid rule from an unwritable file.
- */
+/** The dock's message for a refused shell-rule save: the mapped reason for the host's error code, plus the host's
+ * detail for a rejected rule or a storage failure so the user can tell an invalid rule from an unwritable file. */
 function shellRuleSaveError(result: { error?: string; message?: string } | undefined, fallback: string): string {
   const code = result?.error;
   const reason = resolveIpcErrorKey(code) ? formatIpcError(code, undefined) : fallback;
@@ -691,11 +632,8 @@ export function ToolApprovalContent({
 }: {
   open: boolean;
   request: ApprovalRequest | null;
-  /**
-   * What the card calls the conversation that raised it — the surface's own
-   * name for itself (a tile's title, "Side chat", "no conversation"). The
-   * raw session id is kept for the review details, where an id is useful.
-   */
+  /** What the card calls the conversation that raised it; the surface's own name for itself (a tile's title,
+   * "Side chat", "no conversation"). The raw session id is kept for the review details, where an id is useful. */
   conversationLabel: string;
   /** Let a very narrow floating approval scroll as one card when its footer cannot fit. */
   narrowLaneScroll?: boolean;
@@ -741,10 +679,8 @@ export function ToolApprovalContent({
     [isRationaleApproval, request?.args],
   );
   const rationaleDisplayInvalid = isRationaleApproval && rationaleDisplay === null;
-  // Path-grant (out-of-allowed-dir) view-model — the ONE place the shared
-  // scope authority is projected for rendering. The card below stays a single
-  // layout for every kind; only this data (labels, availability, the pattern
-  // the allow-always button must carry) is kind-specific.
+  // Path-grant (out-of-allowed-dir) view-model; the ONE place the shared scope authority is projected for rendering. The card below stays a
+  // single layout for every kind; only this data (labels, availability, the pattern the allow-always button must carry) is kind-specific.
   const isOutOfDir = request?.kind === "out-of-allowed-dir";
   const outOfDir = isOutOfDir ? request?.outOfAllowedDir : undefined;
   const outOfDirCandidatePath = outOfDir?.candidatePath ?? "";
@@ -774,9 +710,8 @@ export function ToolApprovalContent({
   const isUnsupportedElicitationForm = hasElicitationSchema && !elicitationParse.supported;
   const [elicitationValues, setElicitationValues] = useState<Record<string, ElicitationFormValue>>({});
 
-  // Reset the async decision lock only when the queue head itself changes.
-  // Other request-local form updates must never reopen controls while the
-  // exact decision record is still in flight.
+  // Reset the async decision lock only when the queue head itself changes. Other request-local
+  // form updates must never reopen controls while the exact decision record is still in flight.
   useEffect(() => {
     recordingRequestIdRef.current = null;
     setRecordingDecision(false);
@@ -793,9 +728,8 @@ export function ToolApprovalContent({
     recordingRequestIdRef.current = null;
   }, []);
 
-  // Reset request-local choice state when the queue head changes. Approval
-  // cards never collect typed prose; an explicit user reason must already be
-  // part of the originating conversation and is projected read-only below.
+  // Reset request-local choice state when the queue head changes. Approval cards never collect typed prose; an
+  // explicit user reason must already be part of the originating conversation and is projected read-only below.
   useEffect(() => {
     setElicitationValues(initialElicitationValues(elicitationFields));
   }, [request?.id, elicitationFields]);
@@ -812,9 +746,8 @@ export function ToolApprovalContent({
     [elicitationFields, elicitationValues],
   );
 
-  // HIGH approval is itself the explicit act. The explanatory text is a
-  // read-only, one-shot audit summary from host-owned context; it is never a
-  // renderer-authored prerequisite for the decision.
+  // HIGH approval is itself the explicit act. The explanatory text is a read-only, one-shot audit
+  // summary from host-owned context; it is never a renderer-authored prerequisite for the decision.
   const showsHighRiskReason = finalVerdict === "high" && !isRationaleApproval;
   const highRiskReasonSource = userProvidedPurpose.length > 0
     ? tHook("toolApprovalDialog.reasonFromRequest")
@@ -824,9 +757,8 @@ export function ToolApprovalContent({
     isUnsupportedElicitationForm ||
     elicitationInvalid;
 
-  // Host-constrained and sealed approvals remain per-invocation. The
-  // "Always allow" control stays visible for layout/decision consistency but
-  // is disabled with an explicit explanation.
+  // Host-constrained and sealed approvals remain per-invocation. The "Always allow" control
+  // stays visible for layout/decision consistency but is disabled with an explicit explanation.
   const isHostConstrainedToOneShot =
     request?.allowedChoices !== undefined &&
     !request.allowedChoices.includes("allow-always");
@@ -835,11 +767,8 @@ export function ToolApprovalContent({
     isMcpElicitation ||
     isAgentAction ||
     isHostConstrainedToOneShot;
-  // For a path grant, availability comes from the shared scope authority
-  // (buildApprovalScopeOptions): allow-always exists only when the host
-  // resolved a safe parent AND the host did not narrow the choices.
-  // A browser scope is remembered until restart only; the remember button
-  // says so and records `scope: "session"` (the record handler enforces it).
+  // For a path grant, availability comes from the shared scope authority (buildApprovalScopeOptions): allow-always exists only when the host resolved a safe parent AND the host
+  // did not narrow the choices. A browser scope is remembered until restart only; the remember button says so and records `scope: "session"` (the record handler enforces it).
   const rememberIsSessionOnly = !outOfDirScopes && isSessionOnlyRemember(request);
   const shellRule = request?.shellRule;
   const parsedShellPattern = useMemo(() => {
@@ -853,8 +782,7 @@ export function ToolApprovalContent({
   const canonicalShellPattern = parsedShellPattern ? formatRuleSpecifier(parsedShellPattern) : null;
   const shellPrefixRefusal = parsedShellPattern !== null ? refusedShellPrefix(parsedShellPattern.tokens, parsedShellPattern.wildcard) : null;
   const shellPrefixRefused = shellPrefixRefusal !== null;
-  // A session allow belongs to the request's root conversation; a request
-  // with no conversation cannot hold one (the host answers `missing-session`).
+  // A session allow belongs to the request's root conversation; a request with no conversation cannot hold one (the host answers `missing-session`).
   const sessionRememberWithoutConversation = !shellRule && !outOfDirScopes && rememberIsSessionOnly && !request?.sessionId;
   const alwaysAllowUnavailable = shellRule
     ? !shellRule.persistentAllowed || !shellRule.suggestedPattern || !canonicalShellPattern || shellPrefixRefused
@@ -887,9 +815,8 @@ export function ToolApprovalContent({
     approveDisabled || recordingDecision || interactionLocked ||
     (outOfDirScopes !== null && outOfDirScopes.once === null);
 
-  // Exactly one enabled decision must remain in the tab order. Default to the
-  // fail-closed Reject action so a pending Enter/Space from the covered
-  // composer can never become an accidental approval.
+  // Exactly one enabled decision must remain in the tab order. Default to the fail-closed Reject
+  // action so a pending Enter/Space from the covered composer can never become an accidental approval.
   useEffect(() => {
     const disabled = [
       denyDecisionDisabled,
@@ -905,10 +832,8 @@ export function ToolApprovalContent({
     request?.id,
   ]);
 
-  // A `/allow` sentence FILLS THE FORM: it moves focus onto the decision it
-  // named — the target line above rewrites with it — and nothing is decided
-  // until that button is pressed. A proposal naming a decision this request
-  // does not offer is ignored rather than approximated.
+  // A `/allow` sentence FILLS THE FORM: it moves focus onto the decision it named; the target line above rewrites with it; and nothing is
+  // decided until that button is pressed. A proposal naming a decision this request does not offer is ignored rather than approximated.
   const proposedDecisionIndex = proposedChoice === "deny-once"
     ? 0
     : proposedChoice === "allow-always"
@@ -962,8 +887,7 @@ export function ToolApprovalContent({
     denyDecisionDisabled,
   ]);
 
-  // Save remembered decisions before resolving the live request. Shell rules
-  // belong only to the scoped rule store; session approvals use exact memory.
+  // Save remembered decisions before resolving the live request. Shell rules belong only to the scoped rule store; session approvals use exact memory.
   const handleApprove = useCallback(async (
     choice: ApprovalChoice,
     pattern?: string,
@@ -973,14 +897,12 @@ export function ToolApprovalContent({
     if (interactionLocked || recordingRequestIdRef.current !== null) return;
     const requestIdAtStart = request?.id ?? null;
     setRecordError(null);
-    // A path-grant allow-always persists through the host's directory grant
-    // (the rememberPattern argument) — never as an exact-args tuple, so the
-    // user-approval record path is skipped for out-of-allowed-dir requests.
+    // A path-grant allow-always persists through the host's directory grant (the rememberPattern argument);
+    // never as an exact-args tuple, so the user-approval record path is skipped for out-of-allowed-dir requests.
     if (shellAction === "session" && !shellRule?.sessionAllowed) return;
     if (shellAction === "deny" && (!shellRule || !canonicalShellPattern)) return;
     if (request && ((choice === "allow-always" && !alwaysAllowUnavailable && !isOutOfDir) || shellAction)) {
-      // canonicalStringify: sort object keys so {a,b} and {b,a} produce the
-      // same string — matching how dispatchReviewer builds the lookup key.
+      // canonicalStringify: sort object keys so {a,b} and {b,a} produce the same string; matching how dispatchReviewer builds the lookup key.
       const canonicalArgs = canonicalStringifyForRenderer(request.args ?? {});
       recordingRequestIdRef.current = request.id;
       setRecordingDecision(true);
@@ -1022,9 +944,7 @@ export function ToolApprovalContent({
         }
       }
     }
-    // The parent decision callback addresses the current FIFO head. An async
-    // exact-record completion from a request that was cancelled/replaced must
-    // never resolve the next request.
+    // The parent decision callback addresses the current FIFO head. An async exact-record completion from a request that was cancelled/replaced must never resolve the next request.
     if (activeRequestIdRef.current !== requestIdAtStart) return;
     const responseChoice = shellRule && (choice === "allow-always" || shellAction)
       ? shellAction === "deny" ? "deny-once" : "allow-once"
@@ -1059,8 +979,7 @@ export function ToolApprovalContent({
     : (isUnsupportedElicitationForm || elicitationInvalid
         ? "mcp-elicitation-input-unavailable"
         : undefined);
-  // Path grants keep the A/D shortcuts inert (see handlePanelKeyDown), so
-  // their buttons must not advertise them.
+  // Path grants keep the A/D shortcuts inert (see handlePanelKeyDown), so their buttons must not advertise them.
   const decisionShortcutsActive = !isOutOfDir;
   const approveButtonTitle = rationaleDisplayInvalid
     ? RATIONALE_INVALID_APPROVAL_MESSAGE
@@ -1102,11 +1021,8 @@ export function ToolApprovalContent({
       if (!request?.requireExplicit) onDecide("deny-once");
       return;
     }
-    // Path-grant requests keep their decision semantics on the buttons only:
-    // the user may have navigated to the allow-always (parent grant) scope,
-    // and the generic A shortcut would silently commit a plain allow-once,
-    // discarding that selection. Before the frame unification these shortcuts
-    // never existed for this kind — keep it that way (review MAJOR).
+    // Path-grant requests keep their decision semantics on the buttons only: the user may have navigated to the allow-always (parent grant) scope, and the generic A shortcut
+    // would silently commit a plain allow-once, discarding that selection. Before the frame unification these shortcuts never existed for this kind; keep it that way (review MAJOR).
     const isOutOfDirRequest = request?.kind === "out-of-allowed-dir";
     if (e.key.toLowerCase() === "a" && !e.metaKey && !e.ctrlKey) {
       e.preventDefault();
@@ -1142,10 +1058,8 @@ export function ToolApprovalContent({
     );
   }
 
-  // NOTE: argsStr uses JSON.stringify for human-readable display (pretty-printed,
-  // insertion-order keys). The IPC approval record uses canonicalStringify (#828)
-  // which sorts object keys — key ordering may differ between what is shown here
-  // and the canonical form used for cache-key lookups in dispatchReviewer.
+  // NOTE: argsStr uses JSON.stringify for human-readable display (pretty-printed, insertion-order keys). The IPC approval record uses canonicalStringify
+  // which sorts object keys; key ordering may differ between what is shown here and the canonical form used for cache-key lookups in dispatchReviewer.
   const argsStr = isRationaleApproval
     ? ""
     : (JSON.stringify(request.args, null, 2) ?? "");
@@ -1160,11 +1074,10 @@ export function ToolApprovalContent({
   const sourceBadge = request.source ? SOURCE_BADGE[request.source] ?? request.source : tHook("toolApprovalDialog.unknown");
   const originLabel = trustOriginLabel(request.trustOrigin);
   const category = request.toolCategory ?? "meta";
-  // finalVerdict already computed above (before the null-check guard) — use it here.
+  // finalVerdict already computed above (before the null-check guard); use it here.
   const badgeClassName = levelBadgeClass(finalVerdict as RiskLevel);
-  // Rationale cards render the sealed table and out-of-dir cards render the
-  // path-grant evidence rows — neither consumes the generic review rows, so
-  // skip computing them. The frame around that evidence is shared.
+  // Rationale cards render the sealed table and out-of-dir cards render the path-grant evidence rows;
+  // neither consumes the generic review rows, so skip computing them. The frame around that evidence is shared.
   const rows = isRationaleApproval || isOutOfDir
     ? []
     : approvalReviewRows(request, category, argsStr, originLabel, source, sourceBadge);
@@ -1180,8 +1093,7 @@ export function ToolApprovalContent({
           : tHook("toolApprovalDialog.impactMeta");
   const specificReviewerReason = request.reviewerVerdict?.reason.trim() ?? "";
   const specificHostReason = request.reason.trim();
-  // The path-grant reason is host-derived and localized here; the raw
-  // request.reason for this kind is an internal English marker.
+  // The path-grant reason is host-derived and localized here; the raw request.reason for this kind is an internal English marker.
   const reviewedImpact = isOutOfDir
     ? tHook("dockedApprovalCard.headline", { toolName: request.toolName })
     : !isBoilerplateApprovalReason(specificReviewerReason)
@@ -1802,8 +1714,7 @@ function approvalSandboxSummary(request: ApprovalRequest): ReviewBasisRow | null
   } else if (cap.kind === "none" || cap.confidence === "assumed") {
     value = t("toolApprovalDialog.sandboxNone");
   } else if (cap.kind === "disposable-container") {
-    // The broker guest: filesystem and process tree are the guest's own and
-    // are discarded with it; egress is the guest's policy, not "partial".
+    // The broker guest: filesystem and process tree are the guest's own and are discarded with it; egress is the guest's policy, not "partial".
     value = t("toolApprovalDialog.sandboxDisposableGuest");
   } else if (
     cap.confines &&
@@ -1839,8 +1750,7 @@ function approvalReviewRows(
   const reviewer = request.reviewerVerdict
     ? `${riskLevelKoLabel(request.reviewerVerdict.level)} · ${request.reviewerVerdict.reason}`
     : request.reason;
-  // Source, trust origin, category, conversation and sandbox now live in the
-  // compact always-visible summary. Details contain only additional evidence.
+  // Source, trust origin, category, conversation and sandbox now live in the compact always-visible summary. Details contain only additional evidence.
   const rows: ReviewBasisRow[] = [];
   if (isNonUserTrustOrigin(request.trustOrigin)) {
     rows.push({
@@ -1849,12 +1759,8 @@ function approvalReviewRows(
     });
   }
 
-  // Elaboration rows render ONLY when they carry actual per-invocation data —
-  // pickSummary's hardcoded "…not specified" fallback is dropped so the dock
-  // shows real args, not boilerplate. The primary data row (target / command /
-  // endpoint) + the reviewer verdict always render. Always-hardcoded/redundant
-  // rows (write impact = source·category·note; read scope = source·category·…;
-  // read volume) are removed — origin + category already live in the tiles + 판단.
+  // Elaboration rows render ONLY when they carry actual per-invocation data; pickSummary's hardcoded "…not specified" fallback is dropped so the dock shows real args, not boilerplate. The primary data row (target / command /
+  // endpoint) + the reviewer verdict always render. Always-hardcoded/redundant rows (write impact = source·category·note; read scope = source·category·…; read volume) are removed; origin + category already live in the tiles + 판단.
   const NO_DATA = "__AVE_NO_APPROVAL_DATA__";
   const optRow = (
     label: string,
@@ -1912,13 +1818,8 @@ function approvalReviewRows(
   return rows;
 }
 
-/**
- * Compact `source:tool` identity for the Tool/Source tile — `builtin:bash`,
- * `mcp:<tool>`, or `<pluginId>:<tool>` for a plugin (agent-action) call. One
- * short token instead of the old three-line source/plugin/scope stack, so the
- * approval content fits without scrolling. The origin + risk are still shown in
- * the review box's 출처/판단 rows.
- */
+/** Compact `source:tool` identity for the Tool/Source tile; `builtin:bash`, `mcp:<tool>`, or `<pluginId>:<tool>` for a plugin (agent-action) call. One short token
+ * instead of the old three-line source/plugin/scope stack, so the approval content fits without scrolling. The origin + risk are still shown in the review box's 출처/판단 rows. */
 function sourceToolToken(request: ApprovalRequest): string {
   const tool = request.toolName;
   if (request.kind === "agent-action" && request.sourcePluginId) {
