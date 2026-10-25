@@ -96,12 +96,8 @@ describe("shell floors cover powershell in allow mode", () => {
     "gc $env:APPDATA\\MICROS~1\\CREDEN~1",
   ])("forces approval before executing %s", async (command) => {
     const blocked = await run("powershell", command);
-    if (command === "pwsh -enc !!!") {
-      expect(blocked.decision).toMatchObject({ decision: "ask", layer: 6 });
-      expect(blocked.decision.forceModal).toBeUndefined();
-    } else {
-      expect(blocked.decision).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
-    }
+    // An -EncodedCommand payload the host cannot decode is hidden code: the same forced modal as any other floor.
+    expect(blocked.decision).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
     expect(blocked.requestAndWait).toHaveBeenCalledTimes(1);
     expect(blocked.execute).not.toHaveBeenCalled();
     const allowed = await run("powershell", "iwr https://x.invalid -OutFile page.html -Headers @{ Authorization = \"Bearer $env:TOKEN\" }", undefined, true);
@@ -152,7 +148,7 @@ describe("shell floors cover powershell in allow mode", () => {
   });
 
   it.each([
-    "npm test", "npx helper", "pwsh -enc !!!", "iex $code",
+    "npm test", "npx helper", "iex $code",
     "Set-Content build.ps1 Get-Date; build.ps1",
   ])("a saved grant does not run an unsandboxed command; it asks again: %s", async (command) => {
     // Unsandboxed shell exact-rule requirement (owner 2026-10-25): only an exact Bash(<command>) rule runs a
@@ -172,7 +168,7 @@ describe("shell floors cover powershell in allow mode", () => {
   });
 
   it.each([
-    "npm test", "npx helper", "pwsh -enc !!!", "iex $code",
+    "npm test", "npx helper", "iex $code",
     "Set-Content build.ps1 Get-Date; build.ps1",
   ])("runs the same command inside confinement with or without a saved grant: %s", async (command) => {
     // The exact-rule requirement applies only without a sandbox; a sandboxed call keeps its existing lanes.
@@ -182,6 +178,22 @@ describe("shell floors cover powershell in allow mode", () => {
       expect(sandboxed.requestAndWait).not.toHaveBeenCalled();
       expect(sandboxed.execute).toHaveBeenCalledTimes(1);
     }
+  });
+
+  // Fail closed (security re-review of #223): an undecodable -EncodedCommand hides the code that runs, so neither a saved grant nor confinement
+  // runs it unasked; it gets the forced modal on both lanes.
+  it("forces approval for undecodable encoded code with or without a saved grant, sandboxed or not", async () => {
+    const pending = await run("powershell", "pwsh -enc !!!");
+    expect(pending.decision).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    const remembered = await run("powershell", "pwsh -enc !!!", pending.context?.approvalCacheKey);
+    expect(remembered.decision).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    for (const savedGrant of [undefined, "powershell"]) {
+      const sandboxed = await run("powershell", "pwsh -enc !!!", savedGrant, true);
+      expect(sandboxed.decision).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+      expect(sandboxed.execute).not.toHaveBeenCalled();
+    }
+    expect(pending.execute).not.toHaveBeenCalled();
+    expect(remembered.execute).not.toHaveBeenCalled();
   });
 
   it.each([
