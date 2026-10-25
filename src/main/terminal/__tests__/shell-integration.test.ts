@@ -29,6 +29,16 @@ afterEach(() => {
   for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true });
 });
 
+/**
+ * The permission bits an owner-only (0o600) write leaves. Windows keeps only
+ * the write bit, so Node reports 0o666 there. That is no secrecy guarantee and
+ * none is needed: no Windows terminal installs this integration, since the
+ * agent lane refuses win32 before it creates a HOME (pty-manager.ts) and the
+ * manual lane installs none. A native Windows agent terminal would need an
+ * owner-only DACL here instead.
+ */
+const OWNER_ONLY_FILE_MODE = process.platform === "win32" ? 0o666 : 0o600;
+
 /** Run `shell -l -i` with `script` on stdin; stdout and stderr in one stream. */
 function runInteractive(shell: string, script: string) {
   const home = makeHome();
@@ -59,7 +69,9 @@ describe("installShellIntegration", () => {
       shell: "zsh",
       env: { ZDOTDIR: home },
     });
-    expect(statSync(join(home, ".zshrc")).mode & 0o777).toBe(0o600);
+    expect(statSync(join(home, ".zshrc")).mode & 0o777).toBe(OWNER_ONLY_FILE_MODE);
+    expect(statSync(join(home, ".zshenv")).mode & 0o777).toBe(OWNER_ONLY_FILE_MODE);
+    expect(readFileSync(join(home, ".zshenv"), "utf-8")).toContain("skip_global_compinit=1\n");
     expect(installShellIntegration(home, "/bin/bash", { nonce: NONCE, sandboxEnv: sandboxEnvFor(home) })).toEqual({ shell: "bash", env: {} });
     expect(readFileSync(join(home, ".bash_profile"), "utf-8")).toContain("133;C;cmdline_url=");
     expect(installShellIntegration(home, "/usr/bin/fish", { nonce: NONCE, sandboxEnv: sandboxEnvFor(home) })).toEqual({ shell: "fish", env: {} });
@@ -79,13 +91,13 @@ describe("installShellIntegration", () => {
     expect(Object.values(env)).not.toContain(NONCE);
     const file = join(home, SHELL_INTEGRATION_NONCE_FILE);
     expect(readFileSync(file, "utf-8")).toBe(NONCE);
-    expect(statSync(file).mode & 0o777).toBe(0o600);
+    expect(statSync(file).mode & 0o777).toBe(OWNER_ONLY_FILE_MODE);
   });
 
   it("never writes the nonce into a startup file and refuses a weak one", () => {
     const home = makeHome();
     for (const shell of ["/bin/zsh", "/bin/bash", "/usr/bin/fish"]) installShellIntegration(home, shell, { nonce: NONCE, sandboxEnv: sandboxEnvFor(home) });
-    for (const file of [".zshrc", ".bash_profile", join("config", "fish", "conf.d", "ave-shell-integration.fish")]) {
+    for (const file of [".zshenv", ".zshrc", ".bash_profile", join("config", "fish", "conf.d", "ave-shell-integration.fish")]) {
       expect(readFileSync(join(home, file), "utf-8")).not.toContain(NONCE);
     }
     expect(() => installShellIntegration(home, "/bin/zsh", { nonce: "", sandboxEnv: sandboxEnvFor(home) })).toThrow(/nonce/u);

@@ -75,7 +75,7 @@ describe("Windows credential stores are sensitive paths", () => {
   });
 
   it("rows hang off the home anchor, so the sandbox floor denies the literal home paths too", () => {
-    const deny = getDefaultSensitiveReadDenyPaths();
+    const deny = getDefaultSensitiveReadDenyPaths().map((path) => path.replace(/[\\/]$/, ""));
     for (const segments of [
       ["AppData", "Roaming", "Microsoft", "Credentials"],
       ["AppData", "Roaming", "Microsoft", "Protect"],

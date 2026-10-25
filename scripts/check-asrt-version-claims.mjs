@@ -32,7 +32,7 @@
  * and re-stamping it to the current pin would make it false.
  */
 import { readFileSync } from "node:fs";
-import { relative } from "node:path";
+import { relative, sep } from "node:path";
 import process from "node:process";
 import { walkSourceFiles } from "./lib/source-walk.mjs";
 
@@ -79,7 +79,7 @@ export function collectAsrtClaims(root = ROOT) {
       const lines = text.split("\n");
       for (const [index, line] of lines.entries()) {
         for (const match of line.matchAll(CLAIM)) {
-          claims.push({ rel: relative(root, path), line: index + 1, version: match[1] });
+          claims.push({ rel: relative(root, path).split(sep).join("/"), line: index + 1, version: match[1] });
         }
       }
     }

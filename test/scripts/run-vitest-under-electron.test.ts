@@ -1,13 +1,18 @@
 import { EventEmitter } from "node:events";
-import { spawnSync } from "node:child_process";
+import childProcess, { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 import { describe, expect, it, vi } from "vitest";
 
 import { assertElectronNodeVitestRuntime } from "../../scripts/assert-electron-node-vitest.mjs";
-import { normalizeElectronNodeRuntime } from "../../scripts/normalize-electron-node-runtime.mjs";
+import {
+  hideChildConsoles,
+  normalizeElectronNodeRuntime,
+  withHiddenConsole,
+} from "../../scripts/normalize-electron-node-runtime.mjs";
 import { documentGuardImportArgument, guardedNodeOptions } from "../../scripts/lib/document-consumer-node-options.mjs";
 import {
   applyElectronVitestResult,
@@ -144,6 +149,7 @@ describe("Electron Node-mode Vitest runner", () => {
           NODE_OPTIONS: "--trace-warnings",
         },
         nodeExecPath: "C:/runtime/node.exe",
+        platform: "win32",
       },
     );
 
@@ -159,7 +165,7 @@ describe("Electron Node-mode Vitest runner", () => {
           ELECTRON_RUN_AS_NODE: "1",
           KEEP: "yes",
           AVE_TEST_NODE_EXEC_PATH: "C:/runtime/node.exe",
-          NODE_OPTIONS: guardedNodeOptions("--trace-warnings"),
+          NODE_OPTIONS: guardedNodeOptions(guardedNodeOptions("--trace-warnings"), "C:/runtime/normalize.mjs"),
         },
         shell: false,
         stdio: "inherit",
@@ -178,6 +184,27 @@ describe("Electron Node-mode Vitest runner", () => {
         vitestPath: "vitest",
       }),
     ).toThrow("[electron-vitest-runtime-invalid]");
+  });
+
+  it.each(["darwin", "linux"])("preserves caller startup options on %s", async (platform) => {
+    for (const nodeOptions of [undefined, "", "--trace-warnings"]) {
+      const child = new FakeChild();
+      const spawnProcess = vi.fn(() => child);
+      const env = nodeOptions === undefined ? {} : { NODE_OPTIONS: nodeOptions };
+      const completion = runVitestUnderElectron([], {
+        electronPath: "runtime",
+        vitestPath: "tests.mjs",
+        env,
+        platform,
+        signalSource: new EventEmitter(),
+        spawnProcess,
+      });
+      const invocation = spawnProcess.mock.calls[0] as unknown as [string, string[], { env: NodeJS.ProcessEnv }];
+      expect(invocation[2].env.NODE_OPTIONS).toBe(nodeOptions);
+      expect(Object.hasOwn(invocation[2].env, "NODE_OPTIONS")).toBe(nodeOptions !== undefined);
+      child.emit("exit", 0, null);
+      await expect(completion).resolves.toEqual({ code: 0, signal: null });
+    }
   });
 
   it("runs the branding generator once for a worktree that lacks its outputs, and never for a complete one", () => {
@@ -294,6 +321,7 @@ describe("Electron Node-mode Vitest runner", () => {
       cwd: "C:/repo",
       env: { KEEP: "yes" },
       nodeExecPath: "C:/runtime/node.exe",
+      platform: "win32",
       signalSource,
       spawnProcess,
     });
@@ -310,7 +338,7 @@ describe("Electron Node-mode Vitest runner", () => {
           ELECTRON_RUN_AS_NODE: "1",
           KEEP: "yes",
           AVE_TEST_NODE_EXEC_PATH: "C:/runtime/node.exe",
-          NODE_OPTIONS: guardedNodeOptions(),
+          NODE_OPTIONS: guardedNodeOptions(guardedNodeOptions(), "C:/runtime/normalize.mjs"),
         },
         shell: false,
       }),
@@ -395,6 +423,132 @@ describe("Electron Node-mode Vitest runner", () => {
         versions,
       }),
     ).toThrow("[electron-node-normalization-failed]");
+  });
+
+  it("defaults windowsHide for console children of the Windows test runtime only", () => {
+    const callback = () => {};
+    expect(withHiddenConsole(["git"])).toEqual(["git", { windowsHide: true }]);
+    expect(withHiddenConsole(["git", ["status"]])).toEqual(["git", ["status"], { windowsHide: true }]);
+    expect(withHiddenConsole(["git", ["status"], callback])).toEqual(["git", ["status"], { windowsHide: true }, callback]);
+    expect(withHiddenConsole(["echo", callback])).toEqual(["echo", { windowsHide: true }, callback]);
+    const options = { cwd: "x" };
+    expect(withHiddenConsole(["git", [], options])).toEqual(["git", [], { cwd: "x", windowsHide: true }]);
+    expect(options).toEqual({ cwd: "x" });
+    const shown = ["git", [], { windowsHide: false }];
+    expect(withHiddenConsole(shown)).toBe(shown);
+
+    const spawn = vi.fn();
+    const module = { spawn } as unknown as typeof import("node:child_process");
+    const env = { ELECTRON_RUN_AS_NODE: "1" };
+    const target = (platform: string) => ({ platform, env }) as unknown as NodeJS.Process;
+    expect(hideChildConsoles({ target: target("darwin"), module, sync: () => {} })).toBe(false);
+    expect(module.spawn).toBe(spawn);
+    expect(hideChildConsoles({ target: target("win32"), module, sync: () => {} })).toBe(true);
+    module.spawn("git", ["status"]);
+    expect(spawn).toHaveBeenCalledWith("git", ["status"], { windowsHide: true });
+  });
+
+  it.each([undefined, null])("replaces an explicit %s options slot", (options) => {
+    const callback = () => {};
+    const hidden = { windowsHide: true };
+    expect(withHiddenConsole(["file", [], options, callback])).toEqual(["file", [], hidden, callback]);
+    expect(withHiddenConsole(["file", undefined, options, callback])).toEqual(["file", undefined, hidden, callback]);
+    expect(withHiddenConsole(["command", options, callback])).toEqual(["command", hidden, callback]);
+    expect(withHiddenConsole(["file", [], options])).toEqual(["file", [], hidden]);
+    expect(withHiddenConsole(["file", undefined, options])).toEqual(
+      options === undefined ? ["file", hidden] : ["file", undefined, hidden],
+    );
+    expect(withHiddenConsole(["command", options])).toEqual(["command", hidden]);
+    expect(withHiddenConsole(["file", [], options, undefined])).toEqual(["file", [], hidden]);
+    expect(withHiddenConsole(["command", options, undefined])).toEqual(["command", hidden]);
+  });
+
+  it.each([
+    { name: "execFile", args: [process.execPath, ["-e", ""], undefined, undefined] },
+    { name: "exec", args: [`"${process.execPath}" -e ""`, undefined, undefined] },
+  ] as const)("accepts trailing undefined slots in real $name calls", async ({ name, args }) => {
+    const module = { ...childProcess };
+    hideChildConsoles({
+      target: { platform: "win32", env: { ELECTRON_RUN_AS_NODE: "1" } },
+      module,
+      sync: () => {},
+    });
+    // `spawn` is internal to ChildProcess, so the public type does not declare it.
+    const spawn = vi.spyOn(
+      childProcess.ChildProcess.prototype as unknown as { spawn(options: object): void },
+      "spawn",
+    );
+    try {
+      let child!: import("node:child_process").ChildProcess;
+      expect(() => {
+        child = Reflect.apply(module[name], module, args);
+      }).not.toThrow();
+      child.stdin?.end();
+      await expect(new Promise((resolve, reject) => {
+        child.once("error", reject);
+        child.once("close", resolve);
+      })).resolves.toBe(0);
+      expect(spawn).toHaveBeenCalledWith(expect.objectContaining({ windowsHide: true }));
+    } finally {
+      spawn.mockRestore();
+    }
+  });
+
+  describe.each([undefined, null])("real child calls with %s options", (options) => {
+    const command = `"${process.execPath}" -e ""`;
+    const argv = ["-e", ""];
+    const cases = [
+      { name: "spawn", args: [process.execPath, argv, options] },
+      { name: "spawnSync", args: [process.execPath, argv, options] },
+      { name: "exec", args: [command, options] },
+      { name: "execSync", args: [command, options] },
+      { name: "execFile", args: [process.execPath, argv, options] },
+      { name: "execFileSync", args: [process.execPath, argv, options] },
+      { name: "execFile", args: [process.execPath, undefined, options] },
+      { name: "execFileSync", args: [process.execPath, undefined, options] },
+    ] as const;
+
+    it.each(cases)("accepts the $name argument list: $args", async ({ name, args }) => {
+      const module = { ...childProcess };
+      hideChildConsoles({
+        target: { platform: "win32", env: { ELECTRON_RUN_AS_NODE: "1" } },
+        module,
+        sync: () => {},
+      });
+      if (name === "spawn") {
+        const child = Reflect.apply(module.spawn, module, args);
+        child.stdin?.end();
+        await expect(new Promise((resolve, reject) => {
+          child.once("error", reject);
+          child.once("close", resolve);
+        })).resolves.toBe(0);
+      } else if (name === "spawnSync") {
+        const result = Reflect.apply(module.spawnSync, module, args);
+        expect(result.error).toBeUndefined();
+        expect(result.status).toBe(0);
+      } else if (name === "exec" || name === "execFile") {
+        await new Promise<void>((resolve, reject) => {
+          const child = Reflect.apply(module[name], module, [...args, (error: Error | null) => {
+            if (error) reject(error);
+            else resolve();
+          }]);
+          child.stdin?.end();
+        });
+      } else {
+        expect(Reflect.apply(module[name], module, args).toString()).toBe("");
+      }
+    });
+
+    it.each(["exec", "execFile"] as const)("accepts promisified %s", async (name) => {
+      const module = { ...childProcess };
+      hideChildConsoles({
+        target: { platform: "win32", env: { ELECTRON_RUN_AS_NODE: "1" } },
+        module,
+        sync: () => {},
+      });
+      const args = name === "exec" ? [command, options] : [process.execPath, argv, options];
+      await expect(Reflect.apply(promisify(module[name]), module, args)).resolves.toMatchObject({ stdout: "", stderr: "" });
+    });
   });
 
   it("mirrors exit codes and child termination signals", () => {

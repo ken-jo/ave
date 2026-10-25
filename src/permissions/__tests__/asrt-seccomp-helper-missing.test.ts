@@ -24,7 +24,8 @@ vi.mock("../../lib/logger.js", async (importOriginal) => {
 vi.mock("node:fs", async (importOriginal) => {
   const original = await importOriginal<typeof import("node:fs")>();
   const realpathSync = ((path: Parameters<typeof original.realpathSync>[0], options?: never) => {
-    if (String(path).endsWith("/apply-seccomp")) {
+    // Either separator: the helper path is joined in the host's own form.
+    if (/[\\/]apply-seccomp$/.test(String(path))) {
       throw Object.assign(new Error(`ENOENT: ${String(path)}`), { code: "ENOENT" });
     }
     return original.realpathSync(path, options);

@@ -334,7 +334,7 @@ describe("Studio drafts and package projections", () => {
       mcpServers: { local: { type: "stdio", command: "node", args: ["${CLAUDE_PLUGIN_ROOT}/server.js"], oauth: "discard" },
         remote: { url: "https://example.invalid" }, unsupported: { type: "ws", url: "wss://example.invalid" },
         ambiguous: { command: "node", url: "https://example.invalid" } },
-      hooks: { PreToolUse: [{ matcher: "write_*", hooks: [{ type: "command", command: "node", args: ["${CLAUDE_PLUGIN_ROOT}/hook.js"] },
+      hooks: { PreToolUse: [{ matcher: "^write_.*$", hooks: [{ type: "command", command: "node", args: ["${CLAUDE_PLUGIN_ROOT}/hook.js"] },
         { type: "command", command: "echo hi" }] }], UnknownEvent: [{ hooks: [{ type: "command", command: "node", args: [] }] }] } }));
     await put(source, ".mcp.json", JSON.stringify({ mcpServers: { local: { command: "old" }, first: { command: "node" } } }));
     await put(source, "hooks/hooks.json", JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: "command", command: "node", args: ["./start.js"] }] }] } }));
@@ -342,7 +342,7 @@ describe("Studio drafts and package projections", () => {
     const mcp = JSON.parse(result.files.find((file) => file.path === "mcp.json")!.data.toString("utf8")) as { mcpServers: Record<string, { type: string }> };
     expect(Object.keys(mcp.mcpServers).sort()).toEqual(["first", "local", "remote"]);
     expect(mcp.mcpServers.remote.type).toBe("streamable-http");
-    expect(result.pendingHooks).toMatchObject([{ event: "SessionStart", needsAdaptation: true }, { event: "pre", matcher: "write_*", needsAdaptation: true }]);
+    expect(result.pendingHooks).toMatchObject([{ event: "SessionStart", needsAdaptation: true }, { event: "pre", matcher: "^write_.*$", needsAdaptation: true }]);
     expect(result.diagnostics.map((item) => item.path)).toEqual(expect.arrayContaining(["mcpServers.local", "mcpServers.local.oauth", "mcpServers.unsupported", "mcpServers.ambiguous", "hooks.UnknownEvent"]));
     expect(result.diagnostics.filter((item) => item.group === "needs-input")).toHaveLength(2);
   });
@@ -461,7 +461,7 @@ describe("Studio drafts and package projections", () => {
     expect(Object.keys(hooks.hooks)).toEqual(["PreToolUse", "PostToolUse", "PermissionRequest"]);
   });
 
-  it("keeps executable hook bytes and their digest through installed package exports", async () => {
+  async function executableHookExport() {
     const files = [
       { path: "plugin.json", data: Buffer.from(JSON.stringify({ $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
         name: "team-kit", version: "1.0.0", description: "A team plugin" })) },
@@ -474,8 +474,19 @@ describe("Studio drafts and package projections", () => {
     const archive = join(root, "executable-hook.zip");
     await writeFile(archive, studioZip(projected));
     const fromZip = await readLocalAgentPlugin(archive);
+    return { projected, fromZip };
+  }
+
+  it("keeps executable hook bytes and their digest through installed package exports", async () => {
+    const { fromZip } = await executableHookExport();
     expect(fromZip.files.find((file) => file.path === "server/run")?.executable).toBe(true);
     expect(stageLocalAgentPlugin(fromZip.files).contentSha256).toBe(fromZip.treeDigest);
+  });
+
+  // A Windows file system has no executable mode bit, so a package directory
+  // written there cannot carry the hook's executable flag back to the reader.
+  it.skipIf(process.platform === "win32")("keeps executable hook bytes and their digest through an exported package directory", async () => {
+    const { projected, fromZip } = await executableHookExport();
     const directory = join(root, "executable-hook");
     for (const file of projected) {
       const full = join(directory, file.path);

@@ -99,7 +99,11 @@ export function parseSourceTexts(texts) {
 export function withParsedSourceTexts(texts, inspect) {
   const sourceFiles = new Map();
   if (texts.size === 0) return inspect(sourceFiles, () => new Map());
-  const wireByInput = new Map([...texts.keys()].map((path) => [path, toWirePath(resolve(tmpdir(), "ave-source-inputs", path))]));
+  // The compiler service lowercases a Windows drive letter before it asks the
+  // virtual filesystem for a file, and that filesystem matches keys exactly:
+  // a `D:/…` key is never found as `d:/…`, so every input would be unparsed.
+  const wireByInput = new Map([...texts.keys()].map((path) => [path,
+    toWirePath(resolve(tmpdir(), "ave-source-inputs", path)).replace(/^[A-Z]:/u, (drive) => drive.toLowerCase())]));
   const files = Object.fromEntries([...texts].map(([path, text]) => [wireByInput.get(path), text]));
   const filesystem = createVirtualFileSystem(files);
   const api = new API({ fs: {

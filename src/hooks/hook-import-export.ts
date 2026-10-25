@@ -1,15 +1,9 @@
 import { parseHookConfig, type HookConfigEntry } from "./hook-config.js";
 import type { HookEvent } from "./script-hook-types.js";
 import { validateSymbolicHookArgv } from "../plugins/resolve-bundled-argv.js";
+import { HOOK_EVENT_TYPES, hookEventSupportsMatcher } from "./hook-contract.js";
 
-const EVENT_TO_INTERNAL: Readonly<Record<string, HookEvent>> = {
-  PreToolUse: "pre", PostToolUse: "post", PermissionRequest: "perm",
-  UserPromptSubmit: "UserPromptSubmit", PostToolUseFailure: "PostToolUseFailure",
-  PermissionDenied: "PermissionDenied", SessionStart: "SessionStart",
-  SessionEnd: "SessionEnd", Notification: "Notification", Stop: "Stop",
-  PreCompact: "PreCompact", PostCompact: "PostCompact",
-  SubagentStart: "SubagentStart", SubagentStop: "SubagentStop",
-};
+const EVENT_TO_INTERNAL: Readonly<Record<string, HookEvent>> = HOOK_EVENT_TYPES;
 const INTERNAL_TO_EVENT = Object.fromEntries(Object.entries(EVENT_TO_INTERNAL).map(([external, internal]) => [internal, external]));
 
 export interface ImportedHookEntry {
@@ -70,7 +64,10 @@ export function importLegacyHooks(value: unknown, sourcePath: string): { entries
     blocks.forEach((rawBlock, blockIndex) => {
       const block = record(rawBlock);
       const handlers = block?.hooks;
-      const matcher = block?.matcher;
+      const matcher = hookEventSupportsMatcher(event) ? block?.matcher : undefined;
+      if (block?.matcher !== undefined && !hookEventSupportsMatcher(event)) {
+        report("rewritten", `${sourceEvent}[${blockIndex}]`, "matcher ignored: event has no matcher support");
+      }
       if (!block || !Array.isArray(handlers) || (matcher !== undefined && typeof matcher !== "string")) {
         report("lost", `${sourceEvent}[${blockIndex}]`, "invalid matcher block");
         return;
@@ -126,7 +123,7 @@ export function clearedImportedHooks(entries: readonly (Omit<ImportedHookEntry, 
     const event = Object.hasOwn(INTERNAL_TO_EVENT, entry.event) ? INTERNAL_TO_EVENT[entry.event] : undefined;
     if (!event) throw new Error(`hook ${index} has an unsupported event`);
     validateSymbolicHookArgv([...entry.command, ...Object.values(entry.env ?? {})], `hook ${index}`);
-    (hooks[event] ??= []).push({ ...(entry.matcher ? { matcher: entry.matcher } : {}), hooks: [{ type: "command",
+    (hooks[event] ??= []).push({ ...(entry.matcher && hookEventSupportsMatcher(entry.event) ? { matcher: entry.matcher } : {}), hooks: [{ type: "command",
       command: entry.command, ...(entry.env ? { env: entry.env } : {}),
       ...(entry.timeoutMs !== undefined ? { timeoutMs: entry.timeoutMs } : {}) }] });
   }
@@ -148,7 +145,7 @@ export function exportLegacyHooks(entries: readonly HookConfigEntry[]): { hooks:
     if (!event) throw new Error(`hook event ${entry.event} cannot be exported`);
     const [command, ...args] = entry.command;
     if (!command) throw new Error(`hook ${entry.id} has no executable`);
-    (hooks[event] ??= []).push({ ...(entry.matcher ? { matcher: entry.matcher } : {}), hooks: [{ type: "command",
+    (hooks[event] ??= []).push({ ...(entry.matcher && hookEventSupportsMatcher(entry.event) ? { matcher: entry.matcher } : {}), hooks: [{ type: "command",
       command: back(command), args: args.map(back),
       ...(entry.env ? { env: Object.fromEntries(Object.entries(entry.env).map(([key, value]) => [key, back(value)])) } : {}),
       timeoutMs: entry.timeoutMs }] });

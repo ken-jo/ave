@@ -81,6 +81,9 @@ import { errorMessage } from "../../shared/error-message.js";
 import { readJudgeStoredModels, type StoredJudgeModelRef } from "../../permissions/permission-settings-store.js";
 import { judgeModelCatalogFrom } from "../../permissions/judge/judge-model-catalog.js";
 import { isProcessingDisplayLevel } from "../../shared/processing-display-level.js";
+import { mainWindowForContents, getPrimaryMainWindow } from "../../main/app-state.js";
+import { browserTabRegistry } from "../../main/browser/browser-tab-registry.js";
+import { parseMainLayout } from "../../shared/main-layout.js";
 
 let subscriptionRuntimeStatusRevision = 0;
 
@@ -927,7 +930,16 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       settingsService.get("shortcuts"),
       settingsService.get("system"),
     );
+    const layoutPatch = partial?.system?.mainLayout;
+    if (layoutPatch !== undefined) {
+      const window = mainWindowForContents(e.sender);
+      if (!window || getPrimaryMainWindow()?.id !== window.id) return { ok: false, error: "bad-request" };
+      const parsed = parseMainLayout(layoutPatch);
+      if (!parsed.ok) return { ok: false, error: "invalid-input" };
+      partial = { ...partial, system: { ...partial.system, mainLayout: browserTabRegistry.prepareLayoutBindings(window.id, parsed.layout) } };
+    }
     const persistSettings = settingsService.patch(partial);
+    if (layoutPatch !== undefined) browserTabRegistry.trackBindingWrite(persistSettings);
     // SettingsService applies its merge before awaiting disk persistence. Capture
     // this request's exact LLM snapshot before another renderer can supersede it.
     const appliedLlm = settingsService.get("llm");

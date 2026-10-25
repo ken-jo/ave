@@ -126,7 +126,7 @@ function makeServices(pm: ReturnType<typeof makeMockPM>, gate = makeMockGate()) 
     } as any,
     conversationLoop: makeMockLoop(pm) as any,
     approvalGate: gate as any,
-    mcpManager: { listServers: vi.fn(() => []), killSwitch: vi.fn() } as any,
+    mcpManager: { listServers: vi.fn(() => []), killSwitch: vi.fn(), setPackageTransactionProbe: vi.fn() } as any,
     toolRegistry: {
       setDenyRules: vi.fn(),
       // Spied on by the "delegates post-restart ToolRegistry resync" test

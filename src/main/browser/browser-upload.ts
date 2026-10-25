@@ -1,6 +1,8 @@
-import { constants, promises as fs } from "node:fs";
+import { constants, promises as fs, type BigIntStats } from "node:fs";
+import type { FileHandle } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { basename, extname, isAbsolute, join } from "node:path";
+import { sameFileIdentity, type FileIdentity } from "../../lib/file-identity.js";
 import { openFeatureNamespace } from "../storage/feature-namespace.js";
 import { DENY_EXTENSIONS } from "../../shared/attachments-deny-list.js";
 import { sensitiveFilePattern } from "../../tools/file-access-policy.js";
@@ -30,13 +32,14 @@ const namespace = openFeatureNamespace("browser-uploads");
 const liveSelections = new Set<BrowserUploadSelection>();
 let reservedBytes = 0;
 let disposed = false;
-interface StagedFile { readonly path: string; readonly dev: number; readonly ino: number }
+type FileSnapshot = Readonly<FileIdentity & Pick<BigIntStats, "size" | "mtimeNs" | "ctimeNs">>;
+interface StagedFile extends FileSnapshot { readonly path: string }
 
 async function removeOwnedFile(file: StagedFile): Promise<void> {
   let current;
-  try { current = await fs.lstat(file.path); }
+  try { current = await fs.lstat(file.path, { bigint: true }); }
   catch (err) { if ((err as NodeJS.ErrnoException).code === "ENOENT") return; throw new BrowserActionError("upload-cleanup-failed", "upload staging cleanup could not be completed"); }
-  if (!current.isFile() || current.isSymbolicLink() || current.dev !== file.dev || current.ino !== file.ino || current.nlink !== 1) {
+  if (!current.isFile() || current.isSymbolicLink() || !sameFileIdentity(current, file) || current.nlink !== 1n) {
     throw new BrowserActionError("upload-cleanup-failed", "upload staging was replaced; its replacement was preserved");
   }
   // Descriptor-based chmod never follows a replaced file link. Recheck the
@@ -45,12 +48,12 @@ async function removeOwnedFile(file: StagedFile): Promise<void> {
   try {
     const handle = await fs.open(file.path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
     try {
-      const opened = await handle.stat();
-      if (opened.dev !== file.dev || opened.ino !== file.ino || opened.nlink !== 1) throw new Error("staging replaced");
+      const opened = await handle.stat({ bigint: true });
+      if (!sameFileIdentity(opened, file) || opened.nlink !== 1n) throw new Error("staging replaced");
       await handle.chmod(0o600);
     } finally { await handle.close(); }
-    const named = await fs.lstat(file.path);
-    if (!named.isFile() || named.dev !== file.dev || named.ino !== file.ino || named.nlink !== 1) throw new Error("staging replaced");
+    const named = await fs.lstat(file.path, { bigint: true });
+    if (!named.isFile() || !sameFileIdentity(named, file) || named.nlink !== 1n) throw new Error("staging replaced");
     await fs.unlink(file.path);
   }
   catch { throw new BrowserActionError("upload-cleanup-failed", "upload staging cleanup could not be completed"); }
@@ -65,8 +68,25 @@ function refused(): never {
   throw new BrowserActionError("upload-refused", "the selected files cannot be uploaded; choose ordinary non-sensitive files within the upload limits");
 }
 
-function sameFile(a: { dev: number; ino: number; size: number; mtimeMs: number; ctimeMs: number }, b: typeof a): boolean {
-  return a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeMs === b.mtimeMs && a.ctimeMs === b.ctimeMs;
+function sameFile(a: FileSnapshot, b: FileSnapshot): boolean {
+  return sameFileIdentity(a, b) && a.size === b.size && a.mtimeNs === b.mtimeNs && a.ctimeNs === b.ctimeNs;
+}
+
+// Read only through the descriptor whose identity and size the caller verified.
+async function readBoundedFile(handle: FileHandle, size: bigint, assertCurrent: () => void): Promise<Buffer> {
+  if (size < 0n || size > BigInt(BROWSER_UPLOAD_LIMITS.fileBytes)) refused();
+  const buffer = Buffer.alloc(Number(size));
+  let offset = 0;
+  while (offset < buffer.length) {
+    const read = await handle.read(buffer, offset, Math.min(64 * 1024, buffer.length - offset), offset);
+    assertCurrent();
+    if (read.bytesRead === 0) refused();
+    offset += read.bytesRead;
+  }
+  const extra = await handle.read(Buffer.alloc(1), 0, 1, offset);
+  assertCurrent();
+  if (extra.bytesRead !== 0) refused();
+  return buffer;
 }
 
 function sameDestination(a: BrowserUploadPickerRequest, b: BrowserUploadPickerRequest): boolean {
@@ -83,12 +103,18 @@ export class BrowserUploadSelection {
   private retaining = false;
   private dispatched = false;
   private inFlight: Promise<void> | undefined;
+  private readonly dispatchFiles: StagedFile[] = [];
+  private dispatchBytes = 0;
+  private stagedBytes: number;
+  private dispatchDir: string | undefined;
+  private readonly dispatchSlots: string[] = [];
   constructor(
     private readonly destination: BrowserUploadPickerRequest,
     private readonly dir: string,
+    private readonly slots: readonly string[],
     private readonly files: readonly StagedFile[],
     readonly result: BrowserUploadResult,
-  ) {}
+  ) { this.stagedBytes = result.bytes; }
 
   async dispatch(destination: BrowserUploadPickerRequest, send: (paths: readonly string[]) => Promise<void>): Promise<void> {
     if (this.used || this.released) {
@@ -98,9 +124,66 @@ export class BrowserUploadSelection {
     if (!sameDestination(this.destination, destination)) throw new BrowserActionError("upload-revoked", "the upload destination changed; choose files again");
     assertUploadActive(this.destination.signal);
     assertUploadActive(destination.signal);
-    this.inFlight = send(this.files.map((file) => file.path));
+    this.inFlight = this.sendVerifiedFiles(destination, send);
     try { await this.inFlight; this.dispatched = true; }
     finally { this.inFlight = undefined; }
+  }
+
+  private async sendVerifiedFiles(destination: BrowserUploadPickerRequest, send: (paths: readonly string[]) => Promise<void>): Promise<void> {
+    const assertCurrent = () => {
+      if (this.released) throw new BrowserActionError("upload-revoked", "the upload selection is no longer valid; choose files again");
+      assertUploadActive(this.destination.signal);
+      assertUploadActive(destination.signal);
+    };
+    // Browser file assignment consumes paths, so deliver fresh private copies
+    // read from verified descriptors. Reserve each copy until its staging
+    // source is removed, then retain only the delivered generation.
+    try {
+      for (const file of this.files) {
+        assertCurrent();
+        const source = await fs.open(file.path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0)).catch(() => refused());
+        try {
+          assertCurrent();
+          const opened = await source.stat({ bigint: true }).catch(() => refused());
+          if (!opened.isFile() || opened.nlink !== 1n || !sameFile(opened, file)) refused();
+          const buffer = await readBoundedFile(source, opened.size, assertCurrent);
+          const after = await source.stat({ bigint: true }).catch(() => refused());
+          assertCurrent();
+          if (!sameFile(opened, after)) refused();
+          const bytes = Number(file.size);
+          if (reservedBytes + bytes > BROWSER_UPLOAD_LIMITS.processBytes) refused();
+          reservedBytes += bytes;
+          this.dispatchBytes += bytes;
+          this.dispatchDir ??= await namespace.childDir(join(basename(this.dir), `dispatch-${randomUUID()}`));
+          assertCurrent();
+          // The browser names the File after this basename, so each copy keeps
+          // the original name inside its own slot directory.
+          const slot = join(this.dispatchDir, String(this.dispatchSlots.length));
+          await fs.mkdir(slot, { mode: 0o700 });
+          this.dispatchSlots.push(slot);
+          const path = join(slot, basename(file.path));
+          const copy = await fs.open(path, "wx", 0o600);
+          try {
+            const identity = await copy.stat({ bigint: true });
+            this.dispatchFiles.push({ path, dev: identity.dev, ino: identity.ino, size: file.size, mtimeNs: identity.mtimeNs, ctimeNs: identity.ctimeNs });
+            await copy.writeFile(buffer);
+            await copy.chmod(0o400);
+            const written = await copy.stat({ bigint: true });
+            if (!sameFileIdentity(identity, written) || written.size !== file.size || written.nlink !== 1n) refused();
+            this.dispatchFiles[this.dispatchFiles.length - 1] = { ...this.dispatchFiles[this.dispatchFiles.length - 1]!, mtimeNs: written.mtimeNs, ctimeNs: written.ctimeNs };
+          } finally { await copy.close(); }
+        } finally { await source.close(); }
+        await removeOwnedFile(file);
+        const bytes = Number(file.size);
+        this.stagedBytes -= bytes;
+        reservedBytes -= bytes;
+      }
+    } catch (error) {
+      if (error instanceof BrowserActionError) throw error;
+      throw new BrowserActionError("upload-failed", "the selected files could not be staged for this destination");
+    }
+    assertCurrent();
+    await send(this.dispatchFiles.map((file) => file.path));
   }
 
   retainUntil(stop: (revoke: () => void) => () => void): void {
@@ -122,10 +205,14 @@ export class BrowserUploadSelection {
     await this.inFlight?.catch(() => undefined);
     // Only these exclusively-created files belong to this selection. Never
     // recursively remove a directory, follow links or remove selected originals.
-    for (const file of this.files) await removeOwnedFile(file);
-    try { await fs.rmdir(this.dir); }
+    for (const file of [...this.dispatchFiles, ...this.files]) await removeOwnedFile(file);
+    try {
+      for (const slot of [...this.dispatchSlots, ...this.slots]) await fs.rmdir(slot);
+      if (this.dispatchDir) await fs.rmdir(this.dispatchDir);
+      await fs.rmdir(this.dir);
+    }
     catch { throw new BrowserActionError("upload-cleanup-failed", "upload staging cleanup could not be completed"); }
-    reservedBytes -= this.result.bytes;
+    reservedBytes -= this.stagedBytes + this.dispatchBytes;
     liveSelections.delete(this);
   }
 }
@@ -156,6 +243,7 @@ export async function stageBrowserUpload(
   reservedBytes += BROWSER_UPLOAD_LIMITS.selectionBytes;
   let dir: string | undefined;
   const paths: StagedFile[] = [];
+  const slots: string[] = [];
   const files: { name: string; bytes: number }[] = [];
   let bytes = 0;
   try {
@@ -168,40 +256,37 @@ export async function stageBrowserUpload(
       const real = await fs.realpath(original);
       assertUploadActive(destination.signal); assertDestination();
       if (real !== original || sensitiveFilePattern(real)) refused();
-      const before = await fs.lstat(original);
+      const before = await fs.lstat(original, { bigint: true });
       assertUploadActive(destination.signal); assertDestination();
-      if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || before.size > BROWSER_UPLOAD_LIMITS.fileBytes
-        || bytes + before.size > BROWSER_UPLOAD_LIMITS.selectionBytes) refused();
-      const source = await fs.open(original, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+      if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1n || before.size > BigInt(BROWSER_UPLOAD_LIMITS.fileBytes)
+        || BigInt(bytes) + before.size > BigInt(BROWSER_UPLOAD_LIMITS.selectionBytes)) refused();
+      const source = await fs.open(original, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
       try {
         assertUploadActive(destination.signal); assertDestination();
-        const opened = await source.stat();
-        if (!opened.isFile() || opened.nlink !== 1 || !sameFile(before, opened)) refused();
-        // Bounded allocation and reads, including a trailing-byte probe: growth
-        // after the initial size check cannot allocate or export unbounded data.
-        const buffer = Buffer.alloc(opened.size);
-        let offset = 0;
-        while (offset < buffer.length) {
-          const read = await source.read(buffer, offset, Math.min(64 * 1024, buffer.length - offset), offset);
-          assertUploadActive(destination.signal); assertDestination();
-          if (read.bytesRead === 0) refused();
-          offset += read.bytesRead;
-        }
-        const extra = await source.read(Buffer.alloc(1), 0, 1, offset);
+        const opened = await source.stat({ bigint: true });
+        if (!opened.isFile() || opened.nlink !== 1n || !sameFile(before, opened)) refused();
+        const buffer = await readBoundedFile(source, opened.size, () => { assertUploadActive(destination.signal); assertDestination(); });
+        const after = await source.stat({ bigint: true });
+        const current = await fs.lstat(original, { bigint: true });
         assertUploadActive(destination.signal); assertDestination();
-        const after = await source.stat();
-        const current = await fs.lstat(original);
-        assertUploadActive(destination.signal); assertDestination();
-        if (extra.bytesRead !== 0 || !sameFile(opened, after) || !sameFile(opened, current) || await fs.realpath(original) !== real) refused();
+        if (!sameFile(opened, after) || !sameFile(opened, current) || await fs.realpath(original) !== real) refused();
         assertUploadActive(destination.signal); assertDestination();
         const name = basename(original).replace(/[\u0000-\u001f\u007f]/g, "_").slice(0, 200) || "file";
-        const path = join(dir, `${paths.length}-${name}`);
+        // One slot directory per file keeps the original basename, which the
+        // browser exposes as File.name, even when two sources share a name.
+        const slot = join(dir, String(slots.length));
+        await fs.mkdir(slot, { mode: 0o700 });
+        slots.push(slot);
+        const path = join(slot, name);
         const staged = await fs.open(path, "wx", 0o600);
         try {
-          const identity = await staged.stat();
-          paths.push({ path, dev: identity.dev, ino: identity.ino });
+          const identity = await staged.stat({ bigint: true });
+          paths.push({ path, dev: identity.dev, ino: identity.ino, size: BigInt(buffer.length), mtimeNs: identity.mtimeNs, ctimeNs: identity.ctimeNs });
           await staged.writeFile(buffer);
           await staged.chmod(0o400);
+          const written = await staged.stat({ bigint: true });
+          if (!sameFileIdentity(identity, written) || written.size !== BigInt(buffer.length) || written.nlink !== 1n) refused();
+          paths[paths.length - 1] = { ...paths[paths.length - 1]!, mtimeNs: written.mtimeNs, ctimeNs: written.ctimeNs };
         } finally { await staged.close(); }
         assertUploadActive(destination.signal); assertDestination();
         bytes += buffer.length;
@@ -210,13 +295,16 @@ export async function stageBrowserUpload(
     }
     assertUploadActive(destination.signal); assertDestination();
     reservedBytes -= BROWSER_UPLOAD_LIMITS.selectionBytes - bytes;
-    const selection = new BrowserUploadSelection(Object.freeze({ ...destination }), dir, Object.freeze(paths), Object.freeze({ status: "selected", files: Object.freeze(files), count: files.length, bytes }));
+    const selection = new BrowserUploadSelection(Object.freeze({ ...destination }), dir, Object.freeze(slots), Object.freeze(paths), Object.freeze({ status: "selected", files: Object.freeze(files), count: files.length, bytes }));
     liveSelections.add(selection);
     return selection;
   } catch (err) {
     for (const path of paths) await removeOwnedFile(path);
     if (dir) {
-      try { await fs.rmdir(dir); }
+      try {
+        for (const slot of slots) await fs.rmdir(slot);
+        await fs.rmdir(dir);
+      }
       catch { throw new BrowserActionError("upload-cleanup-failed", "upload staging cleanup could not be completed"); }
     }
     reservedBytes -= BROWSER_UPLOAD_LIMITS.selectionBytes;

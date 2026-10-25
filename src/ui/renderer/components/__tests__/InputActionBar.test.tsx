@@ -867,6 +867,24 @@ describe("model card (status-row model cell)", () => {
     expect(spans[1]?.textContent).toBe("Kimi");
   });
 
+  it("labels an unchosen subscription model as the CLI default", async () => {
+    getSettings.mockResolvedValue({
+      ...settingsWithPins(),
+      llm: { ...settingsWithPins().llm, activeChatRuntime: { kind: "subscription", provider: "claude-code" } },
+    });
+    const { getByTestId, findByTestId } = renderBar({ onOpenModelSettings: vi.fn() });
+    fireEvent.click(getByTestId("iab-status-model"));
+    const card = await findByTestId("model-quick-picker");
+    const option = await waitFor(() => {
+      const el = card.querySelector<HTMLButtonElement>("[data-testid='model-quick-picker-option:claude-code']");
+      if (!el) throw new Error("not yet");
+      return el;
+    });
+    const spans = option.querySelectorAll("span");
+    expect(spans[0]?.textContent).toBe("Claude");
+    expect(spans[1]?.textContent).toBe(t("llmTab.cliDefaultModel"));
+  });
+
   it("carries the reasoning control and the way to the full catalogue", async () => {
     const onOpenModelSettings = vi.fn();
     const { getByTestId, findByTestId } = renderBar({ onOpenModelSettings });

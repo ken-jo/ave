@@ -32,6 +32,7 @@ import {
 import type { LLMProvider, StreamEvent } from "../../../engine/llm/types.js";
 import { marketplaceProviderPresetSecretKey } from "../../../shared/marketplace-package-assets.js";
 import { unusedNetworkFetch } from "../../../__tests__/support/network-fetch-stubs.js";
+import { readPermissionSettings } from "../../../permissions/permission-settings-store.js";
 import { createBootHostFixture } from "../../../__tests__/support/host-runtime.js";
 import {
   LlmParentAdjudicator,
@@ -77,6 +78,25 @@ const PARENT_ADJUDICATION = {
 const CHAT_LLM = () => ({ provider: "openai" as const, model: "gpt-4o-mini" });
 
 describe("Permission policy P4 reviewer-wiring", () => {
+  // The reviewer's model follows the chat model (or the judge model); a fresh
+  // profile with no chat model reports the unconfigured state.
+  it("reports an empty active chat model as unconfigured without building a provider", () => {
+    const file = join(tmpDir, "permissions.json");
+    const streamProviderFor = vi.fn(() => stubProvider([]));
+    const result = wireReviewerAgent({
+      networkFetch: unusedNetworkFetch,
+      permissionManager: new PermissionManager(file),
+      readSettings: () => readPermissionSettings(join(tmpDir, "settings.json")).permissions.reviewer,
+      readActiveLlm: () => ({ provider: "openai", model: "" }),
+      streamProviderFor,
+      verdictCachePath: join(tmpDir, "cache.jsonl"),
+      deferredQueuePath: join(tmpDir, "queue.jsonl"),
+    });
+    expect(result.effectiveSettings.model).toBe("");
+    expect(result.runtimeMode).toBe("llm-degraded-to-rule");
+    expect(result.classifier).toBeInstanceOf(RuleBasedRiskClassifier);
+    expect(streamProviderFor).not.toHaveBeenCalled();
+  });
   it("settings mode=rule wires RuleBasedRiskClassifier", () => {
     const pm = new PermissionManager(join(tmpDir, "permissions.json"));
     const setReviewerSpy = vi.spyOn(pm, "setReviewer");

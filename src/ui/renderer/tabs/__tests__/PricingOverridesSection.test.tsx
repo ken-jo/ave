@@ -35,10 +35,12 @@ describe("PricingOverridesSection", () => {
         { vendor: "claude", model: "claude-sonnet-4-6", inputPer1M: 2, outputPer1M: 9 },
       ]),
     });
-    const { findByTestId } = render(<PricingOverridesSection />);
-    await waitFor(async () => {
-      expect(((await findByTestId("llm-pricing-override-model-0")) as HTMLInputElement).value)
-        .toBe("claude-sonnet-4-6");
+    const { findByTestId, getByTestId } = render(<PricingOverridesSection />);
+    // Synchronous queries inside waitFor: an awaited findBy* there nests one
+    // polling timeout inside another and times out under load.
+    await findByTestId("llm-pricing-override-model-0");
+    await waitFor(() => {
+      expect((getByTestId("llm-pricing-override-model-0") as HTMLInputElement).value).toBe("claude-sonnet-4-6");
     });
     expect(((await findByTestId("llm-pricing-override-input-0")) as HTMLInputElement).value).toBe("2");
     expect(((await findByTestId("llm-pricing-override-output-0")) as HTMLInputElement).value).toBe("9");

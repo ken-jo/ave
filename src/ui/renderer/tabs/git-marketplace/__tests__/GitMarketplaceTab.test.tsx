@@ -328,7 +328,7 @@ describe("GitMarketplaceTab package sheet", () => {
       listKinds: async () => [{ pluginId: "calendar", choice: { enabled: true } }],
       onKindsChanged: () => () => {},
     } });
-    api.getSettings.mockResolvedValue({ alerts: { osNotificationsEnabled: false } });
+    api.getSettings.mockResolvedValue({ alerts: { osNotificationsEnabled: false }, system: { turnCompletionSoundEnabled: true } });
 
     fireEvent.click(within(await screen.findByTestId("git-marketplace:card:team:plugin:calendar")).getByTestId("git-marketplace:card:state"));
     const sheet = await screen.findByTestId("git-marketplace:sheet");

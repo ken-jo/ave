@@ -1,9 +1,9 @@
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { createHash } from "node:crypto";
 import { pinClaudeCodeExecutable, type ClaudeCodeExecutable } from "../claude-code-executable.js";
-import { normalizeFixtureAncestorPermissions, writeNativeExecutable } from "../../__tests__/support/native-executable.js";
+import { NATIVE_LOCATION_WAIT, NATIVE_PROBE_HEAVY_TEST, normalizeFixtureAncestorPermissions, writeNativeExecutable } from "../../__tests__/support/native-executable.js";
 import { EventEmitter } from "node:events";
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -20,11 +20,18 @@ import {
 import { CLAUDE_CODE_MAX_OUTPUT_BYTES } from "../claude-code-stream.js";
 import type { CodexAppServerClient } from "../codex-app-server-client.js";
 import * as managed from "../managed-child-processes.js";
+import * as subscriptionClient from "../claude-code-subscription-client.js";
+import * as executableLocation from "../codex-executable-location.js";
+import { CodexExecutableLocationError } from "../codex-executable-location.js";
 import type { FeatureNamespaceHandle } from "../storage/feature-namespace.js";
 import { SubscriptionRuntimeService, type AcpSubscriptionRuntimeRegistry } from "../subscription-runtime-service.js";
 import { SubscriptionToolBridge } from "../subscription-tool-bridge.js";
 import { claudeCodeSubscriptionStatus } from "../../shared/claude-code-subscription.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
+import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+
+vi.mock("node:child_process", async (importOriginal) =>
+  (await import("../../__tests__/support/native-executable.js")).maskFixtureAncestorAcl(await importOriginal()));
 
 const SESSION = "550e8400-e29b-41d4-a716-446655440000";
 const HOST_TOOL = "mcp__ave-host-tools__read_project_file";
@@ -71,7 +78,7 @@ beforeEach(() => {
 afterEach(async () => {
   for (const owner of owners.splice(0)) await owner.stop();
   for (const child of children.splice(0)) child.dispose();
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) await cleanupTmpDir(root);
   vi.restoreAllMocks();
   vi.useRealTimers();
 });
@@ -79,6 +86,7 @@ afterEach(async () => {
 function paths() {
   const root = mkdtempSync(join(tmpdir(), "ave-claude-runtime-"));
   roots.push(root);
+  normalizeFixtureAncestorPermissions(root);
   const value = { runtimeHome: join(root, "home"), workspaceDir: join(root, "workspace"), runtimeTempDir: join(root, "tmp") };
   for (const path of Object.values(value)) mkdirSync(path, { mode: 0o700 });
   return value;
@@ -157,6 +165,24 @@ async function collect(stream: AsyncIterable<StreamEvent>): Promise<StreamEvent[
 }
 
 describe("CLI conversation boundary", () => {
+  it("retains native ancestor rules and reports a location rejection before spawning", async () => {
+    const directories = paths();
+    const harness = spawnHarness();
+    const validate = vi.spyOn(subscriptionClient, "validateClaudeCodeRuntimeDirectories").mockResolvedValue();
+    const runtime = new ClaudeCodeConversationRuntime({ ...directories, ...harness, bridge: new SubscriptionToolBridge([]),
+      resolveRuntime: async () => ({
+        executable: "/approved/runtime", args: [], identity: "approved", routeKind: "native",
+        verify: async () => { throw new CodexExecutableLocationError("Rejected fixture location"); },
+        discard: async () => undefined,
+      }),
+    });
+    owners.push(runtime);
+    await expect(collect(runtime.streamTurn("hello"))).rejects.toMatchObject({ code: "claude-code-runtime-unsafe-location" });
+    expect(validate).toHaveBeenCalledTimes(2);
+    expect(validate.mock.calls.every(([, rule]) => rule === "native")).toBe(true);
+    expect(harness.spawn).not.toHaveBeenCalled();
+  });
+
   it("keeps prompts off argv, disables built-ins, verifies result, and cleans its config", async () => {
     const h = conversation();
     const done = collect(h.runtime.streamTurn("private prompt"));
@@ -311,7 +337,7 @@ describe("CLI conversation boundary", () => {
     const h = conversation();
     for (const text of ["complete history: first request", "complete history: first request, first answer, second request"]) {
       const completed = collect(h.runtime.streamTurn(text));
-      await vi.waitFor(() => expect(h.calls.at(-1)?.child.input).toBe(text));
+      await vi.waitFor(() => expect(h.calls.at(-1)?.child.input).toBe(text), NATIVE_LOCATION_WAIT);
       const call = h.calls.at(-1)!; call.child.send(init()); call.child.send(result()); call.child.close(); await completed;
       expect(call.args).not.toContain("--resume"); expect(call.args).toContain("--no-session-persistence");
       expect(call.child.input).toBe(text);
@@ -446,6 +472,66 @@ describe("CLI account and verification boundary", () => {
     expect(readdirSync(h.runtimeTempDir)).toEqual([]);
   });
 
+  it.each(["none", "directories", "artifact"] as const)(
+    "admits directories and verifies the executable before sign-in (%s rejected)",
+    async (rejected) => {
+      const directories = paths();
+      const harness = spawnHarness((child) => { child.send({ loggedIn: false }); child.close(1); }, {});
+      const cli = installedCli(directories.runtimeHome);
+      const events: string[] = [];
+      let preparingLogin = false;
+      const client = new ClaudeCodeSubscriptionClient({ ...directories, ...harness,
+        candidates: cli.candidates, resolveExecutable: async (path) => path,
+        _pinExecutableForTest: async (path) => {
+          const artifact = await pinForTest(path);
+          return { ...artifact, verify: async () => {
+            if (preparingLogin) {
+              events.push("artifact");
+              if (rejected === "artifact") throw new Error("Rejected executable");
+            }
+            await artifact.verify();
+          } };
+        },
+      });
+      owners.push(client);
+      expect(await client.getStatus()).toMatchObject({ runtime: "unverified", connection: "signed-out" });
+      events.length = 0;
+      const directoryRequests: string[][] = [];
+      const assertLocations = executableLocation.assertCodexLocations;
+      vi.spyOn(executableLocation, "assertCodexLocations").mockImplementation(async (requests, trustInputs) => {
+        if (requests.length > 0 && requests.every((request) => request.kind === "private-directory")) {
+          events.push("directories");
+          preparingLogin = true;
+          directoryRequests.push(requests.map((request) => request.path));
+          if (rejected === "directories") throw new CodexExecutableLocationError("Rejected directories");
+        }
+        await assertLocations(requests, trustInputs);
+      });
+      const spawn = harness.spawn.getMockImplementation()!;
+      harness.spawn.mockImplementation((command, args, options) => {
+        events.push("spawn");
+        return spawn(command, args, options);
+      });
+      harness.spawn.mockClear();
+      harness.calls.length = 0;
+      if (rejected === "none") {
+        expect(await client.startBrowserLogin()).toMatchObject({ connection: "pending" });
+        expect(events).toEqual(["directories", "artifact", "spawn"]);
+        expect(harness.spawn).toHaveBeenCalledOnce();
+        expect(harness.calls).toHaveLength(1);
+        expect(harness.calls[0]!.args).toEqual(["auth", "login"]);
+        await expect(client.verifiedRuntime()).rejects.toMatchObject({ code: "claude-code-runtime-unverified" });
+      } else {
+        await expect(client.startBrowserLogin()).rejects.toMatchObject({ code: rejected === "directories"
+          ? "claude-code-runtime-unsafe-location" : "claude-code-runtime-unverified" });
+        expect(events).toEqual(rejected === "directories" ? ["directories"] : ["directories", "artifact"]);
+        expect(harness.spawn).not.toHaveBeenCalled();
+        expect(harness.calls).toHaveLength(0);
+      }
+      expect(directoryRequests).toEqual([[directories.runtimeHome, directories.workspaceDir, directories.runtimeTempDir]]);
+    },
+  );
+
   it("stop cancels captured commands and prevents future launches", async () => {
     const h = clientHarness(() => undefined); const pending = h.client.getStatus(); const child = await h.started;
     await h.client.stop(); expect(await pending).toMatchObject({ runtime: "unavailable" });
@@ -475,6 +561,31 @@ describe("CLI account and verification boundary", () => {
 });
 
 describe("Claude Code CLI discovery", () => {
+  it.runIf(process.platform === "win32")("selects a native executable when both it and an earlier npm shim exist", async () => {
+    const directories = paths();
+    const npm = join(directories.runtimeHome, "npm");
+    const native = join(directories.runtimeHome, "native");
+    mkdirSync(npm); mkdirSync(native);
+    const executable = join(native, "claude.exe");
+    writeCli(join(npm, "claude.cmd")); writeCli(executable);
+    const harness = spawnHarness((child) => { child.send({ loggedIn: false }); child.close(1); }, {});
+    const client = new ClaudeCodeSubscriptionClient({ ...directories, ...harness,
+      candidates: () => claudeCodeExecutableCandidates({ platform: "win32", env: { PATH: `${npm};${native}` }, homeDir: directories.runtimeHome }),
+      resolveExecutable: async (path) => path, _pinExecutableForTest: pinForTest });
+    owners.push(client);
+    await expect(client.getStatus()).resolves.toMatchObject({ runtime: "unverified" });
+    expect(harness.spawn.mock.calls.every(([path]) => path === executable)).toBe(true);
+    expect(harness.spawn).toHaveBeenCalled();
+  });
+
+  it("prefers native installations over npm shims across PATH and install directories", () => {
+    const candidates = claudeCodeExecutableCandidates({ platform: "win32",
+      env: { PATH: "C:\\npm;C:\\native", USERPROFILE: "C:\\Users\\example", APPDATA: "C:\\Users\\example\\AppData\\Roaming" },
+      homeDir: "C:\\Users\\example" });
+    expect(candidates.indexOf("C:\\native\\claude.exe")).toBeLessThan(candidates.indexOf("C:\\npm\\claude.cmd"));
+    expect(candidates.indexOf("C:\\Users\\example\\.local\\bin\\claude.exe")).toBeLessThan(candidates.indexOf("C:\\npm\\claude.cmd"));
+  });
+
   function discoveryHarness(qualification: Qualification = {}, install = true) {
     const directories = paths();
     const harness = spawnHarness((child) => { child.send({ loggedIn: false }); child.close(1); }, qualification);
@@ -497,7 +608,7 @@ describe("Claude Code CLI discovery", () => {
     ]);
     expect(claudeCodeExecutableCandidates({
       platform: "win32", env: { Path: "C:\\Tools;relative", USERPROFILE: "C:\\Users\\example" }, homeDir: "C:\\ignored",
-    })).toEqual(["C:\\Tools\\claude.exe", "C:\\Tools\\claude.cmd", "C:\\Users\\example\\.local\\bin\\claude.exe"]);
+    })).toEqual(["C:\\Tools\\claude.exe", "C:\\Users\\example\\.local\\bin\\claude.exe", "C:\\Tools\\claude.cmd"]);
   });
 
   it("checks the runtime version identity and advertised auth commands", () => {
@@ -690,15 +801,15 @@ describe("Claude Code CLI discovery", () => {
     "refuses a session turn after the %s loses its private permissions", async (directory) => {
       const h = conversation();
       chmodSync(h[directory], 0o777);
-      await expect(collect(h.runtime.streamTurn("hello"))).rejects.toMatchObject({ code: "claude-code-runtime-unavailable" });
+      await expect(collect(h.runtime.streamTurn("hello"))).rejects.toMatchObject({ code: "claude-code-runtime-unsafe-location" });
       expect(h.spawn).not.toHaveBeenCalled();
     },
   );
 
-  it("discards private copies after retryable qualification failures", async () => {
+  it("discards private copies after retryable qualification failures", NATIVE_PROBE_HEAVY_TEST, async () => {
     const directories = paths();
     normalizeFixtureAncestorPermissions(directories.runtimeHome);
-    const executable = writeNativeExecutable(join(directories.runtimeHome, "installed", "claude"));
+    const executable = writeNativeExecutable(join(directories.runtimeHome, "installed", process.platform === "win32" ? "claude.exe" : "claude"));
     const spawn = vi.fn(() => {
       const child = new FakeChild(); children.push(child);
       setImmediate(() => child.emit("error", new Error("spawn EACCES")));

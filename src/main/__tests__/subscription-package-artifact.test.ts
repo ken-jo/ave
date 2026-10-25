@@ -1,16 +1,40 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { normalizeFixtureAncestorPermissions } from "../../__tests__/support/native-executable.js";
+import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { copySubscriptionPackageArtifact, type SubscriptionPackageArtifact } from "../subscription-package-artifact.js";
 
+const accessRuleProbes = vi.hoisted(() => ({ count: 0 }));
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  const { installFixtureAclTransport, maskFixtureAncestorAclTransport } = await import("../../__tests__/support/native-executable.js");
+  // Counts the access-rule probes: the Windows ACL host request or the macOS metadata listing.
+  if (process.platform === "win32") {
+    const masked = maskFixtureAncestorAclTransport(actual.spawn);
+    installFixtureAclTransport({
+      request: (...args) => {
+        accessRuleProbes.count++;
+        return masked.request(...args);
+      },
+      discard: () => masked.discard(),
+    });
+  }
+  const execFile = ((...args: unknown[]) => {
+    const [file] = args as [string];
+    if (file === "/bin/ls") accessRuleProbes.count++;
+    return (actual.execFile as (...rest: unknown[]) => unknown)(...args);
+  }) as typeof actual.execFile;
+  return { ...actual, execFile };
+});
+
 const roots: string[] = [];
-afterEach(() => {
+afterEach(async () => {
   vi.restoreAllMocks();
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) await cleanupTmpDir(root);
 });
 
 function writePackage(root: string, name: string, files: Record<string, string>, metadata: Record<string, unknown> = {}): string {
@@ -52,12 +76,49 @@ function replaceSealedFile(path: string, content: string): void {
 }
 
 describe("sealed subscription package artifacts", () => {
+  it.each(["module-guard.cjs", "module-guard.mjs"])("includes %s in the pinned artifact verification", async (guard) => {
+    const fixture = createFixture();
+    const artifact = await copySubscriptionPackageArtifact(fixture.packageRoot, fixture.script, fixture.artifactDirectory);
+    replaceSealedFile(join(fixture.artifactDirectory, guard), "throw Error('changed guard');");
+    await expect(artifact.verify()).rejects.toThrow("Subscription package artifact changed");
+  });
+
+  it.each(["require", "import"])("blocks ancestor dependency lookup through %s with a catchable missing-module error", async (kind) => {
+    const source = kind === "require"
+      ? "try { require('evil'); throw Error('escaped'); } catch (e) { if (e.code !== 'MODULE_NOT_FOUND') throw e; } console.log('confined');"
+      : "import('evil').then(() => { throw Error('escaped'); }, e => { if (e.code !== 'MODULE_NOT_FOUND') throw e; console.log('confined'); });";
+    const fixture = createFixture(source);
+    writePackage(join(fixture.root, "node_modules", "evil"), "evil", { "index.cjs": "throw Error('outside-loaded');" });
+    const artifact = await copySubscriptionPackageArtifact(fixture.packageRoot, fixture.script, fixture.artifactDirectory);
+    const result = runArtifact(artifact, fixture.root);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toBe("confined\n");
+  });
+
+  it("keeps built-ins and caught missing optional native dependencies usable", async () => {
+    const fixture = createFixture("require('fs'); require('node:path'); try { require('optional-native'); } catch {} console.log('running');");
+    const artifact = await copySubscriptionPackageArtifact(fixture.packageRoot, fixture.script, fixture.artifactDirectory);
+    const result = runArtifact(artifact, fixture.root);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toBe("running\n");
+  });
+
+  it("resolves a dependency vendored inside the package root in both module systems", async () => {
+    const fixture = createFixture("console.log(require('vendored')); import('vendored').then(m => console.log(m.default));",
+      { dependencies: { vendored: "1" } });
+    writePackage(join(fixture.packageRoot, "node_modules", "vendored"), "vendored", { "index.cjs": "module.exports = 'inside';" });
+    const artifact = await copySubscriptionPackageArtifact(fixture.packageRoot, fixture.script, fixture.artifactDirectory);
+    const result = runArtifact(artifact, fixture.root);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toBe("inside\ninside\n");
+  });
+
   it("executes the private entry snapshot after the installed script is replaced following host verification", async () => {
     const fixture = fixtureForSnapshot();
     const artifact = await copySubscriptionPackageArtifact(fixture.packageRoot, fixture.script, fixture.artifactDirectory);
     expect(artifact.args.slice(0, 2)).toEqual(["--no-global-search-paths", "--import"]);
-    expect(artifact.args[3]).not.toBe(fixture.script);
-    expect(readFileSync(artifact.args[3]!)).toEqual(readFileSync(fixture.script));
+    expect(artifact.args[5]).not.toBe(fixture.script);
+    expect(readFileSync(artifact.args[5]!)).toEqual(readFileSync(fixture.script));
     await artifact.verify();
     writeFileSync(fixture.script, "console.log('source-replaced');\n");
     const result = runArtifact(artifact, fixture.root);
@@ -72,7 +133,7 @@ describe("sealed subscription package artifacts", () => {
     const fixture = fixtureForSnapshot();
     const artifact = await copySubscriptionPackageArtifact(fixture.packageRoot, fixture.script, fixture.artifactDirectory);
     await artifact.verify();
-    replaceSealedFile(artifact.args[3]!, "console.log('private-replaced');\n");
+    replaceSealedFile(artifact.args[5]!, "console.log('private-replaced');\n");
     const result = runArtifact(artifact, fixture.root);
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain("subscription-module-changed");
@@ -83,7 +144,7 @@ describe("sealed subscription package artifacts", () => {
     const fixture = fixtureWithDependency();
     const artifact = await copySubscriptionPackageArtifact(fixture.packageRoot, fixture.script, fixture.artifactDirectory);
     await artifact.verify();
-    const dependency = join(dirname(dirname(artifact.args[3]!)), "fixture-dep", "index.cjs");
+    const dependency = join(dirname(dirname(artifact.args[5]!)), "fixture-dep", "index.cjs");
     replaceSealedFile(dependency, "module.exports = 'private-replaced';\n");
     const result = runArtifact(artifact, fixture.root);
     expect(result.status).not.toBe(0);
@@ -95,7 +156,7 @@ describe("sealed subscription package artifacts", () => {
     const fixture = fixtureWithDependency();
     writeFileSync(join(fixture.modules, "fixture-dep", "redirected.cjs"), "module.exports = 'redirected-marker';\n", { mode: 0o600 });
     const artifact = await copySubscriptionPackageArtifact(fixture.packageRoot, fixture.script, fixture.artifactDirectory);
-    const privateDependency = join(dirname(dirname(artifact.args[3]!)), "fixture-dep");
+    const privateDependency = join(dirname(dirname(artifact.args[5]!)), "fixture-dep");
     expect(readFileSync(join(privateDependency, "redirected.cjs"), "utf8")).toContain("redirected-marker");
     await artifact.verify();
     replaceSealedFile(join(privateDependency, "package.json"), JSON.stringify({
@@ -167,7 +228,7 @@ describe("sealed subscription package artifacts", () => {
       "index.cjs": "module.exports = 'undeclared-marker';\n",
     });
     const artifact = await copySubscriptionPackageArtifact(fixture.packageRoot, fixture.script, fixture.artifactDirectory);
-    const privateDependency = join(dirname(artifact.args[3]!), "node_modules", "fixture-undeclared");
+    const privateDependency = join(dirname(artifact.args[5]!), "node_modules", "fixture-undeclared");
     expect(existsSync(privateDependency)).toBe(false);
     await artifact.verify();
     const result = runArtifact(artifact, fixture.root);
@@ -201,6 +262,21 @@ describe("sealed subscription package artifacts", () => {
     symlinkSync(outside, join(fixture.packageRoot, "linked.cjs"));
     await expect(copySubscriptionPackageArtifact(fixture.packageRoot, fixture.script, fixture.artifactDirectory))
       .rejects.toThrow("contains a symbolic link");
+  });
+
+  it.runIf(process.platform === "win32" || process.platform === "darwin")("admits each verify through one access-rule probe regardless of file count", async () => {
+    const counts: number[] = [];
+    for (const size of [1, 8]) {
+      const fixture = fixtureForSnapshot();
+      writePackage(fixture.packageRoot, "fixture-entry", Object.fromEntries(Array.from({ length: size }, (_, index) =>
+        [join("lib", `part-${index}`, "index.cjs"), `module.exports = ${index};
+`])));
+      const artifact = await copySubscriptionPackageArtifact(fixture.packageRoot, fixture.script, fixture.artifactDirectory);
+      accessRuleProbes.count = 0;
+      await artifact.verify();
+      counts.push(accessRuleProbes.count);
+    }
+    expect(counts).toEqual([1, 1]);
   });
 });
 

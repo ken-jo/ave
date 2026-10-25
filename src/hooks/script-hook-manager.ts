@@ -21,13 +21,13 @@
  *     Caller MUST NOT promote this allow over an upstream deny.
  *   - `modify` is **NOT** supported in v1.
  */
-import { type DiscoveredHook } from "./hook-discovery.js";
+import { HookMatcherError, type DiscoveredHook } from "./hook-discovery.js";
+import { lifecycleMatcherSubject } from "./hook-contract.js";
 import {
   buildHookRegistry,
   filterRegistryByEventAndSubject,
   filterRegistryByEventAndTool,
   type HookRegistryEntry,
-  type ConfigHookRegistryEntry,
 } from "./hook-registry.js";
 import type { HookConfigEntry } from "./hook-config.js";
 import {
@@ -55,6 +55,7 @@ import { areExternalTurnHooksAllowed } from "../shared/turn-extension-policy.js"
 import type { PluginHookTrustStore, PreparedPluginHookProjection } from "./plugin-hook-projection.js";
 import type { PluginRuntimeGenerationAccess } from "../plugins/plugin-host-generation.js";
 import { errorMessage } from "../shared/error-message.js";
+import type { HookCommandAuthorizer } from "./hook-command-policy.js";
 
 const log = createLogger("script-hook-manager");
 
@@ -81,10 +82,21 @@ export interface PreparedPluginHookGenerationPublication {
 
 export class ScriptHookManager {
   private registry: HookRegistryEntry[] = [];
+  private matcherGuards: readonly HookRegistryEntry[] = [];
   private pluginRegistries = new Map<string, readonly HookRegistryEntry[]>();
   private generation = 0;
   private generationAccess: PluginRuntimeGenerationAccess | undefined;
   private readonly generationLeaseSources = new Map<string, (pluginId: string, activationId: string) => Promise<{ release(): void }>>();
+  private commandAuthorizer: HookCommandAuthorizer | undefined;
+
+  setCommandAuthorizer(authorizer: HookCommandAuthorizer): void {
+    this.commandAuthorizer = authorizer;
+    this.generation += 1;
+  }
+
+  private executionOptions(options?: RunOneHookOptions): RunOneHookOptions {
+    return { ...options, ...(this.commandAuthorizer ? { authorizeCommand: this.commandAuthorizer } : {}) };
+  }
 
   setPluginGenerationAccess(access: PluginRuntimeGenerationAccess): void {
     this.generationAccess = access;
@@ -116,6 +128,11 @@ export class ScriptHookManager {
    */
   setTrustedRegistry(shHooks: DiscoveredHook[], configEntries: HookConfigEntry[]): void {
     this.registry = buildHookRegistry(shHooks, configEntries);
+    this.generation += 1;
+  }
+
+  setMatcherGuards(guards: readonly HookRegistryEntry[]): void {
+    this.matcherGuards = guards.filter((entry) => entry.matcherError && (entry.event === "pre" || entry.event === "perm"));
     this.generation += 1;
   }
 
@@ -152,14 +169,13 @@ export class ScriptHookManager {
     const replacements = new Map<string, readonly HookRegistryEntry[]>();
     for (const projection of projections) {
       if (!trust.isApproved(projection)) continue;
-      const entries: ConfigHookRegistryEntry[] = projection.entries.map((entry) => ({
-        id: `plugin:${projection.owner.pluginId}:${projection.owner.localId}:${entry.id}`,
+      const entries = buildHookRegistry([], projection.entries).map((entry) => ({
+        ...entry,
+        id: `plugin:${projection.owner.pluginId}:${projection.owner.localId}:${entry.id.slice("config:".length)}`,
         event: entry.event,
         ...(entry.matcher !== undefined ? { matcher: entry.matcher } : {}),
         command: [...entry.command],
         ...(entry.env ? { env: { ...entry.env } } : {}),
-        source: "config",
-        timeoutMs: entry.timeoutMs,
         owner: projection.owner,
         confinement: projection.confinement,
       }));
@@ -265,8 +281,8 @@ export class ScriptHookManager {
    * milestone-2, design §5). OBSERVE-ONLY: the returned decision is recorded for
    * audit but MUST NEVER affect control flow — a lifecycle hook's `deny` mirrors
    * `PostToolUse` (informational), and a hook erroring / timing out must not
-   * break the turn. The matcher subject for lifecycle events is `sessionId`
-   * (or `'*'` = all), matched via the same glob as `.sh` / tool-use matchers.
+   * break the turn. The matcher subject comes from `lifecycleMatcherSubject`
+   * and uses the same compiled matcher as `.sh` / tool-use hooks.
    *
    * Fail-soft: this method NEVER throws. A dispatch error collapses to an empty
    * observe result so the caller can ignore it and continue.
@@ -295,10 +311,12 @@ export class ScriptHookManager {
       };
     }
     try {
-      // Subject for lifecycle matchers is the sessionId (design §6). Reuse the
-      // same glob filter so a `'*'` / sessionId matcher behaves identically to
-      // tool-use matchers. (`'*'` / absent matcher ⇒ match every session.)
-      const entries = filterRegistryByEventAndSubject(this.snapshotRegistry(), event, sessionId);
+      // Subjects are bounded event values; Stop ignores matchers entirely.
+      const entries = filterRegistryByEventAndSubject(
+        this.snapshotRegistry(),
+        event,
+        lifecycleMatcherSubject(event, sessionId, payload),
+      );
       if (entries.length === 0) {
         return { decision: "allow", reason: "no matching lifecycle hooks", results: [] };
       }
@@ -307,6 +325,8 @@ export class ScriptHookManager {
         event,
         sessionId,
         trustOrigin,
+        ...(event === "SessionStart" ? { sessionSource: payload.sessionSource ?? "startup" } : {}),
+        ...(event === "Notification" ? { notificationType: payload.notificationType ?? "agent_completed" } : {}),
         ...(payload.toolName !== undefined ? { toolName: payload.toolName } : {}),
         // DLP-redact free-text fields (§6.6): a tool error message can echo
         // user/secret data. No tool inputs flow through lifecycle events.
@@ -341,13 +361,18 @@ export class ScriptHookManager {
         ...(payload.message !== undefined
           ? { message: redactForLLM(payload.message).redacted }
           : {}),
+        ...(payload.stopHookActive !== undefined ? { stopHookActive: payload.stopHookActive } : {}),
       };
       // runHookChain stops at the first deny — but for a non-blocking event the
       // decision is OBSERVE-ONLY, so the caller ignores it. (Chain-stop just
       // avoids running later hooks once one already signaled deny — the audit
       // captures every result up to that point, same as PostToolUse.)
-      return await this.runWithGenerationLeases(entries, (activeEntries) =>
-        runHookChain(activeEntries.map(toRunnable), stdinPayload, options));
+      const result = await this.runWithGenerationLeases(entries, (activeEntries) =>
+        runHookChain(activeEntries.map(toRunnable), stdinPayload, this.executionOptions(options)));
+      if (result.decision === "deny") {
+        log.warn("lifecycle hook %s reported a non-blocking failure or denial: %s", event, redactForLLM(result.reason).redacted);
+      }
+      return result;
     } catch (err) {
       // Fail-soft: a lifecycle dispatch must NEVER break the turn. Log + return
       // an empty observe result so the caller continues unaffected.
@@ -375,9 +400,8 @@ export class ScriptHookManager {
    *     blocking event must fail closed.
    *
    * BACK-COMPAT: when NO trusted hook matches, returns `allow` with an empty
-   * `results` so the caller proceeds byte-identically to today. The matcher
-   * subject is the prompt text (or `'*'`), matched via the same glob as `.sh` /
-   * tool-use matchers.
+   * `results` so the caller proceeds byte-identically to today. This event has
+   * no matcher support: every trusted prompt hook runs on every prompt.
    *
    * DLP: `inputText` is DLP-redacted here (§6.6, via {@link redactForLLM}) before
    * it reaches the hook stdin / env — exactly as the observe path redacts
@@ -391,13 +415,7 @@ export class ScriptHookManager {
   ): Promise<HookDispatchResult> {
     if (!areExternalTurnHooksAllowed()) return externalHooksSuppressed();
     try {
-      // Matcher subject = the prompt text (design §5). Reuse the same glob as
-      // tool-use / lifecycle matchers (`'*'` / absent matcher ⇒ match every prompt).
-      const entries = filterRegistryByEventAndSubject(
-        this.snapshotRegistry(),
-        USER_PROMPT_SUBMIT_EVENT,
-        payload.inputText,
-      );
+      const entries = this.snapshotRegistry().filter((entry) => entry.event === USER_PROMPT_SUBMIT_EVENT);
       if (entries.length === 0) {
         // No trusted matching hook ⇒ ALLOW (back-compat: turn proceeds as today).
         return { decision: "allow", reason: "no matching UserPromptSubmit hooks", results: [] };
@@ -418,7 +436,7 @@ export class ScriptHookManager {
       // already collapsed to a deny RESULT by runOneHookScript, so the chain's
       // returned decision is authoritative — the caller refuses on deny.
       return await this.runWithGenerationLeases(entries, (activeEntries) =>
-        runHookChain(activeEntries.map(toRunnable), stdinPayload, options));
+        runHookChain(activeEntries.map(toRunnable), stdinPayload, this.executionOptions(options)));
     } catch (err) {
       // FAIL-CLOSED: a blocking event must DENY (refuse the turn) on an
       // unexpected dispatch error — NOT allow. (Contrast runLifecycleEvent,
@@ -440,9 +458,18 @@ export class ScriptHookManager {
     payload: HookDispatchPayload,
     options?: RunOneHookOptions,
   ): Promise<HookDispatchResult> {
-    // #811 — filter by event + matcher (the same glob as `.sh` frontmatter).
+    // #811 — filter by event + matcher (the same matcher as `.sh` frontmatter).
     // A config/`.sh` entry with no matcher runs for every tool.
-    const entries = filterRegistryByEventAndTool(this.snapshotRegistry(), type, payload.toolName);
+    const registry = this.snapshotRegistry();
+    const invalid = [...this.matcherGuards, ...registry].find((entry) => entry.event === type && entry.matcherError);
+    if (invalid) return { decision: "deny", reason: invalid.matcherError!, results: [] };
+    let entries: HookRegistryEntry[];
+    try {
+      entries = filterRegistryByEventAndTool(registry, type, payload.toolName);
+    } catch (error) {
+      if (!(error instanceof HookMatcherError)) throw error;
+      return { decision: "deny", reason: error.message, results: [] };
+    }
     if (entries.length === 0) {
       return { decision: "allow", reason: "no matching hooks of this type", results: [] };
     }
@@ -458,14 +485,14 @@ export class ScriptHookManager {
       trustOrigin: payload.trustOrigin,
       ...(payload.mcpServerId !== undefined ? { mcpServerId: payload.mcpServerId } : {}),
       ...(payload.pluginId !== undefined ? { pluginId: payload.pluginId } : {}),
-      ...(payload.toolOutput !== undefined ? { toolOutput: payload.toolOutput } : {}),
+      ...(payload.toolOutput !== undefined ? { toolOutput: redactForLLM(payload.toolOutput).redacted } : {}),
       ...(payload.isError !== undefined ? { isError: payload.isError } : {}),
     };
     // Each entry runs with its own timeout: config entries carry a per-entry
     // (already-clamped) `timeoutMs`; `.sh` entries fall back to the default /
     // caller-supplied option.
     return this.runWithGenerationLeases(entries, (activeEntries) =>
-      runHookChain(activeEntries.map(toRunnable), stdinPayload, options));
+      runHookChain(activeEntries.map(toRunnable), stdinPayload, this.executionOptions(options)));
   }
 
   private async runWithGenerationLeases<T>(

@@ -12,7 +12,7 @@
  * that execs `node` on a protocol script, validated from its directory.
  */
 import { afterEach, beforeAll, afterAll, describe, expect, it, vi } from "vitest";
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn } from "node:child_process";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -37,6 +37,7 @@ import { reportExitCode, type ReportRow } from "../report.js";
 import { row } from "./report-row.js";
 import { openValidationSession } from "../validation-session.js";
 import { installPythonSmoke } from "../../isolation/__tests__/python-smoke-harness.js";
+import { settle } from "../../isolation/__tests__/stream-turns.js";
 
 vi.mock("../validation-session.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../validation-session.js")>();
@@ -80,6 +81,7 @@ afterAll(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   // A child whose signals were refused is still alive when its run returns.
   for (const pid of spawnedPids.splice(0)) {
     try {
@@ -118,6 +120,79 @@ function rawOptions(fixture: string, fast = true): ProtocolCheckOptions {
     fast,
     toolArgs: {},
   };
+}
+
+function useProtocolClock(): number {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+  return performance.now();
+}
+
+/**
+ * Keep real pipes and signals, but advance the host clock only after the
+ * child confirms the withheld operation. Startup never spends the deadline.
+ */
+async function timedRawChecks(
+  fixture: string,
+  method: string,
+  manifest = rawManifest(),
+  options = rawOptions(fixture),
+  refuseSignals = false,
+): Promise<ProtocolRun> {
+  // Observe input after the fixture's own listeners consumed it. The side
+  // channel belongs to this test launch; the raw protocol fixtures stay intact.
+  const observer = `
+const emit = process.stdin.emit;
+let buffered = "";
+process.stdin.emit = function(event, ...args) {
+  const result = Reflect.apply(emit, this, [event, ...args]);
+  if (event === "data") {
+    buffered += args[0].toString("utf-8");
+    let end;
+    while ((end = buffered.indexOf("\\n")) !== -1) {
+      const request = JSON.parse(buffered.slice(0, end));
+      buffered = buffered.slice(end + 1);
+      if (request.id !== undefined) process.send({ received: request.method });
+    }
+  } else if (event === "end") process.send({ received: "stdin-close" });
+  return result;
+};
+`;
+  const child = spawn(process.execPath, ["--import", `data:text/javascript,${encodeURIComponent(observer)}`, join(RAW, `${fixture}.mjs`)], {
+    env: CHILD_ENV,
+    stdio: ["pipe", "pipe", "pipe", "ipc"],
+  });
+  spawnedPids.push(child.pid!);
+  if (refuseSignals) {
+    child.kill = (signal?: NodeJS.Signals | number): boolean => {
+      child.emit("error", Object.assign(new Error(`kill ${String(signal)} EPERM`), { code: "EPERM", syscall: "kill" }));
+      return false;
+    };
+  }
+  const received = new Promise<void>((resolve, reject) => {
+    child.once("error", reject);
+    child.once("exit", (code, signal) => reject(new Error(`child exited before ${method}: code=${String(code)} signal=${String(signal)}`)));
+    child.on("message", (message) => {
+      if ((message as { received?: string }).received === method) resolve();
+    });
+  });
+  let settled = false;
+  const pending = runProtocolChecksOnChild(child, manifest, options).finally(() => { settled = true; });
+  // Attach a rejection handler while waiting for the child's acknowledgement.
+  void pending.catch(() => undefined);
+  await received;
+  await settle();
+  const bound = options.fast ? 1_000 : 10_000;
+  await vi.advanceTimersByTimeAsync(bound - 1);
+  expect(settled).toBe(false);
+  await vi.advanceTimersByTimeAsync(1);
+  // Fail at the virtual deadline even if a delayed abort would leave the
+  // real child alive and the pending run unable to finish.
+  expect(vi.mocked(openValidationSession).mock.calls.at(-1)?.[0].signal?.aborted).toBe(true);
+  if (refuseSignals) await vi.advanceTimersByTimeAsync(VALIDATION_TEARDOWN_WAIT_MS);
+  else if (fixture === "ignores-sigterm" && process.platform !== "win32") {
+    await vi.advanceTimersByTimeAsync(VALIDATION_KILL_GRACE_MS);
+  }
+  return await pending;
 }
 
 /** Every row after `check`, but the always-reported teardown. */
@@ -440,7 +515,8 @@ describe("the session-level rows", () => {
 
 describe("the raw child-process fixtures", () => {
   it("ignores-stdin-close: fails protocol.stdin-close, recorded before the kill", async () => {
-    const run = await runProtocolChecks(rawLaunch("ignores-stdin-close"), rawManifest(), rawOptions("ignores-stdin-close"));
+    useProtocolClock();
+    const run = await timedRawChecks("ignores-stdin-close", "stdin-close");
     expect(row(run.rows, "protocol.stdin-close")).toMatchObject({ ok: false, message: "timed out after 1000 ms" });
     const recorded = eventAt(run, "row:protocol.stdin-close:failed");
     const killed = eventAt(run, "signal:");
@@ -471,8 +547,8 @@ describe("the raw child-process fixtures", () => {
   });
 
   it("withholds-start-reply: fails lifecycle.start at 1 s and ends the child once", async () => {
-    const began = performance.now();
-    const run = await runProtocolChecks(rawLaunch("withholds-start-reply"), rawManifest(), rawOptions("withholds-start-reply"));
+    const began = useProtocolClock();
+    const run = await timedRawChecks("withholds-start-reply", "ave/instance/start");
     expect(performance.now() - began).toBeLessThan(5_000);
     expect(row(run.rows, "lifecycle.start")).toMatchObject({ ok: false, message: "timed out after 1000 ms" });
     expect(run.record.terminations).toHaveLength(1);
@@ -484,11 +560,11 @@ describe("the raw child-process fixtures", () => {
   });
 
   it("withholds-tool-reply: fails tools.call:echo at 1 s and ends the child once", async () => {
-    const began = performance.now();
-    const run = await runProtocolChecks(
-      rawLaunch("withholds-tool-reply"),
+    const began = useProtocolClock();
+    const run = await timedRawChecks(
+      "withholds-tool-reply",
+      "tools/call",
       rawManifest(["echo"]),
-      rawOptions("withholds-tool-reply"),
     );
     expect(performance.now() - began).toBeLessThan(5_000);
     expect(row(run.rows, "tools.list").ok).toBe(true);
@@ -502,8 +578,8 @@ describe("the raw child-process fixtures", () => {
   });
 
   it("withholds-construct: fails protocol.construct at 1 s, long before the 20 s cleanup deadline", async () => {
-    const began = performance.now();
-    const run = await runProtocolChecks(rawLaunch("withholds-construct"), rawManifest(), rawOptions("withholds-construct"));
+    const began = useProtocolClock();
+    const run = await timedRawChecks("withholds-construct", "ave/instance/construct");
     expect(performance.now() - began).toBeLessThan(3_000);
     expect(row(run.rows, "protocol.construct")).toMatchObject({ ok: false, message: "timed out after 1000 ms" });
     expect(run.record.terminations).toHaveLength(1);
@@ -519,13 +595,13 @@ describe("the raw child-process fixtures", () => {
     expect(calls.at(-1)?.[0].signal).toBe(run.signal);
     // The reply the fixture would have written at 2 s finds nothing to answer.
     const timeline = run.record.timeline.length;
-    await new Promise((resolve) => setTimeout(resolve, 2_500 - (performance.now() - began)));
+    await vi.advanceTimersByTimeAsync(1_500);
     expect(run.record.timeline).toHaveLength(timeline);
   });
 
   it("slow-construct: fails protocol.construct at the runtime's 10 s activation bound", async () => {
-    const began = performance.now();
-    const run = await runProtocolChecks(rawLaunch("slow-construct"), rawManifest(), rawOptions("slow-construct", false));
+    const began = useProtocolClock();
+    const run = await timedRawChecks("slow-construct", "ave/instance/construct", rawManifest(), rawOptions("slow-construct", false));
     expect(performance.now() - began).toBeLessThan(10_500);
     expect(row(run.rows, "protocol.construct")).toMatchObject({ ok: false, message: "timed out after 10000 ms" });
     for (const later of rowsAfter(run.rows, "protocol.construct")) {
@@ -535,7 +611,8 @@ describe("the raw child-process fixtures", () => {
   }, 20_000);
 
   it("ignores-sigterm: the escalation ends the child and protocol.teardown passes", async () => {
-    const run = await runProtocolChecks(rawLaunch("ignores-sigterm"), rawManifest(), rawOptions("ignores-sigterm"));
+    useProtocolClock();
+    const run = await timedRawChecks("ignores-sigterm", "ave/instance/start");
     expect(row(run.rows, "lifecycle.start")).toMatchObject({ ok: false, message: "timed out after 1000 ms" });
     const signals = run.record.timeline.filter((entry) => entry.event.startsWith("signal:"));
     const exit = run.record.timeline.find((entry) => entry.event.startsWith("exit:"));
@@ -598,30 +675,13 @@ describe("a descendant that holds the child's pipes", () => {
 });
 
 describe("refused signals", () => {
-  /** One child whose `kill` takes Node's refusal path: `error` with EPERM, synchronously. */
-  function refusingChild(fixture: string): ChildProcess {
-    const child = spawn(process.execPath, [join(RAW, `${fixture}.mjs`)], {
-      env: CHILD_ENV,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    spawnedPids.push(child.pid!);
-    child.kill = (signal?: NodeJS.Signals | number): boolean => {
-      child.emit(
-        "error",
-        Object.assign(new Error(`kill ${String(signal)} EPERM`), { code: "EPERM", syscall: "kill" }),
-      );
-      return false;
-    };
-    return child;
-  }
-
   for (const [fixture, timedOut] of [
     ["withholds-construct", "protocol.construct"],
     ["withholds-start-reply", "lifecycle.start"],
   ] as const) {
     it(`${fixture}: an unexited child bounds the run and fails protocol.teardown`, async () => {
-      const began = performance.now();
-      const run = await runProtocolChecksOnChild(refusingChild(fixture), rawManifest(), rawOptions(fixture));
+      const began = useProtocolClock();
+      const run = await timedRawChecks(fixture, fixture === "withholds-construct" ? "ave/instance/construct" : "ave/instance/start", rawManifest(), rawOptions(fixture), true);
       const elapsed = performance.now() - began;
       expect(row(run.rows, timedOut)).toMatchObject({ ok: false, message: "timed out after 1000 ms" });
       for (const later of rowsAfter(run.rows, timedOut)) {

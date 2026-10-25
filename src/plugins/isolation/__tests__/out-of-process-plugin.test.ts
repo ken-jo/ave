@@ -1762,7 +1762,7 @@ describe("a stored '~/…' directory value: refused with guidance, and both ways
     const actual = await vi.importActual<typeof import("../../../permissions/confined-child.js")>(
       "../../../permissions/confined-child.js",
     );
-    const root = mkdtempSync(join(process.platform === "darwin" ? "/private/tmp" : tmpdir(), "oop-tilde-"));
+    const root = mkdtempSync(join(process.platform === "darwin" ? "/private/tmp" : process.platform === "win32" ? tmpdir() : "/tmp", "oop-tilde-"));
     const previousHome = process.env.AVE_HOME;
     const home = join(root, "home");
     const approved = join(root, "approved");

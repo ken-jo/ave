@@ -1129,6 +1129,15 @@ export interface McpOAuthMetadata {
     | "dynamic"
     | "preregistration"
     | "manual";
+  /**
+   * Optional public OAuth client ID that the authorization server pre-registered
+   * for this MCP server. Ave uses it before a Client ID Metadata Document or
+   * dynamic registration, with PKCE and no client secret. The registration must
+   * allow the loopback redirect `http://127.0.0.1` on any port (RFC 8252 §7.3).
+   * 1–256 visible ASCII characters; anything else makes authentication fail
+   * with an unsupported-registration error. Omit it to keep the previous behavior.
+   */
+  clientId?: string;
 }
 
 export interface McpAuthMetadata extends McpOAuthMetadata {

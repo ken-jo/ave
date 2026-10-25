@@ -30,6 +30,13 @@ export interface BrowserTabHost {
 }
 
 const hosts: BrowserTabHost[] = [];
+
+/** Close from trusted window chrome through the same host that handles tab operations. */
+export function closeBrowserTab(tabId: string): void {
+  const host = hosts.find((candidate) => candidate.hasTab(tabId));
+  if (!host) return;
+  host.closeTab(tabId);
+}
 let unsubscribe: (() => void) | null = null;
 let controlled: ReadonlySet<string> = new Set();
 const EMPTY_CONTROL_STATE: BrowserTabControlState = { revision: -1, tabs: [] };

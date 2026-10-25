@@ -2,8 +2,7 @@
  * Permission policy Layer 5 Reviewer Agent: RiskClassifier interface + impls.
  *
  * Spec ref: docs/architecture/permission-policy-design.md §3 Layer 5,
- * §11 v2.1 binding decisions (default `provider="openai"`,
- * `model="gpt-4o-mini"`; `fallbackOnError ∈ {deny, rule}`; default fail-closed;
+ * §11 v2.1 binding decisions (`fallbackOnError ∈ {deny, rule}`; default fail-closed;
  * verdict
  * composition `final = max(rule, llm)`; DLP filter on classifier input).
  *
@@ -2642,7 +2641,7 @@ export interface ReviewerSettings {
   mode: ReviewerMode;
   /** Required when mode === "llm". */
   provider?: LlmReviewerProvider;
-  /** Required when mode === "llm". Defaults to "gpt-4o-mini" per v2.1. */
+  /** Required when mode === "llm"; an unset model is not configured. */
   model?: string;
   /** Defaults to "deny" so reviewer provider failures fail closed. */
   fallbackOnError?: FallbackOnError;
@@ -2669,6 +2668,8 @@ export function createRiskClassifier(settings: ReviewerSettings): RiskClassifier
           `(Permission policy P3 atomic cutover — no silent fallback to rule-based.)`,
         );
       }
+      const model = settings.model?.trim();
+      if (!model) throw new Error("Permission reviewer model not configured.");
       const fb = settings.fallbackOnError ?? "deny";
       if (fb !== "deny" && fb !== "rule") {
         throw new Error(
@@ -2678,7 +2679,7 @@ export function createRiskClassifier(settings: ReviewerSettings): RiskClassifier
       }
       return new LlmRiskClassifier(
         settings.provider,
-        settings.model ?? "gpt-4o-mini",
+        model,
         fb,
         settings.telemetry,
       );

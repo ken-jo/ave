@@ -11,8 +11,11 @@ import {
 } from "../codex-app-server-client.js";
 import { CODEX_APP_SERVER_ARGV } from "../codex-conversation-runtime.js";
 import { CodexUserRuntimeError, type CodexResolvedRuntime } from "../codex-user-runtime.js";
-import { codexExecutableArtifactFixture, normalizeFixtureAncestorPermissions } from "../../__tests__/support/native-executable.js";
+import { codexExecutableArtifactFixture, NATIVE_LOCATION_WAIT, normalizeFixtureAncestorPermissions } from "../../__tests__/support/native-executable.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+
+vi.mock("node:child_process", async (importOriginal) =>
+  (await import("../../__tests__/support/native-executable.js")).fakeFixtureAcl(await importOriginal()));
 
 interface RpcRequest {
   id?: unknown;
@@ -105,7 +108,7 @@ interface Harness {
 }
 
 const harnesses: Harness[] = [];
-const TEST_RUNTIME_PARENT = process.platform === "win32" ? "C:\\tmp" : tmpdir();
+const TEST_RUNTIME_PARENT = tmpdir();
 
 function createHarness(
   handler: RequestHandler,
@@ -118,7 +121,7 @@ function createHarness(
   const server = new FakeAppServer(handler, options.deferInitializeUntilInitialized);
   const openExternal = vi.fn(async (_url: string) => undefined);
   const runtimeRoot = mkdtempSync(join(TEST_RUNTIME_PARENT, "ave-codex-app-server-client-"));
-  normalizeFixtureAncestorPermissions(runtimeRoot);
+  if (process.platform !== "win32") normalizeFixtureAncestorPermissions(runtimeRoot);
   const runtimeHome = join(runtimeRoot, "home");
   const sqliteHome = join(runtimeRoot, "sqlite");
   const workspaceDir = join(runtimeRoot, "workspace");
@@ -297,6 +300,8 @@ describe("CodexAppServerClient", () => {
     expect(projected).not.toContain("account-token-must-not-leave-main");
     expect(projected).not.toContain("refresh-token-must-not-leave-main");
     expect(harness.spawnCalls).toHaveLength(1);
+    expect(harness.spawnCalls[0]?.args).toBe(CODEX_APP_SERVER_ARGV);
+    expect(harness.server.requests.some((request) => request.method === "windowsSandbox/setupStart")).toBe(false);
     expect(harness.spawnCalls[0]).toMatchObject({
       command: harness.artifact.executable,
       // The one argv the conversation runtime also spawns with — the
@@ -348,7 +353,7 @@ describe("CodexAppServerClient", () => {
 
     const statusPromise = harness.client.getStatus();
     void statusPromise.catch(() => undefined);
-    await vi.waitFor(() => expect(harness.server.requests).toHaveLength(3));
+    await vi.waitFor(() => expect(harness.server.requests).toHaveLength(3), NATIVE_LOCATION_WAIT);
 
     expect(harness.server.requests.map((request) => request.method).slice(0, 2)).toEqual([
       "initialize",

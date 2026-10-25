@@ -4,6 +4,7 @@ import { createBootHostFixture } from "../../../__tests__/support/host-runtime.j
 
 const h = vi.hoisted(() => ({
   construct: vi.fn(),
+  notificationOptions: vi.fn(),
   setupChain: vi.fn(),
   log: vi.fn(),
   flush: vi.fn(async () => undefined),
@@ -36,7 +37,9 @@ vi.mock("../../../audit/hmac-chain.js", () => ({
 }));
 
 vi.mock("../../../main/notification-service.js", () => ({
-  NotificationService: class {},
+  NotificationService: class {
+    constructor(options: unknown) { h.notificationOptions(options); }
+  },
 }));
 
 vi.mock("../../../main/plugin-auth-partition-store.js", () => ({
@@ -146,4 +149,25 @@ describe("setupAuditAndNotification OS notification presenter", () => {
     expect(ctx.host.desktop).toBeUndefined();
     expect(ctx.notificationService).toBeDefined();
   });
+});
+
+it("keeps live notification preferences authoritative over desktop options", async () => {
+  const desktop = createDesktopHostFixture({
+    notificationOptions: { isTurnCompletionSoundEnabled: () => true, isOsNotificationsEnabled: () => true },
+  });
+  const ctx = makeContext(createBootHostFixture({ desktop }));
+  await setupAuditAndNotification(ctx);
+  const options = h.notificationOptions.mock.calls[0][0] as {
+    isTurnCompletionSoundEnabled: () => boolean;
+    isOsNotificationsEnabled: () => boolean;
+  };
+  let enabled = false;
+  vi.mocked(ctx.settingsService.get).mockImplementation(((key: string) => key === "alerts"
+    ? { osNotificationsEnabled: enabled }
+    : { turnCompletionSoundEnabled: enabled }) as never);
+  expect(options.isTurnCompletionSoundEnabled()).toBe(false);
+  expect(options.isOsNotificationsEnabled()).toBe(false);
+  enabled = true;
+  expect(options.isTurnCompletionSoundEnabled()).toBe(true);
+  expect(options.isOsNotificationsEnabled()).toBe(true);
 });
