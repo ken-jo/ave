@@ -12,6 +12,7 @@ import {
 } from "../../main/plugin-auth-partition-tracker.js";
 import { t } from "../../i18n/index.js";
 import { createLogger } from "../../lib/logger.js";
+import { initAdminPolicyAudit } from "../../lib/admin-policy-file.js";
 import type { BootContext } from "../context.js";
 import type { DesktopHostCapabilities } from "../host-runtime.js";
 
@@ -38,6 +39,7 @@ export async function setupAuditAndNotification(ctx: BootContext): Promise<void>
     ensureAuditSecret(permissionAuditSecretStore),
     permissionAuditSecretStore,
   );
+  initAdminPolicyAudit(bootAuditLogger);
 
   // Rotation must drain the runtime writer’s queue, not a separate maintenance logger.
   const runAuditMaintenance = () => {

@@ -338,6 +338,7 @@ export function PermissionsTab({
   const [policyBusy, setPolicyBusy] = useState(false);
   const [policySource, setPolicySource] = useState<"defaults" | "user" | "admin" | "merged">("defaults");
   const [policyAdminPath, setPolicyAdminPath] = useState<string | undefined>(undefined);
+  const [policyAdminReason, setPolicyAdminReason] = useState<string | undefined>(undefined);
 
   // ── Rule Editor ───────────────────────────────────
   const [rules, setRules] = useState<ScopedPermissionRule[]>([]);
@@ -433,6 +434,7 @@ export function PermissionsTab({
       setPolicyManaged(!policyRes.editable);
       setPolicySource((policyRes.source as "defaults" | "user" | "admin" | "merged") ?? "defaults");
       setPolicyAdminPath(policyRes.adminPath as string | undefined);
+      setPolicyAdminReason(policyRes.adminStatus === "invalid" ? policyRes.adminReason : undefined);
       setRules(rulesRes.rules);
       setRuleLoadErrors(rulesRes.errors);
       setQuarantinedHooks(hookTrustRes.ok ? hookTrustRes.disabled : []);
@@ -1261,7 +1263,9 @@ export function PermissionsTab({
           </div>
           {policyManaged && (
             <p className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-[11px] text-warning">
-              {(policySource === "admin" || policySource === "merged") && policyAdminPath
+              {policyAdminReason
+                ? t("permissionsTab.invalidAdminPolicy", { reason: policyAdminReason })
+                : (policySource === "admin" || policySource === "merged") && policyAdminPath
                 ? t("permissionsTab.adminPolicyWithPath", { policyAdminPath })
                 : t("permissionsTab.adminPolicyNoPath")}
             </p>
