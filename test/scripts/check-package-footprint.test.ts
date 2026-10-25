@@ -25,7 +25,9 @@ function fixture(outputDirectory: string, mac: boolean) {
     "dist/src/main/main.js", "dist/src/renderer.js", "dist/src/preload.cjs",
     "dist/src/renderer/chunks/mermaid.12345678.js",
     "dist/src/renderer/chunks/highlight.12345678.js",
-    "dist/src/renderer/chunks/hljs-typescript.12345678.js", "package.json",
+    "dist/src/renderer/chunks/hljs-typescript.12345678.js",
+    "dist/src/renderer/chunks/i18n-ko.12345678.js",
+    "dist/src/renderer/chunks/i18n-ko-seed.12345678.js", "package.json",
     ...resolveBuildAssets(repo, "runtime-script").map((asset) => relative(repo, asset.out)),
   ]) writeFixtureFile(input, entry, "");
   writeFixtureFile(input, "dist/src/main/bundle-manifest.json", JSON.stringify({
