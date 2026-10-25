@@ -1567,13 +1567,19 @@ name and its `-Parameter` names (before a `:`); a native program, an unknown
 command and every value stay verbatim (`git branch -d` and `-D`, `git clean
 -n` and `-N`, `java -Dfoo=SAFE` are distinct rules). An alias never merges
 two identities (`sc`, `curl`, `wget`, `ls`, `rm` and `cat` differ by edition):
-aliases are resolved only to classify the command against the floors, and a
-deny or ask rule also matches the alias-resolved command, since matching more
-only narrows. A `-EncodedCommand` payload (`-e`, `-ec`, `-enc…`) is decoded
-(UTF-16LE base64): the destructive, exfiltration and secret floors run on the
-decoded script, a destructive one gets the same forced modal as the plain
-text, no allow rule covers an encoded command, and the card shows the decoded
-script. The host builds the card's rule from
+aliases are resolved only to classify the command against the floors. A deny
+or ask rule compares a normalized name on both sides, since matching more only
+narrows: the directory path, a `Module\` qualifier and an executable extension
+are dropped, case is folded and an alias resolves to its cmdlet, so
+`PowerShell(git push *)` refuses `git.exe push` and `C:\Git\bin\git.exe push`,
+and `PowerShell(gci *)` refuses `Get-ChildItem`. A `-EncodedCommand` payload
+(`-e`, `-ec`, `-enc…`, behind a hyphen, en dash, em dash, horizontal bar or
+`/`) is decoded (UTF-16LE base64, whitespace ignored as .NET does): the
+destructive, exfiltration and secret floors run on the decoded script, a
+destructive one gets the same forced modal as the plain text, no allow rule
+covers an encoded command, and the card shows the decoded script. A payload
+the host cannot fully decode is hidden code: it gets the forced modal and no
+allow rule covers it. The host builds the card's rule from
 the parsed command and matches it again before saving; a command that is not
 one literal simple command has no exact rule.
 

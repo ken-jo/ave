@@ -324,9 +324,11 @@ user, project or session scope. A `PowerShell(...)` rule matches the parsed
 command with a literal identity (case folded only for a known cmdlet's name
 and `-Parameter` names; native programs, unknown commands and every value
 verbatim; aliases never merge identities and are resolved only for floor
-classification and for deny/ask matching) and authorizes an unsandboxed call
+classification and for deny/ask matching, where a path, `Module\` qualifier and
+executable extension are also dropped) and authorizes an unsandboxed call
 only as an exact rule, with the same strictness as Bash. A `-EncodedCommand`
-payload is decoded before the floors run, and no allow rule covers it.
+payload is decoded before the floors run, no allow rule covers it, and one
+that cannot be fully decoded gets the forced modal.
 
 The sink catalogue remains a host policy floor, including for unsandboxed
 commands. The [shell sandbox policy](#os-shell-sandbox-policy) owns the OS
