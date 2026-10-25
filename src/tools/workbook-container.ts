@@ -19,6 +19,11 @@ const PACKAGE_PARTS = new Set([
   "mimetype", "META-INF/manifest.xml", "content.xml",
 ]);
 const XML_PART_NAME = /\.(?:xml|rels)$/i;
+// Legacy VML is not well-formed XML (Excel writes bare <br>), so it gets the
+// declaration byte check but not the full tag scan.
+const VML_PART_NAME = /\.vml$/i;
+// The decoder's own match for a sheet's legacy drawing reference.
+const LEGACY_DRAWING_REFERENCE = /legacyDrawing r:id="(.*?)"/;
 // The decoder reads these relationship targets as XML whatever their part name.
 const XML_TARGET_RELATIONSHIP_TYPES = new Set([
   "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments",
@@ -307,6 +312,18 @@ function validateXlsx(
       }
     });
   }
+  // The decoder follows the legacy drawing r:id whatever the relationship type.
+  const legacyDrawing = LEGACY_DRAWING_REFERENCE.exec(xmlParts.get(partKey(sheet))?.toString("utf8") ?? "")?.[1];
+  if (legacyDrawing !== undefined && relationshipBytes) {
+    let target: string | undefined;
+    scanRelationships(relationshipBytes, (relationship) => {
+      if (relationship.id === legacyDrawing) target = relationship.target;
+    });
+    const path = target === undefined ? undefined : resolveTarget(target, sheet);
+    if (path !== undefined && !XML_PART_NAME.test(path) && !VML_PART_NAME.test(path)) {
+      refuse("Legacy drawing targets a part outside the XML checks");
+    }
+  }
   return decoded;
 }
 
@@ -412,9 +429,10 @@ export function prepareWorkbookContainer(
   const xmlParts = new Map<string, Buffer>();
   const verdict = verifyZipInflateLimits(bytes, limits, (name, data) => {
     if (PACKAGE_PARTS.has(name)) parts.set(name, data);
+    if (VML_PART_NAME.test(name)) refuseXmlDeclarations(data);
     if (!XML_PART_NAME.test(name)) return;
-    // No XML part carries a DTD or text section; the full tag scan below is
-    // kept for the parts decoded for this request, sparing unread worksheets.
+    // No XML or VML part carries a DTD or text section; the full tag scan below
+    // is kept for the XML parts decoded for this request, sparing unread worksheets.
     refuseXmlDeclarations(data);
     xmlParts.set(partKey(name), data);
     if (!/\.rels$/i.test(name)) return;

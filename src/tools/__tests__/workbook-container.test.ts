@@ -207,6 +207,31 @@ describe("workbook container validation", () => {
     expect(refusal(comments.toBuffer(), "xlsx").code).toBe("corrupt-document");
   });
 
+  it("byte-checks the legacy drawing the decoder reads", () => {
+    const vmlDrawing = (target: string, vml: string): Buffer => {
+      const archive = new AdmZip(workbook("xlsx"));
+      const sheet = archive.readAsText("xl/worksheets/sheet1.xml");
+      archive.updateFile("xl/worksheets/sheet1.xml", Buffer.from(sheet.replace(
+        "</worksheet>",
+        '<legacyDrawing r:id="rId9" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/></worksheet>',
+      )));
+      archive.addFile(`xl/drawings/${target}`, Buffer.from(vml));
+      archive.addFile("xl/worksheets/_rels/sheet1.xml.rels", Buffer.from(
+        `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId9" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/vmlDrawing" Target="../drawings/${target}"/></Relationships>`,
+      ));
+      return archive.toBuffer();
+    };
+    // Excel's VML is not well-formed, so only the declaration bytes are checked.
+    expect(prepareWorkbookContainer(vmlDrawing("vmlDrawing1.vml", "<xml><x:Row>0<br></x:Row></xml>"), "xlsx", PREVIEW_DOCUMENT_LIMITS, 0))
+      .toBeInstanceOf(Buffer);
+    expect(refusal(vmlDrawing("vmlDrawing1.vml", '<!DOCTYPE x [<!ENTITY e "e">]><xml/>'), "xlsx")).toMatchObject({
+      code: "corrupt-document", message: expect.stringContaining("declarations"),
+    });
+    expect(refusal(vmlDrawing("vmlDrawing1.bin", "<xml/>"), "xlsx")).toMatchObject({
+      code: "corrupt-document", message: expect.stringContaining("Legacy drawing"),
+    });
+  });
+
   it("refuses archive wrappers and nested members", () => {
     const archive = new AdmZip(workbook("xlsx"));
     archive.addFile("embedded.bin", workbook("xlsx"));

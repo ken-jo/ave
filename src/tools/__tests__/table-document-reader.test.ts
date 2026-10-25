@@ -369,7 +369,9 @@ describe("zip-bomb guard", () => {
     const central = forged.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]));
     forged.writeUInt32LE(10, central + 24);
     const verdict = verifyZipInflateLimits(forged, PREVIEW_DOCUMENT_LIMITS);
-    expect(verdict).toMatchObject({ ok: false, reason: "size-mismatch" });
+    expect(verdict).toMatchObject({
+      ok: false, reason: "size-mismatch", detail: "xl/workbook.xml inflates beyond its declared 10 bytes",
+    });
     expect((await refusal(() => parseTableDocument(forged, "xlsx", 0))).code).toBe("archive-too-large");
   });
 

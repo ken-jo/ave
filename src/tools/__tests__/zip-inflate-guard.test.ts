@@ -165,7 +165,10 @@ describe("bounded ZIP verification", () => {
     const bytes = singleEntry();
     bytes.writeUInt32LE(1, 22);
     bytes.writeUInt32LE(1, zipCentralOffset(bytes) + 24);
-    expect(verifyZipInflateLimits(bytes, LIMITS)).toMatchObject({ ok: false, reason: "size-mismatch" });
+    // The output cap must stop inflation, not the later length comparison.
+    expect(verifyZipInflateLimits(bytes, LIMITS)).toMatchObject({
+      ok: false, reason: "size-mismatch", detail: "content.xml inflates beyond its declared 1 bytes",
+    });
   });
 
   it("accounts for declared limits before inflating", () => {
