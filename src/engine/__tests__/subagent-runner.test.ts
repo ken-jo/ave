@@ -12,7 +12,6 @@ import { openFeatureNamespace } from "../../main/storage/feature-namespace.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { createDynamicTool } from "../../tools/base.js";
 import { makeSubagentLoopDeps as buildLoopDeps, patchLoopProvider } from "./support/subagent-loop-fixtures.js";
-
 import {
   SubAgentRunner,
   resolveSubAgentModel,
@@ -126,8 +125,6 @@ function createInMemoryMailboxNamespace() {
     },
   };
 }
-
-
 
 describe("SubAgentRunner checkpoint child lifetime", () => {
   it.each([

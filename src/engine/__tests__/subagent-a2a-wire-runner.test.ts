@@ -8,10 +8,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { makeSubagentLoopDeps } from "./support/subagent-loop-fixtures.js";
 import { createDlpSafeUuid, isSafeStructuralId } from "../../shared/dlp-safe-id.js";
 import * as structuralIds from "../../shared/dlp-safe-id.js";
-
 import { MemoryManager, type SessionMetadata,
 } from "../../memory/memory-manager.js";
-
 import { createDynamicTool } from "../../tools/base.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { readShellSessionCwd, recordShellSessionCwd } from "../../tools/shell-session-cwd.js";
