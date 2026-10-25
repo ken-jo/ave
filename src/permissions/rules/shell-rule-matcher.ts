@@ -33,6 +33,8 @@ interface ShellRuleCommand {
   raw: string;
   // Reasons this simple command can never be covered by an allow rule.
   allowBlockers: readonly string[];
+  // Set when the command sits after a `|` and so can read the previous stage's output on stdin.
+  piped?: true;
 }
 
 export type ShellRuleShape =
@@ -67,6 +69,8 @@ function shapeOf(parsed: ParsedShellCommand, cwd: string | undefined): ShellRule
   const hidden: string[] = [];
   let ordinaryAsk: string | undefined;
   const globalBlockers: string[] = [];
+  // Depth of `|` stages (after the first) being visited.
+  let downstream = 0;
 
   const scanWord = (word: ShellWord, blockers: string[] | null): void => {
     for (const part of word.parts) {
@@ -144,12 +148,18 @@ function shapeOf(parsed: ParsedShellCommand, cwd: string | undefined): ShellRule
           const inner = wrapperPrefixLength(argv);
           if (inner > 0 && inner < argv.length && argv[inner] === undefined) ordinaryAsk ??= "dynamic program name behind a wrapper";
         }
-        commands.push({ argv, raw: statement.source.raw, allowBlockers: blockers });
+        commands.push({ argv, raw: statement.source.raw, allowBlockers: blockers, ...(downstream > 0 ? { piped: true as const } : {}) });
         return;
       }
       case "sequence":
-      case "pipeline":
         for (const child of statement.statements) visit(child);
+        return;
+      case "pipeline":
+        for (const [index, child] of statement.statements.entries()) {
+          if (index > 0) downstream += 1;
+          visit(child);
+          if (index > 0) downstream -= 1;
+        }
         return;
       case "and":
       case "or":

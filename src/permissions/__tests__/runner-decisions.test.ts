@@ -177,8 +177,8 @@ describe("shared runner decisions", () => {
     for (const dialect of DIALECTS) {
       const expectations = RUNNER_DECISIONS.map((row) => row.dialects?.[dialect] ?? row);
       const counts = dialect === "bash"
-        ? { floor: 288, ordinary: 1655, normal: 88 }
-        : { floor: 317, ordinary: 1613, normal: 101 };
+        ? { floor: 289, ordinary: 1654, normal: 88 }
+        : { floor: 319, ordinary: 1611, normal: 101 };
       for (const bucket of ["floor", "ordinary", "normal"] as const) {
         expect(expectations.filter((row) => row.bucket === bucket)).toHaveLength(counts[bucket]);
       }
