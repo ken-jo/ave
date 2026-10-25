@@ -219,16 +219,18 @@ lifecycle coverage are described in the architecture contract.
 
 ## Shell Credential And Sink Classification
 
-Host-shell credential and exfiltration analysis uses three buckets. An
-identified floor takes precedence over an ordinary reason in the same input.
+Host-shell credential and exfiltration analysis uses three buckets for
+sandboxed calls and unsandboxed inputs within the length limit. Over-limit
+unsandboxed input immediately asks or denies without running these inspections.
+An identified floor takes precedence over an ordinary reason in the same input.
 Existing hard-deny, destructive, explicit-ask, origin and explicit-host-execution
 requirements keep their own authority.
 
 | Bucket | Evidence | Permission behavior |
 | --- | --- | --- |
 | Floor | Sensitive/credential paths in argv, redirects, file-input values or literal inline code; retained credential-store, certificate-export and transport/sink catalogue effects | Per-call ask with `forceModal`, before allow rules or saved grants; never remembered |
-| Ordinary | Parser refusal, budget exhaustion, opaque bindings, retained file-execution provenance, or an opaque package/code-runner prefix | `ordinaryAsk` / `ordinaryShellAsk` at layer 6 without `forceModal`; applicable rules and saved grants may satisfy it |
-| Normal | Neither a floor nor an ordinary reason | Existing category, mode, rules and grants |
+| Ordinary | Parser refusal, budget exhaustion, opaque bindings, retained file-execution provenance, or an opaque package/code-runner prefix | No credential/sink floor from this signal alone; sandboxed execution follows its route, while unsandboxed execution requires proven exact coverage or asks/denies |
+| Normal | Neither a floor nor an ordinary reason | Sandboxed execution follows its route; unsandboxed execution still requires proven exact coverage |
 
 The path scan checks a glob argument's literal directory prefix, before its
 first wildcard, as well as its expansions, so a wildcard below a protected
@@ -274,13 +276,15 @@ not stop the sandboxed automatic lane, whose OS floor still confines reads. A
 later relative recursive search is a floor in every lane, because its root
 cannot be ruled out.
 
-Ordinary asks remain rememberable under the existing approval-scope and risk
-requirements. A parser refusal cannot establish a `Bash(...)` allow-rule match,
-but it does not invalidate an otherwise applicable tool allow rule or saved
-grant. An analysis failure retains visible credential and upload checks rather
-than replacing an identified floor with an ordinary reason.
+An ordinary classifier reason does not itself establish exact-rule eligibility.
+Parser or lexer/analysis-budget failure and nonliteral or ambiguous argv remain
+unproven. Literal visible code can remain eligible despite an ordinary runner
+or file-provenance classification. Legacy shell tool grants stay inert. For
+inputs within the length limit, analysis failure retains visible credential
+and upload checks rather than replacing an identified floor with an ordinary
+reason. Over-limit unsandboxed input instead short-circuits to ask/deny.
 
-Hidden code alone limits `Bash(...)` allow-rule coverage; it does not create an ordinary ask. Statically bound direct interpreter inline and script-file forms follow normal mode handling without explicit restrictions, credential/sink evidence, opaque bindings or retained file-execution provenance. Existing deny/ask command-rule visibility behavior remains in force, and an allow rule does not prove script contents.
+Visible literal interpreter code, script-file invocation and delegation do not by themselves prohibit an exact rule. Host-shell syntax, canonical identity, budgets and the PowerShell encoded-execution exception determine proof. A known carrier role alone does not make an unrelated deny/ask rule uncertain; actual visible matches and syntactic inspection failures retain their precedence. An allow rule never proves future script contents or effects.
 
 These are permission-classifier outcomes, not execution admission. A hard deny
 cannot be approved. A floor's forced ask requires per-call consent but cannot
@@ -305,7 +309,8 @@ option-shaped word before the command prevents persistence unless a literal
 `--` establishes that boundary. No per-option arity or known-safe task table is
 used. `npx tsc`, `npm test`, `pnpm dlx tsc` and `corepack pnpm install` retain
 grantable persistent prefixes. Ambiguous forms remain ordinary and may be
-covered by applicable exact-input saved grants, subject to independent gates.
+eligible for exact command rules when their host-shell argv has an unambiguous
+canonical identity; legacy shell grants cannot supply that authority.
 Classifying a local argument as data does not grant execution, prove read-only
 effects or establish a runner command boundary.
 
@@ -344,43 +349,58 @@ Wildcard allows apply only to sandboxed execution.
 
 The proof checks these conditions in order:
 
-1. Check `MAX_LITERAL_COMMAND_LENGTH` (10,000 characters), defined in the
-   shared launcher-policy module below, before parsing. Over-limit input is
-   unproven and cannot reach the parser for exact-rule proof.
-2. Require successful parsing in the selected dialect, with no lexer or proof
-   budget exhausted, unsupported syntax or unresolved command boundary.
-3. Require every word to be literal. Plain and literally quoted arguments are
-   accepted and stored as canonical quoted argv. Variables, command
-   substitutions, globs and escape expansion are unproven, including inside
-   quotes when that dialect expands them. Thus `git commit -m 'msg'` can have
-   a saved exact rule, while a quoted active expansion cannot.
-4. Reject code carriers by program identity and option or operand role, without
-   inspecting payload contents. Shell and interpreter inline-code options
-   (`-c`, `-e`, `-Command`, the `-enc`/`-EncodedCommand` family and
-   `cmd /c`), stdin code, script-file execution and wrapper-supplied code are
-   never proven. A literal encoded operand does not change this.
-5. Reject nested dialects. The proof never recurses into a child command string
-   or decoded text to admit the outer command.
+1. Check `MAX_LITERAL_COMMAND_LENGTH` (10,000 characters), defined in
+   [shell-prefix-values.ts](../../src/permissions/rules/shell-prefix-values.ts),
+   before all further command processing in the unsandboxed lane. Over-limit
+   input immediately asks or denies headless. It performs no later project
+   loading, parsing, canonical-directory capture, command-rule evaluation, floor
+   inspection or review. Stronger non-command gates, such as a tool-wide deny,
+   may still refuse the call. No automatic execution is possible on this path.
+2. Require successful parsing in the selected host dialect without exhausting
+   a lexer or analysis budget. A parser failure or incomplete required
+   analysis is unproven.
+3. Require literal host-shell words and unambiguous canonical identity. Plain
+   and literally quoted arguments are accepted. Active variables, command
+   substitutions, globs and escape expansion are unproven. Quoted parameter
+   data must remain distinct from named options, in both matching directions.
+   A module-qualified command retains its qualifier in exact-rule identity.
+4. Refuse a parsed PowerShell launcher carrying an `-enc`/`-EncodedCommand`-family
+   operand, including an existing transparent wrapper target, even when the
+   operand is literal. This program-and-option check does not recurse into
+   `sh`/`cmd` code strings, `env -S`, `find` or `xargs` to discover another
+   launcher, and never inspects encoded contents. The option family includes
+   `-e`, `-ec`, `-en` and the prefixes from `-enc` through `-EncodedCommand`;
+   supported dash/slash and attached-value spellings are defined by
+   [`encodedPowerShellExecutionReason`](../../src/permissions/rules/powershell-encoded-command.ts).
 
-The centralized launcher list in
-[shell-prefix-values.ts](../../src/permissions/rules/shell-prefix-values.ts)
-is authoritative. Recognition compares exact basenames with case folding on
-Windows. It includes `pwsh`, `powershell`, `pwsh-preview`, `cmd`, the
-supported POSIX shells and interpreters, and their supported `.exe` forms.
-A similar prefix or numeric suffix does not make another program a launcher.
-An unlisted name such as `ksh93` remains an ordinary literal program, subject
-to the other proof conditions and floors. This list identifies code-carrier
-syntax; it does not certify other programs' effects. Carrier option and wrapper roles are owned by
-[shell-prefix-policy.ts](../../src/permissions/rules/shell-prefix-policy.ts);
-[powershell-exfiltration.ts](../../src/permissions/rules/powershell-exfiltration.ts)
-owns the PowerShell proof shape.
+The sole proof launcher list is `pwsh`, `pwsh-preview`, `powershell` and
+`powershell_ise`, plus their `.exe` forms, matched case-insensitively by exact
+basename. Name prefixes and version-suffix guesses do not extend this list.
+Other shell/interpreter name tables remain only for existing visible-floor or
+classification consumers; they do not prohibit exact rules.
 
-The approval card offers an exact rule only for one proven literal simple
-command and validates the proposed rule against the live request before saving
-it. A pipeline, redirect or compound command receives no exact-rule offer.
-Literal quoted data retains its argument identity: quoted whitespace is not collapsed
-or treated as a separator. Deny and ask matching retains its separate
-conservative normalization and precedence.
+Visible literal code is eligible for an exact rule: `python -c`, `sh -c`,
+`Invoke-Expression`, literal delegated commands and similar forms are not
+rejected merely for carrying code. The outer host-shell words must be literal;
+the proof does not recursively parse a quoted code argument as another dialect.
+Existing visible-text floors still apply to inputs within the length limit.
+
+An exact rule authorizes the saved invocation, not the future behavior of its
+programs. File, stdin and network indirection are accepted limits: `make`,
+`python script.py`, `xargs` and a download piped into a shell can execute code
+whose contents or selected command change independently of the saved words.
+The proof does not detect these forms as a separate prohibition, inspect the
+referenced files or network response, or certify their effects. Such commands
+remain subject to representable exact-rule coverage and visible-text floors.
+
+The approval card derives a rule only when the supported command shape has an
+unambiguous canonical representation and validates that rule against the live
+request before saving. The card offers one simple-command rule; a literal
+pipeline can instead be covered by exact rules for each parsed subcommand.
+Literal quoted whitespace and quoted-versus-bare parameter meaning are
+preserved. An unsupported representation receives no exact-rule offer; this
+is distinct from detecting indirect code. Deny and ask
+matching keeps its conservative normalization and precedence.
 
 For sandboxed execution, the sandbox's filesystem and egress controls remain
 the boundary. Visible-text destructive, credential-exfiltration and

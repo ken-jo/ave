@@ -2156,16 +2156,24 @@ Layer 0–8 의 permission policy 는 _어떤 도구 호출을 허용/거부_ �
     그래서 `PowerShell(git push *)` 는 `git.exe push`·`C:\Git\bin\git.exe push`
     를, `PowerShell(gci *)` 는 `Get-ChildItem` 을 거부한다.
   - 정확한 허용 규칙은 [리터럴 명령 증명](../../architecture/permission-policy-design.md#literal-command-proof)도
-    통과해야 한다. 입력 길이를 파싱 전에 제한하고, 파싱 실패·렉서/증명 예산 소진·
-    미지원 문법·활성 확장은 미증명으로 처리한다. 일반 단어와 확장이 없는 리터럴
-    인용 인자는 정규화한 argv 로 저장하므로 `git commit -m 'msg'` 도 기억할 수
-    있다. 인용 안에서 일어나는 변수·명령·glob·이스케이프 확장은 허용하지 않는다.
-    코드 전달자와 중첩 방언은 코드 피연산자가 리터럴이어도 정확한 허용 규칙이
-    맞지 않는다. 따라서 샌드박스 밖에서는 `-enc`/`-EncodedCommand` 계열로
-    코드를 받는 런처도 매번 확인하며 headless 에서는 거부한다.
-  - 런처는 한 곳의 정확한 basename 목록으로 판별한다. `pwsh-preview` 와 지원하는
-    `.exe` 형식을 포함하고 Windows 에서만 대소문자를 접는다. 접두사나 숫자
-    접미사만으로 다른 프로그램을 런처로 취급하지 않는다.
+    통과해야 한다. 비샌드박스 입력이 길이 한도를 넘으면 프로젝트 로딩·파싱·명령 규칙·
+    floor 검사 전에 즉시 확인하고 headless 에서는 거부한다. 한도 안에서는
+    파싱·렉서/분석 예산 실패, 활성 확장과 정규화 신원의 모호함을 미증명으로
+    처리한다. 확장 없는 인용 인자와 인용된 매개변수 데이터의 신원을 보존하므로
+    `git commit -m 'msg'` 도 기억할 수 있다.
+  - 화면에 보이는 리터럴 코드는 정확한 규칙의 대상이 된다. `python -c`,
+    `sh -c`, `Invoke-Expression` 과 리터럴 위임 명령을 코드 전달자라는 이유로
+    거절하지 않는다. 호스트 셸의 인자만 증명하고 인용된 코드를 다른 방언으로
+    재귀 증명하지 않는다. 파일·stdin·네트워크 간접 실행은 별도로 탐지해 막지
+    않는 한계다. `make`, `python script.py`, `xargs`, 내려받은 코드를 셸에
+    파이프로 넘기는 명령은 저장한 인자가 같아도 나중에 다른 코드를 실행할 수
+    있다. 정확한 규칙은 그 코드의 내용이나 효과를 보증하지 않는다.
+  - 예외는 `-enc`/`-EncodedCommand` 계열 피연산자를 받는 PowerShell 런처다.
+    증명용 목록은 `pwsh`, `pwsh-preview`, `powershell`, `powershell_ise` 와
+    각각의 `.exe` 형식뿐이며 basename 을 대소문자 구분 없이 정확히 비교한다.
+    다른 셸·인터프리터 목록은 기존 visible-text floor 와 분류에만 쓰고 정확한
+    규칙을 금지하는 근거로 쓰지 않는다.
+
   - 샌드박스 실행은 파일시스템·egress 격리를 경계로 삼고, 그 위에는 입력에
     보이는 파괴·유출·민감 경로 floor 만 유지한다. base64 스캔·UTF-16LE 휴리스틱·
     재귀 payload 검사는 없다. 인코딩처럼 보이는 리터럴 데이터도 같은 증명과

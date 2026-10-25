@@ -1579,14 +1579,20 @@ and `PowerShell(gci *)` refuses `Get-ChildItem`.
 
 Exact allows additionally require the host's
 [literal-command proof](permission-policy-design.md#literal-command-proof).
-The input limit is checked before parsing; parse failures, exhausted lexer or
-proof budgets, expansions and unsupported syntax remain unproven. Plain words
-and literal quoted arguments are normalized to canonical argv, so
-`git commit -m 'msg'` can be remembered. Code carriers and nested dialects
-never match an exact allow, even with literal code operands. Launcher identity
-uses one exact basename list, including `pwsh-preview` and the supported
-`.exe` forms, with case folding on Windows; it never uses name prefixes or
-version-suffix guesses.
+An unsandboxed input over the shared length limit immediately asks or denies
+headless before project loading, parsing, command-rule or floor inspection. Under the
+limit, parse or lexer/analysis-budget failure, nonliteral words and ambiguous
+canonical identity remain unproven. Literal quoting is preserved, so
+`git commit -m 'msg'` can be remembered.
+
+Visible literal code, including interpreter options and delegated commands, is
+eligible for exact rules. File, stdin and network indirection are accepted
+limits, not separately detected blockers; a saved `make` or `python script.py`
+invocation does not fix the code it will later execute. The one execution-form
+exception is a PowerShell launcher with an `-enc`-family operand. Its sole proof
+list is `pwsh`, `pwsh-preview`, `powershell`, `powershell_ise` and their
+`.exe` forms, compared as exact basenames case-insensitively. Other launcher
+tables serve only visible-floor and classification analysis.
 
 For sandboxed commands the sandbox is the boundary. Only the visible-text
 floors remain above it; encoded-looking data does not add a permission floor.
