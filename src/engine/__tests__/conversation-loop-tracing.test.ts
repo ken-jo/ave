@@ -10,9 +10,9 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   InMemorySpanExporter,
-  NodeTracerProvider,
   SimpleSpanProcessor,
-} from "@opentelemetry/sdk-trace-node";
+  TracerProvider,
+} from "@opentelemetry/sdk-trace";
 
 import { InputClassifier } from "../../core/input-classifier.js";
 import { RouteEngine } from "../../core/route-engine.js";
@@ -138,8 +138,8 @@ describe("ConversationLoop — loop decisions", () => {
 describe("ConversationLoop — turn tracing", () => {
   it("opens one turn span with the tool call nested under it, and no result text anywhere", async () => {
     const exporter = new InMemorySpanExporter();
-    const provider = new NodeTracerProvider({
-      spanProcessors: [new SimpleSpanProcessor(exporter)],
+    const provider = new TracerProvider({
+      spanProcessors: [new SimpleSpanProcessor({ exporter })],
     });
     const tracer = provider.getTracer("test");
     const loop = makeLoop(new ScriptedProvider(toolThenAnswer()), tracer);
@@ -181,8 +181,8 @@ describe("ConversationLoop — turn tracing", () => {
 
   it("records each decision as a span event on the turn span", async () => {
     const exporter = new InMemorySpanExporter();
-    const provider = new NodeTracerProvider({
-      spanProcessors: [new SimpleSpanProcessor(exporter)],
+    const provider = new TracerProvider({
+      spanProcessors: [new SimpleSpanProcessor({ exporter })],
     });
     const loop = makeLoop(new ScriptedProvider(toolThenAnswer()), provider.getTracer("test"));
 
