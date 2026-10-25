@@ -4,13 +4,7 @@ import {
   sanitizeZipEntryPath,
 } from "../zip-entry-path.js";
 
-/**
- * A published artifact may not ship the plugin's own runtime directories. The
- * install swap carries the LIVE `data/` into the promoted root as its last
- * step, so a payload arriving with one leaves two candidates for one state and
- * no way to merge them — and `run/`/`sockets/` would arrive on top of the
- * host's and the plugin's socket directories.
- */
+/** Artifacts must not contain data/, run/ or sockets/: promotion carries live state into those paths. */
 describe("sanitizeZipEntryPath — reserved runtime directories", () => {
   it.each([
     "data/state.json",
@@ -18,8 +12,7 @@ describe("sanitizeZipEntryPath — reserved runtime directories", () => {
     "data",
     "run/worker/control.sock",
     "sockets/egress.sock",
-    // Case-folded on macOS and Windows, where the payload would land on the
-    // live directory even though the names differ byte for byte.
+    // Case-folded runtime directory names also collide on macOS and Windows.
     "Data/state.json",
     "SOCKETS/egress.sock",
   ])("refuses %s", (entryName) => {

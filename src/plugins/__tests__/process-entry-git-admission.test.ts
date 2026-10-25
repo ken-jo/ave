@@ -1,17 +1,5 @@
-/**
- * A `process` entry, end to end through marketplace admission
- * (docs/design/plugin-hostapi-protocol.md §9.7 P4, decisions 34 and 35).
- *
- * A real git marketplace served over loopback HTTP publishes `alpha` as a
- * process entry the way admission requires: no Windows, `minAppVersion`
- * 0.14.0 (the protocol-3 floor) and a release pinned by sha256. The real ladder stages the release,
- * the install transaction commits it with a receipt recording the release
- * rung, and the runtime's provenance gate then admits it on both activation
- * paths an install reaches: prepared activation during the install, and boot
- * afterwards. The test process has no live OS sandbox, so an admitted process
- * entry is refused at spawn with `process-entry-unconfined` — which is what
- * tells "admitted, then refused at spawn" apart from "refused at the gate".
- */
+// Pinned process artifacts pass provenance admission, then fail spawn without active confinement.
+// The spawn refusal distinguishes admitted artifacts from provenance refusals.
 import AdmZip from "adm-zip";
 import { existsSync, mkdtempSync } from "node:fs";
 import { mkdir, rm, writeFile } from "node:fs/promises";
@@ -59,7 +47,6 @@ const RELEASE_PATH = "/acme/alpha/releases/download/v1.0.0/alpha-1.0.0.zip";
 
 const authority: PluginAuthority = { capabilities: [], requires: { minAppVersion: "0.14.0", hostProtocol: "3" } };
 
-/** The released zip: a process manifest and the executable it names. */
 function processZip(): Buffer {
   const zip = new AdmZip();
   zip.addFile("plugin.json", Buffer.from(`${JSON.stringify({
@@ -114,11 +101,7 @@ describe("a process entry from a pinned git release (§9.7 P4)", () => {
     _resetForTest();
   });
 
-  /**
-   * Publish `alpha` and sync it; the plan and a `stage` that runs the real
-   * ladder. A marketplace lists it in its index; a direct source serves the
-   * same descriptor at its root.
-   */
+  /** Serve the same descriptor through catalog and direct sources; staging uses the real artifact ladder. */
   async function publish(origin: "custom" | "direct" = "custom") {
     const zip = processZip();
     server.file(RELEASE_PATH, zip);
@@ -205,7 +188,6 @@ describe("a process entry from a pinned git release (§9.7 P4)", () => {
     await writeFile(registryPath, JSON.stringify({ version: 1, plugins: [] }), "utf-8");
     const live = runtime();
 
-    // The runtime's own activation, so a bypass would show as process-entry-unconfined.
     await expect(service.installGitPlugin(plan, {
       stage,
       activatePreparedArtifact: (prepared) => live.activatePreparedArtifact(prepared),
@@ -226,8 +208,7 @@ describe("a process entry from a pinned git release (§9.7 P4)", () => {
       stage,
       activatePreparedArtifact: (prepared) => live.activatePreparedArtifact(prepared),
     })).rejects.toBeInstanceOf(ProcessEntryUnconfinedError);
-    // Refused before the commit: no registry entry, receipt or payload is left
-    // (the runtime's own data directories under the root are not the payload).
+    // A pre-commit refusal leaves no registry, receipt or payload; runtime directories are separate.
     expect((await readPluginRegistry(registryPath)).plugins).toEqual([]);
     expect(existsSync(installReceiptPath(cacheRoot, "alpha"))).toBe(false);
     expect(existsSync(join(pluginsDir, "alpha", "plugin.json"))).toBe(false);

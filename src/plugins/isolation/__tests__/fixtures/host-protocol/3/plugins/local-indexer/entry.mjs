@@ -1,9 +1,4 @@
-/**
- * The hostApi surface `local-indexer` reaches (plugin-hostapi-protocol.md §9.2) —
- * a worker handle and its notifications, the folder picker and a key lease —
- * each member called once so the golden transcript beside this file shows every
- * frame that surface puts on the wire.
- */
+/** Record the indexing fixture host calls: worker lifecycle, directory selection and secret resolution. */
 export const createPlugin = async (context) => {
   const api = context.hostApi;
   const seen = { stdout: [], stderr: [], exits: [] };

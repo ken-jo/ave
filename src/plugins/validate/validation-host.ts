@@ -1,24 +1,4 @@
-/**
- * The host a plugin is validated against, and the authority it grants
- * (`docs/design/plugin-hostapi-protocol.md` §9.7, S1).
- *
- * Every member answers the same value every time, and nothing it pushes
- * happens unless the caller asks for it, so a conversation recorded against it
- * is a function of the plugin module alone. It serves the REAL dispatch table
- * through `validation-session.ts`: the dispatcher, the transport and the child
- * runtime on either side are the production ones, and only the answers behind
- * the table are recorded rather than live.
- *
- * Shared by the validator and by the conformance suites — the golden
- * transcripts, the schema parity check and the confined-child run of a golden
- * fixture — so that each is evidence about the others: they all talk to the
- * same host.
- *
- * ITS AUTHORITY IS THE BASE ENVELOPE. {@link validationConfinement} grants the
- * plugin its own root and data directory and nothing else: the validator has
- * no user approvals to consult and must not read the user's settings, so a
- * declared `sandbox` grant is not applied here.
- */
+/** Validation uses scripted host answers and the base envelope; it must never read user settings or apply declared grants. */
 import type {
   AudioCaptureEnd,
   AudioCaptureFrame,
@@ -29,15 +9,11 @@ import type {
 import type { DelegatedWorkerConfinement } from "../isolation/host-api-dispatcher.js";
 import { derivePluginChildEnvelope } from "../isolation/out-of-process-plugin.js";
 
-/**
- * Members the caller replaces, by dotted hostApi path. `undefined` removes
- * one, which is how a host build without an optional member is spelled.
- */
+/** Override by dotted path; undefined represents an unavailable optional member. */
 export type ValidationHostOverrides = Readonly<
   Record<string, ((...args: never[]) => unknown) | undefined>
 >;
 
-/** The settings every fixture sees at construction, keyed as their manifests declare. */
 const INITIAL_CONFIG: ReadonlyArray<readonly [string, unknown]> = [
   ["osNotificationsEnabled", true],
   ["environment", "external"],
@@ -47,10 +23,7 @@ const INITIAL_CONFIG: ReadonlyArray<readonly [string, unknown]> = [
   ["region", "north"],
 ];
 
-/**
- * What each host-side registration is handed when the caller fires it. The
- * values are part of every recorded transcript, so they do not change.
- */
+/** Keep scripted payloads stable because golden transcripts include them. */
 const FIRED_EVENT_DATA = { fired: "by the golden host" } as const;
 const FIRED_PLUGINS_CHANGE: PluginLifecycleEvent = {
   type: "installed",
@@ -60,14 +33,7 @@ const FIRED_PLUGINS_CHANGE: PluginLifecycleEvent = {
 
 type Listener<T> = (value: T) => void;
 
-/**
- * The host-side roots a validated plugin's context names. Fixed, so the
- * construct frame does not depend on the machine the validator runs on, and
- * none of them is read: the plugin's own root and data directory are the
- * caller's. Synthetic, and outside the plugin repositories' embedded-path rule
- * (`tools/vendor.mjs` refuses a bundle that names a user, home or temporary
- * directory): the validator is vendored as a bundle, and these strings are in it.
- */
+/** Use fixed synthetic host roots so golden construct frames remain machine-independent. */
 interface ValidationHostRoots {
   readonly hostRoot: string;
   readonly userHome: string;
@@ -81,31 +47,17 @@ const VALIDATION_HOST_ROOTS: ValidationHostRoots = {
 };
 
 export interface ValidationHost {
-  /** The object the dispatch table binds. */
   readonly api: PluginHostApi;
   readonly roots: ValidationHostRoots;
-  /**
-   * Fire every host-side registration once, in registration order: each event
-   * listener, each plugins-changed listener, each worker's stdout, stderr and
-   * exit, each capture's frame and end, and each panel's detach. What a
-   * running host would eventually do, compressed into one deterministic step.
-   */
+  /** Deliver scripted registrations once in registration order for deterministic transcripts. */
   fireAll(): void;
-  /**
-   * Run every `onShutdown` handler and wait for each, as the host's shutdown
-   * step does — which is what sends `ave/instance/shutdown`.
-   */
+  /** Await each shutdown handler through the real instance request. */
   runShutdown(): Promise<void>;
-  /** `logEvent` lines and `emitEvent` calls, for the cases that assert on them. */
   readonly logged: Array<readonly [string, string, unknown]>;
   readonly emitted: Array<readonly [string, unknown]>;
 }
 
-/**
- * Build the validation host. `overrides` replaces members by path — a missing
- * member is spelled `undefined`, a failing one throws — so an error case is
- * the same host with one answer changed.
- */
+/** Override only the intended member so failure cases keep every other scripted answer identical. */
 export function createValidationHost(overrides: ValidationHostOverrides = {}): ValidationHost {
   const logged: Array<readonly [string, string, unknown]> = [];
   const emitted: Array<readonly [string, unknown]> = [];
@@ -164,9 +116,7 @@ export function createValidationHost(overrides: ValidationHostOverrides = {}): V
       set: async (key: string, value: unknown) => {
         if (value === undefined) config.delete(key);
         else config.set(key, value);
-        // Inside `set`, as the real change bus emits: the host's own snapshot
-        // watcher is one of these, and the contract orders its push before
-        // the `config.set` reply.
+        // Push snapshot changes inside set before its reply.
         for (const entry of [...configListeners]) {
           if (entry.key === key || entry.key === "*") entry.listener(value);
         }
@@ -183,9 +133,7 @@ export function createValidationHost(overrides: ValidationHostOverrides = {}): V
     emitEvent: (type: string, data?: unknown) => void emitted.push([type, data]),
     onEvent: (_type: string, handler: Listener<unknown>) =>
       register(eventListeners, handler, () => handler(FIRED_EVENT_DATA)),
-    // The member excludes the caller, and a validated plugin is validated
-    // alone: no other plugin is installed beside it. A recording that needs a
-    // neighbourhood supplies one through `overrides`.
+    // Validation installs only one plugin; recordings needing neighbours must override that snapshot.
     getInstalledPluginIds: () => [],
     onPluginsChanged: (handler: Listener<PluginLifecycleEvent>) =>
       register(pluginsChangedListeners, handler, () => handler(FIRED_PLUGINS_CHANGE)),
@@ -309,17 +257,7 @@ export function createValidationHost(overrides: ValidationHostOverrides = {}): V
   };
 }
 
-/**
- * The validation host's authority: the base envelope and nothing else.
- *
- * `derivePluginChildEnvelope` with NO `sandbox` input — the plugin's own root
- * and data directory, its socket directory and its worker run root. No
- * `hostDirectory` grant and no `userChosenDirectory` grant: the validator has
- * no user approvals to consult and must not read `~/.ave/settings.json`. A
- * delegated worker that asks for more is refused by the same `spawnWorker`
- * check production applies, and a declared grant is reported as not
- * exercised rather than as passed.
- */
+/** Derive only the base envelope with no sandbox input; declared grants remain unmeasured. */
 export function validationConfinement(
   pluginId: string,
   pluginRoot: string,
@@ -329,8 +267,7 @@ export function validationConfinement(
     pluginId,
     pluginRoot,
     pluginDataDir,
-    // Only a `userChosenDirectory` grant reads config, and with no `sandbox`
-    // input there is none — so a read here is a broken contract, not a value.
+    // Without sandbox input no directory grant may read config; any read is a contract violation.
     configValue: (key) => {
       throw new Error(`[validation-host] the base envelope reads no config, asked for '${key}'`);
     },

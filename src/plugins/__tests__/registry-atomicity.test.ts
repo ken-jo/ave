@@ -16,9 +16,7 @@ const nodeCommand = process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath;
 
 const children = createChildTracker();
 
-// Registered on the way out of the spawn so no call site can forget. The inline
-// kills below still run on the happy path; this is what covers the paths where a
-// rejected wait or a failed expect skips them.
+// Register child cleanup at spawn so failed waits or assertions cannot leak children.
 function spawnNode(args: string[], ipc = false): ChildProcess {
   return children.track(spawn(nodeCommand, ["--import=tsx", ...args], {
     cwd: repoRoot,
@@ -56,7 +54,7 @@ describe("plugin registry transaction atomicity", () => {
 
   afterEach(async () => {
     vi.restoreAllMocks();
-    // Before the directory: a surviving child holds a lock inside it.
+    // Stop children before removing directories they may lock.
     await children.reap();
     await rm(root, { recursive: true, force: true });
   });
@@ -207,8 +205,7 @@ describe("plugin registry transaction atomicity", () => {
       })
     ))).rejects.toThrow("Nested plugin registry mutation is not allowed");
 
-    // A later transaction drains everything that could have been queued. If
-    // the nested call escaped, its `late` entry would be visible here.
+    // A later transaction exposes any writes that escaped the nested transaction boundary.
     await updatePluginRegistry(registryPath, (registry) => {
       registry.plugins.push({ id: "after", manifestPath: "after/plugin.json" });
     });

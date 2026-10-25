@@ -1,10 +1,3 @@
-/**
- * Shared helpers for marketplace test fixtures.
- *
- * Tests construct `PluginMarketplaceService` with the (paths,
- * deploymentGuard?) shape. registry.json lives at the root of pluginsRoot,
- * so tests pick a single tmp root and the helper derives the rest.
- */
 import { pluginChildEntryPath } from "../../__tests__/support/plugin-child-entry.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { execFile } from "node:child_process";
@@ -51,16 +44,7 @@ import { HOST_PROTOCOL_VERSIONS_SERVED } from "../isolation/host-api-wire.js";
 
 type GenerationCommitScope = <T>(operation: () => Promise<T>) => Promise<T>;
 
-/**
- * Generation admission for a `HostApiGenerationScope` that only needs one
- * admitted generation: `generationId` is admitted and leasable, every other id
- * is refused, and a lease runs its operation in place.
- *
- * For a host-API case whose subject is not the lease machinery — standing up
- * the real coordinator would put its scheduling between the member and the
- * assertion. The scope's own lease rules are pinned in
- * `plugin-host-effect-scope.test.ts`.
- */
+/** Admit and lease only generationId without coordinator scheduling; effect-scope tests cover lease machinery. */
 export function admittedGenerationAccess(generationId: string): PluginRuntimeGenerationAccess {
   return {
     getActive: () => undefined,
@@ -78,12 +62,7 @@ export function admittedGenerationAccess(generationId: string): PluginRuntimeGen
 
 const execFileAsync = promisify(execFile);
 
-/**
- * Lay out a plugin's state directories in `root` the way the host does —
- * `<root>/data` and, beside it, the host-only `<root>/storage` the HostApi
- * `storage` surface operates in — and return the data directory, which is
- * what a HostApi factory or runtime is handed as `pluginDataDir`.
- */
+/** Lay out sibling data/ and host-only storage/ roots; return data/ for the runtime context. */
 export function pluginDataDirIn(root: string): string {
   const dataDir = join(root, "data");
   mkdirSync(dataDir, { recursive: true, mode: 0o700 });
@@ -91,11 +70,7 @@ export function pluginDataDirIn(root: string): string {
   return dataDir;
 }
 
-/**
- * Leave under `dir` what a confined child can do to stop a plain recursive
- * `rm`: a directory it made unreadable (`chmod 000`, holding a file) and, on
- * darwin, a user-immutable directory holding a user-immutable file.
- */
+/** Reproduce child-created cleanup obstacles: unreadable directories and macOS user-immutable entries. */
 export async function seedChildLockedTree(dir: string): Promise<void> {
   const locked = join(dir, "locked");
   await mkdir(join(locked, "deep"), { recursive: true });
@@ -110,15 +85,7 @@ export async function seedChildLockedTree(dir: string): Promise<void> {
   }
 }
 
-/**
- * Restore owner write access before deleting immutable generation fixtures.
- *
- * On darwin a fixture may also carry the user-immutable flag (`uchg`), which
- * refuses both `chmod` and `rm`, so it is cleared first and again once every
- * directory is listable — the first pass cannot reach below a `000` directory.
- * Best effort, like the rest of the teardown: `chflags -R` reports entries it
- * could not reach, and the second pass is what reaches them.
- */
+/** Clear macOS uchg before chmod; repeat after unreadable parents become traversable. */
 export async function makeTestTreeWritable(root: string): Promise<void> {
   if (process.platform === "darwin") await clearUserImmutable(root);
   await restoreOwnerModes(root);
@@ -137,11 +104,7 @@ async function restoreOwnerModes(root: string): Promise<void> {
     .map((entry) => restoreOwnerModes(join(root, entry.name))));
 }
 
-/**
- * Explicit test lifecycle for storage-focused Marketplace tests. Production
- * code must supply `PluginRuntime.activatePreparedArtifact`; this helper keeps
- * unit fixtures honest about crossing the same mandatory coordination seam.
- */
+/** Storage fixtures must cross the same mandatory activation seam as production. */
 export const activateAndCommitPreparedPluginForTest: PreparedMarketplacePluginActivation =
   async (prepared) => {
     const completion = Promise.resolve();
@@ -157,13 +120,7 @@ export const preparedActivationOptionsForTest = Object.freeze({
   activatePreparedArtifact: activateAndCommitPreparedPluginForTest,
 });
 
-/**
- * Bring a staged candidate's runtime directories into existence the way the
- * real activation does, BEFORE the durable commit: `ensurePluginDataDir`
- * (the host's own materialiser — `data/` and `sockets/`, at the FINAL plugin
- * root, not the staged one) plus the `run/` root `spawnConfinedPluginChild`
- * creates for a confined child. Returns the directories it made.
- */
+/** Materialize runtime directories at the final root before commit, matching real candidate activation. */
 export function materialiseCandidateRuntimeDirsForTest(
   pluginId: string,
   stagedPluginRoot: string,
@@ -175,11 +132,7 @@ export function materialiseCandidateRuntimeDirsForTest(
   return { dataDir, socketDir: resolvePluginSocketDir(dataDir), workerRunRoot };
 }
 
-/**
- * Storage/unit-test service with an explicit test lifecycle default. Keeping
- * this adapter under `__tests__` lets legacy storage fixtures omit repetitive
- * options without weakening the production method signatures or runtime gate.
- */
+/** Keep test lifecycle defaults here without weakening production activation requirements. */
 export class TestPluginMarketplaceService extends PluginMarketplaceService {
   override installLocal(...args: Parameters<PluginMarketplaceService["installLocal"]>) {
     const [sourcePath, options] = args;
@@ -190,12 +143,7 @@ export class TestPluginMarketplaceService extends PluginMarketplaceService {
   }
 }
 
-/**
- * #885 v6 — build a pure MCP `Tool` object from a bare tool name. Tests declare
- * tools ergonomically as name strings; the host contract is pure `Tool[]`, so
- * each name is expanded to a minimal model+app-visible tool with an empty input
- * schema (the SEP-1865 standard default visibility).
- */
+/** Expand names into pure model-and-app-visible tools with empty input schemas. */
 export function pureTool(
   name: string,
   visibility: Array<"model" | "app"> = ["model", "app"],
@@ -210,12 +158,10 @@ export function pureTool(
   };
 }
 
-/** Build a pure `Tool[]` from bare names, all model+app visible (SEP-1865 default). */
 export function pureTools(...names: string[]): Tool[] {
   return names.map((n) => pureTool(n));
 }
 
-/** Accept either bare names (ergonomic) or already-pure `Tool` objects. */
 function normalizeTestTools(
   tools: ReadonlyArray<string | Tool> | undefined,
 ): Tool[] {
@@ -223,19 +169,11 @@ function normalizeTestTools(
 }
 
 export interface TestPluginPathsInput {
-  /** A tmp directory; the helper anchors plugin paths under it. */
   rootDir: string;
-  /** Optional override — defaults to `<rootDir>/plugins`. */
   pluginsRoot?: string;
-  /** Optional override — defaults to `<pluginsRoot>/.cache`. */
   cacheRoot?: string;
 }
 
-/**
- * Build a fully-formed `PluginPaths` for a test. Mirrors the production
- * resolver shape so any future PluginPaths field addition flows through
- * here without 20-site updates.
- */
 export function makeTestPluginPaths(input: TestPluginPathsInput): PluginPaths {
   return resolvePluginPaths({
     pluginsRoot: input.pluginsRoot ?? resolve(input.rootDir, "plugins"),
@@ -243,13 +181,7 @@ export function makeTestPluginPaths(input: TestPluginPathsInput): PluginPaths {
   });
 }
 
-/**
- * Build a schema-valid PluginManifest for tests. All required fields are
- * pre-filled with sensible defaults; callers only need to supply an id and
- * any overrides. Type-checked at build time — if the schema adds a new
- * required field this factory will surface a TS error at every test that
- * uses it, rather than a runtime AJV failure with an opaque fixture path.
- */
+/** Required manifest defaults stay type-checked so schema changes fail at compile time. */
 export function makeTestManifest(
   overrides: Partial<Omit<PluginManifest, "tools">> &
     Pick<PluginManifest, "id"> & {
@@ -319,15 +251,7 @@ export function makeTestPluginEntrySource(
 `;
 }
 
-/**
- * Patch Ave fields inside an on-disk Agent Plugins document.
- *
- * A fixture that reads `plugin.json`, edits a field and writes it back is
- * editing a DOCUMENT, not a flat manifest — passing it through
- * {@link agentPluginsDocument} again would nest the whole document inside the
- * namespace. This edits at the right depth instead, and throws if the namespace
- * is missing rather than creating one, so a wrong-shaped fixture fails loudly.
- */
+/** Edit Ave fields inside the existing namespace; rewrapping the document would double-nest it. */
 export function patchAveFields(
   document: Record<string, unknown>,
   patch: Record<string, unknown>,
@@ -345,19 +269,8 @@ export function patchAveFields(
   return document;
 }
 
-/**
- * A deliberately permissive Agent Plugins envelope, for suites that want to
- * exercise a HOST cross-field check rather than the real manifest schema.
- *
- * Those suites pass `parsePluginJson` a loose validator on purpose: if the test
- * passes, the rejection came from the host check and not from the schema. That
- * only works while the stand-in agrees with the document shape — an envelope
- * that disagrees fails for the wrong reason and the suite stops measuring what
- * it is about. Hence one definition rather than a literal per suite.
- *
- * `namespaceProperties` names the Ave fields a given suite cares about;
- * everything else inside the namespace is left unconstrained unless `strict`.
- */
+// A permissive envelope must preserve document shape so host-check tests fail at the intended boundary.
+// Only namespaceProperties are constrained unless strict.
 export function permissiveManifestEnvelopeSchema(options: {
   namespaceProperties?: Record<string, unknown>;
   namespaceRequired?: string[];
@@ -375,8 +288,7 @@ export function permissiveManifestEnvelopeSchema(options: {
       version: { type: "string", pattern: "^\\d+\\.\\d+\\.\\d+$" },
       extensions: {
         type: "object",
-        // Non-strict still has to admit a foreign namespace, which is an
-        // object of someone else's shape.
+        // Non-strict envelopes must still allow unknown vendor objects.
         additionalProperties: strict ? false : { type: "object" },
         properties: {
           [AVE_EXTENSION_NAMESPACE]: {
@@ -394,15 +306,7 @@ export function permissiveManifestEnvelopeSchema(options: {
   };
 }
 
-/**
- * A factory for AJV validators over {@link permissiveManifestEnvelopeSchema}.
- *
- * Three manifest suites compiled their own — same `allErrors`, same formats,
- * same envelope — differing only in the namespace fields each one is about,
- * which stay with the caller. A factory rather than one compiled validator,
- * because a validator carries the errors of its last `validate()` call and
- * these suites read `.errors` per test.
- */
+/** Create a validator per suite because its errors belong to the last validation call. */
 export function permissiveManifestValidatorFactory(
   options: Parameters<typeof permissiveManifestEnvelopeSchema>[0] = {},
 ): () => ValidateFunction {
@@ -416,15 +320,7 @@ export function permissiveManifestValidatorFactory(
   };
 }
 
-/**
- * The `properties` map of the Ave namespace inside the host manifest schema.
- *
- * Every Ave field sits under `extensions["ai.agent-connector.ave"]` in an Agent Plugins
- * document, so a suite reaching for `schema.properties.<aveField>` is reaching
- * into the portable top level, where that field is not. The path gets one
- * definition here rather than one per suite, and throws rather than returning
- * undefined so a wrong path fails loudly instead of asserting against nothing.
- */
+/** Ave fields live inside extensions["ai.agent-connector.ave"], not portable top-level properties. */
 export function aveSchemaProperties(
   schema: unknown,
 ): Record<string, Record<string, unknown>> {
@@ -444,12 +340,7 @@ export function aveSchemaProperties(
   return namespace.properties;
 }
 
-/**
- * Fields Agent Plugins 1.0.0 puts at the top level besides identity. A fixture
- * naming one of these means the top-level field, not a host field that happens
- * to share the name — the split has to match `flattenAgentPluginsManifest`, or
- * a round trip would move a field.
- */
+/** Portable top-level fields must match flattenAgentPluginsManifest so round trips preserve field ownership. */
 const AGENT_PLUGINS_PORTABLE_FIELDS: ReadonlySet<string> = new Set([
   "version",
   "description",
@@ -460,17 +351,7 @@ const AGENT_PLUGINS_PORTABLE_FIELDS: ReadonlySet<string> = new Set([
   "keywords",
 ]);
 
-/**
- * Project a flat manifest into the Agent Plugins 1.0.0 document that actually
- * goes on disk — the inverse of the host's `flattenAgentPluginsManifest`.
- *
- * Fixtures stay flat because that is the shape assertions read and the shape a
- * test is usually about. Only the bytes written to `plugin.json` are nested, so
- * a fixture's subject stays its content rather than its envelope.
- *
- * Faithful about absence: a fixture that omits `id` produces a document with no
- * `name`, which is how a test drives the "missing identity" path.
- */
+/** Write nested documents from flat fixtures while preserving missing identity for rejection tests. */
 export function agentPluginsDocument(
   manifest: Readonly<Record<string, unknown>> | PluginManifest,
 ): Record<string, unknown> {
@@ -487,7 +368,6 @@ export function agentPluginsDocument(
   return top;
 }
 
-/** Backfill the served protocol for runtime fixtures while preserving explicit overrides. */
 export function servedAgentPluginsDocument(
   manifest: Readonly<Record<string, unknown>> | PluginManifest,
 ): Record<string, unknown> {
@@ -501,22 +381,8 @@ export function servedAgentPluginsDocument(
   });
 }
 
-/**
- * A writer for the `plugin.json` a manifest-validation suite parses.
- *
- * The five runtime manifest suites each wrote the same document: one
- * {@link agentPluginsDocument} carrying a placeholder description, version and
- * entry plus a single nominal tool, with only the plugin's identity and the
- * field under test differing. That envelope is the shared artifact — a manifest
- * the real validator accepts once the field under test is removed — so a suite
- * that restates it can also drift from it, and a manifest rejected for the
- * wrong reason reads exactly like the rejection the suite is asserting.
- *
- * The identity binds once per suite; `extra` is what the individual call is
- * about. `directory` is read per call rather than captured, because the scratch
- * directory is per-test state and stays the suite's to create and remove — one
- * of these suites writes a second manifest of its own into the same directory.
- */
+// Share a valid manifest envelope so each suite tests its chosen field rather than unrelated schema failures.
+// Read the scratch directory per call because fixtures create it per test.
 export function pluginManifestWriter(
   identity: { readonly id: string; readonly name: string },
   directory: () => string,
@@ -584,7 +450,7 @@ export interface TestRegistryEntry {
   installSource?: "admin" | "user" | "local-dev";
   installedBy?: "admin" | "user";
   _devLinked?: boolean;
-  /** The git source binding of a git install (design §15.1). */
+  /** The source binding of a git install. */
   origin?: unknown;
 }
 
@@ -600,15 +466,13 @@ export async function writeTestPluginRegistry(
   );
 }
 
-/** `src/`, the root the import-boundary tests read the runtime import graph from. */
 export const SOURCE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
-/** `src`-relative and `/`-separated, so a boundary failure names a file readably on every platform. */
+/** Use src-relative POSIX paths for portable boundary failure messages. */
 export function sourceDisplayPath(file: string): string {
   return relative(SOURCE_ROOT, file).split(sep).join("/");
 }
 
-/** A module the app ships: not a test, a test helper or a probe. */
 export function isProductionSourceModule(file: string): boolean {
   const name = sourceDisplayPath(file);
   return !/(^|\/)__tests__\//u.test(name)
@@ -616,17 +480,7 @@ export function isProductionSourceModule(file: string): boolean {
     && !/\.test\.tsx?$/u.test(name);
 }
 
-/**
- * A gate between a test and the plugin code it loads.
- *
- * Every `entry` plugin runs in a plugin child (§9.8 A1), so the test and the
- * plugin no longer share a heap and a deferred promise parked on `globalThis`
- * cannot reach the plugin. A signal here is a file in a directory the test
- * owns (its own temp root, never a global or the user's home): one side
- * writes it whole, by rename, and the other polls for it. `moduleSource` is
- * the plugin side — paste it at the top of a fixture module and call
- * `gate.signal(name)` / `await gate.waitFor(name)` there.
- */
+/** Cross-process tests signal through atomically renamed files under their own temporary root; globals cannot reach plugin children. */
 export interface ChildProcessGate {
   readonly moduleSource: string;
   signal(name: string, value?: string): Promise<void>;
@@ -702,15 +556,7 @@ export function makeTestPluginRuntimeWithAudit(
   });
 }
 
-/**
- * Bind the smallest complete generation lifecycle needed by legacy runtime
- * unit tests. Product code never receives this adapter: strict lifecycle
- * binding and immutable receipt-backed roots are covered by dedicated tests.
- * These older tests intentionally exercise parsing, startup, restart, and
- * teardown in their mutable tmp fixture, so their candidate-root materializer
- * is replaced with that fixture root while publication still goes through the
- * same runtime prepare/publish boundary as production.
- */
+/** Runtime unit tests use mutable fixture roots with real coordinator publication; production keeps strict receipt-backed generation binding. */
 export function bindTestPluginRuntimeGeneration(runtime: PluginRuntime): PluginRuntime {
   const active = new Map<string, ActivePluginGeneration<HostPluginGenerationState>>();
   const lifecycleTails = new Map<string, Promise<void>>();
@@ -767,10 +613,7 @@ export function bindTestPluginRuntimeGeneration(runtime: PluginRuntime): PluginR
   ): ActivePluginGeneration<HostPluginGenerationState> | undefined => {
     const existing = active.get(pluginId);
     if (existing) return existing;
-    // A failed prepared candidate has never been published into the runtime
-    // projection. Do not manufacture a legacy identity merely because failure
-    // cleanup asks whether a generation is active; doing so would make its
-    // later retry collide with a phantom `undefined` install claim.
+    // Unpublished failed candidates have no active identity; inventing one would make retries collide with phantom install claims.
     if (!runtime.listPluginIds().includes(pluginId)) return undefined;
     if (runtime.resolvePluginInstallIdIfKnown(pluginId) === undefined) {
       (runtime as unknown as {
@@ -1011,14 +854,7 @@ export function makeTestPluginMarketplaceService(rootDir: string): PluginMarketp
   return new TestPluginMarketplaceService(makeTestPluginPaths({ rootDir }));
 }
 
-/**
- * Plugin state under `<pluginRoot>`, keyed by path relative to the plugin
- * root: what a confined child writes under `data/` — a JSON sidecar at the top
- * and a binary blob one level down — and what the HostApi storage surface
- * writes under the host-only `storage/`, including a depth-2 key the way
- * samplemail and the app bridge store theirs. A test sees flat and nested files
- * in BOTH state directories survive a root swap.
- */
+/** Flat and nested binary state in both data/ and storage/ must survive root swaps. */
 export const PLUGIN_DATA_FIXTURE: ReadonlyMap<string, Buffer> = new Map([
   [`${PLUGIN_DATA_DIR_NAME}/state.json`, Buffer.from(`${JSON.stringify({ sessions: 3, lastRun: "2026-08-01T00:00:00.000Z" })}\n`)],
   [`${PLUGIN_DATA_DIR_NAME}/index/segment-0001.bin`, Buffer.from([0, 255, 127, 128, 1, 2, 3, 4, 250, 251, 252, 253])],
@@ -1035,13 +871,7 @@ export async function seedPluginDataFixture(pluginRoot: string): Promise<void> {
   }
 }
 
-/**
- * Every file under `<pluginRoot>/data` and `<pluginRoot>/storage` as
- * `path relative to the plugin root → bytes`, so one assertion compares file
- * set and content at once. An absent directory reads as empty: a swap that
- * dropped one fails the comparison against {@link PLUGIN_DATA_FIXTURE}
- * instead of throwing before the comparison.
- */
+/** Compare file sets and bytes together; absent directories read as empty so state loss fails the assertion. */
 export async function readPluginDataFixture(pluginRoot: string): Promise<Map<string, Buffer>> {
   const out = new Map<string, Buffer>();
   async function walk(dir: string): Promise<void> {

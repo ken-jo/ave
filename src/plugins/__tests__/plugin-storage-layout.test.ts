@@ -1,12 +1,5 @@
 import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
-/**
- * Plugin storage layout — the security boundary inside a plugin root.
- *
- * `resolvePluginWritableRoot` is the single derivation every producer of
- * `ownerPluginSandboxRoot` uses. It must point at the plugin's data dir and
- * never at the plugin root, because the root holds the bundle the next load
- * imports into the Electron main process.
- */
+/** The writable root must be data/, never the plugin root containing executable payload. */
 import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { lstat, mkdir, mkdtemp, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
@@ -41,17 +34,12 @@ import { isPathWithin, isResolvedPathWithin } from "../plugin-storage-containmen
 import { isGrantPathWithin, outermostContainingRoots } from "../../permissions/asrt-sandbox.js";
 import { PLUGIN_DATA_FIXTURE, makeTestTreeWritable, readPluginDataFixture, seedChildLockedTree, seedPluginDataFixture } from "./test-helpers.js";
 
-/**
- * One armed, one-shot transient lock on the next `rename` into a path ending
- * with `lockRenameEndingWith`; every other `rename` passes through, so the
- * rest of this suite runs against the real filesystem.
- */
+/** Inject one transient destination lock; other renames use the real filesystem. */
 const renameLock = vi.hoisted(() => ({
   lockRenameEndingWith: undefined as string | undefined,
   /** Runs once, right before the first rename or link into `to` or out of `from`. */
   beforeMove: undefined as { to?: string; from?: string; run: () => Promise<void> } | undefined,
   unlinkFailure: undefined as string | undefined,
-  /** Every recursive rm the module under test issued, by path. */
   recursiveRms: [] as string[],
   /** One-shot: the entry is removed right before the first lstat of it. */
   vanishOnLstat: undefined as string | undefined,
@@ -114,7 +102,6 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 
 const PLUGIN_ID = "ave-plugin-layout-fixture";
 
-/** The recovery policy, recording what it discarded. */
 function keepDestination(discarded: string[] = []) {
   return {
     onConflict: "keep-destination" as const,
@@ -158,17 +145,13 @@ describe("isPathWithin", () => {
   });
 
   it("refuses a sibling whose name merely starts with the root's", () => {
-    // The reason this predicate is shared rather than rewritten per site: a
-    // bare `startsWith` accepts `/srv/data-evil` for a root of `/srv/data`.
+    // Bare prefix matching would admit a sibling such as /srv/data-evil.
     const root = resolve("/srv", "data");
     expect(isPathWithin(root, `${root}-evil`)).toBe(false);
   });
 
   it("accepts a descendant of a root that already ends in a separator", () => {
-    // A second separator would be appended and match nothing, so a legitimate
-    // path would read as outside its own root. On Windows a drive root is
-    // exactly this shape, which is where it would have surfaced first — as a
-    // plugin whose own directory looks foreign to it, not as an escape.
+    // A drive root already ends in a separator; appending another would reject contained paths.
     const root = resolve("/srv", "data");
     const rootWithTrailingSeparator = `${root}${sep}`;
     expect(isPathWithin(rootWithTrailingSeparator, under(root, "file.txt"))).toBe(true);
@@ -178,11 +161,7 @@ describe("isPathWithin", () => {
 
 describe("isResolvedPathWithin", () => {
   it("keeps a directory whose own name begins with two dots", () => {
-    // The predicate this replaced was `relative(root, target)` +
-    // `!rel.startsWith("..")`, spelled identically at seven sites. For
-    // `<root>/..foo` that relative path IS `"..foo"`, so every one of the seven
-    // read a plainly-contained directory as an escape. Nothing named `..foo`
-    // happened to exist, which is why it never showed up as a bug report.
+    // A ..foo segment is a contained name; only a complete .. segment escapes.
     const root = resolve("/srv", "data");
     expect(isResolvedPathWithin(root, resolve(root, "..foo"))).toBe(true);
     expect(isResolvedPathWithin(root, resolve(root, "..foo", "bar.txt"))).toBe(true);
@@ -192,7 +171,6 @@ describe("isResolvedPathWithin", () => {
     const root = resolve("/srv", "data");
     expect(isResolvedPathWithin(root, resolve("/srv", "data-evil"))).toBe(false);
     expect(isResolvedPathWithin(root, resolve("/etc", "passwd"))).toBe(false);
-    // `..` as a whole segment is an escape and must stay one.
     expect(isResolvedPathWithin(root, `${root}${sep}..${sep}evil`)).toBe(false);
   });
 
@@ -208,9 +186,7 @@ describe("isResolvedPathWithin", () => {
   });
 
   it("anchors a relative argument the same way `path.relative` did", () => {
-    // Behaviour the seven copies had by accident (both sides went through
-    // `path.relative`, which resolves against cwd) and that callers still rely
-    // on. Made explicit here so a future edit cannot drop it silently.
+    // Relative inputs must resolve against cwd.
     expect(isResolvedPathWithin(process.cwd(), "package.json")).toBe(true);
     expect(isResolvedPathWithin(resolve(process.cwd(), "src"), "package.json")).toBe(false);
   });
@@ -218,11 +194,7 @@ describe("isResolvedPathWithin", () => {
 
 describe("resolvePluginSocketDir", () => {
   it("sits BESIDE the data directory, not inside it", () => {
-    // Inside would be simpler and wrong. The Unix-socket ALLOW is scoped to one
-    // directory on macOS, so putting the socket dir under `data` would make
-    // every ordinary plugin file share that scope — and the case in
-    // `confined-plugin-child.test.ts` that proves the ALLOW is separate from
-    // the write jail would have nothing left to measure.
+    // Keep sockets outside data/ so the socket allowance does not cover every writable plugin file.
     const dataDir = resolvePluginWritableRoot(PLUGIN_ID);
     expect(resolvePluginSocketDir(dataDir)).toBe(
       resolve(aveHome(), "plugins", PLUGIN_ID, PLUGIN_OWN_SOCKET_DIR_NAME),
@@ -230,11 +202,8 @@ describe("resolvePluginSocketDir", () => {
   });
 
   it("follows a relocated data directory rather than rebuilding from the home", () => {
-    // The property that keeps the granted directory and the created one equal.
-    // A derivation from `aveHome()` and the id would answer with the
-    // production path for a plugin whose data dir is somewhere else — and the
-    // child would then be handed a directory the sandbox never heard of.
-    // Resolved so the expected root carries the drive on Windows as resolve() does.
+    // Derive grants from the actual data root so created and confined directories match.
+    // Resolve the root to retain the drive on Windows.
     const relocated = resolve("/somewhere/else/plugins/p");
     expect(resolvePluginSocketDir(join(relocated, "data"))).toBe(
       join(relocated, PLUGIN_OWN_SOCKET_DIR_NAME),
@@ -250,9 +219,7 @@ describe("assertUnixSocketPathFits", () => {
   });
 
   it("refuses one byte over, and says the length rather than leaving EINVAL to explain it", () => {
-    // The failure this replaces is `bind()` answering `EINVAL` — "malformed
-    // address" — which names nothing and sends the reader at the address
-    // family, the permissions, anywhere but a length.
+    // Reject oversized socket paths with a length error before bind returns opaque EINVAL.
     expect(() => assertUnixSocketPathFits("/".repeat(limit + 1), "probe")).toThrow(
       new RegExp(`${String(limit + 1)} bytes`),
     );
@@ -262,9 +229,7 @@ describe("assertUnixSocketPathFits", () => {
   });
 
   it("counts BYTES, not characters", () => {
-    // A path is bytes to the kernel. A limit measured in JS string length would
-    // pass a name of multi-byte characters that the kernel then refuses — the
-    // guard would be the thing making the failure opaque.
+    // Kernel socket-path limits count bytes, not JavaScript characters.
     const multiByte = "가".repeat(Math.ceil(limit / 3));
     expect(multiByte.length).toBeLessThanOrEqual(limit);
     expect(() => assertUnixSocketPathFits(multiByte, "probe")).toThrow(/bytes/);
@@ -334,7 +299,6 @@ describe("carryPluginStateDirs", () => {
       /both roots hold a plugin host storage directory/,
     );
 
-    // `data/` is checked first and moved first; the refusal still left it home.
     expect(await readPluginDataFixture(from)).toEqual(PLUGIN_DATA_FIXTURE);
     expect(existsSync(join(to, PLUGIN_DATA_DIR_NAME))).toBe(false);
   });
@@ -463,15 +427,11 @@ describe("carryPluginSocketDirs", () => {
     await expect(carryPluginSocketDirs(from, to, { onConflict: "reject" })).rejects.toThrow(/bound at .* during the carry/);
     expect(statSync(sourceEntry).ino).toBe(lateInode);
     expect(readFileSync(sourceEntry, "utf8")).toBe("newly bound");
-    // The carried entry left the child-writable directory before the link was
-    // refused; it is kept, host-staged, for the next carry to place.
+    // Keep an entry host-staged if it left the writable directory before a link refusal.
     expect(statSync(join(from, PLUGIN_SOCKET_CARRY_DIR_NAME, "late")).ino).toBe(carriedInode);
   });
 
-  // macOS link(2) follows a symlink and hard-links its target. sockets/ is in
-  // the child's write envelope, so a child that swaps its socket for a link
-  // to a file it may not write must never get a hard link to that file out
-  // of the carry (the escape reproduced under a real Seatbelt child).
+  // macOS link(2) follows symlinks; a child swap must never yield a hard link to an outside file.
   it.skipIf(process.platform === "win32")("never hard-links the target of a symlink raced into sockets after preflight", async () => {
     const from = join(root, "old");
     const to = join(root, "new");
@@ -516,9 +476,7 @@ describe("carryPluginSocketDirs", () => {
     expect(readFileSync(victim, "utf8")).toBe("original");
   });
 
-  // A carry interrupted while the roots had the other roles leaves its
-  // staging in what is now the RECEIVING root; it belongs to that root's
-  // sockets/ and must not be stranded beside the directory that replaces it.
+  // Interrupted staging belongs to the receiving root and must survive directory replacement.
   it("places an entry an interrupted carry left staged in the receiving root", async () => {
     const from = join(root, "old");
     const to = join(root, "new");
@@ -537,9 +495,7 @@ describe("carryPluginSocketDirs", () => {
     expect(existsSync(join(to, PLUGIN_SOCKET_CARRY_DIR_NAME))).toBe(false);
   });
 
-  // A child can leave any shape in its own sockets/. Install refuses it (the
-  // tests above); recovery must still finish, or the plugin stays unresolved
-  // on every boot. It removes the entry without following it, and says so.
+  // Recovery must remove malformed child entries without following them so every update reaches a disposition.
   it.skipIf(process.platform === "win32")("removes refused shapes under keep-destination instead of failing the recovery", async () => {
     const from = join(root, "old");
     const to = join(root, "new");
@@ -570,11 +526,7 @@ describe("carryPluginSocketDirs", () => {
     expect(readFileSync(victim, "utf8")).toBe("original");
   });
 
-  // A recursive delete inside a directory the child can write races the
-  // child: it can swap a subdirectory for a link to an outside directory
-  // between rm's lstat and its descent. Every entry the carry deletes is
-  // first renamed (which never follows) into a host-only directory, and only
-  // deleted there.
+  // Rename child-writable entries into host-only staging before recursive deletion to prevent link-swap escapes.
   it.skipIf(process.platform === "win32")("deletes recursively only inside the host-only discard directory", async () => {
     const from = join(root, "old");
     const to = join(root, "new");
@@ -604,9 +556,7 @@ describe("carryPluginSocketDirs", () => {
     expect(existsSync(discard(to))).toBe(false);
   });
 
-  // A live child owns its sockets/ entries and a worker its run/ leaf, so
-  // either can be gone between the carry's readdir and its next step. That
-  // is nothing left to move, never a failure or a false conflict.
+  // Entries can disappear between readdir and carry; absence is neither failure nor conflict.
   it("treats a socket its child unlinked after readdir as nothing to move", async () => {
     const from = join(root, "old");
     const to = join(root, "new");
@@ -684,9 +634,7 @@ describe("carryPluginSocketDirs", () => {
     expect(await readdir(join(to, "sockets"))).toEqual([]);
   });
 
-  // A child that keeps binding new sockets while the carry runs makes the
-  // destination's rmdir fail every time. That is a clear, retryable outcome:
-  // nothing it bound is lost, and the error says to retry.
+  // Repeated binds may prevent rmdir; preserve every socket and return a retryable error.
   it("fails clearly, losing nothing, when a live child keeps filling the destination", async () => {
     const from = join(root, "old");
     const to = join(root, "new");
@@ -704,8 +652,7 @@ describe("carryPluginSocketDirs", () => {
       .toEqual(["a.sock", "late-1", "late-2", "late-3"]);
   });
 
-  // An interrupted delete leaves its entry in the host-only discard
-  // directory; the next carry over either root empties it.
+  // The next carry must finish interrupted host-only discards.
   it("empties a discard directory an interrupted carry left in either root", async () => {
     const from = join(root, "old");
     const to = join(root, "new");
@@ -721,9 +668,7 @@ describe("carryPluginSocketDirs", () => {
     expect(existsSync(join(to, PLUGIN_SOCKET_DISCARD_DIR_NAME))).toBe(false);
   });
 
-  // At runtime a discarded worker leaf may still be bound into a live
-  // worker (bubblewrap --bind holds the directory, not its path), so the
-  // recursive delete waits for the boot sweep, before any child runs.
+  // A discarded leaf may remain bound into a live worker; recursive deletion waits for boot.
   describe("discards and the confined-process phase", () => {
     afterEach(() => { _resetConfinedProcessPhaseForTests(); });
 
@@ -891,8 +836,7 @@ describe("carryPluginSocketDirs", () => {
     expect(existsSync(join(to, PLUGIN_WORKER_RUN_DIR_NAME))).toBe(false);
   });
 
-  // Which side wins is decided by contents, never by location: a live
-  // worker can `mkdir run/<id>` at either root while a swap is in flight.
+  // Choose the original directory by contents, not location; live workers can create leaves at either root.
   it("replaces an EMPTY destination with the source directory itself", async () => {
     const from = join(root, "old");
     const to = join(root, "new");
@@ -908,9 +852,7 @@ describe("carryPluginSocketDirs", () => {
     expect(existsSync(join(from, PLUGIN_OWN_SOCKET_DIR_NAME))).toBe(false);
   });
 
-  // An EMPTY source is still the directory the running children were wrapped
-  // against (a bubblewrap child holds it by bind mount), so it is the
-  // destination's entries that move, never the source that is dropped.
+  // Even an empty source may be bind-mounted; merge into it without replacing its identity.
   it("keeps an EMPTY source's identity and moves the destination's entries into it", async () => {
     const from = join(root, "old");
     const to = join(root, "new");
@@ -958,7 +900,6 @@ describe("carryPluginSocketDirs", () => {
     await expect(carryPluginSocketDirs(from, to, { onConflict: "reject" }))
       .rejects.toThrow(/both roots hold sockets\/egress\.sock/);
 
-    // Refused before anything moved: both sides exactly as they were.
     expect(readFileSync(join(from, PLUGIN_OWN_SOCKET_DIR_NAME, "egress.sock"), "utf8")).toBe("source");
     expect(readFileSync(join(to, PLUGIN_OWN_SOCKET_DIR_NAME, "egress.sock"), "utf8")).toBe("destination");
   });
@@ -976,8 +917,7 @@ describe("carryPluginSocketDirs", () => {
     expect(readFileSync(join(to, PLUGIN_OWN_SOCKET_DIR_NAME, "egress.sock"), "utf8")).toBe("destination");
   });
 
-  // renameDirectory retries a Windows lock on its own; the caller still has
-  // to be able to log the contention it no longer wraps.
+  // The caller must still observe Windows contention handled by renameDirectory retries.
   it("reports each retried Windows lock through onRetry", async () => {
     const from = join(root, "old");
     const to = join(root, "new");
@@ -1012,18 +952,12 @@ describe("carryPluginSocketDirs", () => {
   });
 });
 
-/**
- * The resolving policy recovery uses. Every conflict must end in a decision:
- * refusing leaves `pendingUpdate` set and the plugin unloadable forever.
- */
+/** Recovery must resolve every conflict or pendingUpdate prevents the plugin from loading. */
 describe("carryPluginStateDirs — resolving conflict policy", () => {
   let root: string;
   let parked: string[];
 
-  /**
-   * `unattributedRoot` names the live install path — the only root a stray
-   * write can reach. Whichever side of the carry is under it loses.
-   */
+  /** unattributedRoot is the stray-writable live path; whichever side is under it loses. */
   const resolvePolicy = (unattributedRoot: string) => ({
     onConflict: "resolve" as const,
     unattributedRoot,
@@ -1054,8 +988,6 @@ describe("carryPluginStateDirs — resolving conflict policy", () => {
   it("removes an empty destination data directory and carries the real one in", async () => {
     const { from, to } = await twoRoots();
     await seedPluginDataFixture(from);
-    // Exactly the state a storage call landing in the swap window used to
-    // leave at the promoted root: the directory exists and holds nothing.
     await mkdir(join(to, PLUGIN_DATA_DIR_NAME));
 
     await expect(carryPluginStateDirs(from, to, resolvePolicy(to))).resolves.toBe(true);
@@ -1102,11 +1034,7 @@ describe("carryPluginStateDirs — resolving conflict policy", () => {
     expect(await readdir(parked[0]!)).toEqual(["unattributed.bin"]);
   });
 
-  /**
-   * The direction that made the source-always-wins rule wrong: when the LIVE
-   * path is the carry's source, the destination is a backup holding state a
-   * transaction deliberately put there, and it must survive untouched.
-   */
+  /** When the live path is the source, the destination backup remains authoritative. */
   it("parks the SOURCE when the source is the live path, and leaves the destination alone", async () => {
     const { from, to } = await twoRoots();
     await mkdir(join(from, PLUGIN_DATA_DIR_NAME), { recursive: true });
@@ -1151,9 +1079,7 @@ describe("carryPluginStateDirs — resolving conflict policy", () => {
   });
 });
 
-// Staging, restore and backup copies are deleted right away because no
-// confined process is granted a path in them; a runtime directory there
-// breaks that premise and must refuse the delete.
+// Immediate deletion requires a payload-only root; runtime directories must refuse it.
 describe("assertPayloadOnlyPluginTree", () => {
   let root: string;
   beforeEach(async () => { root = await mkdtemp(join(tmpdir(), "payload-only-")); });
@@ -1177,8 +1103,7 @@ describe("pluginPayloadCopyFilter", () => {
     const pluginRoot = resolve(sep, "plugins", PLUGIN_ID);
     const filter = pluginPayloadCopyFilter(pluginRoot);
     for (const runtimeDir of PLUGIN_RUNTIME_DIR_NAMES) {
-      // `run/` and `sockets/` hold live Unix sockets: `cp` over one fails the
-      // whole copy with ERR_FS_CP_SOCKET rather than skipping it.
+      // Copying live Unix sockets fails with ERR_FS_CP_SOCKET; exclude run/ and sockets/.
       expect(filter(resolve(pluginRoot, runtimeDir))).toBe(false);
     }
     expect(filter(resolve(pluginRoot, "plugin.json"))).toBe(true);
@@ -1187,11 +1112,7 @@ describe("pluginPayloadCopyFilter", () => {
   });
 });
 
-/**
- * The carry asks the filesystem (`lstat`) and the copy filter compares
- * strings. On a case-folding volume those two must not disagree about `Data/`,
- * or the filter copies a directory the carry then has to reconcile.
- */
+/** String-based copy filters must agree with lstat on case-folding volumes. */
 describe("isSamePluginPath", () => {
   it("folds case only where the filesystem does", () => {
     const dataDir = resolve(sep, "plugins", PLUGIN_ID, PLUGIN_DATA_DIR_NAME);
@@ -1206,8 +1127,6 @@ describe("isSamePluginPath", () => {
     try {
       await mkdir(join(root, PLUGIN_DATA_DIR_NAME));
       const filter = pluginPayloadCopyFilter(root);
-      // `existsSync` is the filesystem's own answer; the filter must give the
-      // same one, whichever platform this runs on.
       const filesystemSeesAlias = existsSync(join(root, "Data"));
       expect(filter(join(root, "Data"))).toBe(!filesystemSeesAlias);
     } finally {
@@ -1225,9 +1144,7 @@ describe("outermostContainingRoots", () => {
   });
 
   it("hands a grant the envelope root, never a component the plugin can turn into a link", async () => {
-    // The plugin's own process re-points `data/link` at a directory outside;
-    // the path a worker asked for runs through it. What a Windows ACL grant is
-    // given must not: srt-win stamps the ACE on whatever the path resolves to.
+    // A child can repoint data/link; an access grant must not follow it outside the allowed roots.
     const data = join(root, "data");
     const outside = join(root, "outside");
     await mkdir(data);
@@ -1239,10 +1156,8 @@ describe("outermostContainingRoots", () => {
 
     const throughLink = [join(data, "link", "segments"), join(data, "link")];
     const roots = [data, sockets, chosenInData];
-    // On Windows containment is asked on the canonical form admission uses,
-    // which follows the link: a path re-pointed outside every root is refused
-    // rather than granted at any root. Elsewhere the question is lexical and
-    // the root is what the grant names either way.
+    // Windows admission checks canonical paths so repointed links cannot receive outside grants.
+    // Other platforms use lexical containment.
     const granted = process.platform === "win32"
       ? outermostContainingRoots([chosenInData, join(sockets, "a.sock")], roots)
       : outermostContainingRoots([throughLink[0]!, chosenInData, join(sockets, "a.sock"), throughLink[1]!], roots);
@@ -1264,8 +1179,7 @@ describe("outermostContainingRoots", () => {
     afterEach(() => { Object.defineProperty(process, "platform", platform); });
 
     it("takes a case-variant spelling of a nested root for the root it is inside", async () => {
-      // `...\acme\DATA\work` is `data\work` to NTFS. Taken for a root of its
-      // own, a grant would name it — and the plugin re-points it at will.
+      // Case-folded DATA/work belongs to data/ and must not become a separately grantable root.
       const data = join(root, "data");
       await mkdir(join(data, "work"), { recursive: true });
       const variant = join(root, "DATA", "work");

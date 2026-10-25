@@ -124,9 +124,7 @@ describe("PluginRuntime config overrides", () => {
     events.length = 0;
     await runtime.restartAll();
 
-    // Replacement publishes the candidate before retiring predecessor-scoped
-    // effects. A global onDisable here would erase the freshly published host
-    // projection, so it is reserved for actual plugin removal/disable.
+    // Publish the replacement before retiring predecessor effects; global onDisable would erase the new projection.
     expect(events).toEqual([]);
     await expect(runtime.call("cleanup_echo")).resolves.toBe("ok");
   });
@@ -152,11 +150,7 @@ describe("PluginRuntime config overrides", () => {
         },
       },
     });
-    // No override for schema-default-plugin — handler must see the
-    // schema-declared default, not undefined. Reproduces the samplehub
-    // 404 regression where `${cfg.hubServerUrl}${path}` produced
-    // `undefined/api/v1/me` because configSchema defaults weren't
-    // applied at sandbox-context build time.
+    // Runtime context must include schema defaults even when no saved override exists.
     const runtime = makeTestPluginRuntime(fixture, {
       configOverrides: {},
     });

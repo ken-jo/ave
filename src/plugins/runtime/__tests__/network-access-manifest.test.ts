@@ -1,17 +1,4 @@
-/**
- * Tier A — `networkAccess` manifest validation through the host schema
- * validator (`buildManifestValidator()`), the load-time path `parsePluginJson()`
- * runs at boot/install.
- *
- * Regression guard: when the host schema lacked `networkAccess`, the strict
- * root `additionalProperties:false` rejected
- * every migrated plugin manifest (meeting STT, samplemail) as an unknown
- * property; the fail-soft load path then dropped the plugin with only an
- * audit-log entry. No prior test drove `buildManifestValidator()` with a
- * networkAccess manifest, so the regression was invisible. This locks the real
- * path: the field is accepted, its shape is still validated, and unrelated
- * unknown properties are still rejected (the OR-wrap must not relax that).
- */
+/** Real host-schema validation must accept declared network access without relaxing unknown-field rejection. */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -62,10 +49,7 @@ describe("manifest networkAccess (Tier A) — host-owned schema validator path",
   });
 
   it("carries the loopback literals through load-time normalization", async () => {
-    // End-to-end for a plugin declaring a local endpoint the user runs: the
-    // schema accepts the literals and `normalizeAllowedHosts` keeps them
-    // instead of throwing on the one-dot rule, which is what makes the
-    // declaration writable at all. Reachability is still `host-fetch-guard`'s.
+    // Loopback literals must survive normalization; the fetch guard still decides reachability.
     const validator = await buildManifestValidator();
     const path = await writeManifest({
       networkAccess: {
@@ -114,9 +98,7 @@ describe("manifest networkAccess (Tier A) — host-owned schema validator path",
   });
 
   it("rejects an authCookiePartition carrying a colon (partition-namespace escape)", async () => {
-    // Only the `<sub>` segment may be declared; the host composes
-    // `persist:plugin-auth:<pluginId>:<sub>`. A colon would let a declaration
-    // append segments to that composition.
+    // Declare only the partition suffix; colons could append segments to the host-composed auth partition.
     const validator = await buildManifestValidator();
     const path = await writeManifest({
       networkAccess: {

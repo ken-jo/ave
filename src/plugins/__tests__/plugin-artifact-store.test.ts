@@ -1,29 +1,11 @@
 import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
-/**
- * Phase 2 §FU#267 — PluginArtifactStore extracted from marketplace.ts.
- *
- * The store owns history journal + version cache + zip extract atomicity.
- * These tests lock the public contract that the orchestrator (and the
- * future MCP install consumer #259) relies on:
- *
- *   - history journal append + read round-trip
- *   - findRollbackTarget skips current version, skips entries without a
- *     cached manifest, returns null when nothing is replayable
- *   - cacheVersionFromManifest is best-effort (no throw on missing source)
- *
- * Download + extract paths are exercised by the existing `marketplace-
- * installer.test.ts` and the orchestrator's integration tests; here we
- * focus on the journaling primitives that previously lived in the god
- * class with no direct coverage.
- */
 import AdmZip from "adm-zip";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { existsSync, statSync } from "node:fs";
 import { chmod, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 
-// Exercise the real retry ladder and filesystem operations through its
-// existing sleep seam; these cases assert cleanup outcomes, not elapsed time.
+// Use the real retry ladder with injected sleep; assert cleanup, not elapsed time.
 vi.mock("../../lib/transient-fs-lock-retry.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../lib/transient-fs-lock-retry.js")>();
   return {
@@ -35,10 +17,7 @@ vi.mock("../../lib/transient-fs-lock-retry.js", async (importOriginal) => {
   };
 });
 
-/**
- * One-shot hooks on `rename`; every other rename passes through, so the rest
- * of this suite runs against the real filesystem.
- */
+/** Only the armed rename is intercepted; all others use the real filesystem. */
 const renameFault = vi.hoisted(() => ({
   /** Runs once, right after a rename into exactly this path succeeds. */
   afterRenameInto: undefined as { to: string; run: () => Promise<void> } | undefined,
@@ -128,8 +107,6 @@ describe("PluginArtifactStore — findRollbackTarget", () => {
       await store.appendHistory("acme", { version: "1.0.1", installedAt: "2026-04-02" });
       await store.appendHistory("acme", { version: "2.0.0", installedAt: "2026-04-03" });
 
-      // Cache manifests for 1.0.0 and 1.0.1 only — 2.0.0 is the current
-      // (no snapshot yet) and 1.0.1 is the rollback target.
       for (const version of ["1.0.0", "1.0.1"]) {
         const dir = resolve(tmp, "cache", "acme", version);
         await mkdir(dir, { recursive: true });
@@ -157,7 +134,6 @@ describe("PluginArtifactStore — findRollbackTarget", () => {
           resolve(dir, "plugin.json"),
           JSON.stringify(agentPluginsDocument({ id: "acme", version, name: "acme", entry: "x" })));
       }
-      // Pretend 2.0.0 is current — should pick 1.0.0.
       expect(await store.findRollbackTarget("acme", "2.0.0")).toBe("1.0.0");
     } finally {
       await cleanupTmpDir(tmp);
@@ -170,14 +146,11 @@ describe("PluginArtifactStore — findRollbackTarget", () => {
       const store = makeStore(tmp);
       await store.appendHistory("acme", { version: "1.0.0", installedAt: "2026-04-01" });
       await store.appendHistory("acme", { version: "1.0.1", installedAt: "2026-04-02" });
-      // Only cache 1.0.0 — 1.0.1 history entry exists but has no manifest snapshot.
       const dir = resolve(tmp, "cache", "acme", "1.0.0");
       await mkdir(dir, { recursive: true });
       await writeFile(
         resolve(dir, "plugin.json"),
         JSON.stringify(agentPluginsDocument({ id: "acme", version: "1.0.0", name: "acme", entry: "x" })));
-      // Current is 2.0.0 (not in history) — rollback skips 1.0.1 (missing
-      // snapshot) and returns 1.0.0.
       expect(await store.findRollbackTarget("acme", "2.0.0")).toBe("1.0.0");
     } finally {
       await cleanupTmpDir(tmp);
@@ -330,9 +303,7 @@ describe("PluginArtifactStore — extractZip", () => {
     }
   });
 
-  // The candidate was activated before the commit, so it may still run with
-  // the promoted root's paths in its confinement. Once confined processes may
-  // run, the rollback tombstones that root instead of deleting it.
+  // A candidate may still run after a failed commit; tombstone its confined root instead of deleting it.
   it("tombstones the promoted root on rollback once confined processes may run", async () => {
     const tmp = makeTmpDir();
     try {
@@ -359,12 +330,7 @@ describe("PluginArtifactStore — extractZip", () => {
     }
   });
 
-  // After a successful update the predecessor's root is payload only, so it
-  // is deleted at once. A runtime directory left in it refuses that delete,
-  // and the root goes to the tombstones instead.
-  // An abandoned stage is deleted at once only because no confined process
-  // is granted a path in it. One that holds a runtime directory breaks that
-  // premise: the delete refuses and the stage goes to the tombstones.
+  // Only payload-only roots may be deleted immediately; runtime directories require tombstoning.
   it("tombstones an abandoned stage that holds a runtime directory", async () => {
     const tmp = makeTmpDir();
     try {
@@ -399,8 +365,7 @@ describe("PluginArtifactStore — extractZip", () => {
       const installDir = store.installDirFor("acme");
       await mkdir(installDir, { recursive: true });
       await writeFile(resolve(installDir, "plugin.json"), JSON.stringify(agentPluginsDocument({ id: "acme", version: "old" })));
-      // The carry moves run/ and sockets/ into the promoted root; what a runtime
-      // carry discarded stays in the old root until the next boot.
+      // Runtime carry discards remain in the old root until boot.
       await mkdir(resolve(installDir, PLUGIN_SOCKET_DISCARD_DIR_NAME, "x-left"), { recursive: true });
       const zip = new AdmZip();
       zip.addFile("plugin.json", Buffer.from(JSON.stringify(agentPluginsDocument({ id: "acme", version: "new" }))));
@@ -444,11 +409,7 @@ describe("PluginArtifactStore — extractZip", () => {
     }
   });
 
-  // A staged install activates its candidate before the durable commit, and the
-  // activation materialises `sockets/` and `run/` at the FINAL root. The swap
-  // that follows must leave the candidate those same directories — not drop
-  // them with the root it renamed aside (local-indexer: `listen EACCES
-  // …/sockets/egress.sock`, startup degraded until restart).
+  // Activation creates run/ and sockets/ at the final root before commit; the swap must preserve their identities.
   describe("socket directories of the already-activated candidate", () => {
     const ino = (path: string) => statSync(path).ino;
     afterEach(() => {
@@ -516,11 +477,7 @@ describe("PluginArtifactStore — extractZip", () => {
       }
     });
 
-    // The carry into the promoted root stops after a live worker created its
-    // leaf there but before that leaf joined the original run/, which is still
-    // in the root that went aside. The rollback must finish that merge first:
-    // reversing it as found would move the original's leaves into the leaf's
-    // fresh run/ and restore that directory in place of the original.
+    // Finish the interrupted merge before rollback so the original run/ directory is restored.
     it("finish an interrupted merge before going back, keeping the original run/", async () => {
       const tmp = makeTmpDir();
       try {
@@ -1057,8 +1014,7 @@ describe("PluginArtifactStore — cacheVersionFromManifest", () => {
       const cached = resolve(tmp, "cache", "acme", "1.2.3", "plugin.json");
       const { readFile: read } = await import("node:fs/promises");
       const raw = await read(cached, "utf-8");
-      // The cached snapshot is a byte copy of the document, so identity is the
-      // portable `name`, not the flat `id` the host projects it to.
+      // Cached manifests retain portable name; id exists only in the host projection.
       expect(JSON.parse(raw)).toMatchObject({ name: "acme", version: "1.2.3" });
     } finally {
       await cleanupTmpDir(tmp);
@@ -1066,10 +1022,7 @@ describe("PluginArtifactStore — cacheVersionFromManifest", () => {
   });
 
   it.skipIf(!canCreateSymlinks())("does not stage through the predictable `<file>.tmp` a planted symlink could redirect", async () => {
-    // The cache writer used a fixed `${filePath}.tmp` + writeFile + rename; the
-    // shared atomic writer stages under a random O_EXCL name, so a symlink
-    // sitting at the old staging path is neither followed nor renamed over
-    // the target.
+    // Random O_EXCL staging must leave a symlink at the former fixed temporary path untouched.
     const tmp = makeTmpDir();
     try {
       const store = makeStore(tmp);

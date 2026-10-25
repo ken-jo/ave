@@ -9,13 +9,8 @@ export interface BundledArgvInput {
   argv: readonly string[];
   baseFingerprint: string;
   label: string;
-  /**
-   * `process` is a `process` entry's `[command, ...args]` (decision 37): the
-   * executable is a package file, and an argument may name a package file OR
-   * directory under `${PLUGIN_ROOT}/` or a path under `${PLUGIN_DATA}`.
-   */
+  /** Process executables must be package files; rooted arguments may name package files, directories or data paths. */
   policy: "hook" | "mcp" | "process";
-  /** Launcher tokens already identified by the MCP launcher grammar. */
   launcherLiteralIndexes?: readonly number[];
 }
 
@@ -28,7 +23,7 @@ interface ClassifiedArgv {
   symbolic: string[];
   anchorIndexes: number[];
   dataIndexes: number[];
-  /** `process` arguments under `${PLUGIN_ROOT}/`, which may name a directory. */
+  /** Rooted process arguments may name directories. */
   rootIndexes: number[];
 }
 
@@ -46,14 +41,7 @@ function relativeSegments(raw: string, label: string): string {
   return segments.join("/");
 }
 
-/**
- * A `${PLUGIN_ROOT}/…` argument or environment value of a `process` entry.
- *
- * Unlike the executable it may name a directory — a vendored tree is one — so
- * it cannot go through `anchorBundledCommand`'s regular-file rule. The artifact
- * is immutable, so a path it does not ship is a manifest error rather than
- * something that may appear later, and its realpath must stay inside the root.
- */
+/** Rooted package arguments and env values must exist and resolve within the retained package. */
 function containedRootPath(rootReal: string, suffix: string, label: string): string {
   const candidate = resolve(rootReal, relativeSegments(suffix, label));
   if (!isResolvedPathWithin(rootReal, candidate)) throw new Error(`${label} escapes PLUGIN_ROOT`);
@@ -69,17 +57,9 @@ function containedRootPath(rootReal: string, suffix: string, label: string): str
   return candidateReal;
 }
 
-/**
- * A `${PLUGIN_DATA}…` token: relative segments below the data directory, whose
- * leaf may not exist yet. No component that does exist may be a symlink, in or
- * out of the directory, dangling or not: the plugin writes this directory, so
- * a link that resolves inside it now can point anywhere when the path is
- * used, and a dangling one has no target to check at all.
- */
+/** Data leaves may be missing; every existing component must refuse links, including dangling ones. */
 function containedDataPath(dataDir: string, suffix: string, label: string): string {
-  // The root's ancestors are trusted host paths and are resolved, links
-  // included; the root itself must be the real directory the host created
-  // (`resolvePluginDataRoot`). Every component below it is walked with lstat.
+  // Resolve trusted root ancestors, verify the root itself, then lstat each component below it.
   let root: string;
   try {
     root = resolvePluginDataRoot(label, dataDir);
@@ -97,7 +77,6 @@ function containedDataPath(dataDir: string, suffix: string, label: string): stri
     try {
       entry = lstatSync(component);
     } catch (error) {
-      // Nothing exists from here down, so nothing below can be a link.
       const code = (error as NodeJS.ErrnoException).code;
       if (code === "ENOENT" || code === "ENOTDIR") break;
       throw error;
@@ -117,14 +96,7 @@ type ProcessValue =
   | { readonly kind: "data"; readonly suffix: string }
   | { readonly kind: "literal" };
 
-/**
- * Read one `process` argument or environment value (decision 37).
- *
- * `${PLUGIN_ROOT}/…` and `${PLUGIN_DATA}…` are the only placeholders. Any other
- * argument may not look like a path, because nothing would resolve it; any
- * other environment value is data the confined process reads, passed as an
- * opaque literal, which may not contain `${` either.
- */
+/** Only PLUGIN_ROOT and PLUGIN_DATA placeholders expand; all other literals must contain no placeholder syntax. */
 function classifyProcessValue(value: string, label: string, place: "argument" | "environment value"): ProcessValue {
   if (typeof value !== "string") throw new Error(`${label} is not a string`);
   if (place === "argument" && CONTROL.test(value)) throw new Error(`${label} has control characters`);
@@ -145,17 +117,14 @@ function classifyProcessValue(value: string, label: string, place: "argument" | 
   return { kind: "literal" };
 }
 
-/** Check a `process` argument before any generation exists (manifest hardening). */
 export function checkProcessEntryArgument(value: string, label: string): void {
   classifyProcessValue(value, label, "argument");
 }
 
-/** Check a `process` environment value before any generation exists (manifest hardening). */
 export function checkProcessEntryEnvironmentValue(value: string, label: string): void {
   classifyProcessValue(value, label, "environment value");
 }
 
-/** Expand one `process` environment value against the retained generation and the data directory. */
 export function resolveProcessEntryEnvironmentValue(
   generationRoot: string,
   dataDir: string,
@@ -168,12 +137,7 @@ export function resolveProcessEntryEnvironmentValue(
   return value;
 }
 
-/**
- * Resolve only explicitly classified package and data tokens from a bundled command.
- * The caller must first validate the MCP launcher grammar before supplying its
- * literal indexes. PLUGIN_DATA exists before this call; its contents are not
- * part of the package fingerprint because they may change at runtime.
- */
+/** Validate launcher grammar before resolving classified tokens; mutable data bytes stay outside package fingerprints. */
 function classifyBundledArgv(input: Pick<BundledArgvInput, "argv" | "label" | "policy" | "launcherLiteralIndexes">): ClassifiedArgv {
   const { argv, label } = input;
   if (input.policy !== "hook" && input.policy !== "mcp" && input.policy !== "process") {
@@ -248,7 +212,6 @@ function classifyBundledArgv(input: Pick<BundledArgvInput, "argv" | "label" | "p
   return { symbolic, anchorIndexes, dataIndexes, rootIndexes };
 }
 
-/** Validate the symbolic package hook command before it enters a descriptor. */
 export function validateSymbolicHookArgv(argv: readonly string[], label: string): void {
   classifyBundledArgv({ argv, label, policy: "hook" });
 }

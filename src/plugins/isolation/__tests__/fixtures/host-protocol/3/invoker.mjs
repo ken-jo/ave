@@ -1,11 +1,4 @@
-/**
- * One call per `ave/host/*` method, so each method's golden is the request
- * this call puts on the wire and the reply the host sends back.
- *
- * The calls are code rather than data because several arguments cannot be
- * written as JSON — bytes, a callback, a signal — and the point of the golden is
- * to show what the child's stub turns each of them into.
- */
+/** Call each host method through the real child stub so golden frames record its marshalling. */
 const CALLS = {
   "storage.read": (api) => api.storage.read("notes/today.bin"),
   "storage.readText": (api) => api.storage.readText("notes/today.txt", "utf-8"),
@@ -84,7 +77,7 @@ const CALLS = {
   withdrawAlert: (api) => api.withdrawAlert("mail-reply", "mail-1"),
 };
 
-/** A value the plugin received, as JSON: live handles become their data members. */
+/** Project live handles to their data members for JSON observations. */
 function describe(value) {
   if (value === undefined) return { undefined: true };
   if (typeof value === "function") return { function: true };
@@ -117,7 +110,7 @@ export const createPlugin = async (context) => {
       invoke_cancelled: async () => {
         const controller = new AbortController();
         const answer = api.callLlm("an answer the plugin stops waiting for", { signal: controller.signal });
-        // After the request is on the wire, so the host has something to cancel.
+        // Cancel only after the request reaches the wire.
         await new Promise((resolve) => setTimeout(resolve, 0));
         controller.abort(new Error("the plugin stopped waiting"));
         try {
@@ -135,7 +128,6 @@ export const createPlugin = async (context) => {
         return {};
       },
     },
-    // Every optional lifecycle member, so each `ave/instance/*` method crosses.
     start: async () => undefined,
     onPublished: async () => undefined,
     stop: async () => undefined,

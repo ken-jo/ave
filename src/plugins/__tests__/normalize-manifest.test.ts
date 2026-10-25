@@ -1,18 +1,4 @@
-/**
- * #885 Plugin Contract v6 — manifest materialization.
- *
- * The visibility + `name` defaulting that used to live in a standalone exported
- * helper is now inlined into `parsePluginJson` (the single load-time
- * materializer). These cases pin that behavior end-to-end through the parser:
- * a validated pure `Tool[]` passes through, an omitted `_meta.ui.visibility` is
- * filled with the standard `["model","app"]` default, an explicit `[]` is
- * REJECTED (fail-closed, never widened to dual), and `name` defaults to `id`.
- *
- * A permissive validator is used so a fixture reaches the host-side materializer
- * directly — the host schema rejects `visibility: []` upstream at its
- * `minItems:1` gate, but the host keeps its own fail-closed backstop and that is
- * what these tests exercise.
- */
+/** A permissive validator reaches materialization directly, including the fail-closed backstop for empty visibility. */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -22,7 +8,6 @@ import { parsePluginJson } from "../runtime/manifest-validation.js";
 import type { PluginManifest, Tool } from "../types.js";
 import { agentPluginsDocument } from "./test-helpers.js";
 
-/** Accept any object so a fixture reaches parsePluginJson's structural checks + materialization. */
 function permissiveValidator() {
   return new Ajv().compile({ type: "object", additionalProperties: true });
 }
@@ -82,7 +67,7 @@ describe("parsePluginJson — manifest materialization (visibility + name defaul
     const out = await parse(base([noMeta, metaNoVis]));
     expect(out.tools[0]._meta?.ui?.visibility).toEqual(["model", "app"]);
     expect(out.tools[1]._meta?.ui?.visibility).toEqual(["model", "app"]);
-    expect(out.tools[1]._meta?.["ave/pathFields"]).toEqual(["p"]); // preserved
+    expect(out.tools[1]._meta?.["ave/pathFields"]).toEqual(["p"]);
   });
 
   it("default is governed — never yields an app-only (bypass) tool", async () => {

@@ -1,18 +1,4 @@
-/**
- * The cross-language smoke's launcher, run the way the host runs it
- * (`docs/design/plugin-hostapi-protocol.md` §9.7 P5, decision 46).
- *
- * `bin/plugin` is the plugin's whole contract with its interpreter: the host
- * hands it `PLUGIN_ROOT` and `PLUGIN_DATA` and nothing Python-specific, and
- * `PYTHONPATH` is a name the host reserves. So the launcher must point the
- * interpreter at `<root>/vendor` itself. The provisioning check cannot show
- * that — it sets `PYTHONPATH` on its own — so this runs the real launcher
- * under `env -i`, with no `PYTHONPATH`, `PYTHONHOME` or `PYTHONUSERBASE` from
- * the harness, and asks where `mcp` was imported from. A launcher that dropped
- * `PYTHONPATH` fails either way the defect shows: `ModuleNotFoundError` where
- * the interpreter has no `mcp` of its own, an origin outside `<root>/vendor`
- * where it has one (and `-s` keeps a user site directory from being it).
- */
+/** Run the POSIX launcher through the selected interpreter and isolated vendor tree. */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -36,9 +22,7 @@ describe("the python smoke's cached vendor directory", () => {
     const distInfo = join(vendor, "mcp-2.2.0.dist-info");
     mkdirSync(distInfo);
     writeFileSync(join(distInfo, "METADATA"), "Metadata-Version: 2.4\nName: mcp\nVersion: 2.2.0\n");
-    // The first 48 bytes of the sidecar macOS bsdtar wrote for this directory:
-    // the AppleDouble header, whose byte 0xa3 at offset 45 is what
-    // importlib.metadata failed to decode as UTF-8.
+    // Use real sidecar header bytes to reproduce invalid UTF-8 during distribution discovery.
     const header = Buffer.from(
       "00051607000200004d6163204f5320582020202020202020"
         + "000200000009000000320000007100000002000000a30000",
@@ -61,7 +45,7 @@ describe("the python smoke's cached vendor directory", () => {
   });
 });
 
-// A `process` entry never runs on win32, and `bin/plugin` is a POSIX shell script.
+// Process entries exclude Windows; this launcher is a POSIX shell script.
 describe.runIf(process.platform !== "win32")("the python smoke's launcher", () => {
   it("imports mcp from the plugin's own vendor directory, with nothing but PLUGIN_ROOT and PLUGIN_DATA", () => {
     const python = provisionPythonSmoke();

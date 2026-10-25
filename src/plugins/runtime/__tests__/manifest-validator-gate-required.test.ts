@@ -1,7 +1,3 @@
-/**
- * Manifest loading must use the host-owned schema validator as its source of truth.
- */
-
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { mkdtempSync } from "node:fs";
@@ -53,7 +49,7 @@ describe("parsePluginJson — host schema validator required", () => {
   });
 
   it("loads an installed manifest that still carries installPolicy and publisher, dropping them with one warning", async () => {
-    // Every official plugin installed before the git marketplace has both (design §5.3).
+    // Legacy official installs carry both fields.
     await writeFile(
       manifestPath,
       JSON.stringify(agentPluginsDocument({
@@ -101,7 +97,6 @@ describe("parsePluginJson — host schema validator required", () => {
 
     const validator = await buildManifestValidator();
     const manifest = await parsePluginJson(manifestPath, validator);
-    // Pure form: no uiActions map; the method is ONE Tool object with app-only visibility.
     expect((manifest as Record<string, unknown>).uiActions).toBeUndefined();
     const tool = manifest.tools.find((t) => t.name === "ui_upload_chunk");
     expect(tool?._meta?.ui?.visibility).toEqual(["app"]);
@@ -158,8 +153,7 @@ describe("parsePluginJson — host schema validator required", () => {
     const manifest = await parsePluginJson(manifestPath, validator);
     expect(manifest.auth).toMatchObject({ statusTool: "auth_status", loginTool: "auth_login" });
     expect((manifest as Record<string, unknown>).uiActions).toBeUndefined();
-    // auth tools resolve to EXACTLY ["app"] (host-managed, never model-callable —
-    // the #1554 invariant, now enforced at the tool-object level).
+    // Auth tools require exactly app visibility and must never be model-callable.
     expect(manifest.tools.find((t) => t.name === "auth_status")?._meta?.ui?.visibility).toEqual(["app"]);
     expect(manifest.tools.find((t) => t.name === "auth_login")?._meta?.ui?.visibility).toEqual(["app"]);
   });

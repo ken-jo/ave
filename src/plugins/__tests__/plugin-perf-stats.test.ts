@@ -1,8 +1,3 @@
-/**
- * PluginRuntime — per-plugin performance stats.
- * Verifies that call() increments counters, accumulates timing, and that
- * errors increment errorCount without losing timing info.
- */
 import { describe, it, expect } from "vitest";
 import { TestPluginRuntime as PluginRuntime } from "./test-helpers.js";
 

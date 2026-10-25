@@ -1,16 +1,5 @@
-/**
- * S14 — Plugin dependency resolution.
- *
- * Resolves `requires.capabilities[]` from a catalog item against the
- * capability tags advertised by currently-installed plugins.  Used as a
- * preflight check in the marketplace install flow.
- */
 import type { PluginManifest } from "./types.js";
 
-/**
- * Collect the set of capability tags from a list of installed plugin manifests.
- * Manifests without a `capabilities` array contribute nothing.
- */
 export function installedCapabilities(
   manifests: ReadonlyArray<Pick<PluginManifest, "capabilities">>,
 ): Set<string> {
@@ -25,15 +14,7 @@ export function installedCapabilities(
   return caps;
 }
 
-/**
- * Resolve a list of required capability tags against the installed capability set.
- *
- * @param required  - capability tags declared in the to-be-installed plugin's
- *                    `requires.capabilities` field.
- * @param installed - manifests of all currently-installed (and enabled) plugins.
- * @returns `{ ok: true }` when all required capabilities are satisfied, or
- *          `{ ok: false, missing: string[] }` listing unsatisfied capabilities.
- */
+/** Resolve declared required tags against installed, enabled manifests; return every missing tag. */
 export function resolveDependencies(
   required: string[],
   installed: ReadonlyArray<Pick<PluginManifest, "capabilities">>,

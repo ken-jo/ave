@@ -1,15 +1,4 @@
-/**
- * #885 v6 (§0) — the single host reader `toolVisibility` + its derived predicates.
- *
- * The primitive is a pure READER: `parsePluginJson` (U1) is the SOLE defaulting
- * site, so post-materialize every tool carries an explicit non-empty visibility.
- * These tests pin (a) explicit arrays are returned verbatim with no warn, and
- * (b) the DEFENSIVE fail-closed backstop: a tool that reaches a consumer WITHOUT
- * explicit visibility (a normalization-contract violation) resolves to the
- * MINIMAL GOVERNED surface `["model"]` — NEVER app-only, so it can never reach
- * the ungoverned app-only dispatch path — and warns loudly. This is NOT the semantic
- * default (`["model","app"]`, which lives only in normalize).
- */
+/** Visibility readers never apply semantic defaults; malformed normalized declarations fail to the minimal governed surface. */
 import { describe, it, expect, vi } from "vitest";
 import type { Tool } from "../../types.js";
 import { toolVisibility, isModelVisible, isAppVisible, isUiOnly } from "../tool-visibility.js";
@@ -46,7 +35,7 @@ describe("toolVisibility — fail-closed defensive backstop (never app-only)", (
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
       const vis = toolVisibility(t);
-      // fail-closed: minimal GOVERNED surface, never app-only.
+      // Fail closed to a governed surface, never app-only.
       expect(vis).toEqual(["model"]);
       expect(vis).not.toContain("app");
       const warned = warnSpy.mock.calls.some((args) =>
@@ -68,7 +57,7 @@ describe("toolVisibility — fail-closed defensive backstop (never app-only)", (
       const t: Tool = { name: "t", inputSchema: { type: "object", properties: {} } };
       expect(isModelVisible(t)).toBe(true);
       expect(isAppVisible(t)).toBe(false);
-      expect(isUiOnly(t)).toBe(false); // governed, never the ungoverned bypass
+      expect(isUiOnly(t)).toBe(false);
     } finally {
       warnSpy.mockRestore();
     }

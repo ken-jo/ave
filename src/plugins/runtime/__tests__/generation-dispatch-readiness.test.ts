@@ -403,10 +403,7 @@ describe("generation dispatch readiness", () => {
 
 describe("post-publish fault ownership", () => {
   function throwingHostEffect(pluginId: string, lifecycle: PluginRuntimeGenerationLifecycle) {
-    // A real scope, not a stub: `emitEvent` is queued while the scope is
-    // preparing and replayed by postPublish(), which is where it throws. A
-    // stub returning a canned array would pass even if the host stopped
-    // replaying queued signals at all.
+    // Use the real preparing scope and replay so replacing postPublish with inert behavior cannot pass.
     const scope = new HostApiGenerationScope(pluginId);
     const api = scope.wrapHostApi({
       emitEvent: () => { throw new Error("generation fence signal failed"); },
@@ -453,8 +450,7 @@ describe("post-publish fault ownership", () => {
     await expect(runtime.postPublishRuntimeGeneration(candidate)).resolves.toBeUndefined();
     await transition.markDispatchReady();
 
-    // The whole point: a startup failure must not spend the rest of the
-    // session refusing every tool with a host message.
+    // Plugin startup failure must still open dispatch with degraded health.
     await expect(runtime.call(MODEL_TOOL)).resolves.toBe("reached the plugin");
     await expect(runtime.callDeclaredAppOnlyTool(APP_TOOL)).resolves.toBe("reached the plugin");
     expect(audit).toContainEqual(expect.objectContaining({
@@ -483,15 +479,12 @@ describe("post-publish fault ownership", () => {
     await expect(runtime.postPublishRuntimeGeneration(candidate))
       .rejects.toThrow(/host generation effects failed to publish/);
 
-    // The caller closes dispatch on that throw, exactly as before the split.
     transition.markDispatchUnavailable(new Error("host generation effects failed to publish"));
     await expect(runtime.call(MODEL_TOOL)).rejects.toThrow(/dispatch blocked/);
   });
 
   it("does not fold a plugin startup failure back into the host fence faults", async () => {
-    // The control for the split. If both classes are merged into one
-    // AggregateError again, this AggregateError carries two errors and the
-    // plugin's message leaks into a host-owned fault.
+    // Keep plugin errors separate from host AggregateErrors so plugin text cannot leak into host fault records.
     const audit: Array<{ level: string; message: string; data?: unknown }> = [];
     const { coordinator, runtime, lifecycle } = runtimeFixture(audit);
     const effect = throwingHostEffect(TARGET_ID, lifecycle);
@@ -513,7 +506,7 @@ describe("post-publish fault ownership", () => {
     const errors = (failure as AggregateError).errors as Error[];
     expect(errors).toHaveLength(1);
     expect(errors[0]!.message).toBe("generation fence signal failed");
-    // The plugin fault is still recorded — on its own channel, not this one.
+    // Record plugin failure through its own diagnostic channel.
     expect(audit).toContainEqual(expect.objectContaining({
       message: "plugin_post_publish_startup_degraded",
     }));

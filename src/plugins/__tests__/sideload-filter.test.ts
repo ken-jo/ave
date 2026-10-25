@@ -4,10 +4,6 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { buildSideloadCopyFilter, rejectSideloadSymlinks } from "../sideload-filter.js";
 
-// ---------------------------------------------------------------------------
-// buildSideloadCopyFilter
-// ---------------------------------------------------------------------------
-
 describe("buildSideloadCopyFilter", () => {
   const root = "/fake/source";
   const filter = buildSideloadCopyFilter(root);
@@ -21,12 +17,7 @@ describe("buildSideloadCopyFilter", () => {
     expect(filter(join(root, "plugin.json"))).toBe(true);
   });
 
-  /**
-   * Thrown rather than filtered out. A developer whose source tree carries a
-   * `data/` expected that state to be installed; dropping it silently would
-   * leave them believing it was, and promoting it would put a second candidate
-   * for the plugin's state into the root the swap carries the live one into.
-   */
+  /** Refuse payload data/ rather than silently drop it or collide with live state during promotion. */
   it("refuses a top-level runtime directory in the source tree", () => {
     expect(() => filter(join(root, "data"))).toThrow(/top-level runtime directory/);
     expect(() => filter(join(root, "run"))).toThrow(/top-level runtime directory/);
@@ -54,8 +45,7 @@ describe("buildSideloadCopyFilter", () => {
     expect(filter(join(root, "node_modules", "node-ical", "index.js"))).toBe(true);
   });
 
-  // Without this, electron's filter leaves `.bin/electron` as a dangling
-  // symlink and `rejectSideloadSymlinks` aborts the entire install.
+  // Removing the runtime package must also remove its bin shim or sideload-link validation sees a dangling link.
   it("rejects node_modules/.bin shell-shim subtree", () => {
     expect(filter(join(root, "node_modules", ".bin"))).toBe(false);
     expect(filter(join(root, "node_modules", ".bin", "electron"))).toBe(false);
@@ -77,23 +67,15 @@ describe("buildSideloadCopyFilter", () => {
   });
 
   it("handles Windows-style backslash paths", () => {
-    // Simulate a path with backslashes as separators
     const winFilter = buildSideloadCopyFilter("C:\\fake\\source");
     expect(winFilter("C:\\fake\\source\\node_modules\\electron\\dist")).toBe(false);
     expect(winFilter("C:\\fake\\source\\node_modules\\react\\index.js")).toBe(true);
   });
 });
 
-// ---------------------------------------------------------------------------
-// rejectSideloadSymlinks
-// ---------------------------------------------------------------------------
-
 describe("rejectSideloadSymlinks", () => {
   let tmpDir: string;
-  // A sibling directory outside tmpDir used as an escape target.
-  // Created here so a real file exists on disk — realpathSync requires the
-  // target to exist for a non-dangling symlink. Using tmpdir() siblings is
-  // platform-neutral (avoids /etc/passwd which does not exist on Windows).
+  // Use a real sibling escape target so realpath checks work on every platform.
   let escapeTarget: string;
 
   beforeEach(async () => {
@@ -114,7 +96,7 @@ describe("rejectSideloadSymlinks", () => {
     await expect(rejectSideloadSymlinks(tmpDir)).resolves.toBeUndefined();
   });
 
-  // Symlink creation on Windows requires elevated privileges — skip on that platform.
+  // Skip file-symlink creation where Windows requires privileges.
   const itSymlink = it.skipIf(process.platform === "win32");
 
   itSymlink("rejects an internal symlink before promotion", async () => {
@@ -155,12 +137,7 @@ describe("rejectSideloadSymlinks", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Integration: cp({ filter }) + rejectSideloadSymlinks against a fixture that
-// mimics the samplemail layout — proves the filter prevents the dangling-bin
-// regression that motivated this PR. A future refactor that splits filter and
-// walker would re-regress without this case.
-// ---------------------------------------------------------------------------
+// Exercise copy and link validation together so filtered packages leave no dangling shims.
 describe("integration: cp filter + rejectSideloadSymlinks (samplemail layout)", () => {
   let baseDir: string;
   let sourceDir: string;
@@ -180,26 +157,19 @@ describe("integration: cp filter + rejectSideloadSymlinks (samplemail layout)", 
   const itSymlink = it.skipIf(process.platform === "win32");
 
   itSymlink("samplemail fixture (electron pkg + .bin/electron shim) installs cleanly", async () => {
-    // dist/ + plugin.json — the legitimate plugin payload.
     await mkdir(join(sourceDir, "dist"), { recursive: true });
     await writeFile(join(sourceDir, "dist", "hostPlugin.js"), "export default {};");
     await writeFile(join(sourceDir, "plugin.json"), '{"id":"x","name":"X","version":"1.0.0","tools":[],"entry":"dist/hostPlugin.js","description":"d"}');
 
-    // node_modules/electron/cli.js + node_modules/.bin/electron -> ../electron/cli.js
-    // (the exact shape that triggered the dangling-symlink rejection on
-    // samplemail after PR #404 + PR #407 landed).
     const electronPkg = join(sourceDir, "node_modules", "electron");
     await mkdir(electronPkg, { recursive: true });
     await writeFile(join(electronPkg, "cli.js"), "// electron cli");
     await mkdir(join(sourceDir, "node_modules", ".bin"), { recursive: true });
     await symlink("../electron/cli.js", join(sourceDir, "node_modules", ".bin", "electron"));
 
-    // A non-electron .bin shim that ALSO would dangle without the .bin filter
-    // (its target package is not present at all).
+    // An unrelated bin shim can also dangle when its package is absent.
     await symlink("../never-existed/cli.js", join(sourceDir, "node_modules", ".bin", "phantom"));
 
-    // Mirror the production install pipeline: cp with the sideload filter,
-    // then run rejectSideloadSymlinks on the staged dir.
     const { cp } = await import("node:fs/promises");
     await cp(sourceDir, stagingDir, {
       recursive: true,
@@ -208,7 +178,6 @@ describe("integration: cp filter + rejectSideloadSymlinks (samplemail layout)", 
     });
     await expect(rejectSideloadSymlinks(stagingDir)).resolves.toBeUndefined();
 
-    // Staging must contain plugin.json + dist/, but NOT electron / .bin.
     const { existsSync } = await import("node:fs");
     expect(existsSync(join(stagingDir, "plugin.json"))).toBe(true);
     expect(existsSync(join(stagingDir, "dist", "hostPlugin.js"))).toBe(true);

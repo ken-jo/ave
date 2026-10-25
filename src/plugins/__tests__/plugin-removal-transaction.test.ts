@@ -4,9 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// `lstat` passes through, except for a path a case marks as swapped: there it
-// reports the directory that used to be at that path, which is what a swap
-// between the walk's `lstat` and its next call looks like from inside.
+// Report a stale lstat identity to reproduce a parent swap between filesystem calls.
 const staleLstat = vi.hoisted(() => new Map<string, unknown>());
 /** One-shot: the process "crashes" (the call throws) at the rm of this path. */
 const crashAtRm = vi.hoisted(() => ({ path: undefined as string | undefined }));
@@ -127,10 +125,7 @@ describe("durable plugin removal transactions", () => {
     expect((await readPluginDataFixture(join(paths.pluginsRoot, "alpha"))).size).toBe(0);
   });
 
-  // An uninstall commits while the plugin's generation is still retiring: its
-  // child may be bound (Linux --bind) to data/ inside the staged root, so a
-  // runtime finish must not delete it recursively. It goes to the tombstones,
-  // and the transaction is finished; the next boot's sweep deletes it.
+  // A retiring child may retain a bind mount into the staged root; runtime finish tombstones it until boot.
   it("tombstones the staged root instead of deleting it once confined processes may run", async () => {
     const before = await seed(["alpha"]);
     await seedPluginDataFixture(join(paths.pluginsRoot, "alpha"));
@@ -158,11 +153,7 @@ describe("durable plugin removal transactions", () => {
     expect(statSync(join(paths.pluginsRoot, TOMBSTONE_SUBDIR, tombstones[0]!, "data")).ino).toBe(dataIno);
   });
 
-  // A crash right after the runtime finish moved the staged root into the
-  // tombstones, before it removed the transaction's own directory: the next
-  // boot finds a committed journal whose staged root is gone. It cleans the
-  // transaction rather than calling the state ambiguous, and its tombstone
-  // sweep then deletes the root.
+  // A committed journal with an already-tombstoned root must finish cleanup rather than become ambiguous.
   it("cleans a committed transaction whose staged root a crashed runtime finish already tombstoned", async () => {
     const before = await seed(["alpha"]);
     await seedPluginDataFixture(join(paths.pluginsRoot, "alpha"));
@@ -185,7 +176,7 @@ describe("durable plugin removal transactions", () => {
     expect(existsSync(journal.mappings[0]!.stagedPath)).toBe(false);
     expect(await readdir(join(paths.pluginsRoot, TOMBSTONE_SUBDIR))).toHaveLength(1);
 
-    // Next boot: no confined process yet.
+    // Boot recovery runs before any confined process starts.
     _resetConfinedProcessPhaseForTests();
     expect(await reconcileRemovalTransactions(paths)).toEqual({ restored: [], cleaned: [journal.transactionId], unresolved: [] });
     expect(existsSync(transaction)).toBe(false);

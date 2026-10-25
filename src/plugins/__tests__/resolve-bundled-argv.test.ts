@@ -84,13 +84,8 @@ describe("bundled argv resolution", () => {
   });
 });
 
-/**
- * Policy `process` (docs/design/plugin-hostapi-protocol.md decision 37): the
- * executable is a regular package file; an argument or value under
- * `${PLUGIN_ROOT}/` may be a file OR a directory, must exist, and must stay
- * inside the root; `${PLUGIN_DATA}` keeps the data rule, whose leaf may not
- * exist yet.
- */
+// Process executables must be regular package files; rooted args and env values must exist inside the package.
+// PLUGIN_DATA leaves may be absent but must obey data-root containment.
 describe("bundled argv resolution for a process entry", () => {
   function processFixture() {
     const paths = fixture();
@@ -197,10 +192,7 @@ describe("bundled argv resolution for a process entry", () => {
       .toBe(join(realpathSync(dataDir), "state", "cache", "db"));
   });
 
-  // The root's ancestors are trusted host paths and are resolved; the root
-  // itself must be the real directory the host created, and the components
-  // below it are walked. Every consumer shares the one rule: hook and MCP
-  // argv, process argv, and process env values.
+  // Resolve trusted ancestors, reject a replaced root, then walk every component below it.
   it.runIf(process.platform !== "win32")(
     "resolves a data root behind a linked ancestor, refuses a root replaced by a link, and refuses a link below it, for every consumer",
     () => {
@@ -210,8 +202,7 @@ describe("bundled argv resolution for a process entry", () => {
       mkdirSync(join(realData, "real"), { recursive: true });
       symlinkSync(join(realData, "real"), join(realData, "alias"));
       symlinkSync(realParent, join(root, "linked-ancestor"));
-      // A root the host created and a confined plugin then replaced: `rmdir`
-      // of the directory, a link to elsewhere in its place.
+      // A confined child can replace its data directory with a link after host creation.
       const takenOver = join(root, "taken-over", "data");
       const outside = join(root, "outside");
       mkdirSync(takenOver, { recursive: true });

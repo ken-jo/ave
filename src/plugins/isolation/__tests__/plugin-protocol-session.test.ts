@@ -1,22 +1,4 @@
-/**
- * The protocol session, over a paired link whose `terminate` is recorded
- * (`docs/design/plugin-hostapi-protocol.md` §9.7, S1).
- *
- * The child end is the real child runtime (`servePluginChild`) importing a
- * real module, or — where a case needs a child that misbehaves on purpose — a
- * child written by hand. The link models a process: the child end exits when
- * its stdin ends, which is what the real child does, and the link reports that
- * exit through `onGone`.
- *
- * What these cases hold the session to:
- *
- *  - the channel is non-destructive: the stop hook, closing stdin and a
- *    natural exit terminate nothing;
- *  - `teardown` is the one destructive operation, and a fault ends the child
- *    without being mistaken for its exit;
- *  - an abort tears the session down at any point, construct included;
- *  - the table it is handed is its whole authority.
- */
+/** Protocol-session cleanup must own both ledgers and the child from construct through abort or exit. */
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { PassThrough } from "node:stream";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -52,7 +34,6 @@ const MANIFEST: PluginManifest = {
   tools: [{ name: "speak", description: "speak", inputSchema: { type: "object", properties: {} } }],
 };
 
-/** The envelope the session's table is bound to in every case. */
 const ENVELOPE = {
   read: [`/plugins/${PLUGIN_ID}`, `/plugins/${PLUGIN_ID}/data`],
   write: [`/plugins/${PLUGIN_ID}/data`],
@@ -83,7 +64,6 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-/** A hostApi with what the session reads, and a count of its own watchers. */
 function watchedHostApi(): {
   hostApi: PluginHostApi;
   liveWatchers: () => number;
@@ -135,13 +115,7 @@ function contextFor(hostApi: PluginHostApi): PluginRuntimeContext {
   };
 }
 
-/**
- * The host's end of a child, with the child's exit modelled: the child end
- * leaves when its stdin ends — or when the case says it left — and the link
- * reports that as gone. `terminate` is recorded and does NOT end the child,
- * so whether a termination was requested and whether the child left are two
- * separate observations.
- */
+/** Model requested termination separately from observed exit. */
 function processLink(answer: "runtime" | ((frame: Frame, reply: (frame: Frame) => void) => void)): {
   link: ChildLink;
   sent: Frame[];
@@ -228,7 +202,7 @@ describe("the channel is non-destructive", () => {
     expect(child.sent.filter((frame) => frame.method === PLUGIN_INSTANCE_METHODS.stop)).toHaveLength(1);
     expect(child.terminated).toEqual([]);
     expect(onClosed).not.toHaveBeenCalled();
-    // Still served: the stop hook did not close the channel.
+    // The stop hook must not close the channel.
     await expect(session.instance.handlers.speak!()).resolves.toBe("spoke");
     await session.teardown("case over");
   });
@@ -245,7 +219,6 @@ describe("the channel is non-destructive", () => {
     expect(onClosed).toHaveBeenCalledWith(EXIT_REASON);
     expect(liveWatchers()).toBe(0);
     expect(child.terminated).toEqual([]);
-    // A teardown after the release has nothing to end.
     await session.teardown("stopped after it left");
     expect(child.terminated).toEqual([]);
     expect(onClosed).toHaveBeenCalledTimes(1);
@@ -254,7 +227,6 @@ describe("the channel is non-destructive", () => {
 
 describe("teardown is the one destructive operation", () => {
   it.each([
-    // A teardown terminates the live child once; an exit has nothing to end.
     ["a teardown", 1, (session: PluginProtocolSession) => session.teardown("torn down")],
     ["the child's exit", 0, (session: PluginProtocolSession) => {
       session.channel.closeInput();
@@ -265,8 +237,7 @@ describe("teardown is the one destructive operation", () => {
     const { hostApi } = watchedHostApi();
     let session: PluginProtocolSession | undefined;
     let reentered: Promise<void> | undefined;
-    // The owner's cleanup ends the session itself, synchronously, the first
-    // time it runs — before the release that called it has returned.
+    // Owner cleanup must end the session synchronously before its releasing callback returns.
     const onClosed = vi.fn(async () => {
       if (onClosed.mock.calls.length === 1) reentered = session!.teardown("re-entered from onClosed");
     });
@@ -327,7 +298,6 @@ describe("cancellation", () => {
     process.on("unhandledRejection", onUnhandled);
     try {
       let constructFrame: Frame | undefined;
-      // Reads construct and never answers it.
       const child = processLink((frame) => {
         if (frame.method === PLUGIN_INSTANCE_METHODS.construct) constructFrame = frame;
       });
@@ -346,7 +316,7 @@ describe("cancellation", () => {
       expect(onClosed).toHaveBeenCalledTimes(1);
       expect(liveWatchers()).toBe(0);
 
-      // The reply arrives after the abort: nothing follows from it.
+      // Ignore replies arriving after abort.
       expect(constructFrame).toBeDefined();
       child.reply({ jsonrpc: "2.0", id: constructFrame!.id, result: CONSTRUCTED });
       await settle();
@@ -402,7 +372,6 @@ describe("the bound table is the session's whole authority", () => {
     expect(replyTo("outside")).toMatchObject({ error: { data: { code: "effect-boundary-denied" } } });
     expect(spawnWorker).not.toHaveBeenCalled();
 
-    // The contrast: a path inside the table's envelope is served.
     request("inside", [`/plugins/${PLUGIN_ID}/data/work`]);
     await vi.waitFor(() => expect(replyTo("inside")).toBeDefined());
     expect(replyTo("inside")).toHaveProperty("result");

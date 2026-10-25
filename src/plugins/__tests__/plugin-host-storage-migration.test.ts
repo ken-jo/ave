@@ -1,21 +1,6 @@
 import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
-/**
- * The boot migration that gives a plugin root its host-only `storage/`.
- *
- * Before the HostApi `storage` surface moved into `<root>/<id>/storage`, it
- * operated in `<root>/<id>/data` — the directory the confined child writes.
- * A file written through `storage` cannot be told apart from one the child
- * wrote, so the migration COPIES `data/` (regular files and directories only)
- * into `storage/` and leaves `data/` as it is. What is pinned here:
- *
- *  - what is copied and what is skipped (links, special files, hard links,
- *    files no storage value could be, unreadable entries);
- *  - it never follows a link — not one planted in `data/`, and not a parent
- *    swapped for one while the copy runs (macOS `O_NOFOLLOW_ANY`, Linux
- *    `/proc/self/fd`);
- *  - it is idempotent and crash-safe (`storage/` absent or complete);
- *  - it refuses to run once confined processes may run.
- */
+// Boot copies eligible values from child-writable data/ into host-only storage/ without following links.
+// The copy must be atomic, idempotent and complete before any confined process starts.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   existsSync,
@@ -73,7 +58,6 @@ let pluginsRoot: string;
 let outside: string;
 
 beforeEach(() => {
-  // Canonical, as the migration canonicalises the root it is handed.
   scratch = realpathSync(mkdtempSync(join(tmpdir(), "ave-host-storage-migration-")));
   pluginsRoot = join(scratch, "plugins");
   outside = join(scratch, "outside");
@@ -98,7 +82,6 @@ function storageOf(id: string): string {
   return join(pluginsRoot, id, PLUGIN_HOST_STORAGE_DIR_NAME);
 }
 
-/** Every file under `dir`, relative path → content. */
 function filesUnder(dir: string): Record<string, string> {
   const out: Record<string, string> = {};
   const walk = (at: string, prefix: string): void => {
@@ -131,7 +114,6 @@ describe("migratePluginHostStorage — what is copied", () => {
       "ui-storage/prefs.json": '{"theme":"dark"}',
     };
     expect(filesUnder(storageOf("samplemail"))).toEqual(expected);
-    // A directory holds no key, so one with nothing copied into it is not made.
     expect(existsSync(join(storageOf("samplemail"), "empty"))).toBe(false);
     expect(filesUnder(data)).toEqual(expected);
     expect(existsSync(join(pluginsRoot, "samplemail", PLUGIN_HOST_STORAGE_MIGRATION_DIR_NAME))).toBe(false);
@@ -145,11 +127,9 @@ describe("migratePluginHostStorage — what is copied", () => {
   it("copies keys to depth 2 and up to 8 MiB, and skips the plugin's own deeper or larger trees", async () => {
     const data = dataOf("meeting");
     mkdirSync(join(data, "auth"));
-    // Exactly the size cap, at depth 2: copied.
     writeFileSync(join(data, "auth", "token-default.json"), "");
     truncateSync(join(data, "auth", "token-default.json"), 8 * 1024 * 1024);
     writeFileSync(join(data, "calendar-automation-claims.json"), "{}");
-    // A session tree: its transcript is depth 3, its recording one byte over.
     mkdirSync(join(data, "sessions", "s-1"), { recursive: true });
     writeFileSync(join(data, "sessions", "s-1", "transcript.json"), "{}");
     writeFileSync(join(data, "recording.wav"), "");
@@ -165,8 +145,7 @@ describe("migratePluginHostStorage — what is copied", () => {
     const storage = storageOf("meeting");
     expect(statSync(join(storage, "auth", "token-default.json")).size).toBe(8 * 1024 * 1024);
     expect(readFileSync(join(storage, "calendar-automation-claims.json"), "utf-8")).toBe("{}");
-    // Nothing was copied into `sessions/`, so it is not made: an empty
-    // directory would be a key namespace the plugin never held a value in.
+    // Do not create namespaces with no eligible values.
     expect(existsSync(join(storage, "sessions"))).toBe(false);
     expect(existsSync(join(storage, "recording.wav"))).toBe(false);
   });
@@ -174,10 +153,9 @@ describe("migratePluginHostStorage — what is copied", () => {
   it("skips what storage could never have written, and reports each", async () => {
     const data = dataOf("p");
     writeFileSync(join(data, "kept.json"), "{}");
-    // A second name for an inode the plugin may not own.
+    // Hard links can alias inodes the plugin does not own.
     writeFileSync(join(scratch, "elsewhere.txt"), "not the plugin's");
     linkSync(join(scratch, "elsewhere.txt"), join(data, "hard-link"));
-    // Larger than the 8 MiB a migrated storage value may be.
     writeFileSync(join(data, "index.bin"), "");
     truncateSync(join(data, "index.bin"), 8 * 1024 * 1024 + 1);
     if (posix) execFileSync("mkfifo", [join(data, "fifo")]);
@@ -241,8 +219,7 @@ describe("migratePluginHostStorage — what is copied", () => {
     "skips an entry whose path fits under data/ but not under the longer staging name",
     async () => {
       const pathMax = process.platform === "darwin" ? 1024 : 4096;
-      // A plugins root deep enough that a depth-2 key reaches PATH_MAX: its
-      // path is under the limit in data/ and over it in the staging tree.
+      // Staging paths can exceed PATH_MAX even when the source key fits.
       const stagingGrowth = PLUGIN_HOST_STORAGE_MIGRATION_DIR_NAME.length - PLUGIN_DATA_DIR_NAME.length;
       const target = pathMax - 3;
       let deepRoot = join(scratch, "deep");
@@ -286,14 +263,8 @@ describe("migratePluginHostStorage — what is copied", () => {
 });
 
 describe("migratePluginHostStorage — never follows a link", () => {
-  /**
-   * The copy's lstat of a file is where a swapped parent would be seen
-   * THROUGH: `data/sub` becomes a link to `outside`, so lstat and open of
-   * `data/sub/secret.txt` both reach the outside file, and the ino check
-   * agrees with itself. Only `O_NOFOLLOW_ANY` (macOS) or the `/proc/self/fd`
-   * path check (Linux) can refuse it. Windows has neither primitive; there the
-   * migration relies on running before any confined process, as asserted below.
-   */
+  // A swapped parent can fool lstat/open inode checks; use no-follow ancestry checks on supported platforms.
+  // Windows relies on migration finishing before any confined process starts.
   it.runIf(process.platform === "darwin" || process.platform === "linux")(
     "refuses a parent swapped for a link between listing and copying, and copies nothing from outside",
     async () => {
@@ -343,7 +314,6 @@ describe("migratePluginHostStorage — idempotent and crash-safe", () => {
     const data = dataOf("p");
     writeFileSync(join(data, "state.json"), "{}");
     await migratePluginHostStorage(pluginsRoot);
-    // Written by the child after the migration: data/ is its own from now on.
     writeFileSync(join(data, "later.json"), "{}");
 
     await expect(migratePluginHostStorage(pluginsRoot)).resolves.toEqual({ migrated: [], skipped: [], failed: [] });
@@ -382,7 +352,6 @@ describe("migratePluginHostStorage — idempotent and crash-safe", () => {
     "names the migration's own failure and the path when a load is refused for it",
     async () => {
       writeFileSync(join(dataOf("stuck"), "session-snapshot.json"), "{}");
-      // The plugin root refuses the staging directory: a persistent failure.
       chmodSync(join(pluginsRoot, "stuck"), 0o500);
       try {
         const result = await migratePluginHostStorage(pluginsRoot);

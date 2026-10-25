@@ -1,16 +1,4 @@
-/**
- * `resolveManifestPathsFromRegistry` is the producer; `PythonRuntime`'s
- * lockfile discovery is the consumer. Every case below drives the producer
- * end-to-end from a REAL `registry.json` on disk through the REAL
- * `readPluginRegistry`, and asserts on the list the consumer is handed.
- *
- * Why the consumer matters: `python-runtime.ts` feeds each returned path to
- * `lockCandidatesFromManifest`, which reads the manifest and contains the
- * declared lockfile relative to `dirname(manifestPath)` — containment anchored
- * to whatever directory the registry entry named. The chosen lockfile drives
- * the `uv` bootstrap, which by explicit design runs at boot BEFORE the ASRT
- * sandbox is initialized.
- */
+/** Registry-derived lockfiles drive boot dependency setup before sandbox initialization; paths must stay trusted. */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -37,7 +25,6 @@ async function writeManifestAt(dir: string, id: string): Promise<string> {
   return manifestPath;
 }
 
-/** The exact producer call `python-runtime.ts` makes. */
 async function consumerInput(): Promise<string[]> {
   const registry = await readPluginRegistry(registryPath);
   return resolveManifestPathsFromRegistry(registryPath, registry.plugins);
@@ -45,7 +32,6 @@ async function consumerInput(): Promise<string[]> {
 
 beforeEach(async () => {
   testDir = await mkdtemp(join(tmpdir(), "ave-regtrust-"));
-  // `dirname(registryPath) === pluginsRoot` by construction.
   pluginsRoot = join(testDir, "plugins");
   outsideDir = join(testDir, "outside");
   await mkdir(pluginsRoot, { recursive: true });
@@ -76,8 +62,7 @@ describe("resolveManifestPathsFromRegistry — trust root is enforced before the
     ]);
 
     const paths = await consumerInput();
-    // The consumer must never be handed the escaping path — it would read
-    // that manifest and derive lockfile candidates anchored to `outsideDir`.
+    // An escaping manifest would anchor lockfile discovery outside the plugin root.
     expect(paths.map((p) => resolve(p))).toEqual([resolve(good)]);
     expect(paths.some((p) => p.includes("outside"))).toBe(false);
   });
@@ -87,8 +72,7 @@ describe("resolveManifestPathsFromRegistry — trust root is enforced before the
     await writeTestPluginRegistry({ registryPath }, [
       { id: "evil", manifestPath: join("..", "outside", "evil", "plugin.json") },
     ]);
-    // Sanity: the traversal really does resolve onto the planted manifest, so
-    // this fixture expresses a reachable escape rather than a dead string.
+    // Ensure traversal reaches the planted manifest so containment is tested against a real escape.
     expect(resolve(pluginsRoot, "..", "outside", "evil", "plugin.json")).toBe(resolve(evil));
 
     expect(await consumerInput()).toEqual([]);
@@ -100,13 +84,12 @@ describe("resolveManifestPathsFromRegistry — trust root is enforced before the
     try {
       await symlink(join(outsideDir, "evil"), linkDir, "junction");
     } catch {
-      return; // symlink/junction creation unavailable — nothing to assert
+      return;
     }
     await writeTestPluginRegistry({ registryPath }, [{ id: "linked", manifestPath: join(linkDir, "plugin.json") }]);
     expect(evil).toContain("outside");
 
-    // A lexical containment check would ACCEPT this path; realpath is what
-    // rejects it.
+    // Lexical containment passes this path; realpath must refuse it.
     expect(await consumerInput()).toEqual([]);
   });
 
@@ -131,8 +114,7 @@ describe("resolveManifestPathsFromRegistry — trust root is enforced before the
 describe("resolveTrustedRegistryManifestPath — the authority itself", () => {
   it("does not blanket-trust a relative path the way the old predicate did", async () => {
     await writeManifestAt(join(outsideDir, "evil"), "evil");
-    // The predicate this replaced opened with `if (!isAbsolute(p)) return true`,
-    // so this exact input returned TRUE.
+    // Relative registry manifest paths must not bypass containment.
     expect(
       resolveTrustedRegistryManifestPath(
         join("..", "outside", "evil", "plugin.json"),

@@ -1,37 +1,4 @@
-/**
- * The host protocol, pinned frame by frame.
- *
- * Every golden here is recorded over the REAL stack: `servePluginChild` and the
- * real child runtime on one side, `openValidationSession` — the production
- * protocol session with the dispatch table assembled from the group factories
- * — on the other, joined by two in-memory `PassThrough`s, the substitution
- * `out-of-process-plugin.test.ts` makes, and the only one. The host answers
- * from `createValidationHost` — with the recorded neighbourhood supplied by
- * `createRecordingHost` — so a transcript is a function of the plugin
- * module, and a transcript that changes is the wire that changed
- * (plugin-hostapi-protocol.md §10.1).
- *
- * Four kinds, under `fixtures/host-protocol/3/`:
- *
- *  - `methods/<method>.json`: the request one call puts on the wire and the
- *    reply it gets, for every `ave/host/*` and `ave/instance/*` method, and
- *    `methods/errors/<code>.json` for every code of the closed error set.
- *  - `notifications/<name>.json`: one frame per notification kind (§3.4).
- *  - `plugins/<id>/expected.jsonl`: the whole conversation for one installed
- *    plugin's surface (§9.2), in the order it crossed.
- *  - `launches/process/construct.json`: the construct pair for a plugin whose
- *    process is its own executable (§9.7 P3, decision 33), beside the complete
- *    plugin it was recorded from.
- *  - `plugins/python-smoke/expected.jsonl`: the one conversation NOT recorded
- *    in memory. A Python process cannot run on in-memory streams, so its
- *    child is a real process on pipes the test spawns and owns (§9.7 P5).
- *
- * Frames are compared after canonical key ordering and id normalisation: a
- * UUID or request-derived worker handle becomes `<uuid-N>` by first appearance,
- * so a transcript does not depend on its opaque identity allocation. Regenerate
- * with `-u` after a deliberate wire change and read the diff — it IS the
- * protocol change.
- */
+/** Record golden frames through the real host session and child runtime; review snapshot changes as wire changes. */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { spawn } from "node:child_process";
 import { PassThrough, Writable, type Readable } from "node:stream";
@@ -79,24 +46,16 @@ import { installPythonSmoke, reportSmoke } from "./python-smoke-harness.js";
 import { repositoryRoot } from "./child-entry-bundle.js";
 
 const GOLDEN_ROOT = fileURLToPath(new URL("./fixtures/host-protocol/3/", import.meta.url));
-/** The golden invoker's entry; every `plugins/<id>` directory holds its own. */
 const INVOKER_ENTRY = join(GOLDEN_ROOT, "invoker.mjs");
 
 type Frame = Record<string, unknown>;
 
-/** One frame as it crossed, and which end wrote it. */
 interface RecordedFrame {
   readonly from: "host" | "child";
   readonly frame: Frame;
 }
 
-/**
- * The `ave/host/*` members each fixture calls — the §9.2 survey. The
- * transcript is held to this set as well as to its snapshot, so a fixture that
- * stopped calling a member fails on the set rather than on a diff a reviewer
- * might accept. Child-local members (`config.get`, `getInstalledPluginIds`)
- * are answered without a round trip and so are not here.
- */
+/** The transcript must call every surveyed wire member; child-local methods produce no frames. */
 const PLUGIN_SURVEY: Readonly<Record<string, readonly HostApiPath[]>> = {
   "sampleassistant": [
     "onEvent",
@@ -141,8 +100,7 @@ let aveHomeRoot: string;
 let previousAveHome: string | undefined;
 
 beforeAll(() => {
-  // The envelope derivation reads `AVE_HOME` for declared host directories;
-  // a recording must never resolve the real one.
+  // Isolate AVE_HOME so recordings never resolve the user profile.
   previousAveHome = process.env.AVE_HOME;
   aveHomeRoot = mkdtempSync(join(tmpdir(), "host-protocol-golden-"));
   process.env.AVE_HOME = join(aveHomeRoot, ".ave");
@@ -154,7 +112,6 @@ afterAll(() => {
   rmSync(aveHomeRoot, { recursive: true, force: true });
 });
 
-/** Record every frame written to `stream`, decoded exactly as its reader decodes it. */
 function tap(stream: Readable, from: RecordedFrame["from"], frames: RecordedFrame[]): void {
   const decoder = new StdioFrameDecoder(FRAME_BYTES_MAX);
   stream.on("data", (chunk: Buffer) => {
@@ -165,11 +122,9 @@ function tap(stream: Readable, from: RecordedFrame["from"], frames: RecordedFram
 interface Session {
   readonly instance: RuntimePlugin;
   readonly frames: RecordedFrame[];
-  /** Write a frame onto the child's stdout, as a child that built it by hand would. */
   sendAsChild(frame: Frame): void;
 }
 
-/** A plugin constructed over the real stack, with both directions recorded. */
 async function openSession(
   manifest: PluginManifest,
   entryPath: string,
@@ -186,7 +141,6 @@ async function openSession(
     output: hostToChild,
     terminate: () => service.hostGone(),
     onGone: () => undefined,
-    // No process, so nothing can fault.
     onFault: () => undefined,
   };
   const { instance } = await openValidationSession({
@@ -207,11 +161,7 @@ async function openSession(
 
 const TRANSCRIPT_ID = /\bworker_\d+\b|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
 
-/**
- * A path under the golden root, as `<golden>/` and `/`-separated segments.
- * The separators are the platform's (`\` on Windows) only below the root,
- * which the root's replacement alone would leave behind.
- */
+/** Normalize root spellings and separators below the root for portable goldens. */
 function goldenPath(text: string): string {
   let out = "";
   let from = 0;
@@ -223,17 +173,11 @@ function goldenPath(text: string): string {
   return out + text.slice(from);
 }
 
-/**
- * Canonical JSON: keys sorted at every depth, each opaque identity replaced by
- * `<uuid-N>` in order of first appearance across the whole golden, and the
- * checkout's own path replaced, so a golden reads the same on every machine.
- */
+/** Sort keys and replace opaque IDs and checkout roots deterministically. */
 function canonicalise(value: unknown, ids: Map<string, string>): unknown {
   if (typeof value === "string") {
     const pathed = goldenPath(value);
-    // Two ways a checkout leaks into a golden only it can match: a separator
-    // left below the root, or the root spelled another way (a drive letter's
-    // case) and so not replaced at all.
+    // Test alternate drive casing and separators below the normalized root.
     if (/<golden>\/[^\s"'`]*\\/.test(pathed) || /fixtures[\\/]host-protocol[\\/]1[\\/]/.test(pathed)) {
       throw new Error(`a golden kept a checkout path: ${pathed}`);
     }
@@ -264,14 +208,7 @@ function goldenJsonl(frames: readonly RecordedFrame[]): string {
   return frames.map((recorded) => `${JSON.stringify(canonicalise(recorded, ids))}\n`).join("");
 }
 
-/**
- * Every string a transcript carries, decoded: each JSON key and string value,
- * and, where a value is itself JSON text (a tool's text content often is), the
- * strings inside that too. Checking decoded strings rather than the serialized
- * transcript is what makes the leftover-path guard independent of how a
- * plugin escaped them: JavaScript keeps non-ASCII literal, Python's
- * `json.dumps` writes `\uXXXX`, and either may nest JSON inside a string.
- */
+/** Decode nested JSON strings when searching transcripts for path leaks, including escaped Unicode. */
 function decodedStrings(transcript: string): string[] {
   const out: string[] = [];
   const visit = (value: unknown, depth: number): void => {
@@ -283,7 +220,7 @@ function decodedStrings(transcript: string): string[] {
         try {
           inner = JSON.parse(text);
         } catch {
-          return; // prose that merely starts like JSON; already pushed as is
+          return;
         }
         visit(inner, depth + 1);
       }
@@ -304,25 +241,10 @@ function decodedStrings(transcript: string): string[] {
   return out;
 }
 
-/**
- * Where a root ends when it is named: at a separator (something inside it), at
- * the end of the string, or at prose punctuation or whitespace naming the root
- * itself. Anything else that can continue a file name (`+`, `(`, a letter, a
- * dot followed by more name) makes it a sibling such as `/work/repo+backup`,
- * not the root. A space is taken as the end: `/work/repo backup` is then a
- * false positive, which fails the recording loudly rather than passing a leak.
- */
+/** Match root boundaries rather than substrings; ambiguous matches must fail loudly. */
 const ROOT_END = String.raw`(?=$|[\\/\s"'\x60,;:!?)\]}>]|\.(?:\s|$))`;
 
-/**
- * The first carried string that still names `root` as a path, if any. A path,
- * not a substring: a short root such as a container's `/w` is also inside
- * `ave/host/storage/write`, so no path character may stand before it and it
- * must end at `ROOT_END`. The spellings are the root with any trailing
- * separator dropped and as a `file://` URL's path (percent-encoding `#`, `?`
- * and spaces), each also as JSON escapes it inside prose that embeds JSON:
- * literal, or ASCII-only with `\uXXXX` as Python writes it.
- */
+/** Find path leaks in decoded carried strings, including nested JSON and escaped spellings. */
 function keptRoot(root: string, carried: readonly string[]): string | undefined {
   const bare = root.length > 1 ? root.replace(/[/\\]+$/, "") : root;
   const jsonEscaped = (text: string) => JSON.stringify(text).slice(1, -1);
@@ -336,7 +258,6 @@ function keptRoot(root: string, carried: readonly string[]): string | undefined 
   return carried.find((text) => patterns.some((pattern) => pattern.test(text)));
 }
 
-/** The reply to `id` from the other end, waiting for it if it has not crossed yet. */
 async function replyTo(
   frames: readonly RecordedFrame[],
   request: RecordedFrame,
@@ -360,32 +281,21 @@ function lastRequest(frames: readonly RecordedFrame[], method: string): Recorded
   return found;
 }
 
-/** The members a plugin reaches over the wire: not child-local, so each is a method. */
 const WIRE_PATHS = (Object.keys(HOSTAPI_PATH_CONTRACTS) as HostApiPath[]).filter(
   (path) => HOSTAPI_PATH_CONTRACTS[path].result !== "child-local",
 );
 
 const methodGoldenFile = (method: string): string => join(GOLDEN_ROOT, "methods", `${method}.json`);
 
-/**
- * `code-` in front because `vitest.globalSetup.ts` schema-checks every JSON file
- * under `__tests__` whose name starts with `plugin` or `manifest` as a plugin
- * manifest, and four codes do.
- */
+/** Prefix error goldens with code- so manifest discovery does not parse error names as plugin documents. */
 const errorGoldenName = (code: HostApiWireErrorCode): string => `errors/code-${code}.json`;
 
-/**
- * Run a recording once, however many describes need it and whichever of them
- * a filtered run (`-t`) selects: the notification goldens are drawn from the
- * same conversations the method goldens are, and must not depend on those
- * tests having run first.
- */
+/** Cache shared recordings but start them independently under test filters. */
 function once<T>(record: () => Promise<T>): () => Promise<T> {
   let recording: Promise<T> | undefined;
   return () => (recording ??= record());
 }
 
-/** The invoker calling every member and every lifecycle method once. */
 const recordInvokerConversation = once(async (): Promise<RecordedFrame[]> => {
   const host = createRecordingHost();
   const session = await openSession(INVOKER_MANIFEST, INVOKER_ENTRY, host);
@@ -395,8 +305,7 @@ const recordInvokerConversation = once(async (): Promise<RecordedFrame[]> => {
   await instance.onPublished?.();
   for (const path of WIRE_PATHS) {
     const outcome = (await instance.handlers.invoke_member!({ path })) as { error?: unknown };
-    // A pair whose reply is an error would pin a refusal as the method's
-    // shape; the error goldens below are where refusals belong.
+    // Method goldens must record successful replies; error goldens cover refusals.
     expect(outcome.error, path).toBeUndefined();
   }
   await instance.handlers.write_log!();
@@ -404,8 +313,7 @@ const recordInvokerConversation = once(async (): Promise<RecordedFrame[]> => {
   await settle();
   await instance.handlers.dispose_all!();
   await settle();
-  // Before stop, as the host's shutdown step runs: the `onShutdown` the
-  // invoker registered is what `ave/instance/shutdown` names.
+  // Run onShutdown before stopping, matching host shutdown order.
   await host.runShutdown();
   await settle();
   await instance.stop?.();
@@ -438,18 +346,14 @@ describe("one request/response pair per method", () => {
   });
 });
 
-/** How one error code is provoked, over the same real stack. */
 interface ErrorTrigger {
-  /** What the golden records as the reason this reply was sent. */
   readonly trigger: string;
   readonly overrides?: ValidationHostOverrides;
-  /** Stop the incarnation first, so the request arrives at a host that retired it. */
+  /** Retire the incarnation before dispatching this request. */
   readonly afterStop?: boolean;
-  /** Produce the request whose reply is the golden, and return it. */
   readonly provoke: (session: Session) => Promise<RecordedFrame>;
 }
 
-/** Call one member through the invoker and return the request it sent. */
 function throughStub(path: HostApiPath): ErrorTrigger["provoke"] {
   return async (session) => {
     await session.instance.handlers.invoke_member!({ path });
@@ -457,7 +361,6 @@ function throughStub(path: HostApiPath): ErrorTrigger["provoke"] {
   };
 }
 
-/** Send a request no stub would build, and return it. */
 function byHand(method: string, params: unknown): ErrorTrigger["provoke"] {
   return async (session) => {
     session.sendAsChild({ jsonrpc: "2.0", id: "hand-built", method, params });
@@ -592,7 +495,6 @@ const ERROR_TRIGGERS: Readonly<Record<Exclude<HostApiWireErrorCode, "protocol-ve
 
 type ErrorTriggerCode = keyof typeof ERROR_TRIGGERS;
 
-/** One session per error code: the request that provoked it, its reply, and every frame. */
 const recordErrorConversation = Object.fromEntries(
   Object.entries(ERROR_TRIGGERS).map(([code, { overrides, afterStop, provoke }]) => [
     code,
@@ -625,8 +527,7 @@ describe("one reply per error code", () => {
 
       const error = (response.frame as { error?: { code: number; data?: { code?: string } } }).error;
       expect(error?.data?.code).toBe(code);
-      // The JSON-RPC code is the standard one where one exists, and the
-      // host-protocol code for everything else (§3.3).
+      // Use standard JSON-RPC codes where defined and host-protocol codes otherwise.
       expect(error?.code).toBe(code === "path-unknown" ? -32601 : -32000);
       await expect(
         goldenJson({ trigger, request: request.frame, response: response.frame }),
@@ -635,8 +536,7 @@ describe("one reply per error code", () => {
   }
 
   it("protocol-version-mismatch", async () => {
-    // Answered by the CHILD, to the one request that carries the version, so
-    // it is recorded against the reference runtime alone.
+    // Only construct carries the version; its mismatch reply is child-owned.
     const hostToChild = new PassThrough();
     const childToHost = new PassThrough();
     const frames: RecordedFrame[] = [];
@@ -667,7 +567,6 @@ describe("one reply per error code", () => {
   });
 });
 
-/** The invoker abandoning a call in flight, which is what sends `notifications/cancelled`. */
 const recordCancelledConversation = once(async () => {
   let hostSignal: AbortSignal | undefined;
   const host = createRecordingHost({
@@ -691,9 +590,7 @@ describe("a cancelled request", () => {
     const { session, outcome, hostSignal: signal } = await recordCancelledConversation();
     const hostSignal = signal();
 
-    // The host's controller for THAT request aborted, and the reply carries
-    // the name a plugin checks for, so `name === "AbortError"` holds across
-    // the wire as it does in-process.
+    // Assert host cancellation and the wire AbortError identity.
     expect(hostSignal?.aborted).toBe(true);
     expect(outcome.error?.name).toBe("AbortError");
     const request = lastRequest(session.frames, hostApiMethodOf("callLlm"));
@@ -706,10 +603,7 @@ describe("a cancelled request", () => {
 });
 
 describe("one frame per notification kind", () => {
-  // Drawn from the conversations the describes above record, so a notification
-  // golden is a frame that really crossed rather than one assembled here. The
-  // recordings are shared, not re-run, and this describe starts them itself so
-  // it stands alone under a filter.
+  // Notification goldens reuse actual conversations and must also start independently under filters.
   const recordedForNotifications: RecordedFrame[] = [];
   beforeAll(async () => {
     recordedForNotifications.push(...(await recordInvokerConversation()));
@@ -741,10 +635,7 @@ describe("a process launch's construct", () => {
   it("carries the process manifest and the resolved command path", async () => {
     const dir = join(GOLDEN_ROOT, "launches", "process");
     const manifest = flattenAgentPluginsManifest(JSON.parse(readFileSync(join(dir, "plugin.json"), "utf-8")));
-    // The launch the factory would build from this directory: the command it
-    // resolves is the path construct names. The reference runtime stands in for
-    // the plugin's own program on the in-memory pair, so the golden pins what
-    // the HOST sends; a real executable on pipes is P5's recording path.
+    // Record the host construct frame with the reference runtime; real process pipes are measured separately.
     const dataDir = join(aveHomeRoot, "process-launch-data");
     mkdirSync(dataDir, { recursive: true });
     const launch = resolveProcessLaunch(manifest, dir, dataDir);
@@ -788,11 +679,10 @@ describe("a golden reads the same on every machine", () => {
   });
 
   it("records a path under the golden root with `/`, whatever separator the platform used", () => {
-    // What a Windows checkout records: the root in its own spelling, then `\`.
     expect(goldenPath(`${GOLDEN_ROOT}plugins\\sampleportal\\entry.mjs`)).toBe("<golden>/plugins/sampleportal/entry.mjs");
     expect(goldenPath(`${GOLDEN_ROOT}plugins/sampleportal/entry.mjs`)).toBe("<golden>/plugins/sampleportal/entry.mjs");
     expect(goldenPath(`cannot load ${GOLDEN_ROOT}invoker.mjs: gone`)).toBe("cannot load <golden>/invoker.mjs: gone");
-    // A backslash that is not under the root is content, and stays.
+    // Backslashes outside the root are content and must survive normalization.
     expect(goldenPath("a\\b")).toBe("a\\b");
   });
 });
@@ -804,9 +694,7 @@ describe("one conversation per installed plugin's surface", () => {
   ] as const)("refuses an old %s bundle before its child connects", async (pluginId, refusal) => {
     const dir = join(GOLDEN_ROOT, "old-bundles", pluginId);
     const manifest = flattenAgentPluginsManifest(JSON.parse(readFileSync(join(dir, "plugin.json"), "utf-8")));
-    // The entry beside the old manifest throws when imported, so a
-    // refusal that came after an import would surface as that throw instead.
-    // A link whose child must never hear from the host: any write fails the case.
+    // A throwing entry and a write-refusing link prove old protocols fail before import or child traffic.
     const written: unknown[] = [];
     const output = new Writable({
       write(chunk, _encoding, callback) {
@@ -842,8 +730,6 @@ describe("one conversation per installed plugin's surface", () => {
       );
       expect(manifest.id).toBe(pluginId);
       const host = createRecordingHost();
-      // The plugin's own directory is a complete plugin: its manifest and its
-      // entry, as a directory validator takes it.
       const session = await openSession(manifest, join(dir, "entry.mjs"), host);
       const { instance, frames } = session;
 
@@ -867,26 +753,7 @@ describe("one conversation per installed plugin's surface", () => {
   }
 });
 
-/**
- * The Python smoke's conversation, over real pipes (§9.7 P5).
- *
- * The child is the fixture's own `bin/plugin`, spawned plainly by the test —
- * never the production factory, which would demand a live sandbox and pinned
- * provenance and is right to — on the validator's own link, and attached to
- * `openValidationSession`. Two rules beyond `canonicalise`, each keyed to one
- * thing that varies by run and not by wire behaviour:
- *
- *  - MEASUREMENT: in a child `notifications/ave/log` frame,
- *    `params.meta.ruMaxrss` is the child's peak RSS. Its raw value is copied
- *    to the measurement record and the frame holds `"<measured>"`. Any other
- *    number still compares exactly.
- *  - TEMPORARY ROOTS: the plugin root (a `mkdtemp` copy of the fixture with
- *    its `vendor/`) and the data root are outside the golden root, so
- *    `goldenPath` leaves them; they reach construct's context and `entryPath`.
- *    Each is replaced, as allocated and after `realpath`, longest spelling
- *    first, as are the validation context's fixed roots — and the transcript
- *    is refused if the OS temp directory or the checkout still appears in it.
- */
+/** Record the cross-language smoke over real unconfined pipes; reject leaked temporary and checkout paths. */
 describe.runIf(process.platform !== "win32")("the python smoke's conversation, over real pipes", () => {
   const PYTHON_SMOKE_GOLDEN = join(GOLDEN_ROOT, "plugins", "python-smoke", "expected.jsonl");
   let templateRoot: string;
@@ -899,13 +766,9 @@ describe.runIf(process.platform !== "win32")("the python smoke's conversation, o
     cpSync(templateRoot, root, { recursive: true, preserveTimestamps: true });
   }
 
-  /** The two spellings of a path: as given, and after `realpath`. */
   const spellings = (path: string): string[] => [...new Set([path, realpathSync(path)])];
 
-  /**
-   * Replace `params.meta.ruMaxrss` of each child log frame with `"<measured>"`,
-   * returning the raw values in order. The frames are rewritten in place.
-   */
+  /** Normalize measured peak RSS in child logs while retaining raw values for assertions. */
   function measureRuMaxrss(frames: RecordedFrame[]): number[] {
     const measured: number[] = [];
     for (const recorded of frames) {
@@ -920,7 +783,6 @@ describe.runIf(process.platform !== "win32")("the python smoke's conversation, o
     return measured;
   }
 
-  /** Every string in `value` with each `[spelling, placeholder]` replaced, in the order given. */
   function replaceRoots(value: unknown, replacements: ReadonlyArray<readonly [string, string]>): unknown {
     if (typeof value === "string") {
       return replacements.reduce((text, [spelling, placeholder]) => text.replaceAll(spelling, placeholder), value);
@@ -936,17 +798,15 @@ describe.runIf(process.platform !== "win32")("the python smoke's conversation, o
 
   interface PythonRecording {
     readonly transcript: string;
-    /** The child's own `ru_maxrss`, in bytes: darwin reports bytes, linux KiB. */
+    /** Peak RSS units differ: bytes on macOS, KiB on Linux. */
     readonly ruMaxrssBytes: number;
   }
 
-  /** One recording, in its own freshly allocated plugin and data roots. */
   async function recordPythonConversation(): Promise<PythonRecording> {
     const pluginRoot = mkdtempSync(join(tmpdir(), "python-smoke-plugin-"));
     const pluginDataDir = mkdtempSync(join(tmpdir(), "python-smoke-data-"));
     try {
-      // Each recording gets its own roots and process, with the already
-      // verified dependency tree copied rather than imported again in setup.
+      // Each recording owns fresh roots and a child while reusing verified dependencies.
       copyPythonFixture(pluginRoot);
       const manifest = flattenAgentPluginsManifest(
         JSON.parse(readFileSync(join(pluginRoot, "plugin.json"), "utf-8")),
@@ -962,8 +822,7 @@ describe.runIf(process.platform !== "win32")("the python smoke's conversation, o
         stderr += chunk.toString("utf-8");
       });
       const frames: RecordedFrame[] = [];
-      // The validator's link writes to the child through a `PassThrough` it
-      // pipes into stdin, so the host's frames are read where they are written.
+      // Observe frames on the validator-owned pass-through before piping to stdin.
       tap(link.output as PassThrough, "host", frames);
       tap(link.input, "child", frames);
       const host = createRecordingHost();
@@ -982,8 +841,7 @@ describe.runIf(process.platform !== "win32")("the python smoke's conversation, o
         expect(await session.instance.handlers.echo!({ said: "hello" })).toEqual({ echoed: { said: "hello" } });
         await session.instance.stop!();
       } catch (error) {
-        // The session never reached its own teardown, so the child is ended
-        // here; the link starts its one termination sequence at most once.
+        // If session setup never reaches teardown, the fixture must end its child exactly once.
         link.terminate("the python smoke's recording failed");
         throw new Error(`the python smoke failed: ${String(error)}\nits stderr:\n${stderr}`, { cause: error });
       } finally {
@@ -1019,8 +877,7 @@ describe.runIf(process.platform !== "win32")("the python smoke's conversation, o
   }
 
   it("is the committed golden, recorded twice in independently allocated roots", async () => {
-    // Each recording owns its install, data roots, host and real child. Wait
-    // for both cleanups even when one fails, before the shared template is removed.
+    // Await both recording cleanups even after failure before removing the shared template.
     const [firstResult, secondResult] = await Promise.allSettled([
       recordPythonConversation(),
       recordPythonConversation(),
@@ -1041,9 +898,7 @@ describe.runIf(process.platform !== "win32")("the python smoke's conversation, o
     expect(methods).toEqual(expect.arrayContaining(["server/discover", "tools/list", "tools/call"]));
     for (const { from, frame } of recorded) {
       if (from !== "host" || !["server/discover", "tools/list", "tools/call"].includes(String(frame.method))) continue;
-      // Every MCP request carries the S1 metadata, and the plugin answered it.
-      // A tools/call also names the host invocation it serves; a child that
-      // makes no hostApi call (this one) has nothing to carry it back on.
+      // Every request needs metadata; only nested host calls carry an invocation token back.
       expect((frame.params as { _meta?: unknown })._meta).toEqual({
         "io.modelcontextprotocol/clientCapabilities": {},
         "io.modelcontextprotocol/protocolVersion": "2026-07-28",
@@ -1063,9 +918,7 @@ describe.runIf(process.platform !== "win32")("the python smoke's conversation, o
         JSON.parse(readFileSync(join(pluginRoot, "plugin.json"), "utf-8")),
       );
       const launch = resolveProcessLaunch(manifest, pluginRoot, pluginDataDir);
-      // The pipe the test owns: these frames are written by hand, because the
-      // session's `requestMcp` always stamps the metadata and its `probe`
-      // refuses MCP methods.
+      // Hand-build frames to test missing metadata because production requestMcp always stamps it.
       const child = spawn(launch.command, [...launch.args], {
         env: buildSafeChildEnv({ ...launch.env }),
         stdio: ["pipe", "pipe", "inherit"],
@@ -1094,8 +947,7 @@ describe.runIf(process.platform !== "win32")("the python smoke's conversation, o
       child.stdin!.write(call("version-only", version));
       child.stdin!.write(call("capabilities-only", capabilities));
       child.stdin!.write(call("both", { ...version, ...capabilities }));
-      // Ended only once every request is answered: the plugin leaves when its
-      // stdin ends, abandoning whatever is still in flight.
+      // End stdin only after all replies; the plugin abandons in-flight work when input closes.
       await answered;
       child.stdin!.end();
       await exited;

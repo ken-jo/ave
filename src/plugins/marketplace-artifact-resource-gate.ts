@@ -1,11 +1,4 @@
-/**
- * Process-wide marketplace artifact gate.
- *
- * Each install temporarily retains compressed chunks, a contiguous zip
- * buffer, and decompressed entry buffers. Per-artifact ceilings alone do not
- * bound aggregate memory when different plugin IDs install concurrently, so
- * production plugin and MCP install orchestration share this one FIFO slot.
- */
+/** Serialize artifact materialization across plugin kinds to bound simultaneous compressed and decompressed allocations. */
 import { createSerialQueue } from "../lib/with-file-lock.js";
 
 const slot = createSerialQueue();
@@ -18,14 +11,12 @@ export async function withMarketplaceArtifactResourceSlot<T>(
   if (signal?.aborted) throw abortedWhileQueued();
   let started = false;
   const turn = slot(async () => {
-    // A caller that gave up while queued must not consume the slot.
     if (signal?.aborted) throw abortedWhileQueued();
     started = true;
     return operation();
   });
   if (!signal) return turn;
-  // Only the wait is abortable: once `operation` runs, its own signal handling
-  // decides, and this gate no longer stands between the caller and the result.
+  // Only queue waiting is abortable; running operations own cancellation.
   let onAbort: (() => void) | undefined;
   const abortedWhileWaiting = new Promise<never>((_resolve, reject) => {
     onAbort = () => {

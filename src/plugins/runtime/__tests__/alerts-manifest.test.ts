@@ -1,13 +1,4 @@
-/**
- * Alert and config-inheritance declarations in the plugin manifest.
- *
- * The schema bounds each field and the host readers re-check every bound, so
- * a plugin built against a stale schema cannot widen what it declares. The
- * readers add the rules the schema cannot state — template references, unused
- * slots, duplicate ids and targets — and refuse the whole block on any
- * violation: the declaration is the grant, and a consent-bearing declaration
- * has no partial form.
- */
+/** Alert declarations grant all-or-nothing; host readers recheck schema bounds before granting behavior. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -87,22 +78,19 @@ function alertsBlock(overrides: Json = {}): Json {
   };
 }
 
-/** A manifest projection carrying `block` as its alerts declaration. */
 function withAlerts(block: unknown): Pick<PluginManifest, "alerts"> {
   return { alerts: block as PluginManifest["alerts"] };
 }
 
-/** `alertsBlock()` with the first kind replaced by `kind`. */
 function withReplyKind(edit: (kind: Json) => void): Pick<PluginManifest, "alerts"> {
   const kind = replyKind();
   edit(kind);
   return withAlerts(alertsBlock({ kinds: [kind, digestKind()] }));
 }
 
-/** Assert the block grants nothing, and — given `reason` — that it was refused for that reason and no other. */
 function expectRefused(manifest: Pick<PluginManifest, "alerts">, reason?: RegExp): void {
   expect(getDeclaredAlertKinds(manifest, "fixturemail")).toEqual([]);
-  // A refused block still scopes triggerConversation, with no source granted.
+  // A malformed alerts block still scopes triggers and grants no source.
   expect(getDeclaredSuggestionSources(manifest, "fixturemail")).toEqual([]);
   if (reason) {
     const refusals = vi.mocked(console.warn).mock.calls

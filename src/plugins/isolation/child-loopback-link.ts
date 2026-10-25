@@ -1,77 +1,6 @@
-/**
- * The Windows sandboxed plugin child's protocol channel: one authenticated
- * loopback TCP connection instead of the child's stdin and stdout.
- *
- * WHY NOT STDIO. `srt-win exec` starts the target as the `srt-sandbox` account
- * through a two-hop runner that relays the target's stdout but no stdin:
- * `echo hi | srt-win exec -- cmd /c more` prints nothing (measured on ASRT
- * 0.0.76 on a provisioned Windows 11 host, 2026-10-10; through ASRT 0.0.80 the
- * srt-win source changes only in merging a batch's duplicate targets, #656, so
- * the relay is unchanged). The plugin protocol
- * is framed in both directions, so on that path the host's half has nowhere to
- * go. macOS and Linux keep stdio; nothing here runs there.
- *
- * WHY THIS SHAPE. srt-win's WFP filters refuse an outbound connect from the
- * `srt-sandbox` account except to the proxy port range — loopback included, so
- * one sandboxed process cannot dial another's listener either (measured:
- * `EACCES`) — while an inbound connect from the host to a loopback listener
- * the child opened is admitted (measured, same host). So the child listens on
- * `127.0.0.1:0` and announces the port and a fresh 32-byte nonce on its stdout:
- * the one channel srt-win does relay, and one only the host reads. The nonce
- * itself never crosses the socket and is never logged.
- *
- * MUTUAL, CHANNEL-BOUND AUTHENTICATION. Both ends prove they hold the nonce,
- * and each proof is bound to the one TCP connection it is sent on:
- *   host  → child  HMAC-SHA256(nonce, "ave-loopback host <hostAddr> <hostPort> <childAddr> <childPort>")
- *   child → host   HMAC-SHA256(nonce, "ave-loopback child <childAddr> <childPort> <hostAddr> <hostPort>")
- * where the addresses and ports are the connection's own, each side reading
- * them from its socket (IPv4-mapped addresses unmapped). The host sends its
- * proof first and treats the channel as the child's only after the child's
- * proof checks; the child accepts the host only after the host's proof checks
- * against the remote address and port it actually sees. Both ends are
- * 127.0.0.1: the host dials from it, and the child drops a peer from any other
- * address before reading a byte. Every 127/8 address reaches a 127.0.0.1
- * listener (measured on Windows: a client bound to 127.0.0.2 connected), so
- * without that a peer on 127.0.0.2 could take the host's port number and
- * replay its proof. So a peer that does not hold the nonce learns nothing from
- * either proof and can be neither end: a listener that took the host's
- * connection cannot answer it, and cannot replay the host's proof into its own
- * connection to the child, whose address or port differ (two live connections
- * never share a 4-tuple). A peer that fails is dropped and the child keeps
- * listening, for a bounded number of peers within the accept time, so a local
- * process that connects first delays the host rather than ending the load;
- * the host connects once more if the child dropped it for want of a handshake
- * slot. Whoever holds the nonce besides the two ends could only have read it
- * out of the child's own memory, which the same account can do anyway
- * (decision 64). A second bind of the child's port is refused even to the
- * same account (measured: `WSAEACCES` with `SO_REUSEADDR`), so the host's
- * connection reaches the child's listener.
- *
- * WHY THE ENVIRONMENT TRAVELS HERE. The same runner gives the target the
- * sandbox account's profile environment plus srt-win's own `--env` overlay
- * (PATH, PATHEXT, proxy), not the environment the host spawned `srt-win` with
- * — so the throwaway HOME and its TEMP never arrived. The child's intended
- * environment is passed as one base64url JSON argument and applied before the
- * plugin is imported; base64url keeps every byte of it out of `cmd.exe`'s
- * reach. `ELECTRON_RUN_AS_NODE` cannot travel this way — it decides what the
- * binary is before any JavaScript runs — and is set on the command line instead
- * (`confined-child.ts`, `windowsShell: "cmd"`).
- *
- * THE STDIO RELAY. A program the host does not write — a bundled hook, an MCP
- * stdio server, a plugin worker — cannot be taught this channel, yet it reads
- * its stdin (a hook its payload, a server its requests, a worker its host's
- * liveness) and needs its environment. So the same launch runs the host's own
- * runtime in relay mode instead ({@link CHILD_RELAY_TRANSPORT_ARG}): it accepts
- * the host over this channel, reads ONE request line naming the program, its
- * arguments, its environment and its working directory, starts that program
- * with a real stdin pipe, and copies the socket into it. The program inherits
- * the relay's stdout and stderr, which srt-win already carries to the host, and
- * the relay exits with the program's exit code. Both run inside the one srt-win
- * wrap — same account, same restricted token, same job object, same filesystem
- * and network fence — so the relay adds a hop, not a privilege. Because the
- * request travels over the authenticated socket, nothing the program is given
- * ever meets `cmd.exe`: only the host's own executable and entry path do.
- */
+// Windows sandbox runners lack usable stdin, so the child announces a loopback listener and nonce over stdout.
+// Both peers require 127.0.0.1 and mutual HMACs bound to their socket four-tuple; never send the nonce over the socket or log it.
+// Apply encoded environment before imports; relay mode stays in the same confinement and gives unmodified programs real stdin.
 import { spawn } from "node:child_process";
 import { createServer, connect, type Socket } from "node:net";
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
@@ -120,11 +49,7 @@ function endpoints(socket: Socket): { readonly local: Endpoint; readonly remote:
   };
 }
 
-/**
- * One side's proof that it holds `nonce`, bound to this connection: the
- * sender's own address and port first, then its peer's, each as the sender's
- * socket reports them.
- */
+/** Bind each HMAC proof to nonce and both address/port endpoints in sender-first order. */
 function loopbackProof(nonce: string, side: "host" | "child", own: Endpoint, peer: Endpoint): Buffer {
   return createHmac("sha256", Buffer.from(nonce, "hex"))
     .update(`ave-loopback ${side} ${own.address} ${own.port} ${peer.address} ${peer.port}`)
@@ -145,12 +70,8 @@ export function encodeChildEnv(env: Readonly<Record<string, string>>): string {
   return CHILD_ENV_ARG_PREFIX + Buffer.from(JSON.stringify(env), "utf-8").toString("base64url");
 }
 
-/**
- * What an environment can hold: a non-empty name without `=` or NUL, and a
- * string value without NUL. Nothing stricter — the variables travel as JSON,
- * never through a shell, and Windows admits names (`ProgramFiles(x86)`) that a
- * POSIX-shaped rule would refuse.
- */
+// Environment names must be nonempty without = or NUL; values must be strings without NUL.
+// They travel as JSON, so platform-valid names need no shell restrictions.
 function assertEnvPair(name: string, value: unknown): asserts value is string {
   if (name.length === 0 || name.includes("=") || name.includes("\0")) {
     throw new Error(`[child-loopback-link] '${name}' is not an environment variable name`);
@@ -166,14 +87,7 @@ export type ChildLaunchMode =
   | { readonly transport: "loopback"; readonly env: Readonly<Record<string, string>> }
   | { readonly transport: "relay" };
 
-/**
- * Parse the child's arguments. With none of this module's arguments it is
- * the stdio child every other launch runs, and whatever else is there is left
- * to its caller as before (the plugin validator passes the entry path). With
- * the loopback argument, the launch must be exactly it and one environment
- * argument; with the relay argument, exactly that argument alone. Anything
- * else is refused rather than ignored.
- */
+/** No channel arguments means stdio; otherwise accept exactly one complete supported argument form. */
 export function parseChildLaunchArgs(args: readonly string[]): ChildLaunchMode {
   if (args.includes(CHILD_RELAY_TRANSPORT_ARG)) {
     if (args.length !== 1) {
@@ -222,15 +136,7 @@ function decodeChildEnv(encoded: string): Record<string, string> {
   return env;
 }
 
-/**
- * CHILD SIDE. Listen on loopback, announce, and resolve with the one socket
- * whose peer proved it holds the nonce for that connection, after answering
- * with the child's own proof (see the module header). A peer that fails —
- * a wrong or late proof, too many bytes, an error — is dropped and the child
- * keeps listening; it gives up after {@link MAX_REFUSED_PEERS} of them or when
- * the accept time runs out. The listener is closed once the host is in, and
- * on every failure.
- */
+/** Authenticate one loopback peer, close the listener on success or failure, and bound handshake time and peers. */
 export function acceptHostOverLoopback(opts: {
   readonly announce: (line: string) => void;
   readonly acceptTimeoutMs: number;
@@ -268,15 +174,13 @@ export function acceptHostOverLoopback(opts: {
     };
     server.on("error", (error) => finish(error));
     server.on("connection", (socket) => {
-      // A peer's reset must never surface as an unhandled error in the child.
       socket.on("error", () => undefined);
       if (settled || pending.size >= MAX_PENDING_HANDSHAKES) {
         socket.destroy();
         if (!settled) refuse(socket);
         return;
       }
-      // The host dials from the loopback address itself; a peer bound to any
-      // other (127.0.0.2, say) is not the host, whatever it sends.
+      // Only the designated loopback source address may authenticate as host.
       const ends = endpoints(socket);
       if (ends === undefined || ends.remote.address !== LOOPBACK_ADDRESS || ends.local.address !== LOOPBACK_ADDRESS) {
         refuse(socket);
@@ -340,17 +244,7 @@ export function acceptHostOverLoopback(opts: {
   });
 }
 
-/**
- * HOST SIDE. Read the child's stdout for its announce, connect from the
- * loopback address, send the host's proof for this connection, and resolve
- * with the socket only after the peer answered with the child's proof for it
- * (see the module header). If the child drops the connection before answering
- * — it does so to a peer beyond its handshake slots — the host connects once
- * more, after a short wait, within the same time limit. Rejects — and leaves
- * no socket open — if the child exits first, says anything else first, says
- * too much, answers wrongly, or the time runs out. Blank lines before the
- * announce are skipped; srt-win's shells may emit one.
- */
+/** Read announce, authenticate both connection endpoints and skip only pre-announce blank lines. */
 export function connectToAnnouncedChild(opts: {
   readonly stdout: Readable;
   readonly exited: Promise<string>;
@@ -383,7 +277,6 @@ export function connectToAnnouncedChild(opts: {
     );
     void opts.exited.then((reason) =>
       finish(new Error(`[child-loopback-link] the child ended before its channel was connected: ${reason}`)));
-    /** The child dropped `connected` before answering: try once more, or give up with `error`. */
     const dropped = (connected: Socket, error: Error, port: number, nonce: string): void => {
       if (settled || connected !== socket) return;
       connected.destroy();
@@ -403,9 +296,7 @@ export function connectToAnnouncedChild(opts: {
         return;
       }
       const expected = loopbackProof(nonce, "child", ends.remote, ends.local);
-      // Read the answer in paused mode, so that once this listener is gone the
-      // socket is back where a fresh one starts: the caller's first `data`
-      // listener starts the flow, and nothing after the answer is lost.
+      // Read the proof while paused so bytes after it remain for the first protocol reader.
       let received = Buffer.alloc(0);
       const onReadable = (): void => {
         if (settled || connected !== socket) return;
@@ -452,8 +343,7 @@ export function connectToAnnouncedChild(opts: {
       });
       socket = connected;
       connected.on("error", (error: Error) => {
-        // A connect that never reached a listener is not retried; a connection
-        // the child reset during the handshake is.
+        // Retry handshake resets, never a connect that reached no listener.
         if (established) dropped(connected, error, port, nonce);
         else if (connected === socket) finish(error);
       });
@@ -489,10 +379,7 @@ export function connectToAnnouncedChild(opts: {
   });
 }
 
-/**
- * The program a relay starts (see the module header), sent as one JSON line
- * once the channel is authenticated. Validated on both sides; a malformed request ends the relay.
- */
+/** Validate the authenticated relay request on both ends; malformed requests terminate the relay. */
 export interface RelayRequest {
   readonly command: string;
   readonly args: readonly string[];
@@ -500,25 +387,13 @@ export interface RelayRequest {
   readonly cwd?: string;
 }
 
-/** Longest request line, environment included, either side accepts. */
 const RELAY_REQUEST_LIMIT = 1024 * 1024;
-/** The relay's exit code when the program could not be started at all. */
 const RELAY_START_FAILED_EXIT = 127;
 
-/**
- * A batch file, as Windows names one: `.cmd`/`.bat` in any case, trailing
- * dots and spaces ignored as the file system ignores them.
- */
+/** Windows treats .cmd/.bat case-insensitively and ignores trailing dots or spaces. */
 const BATCH_FILE_RE = /\.(?:cmd|bat)[. ]*$/i;
 
-/**
- * Why the relay starts no batch file. Node refuses to spawn one without a
- * shell (`EINVAL`, since the CVE-2024-27980 fix), and the only shell for it is
- * `cmd.exe`, which would put the program's arguments — a plugin's or an MCP
- * server's, not the host's — on a command line it parses. The relay exists so
- * that nothing the program is given meets `cmd.exe`; a batch file would undo
- * that, so it is refused before anything starts.
- */
+/** Refuse batch files: launching them requires a command shell that would reinterpret manifest bytes. */
 export function batchFileRefusal(command: string): Error {
   return new Error(
     `[child-loopback-link] '${command}' is a batch file (.cmd/.bat); a sandboxed Windows program `
@@ -551,7 +426,6 @@ export function assertRelayRequest(value: unknown): asserts value is RelayReques
   }
 }
 
-/** The request as the line the host writes once the channel is authenticated. */
 function encodeRelayRequest(request: RelayRequest): string {
   assertRelayRequest(request);
   const line = `${JSON.stringify({
@@ -566,19 +440,7 @@ function encodeRelayRequest(request: RelayRequest): string {
   return line;
 }
 
-/**
- * HOST SIDE of the relay. Given the wrapped relay's stdout and its exit, return
- * the program's stdin and stdout as the caller will use them: `stdin` is
- * buffered until the channel exists and then copied into it, ending it ends
- * the program's input; `stdout` is the relay's stdout after the announce, which
- * is the program's own. Nothing else is read from the channel.
- *
- * On any failure to connect, `onFailure` is told — the caller ends the child —
- * `stdout` ends, and `stdin` becomes a sink, so a caller that writes before it
- * sees the exit gets no stream error. The same happens to `stdin` when the
- * channel closes later: the relay, and with it the program, is gone, and the
- * child's exit is how the caller learns it.
- */
+/** Buffer stdin until relay authentication; terminate by closing the channel, not by signaling a PID. */
 export function relayStdioOverLoopback(opts: {
   readonly stdout: Readable;
   readonly exited: Promise<string>;
@@ -591,9 +453,7 @@ export function relayStdioOverLoopback(opts: {
   const stdout = new PassThrough();
   connectToAnnouncedChild({ stdout: opts.stdout, exited: opts.exited, timeoutMs: opts.timeoutMs }).then(
     (socket) => {
-      // The program starts only once its request is read, so the relay's stdout
-      // carries nothing between the announce and this point: attaching here, in
-      // the same turn the connection resolved, loses nothing.
+      // Attach before sending the launch request; no program output can exist yet.
       opts.stdout.pipe(stdout);
       socket.on("error", () => undefined);
       socket.once("close", () => {
@@ -612,7 +472,7 @@ export function relayStdioOverLoopback(opts: {
   return { stdin, stdout };
 }
 
-/** CHILD SIDE: read the one request line, leaving whatever follows it unread. */
+/** Read exactly one request line, leaving protocol bytes after it untouched. */
 function readRelayRequest(socket: Socket, timeoutMs: number): Promise<RelayRequest> {
   return new Promise<RelayRequest>((resolve, reject) => {
     let received = Buffer.alloc(0);
@@ -667,19 +527,7 @@ function readRelayRequest(socket: Socket, timeoutMs: number): Promise<RelayReque
   });
 }
 
-/**
- * CHILD SIDE of the relay: accept the host, read its request, run the program
- * with a real stdin pipe fed from the channel and with this process's stdout
- * and stderr, and resolve with the program's exit code.
- *
- * The program's environment is this process's own — the sandbox account's
- * profile and srt-win's overlay — with `ELECTRON_RUN_AS_NODE` removed (it was
- * set for this runtime, not for the program) and the request's variables laid
- * over it; a request name replaces an inherited one of any case, as Windows
- * compares them. The program's input ends when the host ends it or when the
- * channel goes away, whichever comes first: for a plugin worker that end is
- * the host-liveness signal it already reads on stdin.
- */
+/** Relay input to the child program and use channel EOF as its host-liveness signal. */
 export async function serveStdioRelay(opts: {
   readonly announce: (line: string) => void;
   readonly acceptTimeoutMs: number;
@@ -688,7 +536,6 @@ export async function serveStdioRelay(opts: {
   readonly diagnostics: Writable;
 }): Promise<number> {
   const socket = await acceptHostOverLoopback(opts);
-  // From here a dropped channel is read as the end of the program's input.
   socket.on("error", () => undefined);
   const request = await readRelayRequest(socket, opts.handshakeTimeoutMs);
   const env: Record<string, string> = {};
@@ -707,8 +554,7 @@ export async function serveStdioRelay(opts: {
       socket.destroy();
       resolve(RELAY_START_FAILED_EXIT);
     };
-    // A batch file never gets here (assertRelayRequest); any other launch
-    // Node refuses synchronously rejects the relay, reported on its stderr.
+    // Report synchronous launch failures on stderr; batch files must already have been refused.
     const program = spawn(request.command, [...request.args], {
       env,
       ...(request.cwd !== undefined ? { cwd: request.cwd } : {}),

@@ -1,22 +1,5 @@
-/**
- * The validator's code stays out of the running app, and the protocol
- * session keeps exactly two production callers
- * (`docs/design/plugin-hostapi-protocol.md` §9.7, S1).
- *
- *  - Nothing the main process, the boot sequence or the plugin runtime loads
- *    reaches `src/plugins/validate/`: the validation host serves recorded
- *    answers, and a running app that reached it would be serving them too.
- *  - Among production modules, `plugin-protocol-session.ts` is imported by
- *    the factory and by the validation session and by nothing else, so a
- *    child is either spawned confined by the factory or handed over by the
- *    validator — there is no third way to open the protocol on one.
- *  - `observeChild` is named by no production module but the factory that
- *    defines it, so no runtime caller observes a child or ends its input.
- *
- * The graph is the one `scripts/check-import-cycles.mjs` builds — the same
- * resolver, the same runtime-only edges — with the dynamic `import("…")` of a
- * reached module added, so a lazy import cannot step around the first rule.
- */
+// Validation serves recorded host answers and must stay unreachable from the app runtime.
+// Only the runtime factory and validator may open production protocol sessions; dynamic imports count.
 import { describe, expect, it } from "vitest";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -31,7 +14,6 @@ const isProduction = isProductionSourceModule;
 
 const DYNAMIC_IMPORT = /\bimport\(\s*["'](\.{1,2}\/[^"']+)["']\s*\)/gu;
 
-/** The local modules `file` loads with a dynamic `import("./…")`. */
 function dynamicImports(file: string): string[] {
   const targets: string[] = [];
   for (const match of readFileSync(file, "utf-8").matchAll(DYNAMIC_IMPORT)) {
@@ -43,7 +25,6 @@ function dynamicImports(file: string): string[] {
   return targets;
 }
 
-/** Every module reachable from `entries` at runtime. */
 function reachableFrom(entries: readonly string[]): Set<string> {
   const reached = new Set<string>();
   const queue = [...entries];
@@ -71,7 +52,7 @@ describe("the validator's code stays out of the running app", () => {
     expect(entries.map(display)).toContain("main.ts");
     expect(entries.map(display)).toContain("plugins/runtime/index.ts");
     const reached = [...reachableFrom(entries)].map(display);
-    // The factory IS reached, so the walk goes through the isolation directory.
+    // Ensure the graph walk actually reaches the isolation factory.
     expect(reached).toContain("plugins/isolation/out-of-process-plugin.ts");
     expect(reached.filter((name) => name.startsWith(VALIDATE_DIR))).toEqual([]);
   });
