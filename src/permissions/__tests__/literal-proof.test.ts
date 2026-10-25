@@ -3,11 +3,12 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as analysis from "../../shared/shell-analysis.js";
+import { PermissionManager } from "../permission-manager.js";
 import { ProjectRuleScopes } from "../rules/rule-scopes.js";
 import { evaluatePowerShellSubject, evaluateShellSubject } from "../rules/rule-scopes.js";
-import { buildShellRuleApproval } from "../rules/shell-rule-approval.js";
+import { buildShellRuleApproval, shellRuleCoversCommand } from "../rules/shell-rule-approval.js";
 import { proveLiteralShell } from "../rules/shell-rule-matcher.js";
-import { proveLiteralPowerShell, _recordPowerShellLexesForTest } from "../rules/powershell-exfiltration.js";
+import { inspectPowerShellCommand, proveLiteralPowerShell, _recordPowerShellLexesForTest } from "../rules/powershell-exfiltration.js";
 import { codeLauncherName, isPowerShellLauncher, MAX_LITERAL_COMMAND_LENGTH } from "../rules/shell-prefix-values.js";
 import { canonicalRuleSpecifier, normalizeRuleSpecifierInput, parseRuleSpecifier } from "../rules/rule-specifier.js";
 
@@ -103,7 +104,7 @@ describe("literal exact-rule proof", () => {
     expect(proveLiteralPowerShell("printf %s –enc 'not-base64!'").proven).toBe(true);
   });
 
-  it.each(["npm exec --call='printf ready'", "npx node build.mjs", "npm exec -- node -e 'ready'", "bun exec printf ready", "deno run build.ts"])("rejects nested code carriers: %s", (command) => {
+  it.each(["npm exec --call='printf ready'", "npx node build.mjs", "npm exec -- node -e 'ready'", "bun exec printf ready", "deno run build.ts", "yarn node script.js", "yarnpkg node script.js"])("rejects nested code carriers: %s", (command) => {
     expect(proveLiteralShell(command).proven).toBe(false);
     expect(proveLiteralPowerShell(command).proven).toBe(false);
   });
@@ -156,5 +157,22 @@ describe("literal exact-rule proof", () => {
       expect(parse).not.toHaveBeenCalled();
       expect(lex.lexed).toEqual([]);
     } finally { lex.stop(); }
+  });
+
+  it("refuses remembered rules when literal PowerShell path analysis exhausts its budget", () => {
+    const cwd = projectDirectory();
+    const command = `printf ${Array<string>(20).fill("a").join(" ")}`;
+    const pattern = `PowerShell(${command})`;
+    expect(proveLiteralPowerShell(command).proven).toBe(true);
+    expect(inspectPowerShellCommand(command, cwd)).toMatchObject({ analysisLimited: true, sensitive: null, exfiltration: null });
+    expect(buildShellRuleApproval("powershell", command, cwd, { allow: true, deny: true }).exactRule).toBeNull();
+    expect(shellRuleCoversCommand("powershell", pattern, "allow", command, cwd)).toBe(false);
+    const manager = new PermissionManager(join(cwd, "permissions.json"));
+    manager.setMode("allow");
+    manager.setRules([{ pattern, action: "allow" }]);
+    const context = { ruleSubject: { kind: "shell" as const, dialect: "powershell" as const, command, cwd }, shellExecution: { runsSandboxed: false } };
+    expect(manager.checkDetailed("powershell", "builtin", "shell", null, context).decision).toBe("ask");
+    expect(manager.checkDetailed("powershell", "builtin", "shell", null, { ...context, headless: true }).decision).toBe("deny");
+    expect(manager.checkDetailed("powershell", "builtin", "shell", null, { ...context, shellExecution: { runsSandboxed: true } })).toMatchObject({ decision: "allow", layer: 3 });
   });
 });
