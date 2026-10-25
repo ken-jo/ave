@@ -39,6 +39,7 @@ import { trackCodeCheckpointChild } from "../memory/code-checkpoints.js";
 import { endShellSession } from "../tools/shell-tools.js";
 import { canonicalizePathForMatch } from "../permissions/sensitive-paths.js";
 import type {
+  TurnCallbacks,
   TurnInputRequired,
   TurnStopReason,
   WorkspaceRootRevocationOptions,
@@ -2986,6 +2987,14 @@ export class SubAgentRunner {
     callbacks?: SubAgentSpawnCallbacks,
   ): SubAgentSpawnResult {
     callbacks?.onError?.(message);
+    return this.buildFailureResult(childSessionId, message);
+  }
+
+  private buildFailureResult(
+    childSessionId: string,
+    message: string,
+    extra?: Partial<SubAgentSpawnResult>,
+  ): SubAgentSpawnResult {
     return {
       summary: message,
       toolCallCount: 0,
@@ -2994,6 +3003,93 @@ export class SubAgentRunner {
       entries: [],
       ok: false,
       error: message,
+      ...extra,
+    };
+  }
+
+  private buildTurnCallbacks(args: {
+    transcript: SubAgentTranscriptAccumulator;
+    emitActivity: () => void;
+    reasoningStreamEmitter: ReturnType<typeof createCoalescedEmitter>;
+    onToolEnd: () => void;
+    onAssistantRound: NonNullable<TurnCallbacks["onAssistantRound"]>;
+    callbacks: SubAgentSpawnCallbacks | undefined;
+  }): TurnCallbacks {
+    const { transcript, emitActivity, reasoningStreamEmitter } = args;
+    return {
+      onReasoningDelta: (text) => {
+        transcript.onReasoningDelta(text);
+        reasoningStreamEmitter.schedule();
+      },
+      onLlmStatus: (status) => {
+        if (transcript.onLlmStatus(status)) emitActivity();
+      },
+      onToolStart: (name, input, meta) => {
+        transcript.onToolStart(name, input, meta);
+        emitActivity();
+      },
+      onPermissionReview: (event) => {
+        transcript.onPermissionReview(event);
+        emitActivity();
+      },
+      onToolEnd: (name, toolResult, isError, meta, uiPayload, durationMs) => {
+        args.onToolEnd();
+        transcript.onToolEnd(name, toolResult, isError, meta, uiPayload, durationMs);
+        emitActivity();
+      },
+      onAssistantRound: (round) => {
+        args.onAssistantRound(round);
+        // The completed round supersedes any queued mid-stream snapshot.
+        reasoningStreamEmitter.cancel();
+        transcript.onAssistantRound(
+          round.thought,
+          round.text,
+          round.stopReason,
+          round.hasToolCalls,
+        );
+        emitActivity();
+      },
+      onError: (message) => {
+        args.callbacks?.onError?.(maskSubAgentText(message));
+      },
+    };
+  }
+
+  private buildTurnResult(args: {
+    summary: string;
+    toolCallCount: number;
+    turnCount: number;
+    childSessionId: string;
+    entries: ChatEntry[];
+    ok: boolean;
+    failureReason: string | undefined;
+    stopReason: TurnStopReason | undefined;
+    authorizationRequired: AuthorizationRequiredState | undefined;
+    inputRequired: TurnInputRequired | undefined;
+    suspensionSessionId: string;
+  }): SubAgentSpawnResult {
+    return {
+      summary: args.summary,
+      toolCallCount: args.toolCallCount,
+      turnCount: args.turnCount,
+      childSessionId: args.childSessionId,
+      entries: args.entries,
+      ok: args.ok,
+      ...(args.ok ? {} : { error: args.failureReason ?? args.summary }),
+      ...(args.stopReason ? { stopReason: args.stopReason } : {}),
+      ...(args.authorizationRequired
+        ? { authorizationRequired: args.authorizationRequired }
+        : {}),
+      ...(args.ok && args.stopReason === "round-cap"
+        ? {
+            suspension: createBudgetSuspension(args.suspensionSessionId),
+            // Derived compatibility alias for pre-suspension consumers.
+            incomplete: true,
+          }
+        : {}),
+      ...(args.ok && args.stopReason === "input-required" && args.inputRequired
+        ? { suspension: createQuestionSuspension(args.suspensionSessionId, args.inputRequired) }
+        : {}),
     };
   }
 
@@ -3116,16 +3212,9 @@ export class SubAgentRunner {
       const message = interrupted
         ? "sub-agent run interrupted"
         : (setupResult.error as Error).message ?? "sub-agent setup failed";
-      const result: SubAgentSpawnResult = {
-        summary: message,
-        toolCallCount: 0,
-        turnCount: 0,
-        childSessionId,
-        entries: [],
-        ok: false,
-        error: message,
+      const result = this.buildFailureResult(childSessionId, message, {
         ...(interrupted ? { stopReason: "interrupted" as const } : {}),
-      };
+      });
       this.finalizeRun(trackedRun, result);
       if (!interrupted) callbacks?.onError?.(maskSubAgentText(message));
       return result;
@@ -3224,16 +3313,9 @@ export class SubAgentRunner {
         : initialMetadataPersisted
           ? "sub-agent durable binding failed"
           : (err as Error).message ?? "sub-agent metadata setup failed";
-      const result: SubAgentSpawnResult = {
-        summary: message,
-        toolCallCount: 0,
-        turnCount: 0,
-        childSessionId,
-        entries: [],
-        ok: false,
-        error: message,
+      const result = this.buildFailureResult(childSessionId, message, {
         ...(interrupted ? { stopReason: "interrupted" as const } : {}),
-      };
+      });
       if (initialMetadataPersisted) {
         try {
           await this.deps.subAgentMemoryManager.saveSessionMetadata(childSessionId, {
@@ -3339,16 +3421,9 @@ export class SubAgentRunner {
 
     if (cancellation.signal.aborted) {
       const message = "sub-agent run interrupted";
-      return await persistFinalResult({
-        summary: message,
-        toolCallCount: 0,
-        turnCount: 0,
-        childSessionId,
-        entries: [],
-        ok: false,
-        error: message,
+      return await persistFinalResult(this.buildFailureResult(childSessionId, message, {
         stopReason: "interrupted",
-      });
+      }));
     }
     if (
       executionPolicy
@@ -3357,29 +3432,13 @@ export class SubAgentRunner {
       const message =
         "sub-agent A2A project binding rejected (a2a-project-binding-rejected)";
       callbacks?.onError?.(maskSubAgentText(message));
-      return await persistFinalResult({
-        summary: message,
-        toolCallCount: 0,
-        turnCount: 0,
-        childSessionId,
-        entries: [],
-        ok: false,
-        error: message,
-      });
+      return await persistFinalResult(this.buildFailureResult(childSessionId, message));
     }
 
     if (!child.hasProvider()) {
       const message = "sub-agent: LLM provider not configured";
       callbacks?.onError?.(maskSubAgentText(message));
-      return await persistFinalResult({
-        summary: message,
-        toolCallCount: 0,
-        turnCount: 0,
-        childSessionId,
-        entries: [],
-        ok: false,
-        error: message,
-      });
+      return await persistFinalResult(this.buildFailureResult(childSessionId, message));
     }
     this.updateRun(trackedRun, { taskState: projectSubAgentRunState("running") });
 
@@ -3446,52 +3505,18 @@ export class SubAgentRunner {
       // past the registry strip refuses with a clear error.
       const result = await child.runTurn(
         initialPrompt,
-        {
-          // Forward the FULL child activity — tool calls, permission reviews,
-          // reasoning, and assistant rounds — into the shared ChatEntry model.
-          // `toolCallCount:0` hardcode removed: real tool counts flow from the
-          // accumulator's tool_start/tool_end rows.
-          onReasoningDelta: (text) => {
-            transcript.onReasoningDelta(text);
-            reasoningStreamEmitter.schedule();
-          },
-          onLlmStatus: (status) => {
-            if (transcript.onLlmStatus(status)) emitActivity();
-          },
-          onToolStart: (name, input, meta) => {
-            transcript.onToolStart(name, input, meta);
-            emitActivity();
-          },
-          onPermissionReview: (event) => {
-            transcript.onPermissionReview(event);
-            emitActivity();
-          },
-          onToolEnd: (name, toolResult, isError, meta, uiPayload, durationMs) => {
-            totalToolCalls += 1;
-            transcript.onToolEnd(name, toolResult, isError, meta, uiPayload, durationMs);
-            emitActivity();
-          },
+        this.buildTurnCallbacks({
+          transcript,
+          emitActivity,
+          reasoningStreamEmitter,
+          onToolEnd: () => { totalToolCalls += 1; },
           onAssistantRound: (round) => {
             assistantRounds += 1;
             turn = assistantRounds;
             lastText = round.text;
-            // Drop any queued delta emission first: the fold below is the
-            // authoritative state for this round, and a trailing snapshot
-            // landing after it would replace the finalized thought with the
-            // mid-stream one.
-            reasoningStreamEmitter.cancel();
-            transcript.onAssistantRound(
-              round.thought,
-              round.text,
-              round.stopReason,
-              round.hasToolCalls,
-            );
-            emitActivity();
           },
-          onError: (e) => {
-            callbacks?.onError?.(maskSubAgentText(e));
-          },
-        },
+          callbacks,
+        }),
         // The run's cancellation signal, exactly as the resume path passes it.
         // The `abortCurrentTurn()` closure registered above cannot cover the
         // window between `interruptRun` firing and this call: it is documented
@@ -3568,7 +3593,7 @@ export class SubAgentRunner {
       ok = false;
     }
     if (transcript.finish()) emitActivity();
-    const result: SubAgentSpawnResult = {
+    const result = this.buildTurnResult({
       summary: lastText,
       toolCallCount: totalToolCalls,
       turnCount: turn,
@@ -3577,22 +3602,12 @@ export class SubAgentRunner {
       // the sub-agent tab without any live stream.
       entries: transcript.snapshot(),
       ok,
-      ...(ok ? {} : { error: failureReason ?? lastText }),
-      ...(childStopReason ? { stopReason: childStopReason } : {}),
-      ...(childAuthorizationRequired
-        ? { authorizationRequired: childAuthorizationRequired }
-        : {}),
-      ...(ok && childStopReason === "round-cap"
-        ? {
-            suspension: createBudgetSuspension(child.sessionId),
-            // Derived compatibility alias for pre-suspension consumers.
-            incomplete: true,
-          }
-        : {}),
-      ...(ok && childStopReason === "input-required" && childInputRequired
-        ? { suspension: createQuestionSuspension(child.sessionId, childInputRequired) }
-        : {}),
-    };
+      failureReason,
+      stopReason: childStopReason,
+      authorizationRequired: childAuthorizationRequired,
+      inputRequired: childInputRequired,
+      suspensionSessionId: child.sessionId,
+    });
     return await persistFinalResult(result);
   }
 
@@ -4066,27 +4081,11 @@ export class SubAgentRunner {
       extra?: Partial<SubAgentSpawnResult>,
     ): SubAgentSpawnResult => {
       if (cancellation.signal.aborted) {
-        return {
-          summary: "sub-agent run interrupted",
-          toolCallCount: 0,
-          turnCount: 0,
-          childSessionId: resumeId,
-          entries: [],
-          ok: false,
-          error: "sub-agent run interrupted",
+        return this.buildFailureResult(resumeId, "sub-agent run interrupted", {
           stopReason: "interrupted",
-        };
+        });
       }
-      return {
-        summary: message,
-        toolCallCount: 0,
-        turnCount: 0,
-        childSessionId: resumeId,
-        entries: [],
-        ok: false,
-        error: message,
-        ...extra,
-      };
+      return this.buildFailureResult(resumeId, message, extra);
     };
     const finishAttemptFailure = (
       message: string,
@@ -4510,48 +4509,18 @@ export class SubAgentRunner {
     try {
       const turnResult = await child.runTurn(
         canonicalContinuationInstructions,
-        {
-          onReasoningDelta: (text) => {
-            transcript.onReasoningDelta(text);
-            reasoningStreamEmitter.schedule();
-          },
-          onLlmStatus: (status) => {
-            if (transcript.onLlmStatus(status)) emitActivity();
-          },
-          onToolStart: (name, input, cbMeta) => {
-            transcript.onToolStart(name, input, cbMeta);
-            emitActivity();
-          },
-          onPermissionReview: (event) => {
-            transcript.onPermissionReview(event);
-            emitActivity();
-          },
-          onToolEnd: (name, toolResult, isError, cbMeta, uiPayload, durationMs) => {
-            totalToolCalls += 1;
-            transcript.onToolEnd(name, toolResult, isError, cbMeta, uiPayload, durationMs);
-            emitActivity();
-          },
+        this.buildTurnCallbacks({
+          transcript,
+          emitActivity,
+          reasoningStreamEmitter,
+          onToolEnd: () => { totalToolCalls += 1; },
           onAssistantRound: (round) => {
             assistantRounds += 1;
             turn = assistantRounds;
             lastText = round.text;
-            // Drop any queued delta emission first: the fold below is the
-            // authoritative state for this round, and a trailing snapshot
-            // landing after it would replace the finalized thought with the
-            // mid-stream one.
-            reasoningStreamEmitter.cancel();
-            transcript.onAssistantRound(
-              round.thought,
-              round.text,
-              round.stopReason,
-              round.hasToolCalls,
-            );
-            emitActivity();
           },
-          onError: (message) => {
-            callbacks?.onError?.(maskSubAgentText(message));
-          },
-        },
+          callbacks,
+        }),
         cancellation.signal,
         {
           maxRounds: cappedRounds,
@@ -4594,28 +4563,19 @@ export class SubAgentRunner {
       unregisterResumeChild();
     }
     if (transcript.finish()) emitActivity();
-    let result: SubAgentSpawnResult = {
+    let result = this.buildTurnResult({
       summary: lastText,
       toolCallCount: totalToolCalls,
       turnCount: turn,
       childSessionId: resumeId,
       entries: transcript.snapshot(),
       ok,
-      ...(ok ? {} : { error: failureReason ?? lastText }),
-      ...(childStopReason ? { stopReason: childStopReason } : {}),
-      ...(childAuthorizationRequired
-        ? { authorizationRequired: childAuthorizationRequired }
-        : {}),
-      ...(ok && childStopReason === "round-cap"
-        ? {
-            suspension: createBudgetSuspension(resumeId),
-            incomplete: true,
-          }
-        : {}),
-      ...(ok && childStopReason === "input-required" && childInputRequired
-        ? { suspension: createQuestionSuspension(resumeId, childInputRequired) }
-        : {}),
-    };
+      failureReason,
+      stopReason: childStopReason,
+      authorizationRequired: childAuthorizationRequired,
+      inputRequired: childInputRequired,
+      suspensionSessionId: resumeId,
+    });
     if (cancellation.signal.aborted) {
       result = {
         summary: "sub-agent run interrupted",
