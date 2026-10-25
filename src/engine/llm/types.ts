@@ -584,6 +584,11 @@ export interface StreamTurnParams {
   /** Thinking budget before the primary output ceiling, re-bounded for a fallback. */
   requestedThinkingBudgetTokens?: number;
   /**
+   * A route whose user picks reasoning by name (a subscription runtime's speed menu) asks for this effort instead
+   * of one derived from a token budget. The model's accepted levels still decide what is sent.
+   */
+  reasoningEffort?: "none" | "low" | "medium" | "high";
+  /**
    * finish_reason=length CONTINUATION. When true, the FINAL message in
    * `messages` is a partial assistant turn the model must CONTINUE verbatim
    * (not restart). Only the openai-compatible (vLLM) path acts on it today —

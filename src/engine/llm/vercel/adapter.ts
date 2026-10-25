@@ -407,6 +407,7 @@ export class VercelUnifiedProvider implements LLMProvider {
         model: params.model,
         enableThinking: params.enableThinking === true,
         budgetTokens: budget,
+        ...(params.reasoningEffort !== undefined ? { requestedEffort: params.reasoningEffort } : {}),
         baseUrl,
         catalogModel: params.catalogModel,
         ...(capabilities.reasoning !== undefined ? { reasoning: capabilities.reasoning } : {}),

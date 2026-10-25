@@ -206,6 +206,40 @@ export interface SubscriptionRuntimeDescriptor {
    * (the same predicate as that vendor's API-key route). Absent: the runtime's verified capability alone decides.
    */
   imageInputFollowsModelOf?: "openai";
+  /**
+   * The runtime runs on Ave's own request path, so Ave chooses its reasoning: the user picks a speed
+   * (`SUBSCRIPTION_REASONING_SPEEDS`) and each turn asks the model for that speed's effort.
+   */
+  offersReasoningSpeed?: true;
+}
+
+/** The model speed menu of a runtime that `offersReasoningSpeed`, fastest first, as the provider's own app labels it. */
+export const SUBSCRIPTION_REASONING_SPEEDS = Object.freeze(["instant", "medium", "high"] as const);
+export type SubscriptionReasoningSpeed = (typeof SUBSCRIPTION_REASONING_SPEEDS)[number];
+/** The provider's own app opens on Medium. */
+export const DEFAULT_SUBSCRIPTION_REASONING_SPEED: SubscriptionReasoningSpeed = "medium";
+
+export function isSubscriptionReasoningSpeed(value: unknown): value is SubscriptionReasoningSpeed {
+  return typeof value === "string" && (SUBSCRIPTION_REASONING_SPEEDS as readonly string[]).includes(value);
+}
+
+/**
+ * The reasoning effort a speed asks for. The model's own accepted levels still decide what is sent: a model that
+ * refuses `none` runs Instant at its lowest accepted level, and the speed menu says so.
+ */
+export function subscriptionReasoningSpeedEffort(speed: SubscriptionReasoningSpeed): "none" | "medium" | "high" {
+  switch (speed) {
+    case "instant":
+      return "none";
+    case "medium":
+      return "medium";
+    case "high":
+      return "high";
+    default: {
+      const unknownSpeed: never = speed;
+      throw new Error(`unknown reasoning speed: ${String(unknownSpeed)}`);
+    }
+  }
 }
 
 /** Install instructions are display text; the app never executes them. */
@@ -362,6 +396,7 @@ export const SUBSCRIPTION_RUNTIME_DESCRIPTORS: readonly SubscriptionRuntimeDescr
     requiresModelSelection: true,
     usageSettingsUrl: "https://chatgpt.com/settings/usage",
     imageInputFollowsModelOf: "openai",
+    offersReasoningSpeed: true,
   },
   {
     id: "kimi-code",

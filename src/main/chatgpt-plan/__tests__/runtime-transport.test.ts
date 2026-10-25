@@ -305,6 +305,54 @@ describe("ChatGPT plan transport", () => {
     expect(h.requests.some((entry) => entry.url === CHATGPT_PLAN_RESPONSES_URL)).toBe(false);
   });
 
+  it.each([
+    { effort: "high" as const, sent: "high" },
+    { effort: "medium" as const, sent: "medium" },
+    // gpt-6.1-sol does not accept `none`, so Instant runs at its lowest accepted level.
+    { effort: "none" as const, sent: "low" },
+  ])("asks for reasoning effort $effort as $sent with a streamed summary", async ({ effort, sent }) => {
+    const h = harness(PLAN_SCOPES);
+    const transport = new ChatGptPlanTransport(
+      { kind: "subscription", provider: "chatgpt-plan", model: "gpt-6.1-sol" },
+      async () => h.runtime,
+    );
+    const events = await collect(transport.streamTurn({
+      model: "m",
+      systemPrompt: "s",
+      messages: [{ role: "user", content: "hi" }],
+      enableThinking: true,
+      reasoningEffort: effort,
+    }));
+    expect(events.find((event) => event.type === "error")).toBeUndefined();
+    const body = h.requests.find((entry) => entry.url === CHATGPT_PLAN_RESPONSES_URL)!.body;
+    expect(body).toMatchObject({ reasoning: { effort: sent, summary: "detailed" }, store: false });
+  });
+
+  it("replays a reasoning turn's tool round without stored item references, since the route keeps nothing", async () => {
+    const h = harness(PLAN_SCOPES);
+    const transport = new ChatGptPlanTransport(
+      { kind: "subscription", provider: "chatgpt-plan", model: "gpt-6.1-sol" },
+      async () => h.runtime,
+    );
+    const events = await collect(transport.streamTurn({
+      model: "m",
+      systemPrompt: "s",
+      enableThinking: true,
+      reasoningEffort: "medium",
+      tools: [{ name: "read_file", description: "Read a file", inputSchema: { type: "object", properties: {} } }],
+      messages: [
+        { role: "user", content: "read it" },
+        { role: "assistant", content: "", toolCalls: [{ id: "call_1", name: "read_file", input: {} }] },
+        { role: "tool_result", toolUseId: "call_1", toolName: "read_file", content: "file text" },
+      ],
+    }));
+    expect(events.find((event) => event.type === "error")).toBeUndefined();
+    const body = h.requests.find((entry) => entry.url === CHATGPT_PLAN_RESPONSES_URL)!.body as { input: unknown[] };
+    const wire = JSON.stringify(body.input);
+    expect(wire).toContain('"type":"function_call_output"');
+    expect(wire).not.toContain("item_reference");
+  });
+
   it("sends the newest turn's image natively to a model that accepts images", async () => {
     const h = harness(PLAN_SCOPES);
     const transport = new ChatGptPlanTransport(
