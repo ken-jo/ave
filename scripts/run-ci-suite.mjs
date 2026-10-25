@@ -1,5 +1,7 @@
 #!/usr/bin/env node
-// CI test selection rules (the build and typechecks stay in the workflow):
+// CI test selection rules (the build and typechecks stay in the workflow).
+// The Vitest stage is planned once in ci.yml's build job, run by its vitest
+// shards and reported by build-and-test:
 // - A test-only diff on any PR base or main push always keeps the affected
 //   selection, including changes above the usual fan-out limit.
 // - A non-test-only category PR (integration/* -> main) runs the full suite.
@@ -11,21 +13,24 @@
 //
 // Selection includes changed collected tests, transitive importers, tests that
 // read changed paths (including through test helpers), triggered lock suites,
-// and config/ci-must-run-tests.json. Global setup and runner inputs are never
-// test-only; the shared source policy owns that classification.
-// Deleted tests drop from the selection. Renames are deletion + addition;
-// deleted helper paths are still matched in surviving importers and their
-// helper chains. Fixture assets are traced through test helper readers.
+// and config/ci-must-run-tests.json. Test-only means collected Vitest files
+// and fixture assets only; the shared source policy owns that classification.
+// A test helper or setup module, the Vitest config and setup files, config/,
+// scripts/ (this selection included) and .github/ are never test-only: each
+// runs the full suite on every base but integration/*, whose full run is the
+// category merge.
+// Deleted tests drop from the selection. Renames are deletion + addition.
+// Fixture assets are traced through the tests and test helpers that read them.
 // Test-only discovery failure fails CI instead of running the whole suite or
 // silently dropping importers. A deletion-only test diff runs the must-run set
-// and any triggered locks/readers. Unused helpers need no importer test.
+// and any triggered locks/readers.
 //
 // Both a PR merge commit and a main push are diffed against HEAD's first
 // parent. An unresolved integration-base PR diff fails; other unresolved diffs
 // use the full suite. The summary records the event rule and tracing outcome.
 
 import { spawnSync } from "node:child_process";
-import { appendFileSync, readFileSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { join, posix } from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
@@ -34,6 +39,7 @@ import { isCanonicalGitPath } from "./hooks/pre-push-markdown-policy.mjs";
 import {
   getRelatedCoverageFullReason,
   isCollectedVitestFile,
+  isTestHelperModule,
   isTestOnlyDiff,
   isTestSupportFile,
   selectFastSourceChecks,
@@ -188,6 +194,41 @@ export function runsCoverage(eventName) {
   return COVERAGE_EVENTS.includes(eventName);
 }
 
+/** Parallel Vitest shards for a full run without coverage. ci.yml plans once,
+ *  then runs one job per shard (`vitest --shard=<index>/<count>`); the shards
+ *  together run exactly the planned files. An affected selection and a
+ *  coverage run stay one job: coverage thresholds describe the whole suite,
+ *  and a few affected files gain nothing from a second runner's setup. */
+export const FULL_RUN_SHARDS = 4;
+
+export function ciShardCount(plan, coverage) {
+  return plan.mode === "full" && !coverage ? FULL_RUN_SHARDS : 1;
+}
+
+/** `<index>/<count>` from AVE_CI_SHARD, or null when the job runs the whole
+ *  plan. Malformed values fail: a shard that silently ran everything, or
+ *  nothing, would misreport what the aggregate check covered. */
+export function parseCiShard(value) {
+  if (value === undefined || value === "") return null;
+  const match = /^([1-9]\d*)\/([1-9]\d*)$/u.exec(value);
+  if (!match || Number(match[1]) > Number(match[2])) {
+    throw new Error(`AVE_CI_SHARD must be <index>/<count> with 1 <= index <= count, got ${JSON.stringify(value)}`);
+  }
+  return Number(match[2]) === 1 ? null : `${match[1]}/${match[2]}`;
+}
+
+/** A plan written by `--write-plan`, read back by each shard so every shard
+ *  splits the same file list. */
+export function readPlanFile(text) {
+  const plan = JSON.parse(text);
+  const valid = plan !== null && typeof plan === "object"
+    && (plan.mode === "full" || plan.mode === "affected")
+    && typeof plan.reason === "string"
+    && Array.isArray(plan.tests) && plan.tests.every((test) => typeof test === "string");
+  if (!valid) throw new Error("the CI plan file is not a { mode, reason, tests } plan");
+  return { mode: plan.mode, reason: plan.reason, tests: plan.tests };
+}
+
 function full(reason) {
   return { mode: "full", reason, tests: [] };
 }
@@ -258,6 +299,14 @@ export function selectCiTests({ changes, trackedTests, mustRunTests, readText, d
     if (!scoped) return full(fast.reason);
     if (!testOnly) fullReasons.push(fast.reason);
   }
+  // Never test-only (isTestOnlyDiff refuses it), and never trusted selection:
+  // a helper reaches tests the import graph and text readers may not show.
+  const helper = changes.find(({ path }) => isTestHelperModule(path));
+  if (helper) {
+    const reason = `${helper.path} is a test helper or setup module, which runs the full suite`;
+    if (!integrationBase) return full(reason);
+    fullReasons.push(`${reason} at the category merge`);
+  }
   if (fast.messageCatalogEntries.length > 0) {
     const reason = `${fast.messageCatalogEntries[0].path} is message catalog data`;
     if (!integrationBase) return full(reason);
@@ -301,7 +350,7 @@ export function selectCiTests({ changes, trackedTests, mustRunTests, readText, d
       fullReasons.push(reason);
       continue;
     }
-    const namesChange = testOnly
+    const namesChange = testOnly || helper
       ? testNamesChangedPath(test, changedPaths, readText)
       : changedPaths.some((changed) => namedRepositoryPaths(test, text).some((path) => namesChangedPath(path, changed)));
     if (namesChange) textReaders.push(test);
@@ -453,30 +502,49 @@ function writeSummary(plan, coverage) {
 }
 
 /** The node arguments of the Vitest stage: the coverage gate, or a plain run of the plan's files (none: all). */
-export function ciSuiteArguments(plan, coverage) {
+export function ciSuiteArguments(plan, coverage, shard = null) {
+  if (coverage && shard !== null) throw new Error("a coverage run cannot be sharded: its thresholds describe the whole suite");
   if (coverage) return [join("scripts", "run-test-coverage-gate.mjs")];
   if (plan.mode === "affected" && plan.tests.length === 0) throw new Error("affected CI selection must not be empty");
   const tests = plan.mode === "full" ? [] : plan.tests.map((test) => `./${test}`);
-  return [join("scripts", "run-vitest-under-electron.mjs"), "run", "--silent=true", ...tests];
+  const split = shard === null ? [] : [`--shard=${shard}`];
+  return [join("scripts", "run-vitest-under-electron.mjs"), "run", "--silent=true", ...split, ...tests];
 }
 
-function runPlan(plan, coverage) {
-  return spawnSync(process.execPath, ciSuiteArguments(plan, coverage), { stdio: "inherit" });
+function runPlan(plan, coverage, shard) {
+  return spawnSync(process.execPath, ciSuiteArguments(plan, coverage, shard), { stdio: "inherit" });
 }
 
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
   try {
-    const plan = planCiSuite(process.env.GITHUB_EVENT_NAME, {
-      headRef: process.env.GITHUB_HEAD_REF,
-      baseRef: process.env.GITHUB_BASE_REF,
-      ref: process.env.GITHUB_REF,
-    });
+    // `--write-plan <file>` plans and stops: ci.yml's build job writes the
+    // plan once and sizes the shard matrix from it. AVE_CI_PLAN_FILE runs a
+    // written plan, so the shards never plan again.
+    const writePlanAt = process.argv[2] === "--write-plan" ? process.argv[3] : undefined;
+    if (process.argv[2] === "--write-plan" && !writePlanAt) throw new Error("--write-plan needs a file path");
+    const planFile = process.env.AVE_CI_PLAN_FILE;
+    const plan = planFile && !writePlanAt
+      ? readPlanFile(readFileSync(planFile, "utf8"))
+      : planCiSuite(process.env.GITHUB_EVENT_NAME, {
+        headRef: process.env.GITHUB_HEAD_REF,
+        baseRef: process.env.GITHUB_BASE_REF,
+        ref: process.env.GITHUB_REF,
+      });
     const eventName = process.env.GITHUB_EVENT_NAME;
     const coverage = runsCoverage(eventName);
     if (coverage && plan.mode !== "full") throw new Error(`${eventName} must plan a full run to enforce coverage`);
-    console.log(`[ci-suite] ${describeRun(plan, coverage)}: ${plan.reason}`);
-    writeSummary(plan, coverage);
-    const result = runPlan(plan, coverage);
+    if (writePlanAt) {
+      writeFileSync(writePlanAt, `${JSON.stringify(plan)}\n`, "utf8");
+      const shards = Array.from({ length: ciShardCount(plan, coverage) }, (_, index) => index + 1);
+      console.log(`[ci-suite] planned ${describeRun(plan, coverage)} in ${shards.length} shard(s): ${plan.reason}`);
+      writeSummary(plan, coverage);
+      if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `shards=${JSON.stringify(shards)}\n`);
+      process.exit(0);
+    }
+    const shard = parseCiShard(process.env.AVE_CI_SHARD);
+    console.log(`[ci-suite] ${describeRun(plan, coverage)}${shard ? `, shard ${shard}` : ""}: ${plan.reason}`);
+    if (!planFile) writeSummary(plan, coverage);
+    const result = runPlan(plan, coverage, shard);
     if (result.error) throw result.error;
     process.exitCode = result.status ?? 1;
   } catch (error) {

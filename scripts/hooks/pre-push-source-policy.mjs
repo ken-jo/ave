@@ -212,16 +212,35 @@ export function isTestSupportFile(path) {
       /^(?:src|test)\/(?:.*\/)?fixtures\/.+/.test(path));
 }
 
+const testModuleExtension = /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs)$/;
+const testHelperLocation = /^test\/|(?:^|\/)(?:__tests__|__mocks__|fixtures)\//;
+
 /**
- * Renames arrive as deletion + addition (--no-renames). Deleted tests drop;
- * deleted helper paths still require tracing through surviving importers.
- * Mode changes and global inputs never qualify for this exception.
+ * A test helper or setup module: an importable file in a test tree (anything
+ * under test/, or under a __tests__, __mocks__ or fixtures directory) that
+ * Vitest does not collect. One helper can change what any number of tests
+ * observe, and the import graph only sees the importers it can trace, so CI
+ * never treats a helper change as test-only and runs the full suite for it on
+ * every base but integration/* (scripts/run-ci-suite.mjs). The Vitest setup
+ * files are also global inputs (FULL_CHECK_GLOBAL_INPUT_FILES).
+ */
+export function isTestHelperModule(path) {
+  return isCanonicalGitPath(path) && testModuleExtension.test(path) &&
+    !isCollectedVitestFile(path) && testHelperLocation.test(path);
+}
+
+/**
+ * A test-only diff changes collected Vitest files and fixture assets, nothing
+ * else: no test helper or setup module (isTestHelperModule), no global input
+ * (the Vitest config and setup files, config/, scripts/ including the CI
+ * selection itself, .github/), no symlink and no mode change.
+ * Renames arrive as deletion + addition (--no-renames). Deleted tests drop.
  */
 export function isTestOnlyDiff(changes) {
   const regularModes = new Set(["100644", "100755"]);
   return Array.isArray(changes) && changes.length > 0 && changes.every(({ path, status, oldMode, newMode }) =>
     isCanonicalGitPath(path) && safeCliPath.test(path) && !isFullCheckGlobalInput(path) &&
-    (isCollectedVitestFile(path) || isTestSupportFile(path)) &&
+    !isTestHelperModule(path) && (isCollectedVitestFile(path) || isTestSupportFile(path)) &&
     ((status === "A" && oldMode === "000000" && regularModes.has(newMode)) ||
       (status === "M" && regularModes.has(oldMode) && oldMode === newMode) ||
       (status === "D" && regularModes.has(oldMode) && newMode === "000000")));
@@ -472,20 +491,43 @@ export function readMessageCatalogEntries(text, relativePath) {
 }
 
 /**
+ * readMessageCatalogEntries for many modules at once, keyed by relative path.
+ * Each compiler session is a native child process, so reading the catalog's
+ * ~190 modules one by one costs ~190 process spawns; this parses them all in
+ * one session and validates each module exactly as the single-module reader.
+ */
+export function readMessageCatalogEntriesByPath(texts) {
+  const readable = new Map([...texts].filter(([, text]) => isReadableCatalogText(text)));
+  const sources = parseCatalogSources(readable);
+  return new Map([...texts.keys()].map((path) =>
+    [path, readParsedMessageCatalog(sources?.get(path), path)?.entries ?? null]));
+}
+
+function isReadableCatalogText(text) {
+  return typeof text === "string" && !/[\u2028\u2029]/u.test(text);
+}
+
+function parseCatalogSources(texts) {
+  try {
+    return parseSourceTexts(texts);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Preserve each locale's property order and the source ranges of its values.
  * Only the shipped declarations, type-only seed scaffolding and static string
  * properties are accepted. Unknown syntax or a different binding layout keeps
  * the full tier; declaration order must never stand in for locale identity.
  */
 function readMessageCatalogModule(text, relativePath) {
-  if (typeof text !== "string" || /[\u2028\u2029]/u.test(text)) return null;
+  if (!isReadableCatalogText(text)) return null;
   const parsePath = relativePath ?? "catalog.ts";
-  let source;
-  try {
-    source = parseSourceTexts(new Map([[parsePath, text]])).get(parsePath);
-  } catch {
-    return null;
-  }
+  return readParsedMessageCatalog(parseCatalogSources(new Map([[parsePath, text]]))?.get(parsePath), relativePath);
+}
+
+function readParsedMessageCatalog(source, relativePath) {
   if (!source) return null;
   const fragment = relativePath === undefined
     ? source.statements.filter(ast.isVariableStatement).length === 2

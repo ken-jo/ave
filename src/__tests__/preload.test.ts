@@ -245,6 +245,15 @@ describe("preload — plugin webview asset URLs", () => {
     expect("sideChat" in surface).toBe(false);
   });
 
+  it.each([MAIN_CHAT_GROUP_ID, "tile-2"])("preserves rewind group and restore choice for %s", async (chatGroupId) => {
+    const { buildPublicSurface } = await import("../preload/public-surface.js");
+    const api = buildPublicSurface();
+    const surface = chatGroupId === MAIN_CHAT_GROUP_ID ? api : api.chatGroup(chatGroupId);
+    mockInvoke.mockResolvedValueOnce({ ok: false, error: "code-restore-conflict", conflictingFiles: ["/workspace/code.ts"] });
+    expect(await surface.chatRewindTo("user-row", "both")).toEqual({ ok: false, error: "code-restore-conflict", conflictingFiles: ["/workspace/code.ts"] });
+    expect(mockInvoke).toHaveBeenCalledWith(CHANNELS.chat.rewindTo, "user-row", chatGroupId, "both");
+  });
+
   it("exposes pluginShellUrl as a file:// string under dist/src/", async () => {
     const api = await loadAveApi();
     const url = api["pluginShellUrl"];
@@ -458,6 +467,14 @@ describe("preload — plugin webview asset URLs", () => {
       { operation: "clock_in" },
       { userAction: false, operationGrantToken: "grant-once" },
     );
+  });
+
+  it("forwards only the server id for remote authentication", async () => {
+    const api = await loadAveApi();
+    const mcp = api["mcp"] as { authenticate(id: string): Promise<unknown> };
+    mockInvoke.mockResolvedValueOnce({ connected: false, errorCode: "mcp-auth-required" });
+    await expect(mcp.authenticate("remote-a")).resolves.toEqual({ connected: false, errorCode: "mcp-auth-required" });
+    expect(mockInvoke).toHaveBeenCalledWith("ave:mcp:authenticate", "remote-a");
   });
 
   it("pins MCP app resource and tool calls to the supplied generation", async () => {

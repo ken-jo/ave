@@ -62,12 +62,17 @@ consumer skips those expensive gates after diff and policy checks. Eligible
 test-only pushes run typecheck and targeted Vitest in the hook. Register
 documents read by native or non-Node processes, or through `openAsBlob`, in
 `scripts/hooks/documentation-references.json`; the read guard cannot see them.
-CI's `build-and-test` keeps typecheck, the test-typecheck ratchet and the build
-for every non-documentation run. `scripts/run-ci-suite.mjs` owns test selection:
-test-only diffs on every PR base and main push run changed tests, transitive
-helper importers, fixture readers, triggered locks and the must-run set. Deleted
-tests drop; helper renames are traced as deletion plus addition. Global inputs
-are never test-only, and failed test-only importer discovery fails CI.
+CI's build job keeps typecheck, the test-typecheck ratchet and the build for
+every non-documentation run, and plans the Vitest run once; the Vitest shard
+jobs run that plan and the required `build-and-test` check aggregates them and
+runs the hygiene gates. `scripts/run-ci-suite.mjs` owns test selection:
+a test-only diff (collected Vitest files and fixture assets only) on every PR
+base and main push runs changed tests, fixture readers, triggered locks and the
+must-run set, never the full suite. Deleted tests drop. Test helper and setup
+modules, the Vitest config, `config/`, `scripts/` (the selection itself) and
+`.github/` are never test-only: they run the full suite on every base except
+`integration/*`, whose full run is the category merge. Failed test-only
+discovery fails CI.
 A non-test-only category PR (`integration/*` into `main`) runs the full suite.
 Main pushes use HEAD's first-parent diff with the same trusted-selection rule
 as other non-integration PRs: uncertainty falls back to full. Integration-base

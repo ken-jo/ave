@@ -198,6 +198,7 @@ export function pickRedactedSettings(settings: AppSettings): Record<string, unkn
       localApiServer: s.localApiServer,
       launchAtStartup: s.launchAtStartup,
       launchMinimized: s.launchMinimized,
+      turnCompletionSoundEnabled: s.turnCompletionSoundEnabled,
       sidebarActiveTab: s.sidebarActiveTab,
     };
   }

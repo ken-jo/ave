@@ -1,5 +1,5 @@
 import { createServer } from "node:net";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -104,6 +104,29 @@ connection.on('close', () => process.stdout.write(JSON.stringify({ action: 'allo
         // Refused, never read: macOS reports EPERM; bubblewrap's tmpfs mask, ENOENT.
         for (const outcome of reported.neighbourReads) expect(["EPERM", "EACCES", "ENOENT"]).toContain(outcome);
         expect(readFileSync(join(dataDir, "state.json"), "utf8")).toBe("allowed");
+
+        // A user hook is read from its protected configuration directory, with
+        // only that exact script re-allowed and its working directory writable.
+        const userHooks = join(fakeHome, ".config", "ave", "hooks");
+        const workspace = join(root, "workspace");
+        mkdirSync(userHooks, { recursive: true });
+        mkdirSync(workspace);
+        const userScript = join(userHooks, "probe.cjs");
+        const siblingScript = join(userHooks, "sibling.cjs");
+        const escapedScript = join(userHooks, "escaped.cjs");
+        writeFileSync(userScript, readFileSync(script));
+        writeFileSync(siblingScript, NEIGHBOUR);
+        symlinkSync(secret, escapedScript);
+        const userResult = await runOneHookScript({ id: "user-probe", hookType: "pre", source: "config",
+          hookPath: userScript,
+          command: ["node", userScript, secret, outside, join(workspace, "state.json"), String(address.port),
+            ...neighbours.map((dir) => join(dir, "s")), siblingScript, escapedScript],
+        }, payload, { cwd: workspace, timeoutMs: 4000 });
+        expect(userResult.decision, userResult.reason).toBe("allow");
+        const userReported = JSON.parse(userResult.reason) as { neighbourReads: string[] };
+        expect(userReported).toMatchObject({ read: false, outsideWrite: false, dataWrite: true, socket: false });
+        for (const outcome of userReported.neighbourReads) expect(["EPERM", "EACCES", "ENOENT"]).toContain(outcome);
+        expect(readFileSync(join(workspace, "state.json"), "utf8")).toBe("allowed");
       } finally {
         await new Promise<void>((resolve) => server.close(() => resolve()));
         await cleanupTmpDir(root);

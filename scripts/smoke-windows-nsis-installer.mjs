@@ -8,6 +8,7 @@
  */
 
 import { spawn } from "node:child_process";
+import { windowsPowerShellEnv } from "./lib/windows-powershell-env.mjs";
 import {
   copyFileSync,
   existsSync,
@@ -822,7 +823,7 @@ async function runPowerShellJson(script, env) {
       "-Command",
       script,
     ],
-    { timeoutMs: 30_000, env: { ...process.env, ...env } },
+    { timeoutMs: 30_000, env: windowsPowerShellEnv({ ...process.env, ...env }) },
   );
   return parseJsonProcessResult(result, "PowerShell");
 }
@@ -1014,7 +1015,7 @@ async function cleanupOwnedRuntimeNotificationArtifacts(machineInstall) {
       "-InstallMarker",
       machineInstall.markerPath,
     ],
-    { timeoutMs: 30_000 },
+    { timeoutMs: 30_000, env: windowsPowerShellEnv() },
   );
 }
 
@@ -1971,7 +1972,7 @@ async function prepareAsrtUninstallProbe(installDir) {
       "-Command",
       "Start-Sleep -Seconds 300",
     ],
-    { stdio: "ignore", windowsHide: true },
+    { stdio: "ignore", windowsHide: true, env: windowsPowerShellEnv() },
   );
   if (holder.pid === undefined) {
     removeTempDirBestEffort(probeRoot);

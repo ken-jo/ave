@@ -5,6 +5,7 @@ import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
 import { collectRelatedTestFiles } from "../../scripts/hooks/pre-push-related-tests.mjs";
 import { getRelatedCoverageFullReason } from "../../scripts/hooks/pre-push-source-policy.mjs";
+import { splitArgumentsWithinBudget } from "../../scripts/hooks/spawn-command.mjs";
 
 describe("pre-push related test coverage", () => {
   it("queries each source independently so a covered module cannot mask an opaque module", async () => {
@@ -42,7 +43,7 @@ describe("pre-push related test coverage", () => {
     const runs: string[][] = [];
     const runFastChecks = runInNewContext(source.slice(start, end) + "; runAppFastSourceChecks", {
       commands: { bun: "bun" }, available: () => "bun", hasPackageScript: () => true, hasFile: () => true,
-      join, tmpdir, mkdtempSync, rmSync,
+      join, tmpdir, mkdtempSync, rmSync, splitArgumentsWithinBudget,
       runAppTypecheckGate: () => {}, ensureAppTestRuntimeAbi: () => {}, ensureWindowsJobLauncher: () => {},
       resolveHostLockSettings: () => ({ directory: "/fixture-locks", timeoutMs: 1000, fastSlots: 1 }),
       withHostLock: (_options: object, callback: () => unknown) => callback(),
@@ -62,7 +63,7 @@ describe("pre-push related test coverage", () => {
     const lockOptions: object[] = [];
     const runFastChecks = runInNewContext(source.slice(start, end) + "; runAppFastSourceChecks", {
       commands: { bun: "bun" }, available: () => "bun", hasPackageScript: () => true, hasFile: () => true,
-      join, tmpdir, mkdtempSync, rmSync,
+      join, tmpdir, mkdtempSync, rmSync, splitArgumentsWithinBudget,
       runAppTypecheckGate: () => { calls.push("typecheck"); }, ensureAppTestRuntimeAbi: () => {}, ensureWindowsJobLauncher: () => {},
       MESSAGE_CATALOG_CHECK_SCRIPTS: ["check:i18n-catalog", "check:i18n-barrels"],
       runPackageScripts: (_dir: string, scripts: string[]) => { calls.push(scripts.join(" ")); },
@@ -85,12 +86,12 @@ describe("pre-push related test coverage", () => {
     expect(lockOptions).toEqual([{ name: "fast", label: "fast-tier", directory: "/fixture-locks", timeoutMs: 1000, slots: 3 }]);
   });
 
-  it("leaves out a message consumer no test reaches, but never a changed module", () => {
+  it("leaves out a message consumer no test reaches, and reports a changed module no test reaches", () => {
     const source = readFileSync(resolve("scripts/hooks/run-local-checks.mjs"), "utf8");
     const start = source.indexOf("// Per-module related-test discovery");
     const end = source.indexOf("function runAppCommentOnlyChecks", start);
     const select = (coverage: { source: string; tests: string[] }[]) => runInNewContext(source.slice(start, end) + "; getFastSourceRelatedSelection", {
-      commands: { node: "node" }, join, withoutGitContext: () => ({}), readFileSync: () => "",
+      commands: { node: "node" }, join, splitArgumentsWithinBudget, withoutGitContext: () => ({}), readFileSync: () => "",
       spawnSync: () => ({ status: 0, stdout: JSON.stringify(coverage) }),
       getRelatedCoverageFullReason, boundRelatedTests: (records: { tests: string[] }[]) => ({
         tests: [...new Set(records.flatMap((record) => record.tests))].sort(), narrowed: [],
@@ -104,9 +105,17 @@ describe("pre-push related test coverage", () => {
       narrowed: [],
       sources: [changed.source, tested.source],
       untestedConsumers: [untested.source],
+      untestedModules: [],
     });
-    // A changed module with no related test still keeps the full checks.
+    // A changed module with no related test is reported, not escalated: the
+    // scoped tier runs its path-naming, must-run and lock-suite tests instead.
     expect(select([{ source: "src/lib/changed.ts", tests: [] }, tested])("/fixture", ["src/lib/changed.ts"], [tested.source]))
-      .toEqual({ reason: "src/lib/changed.ts has no related test files" });
+      .toEqual({
+        tests: ["src/ui/__tests__/panel.test.tsx"],
+        narrowed: [],
+        sources: [tested.source],
+        untestedConsumers: [],
+        untestedModules: ["src/lib/changed.ts"],
+      });
   });
 });

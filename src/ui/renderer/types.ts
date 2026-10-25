@@ -1,3 +1,4 @@
+import type { RewindMode, RewindResult } from "../../shared/code-rewind.js";
 // Types extracted from src/renderer.tsx.
 // Pure type declarations — no React runtime, no hook state, no side effects.
 
@@ -14,7 +15,7 @@ import type {
 } from "../../shared/browser-surface.js";
 import type { AppBootstrapStatus } from "../../shared/bootstrap-status.js";
 import type { RoutineRunRow, SessionFamily, SessionListKindFilter, SessionListRow } from "../../shared/session-lookup.js";
-import type { McpResourceSummary, McpResourceTemplateSummary, McpServerConfig, McpServerConfigDto, McpServerState, McpUiResourceBundle, McpUiToolCallOutcome } from "../../mcp/types.js";
+import type { McpAuthErrorCode, McpAuthenticationResult, McpConfigMutationResult, McpResourceSummary, McpResourceTemplateSummary, McpServerConfig, McpServerConfigDto, McpServerState, McpUiResourceBundle, McpUiToolCallOutcome } from "../../mcp/types.js";
 import type { McpUiMessageOutcome } from "../../mcp/mcp-ui-message.js";
 import type { McpUiDownloadOutcome } from "../../mcp/mcp-app-download.js";
 import type { McpUiModelContextOutcome } from "../../mcp/mcp-app-model-context.js";
@@ -85,7 +86,7 @@ import type {
 } from "../../shared/sandbox-capability-info.js";
 
 // Re-export MCP types for renderer-side consumers (type-only, no main-process runtime)
-export type { McpServerConfig, McpServerConfigDto, McpServerState };
+export type { McpAuthErrorCode, McpServerConfig, McpServerConfigDto, McpServerState };
 export type { PermissionEvaluationContext } from "../../permissions/evaluation-context.js";
 export type { ExecutionMode } from "../../shared/permission-mode.js";
 
@@ -797,14 +798,12 @@ export type AveApi = {
    */
   chatEditResend: (messageId: string, newText: string) => Promise<{ ok: boolean; error?: string }>;
   /**
-   * Discard the conversation from this user message onward, in place. The
-   * message itself goes too — the caller owns putting its text back in the
-   * composer, which is what makes this a rewind rather than a delete.
+   * Restore conversation, native file-tool edits, or both before this user
+   * message. Omitted mode restores conversation only: the message and later
+   * rows are discarded and its input is returned for the composer. Code-only
+   * restore keeps the conversation intact.
    */
-  chatRewindTo: (messageId: string) => Promise<
-    | { ok: true; text: string; personaPromptId?: string }
-    | { ok: false; error: string }
-  >;
+  chatRewindTo: (messageId: string, mode?: RewindMode) => Promise<RewindResult>;
   /** Branch into a new session up to and including `messageId`; omit it to branch the whole conversation. */
   chatFork: (messageId?: string) => Promise<{ ok: boolean; sessionId: string | null; error?: string }>;
   chatContinueLastUser: (sessionId: string) => Promise<{ ok: boolean; error?: string }>;
@@ -1747,9 +1746,10 @@ export type AveHostApi = {
 export type AveMcpApi = {
   servers: () => Promise<McpServerState[]>;
   kill: (id: string) => Promise<void>;
+  authenticate: (id: string) => Promise<McpAuthenticationResult>;
   getConfigs: () => Promise<McpServerConfigDto[]>;
   getConfigPath: () => Promise<string>;
-  addConfig: (config: McpServerConfig) => Promise<{ connected: boolean; warning?: string }>;
+  addConfig: (config: McpServerConfig) => Promise<McpConfigMutationResult>;
   setApiKey: (id: string, apiKey: string) => Promise<{ connected: boolean; warning?: string }>;
   removeConfig: (id: string) => Promise<void>;
   /**

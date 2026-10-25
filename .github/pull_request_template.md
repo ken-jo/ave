@@ -30,7 +30,7 @@
 ## Validation
 
 - [ ] Targeted checks run while iterating (commands/results below):
-- [ ] Pre-push passed on the tier the hook logged (fast, full, test-only, comment-only, or unconsumed documentation), and the full suite and build pass on the merged tree before merge:
+- [ ] Pre-push passed on the tier the hook logged (fast, full, test-only, comment-only, or unconsumed documentation), and the build and the CI test scope `scripts/run-ci-suite.mjs` selects pass on the merged tree before merge:
 - [ ] Documents read by native code, non-Node subprocesses, or `openAsBlob` are registered in `scripts/hooks/documentation-references.json`; CI selection follows `scripts/run-ci-suite.mjs`:
 - [ ] Targeted changed-flow Playwright check, when UI behavior changed:
 - [ ] Full E2E is delegated to CI/release unless explicitly required locally:

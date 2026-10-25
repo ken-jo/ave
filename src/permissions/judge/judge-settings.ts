@@ -18,9 +18,9 @@
 import { isAbsolute } from "node:path";
 import { isIP } from "node:net";
 import { classifyAddress } from "../../core/network-guard.js";
-import { isLLMVendor, LLM_VENDOR_MODEL_OPTIONS, type LLMVendor } from "../../shared/llm-vendor-defaults.js";
+import { isLLMVendor, llmVendorModelOptions, type LLMVendor } from "../../shared/llm-vendor-defaults.js";
 import type { LlmModelListCache } from "../../shared/llm-model-list.js";
-import { isDefaultModelListEndpoint } from "../../engine/llm/model-list.js";
+import { cachedLiveModelIds } from "../../engine/llm/model-list.js";
 import type { JudgeCategory } from "./judge-contract.js";
 
 /** Settings path of the subtree. Enforcement as a write floor lives with the P1 floors list. */
@@ -228,15 +228,11 @@ export interface JudgeModelCatalogSource {
 export function judgeModelCatalogFrom(source: JudgeModelCatalogSource): JudgeModelCatalog {
   return {
     optionsFor(vendor) {
-      const options = new Set<string>(LLM_VENDOR_MODEL_OPTIONS[vendor] ?? []);
+      const options = new Set<string>(llmVendorModelOptions(vendor));
       const block = source.vendors?.[vendor];
-      for (const entry of Object.values(source.modelListCache ?? {})) {
-        if (entry.vendor !== vendor) continue;
-        // Only the listing for the endpoint the vendor's route actually
-        // reaches, resolved exactly as the model-list fetch resolves it.
-        if (!isDefaultModelListEndpoint(source.vendors, vendor, entry.endpoint)) continue;
-        for (const model of entry.models) options.add(model);
-      }
+      // Only the listing for the endpoint the vendor's route actually
+      // reaches, resolved exactly as the model-list fetch resolves it.
+      for (const model of cachedLiveModelIds(source, vendor)) options.add(model);
       const saved = block?.model?.trim();
       if (saved) options.add(saved);
       return [...options];

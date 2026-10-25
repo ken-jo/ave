@@ -1,6 +1,9 @@
 name: CI
-# Test-only diffs run affected tests on every PR base and main push.
-# Main pushes use trusted first-parent selection, like non-integration PRs;
+# Test-only diffs (collected tests and fixture assets only) run affected tests
+# on every PR base and main push, never the full suite. Test helper and setup
+# modules, the Vitest config, config/, scripts/ and .github/ are never
+# test-only. Main pushes use trusted first-parent selection, like
+# non-integration PRs;
 # uncertainty falls back to full. Integration-base PRs keep traced selection.
 # Non-test-only category PRs, release tags, nightly schedules and manual
 # dispatches run the full suite. Coverage runs only on schedule and dispatch.
@@ -15,6 +18,8 @@ on:
     # 18:00 UTC is 03:00 KST, outside the owner's working hours.
     - cron: "0 18 * * *"
   workflow_dispatch:
+permissions:
+  contents: read
 concurrency:
   # The event is part of the group so the nightly run on main never cancels,
   # and is never cancelled by, the run of a push to main. A push groups
@@ -25,27 +30,33 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'push' && format('{0}-{1}', github.ref, github.sha) || github.ref }}
   cancel-in-progress: true
 jobs:
-  build-and-test:
-    # By default runs use ephemeral GitHub-hosted ARM64 runners (the
-    # AVE_LINUX_RUNNER note below is the opt-in self-hosted path). Ephemeral VMs
-    # cannot persist state or exfiltrate secrets across runs, which closes
-    # the "pwn-request" supply-chain RCE vector that made the prior
-    # self-hosted Oracle runner risky for fork PRs (a fork controls
-    # package.json + postinstall scripts, and `bun install` would execute
-    # attacker code). ARM64 keeps native-module (better-sqlite3 etc.) parity
-    # with the dev fleet. Core CI is deliberately secret-free and does not
-    # clone private sibling repositories; cross-repository integration belongs
-    # to trusted default-branch repository_dispatch workflows.
-    # Runner from repo variable AVE_LINUX_RUNNER (JSON label array, e.g.
-    # ["self-hosted","Linux","ARM64","ave"]); unset = hosted fallback, and a
-    # fork pull request always gets the hosted label. Private repo only: unset
-    # AVE_LINUX_RUNNER before the repo goes public.
-    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04-arm' || vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'ubuntu-24.04-arm' }}
+  build:
+    name: Build, typecheck and plan the suite
+    # Every job in every workflow runs on a GitHub-hosted runner
+    # (src/__tests__/support/workflow-runner-policy.ts fails on anything
+    # else). Hosted runners are ephemeral VMs, so a fork's package.json
+    # postinstall cannot persist on, or read state from, any machine of the
+    # owner's. The repository must also register no self-hosted runner: a
+    # fork pull request runs its own edited copy of this file and could name
+    # one. ARM64 keeps native-module
+    # (better-sqlite3 etc.) parity with the dev fleet. Core CI is deliberately
+    # secret-free and does not clone private sibling repositories;
+    # cross-repository integration belongs to trusted default-branch
+    # repository_dispatch workflows.
+    runs-on: ubuntu-24.04-arm
+    outputs:
+      docs_only: ${{ steps.docs-impact.outputs.docs_only }}
+      # One shard when the plan step did not run (a docs-only change), so the
+      # matrix below always reads a list.
+      shards: ${{ steps.plan.outputs.shards || '[1]' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: ave
           fetch-depth: 0
+          # No later step pushes or fetches with the job token, so it is not
+          # left in .git/config for the test suite's processes to read.
+          persist-credentials: false
       - name: Classify documentation impact
         id: docs-impact
         working-directory: ave
@@ -66,9 +77,9 @@ jobs:
         if: steps.docs-impact.outputs.docs_only == 'true'
         working-directory: ave
         run: node --import ./scripts/lib/document-consumer-guard.mjs --test test/scripts/check-asrt-version-claims.test.mjs && node scripts/check-asrt-version-claims.mjs && node --import ./scripts/lib/document-consumer-guard.mjs --test test/scripts/retired-name.test.mjs && node scripts/check-retired-name.mjs
-      # The pinned bun from .bun-version goes under RUNNER_TEMP, never into
-      # the owner's own bun home on a self-hosted runner; on Windows it is a
-      # checksum-verified release download (see the action).
+      # The pinned bun from .bun-version goes under RUNNER_TEMP, not the runner
+      # user's bun home; on Windows it is a checksum-verified release download
+      # (see the action).
       - uses: ./ave/.github/actions/setup-bun
         if: steps.docs-impact.outputs.docs_only != 'true'
         with:
@@ -108,7 +119,7 @@ jobs:
       # The Python smoke's interpreter (§9.7 P5): the harness verifies it,
       # installs `mcp` 2.2.0 for it with the uv above and proves the import, so
       # no step relies on the runner image's own python3.
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         id: python
         if: steps.docs-impact.outputs.docs_only != 'true'
         with:
@@ -116,11 +127,11 @@ jobs:
       # The steps above are preconditions, not gates: without a checkout, an
       # install, the uv toolchain and the smoke's Python there is nothing to
       # verify, so a red job there genuinely means "could not verify". From
-      # here down the job compiles, builds and tests the product — every step
-      # below is one of those, except `Remove root-level Bun binary shims`,
-      # which prepares the runner for the step after it — and the
-      # repository-hygiene gates run after all of it, at the end of this job.
-      # The block above them says why they are there and not above.
+      # here down the job compiles and builds the product, and plans the suite
+      # the Vitest shards run — and the
+      # repository-hygiene gates run after all of it, in build-and-test, which
+      # needs this job and every Vitest shard. The block above them says why
+      # they are there and not above.
       - name: Typecheck
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
@@ -140,30 +151,134 @@ jobs:
       - run: bun run build
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
-      - name: Remove root-level Bun binary shims before Vitest
+      # Plan once: the shards below run this plan instead of planning again,
+      # so every shard splits the same file list. A full run without
+      # coverage gets FULL_RUN_SHARDS shards; an affected selection and a
+      # coverage run get one (scripts/run-ci-suite.mjs).
+      - name: Plan the suite
+        id: plan
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
-        run: rm -f ajv pino
-      # The terminal's real-shell tests (typing, and the differential check of
-      # what zsh and bash run against what the permission rules read) need zsh,
-      # which the Ubuntu image lacks. A runner without passwordless sudo keeps
-      # its own shells and those tests skip zsh.
-      - name: Install zsh for the real-shell terminal tests
-        if: steps.docs-impact.outputs.docs_only != 'true'
         run: |
-          if command -v zsh >/dev/null; then exit 0; fi
-          if sudo -n true 2>/dev/null; then
-            sudo apt-get update && sudo apt-get install -y --no-install-recommends zsh
-          else
-            echo "::notice::zsh is not installed and sudo is unavailable; the zsh real-shell tests skip"
-          fi
-      - name: Run the suite (coverage gate on nightly and dispatch)
+          mkdir -p "$RUNNER_TEMP/ci-plan"
+          node scripts/run-ci-suite.mjs --write-plan "$RUNNER_TEMP/ci-plan/ci-plan.json"
+      - name: Upload the build for the Vitest shards
         if: steps.docs-impact.outputs.docs_only != 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ci-build
+          path: ave/dist
+          if-no-files-found: error
+          retention-days: 1
+      - name: Upload the suite plan
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ci-plan
+          path: ${{ runner.temp }}/ci-plan/ci-plan.json
+          if-no-files-found: error
+          retention-days: 1
+
+  vitest:
+    name: Vitest shard ${{ matrix.shard }}
+    needs: build
+    if: needs.build.outputs.docs_only != 'true'
+    runs-on: ubuntu-24.04-arm
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.build.outputs.shards || '[1]') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: ave
+          fetch-depth: 0
+          # No later step pushes or fetches with the job token.
+          persist-credentials: false
+      # Install and save package archives before dependency scripts can run.
+      # The suite's sandbox tests need bwrap, socat and rg, and the terminal's
+      # real-shell tests (typing, and the differential check of what zsh and
+      # bash run against what the permission rules read) need zsh, which the
+      # Ubuntu image lacks. The build job and build-and-test run no tests, so
+      # only the shards install them.
+      - name: Install Linux sandbox and real-shell tools
+        uses: ./ave/.github/actions/linux-packages
+        with:
+          packages: bubblewrap socat ripgrep zsh
+          commands: bwrap socat rg zsh
+      # Only when the knob exists and is not already 0. The next step proves
+      # the namespace either way.
+      - name: Allow unprivileged user namespaces
+        run: |
+          knob=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
+          if [ -r "$knob" ] && [ "$(cat "$knob")" != "0" ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          else
+            echo "unprivileged user namespaces already allowed"
+          fi
+      # Fails here, with its own message, on a runner that cannot create the
+      # namespace — rather than inside a test.
+      - name: Prove the sandbox backend
+        run: bwrap --version && socat -V | head -1 && rg --version | head -1 && bwrap --unshare-all --ro-bind / / --dev /dev --proc /proc /bin/true
+      - uses: ./ave/.github/actions/setup-bun
+        with:
+          bun-version-file: ave/.bun-version
+      # Cache the built node_modules (Electron dist + electron-rebuilt native
+      # modules) keyed on os+arch+lockfile. On a hit, `bun install` restores the
+      # ABI-correct binaries without re-downloading Electron or recompiling
+      # better-sqlite3/node-pty. Exact-key only — a lockfile change (which pins
+      # the Electron version) misses and rebuilds, so a stale ABI never leaks in.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: node-modules-cache
+        with:
+          path: ave/node_modules
+          key: ${{ runner.os }}-${{ runner.arch }}-ci-nm-${{ hashFiles('ave/bun.lock', 'ave/patches/**') }}
+      # Bun's download cache only feeds an install that has to fetch packages.
+      # After an exact node_modules hit `bun install` finds every package in
+      # place (2-3 s in every measured run), so restoring this cache there was
+      # ~45 s of download for nothing. It is restored, and saved, only when
+      # node_modules missed.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.node-modules-cache.outputs.cache-hit != 'true'
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-ci-bun-${{ hashFiles('ave/bun.lock') }}
+          restore-keys: ${{ runner.os }}-ci-bun-
+      - run: bun install --frozen-lockfile
+        working-directory: ave
+      # uv is fetched to resources/ (outside node_modules) by the postinstall,
+      # which bun skips when node_modules is already satisfied from cache. Ensure
+      # it explicitly — fetch-uv is idempotent (no-op when already present).
+      - name: Ensure uv toolchain
+        working-directory: ave
+        run: node scripts/fetch-uv.mjs
+      # The Python smoke's interpreter (§9.7 P5): the harness verifies it,
+      # installs `mcp` 2.2.0 for it with the uv above and proves the import, so
+      # no step relies on the runner image's own python3.
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        id: python
+        with:
+          python-version: "3.12"
+      # The build job's dist/, so this shard tests the bytes that job built
+      # and typechecked instead of building again.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: ci-build
+          path: ave/dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: ci-plan
+          path: ${{ runner.temp }}/ci-plan
+      - name: Remove root-level Bun binary shims before Vitest
+        working-directory: ave
+        run: rm -f ajv pino
+      - name: Run the suite (coverage gate on nightly and dispatch)
         # The suite resolves entirely from ave/src. Sibling slugs appear
         # only as fixtures or mocked installer inputs.
         #
-        # Test-only diffs always keep changed tests, helper importers, triggered
-        # locks and the must-run set. Other main pushes use trusted selection
+        # Test-only diffs always keep changed tests, fixture readers, triggered
+        # locks and the must-run set; a test helper or setup module is never
+        # test-only and runs full off integration bases. Other main pushes use trusted selection
         # from HEAD's first-parent diff, with uncertainty falling back to full.
         # Non-test-only category merges, tags, schedule and dispatch run full.
         # Integration-base PRs retain best traced selection on uncertainty and
@@ -178,14 +293,102 @@ jobs:
         # composite's two halves separately, the duplicate scan last;
         # `check:test-quality` stays as the local one-shot README.md documents.
         #
-        # Three workers, not the config's four: the self-hosted runners share
-        # one cgroup slice capped at three CPUs (CPUQuota=300%), where 80% of
-        # scheduling periods were throttled with four workers plus their
-        # subprocesses.
+        # Three workers, not the config's four: a standard hosted runner has
+        # four vCPUs, and each Vitest worker spawns subprocesses of its own.
+        #
+        # This job is one shard of the plan the build job wrote:
+        # AVE_CI_PLAN_FILE is that plan, AVE_CI_SHARD this shard's place in
+        # the matrix (`vitest --shard`); a one-shard matrix runs it whole.
         env:
           AVE_SMOKE_PYTHON: ${{ steps.python.outputs.python-path }}
           AVE_VITEST_MAX_WORKERS: "3"
+          AVE_CI_PLAN_FILE: ${{ runner.temp }}/ci-plan/ci-plan.json
+          AVE_CI_SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}
         run: bun run test:ci
+        working-directory: ave
+
+  build-and-test:
+    # The required check on main. It reports success only when the build job
+    # and every Vitest shard succeeded (a docs-only change skips the shards
+    # and checks its documents in the build job), then runs the repository
+    # hygiene gates. `always()` keeps it running when a needed job failed
+    # and when the run was cancelled, so a red or cancelled shard turns this
+    # check red instead of skipping it: a skipped job reports success to
+    # branch protection. Its first step is `always()` too, so a cancelled run
+    # cannot skip it either, and it fails on any upstream result other than
+    # success (cancelled and skipped included).
+    needs: [build, vitest]
+    if: always()
+    # Every job in every workflow runs on a GitHub-hosted runner
+    # (src/__tests__/support/workflow-runner-policy.ts fails on anything
+    # else). Hosted runners are ephemeral VMs, so a fork's package.json
+    # postinstall cannot persist on, or read state from, any machine of the
+    # owner's. The repository must also register no self-hosted runner: a
+    # fork pull request runs its own edited copy of this file and could name
+    # one. ARM64 keeps native-module
+    # (better-sqlite3 etc.) parity with the dev fleet. Core CI is deliberately
+    # secret-free and does not clone private sibling repositories;
+    # cross-repository integration belongs to trusted default-branch
+    # repository_dispatch workflows.
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Require the build and every Vitest shard
+        if: always()
+        env:
+          BUILD_RESULT: ${{ needs.build.result }}
+          VITEST_RESULT: ${{ needs.vitest.result }}
+          DOCS_ONLY: ${{ needs.build.outputs.docs_only }}
+        run: |
+          if [ "$BUILD_RESULT" != "success" ]; then
+            echo "::error::the build job ended $BUILD_RESULT"
+            exit 1
+          fi
+          if [ "$DOCS_ONLY" = "true" ]; then
+            if [ "$VITEST_RESULT" != "skipped" ]; then
+              echo "::error::a docs-only change ran Vitest shards ($VITEST_RESULT)"
+              exit 1
+            fi
+            exit 0
+          fi
+          if [ "$VITEST_RESULT" != "success" ]; then
+            echo "::error::the Vitest shards ended $VITEST_RESULT"
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: needs.build.outputs.docs_only != 'true'
+        with:
+          path: ave
+          fetch-depth: 0
+          # No later step pushes or fetches with the job token.
+          persist-credentials: false
+      - uses: ./ave/.github/actions/setup-bun
+        if: needs.build.outputs.docs_only != 'true'
+        with:
+          bun-version-file: ave/.bun-version
+      # Cache the built node_modules (Electron dist + electron-rebuilt native
+      # modules) keyed on os+arch+lockfile. On a hit, `bun install` restores the
+      # ABI-correct binaries without re-downloading Electron or recompiling
+      # better-sqlite3/node-pty. Exact-key only — a lockfile change (which pins
+      # the Electron version) misses and rebuilds, so a stale ABI never leaks in.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: node-modules-cache
+        if: needs.build.outputs.docs_only != 'true'
+        with:
+          path: ave/node_modules
+          key: ${{ runner.os }}-${{ runner.arch }}-ci-nm-${{ hashFiles('ave/bun.lock', 'ave/patches/**') }}
+      # Bun's download cache only feeds an install that has to fetch packages.
+      # After an exact node_modules hit `bun install` finds every package in
+      # place (2-3 s in every measured run), so restoring this cache there was
+      # ~45 s of download for nothing. It is restored, and saved, only when
+      # node_modules missed.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: needs.build.outputs.docs_only != 'true' && steps.node-modules-cache.outputs.cache-hit != 'true'
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-ci-bun-${{ hashFiles('ave/bun.lock') }}
+          restore-keys: ${{ runner.os }}-ci-bun-
+      - run: bun install --frozen-lockfile
+        if: needs.build.outputs.docs_only != 'true'
         working-directory: ave
       # Repository hygiene: manifests, baseline ledgers, and the self-tests of
       # the gates that read them. Nothing below compiles or runs the product; a
@@ -266,8 +469,12 @@ jobs:
       # CI-only on purpose — the Knip self-test costs more than a pre-push
       # budget allows — and
       # `check:test-coverage` above is CI-only for the same reason.
+      - name: Remove root-level Bun binary shims before the hygiene gates
+        if: needs.build.outputs.docs_only != 'true'
+        working-directory: ave
+        run: rm -f ajv pino
       - name: Core hygiene gates
-        if: steps.docs-impact.outputs.docs_only != 'true'
+        if: needs.build.outputs.docs_only != 'true'
         working-directory: ave
         run: bun run check:gate-core && bun run test:knip-gate
 
@@ -278,24 +485,15 @@ jobs:
     # event (main push, tag, schedule, dispatch). These jobs run only the
     # explicit platform regression files below, never the whole suite.
     if: github.event_name != 'pull_request' || github.base_ref == 'main'
-    # Runner from repo variable AVE_WINDOWS_RUNNER (JSON label array, e.g.
-    # ["self-hosted","Windows","X64","ave-release"], or a hosted label such as
-    # "\"windows-latest\"" — a quoted JSON string — to opt into a GitHub-hosted
-    # runner explicitly), the variable build-installers.yml reads. Unset falls
-    # back to any self-hosted runner only so the check below can fail naming
-    # the variable, never to a billing-blocked hosted label. A pull request
-    # from a fork always gets the hosted label: a fork run may not see repo
-    # variables at all, and the self-hosted fallback would then hand it the
-    # owner's machine. That guard lives in this file, which a fork PR can
-    # edit, so the repo setting that holds fork workflows for approval stays
-    # the real boundary; keep it on, and before going public also set the
-    # variable to its hosted label.
+    # GitHub-hosted runner, as every job is; see workflow-runner-policy.ts.
     # The runner needs Git for Windows (bash) and the C++ build tools that
-    # scripts/build-windows-job.ps1 finds through vswhere.
-    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'windows-latest' || vars.AVE_WINDOWS_RUNNER && fromJSON(vars.AVE_WINDOWS_RUNNER) || 'self-hosted' }}
+    # scripts/build-windows-job.ps1 finds through vswhere. Pinned to
+    # windows-2025, the image the release matrix builds the installer on, so
+    # a windows-latest rollover cannot test one image and ship another.
+    runs-on: windows-2025
     env:
-      # A self-hosted runner's home is the owner's own: keep bun's package
-      # cache and Electron's download cache in the workspace.
+      # Keep bun's package cache and Electron's download cache in the
+      # workspace, under the cache keys below.
       BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}/.cache/bun
       ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
     steps:
@@ -304,19 +502,12 @@ jobs:
           path: ave
           fetch-depth: 0
           persist-credentials: false
-      # Self-hosted machines have no preinstalled toolcache; install Node into
-      # the runner's own tool cache instead of relying on a system Node. The
-      # runner check and the docs classifier below both run on it.
+      # Pin Node 24 rather than whichever Node the runner image ships. The
+      # docs classifier below runs on it.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24"
           package-manager-cache: false
-      - name: Require the runner variable
-        shell: bash
-        working-directory: ave
-        env:
-          AVE_WINDOWS_RUNNER: ${{ vars.AVE_WINDOWS_RUNNER }}
-        run: bash .github/scripts/require-runner-vars.sh AVE_WINDOWS_RUNNER
       - name: Classify documentation impact
         id: docs-impact
         shell: bash
@@ -328,9 +519,9 @@ jobs:
           if ! node scripts/hooks/classify-docs-diff.mjs "$BASE_SHA" HEAD "$EVENT_NAME" >> "$GITHUB_OUTPUT"; then
             echo 'docs_only=false' >> "$GITHUB_OUTPUT"
           fi
-      # The pinned bun from .bun-version goes under RUNNER_TEMP, never into
-      # the owner's own bun home on a self-hosted runner; on Windows it is a
-      # checksum-verified release download (see the action).
+      # The pinned bun from .bun-version goes under RUNNER_TEMP, not the runner
+      # user's bun home; on Windows it is a checksum-verified release download
+      # (see the action).
       - uses: ./ave/.github/actions/setup-bun
         if: steps.docs-impact.outputs.docs_only != 'true'
         with:
@@ -338,7 +529,7 @@ jobs:
       # Every later step (install scripts, the Windows helper checks, the
       # tests and the post-job cache saves) sees a home and a temp directory
       # under RUNNER_TEMP, which the runner empties around every job, instead
-      # of the owner's profile and %LOCALAPPDATA%\Temp.
+      # of the runner user's profile and %LOCALAPPDATA%\Temp.
       - name: Isolate home and temp directories in the runner temp
         if: steps.docs-impact.outputs.docs_only != 'true'
         shell: bash
@@ -363,8 +554,8 @@ jobs:
       - name: Verify native background process ownership
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
-        # Windows PowerShell ships with every Windows install; a self-hosted
-        # runner's default shell depends on whether PowerShell 7 is present.
+        # Windows PowerShell ships with every Windows install; the default
+        # shell depends on whether PowerShell 7 is present.
         shell: powershell
         run: |
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1
@@ -377,8 +568,8 @@ jobs:
       - name: Verify Windows folder classification
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
-        # Windows PowerShell ships with every Windows install; a self-hosted
-        # runner's default shell depends on whether PowerShell 7 is present.
+        # Windows PowerShell ships with every Windows install; the default
+        # shell depends on whether PowerShell 7 is present.
         shell: powershell
         run: |
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1 -Helper path-kind
@@ -449,20 +640,13 @@ jobs:
     # event (main push, tag, schedule, dispatch). These jobs run only the
     # explicit platform regression files below, never the whole suite.
     if: github.event_name != 'pull_request' || github.base_ref == 'main'
-    # Runner from repo variable AVE_MACOS_RUNNER (JSON label array, e.g.
-    # ["self-hosted","macOS","ARM64","ave-release"], or a hosted label such as
-    # "\"macos-15\"" — a quoted JSON string — to opt into a GitHub-hosted runner
-    # explicitly), the variable build-installers.yml reads. Unset falls back
-    # to any self-hosted runner only so the check below can fail naming the
-    # variable, never to a billing-blocked hosted label. Fork pull requests
-    # always get the hosted label; see the Windows job for why that guard is
-    # not the boundary on its own.
+    # GitHub-hosted runner, as every job is; see workflow-runner-policy.ts.
     # The adversarial suite's Electron control runs the dev Electron binary
     # (never the packaged app), so the runner needs a logged-in GUI session.
-    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'macos-15' || vars.AVE_MACOS_RUNNER && fromJSON(vars.AVE_MACOS_RUNNER) || 'self-hosted' }}
+    runs-on: macos-15
     env:
-      # A self-hosted runner's home is the owner's own: keep bun's package
-      # cache and Electron's download cache in the workspace.
+      # Keep bun's package cache and Electron's download cache in the
+      # workspace, under the cache keys below.
       BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}/.cache/bun
       ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
     steps:
@@ -471,19 +655,12 @@ jobs:
           path: ave
           fetch-depth: 0
           persist-credentials: false
-      # Self-hosted machines have no preinstalled toolcache; install Node into
-      # the runner's own tool cache instead of relying on a system Node. The
-      # runner check and the docs classifier below both run on it.
+      # Pin Node 24 rather than whichever Node the runner image ships. The
+      # docs classifier below runs on it.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24"
           package-manager-cache: false
-      - name: Require the runner variable
-        shell: bash
-        working-directory: ave
-        env:
-          AVE_MACOS_RUNNER: ${{ vars.AVE_MACOS_RUNNER }}
-        run: bash .github/scripts/require-runner-vars.sh AVE_MACOS_RUNNER
       - name: Classify documentation impact
         id: docs-impact
         working-directory: ave
@@ -494,16 +671,16 @@ jobs:
           if ! node scripts/hooks/classify-docs-diff.mjs "$BASE_SHA" HEAD "$EVENT_NAME" >> "$GITHUB_OUTPUT"; then
             echo 'docs_only=false' >> "$GITHUB_OUTPUT"
           fi
-      # The pinned bun from .bun-version goes under RUNNER_TEMP, never into
-      # the owner's own bun home on a self-hosted runner; on Windows it is a
-      # checksum-verified release download (see the action).
+      # The pinned bun from .bun-version goes under RUNNER_TEMP, not the runner
+      # user's bun home; on Windows it is a checksum-verified release download
+      # (see the action).
       - uses: ./ave/.github/actions/setup-bun
         if: steps.docs-impact.outputs.docs_only != 'true'
         with:
           bun-version-file: ave/.bun-version
       # Every later step (install scripts, the tests and the post-job cache
       # saves) sees a home and a temp directory under RUNNER_TEMP, which the
-      # runner empties around every job, instead of the owner's home, its
+      # runner empties around every job, instead of the runner user's home, its
       # ~/.ave and ~/Library, and the per-user /var/folders temp directory.
       - name: Isolate home and temp directories in the runner temp
         if: steps.docs-impact.outputs.docs_only != 'true'
@@ -534,17 +711,14 @@ jobs:
         run: node scripts/fetch-uv.mjs
       # The Python smoke's interpreter (§9.7 P5) here is not actions/setup-python:
       # on macOS that action runs `sudo installer -pkg … -target /` into
-      # /Library/Frameworks, outside the workspace of the owner's machine. With
+      # /Library/Frameworks, outside the job's workspace. With
       # AVE_SMOKE_PYTHON unset the harness has the uv above install a managed
       # 3.12 under node_modules/.cache/ave-python-smoke and discovers it with
       # `--managed-python`, so no step relies on the machine's own python3.
-      # The plugin-confinement cases need a LIVE sandbox, and the Linux job that
-      # runs the whole suite has no bubblewrap — so there they return early and
-      # pass without measuring anything. macOS needs no backend install; Linux
-      # gets its own job below, which installs the backend first.
-      # `AVE_REQUIRE_SANDBOX_CASES=1` is what stops that from being a silent
-      # arrangement: if the sandbox cannot initialize here, the cases FAIL
-      # instead of reporting a measurement they never took.
+      # The plugin-confinement cases need a live sandbox. Both Linux jobs
+      # install the backend; this job needs no backend install.
+      # `AVE_REQUIRE_SANDBOX_CASES=1` makes confinement jobs fail if the sandbox
+      # cannot initialize, instead of passing without taking a measurement.
       - name: Run macOS permission regressions
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
@@ -578,16 +752,16 @@ jobs:
     if: github.event_name != 'pull_request' || github.base_ref == 'main'
     # The architecture of `build-and-test`, so the native-module cache key below
     # and ASRT's `arm64` seccomp filter both apply.
-    # Runner from repo variable AVE_LINUX_RUNNER (JSON label array, e.g.
-    # ["self-hosted","Linux","ARM64","ave"]); unset = hosted fallback, and a
-    # fork pull request always gets the hosted label. Private repo only: unset
-    # AVE_LINUX_RUNNER before the repo goes public.
-    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04-arm' || vars.AVE_LINUX_RUNNER && fromJSON(vars.AVE_LINUX_RUNNER) || 'ubuntu-24.04-arm' }}
+    # GitHub-hosted runner, as every job is; see workflow-runner-policy.ts.
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: ave
           fetch-depth: 0
+          # No later step pushes or fetches with the job token, so it is not
+          # left in .git/config for the test suite's processes to read.
+          persist-credentials: false
       - name: Classify documentation impact
         id: docs-impact
         working-directory: ave
@@ -605,18 +779,10 @@ jobs:
       # CI host ("Testing on Headless CI Systems").
       - name: Install the Linux sandbox backend
         if: steps.docs-impact.outputs.docs_only != 'true'
-        # A self-hosted runner has no sudo and is provisioned with these
-        # already; install only what is missing so both runner kinds pass.
-        run: |
-          missing=0
-          for tool in bwrap socat rg xvfb-run bash zsh; do
-            command -v "$tool" >/dev/null 2>&1 || { echo "missing: $tool"; missing=1; }
-          done
-          if [ "$missing" = 1 ]; then
-            sudo apt-get update && sudo apt-get install -y bubblewrap socat ripgrep xvfb bash zsh
-          else
-            echo "bubblewrap, socat, ripgrep, xvfb, bash and zsh already installed"
-          fi
+        uses: ./ave/.github/actions/linux-packages
+        with:
+          packages: bubblewrap socat ripgrep xvfb bash zsh
+          commands: bwrap socat rg xvfb-run bash zsh
       # Ubuntu 24.04 restricts unprivileged user namespaces by default, which
       # strips what bubblewrap needs (ASRT README, "Platform-Specific
       # Dependencies"). A runner setting, not a product change: the app never
@@ -624,8 +790,7 @@ jobs:
       # initialise and a `process` entry is refused `process-entry-unconfined`.
       - name: Allow unprivileged user namespaces
         if: steps.docs-impact.outputs.docs_only != 'true'
-        # Only when the knob exists and is not already 0 (a self-hosted runner
-        # has it set at provisioning and has no sudo). The next step proves
+        # Only when the knob exists and is not already 0. The next step proves
         # the namespace either way.
         run: |
           knob=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
@@ -639,9 +804,9 @@ jobs:
       - name: Prove the sandbox backend
         if: steps.docs-impact.outputs.docs_only != 'true'
         run: bwrap --version && socat -V | head -1 && rg --version | head -1 && bwrap --unshare-all --ro-bind / / --dev /dev --proc /proc /bin/true
-      # The pinned bun from .bun-version goes under RUNNER_TEMP, never into
-      # the owner's own bun home on a self-hosted runner; on Windows it is a
-      # checksum-verified release download (see the action).
+      # The pinned bun from .bun-version goes under RUNNER_TEMP, not the runner
+      # user's bun home; on Windows it is a checksum-verified release download
+      # (see the action).
       - uses: ./ave/.github/actions/setup-bun
         if: steps.docs-impact.outputs.docs_only != 'true'
         with:
@@ -672,7 +837,7 @@ jobs:
       # The Python smoke's interpreter (§9.7 P5): the harness verifies it,
       # installs `mcp` 2.2.0 for it with the uv above and proves the import, so
       # no step relies on the runner image's own python3.
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         id: python
         if: steps.docs-impact.outputs.docs_only != 'true'
         with:
@@ -687,6 +852,8 @@ jobs:
           AVE_SMOKE_PYTHON: ${{ steps.python.outputs.python-path }}
         run: >
           bun run test --
+          src/permissions/__tests__/linux-sandbox-wrap.test.ts
+          src/permissions/__tests__/asrt-sandbox.test.ts
           src/plugins/isolation/__tests__/confined-plugin-child.test.ts
           src/plugins/isolation/__tests__/adversarial-escapes.test.ts
           src/hooks/__tests__/bundled-hook-asrt.smoke.test.ts

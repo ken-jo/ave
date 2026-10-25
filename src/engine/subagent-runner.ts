@@ -35,6 +35,7 @@ import {
   SUBAGENT_MAX_ROUNDS_MIN,
 } from "../shared/subagent-policy.js";
 import { ConversationLoop, type ConversationLoopDeps } from "./conversation-loop.js";
+import { trackCodeCheckpointChild } from "../memory/code-checkpoints.js";
 import { endShellSession } from "../tools/shell-tools.js";
 import { canonicalizePathForMatch } from "../permissions/sensitive-paths.js";
 import type {
@@ -80,6 +81,7 @@ import { maskSensitiveData } from "../shared/dlp.js";
 import { createDlpSafeUuid, createNamespacedSessionId } from "../shared/dlp-safe-id.js";
 import { renderAgentProfilePrompt } from "./agent-profile-prompt.js";
 import type { GenericMessage } from "./llm/types.js";
+import { cachedLiveModelIds } from "./llm/model-list.js";
 import type {
   A2ASubAgentMessageBus,
   DeliverToParentInput,
@@ -1097,8 +1099,9 @@ function originSessionTag(originSessionId: string): string {
  *   3. API-key complexity   → MODEL_COMPLEXITY_MAP[vendor][tier]; null when
  *                             the vendor lacks that tier (design-intent
  *                             parent-model fallback, logged)
- *   4. API-key explicit ID  → used only when it is selectable for the active
- *                             vendor (LLM_VENDOR_MODEL_OPTIONS); otherwise
+ *   4. API-key explicit ID  → used only when the active vendor serves it: the
+ *                             catalog lists it for that vendor, or its live
+ *                             `/models` answer (`liveModels`) named it; otherwise
  *                             null (parent-model fallback, logged).
  *
  * Returning null means "no override" — the active runtime retains its
@@ -1109,7 +1112,8 @@ function originSessionTag(originSessionId: string): string {
 export function resolveSubAgentModel(
   profileModel: string | undefined,
   activeVendor: string,
-  subscriptionRuntime?: SubscriptionChatRuntimeSelection,
+  subscriptionRuntime: SubscriptionChatRuntimeSelection | undefined,
+  liveModels: readonly string[],
 ): string | null {
   const trimmed = profileModel?.trim();
   if (!trimmed) return null;
@@ -1154,7 +1158,7 @@ export function resolveSubAgentModel(
   // can actually serve it; an unavailable ID resolves to null (parent-model
   // fallback, logged) rather than reaching the provider and hard-failing the
   // child with a non-retryable model-not-found.
-  if (isModelAvailableForVendor(activeVendor, trimmed)) {
+  if (isModelAvailableForVendor(activeVendor, trimmed, liveModels)) {
     return trimmed;
   }
   log.warn(
@@ -2398,6 +2402,11 @@ export class SubAgentRunner {
     return this.deps.subAgentMemoryManager.listSubAgentSessionsForOrigin(originSessionId);
   }
 
+  /** Transcript existence, independent of row metadata and current run state. */
+  hasPersistedSession(sessionId: string): boolean {
+    return this.deps.subAgentMemoryManager.hasSessionTranscript(sessionId);
+  }
+
   /**
    * The sub-agent sessions work-board items spawned, newest first — the rows
    * the sidebar's conversation list shows beside the main sessions.
@@ -2845,6 +2854,7 @@ export class SubAgentRunner {
       args.profileModel,
       llmSettings.provider,
       subscriptionRuntime,
+      isLLMVendor(llmSettings.provider) ? cachedLiveModelIds(llmSettings, llmSettings.provider) : [],
     );
 
     // A builder carries mutable project/session overlay state. Never share it
@@ -2979,6 +2989,21 @@ export class SubAgentRunner {
   }
 
   private async runSpawn(
+    input: SubAgentSpawnInput,
+    callbacks?: SubAgentSpawnCallbacks,
+    executionPolicy?: SubAgentExecutionPolicy,
+    durableLinkBarrier?: A2AWireSpawnCallbacks["onDurablyLinked"],
+  ): Promise<SubAgentSpawnResult> {
+    const checkpointChild: { release?: () => void } = {};
+    try {
+      return await this.runSpawnChild(checkpointChild, input, callbacks, executionPolicy, durableLinkBarrier);
+    } finally {
+      checkpointChild.release?.();
+    }
+  }
+
+  private async runSpawnChild(
+    checkpointChild: { release?: () => void },
     input: SubAgentSpawnInput,
     callbacks?: SubAgentSpawnCallbacks,
     executionPolicy?: SubAgentExecutionPolicy,
@@ -3164,6 +3189,7 @@ export class SubAgentRunner {
         spawnMetadata,
       );
       initialMetadataPersisted = true;
+      checkpointChild.release = await trackCodeCheckpointChild(input.originSessionId);
       if (
         executionPolicy
         && !this.hasAuthoritativeA2AWireProjectBinding(
@@ -3391,6 +3417,7 @@ export class SubAgentRunner {
       ? `${modePreamble}\n\n${input.instructions}`
       : input.instructions;
     let assistantRounds = 0;
+    let subagentStopDispatched = false;
 
     try {
       // Subagent lifecycle parity (#811): fire SubagentStart on the child loop
@@ -3472,6 +3499,13 @@ export class SubAgentRunner {
             ? { approvalReasonPrefix: executionPolicy.approvalReasonPrefix }
             : {}),
           inputOrigin: executionPolicy?.inputOrigin ?? "llm-tool-arg",
+          // A clean end dispatches SubagentStop inside the run, where a
+          // deliberate block continues the child; the finally then skips it.
+          subagentStop: {
+            ...(input.spawnId !== undefined ? { agentId: input.spawnId } : {}),
+            ...(input.profileMode !== undefined ? { agentType: input.profileMode } : {}),
+            onDispatched: () => { subagentStopDispatched = true; },
+          },
         },
       );
       // `result.toolCalls.length` is the authoritative final count (the
@@ -3508,11 +3542,14 @@ export class SubAgentRunner {
       reasoningStreamEmitter.cancel();
       unregisterSpawnChild();
       // SubagentStop — fires once whether the run completed, errored, or
-      // aborted (the subagent has stopped either way). Observe-only/fail-soft.
-      await child.fireLifecycleEvent("SubagentStop", {
-        agentId: input.spawnId,
-        agentType: input.profileMode,
-      });
+      // aborted (the subagent has stopped either way). Observe-only/fail-soft
+      // here; a clean end already dispatched it inside the run.
+      if (!subagentStopDispatched) {
+        await child.fireLifecycleEvent("SubagentStop", {
+          agentId: input.spawnId,
+          agentType: input.profileMode,
+        });
+      }
     }
 
     if (cancellation.signal.aborted) {
@@ -3952,7 +3989,7 @@ export class SubAgentRunner {
       return result;
     }
 
-    const attempt: InFlightResumeAttempt = {};
+    const attempt: InFlightResumeAttempt & { releaseCheckpointChild?: () => void } = {};
     const runPromise = this.runResume(
       resumeId,
       continuationInstructions,
@@ -3969,6 +4006,7 @@ export class SubAgentRunner {
     try {
       return await runPromise;
     } finally {
+      attempt.releaseCheckpointChild?.();
       this.inFlight.delete(resumeId);
     }
   }
@@ -3983,7 +4021,7 @@ export class SubAgentRunner {
     spawnId: string | undefined,
     background: boolean,
     executionPolicy: SubAgentExecutionPolicy | undefined,
-    attempt: InFlightResumeAttempt,
+    attempt: InFlightResumeAttempt & { releaseCheckpointChild?: () => void },
   ): Promise<SubAgentSpawnResult> {
     const cancellation = new AbortController();
     let child: ConversationLoop | null = null;
@@ -4279,6 +4317,7 @@ export class SubAgentRunner {
         'sub-agent resume: failed to load session history for "' + resumeId + '"',
       );
     }
+    attempt.releaseCheckpointChild = await trackCodeCheckpointChild(originSessionId ?? meta.originSessionId);
     if (
       executionPolicy
       && !projectRootEquals(child.getSessionProjectRoot(), meta.projectRoot)

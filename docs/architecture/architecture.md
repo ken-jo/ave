@@ -414,6 +414,12 @@ context, memory context, available tools, and provider configuration for each
 turn. It streams model output, collects tool calls, dispatches tool execution,
 and commits turn artifacts back to the session store.
 
+The return-here action can restore conversation, native file-tool edits, or
+both at a durable user-message boundary. The [code rewind design](../design/code-rewind.md)
+owns capture boundaries, conflict refusal, storage limits and untracked effects,
+and compares them with [Claude Code checkpointing](https://code.claude.com/docs/en/checkpointing)
+(accessed 2026-10-22).
+
 Important rules:
 
 - Explicit project metadata must be attached before a project-scoped new
@@ -451,7 +457,11 @@ Important rules:
   the loops share the memory manager and the window-wide idle services. A
   closed tile releases its loop. See `docs/design/tiled-chat-groups.md`.
 - Several main windows may be open ("New Window", `CmdOrCtrl+Shift+N`, or the
-  tray). Launching the app again without an `ave://` link restores and focuses
+  tray). Only a packaged app on its real profile registers itself as the OS
+  `ave://` handler; unpackaged, E2E, relocated-`AVE_HOME` and `--user-data-dir`
+  launches skip (`src/main/ave-protocol-registration.ts`), so a dev or test run
+  cannot take the installed app's deep links. Launching the app again without
+  an `ave://` link restores and focuses
   the primary window — or opens a fresh primary when it was closed — instead of
   opening another beside it. `app-state.ts`
   owns the set: broadcasts go to every main window (`getAppWindows`), point-to-
@@ -510,9 +520,10 @@ settings, the endpoint's report or the catalog, never from its name. Where none 
 them, the window is the 128K host fallback (source `fallback`), the price is unknown,
 images are refused and an OpenAI-family request sends no reasoning effort. Host-owned
 values live in `src/shared/model-host-policy.ts`: the 32,000 default output, the 128K
-fallback, the credible-window ceiling, TPM defaults, and the request-shape table (the
-Claude 1M beta header and interleaved-thinking generations, adaptive vs numeric thinking,
-the Responses-vs-Chat wire choice).
+fallback, the credible-window ceiling, TPM defaults, and request-control projection. A declared numeric reasoning budget
+selects numeric thinking; qualitative-only reasoning selects adaptive thinking.
+Unknown entries carry no inferred control. Protocol selection reads reported
+controls or catalog reasoning support instead of model-version patterns.
 A model that is going away is in one of two tiers (`resolveModelRetirement`,
 `src/shared/context-budget.ts`). **Retired:** a public vendor's own complete `/models`
 listing on its native host no longer names it (never for local, self-hosted, gateway,

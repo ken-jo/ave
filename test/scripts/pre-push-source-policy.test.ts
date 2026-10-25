@@ -18,10 +18,12 @@ import {
   FULL_CHECK_GLOBAL_INPUT_FILES,
   isFullCheckGlobalInput,
   isMessageCatalogPath,
+  isTestHelperModule,
   isTestOnlyDiff,
   isTestSupportFile,
   AVE_APP_LOCK_SUITES,
   readMessageCatalogEntries,
+  readMessageCatalogEntriesByPath,
   RELATED_TEST_BOUND,
   selectFastSourceChecks,
   selectMessageCatalogChecks,
@@ -42,9 +44,8 @@ function deleted(path: string) {
 describe("test-only diff policy", () => {
   it.each([
     "src/core/__tests__/route-engine.test.ts", "test/scripts/run-ci-suite.test.ts",
-    "src/__tests__/support/git-diff-entry.ts", "src/core/__tests__/fixtures/helper.ts",
     "test/fixtures/example/data.json", "src/core/__tests__/fixtures/data.json",
-  ])("accepts local test code and fixtures: %s", (path) => {
+  ])("accepts collected tests and fixture assets: %s", (path) => {
     expect(isTestOnlyDiff([modified(path)])).toBe(true);
     expect(isTestOnlyDiff([added(path)])).toBe(true);
     expect(isTestOnlyDiff([deleted(path)])).toBe(true);
@@ -54,8 +55,23 @@ describe("test-only diff policy", () => {
     ...FULL_CHECK_GLOBAL_INPUT_FILES, "config/ci-must-run-tests.json", "config/vitest.globalSetup.ts",
     "scripts/run-ci-suite.mjs", ".github/workflows/ci.yml", "src/core/route-engine.ts",
     "test/e2e/example.test.ts", "test/screenshots/example.test.ts", "test/ordinary-helper.ts",
-  ])("refuses global or non-test inputs: %s", (path) => {
+    "src/__tests__/support/git-diff-entry.ts", "src/core/__tests__/fixtures/helper.ts",
+    "src/core/__mocks__/client.ts", "scripts/hooks/pre-push-source-policy.mjs",
+  ])("refuses global inputs, test helpers and non-test inputs: %s", (path) => {
     expect(isTestOnlyDiff([modified(path)])).toBe(false);
+    expect(isTestOnlyDiff([modified("src/core/__tests__/route-engine.test.ts"), modified(path)])).toBe(false);
+  });
+
+  it("names every importable non-collected test-tree file a test helper module", () => {
+    for (const path of [
+      "src/__tests__/support/git-diff-entry.ts", "src/core/__tests__/helpers.ts", "src/core/__tests__/fixtures/helper.ts",
+      "src/core/__mocks__/client.ts", "test/ordinary-helper.ts", "test/scripts/fixtures/stub.mjs",
+      "src/__tests__/vitest-ave-home.ts",
+    ]) expect(isTestHelperModule(path), path).toBe(true);
+    for (const path of [
+      "src/core/__tests__/route-engine.test.ts", "test/fixtures/example/data.json", "src/core/route-engine.ts",
+      "scripts/run-ci-suite.mjs", "src/../test/ordinary-helper.ts",
+    ]) expect(isTestHelperModule(path), path).toBe(false);
   });
 
   it("refuses mixed diffs, unsafe paths, mode changes and unresolved changes", () => {
@@ -218,13 +234,16 @@ describe("pre-push fast source tier", () => {
   it("wires the fast tier, its opt-out and its log line into the hook", () => {
     const hook = readFileSync(resolve(root, "scripts/hooks/run-local-checks.mjs"), "utf8");
     expect(hook).toContain('process.env.AVE_PREPUSH_FULL === "1"');
-    expect(hook).toContain("[checks] tier=fast pre-push");
+    // The fast and global-input tiers share one log line (pre-push-tier.mjs).
+    expect(hook).toContain("console.log(describeScopedTier({");
+    expect(readFileSync(resolve(root, "scripts/hooks/pre-push-tier.mjs"), "utf8")).toContain("[checks] tier=${tier} pre-push");
     expect(hook).toContain("[checks] tier=full ${stage}");
     expect(hook).not.toContain('"--passWithNoTests"');
     expect(hook).toContain('"--reporter=json"');
     expect(hook.indexOf("getFastSourceRelatedSelection(repoRoot,")).toBeGreaterThanOrEqual(0);
-    expect(hook.indexOf("getFastSourceRelatedSelection(repoRoot,")).toBeLessThan(hook.indexOf("[checks] tier=fast pre-push"));
-    expect(hook).toContain('"run", ...directArgs], dir, withoutGitContext()');
+    expect(hook.indexOf("getFastSourceRelatedSelection(repoRoot,")).toBeLessThan(hook.indexOf("console.log(describeScopedTier({"));
+    // The direct list runs in budgeted chunks (pre-push-argv-budget.test.ts).
+    expect(hook).toContain('runVitestChunks(bun, dir, directArgs, (chunk) => ["run", "test:vitest", "--", "run", ...chunk]);');
     // The skip switch is the shell hook's and keeps its meaning.
     const shellHook = readFileSync(resolve(root, "scripts/hooks/pre-push"), "utf8");
     expect(shellHook).toContain('if [ "${AVE_HOOKS_SKIP:-}" = "1" ] || [ "${SKIP_AVE_HOOKS:-}" = "1" ]; then');
@@ -458,16 +477,34 @@ describe("pre-push message catalog selection", () => {
   });
 
   it("reads every key of the real catalog, and nothing the runtime does not load", () => {
+    // One compiler session for the whole catalog: each session is a native
+    // child process, and one per module (~190 spawns) timed out under load.
+    const texts = new Map(catalogFiles().map((path) => [path, readFileSync(resolve(root, path), "utf8")]));
+    const byPath = readMessageCatalogEntriesByPath(texts);
+    expect([...byPath.keys()]).toEqual([...texts.keys()]);
     const keys = new Set<string>();
-    for (const path of catalogFiles()) {
-      const entries = readMessageCatalogEntries(readFileSync(resolve(root, path), "utf8"), path);
+    for (const [path, entries] of byPath) {
       expect(entries, path).not.toBeNull();
       for (const key of entries!.keys()) keys.add(key);
     }
     expect([...keys].sort()).toEqual(Object.keys(messages.en).sort());
+    // The batch reader validates each module exactly as the single-module reader.
+    for (const path of [`${MESSAGES}/en.ts`, `${MESSAGES}/ko.ts`, `${MESSAGES}/generated/shellExecution.ts`]) {
+      expect(byPath.get(path), path).toEqual(readMessageCatalogEntries(texts.get(path)!, path));
+    }
     // The barrels carry no keys; the barrel check proves they match the fragments.
-    expect(readMessageCatalogEntries(readFileSync(resolve(root, MESSAGES, "generated/index.ts"), "utf8"))).toBeNull();
-  }, 30_000);
+    const barrel = readFileSync(resolve(root, MESSAGES, "generated/index.ts"), "utf8");
+    expect(readMessageCatalogEntries(barrel)).toBeNull();
+    expect(readMessageCatalogEntriesByPath(new Map([
+      [`${MESSAGES}/generated/index.ts`, barrel],
+      [`${MESSAGES}/generated/panel.ts`, "export const en = {"],
+      [`${MESSAGES}/generated/other.ts`, null],
+    ]))).toEqual(new Map([
+      [`${MESSAGES}/generated/index.ts`, null],
+      [`${MESSAGES}/generated/panel.ts`, null],
+      [`${MESSAGES}/generated/other.ts`, null],
+    ]));
+  });
 
   it("refuses catalog shapes whose keys it cannot read", () => {
     expect(readMessageCatalogEntries('export const en = { "a.b": "x" + "y", "a.c": `z` } as const;')).toEqual(

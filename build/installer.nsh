@@ -370,15 +370,50 @@ Function un.aveCleanupCurrentUserNotificationArtifacts
     Return
 
   ave_notification_powershell_ready:
+  ; Rebuild the child interpreter's module search path for its own edition.
+  ; Keep the full value outside the fixed-size script string buffer.
+  StrCpy $R7 "0"
+  System::Call 'kernel32::GetEnvironmentVariableW(w "PSModulePath", p 0, i 0) i .R8'
+  IntCmp $R8 0 ave_notification_module_env_ready
+  IntOp $R9 $R8 * 2
+  System::Alloc $R9
+  Pop $R7
+  StrCmp $R7 "0" ave_notification_module_env_failed
+  System::Call 'kernel32::GetEnvironmentVariableW(w "PSModulePath", p R7, i R8) i .R9'
+  IntCmp $R9 0 ave_notification_module_env_failed
+  IntCmp $R9 $R8 ave_notification_module_env_failed 0 ave_notification_module_env_failed
+  System::Call 'kernel32::SetEnvironmentVariableW(w "PSModulePath", p 0) i .R8'
+  IntCmp $R8 0 ave_notification_module_env_failed
+  ave_notification_module_env_ready:
   nsExec::ExecToStack '"$R6" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\${AVE_NOTIFICATION_CLEANUP_SCRIPT}" -InstalledExecutable "$R0" -ShortcutName "$R1" -AppUserModelId "$R2" -InstallMarker "$R3"'
   Pop $R4
   Pop $R5
+  StrCmp $R7 "0" ave_notification_module_env_restored
+  System::Call 'kernel32::SetEnvironmentVariableW(w "PSModulePath", p R7) i .R8'
+  IntCmp $R8 0 ave_notification_module_env_restore_failed
+  ave_notification_module_env_restored:
+  System::Free $R7
   Delete "$PLUGINSDIR\${AVE_NOTIFICATION_CLEANUP_SCRIPT}"
   StrCmp $R4 "error" 0 ave_notification_cleanup_done
     StrCpy $R4 "1"
     StrCpy $R5 "Ave notification cleanup failed: PowerShell process could not be started"
 
   ave_notification_cleanup_done:
+  Return
+
+  ; Fail closed: customUnInstall aborts the uninstall on a nonzero $R4.
+  ave_notification_module_env_failed:
+  System::Free $R7
+  StrCpy $R4 "1"
+  StrCpy $R5 "Ave notification cleanup failed: PSModulePath could not be cleared for Windows PowerShell"
+  Delete "$PLUGINSDIR\${AVE_NOTIFICATION_CLEANUP_SCRIPT}"
+  Return
+
+  ave_notification_module_env_restore_failed:
+  System::Free $R7
+  StrCpy $R5 "Ave notification cleanup failed: PSModulePath could not be restored after cleanup (cleanup exit $R4)"
+  StrCpy $R4 "1"
+  Delete "$PLUGINSDIR\${AVE_NOTIFICATION_CLEANUP_SCRIPT}"
 FunctionEnd
 !endif
 

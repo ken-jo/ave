@@ -55,13 +55,6 @@ const DEVELOPMENT_TOMBSTONE_SET: ReadonlySet<string> = new Set(DEVELOPMENT_ENV_T
 
 /** The app sets these for something it launched; they are not configuration. */
 const INTERNAL: readonly string[] = [
-  // The host supplies inspected filesystem paths to its access-rule query child.
-  "AVE_EXECUTABLE_ACL_PATHS",
-  // Tells that same child to skip the desktop-package probe when the host
-  // already knows it does not apply; the host decides it per query.
-  "AVE_ACL_DESKTOP_PACKAGE",
-  // Candidate restricting SIDs for the same child's account-resolution check.
-  "AVE_ACL_CAP_SIDS",
   "AVE_HOOK_EVENT",
   "AVE_HOOK_SESSION",
   // Both halves of the subscription tool bridge. The host binds an ephemeral

@@ -110,6 +110,7 @@ describe("runPreflightGuard — estimate-based trigger", () => {
 
     // Configure mock to return a real-looking compact result.
     vi.mocked(compactWithBoundary).mockResolvedValueOnce(makeSyntheticCompactResult(history));
+    const lifecycle = vi.spyOn(loop, "fireLifecycleEvent");
 
     const compactOccurredCb = vi.fn();
     await loop.runTurn(
@@ -130,6 +131,9 @@ describe("runPreflightGuard — estimate-based trigger", () => {
     expect(compactArgs).not.toHaveProperty("model");
     // onCompactOccurred emitted from applyBoundaryToSession.
     expect(compactOccurredCb).toHaveBeenCalled();
+    expect(lifecycle).toHaveBeenCalledWith("PreCompact", expect.objectContaining({ reason: "auto-compact" }));
+    expect(lifecycle).toHaveBeenCalledWith("PostCompact", expect.objectContaining({ reason: "auto-compact" }));
+    lifecycle.mockRestore();
   });
 
   it("uses the provider-native projection for initial preflight", async () => {

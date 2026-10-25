@@ -18,8 +18,12 @@ import {
   MUST_RUN_TESTS_PATH,
   namedRepositoryPaths,
   namesChangedPath,
+  ciShardCount,
   ciSuiteArguments,
+  FULL_RUN_SHARDS,
+  parseCiShard,
   planCiSuite,
+  readPlanFile,
   runsCoverage,
   runsRepoCodeOutOfProcess,
   selectCiTests,
@@ -161,10 +165,19 @@ describe("CI test selection over the real import graph", () => {
     expect(plan.tests).toContain(spawner);
   });
 
-  it("selects real helper importers on a test-only diff", () => {
-    const plan = select([modified("src/__tests__/support/git-diff-entry.ts")]);
+  it("runs the full suite for a real test helper on main, and traces its importers on an integration base", () => {
+    const helper = "src/__tests__/support/git-diff-entry.ts";
+    expect(select([modified(helper)])).toEqual({
+      mode: "full",
+      reason: `${helper} is a test helper or setup module, which runs the full suite`,
+      tests: [],
+    });
+    const plan = selectCiTests({
+      changes: [modified(helper)], trackedTests, mustRunTests, readText, discoverRelated, baseRef: "integration/ci",
+    });
     expect(plan.mode).toBe("affected");
-    expect(plan.reason).toContain("test-only diff");
+    expect(plan.reason).toContain(`${helper} is a test helper or setup module, which runs the full suite at the category merge`);
+    expect(plan.reason).not.toContain("test-only diff");
     expect(plan.tests).toContain("test/scripts/pre-push-source-policy.test.ts");
     expect(plan.tests).toEqual(expect.arrayContaining(mustRunTests));
   });
@@ -262,6 +275,37 @@ describe("CI test selection fallbacks", () => {
     expect(ciSuiteArguments(affected, false)).toEqual([join("scripts", "run-vitest-under-electron.mjs"), "run", "--silent=true", "./src/a.test.ts"]);
   });
 
+  it("shards only a full run without coverage, and passes the shard to Vitest", () => {
+    const fullPlan = { mode: "full" as const, reason: "push runs the full suite", tests: [] };
+    const affected = { mode: "affected" as const, reason: "traced", tests: ["src/a.test.ts"] };
+    expect(FULL_RUN_SHARDS).toBeGreaterThan(1);
+    expect(ciShardCount(fullPlan, false)).toBe(FULL_RUN_SHARDS);
+    expect(ciShardCount(fullPlan, true)).toBe(1);
+    expect(ciShardCount(affected, false)).toBe(1);
+    expect(ciSuiteArguments(fullPlan, false, "2/4")).toEqual([
+      join("scripts", "run-vitest-under-electron.mjs"), "run", "--silent=true", "--shard=2/4",
+    ]);
+    expect(ciSuiteArguments(affected, false, "1/2")).toEqual([
+      join("scripts", "run-vitest-under-electron.mjs"), "run", "--silent=true", "--shard=1/2", "./src/a.test.ts",
+    ]);
+    expect(() => ciSuiteArguments(fullPlan, true, "1/4")).toThrow("a coverage run cannot be sharded");
+  });
+
+  it("reads a shard and a written plan strictly", () => {
+    expect(parseCiShard(undefined)).toBeNull();
+    expect(parseCiShard("")).toBeNull();
+    expect(parseCiShard("1/1")).toBeNull();
+    expect(parseCiShard("3/4")).toBe("3/4");
+    for (const bad of ["0/4", "5/4", "1/0", "1", "a/b", "1/4 "]) {
+      expect(() => parseCiShard(bad), bad).toThrow("AVE_CI_SHARD must be <index>/<count>");
+    }
+    const plan = { mode: "affected", reason: "traced", tests: ["src/a.test.ts"] };
+    expect(readPlanFile(JSON.stringify({ ...plan, extra: true }))).toEqual(plan);
+    for (const bad of [{ ...plan, mode: "some" }, { ...plan, tests: [1] }, { mode: "full", tests: [] }, null]) {
+      expect(() => readPlanFile(JSON.stringify(bad))).toThrow("the CI plan file is not a { mode, reason, tests } plan");
+    }
+  });
+
   it.each(["src/core/route-engine.ts", "src/__tests__/vitest-ave-home.ts"])("runs full for a non-test-only category merge: %s", (path) => {
     withGitOutputs(["head first second\n", `:100644 100644 aaaa bbbb M\0${path}\0`], () => {
       expect(planCiSuite("pull_request", { headRef: "integration/permissions", baseRef: "main" })).toEqual({
@@ -337,11 +381,12 @@ describe("test-only support tracing", () => {
     "src/a/__tests__/support/deep.ts": `readFileSync("${fixture}");`,
     [mustRun]: "export {};",
   };
-  function supportPlan(changes: ReturnType<typeof modified>[], current = files) {
+  function supportPlan(changes: ReturnType<typeof modified>[], current = files, baseRef?: string) {
     return selectCiTests({
       changes, trackedTests: [test, mustRun], mustRunTests: [mustRun],
       readText: (path) => current[path] ?? null,
       discoverRelated: (paths) => paths.map((source) => ({ source, tests: [] })),
+      baseRef,
     });
   }
 
@@ -356,7 +401,16 @@ describe("test-only support tracing", () => {
       .toEqual([test, mustRun].sort());
   });
 
-  it("retains importers of a renamed helper through surviving helper chains", () => {
+  it.each([
+    "src/a/__tests__/support/helper.ts", "src/a/__tests__/fixtures/builder.ts", "test/support/setup-helper.ts",
+    "src/a/__mocks__/client.ts", "vitest.config.ts", "src/__tests__/vitest-ave-home.ts",
+    "scripts/run-ci-suite.mjs", "scripts/hooks/pre-push-source-policy.mjs", "config/ci-must-run-tests.json",
+  ])("never treats %s as test-only: it runs the full suite off integration bases", (path) => {
+    expect(supportPlan([modified(path)]).mode).toBe("full");
+    expect(supportPlan([modified(test), modified(path)]).mode).toBe("full");
+  });
+
+  it("retains importers of a renamed helper through surviving helper chains on an integration base", () => {
     const renamed = "src/a/__tests__/support/renamed.ts";
     const oldPath = "src/a/__tests__/support/deep.ts";
     const { [oldPath]: oldHelper, ...current } = files;
@@ -364,14 +418,16 @@ describe("test-only support tracing", () => {
       { ...modified(oldPath), status: "D", newMode: "000000" },
       { ...modified(renamed), status: "A", oldMode: "000000" },
     ];
-    expect(supportPlan(changes, { ...current, [renamed]: oldHelper }).tests)
+    expect(supportPlan(changes, { ...current, [renamed]: oldHelper }).mode).toBe("full");
+    expect(supportPlan(changes, { ...current, [renamed]: oldHelper }, "integration/ci").tests)
       .toEqual([test, mustRun].sort());
   });
 
   it("fails closed on test-only discovery failure instead of omitting importers or running full", () => {
+    const untracked = "src/a/__tests__/untracked.test.ts";
     expect(() => selectCiTests({
-      changes: [modified(helper)], trackedTests: [test, mustRun], mustRunTests: [mustRun],
-      readText: (path) => files[path] ?? null, discoverRelated: () => null,
+      changes: [modified(untracked)], trackedTests: [test, mustRun], mustRunTests: [mustRun],
+      readText: (path) => (path === untracked ? "export {};" : files[path] ?? null), discoverRelated: () => null,
     })).toThrow("test-only selection cannot resolve importers: related test discovery failed");
   });
 
