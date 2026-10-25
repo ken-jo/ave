@@ -1,3 +1,4 @@
+import { deferred } from "../../__tests__/support/deferred.js";
 import { describe, expect, it, vi } from "vitest";
 import type { StreamEvent, ToolSchema } from "../../engine/llm/types.js";
 import {
@@ -83,6 +84,31 @@ function fakeCodexClient(): CodexAppServerClient {
   } as unknown as CodexAppServerClient;
 }
 
+function isolationRuntime(): CodexConversationRuntime {
+  return {
+    verifyIsolation: vi.fn(async () => undefined),
+    stop: vi.fn(),
+  } as unknown as CodexConversationRuntime;
+}
+
+function nextRuntime(runtimes: CodexConversationRuntime[]): CodexConversationRuntime {
+  const runtime = runtimes.shift();
+  if (!runtime) throw new Error("missing-codex-test-runtime");
+  return runtime;
+}
+
+function runtimeService(
+  acpRegistry: AcpSubscriptionRuntimeRegistry,
+  options: Partial<NonNullable<Parameters<typeof SubscriptionRuntimeService.create>[1]>> = {},
+) {
+  return SubscriptionRuntimeService.create(async () => undefined, {
+    namespace: namespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
+    codexClient: fakeCodexClient(),
+    acpRegistry,
+    ...options,
+  });
+}
+
 describe("SubscriptionRuntimeService", () => {
   it("claims every persistent runtime directory for the current account when it starts", async () => {
     claimFakeRuntimeDirectories.mockClear();
@@ -121,9 +147,7 @@ describe("SubscriptionRuntimeService", () => {
       openTextSession,
       stopAll: vi.fn(async () => undefined),
     } as unknown as AcpSubscriptionRuntimeRegistry;
-    const service = await SubscriptionRuntimeService.create(async () => undefined, {
-      namespace: namespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories, codexClient: fakeCodexClient(), acpRegistry: registry,
-    });
+    const service = await runtimeService(registry);
     try {
       expect((await service.verify(provider)).capabilities.chat).toBe(false);
       await expect(service.openTextSession({ kind: "subscription", provider }))
@@ -137,10 +161,7 @@ describe("SubscriptionRuntimeService", () => {
   it("requires isolation verification and shares the fresh v3 Codex auth home with text chat", async () => {
     const clientOptions: CodexAppServerClientOptions[] = [];
     const runtimeOptions: CodexConversationRuntimeOptions[] = [];
-    const runtime = {
-      verifyIsolation: vi.fn(async () => undefined),
-      stop: vi.fn(),
-    } as unknown as CodexConversationRuntime;
+    const runtime = isolationRuntime();
     const registry = { stopAll: vi.fn(async () => undefined) } as unknown as AcpSubscriptionRuntimeRegistry;
     const service = await SubscriptionRuntimeService.create(async () => undefined, {
       namespace: namespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
@@ -185,11 +206,7 @@ describe("SubscriptionRuntimeService", () => {
       verify: vi.fn(async () => KIMI_WITH_IMAGES),
       stopAll: vi.fn(async () => undefined),
     } as unknown as AcpSubscriptionRuntimeRegistry;
-    const service = await SubscriptionRuntimeService.create(async () => undefined, {
-      namespace: namespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
-      codexClient: fakeCodexClient(),
-      acpRegistry: registry,
-    });
+    const service = await runtimeService(registry);
 
     expect((await service.getStatus("kimi-code")).capabilities).toMatchObject({
       chat: false,
@@ -209,11 +226,7 @@ describe("SubscriptionRuntimeService", () => {
 
   it("rejects model ids above the shared subscription cap before opening a runtime", async () => {
     const registry = { stopAll: vi.fn(async () => undefined) } as unknown as AcpSubscriptionRuntimeRegistry;
-    const service = await SubscriptionRuntimeService.create(async () => undefined, {
-      namespace: namespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
-      codexClient: fakeCodexClient(),
-      acpRegistry: registry,
-    });
+    const service = await runtimeService(registry);
 
     await expect(service.openTextSession({
       kind: "subscription",
@@ -239,11 +252,7 @@ describe("SubscriptionRuntimeService", () => {
       openTextSession: vi.fn(async () => rawSession),
       stopAll: vi.fn(async () => undefined),
     } as unknown as AcpSubscriptionRuntimeRegistry;
-    const service = await SubscriptionRuntimeService.create(async () => undefined, {
-      namespace: namespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
-      codexClient: fakeCodexClient(),
-      acpRegistry: registry,
-    });
+    const service = await runtimeService(registry);
 
     const verified = await service.verify("grok-build");
     expect(verified).toMatchObject({
@@ -270,21 +279,14 @@ describe("SubscriptionRuntimeService", () => {
     await session.stop();
   });
   it("prevents a held service reference from opening an in-flight session after stop", async () => {
-    let resolveStatus!: (status: AcpSubscriptionStatus) => void;
-    const pendingStatus = new Promise<AcpSubscriptionStatus>((resolve) => {
-      resolveStatus = resolve;
-    });
+    const { promise: pendingStatus, resolve: resolveStatus } = deferred<AcpSubscriptionStatus>();
     const registry = {
       getStatus: vi.fn(() => pendingStatus),
       verify: vi.fn(async () => KIMI_CONNECTED),
       openTextSession: vi.fn(),
       stopAll: vi.fn(async () => undefined),
     } as unknown as AcpSubscriptionRuntimeRegistry;
-    const service = await SubscriptionRuntimeService.create(async () => undefined, {
-      namespace: namespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
-      codexClient: fakeCodexClient(),
-      acpRegistry: registry,
-    });
+    const service = await runtimeService(registry);
 
     // The caller holds this instance while status is still resolving. Stopping the singleton must make that retained reference terminal before the pending
     // operation can reach verify/openTextSession.
@@ -326,11 +328,7 @@ describe("SubscriptionRuntimeService", () => {
       }),
       stopAll: vi.fn(async () => undefined),
     } as unknown as AcpSubscriptionRuntimeRegistry;
-    const service = await SubscriptionRuntimeService.create(async () => undefined, {
-      namespace: namespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
-      codexClient: fakeCodexClient(),
-      acpRegistry: registry,
-    });
+    const service = await runtimeService(registry);
     await service.verify("kimi-code");
 
     const opening = service.openTextSession({ kind: "subscription", provider: "kimi-code" });
@@ -361,11 +359,7 @@ describe("SubscriptionRuntimeService", () => {
       setExecutable: vi.fn(async () => KIMI_CONNECTED),
       stopAll: vi.fn(async () => undefined),
     } as unknown as AcpSubscriptionRuntimeRegistry;
-    const service = await SubscriptionRuntimeService.create(async () => undefined, {
-      namespace: namespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
-      codexClient: fakeCodexClient(),
-      acpRegistry: registry,
-    });
+    const service = await runtimeService(registry);
 
     const verifying = service.verify("kimi-code");
     await verificationStarted;
@@ -405,11 +399,7 @@ describe("SubscriptionRuntimeService", () => {
       }),
       stopAll: vi.fn(async () => undefined),
     } as unknown as AcpSubscriptionRuntimeRegistry;
-    const service = await SubscriptionRuntimeService.create(async () => undefined, {
-      namespace: namespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
-      codexClient: fakeCodexClient(),
-      acpRegistry: registry,
-    });
+    const service = await runtimeService(registry);
     await service.verify("kimi-code");
 
     const opening = service.openTextSession({ kind: "subscription", provider: "kimi-code" });
@@ -448,11 +438,7 @@ describe("SubscriptionRuntimeService", () => {
       }),
       stopAll: vi.fn(async () => undefined),
     } as unknown as AcpSubscriptionRuntimeRegistry;
-    service = await SubscriptionRuntimeService.create(async () => undefined, {
-      namespace: namespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
-      codexClient: fakeCodexClient(),
-      acpRegistry: registry,
-    });
+    service = await runtimeService(registry);
     await service.verify("kimi-code");
 
     await expect(service.openTextSession({ kind: "subscription", provider: "kimi-code" }))
@@ -463,10 +449,7 @@ describe("SubscriptionRuntimeService", () => {
 
   it("rejects stale and unsupported persisted subscription model selections", async () => {
     const runtimeOptions: CodexConversationRuntimeOptions[] = [];
-    const runtime = {
-      verifyIsolation: vi.fn(async () => undefined),
-      stop: vi.fn(),
-    } as unknown as CodexConversationRuntime;
+    const runtime = isolationRuntime();
     const listModels = vi.fn(async () => ({
       status: CODEX_CONNECTED,
       models: [{ id: "current-model", displayName: "Current model", isDefault: true }],
@@ -529,10 +512,7 @@ describe("SubscriptionRuntimeService", () => {
       listModels,
       stop: vi.fn(),
     } as unknown as CodexAppServerClient;
-    const verificationRuntime = {
-      verifyIsolation: vi.fn(async () => undefined),
-      stop: vi.fn(),
-    } as unknown as CodexConversationRuntime;
+    const verificationRuntime = isolationRuntime();
     const createTextRuntime = (): CodexConversationRuntime => ({
       startTurn: vi.fn(async (input: StartTurnInput, callbacks: TurnCallbacks) => {
         startTurnInputs.push(input);
@@ -600,10 +580,7 @@ describe("SubscriptionRuntimeService", () => {
   });
 
   it("emits completed Codex usage as separate non-billable subscription telemetry", async () => {
-    const verificationRuntime = {
-      verifyIsolation: vi.fn(async () => undefined),
-      stop: vi.fn(),
-    } as unknown as CodexConversationRuntime;
+    const verificationRuntime = isolationRuntime();
     const textRuntime = {
       startTurn: vi.fn(async (
         _input: unknown,
@@ -636,15 +613,8 @@ describe("SubscriptionRuntimeService", () => {
     } as unknown as CodexConversationRuntime;
     const runtimes = [verificationRuntime, textRuntime];
     const registry = { stopAll: vi.fn(async () => undefined) } as unknown as AcpSubscriptionRuntimeRegistry;
-    const service = await SubscriptionRuntimeService.create(async () => undefined, {
-      namespace: namespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
-      codexClient: fakeCodexClient(),
-      acpRegistry: registry,
-      createCodexConversationRuntime: () => {
-        const runtime = runtimes.shift();
-        if (!runtime) throw new Error("missing-codex-test-runtime");
-        return runtime;
-      },
+    const service = await runtimeService(registry, {
+      createCodexConversationRuntime: () => nextRuntime(runtimes),
     });
 
     try {
@@ -700,11 +670,7 @@ describe("SubscriptionRuntimeService", () => {
       }),
       stopAll: vi.fn(async () => undefined),
     } as unknown as AcpSubscriptionRuntimeRegistry;
-    const service = await SubscriptionRuntimeService.create(async () => undefined, {
-      namespace: namespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
-      codexClient: fakeCodexClient(),
-      acpRegistry: registry,
-    });
+    const service = await runtimeService(registry);
 
     await service.openTextSession({ kind: "subscription", provider: "kimi-code" });
     expect(verify).toHaveBeenCalledOnce();
@@ -718,10 +684,7 @@ describe("SubscriptionRuntimeService", () => {
   });
   it("fails closed before emitting a bridged tool call when a native ACP tool request races it", async () => {
     let onHostRequest: ((request: { kind: "permission" | "tool" | "other" }) => void | Promise<void>) | undefined;
-    let signalTransportStarted: (() => void) | undefined;
-    const transportStarted = new Promise<void>((resolve) => {
-      signalTransportStarted = resolve;
-    });
+    const { promise: transportStarted, resolve: signalTransportStarted } = deferred<void>();
     const session = {
       provider: "kimi-code" as const,
       streamTurn: vi.fn(async function* () {
@@ -743,11 +706,7 @@ describe("SubscriptionRuntimeService", () => {
       stopAll: vi.fn(async () => undefined),
     } as unknown as AcpSubscriptionRuntimeRegistry;
     const setHandler = vi.spyOn(SubscriptionToolBridge.prototype, "setHandler");
-    const service = await SubscriptionRuntimeService.create(async () => undefined, {
-      namespace: namespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
-      codexClient: fakeCodexClient(),
-      acpRegistry: registry,
-    });
+    const service = await runtimeService(registry);
 
     try {
       const textSession = await service.openTextSession(
@@ -803,11 +762,7 @@ describe("SubscriptionRuntimeService", () => {
       openTextSession: vi.fn(async () => session),
       stopAll: vi.fn(async () => undefined),
     } as unknown as AcpSubscriptionRuntimeRegistry;
-    const service = await SubscriptionRuntimeService.create(async () => undefined, {
-      namespace: namespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
-      codexClient: fakeCodexClient(),
-      acpRegistry: registry,
-    });
+    const service = await runtimeService(registry);
 
     try {
       await service.verify("kimi-code");
@@ -861,11 +816,7 @@ describe("SubscriptionRuntimeService", () => {
       }),
       stopAll: vi.fn(async () => undefined),
     } as unknown as AcpSubscriptionRuntimeRegistry;
-    const service = await SubscriptionRuntimeService.create(async () => undefined, {
-      namespace: namespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
-      codexClient: fakeCodexClient(),
-      acpRegistry: registry,
-    });
+    const service = await runtimeService(registry);
 
     try {
       const textSession = await service.openTextSession(
@@ -891,26 +842,11 @@ describe("SubscriptionRuntimeService", () => {
     }
   });
   it("does not forward late ACP output after abort before cancellation settles", async () => {
-    let signalTransportStarted: () => void = () => {};
-    const transportStarted = new Promise<void>((resolve) => {
-      signalTransportStarted = resolve;
-    });
-    let releaseLateOutput: () => void = () => {};
-    const lateOutputReleased = new Promise<void>((resolve) => {
-      releaseLateOutput = resolve;
-    });
-    let signalLateOutputConsumed: () => void = () => {};
-    const lateOutputConsumed = new Promise<void>((resolve) => {
-      signalLateOutputConsumed = resolve;
-    });
-    let signalCancellationStarted: () => void = () => {};
-    const cancellationStarted = new Promise<void>((resolve) => {
-      signalCancellationStarted = resolve;
-    });
-    let releaseCancellation: () => void = () => {};
-    const cancellationReleased = new Promise<void>((resolve) => {
-      releaseCancellation = resolve;
-    });
+    const { promise: transportStarted, resolve: signalTransportStarted } = deferred<void>();
+    const { promise: lateOutputReleased, resolve: releaseLateOutput } = deferred<void>();
+    const { promise: lateOutputConsumed, resolve: signalLateOutputConsumed } = deferred<void>();
+    const { promise: cancellationStarted, resolve: signalCancellationStarted } = deferred<void>();
+    const { promise: cancellationReleased, resolve: releaseCancellation } = deferred<void>();
     const session = {
       provider: "kimi-code" as const,
       streamTurn: async function* () {
@@ -932,10 +868,7 @@ describe("SubscriptionRuntimeService", () => {
       stopAll: vi.fn(async () => undefined),
     } as unknown as AcpSubscriptionRuntimeRegistry;
     const audit = vi.fn();
-    const service = await SubscriptionRuntimeService.create(async () => undefined, {
-      namespace: namespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
-      codexClient: fakeCodexClient(),
-      acpRegistry: registry,
+    const service = await runtimeService(registry, {
       audit,
     });
     try {
@@ -974,23 +907,11 @@ describe("SubscriptionRuntimeService", () => {
       onReasoningDelta?: (event: { delta: string }) => void;
     };
     let callbacks: CallbackProbe | undefined;
-    let signalTurnStarted: () => void = () => {};
-    const turnStarted = new Promise<void>((resolve) => {
-      signalTurnStarted = resolve;
-    });
+    const { promise: turnStarted, resolve: signalTurnStarted } = deferred<void>();
     let resolveTurn: (result: FakeTurnResult) => void = () => {};
-    let signalInterruptStarted: () => void = () => {};
-    const interruptStarted = new Promise<void>((resolve) => {
-      signalInterruptStarted = resolve;
-    });
-    let releaseInterrupt: () => void = () => {};
-    const interruptReleased = new Promise<void>((resolve) => {
-      releaseInterrupt = resolve;
-    });
-    const verificationRuntime = {
-      verifyIsolation: vi.fn(async () => undefined),
-      stop: vi.fn(),
-    } as unknown as CodexConversationRuntime;
+    const { promise: interruptStarted, resolve: signalInterruptStarted } = deferred<void>();
+    const { promise: interruptReleased, resolve: releaseInterrupt } = deferred<void>();
+    const verificationRuntime = isolationRuntime();
     const textRuntime = {
       startTurn: vi.fn((_input: unknown, nextCallbacks: CallbackProbe) => {
         callbacks = nextCallbacks;
@@ -1008,15 +929,8 @@ describe("SubscriptionRuntimeService", () => {
     } as unknown as CodexConversationRuntime;
     const runtimes = [verificationRuntime, textRuntime];
     const registry = { stopAll: vi.fn(async () => undefined) } as unknown as AcpSubscriptionRuntimeRegistry;
-    const service = await SubscriptionRuntimeService.create(async () => undefined, {
-      namespace: namespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
-      codexClient: fakeCodexClient(),
-      acpRegistry: registry,
-      createCodexConversationRuntime: () => {
-        const runtime = runtimes.shift();
-        if (!runtime) throw new Error("missing-codex-test-runtime");
-        return runtime;
-      },
+    const service = await runtimeService(registry, {
+      createCodexConversationRuntime: () => nextRuntime(runtimes),
     });
     try {
       await service.verify("codex");
@@ -1053,15 +967,9 @@ describe("SubscriptionRuntimeService", () => {
       onReasoningDelta?: (event: { delta: string }) => void;
     };
     let callbacks: CallbackProbe | undefined;
-    let signalTurnStart: (() => void) | undefined;
-    const turnStarted = new Promise<void>((resolve) => {
-      signalTurnStart = resolve;
-    });
+    const { promise: turnStarted, resolve: signalTurnStart } = deferred<void>();
     let resolveTurn: ((result: FakeTurnResult) => void) | undefined;
-    const verificationRuntime = {
-      verifyIsolation: vi.fn(async () => undefined),
-      stop: vi.fn(),
-    } as unknown as CodexConversationRuntime;
+    const verificationRuntime = isolationRuntime();
     const textRuntime = {
       startTurn: vi.fn((_input: unknown, nextCallbacks: CallbackProbe) => {
         callbacks = nextCallbacks;
@@ -1077,15 +985,8 @@ describe("SubscriptionRuntimeService", () => {
     const runtimes = [verificationRuntime, textRuntime];
     const registry = { stopAll: vi.fn(async () => undefined) } as unknown as AcpSubscriptionRuntimeRegistry;
     const setHandler = vi.spyOn(SubscriptionToolBridge.prototype, "setHandler");
-    const service = await SubscriptionRuntimeService.create(async () => undefined, {
-      namespace: namespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
-      codexClient: fakeCodexClient(),
-      acpRegistry: registry,
-      createCodexConversationRuntime: () => {
-        const runtime = runtimes.shift();
-        if (!runtime) throw new Error("missing-codex-test-runtime");
-        return runtime;
-      },
+    const service = await runtimeService(registry, {
+      createCodexConversationRuntime: () => nextRuntime(runtimes),
     });
 
     try {
