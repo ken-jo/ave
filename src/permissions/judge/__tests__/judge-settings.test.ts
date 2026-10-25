@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { LLM_VENDOR_MODEL_OPTIONS } from "../../../shared/llm-vendor-defaults.js";
+import { llmVendorModelOptions } from "../../../shared/llm-vendor-defaults.js";
 import { JudgeCircuitBreaker } from "../judge-breaker.js";
 import { createJudgeChain, type CreateJudgeDeps } from "../create-judge.js";
 import {
@@ -12,7 +12,7 @@ import {
 import { judgeModelCatalogFrom } from "../judge-model-catalog.js";
 
 const PICKER_VENDOR = "claude" as const;
-const PICKER_MODEL = LLM_VENDOR_MODEL_OPTIONS[PICKER_VENDOR][0]!;
+const PICKER_MODEL = llmVendorModelOptions(PICKER_VENDOR)[0]!;
 const JEV = { provider: "external", id: "jev", escalateBelow: 0.8, external: { command: ["/opt/jev/bin/jev", "judge"] } };
 
 describe("judge settings", () => {
@@ -159,7 +159,7 @@ describe("judge settings", () => {
       vendor, endpoint, models, fetchedAt: "t", ...(baseUrl ? { baseUrl } : {}),
     });
     const live = judgeModelCatalogFrom({
-      vendors: { openai: { model: LLM_VENDOR_MODEL_OPTIONS.openai[0]! } },
+      vendors: { openai: { model: llmVendorModelOptions("openai")[0]! } },
       modelListCache: {
         std: entry("openai", "https://api.openai.com/v1/models", ["gpt-live-default"]),
         proxy: entry("openai", "https://proxy.example.test/v1/models", ["gpt-via-proxy"], "https://proxy.example.test/v1"),
@@ -184,19 +184,23 @@ describe("judge settings", () => {
     expect(() => validateJudgeSettings(pick("openai-compatible/team/llama-70b"), live)).toThrow(/not offered/);
   });
 
-  it("does not seed an endpoint-defined route before its handshake", () => {
+  it("offers a catalog-backed route's catalog but seeds no endpoint-defined route before its handshake", () => {
     const empty = judgeModelCatalogFrom({});
-    expect(empty.optionsFor("openai")).toEqual([]);
-    expect(empty.optionsFor("openrouter")).toEqual([]);
-    const saved = judgeModelCatalogFrom({ vendors: { openrouter: { model: "team/saved" } } });
-    expect(saved.optionsFor("openrouter")).toEqual(["team/saved"]);
+    expect(empty.optionsFor("openai")).toEqual(llmVendorModelOptions("openai"));
+    expect(empty.optionsFor("openai-compatible")).toEqual([]);
+    const saved = judgeModelCatalogFrom({ vendors: { "openai-compatible": { model: "team/saved" } } });
+    expect(saved.optionsFor("openai-compatible")).toEqual(["team/saved"]);
   });
 
   it("keeps schema-only catalog validation independent from live route discovery", () => {
-    const model = LLM_VENDOR_MODEL_OPTIONS.openai[0]!;
+    const model = llmVendorModelOptions("openai")[0]!;
     const patch = { chain: [{ provider: "builtin-llm", model: `openai/${model}` }] };
     expect(validateJudgeSettings(patch).chain[0]?.model).toEqual({ vendor: "openai", model });
-    expect(() => validateJudgeSettings(patch, judgeModelCatalogFrom({}))).toThrow(/not offered/);
+    // Once the route's own listing arrives, it alone names the offered models.
+    const listed = judgeModelCatalogFrom({ modelListCache: {
+      live: { vendor: "openai", endpoint: "https://api.openai.com/v1/models", models: ["gpt-live-only"], fetchedAt: "2026-10-22T00:00:00Z" },
+    } });
+    expect(() => validateJudgeSettings(patch, listed)).toThrow(/not offered/);
   });
 
   it.each(["static", "manual"] as const)("uses the active preset's %s model options and its own saved selection", (policy) => {
@@ -233,7 +237,8 @@ describe("judge settings", () => {
         selected: { vendor: "openai-compatible", endpoint: "https://models.example.test/v1/models", credentialScope: "team-route", models: ["team/model"], fetchedAt: "2026-10-22T00:00:00Z" },
       },
     };
-    expect(judgeModelCatalogFrom(source).optionsFor("openai-compatible")).toEqual(["team/default", "team/model"]);
+    // A preset's default is no choice of its own: the listing names the models.
+    expect(judgeModelCatalogFrom(source).optionsFor("openai-compatible")).toEqual(["team/model"]);
     expect(judgeModelCatalogFrom({ ...source, marketplaceProviderPresetId: undefined }).optionsFor("openai-compatible")).toContain("generic/model");
     expect(judgeModelCatalogFrom({ ...source, marketplaceProviderPresetId: "missing-route" }).optionsFor("openai-compatible")).toEqual([]);
   });

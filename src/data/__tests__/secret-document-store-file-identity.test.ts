@@ -19,7 +19,7 @@ vi.mock("node:fs", async (importOriginal) => {
   };
 });
 
-const { chmodSync, mkdtempSync, statSync, writeFileSync } = await import("node:fs");
+const { chmodSync, mkdtempSync, readFileSync, statSync, writeFileSync } = await import("node:fs");
 const { tmpdir } = await import("node:os");
 const { join } = await import("node:path");
 const { cleanupTmpDir } = await import("../../__tests__/support/tmp-dir-teardown.js");
@@ -76,6 +76,15 @@ describe("secret document exact file identity", () => {
     inspectStats = (stats) => Object.assign(stats, {
       ino: 2n ** 60n + (observations++ === changedObservation ? 1n : 0n),
     });
+    // Windows has no POSIX mode to repair, so migrate() skips repair and leaves the file untouched.
+    if (process.platform === "win32") {
+      const before = { bytes: readFileSync(store.path), stats: statSync(store.path, { bigint: true }) };
+      await expect(store.migrate()).resolves.toBe(false);
+      const after = statSync(store.path, { bigint: true });
+      expect(readFileSync(store.path)).toEqual(before.bytes);
+      expect([after.ino, after.mtimeNs, after.mode]).toEqual([before.stats.ino, before.stats.mtimeNs, before.stats.mode]);
+      return;
+    }
     await expect(store.migrate()).rejects.toThrow(/changed during mode repair/);
   });
 

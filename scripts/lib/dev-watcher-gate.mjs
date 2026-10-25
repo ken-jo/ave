@@ -57,7 +57,7 @@ export async function waitForAllFirstBuilds(
   log,
   options = {},
 ) {
-  const timeoutMs = options.timeoutMs ?? 60_000;
+  const timeoutMs = options.timeoutMs ?? 90_000;
   const sleepMs = options.sleepMs ?? 100;
   const remaining = new Set(watchers.map((w) => w.tag));
   const list = () =>

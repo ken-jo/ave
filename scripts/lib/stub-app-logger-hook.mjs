@@ -56,12 +56,13 @@ export async function resolve(specifier, context, nextResolve) {
  * than on the loader thread (`module.register`). The two kinds do not chain
  * into each other — a loader-thread hook beside tsx's in-thread ones leaves a
  * `.ts` entry silently unrun — so this hook registers the same kind tsx did.
- * The versions are tsx 4.22's own gate (`node-features`: 24.11.1, 25.1.0,
- * 26.0.0 and later), the version this checkout locks.
+ * The versions are tsx 4.23's own gate (`node-features`: 22.22.3, 24.11.1,
+ * 25.1.0, 26.0.0 and later), the version this checkout locks.
  */
 function tsxRegistersInThread() {
   if (typeof nodeModule.registerHooks !== "function") return false;
   const [major, minor, patch] = process.versions.node.split(".").map(Number);
+  if (major === 22) return minor > 22 || (minor === 22 && patch >= 3);
   if (major === 24) return minor > 11 || (minor === 11 && patch >= 1);
   if (major === 25) return minor >= 1;
   return major >= 26;

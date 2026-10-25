@@ -109,6 +109,14 @@ const MAX_LENGTH_CONTINUATIONS = 3;
  */
 const MAX_REASONING_ONLY_NUDGES = 2;
 /**
+ * Hard cap on consecutive Stop/SubagentStop hook continuations per turn. A hook
+ * that blocks every stop would otherwise keep the turn alive forever. Eight
+ * matches the Claude Code hooks reference default
+ * (https://code.claude.com/docs/en/hooks, accessed 2026-10-22). AND-ed with the
+ * caller-assigned round budget.
+ */
+export const MAX_STOP_HOOK_CONTINUATIONS = 8;
+/**
  * How much of an answer-less round's reasoning the next round replays as that
  * round's assistant text.
  *
@@ -198,6 +206,11 @@ export async function queryLoop(
       rolePrompt?: ActiveRolePrompt;
       onMemoryCaptureTaint?: (reason: "staged-guidance") => void;
       memoryQuery?: string;
+      /**
+       * Dispatches the turn's continuable stop hook at a clean `end_turn` and
+       * returns the block feedback to continue with, or undefined to end.
+       */
+      onStopHook?: (state: { toolCount: number; stopHookActive: boolean }) => Promise<string | undefined>;
     },
   ): Promise<{
     text: string;
@@ -494,6 +507,7 @@ export async function queryLoop(
     // replays it off the committed row.
     let reasoningNudgesRun = 0;
     let reasoningNudgePending = false;
+    let stopHookContinuationsRun = 0;
     // C3(a): effective round budget. A host-assigned `maxRounds` (the sub-agent
     // runner, carrying the user's configured budget) is HONOURED exactly, above
     // the default too; narrowing it only shows up as an agent stopped mid-task.
@@ -1616,6 +1630,30 @@ export async function queryLoop(
               thoughtLen: mergedThought.length,
             });
             continue;
+          }
+        }
+        // A Stop/SubagentStop hook that deliberately blocks keeps the turn going
+        // with its reason as the next input, as in the Claude Code hooks
+        // reference. The feedback row is host-minted like a guidance row, so it
+        // stays in front of the model through the continuation's later rounds.
+        if (stopReason === "end_turn" && bounds.onStopHook && !abortSignal?.aborted) {
+          const feedback = await bounds.onStopHook({
+            toolCount: allToolCalls.length,
+            stopHookActive: stopHookContinuationsRun > 0,
+          });
+          if (feedback !== undefined && !abortSignal?.aborted) {
+            if (stopHookContinuationsRun >= MAX_STOP_HOOK_CONTINUATIONS) {
+              log.warn(`queryLoop: stop hook continuation cap (${MAX_STOP_HOOK_CONTINUATIONS}) reached; ending the turn`);
+              callbacks?.onError?.(t("be_conversationLoop.stopHookContinuationCap", { max: MAX_STOP_HOOK_CONTINUATIONS }));
+            } else if (assistantRoundsRun < effectiveMaxRounds) {
+              stopHookContinuationsRun += 1;
+              self.history.append({
+                role: "user",
+                content: t("be_conversationLoop.stopHookFeedback", { reason: feedback }),
+                meta: { hostInjectionId: randomUUID(), displayText: feedback },
+              });
+              continue;
+            }
           }
         }
         // EARLY-EXIT #4: turn 종료. 정상 케이스는 stopReason === "end_turn"

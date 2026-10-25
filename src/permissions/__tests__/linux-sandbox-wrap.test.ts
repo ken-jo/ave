@@ -9,6 +9,7 @@ import { buildSandboxConfig, getBuiltinShellReadPolicy } from "../asrt-sandbox.j
 import { hardenLinuxSandboxWrap } from "../linux-sandbox-wrap.js";
 import { shellQuote } from "../../lib/shell-resolver.js";
 import { deriveSandboxWritePaths } from "../sandbox-write-jail.js";
+import { asrtCanInitialize } from "./test-helpers.js";
 
 const priorAveHome = process.env.AVE_HOME;
 const temporaryRoots: string[] = [];
@@ -212,7 +213,9 @@ it.runIf(process.platform !== "win32")("refuses a mount whose alias identity can
   })).toThrow(/identity/);
 });
 
-it("remounts a mask that is the final mount at its target", () => {
+// The hardener runs only on Linux and resolves bwrap targets as host paths;
+// on Win32 a rooted /tmp/example resolves onto a drive, which no bwrap sees.
+it.runIf(process.platform !== "win32")("remounts a mask that is the final mount at its target", () => {
   const command = "bwrap --tmpfs /tmp/example --bind /tmp/example /tmp/example --tmpfs /tmp/example -- /bin/sh -c 'true'";
   const wrapped = hardenLinuxSandboxWrap({ argv: ["/bin/bash", "-c", command], env: {} });
   expect(wrapped.argv[2]).toContain("'--remount-ro' '/tmp/example' --");
@@ -377,7 +380,11 @@ it.runIf(process.platform !== "win32")("accepts a generated shared temp wrapper 
   }
 });
 
-it.runIf(process.platform === "linux")("shares newly created temp entries with the host and the next sandbox", async () => {
+it.runIf(process.platform === "linux")("shares newly created temp entries with the host and the next sandbox", async (context) => {
+  if (!(await asrtCanInitialize())) {
+    if (process.env.AVE_REQUIRE_SANDBOX_CASES === "1") throw new Error("ASRT cannot initialize on this machine");
+    return context.skip();
+  }
   const root = mkdtempSync(join(tmpdir(), "ave-shared-temp-"));
   temporaryRoots.push(root);
   const target = join(tmpdir(), `${root.split("/").at(-1)}-new`);

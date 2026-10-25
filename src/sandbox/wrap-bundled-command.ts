@@ -38,7 +38,7 @@ export interface BundledWrapInput {
    * reads nothing under the root.
    */
   ownPluginReads: readonly string[];
-  /** Whose temp directory the process gets: its plugin for a hook, its server for an MCP stdio server. */
+  /** Host-owned principal whose private temporary directory the process receives. */
   tempPrincipal: SandboxTempPrincipal;
   /** Who the process's proxy denies are audited under (`egress-invocations.ts`). */
   egressOwner: WorkerEgressOwner;
@@ -73,7 +73,11 @@ export async function wrapBundledCommand(input: BundledWrapInput): Promise<{ arg
       commandId: egress.token,
       filesystem: {
         allowWrite: [temp.dir, input.sandboxHome.path, ...input.allowWrite],
-        allowRead: [temp.dir, input.sandboxHome.path, ...input.ownPluginReads, ...input.allowWrite, ...(tmpDir ? [tmpDir] : [])],
+        // An ancestor grant can re-emit a protected deny after the exact hook
+        // file carve-out. User hooks need only their own temporary directory.
+        allowRead: [temp.dir, input.sandboxHome.path, ...input.ownPluginReads, ...input.allowWrite,
+          ...(tmpDir && input.tempPrincipal.kind !== "hook" ? [tmpDir] : [])],
+        ...(input.tempPrincipal.kind === "hook" ? { floorPierces: input.ownPluginReads } : {}),
         denyRead: getDefaultSensitiveReadDenyPaths(),
         denyWrite: getDefaultSensitiveWriteDenyPaths(),
         // Bundled hooks and MCP stdio servers are plugin-owned (or third-party)
@@ -161,6 +165,8 @@ export async function spawnWindowsBundledProcess(input: {
   readonly allowRead: readonly string[];
   readonly allowWrite: readonly string[];
   readonly egressOwner: WorkerEgressOwner;
+  /** Recheck caller-owned admission after preparation, at the actual spawn boundary. */
+  readonly assertStillValid?: () => void;
 }): Promise<WindowsBundledSpawn> {
   if (process.platform !== "win32") {
     throw new Error(`[wrap-bundled-command] ${input.label}: spawnWindowsBundledProcess is the Windows path`);
@@ -191,7 +197,10 @@ export async function spawnWindowsBundledProcess(input: {
       stdio: ["pipe", "pipe", "pipe"],
       windowsStdio: "relay",
       ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
-      assertStillValid: () => held.assertAlive(),
+      assertStillValid: () => {
+        held.assertAlive();
+        input.assertStillValid?.();
+      },
       onWrapped: () => {
         wrapped = true;
       },

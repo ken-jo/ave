@@ -448,7 +448,7 @@ describe("buildProvider — profile moved off a retired vendor", () => {
           ? {
             activeChatRuntime: { kind: "api" },
             provider: "openai",
-            vendors: freshVendorBlocks(),
+            vendors: { ...freshVendorBlocks(), openai: { ...freshVendorBlocks().openai, model: "saved-model" } },
             fallbackChain: [{ provider: "claude", model: "claude-sonnet-4-6" }],
             ...(retiredProvider ? { retiredProvider } : {}),
           }

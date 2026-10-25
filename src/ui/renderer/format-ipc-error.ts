@@ -3,6 +3,10 @@
 import { t } from "../../i18n/runtime.js";
 
 export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
+  "code-checkpoint-unavailable": "codeRewind.unavailable",
+  "code-restore-failed": "codeRewind.failed",
+  "code-restore-conflict": "codeRewind.conflict",
+  "invalid-rewind-mode": "codeRewind.invalidMode",
   // ── Trust / intent gate ──
   "egress-grant-store-unreadable": "egressApprovalCard.storeUnreadable",
   "invalid-egress-grant-destination": "formatIpcError.invalidInput",

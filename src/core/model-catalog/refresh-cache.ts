@@ -97,7 +97,6 @@ export async function withModelCatalogCacheLock<T>(dir: string, work: () => Prom
       await readRegularFile(path, MAX_LOCK_BYTES);
     } catch (error) {
       if (!isMissingPathError(error)) throw error;
-      await writeFileAtomicAtPath(path, "");
     }
     try {
       const lock = await lstat(`${path}.lock`);

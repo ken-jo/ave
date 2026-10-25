@@ -33,6 +33,7 @@ export function buildMainLayoutSnapshot(input: {
   tree: PaneNode;
   focusedId: string;
   panelOpenIds: readonly string[];
+  thumbnailOpenIds: readonly string[];
   contentById: Readonly<Record<string, ViewLocation>>;
   /** The main-area surface a pane shows, by its tab id. */
   surfaceOf: (tabId: string) => SavedSurface | null;
@@ -55,6 +56,7 @@ export function buildMainLayoutSnapshot(input: {
     focusedId: input.focusedId,
     surfaces,
     panelOpenIds: input.panelOpenIds.filter((id) => panes.includes(id)),
+    thumbnailOpenIds: input.thumbnailOpenIds.filter((id) => panes.includes(id)),
     sideTabs,
   };
 }

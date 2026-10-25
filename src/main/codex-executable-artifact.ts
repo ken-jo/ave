@@ -4,7 +4,9 @@ import type { FileHandle } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import {
   assertCodexExecutableLocation,
+  assertCodexLocations,
   assertCodexPrivateRuntimeDirectory,
+  type CodexLocationRequest,
 } from "./codex-executable-location.js";
 import { isNativeExecutableFile } from "./native-executable-format.js";
 import { sameFileIdentity } from "../lib/file-identity.js";
@@ -78,6 +80,14 @@ export async function copyExecutableFile(
   executable: string,
 ): Promise<ExecutableArtifactFile> {
   await assertCodexExecutableLocation(source);
+  return copyAdmittedExecutableFile(source, executable);
+}
+
+/** Copy a source whose location the caller already admitted, for example in one batch. */
+export async function copyAdmittedExecutableFile(
+  source: string,
+  executable: string,
+): Promise<ExecutableArtifactFile> {
   const input = await openExecutableFile(source);
   try {
     const before = await input.stat({ bigint: true });
@@ -113,8 +123,10 @@ export async function copyNativeExecutableFile(
   executable: string,
   platform: NodeJS.Platform,
   arch: NodeJS.Architecture,
+  routeKind: CodexLocationRequest["routeKind"] = "native",
 ): Promise<ExecutableArtifactFile> {
-  const artifact = await copyExecutableFile(source, executable);
+  await assertCodexExecutableLocation(source, routeKind);
+  const artifact = await copyAdmittedExecutableFile(source, executable);
   const copied = await openExecutableFile(executable);
   try {
     if (!await isNativeExecutableFile(copied, platform, arch)) throw new CodexExecutableArtifactError();
@@ -142,7 +154,7 @@ async function companionSource(source: string, platform: NodeJS.Platform): Promi
       if (code === "ENOENT" || code === "ENOTDIR") continue;
       throw error;
     }
-    await assertCodexExecutableLocation(candidate);
+    await assertCodexExecutableLocation(candidate, "native");
     return fs.realpath(candidate);
   }
   return null;
@@ -155,11 +167,13 @@ export async function copyCodexExecutableArtifact(
   platform: NodeJS.Platform = process.platform,
   arch: NodeJS.Architecture = process.arch,
 ): Promise<CodexExecutableArtifact> {
-  await assertCodexExecutableLocation(source);
-  await assertCodexPrivateRuntimeDirectory(runtimeDirectory);
+  await assertCodexLocations([
+    { path: source, kind: "executable", routeKind: "native" },
+    { path: runtimeDirectory, kind: "private-directory", routeKind: "native" },
+  ]);
   const directory = await fs.mkdtemp(join(runtimeDirectory, "artifact-"));
   try {
-    await assertCodexPrivateRuntimeDirectory(directory);
+    await assertCodexPrivateRuntimeDirectory(directory, "native");
     const primary = await copyNativeExecutableFile(source, join(directory, platform === "win32" ? "codex.exe" : "codex"), platform, arch);
     const companion = await companionSource(source, platform);
     const artifact = Object.freeze({
@@ -180,12 +194,20 @@ export async function copyCodexExecutableArtifact(
 }
 
 /** Recheck the private copy immediately before each probe or app-server spawn. */
-export async function verifyCodexExecutableArtifact(artifact: CodexExecutableArtifact): Promise<void> {
+export async function verifyCodexExecutableArtifact(
+  artifact: CodexExecutableArtifact,
+  routeKind: CodexLocationRequest["routeKind"] = "native",
+): Promise<void> {
   const directory = dirname(artifact.executable);
-  await assertCodexPrivateRuntimeDirectory(directory);
-  for (const file of [artifact, ...(artifact.companion ? [artifact.companion] : [])]) {
+  const files = [artifact, ...(artifact.companion ? [artifact.companion] : [])];
+  for (const file of files) {
     if (dirname(file.executable) !== directory) throw new CodexExecutableArtifactError();
-    await assertCodexExecutableLocation(file.executable);
+  }
+  await assertCodexLocations([
+    { path: directory, kind: "private-directory", routeKind },
+    ...files.map((file) => ({ path: file.executable, kind: "executable" as const, routeKind })),
+  ]);
+  for (const file of files) {
     const input = await openExecutableFile(file.executable);
     try {
       const stat = await input.stat({ bigint: true });

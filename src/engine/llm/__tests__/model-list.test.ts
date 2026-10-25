@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  cachedLiveModelIds,
   isDefaultModelListEndpoint,
   listLlmModelsFromSettings,
   modelListEndpointFromBaseUrl,
@@ -11,7 +12,7 @@ import {
   resetModelListProbeStateForTesting,
 } from "../model-list.js";
 import { NetworkGuardError } from "../../../core/network-guard.js";
-import { llmModelListCacheKey, MAX_CACHED_LLM_MODEL_IDS } from "../../../shared/llm-model-list.js";
+import { llmModelListCacheKey, MAX_CACHED_LLM_MODEL_IDS, type LlmModelListCacheEntry } from "../../../shared/llm-model-list.js";
 import { llmRouteCatalogAddress, resolveContextWindowForRoute } from "../../../shared/context-budget.js";
 import { freshAllVendorBlocks } from "../../../shared/llm-vendor-defaults.js";
 import { marketplaceProviderPresetSecretKey } from "../../../shared/marketplace-package-assets.js";
@@ -337,7 +338,7 @@ describe("LLM model list sync", () => {
     const result = await listLlmModelsFromSettings(
       makeSettingsService({
         provider: "openai-compatible",
-        baseUrl: "http://10.232.178.100:30000/v1",
+        baseUrl: "http://10.10.2.100:30000/v1",
         secret: "internal-key",
       }) as never,
       { vendor: "openai-compatible" },
@@ -350,11 +351,11 @@ describe("LLM model list sync", () => {
 
     expect(result).toMatchObject({
       ok: true,
-      endpoint: "http://10.232.178.100:30000/v1/models",
+      endpoint: "http://10.10.2.100:30000/v1/models",
       models: ["Qwen3.6-35B-A3B-NVFP4"],
     });
     expect(fetchImpl).toHaveBeenCalledWith(
-      "http://10.232.178.100:30000/v1/models",
+      "http://10.10.2.100:30000/v1/models",
       expect.objectContaining({
         headers: expect.objectContaining({ Authorization: "Bearer internal-key" }),
       }),
@@ -553,14 +554,14 @@ describe("LLM model list sync", () => {
 
     const result = await listLlmModelsFromSettings(
       makeSettingsService({ baseUrl: "https://router.example/v1" }) as never,
-      { vendor: "openrouter", baseUrl: "http://10.232.178.100:30000/v1" },
+      { vendor: "openrouter", baseUrl: "http://10.10.2.100:30000/v1" },
       {
         fetchImpl,
         ensurePublicUrl: async (_url, options) => {
           expect(options?.allowPrivateNetworks).toBe(false);
           expect(options?.allowLoopback).toBe(false);
           throw new NetworkGuardError(
-            "target resolves to non-public address(es): 10.232.178.100",
+            "target resolves to non-public address(es): 10.10.2.100",
           );
         },
       },
@@ -569,7 +570,7 @@ describe("LLM model list sync", () => {
     expect(result).toMatchObject({
       ok: false,
       error: "invalid-model-list-endpoint",
-      endpoint: "http://10.232.178.100:30000/v1/models",
+      endpoint: "http://10.10.2.100:30000/v1/models",
     });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
@@ -581,7 +582,7 @@ describe("LLM model list sync", () => {
     const result = await listLlmModelsFromSettings(
       makeSettingsService({
         provider: "openrouter",
-        baseUrl: "http://10.232.178.100:30000/v1",
+        baseUrl: "http://10.10.2.100:30000/v1",
         secret: "commercial-key",
       }) as never,
       { vendor: "openrouter" },
@@ -591,7 +592,7 @@ describe("LLM model list sync", () => {
     expect(result).toMatchObject({
       ok: false,
       error: "invalid-model-list-endpoint",
-      endpoint: "http://10.232.178.100:30000/v1/models",
+      endpoint: "http://10.10.2.100:30000/v1/models",
     });
     expect(ensurePublicUrl).not.toHaveBeenCalled();
     expect(fetchImpl).not.toHaveBeenCalled();
@@ -1093,6 +1094,24 @@ describe("isDefaultModelListEndpoint — the endpoint a vendor's route resolves 
   });
 });
 
+describe("cachedLiveModelIds — what the route's own /models answer named", () => {
+  const entry = (vendor: string, endpoint: string, models: string[]): LlmModelListCacheEntry => ({
+    vendor, endpoint, models, complete: true, fetchedAt: "2026-10-16T00:00:00.000Z",
+  });
+
+  it("reads only the vendor's listing for the endpoint its route reaches", () => {
+    const modelListCache = {
+      a: entry("openai", "https://api.openai.com/v1/models", ["ft:gpt-6-luna:acme::abc123", "gpt-6-luna"]),
+      b: entry("openai", "https://proxy.example.test/v1/models", ["proxy-only"]),
+      c: entry("openrouter", "https://openrouter.ai/api/v1/models", ["openrouter/free"]),
+    };
+    expect(cachedLiveModelIds({ modelListCache }, "openai")).toEqual(["ft:gpt-6-luna:acme::abc123", "gpt-6-luna"]);
+    expect(cachedLiveModelIds({ vendors: { openai: { baseUrl: "https://proxy.example.test/v1" } }, modelListCache }, "openai"))
+      .toEqual(["proxy-only"]);
+    expect(cachedLiveModelIds({}, "openai")).toEqual([]);
+  });
+});
+
 describe("refreshRouteModelList — the catalogue a headless run can reach", () => {
   const address = {
     vendor: "openai-compatible" as const,
@@ -1325,5 +1344,97 @@ describe("refreshRouteModelList — the catalogue a headless run can reach", () 
       await refreshRouteModelList({ settingsService: service as never, fetchOptions: guardedFetchOptions(fetchImpl), address }),
     ).toBe(false);
     expect(patch).not.toHaveBeenCalled();
+  });
+});
+
+describe("vendor /models paged listings", () => {
+  const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+
+  it("uses x-api-key and anthropic-version, following has_more by last_id", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async (input) => {
+      const url = new URL(String(input));
+      return url.searchParams.get("after_id") === "claude-sonnet-5-5"
+        ? json({ data: [{ id: "claude-haiku-5-5", type: "model" }], has_more: false, first_id: "claude-haiku-5-5", last_id: "claude-haiku-5-5" })
+        : json({ data: [{ id: "claude-opus-5-5", type: "model", lifecycle: "active", display_name: "Flagship", max_input_tokens: 1_000_000, max_tokens: 128_000 }, { id: "retired-model", lifecycle: "retired" }, { id: "claude-sonnet-5-5", type: "model" }], has_more: true, first_id: "claude-opus-5-5", last_id: "claude-sonnet-5-5" });
+    });
+    const result = await listLlmModelsFromSettings(
+      makeSettingsService({ provider: "claude", baseUrl: "https://api.anthropic.com/v1", secret: "fixture-anthropic-key" }) as never,
+      { vendor: "claude" },
+      guardedFetchOptions(fetchImpl),
+    );
+    expect(result).toMatchObject({
+      ok: true,
+      endpoint: "https://api.anthropic.com/v1/models",
+      models: ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"],
+      complete: true,
+    });
+    expect(fetchImpl.mock.calls.map(([url]) => String(url))).toEqual([
+      "https://api.anthropic.com/v1/models?limit=1000",
+      "https://api.anthropic.com/v1/models?limit=1000&after_id=claude-sonnet-5-5",
+    ]);
+    expect(result.ok && result.modelEntries?.find((entry) => entry.id === "claude-opus-5-5"))
+      .toMatchObject({ name: "Flagship", contextLength: 1_000_000, maxOutputTokens: 128_000 });
+    const headers = fetchImpl.mock.calls[0]![1]!.headers as Record<string, string>;
+    expect(headers).toMatchObject({ "x-api-key": "fixture-anthropic-key", "anthropic-version": "2023-06-01" });
+    expect(headers).not.toHaveProperty("Authorization");
+  });
+
+  it("uses x-goog-api-key, keeps only generateContent models, and strips models/", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async (input) => {
+      const url = new URL(String(input));
+      return url.searchParams.get("pageToken") === "page-2"
+        ? json({ models: [{ name: "models/gemini-3.5-flash-lite", baseModelId: "gemini-3.5-flash-lite", supportedGenerationMethods: ["generateContent", "countTokens"] }] })
+        : json({
+          models: [
+            { name: "models/gemini-3.8-flash", baseModelId: "gemini-3.8-flash", supportedGenerationMethods: ["generateContent"] },
+            { name: "models/text-embedding-005", supportedGenerationMethods: ["embedContent"] },
+          ],
+          nextPageToken: "page-2",
+        });
+    });
+    const result = await listLlmModelsFromSettings(
+      makeSettingsService({ provider: "gemini", baseUrl: "https://generativelanguage.googleapis.com/v1beta", secret: "fixture-gemini-key" }) as never,
+      { vendor: "gemini" },
+      guardedFetchOptions(fetchImpl),
+    );
+    expect(result).toMatchObject({ ok: true, models: ["gemini-3.8-flash", "gemini-3.5-flash-lite"], complete: true });
+    expect(fetchImpl.mock.calls.map(([url]) => String(url))).toEqual([
+      "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000",
+      "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000&pageToken=page-2",
+    ]);
+    const headers = fetchImpl.mock.calls[0]![1]!.headers as Record<string, string>;
+    expect(headers).toMatchObject({ "x-goog-api-key": "fixture-gemini-key" });
+    expect(headers).not.toHaveProperty("Authorization");
+  });
+
+  it("is not complete when the page cap stops a list that is still paging", async () => {
+    let page = 0;
+    const fetchImpl = vi.fn<typeof fetch>(async () => {
+      page += 1;
+      return json({ data: [{ id: `claude-fixture-${page}` }], has_more: true, last_id: `claude-fixture-${page}` });
+    });
+    const result = await listLlmModelsFromSettings(
+      makeSettingsService({ provider: "claude", baseUrl: "https://api.anthropic.com/v1", secret: "fixture-anthropic-key" }) as never,
+      { vendor: "claude" },
+      guardedFetchOptions(fetchImpl),
+    );
+    expect(fetchImpl).toHaveBeenCalledTimes(10);
+    expect(result).toMatchObject({ ok: true });
+    expect(result).not.toHaveProperty("complete");
+  });
+
+  it("refuses a page that says has_more without saying where the next one starts", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () => json({ data: [{ id: "claude-opus-5-5" }], has_more: true }));
+    const result = await listLlmModelsFromSettings(
+      makeSettingsService({ provider: "claude", baseUrl: "https://api.anthropic.com/v1", secret: "fixture-anthropic-key" }) as never,
+      { vendor: "claude" },
+      guardedFetchOptions(fetchImpl),
+    );
+    expect(result).toMatchObject({ ok: false, error: "invalid-model-list-response" });
+  });
+
+  it("resolves native model-list endpoints with no address saved", () => {
+    expect(isDefaultModelListEndpoint(undefined, "claude", "https://api.anthropic.com/v1/models")).toBe(true);
+    expect(isDefaultModelListEndpoint(undefined, "gemini", "https://generativelanguage.googleapis.com/v1beta/models")).toBe(true);
   });
 });

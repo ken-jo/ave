@@ -379,6 +379,7 @@ export const CHANNELS = {
   mcp: {
     servers: "ave:mcp:servers",
     kill: "ave:mcp:kill",
+    authenticate: "ave:mcp:authenticate",
     configGet: "ave:mcp:config:get",
     configPath: "ave:mcp:config:path",
     configAdd: "ave:mcp:config:add",
@@ -781,6 +782,8 @@ export const CHANNELS = {
     pausePopup: "ave:browser:pause-popup", // invoke renderer→main  main-issued native popup handle
     resumePopup: "ave:browser:resume-popup", // invoke renderer→main  main-issued native popup handle
     getState: "ave:browser:get-state", // invoke renderer→main  revisioned control snapshot
+    getSessionBindings: "ave:browser:get-session-bindings",
+    sessionBindingsChanged: "ave:browser:session-bindings-changed",
     tabOp: "ave:browser:tab-op", // event  main→renderer  new / select / close a tab
     control: "ave:browser:control", // event  main→renderer  which tabs the agent controls
   },

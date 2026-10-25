@@ -17,13 +17,35 @@ import {
 import { completeCodexSchemas } from "../../__tests__/support/codex-protocol-schemas.js";
 import { nativeExecutableBytes, normalizeFixtureAncestorPermissions, writeNativeExecutable } from "../../__tests__/support/native-executable.js";
 import { verifyCodexExecutableArtifact } from "../codex-executable-artifact.js";
+import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+
+const aclProbeMode = vi.hoisted(() => ({ real: false }));
+const accessRuleProbes = vi.hoisted(() => ({ count: 0 }));
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  const { fakeFixtureAclTransport, installFixtureAclTransport, maskFixtureAncestorAclTransport } =
+    await import("../../__tests__/support/native-executable.js");
+  if (process.platform !== "win32") return actual;
+  const fast = fakeFixtureAclTransport(actual.execFile);
+  const real = maskFixtureAncestorAclTransport(actual.spawn);
+  // Each ACL host request is one access-rule probe.
+  installFixtureAclTransport({
+    request: (...args) => {
+      accessRuleProbes.count++;
+      return (aclProbeMode.real ? real : fast).request(...args);
+    },
+    discard: () => { fast.discard(); real.discard(); },
+  });
+  return actual;
+});
 
 const HOST = process.platform;
 const NATIVE_NAME = HOST === "win32" ? "codex.exe" : "codex";
 
 const roots: string[] = [];
-afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+afterEach(async () => {
+  aclProbeMode.real = false;
+  for (const root of roots.splice(0)) await cleanupTmpDir(root);
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -32,7 +54,7 @@ function tempRoot(): string {
   // Resolution returns real paths; compare against the real temp root.
   const root = realpathSync(mkdtempSync(join(tmpdir(), "ave-codex-user-runtime-")));
   roots.push(root);
-  normalizeFixtureAncestorPermissions(root);
+  if (HOST !== "win32") normalizeFixtureAncestorPermissions(root);
   return root;
 }
 
@@ -150,8 +172,10 @@ describe("codex executable candidates", () => {
 });
 
 describe("native executable resolution", () => {
-  it("accepts a native binary and reports a missing path as absent", async () => {
+  it("accepts a native binary and reports a missing path as absent (real ACL probes, end to end)", async () => {
+    aclProbeMode.real = true;
     const root = tempRoot();
+    if (HOST === "win32") normalizeFixtureAncestorPermissions(root);
     const native = writeNative(join(root, NATIVE_NAME));
     await expect(resolveCodexNativeExecutable(native)).resolves.toBe(native);
     await expect(resolveCodexNativeExecutable(join(root, "absent", NATIVE_NAME))).resolves.toBeNull();
@@ -185,7 +209,8 @@ describe("native executable resolution", () => {
     await expect(resolveCodexNativeExecutable("/tmp/co\u0000dex")).rejects.toBeInstanceOf(CodexUserRuntimeError);
   });
 
-  it("routes a 64-bit universal executable to full copy validation", async () => {
+  // The darwin route takes a POSIX absolute path, which a Windows temp root is not.
+  it.runIf(HOST !== "win32")("routes a 64-bit universal executable to full copy validation", async () => {
     const root = tempRoot();
     const bytes = Buffer.alloc(8192);
     bytes.writeUInt32BE(0xcafebabf, 0); bytes.writeUInt32BE(1, 4);
@@ -288,9 +313,11 @@ describe("CodexUserRuntimeLocator", () => {
     await expect(locator.resolve()).rejects.toMatchObject({ code: "codex-runtime-not-installed" });
   });
 
-  it("finds the CLI on PATH, qualifies it, and probes with the isolated environment", async () => {
+  it("finds the CLI on PATH, qualifies it, and probes with the isolated environment (real ACL probes, end to end)", async () => {
+    aclProbeMode.real = true;
     const calls: string[][] = [];
     const { root, locator, dirs } = locatorHarness({ calls });
+    if (HOST === "win32") normalizeFixtureAncestorPermissions(root);
     const native = writeNative(join(root, "path-bin", NATIVE_NAME));
     const resolved = await locator.resolve();
     expect(resolved.version).toBe("0.153.4");
@@ -512,6 +539,7 @@ describe("CodexUserRuntimeLocator", () => {
   });
 
   it("evicts a corrupted cached artifact and qualifies fresh source bytes on retry", async () => {
+    const before = accessRuleProbes.count;
     const calls: string[][] = [];
     const { root, locator } = locatorHarness({ calls });
     writeNative(join(root, "path-bin", NATIVE_NAME));
@@ -523,6 +551,8 @@ describe("CodexUserRuntimeLocator", () => {
     expect(next.executable).not.toBe(first.executable);
     expect(next.contentHash).toBe(first.contentHash);
     expect(calls).toHaveLength(6);
+    // The unbatched admission used 54 probes for these three resolutions.
+    if (HOST === "win32") expect(accessRuleProbes.count - before).toBeLessThanOrEqual(33);
   });
 
   it("runs every probe against the same copy despite an injected source and ancestor replacement", async () => {
@@ -586,6 +616,7 @@ describe("CodexUserRuntimeLocator", () => {
   });
 
   it("copies the native companion and includes its bytes in compatibility-cache identity", async () => {
+    const before = accessRuleProbes.count;
     const calls: string[][] = [];
     const { root, locator } = locatorHarness({ calls });
     const source = writeNative(join(root, "path-bin", NATIVE_NAME));
@@ -599,6 +630,8 @@ describe("CodexUserRuntimeLocator", () => {
     expect(second.contentHash).toBe(first.contentHash);
     expect(second.companion!.contentHash).not.toBe(first.companion!.contentHash);
     expect(calls).toHaveLength(6);
+    // The unbatched companion path used 58 probes for these two resolutions.
+    if (HOST === "win32") expect(accessRuleProbes.count - before).toBeLessThanOrEqual(30);
   });
 
   it("refuses a version below the minimum and keeps the version it found", async () => {
@@ -649,9 +682,14 @@ describe("CodexUserRuntimeLocator", () => {
   it("finds a CLI installed after it reported none, without being pointed at it", async () => {
     // "Check again" on the settings card is just another resolve: the user
     // installs the CLI and Ave finds it where the installer put it.
-    const { root, locator } = locatorHarness();
+    // Each platform's installer writes to its own official location.
+    const { root, locator } = locatorHarness({
+      env: (base) => ({ PATH: join(base, "path-bin"), LOCALAPPDATA: join(base, "local-app-data") }),
+    });
     await expect(locator.resolve()).rejects.toMatchObject({ code: "codex-runtime-not-installed" });
-    writeNative(join(root, "user-home", ".local", "bin", NATIVE_NAME));
+    writeNative(HOST === "win32"
+      ? join(root, "local-app-data", "Programs", "OpenAI", "Codex", "bin", NATIVE_NAME)
+      : join(root, "user-home", ".local", "bin", NATIVE_NAME));
     await expect(locator.resolve()).resolves.toMatchObject({ version: "0.153.4" });
   });
 
@@ -672,10 +710,13 @@ describe("CodexUserRuntimeLocator", () => {
 
   it("runs real probes without a shell and reads their output", async () => {
     // A system utility reports no CLI version, so a completed real probe
-    // yields an invalid-executable verdict rather than a start failure.
+    // yields an invalid-executable verdict rather than a start failure. On
+    // Windows the copy must start without sibling DLLs, which rules out the
+    // Electron test host and leaves the standalone Node it was launched from.
     const { root, locator } = locatorHarness({ realProbes: true });
     const native = join(mkdirAndReturn(join(root, "path-bin")), NATIVE_NAME);
-    copyFileSync(HOST === "win32" ? process.execPath : "/usr/bin/true", native); chmodSync(native, 0o700);
+    const standalone = process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath;
+    copyFileSync(HOST === "win32" ? standalone : "/usr/bin/true", native); chmodSync(native, 0o700);
     await expect(locator.resolve()).rejects.toMatchObject({ code: "codex-runtime-invalid-executable" });
   });
 

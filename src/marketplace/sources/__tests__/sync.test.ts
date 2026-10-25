@@ -1,10 +1,11 @@
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promises as dnsPromises } from "node:dns";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  copyFixtureRepo,
   createFixtureRepo,
   type FixtureRepo,
   type GitHttpServer,
@@ -12,6 +13,7 @@ import {
   startGitHttpServer,
 } from "../../__tests__/fixtures/git-http-server.js";
 import { createTestGitRunner, type TestGitRunner } from "../../__tests__/fixtures/git-runner.js";
+import { cachedFixtureGit } from "../../__tests__/fixtures/cached-git.js";
 import { aggregateCatalog, versionExclusions } from "../../catalog/aggregate.js";
 import { MarketplaceError } from "../../errors.js";
 import { NetworkGate } from "../../net/network-gate.js";
@@ -63,23 +65,40 @@ function expectFailed(result: SyncResult, code: string): void {
   expect(result).toMatchObject({ status: "failed", code });
 }
 
+function fixtureContents(path: string): string {
+  const stat = lstatSync(path);
+  if (stat.isDirectory()) return JSON.stringify([stat.mode, readdirSync(path).sort().map((name) => [name, fixtureContents(join(path, name))])]);
+  if (!stat.isFile()) throw new Error("fixture contains a non-file entry");
+  return JSON.stringify([stat.mode, readFileSync(path).toString("base64")]);
+}
+
 describe("SourceSyncer", () => {
   let serverRoot: string;
   let server: GitHttpServer;
   let git: TestGitRunner;
+  let fixtureGit: ReturnType<typeof cachedFixtureGit>;
+  let emptyRepo: FixtureRepo;
   let root: string;
   let repos: FixtureRepo[] = [];
   let counter = 0;
+  const initialPublications = new Map<string, { repo: FixtureRepo; commit: string }>();
+  const seedRepos: FixtureRepo[] = [];
+  let emptyContents: string;
 
   beforeAll(async () => {
     serverRoot = mkdtempSync(join(tmpdir(), "ave-sync-served-"));
+    emptyRepo = createFixtureRepo(serverRoot, "empty-seed");
+    emptyContents = JSON.stringify([fixtureContents(emptyRepo.bare), fixtureContents(emptyRepo.work)]);
     server = await startGitHttpServer({ root: serverRoot });
     git = await createTestGitRunner();
+    fixtureGit = cachedFixtureGit(git.runner, serverRoot, server.origin, join(serverRoot, "command-cache"));
   });
 
   afterAll(async () => {
     await server.close();
     await git.cleanup();
+    for (const seed of seedRepos) await removeFixtureRepo(seed);
+    await removeFixtureRepo(emptyRepo);
     await cleanupTmpDir(serverRoot);
   });
 
@@ -96,12 +115,35 @@ describe("SourceSyncer", () => {
   function fixture(): { repo: FixtureRepo; name: string } {
     counter += 1;
     const name = `market-${counter}`;
-    const repo = createFixtureRepo(serverRoot, name);
+    const repo = copyFixtureRepo(serverRoot, name, emptyRepo, { publishByCopy: true });
     repos.push(repo);
+    const commit = repo.commit.bind(repo);
+    let initial = true;
+    // Only the untouched copy's first publication is shared; later history stays private.
+    repo.commit = (files, message) => {
+      if (!initial) return commit(files, message);
+      if (JSON.stringify([fixtureContents(repo.bare), fixtureContents(repo.work)]) !== emptyContents) {
+        throw new Error("initial publication requires an untouched fixture");
+      }
+      const key = JSON.stringify([files, message]);
+      const prepared = initialPublications.get(key);
+      if (prepared) {
+        cpSync(prepared.repo.bare, repo.bare, { recursive: true });
+        cpSync(prepared.repo.work, repo.work, { recursive: true, filter: (path) => path !== join(prepared.repo.work, ".git", "config") });
+        initial = false;
+        return prepared.commit;
+      }
+      const head = commit(files, message);
+      const seed = copyFixtureRepo(serverRoot, `seed-${++counter}`, repo, { publishByCopy: true });
+      seedRepos.push(seed);
+      initialPublications.set(key, { repo: seed, commit: head });
+      initial = false;
+      return head;
+    };
     return { repo, name };
   }
 
-  async function setup(options: { policy?: PolicyLoad; official?: OfficialMarketplace; retained?: string[] } = {}) {
+  async function setup(options: { policy?: PolicyLoad; official?: OfficialMarketplace; retained?: string[]; runner?: typeof fixtureGit } = {}) {
     const policy = policySource(options.policy ?? policyWith({}));
     const registry = await SourceRegistry.open({ root, policy, ...(options.official ? { official: options.official } : {}) });
     const changed: string[] = [];
@@ -109,7 +151,7 @@ describe("SourceSyncer", () => {
       folders: nodeFolders(),
       registry,
       gate: new NetworkGate({ policy, allowLoopback: true, transport: createPinnedFetch() }),
-      runner: git.runner,
+      runner: options.runner ?? fixtureGit,
       root,
       now: () => new Date(AT),
       retainedCommits: async () => new Set(options.retained ?? []),
@@ -122,6 +164,16 @@ describe("SourceSyncer", () => {
     const dir = join(root, id, "snapshots");
     return existsSync(dir) ? readdirSync(dir).sort() : [];
   }
+
+  it("refuses an initial publication over independently changed repository metadata", () => {
+    const files = { "marketplace.json": index("acme", []) };
+    fixture().repo.commit(files, "base");
+    const { repo } = fixture();
+    const ref = join(repo.work, ".git", "refs", "heads", "main");
+    writeFileSync(ref, OTHER_COMMIT);
+    expect(() => repo.commit(files, "base")).toThrow("initial publication requires an untouched fixture");
+    expect(readFileSync(ref, "utf8")).toBe(OTHER_COMMIT);
+  });
 
   it("publishes the first snapshot of a custom source, reading unversioned packages from their descriptors", async () => {
     const { repo, name } = fixture();
@@ -146,7 +198,7 @@ describe("SourceSyncer", () => {
       },
       "first",
     );
-    const { registry, syncer, changed } = await setup();
+    const { registry, syncer, changed } = await setup({ runner: git.runner });
     await registry.add({ id: "acme", origin: "custom", url: server.url(name), auth: { kind: "none" } });
 
     expect(await syncer.sync("acme")).toEqual({ status: "ok", pinnedCommit: commit, changed: true });
@@ -193,7 +245,7 @@ describe("SourceSyncer", () => {
     const { repo, name } = fixture();
     const base = repo.commit({ "marketplace.json": index("acme", []) }, "base");
     repo.commit({ "README.md": "v2\n" }, "second");
-    const { registry, syncer } = await setup();
+    const { registry, syncer } = await setup({ runner: git.runner });
     await registry.add({ id: "acme", origin: "custom", url: server.url(name), auth: { kind: "none" } });
     await syncer.sync("acme");
 
@@ -270,7 +322,8 @@ describe("SourceSyncer", () => {
     const { repo, name } = fixture();
     const base = repo.commit({ "marketplace.json": index("acme", []) }, "base");
     const pinned = repo.commit({ "README.md": "v2\n" }, "second");
-    const context = await setup();
+    // These consumers exercise real history rewrites and read-only object cleanup.
+    const context = await setup({ runner: git.runner });
     await context.registry.add({ id: "acme", origin: "custom", url: server.url(name), auth: { kind: "none" } });
     expect(await context.syncer.sync("acme")).toMatchObject({ status: "ok", pinnedCommit: pinned });
     writeFileSync(join(root, "acme", "snapshots", `${pinned}.json`), "{ not json");
@@ -363,7 +416,7 @@ describe("SourceSyncer", () => {
   it("offers Repair, not network advice, when the source's own repository is half removed", async () => {
     const { repo, name } = fixture();
     repo.commit({ "marketplace.json": index("acme", []) }, "first");
-    const { registry, syncer } = await setup();
+    const { registry, syncer } = await setup({ runner: git.runner });
     await registry.add({ id: "acme", origin: "custom", url: server.url(name), auth: { kind: "none" } });
     const first = await syncer.sync("acme");
     // What an interrupted walk of an older build leaves: HEAD without objects or refs. Removed with the
@@ -386,7 +439,7 @@ describe("SourceSyncer", () => {
     const { repo, name } = fixture();
     const base = repo.commit({ "marketplace.json": index("acme", []) }, "base");
     repo.commit({ "README.md": "v2\n" }, "second");
-    const { registry, syncer } = await setup();
+    const { registry, syncer } = await setup({ runner: git.runner });
     await registry.add({ id: "acme", origin: "custom", url: server.url(name), auth: { kind: "none" } });
     await syncer.sync("acme");
     const rewritten = rewrite(repo, base, { "README.md": "other\n" });
@@ -461,6 +514,7 @@ describe("SourceSyncer", () => {
     repo.commit({ "policy/revocations-by-app.json": revocations([{ ...entry, appVersions: "bad" }]) }, "invalid conditional policy");
     expect(await syncer.sync("acme")).toMatchObject({ status: "failed", code: "SOURCE_INDEX_INVALID", pinnedCommit: commit });
     expect(await syncer.readRevocations("acme", "0.12.0")).toEqual([entry]);
+    expect(server.seen.some((request) => request.path.startsWith(`/${name}/`))).toBe(false);
   });
 
   it("repairs damaged snapshots at the same pin before accepting a no-op", async () => {
@@ -634,11 +688,11 @@ describe("SourceSyncer", () => {
     const base = repo.commit({ "marketplace.json": index("ave", []) }, "base");
     const commit = repo.commit({ "README.md": "v2\n" }, "official");
     const official: OfficialMarketplace = { id: "ave", url: server.url("no-such-repo"), mirrors: [server.url(name)], auth: { kind: "none" } };
-    const { registry, syncer } = await setup({ official });
+    const { registry, syncer } = await setup({ official, runner: git.runner });
     expect(await syncer.sync("ave")).toEqual({ status: "ok", pinnedCommit: commit, changed: true });
 
     const unreachable: OfficialMarketplace = { ...official, mirrors: [server.url("also-missing")] };
-    const { syncer: offline } = await setup({ official: unreachable });
+    const { syncer: offline } = await setup({ official: unreachable, runner: git.runner });
     expectFailed(await offline.sync("ave"), "SOURCE_UNREACHABLE");
     expect((await registry.readState("ave")).pinnedCommit).toBe(commit);
     // Offline: the last good snapshot is still served.
@@ -746,9 +800,9 @@ describe("SourceSyncer", () => {
     const { repo, name } = fixture();
     repo.commit({ "marketplace.json": index("acme", []) }, "first");
     const url = server.url(name);
-    const { registry } = await setup();
+    const { registry } = await setup({ runner: git.runner });
     await registry.add({ id: "acme", origin: "custom", url, auth: { kind: "none" } });
-    const { syncer } = await setup({ policy: policyWith({ block: [parseSourcePattern(url)] }) });
+    const { syncer } = await setup({ policy: policyWith({ block: [parseSourcePattern(url)] }), runner: git.runner });
     const before = server.seen.length;
     expectFailed(await syncer.sync("acme"), "SOURCE_POLICY_BLOCKED");
     expect(server.seen.length).toBe(before);
@@ -947,7 +1001,7 @@ describe("SourceSyncer", () => {
   it("keeps a joined sync running when one caller aborts, and stops it when every caller has", async () => {
     const { repo, name } = fixture();
     const commit = repo.commit({ "marketplace.json": index("acme", []) }, "first");
-    const { registry, syncer } = await setup();
+    const { registry, syncer } = await setup({ runner: git.runner });
     await registry.add({ id: "acme", origin: "custom", url: server.url(name), auth: { kind: "none" } });
     const a = new AbortController();
     const b = new AbortController();

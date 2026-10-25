@@ -1,5 +1,5 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
-import { join, relative, resolve } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
 import { describe, expect, it } from "vitest";
 
 // Every Playwright Electron launch in the e2e and screenshot suites goes
@@ -43,7 +43,9 @@ describe("e2e Electron launches", () => {
 
   it("all go through the harness launcher", () => {
     const direct = SUITES.flatMap((suite) => sourceFiles(resolve(ROOT, suite)))
-      .map((path) => relative(ROOT, path))
+      // Compared in the posix spelling HARNESS uses, so Windows's `\` paths
+      // still exclude the harness itself.
+      .map((path) => relative(ROOT, path).split(sep).join("/"))
       .filter((path) => path !== HARNESS)
       .filter((path) => DIRECT_LAUNCH.test(readFileSync(path, "utf8")));
     expect(direct).toEqual([]);
@@ -54,6 +56,14 @@ describe("e2e Electron launches", () => {
     expect(harness).toContain(
       'export const E2E_CHROMIUM_SWITCHES: readonly string[] = process.platform === "darwin" ? ["--use-mock-keychain"] : [];',
     );
-    expect(harness).toMatch(/return electron\.launch\(\{ \.\.\.options, args: \[\.\.\.E2E_CHROMIUM_SWITCHES, /);
+    expect(harness).toMatch(/args: \[\.\.\.E2E_CHROMIUM_SWITCHES, \.\.\.\(options\?\.args \?\? \[\]\)\]/);
+  });
+
+  it("gives every launch the explicit E2E runtime env, over the spec's own env", () => {
+    const harness = readFileSync(resolve(ROOT, HARNESS), "utf8");
+    expect(harness).toContain(
+      'export const E2E_RUNTIME_ENV = Object.freeze({ AVE_E2E: "1", NODE_ENV: "test" });',
+    );
+    expect(harness).toContain("env: { ...baseEnv, ...E2E_RUNTIME_ENV },");
   });
 });

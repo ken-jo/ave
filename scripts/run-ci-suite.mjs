@@ -1,15 +1,21 @@
 #!/usr/bin/env node
-// The Vitest stage of CI's build-and-test job: the full suite with its
-// coverage gate, or, for a pull request whose change can be traced, only the
-// affected tests.
+// The Vitest stage of CI (planned in ci.yml's build job, run by its vitest
+// shards, reported by build-and-test): integration/*-base pull
+// requests always run the best traced selection, never a whole-suite fallback.
+// Other pull requests run affected tests only when selection is trusted.
 //
-// Full (`bun run check:test-coverage`, every global coverage threshold):
+// Coverage is periodic (owner 2026-10-24): instrumentation and the global
+// thresholds (`bun run check:test-coverage`) run only on the nightly schedule
+// and a manual dispatch, which are always full runs. Every other run executes
+// without instrumentation, so a merge or push gate does not pay for it.
+//
+// Full:
 //   - every event other than pull_request: a push to main, a release tag, the
 //     nightly schedule and a manual dispatch;
 //   - a category merge, a pull request from integration/* into main: the
 //     multi-stage flow makes that merge the full-suite gate;
-//   - a pull request whose selection is not trusted. The rule is the pre-push
-//     tier's, "uncertain -> full", and reuses its source policy
+//   - a pull request to a non-integration base whose selection is not trusted.
+//     The rule is the pre-push tier's, "uncertain -> full", and reuses its source policy
 //     (scripts/hooks/pre-push-source-policy.mjs): a global test or build input
 //     (package.json, bun.lock, tsconfig, the Vitest config and setup files,
 //     config/, scripts/, .github/), a declaration or entry-point file, a
@@ -18,26 +24,33 @@
 //     module no test reaches, a failed import-graph discovery, or a selection
 //     larger than AFFECTED_TEST_LIMIT files.
 //
-// Affected (no coverage instrumentation, no coverage gate): the changed test
-// files, the tests `vitest related` reaches from each changed module (every
+// Affected (no coverage instrumentation, no coverage gate): always for an
+// integration/* base, including global inputs, failed discovery and selections
+// above the limit. Uncertainty is recorded in the reason; whole-suite checking
+// waits for the category merge. Failed discovery keeps every other selection
+// source, including the nonempty must-run set. Local pre-push is unchanged.
+// An integration-base PR needs a resolved merge-commit diff: a missing merge
+// commit or an unparseable diff fails CI before any selection can omit triggers.
+// The selection is the changed test files, the tests `vitest related` reaches
+// from each changed module (every
 // transitive importer, not the pre-push tier's narrowed set), the tests that
 // name a changed path in a string literal (they read it as text, which the
 // import graph cannot see: module-size-boundaries.test.ts failed on such a
 // change), the lock suites whose trigger paths changed, and the must-run set in
 // config/ci-must-run-tests.json. Global coverage thresholds describe the
-// whole suite, so they are enforced only on full runs; a pull request that
-// lowers coverage turns the next push to main red, where the run fails the
-// job and the branch's check.
+// whole suite; a change that lowers coverage turns the next nightly run on
+// main red.
 //
 // The diff is the pull request's merge commit against its first parent, the
 // base it was merged onto: exactly what the PR adds to its target.
 
 import { spawnSync } from "node:child_process";
-import { appendFileSync, readFileSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { join, posix } from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
 import { parseGitRawDiff } from "./hooks/pre-push-ref-updates.mjs";
+import { isCanonicalGitPath } from "./hooks/pre-push-markdown-policy.mjs";
 import {
   getRelatedCoverageFullReason,
   isCollectedVitestFile,
@@ -49,7 +62,7 @@ export const MUST_RUN_TESTS_PATH = "config/ci-must-run-tests.json";
 
 /**
  * Above this many changed and related test files the selection is most of the
- * suite, and a full run (with coverage) is worth its extra minutes.
+ * suite, and a full run is worth its extra minutes on a non-integration base.
  */
 export const AFFECTED_TEST_LIMIT = 600;
 
@@ -57,8 +70,8 @@ export const AFFECTED_TEST_LIMIT = 600;
  * A module that computes what it imports: `import(expression)`,
  * `require(expression)`, `import.meta.glob` or `require.context`. The import
  * graph cannot see what such a module loads, so a change to it keeps the full
- * suite. A literal specifier, with or without a bundler comment before it, is
- * traced.
+ * suite on a non-integration base. A literal specifier, with or without a
+ * bundler comment before it, is traced.
  */
 const COMPUTED_IMPORT = /\bimport\.meta\.glob\b|\brequire\.context\b|\b(?:import|require)\s*\(\s*(?:\/\*[\s\S]*?\*\/\s*)*(?!["'\s)/]|`[^`$]*`)/u;
 
@@ -179,11 +192,70 @@ export function expandMustRunTests(document, trackedTests) {
       for (const test of matches) selected.add(test);
     }
   }
+  if (selected.size === 0) throw new Error(`${MUST_RUN_TESTS_PATH} must select at least one collected test file`);
   return [...selected].sort();
+}
+
+/** The events whose run instruments coverage and enforces its thresholds. */
+export const COVERAGE_EVENTS = Object.freeze(["schedule", "workflow_dispatch"]);
+
+export function runsCoverage(eventName) {
+  return COVERAGE_EVENTS.includes(eventName);
+}
+
+/** Parallel Vitest shards for a full run without coverage. ci.yml plans once,
+ *  then runs one job per shard (`vitest --shard=<index>/<count>`); the shards
+ *  together run exactly the planned files. An affected selection and a
+ *  coverage run stay one job: coverage thresholds describe the whole suite,
+ *  and a few affected files gain nothing from a second runner's setup. */
+export const FULL_RUN_SHARDS = 4;
+
+export function ciShardCount(plan, coverage) {
+  return plan.mode === "full" && !coverage ? FULL_RUN_SHARDS : 1;
+}
+
+/** `<index>/<count>` from AVE_CI_SHARD, or null when the job runs the whole
+ *  plan. Malformed values fail: a shard that silently ran everything, or
+ *  nothing, would misreport what the aggregate check covered. */
+export function parseCiShard(value) {
+  if (value === undefined || value === "") return null;
+  const match = /^([1-9]\d*)\/([1-9]\d*)$/u.exec(value);
+  if (!match || Number(match[1]) > Number(match[2])) {
+    throw new Error(`AVE_CI_SHARD must be <index>/<count> with 1 <= index <= count, got ${JSON.stringify(value)}`);
+  }
+  return Number(match[2]) === 1 ? null : `${match[1]}/${match[2]}`;
+}
+
+/** A plan written by `--write-plan`, read back by each shard so every shard
+ *  splits the same file list. */
+export function readPlanFile(text) {
+  const plan = JSON.parse(text);
+  const valid = plan !== null && typeof plan === "object"
+    && (plan.mode === "full" || plan.mode === "affected")
+    && typeof plan.reason === "string"
+    && Array.isArray(plan.tests) && plan.tests.every((test) => typeof test === "string");
+  if (!valid) throw new Error("the CI plan file is not a { mode, reason, tests } plan");
+  return { mode: plan.mode, reason: plan.reason, tests: plan.tests };
 }
 
 function full(reason) {
   return { mode: "full", reason, tests: [] };
+}
+
+/** Keep traceable inputs even when the shared local policy refuses the change set. */
+function integrationTraceInputs(changes, trackedTests) {
+  const testFiles = new Set();
+  const relatedFiles = new Set();
+  for (const change of changes) {
+    const single = selectFastSourceChecks([change]);
+    for (const test of single.testFiles) testFiles.add(test);
+    for (const source of single.relatedFiles) relatedFiles.add(source);
+    const { path, status } = change;
+    if (status === "D" || !isCanonicalGitPath(path)) continue;
+    if (trackedTests.includes(path)) testFiles.add(path);
+    else if (MODULE_EXTENSION.test(path)) relatedFiles.add(path);
+  }
+  return { testFiles: [...testFiles].sort(), relatedFiles: [...relatedFiles].sort() };
 }
 
 /**
@@ -195,40 +267,63 @@ function full(reason) {
  * - readText(path): a changed module's source, or null
  * - discoverRelated(paths): per-module `vitest related` coverage,
  *   [{ source, tests }], or null when discovery failed
+ * - baseRef: an integration/* base keeps the best traced selection on uncertainty
  */
-export function selectCiTests({ changes, trackedTests, mustRunTests, readText, discoverRelated }) {
-  const fast = selectFastSourceChecks(changes);
-  if (!fast.eligible) return full(fast.reason);
-  if (fast.messageCatalogEntries.length > 0) {
-    return full(`${fast.messageCatalogEntries[0].path} is message catalog data`);
+export function selectCiTests({ changes, trackedTests, mustRunTests, readText, discoverRelated, baseRef }) {
+  const integrationBase = typeof baseRef === "string" && baseRef.startsWith("integration/");
+  const fullReasons = [];
+  let fast = selectFastSourceChecks(changes);
+  if (!fast.eligible) {
+    if (!integrationBase) return full(fast.reason);
+    fullReasons.push(fast.reason);
   }
+  if (fast.messageCatalogEntries.length > 0) {
+    const reason = `${fast.messageCatalogEntries[0].path} is message catalog data`;
+    if (!integrationBase) return full(reason);
+    fullReasons.push(reason);
+  }
+  if (integrationBase) fast = { ...fast, ...integrationTraceInputs(changes, trackedTests) };
   for (const path of fast.relatedFiles) {
     const text = readText(path);
-    if (typeof text !== "string") return full(`${path} could not be read`);
-    if (loadsComputedImport(text)) return full(`${path} loads code through a computed import`);
+    const reason = typeof text !== "string" ? `${path} could not be read`
+      : loadsComputedImport(text) ? `${path} loads code through a computed import` : null;
+    if (reason) {
+      if (!integrationBase) return full(reason);
+      fullReasons.push(reason);
+    }
   }
 
   let related = [];
   if (fast.relatedFiles.length > 0) {
     const coverage = discoverRelated(fast.relatedFiles);
-    if (coverage === null) return full("related test discovery failed");
-    const reason = getRelatedCoverageFullReason(fast.relatedFiles, coverage);
-    if (reason) return full(reason);
-    related = coverage.flatMap((record) => record.tests);
+    const reason = coverage === null ? "related test discovery failed"
+      : getRelatedCoverageFullReason(fast.relatedFiles, coverage);
+    if (reason) {
+      if (!integrationBase) return full(reason);
+      fullReasons.push(reason);
+    }
+    related = Array.isArray(coverage) ? coverage.flatMap((record) => Array.isArray(record?.tests) ? record.tests : []) : [];
   }
 
   const changedPaths = changes.map(({ path }) => path);
   const textReaders = [];
   for (const test of trackedTests) {
     const text = readText(test);
-    if (typeof text !== "string") return full(`${test} could not be read`);
+    if (typeof text !== "string") {
+      const reason = `${test} could not be read`;
+      if (!integrationBase) return full(reason);
+      fullReasons.push(reason);
+      continue;
+    }
     const named = namedRepositoryPaths(test, text);
     if (changedPaths.some((changed) => named.some((path) => namesChangedPath(path, changed)))) textReaders.push(test);
   }
 
   const traced = new Set([...fast.testFiles, ...related, ...textReaders]);
   if (traced.size > AFFECTED_TEST_LIMIT) {
-    return full(`${traced.size} changed and related test files exceed ${AFFECTED_TEST_LIMIT}`);
+    const reason = `${traced.size} changed and related test files exceed ${AFFECTED_TEST_LIMIT}`;
+    if (!integrationBase) return full(reason);
+    fullReasons.push(reason);
   }
 
   const lockSuites = selectTriggeredLockSuites(changes.map(({ path }) => path)).flatMap(({ suite }) => {
@@ -237,12 +332,21 @@ export function selectCiTests({ changes, trackedTests, mustRunTests, readText, d
     return matches;
   });
 
-  const tests = [...new Set([...traced, ...lockSuites, ...mustRunTests])].sort();
+  let tests = [...new Set([...traced, ...lockSuites, ...mustRunTests])].sort();
   const missing = tests.filter((test) => !trackedTests.includes(test));
-  if (missing.length > 0) return full(`${missing[0]} is not a collected test file of this tree`);
+  if (missing.length > 0) {
+    if (!integrationBase) return full(`${missing[0]} is not a collected test file of this tree`);
+    fullReasons.push(...missing.map((test) => `${test} dropped: not a collected test file of this tree`));
+    tests = tests.filter((test) => trackedTests.includes(test));
+  }
+  if (integrationBase && (mustRunTests.length === 0 || mustRunTests.some((test) => !tests.includes(test)))) {
+    throw new Error("integration base requires a nonempty collected must-run set");
+  }
   return {
     mode: "affected",
     reason:
+      (integrationBase ? `${[...new Set(fullReasons)].join("; ")}${fullReasons.length ? "; " : ""}` +
+        "integration base: traced selection, whole suite at the category merge; " : "") +
       `${fast.relatedFiles.length} changed module(s) reach ${related.length === 0 ? 0 : new Set(related).size} test file(s); ` +
       `${fast.testFiles.length} changed test file(s); ${textReaders.length} test file(s) name a changed path; ` +
       `${lockSuites.length} lock suite file(s); ` +
@@ -307,11 +411,17 @@ export function planCiSuite(eventName, { headRef, baseRef } = {}) {
     return full(`${headRef} -> ${baseRef} is a category merge to main, which runs the full suite`);
   }
   const changes = pullRequestChanges();
-  if (changes.reason) return full(changes.reason);
+  if (changes.reason) {
+    if (baseRef.startsWith("integration/")) {
+      throw new Error(`integration base requires a resolved pull request diff: ${changes.reason}`);
+    }
+    return full(changes.reason);
+  }
   const trackedTests = trackedVitestFiles();
   const mustRunTests = expandMustRunTests(JSON.parse(readFileSync(MUST_RUN_TESTS_PATH, "utf8")), trackedTests);
   return selectCiTests({
     changes: changes.entries,
+    baseRef,
     trackedTests,
     mustRunTests,
     readText: (path) => {
@@ -325,39 +435,62 @@ export function planCiSuite(eventName, { headRef, baseRef } = {}) {
   });
 }
 
-function writeSummary(plan) {
+function describeRun(plan, coverage) {
+  if (plan.mode === "affected") return `${plan.tests.length} affected test files`;
+  return coverage ? "full suite with coverage gate" : "full suite";
+}
+
+function writeSummary(plan, coverage) {
   const summaryPath = process.env.GITHUB_STEP_SUMMARY;
   if (!summaryPath) return;
-  const lines = [
-    `### Vitest: ${plan.mode === "full" ? "full suite with coverage gate" : `${plan.tests.length} affected test files`}`,
-    "",
-    plan.reason,
-  ];
-  if (plan.mode === "affected") lines.push("", "Coverage thresholds are enforced on full runs (push to main, tags, nightly).");
+  const lines = [`### Vitest: ${describeRun(plan, coverage)}`, "", plan.reason];
+  if (!coverage) lines.push("", "Coverage thresholds are enforced on the nightly and manually dispatched runs.");
   appendFileSync(summaryPath, `${lines.join("\n")}\n`);
 }
 
-function runPlan(plan) {
-  if (plan.mode === "full") {
-    return spawnSync(process.execPath, [join("scripts", "run-test-coverage-gate.mjs")], { stdio: "inherit" });
-  }
-  return spawnSync(
-    process.execPath,
-    [join("scripts", "run-vitest-under-electron.mjs"), "run", "--silent=true", ...plan.tests.map((test) => `./${test}`)],
-    { stdio: "inherit" },
-  );
+/** The node arguments of the Vitest stage: the coverage gate, or a plain run of the plan's files (none: all). */
+export function ciSuiteArguments(plan, coverage, shard = null) {
+  if (coverage && shard !== null) throw new Error("a coverage run cannot be sharded: its thresholds describe the whole suite");
+  if (coverage) return [join("scripts", "run-test-coverage-gate.mjs")];
+  if (plan.mode === "affected" && plan.tests.length === 0) throw new Error("affected CI selection must not be empty");
+  const tests = plan.mode === "full" ? [] : plan.tests.map((test) => `./${test}`);
+  const split = shard === null ? [] : [`--shard=${shard}`];
+  return [join("scripts", "run-vitest-under-electron.mjs"), "run", "--silent=true", ...split, ...tests];
+}
+
+function runPlan(plan, coverage, shard) {
+  return spawnSync(process.execPath, ciSuiteArguments(plan, coverage, shard), { stdio: "inherit" });
 }
 
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
   try {
-    const plan = planCiSuite(process.env.GITHUB_EVENT_NAME, {
-      headRef: process.env.GITHUB_HEAD_REF,
-      baseRef: process.env.GITHUB_BASE_REF,
-    });
-    console.log(`[ci-suite] ${plan.mode}: ${plan.reason}`);
-    if (plan.mode === "affected") console.log(`[ci-suite] ${plan.tests.length} test files; coverage gate runs on full runs only`);
-    writeSummary(plan);
-    const result = runPlan(plan);
+    // `--write-plan <file>` plans and stops: ci.yml's build job writes the
+    // plan once and sizes the shard matrix from it. AVE_CI_PLAN_FILE runs a
+    // written plan, so the shards never plan again.
+    const writePlanAt = process.argv[2] === "--write-plan" ? process.argv[3] : undefined;
+    if (process.argv[2] === "--write-plan" && !writePlanAt) throw new Error("--write-plan needs a file path");
+    const planFile = process.env.AVE_CI_PLAN_FILE;
+    const plan = planFile && !writePlanAt
+      ? readPlanFile(readFileSync(planFile, "utf8"))
+      : planCiSuite(process.env.GITHUB_EVENT_NAME, {
+        headRef: process.env.GITHUB_HEAD_REF,
+        baseRef: process.env.GITHUB_BASE_REF,
+      });
+    const eventName = process.env.GITHUB_EVENT_NAME;
+    const coverage = runsCoverage(eventName);
+    if (coverage && plan.mode !== "full") throw new Error(`${eventName} must plan a full run to enforce coverage`);
+    if (writePlanAt) {
+      writeFileSync(writePlanAt, `${JSON.stringify(plan)}\n`, "utf8");
+      const shards = Array.from({ length: ciShardCount(plan, coverage) }, (_, index) => index + 1);
+      console.log(`[ci-suite] planned ${describeRun(plan, coverage)} in ${shards.length} shard(s): ${plan.reason}`);
+      writeSummary(plan, coverage);
+      if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `shards=${JSON.stringify(shards)}\n`);
+      process.exit(0);
+    }
+    const shard = parseCiShard(process.env.AVE_CI_SHARD);
+    console.log(`[ci-suite] ${describeRun(plan, coverage)}${shard ? `, shard ${shard}` : ""}: ${plan.reason}`);
+    if (!planFile) writeSummary(plan, coverage);
+    const result = runPlan(plan, coverage, shard);
     if (result.error) throw result.error;
     process.exitCode = result.status ?? 1;
   } catch (error) {

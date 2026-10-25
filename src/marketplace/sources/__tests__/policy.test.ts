@@ -3,6 +3,7 @@ import { lstat, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { requireSymlinkCapability } from "../../../__tests__/support/symlink-capability.js";
 import { normalizeSourceUrl } from "../../net/source-url.js";
 import {
   EMPTY_MARKETPLACE_POLICY,
@@ -71,7 +72,8 @@ describe("loadMarketplacePolicy", () => {
     expect(await loadMarketplacePolicy(join(parent, "policy.json"))).toMatchObject({ ok: false });
   });
 
-  it("treats a dangling policy symlink as unreadable rather than unrestricted", async () => {
+  it("treats a dangling policy symlink as unreadable rather than unrestricted", async ({ skip }) => {
+    requireSymlinkCapability(dir, "file", skip);
     symlinkSync(join(dir, "missing-target.json"), path, "file");
     expect(await loadMarketplacePolicy(path)).toMatchObject({ ok: false });
   });
@@ -428,12 +430,14 @@ describe("FilePolicySource (§18.6)", () => {
     const update = await source.check();
 
     expect(update?.load).toMatchObject({ ok: false });
-    expect(update?.digest).toBe("unreadable:ENOTDIR");
+    // The digest carries the OS code: Windows reports a path through a file as ENOENT.
+    expect(update?.digest).toBe(process.platform === "win32" ? "unreadable:ENOENT" : "unreadable:ENOTDIR");
     source.apply(update!);
     expect(source.load.ok).toBe(false);
   });
 
-  it("refreshes an absent policy to unreadable when a dangling symlink appears", async () => {
+  it("refreshes an absent policy to unreadable when a dangling symlink appears", async ({ skip }) => {
+    requireSymlinkCapability(dir, "file", skip);
     const source = await FilePolicySource.open(path);
     expect(source.digest).toBe("absent");
     symlinkSync(join(dir, "missing-target.json"), path, "file");

@@ -17,7 +17,7 @@ import { createBootHostFixture, createDesktopHostFixture } from "../../__tests__
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { readdirSync, readFileSync } from "node:fs";
-import { join, relative, resolve } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
 
 const calls: string[] = [];
 const hostExit = vi.fn();
@@ -249,6 +249,28 @@ describe("runAppShutdownCleanup ordering (critic M1)", () => {
       process.exitCode = previous;
       hardTimeoutFires = false;
     }
+  });
+
+  it("waits for pending tab binding writes before disposing services", async () => {
+    const services = makeServices();
+    getServices.mockReturnValue(services);
+    vi.resetModules();
+    const { runAppShutdownCleanup } = await configuredShutdown();
+    const { browserTabRegistry } = await import("../browser/browser-tab-registry.js");
+    let finishWrite!: () => void;
+    browserTabRegistry.trackBindingWrite(new Promise<void>((resolve) => { finishWrite = resolve; }));
+    const flush = vi.spyOn(browserTabRegistry, "flushBindingWrites");
+    const cleanup = runAppShutdownCleanup({ reason: "before-quit", exitOnTimeout: false });
+    try {
+      await vi.waitFor(() => expect(flush).toHaveBeenCalledOnce());
+      expect(services.shutdown).not.toHaveBeenCalled();
+      expect(stopLocalApiServer).not.toHaveBeenCalled();
+    } finally {
+      finishWrite();
+      await cleanup;
+      flush.mockRestore();
+    }
+    expect(services.shutdown).toHaveBeenCalledOnce();
   });
 
   // PR #1503 cross-PR check: the log-sink close (added on main after this file
@@ -534,7 +556,7 @@ describe("before-quit listener inventory", () => {
       /\bapp\s*\.\s*(?:on|once|addListener|prependListener|prependOnceListener)\s*\(\s*"before-quit"/u;
     const found = collectSourceFiles(srcRoot, [])
       .filter((file) => registration.test(readFileSync(file, "utf-8")))
-      .map((file) => relative(process.cwd(), file))
+      .map((file) => relative(process.cwd(), file).split(sep).join("/"))
       .sort();
 
     const allowed = [...ALLOWED_LISTENER_FILES.keys()].sort();

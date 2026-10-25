@@ -8,24 +8,28 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  nativeExecutableBytes, normalizeFixtureAncestorPermissions, writeNativeExecutable,
+  NATIVE_PROBE_HEAVY_TEST, nativeExecutableBytes, normalizeFixtureAncestorPermissions, writeNativeExecutable,
 } from "../../__tests__/support/native-executable.js";
+import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { claudeCodeNpmShimTarget, pinClaudeCodeExecutable } from "../claude-code-executable.js";
-import { ClaudeCodeSubscriptionClient } from "../claude-code-subscription-client.js";
+import { ClaudeCodeSubscriptionClient, validateClaudeCodeRuntimeDirectories } from "../claude-code-subscription-client.js";
+import * as locations from "../codex-executable-location.js";
 import type { CliDiscoveryEnvironment } from "../user-cli-discovery.js";
 
 vi.mock("node:child_process", async (importOriginal) => ({
-  ...await importOriginal<typeof import("node:child_process")>(),
+  ...(await import("../../__tests__/support/native-executable.js")).maskFixtureAncestorAcl(await importOriginal()),
   spawn: vi.fn(() => { throw new Error("Unexpected executable launch"); }),
 }));
 
 const roots: string[] = [];
 const fixtureTimestamp = new Date(1_700_000_000_000);
-afterEach(() => {
+afterEach(async () => {
   expect(spawn).not.toHaveBeenCalled();
   vi.restoreAllMocks();
   vi.clearAllMocks();
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  // A test may leave its sealed read-only copy undiscarded; the async removal
+  // clears the Windows read-only attribute that the synchronous one refuses.
+  for (const root of roots.splice(0)) await cleanupTmpDir(root);
 });
 
 function fixture(platform: NodeJS.Platform = process.platform) {
@@ -76,6 +80,52 @@ function changeBytesKeepingMetadata(path: string): void {
 }
 
 describe("subscription executable admission", () => {
+  it("maps a guarded package location rejection to the npm guidance error", async () => {
+    const { root, runtime, source } = fixture();
+    const rejected = new locations.CodexExecutableLocationError("Rejected package fixture");
+    rejected.routeKind = "guarded-script";
+    const client = new ClaudeCodeSubscriptionClient({ runtimeHome: runtime, workspaceDir: root,
+      candidates: () => [source], _pinExecutableForTest: async () => { throw rejected; } });
+    try { await expect(client.getStatus()).rejects.toMatchObject({ code: "claude-code-runtime-unsafe-npm-location" }); }
+    finally { await client.stop(); }
+  });
+
+  it.each(["native", "guarded-script", "script"] as const)("maps a private directory rejection to unsafe-location with ancestor rule %s", async (rule) => {
+    const directory = join(tmpdir(), "rejected-runtime");
+    vi.spyOn(locations, "assertCodexLocations")
+      .mockRejectedValue(new locations.CodexExecutableLocationError("Rejected fixture directory"));
+    const code = rule === "guarded-script" ? "claude-code-runtime-unsafe-npm-location" : "claude-code-runtime-unsafe-location";
+    await expect(validateClaudeCodeRuntimeDirectories([directory], rule)).rejects.toMatchObject({ code, message: code });
+  });
+
+  it("maps a rejected location to the unsafe-location code before probing", async () => {
+    const { root, runtime, source } = fixture();
+    const rejected = new locations.CodexExecutableLocationError("Rejected fixture location");
+    const client = new ClaudeCodeSubscriptionClient({
+      runtimeHome: runtime, workspaceDir: root, candidates: () => [source],
+      _pinExecutableForTest: async () => { throw rejected; },
+    });
+    try {
+      await expect(client.getStatus()).rejects.toMatchObject({
+        code: "claude-code-runtime-unsafe-location", message: "claude-code-runtime-unsafe-location",
+      });
+    } finally { await client.stop(); }
+  });
+
+  it("uses native ancestor rules for every native launch input and private directory", async () => {
+    const { runtime, source, discovery } = fixture();
+    const executableLocation = vi.spyOn(locations, "assertCodexExecutableLocation").mockResolvedValue();
+    const privateDirectory = vi.spyOn(locations, "assertCodexPrivateRuntimeDirectory").mockResolvedValue();
+    const proof = await pinClaudeCodeExecutable(source, runtime, discovery);
+    await proof.verify();
+    expect(proof.routeKind).toBe("native");
+    expect(executableLocation.mock.calls.length).toBeGreaterThan(0);
+    expect(privateDirectory.mock.calls.length).toBeGreaterThan(0);
+    expect(executableLocation.mock.calls.every(([, rule]) => rule === "native")).toBe(true);
+    expect(privateDirectory.mock.calls.every(([, rule]) => rule === "native")).toBe(true);
+    await proof.discard();
+  });
+
   it("pins a hash and a sealed private native copy with no-follow opens", async () => {
     const { runtime, source, discovery } = fixture();
     const open = vi.spyOn(fs, "open");
@@ -172,7 +222,7 @@ describe("subscription executable admission", () => {
       spawn: probe,
     });
     try {
-      await expect(client.getStatus()).rejects.toMatchObject({ code: "claude-code-runtime-invalid-executable" });
+      await expect(client.getStatus()).rejects.toMatchObject({ code: "claude-code-runtime-unsafe-location" });
       expect(probe).not.toHaveBeenCalled();
       expect(readdirSync(runtime)).toEqual([]);
     } finally { await client.stop(); }
@@ -180,26 +230,43 @@ describe("subscription executable admission", () => {
 });
 
 describe("subscription package launch inputs", () => {
+  it("uses guarded package routes and native interpreter routes without splitting the batch", NATIVE_PROBE_HEAVY_TEST, async () => {
+    const { launcher, runtime, discovery } = npmFixture("win32");
+    const executableLocation = vi.spyOn(locations, "assertCodexExecutableLocation").mockResolvedValue();
+    const privateDirectory = vi.spyOn(locations, "assertCodexPrivateRuntimeDirectory").mockResolvedValue();
+    const batches = vi.spyOn(locations, "assertCodexLocations").mockResolvedValue();
+    const proof = await pinClaudeCodeExecutable(launcher, runtime, discovery);
+    await proof.verify();
+    expect(proof.routeKind).toBe("guarded-script");
+    expect(executableLocation.mock.calls.length).toBeGreaterThan(0);
+    expect(privateDirectory.mock.calls.length).toBeGreaterThan(0);
+    expect(batches.mock.calls.length).toBeGreaterThan(0);
+    expect(executableLocation.mock.calls.every(([, rule]) => rule === "native" || rule === "guarded-script")).toBe(true);
+    expect(privateDirectory.mock.calls.every(([, rule]) => rule === "guarded-script")).toBe(true);
+    expect(batches.mock.calls.flatMap(([requests]) => requests).every((request) => request.routeKind === "guarded-script")).toBe(true);
+    await proof.discard();
+  });
+
   it.skipIf(process.platform === "win32")("pins a package script and a private native interpreter through a protected launcher link", async () => {
     const { launcher, runtime, discovery, script, interpreter } = npmFixture();
     const proof = await pinClaudeCodeExecutable(launcher, runtime, discovery);
     expect(proof.args.slice(0, 2)).toEqual(["--no-global-search-paths", "--import"]);
     expect(proof.args[2]).toMatch(/^file:/);
-    expect(proof.args[3]).not.toBe(script);
-    expect(readFileSync(proof.args[3]!)).toEqual(readFileSync(script));
+    expect(proof.args[5]).not.toBe(script);
+    expect(readFileSync(proof.args[5]!)).toEqual(readFileSync(script));
     expect(proof.executable).not.toBe(interpreter);
     expect(readFileSync(proof.executable)).toEqual(readFileSync(interpreter));
     await expect(proof.verify()).resolves.toBeUndefined();
   });
 
-  it("resolves a batch-only installation to its package entry and a private native interpreter without a shell", async () => {
+  it("resolves a batch-only installation to its package entry and a private native interpreter without a shell", NATIVE_PROBE_HEAVY_TEST, async () => {
     const { launcher, runtime, discovery, script, interpreter } = npmFixture("win32");
     expect(claudeCodeNpmShimTarget(launcher)).toBe(script);
     const proof = await pinClaudeCodeExecutable(launcher, runtime, discovery);
     expect(proof.args.slice(0, 2)).toEqual(["--no-global-search-paths", "--import"]);
     expect(proof.args[2]).toMatch(/^file:/);
-    expect(proof.args[3]).not.toBe(script);
-    expect(readFileSync(proof.args[3]!)).toEqual(readFileSync(script));
+    expect(proof.args[5]).not.toBe(script);
+    expect(readFileSync(proof.args[5]!)).toEqual(readFileSync(script));
     expect(proof.executable).not.toBe(interpreter);
     expect(proof.executable.endsWith("runtime.exe")).toBe(true);
     expect(readFileSync(proof.executable)).toEqual(nativeExecutableBytes("win32"));
