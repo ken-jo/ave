@@ -1,27 +1,4 @@
-/**
- * SubAgentRunner.resume — same-instance re-hydration continuation (PR-C).
- *
- * Security invariant under test: a resume RE-HYDRATES a frozen sub-agent, it
- * NEVER RE-AUTHORIZES. Every assertion here pins one facet of that:
- *
- *   1. full-history restore — the resumed child's continuation turn sees the
- *      original spawn's history (tool-pair valid, no loss).
- *   2. scoped tools identical — the resumed child's LLM schema exposes exactly
- *      meta.sourceTools (the frozen allowlist), nothing more.
- *   3. scope cannot widen — a tool the PARENT registry gained AFTER the spawn
- *      is NOT exposed to the resumed child (meta.sourceTools is the only source).
- *   4. depth stays 1 — the continuation turn runs at spawnDepth 1.
- *   5. no agent_spawn from resumed — the blocklist strip + spawnDepth defense
- *      hold on resume (agent_spawn absent from the resumed child registry).
- *   6. resume-exhausted — resumeCount >= MAX_RESUMES refuses without a turn.
- *   7. cumulative ceiling — cumulativeRounds >= ceiling refuses without a turn.
- *   8. concurrent-resume lock — two simultaneous resumes of the same id → one
- *      runs, one is rejected fail-closed; the counter is saved exactly once.
- *   9. round-cap → resumeId surfaced (agent-spawn.test coverage; see below).
- *  10. namespace isolation — resume persists ONLY to ~/.ave/subagent/.
- *  11. counter increment — resumeCount +1, cumulativeRounds += turnCount, and
- *      the full-overwrite spread preserves sourceTools/profile*.
- */
+// Resume rehydrates frozen history and scope; it never reauthorizes against the live parent registry.
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { mkdirSync, mkdtempSync, existsSync, readdirSync,
 } from "node:fs";
@@ -59,7 +36,6 @@ import { PermissionManager } from "../../permissions/permission-manager.js";
 import { authorizationRequiredStateForOutput } from "../../shared/authorization-required.js";
 import { deferred } from "../../__tests__/support/deferred.js";
 
-// ─── Test scaffolding ─────────────────────────────────
 let loopAuditLoggers: AuditLogger[] = [];
 
 class ScriptedProvider implements LLMProvider {
@@ -120,8 +96,7 @@ function buildLoopDeps(toolRegistry: ToolRegistry) {
       setToolScope: () => undefined,
       setOriginSource: () => undefined,
       setActiveSessionId: () => undefined,
-      // The runner never shares the parent builder with a child, so the double
-      // hands back a separate one of the same shape.
+      // Child runs require a separate prompt builder rather than sharing parent state.
       createIsolated: () => ({
         build: () => "system",
         setToolScope: () => undefined,
@@ -140,7 +115,6 @@ function buildLoopDeps(toolRegistry: ToolRegistry) {
   } as unknown as ConstructorParameters<typeof ConversationLoop>[0];
 }
 
-/** Register the fake provider onto every ConversationLoop the runner builds. */
 function patchProvider(provider: LLMProvider) {
   const hasProviderSpy = vi
     .spyOn(ConversationLoop.prototype as unknown as { hasProvider: () => boolean }, "hasProvider",
@@ -170,7 +144,6 @@ function noopTool(name: string) {
   });
 }
 
-// Mirrors memory-manager's rule: optional `<kind>-<tag>-` namespace + lowercase UUID core.
 const SESSION_ID_REGEX = /^(?:(?:sub|a2a-wire)-[a-z0-9]+-)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
@@ -204,8 +177,6 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     return store;
   }
 
-  // A clean spawn (ends on round 1) so the child JSONL + meta are written and a
-  // later resume has real history to re-hydrate.
   function cleanSpawnProvider(): ScriptedProvider {
     return new ScriptedProvider(endTurnScript("spawn answer"));
   }
@@ -799,10 +770,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
           unknown
         >;
         expect(handleResult.isError).toBe(false);
-        // A structural refusal is a host POLICY rejection, so it projects
-        // REJECTED — the same state an exhausted resume projects. The renderer
-        // maps FAILED and REJECTED to the identical `error` run status, so this
-        // unification is invisible to the user and honest on the wire.
+        // Structural policy refusals project REJECTED; renderer error status remains unchanged.
         expect(handle.status).toBe("error");
         expect(handle.taskState).toBe("TASK_STATE_REJECTED");
         expect(handle).not.toHaveProperty("childSessionId");
@@ -827,7 +795,6 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       }
     },
   );
-  // ── 1) full-history restore ─────────────────────────
   it("re-hydrates the original spawn's full history into the continuation turn (tool-pair valid, no loss)", async () => {
     const toolRegistry = new ToolRegistry();
     toolRegistry.register(noopTool("noop"));
@@ -838,8 +805,6 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       subAgentMemoryManager: subStore,
     });
 
-    // Spawn: round 1 calls noop (tool_use), round 2 ends. This lays down a
-    // user + assistant(toolCall) + tool_result + assistant history to restore.
     const spawnProvider = new ScriptedProvider([
       [
         { type: "text_delta", text: "working" },
@@ -863,16 +828,11 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     expect(spawn.ok).toBe(true);
     const resumeId = spawn.childSessionId;
 
-    // The persisted JSONL must carry the spawn's messages. Load them directly to
-    // count history length the resume will restore.
     const persisted = subStore.loadSession(resumeId);
     expect(persisted).not.toBeNull();
     const spawnHistoryLen = persisted!.length;
     expect(spawnHistoryLen).toBeGreaterThan(1);
 
-    // Resume: capture the history length the child loop sees when the
-    // continuation turn starts. A fresh (non-hydrated) loop would see length 1
-    // (just the continuation user message).
     const resumeProvider = new ScriptedProvider([
       [
         { type: "text_delta", text: "resumed answer" },
@@ -880,7 +840,6 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       ],
     ]);
     restore = patchProvider(resumeProvider);
-    // Spy on ConversationLoop.runTurn to inspect the loop's history AT entry.
     let historyLenAtResumeEntry = -1;
     const origRunTurn = ConversationLoop.prototype.runTurn;
     const runTurnSpy = vi
@@ -904,8 +863,6 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       runTurnSpy.mockRestore();
       restore();
     }
-    // The resumed loop entered runTurn already carrying the spawn's restored
-    // history (not a fresh length-1 loop) — proving re-hydration, not re-spawn.
     expect(historyLenAtResumeEntry).toBe(spawnHistoryLen);
   });
 
@@ -922,7 +879,6 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       subAgentMemoryManager: makeSubStore(),
     });
 
-    // A spawn left waiting on a tool call, so the run is resumable afterwards.
     let restore = patchProvider(
       new ScriptedProvider([
         [
@@ -943,7 +899,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     });
     restore();
     expect(spawn.ok).toBe(true);
-    // The spawn run is over: its budget and denial streaks go with it.
+    // Budget and denial streaks belong to one run and reset when that run ends.
     expect(forgetChildRun.mock.calls).toEqual([[spawn.childSessionId]]);
 
     restore = patchProvider(new ScriptedProvider(endTurnScript("resumed")));
@@ -953,15 +909,12 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     } finally {
       restore();
     }
-    // A resume is a run of its own and releases on its own end too, so the
-    // next resume starts from a clean budget rather than the previous run's.
     expect(forgetChildRun.mock.calls).toEqual([
       [spawn.childSessionId],
       [spawn.childSessionId],
     ]);
   });
 
-  // ── 2) scoped tools identical ───────────────────────
   it("scopes the resumed child to exactly meta.sourceTools (write tool absent)", async () => {
     const toolRegistry = new ToolRegistry();
     toolRegistry.register(noopTool("read_only"));
@@ -990,7 +943,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     const spawn = await runner.spawn({
       title: "scoped",
       instructions: "do",
-      toolScope: exactToolScope(["read_only"]), // bash intentionally excluded
+      toolScope: exactToolScope(["read_only"]),
       maxRounds: 2,
     });
     restore();
@@ -1012,7 +965,6 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     } finally {
       restore();
     }
-    // The resumed child's LLM schema saw exactly ["read_only"] — never "bash".
     expect(resumeProvider.observedToolNames[0]).toEqual([
       "read_only",
       "agent_send",
@@ -1020,7 +972,6 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     expect(resumeProvider.observedToolNames[0]).not.toContain("bash");
   });
 
-  // ── 3) scope cannot widen ───────────────────────────
   it("does NOT expose a tool the parent registry gained AFTER the spawn (scope frozen to meta.sourceTools)", async () => {
     const toolRegistry = new ToolRegistry();
     toolRegistry.register(noopTool("orig_tool"));
@@ -1041,8 +992,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     restore();
     const resumeId = spawn.childSessionId;
 
-    // The parent registry GAINS a new tool after the spawn — a resume must NOT
-    // pick it up (it consults meta.sourceTools, never the live parent registry).
+    // Newly added parent tools must not widen a resumed child frozen scope.
     toolRegistry.register(noopTool("newly_added_tool"));
 
     const resumeProvider = new ScriptedProvider([
@@ -1063,12 +1013,10 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     );
   });
 
-  // ── 4) depth stays 1 + 5) no agent_spawn ────────────
   it("runs the continuation at spawnDepth 1 and never exposes agent_spawn to the resumed child", async () => {
     const toolRegistry = new ToolRegistry();
     toolRegistry.register(noopTool("noop"));
-    // agent_spawn IS in the parent registry AND in the frozen allowlist — the
-    // blocklist strip must still remove it from the resumed child.
+    // Strip agent_spawn even when both the parent registry and frozen allowlist contain it.
     toolRegistry.register(
       createDynamicTool({
         name: "agent_spawn",
@@ -1091,12 +1039,11 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     const spawn = await runner.spawn({
       title: "depth",
       instructions: "do",
-      toolScope: exactToolScope(["noop", "agent_spawn"]), // agent_spawn must be stripped
+      toolScope: exactToolScope(["noop", "agent_spawn"]),
       maxRounds: 2,
     });
     restore();
     const resumeId = spawn.childSessionId;
-    // The persisted frozen scope already excludes agent_spawn (spawn stripped it).
     expect(subStore.loadSessionMetadata(resumeId)?.sourceTools).toEqual([
       "noop",
     ]);
@@ -1116,7 +1063,6 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
         this: ConversationLoop,
         ...args: Parameters<typeof origRunTurn>
       ) {
-        // options is the 4th positional arg.
         const opts = args[3] as { spawnDepth?: number } | undefined;
         spawnDepthAtResume = opts?.spawnDepth;
         return origRunTurn.apply(this, args);
@@ -1127,14 +1073,12 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       runTurnSpy.mockRestore();
       restore();
     }
-    // Depth is hard-coded 1 on the continuation turn (recursion defense).
+    // Continuation depth stays one to prevent recursive spawning.
     expect(spawnDepthAtResume).toBe(1);
-    // agent_spawn was never exposed to the resumed child's LLM schema.
     expect(resumeProvider.observedToolNames[0]).toEqual(["noop"]);
     expect(resumeProvider.observedToolNames[0]).not.toContain("agent_spawn");
   });
 
-  // ── 6) resume-exhausted (resumeCount) ───────────────
   it("refuses a resume when resumeCount >= MAX_RESUMES (no turn run)", async () => {
     const toolRegistry = new ToolRegistry();
     toolRegistry.register(noopTool("noop"));
@@ -1154,7 +1098,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     });
     restore();
     const resumeId = spawn.childSessionId;
-    // Simulate legacy metadata that predates the split counters.
+    // Exercise metadata that predates separate resume counters.
     const legacyMeta = { ...subStore.loadSessionMetadata(resumeId)! };
     delete legacyMeta.budgetResumeCount;
     delete legacyMeta.questionAnswerCount;
@@ -1163,7 +1107,6 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       resumeCount: 3,
     });
 
-    // A provider that would fail the test if a turn actually ran.
     const guard = new ScriptedProvider([
       [
         { type: "text_delta", text: "SHOULD NOT RUN" },
@@ -1176,7 +1119,6 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       expect(resumed.ok).toBe(false);
       expect(resumed.resumeRefusal).toBe("exhausted");
       expect(resumed.turnCount).toBe(0);
-      // No turn ran → provider never streamed.
       expect(guard.turnsServed).toBe(0);
     } finally {
       restore2();
@@ -2091,7 +2033,6 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       }
     },
   );
-  // ── 7) cumulative ceiling ───────────────────────────
   it("refuses a resume when cumulativeRounds >= the cumulative ceiling (no turn run)", async () => {
     const toolRegistry = new ToolRegistry();
     toolRegistry.register(noopTool("noop"));
@@ -2112,8 +2053,6 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     restore();
     const resumeId = spawn.childSessionId;
     const meta = subStore.loadSessionMetadata(resumeId)!;
-    // 4 × the configured budget (unset here ⇒ default 60) = 240. Set exactly
-    // at the ceiling.
     await subStore.saveSessionMetadata(resumeId, {
       ...meta,
       cumulativeRounds: 240,
@@ -2224,13 +2163,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
   });
 
   it("treats a round-cap segment as having consumed its parent directive", async () => {
-    // A directive is acknowledged when the turn that carried it reached a
-    // conclusion. Round-cap IS a conclusion: the segment ran, the child saw
-    // the directive in its initial guidance, and it produced partial work.
-    // Withholding the ack because the TASK did not finish re-injects the same
-    // text at the top of every following segment — a parent that guided a
-    // long-running child would have its one message replayed for the rest of
-    // the resume chain.
+    // A concluded round-capped segment acknowledges its directive so later resumes do not replay it.
     const originSessionId = "0d5778ef-74e6-4d32-8936-a88d06a3d2b7";
     const toolRegistry = new ToolRegistry();
     toolRegistry.register(noopTool("noop"));
@@ -2295,7 +2228,6 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
         suspension: { reason: "budget" },
       });
       expect(guidancePerResume[0]).toContain("narrow the scope");
-      // Acknowledged by the segment that ran it, so nothing is left to replay.
       expect(await mailbox.peek(resumeId, originSessionId)).toHaveLength(0);
 
       const second = await runner.resume(
@@ -2315,10 +2247,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
   });
 
   it("does not acknowledge a parent directive when the segment never concluded", async () => {
-    // The boundary of the round-cap widening: an interrupted segment did NOT
-    // conclude, so it must not report the directive as consumed. (What the
-    // mailbox then holds is a separate decision — the child's terminal
-    // projection discards it, since a finished child can never read it.)
+    // Interrupted segments did not conclude and must not acknowledge their directives.
     const originSessionId = "7ee34789-8f56-4296-8361-8fdc94b7a3e1";
     const toolRegistry = new ToolRegistry();
     toolRegistry.register(noopTool("noop"));
@@ -2406,8 +2335,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
 
     const resumeId = spawn.childSessionId;
     const meta = subStore.loadSessionMetadata(resumeId)!;
-    // 240 was the old ABSOLUTE ceiling (4 × 60). With a configured budget of
-    // 500 the ceiling is 2000, so this resume must still run.
+    // The cumulative ceiling scales with the configured budget rather than a fixed default.
     await subStore.saveSessionMetadata(resumeId, {
       ...meta,
       budgetResumeCount: 0,
@@ -2432,8 +2360,6 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       expect(resumed.ok).toBe(true);
       expect(runTurnSpy).toHaveBeenCalledTimes(1);
 
-      // At 4 × 500 the proportional guard still fires — resume-loop protection
-      // is scaled, not removed.
       const afterRun = subStore.loadSessionMetadata(resumeId)!;
       await subStore.saveSessionMetadata(resumeId, {
         ...afterRun,
@@ -2576,7 +2502,6 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       cumulativeRounds: 11,
     });
   });
-  // ── 8) concurrent-resume lock ───────────────────────
   it("fail-closes a second concurrent resume of the same session (one runs, one rejected, one transition sequence)", async () => {
     const toolRegistry = new ToolRegistry();
     toolRegistry.register(noopTool("noop"));
@@ -2601,8 +2526,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       subAgentSuspensionReason: "budget",
     });
 
-    // Start both resumes together, then hold provider work until their
-    // in-flight ownership attempts have overlapped.
+    // Hold provider work until concurrent resume ownership attempts overlap.
     const providerStarted = deferred<void>();
     const releaseProvider = deferred<void>();
     const slowProvider: LLMProvider = {
@@ -2618,7 +2542,6 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       },
     };
     restore = patchProvider(slowProvider);
-    // Count how many times metadata is saved during the overlapping window.
     const saveSpy = vi.spyOn(subStore, "saveSessionMetadata");
     try {
       const attempts = [
@@ -2633,7 +2556,6 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       expect(oks).toHaveLength(1);
       expect(rejected).toHaveLength(1);
       expect(rejected[0].error).toMatch(/already in flight/i);
-      // Exactly one authorized resume persisted WORKING and one terminal state.
       expect(saveSpy).toHaveBeenCalledTimes(2);
       expect(saveSpy.mock.calls[0]?.[1]).toMatchObject({
         subAgentTaskState: "TASK_STATE_WORKING",
@@ -2648,8 +2570,6 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       saveSpy.mockRestore();
       restore();
     }
-    // The single successful resume bumped resumeCount to 1 (not 2 — the lost
-    // update the lock prevents).
     expect(subStore.loadSessionMetadata(resumeId)).toMatchObject({
       resumeCount: 1,
       budgetResumeCount: 1,
@@ -2669,8 +2589,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       );
       expect(retry.ok).toBe(false);
       expect(retry.error).toMatch(/not in INPUT_REQUIRED|already terminal/i);
-      // Structural policy rejection: retrying the same id can never succeed,
-      // and the marker is what stops agent_spawn from emitting retry guidance.
+      // Structural refusal must suppress retry guidance for the same child ID.
       expect(retry.resumeRefusal).toBe("invalid");
       expect(terminalGuard.turnsServed).toBe(0);
       expect(onLinked).not.toHaveBeenCalled();
@@ -3053,7 +2972,6 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       restore();
     }
   });
-  // ── 10) namespace isolation ─────────────────────────
   it("persists the resumed continuation ONLY to ~/.ave/subagent/ (never the main store)", async () => {
     const toolRegistry = new ToolRegistry();
     toolRegistry.register(noopTool("noop"));
@@ -3093,10 +3011,8 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       restore();
     }
 
-    // The subagent JSONL exists under the isolated namespace…
     const subSessionsDir = join(tmpHome, "subagent", "sessions");
     expect(existsSync(join(subSessionsDir, `${resumeId}.jsonl`))).toBe(true);
-    // …and nothing landed in the main sessions dir.
     const mainSessionsDir = join(tmpHome, "sessions");
     const mainFiles = existsSync(mainSessionsDir)
       ? readdirSync(mainSessionsDir).filter((f) => f.endsWith(".jsonl"))
@@ -3105,7 +3021,6 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     expect(mainStore.listSessions()).toEqual([]);
   });
 
-  // ── 11) counter increment (+1 / +turnCount, spread intact) ──
   it("increments resumeCount by 1 and cumulativeRounds by the turn's rounds, preserving the frozen scope (full-overwrite spread)", async () => {
     const toolRegistry = new ToolRegistry();
     toolRegistry.register(noopTool("noop"));
@@ -3116,8 +3031,6 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       subAgentMemoryManager: subStore,
     });
 
-    // Spawn spends 2 rounds (round 1 tool_use, round 2 end) so cumulativeRounds
-    // starts at 2 after the spawn's own accounting fix (Commit 2).
     const spawnProvider = new ScriptedProvider([
       [
         { type: "tool_call", id: "tu-1", name: "noop", input: {} },
@@ -3140,20 +3053,17 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     });
     restore();
     const afterSpawn = subStore.loadSessionMetadata(spawn.childSessionId)!;
-    // Spawn now records its OWN round count into cumulativeRounds (the accounting
-    // fix in this commit; previously left at 0 → inaccurate resume-chain ceiling).
     expect(afterSpawn.cumulativeRounds).toBe(spawn.turnCount);
     expect(afterSpawn.resumeCount).toBe(0);
     expect(afterSpawn.budgetResumeCount).toBe(0);
     expect(afterSpawn.questionAnswerCount).toBe(0);
     const resumeId = spawn.childSessionId;
-    // Question answers are a separate axis and must not consume MAX_RESUMES.
+    // Question answers must not consume the budget-resume allowance.
     await subStore.saveSessionMetadata(resumeId, {
       ...afterSpawn,
       questionAnswerCount: 7,
     });
 
-    // Resume spends 1 round.
     const resumeProvider = new ScriptedProvider([
       [
         { type: "text_delta", text: "resumed" },
@@ -3170,22 +3080,19 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     expect(resumed.ok).toBe(true);
 
     const afterResume = subStore.loadSessionMetadata(resumeId)!;
-    // +1 resume, +turnCount rounds.
     expect(afterResume.resumeCount).toBe(1);
     expect(afterResume.budgetResumeCount).toBe(1);
     expect(afterResume.questionAnswerCount).toBe(7);
     expect(afterResume.cumulativeRounds).toBe(
       afterSpawn.cumulativeRounds! + resumed.turnCount,
     );
-    // Full-overwrite spread preserved the frozen scope + profile fields — a
-    // dropped spread would corrupt the scope for the NEXT resume.
+    // Full metadata overwrite must preserve frozen scope and profile fields for later resumes.
     expect(afterResume.sourceTools).toEqual(["noop"]);
     expect(afterResume.profileModel).toBe("high");
     expect(afterResume.profileMode).toBe("execute");
     expect(afterResume.sessionKind).toBe("subagent");
   });
 
-  // ── fail-closed: non-subagent + missing metadata ────
   it("refuses to resume a session that is not a sub-agent", async () => {
     const toolRegistry = new ToolRegistry();
     toolRegistry.register(noopTool("noop"));
@@ -3195,7 +3102,6 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       toolRegistry,
       subAgentMemoryManager: subStore,
     });
-    // Write a main-kind session metadata under a valid id.
     await subStore.saveSessionMetadata("sub-e3b0c442-43badc19-3d7b-48b6-878e-1bca49295211", {
       sessionKind: "main",
       sourceTools: ["noop"],
@@ -3231,12 +3137,10 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     const resumed = await runner.resume("bad::id//with:sep", "continue", "x");
     expect(resumed.ok).toBe(false);
     expect(resumed.error).toMatch(/invalid resumeId/i);
-    // regex-invalid ids never even reach loadSessionMetadata (which would throw).
     expect(resumed.childSessionId).toBe("bad::id//with:sep");
     expect(resumed.childSessionId).not.toMatch(SESSION_ID_REGEX);
   });
 
-  // ── MAJOR-3: cross-session origin binding ─────────────
   it("refuses cross-session resume: conversation B cannot resume conversation A's sub-agent (no history loaded, no turn run)", async () => {
     const { createHash } = await import("node:crypto");
     const toolRegistry = new ToolRegistry();
@@ -3248,11 +3152,8 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       subAgentMemoryManager: subStore,
     });
 
-    // Spawn from conversation A (originSessionId = "1b9342d9-1e35-4d3e-8b6c-c5e977eb2105").
     const originA = "1b9342d9-1e35-4d3e-8b6c-c5e977eb2105";
     const tagA = createHash("sha256").update(originA).digest("hex").slice(0, 8);
-    // We need a real spawn with origin. Manually write metadata under a
-    // correctly-tagged id (mirrors what spawn writes when passed originSessionId).
     const { createDlpSafeUuid } = await import("../../shared/dlp-safe-id.js");
     const resumeId = createDlpSafeUuid(`sub-${tagA}`);
     await subStore.saveSessionMetadata(resumeId, {
@@ -3265,11 +3166,9 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       subAgentTaskState: "TASK_STATE_INPUT_REQUIRED",
       subAgentSuspensionReason: "budget",
     });
-    // Also write a minimal session JSONL so loadSession would succeed IF we got
-    // past the origin check (proves the guard fires before history is loaded).
+    // Supply valid history so refusal proves ownership is checked before loading it.
     await subStore.saveSession(resumeId, []);
 
-    // A provider that must NOT run (if it does, the test fails).
     const guardProvider = new ScriptedProvider([
       [
         { type: "text_delta", text: "CROSS-SESSION-MUST-NOT-RUN" },
@@ -3278,7 +3177,6 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     ]);
     const restoreGuard = patchProvider(guardProvider);
     try {
-      // Conversation B tries to resume with a DIFFERENT originSessionId.
       const originB = "session-B";
       const result = await runner.resume(
         resumeId,
@@ -3289,13 +3187,11 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       );
       expect(result.ok).toBe(false);
       expect(result.error).toMatch(/does not belong to this session/i);
-      // No turn was run — the guard fires before the LLM is invoked.
       expect(guardProvider.turnsServed).toBe(0);
     } finally {
       restoreGuard();
     }
 
-    // Positive: same origin (conversation A) CAN resume its own sub-agent.
     const resumeProvider = new ScriptedProvider([
       [
         { type: "text_delta", text: "legitimate resume" },
@@ -3382,8 +3278,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       subAgentMemoryManager: subStore,
     });
 
-    // Spawn without originSessionId → the tag hashes the empty origin, so the
-    // id keeps the one `sub-<tag>-<uuid>` shape `isValidSessionId` accepts.
+    // Originless spawns still require a tagged, regex-valid child session ID.
     let restore = patchProvider(waitingSpawnProvider());
     const spawn = await runner.spawn({
       title: "untagged",
@@ -3394,11 +3289,8 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     restore();
     expect(spawn.ok).toBe(true);
     const resumeId = spawn.childSessionId;
-    // Confirm the shape: `sub-` + 8-hex tag + UUID.
     expect(resumeId).toMatch(/^sub-[0-9a-f]{8}-[0-9a-f]{8}-[0-9a-f]{4}-/);
 
-    // A caller with an explicit originSessionId is refused (the id has no tag
-    // to match against, so idTag="" but expectedTag is non-empty).
     const guardProvider = new ScriptedProvider([
       [
         { type: "text_delta", text: "SHOULD-NOT-RUN" },
@@ -3421,7 +3313,6 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       restore();
     }
 
-    // No-origin caller (undefined) CAN resume it.
     const okProvider = new ScriptedProvider([
       [
         { type: "text_delta", text: "ok" },
@@ -3441,7 +3332,6 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     }
   });
 
-  // ── MINOR: empty frozen scope → fail-closed ────────────
   it("refuses a resume when meta.sourceTools is empty (corruption/tamper signal), no turn run", async () => {
     const toolRegistry = new ToolRegistry();
     toolRegistry.register(noopTool("noop"));
@@ -3452,15 +3342,12 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       subAgentMemoryManager: subStore,
     });
 
-    // Write metadata with an explicitly empty sourceTools — simulates a
-    // corrupted or tampered .meta.json (a real spawn always persists a non-empty
-    // allowlist because the resolved scoped surface is non-empty after blocklist
-    // strip; the only way to get [] is external tampering or corruption).
+    // Empty frozen scope indicates corruption outside the wire path and must fail closed.
     const { createNamespacedSessionId } = await import("../../shared/dlp-safe-id.js");
     const resumeId = createNamespacedSessionId("sub", "e3b0c442");
     await subStore.saveSessionMetadata(resumeId, {
       sessionKind: "subagent",
-      sourceTools: [], // deliberately empty — corruption signal
+      sourceTools: [],
       subAgentTitle: "tamper-test",
       resumeCount: 0,
       cumulativeRounds: 0,
@@ -3478,9 +3365,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     try {
       const result = await runner.resume(resumeId, "continue", "tamper-test");
       expect(result.ok).toBe(false);
-      // Must refuse fail-closed, not warn and continue.
       expect(result.error).toMatch(/empty frozen tool scope/i);
-      // No turn was run.
       expect(guardProvider.turnsServed).toBe(0);
       expect(result.resumeRefusal).toBeUndefined();
     } finally {
@@ -3731,11 +3616,8 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
   });
 });
 
-// ─── 9) agent_spawn tool — resumeId surface + routing ─────────────────────────
 describe("agent_spawn tool — resume surface + routing (PR-C)", () => {
   it("surfaces resumeId (= childSessionId) in an incomplete tool result so the parent LLM can continue", async () => {
-    // A spawn that hit its round budget returns incomplete=true + a
-    // childSessionId. The tool result must expose that id as `resumeId`.
     const tool = createAgentSpawnTool({
       getRunner: () =>
         ({
@@ -3819,13 +3701,10 @@ describe("agent_spawn tool — resume surface + routing (PR-C)", () => {
       },
     );
     expect(r.isError).toBe(false);
-    // resume() called with (resumeId, continuationInstructions, title, callbacks, originSessionId).
     expect(resumeSpy).toHaveBeenCalledTimes(1);
     expect((resumeSpy.mock.calls[0] as unknown[])[0]).toBe("sub-75ee563d-86fc97ad-ce0e-442a-847a-fb30cf3f9af0");
     expect((resumeSpy.mock.calls[0] as unknown[])[1]).toBe("keep going");
-    // 5th arg is originSessionId (from ctx.metadata.sessionId = "e4712596-8b3b-4104-8fbc-4802d1e40a71").
     expect((resumeSpy.mock.calls[0] as unknown[])[4]).toBe("e4712596-8b3b-4104-8fbc-4802d1e40a71");
-    // spawn() never called on the resume path.
     expect(spawnSpy).not.toHaveBeenCalled();
     const parsed = JSON.parse(r.output);
     expect(parsed.summary).toBe("resumed answer");
@@ -3867,8 +3746,7 @@ describe("agent_spawn tool — resume surface + routing (PR-C)", () => {
       getRunner: () => ({ resume: resumeSpy, spawn: vi.fn() }) as never,
       emit: () => undefined,
     });
-    // A resumed/sub-agent context (spawnDepth 1) must not be able to call
-    // agent_spawn at all — the depth guard refuses before routing to resume.
+    // Subagent depth must refuse agent_spawn before routing to resume.
     const r = await tool.execute(
       { instructions: "nested resume", resumeId: "sub-07d1bb2c-d73e5160-e94e-4913-863f-de10b10fb3ae" },
       {

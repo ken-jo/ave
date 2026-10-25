@@ -71,7 +71,6 @@ describe("ConversationHistory.attachTurnSummaryToLastAssistant", () => {
       turnDurationMs: 0, toolCount: 0, cumulativeToolMs: 0,
       tokensIn: 0, freshInputTokens: 0, tokensOut: 0,
     })).not.toThrow();
-    // user message should still NOT have turnSummary
     expect(h.getMessages()[0].meta?.turnSummary).toBeUndefined();
   });
 
@@ -83,9 +82,7 @@ describe("ConversationHistory.attachTurnSummaryToLastAssistant", () => {
     h.append({ role: "assistant", content: "a2" });
     h.attachTurnSummaryToLastAssistant({ ...sampleSummary, tokensOut: 999 });
     const messages = h.getMessages();
-    // First assistant has no turnSummary.
     expect(messages[1].meta?.turnSummary).toBeUndefined();
-    // Last assistant got the mutation.
     expect(messages[3].meta?.turnSummary?.tokensOut).toBe(999);
   });
 
@@ -129,8 +126,7 @@ describe("ConversationHistory.restore preserves original createdAt", () => {
     ];
     const h = new ConversationHistory();
     h.restore(persisted);
-    // Legacy messages — undefined stays undefined. UI renders nothing
-    // rather than fake the load time.
+    // Missing legacy timestamps stay undefined rather than becoming the load time.
     expect(h.getMessages()[0].meta?.createdAt).toBeUndefined();
   });
 });
@@ -152,8 +148,6 @@ describe("ConversationHistory.restore attachment boundary", () => {
     }]);
 
     const restored = history.getMessages();
-    // The assertion is about which CONTENT parts survived; the store also
-    // stamps a row identity on restore, which is not part of that claim.
     expect(restored).toMatchObject([{
       role: "user",
       content: [

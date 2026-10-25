@@ -1,8 +1,4 @@
-/**
- * Subdirectory instruction files ride the first successful builtin tool result
- * that touches their directory, once per session; the launch chain is revalidated
- * when any file on it appears or changes.
- */
+// Attach first-touch directory instructions once per session and revalidate changed launch chains.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -50,7 +46,6 @@ function attach(attached: Map<string, number>, overrides: Partial<Parameters<typ
   });
 }
 
-/** The tool_result row the query loop appends for one attached result. */
 function toolResultRow(result: NonNullable<ReturnType<typeof attach>>, meta: GenericMessage["meta"] = {}): GenericMessage {
   return {
     role: "tool_result",
@@ -86,12 +81,10 @@ describe("directory instructions and compaction", () => {
     const row = toolResultRow(first);
     expect(attach(liveDirectoryInstructions([row]))).toBeUndefined();
 
-    // Compaction stubs the row: the instructions no longer reach the model.
     const stubbed = toolResultRow(first, { compactedAt: new Date().toISOString() });
     expect(liveDirectoryInstructions([stubbed]).size).toBe(0);
     expect(attach(liveDirectoryInstructions([stubbed]))?.text).toContain("src rule");
 
-    // Compaction drops the row entirely.
     expect(attach(liveDirectoryInstructions([]))?.text).toContain("src rule");
   });
 });
@@ -149,7 +142,6 @@ describe("directory instructions in the query loop", () => {
     expect(first?.meta?.directoryInstructions?.map((entry) => entry.source)).toEqual([join("src", "AGENTS.md")]);
     expect(second?.content).not.toContain("src rule");
 
-    // Compaction stubs the carrying row; the next touch attaches the file again.
     const compacted = loop.history.getMessages().map((message) => message === first
       ? { ...message, meta: { ...message.meta, compactedAt: new Date().toISOString() } }
       : message);
@@ -189,7 +181,6 @@ describe("directory instruction budgets", () => {
     expect(attach(full)).toBeUndefined();
     const almost = new Map([["other/AGENTS.md", DIRECTORY_INSTRUCTIONS_SESSION_MAX_BYTES - 10]]);
     expect(attach(almost)).toBeUndefined();
-    // Compaction frees the budget the dropped rows held.
     expect(attach(new Map())?.text).toContain("src rule");
   });
 });

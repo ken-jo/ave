@@ -1,13 +1,3 @@
-/**
- * B1 — Session resume + manual compact tests.
- *
- * Covers:
- * - resetAndResume clears streaming state (cumulativeUsage reset) and loads history
- * - resetAndResume triggers auto-compact when history exceeds threshold
- * - resetAndResume returns ok:false for unknown sessionId
- * - manualCompact returns compacted:true when history is long enough to compact
- * - manualCompact returns compacted:false when history is short
- */
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -26,8 +16,6 @@ import {
   makeConversationLoopMemoryManager,
   makeConversationLoopSettings,
 } from "./conversation-loop-test-helpers.js";
-
-// ─── Minimal stubs ────────────────────────────────────────────────────────────
 
 const RESUME_SESSION_ID = "08001f8f-a6f5-4bb9-820d-df1e8366af93";
 const resumeMemory = (storedMessages: GenericMessage[] | null = null) =>
@@ -56,7 +44,7 @@ function createRememberCommandLoop(captureExplicit: CaptureExplicit, args = "ret
   const memoryCaptureService: NonNullable<ConversationLoopDeps["memoryCaptureService"]> = { captureExplicit };
   const provider = {
     vendor: "openai" as const,
-    streamTurn: async function* () { /* command route only */ },
+    streamTurn: async function* () {  },
   };
   const loop = new ConversationLoop(resumeDeps({ memoryManager, memoryCaptureService, routeEngine, inputClassifier }));
   (loop as unknown as { provider: typeof provider }).provider = provider;
@@ -66,8 +54,6 @@ function createRememberCommandLoop(captureExplicit: CaptureExplicit, args = "ret
   };
 }
 
-// ─── Tests ────────────────────────────────────────────────────────────────────
-
 describe("ConversationLoop.resetAndResume", () => {
   it("refuses a session the host reports as held by another loop", async () => {
     const mem = resumeMemory([{ role: "user", content: "hello" }]);
@@ -75,7 +61,6 @@ describe("ConversationLoop.resetAndResume", () => {
     const held = vi.fn((sessionId: string) => sessionId === RESUME_SESSION_ID);
     const loop = new ConversationLoop(resumeDeps({ memoryManager: mem, sessionHeldElsewhere: held }));
 
-    // Both entry points — the IPC resume and the engine `/load` command.
     expect((await loop.resetAndResume(RESUME_SESSION_ID)).ok).toBe(false);
     expect(await loop.loadSession(RESUME_SESSION_ID)).toBe(false);
     expect(readSession).not.toHaveBeenCalled();
@@ -102,12 +87,10 @@ describe("ConversationLoop.resetAndResume", () => {
     const mem = resumeMemory(history);
     const loop = new ConversationLoop(resumeDeps({ memoryManager: mem }));
 
-    // Simulate prior usage so we can confirm reset
     const result = await loop.resetAndResume("08001f8f-a6f5-4bb9-820d-df1e8366af93");
 
     expect(result.ok).toBe(true);
     expect(loop.getHistory().length).toBe(2);
-    // Resume seeds token accounting from the exact persisted session history.
     expect(loop.getCumulativeUsage().inputTokens).toBe(estimateMessagesTokens(history),
     );
     expect(loop.getCumulativeUsage().outputTokens).toBe(0);
@@ -223,10 +206,7 @@ describe("ConversationLoop.resetAndResume", () => {
     expect(mem.loadSession).toHaveBeenCalledTimes(1);
     expect(mem.loadSession).toHaveBeenCalledWith("3e323a73-28d0-4dce-8229-3b0eca68d32a");
     expect(mem.loadSession).not.toHaveBeenCalledWith("a1bdc27a-c758-4a74-8955-5e9188412366");
-    // The store stamps a row identity on restore; the claim here is that the
-    // CHILD's rows loaded and the parent's did not.
-    // The child's own rows load behind one boundary row carrying the copied
-    // summary; nothing of the parent's transcript is merged in.
+    // Reload child rows behind their copied-summary boundary; never merge the parent transcript.
     const [boundary, ...rows] = loop.getHistory().getMessages();
     expect(boundary!.meta?.compactBoundary).toBe(true);
     expect(String(boundary!.content)).toContain("요약된 부모 맥락");
@@ -256,7 +236,6 @@ describe("ConversationLoop.resetAndResume", () => {
     expect(String(loaded[0]!.content)).toContain("<prior-context-summary>\nFORK-SUMMARY\n</prior-context-summary>");
     expect(loaded.slice(1).map((m) => m.content)).toEqual(["forked question", "forked answer"]);
 
-    // Reloading the upgraded history adds nothing.
     const again = new ConversationLoop(resumeDeps({
       memoryManager: { ...mem, loadSession: vi.fn(() => loaded) } as unknown as ConversationLoopDeps["memoryManager"],
     }));
@@ -285,8 +264,6 @@ describe("ConversationLoop.resetAndResume", () => {
   });
 
   it("sets cumulativeUsage estimate on resume for the next token preflight", async () => {
-    // Long synthetic history → estimateMessagesTokens > 0. Token preflight 가
-    // next user turn 진입 시 이 값을 사용하여 임계 평가.
     const msgs: GenericMessage[] = [];
     for (let i = 0; i < 50; i++) {
       msgs.push({ role: i % 2 === 0 ? "user" : "assistant", content: "y".repeat(10_000),
@@ -297,10 +274,9 @@ describe("ConversationLoop.resetAndResume", () => {
 
     const result = await loop.resetAndResume("08001f8f-a6f5-4bb9-820d-df1e8366af93");
     expect(result.ok).toBe(true);
-    // cumulativeUsage 가 estimate 로 set 됐는지 — token preflight 가 정확한 ratio 평가 가능
     expect(loop.getCumulativeUsage().inputTokens).toBe(estimateMessagesTokens(msgs),
     );
-    // resetAndResume 자체는 더 이상 auto-compact 하지 않음 — token preflight 가 next turn 처리
+    // Resume defers compaction to token preflight on the next turn.
     expect(result.compacted).toBe(false);
   });
 
@@ -473,7 +449,7 @@ describe("ConversationLoop.resetAndResume", () => {
     );
     const fakeProvider = {
       vendor: "openai" as const,
-      streamTurn: async function* () { /* unused */ },
+      streamTurn: async function* () {  },
     };
     (loop as unknown as { provider: typeof fakeProvider }).provider = fakeProvider;
 
@@ -485,7 +461,6 @@ describe("ConversationLoop.resetAndResume", () => {
     );
   });
 });
-
 
 describe("/compact <focus>", () => {
   it("hands the argument to manual compaction as the summary focus", async () => {
@@ -507,21 +482,18 @@ describe("ConversationLoop.manualCompact — Major Fix callbacks", () => {
     const mem = resumeMemory();
     const loop = new ConversationLoop(resumeDeps({ memoryManager: mem }));
 
-    // Provider 없으면 early-return — 짧은 history 로 충분히 no-op 검증
     const result = await loop.manualCompact();
 
     expect(result.compacted).toBe(false);
   });
 
   it("manualCompact appends a checkpoint and persists summary", async () => {
-    // Long enough history to trigger compact
     const longHistory = makeConversationLoopLongHistory(40);
     const mem = resumeMemory(longHistory);
 
     const loop = new ConversationLoop(resumeDeps({ memoryManager: mem }));
     await loop.resetAndResume("08001f8f-a6f5-4bb9-820d-df1e8366af93");
 
-    // Inject a fake provider that returns a valid 12-section summary
     const fakeSummary = [
       "## Goal", "test goal",
       "## Constraints & Preferences", "none",
@@ -549,11 +521,9 @@ describe("ConversationLoop.manualCompact — Major Fix callbacks", () => {
     const result = await loop.manualCompact();
 
     if (result.compacted) {
-      // manualCompact 는 callbacks 파라미터가 없으므로 onCompactOccurred 는 호출 안 됨.
-      // 이 테스트는 checkpoint 영속화 (appendCheckpoint + saveSessionMetadata) 를 검증.
+      // manualCompact has no callbacks; verify checkpoint persistence instead.
       expect(result.compacted).toBe(true);
       expect(result.removedMessageCount).toBeGreaterThan(0);
-      // appendCheckpoint and saveSessionMetadata must have been called.
       expect((mem as { appendCheckpoint: ReturnType<typeof vi.fn> }).appendCheckpoint,
       ).toHaveBeenCalled();
       expect((mem as { saveSessionMetadata: ReturnType<typeof vi.fn> }).saveSessionMetadata,
@@ -579,7 +549,7 @@ describe("ConversationLoop command routing", () => {
     } as unknown as ConversationLoopDeps["inputClassifier"];
     const fakeProvider = {
       vendor: "openai" as const,
-      streamTurn: async function* () { /* unused */ },
+      streamTurn: async function* () {  },
     };
     const loop = new ConversationLoop(resumeDeps({ memoryManager: mem, routeEngine, inputClassifier }),
     );
@@ -680,7 +650,7 @@ describe("ConversationLoop command routing", () => {
       );
       const fakeProvider = {
         vendor: "openai" as const,
-        streamTurn: async function* () { /* unused */ },
+        streamTurn: async function* () {  },
       };
       (loop as unknown as { provider: typeof fakeProvider }).provider = fakeProvider;
 

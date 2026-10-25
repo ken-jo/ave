@@ -1,16 +1,5 @@
-/**
- * OpenTelemetry wiring for the conversation runtime.
- *
- * Observability is its own domain boundary: the loop decides what happened,
- * this unit decides where the record of it goes. Keeping the provider, the
- * exporter and the span vocabulary here is what lets `run-turn.ts` and
- * `query-loop.ts` stay free of SDK types — they see a `Tracer` and nothing
- * else, and when tracing is off they see the API's no-op tracer.
- *
- * The OTel SDK and the AI SDK integration are reached through dynamic import
- * so an unconfigured run never evaluates them: default-off has to be free,
- * not merely inert.
- */
+// Keep tracing SDKs behind dynamic imports so default-off runs never evaluate them.
+// Turn logic sees only the tracer API; this module owns sinks and span vocabulary.
 import { context as otelContext, trace, type Tracer } from "@opentelemetry/api";
 import type { ReadableSpan, SpanExporter } from "@opentelemetry/sdk-trace";
 import { appendFileSync } from "node:fs";
@@ -19,14 +8,11 @@ import type { TurnDecisionEvent } from "../turn/types.js";
 
 const log = createLogger("ave");
 
-/** The span a whole conversation turn opens; AI SDK spans nest under it. */
 export const TURN_SPAN_NAME = "ave.turn";
-/** Prefix of the per-tool-call child span, completed with the tool name. */
 export const TOOL_SPAN_PREFIX = "execute_tool ";
-/** Span event carrying one {@link TurnDecisionEvent}. */
 export const DECISION_EVENT_NAME = "ave.decision";
 
-/** Where finished spans go. `off` registers no provider at all. */
+// Off registers no tracer provider.
 export type TelemetrySpec =
   | { kind: "off" }
   | { kind: "otlp"; url: string }
@@ -40,11 +26,7 @@ export interface TracingHandle {
   shutdown(): Promise<void>;
 }
 
-/**
- * Parse `AVE_TELEMETRY`. Unset, empty and `off` all mean off; anything else
- * must name a sink, because a misspelled spec that silently traced nothing
- * would be indistinguishable from a run that was never configured.
- */
+/** Empty and off disable tracing; reject unknown sink names instead of silently losing evidence. */
 export function parseTelemetrySpec(raw: string | undefined): TelemetrySpec {
   const value = raw?.trim() ?? "";
   if (value.length === 0 || value === "off") return { kind: "off" };
@@ -73,7 +55,6 @@ export function parseTelemetrySpec(raw: string | undefined): TelemetrySpec {
   return { error: `AVE_TELEMETRY sink must be "otlp" or "file", got "${kind}"` };
 }
 
-/** Flatten a decision onto span-attribute keys shared by producer and tests. */
 export function decisionAttributes(
   event: TurnDecisionEvent,
 ): Record<string, string | number | boolean> {
@@ -88,7 +69,6 @@ export function decisionAttributes(
   return attributes;
 }
 
-/** One finished span, as the file sink writes it. */
 interface ExportedSpanLine {
   traceId: string;
   spanId: string;
@@ -107,14 +87,7 @@ function hrTimeToMs(time: readonly [number, number]): number {
   return time[0] * 1e3 + time[1] / 1e6;
 }
 
-/**
- * Append-only JSON-lines exporter.
- *
- * It lives here rather than in its own file because the tracing spec is the
- * only thing that can select it and nothing else can construct one; a separate
- * module would be a second place to keep the line shape in step with the
- * benchmark reader.
- */
+/** Append JSON lines using the shape consumed by trace readers. */
 function createFileSpanExporter(path: string): SpanExporter {
   const writeSpans = (spans: readonly ReadableSpan[]): void => {
     if (spans.length === 0) return;
@@ -148,16 +121,14 @@ function createFileSpanExporter(path: string): SpanExporter {
     export(spans, done) {
       try {
         writeSpans(spans);
-        // ExportResultCode.SUCCESS / FAILED: the enum lives in
-        // @opentelemetry/core, which a value import would load eagerly.
+        // Keep result codes numeric to avoid eagerly importing the tracing SDK.
         done({ code: 0 });
       } catch (err) {
         done({ code: 1, error: err as Error });
       }
     },
     async shutdown() {
-      // Nothing is buffered here: every batch is written synchronously as it
-      // arrives, so the processor's own flush is the only thing to wait on.
+      // Writes are synchronous; only the processor itself needs flushing.
     },
     async forceFlush() {},
   };
@@ -172,14 +143,7 @@ function offHandle(): TracingHandle {
   };
 }
 
-/**
- * Register a tracer provider for `spec` and hand the AI SDK the same tracer.
- *
- * The AsyncLocalStorage context manager is installed alongside the provider:
- * it is what makes the AI SDK's `invoke_agent` / `step` / `chat` spans land
- * under the turn span instead of at the root. (SDK 3.x removed
- * `NodeTracerProvider#register()`, which used to install it.)
- */
+/** Install async context with the provider so generated spans nest under the active turn. */
 export async function configureTracing(
   spec: TelemetrySpec,
   appVersion: string,

@@ -1,18 +1,4 @@
-/**
- * #811 milestone-2 — NON-BLOCKING lifecycle events fired from ConversationLoop.
- *
- * Spec ref: docs/architecture/hook-runtime-expansion-design.md §5.
- *
- * Covers the loop-side fire points:
- *   - SessionStart fires ONCE per session, on the first turn
- *   - Stop fires after the query loop resolves, with stopReason/toolCount/duration
- *   - a lifecycle hook deny does NOT change control flow (turn still completes)
- *   - back-compat: no scriptHookManager ⇒ no lifecycle dispatch, turn unchanged
- *
- * PreCompact/PostCompact loop fire points are covered by the manager-level
- * lifecycle test (`src/hooks/__tests__/lifecycle-hook-manager.test.ts`) plus the
- * preflight scenarios; here we focus on the per-turn SessionStart/Stop wiring.
- */
+// SessionStart and Stop are observe-only; dispatch denial must not change control flow.
 import { describe, expect, it, vi } from "vitest";
 
 import { InputClassifier } from "../../core/input-classifier.js";
@@ -39,10 +25,8 @@ function completeTurn(): StreamEvent[] {
   ];
 }
 
-/** A stub manager whose lifecycle dispatch we can assert on. */
 function stubManager(
   lifecycleDecision: "allow" | "deny" = "allow",
-  /** #811 m2 — control the BLOCKING UserPromptSubmit dispatch behavior. */
   userPromptSubmit:
     | { mode: "allow" }
     | { mode: "deny"; reason?: string }
@@ -65,7 +49,7 @@ function stubManager(
     })),
     runUserPromptSubmit: vi.fn(async () => {
       if (userPromptSubmit.mode === "throw") {
-        // The loop's fire helper must treat an unexpected throw as fail-closed.
+        // Unexpected blocking-hook throws must fail closed.
         throw new Error("ups dispatch boom");
       }
       if (userPromptSubmit.mode === "deny") {
@@ -115,7 +99,6 @@ describe("ConversationLoop — #811 m2 lifecycle events", () => {
 
     const starts = mgr.runLifecycleEvent.mock.calls.filter((c) => c[0] === "SessionStart",
     );
-    // SessionStart fires exactly once across two turns of the same session.
     expect(starts).toHaveLength(1);
     const [, sessionId, , payload] = starts[0];
     expect(typeof sessionId).toBe("string");
@@ -134,7 +117,7 @@ describe("ConversationLoop — #811 m2 lifecycle events", () => {
 
     await loop.runTurn("first", undefined, undefined, { inputOrigin: "user-keyboard",
     });
-    await loop.newConversation(); // resets sessionStartFiredFor → the next turn re-announces.
+    await loop.newConversation();
     await loop.runTurn("second", undefined, undefined, { inputOrigin: "user-keyboard",
     });
 
@@ -165,15 +148,13 @@ describe("ConversationLoop — #811 m2 lifecycle events", () => {
 
   it("a lifecycle hook deny does NOT change control flow — the turn still completes", async () => {
     const provider = new FakeProvider([completeTurn()]);
-    const mgr = stubManager("deny"); // every lifecycle dispatch denies.
+    const mgr = stubManager("deny");
     const loop = buildLoop(provider, mgr);
     (loop as { provider: LLMProvider | null }).provider = provider;
 
-    // No throw, and the turn returns its normal assistant text despite the deny.
     const result = await loop.runTurn("hi", undefined, undefined, { inputOrigin: "user-keyboard",
     });
     expect(result.text).toBe("ok");
-    // Both SessionStart and Stop still fired (observe-only — deny ignored).
     expect(mgr.runLifecycleEvent.mock.calls.some((c) => c[0] === "SessionStart"),
     ).toBe(true);
     expect(mgr.runLifecycleEvent.mock.calls.some((c) => c[0] === "Stop")).toBe(true,
@@ -182,7 +163,7 @@ describe("ConversationLoop — #811 m2 lifecycle events", () => {
 
   it("back-compat: no scriptHookManager ⇒ no lifecycle dispatch, turn unchanged", async () => {
     const provider = new FakeProvider([completeTurn()]);
-    const loop = buildLoop(provider); // no manager
+    const loop = buildLoop(provider);
     (loop as { provider: LLMProvider | null }).provider = provider;
 
     const result = await loop.runTurn("hi", undefined, undefined, { inputOrigin: "user-keyboard",
@@ -196,7 +177,6 @@ describe("ConversationLoop — Stop hook continuation", () => {
   const BLOCK: StopDispatch = { decision: "deny", reason: "hook blocked", results: [{ blockFeedback: "Run the focused tests first." }] };
   const ALLOW: StopDispatch = { decision: "allow", reason: "noop", results: [] };
 
-  /** Every round ends cleanly; counts how often the model was asked. */
   function countingProvider() {
     const provider = {
       vendor: "openai" as const,
@@ -295,10 +275,8 @@ describe("ConversationLoop — #811 m2 UserPromptSubmit (BLOCKING, fail-closed)"
 
     const result = await loop.runTurn("hello", undefined, undefined, { inputOrigin: "user-keyboard",
     });
-    // The turn reached the LLM and returned its normal assistant text.
     expect(result.text).toBe("ok");
     expect(result.stopReason).toBe("end_turn");
-    // The blocking hook was dispatched with the prompt-shaped payload.
     expect(mgr.runUserPromptSubmit).toHaveBeenCalledTimes(1);
     const [sessionId, trustOrigin, payload] = mgr.runUserPromptSubmit.mock.calls[0];
     expect(typeof sessionId).toBe("string");
@@ -313,7 +291,6 @@ describe("ConversationLoop — #811 m2 UserPromptSubmit (BLOCKING, fail-closed)"
 
   it("a DENYING UserPromptSubmit hook REFUSES the turn — queryLoop NOT entered, blocked result", async () => {
     const turns = vi.fn(() => completeTurn());
-    // A provider that THROWS if streamTurn is ever called — proves queryLoop never runs.
     const provider: LLMProvider = {
       vendor: "openai",
       async *streamTurn() {
@@ -330,10 +307,9 @@ describe("ConversationLoop — #811 m2 UserPromptSubmit (BLOCKING, fail-closed)"
     });
     expect(result.stopReason).toBe("blocked");
     expect(result.toolCalls).toEqual([]);
-    // The refusal text surfaces the hook's reason; the LLM was never called.
     expect(result.text).toContain("policy: blocked term");
     expect(turns).not.toHaveBeenCalled();
-    // Stop should NOT fire — the turn never started its query loop.
+    // Stop must not fire when the query loop never started.
     expect(mgr.runLifecycleEvent.mock.calls.some((c) => c[0] === "Stop")).toBe(false,
     );
   });
@@ -351,7 +327,6 @@ describe("ConversationLoop — #811 m2 UserPromptSubmit (BLOCKING, fail-closed)"
 
     const result = await loop.runTurn("hi", undefined, undefined, { inputOrigin: "user-keyboard",
     });
-    // Fail-closed: an unexpected dispatch error refuses the turn.
     expect(result.stopReason).toBe("blocked");
     expect(result.text).toContain("fail-closed");
   });
@@ -370,7 +345,7 @@ describe("ConversationLoop — #811 m2 UserPromptSubmit (BLOCKING, fail-closed)"
 
   it("no scriptHookManager ⇒ UserPromptSubmit never dispatched, turn proceeds (byte-identical to today)", async () => {
     const provider = new FakeProvider([completeTurn()]);
-    const loop = buildLoop(provider); // no manager at all
+    const loop = buildLoop(provider);
     (loop as { provider: LLMProvider | null }).provider = provider;
 
     const result = await loop.runTurn("hi", undefined, undefined, { inputOrigin: "user-keyboard",

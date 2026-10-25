@@ -1,10 +1,7 @@
 import type { LLMVendor, ThinkingBlock } from "./types.js";
 
-/**
- * Select signed reasoning blocks that the active route can replay. Callers
- * without a route conservatively retain replayable blocks for estimation.
- * Display-only thought is never request content.
- */
+/** Replay only route-supported signed reasoning; unknown routes retain it for conservative estimation.
+ * Display-only thought never enters request content. */
 export function selectAssistantWireThinkingBlocks(
   blocks: readonly ThinkingBlock[] | undefined,
   vendor?: LLMVendor,

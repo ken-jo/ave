@@ -1,16 +1,3 @@
-/**
- * Checkpoint view-mode and branch — ConversationLoop unit tests.
- *
- * Tests:
- *  1. enterViewMode returns null when checkpoint not found
- *  2. enterViewMode returns messageIndexAtCreation for a known checkpoint
- *  3. exitViewMode is a no-op (does not throw)
- *  4. branchFromCheckpoint throws when checkpoint not found
- *  5. branchFromCheckpoint throws when snapshot is null (not saved yet)
- *  6. branchFromCheckpoint throws when snapshot is shorter than messageCountAtTrigger
- *  7. branchFromCheckpoint loads from snapshot, slices to messageCountAtTrigger, persists branch metadata
- *  8. branchFromCheckpoint marks user-ended branches for automatic continuation
- */
 import { describe, it, expect, vi } from "vitest";
 
 import { InputClassifier } from "../../core/input-classifier.js";
@@ -35,8 +22,6 @@ function makeLoop(
   const savedSessions = new Map<string, unknown[]>();
   const savedMetadata = new Map<string, unknown>();
 
-  // By default simulate a snapshot that has FAKE_DISK_MESSAGES (3 messages),
-  // unless the caller explicitly passes null (snapshot not found) or a custom array.
   const resolvedSnapshot = snapshotMessages === undefined ? FAKE_DISK_MESSAGES : snapshotMessages;
 
   const memoryManager = {
@@ -113,7 +98,6 @@ describe("ConversationLoop branchFromCheckpoint", () => {
   });
 
   it("throws when snapshot is shorter than messageCountAtTrigger", async () => {
-    // Snapshot has only 1 message, checkpoint expects 10
     const { loop } = makeLoop(
       [{ compactNum: 1, messageCountAtTrigger: 10 }],
       [{ role: "user", content: "only one msg" }],
@@ -123,23 +107,16 @@ describe("ConversationLoop branchFromCheckpoint", () => {
   });
 
   it("repairs orphaned tool_call/tool_result pairs from a malformed snapshot before persisting", async () => {
-    // Snapshot simulates a malformed JSONL that skipped a tool_result line,
-    // leaving an orphaned tool_call (no matching tool_result partner).
-    // GenericMessage format uses message.toolCalls[] for assistant tool calls
-    // and role="tool_result" messages for results.
-    // normalizeToolPairInvariant should strip the dangling toolCall so the
-    // branched session has a valid paired history.
+    // A malformed snapshot can omit a tool result; branching must remove its orphaned call.
     const orphanedSnapshot = [
       { role: "user" as const, content: [{ type: "text" as const, text: "hello" }],
       },
-      // Assistant message with a tool_call whose tool_result was skipped (malformed JSONL)
       { role: "assistant" as const, content: "ok", toolCalls: [{ id: "t1", name: "foo", input: {} }],
       },
-      // tool_result for "t1" deliberately omitted — simulates malformed JSONL skip
+      // Omit the result to simulate a malformed JSONL row.
       { role: "user" as const, content: [{ type: "text" as const, text: "next question" }],
       },
     ];
-    // messageCountAtTrigger covers all 3 messages from the snapshot
     const { loop, savedSessions } = makeLoop(
       [{ compactNum: 2, messageCountAtTrigger: 3 }],
       orphanedSnapshot,
@@ -149,9 +126,6 @@ describe("ConversationLoop branchFromCheckpoint", () => {
 
     const saved = savedSessions.get(newSessionId) as unknown[] | undefined;
     expect(saved).toBeDefined();
-    // normalizeToolPairInvariant strips toolCalls with no matching tool_result.
-    // The assistant message had visible content ("ok"), so it is kept but with toolCalls removed.
-    // Verify no saved message retains toolCalls referencing the orphaned id "t1".
     const hasOrphanedToolCall = (saved ?? []).some((msg: unknown) => {
       const m = msg as { role: string; toolCalls?: Array<{ id: string }> };
       return (
@@ -162,31 +136,25 @@ describe("ConversationLoop branchFromCheckpoint", () => {
   });
 
   it("loads from snapshot, slices to messageCountAtTrigger, and persists branch metadata", async () => {
-    // FAKE_DISK_MESSAGES has 3 messages; checkpoint at messageCountAtTrigger=2
     const { loop, memoryManager, savedSessions, savedMetadata } = makeLoop([
       { compactNum: 1, messageCountAtTrigger: 2 },
     ]);
-    // In-memory history is intentionally empty (simulates post-compaction state)
-    // to confirm the implementation reads from snapshot, not this.history
+    // Empty post-compaction memory forces branching to read the checkpoint snapshot.
 
     const result = await loop.branchFromCheckpoint(1);
     const { newSessionId } = result;
 
-    // loadCheckpointSnapshot was called for the current session and compactNum
     expect(memoryManager.loadCheckpointSnapshot).toHaveBeenCalledWith(loop.getSessionId(), 1,
     );
 
-    // New session id is a UUID
     expect(newSessionId).toMatch(/^[0-9a-f-]{36}$/);
     expect(result.lastMessageRole).toBe("assistant");
     expect(result.shouldAutoContinue).toBe(false);
 
-    // Saved messages are sliced to exactly messageCountAtTrigger (2) from snapshot
     const saved = savedSessions.get(newSessionId) as unknown[] | undefined;
     expect(saved).toBeDefined();
     expect(saved!.length).toBe(2);
 
-    // Metadata includes checkpoint provenance and prior summary.
     const meta = savedMetadata.get(newSessionId) as
       | Record<string, unknown> | undefined;
     expect(meta).toBeDefined();

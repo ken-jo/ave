@@ -1,11 +1,3 @@
-/**
- * Slash-command handlers.
- *
- * `handleCommand` (built-in slash dispatch) and `handlePermissionCommand`
- * (`/permission ...` sub-dispatch). Extracted from `conversation-loop.ts` as
- * free functions over a `self: ConversationLoop` this-shaped param; the class
- * keeps a `handleCommand` delegator that runTurn's command route calls.
- */
 import type { ConversationLoop } from "../conversation-loop.js";
 import type { TurnCallbacks, TurnResult } from "./types.js";
 import type { ChatInputOrigin } from "../../shared/chat-origin.js";
@@ -39,47 +31,26 @@ function toolProvenanceLabel(tool: {
   return "builtin";
 }
 
-/**
- * The names {@link handleCommand} dispatches, in step with its switch. A
- * custom command file or a skill can only claim a name outside this set:
- * built-ins always win. Any other `/<skill-name>` is a user's explicit request
- * to use that skill and goes to the model (see run-turn).
- */
+// Builtins retain their names; command files and skills may claim only names outside this switch set.
 export const BUILTIN_SLASH_COMMANDS: ReadonlySet<string> = new Set([
   "new", "remember", "memory", "sessions", "load", "model", "vendor",
   "compact", "tools", "permission", "goal", "help",
 ]);
 
-/** Keyword that returns `/model` to the session's constructed model. */
 const MODEL_COMMAND_RESET = "default";
 
-/**
- * Catalog matches that name the model itself. The looser steps (`folded`,
- * `unprefixed`) forgive spelling for context-window lookups, but a request
- * sent with that spelling would still fail at the provider.
- */
+// Loose catalog matches are safe for capacity lookup, not dispatchable model spelling.
 const VERIFYING_CATALOG_MATCHES: ReadonlySet<string> = new Set([
   "exact", "alias", "version-tag", "canonical", "date-suffix",
 ]);
 
-/**
- * `deployment`: the route names a user-defined deployment, which no list can
- * enumerate; the switch is made but reported as unverified.
- */
+// Deployment names cannot be enumerated; switching them remains explicitly unverified.
 type ModelVerification = "verified" | "unknown" | "retired" | "unverifiable" | "deployment";
 
-/**
- * Vendors whose model field is a deployment name the user created, not a
- * model id: no catalog or `/models` answer can enumerate them, so only the
- * next request can confirm one.
- */
+// Only the next request can confirm a user-created deployment name.
 const DEPLOYMENT_NAMED_VENDORS: ReadonlySet<string> = new Set(["azure-foundry"]);
 
-/**
- * Whether the subscription runtime's live catalog offers `model` — the same
- * list its session start re-checks a selected model against. An unreachable
- * or empty catalog leaves the model unverifiable.
- */
+/** Empty or unreachable subscription catalogs leave model choices unverifiable. */
 async function verifySubscriptionModel(self: ConversationLoop, model: string): Promise<ModelVerification> {
   const list = self.provider?.listSubscriptionModels;
   if (!list) return "unverifiable";
@@ -93,14 +64,7 @@ async function verifySubscriptionModel(self: ConversationLoop, model: string): P
   return models.includes(model) ? "verified" : "unknown";
 }
 
-/**
- * Whether `model` is one the active API route serves, judged from the same
- * two sources the settings page offers models from: the model catalog (for a
- * vendor's own endpoint) and the route's `/models` answer. A route with no
- * cached answer is asked once. When neither source can speak for the route —
- * a custom endpoint whose list cannot be fetched — the model is unverifiable,
- * never assumed.
- */
+/** Validate against route-owned catalog or endpoint knowledge; absent knowledge never implies support. */
 async function verifyRouteModel(self: ConversationLoop, model: string): Promise<ModelVerification> {
   const settings = self.deps.settingsService;
   const llm = settings.get("llm");
@@ -119,8 +83,6 @@ async function verifyRouteModel(self: ConversationLoop, model: string): Promise<
 
   const hit = catalogModelFor(address.vendor, model, undefined, address.baseUrl);
   const inCatalog = hit !== undefined && VERIFYING_CATALOG_MATCHES.has(hit.match);
-  // A deployment name is the user's own; asking an endpoint for a list would
-  // answer a different question.
   if (DEPLOYMENT_NAMED_VENDORS.has(address.vendor) && !listing()?.models.includes(model)) return "deployment";
   if (!listing()?.models.includes(model) && !inCatalog) {
     const policy = address.credentialScope
@@ -134,20 +96,15 @@ async function verifyRouteModel(self: ConversationLoop, model: string): Promise<
         ...(policy ? { modelDiscoveryPolicy: policy } : {}),
       });
     } catch {
-      // An unreachable endpoint leaves the cached answer, or none, to decide.
+      // Unreachable discovery leaves cached knowledge, or none, authoritative.
     }
   }
   if (listing()?.models.includes(model) || inCatalog) return retired() ? "retired" : "verified";
-  // A list or a catalog that speaks for this route and does not name the model.
   if (listing() !== undefined || catalogSpeaksFor(address)) return "unknown";
   return "unverifiable";
 }
 
-/**
- * Whether the catalog's entries describe this route: the vendor maps to
- * catalog providers that list models, and the route uses the vendor's own
- * endpoint rather than a gateway that may serve other names.
- */
+// Catalog entries speak for native endpoints, not gateways serving arbitrary model names.
 function catalogSpeaksFor(address: LlmRouteCatalogAddress): boolean {
   if (!allowsImplicitModelLimits(address.vendor, address.baseUrl)) return false;
   const providers = Object.hasOwn(CATALOG_PROVIDERS_BY_VENDOR, address.vendor)
@@ -157,12 +114,7 @@ function catalogSpeaksFor(address: LlmRouteCatalogAddress): boolean {
   return providers.some((provider) => Object.keys(catalog.providers[provider]?.models ?? {}).length > 0);
 }
 
-/**
- * `/model` — show the session's model, or switch it. The switch goes through
- * the loop's model override, which the provider and the context-window
- * resolver already honour, and lasts until the session changes. Only a model
- * the active route is known to serve is accepted.
- */
+/** Session model overrides last until switching sessions; accept only route-verified choices. */
 async function handleModelCommand(self: ConversationLoop, args: string): Promise<string> {
   const requested = args.trim();
   const llm = self.deps.settingsService.get("llm");
@@ -281,10 +233,7 @@ export async function handleCommand(
         result = t("be_conversationLoop.cmdVendorInfo", { vendor: self.getVendor(), session: self.sessionId.slice(0, 8), input: self.cumulativeUsage.inputTokens, output: self.cumulativeUsage.outputTokens });
         break;
       case "compact": {
-        // manualCompact uses the LLM compact path (12-section structured summary +
-        // freezeBoundary + summaryPreamble persistence + checkpoint append).
-        // callbacks 전달 — onCompactOccurred 가 renderer 에 compact_notice 이벤트 전달 가능.
-        // `/compact <focus>`: the argument tells the summarizer what to keep.
+        // Pass compact focus and progress callbacks through the checkpointing summary path.
         const focus = args.trim();
         const r = await self.manualCompact({
           ...(callbacks?.onCompactOccurred ? { onCompactOccurred: callbacks.onCompactOccurred } : {}),
@@ -295,11 +244,7 @@ export async function handleCommand(
         break;
       }
       case "tools": {
-        // The /tools diagnostic reflects THE MODEL's tools — getModelVisibleTools, not
-        // the executable `getVisibleTools()` superset. After app-only tools became
-        // registry `Tool`s the superset includes them (+ the auth trio); printing those
-        // app-only names is a soft name-disclosure surface the model-exposure design
-        // avoids, and this listing is meant to be exactly what the model can see.
+        // Diagnostics list model-visible tools only; executable app-only tools must not leak their names.
         const tools = self.deps.toolRegistry.getModelVisibleTools();
         result = tools.map((tool) => `${tool.name} [${toolProvenanceLabel(tool)}]`).join("\n") || t("be_conversationLoop.cmdToolsEmpty");
         break;
@@ -312,9 +257,7 @@ export async function handleCommand(
         const store = self.deps.sessionGoalStore;
         if (!store) { result = t("be_conversationLoop.cmdGoalUnavailable"); break; }
         const text = args.trim();
-        // The same upsert the `session_goal` tool performs: no goal yet and
-        // this sets one, a goal already there and this replaces its text with
-        // the rounds it has already spent left alone.
+        // Goal upsert replaces text without resetting rounds already spent.
         if (!text) {
           const current = store.get(self.sessionId);
           result = current === null
@@ -498,11 +441,7 @@ export async function handlePermissionCommand(
           ...(h.errors ?? []).map((error) => `  - ${error}`)].join("\n")).join("\n");
       return t("be_conversationLoop.hookTrustStatus", { active, disabled });
     }
-    // accept|disable|reject mutated hook trust state. Mirror the IPC hook-trust
-    // handlers (ipc/domains/permissions.ts) and notify multi-window
-    // PermissionsTab subscribers so the quarantine banner live-refreshes
-    // instead of waiting for tab re-entry. `list` is a no-op read above and
-    // does not broadcast; failed commands already returned earlier.
+    // Successful trust mutations must broadcast to permission views in every window; reads do not.
     self.deps.broadcastPermissionConfigChanged?.();
     if (result.verb === "accept") {
       return t("be_conversationLoop.hookAccepted", { fileName: result.accepted.fileName, count: result.trusted.length });

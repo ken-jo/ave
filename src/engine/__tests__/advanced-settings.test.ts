@@ -1,14 +1,3 @@
-/**
- * CTRL simplification — StreamTurnParams shape verification.
- *
- * Verifies that StreamTurnParams only carries the fields that remain after
- * tuning-control removal (temperature, maxOutputTokens, seed, responseFormat,
- * stopSequences all removed). streamSmoothing, enableThinking, and
- * thinkingBudgetTokens remain.
- *
- * Vendor-specific payload mapping is covered by the VercelUnifiedProvider
- * adapter tests in src/engine/llm/vercel/__tests__/.
- */
 import { describe, expect, it } from "vitest";
 import type { LLMProvider, StreamEvent, StreamTurnParams } from "../llm/types.js";
 
@@ -32,7 +21,7 @@ describe("CTRL simplification — StreamTurnParams shape", () => {
       enableThinking: false,
       thinkingBudgetTokens: 0,
     });
-    for await (const _ of iter) { /* drain */ }
+    for await (const _ of iter) {  }
     const p = provider.lastParams!;
     expect(p.streamSmoothing).toBe("word");
     expect(p.enableThinking).toBe(false);
@@ -40,15 +29,11 @@ describe("CTRL simplification — StreamTurnParams shape", () => {
   });
 
   it("StreamTurnParams does NOT include removed tuning controls", () => {
-    // Type-level assertion: these keys must not exist on StreamTurnParams.
-    // If they were re-added, TypeScript would fail at compile time (test files
-    // excluded from tsconfig but checked by IDE and CI tsc --noEmit runs on src/).
     const params: StreamTurnParams = {
       model: "gpt-test",
       systemPrompt: "",
       messages: [],
     };
-    // Runtime check: none of the removed fields appear on the object
     expect("temperature" in params).toBe(false);
     expect("maxOutputTokens" in params).toBe(false);
     expect("seed" in params).toBe(false);

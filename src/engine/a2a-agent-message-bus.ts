@@ -91,7 +91,6 @@ export type A2ATerminalMailboxCleanupResult =
   | { ok: true; removed: number; retained: number }
   | { ok: false; reason: "storage-failed" };
 
-/** Host-mediated child-to-parent and sibling A2A bus. */
 export class A2AAgentMessageBus {
   private sendTail: Promise<void> = Promise.resolve();
 
@@ -500,9 +499,7 @@ export class A2AAgentMessageBus {
         } catch {
           rolledBack = false;
         }
-        // A failed rollback leaves one bounded ledger allocation behind. The
-        // stage must still become terminal: retrying either operation could
-        // duplicate a parent edge after an indeterminate delivery.
+        // A failed rollback must terminate the stage; retrying indeterminate delivery can duplicate parent edges.
         stage.state = rolledBack ? "rolled-back" : "indeterminate";
         return this.drop(
           stage.input,

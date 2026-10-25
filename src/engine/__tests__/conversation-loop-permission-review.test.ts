@@ -1,9 +1,4 @@
-/**
- * The permission review verdict the user saw live must survive a session
- * reload. The renderer rebuilds a reloaded transcript from persisted messages
- * only, so the turn stamps each review onto the tool_result it belongs to —
- * without that stamp, the verdict exists in the live stream and nowhere else.
- */
+// Persist permission verdicts on tool results so transcript reload retains them.
 import { describe, expect, it } from "vitest";
 
 import { InputClassifier } from "../../core/input-classifier.js";
@@ -37,7 +32,6 @@ function oneToolRound(): FakeProvider {
   ]);
 }
 
-/** Builds a loop whose executor emits `review` for the round's single tool. */
 function makeLoop(review: PermissionReviewEvent): ConversationLoop {
   const toolRegistry = new ToolRegistry();
   toolRegistry.register(

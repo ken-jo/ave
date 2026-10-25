@@ -1,7 +1,3 @@
-/**
- * Structured Compact tests — recap reviewer interface + parser + freeze invariant.
- * `compactWithBoundary()` 는 `ConversationLoop.runPreflightGuard` 에서 호출됨.
- */
 import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -41,11 +37,8 @@ afterEach(async () => {
   }
 });
 
-// ─── parseSummary ──────────────────────────────────────
-
 describe("parseSummary — 12-section template", () => {
   function makeFullSummary(): string {
-    // 12 헤더 모두 채워진 valid 응답
     return [
       "# Session State as of 2026-05-08T00:00:00Z (compact #1, templateVersion 1)",
       "",
@@ -110,15 +103,12 @@ describe("parseSummary — 12-section template", () => {
   });
 
   it("falls back to raw when a header is missing", () => {
-    // Open Blockers 헤더 누락
     const broken = makeFullSummary().replace("## Open Blockers\n(미정)\n\n", "");
     const r = parseSummary(broken);
     expect(r.raw).toBeDefined();
-    // sections 일부는 채워질 수 있으나, raw 가 set 됨이 핵심 — caller 가 retry 또는 raw 사용 결정
   });
 
   it("falls back to raw when section body is empty (not (미정))", () => {
-    // Goal 섹션이 빈 본문
     const broken = makeFullSummary().replace("## Goal\nauth refactor 완료\n", "## Goal\n\n");
     const r = parseSummary(broken);
     expect(r.raw).toBeDefined();
@@ -131,8 +121,6 @@ describe("parseSummary — 12-section template", () => {
     expect(Object.keys(r.sections)).toHaveLength(0);
   });
 });
-
-// ─── SUMMARY_TEMPLATE_PROMPT_V1 contract ──────────────
 
 describe("SUMMARY_TEMPLATE_PROMPT_V1 placeholders", () => {
   it("contains {{conversationText}} placeholder", () => {
@@ -161,8 +149,6 @@ describe("SUMMARY_TEMPLATE_PROMPT_V1 placeholders", () => {
     expect(SUMMARY_TEMPLATE_PROMPT_V1).toContain("unsafe pending action");
   });
 });
-
-// ─── freezeBoundary (P7 invariant) ────────────────────
 
 describe("freezeBoundary — Object.freeze invariant (P7)", () => {
   function makeBoundary(): CompactBoundary {
@@ -275,13 +261,11 @@ describe("freezeBoundary — Object.freeze invariant (P7)", () => {
   it("deepFreeze is idempotent — already-frozen boundary re-frozen safely", () => {
     const b = makeBoundary();
     const frozen1 = freezeBoundary(b);
-    const frozen2 = freezeBoundary(b); // second call must not throw
+    const frozen2 = freezeBoundary(b);
     expect(frozen1).toBe(frozen2);
     expect(Object.isFrozen(frozen2)).toBe(true);
   });
 });
-
-// ─── compactWithBoundary (recap reviewer call) ──────────
 
 function makeMockReviewer(responses: string[]): CompactRecapReviewer {
   let idx = 0;
@@ -347,7 +331,7 @@ describe("compactWithBoundary — recap reviewer integration", () => {
     const r = await compactWithBoundary({
       messages,
       memoryReviewer,
-      preserveRecentTokens: 200, // 작게 잡아서 split 발생 보장
+      preserveRecentTokens: 200,
       sessionId: "test-sess",
       preflightTokens: 100_000,
       compactNum: 1,
@@ -380,7 +364,6 @@ describe("compactWithBoundary — recap reviewer integration", () => {
     expect(content).toContain(`<prior-context-summary>\n${summary}\n</prior-context-summary>`);
     expect(content).toContain("auth refactor");
     expect(content).not.toContain("system prompt");
-    // The row's size is what the post-compact projection counts.
     expect(r.estimatedAfter).toBe(estimateMessagesTokens(r.newHistory));
   });
 
@@ -460,7 +443,6 @@ describe("compactWithBoundary — recap reviewer integration", () => {
       preflightTokens: 100_000,
       compactNum: 1,
     });
-    // Phase 3 — NOOP status, boundary null, removedCount 0.
     expect(r.status).toBe("noop");
     expect(r.boundary).toBeNull();
     expect(r.removedCount).toBe(0);
@@ -557,7 +539,6 @@ describe("compactWithBoundary — recap reviewer integration", () => {
   });
 
   it("retries parse failure once, then graceful raw fallback", async () => {
-    // 두 번 모두 형식 위반 → raw fallback
     const memoryReviewer = makeMockReviewer(["bad response 1", "bad response 2"]);
     const messages = makeLongHistory(50);
 
@@ -606,7 +587,6 @@ describe("compactWithBoundary — recap reviewer integration", () => {
       },
       { role: "user", content: "lock me", meta: { lock: true } },
     ];
-    // pad with more to ensure split
     for (let i = 0; i < 30; i++) {
       messages.push({ role: "user", content: `q${i} `.repeat(10) });
       messages.push({ role: "assistant", content: `a${i} `.repeat(10) });
@@ -658,8 +638,7 @@ describe("compactWithBoundary — recap reviewer integration", () => {
 
   it("respects tool_use/tool_result invariant on split", async () => {
     const memoryReviewer = makeMockReviewer([makeFullSummaryText()]);
-    // 끝부분에 tool_use → tool_result 페어. preserveRecentTokens 가 작게 설정되어
-    // tool_result 만 preserve 영역에 포함되면 split adjust 가 페어 보존하도록 뒤로 밂.
+    // preserve 영역의 tool_result가 앞선 tool_use와 분리되지 않도록 경계를 조정한다.
     const messages: GenericMessage[] = [];
     for (let i = 0; i < 30; i++) {
       messages.push({ role: "user", content: `q${i} `.repeat(20) });
@@ -680,16 +659,13 @@ describe("compactWithBoundary — recap reviewer integration", () => {
     const r = await compactWithBoundary({
       messages,
       memoryReviewer,
-      preserveRecentTokens: 50, // 작게 — tool_result 만 preserve 영역에 들어가도 페어 보존
+      preserveRecentTokens: 50,
       sessionId: "test-sess",
       preflightTokens: 100_000,
       compactNum: 1,
     });
-    // newHistory 의 첫번째 non-stub 이 tool_use 가 있는 assistant 라면 페어 보존.
-    // 또는 양쪽 다 toCompact 로 넘어가도 OK (페어 분리 X).
     const preservedToolResults = r.newHistory.filter((m) => m.role === "tool_result");
     if (preservedToolResults.length > 0) {
-      // tool_result 가 보존됐다면 그 직전에 매칭 tool_use 도 보존돼야 함.
       const idx = r.newHistory.findIndex((m) => m.role === "tool_result");
       const prev = idx > 0 ? r.newHistory[idx - 1] : undefined;
       expect(prev?.role).toBe("assistant");
@@ -700,17 +676,13 @@ describe("compactWithBoundary — recap reviewer integration", () => {
   });
 
   it("deep tool chain (>3 step) at preserve boundary — surviving never starts with orphan tool_result", async () => {
-    // Loop 2 NEW MAJOR fix: splitForBoundary 의 backward walk 는 3-step bound
-    // 이므로 더 깊은 tool chain 에선 preserveStart 가 여전히 tool_result 일 수
-    // 있음. adjustForwardToToolBoundary 후처리로 surviving[0] 이 절대 orphan
-    // tool_result 가 되지 않게 보장. 이 시나리오 회귀 차단.
+    // 깊은 tool chain은 backward bound를 넘으므로 forward 조정도 orphan result를 막아야 한다.
     const memoryReviewer = makeMockReviewer([makeFullSummaryText()]);
     const messages: GenericMessage[] = [];
     for (let i = 0; i < 15; i++) {
       messages.push({ role: "user", content: `q${i} `.repeat(20) });
       messages.push({ role: "assistant", content: `a${i} `.repeat(20) });
     }
-    // Append 6-step deep tool chain (>3 backward bound) at the tail.
     for (let i = 0; i < 3; i++) {
       messages.push({
         role: "assistant",
@@ -734,18 +706,13 @@ describe("compactWithBoundary — recap reviewer integration", () => {
       compactNum: 1,
     });
 
-    // newHistory[0] = boundary stub (user role). newHistory[1] 가 첫 surviving
-    // 메시지. orphan tool_result 가 안 되어야 함 — toPreserve 가 비어있어 stub
-    // 만 있거나, 또는 첫 surviving 메시지가 non-tool_result.
     if (r.newHistory.length > 1) {
       expect(r.newHistory[1].role).not.toBe("tool_result");
     }
   });
 
   it("REDUCED_INSUFFICIENT_FORCED — post-compact > preflight*0.8 triggers oldest 50% drop + archive", async () => {
-    // Forced archive: LLM summary 후에도 budget 초과 시 toPreserve oldest 50% 강제
-    // drop. fresh preserveRecent 가 충분히 커서 post-compact 가 여전히
-    // preflight × 0.8 초과하도록 fixture 구성.
+    // 요약 후에도 budget을 넘도록 보존 영역을 키워 강제 archive를 검증한다.
     const memoryReviewer = makeMockReviewer([makeFullSummaryText()]);
     const messages: GenericMessage[] = [];
     for (let i = 0; i < 30; i++) {
@@ -760,8 +727,6 @@ describe("compactWithBoundary — recap reviewer integration", () => {
       const r = await compactWithBoundary({
         messages,
         memoryReviewer,
-        // history ≈ 30K tokens, preserve 10K → toCompact ≈ 20K → A.5 drops to ~4.5K
-        // → LLM summary → newHistory ≈ stub + 10K preserve = ~10K. 10K > 5K*0.8=4K → FORCED.
         preserveRecentTokens: 10_000,
         sessionId: "test-sess-forced",
         preflightTokens: 5_000,
@@ -807,8 +772,6 @@ describe("compactWithBoundary — recap reviewer integration", () => {
     ).toBe(true);
   });
 });
-
-// ─── renderBoundaryAsPreamble ──────────────────────────
 
 describe("renderBoundaryAsPreamble — boundary → ⑧ slot text", () => {
   function makeFrozenBoundary(): Readonly<CompactBoundary> {
@@ -881,13 +844,8 @@ describe("renderBoundaryAsPreamble — boundary → ⑧ slot text", () => {
 
 describe("compactWithBoundary — oversize pre-pass measures WIRE cost, not raw", () => {
   it("does not archive+clip a marked tool_result whose wire form is a short stub", async () => {
-    // The damage this pins: `markStaleToolResults` keeps a marked tool_result's
-    // content VERBATIM in memory on purpose (UI + checkpoint preview) while the
-    // provider only ever receives `buildToolResultStrippedStub`. Measuring the raw
-    // content here made the pre-pass archive the message to disk and clip it —
-    // saving nothing on the wire and destroying the verbatim copy the marker
-    // contract exists to preserve.
-    const huge = "x".repeat(200_000); // ~50K tokens raw, ~0 on the wire
+    // Measure marked results as wire stubs; archiving raw content would destroy the inspection copy.
+    const huge = "x".repeat(200_000);
     const raw: GenericMessage[] = [
       { role: "user", content: "go" },
       { role: "assistant", content: "calling tool" },
@@ -895,7 +853,6 @@ describe("compactWithBoundary — oversize pre-pass measures WIRE cost, not raw"
       { role: "user", content: "thanks" },
     ];
 
-    // Mark through the REAL producer, not a hand-set meta flag.
     const { messages, result: markResult } = markStaleToolResults(raw, {
       preserveRecentToolResults: 0,
       minStubThreshold: 200,
@@ -904,7 +861,6 @@ describe("compactWithBoundary — oversize pre-pass measures WIRE cost, not raw"
     const marked = messages[2];
     if (marked.role !== "tool_result") throw new Error("expected tool_result");
     expect(marked.meta?.compactedAt).toBeDefined();
-    // The marker keeps memory verbatim — that is what the pre-pass must not undo.
     expect(marked.content).toHaveLength(200_000);
 
     const reviewer: CompactRecapReviewer = {
@@ -915,8 +871,6 @@ describe("compactWithBoundary — oversize pre-pass measures WIRE cost, not raw"
     const r = await compactWithBoundary({
       messages,
       memoryReviewer: reviewer,
-      // Large enough that nothing is split off for summarization, so the only
-      // thing under test is the oversize pre-pass.
       preserveRecentTokens: 10_000_000,
       sessionId: "wire-cost-sess",
       preflightTokens: 1_000_000,
@@ -928,14 +882,11 @@ describe("compactWithBoundary — oversize pre-pass measures WIRE cost, not raw"
     if (out?.role !== "tool_result") throw new Error("expected tool_result");
     expect(out.content).toHaveLength(200_000);
     expect(out.content).not.toContain("lines truncated, full content saved to");
-    // Nothing was written to the archive directory either.
     expect(existsSync(join(testAveHome!, "sessions", "wire-cost-sess", "truncated"))).toBe(false);
   });
 
   it("still archives+clips an UNMARKED oversize message (the pre-pass is not disabled)", async () => {
-    // Guards the fix against being satisfied by a pre-pass that never fires.
-    // Many lines: the clipper preserves the last N LINES, so a single 200K-char
-    // line would survive verbatim and prove nothing.
+    // Use many lines because the clipper preserves trailing lines; one giant line would not prove clipping.
     const huge = Array.from({ length: 4_000 }, (_, i) => `line ${i} ${"y".repeat(45)}`).join("\n");
     const messages: GenericMessage[] = [
       { role: "user", content: "go" },
@@ -964,12 +915,6 @@ describe("compactWithBoundary — oversize pre-pass measures WIRE cost, not raw"
   });
 });
 
-// ─── preserveUnit: the agent turn that could not be compacted ──────────────
-
-/**
- * One agent turn: a user question, then N rounds of (assistant tool call →
- * tool result). No further user message, because the turn has not ended.
- */
 function makeAgentTurnHistory(rounds: number, priorUserTurns = 0): GenericMessage[] {
   const messages: GenericMessage[] = [];
   for (let i = 0; i < priorUserTurns; i++) {
@@ -996,9 +941,7 @@ describe("compactWithBoundary — preserveUnit inside a long agent turn", () => 
   const PREFLIGHT = 10_000;
 
   it("cannot reduce a fresh session's agent turn while the floor counts user turns", async () => {
-    // The measured shape: nothing but this turn's own rounds. Every one of
-    // them sits after the only user message, so the user-turn floor protects
-    // the whole history and the compactor has nothing to summarize.
+    // A user-turn floor protects the entire active tool loop and leaves nothing to summarize.
     const messages = makeAgentTurnHistory(20);
     expect(estimateMessagesTokens(messages)).toBeGreaterThan(PREFLIGHT);
 
@@ -1033,16 +976,12 @@ describe("compactWithBoundary — preserveUnit inside a long agent turn", () => 
     expect(result.removedCount).toBeGreaterThan(0);
     expect(result.estimatedAfter).toBeLessThan(before);
     expect(result.estimatedAfter).toBeLessThan(PREFLIGHT);
-    // The tail the model still needs to continue the turn survives verbatim,
-    // and it starts on a boundary the provider accepts.
     expect(result.newHistory[0]?.meta?.compactBoundary).toBe(true);
     expect(result.newHistory.at(-1)?.role).toBe("tool_result");
   });
 
   it("keeps the question this turn is answering, even when it falls behind the cut", async () => {
-    // The floor counts tool rounds, so a long turn's cut lands far past the
-    // user's question. Dropping it leaves the model executing an instruction
-    // it can no longer read — the summary paraphrases it at best.
+    // Pin the current question when tool-round compaction cuts past it.
     const question = "index the repository and report";
     const result = await compactWithBoundary({
       messages: makeAgentTurnHistory(20, 2),
@@ -1058,11 +997,8 @@ describe("compactWithBoundary — preserveUnit inside a long agent turn", () => 
       (m) => m.role === "user" && m.content === question,
     );
     expect(verbatim).toHaveLength(1);
-    // It is pinned at the head of what survived, right after the summary, so
-    // the preserved rounds still read as answers to it.
     expect(result.newHistory[0]?.meta?.compactBoundary).toBe(true);
     expect(result.newHistory[1]?.content).toBe(question);
-    // Only the current question is pinned — the earlier turns still compact.
     expect(
       result.newHistory.some((m) => m.role === "user" && m.content === "earlier question 0"),
     ).toBe(false);
@@ -1079,8 +1015,7 @@ describe("compactWithBoundary — preserveUnit inside a long agent turn", () => 
       compactNum: 1,
     });
 
-    // No tool_result may survive without the assistant tool call it answers:
-    // the provider rejects the whole request on a tool_use_id it cannot match.
+    // Surviving tool results must retain matching assistant calls or the provider rejects the request.
     const liveToolUseIds = new Set<string>();
     for (const message of result.newHistory) {
       if (message.role === "assistant") {
@@ -1093,8 +1028,7 @@ describe("compactWithBoundary — preserveUnit inside a long agent turn", () => 
   });
 
   it("still preserves whole user turns when the floor is left on user turns", async () => {
-    // The between-turns contract is unchanged: five prior questions and
-    // everything after them survive.
+    // Between turns, preserve the last five user turns and everything after them.
     const result = await compactWithBoundary({
       messages: makeAgentTurnHistory(20, 8),
       memoryReviewer: makeMockReviewer([makeFullSummaryText()]),
@@ -1104,7 +1038,6 @@ describe("compactWithBoundary — preserveUnit inside a long agent turn", () => 
       compactNum: 1,
     });
 
-    // The last five completed user turns, exactly as between turns.
     const preservedUserTurns = result.newHistory.filter(
       (message) => message.role === "user" && message.meta?.compactBoundary !== true,
     ).length;

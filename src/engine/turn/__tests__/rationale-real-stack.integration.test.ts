@@ -235,9 +235,7 @@ describe("foreground rationale real-stack integration", () => {
     const scopeReviewer = new LlmRationaleScopeReviewer({
       complete: async (input) => {
         scopeReviewerPrompts.push(input.userPrompt);
-        // Deliberately NOT auto-approve-eligible: the reviewer leaves scope
-        // "unclear", so this exercises the full user-modal path even though the
-        // risk stays medium.
+        // Unclear scope forces the modal path despite medium risk.
         return {
           text: JSON.stringify({
             level: "medium",
@@ -332,12 +330,7 @@ describe("foreground rationale real-stack integration", () => {
         requireExplicit: true,
         toolName: "write_fixture",
       });
-      // Main-to-renderer rationale IPC intentionally carries only the
-      // renderer-safe approval card. Execution metadata stays in the host.
-      // `sessionId` is on the card deliberately: it is the host-owned id of
-      // the conversation blocked on this modal, not execution metadata or
-      // conversation content, and the user needs it to tell a background
-      // conversation's card apart from the one they are reading.
+      // Send only the safe approval card; sessionId identifies the blocked conversation without exposing execution metadata.
       expect(Object.keys(modalRequests[0] ?? {}).sort()).toEqual([
         "allowedChoices",
         "args",
@@ -457,7 +450,6 @@ describe("foreground rationale real-stack integration", () => {
     let approvalGate!: ApprovalGate;
     const webContents = {
       isDestroyed: () => false,
-      // The reviewer auto-approve terminal must never reach the renderer modal.
       send: (channel: string, request: ApprovalRequest) => {
         expect(channel).toBe(IPC_APPROVAL_REQUEST);
         rationaleLifecycleOrder.push("modal");
@@ -498,7 +490,6 @@ describe("foreground rationale real-stack integration", () => {
 
     const scopeReviewer = new LlmRationaleScopeReviewer({
       complete: async () => ({
-        // Fresh + aligned + non-high → auto-approve eligible.
         text: JSON.stringify({
           level: "medium",
           reason: "The exact sealed write is in-scope and bounded.",
@@ -565,20 +556,16 @@ describe("foreground rationale real-stack integration", () => {
         },
       );
 
-      // The tool executed end-to-end through the sealed resume.
       expect(write).toHaveBeenCalledTimes(1);
       expect(result.toolCalls.map((call) => call.result)).toEqual([
         "write-complete",
         RATIONALE_SIBLING_CANCELLED_RESULT,
       ]);
 
-      // ZERO modal: neither the ApprovalGate nor the renderer was engaged.
       expect(requestAndWait).not.toHaveBeenCalled();
       expect(modalRequests).toHaveLength(0);
       expect(rationaleLifecycleOrder).not.toContain("modal");
 
-      // Still audited: authorized → started → completed, and a single terminal
-      // projection distinctly marked reviewer-auto.
       expect(invocationRecords.map((record) => record.state)).toEqual([
         "authorized",
         "started",

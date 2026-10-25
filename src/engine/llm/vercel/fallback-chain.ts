@@ -1,18 +1,4 @@
-/**
- * D1a — Multi-model fallback chain for transient LLM errors.
- *
- * Wraps any LLMProvider's streamTurn so that on a transient failure (5xx,
- * 429, or network-level errors) the caller retries the same provider up to
- * five times before being handed events from the next entry in the fallback
- * chain.
- *
- * Design constraints:
- *   - AbortError is NOT retried — user cancellation must propagate immediately.
- *   - Auth / 4xx errors are NOT retried — those indicate config bugs, fail fast.
- *   - Fallback only fires BEFORE the first stream event reaches the caller
- *     (pre-stream failure). Mid-stream recovery is not attempted because we
- *     cannot replay partial output deterministically.
- */
+// Retry transient pre-stream failures only; auth, validation, cancellation, and partial output cannot fall back.
 import type {
   LLMProvider,
   ProviderRequestInputProjection,
@@ -61,14 +47,7 @@ const MAX_ATTEMPTS_PER_PROVIDER = 5;
 
 type ErrorStreamEvent = Extract<StreamEvent, { type: "error" }>;
 
-/**
- * Retains a retryable pre-stream event while it travels through the retry
- * loop. The normal primary/fallback path still throws after exhaustion, but
- * a subscription-only primary returns this original event to the engine so
- * provider-as-oracle schema recovery and TPM recovery keep their structured
- * diagnostics. The subscription adapter owns the renderer-safe `error`
- * string; this class never creates or widens an error surface.
- */
+// Preserve structured subscription error events for bounded engine recovery after transient retries.
 class RetryableStreamEventError extends Error {
   constructor(readonly event: ErrorStreamEvent) {
     super(event.error);
@@ -76,14 +55,12 @@ class RetryableStreamEventError extends Error {
   }
 }
 
-/** Error categories that must NOT trigger fallback (config bugs → fail fast). */
 function isNonRetryable(err: unknown): boolean {
-  // User cancellation — sacred, never fallback.
+  // User cancellation must propagate without retries or fallback.
   if (err instanceof Error && err.name === "AbortError") return true;
 
   const msg = errorMessage(err);
   const lower = msg.toLowerCase();
-  // Auth errors (401/403), validation errors (400), model-not-found (404).
   if (/\b(400|401|403|404)\b/.test(msg)) return true;
   if (/api_key|authentication|unauthorized|forbidden|invalid_model|model_not_found/.test(lower)) return true;
   if (/baseurl is required|project is required|location is required/.test(lower)) return true;
@@ -91,10 +68,7 @@ function isNonRetryable(err: unknown): boolean {
 }
 
 function isNonRetryableStreamEvent(event: ErrorStreamEvent): boolean {
-  // Error events carry richer provider diagnostics than a thrown Error. Keep
-  // deterministic request failures on their first attempt so the query loop
-  // can apply its bounded schema-drop/context recovery rather than burning
-  // the transient retry budget first. A 429 remains explicitly retryable.
+  // Deterministic request failures go straight to bounded schema/context recovery; 429 remains retryable.
   const classification = event.classification ?? event.providerError?.classification;
   const diagnosticClassification = event.providerError?.classification;
   if (
@@ -113,11 +87,7 @@ function isNonRetryableStreamEvent(event: ErrorStreamEvent): boolean {
   return status !== undefined && status !== 429 && status >= 400 && status < 500;
 }
 
-/**
- * Collect events from the primary provider's stream. If the first event is
- * an `error` with a retryable classification, throw so the caller can fallback.
- * Otherwise yield all events normally.
- */
+// Only retryable first-event errors may enter fallback; later events pass through unchanged.
 async function* attemptStream(
   provider: LLMProvider,
   params: StreamTurnParams,
@@ -129,9 +99,7 @@ async function* attemptStream(
         yield ev;
         return;
       }
-      // Retryable error event (network / rate-limit / unknown) — retain the
-      // complete structured event across retries. The terminal subscription
-      // path returns it without exposing any new provider text.
+      // Retain the complete error event across retries without widening exposed provider text.
       throw new RetryableStreamEventError(ev);
     }
     firstEvent = false;
@@ -167,8 +135,7 @@ async function* attemptStreamWithRetries(
       lastErr = err;
       await waitForAttemptWindow(attemptStartedAt, err, params.abortSignal);
       if (attempt >= MAX_ATTEMPTS_PER_PROVIDER) break;
-      // Logged like a fallback is: a run of retries is what a slow or flapping
-      // gateway looks like from the chat, and nothing else records why.
+      // Audit retries so slow or unstable gateways remain diagnosable.
       log.warn(`retry: ${label} attempt=${attempt + 1}/${MAX_ATTEMPTS_PER_PROVIDER} reason=${errorMessage(err)}`);
       callbacks?.onStatus?.({
         phase: "retry",
@@ -202,23 +169,16 @@ function waitForAttemptWindow(
   const remainingMs = Math.max(0, MIN_RETRY_WINDOW_MS - (Date.now() - startedAt));
   if (abortSignal?.aborted) return Promise.reject(makeAbortError());
   if (remainingMs <= 0) return Promise.resolve();
-  // The chain's callers match on the AbortError name, not the signal's reason.
+  // Callers match AbortError by name rather than the signal reason.
   return sleep(remainingMs, abortSignal).catch(() => {
     throw makeAbortError();
   });
 }
 
-/**
- * Build a provider for a fallback entry. Reuses the same API key lookup
- * that the primary path uses (secretKeyFor → getSecret injected by caller).
- */
+// Reuse the injected secret lookup only when constructing a needed fallback.
 export type ApiKeyGetter = (vendor: LLMVendor) => string;
 export type ProviderFactory = (config: ProviderConfig) => LLMProvider;
 
-/**
- * Wraps a primary LLMProvider with fallback-chain semantics.
- * Delegates streamTurn to streamWithFallback — transparent to all callers.
- */
 export class FallbackProvider implements LLMProvider {
   readonly vendor: LLMVendor;
   readonly subscriptionRuntime?: SubscriptionChatRuntimeSelection;
@@ -251,13 +211,10 @@ export class FallbackProvider implements LLMProvider {
   ): ProviderRequestInputProjection | undefined {
     if (this.chain.length === 0) return this.primary.projectRequestInput?.(input);
 
-    // Preflight runs before an attempt can select a fallback. Reserve the
-    // largest complete projection among configured routes; summing routes
-    // would charge context for requests that are never sent together.
+    // Reserve the largest complete route projection, never sum mutually exclusive requests.
     let projection = estimateRequestInputProjection(input, this.primary);
     for (const entry of this.chain) {
-      // Fallback entries use the generic API-key transport. Projection must
-      // not construct providers or read credentials before they are needed.
+      // Projection must not construct fallback providers or read their credentials.
       const candidate = estimateRequestInputProjection(input, { vendor: entry.provider });
       if (candidate.totalTokens > projection.totalTokens) projection = candidate;
     }
@@ -291,8 +248,7 @@ export async function* streamWithFallback(
   _createProvider: ProviderFactory = defaultCreateProvider,
   callbacks?: FallbackCallbacks,
 ): AsyncIterable<StreamEvent> {
-  // Attempt 0: primary provider.
-  // Attempts 1..N: lazily-constructed fallback providers (built only when needed).
+  // Construct fallback providers lazily after the primary attempt.
   const totalAttempts = 1 + chain.length;
 
   const getAttempt = (i: number): {
@@ -311,8 +267,7 @@ export async function* streamWithFallback(
     }
     const entry = chain[i - 1]!;
     const apiKey = getApiKey(entry.provider);
-    // Resolved limits, catalog identity and capabilities describe the primary
-    // model only; the fallback transport resolves its own catalog facts.
+    // Primary route limits and capabilities cannot be carried into fallback models.
     const {
       outputCeiling: _primaryCeiling,
       outputCeilingSource: _primaryCeilingSource,
@@ -351,7 +306,7 @@ export async function* streamWithFallback(
       if (isNonRetryable(err)) throw err;
       lastErr = err;
       if (i + 1 >= totalAttempts) break;
-      const nextEntry = chain[i]; // chain[i] is the (i+1)-th attempt's entry
+      const nextEntry = chain[i];
       const nextLabel = nextEntry ? `${nextEntry.provider}/${nextEntry.model}` : "??";
       const reason = errorMessage(err);
       const msg = `fallback: ${label}→${nextLabel} reason=${reason}`;
@@ -360,11 +315,7 @@ export async function* streamWithFallback(
       callbacks?.onStatus?.({ phase: "fallback", from: label, to: nextLabel, reason });
     }
   }
-  // A subscription provider is deliberately wrapped with an empty chain: it
-  // may retry its own connected runtime, but must never construct an API-key
-  // fallback. Preserve the original structured event for the ordinary query
-  // loop after that bounded retry budget is exhausted. API-key chains retain
-  // their existing throw-on-exhaustion contract.
+  // Subscription retries never construct API-key fallbacks; retain the structured event on exhaustion.
   if (primary.subscriptionRuntime && lastErr instanceof RetryableStreamEventError) {
     yield lastErr.event;
     return;

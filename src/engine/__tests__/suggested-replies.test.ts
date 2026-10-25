@@ -1,7 +1,3 @@
-/**
- * Tests for the suggested-replies parser + streaming filter.
- * See `docs/architecture/proposals/suggested-replies-ghost-text.md`.
- */
 import { describe, it, expect } from "vitest";
 import {
   createStreamingFilter,
@@ -65,27 +61,18 @@ describe("stripSuggestedReplies", () => {
   });
 
   it("removes a mid-text block (defensive — should not happen in practice)", () => {
-    // Mid-text occurrences shouldn't happen in well-behaved model output.
-    // When they do, we strip aggressively (surrounding whitespace included)
-    // — the priority is "no raw tag reaches the user", not preserving the
-    // exact line spacing of malformed output.
+    // Malformed tags must not reach the user, even if stripping alters surrounding whitespace.
     const raw = "before\n<suggested_replies>\n- x\n</suggested_replies>\nafter";
     expect(stripSuggestedReplies(raw)).toBe("beforeafter");
   });
 
   it("strips an unclosed trailing block (vendor malformation guard)", () => {
-    // GPT / Gemini occasionally truncate before the closing tag. Without
-    // this guard the open tag would survive into ~/.ave/sessions JSONL and
-    // re-feed as context on every subsequent turn — the same leak class as
-    // M3 from the PR #807 review.
+    // Strip unterminated blocks before persistence so they cannot replay into later turns.
     const raw = "본문\n<suggested_replies>\n- a";
     expect(stripSuggestedReplies(raw)).toBe("본문");
   });
 
   it("removes multiple blocks (defensive — model malformation or history echo)", () => {
-    // If a prior turn's block survived into history and the next turn echoes
-    // it back ALONGSIDE a freshly emitted block, both must be removed before
-    // re-persistence — otherwise blocks would compound across turns.
     const raw = [
       "본문",
       "<suggested_replies>",
@@ -122,8 +109,6 @@ describe("createStreamingFilter", () => {
 
   it("handles the open tag split across chunk boundaries", () => {
     const f = createStreamingFilter();
-    // The "<sugg" suffix could be a partial open tag — it must NOT leak to
-    // the visible stream while we wait for the rest.
     expect(f.feed("body text <sugg")).toBe("body text ");
     expect(f.feed("ested_replies>\n- ok\n</suggested_replies>")).toBe("");
     expect(f.finish().suggestedReply).toBe("ok");
@@ -131,7 +116,6 @@ describe("createStreamingFilter", () => {
 
   it("treats a partial-tag suffix that turns out to be plain text as visible", () => {
     const f = createStreamingFilter();
-    // "<sugg" looks like a prefix, but the next chunk diverges — emit it.
     expect(f.feed("see <sugg")).toBe("see ");
     expect(f.feed("ar in coffee")).toBe("<suggar in coffee");
     expect(f.finish()).toEqual({ trailing: "", suggestedReply: null });
@@ -139,7 +123,6 @@ describe("createStreamingFilter", () => {
 
   it("returns trailing pending on stream end without a block", () => {
     const f = createStreamingFilter();
-    // Stream ends with a partial-tag suffix — still emitted as plain text.
     expect(f.feed("done <sug")).toBe("done ");
     expect(f.finish()).toEqual({ trailing: "<sug", suggestedReply: null });
   });
@@ -147,8 +130,6 @@ describe("createStreamingFilter", () => {
   it("drops the partial block silently when the stream aborts mid-block", () => {
     const f = createStreamingFilter();
     expect(f.feed("hi\n<suggested_replies>\n- a")).toBe("hi");
-    // Stream aborts here — block never closed. Parser returns null and
-    // trailing is empty so the renderer sees nothing leftover.
     expect(f.finish()).toEqual({ trailing: "", suggestedReply: null });
   });
 });

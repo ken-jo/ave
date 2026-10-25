@@ -16,7 +16,6 @@ const LLM_SETTINGS = {
 
 class ScriptedProvider implements LLMProvider {
   readonly vendor = "openai" as const;
-  /** Recorded so a test can assert what actually crossed the wire. */
   lastParams: StreamTurnParams | null = null;
   constructor(private readonly events: readonly StreamEvent[]) {}
 
@@ -25,7 +24,6 @@ class ScriptedProvider implements LLMProvider {
     yield* this.events;
   }
 }
-
 
 class SubscriptionCapturingProvider implements LLMProvider {
   readonly vendor = "openai" as const;
@@ -282,11 +280,7 @@ describe("collectRoundStream tool call IDs", () => {
   });
 });
 describe("per-vendor output ceiling", () => {
-  // Some gateways pre-authorize credit against the MODEL's maximum output, not
-  // the tokens produced: OpenRouter answers 402 "requires more credits, or
-  // fewer max_tokens" when a capped key cannot afford the full ceiling, so such
-  // a key cannot start any turn. Setting a ceiling is the way out; the adapter
-  // already maps `outputTokenLimit` to the request's native limit.
+  // Gateways may reserve credit against maximum output; a request ceiling can make capped keys usable.
   it("forwards a configured ceiling to the provider", async () => {
     const provider = new ScriptedProvider([
       { type: "message_complete", stopReason: "end_turn" },
@@ -314,7 +308,6 @@ describe("per-vendor output ceiling", () => {
       toolSchemas: [],
       llmSettings: LLM_SETTINGS,
     });
-    // Default stays CTRL policy — vendor SDK defaults govern.
     expect(provider.lastParams).not.toHaveProperty("outputTokenLimit");
   });
 });

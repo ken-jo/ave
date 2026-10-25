@@ -933,11 +933,8 @@ describe("A2ASubAgentMessageBus security boundary", () => {
     })).resolves.toMatchObject({ ok: true, disposition: "queued" });
     expect(entries).toHaveLength(1);
     expect(dispositionCallbacks?.approvalReasonPrefix).toBe("[Sub-Agent: worker]");
-    // Structured provenance so the renderer can draw the child-report box
-    // without sniffing the approval label string.
     expect(dispositionCallbacks?.subAgentTitle).toBe("worker");
-    // The parent is told to judge the report; the durable entry stays canonical
-    // so the next-turn drain path cannot instruct a second time.
+    // Keep durable reports canonical so draining cannot repeat the parent instruction.
     const injectedText = queueGuidanceWithDisposition.mock.calls[0]?.[0] as string;
     expect(injectedText.endsWith(entries[0]?.formattedText ?? "")).toBe(true);
     expect(injectedText).not.toBe(entries[0]?.formattedText);
@@ -957,7 +954,6 @@ describe("A2ASubAgentMessageBus security boundary", () => {
       type: "warn",
       input: expect.stringContaining("empty-body-fallback"),
     }));
-    // The stored text is what the parent will read — never an id-only envelope.
     const body = (entries[0]?.formattedText ?? "").split("\n").slice(1).join("\n");
     expect(body.trim().length).toBeGreaterThan(0);
   });
@@ -1244,9 +1240,7 @@ describe("A2ASubAgentMessageBus security boundary", () => {
 
     wakeResolvers.shift()?.();
     await vi.waitFor(() => expect(wake).toHaveBeenCalledTimes(2));
-    // The token the racing delivery left behind is what re-woke the parent —
-    // the drain never inspects the mailbox, so a re-wake cannot be triggered
-    // by an entry the previous wake failed to consume.
+    // Only a new delivery token can re-wake a parent after an unsuccessful drain.
     expect(peek).not.toHaveBeenCalled();
 
     wakeResolvers.shift()?.();
@@ -1297,8 +1291,6 @@ describe("A2ASubAgentMessageBus security boundary", () => {
     })).resolves.toMatchObject({ ok: true, disposition: "queued" });
     expect(wake).not.toHaveBeenCalled();
 
-    // Exactly the order `runTurn`'s cleanup uses: drop unreachable guidance,
-    // then announce the settled turn.
     activeTurn = false;
     dispositionCallbacks?.onDropped?.("turn-ended");
     localBus.notifyTurnSettled("parent-session");
