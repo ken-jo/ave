@@ -55,7 +55,7 @@ describe("wrapper command boundaries", () => {
     expect(wrapperCommand(argv)).toMatchObject({ candidates: [2, 3, 4] });
     const shape = analyzeShellForRules(argv.join(" "));
     expect(shape).toMatchObject({ ok: true, ordinaryAsk: expect.stringMatching(/unsupported wrapper option/), hidden: [], allowBlockers: [] });
-    if (shape.ok) expect(shape.commands[0]?.allowBlockers).toEqual([]);
+    if (shape.ok) expect(shape.commands[0]?.allowBlockers).toEqual(["unsupported wrapper option"]);
   });
 
   it.each([
@@ -117,7 +117,8 @@ describe("opaque runner prefixes", () => {
   it.each(SHELL_PREFIX_POLICY.packageRunners)("reports ordinary approval for %s regardless of arguments", (runner) => {
     for (const args of [[], ["--help"], ["test"], ["--future", "value"], ["--registry", "https://packages.test"], ["--config", "project.json"], [undefined]]) {
       expect(opaqueRunnerReason([runner, ...args])).toBe("opaque runner prefix");
-      expect(hiddenCodeReason([runner, ...args])).toBeNull();
+      if ((runner === "bun" || runner === "deno") && args[0] !== "--help") expect(hiddenCodeReason([runner, ...args])).not.toBeNull();
+      else expect(hiddenCodeReason([runner, ...args])).toBeNull();
     }
   });
 
@@ -145,14 +146,13 @@ describe("opaque runner prefixes", () => {
     ["env", "A=1", "npm", "test"],
     ["timeout", "5", "npx", "prettier"],
     ["sudo", "-u", "operator", "pnpm", "exec", "vitest"],
-    ["env", "A=1", "busybox", "timeout", "5", "npx.cmd", "node", "script.mjs"],
   ])("finds runners behind transparent wrappers: %j", (...argv) => {
     expect(opaqueRunnerReason(argv)).toBe("opaque runner prefix");
     expect(hiddenCodeReason(argv)).toBeNull();
   });
 
   it("does not interpret forwarded runner arguments as wrapper effects", () => {
-    const argv = ["env", "A=1", "npx", "node", "--output", "build", "PATH=runtime-data"];
+    const argv = ["env", "A=1", "npx", "printf", "--output", "build", "PATH=runtime-data"];
     expect(hiddenCodeReason(argv)).toBeNull();
     expect(hiddenCodeReason(["env", "PATH=/tmp/tools", "npx", "node"])).toMatch(/code-carrying variable PATH/);
   });

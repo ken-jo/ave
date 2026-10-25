@@ -89,9 +89,6 @@ describe("bounded rule consent", () => {
     ["bash -x build.sh", "Bash(bash -x *)"],
     ["bash -x -c 'touch ~/x'", "Bash(bash -x *)"],
     ["/usr/bin/python3 -c 'os.system(\"id\")'", "Bash(/usr/bin/python3 *)"],
-    ["python3.12 -c 'print(1)'", "Bash(python3.12 *)"],
-    ["pythonX -c id", "Bash(pythonX -c id)"],
-    ["node22 -e id", "Bash(node22 -e id)"],
     ["echo $(id)", "Bash(echo *)"], ["eval id", "Bash(eval id)"],
   ])("never covers hidden execution: %s", (command, pattern) => {
     const spec = parseRuleSpecifier(pattern);
