@@ -979,7 +979,17 @@ const MAX_GIT_EXCLUSION_ANSWERS = 65_536;
 
 /** Cleanup cannot move host entries hidden or made read-only by this policy. */
 function gitQuarantineExclusions(filesystem: Partial<FilesystemConfig>, floor: readonly string[]): (path: string, includesChildren?: boolean) => boolean {
-  const normalize = (path: string): string => resolvePhysicalFilesystemPath(expandLeadingTilde(path), process.cwd(), MAX_WALK_UP);
+  // The floor, read masks and write denies repeat many of the same paths;
+  // resolve each spelling once for this build.
+  const normalized = new Map<string, string>();
+  const normalize = (path: string): string => {
+    let physical = normalized.get(path);
+    if (physical === undefined) {
+      physical = resolvePhysicalFilesystemPath(expandLeadingTilde(path), process.cwd(), MAX_WALK_UP);
+      normalized.set(path, physical);
+    }
+    return physical;
+  };
   const protectedReads = floor.map(normalize);
   const readMasks = spelledPathEntries(filesystem.denyRead ?? [], "denyRead").map(normalize);
   const writeRoots = spelledPathEntries(filesystem.allowWrite ?? [], "allowWrite").map(normalize);
