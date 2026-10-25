@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { findIconPath } from "./app-icon.js";
 import { projectRoot } from "./main-paths.js";
 
 type NativeImageModule = typeof import("electron").nativeImage;
@@ -29,13 +29,7 @@ export function resolveTrayIconPath(options: TrayIconPathOptions = {}): string {
   const exists = options.exists ?? existsSync;
   const fileName = trayIconFileName(platform);
 
-  const candidates = [
-    resourcesPath ? join(resourcesPath, fileName) : null,
-    join(devProjectRoot, "build", fileName),
-    join(cwd, "build", fileName),
-  ].filter((candidate): candidate is string => Boolean(candidate));
-
-  const iconPath = candidates.find((candidate) => exists(candidate));
+  const iconPath = findIconPath(fileName, resourcesPath, devProjectRoot, cwd, exists);
   if (!iconPath) {
     throw new Error(`Ave tray icon asset missing: ${fileName}. Run bun run build:icons before launching.`);
   }

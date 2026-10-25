@@ -1,5 +1,5 @@
 // Parent guidance has separate addressing and suspension semantics from child-to-parent or sibling messaging.
-import { createDynamicTool, type Tool } from "./base.js";
+import { createDynamicTool, toolSessionId, type Tool } from "./base.js";
 import type { SubAgentRunner } from "../engine/subagent-runner.js";
 import { PARENT_DIRECTIVE_MAX_CHARS } from "../engine/parent-directive.js";
 import { t } from "../i18n/index.js";
@@ -52,9 +52,7 @@ export function createAgentGuideTool(deps: AgentGuideToolDeps): Tool {
       }
       const runner = deps.getRunner();
       if (!runner) return resultError("agent_guide runner not configured");
-      const originSessionId = typeof ctx.metadata?.sessionId === "string"
-        ? ctx.metadata.sessionId
-        : "";
+      const originSessionId = toolSessionId(ctx) ?? "";
       if (!originSessionId) return resultError("agent_guide requires a session id");
 
       const input = (rawInput ?? {}) as Record<string, unknown>;

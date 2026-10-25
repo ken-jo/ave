@@ -3,7 +3,7 @@
 
 
 import { t } from "../i18n/index.js";
-import { createDynamicTool, type Tool } from "./base.js";
+import { createDynamicTool, toolErrorResult, type Tool } from "./base.js";
 import { MAX_PLACEHOLDER_LENGTH } from "../shared/ask-user-question-limits.js";
 import {
   MAX_QUESTIONS_PER_CARD,
@@ -135,60 +135,30 @@ export function createAskUserQuestionTool(deps: AskUserQuestionToolDeps): Tool {
       }
       const gate = deps.getGate();
       if (!gate) {
-        return {
-          output: JSON.stringify({
-            error: "ask_user_question gate not configured (no active window)",
-          }),
-          isError: true,
-        };
+        return toolErrorResult("ask_user_question gate not configured (no active window)");
       }
       // Require a session identity so the card has an addressable conversation.
       if (typeof ctx.metadata?.sessionId !== "string" || ctx.metadata.sessionId.length === 0) {
-        return {
-          output: JSON.stringify({
-            error: "ask_user_question requires an executing session",
-          }),
-          isError: true,
-        };
+        return toolErrorResult("ask_user_question requires an executing session");
       }
       const sessionId = ctx.metadata.sessionId;
       const a = (rawInput ?? {}) as Record<string, unknown>;
       const rawQuestions = Array.isArray(a.questions) ? a.questions : null;
       if (!rawQuestions || rawQuestions.length === 0) {
-        return {
-          output: JSON.stringify({
-            error: "questions[] is required and must contain at least one item",
-          }),
-          isError: true,
-        };
+        return toolErrorResult("questions[] is required and must contain at least one item");
       }
       if (rawQuestions.length > MAX_QUESTIONS_PER_CARD) {
-        return {
-          output: JSON.stringify({
-            error: `questions[] capped at ${MAX_QUESTIONS_PER_CARD} per card`,
-          }),
-          isError: true,
-        };
+        return toolErrorResult(`questions[] capped at ${MAX_QUESTIONS_PER_CARD} per card`);
       }
       const questions: AskUserQuestionItem[] = [];
       for (const raw of rawQuestions) {
         const q = (raw ?? {}) as Record<string, unknown>;
         const question = typeof q.question === "string" ? q.question.trim() : "";
         if (!question) {
-          return {
-            output: JSON.stringify({
-              error: "every questions[].question must be a non-empty string",
-            }),
-            isError: true,
-          };
+          return toolErrorResult("every questions[].question must be a non-empty string");
         }
         if (!Array.isArray(q.choices)) {
-          return {
-            output: JSON.stringify({
-              error: "each question must provide a choices array",
-            }),
-            isError: true,
-          };
+          return toolErrorResult("each question must provide a choices array");
         }
         if (
           q.choices.some(
@@ -198,15 +168,11 @@ export function createAskUserQuestionTool(deps: AskUserQuestionToolDeps): Tool {
               choiceDisplayWidth(choice.trim()) > MAX_CHOICE_WIDTH,
           )
         ) {
-          return {
-            output: JSON.stringify({
-              error:
-                "each choice must be a non-empty string that fits the chip: " +
-                `at most ${MAX_CHOICE_WIDTH} display columns ` +
-                "(a Latin character is one, a CJK character two)",
-            }),
-            isError: true,
-          };
+          return toolErrorResult(
+            "each choice must be a non-empty string that fits the chip: " +
+              `at most ${MAX_CHOICE_WIDTH} display columns ` +
+              "(a Latin character is one, a CJK character two)",
+          );
         }
         // Preserve original choice positions when dropping placeholders so badges retain their intended targets.
         const keptChoices = (q.choices as string[])
@@ -218,28 +184,13 @@ export function createAskUserQuestionTool(deps: AskUserQuestionToolDeps): Tool {
           keptChoices.map((entry, position) => [entry.index, position]),
         );
         if (filteredChoices.length > 3) {
-          return {
-            output: JSON.stringify({
-              error: "each question must provide at most 3 choices",
-            }),
-            isError: true,
-          };
+          return toolErrorResult("each question must provide at most 3 choices");
         }
         if (filteredChoices.length === 0 && !allowFreeText) {
-          return {
-            output: JSON.stringify({
-              error: "each question must offer an answer — provide choices[] or set allowFreeText:true",
-            }),
-            isError: true,
-          };
+          return toolErrorResult("each question must offer an answer — provide choices[] or set allowFreeText:true");
         }
         if (new Set(filteredChoices).size !== filteredChoices.length) {
-          return {
-            output: JSON.stringify({
-              error: "each question must provide unique choices",
-            }),
-            isError: true,
-          };
+          return toolErrorResult("each question must provide unique choices");
         }
         const recIdxRaw = q.recommendedIndex;
         const recommendedIndex =

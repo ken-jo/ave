@@ -1,4 +1,5 @@
 // Reject installed runtimes whose generated schema lacks any request, notification, field, or literal the integration requires.
+import { isRecord } from "../shared/is-record.js";
 
 type JsonSchema = Record<string, unknown>;
 
@@ -155,12 +156,8 @@ export const CODEX_SCHEMA_FILES = Object.freeze({
   serverRequest: "ServerRequest.json",
 });
 
-function isSchema(value: unknown): value is JsonSchema {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function definitionsOf(document: JsonSchema): Record<string, unknown> {
-  return isSchema(document.definitions) ? document.definitions : {};
+  return isRecord(document.definitions) ? document.definitions : {};
 }
 
 // One union branch contains all its intersecting constraints, never its siblings.
@@ -180,7 +177,7 @@ function intersectBranches(left: SchemaBranch[], right: SchemaBranch[]): SchemaB
 function alternatives(schema: unknown, definitions: Record<string, unknown>, depth = 0): SchemaBranch[] {
   if (depth > 32 || schema === false) return [];
   if (schema === true) return [{ constraints: [], choices: [] }];
-  if (!isSchema(schema)) return [];
+  if (!isRecord(schema)) return [];
   let branches: SchemaBranch[] = [{ constraints: [schema], choices: [] }];
   if (schema.$ref !== undefined) {
     const match = typeof schema.$ref === "string" ? /^#\/definitions\/([^/]+)$/.exec(schema.$ref) : null;
@@ -210,7 +207,7 @@ function propertySchema(branch: SchemaBranch, name: string, mapEntry = false): u
   let declared = false;
   const constraints: unknown[] = [];
   for (const schema of branch.constraints) {
-    const properties = isSchema(schema.properties) ? schema.properties : {};
+    const properties = isRecord(schema.properties) ? schema.properties : {};
     if (Object.hasOwn(properties, name)) {
       declared = true;
       constraints.push(properties[name]);
@@ -225,7 +222,7 @@ function propertySchema(branch: SchemaBranch, name: string, mapEntry = false): u
 function hasSchemaType(value: unknown, expected: SchemaType): boolean {
   if (expected === "null") return value === null;
   if (expected === "array") return Array.isArray(value);
-  if (expected === "object") return isSchema(value);
+  if (expected === "object") return isRecord(value);
   if (expected === "integer") return typeof value === "number" && Number.isInteger(value);
   if (expected === "number") return typeof value === "number" && Number.isFinite(value);
   return typeof value === expected;
@@ -358,7 +355,7 @@ export function missingCodexProtocolRequirements(
   requirements: CodexProtocolRequirements = CODEX_PROTOCOL_REQUIREMENTS,
 ): string[] {
   const missing: string[] = [];
-  if (!isSchema(schemas.clientRequest) || !isSchema(schemas.serverNotification) || !isSchema(schemas.serverRequest)) {
+  if (!isRecord(schemas.clientRequest) || !isRecord(schemas.serverNotification) || !isRecord(schemas.serverRequest)) {
     return ["schema documents"];
   }
   const clientDefinitions = definitionsOf(schemas.clientRequest);
