@@ -215,19 +215,32 @@ export const SENSITIVE_PATH_ENTRIES: readonly SensitiveEntry[] = Object.freeze([
   { anchor: "home", segments: [".local", "share", "keyrings"], kind: "dir", why: "GNOME Keyring / libsecret stores" },
   { anchor: "home", segments: [".password-store"], kind: "dir", why: "pass(1) GPG-encrypted password store" },
   { anchor: "home", segments: [".config", "op"], kind: "dir", why: "1Password CLI configuration and session state" },
+  // The 1Password app's group container has a team-id-prefixed name; the
+  // floor takes literal paths, so the published ids are pinned.
+  { anchor: "home", segments: ["Library", "Group Containers", "2BUA8C4S2C.com.1password"], kind: "dir", why: "1Password 8 app data (macOS)" },
+  { anchor: "home", segments: ["Library", "Group Containers", "2BUA8C4S2C.com.agilebits"], kind: "dir", why: "1Password 7 app data (macOS)" },
+  { anchor: "home", segments: [".local", "share", "kwalletd"], kind: "dir", why: "KDE Wallet stores" },
   // ── Browser profiles: saved logins, cookies, and the keys that decrypt them ──
   // Firefox and Linux Chromium keep the decrypting key in the profile
   // (key4.db, a fixed or keyring-held Local State key), so a copy is decrypted
-  // offline; macOS/Windows Chromium keys live in the keychain/DPAPI, also floored.
-  // Whole profile roots, so a glob over a random profile name stays inside.
-  { anchor: "home", segments: ["Library", "Cookies"], kind: "dir", why: "macOS shared cookie jar (Safari, WebKit apps)" },
-  { anchor: "home", segments: ["Library", "Application Support", "Google", "Chrome"], kind: "dir", why: "Chrome profiles (macOS)" },
+  // offline. macOS/Windows Chromium wrap that key with the keychain/DPAPI; the
+  // floor denies the keychain and DPAPI key FILES, not the securityd/DPAPI API.
+  // Whole profile roots, so a glob over a random profile name stays inside;
+  // a vendor parent that holds only that vendor's app data replaces the
+  // channel list (beta, dev, canary) so a new channel is covered too.
+  { anchor: "home", segments: ["Library", "Cookies"], kind: "dir", why: "macOS legacy shared cookie jar (WebKit apps)" },
+  { anchor: "home", segments: ["Library", "Containers", "com.apple.Safari"], kind: "dir", why: "Safari container: cookies, history, local storage (macOS)" },
+  { anchor: "home", segments: ["Library", "Application Support", "Google"], kind: "dir", why: "Chrome profiles, every channel (macOS)" },
   { anchor: "home", segments: ["Library", "Application Support", "Microsoft Edge"], kind: "dir", why: "Edge profiles (macOS)" },
+  { anchor: "home", segments: ["Library", "Application Support", "Microsoft Edge Beta"], kind: "dir", why: "Edge Beta profiles (macOS)" },
+  { anchor: "home", segments: ["Library", "Application Support", "Microsoft Edge Dev"], kind: "dir", why: "Edge Dev profiles (macOS)" },
+  { anchor: "home", segments: ["Library", "Application Support", "Microsoft Edge Canary"], kind: "dir", why: "Edge Canary profiles (macOS)" },
   { anchor: "home", segments: ["Library", "Application Support", "BraveSoftware"], kind: "dir", why: "Brave profiles (macOS)" },
   { anchor: "home", segments: ["Library", "Application Support", "Chromium"], kind: "dir", why: "Chromium profiles (macOS)" },
   { anchor: "home", segments: ["Library", "Application Support", "Arc"], kind: "dir", why: "Arc profiles (macOS)" },
   { anchor: "home", segments: ["Library", "Application Support", "Vivaldi"], kind: "dir", why: "Vivaldi profiles (macOS)" },
   { anchor: "home", segments: ["Library", "Application Support", "com.operasoftware.Opera"], kind: "dir", why: "Opera profiles (macOS)" },
+  { anchor: "home", segments: ["Library", "Application Support", "com.operasoftware.OperaGX"], kind: "dir", why: "Opera GX profiles (macOS)" },
   { anchor: "home", segments: ["Library", "Application Support", "Firefox"], kind: "dir", why: "Firefox profiles (macOS)" },
   { anchor: "home", segments: [".mozilla"], kind: "dir", why: "Firefox profiles (Linux)" },
   { anchor: "home", segments: [".config", "google-chrome"], kind: "dir", why: "Chrome profiles (Linux)" },
@@ -236,6 +249,24 @@ export const SENSITIVE_PATH_ENTRIES: readonly SensitiveEntry[] = Object.freeze([
   { anchor: "home", segments: [".config", "microsoft-edge"], kind: "dir", why: "Edge profiles (Linux)" },
   { anchor: "home", segments: [".config", "vivaldi"], kind: "dir", why: "Vivaldi profiles (Linux)" },
   { anchor: "home", segments: [".config", "opera"], kind: "dir", why: "Opera profiles (Linux)" },
+  { anchor: "home", segments: [".config", "google-chrome-beta"], kind: "dir", why: "Chrome Beta profiles (Linux)" },
+  { anchor: "home", segments: [".config", "google-chrome-unstable"], kind: "dir", why: "Chrome Dev profiles (Linux)" },
+  { anchor: "home", segments: [".config", "microsoft-edge-beta"], kind: "dir", why: "Edge Beta profiles (Linux)" },
+  { anchor: "home", segments: [".config", "microsoft-edge-dev"], kind: "dir", why: "Edge Dev profiles (Linux)" },
+  // Snap and Flatpak keep each app's whole home under one per-app directory.
+  { anchor: "home", segments: ["snap", "firefox"], kind: "dir", why: "Firefox snap home (Linux)" },
+  { anchor: "home", segments: ["snap", "chromium"], kind: "dir", why: "Chromium snap home (Linux)" },
+  { anchor: "home", segments: ["snap", "brave"], kind: "dir", why: "Brave snap home (Linux)" },
+  { anchor: "home", segments: ["snap", "thunderbird"], kind: "dir", why: "Thunderbird snap home (Linux)" },
+  { anchor: "home", segments: [".var", "app", "org.mozilla.firefox"], kind: "dir", why: "Firefox Flatpak home (Linux)" },
+  { anchor: "home", segments: [".var", "app", "org.chromium.Chromium"], kind: "dir", why: "Chromium Flatpak home (Linux)" },
+  { anchor: "home", segments: [".var", "app", "com.google.Chrome"], kind: "dir", why: "Chrome Flatpak home (Linux)" },
+  { anchor: "home", segments: [".var", "app", "com.brave.Browser"], kind: "dir", why: "Brave Flatpak home (Linux)" },
+  { anchor: "home", segments: [".var", "app", "com.microsoft.Edge"], kind: "dir", why: "Edge Flatpak home (Linux)" },
+  { anchor: "home", segments: [".var", "app", "org.mozilla.Thunderbird"], kind: "dir", why: "Thunderbird Flatpak home (Linux)" },
+  // ── Mail clients: saved account passwords (logins.json + key4.db) ──
+  { anchor: "home", segments: [".thunderbird"], kind: "dir", why: "Thunderbird profiles (Linux)" },
+  { anchor: "home", segments: ["Library", "Thunderbird"], kind: "dir", why: "Thunderbird profiles (macOS)" },
   // ── Shell / tool histories — routinely contain pasted secrets ────────
   { anchor: "home", segments: [".bash_history"], kind: "file", why: "shell history" },
   { anchor: "home", segments: [".zsh_history"], kind: "file", why: "shell history" },
@@ -263,6 +294,13 @@ export const SENSITIVE_PATH_ENTRIES: readonly SensitiveEntry[] = Object.freeze([
   { anchor: "home", segments: ["AppData", "Local", "Chromium", "User Data"], kind: "dir", windows: true, why: "Chromium profiles (Windows)" },
   { anchor: "home", segments: ["AppData", "Local", "Vivaldi", "User Data"], kind: "dir", windows: true, why: "Vivaldi profiles (Windows)" },
   { anchor: "home", segments: ["AppData", "Roaming", "Opera Software"], kind: "dir", windows: true, why: "Opera profiles (Windows)" },
+  { anchor: "home", segments: ["AppData", "Local", "Google", "Chrome SxS", "User Data"], kind: "dir", windows: true, why: "Chrome Canary profiles (Windows)" },
+  { anchor: "home", segments: ["AppData", "Local", "Google", "Chrome Beta", "User Data"], kind: "dir", windows: true, why: "Chrome Beta profiles (Windows)" },
+  { anchor: "home", segments: ["AppData", "Local", "Google", "Chrome Dev", "User Data"], kind: "dir", windows: true, why: "Chrome Dev profiles (Windows)" },
+  { anchor: "home", segments: ["AppData", "Local", "Microsoft", "Edge Beta", "User Data"], kind: "dir", windows: true, why: "Edge Beta profiles (Windows)" },
+  { anchor: "home", segments: ["AppData", "Local", "Microsoft", "Edge Dev", "User Data"], kind: "dir", windows: true, why: "Edge Dev profiles (Windows)" },
+  { anchor: "home", segments: ["AppData", "Local", "Microsoft", "Edge SxS", "User Data"], kind: "dir", windows: true, why: "Edge Canary profiles (Windows)" },
+  { anchor: "home", segments: ["AppData", "Roaming", "Thunderbird"], kind: "dir", windows: true, why: "Thunderbird profiles (Windows)" },
   { anchor: "home", segments: ["AppData", "Roaming", "Mozilla", "Firefox", "Profiles"], kind: "dir", windows: true, why: "Firefox profiles (Windows)" },
   // ── Ave hook scripts — supply-chain / re-exec protection ────────────
   {
@@ -413,6 +451,10 @@ export const SENSITIVE_PATH_PATTERNS: readonly string[] = Object.freeze([
   "**/id_ecdsa",
   "**/id_ecdsa.pub",
   "**/ave-secrets.json", // shallow sibling form (not under the Ave home root)
+  // 1Password group containers under any team-id prefix (the floor pins the
+  // published ids as table rows).
+  "**/Library/Group Containers/*.com.1password*/**",
+  "**/Library/Group Containers/*.com.agilebits*/**",
   ...WINDOWS_UNANCHORED_PATTERNS,
   // ── Electron userData dir — per-platform DEFAULT locations ──────────
   // Holds plugin OAuth session cookies/tokens (Partitions/), Cookies (SQLite),
