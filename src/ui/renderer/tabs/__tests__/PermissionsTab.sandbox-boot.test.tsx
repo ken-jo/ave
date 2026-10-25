@@ -251,7 +251,7 @@ describe("PermissionsTab — boot sandbox outcome notice", () => {
     // The rest of the snapshot and the sections loaded beside it still render.
     expect(screen.getByTestId("worker-confinement-toggle")).not.toBeDisabled();
     expect(screen.getByTestId("os-sandbox-runtime-reason")).toBeInTheDocument();
-    expect(ave.permission.listRules).toHaveBeenCalled();
+    expect(ave.permission.listScopedRules).toHaveBeenCalled();
     expect(ave.permission.dirDispatch).toHaveBeenCalledWith("list");
     expect(screen.queryByText("데이터를 불러오지 못했습니다.")).toBeNull();
 

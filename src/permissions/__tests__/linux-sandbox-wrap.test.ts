@@ -551,7 +551,7 @@ it.runIf(process.platform !== "win32")("accepts a generated shared temp wrapper 
 it("accepts the --cap-add a uid-0 caller with the seccomp helper carries", () => {
   const capabilities = capabilityArgs({ euid: 0, hasSetfcap: true, usesSeccompHelper: true });
   expect(capabilities).toEqual(["--cap-drop", "ALL", "--cap-add", "CAP_SETFCAP"]);
-  const command = `bwrap --new-session --unshare-user ${capabilities.join(" ")} --ro-bind / / -- /bin/sh -c 'true'`;
+  const command = `${BWRAP_PREFIX} --unshare-user ${capabilities.join(" ")} --ro-bind / / -- /bin/sh -c 'true'`;
   expect(() => hardenLinuxSandboxWrap({ argv: ["/bin/bash", "-c", command], env: {} })).not.toThrow();
 });
 
@@ -604,9 +604,12 @@ it("knows every option the installed Linux wrapper can emit", () => {
   expect(unplaced, "new option literal in the Linux wrapper: place it").toEqual([]);
   for (const option of literals) {
     if (!Object.hasOwn(emitted, option)) continue;
-    const words = [option, ...emitted[option]!].map((word) => `'${word}'`).join(" ");
+    // A capability addition is accepted only inside a user namespace with every capability dropped.
+    const requires = option === "--cap-add" ? ["--unshare-user", "--cap-drop", "ALL"] : [];
+    const words = [...requires, option, ...emitted[option]!].map((word) => `'${word}'`).join(" ");
     expect(
-      () => hardenLinuxSandboxWrap({ argv: ["/bin/bash", "-c", `bwrap ${words} -- /bin/sh -c 'true'`], env: {} }),
+      // Every wrap carries the process lifetime guard the hardener requires.
+      () => hardenLinuxSandboxWrap({ argv: ["/bin/bash", "-c", `${BWRAP_PREFIX} ${words} -- /bin/sh -c 'true'`], env: {} }),
       option,
     ).not.toThrow();
   }

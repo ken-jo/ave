@@ -13,7 +13,6 @@ import { Button } from "../../../../components/ui/button.js";
 import { useTranslation } from "../../../../i18n/react.js";
 import type { ListedEgressGrant, RevocableEgressGrant } from "../../../../shared/egress-grant-scopes.js";
 import { formatDateTime } from "../../../../shared/format-time.js";
-import { errorMessage } from "../../../../shared/error-message.js";
 import { formatIpcError } from "../../format-ipc-error.js";
 import { isIpcErrorResult } from "../../types.js";
 import { terminalTabLabel } from "../../preview/terminal-tab-labels.js";
@@ -92,8 +91,9 @@ export function EgressGrantsList({ fetcher, revoker }: EgressGrantsListProps): R
       } else {
         setError(translate("permissionsTab.networkGrantsLoadFailed"));
       }
-    } catch (err) {
-      setError(errorMessage(err));
+    } catch {
+      // A thrown fetch carries no user-facing message; its text stays out of the UI.
+      setError(translate("permissionsTab.networkGrantsLoadFailed"));
     } finally {
       setBusy(false);
     }
@@ -105,14 +105,15 @@ export function EgressGrantsList({ fetcher, revoker }: EgressGrantsListProps): R
     try {
       const result = await (revoker ?? ((g: ListedEgressGrant) => window.ave!.permission!.egressGrantRevoke(revokeTarget(g))))(grant);
       const failed = failureMessage(result);
-      if (failed !== undefined) setError(failed);
-    } catch (err) {
-      setError(errorMessage(err));
+      // A refused revoke stays on screen with the grant still listed.
+      if (failed !== undefined) { setError(failed); return; }
+      await refresh();
+    } catch {
+      setError(translate("permissionsTab.networkGrantRevokeFailed"));
     } finally {
       setBusy(false);
     }
-    await refresh();
-  }, [revoker, refresh]);
+  }, [revoker, refresh, translate]);
 
   useEffect(() => { void refresh(); }, [refresh]);
 

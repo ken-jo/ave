@@ -194,7 +194,7 @@ describe("initSandboxGate — shell sandbox and plugin-worker confinement scopes
     expect(getHostShellExecutionPlan()).toMatchObject({
       requestedSandbox: false,
       mode: "plain",
-      fallbackReason: "none",
+      fallbackReason: "disabled-by-setting",
       requiresExplicitUserApproval: false,
       capability: { kind: "none" },
     });

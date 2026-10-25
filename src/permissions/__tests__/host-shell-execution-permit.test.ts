@@ -24,6 +24,11 @@ import {
   type PermissionCheckResult,
 } from "../permission-manager.js";
 
+// An explicit host retry on a host whose sandbox is available: the route
+// invocation authorization passes, so a wildcard allow may match (without a
+// sandbox only an exact allow can).
+const HOST_ROUTE_ON_SANDBOX_HOST = { runsSandboxed: false, sandboxAvailable: true } as const;
+
 function windowsPlan() {
   return buildHostShellExecutionPlan({
     platform: "win32",
@@ -248,7 +253,7 @@ describe("explicit host execution permit from a matching allow rule (design I3)"
   function ruleDecision(command = "echo one-shot", cwd = join(directory, "subdir")): PermissionCheckResult {
     const result = pm.checkDetailed("bash", "builtin", "shell", null, {
       ruleSubject: { kind: "shell", dialect: "bash", command, cwd },
-      hostShellExecutionPlan: explicitHostPlan(),
+      hostShellExecutionPlan: explicitHostPlan(), shellExecution: HOST_ROUTE_ON_SANDBOX_HOST,
     });
     expect(result).toMatchObject({ decision: "allow", layer: 3 });
     expect(isIssuedShellAllowRuleDecision(result)).toBe(true);
@@ -302,7 +307,9 @@ describe("explicit host execution permit from a matching allow rule (design I3)"
     const modeAllow = pm.checkDetailed("bash", "builtin", "shell", null, {
       ruleSubject: { kind: "shell", dialect: "bash", command: "echo one-shot", cwd: "/repo" },
     });
-    expect(modeAllow.decision).toBe("allow");
+    // Allow mode does not admit a plain shell outside the sandbox: it still
+    // needs an allow rule or approval, and the mode issues no rule proof.
+    expect(modeAllow).toMatchObject({ decision: "ask", layer: 6 });
     expect(isIssuedShellAllowRuleDecision(modeAllow)).toBe(false);
   });
 
@@ -311,7 +318,7 @@ describe("explicit host execution permit from a matching allow rule (design I3)"
     const binding = hostBinding(undefined, { requestedCwd: undefined, executionCwd: cwd, resolvedCwd: cwd });
     const issue = () => pm.checkDetailed("bash", "builtin", "shell", null, {
       ruleSubject: { kind: "shell", dialect: "bash", command: binding.command, cwd },
-      hostShellExecutionPlan: binding.plan,
+      hostShellExecutionPlan: binding.plan, shellExecution: HOST_ROUTE_ON_SANDBOX_HOST,
     });
     const outstanding = issue();
     const mintable = issue();
@@ -344,7 +351,7 @@ describe("explicit host execution permit from a matching allow rule (design I3)"
     expect(sandboxedPlan).toMatchObject({ mode: "asrt", executionRequest: "default" });
     const decision = pm.checkDetailed("bash", "builtin", "shell", null, {
       ruleSubject: { kind: "shell", dialect: "bash", command: binding.command, cwd },
-      hostShellExecutionPlan: sandboxedPlan,
+      hostShellExecutionPlan: sandboxedPlan, shellExecution: { runsSandboxed: true, sandboxAvailable: true },
     });
     expect(decision).toMatchObject({ decision: "allow", layer: 3 });
     expect(isIssuedShellAllowRuleDecision(decision, pm)).toBe(false);
@@ -490,7 +497,7 @@ describe("explicit host execution permit from a matching allow rule (design I3)"
     await pm.ensureProjectRulesLoaded(binding.resolvedCwd);
     await pm.loadRulesFromFile();
     const reevaluated = pm.checkDetailed("bash", "builtin", "shell", null, {
-      hostShellExecutionPlan: binding.plan, projectRulesCwd: binding.resolvedCwd,
+      hostShellExecutionPlan: binding.plan, shellExecution: HOST_ROUTE_ON_SANDBOX_HOST, projectRulesCwd: binding.resolvedCwd,
       ruleSubject: { kind: "shell", dialect: "bash", command: binding.command, cwd: binding.resolvedCwd },
     });
     expect(reevaluated).toMatchObject({ decision: "deny", layer: 1 });
@@ -502,7 +509,7 @@ describe("explicit host execution permit from a matching allow rule (design I3)"
     const other = new PermissionManager(join(directory, "permissions.json"));
     await other.addRulePersist({ pattern: "Bash(echo *)", action: "deny" }, { kind: "project", projectCwd: binding.resolvedCwd });
     const decision = pm.checkDetailed("bash", "builtin", "shell", null, {
-      hostShellExecutionPlan: binding.plan, projectRulesCwd: binding.resolvedCwd,
+      hostShellExecutionPlan: binding.plan, shellExecution: HOST_ROUTE_ON_SANDBOX_HOST, projectRulesCwd: binding.resolvedCwd,
       ruleSubject: { kind: "shell", dialect: "bash", command: binding.command, cwd: binding.resolvedCwd },
     });
     expect(isIssuedShellAllowRuleDecision(decision, pm)).toBe(false);
@@ -515,7 +522,7 @@ describe("explicit host execution permit from a matching allow rule (design I3)"
     await other.addRulePersist({ pattern: "Bash(echo *)", action: "deny" }, { kind: "user" });
     await pm.addRulePersist({ pattern: "Bash(printf *)", action: "allow" }, { kind: "user" });
     const decision = pm.checkDetailed("bash", "builtin", "shell", null, {
-      hostShellExecutionPlan: binding.plan,
+      hostShellExecutionPlan: binding.plan, shellExecution: HOST_ROUTE_ON_SANDBOX_HOST,
       ruleSubject: { kind: "shell", dialect: "bash", command: binding.command, cwd: binding.resolvedCwd },
     });
     expect(isIssuedShellAllowRuleDecision(decision, pm)).toBe(false);

@@ -1685,7 +1685,12 @@ export class BashTool extends ZodTool<typeof BashToolInputSchema> {
  * ordinary sandbox-off run does not: the user chose it.
  */
 function recordsUnsandboxedExecutionPlan(plan: HostShellExecutionPlan): boolean {
-  return plan.requiresExplicitUserApproval || plan.fallbackReason !== "none";
+  if (plan.requiresExplicitUserApproval) return true;
+  // Not requested (setting off, or no sandbox on this platform) is the
+  // ordinary sandbox-off run; every other reason is a degradation to name.
+  return plan.fallbackReason !== "none"
+    && plan.fallbackReason !== "disabled-by-setting"
+    && plan.fallbackReason !== "platform-unsupported";
 }
 
 function withoutReportedCwd(result: SpawnResult): SpawnResult {

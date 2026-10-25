@@ -26,7 +26,8 @@ afterEach(() => cleanupTmpDir(directory));
 describe("host shell invocation authorization", () => {
   it.each(["remove allow", "add deny"])("requires normal authorization again after %s invalidates a decision", async (change) => {
     const manager = new PermissionManager(join(directory, "permissions.json"));
-    manager.setRules([{ pattern: "Bash(printf *)", action: "allow" }]);
+    // No sandbox here, so only an exact allow rule can authorize the host run.
+    manager.setRules([{ pattern: "Bash(printf authorized)", action: "allow" }]);
     const check = vi.spyOn(manager, "checkDetailed");
     const tool = new BashTool();
     const execute = vi.spyOn(tool, "execute");
@@ -53,8 +54,8 @@ describe("host shell invocation authorization", () => {
       sessionId: "host-authorization", permissionContext: userPermissionContext(),
       callbacks: {
         onToolStart: () => manager.setRules(change === "remove allow" ? [] : [
-          { pattern: "Bash(printf *)", action: "allow" },
-          { pattern: "Bash(printf *)", action: "deny" },
+          { pattern: "Bash(printf authorized)", action: "allow" },
+          { pattern: "Bash(printf authorized)", action: "deny" },
         ]),
       },
     }));

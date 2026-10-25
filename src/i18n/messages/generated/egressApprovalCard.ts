@@ -1,6 +1,5 @@
 // i18n fragment. Source: src/ui/renderer/components/permissions/EgressHostApprovalCard.tsx.
 export const en = {
-  "egressApprovalCard.storeUnreadable": "Saved domain permissions could not be read. Check the permission files and try again.",
   "egressApprovalCard.dockTitle": "Approve Network Access",
   "egressApprovalCard.title": "Allow this network connection?",
   "egressApprovalCard.body": "A sandboxed {tool} command wants to connect to a host that is not allowed yet:",
@@ -23,7 +22,6 @@ export const en = {
   "egressApprovalCard.unverifiedWarningTab": "Your network's proxy server looks up this name, so Ave could not check where it leads. An allow here lasts at most until this tab's shell exits (the tab closes, or the shell exits and restarts).",
 } as const;
 export const ko: Record<keyof typeof en, string> = {
-  "egressApprovalCard.storeUnreadable": "저장된 도메인 권한을 읽을 수 없습니다. 권한 파일을 확인하고 다시 시도하세요.",
   "egressApprovalCard.dockTitle": "네트워크 접근 승인",
   "egressApprovalCard.title": "이 네트워크 연결을 허용할까요?",
   "egressApprovalCard.body": "샌드박스 안의 {tool} 명령이 아직 허용되지 않은 호스트에 연결하려고 합니다:",

@@ -3766,13 +3766,15 @@ describe("plugin-worker confinement split migration", () => {
   });
 
   it.each([
-    ["an explicit false", { osToolSandbox: false }],
-    ["no stored value", {}],
-  ])("keeps a default install (%s) off for both", async (_label, features) => {
+    ["an explicit false", { osToolSandbox: false }, false],
+    // A file without the shell value takes the platform shell default; that
+    // default is not the user's opt-in, so workers stay unconfined.
+    ["no stored value", {}, DEFAULT_SETTINGS.features!.osToolSandbox],
+  ])("keeps workers off for a default install (%s)", async (_label, features, shell) => {
     writeFileSync(path, JSON.stringify({ features }), "utf-8");
 
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(service.get("features")?.osToolSandbox).toBe(false);
+    expect(service.get("features")?.osToolSandbox).toBe(shell);
     expect(service.get("features")?.pluginWorkerConfinement).toBe(false);
 
     await service.patch({} as never);
@@ -3801,7 +3803,7 @@ describe("plugin-worker confinement split migration", () => {
   it("each setting changes only itself", async () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     await service.patch({ features: { pluginWorkerConfinement: true } });
-    expect(service.get("features")?.osToolSandbox).toBe(false);
+    expect(service.get("features")?.osToolSandbox).toBe(DEFAULT_SETTINGS.features!.osToolSandbox);
     expect(service.get("features")?.pluginWorkerConfinement).toBe(true);
 
     await service.patch({ features: { osToolSandbox: true, pluginWorkerConfinement: false } });

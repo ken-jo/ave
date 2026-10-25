@@ -1534,10 +1534,11 @@ export async function authorizeToolInvocation(
         // the exact invocation shown to the user.
         const approvalRequest = {
           id: randomUUID(),
-          ...((hostShellRequiresExplicitApproval && !isCanonicalBashTool(tool)) || requiresRemoteLocalOneShot || requiresPerActionApproval
+          ...(hostShellRequiresExplicitApproval || requiresRemoteLocalOneShot || requiresPerActionApproval
             ? {
-                // Non-rule shell, remote-controller and per-action requests
-                // retain exact one-shot consent.
+                // Plain host-shell, remote-controller and per-action approvals
+                // are exact, local one-shot decisions: none can mint a cache
+                // or a rule (design I3).
                 allowedChoices: ["allow-once", "deny-once"] as const,
                 durableApprovalRecordAllowed: false as const,
                 forceExplicit: true as const,

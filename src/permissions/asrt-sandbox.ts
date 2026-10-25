@@ -1901,7 +1901,10 @@ export function buildSandboxConfig(trustedSettings: TrustedSandboxSettings): San
   const allowRead =
     trustedSettings.allowRead !== undefined ? readGrantsOutsideReadDenies(trustedSettings.allowRead, sharedFloor, []) : undefined;
   if (srtWinPath !== undefined) assertPrivateHelperGrants(allowRead ?? [], allowWrite);
-  const windowsGrants = [...allowWrite, ...(allowRead ?? [])];
+  // The caller's own spellings stay in the grant set: the mandatory policy
+  // resolves `~` against the real home, while ASRT expands it against the
+  // profile, and a deny overlapping either one must be kept.
+  const windowsGrants = [...allowWrite, ...(trustedSettings.allowWrite ?? []), ...(allowRead ?? [])];
   const filesystem: FilesystemConfig = {
     denyRead: windowsDenyTargets(
       asrtReadDenyPaths(denyReadUnion, appOwnedSandboxPrivateRoots()),

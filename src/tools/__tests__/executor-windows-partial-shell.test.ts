@@ -150,7 +150,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     setProcessPlatform(ORIGINAL_PLATFORM);
   });
 
-  it.each(["active", "off"])("binds native consent for explicit host with sandbox %s", async (sandbox) => {
+  it.each(["active", "off"])("requires native one-shot approval for explicit host with sandbox %s and ordinary allow", async (sandbox) => {
     if (sandbox === "active") fullDarwinAsrt();
     else explicitlySandboxOff("darwin");
     const executed = vi.fn();
@@ -159,17 +159,18 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     let gate: ApprovalGate;
     const send = vi.fn((channel: string, request: ApprovalRequest) => {
       if (channel !== "ave:approval:request") return;
-      expect(request).toMatchObject({ executionPlan: { executionRequest: "host", mode: "plain", fallbackReason: "none", requiresExplicitUserApproval: true }, requireExplicit: true });
+      expect(request).toMatchObject({ executionPlan: { executionRequest: "host", mode: "plain", fallbackReason: "none", requiresExplicitUserApproval: true }, allowedChoices: ["allow-once", "deny-once"], requireExplicit: true });
       gate.resolveFromDesktopRenderer(request.id, { requestId: request.id, choice: "allow-once", nonce: request.nonce, hmac: request.hmac });
     });
     gate = new ApprovalGate({ isDestroyed: () => false, send } as never);
-    const pm = pmReturning({ decision: "ask", reason: "plain shell requires consent", layer: 6 });
+    const pm = pmReturning({ decision: "allow", reason: "ordinary allow mode", layer: 6 });
     const checkDetailed = vi.spyOn(pm, "checkDetailed");
     const executor = new ToolExecutor(registry, undefined, pm, undefined, gate);
     const result = await executor.executeAll([{ id: "explicit-host", name: "bash", input: { command: "echo host", executionMode: "host", justification: "Use the host execution environment" } }], { sessionId: "explicit-host", permissionContext: permissionContext() });
     expect(sentApprovalCards({ send })).toHaveLength(1);
     expect(executed).toHaveBeenCalledOnce();
     expect(executed.mock.calls[0][0].hostShellExecutionPermit).toBeDefined();
+    // The policy sees the sealed route and whether a sandbox was available.
     const checkedContext = checkDetailed.mock.calls[0]?.[4];
     expect(checkedContext?.hostShellExecutionPlan).toBe(executed.mock.calls[0][0].hostShellExecutionPlan);
     expect(checkedContext?.shellExecution).toEqual({
@@ -192,7 +193,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     expect(send).not.toHaveBeenCalled();
   });
 
-  it.each(["remote"])("rejects %s host requests before a prerequisite directory prompt", async (origin) => {
+  it.each(["headless", "remote"])("rejects %s host requests before a prerequisite directory prompt", async (origin) => {
     fullDarwinAsrt();
     const executed = vi.fn();
     const registry = new ToolRegistry();
@@ -263,6 +264,73 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
       "host-shell-execution-plan-cache/v4:",
     );
   });
+  it("bypasses foreground reviewer and durable memory with a one-shot explicit modal", async () => {
+    partialWindowsAsrt();
+    const execute = vi.fn();
+    const registry = new ToolRegistry();
+    registry.register(shellProbe(execute));
+
+    const pm = pmReturning({
+      decision: "ask",
+      reason: "reviewer would normally handle this",
+      layer: 6,
+      reviewer: { route: "foreground-auto" },
+    });
+    const classify = vi.fn(() => ({ level: "high" as const, reason: "must not run" }));
+    pm.setReviewer({
+      classifier: { classify },
+      cache: {} as never,
+      deferredQueue: {} as never,
+    });
+    const requestAndWait = vi.fn(async (request: { id: string }) => ({
+      requestId: request.id,
+      choice: "deny-once" as const,
+    }));
+    const executor = new ToolExecutor(
+      registry,
+      undefined,
+      pm,
+      undefined,
+      { requestAndWait } as never,
+    );
+
+    const result = await executor.executeAll(
+      [{ id: "partial-shell-deny", name: "bash", input: { command: "echo no-run" } }],
+      { sessionId: "partial-shell", permissionContext: permissionContext() },
+    );
+
+    expect(classify).not.toHaveBeenCalled();
+    expect(requestAndWait).toHaveBeenCalledTimes(1);
+    const request = requestAndWait.mock.calls[0]?.[0] as {
+      allowedChoices?: string[];
+      forceExplicit?: boolean;
+      sandboxCapability?: { kind: string; confines?: Record<string, boolean> };
+      executionPlan?: {
+        mode: string;
+        fallbackReason: string;
+        requiresExplicitUserApproval: boolean;
+        capability: { kind: string; confines?: Record<string, boolean> };
+      };
+    };
+    expect(request.allowedChoices).toEqual(["allow-once", "deny-once"]);
+    expect(request.forceExplicit).toBe(true);
+    expect(request.sandboxCapability).toBeUndefined();
+    expect(request.executionPlan).toMatchObject({
+      mode: "plain",
+      fallbackReason: "windows-partial-shell-acl-unsafe",
+      requiresExplicitUserApproval: true,
+      capability: {
+        kind: "none",
+        confines: { filesystem: false, process: false, network: false },
+      },
+    });
+    expect(JSON.stringify(request.executionPlan)).not.toContain("echo no-run");
+    expect(JSON.stringify(request.executionPlan)).not.toContain(
+      "Windows ASRT partial shell confinement is unavailable",
+    );
+    expect(execute).not.toHaveBeenCalled();
+    expect(result[0]?.is_error).toBe(true);
+  });
 
   it("passes the same sealed none-plan to an allow-once shell invocation", async () => {
     partialWindowsAsrt();
@@ -301,7 +369,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     const executor = new ToolExecutor(
       registry,
       undefined,
-      pmReturning({ decision: "ask", reason: "plain shell requires consent", layer: 6 }),
+      pmReturning({ decision: "allow", reason: "allow mode", layer: 6 }),
       undefined,
       gate,
       undefined,
@@ -392,7 +460,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     const executor = new ToolExecutor(
       registry,
       undefined,
-      pmReturning({ decision: "ask", reason: "plain shell requires consent", layer: 6 }),
+      pmReturning({ decision: "allow", reason: "allow mode", layer: 6 }),
       undefined,
       gate,
       undefined,
@@ -455,7 +523,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     const result = await new ToolExecutor(
       registry,
       undefined,
-      pmReturning({ decision: "ask", reason: "plain shell requires consent", layer: 6 }),
+      pmReturning({ decision: "allow", reason: "allow mode", layer: 6 }),
       undefined,
       { requestAndWait } as never,
     ).executeAll(
@@ -473,7 +541,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     expect(requestAndWait).toHaveBeenCalledTimes(1);
     expect(request?.executionPlan).toBeDefined();
     expect(result[0]?.is_error).toBe(true);
-    expect(result[0]?.content).toContain("no host policy authorization or verified approval receipt");
+    expect(result[0]?.content).toContain("no host-verified allow-once receipt");
     expect(result[0]?.executionPlan).toBe(request!.executionPlan);
     expect(endMetas).toHaveLength(1);
     expect(endMetas[0]?.executionPlan).toBe(request!.executionPlan);
@@ -626,7 +694,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
       const result = await new ToolExecutor(
         registry,
         undefined,
-        pmReturning({ decision: "ask", reason: "plain shell requires consent", layer: 6 }),
+        pmReturning({ decision: "allow", reason: "allow mode", layer: 6 }),
         undefined,
         gate,
       ).executeAll(

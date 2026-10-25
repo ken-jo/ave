@@ -2975,7 +2975,6 @@ export class ApprovalGate {
         args: fullReq.args,
         category: fullReq.category,
         kind: fullReq.kind,
-        ...(fullReq.egressHost === undefined ? {} : { egressScopes: [...fullReq.egressHost.scopes] }),
         allowedChoices: fullReq.allowedChoices,
         toolCategory: fullReq.toolCategory,
         verdictAtApproval,

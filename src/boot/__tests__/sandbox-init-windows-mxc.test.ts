@@ -49,6 +49,7 @@ vi.mock("../../permissions/asrt-sandbox.js", async () => {
     subscribeAsrtViolations: async () => () => {},
     checkAsrtDependencies: h.checkDeps,
     isAsrtLinuxRuntimeProbeError: () => false,
+    isAsrtMacRuntimeProbeError: () => false,
     closeAllEgressConnections: () => 0,
   };
 });

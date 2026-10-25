@@ -32,7 +32,7 @@ function runtime() {
       requestId: card.id, nonce: card.nonce, hmac: card.hmac,
       choice: scope === "deny" ? "deny-once" : "allow-once",
       ...(scope === "deny" ? {} : { egressScope: scope }),
-    });
+    }, wc as never);
   };
   return { callback, cards, cardSent, answer };
 }

@@ -17,19 +17,6 @@ import { setProcessPlatform } from "../../__tests__/support/process-platform.js"
 import { resolveTurnExtensionPolicy, turnExtensionPolicyContext } from "../../shared/turn-extension-policy.js";
 
 const sandboxedHost = vi.hoisted(() => ({ active: false }));
-// The authorizer reads only the plan's route; a sandbox-capable host here
-// needs no live substrate.
-vi.mock("../../permissions/sandbox-capability.js", async (original) => {
-  const actual = await original<typeof import("../../permissions/sandbox-capability.js")>();
-  return {
-    ...actual,
-    getHostShellExecutionPlan: (...args: Parameters<typeof actual.getHostShellExecutionPlan>) => {
-      const plan = actual.getHostShellExecutionPlan(...args);
-      return sandboxedHost.active ? { ...plan, mode: "asrt", sandboxed: true, requiresExplicitUserApproval: false } : plan;
-    },
-  };
-});
-
 vi.mock("../../permissions/asrt-sandbox.js", async (original) => ({
   ...await original<typeof import("../../permissions/asrt-sandbox.js")>(),
   isAsrtSandboxActive: () => false,
@@ -40,12 +27,17 @@ vi.mock("../../permissions/asrt-sandbox.js", async (original) => ({
 // through the Windows partial-ASRT plan, which does. The live provider issues
 // it as on a Windows host: only its platform read is Windows, and only while
 // the plan is built, so the hook itself still runs on this host.
+// The authorizer otherwise reads only the plan's route, so a sandbox-capable
+// host here needs no live substrate.
 const plans = vi.hoisted(() => ({ windowsPartial: false }));
 vi.mock("../../permissions/sandbox-capability.js", async (original) => {
   const actual = await original<typeof import("../../permissions/sandbox-capability.js")>();
   return {
     ...actual,
     getHostShellExecutionPlan: (mode?: Parameters<typeof actual.getHostShellExecutionPlan>[0]) => {
+      if (sandboxedHost.active) {
+        return { ...actual.getHostShellExecutionPlan(mode), mode: "asrt", sandboxed: true, requiresExplicitUserApproval: false };
+      }
       if (!plans.windowsPartial) return actual.getHostShellExecutionPlan(mode);
       const platform = process.platform;
       setProcessPlatform("win32");

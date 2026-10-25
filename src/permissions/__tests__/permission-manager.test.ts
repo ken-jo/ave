@@ -58,6 +58,7 @@ vi.mock("../permissions-store.js", () => ({
 // ─── Tests ───────────────────────────────────────────
 
 describe("host shell rule policy epochs", () => {
+  // No sandbox on this host, so only an exact allow rule can issue the proof.
   const hostPlan = buildHostShellExecutionPlan({
     platform: process.platform, requestedSandbox: false, executionMode: "host",
     activeCapability: { kind: "none", confidence: "verified", platform: process.platform, reason: "fixture" },
@@ -73,7 +74,7 @@ describe("host shell rule policy epochs", () => {
     ["interactive review settings", (manager) => manager.setInteractiveAutoApprove("medium")],
     ["path settings", (manager) => manager.setBlockReadsOutsideWorkingDirectories(true)],
     ["rule reload", (manager) => manager.loadRulesFromFile()],
-    ["allow removal", (manager) => manager.removeRule("Bash(echo *)", "allow")],
+    ["allow removal", (manager) => manager.removeRule("Bash(echo epoch)", "allow")],
     ["deny addition", (manager) => manager.addAlwaysDeniedPersist("bash")],
   ];
 
@@ -85,7 +86,7 @@ describe("host shell rule policy epochs", () => {
 
   it.each(mutations)("revokes an outstanding rule proof when %s changes", async (_name, mutate) => {
     const manager = new PermissionManager(join(tmpdir(), "host-epoch-permissions.json"));
-    manager.setRules([{ pattern: "Bash(echo *)", action: "allow" }]);
+    manager.setRules([{ pattern: "Bash(echo epoch)", action: "allow" }]);
     manager.setToolModeOverride("bash", "auto");
     const decision = manager.checkDetailed("bash", "builtin", "shell", null, {
       ruleSubject: { kind: "shell", dialect: subject.dialect, command: subject.command, cwd: subject.cwd },
@@ -101,7 +102,7 @@ describe("host shell rule policy epochs", () => {
 
   it("invalidates a proof as soon as a deny becomes live, before its write settles", async () => {
     const manager = new PermissionManager(join(tmpdir(), "host-epoch-deny.json"));
-    manager.setRules([{ pattern: "Bash(echo *)", action: "allow" }]);
+    manager.setRules([{ pattern: "Bash(echo epoch)", action: "allow" }]);
     const decision = manager.checkDetailed("bash", "builtin", "shell", null, {
       ruleSubject: { kind: "shell", dialect: subject.dialect, command: subject.command, cwd: subject.cwd },
       hostShellExecutionPlan: hostPlan,

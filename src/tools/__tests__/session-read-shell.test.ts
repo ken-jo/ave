@@ -139,7 +139,8 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("s
     expect(policy.allowWrite).not.toContain(root);
     const privateTemporary = result.output.match(/private-temp:([^\r\n]+)/)?.[1];
     expect(privateTemporary).toBeDefined();
-    const privateHome = policy.allowWrite.find(path => privateTemporary?.startsWith(`${path}/tmp`));
+    // Each shell gets a private temp directory inside its private sandbox home.
+    const privateHome = policy.allowWrite.find(path => privateTemporary?.startsWith(`${path}/shell-tmp-`));
     expect(privateHome).toBeDefined();
     expect(privateHome?.startsWith(`${appOwnedSandboxHomeRoot()}/`)).toBe(true);
     expect(existsSync(privateTemporary!)).toBe(false);

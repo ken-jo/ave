@@ -577,7 +577,7 @@ describe("sandbox-capability — shell sandbox and plugin-worker confinement are
     expect(isActiveSandboxShellContained()).toBe(false);
     expect(isActiveSandboxFilesystemContained()).toBe(false);
     const plan = getHostShellExecutionPlan();
-    expect(plan).toMatchObject({ mode: "plain", requestedSandbox: false, fallbackReason: "none" });
+    expect(plan).toMatchObject({ mode: "plain", requestedSandbox: false, fallbackReason: "disabled-by-setting" });
     expect(plan.requiresExplicitUserApproval).toBe(false);
     expect(resolveReviewerSandboxCapability("builtin", "bash").kind).toBe("none");
     // ASRT itself is live: a wrapped worker still reports the real capability.
