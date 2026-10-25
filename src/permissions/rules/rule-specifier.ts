@@ -1,5 +1,5 @@
 // Settings, dock and persistence share strict Bash/PowerShell/Edit/WebFetch/Network/Mcp rule grammar; malformed rules throw rather than broaden. Legacy tool/path globs contain no parenthesis and retain their separate semantics.
-import { canonicalPowerShellName, POWERSHELL_COMMAND_POLICIES } from "./powershell-command-policy.js";
+import { POWERSHELL_COMMAND_POLICIES } from "./powershell-command-policy.js";
 
 export type RuleSpecifier =
   | {
@@ -11,7 +11,7 @@ export type RuleSpecifier =
     }
   | {
       kind: "powershell";
-      // Quoted dash-leading cmdlet arguments bind as values, not parameters.
+      // Quoted dash-leading arguments retain their value role for every command identity.
       literalParameters?: readonly number[];
       // Canonical argv prefix: the command name lower-cased with its alias resolved, `-Parameter` names lower-cased, every other token verbatim. Never empty.
       tokens: readonly string[];
@@ -184,9 +184,7 @@ export function canonicalPowerShellRuleTokens<T extends string | null>(tokens: r
 }
 
 export function literalPowerShellParameterIndexes(tokens: readonly (string | null)[], quoted: readonly number[]): number[] {
-  const policy = typeof tokens[0] === "string" ? POWERSHELL_COMMAND_POLICIES[canonicalPowerShellName(tokens[0])] : undefined;
-  return policy !== undefined && policy.native === undefined
-    ? quoted.filter((index) => index > 0 && /^[-\u2013-\u2015]/.test(tokens[index] ?? "")) : [];
+  return quoted.filter((index) => index > 0 && /^[-\u2013-\u2015]/.test(tokens[index] ?? ""));
 }
 
 function parsePowerShell(text: string, body: string): RuleSpecifier {

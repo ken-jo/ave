@@ -86,18 +86,24 @@ describe("bounded rule consent", () => {
   });
 
   it.each([
-    ["bash -x build.sh", "Bash(bash -x *)"],
-    ["bash -x -c 'touch ~/x'", "Bash(bash -x *)"],
-    ["/usr/bin/python3 -c 'os.system(\"id\")'", "Bash(/usr/bin/python3 *)"],
-    ["echo $(id)", "Bash(echo *)"], ["eval id", "Bash(eval id)"],
-  ])("never covers hidden execution: %s", (command, pattern) => {
+    ["bash -x build.sh", "Bash(bash -x *)", true],
+    ["bash -x -c 'touch ~/x'", "Bash(bash -x *)", true],
+    ["/usr/bin/python3 -c 'os.system(\"id\")'", "Bash(/usr/bin/python3 *)", true],
+    ["echo $(id)", "Bash(echo *)", false], ["eval id", "Bash(eval id)", true],
+  ] as const)("distinguishes literal visible code from expansion: %s", (command, pattern, literal) => {
     const spec = parseRuleSpecifier(pattern);
     if (spec.kind !== "bash") throw new Error("Expected shell rule");
-    expect(evaluateShellRules(command, { allow: [{ pattern, spec }], ask: [], deny: [] }, project).decision).toBeNull();
-    expect(buildShellRuleApproval("bash", command, project, { allow: true, deny: true }, "conversation")).toMatchObject({ exactRule: null, persistentAllowed: false });
+    expect(evaluateShellRules(command, { allow: [{ pattern, spec }], ask: [], deny: [] }, project).decision).toBe(literal ? "allow" : null);
+    const approval = buildShellRuleApproval("bash", command, project, { allow: true, deny: true }, "conversation");
+    if (literal) expect(approval).toMatchObject({ exactRule: expect.any(String), persistentAllowed: true });
+    else expect(approval).toMatchObject({ exactRule: null, persistentAllowed: false });
     const manager = new PermissionManager(permissionsFile);
     manager.setRules([{ pattern, action: "allow" }]);
-    expect(manager.checkDetailed("bash", "builtin", "shell", null, { ruleSubject: shellSubject(command), shellExecution: plainRoute }).decision).toBe("ask");
+    expect(manager.checkDetailed("bash", "builtin", "shell", null, { ruleSubject: shellSubject(command), shellExecution: plainRoute }).decision).toBe(pattern === "Bash(eval id)" ? "allow" : "ask");
+    if (approval.exactRule !== null) {
+      manager.setRules([{ pattern: approval.exactRule, action: "allow" }]);
+      expect(manager.checkDetailed("bash", "builtin", "shell", null, { ruleSubject: shellSubject(command), shellExecution: plainRoute })).toMatchObject({ decision: "allow", layer: 3 });
+    }
   });
 });
 

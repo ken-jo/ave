@@ -2,7 +2,7 @@
 
 import { analyzeShell, staticShellWord, type ShellAnalysis, type ShellCommand, type ShellWord } from "../../shared/shell-analysis.js";
 
-import { SHELLS, INTERPRETERS, WRAPPERS, STRING_JOINING_WRAPPERS, RUNNER_COMMAND_PREFIXES, PACKAGE_RUNNERS, runnerHasPrefix, BANNED_PREFIX_SUGGESTIONS, isDestructiveShellArgv, noReusableRuleReason, SHELL_SET, INTERPRETER_SET, WRAPPER_SET, RUNNER_SET, programName, runnerName, literalCommandAfterPrefix, refusedShellPrefix, codeLauncherName, MAX_LITERAL_COMMAND_LENGTH } from "./shell-prefix-values.js";
+import { SHELLS, INTERPRETERS, WRAPPERS, STRING_JOINING_WRAPPERS, RUNNER_COMMAND_PREFIXES, PACKAGE_RUNNERS, runnerHasPrefix, BANNED_PREFIX_SUGGESTIONS, isDestructiveShellArgv, noReusableRuleReason, SHELL_SET, INTERPRETER_SET, WRAPPER_SET, RUNNER_SET, programName, runnerName, literalCommandAfterPrefix, refusedShellPrefix, MAX_LITERAL_COMMAND_LENGTH } from "./shell-prefix-values.js";
 export { refusedShellPrefix } from "./shell-prefix-values.js";
 
 // Setup operands, value options and shell-command options share one grammar. A command view widens inspection and restrictions, never allow coverage.
@@ -60,8 +60,8 @@ const WRAPPER_GRAMMAR: Readonly<Record<string, WrapperGrammar>> = {
   wsl: { flags: ["--system"], values: ["-d", "-u", "--distribution", "--distribution-id", "--user", "--cd", "--shell-type"], boundary: ["-e", "--exec"], noCommand: ["-l", "--list", "--status", "--shutdown"], shell: true },
 };
 
-// The inner argv boundary or a wrapper's explicit shell-command payload. Uncertain positions retain floor-only candidates, never an allow-rule boundary. Setup values retain proven arity. At most sixteen wrappers are followed.
-export function wrapperCommand(argv: readonly (string | undefined)[]): { index: number; code?: { text: string | undefined }; ordinaryAsk?: string; candidates?: number[]; nestedDialect?: true } {
+// The inner argv boundary or a wrapper's explicit shell-command payload. Uncertain positions retain floor-only candidates, never an allow-rule boundary. Setup values retain proven arity. By default, at most sixteen wrappers are followed.
+export function wrapperCommand(argv: readonly (string | undefined)[], maxDepth = 16): { index: number; code?: { text: string | undefined }; ordinaryAsk?: string; candidates?: number[]; nestedDialect?: true } {
   let index = 0;
   let ordinaryAsk: string | undefined;
   let candidateFrom: number | undefined;
@@ -78,7 +78,7 @@ export function wrapperCommand(argv: readonly (string | undefined)[]): { index: 
     inspectTail(from);
     return finish(argv.length);
   };
-  for (let guard = 0; guard < 16 && index < argv.length; guard += 1) {
+  for (let guard = 0; guard < maxDepth && index < argv.length; guard += 1) {
     const head = argv[index];
     if (head === undefined) {
       ordinaryAsk ??= "opaque wrapper command binding";
@@ -235,7 +235,6 @@ export function isShellWrapperProgram(token: string): boolean {
 
 // Arguments that make a shell or interpreter print and exit without running code.
 const INFO_ONLY_ARGS = new Set(["--version", "--help"]);
-const MAX_LITERAL_ARGV_WORDS = 1_024;
 
 // Variables whose value is a command, a code path or a config that runs one (`GIT_SSH_COMMAND='rm x' git fetch`, `LESSOPEN`, `BASH_ENV`, `PATH`).
 const CODE_CARRYING_VARIABLE = /^(?:GIT_SSH_COMMAND|GIT_SSH|GIT_EXTERNAL_DIFF|GIT_PAGER|GIT_EDITOR|GIT_SEQUENCE_EDITOR|GIT_ASKPASS|SSH_ASKPASS|GIT_PROXY_COMMAND|GIT_CONFIG_PARAMETERS|GIT_CONFIG_COUNT|GIT_CONFIG_(?:KEY|VALUE)_\d+|GIT_CONFIG|GIT_CONFIG_GLOBAL|GIT_CONFIG_SYSTEM|GIT_EXEC_PATH|GIT_TEMPLATE_DIR|GIT_DIR|PAGER|MANPAGER|EDITOR|VISUAL|LESS|LESSOPEN|LESSCLOSE|LESSKEY|LESSKEYIN|MORE|BASH_ENV|ENV|PROMPT_COMMAND|PS4|SHELLOPTS|BASHOPTS|IFS|LD_PRELOAD|LD_LIBRARY_PATH|DYLD_INSERT_LIBRARIES|DYLD_LIBRARY_PATH|NODE_OPTIONS|NODE_PATH|PYTHONSTARTUP|PYTHONPATH|PYTHONHOME|PERL5OPT|PERL5LIB|PERLLIB|RUBYOPT|RUBYLIB|BROWSER|RIPGREP_CONFIG_PATH|TAR_OPTIONS|FZF_DEFAULT_OPTS|BAT_PAGER|DELTA_PAGER|GH_PAGER|AWS_PAGER|PSQL_PAGER|SYSTEMD_PAGER|ZDOTDIR|HOME|PATH)$/;
@@ -403,7 +402,8 @@ function hiddenCodeAt(argv: readonly (string | undefined)[], start: number): str
     const boundary = wrapperCommand(argv.slice(start)).index;
     return codeCarryingAssignment(args.slice(0, Math.max(0, boundary - 1)));
   }
-  const launcher = codeLauncherName(head);
+  const rawProgram = (head.split(/[\\/]/).pop() ?? head).toLowerCase().replace(/\.exe$/i, "");
+  const launcher = SHELL_SET.has(rawProgram) || INTERPRETER_SET.has(rawProgram) ? rawProgram : null;
   if (launcher !== null) {
     if (args.length > 0 && args.every((arg) => arg !== undefined && INFO_ONLY_ARGS.has(arg))) return null;
     return args.length === 0 ? `${launcher} reads code from stdin` : `code passed to ${launcher}`;
@@ -495,7 +495,8 @@ export function hiddenCodeReason(argv: readonly (string | undefined)[]): string 
   const inner = wrapper.index;
   if (!wrapper.code && inner > 0 && inner < argv.length && argv[inner] === undefined) return "dynamic program name behind a wrapper";
   const wrapperStarts = argv[0] !== undefined && isShellWrapperProgram(argv[0]) ? argv.map((_, index) => index) : [0];
-  const runner = opaqueRunnerReason(argv) !== null && (argv[inner] === undefined || codeLauncherName(argv[inner]!) === null);
+  const innerProgram = argv[inner]?.split(/[\\/]/).pop()?.toLowerCase().replace(/\.exe$/i, "");
+  const runner = opaqueRunnerReason(argv) !== null && (innerProgram === undefined || (!SHELL_SET.has(innerProgram) && !INTERPRETER_SET.has(innerProgram)));
   const visibleArgv = argv;
   const starts = runner ? wrapperStarts.filter((start) => start <= inner) : wrapperStarts;
   for (const start of starts) {
@@ -525,33 +526,6 @@ export function hiddenCodeReason(argv: readonly (string | undefined)[]): string 
     if (depth === 15) return "runner analysis limit exceeded";
   }
   return null;
-}
-
-// Uncertain wrapper and runner command boundaries cannot establish literal execution.
-export function literalInvocationReason(argv: readonly (string | undefined)[]): string | null {
-  if (argv.length > MAX_LITERAL_ARGV_WORDS) return "literal argv word limit exceeded";
-  let start = 0;
-  for (let depth = 0; depth < 16; depth += 1) {
-    const wrapper = wrapperCommand(argv.slice(start));
-    if (wrapper.ordinaryAsk !== undefined) return wrapper.ordinaryAsk;
-    if (wrapper.nestedDialect) return "nested shell dialect";
-    start += wrapper.index;
-    const head = argv[start];
-    if (head === undefined) return null;
-    const prefixes = RUNNER_COMMAND_PREFIXES[runnerName(head)];
-    if (prefixes === undefined) return null;
-    const args = argv.slice(start + 1);
-    if (runnerName(head) === "npm" && args[0] === "explore") return "code passed to runner";
-    if (args.length > 0 && args.every((arg) => arg !== undefined && INFO_ONLY_ARGS.has(arg))) return null;
-    const verb = literalCommandAfterPrefix(argv, start + 1);
-    if (verb === undefined) return "unproven runner command binding";
-    if (prefixes !== true && !runnerHasPrefix(prefixes, argv[verb])) return null;
-    const delegated = prefixes === true ? verb : literalCommandAfterPrefix(argv, verb + 1);
-    if (delegated === undefined) return "unproven runner command binding";
-    if (argv[delegated] === undefined || /[\s;&|<>$`'"()]/.test(argv[delegated]!)) return "unproven runner command binding";
-    start = delegated;
-  }
-  return "runner analysis limit exceeded";
 }
 
 // True when this argv (or the program behind a wrapper) can send data off the machine.

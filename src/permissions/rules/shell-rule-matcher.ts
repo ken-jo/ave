@@ -1,5 +1,5 @@
 // Deny outranks ask then allow, regardless of specificity; deny/ask inspect every command and nested body through wrappers. Allow requires every static command to be covered and rejects opaque syntax, substitutions, assignments, write redirects, functions and all floors.
-// Hidden code is never allowed, even by exact argv; when deny/ask rules cannot inspect it, ask unless a visible deny already matched so mode cannot bypass an unreadable rule.
+// Literal code arguments retain exact argv identity; syntactically unreadable commands never satisfy allow rules.
 import {
   staticShellWord,
   type ShellStatement,
@@ -9,16 +9,14 @@ import { isDestructiveShellText } from "../reviewer/risk-classifier.js";
 import { isDestructiveShellArgv, noReusableRuleReason, MAX_LITERAL_COMMAND_LENGTH } from "./shell-prefix-values.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { literalRuleWord, type RuleSpecifier } from "./rule-specifier.js";
-import { shellExfiltrationSignal, shellSensitivePathSignal, shellScanOrdinaryAsk } from "./shell-exfiltration.js";
+import { shellExfiltrationSignal, shellSensitivePathSignal, shellScanOrdinaryAsk, shellScanProofBlocker } from "./shell-exfiltration.js";
+import { encodedPowerShellExecutionReason } from "./powershell-encoded-command.js";
 import {
   arithmeticEvaluationReason,
   asParsedShellCommand,
   shellFact,
   type ParsedShellCommand,
   type ShellCommandInput,
-  codeCarryingVariable,
-  hiddenCodeReason,
-  literalInvocationReason,
   opaqueRunnerReason,
   isShellWrapperProgram,
   stripGlobalOptions,
@@ -120,14 +118,6 @@ function shapeOf(parsed: ParsedShellCommand, cwd: string | undefined): ShellRule
           ordinaryAsk ??= arithmetic;
           blockers.push(arithmetic);
         }
-        for (const assignment of statement.assignments) {
-          // `GIT_SSH_COMMAND='rm x' git fetch`, `PATH=/tmp/x; git status`.
-          if (codeCarryingVariable(assignment.name)) {
-            const reason = `code-carrying variable ${assignment.name}`;
-            hidden.push(reason);
-            if (staticShellWord(assignment.value) === undefined) ordinaryAsk ??= reason;
-          }
-        }
         if (statement.words.length === 0) {
           // Assignment-only statements change the environment of every later command (`PATH=/tmp/x; git status`). They are not a command a rule can name, so they block allow for the whole input.
           if (statement.assignments.length > 0) globalBlockers.push("environment assignment");
@@ -135,22 +125,14 @@ function shapeOf(parsed: ParsedShellCommand, cwd: string | undefined): ShellRule
         }
         if (statement.assignments.length > 0) blockers.push("command-scoped environment assignment");
         const argv = statement.words.map((word) => staticShellWord(word));
-        const invocation = literalInvocationReason(argv);
-        if (invocation !== null) blockers.push(invocation);
+        const encoded = encodedPowerShellExecutionReason(argv);
+        if (encoded !== null) blockers.push(encoded);
         ordinaryAsk ??= wrapperCommand(argv).ordinaryAsk ?? opaqueRunnerReason(argv) ?? undefined;
         if (argv[0] === undefined) {
           hidden.push("dynamic program name");
           ordinaryAsk ??= "dynamic program name";
           blockers.push("dynamic program name");
         } else {
-          // `bash -c "rm …"`, `echo … | bash`, `bash <<<…`, `node x.js`, `eval "…"`: the code is a string, a file or stdin the matcher does not read, so deny/ask cannot see inside it. No allow rule covers that hidden execution.
-          const hiddenCode = hiddenCodeReason(argv);
-          if (hiddenCode) {
-            hidden.push(hiddenCode);
-            blockers.push(hiddenCode);
-            // Unresolved bindings also need ordinary approval.
-            if (argv.includes(undefined)) ordinaryAsk ??= hiddenCode;
-          }
           const inner = wrapperPrefixLength(argv);
           if (inner > 0 && inner < argv.length && argv[inner] === undefined) ordinaryAsk ??= "dynamic program name behind a wrapper";
         }
@@ -233,7 +215,7 @@ export function proveLiteralShell(input: ShellCommandInput, cwd?: string): { pro
   const reason = shape.hidden[0] ?? shape.allowBlockers[0] ?? shape.commands.flatMap((cmd) => cmd.allowBlockers)[0];
   if (reason !== undefined) return { proven: false, reason };
   if (shape.commands.length === 0 || shape.commands.some((cmd) => cmd.argv.includes(undefined))) return { proven: false, reason: "non-literal command" };
-  const incomplete = shellScanOrdinaryAsk(parsed, cwd);
+  const incomplete = shellScanProofBlocker(parsed, cwd);
   if (incomplete !== null) return { proven: false, reason: incomplete };
   return { proven: true, commands: shape.commands };
 }
@@ -327,7 +309,7 @@ export function evaluateShellRules(input: ShellCommandInput, rules: ShellRuleSet
   if (exfiltration) return { decision: null, reason: `credential exfiltration (floor): ${exfiltration}` };
   const sensitive = shellSensitivePathSignal(parsed, cwd);
   if (sensitive) return { decision: null, reason: `sensitive path (floor): ${sensitive}` };
-  const incomplete = shellScanOrdinaryAsk(parsed, cwd);
+  const incomplete = shellScanProofBlocker(parsed, cwd);
   if (incomplete) return { decision: null, reason: incomplete };
   const patterns: string[] = [];
   for (const cmd of shape.commands) {
