@@ -1025,17 +1025,22 @@ export async function createPrivateObjects<T>(create: (created: string[]) => Pro
  * made, for {@link createPrivateObjects}.
  */
 export async function makePrivateDirectoryTree(path: string, created: string[]): Promise<void> {
-  const first = await fs.mkdir(path, { recursive: true, mode: 0o700 });
-  if (first === undefined) return;
+  const reported = await fs.mkdir(path, { recursive: true, mode: 0o700 });
+  if (reported === undefined) return;
   // Node reports the first directory it made; every level from there down to
-  // `path` is new. A report outside `path` would make removal reach a
-  // directory this call did not make, so it is a contract violation.
+  // `path` is new. On Windows the report is the namespaced form of the path
+  // (`\\?\D:\...`), and drive letters may differ in case. A report outside
+  // `path` would make removal reach a directory this call did not make, so it
+  // is a contract violation.
+  const first = resolvePath(process.platform === "win32" ? reported.replace(/^\\\\\?\\UNC\\/i, "\\\\").replace(/^\\\\\?\\/, "") : reported);
+  const same = (left: string, right: string) => process.platform === "win32" ? left.toLowerCase() === right.toLowerCase() : left === right;
   const made: string[] = [];
-  for (let directory = resolvePath(path); directory !== resolvePath(first); directory = dirname(directory)) {
+  let directory = resolvePath(path);
+  for (; !same(directory, first); directory = dirname(directory)) {
     if (dirname(directory) === directory) throw new CodexExecutableLocationError("Created directory is outside the requested path");
     made.unshift(directory);
   }
-  created.push(resolvePath(first), ...made);
+  created.push(directory, ...made);
 }
 
 /**
