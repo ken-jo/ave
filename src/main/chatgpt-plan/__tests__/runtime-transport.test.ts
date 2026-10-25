@@ -11,6 +11,7 @@ import type { CodexAppServerClient } from "../../codex-app-server-client.js";
 import { claimFakeRuntimeDirectories, createSubscriptionRuntimeNamespace } from "../../../__tests__/support/subscription-runtime-namespace.js";
 import { validateExternalUrl } from "../../../shared/external-url.js";
 import { t } from "../../../i18n/index.js";
+import type { ToolSchema } from "../../../engine/llm/types.js";
 import { DEFAULT_SUBSCRIPTION_IMAGE_ATTACHMENT_LIMITS } from "../../subscription-attachment-input.js";
 
 const PLAN_SCOPES = ["chatgpt.tokens.use.direct", "email", "offline_access", "openid", "profile", "resource.invoke"];
@@ -372,7 +373,7 @@ describe("ChatGPT plan transport", () => {
       { kind: "subscription", provider: "chatgpt-plan", model: "gpt-6.1-sol" },
       async () => h.runtime,
     );
-    const tools = [{ name: "read_file", description: "Read a file", inputSchema: { type: "object", properties: {} } }];
+    const tools: ToolSchema[] = [{ name: "read_file", description: "Read a file", inputSchema: { type: "object", properties: {} } }];
     const first = await collect(transport.streamTurn({
       model: "m", systemPrompt: "s", enableThinking: true, reasoningEffort: "medium", tools,
       messages: [{ role: "user", content: "read it" }],
