@@ -61,41 +61,19 @@ const mockSessionApi = {
   }),
 };
 
-function invokeHandler(url: string): { cancel: boolean } {
-  const handler = mockOnBeforeRequest.mock.calls[0][0] as (
+function invokeRegisteredHandler(mock: typeof mockOnBeforeRequest, url: string): { cancel: boolean } {
+  const handler = mock.mock.calls[0][0] as (
     details: { url: string },
     callback: (result: { cancel: boolean }) => void,
   ) => void;
   let result!: { cancel: boolean };
-  handler({ url }, (r) => {
-    result = r;
-  });
+  handler({ url }, (r) => { result = r; });
   return result;
 }
 
-function invokeMcpHandler(url: string): { cancel: boolean } {
-  const handler = mockOnBeforeRequestMcp.mock.calls[0][0] as (
-    details: { url: string },
-    callback: (result: { cancel: boolean }) => void,
-  ) => void;
-  let result!: { cancel: boolean };
-  handler({ url }, (r) => {
-    result = r;
-  });
-  return result;
-}
-
-function invokePluginHandler(url: string): { cancel: boolean } {
-  const handler = mockOnBeforeRequestPlugin.mock.calls[0][0] as (
-    details: { url: string },
-    callback: (result: { cancel: boolean }) => void,
-  ) => void;
-  let result!: { cancel: boolean };
-  handler({ url }, (r) => {
-    result = r;
-  });
-  return result;
-}
+const invokeHandler = (url: string) => invokeRegisteredHandler(mockOnBeforeRequest, url);
+const invokeMcpHandler = (url: string) => invokeRegisteredHandler(mockOnBeforeRequestMcp, url);
+const invokePluginHandler = (url: string) => invokeRegisteredHandler(mockOnBeforeRequestPlugin, url);
 
 describe("installHtmlPreviewPartitionBlock", () => {
   beforeEach(() => {

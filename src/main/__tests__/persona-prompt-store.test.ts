@@ -11,6 +11,10 @@ import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
 const tempDirs: string[] = [];
 
+function reviewerPrompt(systemPromptAdd = "Review carefully.") {
+  return { id: "reviewer", name: "Reviewer", systemPromptAdd };
+}
+
 function makeStore() {
   const rootDir = mkdtempSync(join(tmpdir(), "persona-prompts-"));
   const userDir = join(rootDir, "prompts");
@@ -29,11 +33,7 @@ describe("PersonaPromptStore", () => {
   it("saves, lists, and deletes prompt markdown files", async () => {
     const { store } = makeStore();
 
-    await store.save({
-      id: "reviewer",
-      name: "Reviewer",
-      systemPromptAdd: "Review carefully.",
-    });
+    await store.save(reviewerPrompt());
 
     await expect(store.list()).resolves.toMatchObject([
       {
@@ -58,11 +58,7 @@ describe("PersonaPromptStore", () => {
     process.env.AVE_HOME = rootDir;
     try {
       const store = new PersonaPromptStore();
-      await store.save({
-        id: "reviewer",
-        name: "Reviewer",
-        systemPromptAdd: "Review carefully.",
-      });
+      await store.save(reviewerPrompt());
 
       expect(readFileSync(join(rootDir, "prompts", "reviewer.md"), "utf-8")).toContain(
         "Review carefully.",
@@ -98,11 +94,7 @@ describe("PersonaPromptStore", () => {
     writeFileSync(externalPath, "outside original", "utf-8");
     linkSync(externalPath, promptPath);
 
-    await store.save({
-      id: "reviewer",
-      name: "Reviewer",
-      systemPromptAdd: "Saved prompt body.",
-    });
+    await store.save(reviewerPrompt("Saved prompt body."));
 
     expect(readFileSync(externalPath, "utf-8")).toBe("outside original");
     expect(readFileSync(promptPath, "utf-8")).toContain("Saved prompt body.");
@@ -116,11 +108,7 @@ describe("PersonaPromptStore", () => {
     writeFileSync(externalPath, "outside original", "utf-8");
     symlinkSync(externalPath, promptPath);
 
-    await store.save({
-      id: "reviewer",
-      name: "Reviewer",
-      systemPromptAdd: "Saved prompt body.",
-    });
+    await store.save(reviewerPrompt("Saved prompt body."));
 
     expect(readFileSync(externalPath, "utf-8")).toBe("outside original");
     expect(readFileSync(promptPath, "utf-8")).toContain("Saved prompt body.");
