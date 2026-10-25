@@ -1,13 +1,4 @@
-/**
- * Composer prompt-history recall (Up/Down on the composer), the way terminal
- * agent hosts do it: Up on an empty composer — or while already walking the
- * history — replaces the text with the previous prompt the user typed; Down
- * walks forward and, past the newest, restores what was in the composer when
- * the walk began.
- *
- * Pure: the Composer owns the cursor (`index`) and the stashed draft and calls
- * these helpers from its keydown handler.
- */
+/** Recall starts on an empty composer; moving past the newest prompt restores the stashed draft. */
 import type { ChatEntry } from "../../../lib/chat-stream-state.js";
 import { stripMarkers } from "./attachment-markers.js";
 

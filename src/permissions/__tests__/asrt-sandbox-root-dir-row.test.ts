@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-// A POSIX-rooted directory row. The shipped table has none today; this proves
-// a future one keeps its exact spelling, so the Windows boundary still drops it.
+// A POSIX-rooted directory row. The shipped table has none today; this proves a future one keeps its exact spelling, so the Windows boundary still drops it.
 const ROOT_DIR_SEGMENTS = vi.hoisted(() => ["etc", "ave-root-dir-probe"] as const);
 const ROOT_DIR_ROW = "/" + ROOT_DIR_SEGMENTS.join("/");
 

@@ -1,19 +1,4 @@
-/**
- * SessionTasksStore — the assistant's per-session checklist (`session_tasks`
- * LLM tool), keyed by ChatSession id so renderer pushes route to the right
- * tile. Distinct from user `task_*` persistence.
- *
- * State shape: sessionId → ordered array of {id, content, status}. Positions
- * are 1-based in every public mutation because that is the number the model
- * and the user both see; the store converts once at its boundary.
- *
- * Durability: the list is a field of the session's metadata sidecar
- * (`<id>.meta.json`), written through {@link SessionTasksPersistence} on every
- * mutation and read back lazily the first time a session is listed after
- * boot. Completed items stay in the list — finishing a step is a state, not a
- * deletion — so a reopened session shows the plan exactly as it was left.
- * Only the manual dismiss (`clear`) drops the list.
- */
+// Public task positions are one-based; persist every mutation in the session sidecar. Completed items remain until explicit clear so reopened sessions retain their plan.
 import { randomUUID } from "node:crypto";
 import { createLogger } from "../lib/logger.js";
 import type { SessionTaskItem } from "../shared/session-tasks.js";
@@ -24,13 +9,13 @@ export type SessionTasksListener = (
   items: SessionTaskItem[],
 ) => void;
 
-/** Where a session's task list lives when this process is not holding it. */
+// Where a session's task list lives when this process is not holding it.
 export interface SessionTasksPersistence {
   load(sessionId: string): SessionTaskItem[];
   save(sessionId: string, items: SessionTaskItem[]): Promise<void>;
 }
 
-/** A 1-based position that names no task in the current list. */
+// A 1-based position that names no task in the current list.
 export class SessionTaskIndexError extends Error {
   constructor(index: number, count: number) {
     super(
@@ -57,15 +42,12 @@ export class SessionTasksStore {
     return this.current(sessionId).map((i) => ({ ...i }));
   }
 
-  /** Replace the whole list with these steps, all pending. */
+  // Replace the whole list with these steps, all pending.
   create(sessionId: string, steps: string[]): Promise<SessionTaskItem[]> {
     return this.commit(sessionId, steps.map(newItem));
   }
 
-  /**
-   * Insert steps after task `after` (1-based). `0` inserts at the front;
-   * omitted appends at the end.
-   */
+  // Insert steps after task `after` (1-based). `0` inserts at the front; omitted appends at the end.
   add(sessionId: string, steps: string[], after?: number): Promise<SessionTaskItem[]> {
     const items = this.current(sessionId);
     const at = after ?? items.length;
@@ -107,7 +89,7 @@ export class SessionTasksStore {
     );
   }
 
-  /** Manual dismiss: drop the list (memory + sidecar) and emit an empty list. */
+  // Manual dismiss: drop the list (memory + sidecar) and emit an empty list.
   clear(sessionId: string): Promise<SessionTaskItem[]> {
     return this.commit(sessionId, []);
   }
@@ -132,11 +114,7 @@ export class SessionTasksStore {
     return index - 1;
   }
 
-  /**
-   * Sidecar first, memory second: a failed write leaves the held list as it
-   * was, so what the chip shows never runs ahead of what a restart would
-   * bring back.
-   */
+  // Sidecar first, memory second: a failed write leaves the held list as it was, so what the chip shows never runs ahead of what a restart would bring back.
   private async commit(sessionId: string, next: SessionTaskItem[]): Promise<SessionTaskItem[]> {
     await this.persistence.save(sessionId, next);
     this.sessions.set(sessionId, next);

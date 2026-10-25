@@ -130,8 +130,8 @@ describe("useSettings", () => {
     next.llm.provider = "openai-compatible";
     next.llm.marketplaceProviderPresetId = "local-router";
     next.llm.vendors["openai-compatible"] = {
-      // The preset's own slot. The block's `model` belongs to the generic
-      // custom-provider row, which is a different row on the same vendor.
+      // The preset's own slot. The block's `model` belongs to the generic custom-provider row, which is a different row on the
+      // same vendor.
       model: "",
       presetModels: { "local-router": "local/reasoner" },
       baseUrl: "http://127.0.0.1:11434/v1",
@@ -158,8 +158,8 @@ describe("useSettings", () => {
     expect(result.current.llmModel).toBe("local/reasoner");
     expect(result.current.enableThinkingChat).toBe(false);
     expect(result.current.llmReadyWithoutApiKey).toBe(true);
-    // Nothing in this snapshot knows the model, so the route lands on the
-    // conservative window — the same one the engine would budget against.
+    // Nothing in this snapshot knows the model, so the route lands on the conservative window — the same one the engine would
+    // budget against.
     expect(result.current.llmContextWindow).toBe(FALLBACK_CONTEXT_WINDOW);
 
     unmount();
@@ -200,9 +200,7 @@ describe("useSettings", () => {
     act(() => onSettingsUpdated!(reported));
 
     expect(result.current.llmContextWindow).toBe(229_376);
-    // The output limit the cost estimate assumes is the one the engine sends:
-    // the host default, clamped to the ceiling the endpoint reported. (Before,
-    // the renderer assumed a fixed 4,096 whatever the route.)
+    // Estimate with the effective host output limit clamped to the reported ceiling.
     expect(result.current.llmOutputTokenLimit).toMatchObject({
       requested: 32_000,
       requestedSource: "host-default",
@@ -210,8 +208,7 @@ describe("useSettings", () => {
       effectiveSource: "provider-reported",
     });
 
-    // A window the user declared outranks what the provider reported, exactly
-    // as it does on the engine side.
+    // A window the user declared outranks what the provider reported, exactly as it does on the engine side.
     const declared = structuredClone(reported);
     declared.llm.vendors["openai-compatible"]!.contextWindow = 300_000;
     act(() => onSettingsUpdated!(declared));
@@ -268,8 +265,8 @@ describe("useSettings", () => {
 
     const { result } = renderHook(() => useSettings(api as unknown as AveApi));
 
-    // Before hydration a delayed persisted subscription must not let the
-    // initial API thinking default persist against the inactive vendor.
+    // Before hydration a delayed persisted subscription must not let the initial API thinking default persist against the
+    // inactive vendor.
     await act(async () => {
       await result.current.toggleThinking(false);
     });
@@ -471,8 +468,8 @@ describe("useSettings", () => {
       emitSubscriptionRuntimeStatusUpdated({ provider: "codex", revision: 1 });
     });
 
-    // The event invalidates the old safe projection before its re-probe settles,
-    // so send, picker, paste, and file ingress all see a non-permissive policy.
+    // The event invalidates the old safe projection before its re-probe settles, so send, picker, paste, and file ingress all
+    // see a non-permissive policy.
     expect(result.current.subscriptionRuntimePolicy.chatReady).toBeNull();
     expect(result.current.subscriptionRuntimePolicy.imagesReady).toBeNull();
     expect(result.current.subscriptionRuntimePolicy.filesReady).toBeNull();

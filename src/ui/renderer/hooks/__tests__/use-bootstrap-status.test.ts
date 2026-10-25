@@ -1,14 +1,4 @@
-/**
- * Phase 2d FU — useBootstrapStatus hook.
- *
- * Verifies the renderer subscription contract: a `start` event flips
- * `installing` true; a `complete` or `error` event flips it back; the
- * hook never auto-clears (renderer dismiss is the only way to clear).
- *
- * Plus the cold-boot pull: the host finishes the whole status sequence before
- * this renderer loads, so the hook reads the recorded snapshot on mount. A
- * live event outranks that snapshot no matter which resolves first.
- */
+/** Live bootstrap events outrank the cold-boot snapshot; results persist until renderer dismissal. */
 import "../../../../../test/renderer/setup.js";
 import { describe, it, expect, vi } from "vitest";
 import { act, renderHook } from "@testing-library/react";
@@ -89,9 +79,8 @@ describe("useBootstrapStatus", () => {
       await result.current.retry();
     });
     expect(retryBootstrap).toHaveBeenCalledTimes(1);
-    // The host re-emits the lifecycle around `runManagedBootstrap`. Hook must
-    // not synthesise its own state — it stays on the last received event
-    // until the next emit lands.
+    // The host re-emits the lifecycle around `runManagedBootstrap`. Hook must not synthesise its own state — it stays on the
+    // last received event until the next emit lands.
     expect(result.current.status).toMatchObject({ phase: "error" });
 
     act(() => emit({ phase: "complete", installed: ["calendar"], failed: [] }));

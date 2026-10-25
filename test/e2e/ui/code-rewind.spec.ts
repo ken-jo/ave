@@ -10,8 +10,7 @@ const MESSAGE_ID = "rewind-user-row";
 let ctx: SeededElectronContext;
 test.afterEach(async () => {
   if (!ctx) return;
-  // These assertions cover rewind, not application shutdown. End only this
-  // isolated fixture process before the shared helper removes its directories.
+  // End only the isolated fixture before directory cleanup; shutdown behavior is outside this spec.
   const child = ctx.app.process();
   if (child.exitCode === null && child.signalCode === null) {
     const exited = once(child, "exit");

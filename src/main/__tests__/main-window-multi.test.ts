@@ -1,8 +1,3 @@
-/**
- * Several main windows: registration roles, the close policy (only the last
- * window follows hide-to-tray), the secondary role reaching the renderer, and
- * the app document staying the only thing a main window may navigate to.
- */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApprovalRequestInput } from "../../permissions/approval-gate.js";
 
@@ -49,7 +44,7 @@ const electronMock = vi.hoisted(() => {
     isMinimized() { return false; }
     isVisible() { return this.visible; }
     isAlwaysOnTop() { return false; }
-    /** What Electron does when nothing prevented `close`. */
+    // What Electron does when nothing prevented `close`.
     close() {
       let prevented = false;
       this.emit("close", { preventDefault: () => { prevented = true; } });
@@ -215,8 +210,7 @@ describe("main windows", () => {
       const owned = gate.requestAndWait(egressAsk("egress-owned", "terminal:0a1b2c3d-1"));
       expect(second.webContents.send).toHaveBeenCalledWith("ave:approval:request", expect.objectContaining({ id: "egress-owned" }));
       expect(first.webContents.send).not.toHaveBeenCalledWith("ave:approval:request", expect.anything());
-      // A reloaded window refetching pending asks gets only its own tabs'; an
-      // answer from the other window is ignored and the ask stays pending.
+      // A reloaded window refetching pending asks gets only its own tabs'; an answer from the other window is ignored and the ask stays pending.
       expect(gate.listPendingRendererRequests(first.webContents as never).map((r) => r.id)).toEqual([]);
       const [card] = gate.listPendingRendererRequests(second.webContents as never);
       expect(card?.id).toBe("egress-owned");
@@ -288,8 +282,7 @@ describe("main windows", () => {
     );
     expect(second.webContents.send).not.toHaveBeenCalled();
 
-    // Both stay listed for a renderer that loads later (a window opened after
-    // the one that drew them closed).
+    // Both stay listed for a renderer that loads later (a window opened after the one that drew them closed).
     expect(gate.listPending().map((req) => req.sessionId)).toEqual(["session-b", "session-z"]);
     gate.disposeAll();
     expect(gate.listPending()).toEqual([]);

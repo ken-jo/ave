@@ -1,21 +1,5 @@
-/**
- * ASRT (Anthropic sandbox-runtime) host adapter — wiring tests.
- *
- * Covers the WIRING-A invariants the host-tool spawn path depends on:
- *   - gate DEFAULT OFF: `isAsrtSandboxActive()` is false until initialize runs;
- *   - the active flag flips on initialize and clears on reset (the boot-time,
- *     no-runtime-injection gate bash.ts/powershell.ts read);
- *   - trust boundary: a per-command wrap can only ever carry a `filesystem`
- *     slice — never a network or sandbox-weakening flag;
- *   - gate ON → real ASRT `{ argv, env }` (the wrapped command runs under the
- *     OS sandbox and resolves its vendor binaries — same proof as the runtime
- *     smoke, exercised through the host adapter here).
- *
- * Real ASRT semantics, no ASRT mocks — mirrors the no-mock style of the
- * bash/powershell tests. Windows resolves host-sensitive paths from an isolated
- * test home while leaving USERPROFILE unchanged for CreateProcessWithLogonW.
- * AVE_HOME is pinned there too so prior test files cannot leak a host path.
- */
+import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
+// The adapter stays inactive until initialized and resets inactive; per-command overrides contain only filesystem policy and cannot weaken sandbox/network gates. Isolate home paths without changing USERPROFILE needed by process creation.
 import {
   describe,
   it,
@@ -29,11 +13,17 @@ import {
 import { execFileSync, spawn } from "node:child_process";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
+import { lookup as lookupAll } from "node:dns/promises";
+// Ave patch test seam, reached by file path (not on the package entry).
+import { setDestinationResolverForTesting } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-manager.js";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, parse, sep } from "node:path";
 import { shellQuote } from "../../lib/shell-resolver.js";
 import { gitFixtureEnv } from "../../__tests__/support/git-fixture-env.mjs";
+import { initializeRequiredSandbox, shouldSkipNativeSandboxTests } from "../../__tests__/support/native-sandbox.js";
+import { getLocale, setLocale } from "../../i18n/index.js";
+import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 
 vi.mock("node:os", async (importOriginal) => {
   const original = await importOriginal<typeof import("node:os")>();
@@ -65,6 +55,7 @@ import {
   buildSandboxConfig,
   getDefaultSensitiveReadDenyPaths,
   getDefaultSensitiveWriteDenyPaths,
+  getBuiltinShellReadPolicy,
   appOwnedSandboxPrivateRoots,
   registerWorkerUnixSocketDir,
   unregisterWorkerUnixSocketDir,
@@ -82,13 +73,10 @@ import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { spawnWithSandbox } from "../../tools/shell-tools.js";
 import { prepareSandboxFixture } from "../../tools/__tests__/support/prepared-shell.js";
 import { preparedShellExecutableReadPaths } from "../../tools/prepared-shell-invocation.js";
-// ASRT-contract guards: the real vendored matcher + parent-proxy resolver, so
-// the host-side fixes are proven against ASRT's ACTUAL semantics (not a
-// re-implementation that could drift from the package).
+// ASRT-contract guards: the real vendored matcher + parent-proxy resolver, so the host-side fixes are proven against ASRT's ACTUAL semantics (not a re-implementation that could drift from the package).
 import { matchesDomainPattern } from "@anthropic-ai/sandbox-runtime/dist/sandbox/domain-pattern.js";
 import { resolveParentProxy } from "@anthropic-ai/sandbox-runtime/dist/sandbox/parent-proxy.js";
 import { rankWindowsFsAccess } from "@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js";
-import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
 import * as sensitivePaths from "../sensitive-paths.js";
 import { getDefaultWritePaths } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
 
@@ -137,16 +125,12 @@ afterEach(async () => {
   }
 });
 
-/** Strip the directory marker only for comparisons with the literal floor. */
+// Strip the directory marker only for comparisons with the literal floor.
 function bare(paths: readonly unknown[]): string[] {
   return paths.map((path) => String(path).replace(/[\\/]$/, ""));
 }
 
-/**
- * A row of an ungranted config as srt-win receives it: POSIX-rooted rows never
- * reach it (they would resolve on the current drive), nor do rows in the
- * profile, where the sandbox user has no rights.
- */
+// A row of an ungranted config as srt-win receives it: POSIX-rooted rows never reach it (they would resolve on the current drive), nor do rows in the profile, where the sandbox user has no rights.
 function reachesAsrt(path: string): boolean {
   if (process.platform !== "win32") return true;
   const home = homedir().toLowerCase();
@@ -193,8 +177,7 @@ describe("asrt-sandbox — gate default OFF", () => {
 describe("asrt-sandbox — active flag lifecycle (boot-time, no runtime injection)", () => {
   it("flips to true on initialize and back to false on reset", async () => {
     if (!(await asrtCanInitialize())) {
-      // Unsupported platform or missing sandbox deps — initialize would
-      // fail-closed at boot anyway; the gate stays OFF.
+      // Unsupported platform or missing sandbox deps — initialize would fail-closed at boot anyway; the gate stays OFF.
       expect(isAsrtSandboxActive()).toBe(false);
       return;
     }
@@ -241,8 +224,7 @@ describe("asrt-sandbox — gate ON wraps a real command under the OS sandbox", (
           : { commandId: TEST_COMMAND_ID, filesystem: { allowWrite: [writeDir], allowRead: [writeDir] } },
       );
 
-      // mac/linux: [<shell>, "-c", <wrapped>]; Windows: [srt-win, "--srt-win",
-      // "exec", ...], the dispatch argument ASRT prepends to every srt-win spawn.
+      // mac/linux: [<shell>, "-c", <wrapped>]; Windows: [srt-win, "--srt-win", "exec",...], the dispatch argument ASRT prepends to every srt-win spawn.
       expect(argv.length).toBeGreaterThanOrEqual(3);
       if (process.platform === "win32") expect(argv.slice(1, 3)).toEqual(["--srt-win", "exec"]);
       else expect(argv[1]).toBe("-c");
@@ -263,7 +245,7 @@ describe("asrt-sandbox — gate ON wraps a real command under the OS sandbox", (
   });
 
   it.runIf(process.platform === "darwin" || process.platform === "linux")(
-    "finds an admitted executable beneath the denied home without exposing its siblings",
+    "finds an admitted executable while allowing broad sibling reads",
     async (context) => {
       if (!(await asrtCanInitialize())) return context.skip();
       const root = realpathSync(mkdtempSync(join(tmpdir(), "asrt-executable-")));
@@ -285,7 +267,7 @@ describe("asrt-sandbox — gate ON wraps a real command under the OS sandbox", (
         const result = await spawnWithSandbox(command, cwd, [cwd], 15, prepared);
         expect(result.output).toContain(executable);
         expect(result.output).toContain("executable-visible");
-        expect(result.output).not.toContain("sibling-must-stay-private");
+        expect(result.output).toContain("sibling-must-stay-private");
         expect(result.isError).toBe(true);
         expect(result.metadata.sandboxed).toBe(true);
         expect(readFileSync(executable, "utf8")).toBe("#!/bin/sh\nprintf 'executable-visible\\n'\n");
@@ -296,16 +278,59 @@ describe("asrt-sandbox — gate ON wraps a real command under the OS sandbox", (
     },
   );
 
+  // A read the credential floor denies fails visibly: the command's own permission error reaches the output, the result is an error, and no store content leaks. There is no silent fallback or empty success.
   it.runIf(process.platform === "darwin" || process.platform === "linux")(
-    "runs git with a disposable HOME instead of probing the denied real .gitconfig",
+    "surfaces the native permission error for a floored browser or keychain read",
+    async (context) => {
+      if (!(await asrtCanInitialize())) {
+        if (process.env.AVE_REQUIRE_SANDBOX_CASES === "1") throw new Error("ASRT cannot initialize on this machine");
+        return context.skip();
+      }
+      const root = realpathSync(mkdtempSync(join(tmpdir(), "asrt-credential-floor-")));
+      const cwd = join(root, "workspace");
+      mkdirSync(cwd);
+      const stores = [
+        join(root, ".mozilla", "firefox", "abc.default-release", "logins.json"),
+        join(root, "Library", "Keychains", "login.keychain-db"),
+        join(root, ".local", "share", "keyrings", "login.keyring"),
+      ];
+      for (const store of stores) {
+        mkdirSync(dirname(store), { recursive: true });
+        writeFileSync(store, "credential-store-secret");
+      }
+      writeFileSync(join(root, "notes.txt"), "ordinary-home-file");
+      try {
+        vi.stubEnv("HOME", root);
+        await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
+        for (const store of stores) {
+          const command = `/bin/cat ${shellQuote(store)}`;
+          const result = await spawnWithSandbox(command, cwd, [cwd], 15, prepareSandboxFixture(command, cwd));
+          expect(result.metadata.sandboxed).toBe(true);
+          expect(result.isError, result.output).toBe(true);
+          expect(result.output).toMatch(/Operation not permitted|Permission denied|No such file or directory/);
+          expect(result.output).not.toContain("credential-store-secret");
+        }
+        const control = `/bin/cat ${shellQuote(join(root, "notes.txt"))}`;
+        const ordinary = await spawnWithSandbox(control, cwd, [cwd], 15, prepareSandboxFixture(control, cwd));
+        expect(ordinary.isError, ordinary.output).toBe(false);
+        expect(ordinary.output).toContain("ordinary-home-file");
+      } finally {
+        vi.unstubAllEnvs();
+        await cleanupTmpDir(root);
+      }
+    },
+  );
+
+  it.runIf(process.platform === "darwin" || process.platform === "linux")(
+    "reads a pre-created git repository with a disposable HOME and isolated fixture config",
     async () => {
       if (!(await asrtCanInitialize())) return;
 
-      // A linked checkout stores Git metadata outside its working directory.
-      // This fixture owns both parts inside the admitted root, so it tests the
-      // disposable home without depending on the enclosing checkout layout.
+      // A linked checkout stores Git metadata outside its working directory. This fixture owns both parts inside the admitted root, so it tests the disposable home without depending on the enclosing checkout layout.
       const cwd = mkdtempSync(join(tmpdir(), "asrt-git-"));
       const gitEnv = gitFixtureEnv(cwd);
+      const fixtureGitConfig = gitEnv.GIT_CONFIG_GLOBAL;
+      if (typeof fixtureGitConfig !== "string") throw new Error("Git fixture config path is missing");
       try {
         execFileSync("git", ["init", "--quiet"], { cwd, env: gitEnv });
         execFileSync("git", [
@@ -313,7 +338,8 @@ describe("asrt-sandbox — gate ON wraps a real command under the OS sandbox", (
           "-c", "commit.gpgsign=false", "commit", "--allow-empty", "--quiet", "-m", "fixture",
         ], { cwd, env: gitEnv });
         await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
-        const command = `printf '%s\\n' "$HOME"; git -C '${cwd.replace(/'/g, `'\\''`)}' log --oneline -n 1`;
+        // Keep fixture identity and signing configuration independent of the sandbox HOME and the user's global configuration.
+        const command = `printf '%s\\n' "$HOME"; GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=${shellQuote(fixtureGitConfig)} git -C ${shellQuote(cwd)} log --oneline -n 1`;
         const result = await spawnWithSandbox(
           command,
           cwd,
@@ -333,22 +359,45 @@ describe("asrt-sandbox — gate ON wraps a real command under the OS sandbox", (
       }
     },
   );
+
+  it.skipIf(process.platform !== "linux" || shouldSkipNativeSandboxTests())(
+    "returns a quarantine restore notice after a normal Git commit creates a control",
+    async () => {
+      const root = realpathSync(mkdtempSync(join(tmpdir(), "asrt-git-control-result-")));
+      const env = gitFixtureEnv(root);
+      const config = env.GIT_CONFIG_GLOBAL;
+      if (typeof config !== "string") throw new Error("Git fixture config path is missing");
+      const locale = getLocale();
+      setLocale("en");
+      try {
+        execFileSync("git", ["init", "--quiet"], { cwd: root, env });
+        await initializeRequiredSandbox({ allowedDomains: [] });
+        const commondir = join(root, ".git", "commondir");
+        expect(() => readFileSync(commondir)).toThrow(/ENOENT/);
+        const command = `export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=${shellQuote(config)}; test ! -e .git/commondir && git status --porcelain && printf committed > tracked.txt && git add tracked.txt && git -c user.name=Fixture -c user.email=fixture@example.invalid -c commit.gpgsign=false commit --quiet -m sandbox-commit && git branch sandbox-branch && printf untrusted-target > .git/commondir`;
+        const result = await spawnWithSandbox(command, root, [root], TOOL_TIMEOUT_POLICY.shellDefaultMs / 1000,
+          prepareSandboxFixture(command, root));
+        expect(result.isError, result.output).toBe(false);
+        expect(result.metadata.sandboxed).toBe(true);
+        expect(result.output).toContain("moved to quarantine (not deleted)");
+        expect(result.output).toContain(JSON.stringify(commondir));
+        expect(result.output).toContain("Restore each entry");
+        expect(() => readFileSync(commondir)).toThrow(/ENOENT/);
+        expect(execFileSync("git", ["log", "-1", "--format=%s"], { cwd: root, env, encoding: "utf8" }).trim()).toBe("sandbox-commit");
+      } finally {
+        setLocale(locale);
+        await cleanupTmpDir(root);
+      }
+    },
+  );
 });
 
-/**
- * ASRT 0.0.66 can return the bare command on Linux only when there are NO
- * restrictions at all. Ave's initialized config always carries
- * `network.allowedDomains` (including [] = deny all), so this real contract
- * locks that the same wrapper route used by the boot-time `true` probe reaches
- * bwrap's secure user namespace/capability path rather than a no-op shell.
- */
+// ASRT 0.0.66 can return the bare command on Linux only when there are NO restrictions at all. Ave's initialized config always carries `network.allowedDomains` (including [] = deny all), so this real contract locks that the same wrapper route used by the boot-time `true` probe reaches bwrap's secure user namespace/capability path rather than a no-op shell.
 describe("asrt-sandbox — Linux configured-wrapper runtime contract", () => {
   it.runIf(process.platform === "linux")(
     "emits bwrap with user namespace and dropped capabilities for the fixed probe command",
     async () => {
-      // Keep the existing helper's contract: only unsupported/missing-dep hosts
-      // skip. A host with binaries but userns blocked must fail initialization,
-      // which is exactly the runtime-probe regression this test protects.
+      // Keep the existing helper's contract: only unsupported/missing-dep hosts skip. A host with binaries but userns blocked must fail initialization, which is exactly the runtime-probe regression this test protects.
       if (!(await asrtCanInitialize())) return;
 
       await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
@@ -361,8 +410,7 @@ describe("asrt-sandbox — Linux configured-wrapper runtime contract", () => {
         expect(renderedWrapper).toContain("--cap-drop");
         expect(renderedWrapper).toContain("ALL");
       } finally {
-        // wrapToolCommand increments ASRT's Linux bwrap cleanup accounting even
-        // though this contract test only inspects argv and does not spawn it.
+        // wrapToolCommand increments ASRT's Linux bwrap cleanup accounting even though this contract test only inspects argv and does not spawn it.
         await cleanupAsrtSandboxAfterCommand();
       }
     },
@@ -382,8 +430,7 @@ describe("asrt-sandbox — Linux configured-wrapper runtime contract", () => {
         expect(words.some((word, index) => word === "--tmpfs" && words[index + 1] === checkout)).toBe(true);
         const reboundUnderDeny = words.flatMap((word, index) => word === "--ro-bind" && words[index + 2]!.startsWith(`${checkout}/`)
           ? [[words[index + 1], words[index + 2]]] : []);
-        // The helper is the one file this wrap re-allows; ASRT itself re-allows
-        // its JVM proxy agent jar. No directory of the package comes back.
+        // The helper is the one file this wrap re-allows; ASRT itself re-allows its JVM proxy agent jar. No directory of the package comes back.
         const jar = getVendoredJavaProxyAgentJarPath();
         expect(reboundUnderDeny.sort()).toEqual([[helper, helper], [jar, jar]].sort());
         expect(words).toContain(helper);
@@ -394,7 +441,7 @@ describe("asrt-sandbox — Linux configured-wrapper runtime contract", () => {
   );
 });
 
-/** The directory holding `node_modules` above `path` — the checkout a HOME deny would hide. */
+// The directory holding `node_modules` above `path` — the checkout a HOME deny would hide.
 function checkoutRootAbove(path: string): string {
   let dir = dirname(path);
   while (basename(dir) !== "node_modules") {
@@ -405,12 +452,7 @@ function checkoutRootAbove(path: string): string {
   return dirname(dir);
 }
 
-/**
- * ASRT runs `apply-seccomp` from inside the bwrap namespace. A shell denies all
- * of `$HOME`, so an app or checkout there hid its own helper and every strict
- * wrap exited 127. Each wrap re-allows exactly that one file, and the shared
- * config pins it as the path ASRT execs.
- */
+// ASRT runs `apply-seccomp` from inside the bwrap namespace. A shell denies all of `$HOME`, so an app or checkout there hid its own helper and every strict wrap exited 127. Each wrap re-allows exactly that one file, and the shared config pins it as the path ASRT execs.
 describe("asrt-sandbox — Linux seccomp helper beneath a read deny", () => {
   const hostPlatform = process.platform;
   afterEach(() => setProcessPlatform(hostPlatform));
@@ -466,10 +508,7 @@ describe("asrt-sandbox — per-command trust boundary (security MINOR)", () => {
     if (!(await asrtCanInitialize())) return;
 
     await initializeAsrtSandbox({ allowedDomains: [] });
-    // The WrapOptions surface only exposes `filesystem` + `abortSignal`. There
-    // is no `customConfig` / network / weakening channel — a call attempting to
-    // smuggle `allowAppleEvents` etc. is a compile error, so the runtime call
-    // simply succeeds with only the filesystem slice applied.
+    // The WrapOptions surface only exposes `filesystem` + `abortSignal`. There is no `customConfig` / network / weakening channel — a call attempting to smuggle `allowAppleEvents` etc. is a compile error, so the runtime call simply succeeds with only the filesystem slice applied.
     const { argv } = await wrapToolCommand("echo trust-ok", { commandId: TEST_COMMAND_ID,
       filesystem: { allowWrite: [], allowRead: [] },
     });
@@ -498,9 +537,7 @@ describe("asrt-sandbox — idempotency guard (PR #1356 NIT)", () => {
   });
 });
 
-// Plugin trees a confined process may write are deleted recursively only
-// before any such process can run (lib/confined-process-phase.ts); a wrap is
-// where one begins, so it has to start that phase itself.
+// Plugin trees a confined process may write are deleted recursively only before any such process can run (lib/confined-process-phase.ts); a wrap is where one begins, so it has to start that phase itself.
 describe("asrt-sandbox — a wrap begins the confined-process phase", () => {
   afterEach(() => _resetConfinedProcessPhaseForTests());
   for (const kind of ["tool", "worker"] as const) {
@@ -520,9 +557,7 @@ describe("asrt-sandbox — worker wrap carries only the filesystem jail", () => 
   it("wrapWorkerCommand wraps with no per-command network override (network is the shared config)", async () => {
     if (!(await asrtCanInitialize())) return;
     await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
-    // WrapOptions exposes only `filesystem` + `abortSignal` — there is no
-    // `network` channel (it would be INERT per command; enforcement is the
-    // shared config). The wrap succeeds with the filesystem slice only.
+    // WrapOptions exposes only `filesystem` + `abortSignal` — there is no `network` channel (it would be INERT per command; enforcement is the shared config). The wrap succeeds with the filesystem slice only.
     const { argv } = await wrapWorkerCommand("echo worker-ok", { commandId: TEST_COMMAND_ID,
       filesystem: { allowWrite: [], allowRead: [] },
     });
@@ -533,23 +568,7 @@ describe("asrt-sandbox — worker wrap carries only the filesystem jail", () => 
 });
 
 describe("asrt-sandbox — REAL enforcement via the SHARED config (strict union allow-list)", () => {
-  /**
-   * The cluster review demands enforcement proof, not a shape assertion. This
-   * exercises the ACTUALLY-configured shared SandboxManager: a host IN the
-   * union allow-list is permitted through the egress proxy; a host OUTSIDE it
-   * is HARD-DENIED at the proxy with NO askCb fallthrough (strictAllowlist).
-   *
-   * Probe hosts: two names under the reserved `.localhost` domain, served by
-   * a loopback HTTP server this suite starts. ASRT's proxy resolves an
-   * allow-listed `.localhost` name to loopback itself (RFC 6761; see its
-   * resolved-address guard), so the ONLY variable is whether the name is on
-   * the shared allow-list, and no probe leaves the machine. These cases used
-   * to probe example.com/example.org over the internet: a slow or failed
-   * lookup on a loaded CI runner read as a denial (2026-10-19, PR #10) or
-   * silently skipped the case. curl is told to proxy every name
-   * (`--noproxy ""`) because ASRT's NO_PROXY lists `localhost`, which curl
-   * also applies to names under it; the case is about the proxy's decision.
-   */
+  // Pin reserved localhost probe names to the local server so DNS differences cannot masquerade as policy denials. Keep real proxy allow/deny and address checks, force proxy use despite NO_PROXY, and send no traffic off-machine.
   const ALLOWED_HOST = "allowed.localhost";
   const OTHER_HOST = "other.localhost";
   let server: Server | undefined;
@@ -562,9 +581,15 @@ describe("asrt-sandbox — REAL enforcement via the SHARED config (strict union 
     });
     await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", resolve));
     port = (server.address() as AddressInfo).port;
+    const probeHosts = new Set([ALLOWED_HOST, OTHER_HOST]);
+    setDestinationResolverForTesting(async (name) => {
+      if (probeHosts.has(name)) return [{ address: "127.0.0.1", family: 4 }];
+      return lookupAll(name, { all: true, verbatim: true });
+    });
   });
 
   afterAll(async () => {
+    setDestinationResolverForTesting(undefined);
     await new Promise<void>((resolve) => (server ? server.close(() => resolve()) : resolve()));
   });
 
@@ -579,7 +604,7 @@ describe("asrt-sandbox — REAL enforcement via the SHARED config (strict union 
   };
   const httpOk = (r: { code: number | null; stdout: string }) =>
     r.code === 0 && /^[23]\d\d$/.test(r.stdout.trim());
-  /** The proxy refused the name: curl got an HTTP status, and it is 403. */
+  // The proxy refused the name: curl got an HTTP status, and it is 403.
   const proxyDenied = (r: { code: number | null; stdout: string }) => r.stdout.trim() === "403";
 
   it("in-union host is permitted and out-of-union host is hard-denied with NO askCb", async () => {
@@ -592,8 +617,7 @@ describe("asrt-sandbox — REAL enforcement via the SHARED config (strict union 
       return true; // would ALLOW if ever consulted — strict must bypass it.
     };
 
-    // Shared config: union includes ALLOWED_HOST, NOT OTHER_HOST.
-    // strictAllowlist hard-denies everything else.
+    // Shared config: union includes ALLOWED_HOST, NOT OTHER_HOST. strictAllowlist hard-denies everything else.
     await initializeAsrtSandbox(
       { allowedDomains: [ALLOWED_HOST], strictAllowlist: true },
       recordingAskCb,
@@ -605,8 +629,7 @@ describe("asrt-sandbox — REAL enforcement via the SHARED config (strict union 
     expect(httpOk(allowed)).toBe(true);
     // Out-of-union host is HARD-DENIED at the egress proxy.
     expect(proxyDenied(denied)).toBe(true);
-    // Strict means the askCb is NEVER consulted — prove no interactive
-    // fallthrough for the out-of-union host (the WIRING-A model is superseded).
+    // Strict means the askCb is NEVER consulted — prove no interactive fallthrough for the out-of-union host (the model is superseded).
     expect(askCalls).toHaveLength(0);
   }, 60_000);
 
@@ -620,10 +643,7 @@ describe("asrt-sandbox — REAL enforcement via the SHARED config (strict union 
     await resetAsrtSandbox();
     expect(proxyDenied(beforeAdd)).toBe(true);
 
-    // Now ADD OTHER_HOST to the union → the SHARED config now PERMITS it
-    // (no longer a strict hard-deny on a config-rule miss). Same probe, same
-    // host — only the shared allow-list changed. This is the property the inert
-    // per-command override could never provide.
+    // Now ADD OTHER_HOST to the union → the SHARED config now PERMITS it (no longer a strict hard-deny on a config-rule miss). Same probe, same host — only the shared allow-list changed. This is the property the inert per-command override could never provide.
     await initializeAsrtSandbox({
       allowedDomains: [ALLOWED_HOST, OTHER_HOST],
       strictAllowlist: true,
@@ -637,14 +657,11 @@ describe("asrt-sandbox — REAL enforcement via the SHARED config (strict union 
     if (!(await asrtCanInitialize())) return;
     if (process.platform !== "darwin" && process.platform !== "linux") return;
 
-    // DYNAMIC-ENDPOINT PROVENANCE: the allow-list host comes from a SETTINGS
-    // baseUrl reduced via computeDynamicEndpointHosts — the exact boot path for
-    // a user-configured Azure/embedding endpoint — NOT a hardcoded literal.
+    // DYNAMIC-ENDPOINT PROVENANCE: the allow-list host comes from a SETTINGS baseUrl reduced via computeDynamicEndpointHosts — the exact boot path for a user-configured Azure/embedding endpoint — NOT a hardcoded literal.
     const dynamicHostsFor = (baseUrl: string) =>
       computeDynamicEndpointHosts({ llm: { vendors: { "azure-foundry": { baseUrl } } } });
 
-    // Union built from the CONFIGURED endpoint, normalized for ASRT exactly
-    // as boot does.
+    // Union built from the CONFIGURED endpoint, normalized for ASRT exactly as boot does.
     const initialUnion = normalizeUnionForAsrt(
       dynamicHostsFor(`http://${ALLOWED_HOST}:${port}/openai/v1`),
     );
@@ -657,9 +674,7 @@ describe("asrt-sandbox — REAL enforcement via the SHARED config (strict union 
     expect(httpOk(configuredAllowed)).toBe(true);
     expect(proxyDenied(nonConfiguredDenied)).toBe(true);
 
-    // Recompute the configured endpoint and exercise the live runtime config
-    // swap without reinitializing the sandbox. Worker endpoint permissions
-    // are refreshed separately through their attributed egress callback.
+    // Recompute the configured endpoint and exercise the live runtime config swap without reinitializing the sandbox. Worker endpoint permissions are refreshed separately through their attributed egress callback.
     const refreshedUnion = normalizeUnionForAsrt(
       dynamicHostsFor(`http://${OTHER_HOST}:${port}/openai/v1`),
     );
@@ -672,8 +687,7 @@ describe("asrt-sandbox — REAL enforcement via the SHARED config (strict union 
       network: { ...current!.network, allowedDomains: refreshedUnion },
     });
 
-    // After the live refresh: the NEW configured host is allowed, the OLD one
-    // is now hard-denied — proving the swap took effect with no restart.
+    // After the live refresh: the NEW configured host is allowed, the OLD one is now hard-denied — proving the swap took effect with no restart.
     const newHostAllowed = await curlProbe(OTHER_HOST);
     const oldHostDenied = await curlProbe(ALLOWED_HOST);
     await resetAsrtSandbox();
@@ -685,12 +699,7 @@ describe("asrt-sandbox — REAL enforcement via the SHARED config (strict union 
 describe("asrt-sandbox — parentProxy explicit (PR #1356 security MINOR)", () => {
   it("the composed child env never carries the host HTTP_PROXY (no covert egress chain)", async () => {
     if (!(await asrtCanInitialize())) return;
-    // Set a bogus host proxy. Two layers must prevent it reaching the child:
-    //   1. network.parentProxy is set explicitly to {} so ASRT's egress proxy
-    //      does NOT chain through the host proxy (resolveParentProxy would
-    //      otherwise silently inherit process.env.HTTP_PROXY);
-    //   2. buildSandboxedChildEnv strips the host HTTP_PROXY from the child env
-    //      because ASRT did not change it (it equals process.env).
+    // Set a bogus host proxy. Two layers must prevent it reaching the child: 1. network.parentProxy is set explicitly to {} so ASRT's egress proxy does NOT chain through the host proxy (resolveParentProxy would otherwise silently inherit process.env.HTTP_PROXY); 2. buildSandboxedChildEnv strips the host HTTP_PROXY from the child env because ASRT did not change it (it equals process.env).
     const { buildSandboxedChildEnv } = await import("../../tools/safe-env.js");
     const HOST_PROXY = "http://host-proxy.invalid:3128";
     const prev = process.env.HTTP_PROXY;
@@ -701,8 +710,7 @@ describe("asrt-sandbox — parentProxy explicit (PR #1356 security MINOR)", () =
         filesystem: { allowWrite: [], allowRead: [] },
       });
       const childEnv = buildSandboxedChildEnv(env);
-      // The host's external proxy must never reach the sandboxed child. Any
-      // HTTP_PROXY present must be ASRT's own localhost egress proxy.
+      // The host's external proxy must never reach the sandboxed child. Any HTTP_PROXY present must be ASRT's own localhost egress proxy.
       if (childEnv.HTTP_PROXY !== undefined) {
         expect(childEnv.HTTP_PROXY).not.toContain("host-proxy.invalid");
       }
@@ -715,15 +723,7 @@ describe("asrt-sandbox — parentProxy explicit (PR #1356 security MINOR)", () =
 });
 
 describe("asrt-sandbox — computeDynamicEndpointHosts (user-configured endpoint union seam)", () => {
-  /**
-   * Some plugins' real egress host is NOT a static manifest domain but
-   * USER-CONFIGURED — notably local-indexer's embedding/caption calls hit the
-   * host's Azure OpenAI resource (`llm.vendors["azure-foundry"].baseUrl`, the
-   * same value resolveApiKey hands the worker). This extractor reduces every
-   * configured vendor baseUrl to its hostname so the union reflects what
-   * plugins actually reach. No-fallback: a malformed/empty endpoint yields NO
-   * host (never a wildcard / allow-all).
-   */
+  // Some plugins' real egress host is NOT a static manifest domain but USER-CONFIGURED — notably local-indexer's embedding/caption calls hit the host's Azure OpenAI resource (`llm.vendors["azure-foundry"].baseUrl`, the same value resolveApiKey hands the worker). This extractor reduces every configured vendor baseUrl to its hostname so the union reflects what plugins actually reach. No-fallback: a malformed/empty endpoint yields NO host (never a wildcard / allow-all).
   it("extracts the hostname from an Azure OpenAI resource baseUrl", () => {
     expect(
       computeDynamicEndpointHosts({
@@ -739,10 +739,7 @@ describe("asrt-sandbox — computeDynamicEndpointHosts (user-configured endpoint
   });
 
   it("includes the active marketplace preset's host, which no vendor block holds", () => {
-    // A preset's address lives in the preset registry, not in the
-    // openai-compatible block. Reading blocks alone would leave the endpoint
-    // chat is actually talking to out of the union — hard-denied under strict
-    // enforcement while the provider looks configured and healthy.
+    // A preset's address lives in the preset registry, not in the openai-compatible block. Reading blocks alone would leave the endpoint chat is actually talking to out of the union — hard-denied under strict enforcement while the provider looks configured and healthy.
     expect(
       computeDynamicEndpointHosts({
         llm: {
@@ -752,8 +749,7 @@ describe("asrt-sandbox — computeDynamicEndpointHosts (user-configured endpoint
         marketplace: {
           installedProviderPresets: [
             { providerId: "future-router", baseUrl: "https://future.example/v1" },
-            // Installed but not selected: not a route anything reaches, so it
-            // must not widen an enforced allow-list.
+            // Installed but not selected: not a route anything reaches, so it must not widen an enforced allow-list.
             { providerId: "other-router", baseUrl: "https://other.example/v1" },
           ],
         },
@@ -799,17 +795,7 @@ describe("asrt-sandbox — computeDynamicEndpointHosts (user-configured endpoint
 });
 
 describe("asrt-sandbox — parentProxy direct-connect floor (PR #1356 MAJOR, corrected)", () => {
-  /**
-   * Pins the ASRT contract the buildSandboxConfig default path depends
-   * on: resolveParentProxy (parent-proxy.js:46) is
-   *   `cfg?.http ?? process.env.HTTP_PROXY ?? process.env.http_proxy`.
-   * An EMPTY object `{}` (the prior buggy value) has no `http` key, so the `??`
-   * chain STILL inherits the host HTTP_PROXY — identical to passing nothing.
-   * Only EXPLICIT EMPTY STRINGS short-circuit the chain (`'' ?? x` ⇒ `''`) and
-   * yield genuine direct-connect. The fix emits `{ http: '', https: '' }` on
-   * the default path, so resolveParentProxy returns undefined (no host-proxy
-   * chaining) even with a host HTTP_PROXY set.
-   */
+  // Pins the ASRT contract the buildSandboxConfig default path depends on: resolveParentProxy (parent-proxy.js:46) is `cfg?.http ?? process.env.HTTP_PROXY ?? process.env.http_proxy`. An EMPTY object `{}` (the prior buggy value) has no `http` key, so the `??` chain STILL inherits the host HTTP_PROXY — identical to passing nothing. Only EXPLICIT EMPTY STRINGS short-circuit the chain (`'' ?? x` ⇒ `''`) and yield genuine direct-connect. The fix emits `{ http: '', https: '' }` on the default path, so resolveParentProxy returns undefined (no host-proxy chaining) even with a host HTTP_PROXY set.
   it("explicit empty strings → no host-proxy inheritance; {} would inherit (proves the floor)", () => {
     const prev = process.env.HTTP_PROXY;
     process.env.HTTP_PROXY = "http://host-proxy.invalid:3128";
@@ -855,13 +841,7 @@ describe("asrt-sandbox — parentProxy direct-connect floor (PR #1356 MAJOR, cor
 });
 
 describe("asrt-sandbox — normalizeUnionForAsrt (domain-matching alignment, PR #1356 MINOR)", () => {
-  /**
-   * ASRT matchesDomainPattern (domain-pattern.js:23) matches a BARE domain
-   * EXACTLY; a strict subdomain needs `*.d`. Ave hostFetch treats a bare
-   * domain as a dot-boundary SUFFIX. normalizeUnionForAsrt emits both `d` and
-   * `*.d` so ASRT's matcher reproduces the suffix semantics. These assertions
-   * run the REAL vendored matcher against the normalized list.
-   */
+  // ASRT matchesDomainPattern (domain-pattern.js:23) matches a BARE domain EXACTLY; a strict subdomain needs `*.d`. Ave hostFetch treats a bare domain as a dot-boundary SUFFIX. normalizeUnionForAsrt emits both `d` and `*.d` so ASRT's matcher reproduces the suffix semantics. These assertions run the REAL vendored matcher against the normalized list.
   it("emits apex + wildcard for each bare domain (order-stable, deduped)", () => {
     expect(normalizeUnionForAsrt(["example.com"])).toEqual([
       "example.com",
@@ -891,48 +871,28 @@ describe("asrt-sandbox — normalizeUnionForAsrt (domain-matching alignment, PR 
   });
 
   it("a RAW bare domain (un-normalized) would NOT match subdomains under ASRT — the divergence the fix closes", () => {
-    // This is the bug: without normalization, ASRT's exact match rejects the
-    // subdomain that Ave hostFetch would have allowed.
+    // This is the bug: without normalization, ASRT's exact match rejects the subdomain that Ave hostFetch would have allowed.
     expect(matchesDomainPattern("sub.example.com", "example.com")).toBe(false);
     expect(matchesDomainPattern("example.com", "example.com")).toBe(true);
   });
 });
 
 describe("asrt-sandbox — proxyPortRange single SOT (install↔config consistency)", () => {
-  /**
-   * The WFP rule stamped at install time MUST cover exactly the port range the
-   * srt-win egress proxy binds at runtime. Both the install handler
-   * (ipc/domains/permissions.ts sandboxWindowsInstall) and buildSandboxConfig
-   * (asrt-sandbox.ts) source their range from the SAME local
-   * DEFAULT_WINDOWS_PROXY_PORT_RANGE constant — the local mirror of ASRT's
-   * value. This test pins the invariant: the local constant is identical to
-   * ASRT's real export, so the WFP-permitted range (stamped at install) equals
-   * the proxy bind range (at runtime) by construction, and any upstream drift
-   * in ASRT fails this test rather than silently desyncing the two paths.
-   */
+  // The WFP rule stamped at install time MUST cover exactly the port range the srt-win egress proxy binds at runtime. Both the install handler (ipc/domains/permissions.ts sandboxWindowsInstall) and buildSandboxConfig (asrt-sandbox.ts) source their range from the SAME local DEFAULT_WINDOWS_PROXY_PORT_RANGE constant — the local mirror of ASRT's value. This test pins the invariant: the local constant is identical to ASRT's real export, so the WFP-permitted range (stamped at install) equals the proxy bind range (at runtime) by construction, and any upstream drift in ASRT fails this test rather than silently desyncing the two paths.
   it("local DEFAULT_WINDOWS_PROXY_PORT_RANGE matches ASRT's real export", async () => {
     const asrt = await import("@anthropic-ai/sandbox-runtime");
-    // Both references must be the identical value — the install path and the
-    // buildSandboxConfig runtime path converge on this one constant.
+    // Both references must be the identical value — the install path and the buildSandboxConfig runtime path converge on this one constant.
     expect(DEFAULT_WINDOWS_PROXY_PORT_RANGE).toEqual(asrt.DEFAULT_WINDOWS_PROXY_PORT_RANGE);
   });
 
   it("getVendoredSrtWinExePath matches ASRT's real VENDORED_SRT_WIN_EXE (srt-win path SoT pin)", async () => {
-    // ASRT 0.0.67 REMOVED implicit vendored resolution — every Windows entry
-    // point must supply an EXPLICIT srt-win path. getVendoredSrtWinExePath is the
-    // local SoT that boot (checkAsrtDependencies), buildSandboxConfig, and the
-    // per-worker ACL grant all source from. Pin it to ASRT's own vendored-exe
-    // constant so upstream drift in the vendored layout fails CI rather than
-    // silently resolving a wrong/absent path. (Dev env has no `app.asar` segment,
-    // so the app.asar.unpacked rewrite is a no-op here.)
+    // ASRT 0.0.67 REMOVED implicit vendored resolution — every Windows entry point must supply an EXPLICIT srt-win path. getVendoredSrtWinExePath is the local SoT that boot (checkAsrtDependencies), buildSandboxConfig, and the per-worker ACL grant all source from. Pin it to ASRT's own vendored-exe constant so upstream drift in the vendored layout fails CI rather than silently resolving a wrong/absent path. (Dev env has no `app.asar` segment, so the app.asar.unpacked rewrite is a no-op here.)
     const asrt = await import("@anthropic-ai/sandbox-runtime");
     expect(getVendoredSrtWinExePath()).toBe(asrt.VENDORED_SRT_WIN_EXE);
   });
 
   it("buildSandboxConfig emits the local SOT constant as windows.proxyPortRange (win32 path)", () => {
-    // Force win32 so the windows section is emitted regardless of the actual
-    // platform running CI. The install handler sources the same local constant,
-    // so this assertion proves both paths use the same value.
+    // Force win32 so the windows section is emitted regardless of the actual platform running CI. The install handler sources the same local constant, so this assertion proves both paths use the same value.
     const prevPlatform = Object.getOwnPropertyDescriptor(process, "platform");
     Object.defineProperty(process, "platform", { value: "win32", configurable: true });
     try {
@@ -968,10 +928,7 @@ describe("asrt-sandbox — proxyPortRange single SOT (install↔config consisten
 });
 
 describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", () => {
-  // getDefaultSensitiveReadDenyPaths derives `~/.ave/*` from aveHome() (which
-  // honors the AVE_HOME env override) and the standard credential stores from
-  // os.homedir(). Pin AVE_HOME to a deterministic value so the ~/.ave assertions
-  // are stable across machines; restore it after each test.
+  // getDefaultSensitiveReadDenyPaths derives `~/.ave/*` from aveHome (which honors the AVE_HOME env override) and the standard credential stores from os.homedir. Pin AVE_HOME to a deterministic value so the ~/.ave assertions are stable across machines; restore it after each test.
   const FAKE_AVE_HOME = join(tmpdir(), "ave-readdeny-test-home", ".ave");
   let prevAveHome: string | undefined;
 
@@ -988,8 +945,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     const paths = getDefaultSensitiveReadDenyPaths().map((path) => path.replace(/[\\/]$/, ""));
     const home = homedir();
 
-    // Every entry is an absolute path with NO glob char (literal — works on both
-    // macOS seatbelt subpath and Linux bwrap deny-bind; ASRT only expands globs).
+    // Every entry is an absolute path with NO glob char (literal — works on both macOS seatbelt subpath and Linux bwrap deny-bind; ASRT only expands globs).
     for (const p of paths) {
       expect(p.startsWith("/") || /^[A-Za-z]:[\\/]/.test(p)).toBe(true);
       expect(/[*?[\]]/.test(p)).toBe(false);
@@ -1032,9 +988,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     expect(paths).toContain(join(home, ".bash_history"));
     expect(paths).toContain(join(home, ".zsh_history"));
 
-    // Electron userData dir (deny whole dir — covers OAuth session cookies/tokens,
-    // Cookies SQLite, Local/Session Storage, ave-secrets.json, etc.).
-    // FIX 1: Linux base mirrors Electron's XDG_CONFIG_HOME resolution.
+    // Electron userData dir (deny whole dir — covers OAuth session cookies/tokens, Cookies SQLite, Local/Session Storage, ave-secrets.json, etc.). FIX 1: Linux base mirrors Electron's XDG_CONFIG_HOME resolution.
     const xdgBase = process.env.XDG_CONFIG_HOME ?? join(home, ".config");
     const expectedUserData =
       process.platform === "darwin"
@@ -1051,13 +1005,108 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
   it("does NOT deny $HOME wholesale (over-deny safety — legit shell tools still read ~)", () => {
     const paths = getDefaultSensitiveReadDenyPaths();
     const home = homedir();
-    // The bare home dir must never be on the deny-list — denying all of ~ would
-    // break tools reading ~/.cargo, ~/.config, etc. We deny SPECIFIC subpaths.
+    // The bare home dir must never be on the deny-list — denying all of ~ would break tools reading ~/.cargo, ~/.config, etc. We deny SPECIFIC subpaths.
     expect(paths).not.toContain(home);
     // A clearly-legit subpath (not a credential store) must NOT be denied.
     expect(paths).not.toContain(join(home, ".cargo"));
     // ~/.config wholesale must never be denied — only specific subdirs.
     expect(paths).not.toContain(join(home, ".config"));
+  });
+
+  // Credential floor review: browser profiles, keychains, keyrings and password managers are on the OS read floor of every platform's builtin shell, beside `.ssh`. Spelled out here, not derived from the table, so a dropped row fails.
+  describe.each([
+    ["darwin", [
+      ["Library", "Keychains"],
+      ["Library", "Cookies"],
+      ["Library", "Containers", "com.apple.Safari"],
+      // The vendor parent covers every Chrome channel (Beta, Dev, Canary).
+      ["Library", "Application Support", "Google"],
+      ["Library", "Application Support", "Microsoft Edge"],
+      ["Library", "Application Support", "Microsoft Edge Beta"],
+      ["Library", "Application Support", "Microsoft Edge Dev"],
+      ["Library", "Application Support", "Microsoft Edge Canary"],
+      ["Library", "Application Support", "BraveSoftware"],
+      ["Library", "Application Support", "Chromium"],
+      ["Library", "Application Support", "Arc"],
+      ["Library", "Application Support", "Vivaldi"],
+      ["Library", "Application Support", "com.operasoftware.Opera"],
+      ["Library", "Application Support", "com.operasoftware.OperaGX"],
+      ["Library", "Application Support", "Firefox"],
+      ["Library", "Thunderbird"],
+      ["Library", "Group Containers", "2BUA8C4S2C.com.1password"],
+      ["Library", "Group Containers", "2BUA8C4S2C.com.agilebits"],
+      [".password-store"],
+      [".config", "op"],
+    ]],
+    ["linux", [
+      [".mozilla"],
+      [".config", "google-chrome"],
+      [".config", "chromium"],
+      [".config", "BraveSoftware"],
+      [".config", "microsoft-edge"],
+      [".config", "vivaldi"],
+      [".config", "opera"],
+      [".config", "google-chrome-beta"],
+      [".config", "google-chrome-unstable"],
+      [".config", "microsoft-edge-beta"],
+      [".config", "microsoft-edge-dev"],
+      ["snap", "firefox"],
+      ["snap", "chromium"],
+      ["snap", "brave"],
+      ["snap", "thunderbird"],
+      [".var", "app", "org.mozilla.firefox"],
+      [".var", "app", "org.chromium.Chromium"],
+      [".var", "app", "com.google.Chrome"],
+      [".var", "app", "com.brave.Browser"],
+      [".var", "app", "com.microsoft.Edge"],
+      [".var", "app", "org.mozilla.Thunderbird"],
+      [".thunderbird"],
+      [".local", "share", "keyrings"],
+      [".local", "share", "kwalletd"],
+      [".password-store"],
+      [".config", "op"],
+    ]],
+    ["win32", [
+      ["AppData", "Local", "Google", "Chrome", "User Data"],
+      ["AppData", "Local", "Microsoft", "Edge", "User Data"],
+      ["AppData", "Local", "BraveSoftware", "Brave-Browser", "User Data"],
+      ["AppData", "Local", "Chromium", "User Data"],
+      ["AppData", "Local", "Vivaldi", "User Data"],
+      ["AppData", "Roaming", "Opera Software"],
+      ["AppData", "Local", "Google", "Chrome SxS", "User Data"],
+      ["AppData", "Local", "Google", "Chrome Beta", "User Data"],
+      ["AppData", "Local", "Google", "Chrome Dev", "User Data"],
+      ["AppData", "Local", "Microsoft", "Edge Beta", "User Data"],
+      ["AppData", "Local", "Microsoft", "Edge Dev", "User Data"],
+      ["AppData", "Local", "Microsoft", "Edge SxS", "User Data"],
+      ["AppData", "Roaming", "Thunderbird"],
+      ["AppData", "Roaming", "Mozilla", "Firefox", "Profiles"],
+      ["AppData", "Roaming", "Microsoft", "Credentials"],
+      ["AppData", "Local", "Microsoft", "Credentials"],
+      ["AppData", "Roaming", "Microsoft", "Protect"],
+    ]],
+  ] as const)("credential floor on %s", (platform, stores) => {
+    const hostPlatform = process.platform;
+    beforeEach(() => setProcessPlatform(platform));
+    afterEach(() => setProcessPlatform(hostPlatform));
+
+    it.each(stores.map((segments) => [segments.join("/"), segments] as const))("denies reads of ~/%s", (_name, segments) => {
+      // A Windows directory row keeps its separator so ASRT denies a directory.
+      const store = join(homedir(), ...segments) + (platform === "win32" ? sep : "");
+      const cwd = join(tmpdir(), "ave-credential-floor-cwd");
+      expect(getBuiltinShellReadPolicy([cwd], homedir()).denyRead).toContain(store);
+      expect(getDefaultSensitiveReadDenyPaths()).toContain(store);
+      expect(getDefaultSensitiveWriteDenyPaths()).toContain(store);
+    });
+
+    it("keeps ordinary home reads and the home itself off the floor", () => {
+      const read = getBuiltinShellReadPolicy([join(homedir(), "projects", "x")], homedir());
+      expect(read.denyRead).not.toContain(homedir());
+      expect(read.allowRead).toContain(join(homedir(), "projects", "x"));
+      for (const ordinary of [["projects"], [".config"], [".local", "share"], ["Library", "Application Support"], ["AppData", "Local"]]) {
+        expect(read.denyRead).not.toContain(join(homedir(), ...ordinary));
+      }
+    });
   });
 
   it("projects subscription runtime state into both OS deny floors for a custom profile", () => {
@@ -1074,8 +1123,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
   });
 
   it("FIX 1 — Linux XDG_CONFIG_HOME: when set, userData base uses $XDG_CONFIG_HOME not ~/.config", () => {
-    // This test only exercises the XDG path on Linux (the env var is harmless
-    // on other platforms since darwin/win32 branches never read it).
+    // This test only exercises the XDG path on Linux (the env var is harmless on other platforms since darwin/win32 branches never read it).
     if (process.platform !== "linux") return;
     const home = homedir();
     const fakeXdg = join(tmpdir(), "fake-xdg-config-home");
@@ -1085,8 +1133,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
       const paths = getDefaultSensitiveReadDenyPaths();
       // Must deny the XDG-resolved path.
       expect(paths).toContain(join(fakeXdg, "Ave"));
-      // Must NOT deny the default ~/.config/Ave when XDG is overridden
-      // (belt-and-suspenders is the caller's choice; this SOT mirrors Electron).
+      // Must NOT deny the default ~/.config/Ave when XDG is overridden (belt-and-suspenders is the caller's choice; this SOT mirrors Electron).
       expect(paths).not.toContain(join(home, ".config", "Ave"));
     } finally {
       if (prevXdg === undefined) delete process.env.XDG_CONFIG_HOME;
@@ -1102,10 +1149,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     expect(paths).toContain(expected);
     // No duplicates.
     expect(new Set(paths).size).toBe(paths.length);
-    // Over-deny safety: the derived fallback is NOT additionally added when
-    // the exact path is provided (the dedup set handles this if they collide,
-    // but the function uses the provided value exclusively for the userData slot).
-    // Verify the provided path is present exactly once.
+    // Over-deny safety: the derived fallback is NOT additionally added when the exact path is provided (the dedup set handles this if they collide, but the function uses the provided value exclusively for the userData slot). Verify the provided path is present exactly once.
     expect(paths.filter((p) => p === expected).length).toBe(1);
   });
 
@@ -1136,8 +1180,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     const sensitive = getDefaultSensitiveReadDenyPaths();
     const privateRoots = appOwnedSandboxPrivateRoots();
     for (const p of sensitive) {
-      // On macOS the sandbox private roots reach ASRT as exact globs, which it
-      // re-emits after the allows minus a wrap's own directory under them.
+      // On macOS the sandbox private roots reach ASRT as exact globs, which it re-emits after the allows minus a wrap's own directory under them.
       const spelled = process.platform === "darwin" && privateRoots.includes(p) ? `${p.slice(0, -1)}[${p.slice(-1)}]` : p;
       if (reachesAsrt(p)) expect(bare(config.filesystem.denyRead)).toContain(bare([spelled])[0]);
     }
@@ -1195,9 +1238,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     try {
       const config = buildSandboxConfig({ allowedDomains: [], strictAllowlist: true });
       const denyWrite = config.filesystem.denyWrite.map(String);
-      // A missing target is created by `srt-win acl stamp`: a trailing
-      // separator makes it a directory instead of a 0-byte file. The floor
-      // appends the host separator (a backslash on a real Windows host).
+      // A missing target is created by `srt-win acl stamp`: a trailing separator makes it a directory instead of a 0-byte file. The floor appends the host separator (a backslash on a real Windows host).
       expect(denyWrite).toContain(`${join(FAKE_AVE_HOME, "keys")}${sep}`);
       expect(denyWrite).toContain(join(FAKE_AVE_HOME, "settings.json"));
       // `/etc/shadow` would become `<drive>:\etc\shadow`.
@@ -1226,8 +1267,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
       const denies = [...config.filesystem.denyRead, ...config.filesystem.denyWrite].map(String);
       // Under the grant: kept, the sandbox user could otherwise reach it.
       expect(denies).toContain(join(work, "locked"));
-      // Elsewhere in the profile the sandbox user has no rights, and srt-win
-      // would stamp the profile itself as the parent (404 s measured).
+      // Elsewhere in the profile the sandbox user has no rights, and srt-win would stamp the profile itself as the parent (404 s measured).
       expect(denies.filter((p) => p.startsWith(profile) && !p.startsWith(work))).toEqual([]);
       // Outside the profile: kept.
       expect(denies).toContain(join(FAKE_AVE_HOME, "settings.json"));
@@ -1240,8 +1280,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
 
   it("Windows: a drive-root profile prunes no deny", () => {
     const prevTestHome = process.env.AVE_ASRT_TEST_HOME;
-    // USERPROFILE=`C:\` is not a home: every deny on the drive would look
-    // like a profile row disjoint from the grants.
+    // USERPROFILE=`C:\` is not a home: every deny on the drive would look like a profile row disjoint from the grants.
     const driveRoot = ORIGINAL_PLATFORM_FOR_DENY_TEST === "win32" ? parse(tmpdir()).root : "/";
     process.env.AVE_ASRT_TEST_HOME = driveRoot;
     setProcessPlatform("win32");
@@ -1496,12 +1535,7 @@ describe("asrt-sandbox — worker-UDS register/unregister (shared-config, not pe
     await expect(registerWorkerUnixSocketDir("/run/worker-a", predecessor)).rejects.toThrow(/not active/);
   }, 60_000);
 
-  // A plugin's `sockets/` and `run/` are per plugin, so during an update or a
-  // restart the candidate child registers the directories its predecessor
-  // still holds, and the predecessor retires first. Its release must not take
-  // the allow away from the candidate: every child wrapped afterwards (the
-  // candidate's own workers, started from onPublished) is generated from the
-  // shared config at that moment.
+  // A plugin's `sockets/` and `run/` are per plugin, so during an update or a restart the candidate child registers the directories its predecessor still holds, and the predecessor retires first. Its release must not take the allow away from the candidate: every child wrapped afterwards (the candidate's own workers, started from onPublished) is generated from the shared config at that moment.
   it.runIf(process.platform === "darwin" || process.platform === "linux")(
     "keeps a directory allowed until its LAST holder releases it",
     async (context) => {
@@ -1525,8 +1559,7 @@ describe("asrt-sandbox — worker-UDS register/unregister (shared-config, not pe
     }
   }, 60_000);
 
-  // Two holders arriving together: the second must not resolve — and go on to
-  // wrap a child — before the first holder's push has landed.
+  // Two holders arriving together: the second must not resolve — and go on to wrap a child — before the first holder's push has landed.
   it.runIf(process.platform === "darwin" || process.platform === "linux")(
     "resolves a concurrent second holder only after the first push has landed",
     async (context) => {
@@ -1549,9 +1582,7 @@ describe("asrt-sandbox — worker-UDS register/unregister (shared-config, not pe
     60_000,
   );
 
-  // The first push failing: every concurrent holder fails with it and the
-  // count is rolled back whole, so the next holder pushes again rather than
-  // joining an entry whose dir was never pushed.
+  // The first push failing: every concurrent holder fails with it and the count is rolled back whole, so the next holder pushes again rather than joining an entry whose dir was never pushed.
   it.runIf(process.platform === "darwin" || process.platform === "linux")(
     "fails every concurrent holder of a failed first push and rolls the count back whole",
     async (context) => {
@@ -1600,14 +1631,14 @@ describe("runtime write defaults", () => {
 });
 
 describe.runIf(process.platform === "linux")("ordinary temporary write policy", () => {
-  it("shares explicitly granted temp writes with the host and later commands", async (context) => {
+  it("retains an explicitly granted temp directory for the host and later commands", async (context) => {
     if (!(await asrtCanInitialize())) {
       if (process.env.AVE_REQUIRE_SANDBOX_CASES === "1") throw new Error("ASRT cannot initialize on this machine");
       return context.skip();
     }
     const root = mkdtempSync("/tmp/ave-ordinary-temp-");
     try {
-      await initializeAsrtSandbox({ allowedDomains: [], allowWrite: ["/tmp"] });
+      await initializeAsrtSandbox({ allowedDomains: [], allowWrite: ["/tmp", root] });
       const target = join(root, "shared.txt");
       const first = await wrapToolCommand(`printf shared > ${shellQuote(target)}`, { commandId: TEST_COMMAND_ID });
       expect(first.argv[1]).toBe("-c");

@@ -27,10 +27,7 @@ interface RpcRequest {
 type RequestHandler = (request: RpcRequest) => unknown;
 type Spawn = NonNullable<CodexAppServerClientOptions["spawn"]>;
 
-/**
- * In-memory App Server double. It handles exactly the App Server JSONL transport that
- * the client owns, so no actual Codex executable, browser, or login is used.
- */
+// In-memory App Server double. It handles exactly the App Server JSONL transport that the client owns, so no actual Codex executable, browser, or login is used.
 class FakeAppServer extends EventEmitter {
   readonly stdin = new PassThrough();
   readonly stdout = new PassThrough();
@@ -305,8 +302,7 @@ describe("CodexAppServerClient", () => {
     expect(harness.server.requests.some((request) => request.method === "windowsSandbox/setupStart")).toBe(false);
     expect(harness.spawnCalls[0]).toMatchObject({
       command: harness.artifact.executable,
-      // The one argv the conversation runtime also spawns with — the
-      // hardening boundary cannot differ between the two processes.
+      // The one argv the conversation runtime also spawns with — the hardening boundary cannot differ between the two processes.
       args: [...CODEX_APP_SERVER_ARGV],
       options: {
         cwd: harness.workspaceDir,
@@ -494,7 +490,6 @@ describe("CodexAppServerClient", () => {
     }));
   });
 
-
   it("reports an asynchronous login failure without leaking App Server detail", async () => {
     const harness = await createHarness((request) => {
       if (request.method === "initialize") return standardInitialize(request);
@@ -648,8 +643,7 @@ describe("CodexAppServerClient", () => {
       id: "tainted\u0007reverse\u0000id",
       method: "item/tool/requestUserInput",
     })}\n`);
-    // Round-trips after both reverse requests, so anything the client wrote in
-    // response to them has already been consumed by the fake App Server.
+    // Round-trips after both reverse requests, so anything the client wrote in response to them has already been consumed by the fake App Server.
     await harness.client.logout();
 
     const echoed = harness.server.requests

@@ -3,36 +3,13 @@ import type { MemoryManager } from "../memory/memory-manager.js";
 import { t } from "../i18n/index.js";
 import { modelBoundCredentialKind } from "../shared/dlp.js";
 
-/** Title length cap — memory titles are short labels, not prose. */
 export const MEMORY_WRITE_MAX_TITLE_CHARS = 120;
-/** Content length cap — one memory holds one fact, not a document. */
 export const MEMORY_WRITE_MAX_CONTENT_CHARS = 8_000;
-/**
- * Reserved marker namespace used by the memory store for `kind` / project-scope
- * HTML-comment markers (`<!-- ave:kind=memory -->`, `<!-- ave:project-root:… -->`).
- * Persisted title/content is rejected if it contains this token so a crafted
- * value cannot smuggle a fake marker that would be parsed on re-read (scope
- * spoofing / memory poisoning).
- *
- * The pattern is whitespace-tolerant + case-insensitive on purpose: it MIRRORS
- * the store's own parser (`/^<!--\s*ave:project-root:…/m`, `stripInternalMarkers`
- * with `\s*`). A fixed single-space substring check (`"<!-- ave:"`) would miss
- * `<!--ave:`, `<!--\tave:`, `<!--  AVE:` — all of which the parser still
- * accepts — so the guard must match every spacing/casing variant the reader does.
- */
-const MEMORY_WRITE_RESERVED_MARKER_PATTERN = /<!--\s*ave:/i;
+// Reject every reserved-marker variant the store parser accepts to prevent kind or project-scope spoofing.
+export const MEMORY_WRITE_RESERVED_MARKER_PATTERN = /<!--\s*ave:/i;
 
-/**
- * True if `title` contains a C0 control character (code point below 0x20) or
- * DEL (0x7F). The store embeds the RAW title into the persisted markdown heading
- * (`# ${title}`), so a newline in the title would let it open a fresh line — the
- * precondition for splitting a reserved marker across the title/content seam,
- * where the store's join and the parser's whitespace-tolerance reassemble it on
- * re-read. A memory title is a single-line label, so control characters are
- * always illegitimate here; forbidding them removes that line-injection vector
- * (checked with code points to avoid a control-character regex literal).
- */
-function memoryWriteTitleHasControlChar(title: string): boolean {
+// Reject C0 and DEL in raw single-line titles to prevent heading/index injection and cross-field marker assembly.
+export function memoryWriteTitleHasControlChar(title: string): boolean {
   for (const char of title) {
     const code = char.codePointAt(0);
     if (code !== undefined && (code < 0x20 || code === 0x7f)) return true;
@@ -40,7 +17,6 @@ function memoryWriteTitleHasControlChar(title: string): boolean {
   return false;
 }
 
-/** Narrow slice of MemoryManager the tool needs — keeps the dep surface minimal. */
 export type MemoryWriteStore = Pick<MemoryManager, "saveMemory">;
 /** The executor supplies cwd from the host-selected conversation project. */
 function memoryWriteProjectScope(ctx: ToolExecutionContext): { projectRoot?: string } {
@@ -48,7 +24,6 @@ function memoryWriteProjectScope(ctx: ToolExecutionContext): { projectRoot?: str
   return projectRoot ? { projectRoot } : {};
 }
 
-/** Why title and content would be refused as holding a credential, or null when they hold none. */
 function credentialLikeContent(title: string, content: string): "authorization-key" | "credential" | null {
   return modelBoundCredentialKind(`${title}\n${content}`);
 }
@@ -58,21 +33,8 @@ export interface MemoryWriteToolDeps {
   memoryManager: MemoryWriteStore;
 }
 
-/**
- * Builtin `memory_write` tool — lets the model submit a durable fact for
- * host-validated long-term-memory review. A successful call creates a
- * candidate only; it never activates long-term memory directly.
- *
- * Guard model (local-only candidate submission + minimal in-tool checks):
- * - This remains a `write` tool. The permission manager grants this single
- *   host-owned local-memory operation automatically in ordinary modes while
- *   retaining explicit deny, strict-mode, and staged-origin gates. The executor
- *   still records its standard `tool_call` audit entry.
- * - In-tool checks retain the boundaries that local persistence alone cannot
- *   provide: DLP, length caps, and reserved-marker-namespace rejection
- *   (format-injection containment).
- * - The description draws the instruction-source boundary for the model.
- */
+// Submit candidates only; activation requires user review, with DLP, length, and marker-injection checks retained.
+// Ordinary auto-approval still honors explicit deny, strict mode, staged-origin gates, and tool-call audit.
 export function createMemoryWriteTool(deps: MemoryWriteToolDeps): Tool {
   return createDynamicTool({
     name: "memory_write",
@@ -129,13 +91,7 @@ export function createMemoryWriteTool(deps: MemoryWriteToolDeps): Tool {
           isError: true,
         };
       }
-      // A title is a single-line label embedded raw into the stored heading
-      // (`# ${title}`) and into the MEMORY.md index link, so C0 control chars —
-      // above all a newline — are rejected to keep it from injecting extra file
-      // or index lines. This is a file/index integrity guard; marker-injection
-      // (including any line-break trick) is the composed-artifact scan's job
-      // below, so this guard does not have to enumerate every line-break code
-      // point the regex engine honors.
+      // Raw titles enter headings and index links; reject control characters that inject lines, then scan the composed artifact for markers.
       if (memoryWriteTitleHasControlChar(title)) {
         return {
           output:
@@ -143,18 +99,7 @@ export function createMemoryWriteTool(deps: MemoryWriteToolDeps): Tool {
           isError: true,
         };
       }
-      // Marker guard runs on the COMPOSED artifact the store persists — title
-      // and content joined the way saveMemory writes them (`# ${title}\n\n
-      // ${content}`) — not each source field in isolation. Checking the joined
-      // form is what makes this robust: a reserved marker split across the
-      // title/content seam (title ends with `<!--`, content begins with
-      // `ave:…`) is caught no matter what line-break character the title used
-      // to reach a line start (`\n`, `\r`, or the >0x7f separators U+2028/U+2029
-      // that the store parser's /m anchor also honors). The pattern's `\s*`
-      // spans the join, so this is a strict superset of what the parser
-      // (`/^<!--\s*ave:…/m`) can ever match. Per-field checks were bypassable;
-      // scanning the artifact the parser sees is not. String.fromCharCode(10,10)
-      // is "\n\n" written escape-free.
+      // Scan the persisted title/content composition so markers split across fields or Unicode line separators cannot evade rejection.
       const composedForMarkerScan = `${title}${String.fromCharCode(10, 10)}${content}`;
       if (MEMORY_WRITE_RESERVED_MARKER_PATTERN.test(composedForMarkerScan)) {
         return {
@@ -167,7 +112,7 @@ export function createMemoryWriteTool(deps: MemoryWriteToolDeps): Tool {
       const credential = credentialLikeContent(title, content);
       if (credential !== null) {
         return {
-          // Name the reason: an Authorization-like key is refused even when its value is a plain URL (§18.8).
+          // Credential-like keys remain refused even when their value is an ordinary URL.
           output: credential === "authorization-key" ? t("be_memoryWrite.authorizationKeyRejected") : t("be_memoryWrite.credentialRejected"),
           isError: true,
         };

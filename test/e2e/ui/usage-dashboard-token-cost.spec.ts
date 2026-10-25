@@ -7,8 +7,7 @@ import { closeInlineSettings, openInlineSettings } from "./inline-settings.js";
 import { makeTestT } from "./i18n.js";
 import { utcDateKey as todayKey } from "../../../src/shared/local-date.js";
 
-// This spec launches its own Electron via launchSeededElectron (default ko
-// settings), independent of the fixture's seedLocale, so bind `t` to that locale.
+// Bind assertions to the Korean locale seeded by the independent harness.
 const t = makeTestT("ko");
 
 function writeUsageAudit(aveHome: string): void {
@@ -181,8 +180,7 @@ test.describe("usage dashboard token cost e2e", () => {
         await expect(unknownRow).toContainText(
           t("usageDashboard.unknownCostTurns", { base: "$0", turns: "1" }),
         );
-        // unknownCostIncluded is "{base} + 미정 포함"; assert the static suffix
-        // (after the dynamic {base}) via the catalog rather than a literal.
+        // Match the catalog suffix after the dynamic base-cost placeholder.
         const unknownIncludedSuffix = t("usageDashboard.unknownCostIncluded", {
           base: "",
         })

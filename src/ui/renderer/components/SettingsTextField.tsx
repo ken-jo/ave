@@ -1,18 +1,5 @@
-/**
- * "Type a value, press Save" settings row — one implementation.
- *
- * Every free-text setting has the same four moving parts: a draft the user is
- * editing, a committed value the app is actually running on, a Save button
- * that must stay disabled while the two agree, and an Enter key that means
- * Save. The corporate-CA field hand-rolled all four, and each newly surfaced
- * text setting was another copy — which is how the trim rule, the disabled
- * rule, and the test ids drift apart one field at a time.
- *
- * `normalize` is the only part that genuinely differs between fields: some
- * settings fall back to a default when cleared, others are legitimately empty.
- * It runs before the comparison AND before the commit, so the value the Save
- * button is judging is the value the store will receive.
- */
+/** Keep draft and committed values separate; normalize only when saving, and preserve edits across unchanged settings
+ * broadcasts. */
 import { useEffect, useState, type ReactNode } from "react";
 import { Button } from "../../../components/ui/button.js";
 import { Input } from "../../../components/ui/input.js";

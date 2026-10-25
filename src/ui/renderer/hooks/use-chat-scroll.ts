@@ -58,15 +58,8 @@ export function useChatScroll({
   const scrollFollowSignature = useMemo(() => bottomFollowSignature(entries), [entries]);
   const [showJumpToBottom, setShowJumpToBottom] = useState(false);
 
-  // Latest committed render inputs, read by the otherwise-stable
-  // `saveScrollPosition`. They live in a ref instead of that callback's
-  // dependency list on purpose: a per-append identity change would re-run the
-  // scroll-listener effect below, and its eager `onScroll()` measures the
-  // viewport *after* the new entry has already grown `scrollHeight` while
-  // `scrollTop` still points at the old bottom. That reads as "user scrolled
-  // away", unpins the viewport, and cancels the pending pin before the
-  // bottom-follow effect gets to run — the transcript stops following as soon
-  // as any entry taller than CHAT_BOTTOM_THRESHOLD_PX is appended.
+  // Keep scroll-listener callbacks stable through refs; per-append resubscription can misread grown scrollHeight as a user
+  // scroll and unpin the transcript.
   const scrollSnapshotInputsRef = useRef({ sessionId: currentSessionId, entryCount: entries.length });
   useLayoutEffect(() => {
     scrollSnapshotInputsRef.current = { sessionId: currentSessionId, entryCount: entries.length };
@@ -173,9 +166,8 @@ export function useChatScroll({
     if (!viewport || typeof ResizeObserverImpl !== "function") return;
     const observer = new ResizeObserverImpl(() => {
       if (viewMode) return;
-      // A hidden tile's viewport reports 0×0, where `isNearBottom()` is true of
-      // every scroll position. Acting on that pins a transcript the user had
-      // scrolled up in to its bottom, and the pin outlives the hiding.
+      // A hidden tile's viewport reports 0×0, where `isNearBottom()` is true of every scroll position. Acting on that pins a
+      // transcript the user had scrolled up in to its bottom, and the pin outlives the hiding.
       if (viewport.clientHeight === 0) return;
       if (pinnedToBottomRef.current || isNearBottom()) {
         scheduleAutoBottomPin();
@@ -232,9 +224,8 @@ export function useChatScroll({
     const viewport = scrollViewportRef.current;
     if (!viewport) return;
     const onScroll = () => {
-      // Hiding the tile zeroes the viewport, and the browser may report that as
-      // a scroll. Measured there, every position reads as "at the bottom" and
-      // would overwrite the one the restore puts back when the tile returns.
+      // Hiding the tile zeroes the viewport, and the browser may report that as a scroll. Measured there, every position reads
+      // as "at the bottom" and would overwrite the one the restore puts back when the tile returns.
       if (viewport.clientHeight === 0) return;
       const nearBottom = isNearBottom();
       pinnedToBottomRef.current = nearBottom;
@@ -255,8 +246,8 @@ export function useChatScroll({
     const previousSessionId = previousSessionIdRef.current;
     previousEntryCountRef.current = entries.length;
     previousSessionIdRef.current = currentSessionId;
-    // Suppress auto-scroll while in view-mode so new live entries don't
-    // yank the viewport away from the frozen checkpoint slice the user is reading.
+    // Suppress auto-scroll while in view-mode so new live entries don't yank the viewport away from the frozen checkpoint
+    // slice the user is reading.
     if (viewMode) return;
     if (
       entries.length > 1 &&

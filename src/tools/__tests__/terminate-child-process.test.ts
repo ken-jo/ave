@@ -1,3 +1,4 @@
+import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { spawn } from "node:child_process";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -30,6 +31,48 @@ afterEach(() => {
 });
 
 describe("terminateChildProcess", () => {
+  it("signals a detached process group and escalates while the process remains alive", () => {
+    vi.useFakeTimers();
+    const platform = process.platform;
+    setProcessPlatform("linux");
+    const killGroup = vi.spyOn(process, "kill").mockReturnValue(true);
+    try {
+      const child = { ...fakeChild(), pid: 4242 };
+      terminateChildProcess(child, 25, { processGroup: true });
+      expect(killGroup).toHaveBeenCalledWith(-4242, "SIGTERM");
+      vi.advanceTimersByTime(25);
+      expect(killGroup).toHaveBeenLastCalledWith(-4242, "SIGKILL");
+      expect(child.kill).not.toHaveBeenCalled();
+    } finally { killGroup.mockRestore(); setProcessPlatform(platform); }
+  });
+
+  it("uses child signaling when the process group is already unavailable", () => {
+    vi.useFakeTimers();
+    const platform = process.platform;
+    setProcessPlatform("linux");
+    const killGroup = vi.spyOn(process, "kill").mockImplementation(() => { throw new Error("missing process group"); });
+    try {
+      const child = { ...fakeChild(), pid: 4242 };
+      terminateChildProcess(child, 25, { processGroup: true });
+      expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+      vi.advanceTimersByTime(25);
+      expect(child.kill).toHaveBeenLastCalledWith("SIGKILL");
+    } finally { killGroup.mockRestore(); setProcessPlatform(platform); }
+  });
+
+  it("does not signal a process group on the unsupported platform", () => {
+    vi.useFakeTimers();
+    const platform = process.platform;
+    setProcessPlatform("win32");
+    const killGroup = vi.spyOn(process, "kill").mockReturnValue(true);
+    try {
+      const child = { ...fakeChild(), pid: 4242 };
+      terminateChildProcess(child, 25, { processGroup: true });
+      expect(killGroup).not.toHaveBeenCalled();
+      expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+    } finally { killGroup.mockRestore(); setProcessPlatform(platform); }
+  });
+
   it("sends SIGKILL when SIGTERM was delivered but the child remains alive", () => {
     vi.useFakeTimers();
     const child = fakeChild();
@@ -75,8 +118,7 @@ describe("terminateChildProcess", () => {
   });
 
   it.skipIf(process.platform === "win32")("takes a detached child's own children down with it when asked to signal the group", async () => {
-    // The shell starts a long sleep and prints its pid; only a group signal
-    // reaches the sleep, because the shell does not forward SIGTERM.
+    // The shell starts a long sleep and prints its pid; only a group signal reaches the sleep, because the shell does not forward SIGTERM.
     const child = spawn("/bin/sh", ["-c", "sleep 30 & echo $!; wait"], { detached: true, stdio: ["ignore", "pipe", "ignore"] });
     const grandchild = await new Promise<number>((resolve, reject) => {
       child.stdout.once("data", (chunk: Buffer) => resolve(Number(chunk.toString().trim())));

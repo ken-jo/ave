@@ -1,18 +1,4 @@
-/**
- * The HOST page for the handshake e2e.
- *
- * It drives the SHIPPING renderer wiring — `createMcpAppBridge` from
- * `src/ui/renderer/components/mcp-app-bridge.ts`, the exact function `McpAppView`
- * uses — rather than standing up its own AppBridge. That is deliberate: the earlier
- * version reimplemented the wiring here, so the gate proved the architecture but not
- * how the renderer wires it (drop `onsandboxready`, swap two ctor args, or skip
- * `connect()` and the product dies with the gate still green). Now a regression in the
- * real wiring turns this gate red.
- *
- * Everything below the transport (the privileged scheme, the sandbox-proxy document,
- * the relay preload, the inner sandboxed iframe) is the real production code path,
- * exercised inside a real Electron <webview>.
- */
+// Exercise production bridge wiring so fixture reimplementations cannot hide integration failures.
 import { createMcpAppBridge } from "../../../../src/ui/renderer/components/mcp-app-bridge.js";
 import type { BridgeWebviewElement } from "../../../../src/ui/renderer/components/webview-ipc-transport.js";
 
@@ -24,7 +10,7 @@ declare global {
 
 window.__startHandshake = ({ proxyUrl, partition, html }) => {
   const webview = document.createElement("webview");
-  // partition MUST be set before src (Electron binds it at attach time).
+  // Set partition before src because guest attachment binds it.
   webview.setAttribute("partition", partition);
   webview.setAttribute(
     "webpreferences",
@@ -35,18 +21,13 @@ window.__startHandshake = ({ proxyUrl, partition, html }) => {
   webview.style.height = "300px";
   document.body.appendChild(webview);
 
-  // The shipping wiring. If `createMcpAppBridge` forgets `onsandboxready`, misorders
-  // the ctor args, or skips `connect()`, none of the markers below will ever fire.
   const { bridge, connected } = createMcpAppBridge(
     { serverId: "e2e-mcp-server" },
     html,
     webview as unknown as BridgeWebviewElement,
-    // This gate exercises the sandbox handshake, not theming: an empty standard
-    // host context matches the prior behavior (previously `{ hostContext: {} }`).
+    // Empty host context isolates handshake behavior from theming.
     {},
-    // The handshake never sends `ui/open-link`, `ui/notifications/size-changed`,
-    // `tools/call`, `ui/message`, `ui/download-file`, or `ui/request-display-mode`, so
-    // these adapters are inert no-ops here — present only to satisfy the signature.
+    // Handshake does not invoke these adapters; no-ops satisfy the bridge contract.
     {
       onResize: () => {},
       openLink: async () => ({ ok: false }),
@@ -67,13 +48,10 @@ window.__startHandshake = ({ proxyUrl, partition, html }) => {
     },
   );
 
-  // Prove the sandbox handshake actually reached the (production) bridge. We observe
-  // it via a SECOND `sandboxready` listener so we neither replace nor depend on the
-  // production `onsandboxready` handler — `addEventListener` composes with it.
+  // Add an independent listener without replacing the production readiness handler.
   bridge.addEventListener("sandboxready", () => console.log("E2E_HOST SANDBOX_READY"));
 
-  // THE GATE: fires only if the unmodified inner App completed `ui/initialize` over the
-  // full chain — i.e. its postMessage really crossed out of the guest.
+  // This marker requires the unmodified guest to complete initialization across the guest boundary.
   bridge.oninitialized = () => console.log("E2E_HOST HANDSHAKE_OK");
 
   connected

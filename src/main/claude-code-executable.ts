@@ -41,14 +41,14 @@ async function isNativeFile(
   } finally { await file.close(); }
 }
 
-/** The shim is only an install marker. Its batch contents are never executed. */
+// The shim is only an install marker. Its batch contents are never executed.
 export function claudeCodeNpmShimTarget(shim: string, platform: NodeJS.Platform = process.platform): string {
   const paths = platform === "win32" ? win32 : { basename, dirname, join };
   if (paths.basename(shim).toLowerCase() !== "claude.cmd") throw new Error("Invalid subscription launcher");
   return paths.join(paths.dirname(shim), "node_modules", "@anthropic-ai", "claude-code", "cli.js");
 }
 
-/** Admit all launch inputs before the first probe and retain a content proof. */
+// Admit all launch inputs before the first probe and retain a content proof.
 export async function pinClaudeCodeExecutable(
   candidate: string,
   runtimeDirectory: string,

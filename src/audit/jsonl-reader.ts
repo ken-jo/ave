@@ -10,10 +10,7 @@ const AUDIT_SNAPSHOT_LOCK_FILE = ".audit-snapshot";
 const AUDIT_SNAPSHOT_LOCK_OPTIONS = { stale: 5 * 60_000, retries: 20 };
 const FD_READ_CHUNK_BYTES = 64 * 1024;
 
-/**
- * Serialize archive rotation and aggregate reads so a usage snapshot cannot
- * observe both a raw file and its gzip archive (or neither).
- */
+/** Serialize rotation and aggregate reads to avoid counting both raw and gzip versions, or neither. */
 export function withAuditSnapshotLock<T>(
   auditDir: string,
   operation: () => Promise<T>,
@@ -25,12 +22,7 @@ export function withAuditSnapshotLock<T>(
   );
 }
 
-/**
- * Split an already-read JSONL document into its non-blank lines. Same line
- * contract as the streaming splitter below (LF-delimited, a trailing CR is
- * dropped) for callers that hold the whole file in memory. Lines are returned
- * as written — not trimmed — because HMAC chains hash the exact bytes.
- */
+/** Split LF lines and drop trailing CR, preserving all other bytes for exact HMAC verification. */
 export function parseJsonlLines(raw: string): string[] {
   const lines: string[] = [];
   for (let line of raw.split("\n")) {
@@ -42,28 +34,18 @@ export function parseJsonlLines(raw: string): string[] {
 }
 
 export interface JsonlRecordFileOptions<T> {
-  /** Keeps a parsed line as a record; anything else is silently dropped. */
   accept: (parsed: unknown) => parsed is T;
-  /** A line that is not JSON at all. */
   onMalformedLine: (line: string) => void;
-  /** The file exists but could not be read; the store starts empty. */
   onReadFailure: (err: unknown) => void;
 }
 
-/**
- * One private JSONL record file (`0o600` under a `0o700` directory) with the
- * three operations every host-owned record store needs: load the records once,
- * append one record, rewrite the whole file from memory. Both writers hold the
- * cross-process file lock, and the rewrite goes through the atomic
- * temp+rename writer so a crash mid-rewrite can never leave a truncated store.
- */
+/** Lock append and rewrite across processes; atomic rewrites prevent truncated private record stores. */
 export class JsonlRecordFile<T> {
   constructor(
     readonly filePath: string,
     private readonly options: JsonlRecordFileOptions<T>,
   ) {}
 
-  /** Missing file reads as an empty store. */
   loadSync(): T[] {
     if (!existsSync(this.filePath)) return [];
     let raw: string;
@@ -87,21 +69,19 @@ export class JsonlRecordFile<T> {
     return records;
   }
 
-  /** O(1) append of one record. */
   async append(record: T): Promise<void> {
     await withFileLock(this.filePath, async () => {
       mkdirSync(dirname(this.filePath), { recursive: true, mode: 0o700 });
       appendFileSync(this.filePath, `${JSON.stringify(record)}\n`, { encoding: "utf-8", mode: 0o600 });
       try {
-        // `mode` only applies when append creates the file; an existing file keeps its bits.
+        // Append mode sets permissions only when creating a file.
         chmodSync(this.filePath, 0o600);
       } catch {
-        // Non-fatal — chmod failure must not block record writes.
+        // Mode repair failure must not block record writes.
       }
     });
   }
 
-  /** Replace the file with exactly `records`, atomically. */
   async rewrite(records: readonly T[]): Promise<void> {
     await withFileLock(this.filePath, async () => {
       mkdirSync(dirname(this.filePath), { recursive: true, mode: 0o700 });
@@ -111,10 +91,7 @@ export class JsonlRecordFile<T> {
   }
 }
 
-/**
- * Split UTF-8 JSONL bytes into lines. The single authority for the line
- * contract shared by the pathname and descriptor readers below.
- */
+/** Preserve the shared LF/CR line contract for pathname and descriptor readers. */
 function createJsonlLineSplitter(maxLineBytes: number) {
 
   const decoder = new StringDecoder("utf-8");
@@ -150,11 +127,7 @@ function createJsonlLineSplitter(maxLineBytes: number) {
   };
 }
 
-/**
- * Iterate a UTF-8 JSONL file without retaining the file's lines in memory.
- * `.gz` archives use the same line contract as active files. The stream is
- * always torn down, including when a consumer exits early.
- */
+/** Stream active or gzip JSONL without retaining lines; always tear down on early exit. */
 export async function* iterateJsonlLines(
   filePath: string,
   maxLineBytes = Number.POSITIVE_INFINITY,
@@ -179,16 +152,7 @@ export async function* iterateJsonlLines(
   }
 }
 
-/**
- * Iterate the first `byteLength` bytes of an already-open descriptor, using the
- * same line contract as {@link iterateJsonlLines}.
- *
- * A caller that must not re-resolve the pathname it is reading — because
- * another process may replace the file underneath it between verification and
- * use — reads through its own descriptor instead. Reads are positional, so the
- * descriptor's own offset is untouched, and the descriptor is left open for the
- * caller to close.
- */
+/** Read positional bytes through the caller's descriptor without closing or changing its offset, avoiding pathname replacement races. */
 export async function* iterateJsonlLinesFromFd(
   fd: number,
   byteLength: number,

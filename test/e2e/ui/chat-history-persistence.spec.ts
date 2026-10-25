@@ -1,15 +1,14 @@
-import { test, expect } from './fixtures';
-import { buildIsolatedElectronEnv, launchElectron } from './seeded-electron';
+import { test, expect } from './fixtures.js';
+import { buildIsolatedElectronEnv, launchElectron } from './seeded-electron.js';
 
-/**
- * Chat history persistence — send a message, restart the app (reusing the
- * same isolated userData dir), and verify session/history is restored.
- * Skips gracefully if the chat input or a session affordance is missing.
- */
+/** Chat history persistence; send a message, restart the app (reusing the same isolated userData dir), and
+ * verify session/history is restored. Skips gracefully if the chat input or a session affordance is missing. */
 test('chat history persists across app restart, or skips cleanly', async ({
   app,
   mainWindow,
   userDataDir,
+  tempHome,
+  aveHome,
 }) => {
   const input = mainWindow
     .locator('textarea, input[type="text"], [contenteditable="true"]')
@@ -38,9 +37,9 @@ test('chat history persists across app restart, or skips cleanly', async ({
   const app2 = await launchElectron({
     args: [mainEntry, `--user-data-dir=${userDataDir}`],
     env: buildIsolatedElectronEnv({
-      HOME: userDataDir,
-      USERPROFILE: userDataDir,
-      AVE_HOME: path.join(userDataDir, 'ave-state'),
+      HOME: tempHome,
+      USERPROFILE: tempHome,
+      AVE_HOME: aveHome,
       AVE_DEV: '1',
       AVE_E2E: '1',
       AVE_MAIN_ENTRY: mainEntry,
@@ -52,10 +51,8 @@ test('chat history persists across app restart, or skips cleanly', async ({
 
   try {
     const win2 = await app2.firstWindow();
-    // The app first loads a data: splash URL, then boots and replaces it
-    // with the real index.html. domcontentloaded fires on the splash where
-    // there is no #root — wait for the persistent main-toolbar testid
-    // instead, mirroring fixtures.mainWindow's bootstrap gate.
+    // The app first loads a data: splash URL, then boots and replaces it with the real index.html. domcontentloaded fires on the
+    // splash where there is no #root; wait for the persistent main-toolbar testid instead, mirroring fixtures.mainWindow's bootstrap gate.
     await win2.locator('[data-testid="main-toolbar"]').first().waitFor({
       state: 'visible',
       timeout: 60_000,

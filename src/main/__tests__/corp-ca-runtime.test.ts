@@ -1,21 +1,14 @@
-/**
- * corp-ca-runtime unit tests — §17 C1
- *
- * Mocks child_process.execFile and node:fs so every path can be tested without
- * touching the real keychain or filesystem.
- */
+// Mocks filesystem and child processes without accessing the real trust store.
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   CORP_CA_G2_PEM,
   CORP_CA_PEM,
 } from "../../__tests__/support/corp-ca-fixtures.js";
 
-// ─── Mock node:child_process ──────────────────────────────────────────────────
 vi.mock("node:child_process", () => ({
   execFile: vi.fn(),
 }));
 
-// ─── Mock node:fs (sync) — for cache reads and directory creation ────────────
 vi.mock("node:fs", () => ({
   closeSync: vi.fn(),
   fstatSync: vi.fn(),
@@ -25,7 +18,6 @@ vi.mock("node:fs", () => ({
   readFileSync: vi.fn(),
 }));
 
-// ─── Mock node:fs/promises — for open() ──────────────────────────────────────
 vi.mock("node:fs/promises", () => ({
   open: vi.fn(async () => ({
     writeFile: vi.fn(async () => undefined),
@@ -46,14 +38,9 @@ const mockedReadFileSync = vi.mocked(fsMock.readFileSync);
 const mockedMkdirSync = vi.mocked(fsMock.mkdirSync);
 const mockedOpen = vi.mocked(fspMock.open);
 
-// ─── Sample PEM fixture ───────────────────────────────────────────────────────
-// Real (throwaway) certificates, shared with the extraction tests. They have to
-// be real here too: acquisition parses every candidate and verifies its subject,
-// so a merely PEM-shaped string is discarded exactly like a corrupt one — that
-// is the behaviour under test, not a harness detail.
+// Use real throwaway certificates because acquisition parses and verifies subjects, rejecting merely PEM-shaped text.
 const SAMPLE_PEM = CORP_CA_PEM;
 
-// ─── Fresh mtime helper ───────────────────────────────────────────────────────
 function makeFreshStat(): ReturnType<typeof fsMock.fstatSync> {
   return { mtimeMs: Date.now() - 1000 } as ReturnType<typeof fsMock.fstatSync>;
 }
@@ -79,18 +66,14 @@ function mockExecFileError(err: Error): void {
   }) as never);
 }
 
-// ─── Tests ────────────────────────────────────────────────────────────────────
-
-// Save the real platform value once at module-evaluation time (before any mock).
 const REAL_PLATFORM = process.platform;
 
 describe("writeSubprocessTrustBundle", () => {
   beforeEach(() => { vi.clearAllMocks(); });
 
   it("writes the platform roots together with the corporate certificate", async () => {
-    // The whole point of the file. `SSL_CERT_FILE` REPLACES the trust set, so a
-    // bundle holding only the corporate root would make every public download
-    // fail verification in the child that reads it.
+    // The whole point of the file. `SSL_CERT_FILE` REPLACES the trust set, so a bundle holding only the corporate root would make every public download fail
+    // verification in the child that reads it.
     const written: string[] = [];
     vi.mocked(fspMock.open).mockResolvedValue({
       writeFile: vi.fn(async (data: string) => { written.push(data); }),
@@ -110,8 +93,7 @@ describe("writeSubprocessTrustBundle", () => {
   });
 
   it("removes a bundle left by an earlier launch when there is no corporate certificate", async () => {
-    // A child that keeps reading a bundle nothing refreshes verifies against
-    // the roots of the day it was written. No file is better than a stale one.
+    // A child that keeps reading a bundle nothing refreshes verifies against the roots of the day it was written. No file is better than a stale one.
     const { writeSubprocessTrustBundle } = await import("../corp-ca-runtime.js");
     await writeSubprocessTrustBundle(null, "/certs/corp-ca.pem");
 
@@ -123,8 +105,7 @@ describe("writeSubprocessTrustBundle", () => {
 describe("ensureCorporateCa", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    // Pin the platform to 'darwin' so extractCorporateCa() dispatches to the
-    // macOS trust-store reader, whose child process is the one mocked here —
+    // Pin the platform to 'darwin' so extractCorporateCa() dispatches to the macOS trust-store reader, whose child process is the one mocked here —
     // otherwise these tests would read the CI host's own trust store.
     Object.defineProperty(process, "platform", { value: "darwin", configurable: true, writable: true });
     // default: openSync throws ENOENT (no cache)
@@ -173,9 +154,7 @@ describe("ensureCorporateCa", () => {
     expect(result.certCount).toBe(1);
     // cache should have been written
     expect(mockedOpen).toHaveBeenCalledWith(
-      // The cache file is keyed by the common name it was extracted for, so
-      // changing the name in Settings is not shadowed by the previous CA's
-      // cache for up to seven days.
+      // The cache file is keyed by the common name it was extracted for, so changing the name in Settings is not shadowed by the previous CA's cache for up to seven days.
       expect.stringMatching(/corp-ca-[0-9a-f]{16}\.pem$/),
       "w",
       0o600,
@@ -219,9 +198,8 @@ describe("ensureCorporateCa", () => {
   });
 
   it("counts every distinct certificate that matched", async () => {
-    // An organization mid-rollover has two roots under one name. Repeating the
-    // SAME certificate would count once — selection deduplicates by
-    // fingerprint — so this uses the second, genuinely different one.
+    // An organization mid-rollover has two roots under one name. Repeating the SAME certificate would count once — selection deduplicates by fingerprint —
+    // so this uses the second, genuinely different one.
     const twoCerts = SAMPLE_PEM + CORP_CA_G2_PEM;
     mockExecFileStdout(twoCerts);
     const mockFd = {

@@ -63,8 +63,7 @@ export function applyUtf8Env(env) {
 }
 
 export function prepareElectronLaunchEnv(env) {
-  // Retired: it only fed the unpackaged ave:// registration, which no longer
-  // runs. Dropped so a stale shell value never reaches the app.
+  // Drop stale launch values that must not reach the app.
   delete env.AVE_WIN_NO_SANDBOX;
   applyUtf8Env(env);
   delete env.ELECTRON_RUN_AS_NODE;

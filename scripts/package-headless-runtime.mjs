@@ -16,11 +16,7 @@ import {
 
 export { HEADLESS_FORBIDDEN_INHERITED_ENV };
 
-/**
- * The standalone server runs on Node 22, at or above the `engines` floor in
- * package.json (22.12, which @anthropic-ai/sandbox-runtime requires). `version`
- * is `process.version`, such as `v22.12.0`.
- */
+// Enforce the standalone runtime floor required by packaged dependencies.
 export function isSupportedHeadlessNodeVersion(version) {
   const match = /^v22\.(\d+)\.\d+$/u.exec(version);
   return match !== null && Number(match[1]) >= 12;
@@ -101,8 +97,7 @@ export function extractPackagedRuntime(archive, app) {
       throw new Error(`Runtime archive entry escapes its output: ${path}`);
     }
     const entry = asar.statFile(archive, filename, false);
-    // Post-pack pruning and native replacement change the physical sidecar;
-    // its stale archive headers are not the shipped unpacked inventory.
+    // Audit physical sidecars after pruning; stale archive headers are not the shipped inventory.
     if (entry.unpacked) continue;
     if ("files" in entry) mkdirSync(destination, { recursive: true });
     else if ("link" in entry) throw new Error(`Unsupported runtime payload entry: ${path}`);
@@ -191,8 +186,7 @@ function main() {
   chmodSync(join(options.out, "bin/node"), 0o755);
   mkdirSync(join(options.out, "licenses"));
   cpSync(options["node-license"], join(options.out, "licenses/node-LICENSE"));
-  // Keep NODE_ENV for downstream compatibility; the app-root marker below is
-  // the only input that establishes the native runtime's packaged identity.
+  // Only the app-root marker establishes packaged identity; NODE_ENV remains compatibility metadata.
   writeHeadlessLauncher(options.out);
   const packagedMarker = writePackagedRuntimeMarker(app);
 

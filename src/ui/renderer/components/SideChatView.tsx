@@ -1,36 +1,5 @@
-/**
- * SideChatView — the side-chat transcript + composer, rendered in two places:
- * a conversation's workspace-rail `side-chat` tab, and a terminal or web
- * pane's own chat panel (`PaneChatPanel`). In a pane it is BOUND to that
- * pane's tab: every turn names the tab, and main defaults the chat's browser
- * and terminal tools to it (`browserTabRegistry` bound conversation). In the
- * rail it is bound to nothing and names no tab.
- *
- * Renders through the SHARED `TranscriptRenderer` (the same renderer the main
- * chat uses) so tool calls, thinking, and permission-review status cards appear
- * identically to the main transcript — the "single SOT UI" goal. Capability
- * differences are expressed by OMITTING the optional prop clusters: side chat
- * passes no `edit` / `search` / `spawns` / `actions`, so the shared renderer
- * degrades to a read-only transcript (no pencil / fork / star / retry / feedback,
- * no ghost-text composer). It still passes its OWN `turnSummaryByTurnStart` so
- * the WorkGroup step count + TurnActionBar cost badge reflect the side loop's
- * own token / cost totals.
- *
- * The composer is the SHARED one as well: the same `Composer` the main dock
- * renders (`surface="side"` selects only the narrower growth cap), inside the
- * same `ComposerFrame`, driven by the same `useMessageQueue` — so Enter queues
- * while a turn runs, ⌘⏎ interrupts, Esc injects-or-aborts, paste chips, the
- * inline "/" and "@" menus open, and IME composition is honoured, all by the
- * one implementation. Only the New-session affordance is side-specific chrome.
- * All streaming is driven by `useSideChat`, which subscribes to the DEDICATED
- * side-chat IPC channel so main-chat frames never appear here. The side chat
- * is a drawing surface of its own: tool APPROVAL requests the side loop
- * raises are drawn by this tab's own `ApprovalDock` and its `ask_user_question`
- * gates by its own `QuestionOverlay`. The latest sending or loading view
- * claims the session, so its cards never reach another retained view or tile;
- * while the panel is closed or another tab is up they wait here, and the
- * window marks the way to them (see `pendingAnswers`).
- */
+/** Pane side chats bind every turn to their surface tab; rail side chats name no tab. Both use the shared transcript
+ * renderer. */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { ChevronDown, Plus } from "lucide-react";
 import { useTranslation } from "../../../i18n/react.js";
@@ -94,11 +63,8 @@ const NO_INLINE_PLUGINS: never[] = [];
 const NO_QUESTIONS: never[] = [];
 const NOOP_SELECT_PLUGIN = () => {};
 
-/**
- * What the composer needs to know about the model it sends to. Inside a
- * conversation tile it comes from the tile's chat context; a pane chat, which
- * has no conversation around it, is handed the window's.
- */
+/** What the composer needs to know about the model it sends to. Inside a conversation tile it comes from the tile's chat
+ * context; a pane chat, which has no conversation around it, is handed the window's. */
 export type SideChatRuntime = Pick<ChatContextValue,
   | "hasApiKey" | "settingsLoaded" | "onOpenSettings"
   | "subscriptionRuntimePolicy" | "subscriptionImageAttachmentProvider" | "subscriptionFileAttachmentProvider"
@@ -107,31 +73,21 @@ export type SideChatRuntime = Pick<ChatContextValue,
 
 interface SideChatViewProps {
   api: AveApi;
-  /**
-   * The terminal or page of the pane this chat sits in (a pane's own chat).
-   * Every turn names it, so the chat's tools act on that pane by default.
-   */
+  /** The terminal or page of the pane this chat sits in (a pane's own chat). Every turn names it, so the chat's tools act on
+   * that pane by default. */
   boundSurface?: BoundSurface | undefined;
   /** The model readiness for a chat with no conversation tile around it. */
   runtime?: SideChatRuntime | undefined;
-  /**
-   * What a chat that is not a pane's acts on, drawn above its composer (the
-   * rail's chip for the window's active terminal or page).
-   */
+  /** What a chat that is not a pane's acts on, drawn above its composer (the rail's chip for the window's active terminal or
+   * page). */
   targetChip?: ReactNode;
   /** A stored side chat this panel has been asked to show. */
   openRequest?: SideChatOpenRequest | undefined;
-  /**
-   * A turn here creates or moves a row in the window's conversation list — a
-   * side chat is listed under the conversation it belongs to — and the list is
-   * read, not pushed, so it has to be told.
-   */
+  /** A turn here creates or moves a row in the window's conversation list — a side chat is listed under the conversation it
+   * belongs to — and the list is read, not pushed, so it has to be told. */
   onSessionsChanged?: (() => void | Promise<void>) | undefined;
-  /**
-   * This tab is the one the panel is showing. The view stays mounted behind
-   * another tab so its session and its parked cards survive the switch; this
-   * says whether the user can see them.
-   */
+  /** This tab is the one the panel is showing. The view stays mounted behind another tab so its session and its parked cards
+   * survive the switch; this says whether the user can see them. */
   shown?: boolean;
   /**
    * The session this side chat holds, reported to the panel that hosts it
@@ -143,17 +99,15 @@ interface SideChatViewProps {
   onSessionIdChange?: ((sessionId: string) => void) | undefined;
   /** Lets the retained panel observe this exact claim after the side view closes. */
   onSessionClaim?: ((isCurrent: () => boolean) => void) | undefined;
-  /**
-   * The conversation group whose side panel holds this chat: its composer is
-   * one a terminal block in that panel can be attached to.
-   */
+  /** The conversation group whose side panel holds this chat: its composer is one a terminal block in that panel can be
+   * attached to. */
   chatGroupId?: string | undefined;
 }
 
 export function SideChatView({ api, openRequest, onSessionsChanged, shown = true, onSessionIdChange, onSessionClaim, chatGroupId, boundSurface, runtime, targetChip }: SideChatViewProps) {
   const { t } = useTranslation();
-  // If side chat is unavailable (preload without the surface), surface a stable
-  // disabled state rather than a broken composer.
+  // If side chat is unavailable (preload without the surface), surface a stable disabled state rather than a broken
+  // composer.
   const sideChat = api.sideChat;
   if (!sideChat) {
     return (
@@ -198,8 +152,8 @@ function SideChatSession({
   const { t } = useTranslation();
   const chatContext = useOptionalChatContext();
   const runtime: SideChatRuntime | null = runtimeProp ?? chatContext;
-  // A side chat runs its own session; its approval cards belong in this panel,
-  // which holds the claim while hidden as well as while shown.
+  // A side chat runs its own session; its approval cards belong in this panel, which holds the claim while hidden as well as
+  // while shown.
   const approvals = useApprovalSurface();
   useSyncExternalStore(approvals.claims.subscribe, approvals.claims.readVersion, approvals.claims.readVersion);
   const sessionIdRef = useRef<string | null>(null);
@@ -236,8 +190,8 @@ function SideChatSession({
         release: approvals.claims.claim(`side-chat:${next}`, ownsSession),
       };
     }
-    // The predicate, claim and panel identity are ready before the host's next
-    // event in this dispatch, even while the session state awaits a render.
+    // The predicate, claim and panel identity are ready before the host's next event in this dispatch, even while the session
+    // state awaits a render.
     if (changed) onSessionIdChangeRef.current?.(next);
     const current = claimRef.current!;
     onSessionClaimRef.current?.(() => current.claims.isClaimCurrent(`side-chat:${next}`, current.ownsSession));
@@ -260,9 +214,8 @@ function SideChatSession({
     abort,
     isCurrentTurnEvent,
   } = useSideChat(api, { onSessionBound: handleSessionBound });
-  // A pane chat is its pane's conversation: it opens on what the pane already
-  // said, read without moving the side loop, and "New" ends it for the pane
-  // instead of switching the loop under another view's turn.
+  // A pane chat is its pane's conversation: it opens on what the pane already said, read without moving the side loop, and
+  // "New" ends it for the pane instead of switching the loop under another view's turn.
   const paneTabId = boundSurface?.tabId;
   const [paneError, setPaneError] = useState<string | null>(null);
   useEffect(() => {
@@ -317,9 +270,8 @@ function SideChatSession({
     [approvals.queue, sessionId, sessionOwned],
   );
   const approvalHead = pendingApprovals[0] ?? null;
-  // The questions the side loop's turn parks, kept and drawn here for the
-  // same reason the approvals are. The predicate reads the session through a
-  // ref so the channel subscription survives a new or loaded session.
+  // The questions the side loop's turn parks, kept and drawn here for the same reason the approvals are. The predicate reads
+  // the session through a ref so the channel subscription survives a new or loaded session.
   const ownsSession = useCallback(
     (id: string) => hasCurrentClaim() && sessionIdRef.current !== null &&
       sessionOwnedBy(sessionIdRef.current, NO_CHILD_SESSIONS, id),
@@ -335,15 +287,13 @@ function SideChatSession({
       : retainedQuestions.filter((request) => sessionOwnedBy(sessionId, NO_CHILD_SESSIONS, request.sessionId)),
     [retainedQuestions, sessionId, sessionOwned],
   );
-  // What the tile beside this panel publishes to the window on the side
-  // chat's behalf: the window leaves this session's questions to this panel
-  // and marks the way here while a card waits off screen.
+  // What the tile beside this panel publishes to the window on the side chat's behalf: the window leaves this session's
+  // questions to this panel and marks the way here while a card waits off screen.
   const publishSideChatSurface = chatContext?.publishSideChatSurface;
   useEffect(() => {
     publishSideChatSurface?.(!sessionOwned || sessionId === null ? null : { sessionId, askQuestions, shown });
   }, [publishSideChatSurface, sessionId, askQuestions, shown, sessionOwned]);
-  // Withdrawn on unmount only: a tile whose side chat is gone must not keep
-  // reporting a session that nothing draws any more.
+  // Withdrawn on unmount only: a tile whose side chat is gone must not keep reporting a session that nothing draws any more.
   useEffect(() => () => publishSideChatSurface?.(null), [publishSideChatSurface]);
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -351,9 +301,8 @@ function SideChatSession({
   const composerRef = useRef<ComposerHandle | null>(null);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
 
-  // Side chat is a second ConversationLoop, not a second credential policy.
-  // Read the app-level readiness contract so it cannot bypass a selected
-  // subscription login that is still checking, signed out, or unsupported.
+  // Side chat is a second ConversationLoop, not a second credential policy. Read the app-level readiness contract so it
+  // cannot bypass a selected subscription login that is still checking, signed out, or unsupported.
   const hasApiKey = runtime?.hasApiKey ?? null;
   const subscriptionRuntimePolicy = runtime?.subscriptionRuntimePolicy;
   const {
@@ -377,8 +326,8 @@ function SideChatSession({
     llmModel: runtime?.llmModel,
     llmRouteModalities: runtime?.llmRouteModalities,
   });
-  // The side loop runs no local slash commands, so a missing credential blocks
-  // the field outright — there is no keyless "/" path to keep open.
+  // The side loop runs no local slash commands, so a missing credential blocks the field outright — there is no keyless "/"
+  // path to keep open.
   const composerInputDisabled = !attachmentInputsReady || runtimeUnavailable || hasApiKey === false;
   const composerSendDisabled = composerInputDisabled || draftHasUnsupportedAttachment;
   const hasDraft = draft.trim().length > 0 || attachments.length > 0;
@@ -386,8 +335,8 @@ function SideChatSession({
   // Up/Down recall in the side composer walks this side conversation's prompts.
   const promptHistory = useMemo(() => collectPromptHistory(entries), [entries]);
 
-  // The main transcript's scroll model: follow the stream only while pinned
-  // near the bottom, and offer a jump back once the reader has scrolled away.
+  // The main transcript's scroll model: follow the stream only while pinned near the bottom, and offer a jump back once the
+  // reader has scrolled away.
   const { scrollViewportRef, showJumpToBottom, scrollChatToBottom } = useChatScroll({
     entries,
     currentSessionId: sessionId ?? "",
@@ -401,15 +350,8 @@ function SideChatSession({
 
   const allocateN = useCallback(() => ++attachmentNCounter.current, []);
 
-  // The queue hands a send here in three shapes: the idle Enter (the draft as
-  // typed), ⌘⏎ / Esc / a row's "send now" (an interrupt), and the end-of-turn
-  // drain (`queue-auto`). A user send composes the draft's attachments into
-  // content parts and clears the field, as the main composer does; the drain
-  // carries text only, because queued rows never held attachments.
-  // The conversation this panel is a column of. A side chat belongs to it, and
-  // the host writes that down on the turn that first gives this side chat a
-  // file — so it rides along on every send rather than on a separate call the
-  // panel would have to know when to make.
+  // User sends include attachments and interrupt as requested; queue drains carry text only. Every send carries the parent
+  // conversation binding.
   const originSessionId = chatContext?.currentSessionId;
   // Named on every turn: a pane chat's tools act on its pane's tab.
   const boundKind = boundSurface?.kind;
@@ -440,9 +382,8 @@ function SideChatSession({
     [send, attachments, originSessionId, boundKind, boundTabId, onSessionsChanged],
   );
 
-  // A stored side chat the sidebar asked this panel to show. Keyed on the
-  // request's nonce so asking for the same one twice loads it twice — the
-  // second click of a row the user is already looking at still means "go there".
+  // A stored side chat the sidebar asked this panel to show. Keyed on the request's nonce so asking for the same one twice
+  // loads it twice — the second click of a row the user is already looking at still means "go there".
   const consumedOpenNonceRef = useRef<number | null>(null);
   useEffect(() => {
     if (!openRequest || consumedOpenNonceRef.current === openRequest.nonce) return;
@@ -490,9 +431,8 @@ function SideChatSession({
     imageAttachmentLimits: subscriptionRuntimePolicy?.imageAttachmentLimits,
   });
 
-  // This side chat's composer, as a place a terminal block in the same side
-  // panel can be attached to — while it is the tab the panel shows (see
-  // `preview/composer-targets.ts`).
+  // This side chat's composer, as a place a terminal block in the same side panel can be attached to — while it is the tab
+  // the panel shows (see `preview/composer-targets.ts`).
   const dockRef = useRef<HTMLDivElement | null>(null);
   const attachPastedTextRef = useRef(attachPastedText);
   attachPastedTextRef.current = attachPastedText;
@@ -521,9 +461,8 @@ function SideChatSession({
           size="sm"
           className="h-6 gap-1 px-1.5 text-[11px]"
           onClick={() => void startNew()}
-          // Disabled mid-stream: starting a new session mutates the shared side
-          // loop; the main handler aborts the in-flight turn first, but blocking
-          // the affordance avoids the surprising "New drops my streaming reply".
+          // Disabled mid-stream: starting a new session mutates the shared side loop; the main handler aborts the in-flight turn
+          // first, but blocking the affordance avoids the surprising "New drops my streaming reply".
           disabled={isStreaming}
           data-testid="side-chat-new"
           aria-label={t("chatPreviewRail.sideChat.newSession")}

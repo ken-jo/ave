@@ -1,17 +1,4 @@
-/**
- * #811 milestone-2 — NON-BLOCKING lifecycle hook events through the manager.
- *
- * Spec ref: docs/architecture/hook-runtime-expansion-design.md §5 (event surface)
- * + §6 (non-blocking semantics). Covers, per the milestone acceptance criteria:
- *   - each lifecycle event fires its registered hook with the right payload
- *   - a deny on a lifecycle hook does NOT change control flow (observe-only)
- *   - an untrusted / quarantined lifecycle hook never fires (registry is the
- *     trust boundary — only trusted entries are ever installed)
- *   - back-compat: no config ⇒ no lifecycle dispatch, behavior identical
- *
- * Lifecycle hooks are CONFIG-ONLY (no `.sh` prefix), so every fixture here is a
- * `HookConfigEntry` pointing at a Node command fixture.
- */
+// Lifecycle denials are audit-only; untrusted hooks never enter the registry. Lifecycle hooks are config-only (docs/architecture/hook-runtime-expansion-design.md).
 import { describe, expect, it } from "vitest";
 import { resolve } from "node:path";
 import { ScriptHookManager } from "../script-hook-manager.js";
@@ -57,10 +44,8 @@ describe("#811 m2 — lifecycle event dispatch", () => {
       m.setTrustedRegistry([], [lifecycleEntry(event, ["node", ECHO])]);
       const out = await m.runLifecycleEvent(event, "sess-42", "unknown");
       expect(out.results).toHaveLength(1);
-      // The echo fixture reflects the payload into `reason`.
       expect(out.results[0].reason).toContain(`event=${event}`);
       expect(out.results[0].reason).toContain("session=sess-42");
-      // The runner carries the lifecycle event through onto the result.
       expect(out.results[0].hookType).toBe(event);
     },
   );
@@ -185,13 +170,10 @@ describe("#811 m2 — NON-BLOCKING semantics (observe-only)", () => {
     const m = new ScriptHookManager();
     m.setTrustedRegistry([], [lifecycleEntry("Stop", ["node", DENY])]);
     const out = await m.runLifecycleEvent("Stop", "s1", "unknown", { stopReason: "end_turn" });
-    // The deny IS recorded for audit...
     expect(out.decision).toBe("deny");
     expect(out.results).toHaveLength(1);
     expect(out.results[0].decision).toBe("deny");
-    // ...but it is the CALLER's contract to ignore it — runLifecycleEvent never
-    // throws and returns normally so a deny cannot abort the turn. (The
-    // executor/loop wiring discards this result entirely.)
+    // Callers must ignore lifecycle denials; they cannot abort the turn.
   });
 
   it("never throws and returns an empty observe result when nothing matches", async () => {
@@ -233,8 +215,7 @@ describe("#811 m2 — trust boundary + matcher", () => {
 
   it.skipIf(!HAS_NODE)("an untrusted / quarantined hook never fires (not in the trusted registry)", async () => {
     const m = new ScriptHookManager();
-    // Simulate quarantine: the entry was NEVER installed into the trusted
-    // registry. setTrustedRegistry only ever receives trusted entries.
+    // Quarantine excludes entries from the trusted registry.
     m.setTrustedRegistry([], []);
     const out = await m.runLifecycleEvent("SessionStart", "s1", "unknown");
     expect(out.results).toEqual([]);
@@ -262,7 +243,6 @@ describe("#811 m2 — trust boundary + matcher", () => {
         lifecycleEntry("SessionStart", ["node", DENY], { id: "SessionStart#0.0" }),
       ],
     );
-    // Firing Stop must NOT run the SessionStart deny hook.
     const out = await m.runLifecycleEvent("Stop", "s1", "unknown");
     expect(out.results).toHaveLength(1);
     expect(out.decision).toBe("allow");
@@ -273,7 +253,6 @@ describe("#811 m2 — trust boundary + matcher", () => {
 describe("#811 m2 — back-compat (no lifecycle config)", () => {
   it("a tool-use registry with no lifecycle entries dispatches nothing for lifecycle events", async () => {
     const m = new ScriptHookManager();
-    // Only a (config) PreToolUse entry — no lifecycle entries at all.
     m.setTrustedRegistry([], [
       { id: "PreToolUse#0.0", event: "pre", command: ["./pre.sh"], timeoutMs: 5000, source: "config" },
     ]);

@@ -1,63 +1,20 @@
-/**
- * SkillApprovalsStore — persistent allowlist for user-authored skills the
- * user has already approved at least once. Without this, every `skill_load`
- * call would reopen the approval dock even after the user said "yes" 30
- * seconds ago, which is a clear UX regression.
- *
- * File: `~/.ave/skills/approvals.json` — the skills namespace, alongside the
- * user-authored skills these approvals are about (`SkillStore.USER_SKILLS_DIR`).
- * It lived at `~/.ave/skill-approvals.json` until the per-feature storage rule
- * reached it; {@link adoptLegacyRootFileSync} moves an existing one on first load.
- *
- * v2 schema (hash-binding):
- * {
- *   "version": 2,
- *   "approvedSkills": [
- *     { "name": "report-writing", "sha256": "abc…", "approvedAt": "2026-…" },
- *     { "name": "field-guide#bundled", "sha256": "def…", "approvedAt": "2026-…" }
- *   ]
- * }
- *
- * `name` is a RECORD KEY, not necessarily a skill name, and `sha256` is a hash of
- * approval MATERIAL, not necessarily a body. Both are chosen by the caller
- * (`tools/skill-load.ts`): a skill carrying bundled resources is keyed
- * `<key>#bundled` and its material covers the body AND the resource manifest, so
- * adding or resizing a bundled file re-prompts. This store deliberately does not
- * know that scheme — it stores opaque (key, hash) pairs, which is what lets the
- * caller change what an approval covers without a schema migration.
- *
- * Why hash-bind? Pre-fix, approval was keyed by NAME ONLY. A user approves
- * `report-writing` once, the body is later swapped (file overwrite, sync
- * tool, malicious overwrite, etc.), and the next `skill_load` short-circuits
- * without re-prompting — provenance changes silently. Post-fix, `isApproved`
- * matches BOTH the key AND the hash of the current material; any mismatch
- * forces re-approval.
- *
- * Migration: any v1 (or pre-v2-without-hash) record is treated as
- * un-approved on read. A re-approval cycle is required after upgrade — this
- * is acceptable in dev-stage and gives the user a chance to re-confirm any
- * previously-blessed skill bodies.
- *
- * Every skill — including seeded built-ins under `~/.ave/skills/` — is
- * recorded here once approved. The load tool gates uniformly because the
- * on-disk body is user-editable post-seed; hash-binding closes the
- * post-approval mutation TOCTOU window (see `skill-load.ts`).
- */
+// Approval binds an opaque record key to a hash of caller-selected material; bundled resources may be part of that material. Any mismatch or legacy
+// unhashed record requires re-approval, including user-edited seeded skills.
 import { resolve } from "node:path";
 import { aveHome } from "../shared/ave-home.js";
 import { withInProcessFileQueue } from "../lib/with-file-lock.js";
 import { adoptLegacyRootFileSync, readJsonFileOrEmpty, writeFileAtomicAtPath } from "./storage/feature-namespace.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 
-interface SkillApprovalRecord {
-  /** Record key from the caller — a skill name, or `<name>#bundled`. */
+export interface SkillApprovalRecord {
+  // Record key from the caller — a skill name, or `<name>#bundled`.
   name: string;
-  /** Hash of the approval material bound to that key. */
+  // Hash of the approval material bound to that key.
   sha256: string;
   approvedAt: string;
 }
 
-interface SkillApprovalsFile {
+export interface SkillApprovalsFile {
   version: 2;
   approvedSkills: SkillApprovalRecord[];
 }
@@ -68,16 +25,7 @@ const LEGACY_ROOT_FILE = "skill-approvals.json";
 
 const defaultPath = (): string => resolve(aveHome(), FEATURE_ID, FILE_NAME);
 
-/**
- * Hash the approval material so a record binds to exactly what the user said yes
- * to. NOT trimmed, and that is the strict direction on purpose: a whitespace-only
- * edit still re-prompts. (An earlier comment here claimed a trim that the code
- * never did — the claim is removed rather than the behavior changed, because
- * re-prompting on an unexpected byte change is the safe side of that trade.)
- *
- * Named for its original caller; it hashes whatever material the caller binds,
- * which for a bundled skill is a digest pair rather than a body.
- */
+// Hash exact approval bytes, including whitespace; callers may supply bundled-resource material rather than a body.
 export function hashSkillMaterial(material: string): string {
   return sha256Hex(material);
 }
@@ -92,9 +40,7 @@ function readFileOrEmpty(filePath: string): Promise<SkillApprovalsFile> {
       version?: number;
       approvedSkills?: unknown;
     };
-    // Only v2 records with a hash are honored. Older formats (v1 string
-    // array, or v2 without sha256) are dropped to force re-approval; do NOT
-    // silently upgrade.
+    // Only v2 records with a hash are honored. Older formats (v1 string array, or v2 without sha256) are dropped to force re-approval; do NOT silently upgrade.
     if (file.version !== 2 || !Array.isArray(file.approvedSkills)) {
       return emptyApprovalsFile();
     }
@@ -114,14 +60,7 @@ function readFileOrEmpty(filePath: string): Promise<SkillApprovalsFile> {
   });
 }
 
-/**
- * Persist the approvals file through the shared atomic-write authority
- * ({@link writeFileAtomicAtPath}): random staging name + `O_CREAT|O_EXCL`, so a
- * symlink planted at a predictable staging path can no longer redirect the
- * write, plus the staged bytes and the parent directory are fsynced. This
- * previously used a FIXED `${filePath}.tmp` staging name with neither guard —
- * exactly the symlink-plant + shared-collision vector the authority documents.
- */
+// Use random exclusive staging and fsync so planted predictable symlinks cannot redirect approval writes.
 async function writeAtomic(filePath: string, data: SkillApprovalsFile): Promise<void> {
   await writeFileAtomicAtPath(filePath, `${JSON.stringify(data, null, 2)}\n`);
 }
@@ -135,10 +74,8 @@ export class SkillApprovalsStore {
   }
 
   async load(): Promise<void> {
-    // Only when this store is on its default path: a caller that passed an
-    // explicit path (tests, fixtures) is not talking about `~/.ave` at all,
-    // and migrating the real user's file underneath such a call would be a
-    // side effect nobody asked for.
+    // Only when this store is on its default path: a caller that passed an explicit path (tests, fixtures) is not talking about `~/.ave` at all, and
+    // migrating the real user's file underneath such a call would be a side effect nobody asked for.
     if (this.filePath === defaultPath()) {
       adoptLegacyRootFileSync(FEATURE_ID, FILE_NAME, LEGACY_ROOT_FILE);
     }
@@ -146,11 +83,8 @@ export class SkillApprovalsStore {
     this.cache = new Map(file.approvedSkills.map((r) => [r.name, r.sha256]));
   }
 
-  /**
-   * Approved iff (record key, hash of current material) matches a stored pair.
-   * Any change to the material invalidates the approval — this returns false and
-   * the caller (skill-load) re-prompts via ApprovalGate.
-   */
+  // Approved iff (record key, hash of current material) matches a stored pair. Any change to the material invalidates the approval — this returns false
+  // and the caller (skill-load) re-prompts via ApprovalGate.
   async isApproved(recordKey: string, currentMaterial: string): Promise<boolean> {
     if (this.cache === null) await this.load();
     const recordedHash = this.cache!.get(recordKey);
@@ -158,12 +92,7 @@ export class SkillApprovalsStore {
     return recordedHash === hashSkillMaterial(currentMaterial);
   }
 
-  /**
-   * Record (or refresh) an approval. The hash of the current material is bound to
-   * the record so the next `isApproved` call detects post-approval mutations.
-   * The key must be the SAME one `isApproved` will use — the caller owns that
-   * derivation, and a mismatch between the two would silently re-prompt forever.
-   */
+  // Bind current material to the same caller-derived key used by isApproved; mismatched derivation would re-prompt forever.
   async approve(recordKey: string, currentMaterial: string): Promise<void> {
     return withInProcessFileQueue(this.filePath, async () => {
       const file = await readFileOrEmpty(this.filePath);

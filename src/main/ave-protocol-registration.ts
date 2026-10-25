@@ -35,18 +35,8 @@ function normalizeLocalDriveWindowsPath(value: unknown): string | null {
   return normalized;
 }
 
-/**
- * A per-machine NSIS install places a versioned regular-file marker beside
- * the executable. Electron's Windows protocol setter always writes HKCU, so
- * that marker is the only reason to skip it. ZIP/win-unpacked builds have no
- * marker and keep Electron's normal self-registration behavior.
- *
- * Validate the executable path lexically before touching the filesystem. This
- * prevents malformed, relative, UNC, and device paths from triggering I/O.
- * Unexpected filesystem errors are deliberately tri-state unknown: callers
- * fail closed by skipping registration and emitting a generic warning without
- * exposing the path.
- */
+// Only the validated per-machine installer marker suppresses HKCU protocol registration. Reject unsafe paths before I/O; unexpected marker-read errors
+// fail closed with a path-free warning.
 export function getPackagedWindowsProtocolMarkerState(
   currentExecutable: unknown,
   inspectMarker: LstatSync = lstatSync,
@@ -70,24 +60,8 @@ export function getPackagedWindowsProtocolMarkerState(
   }
 }
 
-/**
- * Why a launch did not register itself as the OS `ave://` handler.
- *
- * - `unpackaged`: a dev / E2E / CDP launch of the vendored Electron. Its
- *   executable is a worktree build, so registering it would point the user's
- *   installed deep links at a directory that disappears.
- * - `e2e-runtime`: the E2E harness signal (`AVE_E2E=1` under `NODE_ENV=test`).
- *   Packaged boot scrubs `AVE_E2E` before this runs, so at runtime this only
- *   repeats `unpackaged`; it is kept so a spec never depends on packaging state.
- * - `isolated-ave-home`: `AVE_HOME` points somewhere other than `~/.ave`, the
- *   way the CDP launcher, packaged smokes and bench runs isolate a launch.
- * - `isolated-user-data-dir`: an explicit `--user-data-dir` switch, the way the
- *   E2E harness and the CDP launcher isolate the Chromium profile.
- * - `nsis-per-machine-install`: the per-machine installer owns the HKLM
- *   association; Electron's Windows setter would shadow it with HKCU.
- * - `nsis-marker-unknown`: the per-machine marker could not be checked; fail
- *   closed rather than risk shadowing HKLM.
- */
+// Skip protocol registration for unpackaged or isolated launches so they cannot take installed deep links.
+// Skip per-machine installs to avoid shadowing HKLM with HKCU; unknown marker state fails closed.
 type AveProtocolClientRegistrationSkipReason =
   | "unpackaged"
   | "e2e-runtime"
@@ -101,16 +75,16 @@ export type AveProtocolClientRegistrationDecision =
   | { readonly register: false; readonly reason: AveProtocolClientRegistrationSkipReason };
 
 export interface AveProtocolClientRegistrationInput {
-  /** `app.isPackaged`. */
+  // `app.isPackaged`.
   readonly isPackaged: boolean;
   readonly platform: NodeJS.Platform;
-  /** The process environment, after the packaged-env scrub. */
+  // The process environment, after the packaged-env scrub.
   readonly env: NodeJS.ProcessEnv;
-  /** `defaultAveHome()`: the real data home, `~/.ave`. */
+  // `defaultAveHome()`: the real data home, `~/.ave`.
   readonly defaultAveHome: string;
-  /** `app.commandLine.hasSwitch("user-data-dir")`. */
+  // `app.commandLine.hasSwitch("user-data-dir")`.
   readonly hasUserDataDirSwitch: boolean;
-  /** Probed only for a packaged Windows launch on its real profile. */
+  // Probed only for a packaged Windows launch on its real profile.
   readonly probeWindowsMarker: () => PackagedWindowsProtocolMarkerState;
 }
 
@@ -126,16 +100,7 @@ function isIsolatedAveHome(env: NodeJS.ProcessEnv, defaultAveHome: string, platf
     : resolved !== real;
 }
 
-/**
- * Whether this launch may make itself the OS default `ave://` handler
- * (`app.setAsDefaultProtocolClient`, which writes HKCU on Windows, the
- * LaunchServices default on macOS and the xdg default on Linux).
- *
- * Only a packaged production app on its real profile registers. Every
- * isolated launch — unpackaged, E2E, a relocated `AVE_HOME`, an explicit
- * `--user-data-dir` — skips, so a dev, test or CDP run can never take the
- * installed app's deep links. Pure: the caller supplies every signal.
- */
+// Only a packaged production app on its real profile may register as the OS protocol handler.
 export function decideAveProtocolClientRegistration(
   input: AveProtocolClientRegistrationInput,
 ): AveProtocolClientRegistrationDecision {

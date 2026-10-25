@@ -1,11 +1,4 @@
-/**
- * The parent-conversation block of the tier-2 evidence.
- *
- * One question runs through every test here: can anything a SUB-AGENT wrote
- * reach the prompt that decides that sub-agent's own tool call? The block is
- * the only part of the evidence composed out of text the host did not author,
- * so the answer has to come from the composer rather than from the caller.
- */
+// The parent-conversation block of the tier-2 evidence. One question runs through every test here: can anything a SUB-AGENT wrote reach the prompt that decides that sub-agent's own tool call? The block is the only part of the evidence composed out of text the host did not author, so the answer has to come from the composer rather than from the caller.
 import { describe, it, expect } from "vitest";
 import { summarizeParentContextTurns } from "../parent-context-evidence.js";
 
@@ -36,10 +29,7 @@ describe("parent context evidence", () => {
   });
 
   it("never quotes a sub-agent's report back into the prompt", () => {
-    // A child's report lands in its parent's transcript as a user message.
-    // If it could be quoted here, a child would be arguing for its own
-    // approval in its parent's voice — the whole attack this evidence shape
-    // exists to prevent.
+    // A child's report lands in its parent's transcript as a user message. If it could be quoted here, a child would be arguing for its own approval in its parent's voice — the whole attack this evidence shape exists to prevent.
     const transcript = [
       { role: "user", content: "audit the repo" },
       {
@@ -63,12 +53,7 @@ describe("parent context evidence", () => {
   });
 
   it("drops a mixed guidance batch, which carries a child report with no marker", () => {
-    // The batch a child's report shares with the user's own mid-turn guide is
-    // deliberately NOT attributed to the child — the user wrote part of it —
-    // so the row reaches the transcript looking like a plain user message.
-    // The host stamp is one defence; the report's own label is the other, and
-    // this asserts the second, since it is what covers rows written before the
-    // stamp existed.
+    // The batch a child's report shares with the user's own mid-turn guide is deliberately NOT attributed to the child — the user wrote part of it — so the row reaches the transcript looking like a plain user message. The host stamp is one defence; the report's own label is the other, and this asserts the second, since it is what covers rows written before the stamp existed.
     const transcript = [
       {
         role: "user",
@@ -87,9 +72,7 @@ describe("parent context evidence", () => {
   });
 
   it("does not quote the parent's own echo of a child report", () => {
-    // A report can ask the parent to restate it. The restatement is the
-    // parent's assistant turn and carries no marker of its own, so the turn it
-    // was answering is what decides.
+    // A report can ask the parent to restate it. The restatement is the parent's assistant turn and carries no marker of its own, so the turn it was answering is what decides.
     const transcript = [
       { role: "user", content: "audit the repo" },
       { role: "assistant", content: "starting the audit" },
@@ -167,8 +150,7 @@ describe("parent context evidence", () => {
     const [single] = summarizeParentContextTurns([long], 1);
     expect(single?.text.length).toBeLessThanOrEqual(500);
 
-    // Five maximal turns would be 2500 characters; the block bound stops it
-    // short rather than truncating the last one into nonsense.
+    // Five maximal turns would be 2500 characters; the block bound stops it short rather than truncating the last one into nonsense.
     const many = [long, long, long, long, long];
     const turns = summarizeParentContextTurns(many, 5);
     expect(turns.length).toBe(4);

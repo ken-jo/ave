@@ -5,8 +5,8 @@ import type { PersistentItem, ToastItem } from "./status-bar/types.js";
 import { useStatusBarNotifications } from "./status-bar/use-status-bar-notifications.js";
 import { useStatusBarInstall } from "./status-bar/use-status-bar-install.js";
 
-// Re-export shared types so existing call sites (App.tsx, StatusBar.tsx, tests)
-// continue to import from this module without changes.
+// Re-export shared types so existing call sites (App.tsx, StatusBar.tsx, tests) continue to import from this module
+// without changes.
 export type { StatusBarSeverity, NotificationToastMeta, PersistentItem, ToastItem } from "./status-bar/types.js";
 
 /**
@@ -27,26 +27,10 @@ function samePersistentDisplay(a: PersistentItem, b: PersistentItem): boolean {
   );
 }
 
-/**
- * Status-bar event surface shared between persistent (left slot) and
- * transient (right slot) items. The bottom status bar (#231) reads from
- * this hook; producers subscribe to host events that already exist
- * (install-progress, install-result, uninstall-result) plus the routine
- * schedule from settings, so this hook needs no new IPC channel for the
- * initial surface.
- *
- * Future phases (plugin-emitted events, online/offline, marketplace
- * reachability) will plug into the same hook by appending toasts /
- * upserting persistent items — see issue #231.
- */
-
 interface UseStatusBarOptions {
   api: AveApi;
-  /**
-   * Default toast TTL in milliseconds. Override per-toast at push time.
-   * Defaults to LONG_TOAST_TTL_MS (5 s) — long enough to read a single
-   * Korean sentence, short enough to feel ephemeral.
-   */
+  /** Default toast TTL in milliseconds. Override per-toast at push time. Defaults to LONG_TOAST_TTL_MS (5 s) — long enough to
+   * read a single Korean sentence, short enough to feel ephemeral. */
   defaultToastTtlMs?: number;
 }
 
@@ -97,28 +81,16 @@ function resolveToastTtlMs(message: string, requestedTtlMs: number): number {
   return Math.max(requestedTtlMs, Math.min(TOAST_MARQUEE_MAX_TTL_MS, scrollTtlMs));
 }
 
-/**
- * One notice queue with no producers of its own — the state a `StatusBar`
- * draws, for whichever surface owns it.
- *
- * A notice is about ONE conversation (an attachment the composer refused, a
- * provider swap mid-turn, a pre-turn compaction) or about the WINDOW (a host
- * notification, a plugin install). The two are drawn in different places — the
- * tile's composer dock and the window's notice strip — so each surface holds a
- * queue of its own; a queue shared through the window would draw one tile's
- * notice in every tile at once. `useStatusBar` below is the window's queue with
- * the window-scoped producers attached; a tile takes this bare queue and pushes
- * its own conversation's notices into it.
- */
+/** Use one notice queue per owning surface so conversation toasts cannot repeat in every tile; attach window producers only
+ * to the window queue. */
 export function useStatusNotices(opts: { defaultToastTtlMs?: number } = {}) {
-  // LONG_TOAST_TTL_MS (5 s) gives comfortable reading time for a Korean
-  // phrase; callers that need a shorter or longer window pass defaultToastTtlMs.
+  // LONG_TOAST_TTL_MS (5 s) gives comfortable reading time for a Korean phrase; callers that need a shorter or longer window
+  // pass defaultToastTtlMs.
   const { defaultToastTtlMs = LONG_TOAST_TTL_MS } = opts;
   const [persistent, setPersistent] = useState<PersistentItem[]>([]);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
 
-  // Stable counter for unique toast IDs without leaning on Date.now()
-  // (which collides under quick successive pushes).
+  // Stable counter for unique toast IDs without leaning on Date.now() (which collides under quick successive pushes).
   const toastCounterRef = useRef(0);
 
   const pushToast = useCallback(
@@ -133,11 +105,8 @@ export function useStatusNotices(opts: { defaultToastTtlMs?: number } = {}) {
     [defaultToastTtlMs],
   );
 
-  /**
-   * Replace an existing toast in its current queue position, or append it when
-   * absent. Install progress uses a stable ID so every download chunk updates
-   * one live status item instead of creating a growing notification backlog.
-   */
+  /** Replace an existing toast in its current queue position, or append it when absent. Install progress uses a stable ID so
+   * every download chunk updates one live status item instead of creating a growing notification backlog. */
   const upsertToast = useCallback(
     (id: string, input: ToastInput) => {
       const item = createToastItem(id, input, defaultToastTtlMs);
@@ -157,8 +126,7 @@ export function useStatusNotices(opts: { defaultToastTtlMs?: number } = {}) {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);
 
-  // ── Sequential toast display: auto-advance queue head after its TTL.
-  // Only the queue head (toasts[0]) is exposed as `visibleToast`. When the
+    // Only the queue head (toasts[0]) is exposed as `visibleToast`. When the
   // head's TTL elapses (or removeToast dismisses it early), the next item
   // in the queue becomes the new head and gets its own timer. This prevents
   // a burst of install-result events from rendering multiple toasts at once.
@@ -182,13 +150,7 @@ export function useStatusNotices(opts: { defaultToastTtlMs?: number } = {}) {
     setPersistent((prev) => {
       const idx = prev.findIndex((p) => p.id === item.id);
       if (idx === -1) return [...prev, item];
-      // Defense-in-depth against render loops: if a producer re-runs and upserts
-      // a structurally identical item (same display fields), return the SAME
-      // array so no re-render is triggered. Only `onClick` identity may differ
-      // between runs (producers build a fresh closure each time); since the
-      // handler is not display state we ignore it here and keep the existing
-      // item's reference. This prevents an unstable producer callback from
-      // driving an infinite upsert → new-array → re-render loop.
+      // Return the same array for identical display fields, ignoring callback identity, to prevent upsert/render loops.
       if (samePersistentDisplay(prev[idx], item)) return prev;
       const next = [...prev];
       next[idx] = item;
@@ -215,22 +177,13 @@ export function useStatusNotices(opts: { defaultToastTtlMs?: number } = {}) {
   };
 }
 
-/**
- * The WINDOW's notice queue: `useStatusNotices` with the producers that report
- * on the window attached. Subscribed once, drawn once, in the window's notice
- * strip — never inside a tile, where a second tile would draw it again.
- */
+/** The WINDOW's notice queue: `useStatusNotices` with the producers that report on the window attached. Subscribed once,
+ * drawn once, in the window's notice strip — never inside a tile, where a second tile would draw it again. */
 export function useStatusBar(opts: UseStatusBarOptions) {
   const { api, defaultToastTtlMs } = opts;
   const notices = useStatusNotices({ defaultToastTtlMs });
 
-  // ── Producers (each in its own file under status-bar/)
-  // The window status bar is NOTIFICATIONS-ONLY: it surfaces transient toasts
-  // (notifications + install/lifecycle progress). The persistent model /
-  // permission / active-state cells moved into the unified InputActionBar
-  // status sub-row (see useInputStatusRow). `upsertPersistent` /
-  // `removePersistent` serve a tile's own queue (the pre-turn auto-compact
-  // indicator), which is operational state, not a model cell.
+  // Window producers own notification/install toasts; persistent operational items belong to each tile's queue.
   useStatusBarNotifications({ api, pushToast: notices.pushToast });
   useStatusBarInstall({ api, pushToast: notices.pushToast, upsertToast: notices.upsertToast });
 

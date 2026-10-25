@@ -49,8 +49,7 @@ describe("EnvForcedNotice", () => {
   it("says nothing while the host has not answered yet", () => {
     render(<Harness settingsPath="system.corpCaEnabled" />);
 
-    // The fetch has not resolved: claiming the environment decides this before
-    // knowing would be the one wrong thing to render.
+    // The fetch has not resolved: claiming the environment decides this before knowing would be the one wrong thing to render.
     expect(screen.queryByTestId("notice")).toBeNull();
   });
 
@@ -69,9 +68,8 @@ describe("EnvForcedNotice", () => {
   });
 
   it("says nothing when no variable is known for the forced path", async () => {
-    // A path the host reports but the registry does not know is a wiring
-    // mistake; a sentence naming an empty variable tells the user less than
-    // silence does.
+    // A path the host reports but the registry does not know is a wiring mistake; a sentence naming an empty variable tells
+    // the user less than silence does.
     const forcedPaths = deferred<readonly string[]>();
     envForcedSettings.mockReturnValue(forcedPaths.promise);
 

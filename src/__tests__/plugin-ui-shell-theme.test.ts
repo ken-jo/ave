@@ -1,9 +1,4 @@
-/**
- * The plugin UI shell pre-paints the host theme before importing the plugin
- * entry. It must read the fields the host actually sends — `SafeThemePayload`
- * from `src/shared/plugin-theme-cache.ts` — and mirror the root attributes the
- * host renderer sets on its own document (`data-theme-bundle`, `data-shell`).
- */
+/** Pre-paint must use the shared theme payload fields and host root attributes. */
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -50,8 +45,7 @@ async function runShell(theme: unknown): Promise<FakeRoot> {
       },
     },
   });
-  // The entry import has no module loader in this context, so the shell takes
-  // its error path after the theme pre-paint, which is the part under test.
+  // Entry import fails without a module loader here, after the pre-paint under test.
   await new Script(shellSource).runInContext(context);
   return { attributes, properties, colorScheme: style.colorScheme };
 }

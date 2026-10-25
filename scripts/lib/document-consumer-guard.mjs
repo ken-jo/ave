@@ -226,9 +226,7 @@ function installDocumentReadGuard(root = DOCUMENT_ROOT) {
   const installed = Symbol.for("ave.documentConsumerGuard");
   if (globalThis[installed]) return;
   globalThis[installed] = true;
-  // Callback APIs must report a refusal through their callback. A synchronous
-  // throw escapes callers such as webpack's input file system, which then never
-  // settles; the build drains its event loop and exits 0 without an export.
+  // Callback APIs must refuse through their callback; synchronous throws can leave builds unsettled.
   const guard = (name, assertAllowed) => {
     const original = fs[name];
     fs[name] = function (input, ...args) {

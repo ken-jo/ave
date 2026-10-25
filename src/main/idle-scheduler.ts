@@ -1,15 +1,8 @@
-
-
-
-
-
 import * as os from "node:os";
 import { clearIntervalSafe, clearTimeoutSafe } from "../lib/clear-timer.js";
 import { createLogger } from "../lib/logger.js";
 import { sleep } from "../shared/abortable-deadline.js";
 const log = createLogger("idle-scheduler");
-
-// ─── Types ──────────────────────────────────────────
 
 export type IdleState =
   | "RUNNING"
@@ -18,13 +11,14 @@ export type IdleState =
   | "PAUSED"
   | "RESUME_DELAY";
 
+export type Priority = 0 | 1 | 2 | 3 | 4;
+
 export interface IndexJob {
   filePath: string;
   mode: string; // "auto" | "pdf" | "md" | "docx" | "pptx" | "xlsx" | "txt" | "html"
   priority: number; // 0-4
   enqueuedAt?: number;
 }
-
 
 export interface WorkerClientLite {
   enqueue(
@@ -43,11 +37,7 @@ export interface WorkerClientLite {
   }>;
 }
 
-
-
-
 export interface PowerMonitorLike {
-
   getSystemIdleTime(): number;
 
   onBatteryPower?: boolean;
@@ -61,23 +51,15 @@ export interface PowerMonitorLike {
   removeAllListeners(event?: string): unknown;
 }
 
-/**
- * Boundary adapter — narrows Electron's strongly-typed `powerMonitor` (whose
- * `on` signature constrains event names to a closed union) to the wider
- * `PowerMonitorLike` shape used internally. Centralising the cast here keeps
- * call sites off `as unknown as` and documents the boundary.
- */
+// Boundary adapter — narrows Electron's strongly-typed `powerMonitor` (whose `on` signature constrains event names to a closed union) to the wider
+// `PowerMonitorLike` shape used internally. Centralising the cast here keeps call sites off `as unknown as` and documents the boundary.
 export function adaptPowerMonitor(pm: unknown): PowerMonitorLike {
   return pm as PowerMonitorLike;
 }
 
 export interface IdleSchedulerOptions {
-  /**
-   * Index worker client used to drain the idle-deferral queue. Optional:
-   * when omitted (the local-indexer plugin now indexes eagerly in its own
-   * background worker) the queue stays dormant and only the idle-state
-   * machine runs for the remaining consumers.
-   */
+  // Index worker client used to drain the idle-deferral queue. Optional: when omitted (the local-indexer plugin now indexes eagerly in its own background
+  // worker) the queue stays dormant and only the idle-state machine runs for the remaining consumers.
   workerClient?: WorkerClientLite;
 
   powerMonitor?: PowerMonitorLike;
@@ -86,8 +68,6 @@ export interface IdleSchedulerOptions {
   cpuEmaThreshold?: number; // default 0.40
   cpuSpikeThreshold?: number; // default 0.70
   conversationCooldownMs?: number; // default 30000
-
-
 
   keystrokeCooldownMs?: number;
   chunkCooldownMs?: number; // default 200
@@ -98,18 +78,13 @@ export interface IdleSchedulerOptions {
   logger?: (message: string) => void;
 }
 
-/**
- * State transition listener. Fires after every state change with
- * (newState, oldState, reason). boot.ts wires this to invoke
- * RoutineEngine.runRoutine() when entering IDLE_SCAN.
- */
+// State transition listener. Fires after every state change with (newState, oldState, reason). boot.ts wires this to invoke RoutineEngine.runRoutine()
+// when entering IDLE_SCAN.
 export type IdleStateChangeListener = (
   newState: IdleState,
   oldState: IdleState,
   reason: string,
 ) => void;
-
-// ─── IdleSchedulerService ────────────────────────────
 
 export class IdleSchedulerService {
   private state: IdleState = "RUNNING";
@@ -124,7 +99,6 @@ export class IdleSchedulerService {
   private powerSubscribed = false;
   private readonly listeners: Array<{ event: string; handler: (...args: unknown[]) => void }> = [];
   private readonly stateChangeListeners = new Set<IdleStateChangeListener>();
-
 
   private readonly idleThresholdSec: number;
   private readonly cpuEmaAlpha: number;
@@ -154,9 +128,6 @@ export class IdleSchedulerService {
     this.prevCpuTimes = os.cpus();
   }
 
-
-
-
   enqueue(job: { filePath: string; mode: string; priority: number }): void {
     this.queue.push({ ...job, enqueuedAt: Date.now() });
 
@@ -184,7 +155,7 @@ export class IdleSchedulerService {
           }
         });
       } catch {
-        /* not supported on platform */
+        // not supported on platform
       }
       this.powerSubscribed = true;
     }
@@ -205,7 +176,7 @@ export class IdleSchedulerService {
           try {
             detach.call(pm, event, handler);
           } catch {
-            /* ignore */
+            // ignore
           }
         }
       }
@@ -214,7 +185,7 @@ export class IdleSchedulerService {
     }
   }
 
-  /** ConversationLoop가 turn 완료 시 호출 */
+  // ConversationLoop가 turn 완료 시 호출
   signalConversation(): void {
     this.lastConversationAt = Date.now();
     if (this.state === "IDLE_SCAN") {
@@ -222,7 +193,7 @@ export class IdleSchedulerService {
     }
   }
 
-  /** Renderer/IPC가 keystroke 감지 시 호출 */
+  // Renderer/IPC가 keystroke 감지 시 호출
   signalKeystroke(): void {
     this.lastKeystrokeAt = Date.now();
     if (this.state === "IDLE_SCAN") {
@@ -245,7 +216,7 @@ export class IdleSchedulerService {
     return this.queue.length;
   }
 
-  /** 현재 큐의 복사본 (관측용, 변이 금지) */
+  // 현재 큐의 복사본 (관측용, 변이 금지)
   peekQueue(): readonly IndexJob[] {
     return this.queue.slice();
   }
@@ -266,42 +237,35 @@ export class IdleSchedulerService {
     };
   }
 
-  // ─── Test hooks (internal, protected semantics) ───
-
-  /**
-   * 테스트 전용: 내부 tick을 수동 호출. 실제 setInterval 없이 단위 테스트 가능.
-   * 프로덕션 코드는 start()를 사용할 것.
-   */
+  // 테스트 전용: 내부 tick을 수동 호출. 실제 setInterval 없이 단위 테스트 가능. 프로덕션 코드는 start()를 사용할 것.
   _testTick(): void {
     this._tick();
   }
 
-  /** 테스트 전용: 단일 job 처리. */
+  // 테스트 전용: 단일 job 처리.
   async _testProcessOne(): Promise<void> {
     await this._processOne();
   }
 
-  /** 테스트 전용: 상태 강제 전이. */
+  // 테스트 전용: 상태 강제 전이.
   _testForceTransition(newState: IdleState, reason = "test"): void {
     this._transition(newState, reason);
   }
 
-  /** 테스트 전용: cpuEma 강제 설정. */
+  // 테스트 전용: cpuEma 강제 설정.
   _testSetCpuEma(value: number): void {
     this.cpuEma = value;
   }
 
-  /** 테스트 전용: 대화/키 마지막 시각 강제 설정. */
+  // 테스트 전용: 대화/키 마지막 시각 강제 설정.
   _testSetLastConversation(ts: number): void {
     this.lastConversationAt = ts;
   }
 
-  /** 테스트 전용: 조건 재평가 트리거. */
+  // 테스트 전용: 조건 재평가 트리거.
   _testReevaluate(reason = "test"): void {
     this._reevaluate(reason);
   }
-
-  // ─── Private ─────────────────────────────────────
 
   private subscribeListener(
     pm: PowerMonitorLike,
@@ -349,8 +313,7 @@ export class IdleSchedulerService {
   private async _processOne(): Promise<void> {
     if (this.processing) return;
     const wc = this.opts.workerClient;
-    // No index worker client wired → indexing runs eagerly in the plugin's
-    // background worker, not deferred through this queue. Nothing to drain.
+    // No index worker client wired → indexing runs eagerly in the plugin's background worker, not deferred through this queue. Nothing to drain.
     if (!wc) return;
     const job = this.queue.shift();
     if (!job) return;
@@ -380,8 +343,7 @@ export class IdleSchedulerService {
     this.state = newState;
     this.logger(`[idle-scheduler] ${old} → ${newState} (${reason})`);
 
-    // Notify listeners (boot.ts wires the RoutineEngine handoff here).
-    // Swallow listener errors — scheduler must never throw.
+    // Notify listeners (boot.ts wires the RoutineEngine handoff here). Swallow listener errors — scheduler must never throw.
     for (const listener of this.stateChangeListeners) {
       try {
         listener(newState, old, reason);
@@ -414,9 +376,7 @@ export class IdleSchedulerService {
 
     // Battery 저전력 + unplugged → PAUSED
     if (pm && pm.onBatteryPower === true) {
-      // battery level은 Electron API 직접 지원 없음 — onBatteryPower만 신뢰.
-      // 저배터리 강제 정지는 HostApi.getBatteryLevel() 등 후속 확장 시 추가.
-      // 현 단계: onBattery이면 IDLE_SCAN 진입 차단 (배터리 보호).
+      // battery level은 Electron API 직접 지원 없음 — onBatteryPower만 신뢰. 저배터리 강제 정지는 HostApi.getBatteryLevel() 등 후속 확장 시 추가. 현 단계: onBattery이면 IDLE_SCAN 진입 차단 (배터리 보호).
       if (this.state === "IDLE_SCAN") {
         this._transition("RUNNING", "on-battery");
         return;
@@ -443,8 +403,7 @@ export class IdleSchedulerService {
       // 조건 불충족 시 RUNNING 복귀 (THROTTLED는 별도 트리거)
       this._transition("RUNNING", "conditions no longer met");
     } else if (this.state === "THROTTLED") {
-      // THROTTLED 상태에서 일정 시간 keystroke 없고 조건 충족 시 IDLE_SCAN 재진입.
-      // cycle 1 MED: keystrokeCooldownMs 전용 상수 사용 (기존: conversationCooldownMs 재사용).
+      // THROTTLED 상태에서 일정 시간 keystroke 없고 조건 충족 시 IDLE_SCAN 재진입. cycle 1 MED: keystrokeCooldownMs 전용 상수 사용 (기존: conversationCooldownMs 재사용).
       const sinceKey = Date.now() - this.lastKeystrokeAt;
       if (sinceKey > this.keystrokeCooldownMs && conditionsMet) {
         this._transition("IDLE_SCAN", "throttle-cooled");

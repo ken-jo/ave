@@ -1,42 +1,6 @@
-/**
- * The agent browser tools: drive the browser tabs of the app window that
- * hosts the conversation.
- *
- *   browser_tabs        read     list this window's tabs; `select` shows one
- *   browser_snapshot    read on an agent tab; ask per origin (session) on a user tab
- *   browser_screenshot  same as browser_snapshot
- *   browser_wait        read     text to appear, or a time
- *   browser_navigate    ask      origin of the URL, session only (http/https only)
- *   browser_click       ask      origin of the tab, session only
- *   browser_type        ask      origin of the tab, session only
- *   browser_press_key   ask      origin of the tab, session only
- *   browser_tab_new     ask      origin of the URL, session only
- *   browser_tab_close   ask      agent tabs, session only
- *
- * POLICY lives in the ordinary pipeline, not here: each tool declares its
- * category, a remembered scope (`browser-origin` / `browser-agent-tabs`, both
- * session-only — no "always allow" for browser actions) and, for a tab the
- * user opened, `requiresPerActionApproval` (an explicit allow-once every
- * time). The hooks resolve the tab through the main-side registry using the
- * session the call belongs to; the model never supplies the origin.
- *
- * TOCTOU. A tab can navigate (or be released by the user's Stop) while the
- * approval card is open. Execute re-reads the tab's origin and opener and
- * compares them with the scope the call was authorized under; on a mismatch
- * it does nothing and says so, and calling again asks about the page the tab
- * shows now.
- *
- * SCOPE. Only the tabs of the window that hosts the calling conversation are
- * reachable (a sub-agent inherits its parent's); another window's tab answers
- * exactly like one that does not exist. Routines and headless runs get no
- * browser: no window hosts them, and every tool here is `arbitraryEgress`, so
- * unattended lanes never see the schemas at all.
- *
- * Everything read from a page (outline, title, URL) is framed
- * `<browser-content trust="untrusted-web-data">`. Page actions run in main
- * over the guest's DevTools session (main/browser/browser-actions.ts); those
- * and the execute bodies (browser-tools-execute.ts) load on first use.
- */
+/** Browser tools reach only the calling conversation's window; sub-agents inherit it, while routines and headless lanes receive no schemas.
+ * Use session-only origin scopes and per-action approval for user tabs; main resolves origins and execution rechecks opener and origin after approval.
+ * Refuse changed targets without acting, frame all page content as untrusted, and load main-owned actions on first use. */
 import { createDynamicTool, type Tool, type ToolPolicyContext } from "./base.js";
 import type { ToolExecutionContext, ToolExecutionResult } from "./types.js";
 import { resolveSessionWindow, type SessionWindowScopeDeps } from "./session-window-scope.js";
@@ -127,6 +91,12 @@ export const BROWSER_PRESSABLE_KEYS = [
 ] as const;
 
 const MAX_WAIT_MS = 30_000;
+const canonicalBrowserNavigationTools = new WeakSet<object>();
+
+export function isCanonicalBrowserNavigationTool(tool: unknown): boolean {
+  return typeof tool === "object" && tool !== null && canonicalBrowserNavigationTools.has(tool);
+}
+
 /** A tab handle from browser_tabs (minted by the main-side registry). */
 export const BROWSER_TAB_ID_PATTERN = /^tab-\d+$/;
 
@@ -201,11 +171,7 @@ export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps
   const notAgentTab = (raw: unknown, ctx?: ToolPolicyContext): boolean => !onAgentTab(raw, ctx);
   const readOnAgentTab = (raw: unknown, ctx?: ToolPolicyContext): ToolCategory =>
     onAgentTab(raw, ctx) ? "read" : "network";
-  /**
-   * A URL the tools will refuse (not http/https) opens nothing, so asking the
-   * user about it would only ask them to approve a refusal: it runs as a read
-   * and execute refuses it.
-   */
+  /** A URL the tools will refuse (not http/https) opens nothing, so asking the user about it would only ask them to approve a refusal: it runs as a read and execute refuses it. */
   const urlCategory = (raw: unknown): ToolCategory => {
     const input = asInput(raw);
     if (typeof input.url !== "string") return "read";
@@ -394,5 +360,8 @@ export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps
       jsonSchema: object({ tabId: tabIdProperty }, ["tabId"]),
       execute: execute(BROWSER_TOOL.tabClose),
     }),
-  ];
+  ].map((tool) => {
+    if (tool.name === BROWSER_TOOL.navigate || tool.name === BROWSER_TOOL.tabNew) canonicalBrowserNavigationTools.add(tool);
+    return tool;
+  });
 }

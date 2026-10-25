@@ -1,26 +1,4 @@
-/**
- * HMAC chain for audit log tamper-evidence.
- *
- * Spec ref: docs/architecture/permission-policy-design.md §3 Layer 7.
- *
- * Each audit line carries `prevHash = HMAC(secret, prevLine)` where
- * `prevLine` is the previous line's exact raw JSON string as stored in the
- * JSONL body, without the trailing newline. The first line of a file uses
- * `HMAC(secret, GENESIS_MARKER)` where `GENESIS_MARKER = "genesis"`.
- * New lines additionally carry `entryHash = HMAC(secret, lineWithoutEntryHash)`
- * so the current tail is authenticated before a successor exists.
- *
- * The HMAC secret lives behind Electron's OS-backed `safeStorage`
- * when encryption is available. On platforms where that external OS
- * facility is unavailable, the app uses a 0o600 file at
- * `~/.ave/secrets/audit-hmac.key`. There is no in-memory-only mode.
- *
- * Daily seal: `sealDay(date)` walks the day's audit JSONL,
- * recomputes the chain, and writes the final hash to a separate
- * keychain entry `audit-seal-YYYY-MM-DD`. Forensics verify a day's
- * log is intact by recomputing the chain and matching the stored
- * seal.
- */
+/** Hash exact serialized rows without newlines; prevHash links predecessors and entryHash authenticates the tail. Store daily seals separately from their chains. */
 import {
   createHmac,
   randomBytes,
@@ -60,12 +38,7 @@ function hardenSecretDirectory(dir: string): void {
   if (platform !== "win32") chmodSync(dir, 0o700);
 }
 
-/**
- * Secret replacement goes through the one atomic writer: exclusive random
- * staging, fsync, rename (retried on the Windows transient-lock codes),
- * directory fsync. The `wx` staging inode carries the 0o600 it was created
- * with across the rename, so no chmod follows.
- */
+/** Atomic secret replacement uses exclusive 0600 staging, fsync, retried rename, and directory fsync; no post-rename chmod. */
 function atomicWriteSecretFile(dir: string, path: string, value: string): void {
   hardenSecretDirectory(dir);
   writeUtf8FileAtomicSync(path, value, PRIVATE_FILE_MODE);
@@ -92,18 +65,7 @@ function sameSecretFileIdentity(
   return left.dev === right.dev && left.ino === right.ino;
 }
 
-/**
- * Read a whole regular file through a descriptor opened with `O_NOFOLLOW`
- * and `O_NONBLOCK` on POSIX, then prove the bytes came from ONE unchanged
- * file. The non-blocking open lets the type check reject FIFOs and other
- * special files without waiting for a peer. The path must not be a symlink,
- * the descriptor and the path must name the same inode before and after the
- * read, and size/mtime/ctime must not move in between. Returns `null` only
- * when the path is absent. `label` names the file in errors.
- *
- * This is the single copy of that check; the secret store and the rationale
- * invocation journal both read authority files through it.
- */
+/** Reject links and special files without blocking; require matching path/descriptor identity before and after reading, with unchanged size and timestamps. Null means absent only. */
 export function readStableRegularFileUtf8(
   filePath: string,
   maxBytes: number,
@@ -198,14 +160,9 @@ function safeStorageFileLimit(maxValueBytes: number): number {
   );
 }
 
-/**
- * Stable storage interface — abstracts keychain vs file persistence.
- * Tests inject a memory-backed impl.
- */
 export interface SecretStore {
-  /** Read at most maxBytes of decoded UTF-8 value. Returns null when absent. */
+  /** Limit decoded UTF-8 reads to maxBytes; return null only when absent. */
   read(name: string, maxBytes: number): string | null;
-  /** Write a secret by name. Throws on permission/IO errors. */
   write(name: string, value: string): void;
 }
 
@@ -215,11 +172,7 @@ export interface SafeStorageLike {
   decryptString(value: Buffer): string;
 }
 
-/**
- * File-backed store (`~/.ave/secrets/`) — used when
- * Electron's `safeStorage` is unavailable. Each secret is a
- * single-line file with mode 0600.
- */
+/** Use single-line mode-0600 files when OS-backed secret encryption is unavailable. */
 export class FileSecretStore implements SecretStore {
   private readonly dir: string;
 
@@ -229,7 +182,7 @@ export class FileSecretStore implements SecretStore {
   }
 
   private path(name: string): string {
-    // Reject path-traversal characters to keep the keystore flat.
+    // Reject traversal characters to keep the keystore flat.
     if (/[\/\\]|\.\./.test(name)) {
       throw new Error(`invalid secret name: ${name}`);
     }
@@ -254,11 +207,7 @@ export class FileSecretStore implements SecretStore {
   }
 }
 
-/**
- * Electron safeStorage-backed secret store. Ciphertext is persisted under
- * `~/.ave/secrets/` with 0600 mode; the secret material is encrypted by
- * the OS-backed Electron safeStorage facility before it touches disk.
- */
+/** Encrypt with OS-backed storage before persisting mode-0600 ciphertext. */
 export class SafeStorageSecretStore implements SecretStore {
   private readonly dir: string;
 
@@ -304,7 +253,7 @@ export class SafeStorageSecretStore implements SecretStore {
     const createdAt = new Date().toISOString();
     const quarantinedPath = this.quarantinePath(path, createdAt);
     renameSync(path, quarantinedPath);
-    try { chmodSync(quarantinedPath, 0o600); } catch { /* non-fatal */ }
+    try { chmodSync(quarantinedPath, 0o600); } catch {  }
 
     const marker = {
       schemaVersion: 1,
@@ -322,7 +271,7 @@ export class SafeStorageSecretStore implements SecretStore {
         encoding: "utf-8",
         mode: 0o600,
       });
-      try { chmodSync(markerPath, 0o600); } catch { /* non-fatal */ }
+      try { chmodSync(markerPath, 0o600); } catch {  }
     } catch {
       /* The quarantined ciphertext is the critical forensic artifact. */
     }
@@ -378,9 +327,6 @@ export class SafeStorageSecretStore implements SecretStore {
   }
 }
 
-/**
- * In-memory store — for tests. NOT a production fallback.
- */
 export class MemorySecretStore implements SecretStore {
   private readonly map = new Map<string, string>();
   read(
@@ -398,14 +344,7 @@ export class MemorySecretStore implements SecretStore {
   }
 }
 
-/**
- * Read or generate the audit HMAC secret. Idempotent — once
- * generated, subsequent calls return the same value.
- *
- * Throws if the store rejects the write (e.g. permission denied) —
- * caller (boot) treats this as fail-secure: refuse to start the
- * audit chain rather than silently downgrade to no-tamper-evidence.
- */
+/** Reuse the persisted HMAC secret; failed storage must refuse chain startup rather than downgrade integrity. */
 export function ensureAuditSecret(store: SecretStore): string {
   const existing = store.read(AUDIT_HMAC_SECRET_NAME, SECRET_AUTHORITY_MAX_BYTES);
   if (existing && existing.length >= 32) {
@@ -416,7 +355,6 @@ export function ensureAuditSecret(store: SecretStore): string {
   return generated;
 }
 
-/** Read the existing audit authority without minting or replacing it. */
 export function readExistingAuditSecret(store: SecretStore): string {
   const existing = store.read(AUDIT_HMAC_SECRET_NAME, SECRET_AUTHORITY_MAX_BYTES);
   if (!existing || existing.length < 32) {
@@ -425,23 +363,11 @@ export function readExistingAuditSecret(store: SecretStore): string {
   return existing;
 }
 
-/**
- * Compute the HMAC for a single line. Used both as the "prevHash"
- * value embedded in the next entry AND as the daily-seal final
- * hash.
- */
 export function computeLineHmac(secret: string, line: string): string {
   return createHmac("sha256", secret).update(line).digest("hex");
 }
 
-/**
- * Verify a line's chain link given the *previous* serialized line
- * and the *current* entry's `prevHash`. Genesis line uses
- * `GENESIS_MARKER` as the previous-line stand-in.
- *
- * Constant-time comparison to defeat timing oracles on a determined
- * attacker who can observe verification latency.
- */
+/** Compare chain HMACs in constant time; the first row uses the genesis marker. */
 export function verifyLineHmac(
   secret: string,
   previousLine: string,
@@ -455,15 +381,6 @@ export function verifyLineHmac(
   );
 }
 
-/**
- * Build the chain — given a list of input objects (already shaped
- * as permission audit entries minus `prevHash`), return the same objects with
- * `prevHash` populated. The first entry's `prevHash` is the
- * genesis-marker HMAC.
- *
- * Used by `audit-logger`'s `appendPermissionAuditEntry` and by tests that need
- * to construct a known-good fixture.
- */
 export function buildChainedEntries<T extends Record<string, unknown>>(
   secret: string,
   entries: T[],
@@ -477,9 +394,7 @@ export function buildChainedEntries<T extends Record<string, unknown>>(
       entryHash: computeLineHmac(secret, JSON.stringify(linked)),
     };
     out.push(withHash as T & { prevHash: string; entryHash: string });
-    // The *next* entry's prevHash is computed over the SERIALIZED
-    // form of this entry — i.e. the JSON.stringify output that
-    // ends up on disk.
+    // Hash exactly the serialized form written to disk for the next predecessor link.
     prevSerialized = JSON.stringify(withHash);
   }
   return out;
@@ -489,7 +404,6 @@ export type ChainLineVerification =
   | { ok: true; selfAuthenticated: boolean }
   | { ok: false; reason: string };
 
-/** Authenticate a row independently of its predecessor link. */
 export function verifyEntryHmac(secret: string, raw: string): boolean {
   let parsed: Record<string, unknown>;
   try {
@@ -502,7 +416,6 @@ export function verifyEntryHmac(secret: string, raw: string): boolean {
   return verifyLineHmac(secret, JSON.stringify(unsigned), entryHash);
 }
 
-/** Verify one raw row while retaining only its predecessor serialization. */
 export function verifyChainLine(
   secret: string,
   raw: string,
@@ -535,16 +448,7 @@ export function verifyChainLine(
   return { ok: true, selfAuthenticated: true };
 }
 
-/**
- * Verify a complete chain. Returns the index of the FIRST broken
- * line (0-indexed) or null when the chain is intact.
- *
- * The check runs in two stages per line:
- *   1. The line itself must parse as JSON.
- *   2. Its `prevHash` must equal HMAC(secret, previousLineSerialized).
- *
- * On the first line `previousLineSerialized = GENESIS_MARKER`.
- */
+/** Return the first invalid JSON or broken predecessor link, or null for an intact chain. */
 export function verifyChain(
   secret: string,
   lines: string[],
@@ -563,21 +467,11 @@ export function verifyChain(
   return { ok: true };
 }
 
-/**
- * Compute the daily seal — HMAC over the *last serialized line* of
- * a day's chain. Forensics store this in the keychain (separate
- * from the chain itself, so a tampered file doesn't get a fresh
- * matching seal).
- */
+/** Seal the final serialized row separately so tampering cannot mint a matching seal. */
 export function computeDailySeal(secret: string, lastLine: string): string {
   return computeLineHmac(secret, lastLine);
 }
 
-/**
- * Helper — the keychain entry name for a date's seal.
- *
- *   sealKeyName("2026-05-09") === "audit-seal-2026-05-09"
- */
 export function sealKeyName(isoDate: string): string {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(isoDate)) {
     throw new Error(`invalid ISO date for seal name: ${isoDate}`);
@@ -585,11 +479,7 @@ export function sealKeyName(isoDate: string): string {
   return `audit-seal-${isoDate}`;
 }
 
-/**
- * Walk the file's lines, compute the seal, persist to the secret
- * store. Returns the computed seal hash. No-op (returns null)
- * when the file does not exist or contains no entries.
- */
+/** Do not create a seal for a missing or empty file. */
 export function sealDayFromFile(
   secret: string,
   store: SecretStore,
@@ -604,16 +494,7 @@ export function sealDayFromFile(
   return seal;
 }
 
-/**
- * Verify a day's seal — compute the chain, then compute the seal
- * from the last line, and compare against the stored seal.
- *
- * Returns:
- *   { ok: true }                                 — chain intact, seal matches
- *   { ok: false, reason: "no-seal" }            — no stored seal for the day
- *   { ok: false, reason: "chain-broken", index } — chain check failed
- *   { ok: false, reason: "seal-mismatch" }       — chain ok but seal differs
- */
+/** Verify the entire chain before comparing its final seal; distinguish absent seals, broken links, and mismatches. */
 export function verifyDailySeal(
   secret: string,
   store: SecretStore,
@@ -646,17 +527,7 @@ export function verifyDailySeal(
   return same ? { ok: true } : { ok: false, reason: "seal-mismatch" };
 }
 
-/**
- * Extract a permission-audit line subset — the audit log file mixes legacy
- * telemetry entries (with `type` field) and permission audit entries (with
- * `decision` field). Chain verification only cares about the permission audit
- * subset; this helper filters them out.
- *
- * Note: in the v1 implementation permission audit entries are written to a
- * dedicated file (`<date>.permission-audit.jsonl`) so this helper is unused
- * in the hot path. Kept exported for forensic tooling that walks
- * mixed telemetry files.
- */
+/** Filter permission rows from mixed forensic logs; the hot path uses a dedicated permission channel. */
 export function filterPermissionAuditLines(lines: string[]): string[] {
   return lines.filter((l) => {
     try {

@@ -8,7 +8,7 @@ import { DENY_EXTENSIONS } from "../../shared/attachments-deny-list.js";
 import { sensitiveFilePattern } from "../../tools/file-access-policy.js";
 import { BrowserActionError, throwIfAborted } from "./browser-action-guard.js";
 
-/** Main-only picker operands; none of these are model-supplied file authority. */
+// Main-only picker operands; none of these are model-supplied file authority.
 export interface BrowserUploadPickerRequest {
   readonly windowId: number;
   readonly sessionId: string;
@@ -42,8 +42,7 @@ async function removeOwnedFile(file: StagedFile): Promise<void> {
   if (!current.isFile() || current.isSymbolicLink() || !sameFileIdentity(current, file) || current.nlink !== 1n) {
     throw new BrowserActionError("upload-cleanup-failed", "upload staging was replaced; its replacement was preserved");
   }
-  // Descriptor-based chmod never follows a replaced file link. Recheck the
-  // name before unlinking. Processes able to replace private namespace entries
+  // Descriptor-based chmod never follows a replaced file link. Recheck the name before unlinking. Processes able to replace private namespace entries
   // concurrently remain outside this pathname cleanup guarantee.
   try {
     const handle = await fs.open(file.path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
@@ -94,7 +93,7 @@ function sameDestination(a: BrowserUploadPickerRequest, b: BrowserUploadPickerRe
     && a.documentId === b.documentId && a.controlGeneration === b.controlGeneration && a.ref === b.ref;
 }
 
-/** A private byte snapshot. Its paths never enter tool inputs, output, or logs. */
+// A private byte snapshot. Its paths never enter tool inputs, output, or logs.
 export class BrowserUploadSelection {
   private used = false;
   private released = false;
@@ -135,9 +134,8 @@ export class BrowserUploadSelection {
       assertUploadActive(this.destination.signal);
       assertUploadActive(destination.signal);
     };
-    // Browser file assignment consumes paths, so deliver fresh private copies
-    // read from verified descriptors. Reserve each copy until its staging
-    // source is removed, then retain only the delivered generation.
+    // Browser file assignment consumes paths, so deliver fresh private copies read from verified descriptors. Reserve each copy until its staging source is
+    // removed, then retain only the delivered generation.
     try {
       for (const file of this.files) {
         assertCurrent();
@@ -156,8 +154,7 @@ export class BrowserUploadSelection {
           this.dispatchBytes += bytes;
           this.dispatchDir ??= await namespace.childDir(join(basename(this.dir), `dispatch-${randomUUID()}`));
           assertCurrent();
-          // The browser names the File after this basename, so each copy keeps
-          // the original name inside its own slot directory.
+          // The browser names the File after this basename, so each copy keeps the original name inside its own slot directory.
           const slot = join(this.dispatchDir, String(this.dispatchSlots.length));
           await fs.mkdir(slot, { mode: 0o700 });
           this.dispatchSlots.push(slot);
@@ -203,8 +200,7 @@ export class BrowserUploadSelection {
     this.stopLifetime?.();
     this.stopLifetime = undefined;
     await this.inFlight?.catch(() => undefined);
-    // Only these exclusively-created files belong to this selection. Never
-    // recursively remove a directory, follow links or remove selected originals.
+    // Only these exclusively-created files belong to this selection. Never recursively remove a directory, follow links or remove selected originals.
     for (const file of [...this.dispatchFiles, ...this.files]) await removeOwnedFile(file);
     try {
       for (const slot of [...this.dispatchSlots, ...this.slots]) await fs.rmdir(slot);
@@ -217,12 +213,8 @@ export class BrowserUploadSelection {
   }
 }
 
-/**
- * Select once and copy bytes from verified descriptors into private readonly
- * files. A later edit/replacement of an original cannot change browser bytes.
- * Retention ends at input replacement, document replacement, guest destruction
- * or host shutdown; completing the tool does not end the browser's read lifetime.
- */
+// Copy picker-selected bytes through verified descriptors into private readonly files.
+// Keep them until input/document replacement, guest destruction, or shutdown; tool completion does not end browser reads.
 export async function stageBrowserUpload(
   destination: BrowserUploadPickerRequest,
   pickFiles: (request: BrowserUploadPickerRequest) => Promise<readonly string[] | null>,
@@ -237,8 +229,7 @@ export async function stageBrowserUpload(
   assertDestination();
   if (chosen === null || chosen.length === 0) return null;
   if (disposed || chosen.length > BROWSER_UPLOAD_LIMITS.files || new Set(chosen).size !== chosen.length) refused();
-  // Reserve the whole selection ceiling before the first staging await. Two
-  // concurrent pickers cannot each spend the remaining process storage budget.
+  // Reserve the whole selection ceiling before the first staging await. Two concurrent pickers cannot each spend the remaining process storage budget.
   if (reservedBytes + BROWSER_UPLOAD_LIMITS.selectionBytes > BROWSER_UPLOAD_LIMITS.processBytes) refused();
   reservedBytes += BROWSER_UPLOAD_LIMITS.selectionBytes;
   let dir: string | undefined;
@@ -272,8 +263,7 @@ export async function stageBrowserUpload(
         if (!sameFile(opened, after) || !sameFile(opened, current) || await fs.realpath(original) !== real) refused();
         assertUploadActive(destination.signal); assertDestination();
         const name = basename(original).replace(/[\u0000-\u001f\u007f]/g, "_").slice(0, 200) || "file";
-        // One slot directory per file keeps the original basename, which the
-        // browser exposes as File.name, even when two sources share a name.
+        // One slot directory per file keeps the original basename, which the browser exposes as File.name, even when two sources share a name.
         const slot = join(dir, String(slots.length));
         await fs.mkdir(slot, { mode: 0o700 });
         slots.push(slot);
@@ -313,7 +303,7 @@ export async function stageBrowserUpload(
   }
 }
 
-/** App shutdown owns this call; unknown crash remnants are never adopted/deleted. */
+// App shutdown owns this call; unknown crash remnants are never adopted/deleted.
 export async function disposeBrowserUploads(): Promise<void> {
   disposed = true;
   await Promise.all([...liveSelections].map((selection) => selection.release()));

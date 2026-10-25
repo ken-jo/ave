@@ -1,24 +1,5 @@
-/**
- * The messaging connections, as rows in the 원격 연결 list.
- *
- * Two kinds sit in this group and they are not the same thing. Telegram is
- * BUILT INTO this build: the host owns the bot connection, the pairing and the
- * share outright, so its row is always here whether or not a catalog entry for
- * it was ever installed. A marketplace-installed messaging connection is only a
- * record — installing one says this desktop may be reached through that service
- * and nothing more — so it appears as a row that can read back what the catalog
- * declared and nothing else, because this build carries nothing that could
- * drive it.
- *
- * Gating the Telegram row on the installed list is exactly the regression this
- * comment exists to prevent: on a machine with an empty
- * `installedMessagingConnections` the only way to connect a bot would vanish
- * from the app.
- *
- * Its own file rather than a block inside `RemoteSurfacesTab`: this is the one
- * group on the tab whose membership is partly data — what the owner installed —
- * so it owns that read and the per-connection state subscription.
- */
+/** Built-in messaging is always listed; catalog-only connections expose declared metadata without implying unsupported
+ * controls. */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Badge } from "../../../components/ui/badge.js";
 import { Button } from "../../../components/ui/button.js";
@@ -48,12 +29,8 @@ function marketplaceConnectionRowId(connectionId: string): string {
   return `messaging-connection:${connectionId}`;
 }
 
-/**
- * The row a settings deep link into a messaging connection has to open.
- *
- * Null for an anchor this group does not own, which is how the tab tells its
- * own sections from another vendor's.
- */
+/** The row a settings deep link into a messaging connection has to open. Null for an anchor this group does not own, which
+ * is how the tab tells its own sections from another vendor's. */
 export function messagingConnectionRowForSection(section: string): string | null {
   return section === "remote-telegram" ? TELEGRAM_ROW_ID : null;
 }
@@ -77,21 +54,20 @@ function telegramConnectionState(
     case "disconnected":
     case "connected-unpaired":
       return "needs-setup";
-    // The owner has done their part and something else has to happen next: the
-    // code has to be sent, or the share has to be granted.
+    // The owner has done their part and something else has to happen next: the code has to be sent, or the share has to be
+    // granted.
     case "pairing-pending":
     case "paired-unapproved":
       return "pending";
-    // A build with no Telegram support is something the owner fixes by
-    // updating, which is the same kind of "you have to do something" the word
-    // already means.
+    // A build with no Telegram support is something the owner fixes by updating, which is the same kind of "you have to do
+    // something" the word already means.
     case "unsupported":
       return "needs-setup";
     case "pairing-unrecognized":
     case "shared-conversation-missing":
     case "error":
-    // On, and not receiving: the folded line must not read "connected" while
-    // every poll fails, even though main is retrying on its own.
+    // On, and not receiving: the folded line must not read "connected" while every poll fails, even though main is retrying on
+    // its own.
     case "reconnecting":
       return "attention";
   }
@@ -219,9 +195,8 @@ function MarketplaceConnectionRow({ api, connection, expanded, onToggle }: {
   return (
     <ConnectionRow
       label={connection.label}
-      // Updating the app is the something the owner has to do, which is what
-      // the word already means. It stays visible rather than disappearing:
-      // the owner installed it and is owed an explanation.
+      // Updating the app is the something the owner has to do, which is what the word already means. It stays visible rather
+      // than disappearing: the owner installed it and is owed an explanation.
       state="needs-setup"
       expanded={expanded}
       onToggle={onToggle}
@@ -268,9 +243,8 @@ export function MessagingConnectionsSection({
       try {
         settings = await api.getSettings();
       } catch {
-        // A failed read lists no marketplace rows rather than escaping as an
-        // unhandled rejection. The built-in Telegram row does not depend on
-        // this read and still reports its own connection state.
+        // A failed read lists no marketplace rows rather than escaping as an unhandled rejection. The built-in Telegram row does
+        // not depend on this read and still reports its own connection state.
         return;
       }
       if (!alive) return;
@@ -296,9 +270,8 @@ export function MessagingConnectionsSection({
   );
 
   return (
-    // A real block rather than a display-contents wrapper: arrival scrolls to
-    // this element and focuses it, and a box with no layout of its own reports
-    // no position to scroll to.
+    // A real block rather than a display-contents wrapper: arrival scrolls to this element and focuses it, and a box with no
+    // layout of its own reports no position to scroll to.
     <div
       className="flex flex-col gap-3"
       data-settings-section="remote-messaging-connections"

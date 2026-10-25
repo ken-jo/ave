@@ -1,14 +1,4 @@
-/**
- * TerminalBlocksBar — the command-block strip above a workspace terminal.
- *
- * The main process records each command the terminal runs as a block
- * (command, directory, exit code, timing, output; main/terminal/
- * terminal-blocks.ts). This strip lists them for one tab, searches them by
- * command text (the tab's command history), and copies a block or attaches it
- * to the chat composer as a pasted-text chip.
- *
- * It only reads: nothing here writes to the PTY.
- */
+/** Terminal block history is read-only; copying or attaching a block never writes to the PTY. */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { Blocks, ClipboardCopy, MessageSquarePlus } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
@@ -74,8 +64,7 @@ export function TerminalBlocksBar({
       onSession?.(res.session);
       setIntegrated(res.integrated || res.blocks.length === 0);
     }).catch(() => {
-      // The list is a convenience view; a failed refresh keeps the last one
-      // and the next marker retries.
+      // The list is a convenience view; a failed refresh keeps the last one and the next marker retries.
     });
     return () => {
       cancelled = true;

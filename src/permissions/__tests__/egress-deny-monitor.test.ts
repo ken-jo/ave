@@ -1,12 +1,4 @@
-/**
- * Proxy-deny visibility: ASRT violation lines → one audit row per deny, named
- * after the tool call, terminal tab or plugin process that held the key.
- *
- * Drives ASRT's real `SandboxViolationStore` (the object
- * `getSandboxViolationStore()` returns), so the re-notification of the whole
- * retained tail on every change — the store's actual subscribe contract — is
- * what the monitor is tested against.
- */
+// The violation store re-notifies its whole retained tail; audit each refusal once with invocation attribution.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -30,7 +22,7 @@ import { emitSandboxAudit, readRecentSandboxEgressDenials } from "../../audit/sa
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { TEST_SHELL_EGRESS_CONTEXT } from "../../__tests__/support/egress-fixture.js";
 
-/** What ASRT puts in `encodedCommand` for a key (`encodeSandboxedCommand`). */
+// What ASRT puts in `encodedCommand` for a key (`encodeSandboxedCommand`).
 const encode = (key: string): string => Buffer.from(key.slice(0, 100)).toString("base64");
 
 const open: EgressInvocation[] = [];
@@ -111,8 +103,7 @@ describe("unparsed and hostile deny lines", () => {
   it("records a malformed-host deny with control characters as one row, never none", async () => {
     const { store, rows } = await monitored();
     const shell = invocation({ kind: "shell", toolName: "bash", toolUseId: "toolu_04", context: TEST_SHELL_EGRESS_CONTEXT });
-    // ASRT refuses such a host as `malformed host` and records it as sent; the
-    // store turns the control characters into spaces.
+    // ASRT refuses such a host as `malformed host` and records it as sent; the store turns the control characters into spaces.
     deny(store, "deny network-outbound \u0001evil\u0007\u0000:443 (malformed host)", shell.token);
     expect(rows).toHaveLength(1);
     expect(rows[0]!.invocation).toEqual({ kind: "shell", toolName: "bash", toolUseId: "toolu_04" });

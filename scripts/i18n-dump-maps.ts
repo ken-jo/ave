@@ -1,13 +1,4 @@
-/**
- * Dump the assembled i18n catalog to JSON for tooling/verification.
- *
- * Emits `.omc/i18n/maps.json` with:
- *   - enByKey:  key → English text
- *   - koByKey:  key → Korean text
- *   - koToEn:   Korean text → English text (exact-string lookup)
- *
- * Run after `scripts/i18n-build-catalog.mjs`:  bunx tsx scripts/i18n-dump-maps.ts
- */
+// Dump assembled catalogs after regeneration for tooling and verification.
 import { mkdirSync, writeFileSync } from "node:fs";
 import { loadAllLocaleMessages } from "../src/i18n/messages/index.js";
 

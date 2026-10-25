@@ -14,8 +14,7 @@ vi.mock("node:child_process", async (importOriginal) =>
 const roots: string[] = [];
 afterEach(async () => {
   vi.restoreAllMocks();
-  // A test may leave its sealed read-only copy behind; the async removal
-  // clears the Windows read-only attribute that the synchronous one refuses.
+  // A test may leave its sealed read-only copy behind; the async removal clears the Windows read-only attribute that the synchronous one refuses.
   for (const root of roots.splice(0)) await cleanupTmpDir(root);
 });
 

@@ -29,10 +29,8 @@ export function ReviewRow({
 }: {
   label: string;
   children: ReactNode;
-  // Lets the row wrapper itself carry a
-  // data-testid so prose rows (non-monospace) can be selected without
-  // forcing them into the `<pre>` branch (which mis-renders human-
-  // readable sentences as terminal output).
+  // Lets the row wrapper itself carry a data-testid so prose rows (non-monospace) can be selected without forcing them into
+  // the `<pre>` branch (which mis-renders human- readable sentences as terminal output).
   testId?: string;
 }) {
   return (

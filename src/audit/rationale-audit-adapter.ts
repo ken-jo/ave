@@ -632,8 +632,7 @@ export class DurableRationaleAuditAdapter implements RationaleAuditSink {
       );
       if (raw === null) continue;
       storedSlots += 1;
-      // SecretStore replacement is atomic. A present-but-invalid slot is
-      // therefore evidence of corruption/tamper, not a recoverable torn write.
+      // Atomic slot replacement means invalid existing authority is corruption, not a recoverable torn write.
       candidates.push(parseCheckpoint(raw, day, slot, this.#checkpointSecret));
     }
     if (candidates.length === 0) {

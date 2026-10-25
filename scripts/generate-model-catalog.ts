@@ -1,16 +1,5 @@
-/**
- * Write the bundled model catalog, check the committed copy, or download new
- * input.
- *
- *   node --import tsx scripts/generate-model-catalog.ts           write the snapshot from the committed input
- *   node --import tsx scripts/generate-model-catalog.ts --check   fail if the snapshot or the packaged license differs from what the input generates
- *   node --import tsx scripts/generate-model-catalog.ts --fetch   download models.dev, replace the input, write the snapshot
- *
- * The generator is `scripts/lib/model-catalog.ts`; this file is its command
- * line, and it runs unconditionally for the reason
- * `generate-plugin-host-protocol-schema.ts` gives. Every run prints exactly
- * one outcome line; only `wrote …` and `… match their input` exit 0.
- */
+// Reproduce the bundled snapshot from committed input; --fetch replaces input and regenerates.
+// Run unconditionally and print exactly one outcome line.
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -46,7 +35,7 @@ async function run(args: readonly string[]): Promise<string> {
 try {
   console.log(`${LABEL} ${await run(process.argv.slice(2))}`);
 } catch (error) {
-  // One line, not a stack: this is a gate's verdict, read in a build log.
+  // Print a concise gate verdict rather than a stack trace.
   const message = error instanceof Error ? error.message : String(error);
   console.error(message.startsWith(LABEL) ? message : `${LABEL} ${message}`);
   process.exitCode = 1;

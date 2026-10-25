@@ -1,10 +1,4 @@
-/**
- * logger.ts format-selection unit tests.
- *
- * Module-level constants (isProduction, useJsonFormat) are evaluated once at
- * import time, so each scenario re-imports the module in isolation via
- * vi.resetModules() + dynamic import.
- */
+/** Re-import per scenario because logger format constants are evaluated at module load. */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -12,7 +6,6 @@ import { tmpdir } from "node:os";
 
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
-// Sentinel to detect "not passed" vs "passed undefined/null"
 const NOT_SET = Symbol("NOT_SET");
 
 async function importLogger(
@@ -26,7 +19,6 @@ async function importLogger(
 
   const { electronVersion = NOT_SET, defaultApp = NOT_SET } = processOverrides;
 
-  // ── env overrides ──────────────────────────────────────────────────────
   const savedEnv: Record<string, string | undefined> = {};
   for (const [key, value] of Object.entries(envOverrides)) {
     savedEnv[key] = process.env[key];
@@ -37,7 +29,6 @@ async function importLogger(
     }
   }
 
-  // ── process.versions.electron override ────────────────────────────────
   const versionsProxy = process.versions as Record<string, string | undefined>;
   const savedElectron = versionsProxy.electron;
   const changeElectron = electronVersion !== NOT_SET;
@@ -49,7 +40,6 @@ async function importLogger(
     }
   }
 
-  // ── process.defaultApp override ───────────────────────────────────────
   const procAny = process as NodeJS.Process & { defaultApp?: boolean };
   const hadDefaultApp = "defaultApp" in procAny;
   const savedDefaultApp = procAny.defaultApp;
@@ -66,7 +56,6 @@ async function importLogger(
     const mod = await import("../logger.js");
     return mod;
   } finally {
-    // restore env
     for (const [key, value] of Object.entries(savedEnv)) {
       if (value === undefined) {
         delete process.env[key];
@@ -74,7 +63,6 @@ async function importLogger(
         process.env[key] = value;
       }
     }
-    // restore versions.electron
     if (changeElectron) {
       if (savedElectron === undefined) {
         delete versionsProxy.electron;
@@ -82,7 +70,6 @@ async function importLogger(
         versionsProxy.electron = savedElectron;
       }
     }
-    // restore defaultApp
     if (changeDefaultApp) {
       if (!hadDefaultApp) {
         delete procAny.defaultApp;
@@ -99,9 +86,6 @@ describe("logger format selection", () => {
   });
 
   it("uses pino-pretty transport when NODE_ENV=development and AVE_DEV=1", async () => {
-    // In Vitest, process.versions.electron is undefined → isElectronRuntime=false
-    // → isPackagedElectron=false automatically. AVE_DEV=1 is belt-and-suspenders
-    // for any environment that may set process.versions.electron.
     const { logger, transport } = await importLogger({
       NODE_ENV: "development",
       AVE_LOG_FORMAT: undefined,
@@ -109,7 +93,6 @@ describe("logger format selection", () => {
       AVE_DEV: "1",
     });
     expect(logger.level).toBe("debug");
-    // transport should be the pino-pretty config object (not undefined)
     expect(transport).toBeDefined();
     expect((transport as { target: string }).target).toBe("pino-pretty");
   });
@@ -121,7 +104,6 @@ describe("logger format selection", () => {
       VITEST: undefined,
     });
     expect(logger.level).toBe("info");
-    // In JSON mode transport is undefined (pino default stdout JSON)
     expect(transport).toBeUndefined();
   });
 
@@ -132,8 +114,6 @@ describe("logger format selection", () => {
       VITEST: undefined,
       AVE_DEV: "1",
     });
-    // In JSON mode the level stays at the LOG_LEVEL override default for
-    // non-production (AVE_DEV=1 keeps isPackagedElectron false): "debug".
     expect(logger.level).toBe("debug");
     expect(transport).toBeUndefined();
   });
@@ -174,11 +154,7 @@ describe("logger format selection", () => {
     expect(logger.level).toBe("warn");
   });
 
-  // ── isPackagedElectron branch coverage ────────────────────────────────────
-
   it("Electron + unpackaged (defaultApp=true) → pino-pretty, not JSON", async () => {
-    // Simulates `electron dist/src/main/main.js` (unpackaged dev run).
-    // process.versions.electron present, process.defaultApp=true.
     const { transport } = await importLogger(
       {
         NODE_ENV: "development",
@@ -188,14 +164,11 @@ describe("logger format selection", () => {
       },
       { electronVersion: "32.0.0", defaultApp: true },
     );
-    // defaultApp=true → isPackagedElectron=false → pino-pretty
     expect(transport).toBeDefined();
     expect((transport as { target: string }).target).toBe("pino-pretty");
   });
 
   it("Electron + packaged (defaultApp absent) → JSON (no transport), info level", async () => {
-    // Simulates a packaged production Electron build.
-    // process.versions.electron present, process.defaultApp absent.
     const { transport, logger } = await importLogger(
       {
         NODE_ENV: "development", // packaged Electron does not set NODE_ENV=production
@@ -205,16 +178,12 @@ describe("logger format selection", () => {
       },
       { electronVersion: "32.0.0", defaultApp: null }, // null = delete the key
     );
-    // isPackagedElectron=true → useJsonFormat=true → transport undefined
     expect(transport).toBeUndefined();
-    // info level in packaged mode
     expect(logger.level).toBe("info");
   });
 
   it("Electron + packaged + AVE_DEV=1 → still JSON: a packaged binary ignores the dev flag", async () => {
-    // The old local heuristic honoured AVE_DEV=1 here and chose pino-pretty;
-    // dev-flags' rule is that packaged builds ignore AVE_DEV*, and the logger
-    // now derives "packaged" from dev-flags.
+    // Packaged builds must ignore development flags when choosing log format.
     const { transport, logger } = await importLogger(
       {
         NODE_ENV: "development",
@@ -264,7 +233,6 @@ describe("logger format selection", () => {
   });
 
   it("plain Node.js (no process.versions.electron) → isElectronRuntime=false → pino-pretty for dev", async () => {
-    // Explicitly removes process.versions.electron (simulates plain Node / scripts).
     const { transport } = await importLogger(
       {
         NODE_ENV: "development",
@@ -274,7 +242,6 @@ describe("logger format selection", () => {
       },
       { electronVersion: null }, // null = delete the key
     );
-    // isElectronRuntime=false → isPackagedElectron=false → pino-pretty
     expect(transport).toBeDefined();
     expect((transport as { target: string }).target).toBe("pino-pretty");
   });
@@ -282,10 +249,7 @@ describe("logger format selection", () => {
 
 describe("logger redaction (#1499 disk-persistence defense)", () => {
   it("censors secret-bearing fields in JSON output", async () => {
-    // Non-test JSON path (VITEST unset + AVE_LOG_FORMAT=json) builds the real
-    // multistream pino logger whose first stream is process.stdout. Capture the
-    // serialized line and assert secret values are replaced with "[redacted]"
-    // both at the top level and one level deep, while non-secret fields survive.
+    // Exercise the real JSON stream and assert redaction at top level and one level deep.
     const writes: string[] = [];
     const spy = vi
       .spyOn(process.stdout, "write")
@@ -311,17 +275,13 @@ describe("logger redaction (#1499 disk-persistence defense)", () => {
     expect(line).toContain("[redacted]");
     expect(line).not.toContain("sk-secret");
     expect(line).not.toContain("tok-123");
-    // Non-secret context field is preserved.
     expect(line).toContain("keep-me");
   });
 });
 
 describe("initFileLogSink — fail-closed lifecycle (#1499)", () => {
   it("swallows a createLogFileSink failure and returns null (never bricks boot)", async () => {
-    // Force createLogFileSink to throw: point `dir` at a path whose parent is a
-    // regular FILE, so ensureLogDir's mkdirSync(recursive) fails with ENOTDIR/
-    // EEXIST. initFileLogSink must catch this and return null — the boot path
-    // (`if (sink) { … }` in boot/services.ts) then simply skips file logging.
+    // Occupy the parent with a file to force sink creation failure; boot must receive null rather than throw.
     const dir = mkdtempSync(join(tmpdir(), "ave-logfail-"));
     const parentFile = join(dir, "not-a-dir");
     writeFileSync(parentFile, "x");
@@ -338,7 +298,6 @@ describe("initFileLogSink — fail-closed lifecycle (#1499)", () => {
       closeFileLogSink();
       await cleanupTmpDir(dir);
     }
-    // The contract: no throw escapes, and the sink is null (fail-closed).
     expect(threw).toBe(false);
     expect(sink).toBeNull();
   });
@@ -358,9 +317,7 @@ describe("initFileLogSink — fail-closed lifecycle (#1499)", () => {
       }
     } finally {
       closeFileLogSink();
-      // The file-ready wait above prevents a deferred open from racing
-      // teardown. Give end() a turn to deliver its close callback, then use the
-      // shared bounded retry policy for any remaining filesystem lock.
+      // Wait for file readiness and close callbacks, then retry residual filesystem locks.
       await new Promise((r) => setTimeout(r, 0));
       await cleanupTmpDir(dir);
     }

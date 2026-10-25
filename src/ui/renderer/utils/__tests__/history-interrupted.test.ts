@@ -1,12 +1,4 @@
-/**
- * The interrupted badge must survive a reload.
- *
- * Live, the abort handler stamps `interrupted` straight onto the streaming
- * entry. On reload there is no abort event — the only witness is the persisted
- * `interrupted` flag, which `historyToEntries` forwards into
- * `finalizeStreamingAssistant`. That option was passed but never consumed, so
- * a turn the user had watched get cut short came back looking finished.
- */
+/** Restore the persisted interrupted flag after reload; there is no live abort event to reconstruct it. */
 import { describe, expect, it } from "vitest";
 import { historyToEntries, type PersistedHistoryMessage } from "../history.js";
 import { finalizeStreamingAssistant, type ChatEntry } from "../../../../lib/chat-stream-state.js";
@@ -37,9 +29,8 @@ describe("interrupted marker through reload", () => {
   });
 
   it("keeps a live-marked entry marked when finalize runs without the option", () => {
-    // An abort is a fact about the turn, not about the render: a later
-    // re-finalize (the live path finalizes after the abort stamp) must not
-    // quietly clear the badge.
+    // An abort is a fact about the turn, not about the render: a later re-finalize (the live path finalizes after the abort
+    // stamp) must not quietly clear the badge.
     const entries: ChatEntry[] = [
       { kind: "assistant", text: "부분 응답", streaming: true, interrupted: true },
     ];

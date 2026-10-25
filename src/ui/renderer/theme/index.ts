@@ -1,9 +1,3 @@
-/**
- * Theme system v2 barrel.
- *
- * Components import from here to avoid deep paths:
- *   `import { useTheme } from "../theme/index.js"`
- */
 export { ThemeProvider, useTheme, useOptionalTheme } from "./ThemeProvider.js";
 export { bundleToPluginTokens } from "./plugin-token-map.js";
 export {

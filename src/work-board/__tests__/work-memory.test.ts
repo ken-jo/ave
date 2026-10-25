@@ -1,7 +1,4 @@
-/**
- * Work-flow memory contract: seed-once USER.md, header-preserving FIFO cap on
- * MEMORY.md (no summarisation), and the bounded prompt-context render.
- */
+/** Seed user memory once; preserve the header while dropping oldest lines and bound rendered context. */
 import { describe, it, expect } from "vitest";
 import {
   readOrSeedUser,
@@ -16,7 +13,6 @@ import {
 } from "../work-memory.js";
 import { projectMemoryPath } from "./board-test-fixtures.js";
 
-/** In-memory MemoryStorage backed by a plain map. */
 function memStorage(seed?: Record<string, string>): MemoryStorage & { files: Record<string, string> } {
   const files: Record<string, string> = { ...seed };
   return {
@@ -37,7 +33,6 @@ describe("work-memory", () => {
     expect(s.files[USER_FILE]).toBe(USER_MD_SEED);
 
     s.files[USER_FILE] = "# User Profile\n- Role: PM\n";
-    // Second read returns the edit — the seed is never re-applied.
     expect(await readOrSeedUser(s)).toBe("# User Profile\n- Role: PM\n");
   });
 
@@ -54,7 +49,6 @@ describe("work-memory", () => {
   it("ignores blank / whitespace-only appends", async () => {
     const s = memStorage();
     await appendMemory(s, ["   ", "", "\n"]);
-    // Nothing persisted — an all-blank append is a no-op.
     expect(s.files[MEMORY_FILE]).toBeUndefined();
   });
 

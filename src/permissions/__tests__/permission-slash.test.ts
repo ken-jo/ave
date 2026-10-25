@@ -16,7 +16,7 @@ import {
 import { validateDirectoryAddition } from "../allowed-directories.js";
 import { PermissionTestResources } from "./test-resources.js";
 
-/** Only ever named in a fault; `normalizePermissionSettings` reads no file. */
+// Only ever named in a fault; `normalizePermissionSettings` reads no file.
 const SETTINGS_PATH = "/nonexistent/settings.json";
 
 const resources = new PermissionTestResources();
@@ -192,7 +192,6 @@ describe("dispatchPermissionDirCommand — deny", () => {
     expect(onDisk.permissions.additionalDirectories).toContain("/Users/example/Documents");
   });
 });
-
 
 describe("dispatchPermissionDirCommand — injected workspace lifecycle", () => {
   it("delegates allow with the permission-slash source and returns lifecycle persistence", async () => {
@@ -383,17 +382,7 @@ describe("normalizePermissionSettings — canonical permissions", () => {
   });
 });
 
-/**
- * The `allowedDirectories` alias after its sunset.
- *
- * The write-time cleanup that used to erase the key is gone — sunset entry
- * `permission-allowed-directories-alias-convergence`, retired 2026-08-23 and
- * removed from `docs/development/legacy-sunset-inventory.json` with the code.
- * What must survive is the
- * part that was never code: the reader ignores the alias. A persist therefore
- * carries the key through untouched — inert, not authoritative — and the
- * canonical key still decides what the app grants.
- */
+    // Preserve the inert allowedDirectories alias on writes; readers ignore it and only the canonical key grants authority.
 describe("writePermissionSettings — the retired alias is inert, not honoured", () => {
   it("carries a legacy allowedDirectories key through a re-save without granting it", async () => {
     const path = tmpSettingsPath();
@@ -431,19 +420,7 @@ describe("writePermissionSettings — the retired alias is inert, not honoured",
   });
 });
 
-/**
- * FU2 — slash `/permission hooks accept|disable|reject` must broadcast
- * `broadcastPermissionConfigChanged` so the renderer PermissionsTab quarantine
- * banner live-refreshes (parity with the IPC hook-trust handlers in
- * `ipc/domains/permissions.ts`). `list` is a read-only no-op and must NOT
- * broadcast; failed commands must NOT broadcast.
- *
- * The broadcast decision in `conversation-loop.ts` is gated purely on the
- * `dispatchPermissionHooksCommand` result shape (`result.ok` +
- * `result.verb !== "list"`). This suite drives the real dispatcher against a
- * temp hook fixture and asserts that exact predicate so a regression in the
- * dispatcher's discriminator is caught here.
- */
+// FU2 — slash `/permission hooks accept|disable|reject` must broadcast `broadcastPermissionConfigChanged` so the renderer PermissionsTab quarantine banner live-refreshes (parity with the IPC hook-trust handlers in `ipc/domains/permissions.ts`). `list` is a read-only no-op and must NOT broadcast; failed commands must NOT broadcast. The broadcast decision in `conversation-loop.ts` is gated purely on the `dispatchPermissionHooksCommand` result shape (`result.ok` + `result.verb !== "list"`). This suite drives the real dispatcher against a temp hook fixture and asserts that exact predicate so a regression in the dispatcher's discriminator is caught here.
 describe("dispatchPermissionHooksCommand — renderer broadcast gating (FU2)", () => {
   function hooksFixture() {
     const tmpDir = resources.makeTmpDir("ave-hook-trust-bcast-");
@@ -460,10 +437,7 @@ describe("dispatchPermissionHooksCommand — renderer broadcast gating (FU2)", (
     chmodSync(p, 0o755);
   }
 
-  /**
-   * Mirrors the conversation-loop gate exactly: broadcast iff the command
-   * succeeded AND mutated trust state (accept/disable/reject), never on `list`.
-   */
+  // Mirrors the conversation-loop gate exactly: broadcast iff the command succeeded AND mutated trust state (accept/disable/reject), never on `list`.
   function maybeBroadcast(
     result: Awaited<ReturnType<typeof dispatchPermissionHooksCommand>>,
     broadcast: () => void,
@@ -520,10 +494,7 @@ describe("dispatchPermissionHooksCommand — renderer broadcast gating (FU2)", (
 });
 
 describe("/allow — the dispatcher's trust-origin gate covers it too", () => {
-  // `/allow` shares `dispatchPermissionSlash` specifically so it inherits this
-  // boundary. Agent output, tool results, plugin text and remote-controller
-  // messages all reach the composer; none of them may submit an approval
-  // sentence on the user's behalf.
+  // `/allow` shares `dispatchPermissionSlash` specifically so it inherits this boundary. Agent output, tool results, plugin text and remote-controller messages all reach the composer; none of them may submit an approval sentence on the user's behalf.
   it.each(["llm-tool-arg", "plugin-emitted", "app-emitted", "unknown"] as const)(
     "refuses a %s origin and hands back inert text",
     (origin) => {
@@ -540,9 +511,7 @@ describe("/allow — the dispatcher's trust-origin gate covers it too", () => {
     const outcome = dispatchPermissionSlash(`/allow ${sentence}`, "user-keyboard");
     expect(outcome.kind).toBe("allow");
     if (outcome.kind !== "allow") return;
-    // Nothing tokenizes, path-matches or negation-scans it here. The parser's
-    // only job is to hand the words to a selector that can pick a scope but
-    // cannot author one.
+    // Nothing tokenizes, path-matches or negation-scans it here. The parser's only job is to hand the words to a selector that can pick a scope but cannot author one.
     expect(outcome.cmd.sentence).toBe(sentence.trim());
     expect(outcome.needsModal).toBe(false);
   });

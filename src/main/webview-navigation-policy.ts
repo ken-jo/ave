@@ -16,12 +16,7 @@ export function shouldBlockGlobalWebviewNavigation(
 ): boolean {
   if (input.authOwned || input.linkOwned) return false;
 
-  // The MCP-App sandbox-proxy document is host-owned and served from a privileged
-  // scheme whose `protocol.handle` fail-closes on an unknown token or an
-  // authority/token mismatch. Allow it explicitly: the initial `src` load does not
-  // fire `will-navigate`, but a page-initiated re-navigation or crash-recovery reload
-  // (`render-process-gone`) does, and the fallback below permits only data:/about:,
-  // which would silently break the card. Mirrors the plugin-shell precedent above.
+  // Permit the host proxy scheme for guarded re-navigation and recovery; its handler independently validates token and authority.
   if (input.url.startsWith(`${MCP_APP_SCHEME}:`)) return false;
 
   const isPluginShellFrame = isPluginShellFrameUrl(input.currentUrl);

@@ -1,8 +1,4 @@
-/**
- * Verify the immutable unsigned public-release profile carried by a tag.
- * This module intentionally does not control workflow secrets or release-body
- * paths: public tag safety is fixed by the reviewed workflow itself.
- */
+// Tag release safety is fixed by the reviewed workflow, independent of diagnostic inputs.
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -22,11 +18,8 @@ function requireString(value, label) {
   return value;
 }
 
-/**
- * Public tag release is deliberately unsigned until a separately reviewed
- * signing/notarization workflow and evidence gate exists. workflow_dispatch is
- * a secret-free internal candidate and does not publish a GitHub Release.
- */
+// Public releases remain unsigned until a signing workflow is reviewed.
+// Manual internal candidates use no secrets and publish no release.
 export function resolveReleaseProfile({ eventName, refName, sourceSha, packageJson }) {
   if (eventName === "workflow_dispatch") {
     return {

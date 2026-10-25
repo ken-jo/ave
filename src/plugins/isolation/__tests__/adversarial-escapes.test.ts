@@ -780,6 +780,8 @@ describe("the four escapes, against the production factory under the real wrap",
           });
           const other = result.other as { ok: boolean; value?: { stdout: string; stderr: string; exit: unknown } };
           expect(other.ok, `${otherDataDir}: ${JSON.stringify(other)}`).toBe(true);
+          // A worker that never exited measured nothing: only a refused read counts as confinement.
+          expect(other.value!.exit, `${otherDataDir}: ${JSON.stringify(other)}`).toBeTypeOf("number");
           expect(other.value!.exit, `${otherDataDir}: ${JSON.stringify(other)}`).not.toBe(0);
           expect(other.value!.stdout).toBe("");
           expect(JSON.stringify(result)).not.toContain(NEIGHBOUR_SENTINEL);

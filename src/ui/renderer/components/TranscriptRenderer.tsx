@@ -37,11 +37,8 @@ import { shouldShowAssistantEntry } from "../utils/processing-display-policy.js"
 
 type PermissionReviewEntry = Extract<ChatEntry, { kind: "permission_review" }>;
 
-/**
- * Per-turn provider-reported usage summary, keyed by turn-start entry index.
- * Built by the caller (from `turn_summary` entries) and consumed here to feed
- * the WorkGroup step count / duration and the final TurnActionBar cost badge.
- */
+/** Per-turn provider-reported usage summary, keyed by turn-start entry index. Built by the caller (from `turn_summary`
+ * entries) and consumed here to feed the WorkGroup step count / duration and the final TurnActionBar cost badge. */
 export type TurnSummary = {
   /** Present only when the engine reached a natural `end_turn`. */
   endedByEndTurn?: true;
@@ -59,23 +56,18 @@ export type TurnSummary = {
   subscriptionUsage?: Extract<ChatEntry, { kind: "turn_summary" }>["subscriptionUsage"];
 };
 
-/**
- * Edit-cluster props: cohesion group co-derived from the transcript in the
- * caller. Presence enables the inline user-message editor + the "edit" hover
- * action. Omit to render the transcript read-only (side-chat / sub-agent).
- */
-interface TranscriptEditProps {
+/** Edit-cluster props: cohesion group co-derived from the transcript in the caller. Presence enables the inline
+ * user-message editor + the "edit" hover action. Omit to render the transcript read-only (side-chat / sub-agent). */
+export interface TranscriptEditProps {
   editingEntryIdx: number | null;
   editBusy: boolean;
   setEditingEntryIdx: (i: number | null) => void;
   onEditSave: (idx: number, text: string) => void | Promise<void>;
 }
 
-/**
- * Search-cluster props: highlight + match-ring state. Omit to render without
- * search highlighting (defaults collapse to no ring, no highlight).
- */
-interface TranscriptSearchProps {
+/** Search-cluster props: highlight + match-ring state. Omit to render without search highlighting (defaults collapse to no
+ * ring, no highlight). */
+export interface TranscriptSearchProps {
   searchOpen: boolean;
   searchMatches: number[];
   searchMatchSet: Set<number>;
@@ -90,14 +82,11 @@ interface TranscriptSearchProps {
  * actions). `isEntryStarred` defaults to `() => null` so the star indicator is
  * inert when the caller does not track starred state.
  */
-interface TranscriptActionProps {
+export interface TranscriptActionProps {
   isEntryStarred?: (idx: number) => string | null;
   onFork?: (idx: number) => void | Promise<void>;
-  /**
-   * Rewind to just before this user message: the conversation from it onward is
-   * discarded and its text goes back into the composer, unsent. Distinct from
-   * edit (which resends) and fork (which branches into a new session).
-   */
+  /** Rewind to just before this user message: the conversation from it onward is discarded and its text goes back into the
+   * composer, unsent. Distinct from edit (which resends) and fork (which branches into a new session). */
   onReturnHere?: (idx: number) => void | Promise<{ ok: boolean }>;
   onToggleStar?: (idx: number) => void | Promise<void>;
   onRetryEffort?: () => void | Promise<void>;
@@ -111,36 +100,28 @@ export interface SharedTranscriptProps {
   streaming: boolean;
   currentSessionId: string;
 
-  // --- all optional; absence = the feature is omitted for this source ---
+  // Optional capability clusters suppress features when absent.
   turnSummaryByTurnStart?: Map<number, TurnSummary>;
   edit?: TranscriptEditProps;
   search?: TranscriptSearchProps;
   actions?: TranscriptActionProps;
 
-  /**
-   * Checkpoint read-only slice banner state. Suppresses mutating actions on the
-   * main path even when the action callbacks are present. Omit (default `null`)
-   * for sources that never enter a checkpoint slice.
-   */
+  /** Checkpoint read-only slice banner state. Suppresses mutating actions on the main path even when the action callbacks are
+   * present. Omit (default `null`) for sources that never enter a checkpoint slice. */
   viewMode?: ViewModeState | null;
 
   /** Final TurnActionBar vendor fallback when a turn_summary has no vendor. */
   activeVendor?: LLMVendor;
 
-  /**
-   * False when the active runtime has no API-key billing contract. A validated
-   * subscription telemetry segment still renders its token-only badge.
-   */
+  /** False when the active runtime has no API-key billing contract. A validated subscription telemetry segment still renders
+   * its token-only badge. */
   showTokenCostBadge?: boolean;
 
   /** When true, WorkGroup render decisions are traced via debugLog. */
   debugStreamEnabled?: boolean;
 
-  /**
-   * Read-only companion surfaces such as the sub-agent side panel need the same
-   * WorkGroup / ToolGroup SOT as main chat, but with historical content visible
-   * immediately after selecting a row.
-   */
+  /** Read-only companion surfaces such as the sub-agent side panel need the same WorkGroup / ToolGroup SOT as main chat, but
+   * with historical content visible immediately after selecting a row. */
   workGroupsForceOpen?: boolean;
 
   /** Controls which model work items are visible inside each WorkGroup. */
@@ -149,18 +130,7 @@ export interface SharedTranscriptProps {
 
 const NO_STAR: () => string | null = () => null;
 
-/**
- * Shared, context-free transcript renderer. Builds the ordered node list from a
- * ChatEntry array using the three-way turn classification + WorkGroup collapsing
- * + TurnActionBar-only-when-complete behavior. Extracted verbatim from ChatView's
- * `transcriptEntries` useMemo — all data-testids and i18n keys are byte-identical
- * and the memo dependency array is preserved exactly.
- *
- * Capability differences between the three chat sources (main / side-chat /
- * sub-agent) are expressed as optional prop clusters. Individual mutating
- * actions render only when their callback is present, so a read-only source that
- * omits `actions` shows no fork / star / retry / feedback affordances.
- */
+/** Read-only transcript sources omit mutating callbacks; render each action only when its capability is present. */
 export function TranscriptRenderer({
   entries,
   streaming,
@@ -180,9 +150,8 @@ export function TranscriptRenderer({
   const openNativeContextMenu = useNativeContextMenu();
   const pricingOverrides = usePricingOverrides();
 
-  // Cluster fields with explicit inert defaults. These defaults ARE the
-  // no-regression contract: forgetting one produces wrong runtime output
-  // (footers / actions silently vanish) with no type error.
+  // Cluster fields with explicit inert defaults. These defaults ARE the no-regression contract: forgetting one produces
+  // wrong runtime output (footers / actions silently vanish) with no type error.
   const summaryByTurnStart = turnSummaryByTurnStart;
   const editingEntryIdx = edit?.editingEntryIdx ?? null;
   const editBusy = edit?.editBusy ?? false;
@@ -205,19 +174,7 @@ export function TranscriptRenderer({
   const handleBranchFrom = actions?.handleBranchFrom;
 
   const rendered = useMemo(() => {
-  // Three-way entry classification eliminates retroactive-reclassification flicker.
-  //
-  // "intermediate" — non-final work inside a user turn. This includes
-  //                  reasoning, tools, and mid-turn assistant text.
-  //                  Once the final assistant answer lands, all prior
-  //                  work collapses into one WorkGroup.
-  // "live"         — standalone non-final edge entry.
-  // "final"        — last assistant entry outside the active streaming turn
-  //                  → shown with TurnActionBar (turn truly complete)
-  //
-  // TurnActionBar therefore appears ONLY when the whole turn is done, never during it.
-
-  // Use entries (sliced in view-mode, full list otherwise for the main source).
+  // Show TurnActionBar only after the whole turn completes; intermediate work collapses together after the final answer.
   const activeEntries = entries;
 
   // A permission review belongs to one tool call, so it renders ON that tool's
@@ -240,9 +197,8 @@ export function TranscriptRenderer({
   const { lastTurnStartIdx, entryClassMap, finalTurnStartMap, entryTurnStartMap } =
     classifyTurnEntries(activeEntries, streaming);
 
-  // One backward pass instead of a scan from the top per work group: this
-  // memo re-runs on every streamed token, and a per-group `findIndex` made a
-  // long session quadratic in its length on each token.
+  // One backward pass instead of a scan from the top per work group: this memo re-runs on every streamed token, and a
+  // per-group `findIndex` made a long session quadratic in its length on each token.
   const nextTurnStartAfter = new Int32Array(activeEntries.length + 1);
   nextTurnStartAfter[activeEntries.length] = -1;
   for (let k = activeEntries.length - 1; k >= 0; k--) {
@@ -253,8 +209,8 @@ export function TranscriptRenderer({
   }
 
   const rendered: React.ReactNode[] = [];
-  // Reasoning, permission-review and tool-group rows draw the same whether
-  // the entry is the live tail of a turn or an unclassified straggler.
+  // Reasoning, permission-review and tool-group rows draw the same whether the entry is the live tail of a turn or an
+  // unclassified straggler.
   const pushSideEntry = (
     entry: (typeof activeEntries)[number],
     idx: number,
@@ -308,15 +264,7 @@ export function TranscriptRenderer({
     const ringCls = ringClassFor(idx);
 
     if (entry.kind === "user") {
-      // Add extra breathing room only after a *completed* assistant
-      // turn (whose action bar sits at the bottom of the card).
-      // Skip the gap for day/session markers, session-opening user
-      // turns, and mid-stream guidance messages where the previous
-      // assistant entry is still streaming and has no action bar
-      // yet. `!mt-4` uses Tailwind's important prefix to outweigh
-      // the parent's `space-y-3` specificity (the descendant
-      // selector `> :not([hidden]) ~ :not([hidden])` otherwise
-      // wins).
+      // Add turn spacing only after completed answers; the important utility must override the parent sibling-spacing selector.
       const prevEntry = i > 0 ? activeEntries[i - 1] : undefined;
       const prevAssistantComplete =
         prevEntry?.kind === "assistant" && prevEntry.streaming !== true;
@@ -366,13 +314,12 @@ export function TranscriptRenderer({
           </div>
         );
       } else {
-        // Hover actions render only when their callbacks are present. Main
-        // passes them (identical to pre-extraction); read-only sources omit
-        // the edit/action clusters, so no dangling handlers are wired.
+        // Hover actions render only when their callbacks are present. Main passes them (identical to pre-extraction); read-only
+        // sources omit the edit/action clusters, so no dangling handlers are wired.
         const showHoverActions =
           !viewMode && (!!setEditingEntryIdx || !!onFork || !!onReturnHere);
-        // The send time is persisted on the message, so it is shown as recorded
-        // or not at all — a card with no recorded time must not invent one.
+        // The send time is persisted on the message, so it is shown as recorded or not at all — a card with no recorded time must
+        // not invent one.
         const sentAtLabel = formatHhMm(entry.createdAt);
         rendered.push(
           <div
@@ -461,8 +408,8 @@ export function TranscriptRenderer({
           </div>
         );
       }
-      // Only the active turn's start can need the placeholder, so only it pays
-      // for the scan (a scan per user message made long sessions quadratic).
+      // Only the active turn's start can need the placeholder, so only it pays for the scan (a scan per user message made long
+      // sessions quadratic).
       const needsActiveStart =
         streaming &&
         idx === lastTurnStartIdx &&
@@ -510,8 +457,7 @@ export function TranscriptRenderer({
       continue;
     }
 
-    // turn_summary entry — 데이터 carrier 로 history 에 남기되 standalone
-    // 렌더링 안 함. 같은 turn 의 final AssistantCard / WorkGroup 이
+    // turn_summary entry — 데이터 carrier 로 history 에 남기되 standalone 렌더링 안 함. 같은 turn 의 final AssistantCard / WorkGroup 이
     // turnSummaryByTurnStart 에서 lookup 해 inline 으로 표시한다.
     if (entry.kind === "turn_summary" || entry.kind === "context_usage") {
       i++;
@@ -568,7 +514,6 @@ export function TranscriptRenderer({
       continue;
     }
 
-    // ── Intermediate: collect contiguous turn work into one WorkGroup ──
     if (entryClassMap.get(i) === "intermediate") {
       const groupStart = i;
       const groupTurnStart = entryTurnStartMap.get(i) ?? 0;
@@ -597,9 +542,8 @@ export function TranscriptRenderer({
         if (e.kind === "reasoning") {
           if (cls === "intermediate") {
             groupRevisions.push(entryRenderRevision({ entry: e, idx: i, searchHighlight, starred: false }));
-            // The active WorkGroup header is the one live thinking status.
-            // Keep its underlying reasoning in the group, but reveal the card
-            // only after the turn settles so the transcript does not repeat it.
+            // The active WorkGroup header is the one live thinking status. Keep its underlying reasoning in the group, but reveal the
+            // card only after the turn settles so the transcript does not repeat it.
             if (!groupIsActiveTurn && processingDisplayLevel !== "tools") {
               groupEntries.push({ idx: i, node: <ReasoningCard key={i} entry={e} /> });
             }
@@ -608,10 +552,8 @@ export function TranscriptRenderer({
           }
         } else if (e.kind === "permission_review") {
           if (cls === "intermediate") {
-            // The parent-answered outcomes open the work group for the same
-            // reason the automatic ones do, and with more force: no dock ever
-            // showed these calls, so a collapsed group would be the user's only
-            // view of a decision made without them.
+            // The parent-answered outcomes open the work group for the same reason the automatic ones do, and with more force: no dock
+            // ever showed these calls, so a collapsed group would be the user's only view of a decision made without them.
             if (
               e.status === "reviewing" ||
               e.status === "auto_approved" ||
@@ -697,9 +639,8 @@ export function TranscriptRenderer({
         i++;
       }
 
-      // A filtered completed turn can have no visible intermediate rows. Do
-      // not leave a collapsed, empty work group behind; an active turn still
-      // needs its single progress header even before a visible row arrives.
+      // A filtered completed turn can have no visible intermediate rows. Do not leave a collapsed, empty work group behind; an
+      // active turn still needs its single progress header even before a visible row arrives.
       if (groupEntries.length > 0 || groupIsActiveTurn) {
         // Prefer the turn_summary's authoritative `toolCount` over
         // groupEntries.length — the latter includes reasoning /
@@ -718,13 +659,11 @@ export function TranscriptRenderer({
           (candidate): candidate is Extract<ChatEntry, { kind: "turn_summary" }> =>
             candidate.kind === "turn_summary",
         );
-        // The map is the normal main/side surface path. Falling back to the
-        // carried entry keeps direct read-only transcript consumers from
-        // mistaking an incomplete summary for a completed turn.
+        // The map is the normal main/side surface path. Falling back to the carried entry keeps direct read-only transcript
+        // consumers from mistaking an incomplete summary for a completed turn.
         const groupSummary = summaryByTurnStart?.get(groupTurnStart) ?? transcriptSummary;
-        // A summary carries usage totals, but an error/interrupt can still
-        // settle the renderer after it. Do not turn that terminal state into
-        // a successful-looking completion label.
+        // A summary carries usage totals, but an error/interrupt can still settle the renderer after it. Do not turn that terminal
+        // state into a successful-looking completion label.
         const hasTerminalFailure = turnEntries.some(
           (candidate) =>
             candidate.kind === "assistant" &&
@@ -783,7 +722,6 @@ export function TranscriptRenderer({
       continue;
     }
 
-    // ── Live: last entry in turn while streaming — no TurnActionBar ──
     if (entryClassMap.get(i) === "live") {
       if (!pushSideEntry(entry, idx, ringCls) && entry.kind === "assistant") {
         // Before assistant_round closes, streamed text has no trustworthy
@@ -806,7 +744,6 @@ export function TranscriptRenderer({
       continue;
     }
 
-    // ── Final: turn complete, last assistant — show TurnActionBar ──
     if (entryClassMap.get(i) === "final" && entry.kind === "assistant") {
       const turnStartIdx = finalTurnStartMap.get(i) ?? 0;
       const summary = summaryByTurnStart?.get(turnStartIdx);
@@ -852,7 +789,6 @@ export function TranscriptRenderer({
       continue;
     }
 
-    // ── Fallback: unclassified edge-case entries ──
     pushSideEntry(entry, idx, ringCls);
     i++;
   }
@@ -897,8 +833,6 @@ export function TranscriptRenderer({
   return <>{rendered}</>;
 }
 
-
-// ─── Transcript leaf fragments ────────────────────────────────────────────
 // Small render-only pieces of the transcript. They live here rather than in
 // their own modules because TranscriptRenderer is their only consumer.
 
@@ -944,12 +878,8 @@ export function SummaryToast({ summary }: { summary: string }) {
 type ImportedTriggerEntry = Extract<ChatEntry, { kind: "imported_trigger" }>;
 
 function ImportedTriggerCard({ entry }: { entry: ImportedTriggerEntry }) {
-  // Parse the envelope source tag to confirm STAGED provenance — `overlay:…` for a
-  // plugin trigger, `app:…` for an MCP App's `ui/message`, `mcp-prompt:…` for a
-  // server-declared prompt. Resolved through the staged-origin table, so a newly
-  // registered origin is labeled here without touching this card. Read from the
-  // envelope in the prompt itself, so what the user sees is what the engine
-  // classified. title + summary fields are already clean (set at insert time).
+  // Read staged provenance from the actual prompt envelope through the origin table so display agrees with engine
+  // classification.
   const envelopeSource = parseStagedEnvelope(entry.prompt)?.source;
   return (
     <div
@@ -1008,15 +938,7 @@ function AskUserAnswerBubble({
   );
 }
 
-/**
- * Thinking card. Always starts COLLAPSED — including while the model is still
- * streaming reasoning. The folded state shows just the header (a spinner +
- * "thinking…" title while streaming, a brain + "thought" title once done); the
- * reasoning body is revealed ONLY when the user clicks the header. This keeps
- * live reasoning from auto-expanding and cluttering the conversation; the user
- * opts in to read it. (Previously it auto-expanded during streaming and
- * auto-collapsed on completion.)
- */
+/** Keep reasoning collapsed during and after streaming; only user interaction reveals it. */
 export function ReasoningCard({
   entry,
 }: {
@@ -1155,7 +1077,6 @@ export function CheckpointDivider({
   const variant: Variant = compactStatus !== undefined
     ? STATUS_VARIANTS[compactStatus]
     : TRIGGER_VARIANTS[trigger ?? "default"];
-
 
   const hasBoundary = compactStatus === undefined
     || compactStatus === "summarized"

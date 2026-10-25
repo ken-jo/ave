@@ -1,10 +1,4 @@
-/**
- * Narrow host-renderer bridge for the local-owner Tailnet observer configuration.
- *
- * A leaf, like the sharing bridge: plugin frames and public surfaces never
- * receive it, and `apply` mints its own live keyboard intent here so a renderer
- * cannot replay or fabricate one.
- */
+/** Keep observer configuration host-only and mint apply intent locally. */
 import { ipcRenderer } from "electron";
 import { CHANNELS } from "../contract/app-contract.js";
 import {
@@ -37,7 +31,6 @@ function unavailableGuidedSetup(): TailnetGuidedSetupResult {
   return Object.freeze({ ok: false, error: "tailnet-observer-unavailable", output: null });
 }
 
-/** Build the private `window.aveApi.tailnetObserver` namespace. */
 export function buildTailnetObserverApiSurface(): TailnetObserverConfigApi {
   return Object.freeze({
     async snapshot(): Promise<TailnetObserverSnapshotResult> {

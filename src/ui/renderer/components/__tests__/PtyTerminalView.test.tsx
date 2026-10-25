@@ -1,11 +1,5 @@
 // @vitest-environment jsdom
-/**
- * PtyTerminalView paints xterm with concrete colors read off :root (its canvas
- * cannot resolve CSS custom properties). Those colors must follow the applied
- * theme while the terminal lives: re-tinted in place through
- * `terminal.options.theme`, never by re-creating the terminal (which would
- * drop the shell's screen and scrollback).
- */
+/** Retint the existing terminal from root theme values; recreating it would discard screen and scrollback. */
 import "../../../../../test/renderer/setup.js";
 import { act, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -101,7 +95,6 @@ describe("PtyTerminalView theme", () => {
     });
 
     await waitFor(() => expect(terminals[0]!.options.theme).toEqual({ background: "hsl(210 40% 18%)", foreground: "hsl(0 0% 100%)" }));
-    // The same terminal, re-tinted: the shell and its scrollback are untouched.
     expect(terminals).toHaveLength(1);
     expect(ave.terminal.spawn).toHaveBeenCalledTimes(1);
   });
@@ -188,7 +181,6 @@ describe("PtyTerminalView command blocks", () => {
 
 describe("PtyTerminalView tab identity across groups", () => {
   it("gives two groups' first terminals distinct PTYs", async () => {
-    // Each chat group mounts its own tab store; both open their first terminal.
     const groupA = renderHook(() => useWorkspaceTabs());
     const groupB = renderHook(() => useWorkspaceTabs());
     act(() => groupA.result.current.addTab("terminal"));
@@ -230,7 +222,6 @@ describe("PtyTerminalView tab identity across groups", () => {
     expect(notice.getAttribute("data-owner-location")).toBe("side-panel");
     expect(surfaceMountLocation("terminal:7")).toBe("side-panel");
 
-    // Moving the tab: the side-panel view unmounts and the pane view takes over.
     rerender(<>{view("pane:main")}</>);
     await waitFor(() => expect(surfaceMountLocation("terminal:7")).toBe("pane:main"));
     await waitFor(() => expect(terminal.spawn).toHaveBeenCalledTimes(2));

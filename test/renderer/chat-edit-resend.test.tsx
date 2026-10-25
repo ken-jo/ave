@@ -1,15 +1,4 @@
-/**
- * Safety net for the rewind actions on the user's own message card.
- *
- * Two of them, and they differ by what happens after the rewind:
- *   - edit & resend — UserMessageEditor mount/cancel/save, failure
- *     restoration, and the chatEditResend IPC contract;
- *   - return here — the same rewind with NO resend: the text goes back to the
- *     composer and the conversation stops there.
- *
- * Hover-revealed action buttons are found via title attribute since the
- * group-hover reveal is invisible to jsdom layout.
- */
+// Cover editor resend and rewind-without-resend separately, including rollback and restored composer text.
 import "./setup.js";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { act, fireEvent, waitFor, screen } from "@testing-library/react";
@@ -41,7 +30,7 @@ describe("Chat edit & resend (Phase 3.2 regression net)", () => {
     });
     await waitFor(() => expect(api.chatSend).toHaveBeenCalled());
 
-    // Pencil button is hover-only; query by its title attribute directly.
+    // Hover-only controls remain addressable by title.
     const editBtn = await waitFor(() => {
       const btn = container.querySelector('button[title="편집"]');
       if (!btn) throw new Error("edit button not yet rendered");
@@ -52,7 +41,6 @@ describe("Chat edit & resend (Phase 3.2 regression net)", () => {
     });
     await waitFor(() => {
       const textareas = container.querySelectorAll("textarea");
-      // There should now be 2 textareas: main composer + editor.
       expect(textareas.length).toBeGreaterThanOrEqual(2);
       const editorTa = Array.from(textareas).find(
         (t) => (t as HTMLTextAreaElement).value === "first draft",
@@ -80,7 +68,6 @@ describe("Chat edit & resend (Phase 3.2 regression net)", () => {
     await act(async () => {
       fireEvent.click(editBtn);
     });
-    // Find the cancel button (text: 취소)
     const cancelBtn = await waitFor(() => {
       const btns = Array.from(container.querySelectorAll("button"));
       const btn = btns.find((b) => b.textContent?.trim() === "취소");
@@ -114,7 +101,6 @@ describe("Chat edit & resend (Phase 3.2 regression net)", () => {
       fireEvent.click(editBtn);
     });
 
-    // Locate editor textarea and change its text.
     const editorTa = await waitFor(() => {
       const tas = Array.from(container.querySelectorAll("textarea")) as HTMLTextAreaElement[];
       const ta = tas.find((t) => t.value === "original");
@@ -137,10 +123,9 @@ describe("Chat edit & resend (Phase 3.2 regression net)", () => {
       expect(api.chatEditResend).toHaveBeenCalled();
     });
     const [messageId, text] = (api.chatEditResend.mock.calls[0] ?? []) as unknown[];
-    // The row is named, never counted to — see chat-row-addressing.test.ts.
+    // Address rows by identity; see chat-row-addressing.test.ts.
     expect(messageId).toBe("sent-msg-1");
     expect(text).toBe("edited text");
-    // Minimally assert userEvent import is usable (future-proofing).
     expect(user).toBeTruthy();
   });
 
@@ -185,8 +170,6 @@ describe("Chat edit & resend (Phase 3.2 regression net)", () => {
     });
     await waitFor(() => expect(api.chatEditResend).toHaveBeenCalled());
 
-    // On failure, the editor stays open (a textarea with "retry edit" value
-    // still exists), and the error message is surfaced.
     await waitFor(() => {
       const tas = Array.from(container.querySelectorAll("textarea")) as HTMLTextAreaElement[];
       const stillOpen = tas.some((t) => t.value === "retry edit");
@@ -252,8 +235,7 @@ describe("Chat edit & resend (Phase 3.2 regression net)", () => {
 
     await waitFor(() => expect(api.chatEditResend).toHaveBeenCalled());
     await act(async () => {
-      // Main emits the aggregate notice before the DLP-damaged staged header
-      // fails closed. It must survive renderer rollback regardless of IPC order.
+      // Aggregate DLP notices must survive rollback regardless of stream/IPC ordering.
       emitChatStream({ type: "redact_notice", count: 1, byKind: { PHONE_KR: 1 } });
     });
     await waitFor(() => expect(container.textContent).toContain("PII 1"));
@@ -313,12 +295,10 @@ describe("Return here — rewind without resending", () => {
       fireEvent.click(await screen.findByRole("button", { name: "대화만 복원" }));
     });
 
-    // Main truncates at the message's own history index — the message goes too.
     await waitFor(() => expect(api.chatRewindTo).toHaveBeenCalledWith("seed-msg-0", "conversation"));
     await waitFor(() => {
       expect(container.textContent).not.toContain("an answer to be discarded");
-      // The bubble goes too — its text is only in the composer now, which is
-      // why this asserts on the transcript rather than the whole container.
+      // Check transcript removal separately because restored text now belongs in the composer.
       expect(container.querySelectorAll('[data-testid="user-message-bubble"]')).toHaveLength(0);
     });
   });
@@ -347,7 +327,6 @@ describe("Return here — rewind without resending", () => {
       fireEvent.click(await screen.findByRole("button", { name: "대화만 복원" }));
     });
 
-    // formatIpcError turns the wire code into the shared refusal sentence.
     await waitFor(() => expect(container.textContent).toContain("아직 응답을 생성하는 중입니다"));
     expect(container.textContent).toContain("an answer to be discarded");
     expect(composer(container).value).toBe("");
@@ -356,8 +335,7 @@ describe("Return here — rewind without resending", () => {
   it("restores the host's copy of the input, not the transcript's rendering of it", async () => {
     const { container, api } = await renderApp({ history: answeredTurn });
     await waitFor(() => expect(container.textContent).toContain("an answer to be discarded"));
-    // The bubble only ever showed a flattened rendering of the row. The host
-    // owns the text to restore, so the composer takes what the host hands back.
+    // Restore host-owned source text rather than the bubble's flattened rendering.
     api.chatRewindTo.mockResolvedValueOnce({ ok: true, text: "the row's own text" });
 
     await act(async () => {
@@ -381,8 +359,6 @@ describe("Return here — rewind without resending", () => {
     await waitFor(() =>
       expect(container.textContent).toContain("입력창으로 되돌릴 수 없는 첨부"),
     );
-    // Refused means nothing moved: the answer is still there and the composer
-    // is still empty.
     expect(container.textContent).toContain("an answer to be discarded");
     expect(composer(container).value).toBe("");
   });
@@ -395,8 +371,6 @@ describe("Return here — rewind without resending", () => {
     });
     await waitFor(() => expect(container.textContent).toContain("an answer to be discarded"));
 
-    // Queue one message behind an in-flight turn, then let the turn finish so
-    // the rewind is offered again.
     api.chatSend.mockImplementationOnce(async () => pendingSend.promise);
     await submitChatMessage(container, "a turn in flight");
     await waitFor(() => expect(api.chatSend).toHaveBeenCalledTimes(1));

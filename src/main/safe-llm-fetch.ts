@@ -34,10 +34,7 @@ export function isAllowedLlmFetchUrl(url: URL): boolean {
   return subdomain.length > 0 && isValidDnsSubdomain(subdomain);
 }
 
-/**
- * Electron's network stack owns host resolution for Azure Foundry calls. Keep
- * that power scoped to the only current LLM path that needs it.
- */
+// Electron's network stack owns host resolution for Azure Foundry calls. Keep that power scoped to the only current LLM path that needs it.
 export function createSafeLlmFetch(
   netFetch: ElectronNetFetch,
 ): typeof fetch {

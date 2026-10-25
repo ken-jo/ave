@@ -1,12 +1,4 @@
-/**
- * Self-test for the source-text-safety gate.
- *
- * The gate exists because a raw control byte in a source file makes git treat the
- * file as binary, which silently exempts it from `git diff`, review, ripgrep, and
- * the naming gate — and that happened twice in one review cycle to a file defining
- * shared validation. A gate nobody has watched fail is a gate nobody can trust, so
- * this pins all three outcomes against fixtures.
- */
+// Raw control bytes can hide files from text review and policy scans; test every verdict.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -35,8 +27,7 @@ function fixtureRoot() {
 test("flags a raw control byte and reports where it is", () => {
   const root = fixtureRoot();
   try {
-    // The exact shape that caused this: a control character written into a regex
-    // character class as a raw byte instead of the escape text.
+    // A raw control byte inside a regex character class must still be detected.
     writeFileSync(join(root, "src", "bad.ts"), Buffer.from("const RE = /[\u0000-\u001f]/;\n", "latin1"));
     const { offenders, stale } = scanSourceTextSafety(root, ["src"], []);
     assert.equal(offenders.length, 1);
@@ -67,7 +58,6 @@ test("exempts a grandfathered file but reports it once it is clean", () => {
     writeFileSync(join(root, "src", "legacy.ts"), Buffer.from("const x = \"\u0000\";\n", "latin1"));
     assert.deepEqual(scanSourceTextSafety(root, ["src"], [rel]), { offenders: [], stale: [] });
 
-    // Cleaned up ⇒ the entry must go, so the list can only ever shrink.
     writeFileSync(join(root, "src", "legacy.ts"), "const x = \"\\u0000\";\n");
     assert.deepEqual(scanSourceTextSafety(root, ["src"], [rel]), { offenders: [], stale: [rel] });
   } finally {

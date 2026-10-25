@@ -1,33 +1,5 @@
-/**
- * local-api-server.ts — #1436 lifecycle wiring for the loopback local API.
- *
- * This module owns the MAIN-PROCESS lifecycle of the shared loopback surface:
- * it snapshots the independently opt-in local API and A2A route families,
- * generates a fresh per-boot bearer secret, builds the same `IpcDeps` the IPC
- * registrars receive plus the shared {@link ConversationCommandPort}, starts the
- * transport (`src/api/http-server.ts`), and persists a small discovery file so
- * a CLI companion can find the port + secret. It also tears everything down on
- * app shutdown.
- *
- * SECURITY / GATE:
- *   - The server is OFF when both route families are disabled. The local API is
- *     enabled by `system.localApiServer` or `AVE_LOCAL_API=1`; A2A is enabled
- *     by `features.a2aLoopbackServer` or `AVE_A2A=1` and also requires a
- *     routable handler factory. No active family means no socket or disk write.
- *   - The secret is `randomBytes(32).toString("hex")` (64 hex chars), fresh per
- *     boot. It is NEVER logged. The bearer check + constant-time compare live in
- *     the transport (`http-server.ts`).
- *   - The discovery file is written through {@link openFeatureNamespace}
- *     (`~/.ave/local-api/`) with 0o600 file mode. That mode IS the protection
- *     model for this local capability token — same posture as an SSH private
- *     key: any local process running as the same user could read it, so the file
- *     is only as strong as the OS user boundary. This is intentional and matches
- *     the loopback trust model.
- *
- * STORAGE DISCIPLINE (project CLAUDE.md): `openFeatureNamespace` is the ONLY
- * write path into `~/.ave/local-api/` — this module never touches `fs`
- * directly, so the 0o700 dir / 0o600 file / atomic-write contract cannot drift.
- */
+// Start no listener or discovery write unless an independently opted-in route family has a handler. A fresh per-boot bearer is never logged; discovery
+// uses openFeatureNamespace and the local OS user boundary.
 import { randomBytes } from "node:crypto";
 import type { BrowserWindow } from "electron";
 import type { AppServices } from "../boot.js";
@@ -62,41 +34,32 @@ import { errorMessage } from "../shared/error-message.js";
 
 const log = createLogger("local-api");
 
-/** Feature namespace id — resolves to `~/.ave/local-api/`; the CLI reads the same namespace. */
+// Feature namespace id — resolves to `~/.ave/local-api/`; the CLI reads the same namespace.
 export const LOCAL_API_FEATURE = "local-api";
 
-/** The discovery file the CLI reads to find the running server. */
+// The discovery file the CLI reads to find the running server.
 export const LOCAL_API_INFO_FILE = "server.json";
 
-/**
- * Discovery info persisted after the server is listening. `secret` is a local
- * capability token protected only by the 0o600 file mode (see module doc) —
- * treat it exactly like an SSH private key.
- */
+// Discovery info persisted after the server is listening. `secret` is a local capability token protected only by the 0o600 file mode (see module doc) —
+// treat it exactly like an SSH private key.
 export interface LocalApiServerInfoFile {
-  /** The actual bound loopback port (ephemeral; never 0 once listening). */
+  // The actual bound loopback port (ephemeral; never 0 once listening).
   port: number;
-  /** Per-boot bearer secret (64 hex chars). NEVER logged. */
+  // Per-boot bearer secret (64 hex chars). NEVER logged.
   secret: string;
-  /** The main-process pid, so a CLI can detect a stale file after a crash. */
+  // The main-process pid, so a CLI can detect a stale file after a crash.
   pid: number;
-  /** Additive A2A discovery, present only when that route family is active. */
+  // Additive A2A discovery, present only when that route family is active.
   a2a?: {
     protocolVersion: string;
     agentCardPaths: string[];
   };
 }
 
-/**
- * Tombstone written on stop: a stale secret + port must NEVER linger on disk
- * after the server is gone. We overwrite (rather than delete) because
- * {@link openFeatureNamespace} exposes only an atomic `writeJson`; a blanked
- * file is unambiguously "no server" for a reader and keeps the single-writer
- * atomic-write contract intact.
- */
+// Blank discovery atomically on stop so stale bearer/port data cannot survive; the namespace exposes atomic writes rather than deletion.
 const LOCAL_API_TOMBSTONE: LocalApiServerInfoFile = { port: 0, secret: "", pid: 0 };
 
-/** Module-level handle to the running server (C17 shared-handle pattern). */
+// Module-level handle to the running server (C17 shared-handle pattern).
 let runningServer: LocalApiHttpServer | null = null;
 let bootRouteFamilies: Readonly<LoopbackRouteFamilies> | undefined;
 let bootA2ARuntime: Promise<A2ARouterRuntime | null> | undefined;
@@ -135,11 +98,7 @@ export function resolveLoopbackRouteFamilies(
   settingsService: SettingsService,
   env: NodeJS.ProcessEnv = process.env,
 ): Readonly<LoopbackRouteFamilies> {
-  // Which variable turns each family on, and at which value, is the
-  // ENV_BACKED_SETTINGS registry's business — the same registry the Settings
-  // surface reads to tell the user the environment is deciding this switch.
-  // The `=== true` stays here: it is this gate's fail-closed rule that a
-  // non-boolean in a hand-edited profile is OFF, not the precedence rule.
+  // The environment registry owns precedence; this gate separately requires literal true so malformed settings fail closed.
   return Object.freeze({
     localApi: resolveEnvBackedBoolean(
       "system.localApiServer",
@@ -156,11 +115,8 @@ export function resolveLoopbackRouteFamilies(
   });
 }
 
-/**
- * Is the opt-in local API server enabled? True when the user turned it on in
- * Settings OR the environment sets `AVE_LOCAL_API=1`. Fail-closed: anything
- * else (undefined flag, malformed env) is OFF.
- */
+// Is the opt-in local API server enabled? True when the user turned it on in Settings OR the environment sets `AVE_LOCAL_API=1`. Fail-closed: anything
+// else (undefined flag, malformed env) is OFF.
 export function isLocalApiEnabled(
   settingsService: SettingsService,
   env: NodeJS.ProcessEnv = process.env,
@@ -168,7 +124,7 @@ export function isLocalApiEnabled(
   return resolveLoopbackRouteFamilies(settingsService, env).localApi;
 }
 
-/** Is the independently opt-in A2A loopback family enabled for this boot? */
+// Is the independently opt-in A2A loopback family enabled for this boot?
 export function isA2ALoopbackEnabled(
   settingsService: SettingsService,
   env: NodeJS.ProcessEnv = process.env,
@@ -272,43 +228,9 @@ async function initializeA2ARouter(
   return runtime;
 }
 
-/**
- * Build the #1409 approval-mediated external-mutation approver over the live
- * {@link ApprovalGate}. Returns `undefined` when no gate is available (boot
- * without a conversation surface) — the dispatcher then keeps its byte-identical
- * fail-closed default (gesture-gated channels rejected).
- *
- * The request MIRRORS the existing agent-action call sites (work-board-engine /
- * agent-action-requester): `category: "agent-action"`, `toolName: <channel>`,
- * `toolCategory: "meta"`, a fresh `randomUUID()` id, `createdAt: Date.now()`, and
- * `trustOrigin: <external origin>`. The `reason` is renderer-facing English per
- * the IPC-language convention. `requireExplicit` is NOT (and CANNOT be) passed
- * here — the gate's signature is `Omit<ApprovalRequest, "requireExplicit">` and
- * it derives `requireExplicit` from the active policy
- * (`PolicyFile.requireExplicitApproval`). The gate ALWAYS shows this approval dock
- * because the request is an `agent-action` (its `isReadOnly` short-circuit
- * explicitly excludes `kind === "agent-action"`, so it is never auto-approved).
- * We only ever treat an `allow-*` choice as approval and NEVER persist an
- * allow-always exception for this path — the caller reads only `.choice` and
- * drops `rememberPattern`, so even an `allow-always` click grants exactly this
- * one mutation and nothing durable.
- *
- * Fail-closed: any error/timeout inside `requestAndWait` (the gate resolves
- * `deny-once` on timeout / send-failure) is treated as DENIED; a thrown error is
- * caught, logged (English, no secrets), and returned as `false`.
- *
- * ATTENTION-DoS HARDENING, fail-closed:
- * an in-flight cap prevents an external caller from flooding the user with
- * concurrent ApprovalGate prompts for the same approver instance. While a
- * previous external-mutation approval is still pending, a new ask returns
- * `false` IMMEDIATELY — WITHOUT calling `approvalGate.requestAndWait` again —
- * so the user only ever faces one live external-mutation prompt at a time.
- * Once the in-flight decision resolves (allow OR deny, and even on a thrown
- * gate error), the guard releases and the next request asks normally. The
- * guard is simple per-approver-instance closure state (module-closure, not
- * module-global) — correct because exactly one approver is built per server
- * lifecycle (see `maybeStartLocalApiServer`).
- */
+// External mutations use the live agent-action ApprovalGate; absent gates, timeouts, errors, and non-allow choices deny.
+// Never persist rememberPattern here: every allow choice grants one mutation only.
+// Allow one pending prompt per server approver and refuse concurrent asks to prevent attention flooding.
 export function buildExternalMutationApprover(
   approvalGate: ApprovalGate | undefined,
   emit: (message: string) => void,
@@ -359,13 +281,7 @@ function buildExternalMutationApproverFromAgentAction(
   }));
 }
 
-/**
- * Start the loopback local API server IFF the gate is on. Returns `{ port }` on
- * success, or `null` when the gate is off (no socket, no disk write).
- *
- * Idempotent-ish: if a server is already running it is returned as-is rather
- * than double-started (defensive — main.ts calls this exactly once).
- */
+// A disabled gate opens no socket and writes no state; repeated starts return the existing server.
 interface LocalApiStartInput {
   services: AppServices;
   getMainWindow: () => BrowserWindow | null;
@@ -428,16 +344,14 @@ async function startLocalApiServerForBoot(
       conversationSurfaceRuntime,
     };
 
-    // SSE is a compatibility adapter over the same Runtime Electron publishes
-    // to; it no longer owns a second stream id or turn lease.
+    // SSE is a compatibility adapter over the same Runtime Electron publishes to; it no longer owns a second stream id or turn lease.
     const broadcaster = createPlatformConversationLegacyStreamAdapter(
       conversationSurfaceRuntime.timeline,
     );
     const conversationCommandPort = suppliedConversationCommandPort
       ?? createConversationCommandPort(ipc, conversationSurfaceRuntime);
 
-    // #1409 approval-mediated external-mutation gate. Undefined when no
-    // ApprovalGate is available → the dispatcher keeps its fail-closed default.
+    // #1409 approval-mediated external-mutation gate. Undefined when no ApprovalGate is available → the dispatcher keeps its fail-closed default.
     const externalMutationApprover = buildExternalMutationApproverFromAgentAction(
       approveAgentAction,
     );
@@ -453,8 +367,7 @@ async function startLocalApiServerForBoot(
       broadcaster,
       a2aRouter: a2aRuntime?.router,
       routeFamilies: activeRouteFamilies,
-      // Do NOT forward the secret into the transport log — startLocalApiHttpServer
-      // is documented to never receive it, and this callback only sees benign
+      // Do NOT forward the secret into the transport log — startLocalApiHttpServer is documented to never receive it, and this callback only sees benign
       // dispatch/routing diagnostics.
       log: (message: string) => emit(`[local-api] ${message}`),
     });
@@ -472,8 +385,7 @@ async function startLocalApiServerForBoot(
   }
   runningServer = server;
 
-  // Persist discovery info AFTER listen succeeds so the file never points at a
-  // dead port for this boot. 0o600 file mode (via openFeatureNamespace) is the
+  // Persist discovery info AFTER listen succeeds so the file never points at a dead port for this boot. 0o600 file mode (via openFeatureNamespace) is the
   // protection model for this capability token — same as an SSH key.
   const info: LocalApiServerInfoFile = {
     port: server.port,
@@ -565,12 +477,7 @@ async function closeAndTombstone(server: LocalApiHttpServer): Promise<void> {
   await tombstoneDiscoveryFile();
 }
 
-/**
- * Stop the local API server and blank its discovery file. Idempotent — safe to
- * call when nothing is running (e.g. the gate was off this boot, or a double
- * shutdown). Fast: the transport's close() destroys idle sockets and ends live
- * SSE streams so it never hangs.
- */
+// Close streams and idle sockets before blanking discovery; repeated stops are safe, including disabled boots.
 async function stopLocalApiServerForShutdown(): Promise<void> {
   stopped = true;
   lifecycleGeneration += 1;
@@ -606,7 +513,7 @@ export function stopLocalApiServer(): Promise<void> {
   return tracked;
 }
 
-/** @internal Test-only module-state reset; production boot snapshots never reset. */
+// @internal Test-only module-state reset; production boot snapshots never reset.
 export function resetLocalApiServerForTests(): void {
   if (process.env.NODE_ENV !== "test") {
     throw new Error("local-api-server-test-reset-outside-test");

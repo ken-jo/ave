@@ -2,18 +2,8 @@ import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { posix } from "node:path";
 import { spawnManaged } from "./managed-child-processes.js";
 
-/**
- * Runs in the Electron-as-Node bootstrap, then replaces it with the program.
- *
- * Opening a pipe or socket as a stdio stream makes libuv set O_NONBLOCK on it
- * (`uv_pipe_open`), a flag of the open file description that the program keeps
- * across `execve`. Electron 45 opens `process.stderr` while it starts a
- * run-as-node process, so without the reset the program would get a
- * non-blocking stderr: a write it does not retry fails with EAGAIN, the
- * program exits on an I/O error, and the host's input write fails with EPIPE.
- * Standard input is never opened here and keeps the blocking state libuv gave
- * it when it spawned this process.
- */
+// Electron run-as-node opens stderr nonblocking; reset O_NONBLOCK before execve or native writes can fail with EAGAIN. Leave stdin unopened so it
+// retains the blocking state supplied by libuv.
 const NATIVE_EXEC_BOOTSTRAP = [
   '"use strict";',
   "try {",
@@ -27,10 +17,7 @@ const NATIVE_EXEC_BOOTSTRAP = [
   "process.exit(126);",
 ].join("\n");
 
-/**
- * Execute a qualified artifact without invoking a shell when the loader rejects it.
- * Callers supply a complete native environment; omission means an empty one.
- */
+// Execute a qualified artifact without invoking a shell when the loader rejects it. Callers supply a complete native environment; omission means an empty one.
 export function spawnCodexNative(
   command: string,
   args: readonly string[],
@@ -38,8 +25,7 @@ export function spawnCodexNative(
   label: string,
 ): ChildProcess {
   if (process.platform === "darwin") {
-    // Supported systems use explicit-path native spawning. Account changes and
-    // detached sessions can select a legacy fork path, so reject those options.
+    // Supported systems use explicit-path native spawning. Account changes and detached sessions can select a legacy fork path, so reject those options.
     if (!posix.isAbsolute(command) || options.uid !== undefined || options.gid !== undefined || options.detached) {
       throw new Error("Native launch requires an absolute path and the current account session");
     }
@@ -47,8 +33,7 @@ export function spawnCodexNative(
   if (process.platform === "win32" || process.platform === "darwin") {
     return spawnManaged(command, args, { ...options, shell: false, env: options.env ?? {} }, { label });
   }
-  // A new bootstrap process uses the trusted application host installation.
-  // Replacement retains the managed PID, process group and standard streams.
+  // A new bootstrap process uses the trusted application host installation. Replacement retains the managed PID, process group and standard streams.
   return spawnManaged(process.execPath, [
     "--no-warnings", "--eval", NATIVE_EXEC_BOOTSTRAP, "--",
     command, JSON.stringify(options.env ?? {}), ...args,

@@ -1,16 +1,3 @@
-/**
- * Issue #749 — FileEditDiff component tests.
- *
- * Covers:
- *   1. Non-truncated result renders plain summary (no expand button)
- *   2. Truncated+hasSidecar result shows "전체 diff 보기" button
- *   3. Click → loading state (button disabled, spinner text)
- *   4. IPC success → expanded diff hunks rendered
- *   5. IPC returns null → error state shown
- *   6. IPC throws → error state shown
- *   7. Retry button resets to idle state
- *   8. 접기 button collapses expanded state back to idle
- */
 import "../../../../test/renderer/setup.js";
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { render, fireEvent, waitFor, act } from "@testing-library/react";
@@ -226,12 +213,10 @@ describe("FileEditDiff", () => {
     );
 
     fireEvent.click(container.querySelector("button") as HTMLButtonElement);
-    // Unmount before the IPC resolves.
     unmount();
     // Now resolve — isMountedRef guard must swallow this.
     await act(async () => {
       resolve({ before: "a", after: "b" });
-      // Flush micro-task queue.
       await Promise.resolve();
     });
 

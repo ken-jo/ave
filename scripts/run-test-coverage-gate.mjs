@@ -27,10 +27,7 @@ try {
         "--coverage",
         "--silent",
         `--coverage.reportsDirectory=${reportsDir}`,
-        // The gate reads coverage-summary.json and the log shows the text
-        // summary; the HTML report the config also asks for would be written
-        // into a directory this script deletes, so it is not generated here.
-        // A kept or caller-owned reports directory gets the config's full set.
+        // Skip disposable HTML coverage output; caller-owned report directories keep the configured reporters.
         ...(discardsReports ? ["--coverage.reporter=json-summary", "--coverage.reporter=text-summary"] : []),
       ],
       { stdio: "inherit" },

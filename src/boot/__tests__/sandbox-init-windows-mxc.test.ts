@@ -1,8 +1,4 @@
-/**
- * Windows boot plan (proxy-egress PR 9): which substrate carries agent shells
- * and extensions, for each MXC × srt-win combination, and that every branch
- * records what it chose for Settings.
- */
+/** Check each Windows substrate combination and the boot outcome reported to Settings. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import {
@@ -49,6 +45,7 @@ vi.mock("../../permissions/asrt-sandbox.js", async () => {
     subscribeAsrtViolations: async () => () => {},
     checkAsrtDependencies: h.checkDeps,
     isAsrtLinuxRuntimeProbeError: () => false,
+    isAsrtMacRuntimeProbeError: () => false,
     closeAllEgressConnections: () => 0,
   };
 });
@@ -70,7 +67,7 @@ import {
 
 const ORIGINAL_PLATFORM = process.platform;
 const SRT_WIN_MISSING = { errors: ["no srt-win path configured"], warnings: [] };
-// Boot-path checks passed; the PowerShell start probe (h.startProbe) decides.
+// Boot-path checks precede the shell start probe.
 const MXC_OK = { state: "available", windowsBuild: "10.0.26300.9711" };
 const MXC_OLD = { state: "unavailable", reason: "tier-unsupported", windowsBuild: "10.0.22631.4317", detail: "tier none" };
 
@@ -145,7 +142,7 @@ describe("initSandboxGate — Windows MXC substrate", () => {
     await vi.waitFor(() => expect(getWindowsSandboxSubstrate()).toMatchObject({ shells: "mxc", extensions: "none", shellEgressIdentity: "kernel-channel" }));
     expect(detectSandboxCapability().reason).toContain("agent shell commands run in containers");
     expect(getHostShellExecutionPlan()).toMatchObject({ mode: "asrt", substrate: "mxc" });
-    // Nothing outside the containers is claimed as confined.
+    // Never claim confinement outside the containers.
     expect(detectShellSandboxCapability().confines).toEqual({ filesystem: false, process: false, network: false });
     expect(detectPluginWorkerSandboxCapability().kind).toBe("none");
   });
@@ -257,7 +254,6 @@ describe("initSandboxGate — Windows MXC substrate", () => {
 
     await initSandboxGate(harness.context(true, false));
 
-    // Boot finished with the probe started and still pending.
     await vi.waitFor(() => expect(h.startProbe).toHaveBeenCalledOnce());
     expect(getSandboxBootOutcome()).toMatchObject({ action: "activate", reason: "activate-windows-mxc-proxy-only" });
     expect(getWindowsSandboxSubstrate()).toMatchObject({ mxc: { state: "checking" }, shells: "approved-host", shellEgressIdentity: "shared" });
@@ -284,7 +280,7 @@ describe("initSandboxGate — Windows MXC substrate", () => {
 
     await vi.waitFor(() => expect(getWindowsSandboxSubstrate()).toMatchObject({
       mxc: { state: "unavailable", reason: "unverified-session" },
-      // The proxy-only boot cannot change mode mid-session: shells ask.
+      // Proxy-only boot cannot change mode mid-session; shells require approval.
       shells: "approved-host",
     }));
     expect(getSandboxBootOutcome()).toMatchObject({

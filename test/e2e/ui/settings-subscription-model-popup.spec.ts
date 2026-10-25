@@ -3,22 +3,7 @@ import { openInlineSettings } from './inline-settings.js';
 import type { ElectronApplication, Page } from '@playwright/test';
 import { TEST_IDS } from "../../../src/shared/test-ids.js";
 
-/**
- * Settings → Model: the one chooser's placement, with a subscription catalogue
- * in it.
- *
- * A connected subscription's models are offered in the same chooser as every
- * API vendor's, so this list is as long and as wide as a real provider catalog.
- * Its `SelectContent` took Radix's default `position="item-aligned"`, which
- * anchors the selected row over the trigger and sizes the popup to its own
- * widest row — on a narrow window the popup grew far past the settings pane and
- * covered the app's left navigation column.
- *
- * Only the DATA is stubbed here. The two `ipcMain` handlers below stand in for a
- * provider login the harness cannot perform; everything the assertions touch —
- * the controller state, the tab's render, `Select`, and the CSS — is production
- * code running in the real app.
- */
+// Subscription catalogs share the model chooser and must fit its trigger and available viewport.
 
 const MODEL_COUNT = 40;
 
@@ -89,7 +74,6 @@ const MEASURE = () => {
       text: (it.textContent ?? '').slice(0, 50),
       right: it.getBoundingClientRect().right,
       overflowPx: Math.round(it.scrollWidth - it.clientWidth),
-      // How much of the id does not fit its box (0 when nothing is cut).
       labelClippedPx: label ? Math.round(label.scrollWidth - label.clientWidth) : 0,
     };
   });
@@ -124,9 +108,7 @@ async function openSubscriptionModelPopup(
   await w.waitForTimeout(700);
   await gotoModelTab(w);
 
-  // Nothing is pressed to fetch the catalogue: a connected provider's models
-  // are asked for as soon as it reports itself connected, because the chooser
-  // that offers them has no "load" control of its own.
+  // Connected subscriptions fetch models automatically; the chooser has no separate load action.
   const select = w.getByTestId(TEST_IDS.llmModelSelect);
   await expect(select).toBeVisible({ timeout: 10_000 });
   await select.scrollIntoViewIfNeeded();
@@ -149,23 +131,19 @@ for (const width of [1200, 620]) {
     // eslint-disable-next-line no-console
     console.log(`[subscription-popup ${width}]`, JSON.stringify(m, null, 2));
 
-    // The chooser spans every connected provider, so the subscription's
-    // catalogue is a floor here, not the whole list.
+    // The subscription catalog is a floor because the chooser also includes other providers.
     expect(m.itemCount).toBeGreaterThanOrEqual(MODEL_COUNT);
     expect(m.pane).not.toBeNull();
 
-    // The popup belongs to the settings pane; it must not spill over the app
-    // chrome to either side, and it must start at its own trigger.
+    // The chooser must align with its trigger and stay inside the settings pane.
     expect(m.popupLeftMinusPaneLeft).toBeGreaterThanOrEqual(0);
     expect(m.popupRightMinusPaneRight).toBeLessThanOrEqual(0);
     expect(m.popupLeftMinusTriggerLeft).toBeGreaterThanOrEqual(-1);
 
-    // ...and inside the window, without pushing the page sideways.
     expect(m.popupRightMinusWindow).toBeLessThanOrEqual(0);
     expect(m.docScrollWidth).toBeLessThanOrEqual(m.innerWidth + 1);
 
-    // `select-content` is `overflow-x-hidden`: a row wider than its box is
-    // clipped with no way to scroll to the rest of it.
+    // Horizontal clipping makes over-wide rows inaccessible.
     expect(m.rowsOverflowingTheirBox).toBe(0);
 
   });

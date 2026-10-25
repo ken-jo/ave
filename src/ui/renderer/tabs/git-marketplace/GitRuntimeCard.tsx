@@ -1,8 +1,4 @@
-/**
- * The git the marketplace runs (design §15.7): the detected state, the mode,
- * and installing the managed copy with its phase progress. The same card is
- * the blocking step of the Add dialog when git is missing (`compact`).
- */
+/** A missing git runtime blocks repository sources; compact mode reuses this setup inside the Add dialog. */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "../../../../components/ui/button.js";
 import { cn } from "../../../../lib/utils.js";
@@ -34,8 +30,8 @@ export function GitRuntimeCard({ api, compact = false, onReady }: GitRuntimeCard
   const [installing, setInstalling] = useState(false);
   /** Why the last mode change was not saved, as the raw text behind *Copy details*. */
   const [modeError, setModeError] = useState<string | null>(null);
-  // The caller passes a fresh closure each render; reading it through a ref
-  // keeps `refresh` (and the status read it starts) to one per mount.
+  // The caller passes a fresh closure each render; reading it through a ref keeps `refresh` (and the status read it starts)
+  // to one per mount.
   const onReadyRef = useRef(onReady);
   useEffect(() => {
     onReadyRef.current = onReady;

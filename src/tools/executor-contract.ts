@@ -23,7 +23,6 @@ import type {
   ToolTrustOrigin,
 } from "./types.js";
 
-/** Stable renderer/audit metadata for one tool invocation. */
 export interface ToolCallMeta {
   groupId: string;
   toolUseId: string;
@@ -35,15 +34,7 @@ export interface ToolCallMeta {
   mcpServerId?: string;
   /** Renderer-safe shell projection; never the raw capability or permit. */
   executionPlan?: HostShellExecutionPlanAuditProjection;
-  /**
-   * The user stopped the turn while this call was in flight.
-   *
-   * The LLM-facing `is_error` stays true — a tool-result has no third state in
-   * the provider schemas and the model must know no usable result came back.
-   * This is the RENDERER's separate signal, so a deliberate stop is not drawn
-   * as a failure. The assistant-text path already draws this distinction
-   * (`entry.interrupted` vs `systemNotice`); tool rows had no carrier for it.
-   */
+  // Renderer-only cancellation marker; model-facing is_error stays true because tool results have no cancellation state.
   cancelled?: boolean;
 }
 
@@ -58,11 +49,9 @@ export interface ToolResult {
   tool_use_id: string;
   content: string;
   is_error?: boolean;
-  /** MCP Apps spec §3.2 UI payload. */
   uiPayload?: McpUiPayload;
   /** Host-internal raw tool result for non-LLM plugin invocation surfaces. */
   rawResult?: unknown;
-  /** Optional image for the model to see. */
   image?: ToolResultImage;
   /** Host-issued renderer-safe shell substrate projection. */
   executionPlan?: HostShellExecutionPlanAuditProjection;
@@ -74,10 +63,7 @@ export interface ToolResult {
 
 export interface ToolExecutorCallbacks {
   onToolStart?: (name: string, input: Record<string, unknown>, meta: ToolCallMeta) => void;
-  /**
-   * Display-only live output of a running host shell tool, coalesced and
-   * capped. The tool's final result is still delivered by `onToolEnd`.
-   */
+  // Coalesced, capped display output; final results still arrive through onToolEnd.
   onToolOutput?: (name: string, text: string, meta: ToolCallMeta) => void;
   onPermissionReview?: (event: PermissionReviewEvent) => void;
   onToolEnd?: (
@@ -92,11 +78,7 @@ export interface ToolExecutorCallbacks {
 
 export interface ToolPermissionContext {
   headless?: boolean;
-  /**
-   * The local owner started this unattended turn (native `--exec`). Asks still
-   * route to the reviewer as on the headless lane, but the owner's explicit
-   * allow rules and durable grants apply first: the gesture is their own.
-   */
+  // Native --exec uses headless review but honors the local owner's explicit rules and durable grants first.
   ownerUnattended?: boolean;
   /** Host-owned UI capability, independent of routine/headless tool scope. */
   approvalSurface?: ApprovalSurface;
@@ -109,16 +91,10 @@ export interface ToolPermissionContext {
   additionalDirectories?: readonly string[];
   /** Fresh accessor used to observe earlier grants in an ordered batch. */
   getAdditionalDirectories?: () => readonly string[];
-  /** Audited trust origin for this invocation. */
   trustOrigin: ToolTrustOrigin;
   /** Immutable host-owned remote-controller authority; never a tool or wire field. */
   remoteControllerAuthority?: RemoteControllerAuthority;
-  /**
-   * Host-selected disposable guest this invocation executes in (set per
-   * invocation by the executor after route selection). The reviewer grades
-   * filesystem and process effects against that guest instead of the host
-   * process; never a tool or wire field.
-   */
+  // Host-selected guest for grading process and filesystem effects; never supplied by tools or wire data.
   disposableSubstrate?: DisposableSubstrate;
   /** Direct plugin panel/renderer user activation marker. */
   pluginPanelUserAction?: boolean;
@@ -128,24 +104,14 @@ export interface ToolPermissionContext {
   expectedMcpServerId?: string;
   /** Recent user-authored intent for reviewer context only. */
   userIntent?: string;
-  /**
-   * Host-detected corruption of a permission store for this invocation, naming
-   * the file (issue #28). Never a tool or wire field.
-   */
+  // Host-detected permission-store corruption; never a tool or wire field.
   permissionStoreError?: string;
   onTurnDirectoryGrant?: (approvedDirectory: string) => void;
   onSessionDirectoryGrant?: (approvedDirectory: string) => void;
 }
 
-/**
- * Host-private auth-transition lifecycle for one governed plugin invocation.
- *
- * This deliberately travels through executor options rather than the plugin
- * permission context: plugins, manifests, external callers, and HostApi handlers
- * must never be able to observe or supply it. The executor invokes
- * `beforeHandler` at its final no-await authorization boundary and settles the
- * result before releasing the governed-operation lease.
- */
+// Host-private auth lifecycle must never be visible or supplied through plugin permission data.
+// Run beforeHandler at the final no-await authorization boundary and settle before releasing the operation lease.
 export interface HostPluginAuthLifecycle {
   readonly binding: Readonly<{
     pluginId: string;
@@ -162,7 +128,6 @@ export interface HostPluginAuthLifecycle {
   completeFailure(reason: unknown): void;
 }
 
-/** Bundled options shared by batch and single-invocation execution. */
 export interface ExecuteOptions {
   callbacks?: ToolExecutorCallbacks;
   /** Final model-facing result, after invocation cleanup; awaited before ordered execution continues. */
@@ -170,11 +135,7 @@ export interface ExecuteOptions {
   sessionId?: string;
   overlayTriggerOrigin?: string | null;
   spawnDepth?: number;
-  /**
-   * The conversation runs in the default project, where prompt memory
-   * selection also includes memories saved before project scoping existed.
-   * Carried to the memory tools so they see the same set.
-   */
+  // Default-project memory selection includes unscoped legacy notes; memory tools must use the same set.
   memoryIncludeUnscoped?: boolean;
   supportsA2AParentDelivery?: boolean;
   approvalReasonPrefix?: string;

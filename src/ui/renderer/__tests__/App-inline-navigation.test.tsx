@@ -6,20 +6,7 @@ import { MAX_PANES } from "../../../contract/app-contract.js";
 import { act, fireEvent, waitFor } from "@testing-library/react";
 import { renderApp } from "../../../../test/renderer/render-app.js";
 
-/**
- * Selecting a view renders it inline — in chat mode too.
- *
- * Chat mode used to answer a navigation click by opening a second window and
- * returning WITHOUT setting `activeView`. Two things followed: the main window
- * had no way to say where it was (it stayed on `home` while the user was
- * looking at the work board), and the sidebar's own active highlight, which is
- * derived from `activeView`, could never light up for a destination opened in
- * chat mode.
- *
- * Driven through the real producer — the app-mode toggle and a sidebar click —
- * because the claim is about what a user's click does end to end, not about
- * what a routing function returns.
- */
+/** Drive navigation through actual controls to verify inline routing and sidebar selection in both app modes. */
 describe("App inline navigation", () => {
   afterEach(() => vi.restoreAllMocks());
 
@@ -35,9 +22,8 @@ describe("App inline navigation", () => {
     await waitFor(() => expect(chatBtn.getAttribute("aria-pressed")).toBe("true"));
   }
 
-  // The built-in views live in the Features group's flyout in BOTH sidebar
-  // states — the collapsed rail opens the same flyout from its icon, so
-  // nothing has to expand. Rows render in a portal: read them from `document`.
+  // The built-in views live in the Features group's flyout in BOTH sidebar states — the collapsed rail opens the same flyout
+  // from its icon, so nothing has to expand. Rows render in a portal: read them from `document`.
   async function openFeaturesFlyout(container: HTMLElement) {
     expect(container.querySelector('[data-testid="sidebar-group-features"]')).not.toBeNull();
     expect(document.querySelector('[data-testid="toolbar-work-board"]')).toBeNull();
@@ -53,8 +39,8 @@ describe("App inline navigation", () => {
     await openFeaturesFlyout(container);
 
     const workBoardNav = document.querySelector('[data-testid="toolbar-work-board"]') as HTMLButtonElement;
-    // Nothing is selected yet, so the entry starts unlit — otherwise the
-    // assertion below could pass on a highlight that was never off.
+    // Nothing is selected yet, so the entry starts unlit — otherwise the assertion below could pass on a highlight that was
+    // never off.
     expect(workBoardNav.getAttribute("aria-current")).toBeNull();
     expect(container.querySelector('[data-testid="sidebar-group-features"]')?.getAttribute("data-active")).toBeNull();
 
@@ -62,21 +48,20 @@ describe("App inline navigation", () => {
       fireEvent.click(workBoardNav);
     });
 
-    // Inline: the main pane switched off the chat surface. Visit history is
-    // owned by the top toolbar, so the content surface has no duplicate back.
+    // Inline: the main pane switched off the chat surface. Visit history is owned by the top toolbar, so the content surface
+    // has no duplicate back.
     await waitFor(() => {
       expect(container.querySelector('[data-testid="main-pane-shell"]')).not.toBeNull();
       expect(container.querySelector('[data-testid="view-path-current-work-board"]')).not.toBeNull();
     });
-    // Hidden, not unmounted: a tile subscribes to its group's stream when it
-    // mounts, so swapping it out for the work board would drop the frames of a
-    // turn still in flight — along with the composer draft and scroll position.
+    // Hidden, not unmounted: a tile subscribes to its group's stream when it mounts, so swapping it out for the work board
+    // would drop the frames of a turn still in flight — along with the composer draft and scroll position.
     expect(
       container.querySelector('[data-testid="chat-surface"]')?.getAttribute("data-visible"),
     ).toBe("false");
 
-    // The pick closed the flyout; the group now reports the page as one of its
-    // rows, and the row itself says so once the flyout is opened again.
+    // The pick closed the flyout; the group now reports the page as one of its rows, and the row itself says so once the
+    // flyout is opened again.
     await waitFor(() => {
       expect(document.querySelector('[data-testid="sidebar-group-features-menu"]')).toBeNull();
       expect(container.querySelector('[data-testid="sidebar-group-features"]')?.getAttribute("data-active")).toBe("true");
@@ -87,9 +72,8 @@ describe("App inline navigation", () => {
   });
 
   it("renders the same view inline in work mode — the two modes no longer differ here", async () => {
-    // Work mode already behaved this way; pinning it makes the convergence the
-    // assertion rather than a coincidence of which mode the test happened to
-    // start in (the default is work).
+    // Work mode already behaved this way; pinning it makes the convergence the assertion rather than a coincidence of which
+    // mode the test happened to start in (the default is work).
     const { container } = await renderApp({ hasApiKey: true });
     await clickSidebarNavRow("features", "sidebar-routines");
 
@@ -102,8 +86,6 @@ describe("App inline navigation", () => {
   it("keeps navigating inline after a mode switch, in both directions", async () => {
     const { container } = await renderApp({ hasApiKey: true });
 
-    // work → select → chat → select: the previously mode-dependent branch would
-    // have taken a different path on the second selection.
     await clickSidebarNavRow("features", "toolbar-work-board");
     await waitFor(() => {
       expect(container.querySelector('[data-testid="view-path-current-work-board"]')).not.toBeNull();
@@ -126,8 +108,8 @@ describe("App inline navigation", () => {
 
     await clickSidebarNavRow("features", "sidebar-routines", { metaKey: true });
 
-    // A second pane, and the view in it: the pane the gesture made is the one
-    // focus is on, so the ordinary selection landed there.
+    // A second pane, and the view in it: the pane the gesture made is the one focus is on, so the ordinary selection landed
+    // there.
     await waitFor(() => expect(mountedTileIds(container)).toHaveLength(2));
     await waitFor(() => {
       expect(container.querySelector('[data-testid="view-path-current-routines"]')).not.toBeNull();
@@ -138,8 +120,8 @@ describe("App inline navigation", () => {
         ?.getAttribute("data-focused"),
     ).toBe("true");
 
-    // A plain click on the same row replaces the focused pane's content and
-    // adds nothing — the two gestures differ, and not by accident.
+    // A plain click on the same row replaces the focused pane's content and adds nothing — the two gestures differ, and not by
+    // accident.
     await clickSidebarNavRow("features", "toolbar-work-board");
     await waitFor(() => {
       expect(container.querySelector('[data-testid="view-path-current-work-board"]')).not.toBeNull();
@@ -154,8 +136,7 @@ describe("App inline navigation", () => {
 
     await clickSidebarNavRow("features", "sidebar-routines", { metaKey: true });
 
-    // The refusal is SAID. A menu row that quietly does nothing is the one
-    // outcome a user cannot tell apart from a broken app.
+    // The refusal is SAID. A menu row that quietly does nothing is the one outcome a user cannot tell apart from a broken app.
     await waitFor(() => {
       const toasts = container.querySelectorAll('[data-testid="status-toast-message"]');
       expect([...toasts].some((el) => el.textContent?.includes("자리가 없습니다"))).toBe(true);
@@ -180,8 +161,8 @@ describe("App inline navigation", () => {
 
   it("starts the band's path past the sidebar's bare cluster strip once the rail is collapsed", async () => {
     const { container } = await renderApp({ hasApiKey: true });
-    // jsdom has no preload bridge, so the band is the plain variant and the
-    // platform is not darwin — the same two facts the clearance is asked with.
+    // jsdom has no preload bridge, so the band is the plain variant and the platform is not darwin — the same two facts the
+    // clearance is asked with.
     const band = await waitFor(() => {
       const el = container.querySelector('[data-testid="custom-titlebar-plain"]') as HTMLElement | null;
       expect(el).not.toBeNull();
@@ -192,9 +173,8 @@ describe("App inline navigation", () => {
 
     await switchToChatMode(container);
 
-    // Collapsed: the card retracts but its cluster strip stays on the band, so
-    // the band pads past that strip (CDP: `view-path-breadcrumb`.left must be
-    // >= `sidebar-cluster`.right + SHELL_GUTTER) instead of the rail reserve.
+    // Collapsed: the card retracts but its cluster strip stays on the band, so the band pads past that strip (CDP:
+    // `view-path-breadcrumb`.left must be >= `sidebar-cluster`.right + SHELL_GUTTER) instead of the rail reserve.
     await waitFor(() => {
       expect(band.style.paddingLeft).toBe(`${collapsedBandLeadClearance(false)}px`);
     });

@@ -1,11 +1,4 @@
-/**
- * A branch push of an ordinary source change ran the whole suite and the
- * build (`bun run test` + `bun run build`), the same work CI and the merge
- * gate repeat on the merged tree. The fast tier scopes the push to the
- * change: typecheck gate, duplicate helpers, lock suites, changed tests and
- * the tests `vitest related` finds. Inputs the import graph cannot show keep
- * the full checks.
- */
+// Scoped source checks follow import coverage; inputs the graph cannot resolve require full checks.
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { posix, resolve } from "node:path";
@@ -191,7 +184,6 @@ describe("pre-push fast source tier", () => {
     expect(selectFastSourceChecks([{ ...modified("src/a b.ts") }]).eligible).toBe(false);
     expect(selectFastSourceChecks([modified("src/../package.json")]).eligible).toBe(false);
     expect(selectFastSourceChecks([]).eligible).toBe(false);
-    // Unconsumed documentation alone is the docs-only tier's, not this one's.
     expect(selectFastSourceChecks([added("docs/notes/example.md")])).toMatchObject({
       eligible: false,
       reason: "no source or test module changed",
@@ -257,7 +249,6 @@ describe("pre-push fast source tier", () => {
   it("wires the fast tier, its opt-out and its log line into the hook", () => {
     const hook = readFileSync(resolve(root, "scripts/hooks/run-local-checks.mjs"), "utf8");
     expect(hook).toContain('process.env.AVE_PREPUSH_FULL === "1"');
-    // The fast and global-input tiers share one log line (pre-push-tier.mjs).
     expect(hook).toContain("console.log(describeScopedTier({");
     expect(readFileSync(resolve(root, "scripts/hooks/pre-push-tier.mjs"), "utf8")).toContain("[checks] tier=${tier} pre-push");
     expect(hook).toContain("[checks] tier=full ${stage}");
@@ -265,9 +256,7 @@ describe("pre-push fast source tier", () => {
     expect(hook).toContain('"--reporter=json"');
     expect(hook.indexOf("getFastSourceRelatedSelection(repoRoot,")).toBeGreaterThanOrEqual(0);
     expect(hook.indexOf("getFastSourceRelatedSelection(repoRoot,")).toBeLessThan(hook.indexOf("console.log(describeScopedTier({"));
-    // The direct list runs in budgeted chunks (pre-push-argv-budget.test.ts).
     expect(hook).toContain('runVitestChunks(bun, dir, directArgs, (chunk) => ["run", "test:vitest", "--", "run", ...chunk]);');
-    // The skip switch is the shell hook's and keeps its meaning.
     const shellHook = readFileSync(resolve(root, "scripts/hooks/pre-push"), "utf8");
     expect(shellHook).toContain('if [ "${AVE_HOOKS_SKIP:-}" = "1" ] || [ "${SKIP_AVE_HOOKS:-}" = "1" ]; then');
   });
@@ -285,7 +274,7 @@ describe("pre-push fast source tier", () => {
       "src/plugins/__tests__/registry-atomicity.test.ts",
       "test/scripts/repository-identity.test.ts",
     ]);
-    // Without a recorded reader set the change keeps the full checks.
+    // Consumed documents without recorded readers require full checks.
     expect(selectFastSourceChecks([modified("web/NOT-RECORDED.md")])).toMatchObject({
       eligible: false,
       reason: "web/NOT-RECORDED.md is documentation that tests or the build read, with no recorded reader set",
@@ -294,8 +283,7 @@ describe("pre-push fast source tier", () => {
   });
 
   it("pins the lock-suite trigger table", () => {
-    // A change to this table changes which cross-cutting suites a fast push
-    // skips. Each trigger is a path the suite scans or reads, or a module it pins.
+    // Each trigger must name a scanned path, a read file or a pinned module.
     expect(AVE_APP_LOCK_SUITE_TRIGGERS).toEqual({
       "src/__tests__/packaging-discipline-source.test.ts": [
         "AGENTS.md",
@@ -325,7 +313,6 @@ describe("pre-push fast source tier", () => {
       "test/scripts": ["package.json", "scripts/"],
     });
     expect(AVE_APP_LOCK_SUITES).toEqual(Object.keys(AVE_APP_LOCK_SUITE_TRIGGERS));
-    // Every trigger names something that exists.
     for (const trigger of Object.values(AVE_APP_LOCK_SUITE_TRIGGERS).flat()) {
       const directory = trigger.slice(0, trigger.lastIndexOf("/") + 1);
       const matched = existsSync(resolve(root, trigger)) ||
@@ -363,11 +350,10 @@ describe("pre-push fast source tier", () => {
       tests: [fanOut[0], fanOut[1], "src/permissions/judge/__tests__/judge-engine.test.ts"].sort(),
       narrowed: [{ source: "src/audit/audit-schema.ts", related: RELATED_TEST_BOUND + 10, direct: 2, lockSuites: 0 }],
     });
-    // Under the bound nothing is narrowed.
     expect(boundRelatedTests([{ source: "src/a.ts", tests: fanOut.slice(0, 30) }], read)).toEqual({
       tests: [...fanOut.slice(0, 30)].sort(), narrowed: [],
     });
-    // A fan-out module with no direct importer is not silently dropped.
+    // A fan-out module with no direct importer must not disappear from selection.
     expect(boundRelatedTests([{ source: "src/lonely.ts", tests: fanOut }], read).reason)
       .toBe(`src/lonely.ts reaches ${RELATED_TEST_BOUND + 10} related test files and none imports it directly; full checks required`);
   });
@@ -380,9 +366,7 @@ describe("pre-push fast source tier", () => {
   });
 
   it("keeps the IPC lock suites when src/shared/ipc-channels.ts changes alone", () => {
-    // The PR #43 review case: 255 related tests, 21 direct importers, and the
-    // IPC and preload lock suites reach the module only through
-    // src/contract/app-contract.ts. They must survive both ways.
+    // Preserve transitive lock suites when narrowing a large related-test set to direct importers.
     expect(selectTriggeredLockSuites(["src/shared/ipc-channels.ts"]).map(({ suite }) => suite)).toEqual([
       "src/__tests__/preload-shape.test.ts",
       "src/__tests__/preload.test.ts",
@@ -410,15 +394,13 @@ describe("pre-push fast source tier", () => {
   });
 
   it("triggers every lock suite that reaches the contract barrel on the barrel's own imports", () => {
-    // Derived from the import graphs rather than listed by hand: a suite that
-    // reaches src/contract/app-contract.ts reaches its imports only through it.
     const barrel = "src/contract/app-contract.ts";
     const specifier = /(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s+|vi\.mock\(\s*)["'](\.[^"']+)["']/g;
     const resolveModule = (from: string, spec: string) => {
       const base = posix.normalize(posix.join(posix.dirname(from), spec)).replace(/\.(?:js|mjs)$/, "");
       return [".ts", ".tsx", ".mts", "/index.ts"].map((ext) => base + ext).find((path) => existsSync(resolve(root, path))) ?? null;
     };
-    // Comments are stripped first: a JSDoc `{@link import("./x.js")}` is not an import.
+    // Strip comments before scanning imports; JSDoc links are not dependencies.
     const importCache = new Map<string, string[]>();
     const imports = (file: string) => {
       const cached = importCache.get(file);
@@ -453,12 +435,7 @@ describe("pre-push fast source tier", () => {
   });
 });
 
-/**
- * Message catalog changes used to be global inputs: every test reaches the
- * catalog through t(), so `vitest related` on a fragment returns most of the
- * suite and nearly every UI change took the full tier. They are selected by
- * key instead: the modules and tests that name a changed key's namespace.
- */
+// Select catalog consumers by changed key namespace instead of the shared translation import graph.
 describe("pre-push message catalog selection", () => {
   const MESSAGES = "src/i18n/messages";
   const tracked = execFileSync("git", ["-C", root, "ls-files", "-z", "--", "src", "test"], { encoding: "utf8" })
@@ -494,14 +471,13 @@ describe("pre-push message catalog selection", () => {
     expect(result).toMatchObject({ eligible: true, testFiles: [], relatedFiles: [] });
     expect(result.messageCatalogEntries).toEqual(changes);
     expect(result.reason).toBe("0 source module(s) and 0 test file(s) changed, with 5 message catalog file(s)");
-    // Removing a fragment leaves keys behind that the new tree cannot show.
+    // Removed fragments require keys from the old tree.
     expect(selectFastSourceChecks([deleted(`${MESSAGES}/generated/shellExecution.ts`)]).eligible).toBe(false);
     expect(selectFastSourceChecks([{ ...modified(`${MESSAGES}/en.ts`), newMode: "100755" }]).eligible).toBe(false);
   });
 
   it("reads every key of the real catalog, and nothing the runtime does not load", () => {
-    // One compiler session for the whole catalog: each session is a native
-    // child process, and one per module (~190 spawns) timed out under load.
+    // Reuse one compiler session across the catalog to bound native child spawns.
     const texts = new Map(catalogFiles().map((path) => [path, readFileSync(resolve(root, path), "utf8")]));
     const byPath = readMessageCatalogEntriesByPath(texts);
     expect([...byPath.keys()]).toEqual([...texts.keys()]);
@@ -511,11 +487,10 @@ describe("pre-push message catalog selection", () => {
       for (const key of entries!.keys()) keys.add(key);
     }
     expect([...keys].sort()).toEqual(Object.keys(messages.en).sort());
-    // The batch reader validates each module exactly as the single-module reader.
     for (const path of [`${MESSAGES}/en.ts`, `${MESSAGES}/ko.ts`, `${MESSAGES}/generated/shellExecution.ts`]) {
       expect(byPath.get(path), path).toEqual(readMessageCatalogEntries(texts.get(path)!, path));
     }
-    // The barrels carry no keys; the barrel check proves they match the fragments.
+    // Barrels carry no keys; verify them separately against the fragments.
     const barrel = readFileSync(resolve(root, MESSAGES, "generated/index.ts"), "utf8");
     expect(readMessageCatalogEntries(barrel)).toBeNull();
     expect(readMessageCatalogEntriesByPath(new Map([
@@ -628,11 +603,9 @@ describe("pre-push message catalog selection", () => {
       testFiles: ["src/i18n/__tests__/i18n.test.ts", "src/ui/__tests__/panel-copy.test.tsx"],
       consumerModules: ["src/marketplace/language-check.ts", "src/ui/panel-kinds.ts", "src/ui/panel.tsx"],
     });
-    // A translation-only change selects the same way.
     expect(selectFixture(fragment("Panel"), fragment("Panel").replace('"패널"', '"패널 제목"')).namespaces).toEqual(["panel"]);
-    // An added fragment changes every key it declares.
     expect(selectFixture(null, fragment("Panel")).namespaces).toEqual(["other", "panel"]);
-    // A source edit with no attributable value change keeps the full tier.
+    // Unattributable source value changes require full checks.
     expect(selectFixture(fragment("Panel"), `// reflowed\n${fragment("Panel")}`)).toEqual({
       reason: `${MESSAGES}/generated/panel.ts has changes outside attributable message values; full checks required`,
     });
@@ -724,9 +697,7 @@ describe("pre-push message catalog selection", () => {
     });
   });
 
-  // These inputs and expected decisions are specified independently of both
-  // the catalog reader and the consumer scanner. A literal sibling must never
-  // turn unresolved coverage into a fast selection.
+  // Independent expected decisions must reject unresolved coverage even beside a literal consumer.
   it.each([
     'export const title = (ns: string) => t(`${ns}.title`);',
     'export const title = (kind: string) => t(`panel.${kind}`);',
@@ -1148,9 +1119,7 @@ describe("pre-push message catalog selection", () => {
     expect(selection.reason).toMatch(/unresolved dynamic message consumer; full checks required$/);
     expect(selection.testFiles).toBeUndefined();
     expect(selection.consumerModules).toBeUndefined();
-    // Parses every tracked src/test module (~3,200) through the TS7 compiler
-    // service, as the hook does on a real push: about 2s locally, several times
-    // that on a loaded CI runner.
+    // Parse tracked modules through the same compiler service used by the hook.
   }, 30_000);
 
   it("keeps a shell execution wording change on full checks when its approval surface uses dynamic keys", () => {

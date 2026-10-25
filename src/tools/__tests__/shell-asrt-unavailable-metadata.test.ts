@@ -11,8 +11,7 @@ function propertyName(property: string): string | undefined {
 
 function isUnavailableMetadata(metadata: string): boolean {
   const properties = metadata.split(",").map((property) => property.trim()).filter(Boolean);
-  // Spreads, computed keys and other nonliteral properties can overwrite any
-  // field. Each required verdict must occur after the last such write.
+  // Spreads, computed keys and other nonliteral properties can overwrite any field. Each required verdict must occur after the last such write.
   const lastUnknownWrite = properties.findLastIndex((property) => propertyName(property) === undefined);
   const expected = {
     sandboxed: /^sandboxed\s*:\s*false$/,
@@ -69,10 +68,10 @@ describe("ASRT unavailable metadata", () => {
 
   it("lets failure verdicts override preceding artifact metadata, but rejects later overrides", () => {
     const verdict = 'sandboxed: false, sandboxAttempted: true, isolation: "unavailable"';
-    for (const prefix of ["", "...artifactMetadata, "]) {
+    for (const prefix of ["", "...artifactMetadata, ", "...cleanupMetadata, "]) {
       expect(isUnavailableMetadata(prefix + verdict)).toBe(true);
     }
-    for (const suffix of ["...artifactMetadata", "sandboxed: true", "sandboxAttempted: false", 'isolation: "asrt"', "[unknownKey]: true"]) {
+    for (const suffix of ["...artifactMetadata", "...cleanupMetadata", "sandboxed: true", "sandboxAttempted: false", 'isolation: "asrt"', "[unknownKey]: true"]) {
       expect(isUnavailableMetadata(verdict + ", " + suffix)).toBe(false);
     }
   });

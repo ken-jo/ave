@@ -5,7 +5,7 @@ import { bindPreparedShellExecutableReadPaths, disposePreparedShellInvocation, p
 const prepared: PreparedShellInvocation[] = [];
 afterEach(() => { for (const handle of prepared.splice(0)) disposePreparedShellInvocation(handle); });
 
-/** The native helper owns wrapping/spawn; preparation is now an earlier boundary. */
+// Preparation precedes the native helper's wrapping and spawn boundary.
 export function prepareSandboxFixture(command: string, cwd: string, options: { toolUseId?: string } = {}): PreparedShellInvocation {
   const plan = buildHostShellExecutionPlan({ platform: process.platform, requestedSandbox: true,
     activeCapability: { kind: "asrt", confidence: "verified", platform: process.platform, reason: "Controlled sandbox fixture",

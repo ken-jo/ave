@@ -1,27 +1,5 @@
-/**
- * useResourceMention — the composer's `@` picker for MCP server resources.
- *
- * Sibling of `use-inline-slash-menu` and deliberately shaped like it (trigger → items →
- * open/move/accept/close), sharing the activation rule through `detectMentionQuery` so
- * the two menus cannot disagree about what a trigger is.
- *
- * What is NOT like the slash menu: every item there applies DRAFT TEXT the user then
- * submits. Accepting a resource instead performs an IPC read and attaches the host-built
- * fenced block as its own content part, because that text is the server's, not the
- * user's. The hook therefore owns an async accept and the failure modes that come with
- * it, and the marker it puts in the body is a reference — never the content.
- *
- * The catalogue comes from `listResources` and `listResourceTemplates` (the host's ONE
- * projection each). The picker never derives "which resources are attachable" from server
- * state itself: a second answer to that question is how a picker starts offering URIs the
- * read path refuses.
- *
- * Two kinds of row, and the difference is the whole reason this hook has a second state
- * machine. A resource row is a finished identifier and accepting it reads. A TEMPLATE row
- * is an offer — the user has to fill it in — so accepting it opens a host dialog and the
- * read happens on submit. The renderer never builds the URI: it hands back the template
- * and the values, and main expands. (`mcp-resources-policy.md` §3.)
- */
+/** Resource acceptance attaches server-authored content instead of composer text. Use host-projected catalogs; templates
+ * open a required-field dialog and main expands the URI. */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "../../../i18n/react.js";
 import {
@@ -60,11 +38,8 @@ const MENTION_MAX_ROWS = 50;
 type ResourceMentionTarget =
   | { kind: "resource"; uri: string }
   | { kind: "template"; uriTemplate: string; variables: readonly string[] }
-  /**
-   * A workspace file main found and verified readable. Accepting it attaches a
-   * PATH REFERENCE (`[File #N]`), never content: the model reads it through
-   * `read_file` and its normal permission path at turn time.
-   */
+  /** A workspace file main found and verified readable. Accepting it attaches a PATH REFERENCE (`[File #N]`), never content:
+   * the model reads it through `read_file` and its normal permission path at turn time. */
   | { kind: "file"; path: string; relativePath: string; bytes: number };
 
 /** Debounce between keystrokes and a workspace file query. */
@@ -81,15 +56,8 @@ export interface ResourceMentionItem {
   label: string;
   /** Secondary text: `serverId` plus the same treatment of the URI or template. */
   hint: string;
-  /**
-   * Why this row cannot be attached right now, or `undefined` when it can.
-   *
-   * Lives on the ROW, not in the projection. `listDeclaredResources` answers "what did
-   * the host catalogue" — the model-facing tool wants those rows listed, and one of them
-   * is a resource the spec says the CLIENT fetches directly, which the host refuses to
-   * fetch on its behalf. The picker answers a different question, "what can be attached
-   * right now", and that is the one a user is asking when they type `@`.
-   */
+  /** Picker attachability is a row-specific decision; catalog presence does not imply the host may fetch a client-owned
+   * resource. */
   unavailableReason?: string;
 }
 
@@ -101,10 +69,8 @@ export interface UseResourceMentionArgs {
   mcp: AveApi["mcp"] | undefined;
   /** Resource attachments already in the composer — the cap is per turn. */
   resourceCount: number;
-  /**
-   * `@file` source: the main-side workspace search. Omitted on surfaces without
-   * the workspace bridge, and then no file rows are offered.
-   */
+  /** `@file` source: the main-side workspace search. Omitted on surfaces without the workspace bridge, and then no file rows
+   * are offered. */
   searchFiles?: AveWorkspaceApi["searchFiles"];
   /** False when the active runtime cannot take file attachments. */
   filesEnabled: boolean;
@@ -206,8 +172,8 @@ export function useResourceMention({
   const [activeIndex, setActiveIndex] = useState(0);
   const [dismissedToken, setDismissedToken] = useState<string | null>(null);
   const [pendingTemplate, setPendingTemplate] = useState<PendingResourceTemplate | null>(null);
-  // Guards a second read while one is in flight: the accept path is async and a user
-  // can hit Enter twice, which would attach the same resource under two markers.
+  // Guards a second read while one is in flight: the accept path is async and a user can hit Enter twice, which would attach
+  // the same resource under two markers.
   const attachingRef = useRef(false);
 
   const trigger = useMemo(
@@ -217,15 +183,13 @@ export function useResourceMention({
   const triggerKey = trigger ? `${trigger.start}:${trigger.end}:${trigger.query}` : null;
   const active = trigger !== null;
   const fileQuery = trigger?.query ?? null;
-  // Results carry the query they answer: during the debounce and the search
-  // the previous query's rows must not be on screen, or Enter would attach a
-  // match for text the user already changed.
+  // Results carry the query they answer: during the debounce and the search the previous query's rows must not be on screen,
+  // or Enter would attach a match for text the user already changed.
   const [fileResults, setFileResults] = useState<{ query: string; rows: ResourceMentionItem[] } | null>(null);
   const fileRows = fileResults !== null && fileResults.query === fileQuery ? fileResults.rows : NO_ROWS;
 
-  // Workspace files are searched in MAIN per query (debounced), not filtered
-  // here: main owns the roots, the sensitive filter and the read-scope guard,
-  // so the renderer only ever sees paths main already vouched for.
+  // Workspace files are searched in MAIN per query (debounced), not filtered here: main owns the roots, the sensitive filter
+  // and the read-scope guard, so the renderer only ever sees paths main already vouched for.
   useEffect(() => {
     if (fileQuery === null || !filesEnabled || !searchFiles) {
       setFileResults(null);
@@ -275,13 +239,7 @@ export function useResourceMention({
     let cancelled = false;
     void (async () => {
       try {
-        // Each half absorbs its OWN failure before they are joined, so one cannot take
-        // the other down. A bare `Promise.all` rejects as a unit: a template fetch that
-        // rejected — or a method that was not there to call — would reach the catch
-        // below, which empties the catalogue, and the user would lose their RESOURCES
-        // because TEMPLATES were unavailable. Degrading to resources-only is the honest
-        // outcome, and it is a consequence, not a story about a preload that shipped
-        // separately.
+        // Catch resource and template catalog failures independently so one unavailable source cannot erase the other.
         const unavailable = { ok: false as const, error: "unavailable" };
         const [resources, templates] = await Promise.all([
           mcp.listResources().catch(() => unavailable),
@@ -305,9 +263,8 @@ export function useResourceMention({
                 label,
                 hint: `${server.serverId} · ${safeUri}`,
                 search: `${label} ${server.serverId} ${safeUri}`.toLowerCase(),
-                // Shown and disabled rather than hidden. A user whose `https:` resource
-                // silently vanished from the picker would report the picker as broken; a row
-                // that says why is the difference between a bug and an explanation.
+                // Shown and disabled rather than hidden. A user whose `https:` resource silently vanished from the picker would report the
+                // picker as broken; a row that says why is the difference between a bug and an explanation.
                 ...(resource.hostFetchRefused
                   ? { unavailableReason: t("composer.resourceNotFetchable") }
                   : {}),
@@ -353,8 +310,8 @@ export function useResourceMention({
         }
         setCatalogue(flat);
       } catch {
-        // A failed catalogue read is an empty menu, not an error toast: the user typed
-        // "@" and may not have meant a resource at all.
+        // A failed catalogue read is an empty menu, not an error toast: the user typed "@" and may not have meant a resource at
+        // all.
         if (!cancelled) setCatalogue([]);
       }
     })();
@@ -427,13 +384,7 @@ export function useResourceMention({
       try {
         const result = await read();
         if (!result.ok) {
-          // Through the SAME code table the rest of the app uses, rather than a second
-          // hand-written mapping here. Stage 3a already registered every code this
-          // handler can return (`empty-resource`, `resource-failed`, `invalid-request`,
-          // `rate-limited`, `invalid-server-id`); collapsing them to one sentence told
-          // a user who had simply gone too fast that their server may have
-          // disconnected — a wrong answer, not a vague one. `rate-limited` keeps its own
-          // string because that is the one a person can act on.
+          // Use the shared IPC error table so actionable refusals such as rate-limited retain their distinct meaning.
           const mapped = resolveIpcErrorKey(result.error);
           onError(t(mapped ?? "composer.resourceAttachFailed"));
           return;
@@ -445,8 +396,8 @@ export function useResourceMention({
             n,
             kind: "resource",
             serverId: context.serverId,
-            // For a template this is the URI MAIN produced, echoed back for the chip.
-            // The renderer never composes it — it has no channel that would take one.
+            // For a template this is the URI MAIN produced, echoed back for the chip. The renderer never composes it — it has no
+            // channel that would take one.
             uri: result.uri ?? context.uri,
             label: context.label,
             text: result.attachment.text,
@@ -484,8 +435,8 @@ export function useResourceMention({
     const range = { start: trigger.start, end: trigger.end };
     const mentionToken = text.slice(trigger.start, trigger.end);
     if (item.target.kind === "file") {
-      // A reference, not a read: nothing crosses to main here. The file shares
-      // the picker's cap, not the per-turn resource bound.
+      // A reference, not a read: nothing crosses to main here. The file shares the picker's cap, not the per-turn resource
+      // bound.
       if (chipCount >= ATTACH_MAX_COUNT) {
         onError(t("composer.attachLimitWarning", { max: ATTACH_MAX_COUNT }));
         return;
@@ -526,9 +477,8 @@ export function useResourceMention({
         onError(t("composer.resourceAttachFailed"));
         return;
       }
-      // No read yet — a template is an offer. The menu is dismissed here so it is not
-      // sitting open behind the dialog, and the position is captured now because the
-      // user is about to spend time in a form.
+      // No read yet — a template is an offer. The menu is dismissed here so it is not sitting open behind the dialog, and the
+      // position is captured now because the user is about to spend time in a form.
       setDismissedToken(triggerKey);
       setPendingTemplate({
         serverId: item.serverId,
@@ -559,9 +509,8 @@ export function useResourceMention({
     const attachTemplate = mcp?.attachResourceTemplate;
     if (!pending || !attachTemplate) return;
     setPendingTemplate(null);
-    // Re-checked, not inherited from the accept: the form was open while the rest of the
-    // composer stayed live, and a user can add attachments from another surface in that
-    // time. Refusing here costs a message; not refusing costs a send.
+    // Re-checked, not inherited from the accept: the form was open while the rest of the composer stayed live, and a user can
+    // add attachments from another surface in that time. Refusing here costs a message; not refusing costs a send.
     if (resourceCount >= MCP_RESOURCE_ATTACHMENTS_PER_TURN) {
       onError(t("composer.resourceLimit", { max: MCP_RESOURCE_ATTACHMENTS_PER_TURN }));
       return;
@@ -570,8 +519,8 @@ export function useResourceMention({
       {
         serverId: pending.serverId,
         label: pending.label,
-        // Only a fallback for the chip if main ever stops echoing the expansion; the
-        // renderer cannot expand the template itself and does not try.
+        // Only a fallback for the chip if main ever stops echoing the expansion; the renderer cannot expand the template itself
+        // and does not try.
         uri: pending.uriTemplate,
         range: pending.range,
         mentionToken: pending.mentionToken,

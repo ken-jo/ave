@@ -1,17 +1,4 @@
-/**
- * initial-size E2E (PR #368 follow-up — narrow width, right-docked tall height).
- *
- * The main BrowserWindow is sized at creation for the persisted app mode
- * (`system.appMode` in ave-settings.json, read before bootstrap):
- *   - chat mode: width 460 px (single-column chat shell), height 840 px,
- *     right edge keeps a small visual gap from the primary work area edge;
- *     macOS/Linux open near the top edge, Windows near the bottom edge.
- *   - first run (nothing persisted): work mode, `computeWorkModeBounds`.
- *
- * Uses `app.evaluate` to read bounds directly via Electron BrowserWindow APIs.
- * Skipped automatically when the built app binary is absent so CI that doesn't
- * run Electron tests is unaffected.
- */
+// Seed persisted app mode before boot to verify native initial bounds.
 import { test, expect } from "@playwright/test";
 import { ElectronApplication } from "playwright";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -37,7 +24,6 @@ test.describe("initial window size", () => {
   let tempHome: string | undefined;
   let userDataDir: string | undefined;
 
-  /** Launch with an isolated home, data home and profile; `settings` seeds ave-settings.json. */
   async function launch(settings?: object): Promise<ElectronApplication> {
     tempHome = mkdtempSync(resolve(tmpdir(), "ave-e2e-home-"));
     userDataDir = mkdtempSync(resolve(tmpdir(), "ave-e2e-initial-size-"));
@@ -104,7 +90,6 @@ test.describe("initial window size", () => {
       ? workArea.y + Math.max(0, availableVerticalSpace - EXPECTED_BOTTOM_GAP)
       : workArea.y + Math.min(EXPECTED_TOP_GAP, availableVerticalSpace);
     expect(Math.abs(bounds.y - expectedY)).toBeLessThanOrEqual(8);
-    // Ensure height is not accidentally compact (the PR #368 regression was 380px)
     expect(bounds.height).toBeGreaterThanOrEqual(600);
   });
 });

@@ -1,11 +1,4 @@
-/**
- * The generated shell integration, run by the real shells: each startup file
- * is written into a throwaway HOME, the shell runs a few commands as an
- * interactive login shell, and its output goes through the block tracker.
- * This pins the whole marker path — the scripts, their percent-encoding and
- * the parser — against the shells themselves rather than a hand-written
- * stream. A shell absent from the host is not run.
- */
+// Run generated startup files in temporary homes through real interactive shells to cover marker encoding and parsing together.
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -20,7 +13,7 @@ import { TERMINAL_TEST_MODERN_BASH, TERMINAL_TEST_UTF8_LOCALE, TERMINAL_TEST_ZSH
 const NONCE = "0123456789abcdef0123456789abcdef";
 const homes: string[] = [];
 const editors: Array<{ pty: nodePty.IPty; exited: Promise<void> }> = [];
-/** The XDG layout createSandboxProcessHome gives a sandbox HOME. */
+// The XDG layout createSandboxProcessHome gives a sandbox HOME.
 const sandboxEnvFor = (home: string) => ({ HOME: home, XDG_CONFIG_HOME: join(home, "config") });
 function makeHome(): string {
   const home = mkdtempSync(join(tmpdir(), "ave-shell-integration-"));
@@ -36,17 +29,10 @@ afterEach(async () => {
   for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true });
 });
 
-/**
- * The permission bits an owner-only (0o600) write leaves. Windows keeps only
- * the write bit, so Node reports 0o666 there. That is no secrecy guarantee and
- * none is needed: no Windows terminal installs this integration, since the
- * agent lane refuses win32 before it creates a HOME (pty-manager.ts) and the
- * manual lane installs none. A native Windows agent terminal would need an
- * owner-only DACL here instead.
- */
+// Windows reports writable mode bits without secrecy guarantees; no Windows terminal installs this integration. A native agent path would require owner-only DACLs.
 const OWNER_ONLY_FILE_MODE = process.platform === "win32" ? 0o666 : 0o600;
 
-/** Run `shell -l -i` with `script` on stdin; stdout and stderr in one stream. */
+// Run `shell -l -i` with `script` on stdin; stdout and stderr in one stream.
 function runInteractive(shell: string, script: string) {
   const home = makeHome();
   const { env } = installShellIntegration(home, shell, { nonce: NONCE, sandboxEnv: sandboxEnvFor(home) });
@@ -311,13 +297,11 @@ describe("installShellIntegration", () => {
     });
 
   }
-  // macOS /bin/bash 3.2 has no PS0: its C marker comes from a DEBUG trap,
-  // which runs inside a group's redirection. terminal_run refuses that bash
-  // (no bracketed paste), so only the user's own commands run there.
+  // macOS /bin/bash 3.2 has no PS0: its C marker comes from a DEBUG trap, which runs inside a group's redirection. terminal_run refuses that bash (no
+  // bracketed paste), so only the user's own commands run there.
   for (const shell of [TERMINAL_TEST_ZSH, TERMINAL_TEST_MODERN_BASH]) {
     it.runIf(shell !== undefined)(`${shell}: keeps the nonce out of the environment, the prompt, files a command writes and the disk, and markers out of forged output`, () => {
-      // Every probe writes to a file under HOME; the nonce itself is never
-      // typed or echoed (a line editor's redisplay would put it on screen).
+      // Every probe writes to a file under HOME; the nonce itself is never typed or echoed (a line editor's redisplay would put it on screen).
       const expandPrompt = shell!.endsWith("zsh") ? 'print -rP -- "$PS1"' : 'echo "${PS1@P}"';
       const { tracker, raw, display, home } = runInteractive(
         shell!,

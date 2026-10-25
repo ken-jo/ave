@@ -1,11 +1,3 @@
-/**
- * PR-A1 — SandboxAuditEntry schema + buildSandboxAuditEntry tests.
- *
- * Issue: #691
- *
- * Tests the audit entry shape and builder function.
- * Actual sink (audit.log append) lands in PR-A4.
- */
 import { describe, it, expect } from "vitest";
 import { buildSandboxAuditEntry, type SandboxAuditEntry } from "../sandbox-audit.js";
 
@@ -157,7 +149,6 @@ describe("buildSandboxAuditEntry", () => {
   it("each call produces a distinct ISO timestamp (or same if clock frozen)", () => {
     const e1 = buildSandboxAuditEntry({ tool: VALID_TOOL, sandbox: VALID_SANDBOX, reviewer: VALID_REVIEWER });
     const e2 = buildSandboxAuditEntry({ tool: VALID_TOOL, sandbox: VALID_SANDBOX, reviewer: VALID_REVIEWER });
-    // Both must be valid ISO strings regardless of ordering
     expect(new Date(e1.timestamp).getTime()).toBeGreaterThan(0);
     expect(new Date(e2.timestamp).getTime()).toBeGreaterThan(0);
   });

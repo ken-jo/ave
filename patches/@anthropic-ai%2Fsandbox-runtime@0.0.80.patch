@@ -1,4 +1,4 @@
-Two backports and six Ave additions onto @anthropic-ai/sandbox-runtime 0.0.80.
+Two backports and eight Ave additions onto @anthropic-ai/sandbox-runtime 0.0.80.
 Drop each part when a released version carries it, and the whole patch (and
 the patchedDependencies entry in package.json) when all are released and Ave
 pins that version.
@@ -174,6 +174,25 @@ the installed package.
 
 8. Caller-owned writes: default write paths contain only device paths. All
    filesystem write roots come from caller policy.
+
+9. Unix socket denial (Ave): `WrapWithSandboxOptions.denyUnixSockets` refuses
+   Unix sockets for one invocation, overriding shared worker socket grants
+   for shell commands.
+
+10. Linux mandatory Git controls (Ave) are mounted read-only only when they
+    exist. Missing controls stay absent during preparation; the host
+    quarantines newly created metadata after execution. Other mandatory
+    missing-path denies remain.
+
+11. Folded path filters (Ave): every macOS rule renders the `subpath` and
+    `literal` filters that share a parent directory as one anchored regex
+    per parent (`^<dir>/(<a>|<b>)(/.*)?$`, or `...)$` for literals), chunked
+    under the SBPL string limit. The filters of a rule are alternatives, so
+    the regex matches exactly the paths they matched. sandbox-exec compiles
+    every wrap's profile again, and path filters cost more than their
+    number (a worker profile of about 500 compiled in ~0.1 s locally and
+    ~0.7 s on a loaded hosted runner); folded, about 75 remain.
+    `setPathFilterCompactionForTesting` renders them unfolded for tests.
 
 diff --git a/dist/index.d.ts b/dist/index.d.ts
 index 46dc2732e7bb6af64d3ceec733c3acf1ec8e85f0..8a03e567036ea348165ebdc5821f3b0b6aafc178 100644
@@ -484,7 +503,7 @@ index 53c4a26438ebb3658b6ec0c64a28580f6010f407..3a43a5fd751742ffb876783aeba73f18
      socksSocketPath?: string;
      httpProxyPort?: number;
 diff --git a/dist/sandbox/linux-sandbox-utils.js b/dist/sandbox/linux-sandbox-utils.js
-index b3acba671fe6356ad5d9e187ca13753f345f931b..c406e229140b3c82351dd0638acc28a1c1cc7ce2 100644
+index b3acba671fe6356ad5d9e187ca13753f345f931b..37148f95320768342b2dd8837b75ead011f7f96d 100644
 --- a/dist/sandbox/linux-sandbox-utils.js
 +++ b/dist/sandbox/linux-sandbox-utils.js
 @@ -260,11 +260,11 @@ function makeableMountPoint(dest, wanted) {
@@ -501,7 +520,60 @@ index b3acba671fe6356ad5d9e187ca13753f345f931b..c406e229140b3c82351dd0638acc28a1
                  return MountPointKind.Directory;
              }
          }
-@@ -502,28 +502,217 @@ async function linuxGetMandatoryDenyPaths(ripgrepConfig = { command: 'rg' }, max
+@@ -306,6 +306,17 @@ function dotGitKindAt(dotGitPath) {
+         return DotGitKind.Absent;
+     }
+ }
++function gitControlExists(controlPath) {
++    try {
++        fs.lstatSync(controlPath);
++        return true;
++    }
++    catch (error) {
++        if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR')
++            return false;
++        throw error;
++    }
++}
+ /**
+  * The part of the mandatory deny set that follows from the cwd alone: the
+  * dangerous files and directories resolved against it, plus `.git/hooks` and
+@@ -334,10 +345,14 @@ export function linuxGetCwdMandatoryDenyPaths(allowGitConfig = false) {
+     }
+     if (dotGit === DotGitKind.Directory) {
+         // Git hooks always blocked for security
+-        denyPaths.push(path.resolve(cwd, '.git/hooks'));
++        const hooksPath = path.resolve(cwd, '.git/hooks');
++        if (gitControlExists(hooksPath))
++            denyPaths.push(hooksPath);
+         // Git config conditionally blocked based on allowGitConfig setting
+         if (!allowGitConfig) {
+-            denyPaths.push(path.resolve(cwd, '.git/config'));
++            const configPath = path.resolve(cwd, '.git/config');
++            if (gitControlExists(configPath))
++                denyPaths.push(configPath);
+         }
+     }
+     return denyPaths;
+@@ -413,8 +428,8 @@ async function linuxGetMandatoryDenyPaths(ripgrepConfig = { command: 'rg' }, max
+     for (const dirName of dangerousDirectories) {
+         iglobArgs.push('--iglob', `**/${dirName}/**`);
+     }
+-    // Git hooks always blocked in nested repos. A repository is known by its
+-    // HEAD, so that its hooks are denied before there are any.
++    // A HEAD match discovers existing hooks even when the directory is empty.
++    // Absent controls are handled after execution without creating mount points.
+     iglobArgs.push('--iglob', '**/.git/hooks/**', '--iglob', '**/.git/HEAD');
+     // Git config conditionally blocked in nested repos
+     if (!allowGitConfig) {
+@@ -498,32 +513,223 @@ async function linuxGetMandatoryDenyPaths(ripgrepConfig = { command: 'rg' }, max
+         const found = segments.slice(0, at + length);
+         if (lower[at] === '.git' && lower[at + 1] === 'head')
+             found[at + 1] = 'hooks';
+-        denyPaths.push(path.join(cwd, ...found));
++        const denyPath = path.join(cwd, ...found);
++        if (lower[at] !== '.git' || gitControlExists(denyPath))
++            denyPaths.push(denyPath);
      }
      return [...new Set(denyPaths)];
  }
@@ -728,7 +800,7 @@ index b3acba671fe6356ad5d9e187ca13753f345f931b..c406e229140b3c82351dd0638acc28a1
                  fs.readdirSync(emptyMountSourceDir).length === 0) {
                  return emptyMountSourceDir;
              }
-@@ -532,12 +721,17 @@ function ensureEmptyMountSourceDir() {
+@@ -532,12 +738,17 @@ function ensureEmptyMountSourceDir() {
              // Gone, or no longer inspectable: make a new one below.
          }
          logForDebugging(`[Sandbox Linux] Not reusing the empty-directory mount source, it is gone or no longer our own empty directory: ${emptyMountSourceDir}`);
@@ -748,7 +820,7 @@ index b3acba671fe6356ad5d9e187ca13753f345f931b..c406e229140b3c82351dd0638acc28a1
      return emptyMountSourceDir;
  }
  export const CAP_SETFCAP = 31;
-@@ -894,11 +1088,14 @@ function registerExitCleanupHandler() {
+@@ -894,11 +1105,14 @@ function registerExitCleanupHandler() {
      exitHandlerRegistered = true;
  }
  /**
@@ -767,7 +839,7 @@ index b3acba671fe6356ad5d9e187ca13753f345f931b..c406e229140b3c82351dd0638acc28a1
   *
   * This should be called after each sandboxed command completes to prevent
   * ghost dotfiles (e.g. .bashrc, .gitconfig) from appearing in the working
-@@ -911,8 +1108,8 @@ function registerExitCleanupHandler() {
+@@ -911,8 +1125,8 @@ function registerExitCleanupHandler() {
   * is unhashed, so path lookup no longer finds the mount) and the deny rule
   * stops applying inside that sandbox.
   *
@@ -778,7 +850,7 @@ index b3acba671fe6356ad5d9e187ca13753f345f931b..c406e229140b3c82351dd0638acc28a1
   *
   * Also closes the `--args` profiles the wraps of this batch opened.
   */
-@@ -930,58 +1127,67 @@ export function cleanupBwrapMountPoints(opts) {
+@@ -930,58 +1144,67 @@ export function cleanupBwrapMountPoints(opts) {
          activeSandboxCount = 0;
          forcedCleanups++;
      }
@@ -890,7 +962,7 @@ index b3acba671fe6356ad5d9e187ca13753f345f931b..c406e229140b3c82351dd0638acc28a1
      }
  }
  function isExecutable(p) {
-@@ -2322,12 +2528,17 @@ async function generateFilesystemArgs(readConfig, writeConfig, maskedFileBinds,
+@@ -2322,12 +2545,17 @@ async function generateFilesystemArgs(readConfig, writeConfig, maskedFileBinds,
                  unmakeableDenyDests.add(dest);
              }
              else {
@@ -914,7 +986,7 @@ index b3acba671fe6356ad5d9e187ca13753f345f931b..c406e229140b3c82351dd0638acc28a1
              }
              return { dest, kind };
          };
-@@ -2851,7 +3062,7 @@ async function generateFilesystemArgs(readConfig, writeConfig, maskedFileBinds,
+@@ -2851,7 +3079,7 @@ async function generateFilesystemArgs(readConfig, writeConfig, maskedFileBinds,
   * inheritable sets.
   */
  export async function wrapCommandWithSandboxLinux(params) {
@@ -923,7 +995,7 @@ index b3acba671fe6356ad5d9e187ca13753f345f931b..c406e229140b3c82351dd0638acc28a1
      // bubblewrap takes no patterns, so every path here is a name. The literal
      // lists are folded into the lists they belong to, once, so that nothing
      // below can read a list and miss them; a pattern in `allowOnly` that is no
-@@ -3029,6 +3240,18 @@ export async function wrapCommandWithSandboxLinux(params) {
+@@ -3029,6 +3257,18 @@ export async function wrapCommandWithSandboxLinux(params) {
          };
          // Always bind /dev
          bwrapArgs.push('--dev', '/dev');
@@ -942,8 +1014,15 @@ index b3acba671fe6356ad5d9e187ca13753f345f931b..c406e229140b3c82351dd0638acc28a1
          // ========== PID NAMESPACE ISOLATION ==========
          // IMPORTANT: These must come AFTER filesystem binds for nested bwrap to work
          // By default, always unshare PID namespace and mount fresh /proc.
+@@ -3144,4 +3384,4 @@ export async function wrapCommandWithSandboxLinux(params) {
+         throw error;
+     }
+ }
+-//# sourceMappingURL=linux-sandbox-utils.js.map
+\ No newline at end of file
++//# sourceMappingURL=linux-sandbox-utils.js.map
 diff --git a/dist/sandbox/macos-sandbox-utils.d.ts b/dist/sandbox/macos-sandbox-utils.d.ts
-index 8af5e03041b27d060b0027278fb0567745b06f2f..cb475685df0ae8d5ae7d00d9009ba2f1f1679ad6 100644
+index 8af5e03041b27d060b0027278fb0567745b06f2f..51c351272bca59d6bb4cc91928ab2d33ff2bf02b 100644
 --- a/dist/sandbox/macos-sandbox-utils.d.ts
 +++ b/dist/sandbox/macos-sandbox-utils.d.ts
 @@ -48,6 +48,8 @@ export interface MacOSSandboxParams {
@@ -955,18 +1034,120 @@ index 8af5e03041b27d060b0027278fb0567745b06f2f..cb475685df0ae8d5ae7d00d9009ba2f1
      allowGitConfig?: boolean;
      /**
       * Directories to emit as `safe.directory` via `GIT_CONFIG_*` env
-@@ -114,4 +116,5 @@ export declare function startMacOSSandboxLogMonitor(callback: SandboxViolationCa
+@@ -114,4 +116,9 @@ export declare function startMacOSSandboxLogMonitor(callback: SandboxViolationCa
   *  `sanitizeUnregisteredCommandKey`, which treats the key as the untrusted
   *  bytes it arrived as. */
  resolveCommandText: (decodedKey: string) => string): () => void;
 +export declare function assertPtySlavePaths(ttys: readonly string[]): void;
++/** The filters of one rule, with path filters that share a parent folded into one regex (Ave). */
++export declare function compactPathFilters(filters: Iterable<string>): string[];
++/** Test seam (Ave): render every rule's filters as given. */
++export declare function setPathFilterCompactionForTesting(enabled: boolean): void;
  //# sourceMappingURL=macos-sandbox-utils.d.ts.map
 \ No newline at end of file
 diff --git a/dist/sandbox/macos-sandbox-utils.js b/dist/sandbox/macos-sandbox-utils.js
-index 0e598b612d84d24b09ec2ab0d7ccc9b009c9457b..2743f0463df672bfbc02d8f2035ab31ed6d0ea3b 100644
+index 0e598b612d84d24b09ec2ab0d7ccc9b009c9457b..16824444e6aa4335320b6f6b0a1a6f3ff2ab5f25 100644
 --- a/dist/sandbox/macos-sandbox-utils.js
 +++ b/dist/sandbox/macos-sandbox-utils.js
-@@ -750,7 +750,7 @@ function generateWriteRules(config, logTag, allowGitConfig, writeRoots) {
+@@ -424,10 +424,96 @@ function renderRule(action, operations, filters, logTag) {
+         return [];
+     return [
+         `(${action} ${operations.join(' ')}`,
+-        ...[...filters].map(f => `  ${f}`),
++        ...(pathFilterCompaction ? compactPathFilters(filters) : [...filters]).map(f => `  ${f}`),
+         `  (with message "${logTag}"))`,
+     ];
+ }
++let pathFilterCompaction = true;
++/**
++ * Test seam (Ave): render every rule's filters as given, so a test can set a
++ * profile beside its compacted form. Never called outside tests.
++ */
++export function setPathFilterCompactionForTesting(enabled) {
++    pathFilterCompaction = enabled;
++}
++/** A `(subpath "…")` or `(literal "…")` filter, as {@link pathFilter} renders it. */
++const PATH_FILTER = /^\((subpath|literal) ("(?:[^"\\]|\\.)*")\)$/;
++/**
++ * The filters of one rule, with the `subpath` and `literal` filters that share
++ * a parent directory folded into one anchored regex per parent (Ave).
++ *
++ * The filters of a rule are alternatives, so this matches exactly the paths
++ * the separate filters matched: `^<dir>/(<a>|<b>)(/.*)?$` is `(subpath
++ * "<dir>/<a>")` or `(subpath "<dir>/<b>")`, and `^<dir>/(<a>|<b>)$` the two
++ * literals; Seatbelt matches a regex against the same path it matches a
++ * `subpath` or `literal` against. sandbox-exec compiles path filters in time
++ * that grows faster than their number (a rule of 300 costs about five times
++ * one of 100), and a few regexes in a fraction of that: every wrap compiles
++ * its profile again, so the folding is paid for on every spawn.
++ *
++ * A filter whose path is not a normalized absolute path, or whose regex
++ * would not fit {@link SBPL_STRING_MAX_BYTES}, and a parent with one child,
++ * stay as they were. Other filters (regexes, `require-*` forms) are kept
++ * unchanged.
++ */
++export function compactPathFilters(filters) {
++    const kept = [];
++    const byParent = new Map();
++    for (const filter of filters) {
++        const match = PATH_FILTER.exec(filter);
++        const filterPath = match ? JSON.parse(match[2]) : undefined;
++        if (filterPath === undefined || !path.isAbsolute(filterPath) ||
++            path.posix.normalize(filterPath) !== filterPath || filterPath === '/' ||
++            filterPath.endsWith('/') || filterPath.includes('\0')) {
++            kept.push(filter);
++            continue;
++        }
++        const kind = match[1];
++        const parent = path.posix.dirname(filterPath);
++        const key = `${kind}\0${parent}`;
++        let group = byParent.get(key);
++        if (!group) {
++            group = { kind, parent, filters: [], names: [] };
++            byParent.set(key, group);
++        }
++        group.filters.push(filter);
++        group.names.push(path.posix.basename(filterPath));
++    }
++    const folded = [];
++    for (const group of byParent.values()) {
++        if (group.names.length < 2) {
++            kept.push(...group.filters);
++            continue;
++        }
++        const prefix = `^${escapeRegexLiteral(group.parent === '/' ? '' : group.parent)}/(`;
++        const tail = group.kind === 'subpath' ? ')(/.*)?$' : ')$';
++        const fixedLength = regexLength(prefix) + regexLength(tail);
++        let chunk = [];
++        let chunkLength = 0;
++        const flush = () => {
++            if (chunk.length === 1)
++                kept.push(chunk[0].filter);
++            else if (chunk.length > 1)
++                folded.push(`(regex ${escapePath(prefix + chunk.map(c => c.name).join('|') + tail)})`);
++            chunk = [];
++            chunkLength = 0;
++        };
++        group.names.forEach((name, index) => {
++            const escaped = escapeRegexLiteral(name);
++            const nameLength = regexLength(escaped) + (chunk.length === 0 ? 0 : 1);
++            if (fixedLength + regexLength(escaped) > SBPL_STRING_MAX_BYTES) {
++                kept.push(group.filters[index]);
++                return;
++            }
++            if (chunk.length > 0 && fixedLength + chunkLength + nameLength > SBPL_STRING_MAX_BYTES)
++                flush();
++            chunk.push({ name: escaped, filter: group.filters[index] });
++            chunkLength += chunk.length === 1 ? regexLength(escaped) : nameLength;
++        });
++        flush();
++    }
++    return [...kept, ...folded];
++}
+ /**
+  * Get all ancestor directories for a path, up to (but not including) root
+  * Example: /private/tmp/test/file.txt -> ["/private/tmp/test", "/private/tmp", "/private"]
+@@ -750,7 +836,7 @@ function generateWriteRules(config, logTag, allowGitConfig, writeRoots) {
  /**
   * Generate complete sandbox profile
   */
@@ -975,7 +1156,7 @@ index 0e598b612d84d24b09ec2ab0d7ccc9b009c9457b..2743f0463df672bfbc02d8f2035ab31e
      const profile = [
          '(version 1)',
          `(deny default (with message "${logTag}"))`,
-@@ -762,6 +762,13 @@ function generateSandboxProfile({ readConfig, libraryDenyEntries, writeConfig, h
+@@ -762,6 +848,13 @@ function generateSandboxProfile({ readConfig, libraryDenyEntries, writeConfig, h
          '(allow process-exec)',
          '(allow process-fork)',
          '(allow process-info* (target same-sandbox))',
@@ -989,7 +1170,7 @@ index 0e598b612d84d24b09ec2ab0d7ccc9b009c9457b..2743f0463df672bfbc02d8f2035ab31e
          '(allow signal (target same-sandbox))',
          '(allow mach-priv-task-port (target same-sandbox))',
          '',
-@@ -1032,6 +1039,16 @@ function generateSandboxProfile({ readConfig, libraryDenyEntries, writeConfig, h
+@@ -1032,6 +1125,16 @@ function generateSandboxProfile({ readConfig, libraryDenyEntries, writeConfig, h
          profile.push('  (regex #"^/dev/ttys")');
          profile.push(')');
      }
@@ -1006,7 +1187,7 @@ index 0e598b612d84d24b09ec2ab0d7ccc9b009c9457b..2743f0463df672bfbc02d8f2035ab31e
      return profile.join('\n');
  }
  /**
-@@ -1040,11 +1057,27 @@ function generateSandboxProfile({ readConfig, libraryDenyEntries, writeConfig, h
+@@ -1040,11 +1143,27 @@ function generateSandboxProfile({ readConfig, libraryDenyEntries, writeConfig, h
  function escapePath(pathStr) {
      return JSON.stringify(pathStr);
  }
@@ -1035,7 +1216,7 @@ index 0e598b612d84d24b09ec2ab0d7ccc9b009c9457b..2743f0463df672bfbc02d8f2035ab31e
      // SBPL cannot redirect a read to different bytes, so whole-file masking
      // degrades to read-deny on macOS: the sandboxed process gets EPERM
      // instead of the sentinel. The DYLD interposer (a later step) lifts
-@@ -1098,6 +1131,7 @@ export function wrapCommandWithSandboxMacOS(params) {
+@@ -1098,6 +1217,7 @@ export function wrapCommandWithSandboxMacOS(params) {
          allowLocalBinding,
          allowMachLookup,
          allowPty,
@@ -1413,7 +1594,7 @@ index d52e0f809e13d5515ab80fb52fe437eccff778f6..2f993bebb2361b569ebf10b11c2a4daa
  /**
   * Schema for the access mode of a declared credential source.
 diff --git a/dist/sandbox/sandbox-manager.d.ts b/dist/sandbox/sandbox-manager.d.ts
-index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..f3beda9196551df2a1e0c7e005580865c3a7758c 100644
+index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..30f8220eaf27af409ec37f41e81355720485d0c1 100644
 --- a/dist/sandbox/sandbox-manager.d.ts
 +++ b/dist/sandbox/sandbox-manager.d.ts
 @@ -1,3 +1,11 @@
@@ -1428,7 +1609,7 @@ index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..f3beda9196551df2a1e0c7e005580865
  import { SentinelRegistry } from './credential-sentinel.js';
  import { MaskedFileStore } from './credential-mask-files.js';
  import { AwsPairRegistry } from './credential-aws-pairs.js';
-@@ -45,6 +53,51 @@ export type WrapWithSandboxOptions = {
+@@ -45,6 +53,53 @@ export type WrapWithSandboxOptions = {
       * reported as the violation's `command`. Defaults to `command`.
       */
      commandText?: string;
@@ -1439,6 +1620,8 @@ index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..f3beda9196551df2a1e0c7e005580865
 +     * anthropics/sandbox-runtime#722.
 +     */
 +    ttys?: readonly string[];
++    /** Refuse Unix sockets for this invocation, including shared worker grants. */
++    denyUnixSockets?: boolean;
 +};
 +/**
 + * Ave patch (upstream routes): one way to reach a destination. `direct`
@@ -1480,7 +1663,7 @@ index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..f3beda9196551df2a1e0c7e005580865
  };
  /**
   * Interface for the sandbox manager API
-@@ -125,6 +178,66 @@ export interface ISandboxManager {
+@@ -125,6 +180,66 @@ export interface ISandboxManager {
       * none. `reset()` removes them all.
       */
      unregisterCommandNetworkLists(commandId: string): void;
@@ -1547,7 +1730,7 @@ index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..f3beda9196551df2a1e0c7e005580865
      /**
       * True when the network filter understands an ask callback's
       * `{ allow: false, reason }` answer (see {@link SandboxAskCallback}). Read
-@@ -150,4 +263,13 @@ export interface ISandboxManager {
+@@ -150,4 +265,13 @@ export interface ISandboxManager {
   * for this session. This runs outside of the sandbox, on the host machine.
   */
  export declare const SandboxManager: ISandboxManager;
@@ -1563,7 +1746,7 @@ index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..f3beda9196551df2a1e0c7e005580865
  //# sourceMappingURL=sandbox-manager.d.ts.map
 \ No newline at end of file
 diff --git a/dist/sandbox/sandbox-manager.js b/dist/sandbox/sandbox-manager.js
-index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..a4904e91a116e21694900e7f2b590931c77812de 100644
+index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..4586ed2527b7291baacc4468522f540556ea5695 100644
 --- a/dist/sandbox/sandbox-manager.js
 +++ b/dist/sandbox/sandbox-manager.js
 @@ -16,17 +16,21 @@ import * as fs from 'fs';
@@ -3083,7 +3266,15 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..a4904e91a116e21694900e7f2b590931
                  proxyAuthToken: needsNetworkProxy ? proxyAuthToken : undefined,
                  caCertPath: mitmCA?.trustBundlePath,
                  javaAgentJarPath: needsNetworkProxy ? javaAgentJarPath : undefined,
-@@ -1734,23 +2997,31 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1728,29 +2991,37 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+                 setEnvVars: credentialRestrictions.setEnvVars,
+                 maskedFileBinds: credentialRestrictions.maskedFileBinds,
+                 degradeToDenyPaths: credentialRestrictions.degradeToDenyPaths,
+-                allowUnixSockets: getAllowUnixSockets(),
+-                allowAllUnixSockets: getAllowAllUnixSockets(),
++                allowUnixSockets: options?.denyUnixSockets ? [] : getAllowUnixSockets(),
++                allowAllUnixSockets: options?.denyUnixSockets ? false : getAllowAllUnixSockets(),
+                 allowLocalBinding: getAllowLocalBinding(),
                  allowMachLookup: getAllowMachLookup(),
                  ignoreViolations: getIgnoreViolations(),
                  allowPty,
@@ -3118,6 +3309,15 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..a4904e91a116e21694900e7f2b590931
                      : undefined,
                  httpProxyPort: needsNetworkProxy
                      ? managerContext?.httpProxyPort
+@@ -1769,7 +3040,7 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+                 maskedFileStoreDir: credentialRestrictions.maskedFileStoreDir,
+                 enableWeakerNestedSandbox: getEnableWeakerNestedSandbox(),
+                 allowNestedUserNamespaces,
+-                allowAllUnixSockets: getAllowAllUnixSockets(),
++                allowAllUnixSockets: options?.denyUnixSockets ? false : getAllowAllUnixSockets(),
+                 binShell,
+                 ripgrepConfig: getRipgrepConfig(),
+                 mandatoryDenySearchDepth: getMandatoryDenySearchDepth(),
 @@ -1786,6 +3057,7 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
                      return startOver();
                  throw err;

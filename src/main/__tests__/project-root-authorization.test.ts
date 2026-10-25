@@ -4,8 +4,7 @@ import { mkdirSync, mkdtempSync, realpathSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-// The exclusive broker route is process state owned by the workload runtime;
-// the resolver only asks it two questions, so those are all the fixture answers.
+// The exclusive broker route is process state owned by the workload runtime; the resolver only asks it two questions, so those are all the fixture answers.
 const broker = vi.hoisted(() => ({
   active: false,
   cwd: "/app",
@@ -164,8 +163,7 @@ describe("project root authorization under the exclusive workload-broker route",
       authorized: false,
       project: null,
     });
-    // The loop's fallback project is the guest cwd too, so an unauthorized
-    // or absent selection can never re-root a brokered session at the host.
+    // The loop's fallback project is the guest cwd too, so an unauthorized or absent selection can never re-root a brokered session at the host.
     expect(defaultWorkspaceProject()).toEqual(brokered);
     expect(sessionBoundProjectRootMatches("/app", "/app")).toBe(true);
     expect(sessionBoundProjectRootMatches(workspace, "/app")).toBe(false);

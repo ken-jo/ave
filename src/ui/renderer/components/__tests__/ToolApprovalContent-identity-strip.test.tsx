@@ -9,12 +9,7 @@ import {
 } from "../../../../shared/rationale-approval-display.js";
 import { TEST_IDS } from "../../../../shared/test-ids.js";
 
-/**
- * Identity strip SOT: every approval card names the tool it is deciding about,
- * from host-owned request fields — including the degenerate rationale card
- * whose sealed display failed to parse, which used to render with NO tool
- * identity at all while still offering an allow button.
- */
+/** Every approval card needs host-owned tool identity, including rationale cards with invalid sealed display. */
 afterEach(() => {
   vi.unstubAllGlobals();
 });
@@ -84,9 +79,8 @@ describe("ToolApprovalContent identity strip", () => {
   });
 
   it("names the tool on a VALID rationale card from the SEALED display", () => {
-    // The request-level name is display-untrusted for sealed cards; only the
-    // HMAC-sealed display.toolName may render. Diverging names prove which
-    // source the strip reads.
+    // The request-level name is display-untrusted for sealed cards; only the HMAC-sealed display.toolName may render.
+    // Diverging names prove which source the strip reads.
     const request = { ...rationaleRequest(sealedDisplayArgs()), toolName: "request-level-name" };
     render(<ToolApprovalContent conversationLabel="conversation" open request={request} onDecide={vi.fn()} />);
     expect(screen.getByTestId("approval-tool-identity")).toHaveTextContent("agent_spawn");
@@ -123,19 +117,15 @@ describe("ToolApprovalContent identity strip", () => {
         onDecide={vi.fn()}
       />,
     );
-    // Fail-closed means the allow options are not presented at all — a
-    // permanently disabled button teaches users to distrust the panel.
+    // Fail-closed means the allow options are not presented at all — a permanently disabled button teaches users to distrust
+    // the panel.
     expect(screen.queryByTestId(TEST_IDS.approveButton)).toBeNull();
     expect(screen.queryByTestId(TEST_IDS.allowAlwaysButton)).toBeNull();
     expect(screen.getByTestId(TEST_IDS.denyButton)).toBeInTheDocument();
   });
 
-
   it("renders a path-grant request inside the same frame, identity strip included", () => {
-    // Issue #2104: one approval format. The path-grant kind keeps its own
-    // decision semantics (allow-always grants a parent directory), but it uses
-    // the same identity strip, review expander, and decision row as every
-    // other kind — one frame, one visual language, no second layout.
+    // Path grants share approval framing while allow-always retains parent-directory semantics.
     render(
       <ToolApprovalContent conversationLabel="conversation"
         open
@@ -162,7 +152,6 @@ describe("ToolApprovalContent identity strip", () => {
     expect(screen.getByTestId(TEST_IDS.approvalReviewDetails)).toBeInTheDocument();
     expect(screen.getByTestId("approval-path-grant-evidence")).toBeInTheDocument();
   });
-
 
   it("panel A/D shortcuts are inert for a path-grant request", () => {
     // The user may have navigated to the allow-always (parent grant) scope;

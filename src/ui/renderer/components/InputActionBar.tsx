@@ -1,38 +1,5 @@
-/**
- * InputActionBar — the single action row inside the composer input box, and
- * ComposerStatusRow — the status line drawn UNDER the box.
- *
- * There is ONE action bar in the composer — shortcuts, cancel and send live
- * here rather than in a second turn-control row below it. Layout:
- *
- *   ACTION ROW (single line, inside the box):
- *     LEADING:  [⌘ slash/command picker (persona is its first submenu)] → [attach]
- *     TRAILING: [? shortcuts] → [send / stop — one button]
- *
- * The turn control is a SINGLE icon button, not a send button next to a
- * separate cancel button: it carries "stop" only while a run is in flight AND
- * the composer is empty, and reverts to "send" the moment anything is typed.
- *
- *   STATUS ROW (compact single line, below the box):
- *     [ring] … [pending approvals] · [permission] · [model] [reasoning]
- *
- * The permission cell and the model cell each open a card of their own — the
- * modes to switch between (the current one marked) and one link into the
- * Settings section that owns them. Nothing in the row says whether a chat
- * model is configured: that alert lives on the sidebar's Settings entry.
- *
- * The status row is outside the input box on purpose. Everything inside the
- * box is about the message being written; the model, the permission mode and
- * whether a turn is running describe the SESSION, and a reader looks for that
- * at the foot of the box, not among the controls that send it. The window
- * StatusBar is notifications-only; the persistent cells live here.
- *
- * Both are exported from one module because the dock composes them as a pair
- * and the side chat takes only the row's buttons — the split is in where they
- * are drawn, not in what they know.
- *
- * Spec: docs/blueprints/composer-redesign-message-queue.md
- */
+/** Keep message actions inside the composer and session status below it; send becomes stop only while running with empty input.
+ * Permission and model cells open their own cards (docs/blueprints/composer-redesign-message-queue.md). */
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { ArrowUp, Brain, Check, ChevronRight, HelpCircle, Lightbulb, Paperclip, Square } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
@@ -43,6 +10,7 @@ import { t } from "../../../i18n/runtime.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { isSubscriptionRuntimeId, subscriptionRuntimeDescriptor } from "../../../shared/subscription-runtime.js";
 import type { PluginEntry } from "../types.js";
+import { SandboxStatusBadge } from "./SandboxStatusBadge.js";
 import { SlashPicker } from "./SlashPicker.js";
 import { ReasoningLevelControl, useReasoningLevel } from "./ReasoningSlider.js";
 import type { ReasoningLevel } from "./ReasoningSlider.js";
@@ -67,9 +35,8 @@ import { EnvForcedNotice } from "./EnvForcedNotice.js";
 import { errorMessage } from "../../../shared/error-message.js";
 
 export interface InputActionBarProps {
-  // Leading — slash/command picker (folds plugins/mcp/skills inside its own
-  // categories, so there is no separate plugin grid button: the sidebar already
-  // surfaces plugins + marketplace).
+  // Leading; slash/command picker (folds plugins/mcp/skills inside its own categories, so
+  // there is no separate plugin grid button: the sidebar already surfaces plugins + marketplace).
   plugins: PluginEntry[];
   onSelectPlugin: (viewKey: string) => void;
   onInsertSlashCommand: (cmd: string) => void;
@@ -79,31 +46,24 @@ export interface InputActionBarProps {
   loadCustomCommands?: () => Promise<{ commands: CustomCommandEntry[] }>;
   slashPickerOpen: boolean;
   onSlashPickerOpenChange: (open: boolean) => void;
-  // Leading — attachment picker (single unified button, no count badge —
-  // count lives on the in-composer chip).
+  // Leading; attachment picker (single unified button, no count badge; count lives on the in-composer chip).
   onAttach: () => void | Promise<void>;
   attachDisabled: boolean;
 
   attachDisabledReason?: "limit" | "no-api-key" | "subscription-unsupported" | "runtime-pending";
   attachDisabledSubscriptionProvider?: string;
-  // Leading — role preset (persona). Chosen inside the command menu, as its
-  // first submenu; there is no button of its own.
+  // Leading; role preset (persona). Chosen inside the command menu, as its first submenu; there is no button of its own.
   rolePresets: RolePreset[];
   activePresetId: string;
   onSelectPreset: (id: string) => void;
 
-  // Trailing — turn controls (merged from the former BottomActionRow).
+  // Trailing; turn controls (merged from the former BottomActionRow).
 
   isBusy: boolean;
 
   isSendDisabled: boolean;
-  /**
-   * Whether the composer holds anything sendable (draft text or an
-   * attachment). Distinct from `!isSendDisabled`, which also folds in the
-   * runtime blocks — this one is purely "does the user have something queued
-   * up", and it is what flips the single turn-control button between send and
-   * stop.
-   */
+  /** Whether the composer holds anything sendable (draft text or an attachment). Distinct from `!isSendDisabled`, which also folds in the runtime
+   * blocks; this one is purely "does the user have something queued up", and it is what flips the single turn-control button between send and stop. */
   hasDraft: boolean;
   /** Send click (= Enter). intent capture lives in the caller. */
   onSend: () => void;
@@ -137,7 +97,7 @@ const PERMISSION_LABEL_KEYS: Record<ExecutionModeDisplay, string> = {
   unknown: "permissionModeBadge.labelUnknown",
 };
 
-// Per-mode TEXT color (no pill/outline) — reuses the PermissionModeBadge color
+// Per-mode TEXT color (no pill/outline); reuses the PermissionModeBadge color
 
 const PERMISSION_TEXT_COLOR: Record<ExecutionModeDisplay, string> = {
   default: "text-info",
@@ -172,9 +132,7 @@ export function InputActionBar({
   return (
     <div
       data-testid="input-action-bar"
-      // SpotlightTour anchor. Step 2 of
-      // `first-boot-essentials` pins to this action-bar root, see
-      // `default-tour-scenarios.ts`.
+      // SpotlightTour anchor. Step 2 of `first-boot-essentials` pins to this action-bar root, see `default-tour-scenarios.ts`.
       data-tour-anchor="input-action-bar"
       className="flex min-w-0 flex-nowrap items-center gap-1.5 px-3 py-2"
     >
@@ -232,18 +190,8 @@ interface TurnControlButtonProps {
   onCancel: () => void;
 }
 
-/**
- * ONE turn-control button, shared by every composer surface. The draft decides
- * which verb it carries: anything typed (or attached) means the user's next
- * action is "send", so it stays a send button even mid-run; an empty draft
- * during a run leaves "stop" as the only useful action. Idle with an empty
- * draft keeps the send glyph, disabled. ESC still cancels a run regardless of
- * what the button currently shows.
- *
- * The label is the icon plus title/aria-label — the old "전송 + ⏎ keycap" pair
- * rendered the keycap as an empty box (its background and its text both
- * resolved to `primary-foreground`, so the glyph disappeared into the chip).
- */
+/** ONE turn-control button, shared by every composer surface. The draft decides which verb it carries: anything typed (or attached) means the user's next action is "send", so it stays a send button even mid-run; an empty draft during a run leaves "stop" as the only useful action. Idle with an empty draft keeps the
+ * send glyph, disabled. ESC still cancels a run regardless of what the button currently shows. The label is the icon plus title/aria-label; the old "전송 + ⏎ keycap" pair rendered the keycap as an empty box (its background and its text both resolved to `primary-foreground`, so the glyph disappeared into the chip). */
 export function TurnControlButton({
   isBusy,
   hasDraft,
@@ -256,20 +204,13 @@ export function TurnControlButton({
   const turnControlLabel = showStop
     ? t("bottomActionRow.cancelButton")
     : t("bottomActionRow.sendButton");
-  // Stop is always actionable; send is not whenever `isSendDisabled` says so —
-  // which covers BOTH "nothing to send" and the runtime blocks (no API key,
-  // runtime unavailable). One flag drives the `disabled` attribute and the
-  // quiet styling together, so the two can never disagree.
+  // Stop is always actionable; send is not whenever `isSendDisabled` says so; which covers BOTH "nothing to send" and the runtime blocks (no
+  // API key, runtime unavailable). One flag drives the `disabled` attribute and the quiet styling together, so the two can never disagree.
   const turnControlInert = !showStop && isSendDisabled;
   return (
     <Button
       type="button"
-      /* Quiet whenever it cannot act: a disabled SOLID button is a
-         near-black disc at 50% opacity, which reads as a broken grey
-         blob rather than "waiting". Inert it borrows the leading
-         cluster's outline treatment, so an idle composer shows one calm
-         row of controls; it goes solid the instant the button can
-         actually do something. */
+      /* Quiet whenever it cannot act: a disabled SOLID button is a near-black disc at 50% opacity, which reads as a broken grey blob rather than "waiting". Inert it borrows the leading cluster's outline treatment, so an idle composer shows one calm row of controls; it goes solid the instant the button can actually do something. */
       variant={turnControlInert ? "outline" : "default"}
       onClick={showStop ? onCancel : onSend}
       disabled={turnControlInert}
@@ -305,11 +246,8 @@ interface AttachButtonProps {
   disabledSubscriptionProvider?: string;
 }
 
-/**
- * Single unified attach button — images, files, anything except the
- * deny-listed dangerous extensions. The chip count badge lives on the inline
- * composer chip (n/5), not here. Shared by every composer surface.
- */
+/** Single unified attach button; images, files, anything except the deny-listed dangerous extensions. The
+ * chip count badge lives on the inline composer chip (n/5), not here. Shared by every composer surface. */
 export function AttachButton({
   onAttach,
   disabled,
@@ -333,15 +271,8 @@ export function AttachButton({
   );
 }
 
-/**
- * Status sub-row — compact single line at the bottom of the unified bar:
- *   [● active] · [model] · [permission — per-mode text color] · [ring]
- *
- * Permission is plain text colored per-mode (no pill/outline). The
- * TokenProgressRing widget sits at the END (after permission); the usage % /
- * cost detail is surfaced on the ring's hover/click — there is no separate
- * context-percent text cell.
- */
+/** Status sub-row; compact single line at the bottom of the unified bar: [● active] · [model] · [permission; per-mode text color] · [ring] Permission is plain text colored per-mode (no
+ * pill/outline). The TokenProgressRing widget sits at the END (after permission); the usage % / cost detail is surfaced on the ring's hover/click; there is no separate context-percent text cell. */
 export interface ComposerStatusRowProps {
   /** Resolved model / permission / active fields (from useInputStatusRow). */
   statusRow: InputStatusRow;
@@ -351,7 +282,7 @@ export interface ComposerStatusRowProps {
   tasksSlot?: ReactNode;
   /** The session's goal chip, drawn after the tasks chip; absent when there is no goal. */
   goalSlot?: ReactNode;
-  /** Opens Settings → LLM — the model card's way to the full catalogue. */
+  /** Opens Settings → LLM; the model card's way to the full catalogue. */
   onOpenModelSettings: () => void;
   /** Opens Settings → Permissions when the permission cell is clicked. */
   onOpenPermissions?: () => void;
@@ -364,7 +295,7 @@ export interface ComposerStatusRowProps {
   onToggleThinking: (next: boolean) => void | Promise<void>;
 }
 
-/** The session line under the input box — see the module header for why it is outside. */
+/** The session line under the input box; see the module header for why it is outside. */
 export function ComposerStatusRow({
   statusRow,
   ringSlot,
@@ -379,17 +310,11 @@ export function ComposerStatusRow({
 }: ComposerStatusRowProps) {
   const { t } = useTranslation();
   const { vendorModel, activeChatModel, permissionMode, pendingApprovals } = statusRow;
-  // No connected provider means no model: the row offers setup in the model's
-  // place instead of naming the vendor default nobody chose. A retired
-  // provider keeps its picker — choosing a model there is how the retirement
-  // notice is resolved.
+  // No connected provider means no model: the row offers setup in the model's place instead of naming the vendor default
+  // nobody chose. A retired provider keeps its picker; choosing a model there is how the retirement notice is resolved.
   const noActiveModel = activeChatModel?.kind === "none" && activeChatModel.reason === "no-connected-provider";
-  // The row names the model only. Which vendor serves it is a detail of the
-  // route, not of the sentence the person is about to send — it belongs in
-  // the model card the cell opens, next to the models they can switch to.
-  // One case survives the strip whole: before a model is chosen the label is
-  // the vendor alone (or "not configured"), with no " · " to cut at — and that
-  // is right, because there is no model name yet to show instead.
+  // The row names the model only. Which vendor serves it is a detail of the route, not of the sentence the person is about to send; it belongs in the model card the cell opens, next to the models they can switch
+  // to. One case survives the strip whole: before a model is chosen the label is the vendor alone (or "not configured"), with no " · " to cut at; and that is right, because there is no model name yet to show instead.
   const displayModel = stripVendorPrefix(vendorModel);
 
   return (
@@ -406,6 +331,7 @@ export function ComposerStatusRow({
       </span>
       {tasksSlot}
       {goalSlot}
+      <SandboxStatusBadge capability={statusRow.sandboxCapability} statusQueryFailed={statusRow.sandboxStatusQueryFailed} onRetry={statusRow.refreshSandboxStatus} />
 
       <div className="ml-auto flex min-w-0 flex-nowrap items-center gap-1.5">
         {/* Pending approvals — its OWN button, BEFORE the permission cell. */}
@@ -479,16 +405,8 @@ export function ComposerStatusRow({
   );
 }
 
-/**
- * The permission card: what the status row's permission cell opens.
- *
- * The same four modes Settings → Permissions offers, in the same order, the
- * current one marked; a pick persists through the same `setMode` the tab
- * uses and then sends the tab's two reviewer dispatches, so a mode chosen here
- * leaves the reviewer exactly as the tab would. The row's own label follows
- * the host's mode broadcast, so nothing here is optimistic. Settings is one
- * more click away, not the first thing a permission click does.
- */
+/** The permission card: what the status row's permission cell opens. The same four modes Settings → Permissions offers, in the same order, the current one marked; a pick persists through the same `setMode` the tab uses and then sends the tab's two
+ * reviewer dispatches, so a mode chosen here leaves the reviewer exactly as the tab would. The row's own label follows the host's mode broadcast, so nothing here is optimistic. Settings is one more click away, not the first thing a permission click does. */
 function PermissionQuickPicker({
   permissionMode,
   onOpenPermissions,
@@ -510,8 +428,7 @@ function PermissionQuickPicker({
     setBusy(true);
     try {
       const perm = getApi().permission;
-      // The card closes only once the pick took. A refused or failed change
-      // leaves it open with the current mark unmoved — the honest state.
+      // The card closes only once the pick took. A refused or failed change leaves it open with the current mark unmoved; the honest state.
       const res = await perm.setMode(mode);
       if (!res.ok) {
         console.warn("[ave] permission mode pick was refused: %s", res.message ?? res.error);
@@ -639,15 +556,8 @@ const SANDBOX_STATUS_TONE: Record<ShellSandboxStatusInfo["state"], string> = {
   error: "text-destructive",
 };
 
-/**
- * The shell sandbox checkbox at the foot of the permission card (design I3:
- * a silent off or a sandbox that did not start is visible here and one click
- * away). The host decides the state — `sandboxCapability().shell` — and this
- * row renders it; a click writes `features.osToolSandbox` and nothing else,
- * the same write Settings → Permissions makes for the shell toggle. The
- * sandbox starts once at boot, so a change shows as pending until a restart
- * instead of claiming it applied.
- */
+/** The shell sandbox checkbox at the foot of the permission card (design I3: a silent off or a sandbox that did not start is visible here and one click away). The host decides the state; `sandboxCapability().shell`; and this row renders
+ * it; a click writes `features.osToolSandbox` and nothing else, the same write Settings → Permissions makes for the shell toggle. The sandbox starts once at boot, so a change shows as pending until a restart instead of claiming it applied. */
 function SandboxCheckboxRow({ onOpenPermissions }: { onOpenPermissions?: () => void }) {
   const { t } = useTranslation();
   const checkboxId = useId();
@@ -668,8 +578,7 @@ function SandboxCheckboxRow({ onOpenPermissions }: { onOpenPermissions?: () => v
     }
   }, []);
 
-  // Mounted only while the card is open, so this reads on open and follows a
-  // change made in Settings while the card stays up.
+  // Mounted only while the card is open, so this reads on open and follows a change made in Settings while the card stays up.
   useEffect(() => {
     void refresh();
     return getApi().onSettingsUpdated(() => { void refresh(); });
@@ -703,9 +612,8 @@ function SandboxCheckboxRow({ onOpenPermissions }: { onOpenPermissions?: () => v
   const checked = status !== null && (status.setting || status.envForced);
   const disabled =
     busy || status === null || status.state === "unsupported" || status.envForced;
-  // The one-time Windows administrator setup lives in Settings → Permissions
-  // (it raises a UAC prompt on an explicit click there), so a card that says
-  // the setup is incomplete leads to it rather than leaving the user stuck.
+  // The one-time Windows administrator setup lives in Settings → Permissions (it raises a UAC prompt on an
+  // explicit click there), so a card that says the setup is incomplete leads to it rather than leaving the user stuck.
   const needsWindowsSetup =
     status?.state === "unavailable" && status.causes.includes("windows-setup-incomplete");
 
@@ -765,28 +673,8 @@ function SandboxCheckboxRow({ onOpenPermissions }: { onOpenPermissions?: () => v
   );
 }
 
-/**
- * The model card: what the status row's model cell opens.
- *
- * It holds the three things a person changes mid-conversation — which
- * model to use (the current one, and the pinned ones), how deep to reason,
- * and, when neither is enough, the way to the full catalogue in Settings.
- * Pins come from the same list the settings chooser pins with, so the card
- * and the chooser cannot disagree about what is pinned; a pick persists at
- * once, the same way the chooser's does.
- *
- * The reasoning chip beside the model cell is a second way in, not a
- * second control: it shows the current level and opens this same card.
- */
-/**
- * How deep the model thinks, drawn as how yellow the bulb is. The status row is
- * a glance surface: a word costs more width than the icon it sits next to and
- * still has to be read. The level stays in the accessible name on the button,
- * so nothing that cannot see the colour loses the value.
- */
-// One step of the yellow ladder per level; level 0 has no entry because it
-// draws no fill at all — an unlit bulb is the value, and giving it a colour
-// would make "off" look like an active depth.
+/** The model and reasoning chips open one card backed by shared persisted pins.
+ * Use yellow depth steps with an accessible level name; zero stays unlit. */
 const REASONING_FILL: Record<Exclude<ReasoningLevel, 0>, string> = {
   1: "var(--reasoning-fill-1)",
   2: "var(--reasoning-fill-2)",
@@ -836,10 +724,8 @@ function ModelQuickPicker({
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
-  // The chip sits outside the card, so Radix would treat a click on it as
-  // "outside" — dismiss, then the click reopens: a flicker. The card is told
-  // the chip is not outside, and the chip toggles like the trigger does.
-  // Whichever of the two opened the card gets focus back when it closes.
+  // The chip sits outside the card, so Radix would treat a click on it as "outside"; dismiss, then the click reopens: a flicker. The card is
+  // told the chip is not outside, and the chip toggles like the trigger does. Whichever of the two opened the card gets focus back when it closes.
   const chipRef = useRef<HTMLButtonElement>(null);
   const openedByChipRef = useRef(false);
   const [choices, setChoices] = useState<ModelCardChoice[]>([]);
@@ -847,8 +733,7 @@ function ModelQuickPicker({
   const runtimeRef = useRef<string>("api");
   const { level, levelLabels, currentLabel, custom, apply } = useReasoningLevel({ enabled: enableThinking, onToggle: onToggleThinking });
 
-  // Read on open and follow the broadcast while open: a pin added in
-  // Settings, or a pick made in another tile, shows up without reopening.
+  // Read on open and follow the broadcast while open: a pin added in Settings, or a pick made in another tile, shows up without reopening.
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
@@ -870,8 +755,7 @@ function ModelQuickPicker({
       return;
     }
     const api = getApi();
-    // The card closes only once the pick took. A refused or failed save
-    // leaves it open with the current mark unmoved — the honest state.
+    // The card closes only once the pick took. A refused or failed save leaves it open with the current mark unmoved; the honest state.
     const saved = await api.updateSettings({
       llm: {
         provider: choice.vendor,
@@ -882,10 +766,8 @@ function ModelQuickPicker({
       console.warn("[ave] model pick was refused: %s", saved.error);
       return;
     }
-    // A pinned model is an API model, so picking one is also choosing the
-    // API path when a subscription runtime was in use. That switch has its
-    // own request — the settings patch refuses a runtime change on its own —
-    // and it is the same one the settings chooser sends.
+    // A pinned model is an API model, so picking one is also choosing the API path when a subscription runtime was in use. That switch
+    // has its own request; the settings patch refuses a runtime change on its own; and it is the same one the settings chooser sends.
     if (runtimeRef.current !== "api") await api.subscriptionUseApiForChat();
     setOpen(false);
   };
@@ -897,13 +779,10 @@ function ModelQuickPicker({
         <button
           type="button"
           data-testid="iab-status-model"
-          // SpotlightTour anchor. Step 6 of `first-boot-essentials` points at
-          // the model in use, and this button is the control that changes it.
+          // SpotlightTour anchor. Step 6 of `first-boot-essentials` points at the model in use, and this button is the control that changes it.
           data-tour-anchor="model-picker"
-          // The visible text is the model alone, so the vendor would be lost to
-          // anyone who cannot hover for the tooltip. The accessible name carries
-          // the whole route; it still contains the visible text, so name-in-label
-          // holds and voice control can still say the model.
+          // The visible text is the model alone, so the vendor would be lost to anyone who cannot hover for the tooltip. The accessible name
+          // carries the whole route; it still contains the visible text, so name-in-label holds and voice control can still say the model.
           aria-label={vendorModel}
           onClick={() => { openedByChipRef.current = false; }}
           className="inline-flex min-w-0 shrink items-center gap-1 text-left transition-opacity duration-(--motion-fast) ease-(--motion-ease-standard) hover:opacity-80 focus:outline-none focus-visible:ring-1 focus-visible:ring-input-bar-focus motion-reduce:transition-none"
@@ -960,14 +839,10 @@ function ModelQuickPicker({
             const testId = apiChoice
               ? `model-quick-picker-option:${apiChoice.vendor}:${apiChoice.modelId}`
               : `model-quick-picker-option:${subscriptionChoice?.provider}`;
-            // A subscription runtime with no model of its own (kimi-code,
-            // grok-build — `modelId` null) has nothing to put in the primary
-            // column, so the provider label moves there instead of leaving
-            // it empty; the muted vendor column is then blank rather than
-            // repeating the same label twice.
+            // A subscription runtime with no model of its own (kimi-code, grok-build; `modelId` null) has nothing to put in the primary column, so the
+            // provider label moves there instead of leaving it empty; the muted vendor column is then blank rather than repeating the same label twice.
             const modelLessSubscription = subscriptionChoice !== null && subscriptionChoice.modelId === null;
-            // A CLI that runs its own default when nothing is chosen
-            // says so instead of leaving the model column to the label.
+            // A CLI that runs its own default when nothing is chosen says so instead of leaving the model column to the label.
             const cliDefault = modelLessSubscription && isSubscriptionRuntimeId(subscriptionChoice.provider)
               && subscriptionRuntimeDescriptor(subscriptionChoice.provider).offersCliDefaultModel;
             const vendorText = modelLessSubscription && !cliDefault ? "" : choice.vendorLabel;
@@ -1023,10 +898,7 @@ function stripVendorPrefix(vendorModel: string): string {
   return vendorModel.slice(idx + marker.length);
 }
 
-/**
- * Helper to capture user keyboard intent snapshot from window.aveApi.
- * The bar itself does not know the intent → the caller wraps the send.
- */
+/** Helper to capture user keyboard intent snapshot from window.aveApi. The bar itself does not know the intent → the caller wraps the send. */
 export function makeBottomActionSendHandler(
   baseSend: (intent: UserKeyboardIntentSnapshot) => void,
 ): () => void {
@@ -1042,11 +914,8 @@ export function makeBottomActionSendHandler(
   };
 }
 
-/**
- * ShortcutsButton — fixed-size "?" affordance. Hover surfaces a "단축키"
- * tooltip; click opens a tidy popover listing every composer keybinding.
- * Fixed form (h-[26px] w-[26px]) keeps the action row layout stable.
- */
+/** ShortcutsButton; fixed-size "?" affordance. Hover surfaces a "단축키" tooltip; click opens a tidy popover
+ * listing every composer keybinding. Fixed form (h-[26px] w-[26px]) keeps the action row layout stable. */
 export function ShortcutsButton() {
   const { t } = useTranslation();
   const label = t("bottomActionRow.shortcuts");

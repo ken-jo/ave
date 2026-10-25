@@ -494,8 +494,7 @@ describe("operator container attestation", () => {
 
   it("verifies a fixed Ed25519 canonicalization vector", async () => {
     const f = fixture();
-    // Generated once with an independent recursive key sorter; the private key
-    // is intentionally absent so this test cannot regenerate its own answer.
+    // Generated once with an independent recursive key sorter; the private key is intentionally absent so this test cannot regenerate its own answer.
     const publicPem = [
       "-----BEGIN PUBLIC KEY-----",
       "MCowBQYDK2VwAyEAAna+qr4CfqJfTzFzSp1nW9Te8tFaINQckfctngHN+wI=",

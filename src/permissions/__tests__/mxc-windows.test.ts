@@ -41,8 +41,7 @@ const DRY_RUN_PASSED = [
 ].join("\r\n");
 const DRY_RUN_PROXY_RULE_REJECTED =
   "Request error\r\nConfiguration parse error: runtimeConfig.networkProxy requires network.egress.default='deny' with no direct allow or deny rules\r\n";
-// What wxc-exec printed when Windows PowerShell 5.1 started in a container over
-// SSH (session 0, 2026-10-19), and its exit code.
+// What wxc-exec printed when Windows PowerShell 5.1 started in a container over SSH (session 0, 2026-10-19), and its exit code.
 const START_DLL_INIT_FAILED =
   "The target executable exited with STATUS_DLL_INIT_FAILED (0xC0000142). This often means the sandbox is blocking Win32k system calls (UI subsystem access), which is often required to initialize.";
 const DRY_RUN_NON_LOOPBACK =

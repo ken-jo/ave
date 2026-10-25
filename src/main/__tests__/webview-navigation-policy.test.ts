@@ -41,10 +41,7 @@ describe("global webview navigation policy", () => {
     })).toBe(true);
   });
 
-  // `currentUrl` decides whether the plugin-shell dist/src allowance applies at
-  // all. It used to be a substring test against the whole URL, so any frame
-  // whose query carried the shell filename got the shell's file-navigation
-  // allowance — the `url` side had a look-alike test, this side had none.
+  // Grant plugin-shell file navigation only for the actual shell path, never a query containing its filename.
   it("grants the dist/src allowance only to the real shell document", () => {
     const targetInDistSrc = fileUrlInDistSrc("plugin-entry.js");
     // Genuine shell frame — allowance applies.
@@ -75,10 +72,7 @@ describe("global webview navigation policy", () => {
   });
 
   it("allows the host-owned ave-mcp-app:// sandbox-proxy scheme", () => {
-    // Without this branch the fallback (data:/about: only) would BLOCK a
-    // page-initiated re-navigation / crash-recovery reload of the proxy document,
-    // silently breaking the card. protocol.handle already fail-closes on a bad token
-    // or authority mismatch, so allowing the scheme here is safe.
+    // Proxy-document reloads require this scheme; protocol.handle separately rejects invalid tokens and authority mismatches.
     expect(decision({ url: "ave-mcp-app://abc123/proxy.html?t=tok" })).toBe(false);
     // A look-alike that only starts with the string but isn't the scheme is still blocked.
     expect(decision({ url: "https://ave-mcp-app.evil.example/" })).toBe(true);

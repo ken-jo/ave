@@ -1,21 +1,4 @@
-/**
- * First-run sample-data seed for the Work Board (user-guide onboarding).
- *
- * A brand-new install opens to an empty board, which makes the agentic flow
- * (create → approve → sub-agent executes → output) hard to discover. This step
- * seeds a small set of clearly-labelled example items on the FIRST boot of the
- * work-board domain so the board demonstrates itself — including one item that
- * is already `completed` with a captured plan + output, so the columns show the
- * full lifecycle, not just empty lanes.
- *
- * Idempotency is keyed by a one-time marker file (`sample-seeded.json`), NOT by
- * the board being empty: once the decision is recorded, deleting the demo items
- * never makes them reappear. The seed is skipped (and the marker still written)
- * when the board was migrated from a legacy plugin or already has items — a real
- * board is never polluted with examples.
- *
- * Non-fatal: any failure logs and leaves the board untouched (boot continues).
- */
+/** Seed examples only once and never over real or migrated boards; deleting demos must not reseed. Boot continues on seed failure. */
 import type { WorkBoardStorage } from "./storage.js";
 import type {
   WorkItemCreateInput,
@@ -23,10 +6,8 @@ import type {
   WorkItemListResult,
 } from "../shared/work-board-types.js";
 
-/** Marker recording that the first-run seed decision was already made. */
 export const SAMPLE_SEEDED_FILE = "sample-seeded.json";
 
-/** Narrow store surface the seed needs (satisfied by WorkBoardStore). */
 export interface SampleSeedStore {
   list(): Promise<WorkItemListResult>;
   create(input: WorkItemCreateInput): Promise<WorkItemCreateResult>;
@@ -44,9 +25,7 @@ export interface SampleSeedStore {
 export interface SampleSeedDeps {
   store: SampleSeedStore;
   marker: Pick<WorkBoardStorage, "readJson" | "writeJson">;
-  /** True when boot migrated a legacy plugin board this run — never seed over real data. */
   alreadyMigrated: boolean;
-  /** Injectable clock so due dates / timestamps are deterministic in tests. */
   now: () => number;
 }
 
@@ -62,11 +41,6 @@ interface SampleSeededMarker {
   count?: number;
 }
 
-/**
- * Build the sample items. `now` anchors the due dates so the high-priority
- * planned item lands inside the due-soon window (demonstrating the nudge) and
- * the completed item reads as finished recently.
- */
 function sampleItems(nowMs: number): Array<{
   input: WorkItemCreateInput;
   run?: { plan: string; output: string };
@@ -80,7 +54,6 @@ function sampleItems(nowMs: number): Array<{
           "Collect this week's completed and in-progress items into a weekly report draft. Open the card and choose Run; the agent will plan, request approval, and draft the report after approval.",
         priority: "high",
         status: "planned",
-        // Roughly 20 hours out: demonstrates the due-soon (24h) nudge.
         due_at: inHours(20),
       },
     },
@@ -111,21 +84,15 @@ function sampleItems(nowMs: number): Array<{
   ];
 }
 
-/**
- * Seed the sample board exactly once. Returns whether items were created.
- * Writes the marker on every terminal decision (seeded or deliberately skipped)
- * so the choice is made at most once per install.
- */
+/** Record every terminal seed decision, including deliberate skips, to prevent repeated onboarding. */
 export async function seedSampleWorkBoard(deps: SampleSeedDeps): Promise<SampleSeedResult> {
   const { store, marker, alreadyMigrated, now } = deps;
 
-  // The marker — not board emptiness — is the idempotency key.
   const existing = await marker.readJson<SampleSeededMarker>(SAMPLE_SEEDED_FILE);
   if (existing) return { seeded: false, reason: "already-decided" };
 
   const decidedAt = new Date(now()).toISOString();
 
-  // Never seed over real data: a migrated or already-populated board.
   if (alreadyMigrated) {
     await marker.writeJson(SAMPLE_SEEDED_FILE, { seeded: false, decidedAt });
     return { seeded: false, reason: "migrated" };

@@ -1,18 +1,5 @@
-/**
- * Write-file diff sidecar cache.
- *
- * When WriteFileTool content exceeds WRITE_DIFF_PREVIEW_LIMIT on either side,
- * the before/after pair is persisted to:
- *   `~/.ave/diff-cache/<sessionId>/<toolUseId>.json`
- *
- * Namespace: Storage Namespace per Feature rule (CLAUDE.md).
- * - Dir mode: 0o700, file mode: 0o600
- * - Path resolved via `aveHome()` (AVE_HOME env override compat)
- *
- * Cleanup:
- *   - `clearSessionDiffCache(sessionId)` — call on session end
- *   - `purgeStaleSessionDiffDirs(maxAgeMs)` — call at boot (fire-and-forget)
- */
+// Persist oversized before/after diffs under the feature namespace with 0o700 directories and 0o600 files.
+// Session-end and boot-age cleanup remove cached sidecars.
 
 import { mkdir, writeFile, readFile, rm, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
@@ -21,19 +8,15 @@ import { createLogger } from "../lib/logger.js";
 
 const log = createLogger("write-diff-cache");
 
-/** Max bytes per side before sidecar is written. Matches renderer's WRITE_DIFF_PREVIEW_LIMIT. */
+// Keep the sidecar threshold aligned with the renderer preview limit.
 export const WRITE_DIFF_PREVIEW_LIMIT = 4096;
 
-/** Payload stored in the sidecar file. */
 export interface WriteDiffBlob {
   before: string;
   after: string;
 }
 
-/**
- * Validate that a string is a safe session / tool-use id.
- * Accepts UUIDs, alphanumeric, hyphens, underscores — no path separators.
- */
+// IDs may contain alphanumerics, hyphens, and underscores, never path separators.
 export function isSafeId(id: string): boolean {
   return /^[a-zA-Z0-9_-]{1,128}$/.test(id);
 }
@@ -50,14 +33,7 @@ function sidecarPath(sessionId: string, toolUseId: string): string {
   return join(sessionDir(sessionId), `${toolUseId}.json`);
 }
 
-/**
- * Write a diff sidecar when content on either side exceeds the preview limit.
- *
- * Returns true when sidecar was written, false when below limit (no write).
- * On write failure: logs audit-level warn and returns false — the caller
- * keeps `truncated: true` state so the UI shows the truncated view.
- * "No Fallback Code" rule: failure is surfaced, not silently papered over.
- */
+// Write when either side exceeds the preview limit; log failure and retain visible truncation state.
 export async function writeDiffSidecar(
   sessionId: string,
   toolUseId: string,
@@ -92,11 +68,7 @@ export async function writeDiffSidecar(
   }
 }
 
-/**
- * Read a diff sidecar. Returns the blob or null when not found / invalid.
- *
- * On read failure: returns null — caller keeps truncated state.
- */
+// Missing, invalid, or unreadable sidecars return null while callers retain truncation state.
 export async function readDiffSidecar(
   sessionId: string,
   toolUseId: string,
@@ -122,9 +94,6 @@ export async function readDiffSidecar(
   }
 }
 
-/**
- * Delete all sidecar files for a session. Fire-and-forget safe.
- */
 export async function clearSessionDiffCache(sessionId: string): Promise<void> {
   if (!isSafeId(sessionId)) return;
   const dir = sessionDir(sessionId);
@@ -135,10 +104,7 @@ export async function clearSessionDiffCache(sessionId: string): Promise<void> {
   }
 }
 
-/**
- * Purge session dirs older than `maxAgeMs` ms. Intended for boot-time cleanup.
- * Fire-and-forget safe — logs failures but does not throw.
- */
+// Boot-time age cleanup logs failure without throwing.
 export async function purgeStaleSessionDiffDirs(maxAgeMs: number): Promise<{
   swept: string[];
   failed: string[];
@@ -151,7 +117,6 @@ export async function purgeStaleSessionDiffDirs(maxAgeMs: number): Promise<{
   try {
     entries = await readdir(root);
   } catch {
-    // root may not exist yet — not an error
     return { swept, failed };
   }
 

@@ -1,11 +1,3 @@
-/**
- * Main application window — creation, (re)load, and the small window helpers
- * shared across the menu, tray, and deep-link flows.
- *
- * The window instance itself and the renderer-reload flags live in
- * `app-state.ts`; this module owns the wiring (bounds, chrome, event
- * listeners, crash recovery, bootstrap splash) that produces and drives it.
- */
 import { app, BrowserWindow, screen, shell } from "electron";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
@@ -63,28 +55,13 @@ const log = createLogger("ave");
 
 export const rendererIndexUrl = () => pathToFileURL(resolve(mainDir, "..", "index.html")).toString();
 
-/**
- * The app's own document, bare or carrying the window-role query a secondary
- * window loads with. Any other path, scheme, query or fragment is refused.
- */
+// The app's own document, bare or carrying the window-role query a secondary window loads with. Any other path, scheme, query or fragment is refused.
 function isRendererIndexUrl(url: string): boolean {
   if (url === rendererIndexUrl()) return true;
   return url === `${rendererIndexUrl()}?${MAIN_WINDOW_ROLE_QUERY_KEY}=secondary`;
 }
 
-/**
- * Persisted workspace mode used to size the main window and prime the renderer
- * at creation time.
- *
- * The first `createWindow()` runs BEFORE the async bootstrap assigns
- * `services`, so the in-memory `SettingsService` is not yet available. In that
- * window we read `system.appMode` straight from the settings file on disk via
- * `readPersistedAppModeSync`. Once the service exists (re-create on macOS re-activation, recovery paths) we prefer
- * its in-memory value so an unsaved-to-disk in-session change is honored.
- *
- * Defaulting to "work" when nothing is persisted is the legitimate first-run
- * default, not a bug-papering fallback.
- */
+// Read disk before SettingsService exists; prefer its live value on later window creation to preserve in-session mode changes.
 function readPersistedAppMode(): InitialAppMode {
   const live = getServices()?.settingsService.getAll().system?.appMode;
   const normalizedLive = normalizeAppMode(live);
@@ -94,45 +71,19 @@ function readPersistedAppMode(): InitialAppMode {
 
 function initialMainWindowBounds(): { x: number; y: number; width: number; height: number } {
   const { workArea } = screen.getPrimaryDisplay();
-  // Size the window to match the persisted mode at CREATION time so the OS
-  // window never opens chat-shaped then animates to work (or vice-versa)
-  // after the renderer mounts. work → centered canvas; chat → right-docked.
+  // Size the window to match the persisted mode at CREATION time so the OS window never opens chat-shaped then animates to work (or vice-versa) after the
+  // renderer mounts. work → centered canvas; chat → right-docked.
   return readPersistedAppMode() === "work"
     ? computeWorkModeBounds(workArea)
     : computeInitialMainWindowBounds(workArea);
 }
 
-/**
- * Build the `webPreferences.additionalArguments` strings that carry the
- * host's currently cached `lastThemePayload` into every new BrowserWindow.
- *
- * The preload script parses these on document-start, applies tokens to
- * `documentElement` (frame-0 paint correct), and exposes the payload as
- * `window.__aveInitialTheme` so ThemeProvider can init synchronously
- * without racing the renderer's first `notifyPluginTheme` broadcast. See
- * `architecture.md` §6.7.1.
- *
- * Returns `[]` when no payload is cached yet (cold-boot first window) OR
- * when the serialized payload exceeds `INITIAL_THEME_ARG_MAX_BYTES` —
- * either case is harmless because the renderer's async hydrate path
- * remains in effect.
- */
+// Prime frame-zero theme through preload arguments; missing or oversized payloads defer to asynchronous hydration.
 export function initialThemeArgs(): string[] {
   const payload = getLastThemePayload();
   if (!payload) return [];
-  // Narrow projection to `InitialThemePrime` — the three fields that drive
-  // frame-0 paint. `colorScheme` / `reducedMotion` / `fonts` are renderer-
-  // only and hydrate from settings.json a few ms later, so embedding them in
-  // argv is pure overhead.
-  // User font overrides live in `settings.appearance.font`, NOT in the cached
-  // plugin-theme payload — so they're read straight from the in-memory
-  // settings service (already normalized at write time by settings-store's
-  // `isValidFontFamilyOverride` + `FONT_SIZE_SCALE_VALUES` guards). Carrying
-  // them in the frame-0 prime makes the main renderer paint at the
-  // configured size + family instead of flashing the default step /
-  // HOST_FONT_STACK until React hydrates. `"system"` family + a missing scale
-  // are the defaults, so they're left off the wire (no override → omit the
-  // field); the CSS fallback is the default step.
+  // Prime only initial paint fields; read validated user font overrides from live settings, not cached plugin theme.
+  // Omit default font values and leave renderer-only fields to normal hydration.
   const font = getServices()?.settingsService.getAll().appearance?.font;
   const fontSizeScale = typeof font?.sizeScale === "number" ? font.sizeScale : undefined;
   const fontFamily = font?.family && font.family !== "system" ? font.family : undefined;
@@ -153,22 +104,13 @@ export function initialThemeArgs(): string[] {
   return [`${INITIAL_THEME_ARG_PREFIX}${serialized}`];
 }
 
-/**
- * Serialize the persisted workspace mode into `additionalArguments` so the
- * preload can expose `window.__aveInitialAppMode` and the renderer's first
- * React render seeds `appMode` from the saved value (no wrong-mode flash). The
- * value is always one of the validated `AppMode` literals, so no size cap is
- * needed (unlike the theme payload). Wire format SoT: `initial-app-mode.ts`.
- */
+// Prime the validated saved mode through the shared initial-app-mode wire format to avoid a wrong-mode first render.
 function initialAppModeArgs(): string[] {
   return [`${INITIAL_APP_MODE_ARG_PREFIX}${readPersistedAppMode()}`];
 }
 
-/**
- * Open one main app window. Several may be open at once; the first live one
- * owns the primary conversation (see `app-state.ts`). Returns the window, or
- * `null` for a headless run.
- */
+// Open one main app window. Several may be open at once; the first live one owns the primary conversation (see `app-state.ts`). Returns the window, or
+// `null` for a headless run.
 export function createWindow(
   options: { showBootstrapSplash?: boolean; headless?: boolean } = {},
 ): BrowserWindow | null {
@@ -187,23 +129,18 @@ export function createWindow(
     show: true,
     icon: resolveAppIconPath(),
     autoHideMenuBar: false,
-    // Cross-platform titlebar — see `src/main/window-chrome.ts` for the
-    // full rationale. The helper unifies main / settings / link / auth.
+    // Cross-platform titlebar — see `src/main/window-chrome.ts` for the full rationale. The helper unifies main / settings / link / auth.
     ...getCommonChromeOptions(),
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
       // The host preload and its sandbox (false: it needs Node built-ins), from the one table.
       ...hostPreload,
-      // render_html tool renders LLM-produced HTML inside an Electron
-      // <webview>. The webview runs on its own webContents / OS process so
-      // a malicious or runaway payload (e.g. `while(true){}`) can't freeze
-      // the main UI. The <webview> tag is gated by webPreferences.webviewTag.
+      // render_html tool renders LLM-produced HTML inside an Electron <webview>. The webview runs on its own webContents / OS process so a malicious or
+      // runaway payload (e.g. `while(true){}`) can't freeze the main UI. The <webview> tag is gated by webPreferences.webviewTag.
       webviewTag: true,
-      // Pass the host's cached lastThemePayload + persisted appMode to the
-      // renderer so ThemeProvider and the App shell can both init from frame 0
-      // (no flash of fallback theme / wrong mode). See initialThemeArgs() and
-      // initialAppModeArgs() above.
+      // Pass the host's cached lastThemePayload + persisted appMode to the renderer so ThemeProvider and the App shell can both init from frame 0 (no flash of
+      // fallback theme / wrong mode). See initialThemeArgs() and initialAppModeArgs() above.
       additionalArguments: [...initialThemeArgs(), ...initialAppModeArgs()],
     },
   });
@@ -213,17 +150,11 @@ export function createWindow(
   // Point-to-point sends (menu actions, dialogs) follow the window in use.
   win.on("focus", () => markMainWindowFocused(win));
 
-  // Attach maximize / fullscreen broadcast listeners. These must be registered
-  // on every new BrowserWindow instance (initial boot, macOS re-activation,
-  // and any recovery path). The IPC handlers in ipc-bridge.ts look up the
-  // current window via getMainWindow() at call-time, but win.on() bindings
-  // are instance-specific and are lost when a new window object is created.
+  // Register native state listeners on every new window instance; IPC’s live window lookup does not restore lost instance bindings.
   registerWindowEventListeners(win);
 
-  // Development debugging is provided by the renderer-side eruda console
-  // (AVE_DEV_CONSOLE=1). Do not auto-open native Chromium DevTools: it
-  // changes the runtime viewport and makes UI regressions look different
-  // from the real app window.
+  // Development debugging is provided by the renderer-side eruda console (AVE_DEV_CONSOLE=1). Do not auto-open native Chromium DevTools: it changes the
+  // runtime viewport and makes UI regressions look different from the real app window.
 
   win.once("ready-to-show", () => {
     log.info("window ready-to-show");
@@ -232,28 +163,13 @@ export function createWindow(
   win.on("close", (event) => {
     if (isAppUpdateInstallRequested()) return;
     if (isAppShutdownStarted() || isAppShutdownCompleted() || !getTray() || win.isDestroyed()) return;
-    // With another main window still open, closing this one closes it for
-    // real: only the last remaining window follows the close-button
-    // preference (hide to tray / quit), so extra windows never pile up as
-    // hidden zombies and closing one window never quits the others.
+    // With another main window still open, closing this one closes it for real: only the last remaining window follows the close-button preference (hide to
+    // tray / quit), so extra windows never pile up as hidden zombies and closing one window never quits the others.
     if (getMainWindows().some((other) => other !== win)) return;
-    // Honour user's close-button preference. The default is `hide-to-tray`
-    // (keeps routine scheduler + plugin background work alive); a user who
-    // picks `quit` in Settings → 일반 → 시스템 동작 gets the conventional
-    // Windows behaviour (close button terminates the app).
-    //
-    // Defensive `?? "hide-to-tray"` covers two real cases:
-    //   (1) very early boot before `services` is assigned;
-    //   (2) older settings.json from a pre-PR version with no `system`
-    //       block — the renderer-side AppSettings types `system?` as
-    //       optional, mirroring this fallback.
+    // hide-to-tray keeps background work alive; it is also the early-boot and missing-system-settings default.
     const behavior = getServices()?.settingsService.getAll().system?.closeBehavior ?? "hide-to-tray";
     if (behavior === "quit") {
-      // Gate the destroy through `before-quit` so the cleanup pipeline
-      // owns shutdown ordering — calling `app.quit()` without preventDefault
-      // races the window's default destroy against the async cleanup queue
-      // and can leave the user staring at an invisible-but-not-yet-exited
-      // process for up to `cleanupTimeoutMs` on slow shutdowns.
+      // Prevent default close and let before-quit own destruction after bounded asynchronous cleanup.
       event.preventDefault();
       app.quit();
       return;
@@ -264,18 +180,16 @@ export function createWindow(
   });
   win.on("closed", () => {
     unregisterMainWindow(win);
-    // Its shells go with it. On macOS the app outlives its last window, and a
-    // window opened later restores the layout under the same terminal ids, in
-    // new shells (`pty-manager.ts` waits for these to exit first).
+    // Its shells go with it. On macOS the app outlives its last window, and a window opened later restores the layout under the same terminal ids, in new
+    // shells (`pty-manager.ts` waits for these to exit first).
     killTerminalsOwnedBy(windowId);
     requestNativeChromeRefresh();
   });
   win.webContents.on("did-fail-load", (_e, code, desc, url) => {
     log.error({ code, desc, url }, "window failed to load");
   });
-  // Recovery: if the renderer crashes (e.g. GPU-lost after GPU utility failure),
-  // reload index.html. IPC handlers are registered on the main-process side and
-  // survive a renderer restart — the reloaded renderer reconnects automatically.
+  // Recovery: if the renderer crashes (e.g. GPU-lost after GPU utility failure), reload index.html. IPC handlers are registered on the main-process side
+  // and survive a renderer restart — the reloaded renderer reconnects automatically.
   win.webContents.on("render-process-gone", (_e, details) => {
     log.error({ details }, "main window renderer process gone");
     if (!isRendererReloadReady()) {
@@ -293,8 +207,7 @@ export function createWindow(
   });
 
   win.webContents.on("will-attach-webview", (event, webPreferences, params) => {
-    // Plugin frames, MCP app frames and the side browser each have a guard that
-    // sets the guest's preferences in main; a guest no guard owns is refused.
+    // Plugin frames, MCP app frames and the side browser each have a guard that sets the guest's preferences in main; a guest no guard owns is refused.
     const attach = configureMainWindowWebviewAttach({
       event,
       webPreferences: webPreferences as Record<string, unknown>,
@@ -304,13 +217,7 @@ export function createWindow(
       log.warn({ src: params.src, partition: params.partition, owner: attach.owner }, "blocked webview attach");
     }
   });
-  // Every browser guest this window hosts — wherever the renderer mounted it.
-  // The partition identifies it: will-attach-webview refuses any guest whose
-  // partition no guard owns, and the side browser's guard has already blocked
-  // a non-http(s) src, so a guest that attaches on this partition is one the
-  // guard accepted. The tab it renders is bound afterwards by the renderer
-  // (`ave:browser:bind-tab`), keyed by this guest's webContents id — never by
-  // matching URLs, which two tabs can share.
+  // Track only guests admitted by a partition guard, then bind by webContents ID; URLs cannot identify duplicate tabs.
   win.webContents.on("did-attach-webview", (_event, contents) => {
     if (!isSideBrowserContents(contents)) return;
     attachSideBrowserWebview(contents, win);
@@ -318,8 +225,7 @@ export function createWindow(
     log.debug({ webContentsId: contents.id }, "browser webview attached");
   });
 
-  // 외부 URL → 시스템 브라우저로 리다이렉트 (앱 내 탐색 방지)
-  // window.open() 차단
+  // 외부 URL → 시스템 브라우저로 리다이렉트 (앱 내 탐색 방지) window.open() 차단
   win.webContents.setWindowOpenHandler(({ url }) => {
     try {
       const parsedUrl = new URL(url);
@@ -340,25 +246,15 @@ export function createWindow(
     }
     return { action: "deny" };
   });
-  // <a href> 클릭 또는 location.href 변경으로 인한 탐색 차단.
-  // Electron 24+ exposes the URL on `details.url`; the legacy positional
-  // `url` arg is deprecated and arrives empty on Electron 41.x, so we read
-  // the canonical event payload only.
+  // <a href> 클릭 또는 location.href 변경으로 인한 탐색 차단. Electron 24+ exposes the URL on `details.url`; the legacy positional `url` arg is deprecated and arrives
+  // empty on Electron 41.x, so we read the canonical event payload only.
   win.webContents.on("will-navigate", (details) => {
     const url = details.url;
-    // Pin to the app's OWN document rather than allowing the file: scheme.
-    // This window carries the full host preload, so any other file: document
-    // — a dropped HTML file, an attacker-written one — would inherit the whole
-    // `aveApi` bridge, and its `senderFrame.url` is a file: URL that passes
-    // both `validateSender` and `validateHostRendererSender`. Nothing in the
-    // renderer navigates itself; the splash and index are loaded from main via
-    // loadURL/loadFile, which do not raise `will-navigate`.
+    // Pin navigation to the app’s own document; any other file document would inherit the full host preload and pass file-origin sender checks.
     if (isRendererIndexUrl(url)) return;
     details.preventDefault();
-    // The fallback used to hand the raw URL to `shell.openExternal`, which
-    // launches any registered handler — `ms-msdt:`, `smb://` (NTLM leak),
-    // `search-ms:`. The sibling `setWindowOpenHandler` above already enforces
-    // http/https; route through the shared validator so both agree.
+    // The fallback used to hand the raw URL to `shell.openExternal`, which launches any registered handler — `ms-msdt:`, `smb://` (NTLM leak), `search-ms:`.
+    // The sibling `setWindowOpenHandler` above already enforces http/https; route through the shared validator so both agree.
     const validated = validateExternalUrl(url);
     if (!validated.ok) {
       log.warn({ url, error: validated.error }, "blocked navigation to disallowed URL");
@@ -370,8 +266,7 @@ export function createWindow(
   });
 
   if (showBootstrapSplash) {
-    // §M-race: bootstrap 동안 splash만 표시. 실 index.html 로드는 main()이
-    // IPC 핸들러 등록 후 수행.
+    // §M-race: bootstrap 동안 splash만 표시. 실 index.html 로드는 main()이 IPC 핸들러 등록 후 수행.
     markBootstrapSplashShown();
     void win
       .loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(BOOTSTRAP_SPLASH)}`)
@@ -384,9 +279,8 @@ export function createWindow(
 export async function loadMainInterface(win: BrowserWindow, reason: string) {
   if (win.isDestroyed()) return;
   try {
-    // A secondary window's renderer is told so through the document URL (the
-    // primary loads the bare index, exactly as before multi-window). Crash
-    // recovery reloads through here too, so the role is re-derived each time.
+    // A secondary window's renderer is told so through the document URL (the primary loads the bare index, exactly as before multi-window). Crash recovery
+    // reloads through here too, so the role is re-derived each time.
     const isPrimary = getPrimaryMainWindow() === win;
     await win.loadFile(
       resolve(mainDir, "..", "index.html"),
@@ -408,14 +302,7 @@ export function showMainWindow(win: BrowserWindow): void {
   win.moveTop();
 }
 
-/**
- * E4 — toggle the main window's visibility, the action bound to the global
- * show/hide accelerator. If the window is hidden or not focused, bring it
- * forward (reuses {@link showMainWindow}); if it is already visible AND
- * focused, hide it. The "focused" check makes the toggle feel right when the
- * window is visible but behind other apps — the first press raises it, the
- * second hides it. Returns the action taken so callers/tests can assert.
- */
+// Raise hidden or unfocused windows; hide only a visible focused window so the first shortcut press always brings the app forward.
 export function toggleMainWindowVisibility(win: BrowserWindow): "shown" | "hidden" {
   if (win.isDestroyed()) return "shown";
   const visibleAndFocused = win.isVisible() && !win.isMinimized() && win.isFocused();
@@ -427,7 +314,7 @@ export function toggleMainWindowVisibility(win: BrowserWindow): "shown" | "hidde
   return "shown";
 }
 
-/** Every open main window — the broadcast target set (see `app-state.ts`). */
+// Every open main window — the broadcast target set (see `app-state.ts`).
 export function getAppWindows(): BrowserWindow[] {
   return getMainWindows();
 }

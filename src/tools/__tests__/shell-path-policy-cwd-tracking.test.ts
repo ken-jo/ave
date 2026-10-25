@@ -1,37 +1,15 @@
-/**
- * A relative operand is only meaningful together with the directory it
- * resolves against, and `cd` changes that directory partway through a command.
- *
- * The policy used to resolve every operand against the session cwd, so
- * `cd /tmp && cat ../../etc/passwd` read as `<session cwd>/../../etc/passwd` —
- * inside the boundary — while the shell, standing in `/tmp`, read
- * `/etc/passwd`. The `cd` target itself was checked, which is why the escape
- * needed a directory that was ALLOWED but shallower than the session cwd; from
- * there `..` reaches places the static resolution never looks at.
- *
- * The shared execution inspector follows typed statement scopes and resolves
- * each operand against the possible directories at that point of execution.
- */
+// Resolve operands against each possible execution directory, including changes made by cd.
 import { homedir } from "node:os";
 import { describe, expect, it } from "vitest";
 
 import { findShellPathPolicyViolation } from "../shell-path-policy.js";
 
-// A session cwd deliberately DEEPER than the extra allowed directory, which is
-// the shape the escape needs: `..` from the shallow one climbs out, `..` from
-// the deep one does not.
+// A shallower allowed directory makes traversal escape only after cd.
 const ROOT = "/private/tmp/ave-cwd-tracking";
 const CWD = `${ROOT}/src/deep/nested`;
 const EXTRAS = ["/tmp"];
 
-/**
- * `blockReads` is `permissions.blockReadsOutsideWorkingDirectories`. It ships
- * OFF, so a READ operand is bounded by the Layer 0 deny-list rather than by
- * this boundary; the cwd-tracking escape therefore has to be shown twice — with
- * a write verb under the shipped policy, and with the original read verb once
- * the user re-fences reads. Both prove the same mechanic: the operand resolves
- * against the directory `cd` moved to.
- */
+// Reads are unfenced by default but retain the sensitive-path deny-list; test cwd tracking with writes and fenced reads.
 function check(command: string, blockReads = false) {
   return findShellPathPolicyViolation(command, CWD, ROOT, EXTRAS, blockReads);
 }
@@ -65,16 +43,12 @@ describe("shell path policy — working directory tracking", () => {
   });
 
   it("still resolves against the session cwd when no cd is present", () => {
-    // The historical behaviour, unchanged: this is the check that was always
-    // here, and it must keep catching what it caught. Shown on a write, and on
-    // the original read once reads are re-fenced.
+    // Check both write confinement and opt-in read confinement.
     expect(check("cp ./staged ../../../../../etc/evil")).not.toBeNull();
     expect(check("cat ../../../../../etc/passwd", true)).not.toBeNull();
   });
 
-  // Reading outside the boundary is the SHIPPED behaviour, not a gap the cases
-  // above forgot: a directory list answers what may be changed, and a read is
-  // bounded by the Layer 0 deny-list, which still catches `/etc/shadow` above.
+  // Wide reads remain allowed by directory policy but must still respect protected paths.
   it("admits a read that climbs out, under the shipped policy", () => {
     expect(check("cd /tmp && cat ../../etc/passwd")).toBeNull();
     expect(check("cat ../../../../../etc/passwd")).toBeNull();
@@ -91,9 +65,7 @@ describe("shell path policy — working directory tracking", () => {
   });
 
   it("resolves a later operand against the directory cd moved to, not the session cwd", () => {
-    // `../notes.txt` from `<cwd>/sub` is `<cwd>/notes.txt`. Both readings stay
-    // inside the boundary here — the point is that the walk uses the moved-to
-    // directory, which the escape cases above prove by being caught.
+    // Resolve the operand against the directory entered by cd.
     expect(check("cd sub && cat ../notes.txt")).toBeNull();
   });
 
@@ -108,17 +80,12 @@ describe("shell path policy — working directory tracking", () => {
     });
 
     it("says what to do instead", () => {
-      // The message is shown to the user, so it has to name a way forward.
       expect(check("cd $DIR && cat foo")!.reason).toMatch(/unresolved working-directory destination/i);
     });
 
     it("treats a bare cd as decidable — it goes home, which is then checked", () => {
-      // Home is outside the sandbox root, so this is a boundary violation
-      // rather than an indeterminate one. Distinguishing them matters: only the
-      // indeterminate case is unanalysable.
-      //
-      // A bare cd supplies no path word: its destination comes from the
-      // prepared HOME fact and receives the same boundary check.
+      // Bare cd resolves through prepared HOME and must receive the same boundary check.
+      // A known outside destination is a violation, distinct from an unresolved destination.
       const violation = findShellPathPolicyViolation("cd && cat foo", CWD, ROOT, EXTRAS, true, { dialect: "bash", environment: { HOME: homedir() } });
       expect(violation).not.toBeNull();
       expect(violation!.kind).toBe("sandbox-boundary");

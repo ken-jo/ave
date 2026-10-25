@@ -1,15 +1,5 @@
-/**
- * `skill_read` — tool-level security contract.
- *
- * The store owns containment; this file owns the ACCESS decision, which lives
- * entirely in the tool:
- *   - a skill that is not in the current turn's overlay is unreadable
- *     (overlay membership ⇒ it passed `skill_load`'s approval gate),
- *   - only paths listed in the manifest captured at load time are served,
- *   - a plugin read refuses when the live generation drifted from the approved
- *     one, and always releases its lease,
- *   - no session id ⇒ refuse.
- */
+// Reads require session attribution, an approved overlay entry, and a load-time manifest path.
+// Plugin generation drift refuses access; every acquired lease must be released.
 import { describe, it, expect } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
@@ -30,7 +20,7 @@ function ctx(sessionId = "session-x"): ToolExecutionContext {
   } as ToolExecutionContext;
 }
 
-/** Context with no session attribution — `skill_read` must refuse outright. */
+// Missing session attribution must refuse access.
 function ctxWithoutSession(): ToolExecutionContext {
   return {
     cwd: process.cwd(),
@@ -120,8 +110,7 @@ describe("skill_read — access control", () => {
       const store = new SkillStore({ userDir: dir });
       const overlay = new SkillOverlay();
       overlay.register("session-x", (await store.load("guide"))!);
-      // Planted AFTER load: it exists on disk and is contained, but it was
-      // never listed to the model, so it is not authorized.
+      // Contained files added after load are not part of the approved manifest.
       writeFileSync(join(skillDir, "references", "later.md"), "LATER");
       const tool = createSkillReadTool({ store, overlay });
       const r = await tool.execute({ skillName: "guide", resourcePath: "references/later.md" }, ctx());
@@ -205,7 +194,7 @@ describe("skill_read — plugin generation binding", () => {
       );
       expect(r.isError).toBe(true);
       expect(r.output).toContain("generation changed");
-      expect(released).toBe(1); // lease released even on refusal
+      expect(released).toBe(1); // Release the lease even on refusal.
     } finally {
       await cleanupTmpDir(dir);
     }
@@ -261,13 +250,11 @@ describe("skill_load — approval covers the bundled manifest", () => {
       expect(first.isError).toBe(false);
       expect(prompts).toBe(1);
 
-      // Same body, second load: still approved, no new prompt.
       const second = await tool.execute({ skillName: "guide" }, ctx());
       expect(second.isError).toBe(false);
       expect(prompts).toBe(1);
 
-      // A NEW bundled file changes what renders in the trusted fence, so the
-      // approval must no longer match.
+      // New bundled content changes trusted approval material and must invalidate the old approval.
       writeFileSync(join(skillDir, "references", "extra.md"), "EXTRA");
       const third = await tool.execute({ skillName: "guide" }, ctx());
       expect(third.isError).toBe(false);
@@ -280,8 +267,7 @@ describe("skill_load — approval covers the bundled manifest", () => {
 
 describe("skill_read — manifest fidelity", () => {
   it("serves a filename containing '&' exactly as the skill_load result renders it", async () => {
-    // Regression: escaping the manifest line rewrote `Q&A.md` to `Q&amp;A.md`,
-    // so the model echoed a name the authorized set never contained.
+    // Keep manifest names literal so Q&A.md cannot become an unauthorized Q&amp;A.md request.
     const dir = mkdtempSync(join(tmpdir(), "ave-skills-"));
     try {
       const skillDir = userSkillDir(dir, "guide");
@@ -306,8 +292,7 @@ describe("skill_read — manifest fidelity", () => {
     const { createSkillLoadTool } = await import("../skill-load.js");
     const dir = mkdtempSync(join(tmpdir(), "ave-skills-"));
     try {
-      // Flat skill => no bundle => the hashed material must stay the bare body,
-      // so approvals recorded before stage-3 remain valid (no mass re-prompt).
+      // Flat skills hash the bare body to preserve existing approval records.
       writeFileSync(join(dir, "flat.md"), "---\nname: flat\ndescription: d\n---\nFLAT BODY");
       const store = new SkillStore({ userDir: dir });
       const seen: string[] = [];
@@ -316,7 +301,6 @@ describe("skill_read — manifest fidelity", () => {
         store,
         overlay: new SkillOverlay(),
         approvals: {
-          // Pre-seeded with the PRE-stage-3 material (the bare body).
           isApproved: async (_key: string, material: string) => {
             seen.push(material);
             return material === "FLAT BODY";
@@ -331,7 +315,7 @@ describe("skill_read — manifest fidelity", () => {
       const r = await tool.execute({ skillName: "flat" }, ctx());
       expect(r.isError).toBe(false);
       expect(seen).toEqual(["FLAT BODY"]);
-      expect(prompts).toBe(0); // existing approval still honored
+      expect(prompts).toBe(0);
     } finally {
       await cleanupTmpDir(dir);
     }
@@ -343,15 +327,11 @@ describe("skill_load — approval key domains", () => {
     const { createSkillLoadTool } = await import("../skill-load.js");
     const dir = mkdtempSync(join(tmpdir(), "ave-skills-"));
     try {
-      userSkillDir(dir, "guide"); // directory skill WITH a bundled file
+      userSkillDir(dir, "guide");
       writeFileSync(join(dir, "flat.md"), "---\nname: flat\ndescription: d\n---\nFLAT BODY");
       const store = new SkillStore({ userDir: dir });
       const keys: string[] = [];
-      // BOTH sides are recorded. An earlier round of this feature applied the
-      // namespacing to `approve` but not `isApproved`, which stores an approval
-      // under one key and looks it up under another — the user re-approves every
-      // single load and nothing looks broken. Asserting only the read side would
-      // not have caught it.
+      // Approval writes and lookups must use the same namespace.
       const approvedKeys: string[] = [];
       const approvedMaterial: string[] = [];
       const tool = createSkillLoadTool({
@@ -369,13 +349,10 @@ describe("skill_load — approval key domains", () => {
       });
       await tool.execute({ skillName: "flat" }, ctx());
       await tool.execute({ skillName: "guide" }, ctx());
-      // Flat keeps the legacy key; the bundle-bearing skill is namespaced, so
-      // the two material encodings can never share a record.
+      // Flat and bundled material encodings must never share approval records.
       expect(keys).toEqual(["flat", "guide#bundled"]);
-      // …and the write side uses the SAME keys, in the same order.
       expect(approvedKeys).toEqual(keys);
-      // The material differs in kind, which is why the namespaces exist: a flat
-      // skill binds its body verbatim, a bundled one binds a digest pair.
+      // Flat approval binds the body; bundled approval binds a digest pair.
       expect(approvedMaterial[0]).toContain("FLAT BODY");
       expect(approvedMaterial[1]).toMatch(/^[0-9a-f]{64}\|[0-9a-f]{64}$/);
     } finally {

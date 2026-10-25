@@ -1,13 +1,4 @@
-/**
- * Where a CLI the user installed can be, for the subscription runtimes that
- * start the user's own official CLI (`codex`, `claude`).
- *
- * The user never points Ave at the file. Ave looks where the user's shell
- * would — every fully qualified PATH entry — and then in the provider's
- * official install locations, which matter because an app started from the
- * desktop inherits a PATH without them. Each runtime's locator decides what a
- * candidate has to prove before it is used; this module only lists them.
- */
+// Desktop launches may omit provider install directories from PATH; list fully qualified PATH entries and standard install locations.
 import { posix, win32 } from "node:path";
 
 const MAX_PATH_LENGTH = 4_096;
@@ -23,18 +14,14 @@ export function cliPathApi(platform: NodeJS.Platform): typeof posix {
   return platform === "win32" ? win32 : posix;
 }
 
-/**
- * An absolute path that does not depend on the process's current drive or
- * directory. Device namespaces are not ordinary filesystem executable
- * locations, and a rooted Windows path without a drive inherits the current one.
- */
+// Reject device namespaces and drive-relative Windows paths; candidates must not depend on cwd.
 export function fullyQualifiedCliPath(value: string, platform: NodeJS.Platform): boolean {
   if (platform !== "win32") return posix.isAbsolute(value);
   if (/^[\\/]{2}[?.][\\/]/.test(value)) return false;
   return /^[a-z]:[\\/]/i.test(value) || /^[\\/]{2}[^\\/]+[\\/][^\\/]+(?:[\\/]|$)/.test(value);
 }
 
-/** A directory value from the environment, or null when it cannot be trusted as one. */
+// A directory value from the environment, or null when it cannot be trusted as one.
 export function usableCliDirectory(value: string | undefined, platform: NodeJS.Platform): string | null {
   if (typeof value !== "string") return null;
   const trimmed = platform === "win32" ? value.trim().replace(/^"(.*)"$/, "$1") : value;
@@ -42,18 +29,15 @@ export function usableCliDirectory(value: string | undefined, platform: NodeJS.P
   return fullyQualifiedCliPath(trimmed, platform) ? trimmed : null;
 }
 
-/** Windows environment names are case-insensitive. */
+// Windows environment names are case-insensitive.
 export function cliEnvironmentValue(env: NodeJS.ProcessEnv, name: string, platform: NodeJS.Platform): string | undefined {
   if (platform !== "win32") return env[name];
   const key = Object.keys(env).find((candidate) => candidate.toUpperCase() === name.toUpperCase());
   return key === undefined ? undefined : env[key];
 }
 
-/**
- * Candidates, most specific first: each PATH entry joined with each file name
- * the CLI goes by on this platform, then `installLocations` in the order given.
- * Relative PATH entries are skipped, and a path listed twice is tried once.
- */
+// Candidates, most specific first: each PATH entry joined with each file name the CLI goes by on this platform, then `installLocations` in the order
+// given. Relative PATH entries are skipped, and a path listed twice is tried once.
 export function cliExecutableCandidates(
   discovery: CliDiscoveryEnvironment,
   names: readonly string[],

@@ -64,7 +64,6 @@ export interface PermissionAuditSelfTestReceipt {
   readonly file: PermissionAuditProofFile;
 }
 
-/** Parse the proof command before the ordinary host boot path runs. */
 export function parsePermissionAuditProofCommand(
   argv: readonly string[],
 ): PermissionAuditProofCommand | null {
@@ -101,7 +100,6 @@ export function parsePermissionAuditSelfTestCommand(
   return { challenge };
 }
 
-/** Create one challenge-bound row using only the packaged audit implementation. */
 export async function createPermissionAuditSelfTest(
   challenge: string,
   now: () => Date = () => new Date(),
@@ -282,7 +280,6 @@ async function verifyAuditFile(
   }
 }
 
-/** Verify frozen permission audit evidence without starting the host runtime. */
 export async function createPermissionAuditProof(
   challenge: string,
   now: () => Date = () => new Date(),

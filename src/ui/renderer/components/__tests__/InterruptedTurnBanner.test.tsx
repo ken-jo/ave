@@ -1,9 +1,6 @@
 // @vitest-environment jsdom
-/**
- * Relaunch rendering for a turn the previous app run never finished: the
- * partial answer keeps its interrupted badge, and the composer offers Continue
- * — which runs only when clicked.
- */
+/** Relaunch rendering for a turn the previous app run never finished: the partial answer keeps its interrupted badge, and
+ * the composer offers Continue — which runs only when clicked. */
 import "../../../../../test/renderer/setup.js";
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";

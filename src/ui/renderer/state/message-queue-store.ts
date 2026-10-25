@@ -1,8 +1,3 @@
-
-
-
-
-
 import { t } from "../../../i18n/runtime.js";
 
 export interface MessageQueueItem {
@@ -12,22 +7,13 @@ export interface MessageQueueItem {
   createdAt: number;
 
   expiresAt: number;
-  /**
-   * The exact text handed to the engine at a brake point, set once the engine
-   * has ACCEPTED it and cleared once it has actually been delivered.
-   *
-   * The row stays on screen in between because acceptance is not arrival: the
-   * engine holds guidance until its next round boundary, which can be a whole
-   * LLM round away. Clearing the row at hand-off left the message invisible in
-   * BOTH places for that entire stretch — gone from the queue, not yet in the
-   * transcript. That gap is what reads as "the queue just disappeared".
-   */
+  /** Keep accepted guidance visible until delivered at the next round boundary; engine acceptance alone does not mean it is
+   * in the transcript. */
   handedOffAs?: string;
 }
 
 let nextId = 0;
 function makeId(): string {
-
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
     return crypto.randomUUID();
   }
@@ -57,20 +43,13 @@ export class MessageQueueStore {
   /** 큐 capacity caps — economic DoS 방어. add() 가 throw 함. */
   static readonly MAX_ITEMS = 50;
   static readonly MAX_ITEM_CHARS = 8000;
-  /**
-   * 큐 항목 자동 만료 TTL (30 분). 사용자가 큐에 적재 후 장시간 방치 시
-   * stale 항목이 의도치 않게 inject 되는 회귀 방지. take/getItems 에서
-   * lazy prune.
-   */
+  /** 큐 항목 자동 만료 TTL (30 분). 사용자가 큐에 적재 후 장시간 방치 시 stale 항목이 의도치 않게 inject 되는 회귀 방지. take/getItems 에서 lazy prune. */
   static readonly DEFAULT_TTL_MS = 30 * 60 * 1000;
 
   private items: MessageQueueItem[] = [];
   private listeners = new Set<() => void>();
 
-  /**
-   * Lazy prune — 만료된 항목 제거. 모든 read/take 메서드가 호출.
-   * 항목 변동 있으면 listener notify.
-   */
+  /** Lazy prune — 만료된 항목 제거. 모든 read/take 메서드가 호출. 항목 변동 있으면 listener notify. */
   private prune(): void {
     const now = Date.now();
     const next = this.items.filter((it) => it.expiresAt > now);
@@ -84,9 +63,8 @@ export class MessageQueueStore {
     if (trimmed.length === 0) {
       throw new Error("MessageQueueStore.add: empty text rejected");
     }
-    // Cap: economic DoS / API cost blast 방어.
-    // 사용자 button-mash 사고로 1000+ 항목 누적 시 formatQueueInject 의 거대
-    // string 이 다음 brake-point 에 통째로 paid LLM API 로 전송되는 것 차단.
+    // Cap: economic DoS / API cost blast 방어. 사용자 button-mash 사고로 1000+ 항목 누적 시 formatQueueInject 의 거대 string 이 다음 brake-point
+    // 에 통째로 paid LLM API 로 전송되는 것 차단.
     if (trimmed.length > MessageQueueStore.MAX_ITEM_CHARS) {
       throw new Error(
         `MessageQueueStore.add: item exceeds ${MessageQueueStore.MAX_ITEM_CHARS} chars`,
@@ -143,11 +121,8 @@ export class MessageQueueStore {
     if (this.items.length !== before) this.notify();
   }
 
-  /**
-   * Return handed-off rows to the queue — the engine took them but could not
-   * deliver them (`guidance_dropped`), so they are the user's again and the
-   * end-of-turn drain must pick them up.
-   */
+  /** Return handed-off rows to the queue — the engine took them but could not deliver them (`guidance_dropped`), so they are
+   * the user's again and the end-of-turn drain must pick them up. */
   releaseHandedOff(): void {
     let changed = false;
     this.items = this.items.map((it) => {
@@ -165,11 +140,8 @@ export class MessageQueueStore {
     return this.items.filter((it) => it.handedOffAs === undefined);
   }
 
-  /**
-   * 큐 항목 텍스트 수정. 빈/cap 초과 throw — add 와 동일 contract.
-   * Returns: true 면 변경됨 (listener notify). 같은 텍스트면 false (no-op).
-   * 수정 시 expiresAt 갱신 (사용자 액션 = TTL reset).
-   */
+  /** 큐 항목 텍스트 수정. 빈/cap 초과 throw — add 와 동일 contract. Returns: true 면 변경됨 (listener notify). 같은 텍스트면 false (no-op). 수정 시
+   * expiresAt 갱신 (사용자 액션 = TTL reset). */
   update(id: string, text: string): boolean {
     const trimmed = text.trim();
     if (trimmed.length === 0) {
@@ -219,10 +191,7 @@ export class MessageQueueStore {
     this.notify();
   }
 
-  /**
-   * 자연 인입 — 큐 전체를 꺼내고 비움. brake-point hook 에서 호출.
-   * Returns: items in insertion order (selection state 무시).
-   */
+  /** 자연 인입 — 큐 전체를 꺼내고 비움. brake-point hook 에서 호출. Returns: items in insertion order (selection state 무시). */
   takeAll(): MessageQueueItem[] {
     if (this.items.length === 0) return [];
     const taken = this.items;
@@ -231,10 +200,7 @@ export class MessageQueueStore {
     return taken;
   }
 
-  /**
-   * 즉시 주입 — 선택된 항목만 꺼내고 비움. 미선택 항목은 잔존.
-   * ⌘⏎ 인터럽트에서 호출. selection state 가 false 인 항목은 그대로.
-   */
+  /** 즉시 주입 — 선택된 항목만 꺼내고 비움. 미선택 항목은 잔존. ⌘⏎ 인터럽트에서 호출. selection state 가 false 인 항목은 그대로. */
   takeSelected(): MessageQueueItem[] {
     const selected = this.items.filter((it) => it.selected);
     if (selected.length === 0) return [];
@@ -243,10 +209,7 @@ export class MessageQueueStore {
     return selected;
   }
 
-  /**
-   * 행별 즉시 — 특정 1 항목을 꺼내고 비움. 다른 항목은 잔존.
-   * 큐 행의 [↑ 즉시] 버튼에서 호출.
-   */
+  /** 행별 즉시 — 특정 1 항목을 꺼내고 비움. 다른 항목은 잔존. 큐 행의 [↑ 즉시] 버튼에서 호출. */
   takeOne(id: string): MessageQueueItem | null {
     const idx = this.items.findIndex((it) => it.id === id);
     if (idx === -1) return null;
@@ -256,8 +219,7 @@ export class MessageQueueStore {
     return taken;
   }
 
-  // ─── selectors ───
-  // 모든 selector + take* 는 prune 먼저 호출 — 만료된 항목 lazy 제거.
+    // 모든 selector + take* 는 prune 먼저 호출 — 만료된 항목 lazy 제거.
   getItems(): readonly MessageQueueItem[] {
     this.prune();
     return this.items;
@@ -275,11 +237,7 @@ export class MessageQueueStore {
     return this.items.reduce((n, it) => (it.selected ? n + 1 : n), 0);
   }
 
-  // ─── subscription ───
-  /**
-   * useSyncExternalStore 호환 subscribe.
-   * 반환된 unsubscribe 함수로 listener 제거.
-   */
+  /** useSyncExternalStore 호환 subscribe. 반환된 unsubscribe 함수로 listener 제거. */
   subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener);
     return () => {
@@ -288,8 +246,7 @@ export class MessageQueueStore {
   };
 
   private notify(): void {
-    // Listener isolation — 한 listener throw 가 다른 listener 호출 막지 않음.
-    // useSyncExternalStore 가 React 내부에서 listener 호출하므로 throw 가
+    // Listener isolation — 한 listener throw 가 다른 listener 호출 막지 않음. useSyncExternalStore 가 React 내부에서 listener 호출하므로 throw 가
     // 다른 구독자 (외부 sync) 까지 영향 안 미치도록.
     for (const listener of this.listeners) {
       try {

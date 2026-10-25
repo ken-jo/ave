@@ -84,11 +84,7 @@ describe("SecretDocumentStore atomicity and policy", () => {
   let root: string;
   let path: string;
 
-  // The first child of a run pays the cold start — tsx compiling the fixture's
-  // import graph, and on Windows the first scan of the spawned binary — which
-  // took the first cross-process case to 13.7 s, then past its 20 s budget, on
-  // the Windows runner while the later ones took 3-4 s. One child run here
-  // pays it once, so each case's budget covers only its own contention.
+  // Warm the fixture child once so per-test contention budgets exclude cold compilation and binary scanning.
   beforeAll(async () => {
     const warm = mkdtempSync(join(tmpdir(), "ave-secret-document-warm-"));
     try {
@@ -558,10 +554,7 @@ describe("SecretDocumentStore atomicity and policy", () => {
     expect(readFileSync(path, "utf-8")).toBe(mismatched);
   });
 
-  // An unprivileged Windows process cannot create a file symlink (EPERM) but
-  // can put a directory junction at the document's name, which lstat reports
-  // as a link; Windows opens without O_NOFOLLOW, so the lstat check is the
-  // refusal there. POSIX keeps the file symlink and adds the same directory link.
+  // Windows refuses junctions through lstat without O_NOFOLLOW; POSIX also exercises file symlinks.
   it.each(process.platform === "win32" ? ["directory link"] : ["file symlink", "directory link"])(
     "rejects a %s secret document without reading its target",
     async (linkKind) => {
@@ -579,7 +572,6 @@ describe("SecretDocumentStore atomicity and policy", () => {
     })}\n`;
     writeFileSync(externalPath, external, { mode: 0o600 });
     if (linkKind === "file symlink") symlinkSync(externalPath, path);
-    // A junction on Windows; the type is ignored on POSIX.
     else symlinkSync(externalDir, path, "junction");
     const store = new SecretDocumentStore({ path, policy: "packaged", encryption: availableEncryption() });
 

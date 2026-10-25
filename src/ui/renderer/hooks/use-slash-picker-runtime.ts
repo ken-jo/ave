@@ -1,21 +1,4 @@
-/**
- * useSlashPickerRuntime — lazily fetches the live MCP-server tools and the
- * registered assistant skills that back the SlashPicker's `mcp` / `skills`
- * categories.
- *
- * Both sources are REAL host IPCs that already exist:
- *   - MCP tools: `window.ave.mcp.servers()` → each connected server's
- *     `registeredTools` (namespaced names), flattened.
- *   - Skills: `window.ave.listSkills()` → `{ skills: AssistantSkillSummary[] }`.
- *
- * No fake/stub fallback: when the host API is absent (e.g. detached preview
- * windows) the lists stay empty, which the panel surfaces honestly as a
- * zero-count category rather than synthesizing rows.
- *
- * Fetching is gated on `enabled` so the picker pays the IPC cost only while
- * open, and re-runs whenever it re-opens so a newly-connected MCP server or a
- * freshly-installed skill shows up without a restart.
- */
+/** Fetch live tool and skill catalogs on each picker open; missing host APIs leave honest empty lists. */
 import { useEffect, useState } from "react";
 import type {
   McpPromptEntry,

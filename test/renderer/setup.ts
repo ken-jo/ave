@@ -1,12 +1,4 @@
-/**
- * jsdom setup for renderer tests.
- *
- * Imported from each test file (import "./setup"). Sets up:
- *   - @testing-library/jest-dom matchers
- *   - global afterEach cleanup
- *   - matchMedia / scrollIntoView / pointer-capture polyfills
- *   - a driveable IntersectionObserver (see `triggerIntersection`)
- */
+// Shared DOM setup owns cleanup, polyfills and explicit intersection delivery.
 import "@testing-library/jest-dom/vitest";
 import { afterEach, vi } from "vitest";
 import { cleanup } from "@testing-library/react";
@@ -42,30 +34,17 @@ if (typeof (vi as { unstubAllGlobals?: unknown }).unstubAllGlobals !== "function
 }
 
 const liveIntersectionObservers = new Set<TestIntersectionObserver>();
-/**
- * Each target's last reported intersection, which is what makes this stub model
- * the real contract rather than a message bus: a browser hands a NEW observer
- * the target's CURRENT state, so an observer built over a still-visible element
- * fires again on its own. Without that, code whose observer must be rebuilt to
- * keep going looks correct under test and stalls in the app.
- */
+// New observers receive each target's retained intersection state, not only future trigger events.
 const intersectionStates = new Map<Element, boolean>();
 
 afterEach(() => {
   cleanup();
-  // Unmounting a chat tile parks its unsent text; one test's draft must not
-  // reappear in the next test's composer.
+  // Clear parked drafts so unmounting one test cannot seed the next composer.
   clearComposerDrafts();
   intersectionStates.clear();
 });
 
-/**
- * jsdom lays nothing out, so a real IntersectionObserver would never report an
- * intersection and scroll-driven UI could not be exercised at all. Every
- * observer registers here instead, and `triggerIntersection` delivers the
- * entry a test wants — the intersection becomes an explicit act of the test
- * rather than layout jsdom will never produce.
- */
+// Supply explicit intersection delivery because the DOM test environment has no layout.
 class TestIntersectionObserver implements IntersectionObserver {
   readonly root: Element | Document | null;
   readonly rootMargin: string;
@@ -86,9 +65,7 @@ class TestIntersectionObserver implements IntersectionObserver {
 
   observe(target: Element): void {
     this.targets.add(target);
-    // The browser reports the target's current state to a newly observing
-    // observer, asynchronously — so this delivery is queued, not immediate,
-    // exactly as the real one arrives after the caller's own frame.
+    // Queue current-state delivery to match asynchronous browser observer behavior.
     queueMicrotask(() => {
       this.deliver(target, intersectionStates.get(target) ?? false);
     });
@@ -126,15 +103,7 @@ class TestIntersectionObserver implements IntersectionObserver {
   }
 }
 
-/**
- * Report `target` as having scrolled into (or out of) its observer's root.
- * Returns the number of observers that were watching it, so a test can assert
- * that the element it picked is actually observed.
- *
- * The state STICKS: an element left intersecting stays intersecting for every
- * observer that starts watching it later, which is how the browser behaves and
- * what lets a test drive a scroll ONCE and watch the consequences play out.
- */
+// Retain intersection state for new observers and return the number of actual watchers.
 export function triggerIntersection(target: Element, isIntersecting = true): number {
   intersectionStates.set(target, isIntersecting);
   let delivered = 0;
@@ -178,8 +147,7 @@ if (typeof window !== "undefined") {
   }
   if (!window.ResizeObserver) {
     window.ResizeObserver = class ResizeObserver {
-      // Match the real ResizeObserver(callback) signature so production
-      // `new ResizeObserver(cb)` is not flagged as a superfluous argument.
+      // Match the callback-taking constructor so production calls remain type-correct.
       constructor(_callback: ResizeObserverCallback) {}
       observe() {}
       unobserve() {}

@@ -1,10 +1,5 @@
 // @vitest-environment jsdom
-/**
- * Path-grant (out-of-allowed-dir) requests render in the SAME approval frame
- * as every other kind — one identity strip, one impact banner, one review
- * expander, one three-button decision row. Only the evidence and the pattern
- * carried by allow-always are kind-specific. Issue #2104.
- */
+/** Path grants share the common approval frame; only evidence and the allow-always pattern vary by kind. */
 import "../../../../../test/renderer/setup.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";

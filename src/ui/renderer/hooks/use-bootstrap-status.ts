@@ -2,27 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { AveApi } from "../types.js";
 import type { AppBootstrapStatus } from "../../../shared/bootstrap-status.js";
 
-/**
- * Managed bootstrap status subscription.
- *
- * The host emits one of three lifecycle states around
- * `ensureManagedInstalled()`:
- *   - `start`       — install pipeline kicked off; render a quiet spinner
- *   - `complete`    — finished; expose `installed` + `failed` + `skipped` so
- *                     the UI can render "all set", "N failed", or the
- *                     translated sentence for the skip code, depending on shape
- *   - `error`       — bootstrap itself threw; expose `message` for the banner
- *
- * `installing` is a derived flag (true between start and complete/error).
- * Renderer can debounce / dismiss on its own; the hook never auto-clears.
- *
- * On a cold boot every one of those events is emitted before this renderer
- * loads, so the subscription alone would show nothing at first launch — the
- * exact failure the pill exists to report. The hook therefore also pulls the
- * host's recorded snapshot on mount. A live event always wins: the pull is
- * applied only while none has arrived, so a stale snapshot resolving late can
- * never overwrite a newer event.
- */
+/** Pull the recorded bootstrap snapshot for cold starts, but let live events outrank it; do not auto-clear results. */
 export interface BootstrapStatusState {
   status: AppBootstrapStatus | null;
   /** True between `start` and a terminal (complete/error) event. */
@@ -39,8 +19,7 @@ export function useBootstrapStatus(
   useEffect(() => {
     let alive = true;
     liveEventRef.current = false;
-    // Subscribe first: an event emitted while the pull is in flight must be
-    // seen, and must be the one that survives.
+    // Subscribe first: an event emitted while the pull is in flight must be seen, and must be the one that survives.
     const unsubscribe = api.onBootstrapStatus((next) => {
       if (!alive) return;
       liveEventRef.current = true;
@@ -67,9 +46,8 @@ export function useBootstrapStatus(
     status,
     installing,
     dismiss: () => setStatus(null),
-    // The host re-emits start/complete/error during the retry, so the hook
-    // doesn't need to mutate `status` itself — let the IPC subscription
-    // drive the banner update.
+    // The host re-emits start/complete/error during the retry, so the hook doesn't need to mutate `status` itself — let the
+    // IPC subscription drive the banner update.
     retry: async () => {
       try {
         await api.retryBootstrap();

@@ -5,35 +5,13 @@ import { useTranslation } from "../../../i18n/react.js";
 import type { BreadcrumbSegment, ViewLocation } from "../utils/view-location.js";
 import { TEST_IDS } from "../../../shared/test-ids.js";
 
-/**
- * Where the main window is, in two pieces that no longer sit together.
- *
- * They were one control in the top band. The workbench model (DESIGN.md)
- * separates them by what they act on: back/forward act on the WINDOW's
- * location, so they belong to the chrome; the path describes WHAT IS OPEN, so
- * it belongs with the content. VS Code makes the same split — history is
- * chrome, and `breadcrumb.*` is a content token family rendered at the leading
- * edge of the editor, not in the title bar.
- *
- * So this file exports the two halves separately:
- *   - {@link ViewHistoryNav} — the buttons, now in the sidebar's cluster strip.
- *   - {@link ViewPathBreadcrumb} — the path, now on the canvas's leading edge.
- *
- * They keep sharing {@link ViewPathNavProps}: the two halves read the same
- * navigation state, and splitting the type would let the halves disagree about
- * what "where you are" means. Both are still width-capped and truncate rather
- * than grow — the strip they sit in is a drag region, and grab area is scarce.
- *
- * Styling stays the band's icon-button recipe (`ghost` / `icon-xs`, muted
- * foreground, shared transition tokens) so neither half reads as a new control
- * family after the move.
- */
+/** History buttons and content breadcrumbs share navigation state while rendering in their respective chrome and content
+ * surfaces. */
 export interface ViewPathNavProps {
   segments: BreadcrumbSegment[];
   canGoBack: boolean;
   canGoForward: boolean;
-  /** Destination labels, when known — the button says where it goes rather
-   *  than only that it goes back. */
+  /** Destination labels, when known — the button says where it goes rather than only that it goes back. */
   backLabel?: string;
   forwardLabel?: string;
   onBack: () => void;
@@ -42,9 +20,8 @@ export interface ViewPathNavProps {
   onSelectSegment: (target: ViewLocation) => void;
 }
 
-// A `--chrome-icon-button` square, like every control on the sidebar cluster
-// strip it renders in: px, not rem, so `collapsedBandLeadClearance`
-// (shared/shell-geometry.ts) can add the strip up at every type scale.
+// A `--chrome-icon-button` square, like every control on the sidebar cluster strip it renders in: px, not rem, so
+// `collapsedBandLeadClearance` (shared/shell-geometry.ts) can add the strip up at every type scale.
 const ICON_BUTTON_CLASS =
   "h-(--chrome-icon-button) w-(--chrome-icon-button) shrink-0 rounded-lg text-muted-foreground transition-[color,background-color,transform] "
   + "duration-[var(--motion-fast)] ease-[var(--motion-ease-standard)] hover:bg-accent "
@@ -114,18 +91,8 @@ export function ViewHistoryNav({
   );
 }
 
-/**
- * The path half. Content-side: it renders on the canvas's leading edge, under
- * the window band, because it describes what is open rather than where the
- * window is.
- *
- * Collapsed below `md` — a window at `MAIN_WINDOW_MIN_WIDTH`
- * (`shared/shell-geometry.ts`), which is the chat band, has no room for a
- * readable path, and a two-character stub is not one. The history buttons live elsewhere now
- * and are unaffected, so the way back survives even at widths where the label
- * cannot. `min-w-0` plus per-crumb truncation keeps a long path from pushing
- * the canvas wider than it is.
- */
+/** Hide unreadable breadcrumbs at narrow widths while keeping history navigation; truncate crumbs to prevent canvas
+ * overflow. */
 export function ViewPathBreadcrumb({
   segments,
   onSelectSegment,
@@ -161,8 +128,7 @@ export function ViewPathBreadcrumb({
                 className={isLast
                   ? "min-w-0 truncate px-1 py-0.5 font-medium text-foreground"
                   : "min-w-0 truncate px-1 py-0.5"}
-                // The deepest crumb is where you already are, so it is text,
-                // not a control — and it is what a screen reader should
+                // The deepest crumb is where you already are, so it is text, not a control — and it is what a screen reader should
                 // announce as current.
                 aria-current={isLast ? "page" : undefined}
                 data-testid={`${isLast ? "view-path-current" : "view-path-segment"}-${segment.key}`}

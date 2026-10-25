@@ -61,10 +61,7 @@ export interface CreateA2ALoopbackRuntimeOptions {
   approveAgentAction: AgentActionApprover | undefined;
   namespace?: Pick<FeatureNamespaceHandle, "readJson" | "writeJson">;
   deriveHandlerId?: (profile: LoadedAgentProfile) => string;
-  /**
-   * Optional receiver-only wire decorator. The ph3/local listener omits this
-   * hook, so its handlers and gate behavior remain byte-for-byte unchanged.
-   */
+  // Optional receiver-only wire decorator. The ph3/local listener omits this hook, so its handlers and gate behavior remain byte-for-byte unchanged.
   transformHandler?: (handler: A2ARequestHandler) => A2ARequestHandler;
   advertisedOrigin?: string;
   wireTrustOrigin?: string;
@@ -78,7 +75,7 @@ function canonicalProfilePath(filePath: string, platform: NodeJS.Platform): stri
   return platform === "win32" ? normalized.toLowerCase() : normalized;
 }
 
-/** Stable opaque address derived from host-owned source identity, never display name. */
+// Stable opaque address derived from host-owned source identity, never display name.
 export function deriveA2ALoopbackHandlerId(
   filePath: string,
   platform: NodeJS.Platform = process.platform,

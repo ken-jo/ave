@@ -272,9 +272,7 @@ export async function startRationaleResume(
       startedInvocationAudit: startCommit.startedInvocationAudit,
       now,
     });
-    // commitStart is the sole execution-authority boundary. It makes the
-    // started state authoritative before publishing its at-least-once audit
-    // projection and before this function can release the tool for execution.
+    // commitStart alone grants execution authority, committing started before audit publication or tool release.
     return { ok: true, value: { ...authorized, authorityEntry } };
   } catch (error) {
     return mismatch(

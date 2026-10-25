@@ -9,8 +9,6 @@ import { applyInstalledContent, resetInstalledContentForTests } from "../../inst
 import { makeMockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
 import { installedTheme, installedThemeContent, NO_LANGUAGE_BRIDGE } from "../../../../../test/renderer/installed-theme.js";
 
-// ─── Window bridge mocks ──────────────────────────────────────────────────
-
 const mockMinimize = vi.fn().mockResolvedValue(undefined);
 const mockToggleMaximize = vi.fn().mockResolvedValue(undefined);
 const mockClose = vi.fn().mockResolvedValue(undefined);
@@ -123,7 +121,6 @@ describe("CustomTitleBar", () => {
     it("hides entirely when fullscreen event fires", async () => {
       const { queryByTestId } = render(<CustomTitleBar />);
       expect(queryByTestId("custom-titlebar")).toBeTruthy();
-      // Simulate fullscreen broadcast from main process
       await act(async () => {
         fullscreenListener?.(true);
       });
@@ -137,7 +134,6 @@ describe("CustomTitleBar", () => {
       await act(async () => {
         maxListener?.(true);
       });
-      // After maximized — Minimize2 icon (title = 이전 크기로)
       expect(getByTestId("titlebar-maximize").title).toBe("이전 크기로");
     });
   });

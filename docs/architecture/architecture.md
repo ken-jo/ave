@@ -64,6 +64,11 @@ retains ownership of request projection and attachment limits.
 
 ## Process Boundaries
 
+Local table previews use a bounded and killable child. Admission covers reading
+and parsing; separate startup and parse deadlines cover the child lifecycle.
+The [table preview contract](table-document-preview.md) owns request replacement,
+container checks, expansion refusals and bounded display windows.
+
 Host service bootstrap accepts `BootHost` (`src/boot/host-runtime.ts`) for
 user-data and resource paths, packaged mode, encryption, network fetches, and
 shutdown. Desktop capabilities are optional and required explicitly by
@@ -960,6 +965,10 @@ than inferred from the initial directory or terminal output.
 authenticated shell integration, and active filesystem/process confinement.
 Its initial write-jail directory may be within the default workspace or a
 user-approved additional project, as resolved by the host's project authority.
+Its domain allowlist starts empty; the live egress proxy obtains attributed
+destination approvals for foreground and background descendants. Plugin and
+model endpoint grants remain worker-only. Approval scopes, revocation and tab
+lifecycle follow the [terminal policy](permission-policy-design.md#commands-typed-into-a-workspace-terminal).
 Canonical, segment-aligned containment rejects paths resolving outside those
 projects at admission; a renderer cwd does not add a grant. This path check is
 separate from the sandbox's actual access enforcement and does not alone prove
@@ -972,6 +981,16 @@ before typing. No agent bytes, cancellation, or output can redirect to Manual
 or another tab; agent output does not take Manual's focus. A wait timeout means
 the command can still be running, and cancellation of a waiter does not prove
 process cleanup.
+
+On Linux, an Agent terminal keeps its initial mount namespace until it exits.
+Before typing an agent command, the host re-scans against that initial policy
+and refuses newly required denies, withdrawn grants or scan failures until the
+terminal is reopened. Metadata appearing after that check can still be used
+until shell exit, with no time limit. Startup/replay output and terminal tool
+results disclose this limitation. Foreground and background work can use new
+metadata before the next check; raw input does not run the check. A project
+outside the original grant stays unwritable. The [sandbox policy](permission-policy-design.md#preparation-and-native-validation)
+explains why prompt markers cannot provide a reliable post-block boundary.
 
 An unavailable confined backend leaves Manual usable and Agent explicitly
 unavailable. The current Windows interactive Agent backend cannot attest this
@@ -1521,6 +1540,58 @@ Windows srt-win provides filesystem and network confinement but no process
 confinement, so shell/process relaxation must remain stricter than filesystem
 or network-bearing tool relaxation.
 
+`features.osToolSandbox` defaults to `true` on macOS and Linux and `false` on
+Windows. An explicit stored value is preserved. The Windows default remains
+gated until its shell confinement lane is ready; plugin confinement alone
+does not satisfy that gate. Activation still requires a successful runtime
+probe. The host issues one immutable `HostShellExecutionPlan` per invocation;
+its `sandboxed` field describes the selected child, including exclusions and
+unsandboxed retries, rather than merely repeating the setting. Permission,
+reviewer, audit and cache consumers use that plan.
+
+The [builtin shell sandbox policy](permission-policy-design.md#os-shell-sandbox-policy)
+defines writes within project and temporary roots, mandatory control-file
+write denies for repository configuration, hooks and pointers, bounded nested
+repository discovery, broad reads subject to existing protections, domain approval
+through the local egress proxy, and denied Unix sockets. Inactive shell
+confinement remains visible in the chat header and Settings through a
+persistent reason-bearing status. Workspace terminals, plugin network and
+worker control channels retain their own contracts.
+
+Write-policy preparation can remove a broad root's grant when bounded
+repository discovery cannot complete. Independently scanned narrower roots,
+including the working directory and private temporary directory, keep their
+own grants; removing an ambient temporary-root grant does not deny those
+children. The linked policy owns discovery and serialized-policy limits.
+The existing tool result and terminal output report why access was narrowed,
+which roots lost their grants and which roots remain writable.
+
+Existing repository metadata permits index/ref updates, commits, branches and
+stashes. macOS blocks new `.git` entries and requires the existing approved
+host route. Linux deny-mounts existing Git controls only, preserving missing
+routing records as absent, and re-scans nested controls before each command.
+After confirmed exit it atomically quarantines newly appeared controls,
+new or replaced marker entries, new submodule/private-worktree stores,
+newly materialized pre-resolved stores and reserved bare-layout entries within
+discovery coverage and the final effective write grants. Inaccessible control
+subtrees are excluded; a whole-entry move that would include protected state
+fails visibly instead. New routing or directory links cannot authorize cleanup
+targets. The entries remain recoverable, and existing result and terminal
+output show their original paths and restore locations. Rename failures report an
+error without deleting entries. Every Ave-owned Git process carries one shared
+hardening policy. Linux invocations hold overlapping canonical write roots
+until quarantine succeeds. The current Ave-owned user-project Git query defers
+without spawning or caching its temporary answer while a hold is active;
+cleanup failure retains the hold for the host process's lifetime. Future
+user-workspace Git callers must use the same availability check. Holds compare
+checkout-root paths; a non-overlapping sibling checkout can still read a shared
+external gitdir or commondir. This ordering is not durable across crashes and
+does not control Git already running or
+external editor and user-terminal processes. New controls remain usable during
+the invocation by such processes; these temporal and failed-cleanup risks are
+defined by the
+[same policy](permission-policy-design.md#os-shell-sandbox-policy).
+
 Two ASRT 0.0.80 rules shape what a confined command can do:
 
 - Linux: a sandboxed command cannot create a user namespace or a mount
@@ -1739,6 +1810,10 @@ refused, and Ave never sets it. The macOS profile also denies process-info on ot
 the `kern.procargs` sysctls, and each non-PTY wrap starts in its own session
 (node-pty already starts one), so a sandboxed process cannot read another
 process's environment.
+Every rule of the macOS profile folds the `subpath` and `literal` filters that
+share a parent directory into one regex for that parent. The regex matches the
+same paths, and sandbox-exec, which compiles the profile on every wrap, compiles
+it several times faster.
 
 To regenerate `patches/@anthropic-ai%2Fsandbox-runtime@0.0.80.patch`, save its
 explanatory preamble (everything before the first `diff --git`) and run
@@ -1757,7 +1832,9 @@ every connection: a plugin worker reaches its own extension's declared
 domains and the configured model endpoints, nothing else, and is never asked;
 a Bash or PowerShell call reaches a host a grant covers, and otherwise
 the person is asked on the approval dock (Deny, Allow once, This
-conversation, This workspace, Always); a workspace terminal tab (always in
+conversation, This workspace, Always; OWNER ITEM: pending — this line carries
+Ave's merged main, while the permissions-2 line offers a shell call only Allow
+once and Always, until the owner picks); a workspace terminal tab (always in
 the foreground) reaches a host a grant covers, and otherwise the person is
 asked in a banner in that tab, drawn only in, fetched by and answered from
 the window that owns the tab (Deny, Allow once, This tab, Always: a

@@ -31,8 +31,6 @@ test('first-run model setup reveals credentials only after an explicit choice', 
   await settings.getByTestId('llm-tab:add-provider-item:gemini').click();
   const apiCard = settings.getByTestId('llm-tab:connection:gemini');
   const apiKey = apiCard.getByTestId('llm-api-key-input');
-  // A provider reached only by key has nothing to choose: its field is there
-  // the moment the card opens.
   await expect(apiKey).toBeFocused();
   await apiKey.fill('discarded-draft');
   await apiCard.getByTestId('llm-tab:save-providers-cancel').click();

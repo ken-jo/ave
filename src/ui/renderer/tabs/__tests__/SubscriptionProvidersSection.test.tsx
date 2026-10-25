@@ -73,12 +73,8 @@ afterEach(() => {
   setLocale(localeBeforeTest);
 });
 
-
-/**
- * The settings page draws the provider row itself — header, badges, state word,
- * sub-line and refresh — so what ships from this module is the sign-in half,
- * and that is what these tests drive.
- */
+/** The settings page draws the provider row itself — header, badges, state word, sub-line and refresh — so what ships from
+ * this module is the sign-in half, and that is what these tests drive. */
 function SubscriptionProvidersSection({
   providers,
   actions,
@@ -108,9 +104,8 @@ describe("SubscriptionAuthControls", () => {
       />,
     );
 
-    // Every one of these belongs to the row the settings page draws, and having
-    // it here too is what gave one provider two headers, two state words and
-    // two refresh buttons — each computing its own answer.
+    // Every one of these belongs to the row the settings page draws, and having it here too is what gave one provider two
+    // headers, two state words and two refresh buttons — each computing its own answer.
     for (const testId of [
       "subscription-provider:codex:refresh",
       "subscription-provider:codex:connection",
@@ -490,9 +485,8 @@ describe("SignInMethodChoice", () => {
     rerender(<SignInMethodChoice rowId="codex" planName="ChatGPT" value="api" onChange={onChange} />);
     expect(apiKey).toHaveAttribute("aria-checked", "true");
     expect(subscription).toHaveAttribute("aria-checked", "false");
-    // Both options are buttons in one radio group, so Tab reaches the group
-    // and the arrow keys move between them (driven with real key events in
-    // the CDP check; jsdom does not run Radix's roving focus).
+    // Both options are buttons in one radio group, so Tab reaches the group and the arrow keys move between them (driven with
+    // real key events in the CDP check; jsdom does not run Radix's roving focus).
     expect(subscription.tagName).toBe("BUTTON");
     expect(apiKey.tagName).toBe("BUTTON");
   });

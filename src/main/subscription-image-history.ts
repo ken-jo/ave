@@ -16,7 +16,7 @@ interface ImageCandidate {
   fresh: boolean;
 }
 
-/** Select native images for one request without changing stored conversation rows. */
+// Select native images for one request without changing stored conversation rows.
 export function projectSubscriptionImageHistory(
   messages: GenericMessage[],
   limits: SubscriptionImageAttachmentLimits,
@@ -45,8 +45,7 @@ export function projectSubscriptionImageHistory(
   if (candidates.length === 0) return messages;
 
   const newUserImages = candidates.filter((candidate) => candidate.fresh && candidate.partIndex !== undefined);
-  // Authored input must fit as a whole. A tool image can instead report a
-  // recoverable delivery failure alongside its original text result.
+  // Authored input must fit as a whole. A tool image can instead report a recoverable delivery failure alongside its original text result.
   assertSubscriptionPromptAttachments(newUserImages.map((candidate) => candidate.attachment), limits);
   let remainingCount = limits.maxCount;
   let remainingBytes = limits.maxTotalBytes;

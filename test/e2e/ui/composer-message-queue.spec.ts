@@ -1,40 +1,19 @@
-/**
- * E2E: Composer redesign + Message Queue v6 layout structural verification.
- *
- * Spec: docs/blueprints/composer-redesign-message-queue.md
- *
- * 본 e2e 는 v6 layout 구조와 queue-auto done event 인입을 검증한다.
- * ⌘⏎ 인터럽트 / 자연 인입 / busy state 는 실제 LLM streaming 의존도가 높아
- * 별도 renderer 단위 테스트에서 다룬다.
- *
- * - composer textarea-only (input-bar 안 SEND/Stop/Guide 0)
- * - BottomActionRow 가 TokenRing slot + ⇧⏎ kbd + Send 노출
- * - InputActionBar trailing 순서: 📎 → 권한 → (승인) → 페르소나 → Thinking
- * - MessageQueuePanel sentinel: 큐 비면 panel 자체 미렌더
- */
+// Pin composer and queue structure from docs/blueprints/composer-redesign-message-queue.md.
+// Live-stream timing and interruption behavior belong to renderer unit coverage.
 import { test, expect } from './fixtures';
 import { TEST_IDS, testIdSelector } from "../../../src/shared/test-ids.js";
 import { MAIN_CHAT_GROUP_ID } from "../../../src/contract/app-contract.js";
 
-/**
- * The side chat renders the SAME composer, queue panel, and turn control as the
- * main dock, with the same test ids. Every locator that means "the main dock's
- * X" is anchored on the dock's surface marker so it cannot resolve to the side
- * chat's copy — and so a second match is a real failure rather than something
- * `.first()` quietly hides.
- */
+// Scope locators to the main dock because the side chat renders the same controls and test ids.
 const MAIN = '[data-composer-surface="main"] ';
 
 
 test('idle: composer input-bar contains textarea only (no Send/Stop/Guide buttons)', async ({ mainWindow }) => {
-  // textarea 존재
   const textarea = mainWindow.locator(MAIN + testIdSelector(TEST_IDS.composerTextarea));
   await expect(textarea).toBeVisible();
 
-  // input-bar 안 v6 이전의 Send/Stop/Guide 버튼은 사라짐
   const inputBar = mainWindow.locator(MAIN + testIdSelector(TEST_IDS.composerInputBar));
   await expect(inputBar).toBeVisible();
-  // input-bar 직하 자식 button 0 (textarea 만)
   const buttonsInsideInputBar = inputBar.locator('> button');
   await expect(buttonsInsideInputBar).toHaveCount(0);
 });
@@ -42,23 +21,20 @@ test('idle: composer input-bar contains textarea only (no Send/Stop/Guide button
 test('idle: unified InputActionBar 가 TokenRing + Send 를 표시', async ({ mainWindow }) => {
   const row = mainWindow.locator(MAIN + '[data-testid="input-action-bar"]');
   await expect(row).toBeVisible();
-  // The token ring sits in the composer's status row, below the action bar.
   await expect(mainWindow.locator(MAIN + '[data-testid="iab-status-row"] [data-testid="iab-status-ring"]')).toBeVisible();
 
-  // 통합 turn control — idle 이면 send 아이콘 (라벨은 aria-label/title 로만)
   const sendBtn = mainWindow.locator(MAIN + '[data-testid="composer-send-button"]');
   await expect(sendBtn).toBeVisible();
 });
 
 test('idle: cancel button 미노출 (busy 일 때만)', async ({ mainWindow }) => {
-  // 정지는 별도 버튼이 아니라 같은 turn control 이 busy + 빈 draft 일 때 갖는 상태.
+  // Stop is a state of the shared turn control while busy with an empty draft.
   const cancelBtn = mainWindow.locator(MAIN + '[data-testid="composer-cancel-button"]');
   await expect(cancelBtn).toHaveCount(0);
 });
 
 test('idle: MessageQueuePanel 미렌더 (큐 비어 있음 sentinel)', async ({ mainWindow }) => {
   const panel = mainWindow.locator(MAIN + '[data-testid="message-queue-panel"]');
-  // 큐 비면 panel 자체가 null return → DOM 부재
   await expect(panel).toHaveCount(0);
 });
 
@@ -90,10 +66,8 @@ test.describe('renderer debug stream env', () => {
 });
 
 test('InputActionBar: command → attach leading controls and reasoning status are visible', async ({ mainWindow }) => {
-  // attach button 존재
   const attachBtn = mainWindow.locator(MAIN + '[data-testid="iab-attach-button"]');
   await expect(attachBtn).toBeVisible();
-  // The persona is the command menu's first submenu, not a button of its own.
   const leadingIds = await mainWindow.locator('[data-testid="iab-leading"] [data-testid]').evaluateAll(
     (nodes) => nodes.map((node) => node.getAttribute('data-testid')),
   );
@@ -105,10 +79,7 @@ test('InputActionBar: command → attach leading controls and reasoning status a
 });
 
 test('큐 항목 수정 (더블클릭) — input 진입 + Enter commit', async ({ mainWindow }) => {
-  // 큐 적재 후 더블클릭 → input 등장 → Enter 로 텍스트 갱신.
-  // store 직접 manipulation 으로 testid="message-queue-row" 강제 등장.
-  // The harness launches with AVE_DEV=1 + AVE_E2E=1, which is exactly when the
-  // renderer exposes the queue store; wait for it rather than skipping.
+  // Wait for the queue store exposed by the development E2E harness rather than skipping.
   await mainWindow.waitForFunction(
     () => typeof (window as unknown as { __ave_message_queue_store__?: { add?: unknown } })
       .__ave_message_queue_store__?.add === "function",
@@ -128,9 +99,7 @@ test('큐 항목 수정 (더블클릭) — input 진입 + Enter commit', async (
 });
 
 test('queue-auto 자동 인입 — done event 시 큐 항목이 user bubble + "↪ 큐에서" hint 로 표시', async ({ app, mainWindow, t }) => {
-  // The default shared fixture intentionally starts without an LLM key. Seed
-  // the active provider with a dummy key so handleAsk passes its API-key gate;
-  // chatSend may fail later, but the queue user bubble must be appended first.
+  // A dummy active-provider key passes the initial send gate; the queue bubble must append before later failure.
   const hasSeededKey = await mainWindow.evaluate(async () => {
     const api = (window as unknown as {
       aveApi: {
@@ -153,8 +122,6 @@ test('queue-auto 자동 인입 — done event 시 큐 항목이 user bubble + "�
     return api.hasApiKey(provider);
   });
   expect(hasSeededKey).toBe(true);
-  // 큐에 항목 적재 후 done event 시뮬 (preload 의 stream IPC) → user bubble
-  // 등장 + injectHint="queue" 배지. queue-auto inputOrigin path 의 통합 검증.
   await mainWindow.waitForFunction(
     () => typeof (window as unknown as { __ave_message_queue_store__?: { add?: unknown } })
       .__ave_message_queue_store__?.add === "function",
@@ -165,14 +132,12 @@ test('queue-auto 자동 인입 — done event 시 큐 항목이 user bubble + "�
   });
   const row = mainWindow.locator(MAIN + '[data-testid="message-queue-row-text"]').first();
   await expect(row).toBeVisible();
-  // done event 발화 — main 프로세스에서 broadcast. The preload delivers a
-  // stream frame only to the chat group it names, so it addresses the main dock.
+  // Address the main dock: preload routes stream frames only to their named chat group.
   await app.evaluate(({ BrowserWindow }, chatGroupId) => {
     const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed());
     if (!win) throw new Error("no live window to deliver the done frame to");
     win.webContents.send("ave:chat:stream", { type: "done", streamId: 1, chatGroupId });
   }, MAIN_CHAT_GROUP_ID);
-  // user bubble 에 "↪ 큐에서" 배지 확인.
   await expect(mainWindow.locator(`text=${t('chatView.queueInjectLabel')}`).first()).toBeVisible({ timeout: 5_000 });
   await expect(mainWindow.locator('text=끝나면 요약').first()).toBeVisible();
 });

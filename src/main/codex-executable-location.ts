@@ -19,8 +19,7 @@ import {
 const log = createLogger("codex-executable-location");
 const MAX_SYMLINKS = 40;
 const MAX_ACL_OUTPUT_BYTES = 256 * 1024;
-// One request receives at most this many paths, which keeps each request line
-// bounded and the output budget per path stable.
+// One request receives at most this many paths, which keeps each request line bounded and the output budget per path stable.
 const ACL_BATCH_PATHS = 128;
 const ACL_BATCH_CHARS = 24 * 1024;
 const ACL_OUTPUT_PATHS = 16;
@@ -43,9 +42,8 @@ const PACKAGE_RESOLUTION_FAILURES = [
 type PackageResolutionFailure = typeof PACKAGE_RESOLUTION_FAILURES[number];
 type DesktopPackagePrincipals = { status: "resolved"; packageSid: string; capabilitySid: string }
   | { status: "unavailable"; reason: PackageResolutionFailure };
-// A package SID derives from its family name and stays stable for this process.
-// Uninstalling leaves its ACE inert because no token carries that SID anymore.
-// Cache failures too: a later installation requires a restart to become trusted.
+// A package SID derives from its family name and stays stable for this process. Uninstalling leaves its ACE inert because no token carries that SID
+// anymore. Cache failures too: a later installation requires a restart to become trusted.
 let cachedDesktopPackage: DesktopPackagePrincipals | undefined;
 let packageResolutionWarned = false;
 
@@ -60,7 +58,7 @@ const windowsAclHost = new WindowsAclHost((command, args, options) =>
 let windowsAclQueue: Promise<void> = Promise.resolve();
 let windowsAclRequestId = 0;
 
-/** Kill the ACL host and drop queued work, the way a restart would. */
+// Kill the ACL host and drop queued work, the way a restart would.
 export function _resetWindowsAclHostForTest(): void {
   windowsAclHost.discard();
   windowsAclTransportSeam.override?.discard();
@@ -94,11 +92,11 @@ interface InspectedPath {
   stat: Stats;
 }
 
-/** A location admitted with the rule its single-path function applies. */
+// A location admitted with the rule its single-path function applies.
 export interface CodexLocationRequest {
   readonly path: string;
   readonly kind: "executable" | "directory" | "private-directory";
-  /** Windows only; unknown callers retain strict script dependency admission. */
+  // Windows only; unknown callers retain strict script dependency admission.
   readonly routeKind?: CodexLocationRouteKind;
 }
 
@@ -106,7 +104,7 @@ export type CodexLocationRouteKind = "native" | "script" | "guarded-script";
 type ComponentRole = "ancestor" | "leaf" | "private";
 interface ComponentRule { routeKind: CodexLocationRouteKind; role: ComponentRole }
 
-/** The only exception to foreign subdirectory-creation admission. */
+// The only exception to foreign subdirectory-creation admission.
 function mayIgnoreForeignSubdirectoryCreation(kind: CodexLocationRouteKind, role: ComponentRole): boolean {
   return role === "ancestor" && (kind === "native" || kind === "guarded-script");
 }
@@ -139,20 +137,8 @@ interface WindowsSecurityResult {
   desktopPackage: DesktopPackagePrincipals;
 }
 
-// Open the path object itself so a reparse point's ACL cannot be replaced by
-// its target's ACL. The host compiles the native type once, then answers one
-// request line at a time. Each request re-reads every input below; nothing is
-// carried between requests. Paths and SIDs are request data decoded by the
-// JSON parser, never script text. Any error ends the host, which fails closed.
-//
-// Module autoloading is off and every module the script calls is imported by
-// its path under $PSHOME, the directory of the pinned powershell.exe. With
-// autoloading, the first cmdlet call searched every directory on the module
-// path for a module exporting it; the host's minimal environment leaves that
-// search without a usable analysis cache, so on a machine with many installed
-// modules (264 on the hosted windows-2025 image, Az among them) one start
-// took over 20 seconds before the first reply. Explicit imports also keep
-// modules from the user's or other module directories out of the host.
+// Read the path object’s ACL without following reparse points; decode fresh request data and fail closed on any error.
+// Disable module autoloading and import only pinned engine modules to avoid untrusted search paths and slow discovery.
 const WINDOWS_ACL_SCRIPT = [
   "$ErrorActionPreference = 'Stop'",
   "$PSModuleAutoLoadingPreference = 'None'",
@@ -203,10 +189,8 @@ const WINDOWS_ACL_SCRIPT = [
   "      } finally { LocalFree(descriptor); }",
   "    }",
   "  }",
-  // Both open the path object itself, as Read does. Owner asks for
-  // READ_CONTROL only, which an owner holds implicitly. ClaimFromAdministrators
-  // adds WRITE_OWNER, re-reads the owner on that same handle, and sets the
-  // claimant only while BUILTIN\Administrators still owns the object.
+  // Both open the path object itself, as Read does. Owner asks for READ_CONTROL only, which an owner holds implicitly. ClaimFromAdministrators adds
+  // WRITE_OWNER, re-reads the owner on that same handle, and sets the claimant only while BUILTIN\Administrators still owns the object.
   "  private static SafeFileHandle Open(string path, uint access) {",
   "    SafeFileHandle handle = CreateFile(path, access, 7, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero);",
   "    if (handle.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());",
@@ -235,15 +219,9 @@ const WINDOWS_ACL_SCRIPT = [
   "'@",
   "while ($null -ne ($line = [Console]::In.ReadLine())) {",
   "$request = ConvertFrom-Json -InputObject $line",
-  // Direct assignment preserves the decoded array without nesting it inside
-  // a single pipeline object.
+  // Direct assignment preserves the decoded array without nesting it inside a single pipeline object.
   "$targets = $request.paths",
-  // The owner is this host's token user, never request data. Every owner is
-  // read first. One the claimant already owns is kept, without asking for
-  // WRITE_OWNER. One owned by BUILTIN\Administrators, the default owner an
-  // elevated token gives new objects, is set to the claimant. Any other owner
-  // is refused, and then nothing in the request changes. A failed open or set
-  // throws, which ends the host and fails the request.
+  // Read all owners before mutation; keep token-owned paths, claim administrator-owned paths, and reject any foreign owner without changing the batch.
   "$claims = $null",
   "if ($request.setOwner -is [bool] -and $request.setOwner) {",
   "  $claimant = [System.Security.Principal.WindowsIdentity]::GetCurrent().User",
@@ -271,8 +249,7 @@ const WINDOWS_ACL_SCRIPT = [
   "})",
   "$machineDomainSid = $null",
   "try {",
-  // LocalAccounts and Appx are imported where they are used, inside the
-  // lookups whose failure already falls back or reports an unavailable package.
+  // LocalAccounts and Appx are imported where they are used, inside the lookups whose failure already falls back or reports an unavailable package.
   "  Import-Module -Name ($PSHOME + '\\Modules\\Microsoft.PowerShell.LocalAccounts\\Microsoft.PowerShell.LocalAccounts.psd1') -ErrorAction Stop",
   "  $localUser = Get-LocalUser -ErrorAction Stop | Select-Object -First 1",
   "  $machineDomainSid = $localUser.SID.AccountDomainSid.Value",
@@ -522,12 +499,7 @@ function isSandboxGroupShape(value: unknown): boolean {
     && (group.members === undefined || (Array.isArray(group.members) && group.members.every((member) => typeof member === "string")));
 }
 
-/**
- * Strict reply framing, checked before parseWindowsSecurity reads the result:
- * exactly `{ id, result }` carrying the request's id, and a result whose keys
- * and value types are those the host script writes. Value rules, and members
- * a reply leaves out, stay with the parser and the trust rules as before.
- */
+// Validate exactly { id, result } and the matching request id before parsing host-defined result fields and trust rules.
 function validateWindowsAclReply(line: string, id: number): unknown {
   let reply: unknown;
   try {
@@ -564,15 +536,7 @@ function validateWindowsAclReply(line: string, id: number): unknown {
   return result;
 }
 
-/**
- * Serialize every request through one queue, so the reply read is always the
- * one for the request in flight. Any failure discards the host before the
- * next request runs, and that request starts a fresh one; nothing is retried.
- * Callers keep today's error paths: a host failure (timeout, oversize, exit,
- * error output, extra output, failed write) propagates unchanged, as a failed
- * probe process did; a reply that is not JSON "could not be read"; a wrong id
- * or shape is "invalid".
- */
+// Serialize requests so replies cannot cross; discard the host on failure and start fresh for the next request without retrying the failed one.
 function exchangeWindowsAcl(request: WindowsAclRequest, launch: WindowsAclHostLaunch, limits: WindowsAclLimits): Promise<unknown> {
   const exchange = windowsAclQueue.then(async () => {
     const transport = windowsAclTransportSeam.override ?? windowsAclHost;
@@ -624,8 +588,7 @@ function parseWindowsSecurity(value: unknown, skippedPackage?: DesktopPackagePri
 }
 
 function windowsAclLaunch(): WindowsAclHostLaunch {
-  // The current account's process environment is trusted; arbitrary actions
-  // by that account are outside the filesystem admission boundary.
+  // The current account's process environment is trusted; arbitrary actions by that account are outside the filesystem admission boundary.
   const root = process.env.SystemRoot ?? process.env.SYSTEMROOT ?? process.env.windir;
   if (typeof root !== "string" || !/^[a-z]:[\\/]/i.test(root) || /[\u0000-\u001f\u007f]/.test(root)) {
     throw new CodexExecutableLocationError("System directory is unavailable");
@@ -633,8 +596,7 @@ function windowsAclLaunch(): WindowsAclHostLaunch {
   const systemRoot = win32.normalize(root);
   const system32 = win32.join(systemRoot, "System32");
   const command = win32.join(system32, "WindowsPowerShell", "v1.0", "powershell.exe");
-  // The host process stays as fixed as the per-probe process was. Inputs that
-  // travelled in its environment travel in each request line instead.
+  // The host process stays as fixed as the per-probe process was. Inputs that travelled in its environment travel in each request line instead.
   return {
     command,
     args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", WINDOWS_ACL_ENCODED_SCRIPT],
@@ -644,8 +606,7 @@ function windowsAclLaunch(): WindowsAclHostLaunch {
 
 async function readWindowsSecurity(inspected: readonly InspectedPath[], capSids: readonly string[]): Promise<WindowsSecurityResult> {
   const launch = windowsAclLaunch();
-  // Captured before queueing, so concurrent first lookups each resolve the
-  // package and are compared with the cached outcome below.
+  // Captured before queueing, so concurrent first lookups each resolve the package and are compared with the cached outcome below.
   const skippedPackage = cachedDesktopPackage;
   const result = await exchangeWindowsAcl({
     id: ++windowsAclRequestId,
@@ -710,14 +671,9 @@ function assertWindowsSecurity(
 ): void {
   const expected = new Set(inspected.map((entry) => win32.normalize(entry.path)));
   const seen = new Set<string>();
-  // A write-restricted token must pass both normal user/group and restricting-SID
-  // checks. A cap-SID ACE therefore never extends write access to another account.
+  // A write-restricted token must pass both normal user/group and restricting-SID checks. A cap-SID ACE therefore never extends write access to another account.
   const trustedSids = new Set([security.currentSid, ...trustedSystemSids, ...sandboxPrincipals(security), ...capSids]);
-  // Admission means not writable by another account. AppContainer/capability
-  // tokens must also pass the normal user/group check, so these ACEs never
-  // extend write access to another account. Only the identified package's
-  // sandbox is owner-accepted; other package/capability SIDs remain foreign.
-  // This exemption applies to mutation only, never ownership or private paths.
+  // Capability tokens still require the normal user/group check; only the identified package’s mutation access is exempt, never ownership or private paths.
   const packageSids = new Set(security.desktopPackage.status === "resolved"
     ? [security.desktopPackage.packageSid, security.desktopPackage.capabilitySid] : []);
   const privateRoots = new Set([...privateDirectories].map((directory) => directory.toLowerCase()));
@@ -805,14 +761,7 @@ async function inspectLocation(
   return inspectPathRoute(await fs.realpath(candidate), inspected);
 }
 
-/**
- * Admit every location with its single-path rule, then read the access rules
- * of all their deduplicated routes through as few probes as the batch allows.
- * A private leaf keeps the private rule even where it is also another
- * location's ancestor, since that rule is stricter than the ancestor rule.
- * Requested leaves and routes that reject ancestor child creation also keep
- * their stricter rule when another request allows it.
- */
+// Batch deduplicated routes without weakening any leaf, private-path, or ancestor-child-creation rule.
 export async function assertCodexLocations(requests: readonly CodexLocationRequest[], trustInputs: CodexLocationTrustInputs = {}): Promise<void> {
   try {
     await inspectCodexLocations(requests, trustInputs);
@@ -862,8 +811,7 @@ async function inspectCodexLocations(requests: readonly CodexLocationRequest[], 
     return;
   }
   if (inspected.size === 0) return;
-  // Cap-file routes join the same deduplicated probe batch; they never admit
-  // themselves using SIDs supplied by their own contents.
+  // Cap-file routes join the same deduplicated probe batch; they never admit themselves using SIDs supplied by their own contents.
   const capPath = trustInputs.capSidPath ?? win32.join(process.env.CODEX_HOME || win32.join(homedir(), ".codex"), "cap_sid");
   const capRoute = new Map<string, InspectedPath>();
   try {
@@ -878,16 +826,14 @@ async function inspectCodexLocations(requests: readonly CodexLocationRequest[], 
       && paths.reduce((chars, path) => chars + JSON.stringify(path.path).length + 1, 0)
         + JSON.stringify(entry.path).length + 1 <= ACL_BATCH_CHARS);
     if (!batch) {
-      // Optional trust input must not add probes. If existing batches are full,
-      // leave the cap file unread and retain admission without cap exemptions.
+      // Optional trust input must not add probes. If existing batches are full, leave the cap file unread and retain admission without cap exemptions.
       capRoute.clear();
       break;
     }
     batch.push(entry);
   }
   if (capRoute.size) batches = withCapPaths;
-  // Parse only bounded SID data before the existing probe; it grants no trust
-  // until the cap-file route passes admission without those candidates below.
+  // Parse only bounded SID data before the existing probe; it grants no trust until the cap-file route passes admission without those candidates below.
   let capCandidates: string[] = [];
   if (capRoute.size) {
     try { capCandidates = parseCapSids(await (trustInputs.readCapSidFile ?? readCapSidFile)(capPath)); }
@@ -925,22 +871,8 @@ async function inspectCodexLocations(requests: readonly CodexLocationRequest[], 
   assertWindowsSecurity(security, [...inspected.values()], rules, privateDirectories, capSids);
 }
 
-/**
- * Make the current account the owner of the product's private objects.
- *
- * An elevated token usually gives new objects BUILTIN\Administrators as their
- * owner, and admission requires the current account to own everything under a
- * private root. This is the one place that ownership is established (the rule
- * is written in docs/architecture/architecture.md, "Windows object
- * ownership"). The resident ACL host reads each owner on the path object
- * itself. It keeps one the current account already owns, without asking for
- * WRITE_OWNER, and gives one owned by BUILTIN\Administrators to its own token
- * user. Any other owner refuses the whole batch and changes nothing, so a
- * directory another account planted is never taken over. The reply must then
- * show the current account as every path's owner. Elsewhere POSIX creation
- * modes already leave the current account as owner, so there is nothing to
- * claim.
- */
+// Private objects must be owned by the token user; only administrator-owned objects may be claimed.
+// Refuse foreign owners atomically and verify every returned owner; see architecture.md, Windows object ownership.
 export async function claimPrivateOwnership(paths: readonly string[]): Promise<void> {
   if (process.platform !== "win32" || paths.length === 0) return;
   for (const path of paths) assertAbsolutePath(path);
@@ -973,7 +905,7 @@ interface OwnershipClaim {
   claims: { path: string; previousOwner: string; outcome: typeof OWNERSHIP_CLAIM_OUTCOMES[number] }[];
 }
 
-/** The claim reply, checked path by path against the request; any other shape refuses. */
+// The claim reply, checked path by path against the request; any other shape refuses.
 function parseOwnershipClaim(value: unknown, requested: readonly string[]): OwnershipClaim {
   const invalid = () => new CodexExecutableLocationError("Runtime directory ownership reply is invalid");
   if (!isRecord(value) || typeof value.currentSid !== "string" || !SID_PATTERN.test(value.currentSid)
@@ -1001,13 +933,7 @@ function parseOwnershipClaim(value: unknown, requested: readonly string[]): Owne
 
 const OWNERSHIP_CLAIM_KEYS = new Set(["path", "previousOwner", "outcome"]);
 
-/**
- * Create the product's private objects and make the current account their
- * owner with one claim. `create` makes them and records each path it made in
- * `created`, parents before children. If creation or the claim fails, every
- * recorded path is removed, last first, before the error is rethrown, so no
- * half-owned object is left behind.
- */
+// Create parents first and record only newly made paths; on creation or ownership failure remove them in reverse order.
 export async function createPrivateObjects<T>(create: (created: string[]) => Promise<T>): Promise<T> {
   const created: string[] = [];
   try {
@@ -1020,18 +946,11 @@ export async function createPrivateObjects<T>(create: (created: string[]) => Pro
   }
 }
 
-/**
- * `fs.mkdir` with `recursive` that records, parents first, each directory it
- * made, for {@link createPrivateObjects}.
- */
+// `fs.mkdir` with `recursive` that records, parents first, each directory it made, for {@link createPrivateObjects}.
 export async function makePrivateDirectoryTree(path: string, created: string[]): Promise<void> {
   const reported = await fs.mkdir(path, { recursive: true, mode: 0o700 });
   if (reported === undefined) return;
-  // Node reports the first directory it made; every level from there down to
-  // `path` is new. On Windows the report is the namespaced form of the path
-  // (`\\?\D:\...`), and drive letters may differ in case. A report outside
-  // `path` would make removal reach a directory this call did not make, so it
-  // is a contract violation.
+  // Normalize namespaced Windows paths and drive case; reject mkdir reports outside the target to keep rollback from deleting unrelated directories.
   const first = resolvePath(process.platform === "win32" ? reported.replace(/^\\\\\?\\UNC\\/i, "\\\\").replace(/^\\\\\?\\/, "") : reported);
   const same = (left: string, right: string) => process.platform === "win32" ? left.toLowerCase() === right.toLowerCase() : left === right;
   const made: string[] = [];
@@ -1045,11 +964,7 @@ export async function makePrivateDirectoryTree(path: string, created: string[]):
   created.push(directory, ...made);
 }
 
-/**
- * Create private directories in order, each owned by the current account,
- * with one ownership claim for the whole set. A later path may sit inside an
- * earlier one; the first path's parent must exist.
- */
+// Claim each directory for the current account in order; the first parent must exist, and later paths may nest in earlier ones.
 export async function createPrivateDirectories(paths: readonly string[]): Promise<void> {
   await createPrivateObjects(async (created) => {
     for (const path of paths) {
@@ -1059,13 +974,13 @@ export async function createPrivateDirectories(paths: readonly string[]): Promis
   });
 }
 
-/** Create one private directory owned by the current account; its parent must exist. */
+// Create one private directory owned by the current account; its parent must exist.
 export async function createPrivateDirectory(path: string): Promise<string> {
   await createPrivateDirectories([path]);
   return path;
 }
 
-/** `fs.mkdtemp` for a private directory owned by the current account. */
+// `fs.mkdtemp` for a private directory owned by the current account.
 export async function createPrivateTempDirectory(prefix: string): Promise<string> {
   return createPrivateObjects(async (created) => {
     const path = await fs.mkdtemp(prefix);
@@ -1074,7 +989,7 @@ export async function createPrivateTempDirectory(prefix: string): Promise<string
   });
 }
 
-/** Admit the file's location; callers execute a separately pinned artifact. */
+// Admit the file's location; callers execute a separately pinned artifact.
 export async function assertCodexExecutableLocation(
   candidate: string,
   routeKind: CodexLocationRouteKind = "script",
@@ -1083,7 +998,7 @@ export async function assertCodexExecutableLocation(
   await assertCodexLocations([{ path: candidate, kind: "executable", routeKind }], trustInputs);
 }
 
-/** Require a current-account private leaf and trusted, non-mutable ancestors. */
+// Require a current-account private leaf and trusted, non-mutable ancestors.
 export async function assertCodexPrivateRuntimeDirectory(
   candidate: string,
   routeKind: CodexLocationRouteKind = "script",

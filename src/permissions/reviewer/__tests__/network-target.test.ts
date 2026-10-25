@@ -1,16 +1,4 @@
-/**
- * One extractor answers "which endpoint is this call aimed at" for BOTH the
- * category decision (`inspectHostRisk`) and the network verdict
- * (`RuleBasedRiskClassifier`).
- *
- * They used to be two implementations. The category side scanned every
- * top-level string for a URL (default-strict: a URL hidden under an arbitrary
- * key still escalates); the verdict side only looked at `url` / `endpoint` /
- * `host` / `uri`. So `{ target: "https://api.openai.com/v1/chat" }` escalated to
- * category `network` and then rated HIGH "network untrusted host" — the
- * trusted-host allowance could not be reached from any key outside the named
- * four. Consolidating makes it reachable, which LOOSENS those verdicts.
- */
+// Category and verdict extraction share one endpoint authority, including URLs in arbitrary top-level fields, so trusted-host policy cannot disappear between stages.
 import { describe, it, expect } from "vitest";
 import { RuleBasedRiskClassifier } from "../risk-classifier.js";
 import { inspectHostRisk } from "../host-risk-inspector.js";
@@ -23,7 +11,7 @@ import { makeRiskClassifierContext } from "../../__tests__/test-helpers.js";
 
 const rb = new RuleBasedRiskClassifier();
 
-/** Drive both consumers from the same arguments, as the pipeline does. */
+// Drive both consumers from the same arguments, as the pipeline does.
 function categoryAndVerdict(input: Record<string, unknown>) {
   const category = inspectHostRisk({
     source: "plugin",
@@ -57,8 +45,7 @@ describe("the two consumers agree because they share one extractor", () => {
     it(`${JSON.stringify(input)}: category "network" iff a target was extracted`, () => {
       const target = extractNetworkTarget(input);
       expect(hasNetworkTarget(input)).toBe(target !== null);
-      // `inspectHostRisk` only reaches the network branch for non-shell calls,
-      // which every shape here is.
+      // `inspectHostRisk` only reaches the network branch for non-shell calls, which every shape here is.
       expect(categoryAndVerdict(input).category === "network").toBe(target !== null);
     });
   }
@@ -74,8 +61,7 @@ describe("the trusted-host rule is now reachable from any key — the approved L
 
   for (const { input, host } of TRUSTED_UNDER_ARBITRARY_KEY) {
     it(`${JSON.stringify(input)} → LOW (was HIGH "network untrusted host")`, () => {
-      // The key is genuinely outside the named set — otherwise this row would
-      // have been reachable before and would prove nothing.
+      // The key is genuinely outside the named set — otherwise this row would have been reachable before and would prove nothing.
       const key = Object.keys(input)[0];
       expect(NETWORK_TARGET_FIELDS).not.toContain(key);
       expect(categoryAndVerdict(input)).toEqual({
@@ -87,9 +73,7 @@ describe("the trusted-host rule is now reachable from any key — the approved L
   }
 
   it("a bare trusted hostname in `endpoint` now reaches the network domain at all", () => {
-    // Before: the category side required a parseable URL on `endpoint`, so a
-    // bare hostname there was not a network target and the call fell through to
-    // the default-strict `write` domain → HIGH "write path not declared".
+    // Before: the category side required a parseable URL on `endpoint`, so a bare hostname there was not a network target and the call fell through to the default-strict `write` domain → HIGH "write path not declared".
     expect(categoryAndVerdict({ endpoint: "api.openai.com" })).toEqual({
       category: "network",
       level: "low",
@@ -154,9 +138,7 @@ describe("extraction order and scheme handling are preserved", () => {
   });
 
   it("an empty-authority URL is normalized by WHATWG, not treated as hostless", () => {
-    // An empty-authority https URL parses with the first path segment promoted
-    // to the authority, so there is no reachable "hostless network URL" shape.
-    // Pinned because it is the input that looks like it should produce one.
+    // An empty-authority https URL parses with the first path segment promoted to the authority, so there is no reachable "hostless network URL" shape. Pinned because it is the input that looks like it should produce one.
     expect(extractNetworkTarget({ url: "https:///x" })).toMatchObject({ host: "x", path: "/" });
     expect(categoryAndVerdict({ url: "https:///x" })).toEqual({
       category: "network",
@@ -176,9 +158,7 @@ describe("extraction order and scheme handling are preserved", () => {
   });
 
   it("a non-URL value in a named field is a bare-host candidate — STRICTER category movement", () => {
-    // Before: the category side saw no network target and fell through to
-    // `write` → HIGH "write path not declared". Now the declared `url` field is
-    // honoured as a (bogus) hostname → HIGH "network untrusted host".
+    // Before: the category side saw no network target and fell through to `write` → HIGH "write path not declared". Now the declared `url` field is honoured as a (bogus) hostname → HIGH "network untrusted host".
     expect(categoryAndVerdict({ url: "not-a-url" })).toEqual({
       category: "network",
       level: "high",

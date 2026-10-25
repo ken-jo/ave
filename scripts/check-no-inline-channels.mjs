@@ -1,26 +1,6 @@
 #!/usr/bin/env node
-/**
- * check-no-inline-channels.mjs — #1409 C2 + C11 + M1 CI guard
- *
- * EVERY `src/ipc/domains/*.ts` IPC domain, host/plugin preload entry, selected
- * main-side producer, and external-surface consumer must reference Electron
- * wire channels ONLY through the `src/contract/` SOT (`CHANNELS.*`). The guard
- * rejects actual string, template, and statically concatenated literals in
- * the `ave:`, `marketplace:`, and `window:` namespaces while ignoring comments
- * and documentation.
- *
- * The domain directory is read dynamically (M1: cluster-review finding —
- * previously only the C2-swept chat/plugins/settings domains were guarded, so
- * the remaining domains could re-author `ave:*` literals independently). The
- * `__tests__/` subdirectory is excluded automatically (it is a directory, not
- * a `.ts` file) — domain behavior tests legitimately assert on literal
- * channel strings.
- *
- * The preload surface split (#1409 C11 / #1411) moved the host bridge into
- * `src/preload/{public-surface,internal-surface,gesture-intent}.ts`; the whole
- * `src/preload/` directory is scanned so a new submodule is covered
- * automatically. Run standalone with `node scripts/check-no-inline-channels.mjs`.
- */
+// Require shared channel constants at every IPC, preload and external-surface boundary.
+// Scan directories dynamically so new modules cannot escape the gate.
 import { readFileSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
@@ -43,33 +23,23 @@ const ROOT = rootArgIndex >= 0
   ? resolve(process.argv[rootArgIndex + 1] ?? "")
   : process.cwd();
 
-/** Read the top-level `.ts` modules of a directory (subdirs like `__tests__/`
- *  are excluded by the `.endsWith(".ts")` filter). */
 const tsModulesIn = (dir) =>
   readdirSync(join(ROOT, dir))
     .filter((f) => f.endsWith(".ts"))
     .map((f) => `${dir}/${f}`);
 
 const TARGETS = [
-  // Every IPC domain module (read dynamically so a new domain is covered
-  // automatically).
   ...tsModulesIn("src/ipc/domains"),
   "src/preload.ts",
-  // Every TS module in the preload surface split (public/internal/gesture).
   ...tsModulesIn("src/preload"),
-  // The external-surface stack (#1409/#1436): contract consumers must never
-  // re-inline a wire literal — dispatcher, HTTP server, SDK facade, CLI.
-  // (src/contract itself is the SOT where the literals are DEFINED — excluded.)
+  // Consumers use the shared contract; only the contract defines wire literals.
   ...tsModulesIn("src/api"),
   ...tsModulesIn("src/sdk"),
   ...tsModulesIn("src/cli"),
-  // Separate sandboxed plugin-webview preload entry. This is not under
-  // src/preload/, so it must be listed explicitly.
+  // This sandboxed preload lives outside the scanned preload directory.
   "src/plugin-preload.ts",
-  // The floating dock's preload, for the same reason: a separate sandboxed
-  // entry outside src/preload/.
+  // This sandboxed preload also lives outside the scanned preload directory.
   "src/floating-dock-preload.ts",
-  // Main-side producers paired with the preload/domain consumers above.
   "src/boot/bootstrap-status.ts",
   "src/boot/plugins.ts",
   "src/boot/steps/ipc-bridge.ts",

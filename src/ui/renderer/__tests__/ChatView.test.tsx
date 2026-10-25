@@ -1,9 +1,4 @@
-/**
- * ChatView unit tests.
- *
- * ChatView relies heavily on useChatContext() so tests render the full <App />
- * via the shared renderApp helper and assert ChatView-specific behaviour.
- */
+/** Render through App because ChatView requires its chat context. */
 import "../../../../test/renderer/setup.js";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { act, fireEvent, waitFor } from "@testing-library/react";
@@ -65,7 +60,6 @@ function installDeterministicScrollMetrics(initialScrollHeight = 2400, clientHei
   };
 }
 
-
 describe("ChatView", () => {
   it("mounts without crashing", async () => {
     const { container } = await renderApp();
@@ -75,8 +69,8 @@ describe("ChatView", () => {
   it("shows API key prompt when hasApiKey is false", async () => {
     const { container, api } = await renderApp({ hasApiKey: false });
 
-    // The prompt is a chip in the composer's reserved strip — it must NOT live
-    // in the scrolling transcript, where its height decentered the composer.
+    // The prompt is a chip in the composer's reserved strip — it must NOT live in the scrolling transcript, where its height
+    // decentered the composer.
     await waitFor(() => {
       expect(container.textContent).toContain("API 키 설정 필요");
     });
@@ -255,9 +249,8 @@ describe("ChatView", () => {
       const statusRow = container.querySelector('[data-testid="iab-status-row"]');
       const ring = container.querySelector('[data-testid="iab-status-ring"]');
       expect(chip).not.toBeNull();
-      // The plan describes the SESSION's work, so it is a chip on the session
-      // line under the box, right after the context ring — not a band up in
-      // the queue dock over an empty toast reserve, and not inside the box.
+      // The plan describes the SESSION's work, so it is a chip on the session line under the box, right after the context ring —
+      // not a band up in the queue dock over an empty toast reserve, and not inside the box.
       expect(queueDock?.contains(chip)).toBe(false);
       expect(frame?.contains(chip)).toBe(false);
       expect(statusRow?.contains(chip)).toBe(true);
@@ -291,8 +284,7 @@ describe("ChatView", () => {
     const { container } = await renderApp({ hasApiKey: false });
 
     await waitFor(() => {
-      // The no-key affordance is a zero-height chip in the composer's reserved
-      // strip, NOT a transcript card.
+      // The no-key affordance is a zero-height chip in the composer's reserved strip, NOT a transcript card.
       expect(container.textContent).toContain("API 키 설정 필요");
       expect(container.querySelector('[data-testid="composer-api-key-chip"]')).not.toBeNull();
       const composerDock = container.querySelector("[data-composer-placement]");
@@ -337,8 +329,8 @@ describe("ChatView", () => {
       expect(container.querySelector('[data-testid="suggested-tasks"]')).not.toBeNull();
     });
 
-    // Turn end. A suggestion ghost takes over the empty conversation: the
-    // new-chat affordances step aside while it is on screen.
+    // Turn end. A suggestion ghost takes over the empty conversation: the new-chat affordances step aside while it is on
+    // screen.
     await act(async () => {
       emitChatStream({ type: "suggested_replies", reply: "다음 작업 진행" });
     });
@@ -621,8 +613,8 @@ describe("ChatView", () => {
       expect(container.textContent).toContain("오류: reviewer failed");
     });
 
-    // A settled error is grouped for inspection, but it is not a completed
-    // turn. The verdict remains available after expanding that group.
+    // A settled error is grouped for inspection, but it is not a completed turn. The verdict remains available after expanding
+    // that group.
     expect(container.querySelector('[data-testid="work-group"]')?.textContent).not.toContain("작업 완료");
     await act(async () => {
       fireEvent.click(container.querySelector('[data-testid="work-group"] button')!);
@@ -1097,8 +1089,8 @@ describe("ChatView", () => {
     expect(sidePanelClassName).not.toContain("lg:relative");
     const previewCloseButtons = Array.from(container.querySelectorAll('button[aria-label="사이드 패널 닫기"]'));
     expect(previewCloseButtons.some((button) => button.className.includes("absolute inset-0"))).toBe(false);
-    // Content-driven tabs: the panel opens EMPTY to the launcher (no default
-    // tabs). Opening the file-browser tab from the launcher then shows the file.
+    // Content-driven tabs: the panel opens EMPTY to the launcher (no default tabs). Opening the file-browser tab from the
+    // launcher then shows the file.
     const launcher = container.querySelector('[data-testid="chat-side-panel-launcher"]') as HTMLElement | null;
     expect(launcher).not.toBeNull();
     const fileLauncher = container.querySelector('[data-testid="chat-side-panel-launcher-file-browser"]') as HTMLButtonElement | null;
@@ -1302,9 +1294,8 @@ describe("ChatView", () => {
       expect(container.textContent).toContain("서브에이전트 실행이 완료되었습니다.");
     });
 
-    // Parent transcript history is not a sub-agent SOT. The normal WorkGroup
-    // remains visible, but the sub-agent rail is populated only by live
-    // agent-spawn events from the current runtime.
+    // Parent transcript history is not a sub-agent SOT. The normal WorkGroup remains visible, but the sub-agent rail is
+    // populated only by live agent-spawn events from the current runtime.
     const workGroupToggle = await waitFor(() => {
       const button = container.querySelector('[data-testid="work-group"] button') as HTMLButtonElement | null;
       expect(button).not.toBeNull();
@@ -1410,8 +1401,7 @@ describe("ChatView", () => {
     await waitFor(() => {
       expect(container.querySelector('[data-testid="chat-preview-rail"]')).not.toBeNull();
     });
-    // Content-driven tabs: open the file-browser tab from the launcher to view
-    // the draft attachment in the file tree.
+    // Content-driven tabs: open the file-browser tab from the launcher to view the draft attachment in the file tree.
     await act(async () => {
       fireEvent.click(container.querySelector('[data-testid="chat-side-panel-launcher-file-browser"]')!);
     });
@@ -1419,10 +1409,6 @@ describe("ChatView", () => {
       expect(container.textContent).toContain("draft-only.md");
     });
 
-    // Switch sessions the way a user does — the sidebar's own session row. This
-    // used to reach in through the detached-window "load this session in main"
-    // bridge, which no longer exists; the claim under test was never about that
-    // bridge, only about what a session switch does to the side panel.
     const sessionButton = await waitFor(() => {
       const button = Array.from(document.querySelectorAll("button")).find((el) =>
         el.textContent?.includes("Session B"),
@@ -1836,11 +1822,7 @@ describe("ChatView", () => {
     });
   });
 
-  // Regression 2026-05-05 — engine-emitted empty `assistant_round.text`
-  // overwrote the renderer's delta-accumulated body. With `ev.text ?? streamRef`,
-  // an empty string is non-nullish so `??` picks it, leaving the assistant
-  // entry blank. Fix: `ev.text || streamRef.current` so empty falls through
-  // to the accumulated body. (User report: "결론 본문이 사라지고 마커만 남는".)
+  // An empty assistant_round text must fall back to accumulated deltas; nullish coalescing would erase the answer.
   it("preserves accumulated body when assistant_round.text is empty-string", async () => {
     const { container, emitChatStream } = await renderApp({ hasApiKey: true });
     await act(async () => {
@@ -1857,8 +1839,6 @@ describe("ChatView", () => {
       emitChatStream({ type: "done" });
     });
     await waitFor(() => {
-      // Body must survive — pre-fix it was wiped because empty `ev.text`
-      // beat the accumulated streamRef under `??` precedence.
       expect(container.textContent).toContain("본문이 정상적으로 누적되었습니다");
     });
   });
@@ -1984,8 +1964,8 @@ describe("ChatView", () => {
     });
 
     await waitFor(() => {
-      // The thinking header shows while streaming, but the reasoning body stays
-      // COLLAPSED (no auto-expand) — it reveals only on user click.
+      // The thinking header shows while streaming, but the reasoning body stays COLLAPSED (no auto-expand) — it reveals only on
+      // user click.
       expect(container.textContent).toContain("생각 중...");
       expect(container.textContent?.match(/생각 중\.\.\./g)).toHaveLength(1);
       expect(container.textContent).not.toContain("완료되면 접혀야 하는 생각");
@@ -1996,8 +1976,8 @@ describe("ChatView", () => {
     });
 
     await waitFor(() => {
-      // After completion the header reads "생각 완료" and the raw thought stays
-      // hidden. The legacy "응답이 비어있습니다." placeholder is not rendered.
+      // After completion the header reads "생각 완료" and the raw thought stays hidden. The legacy "응답이 비어있습니다." placeholder is not
+      // rendered.
       expect(container.textContent).toContain("생각 완료");
       expect(container.textContent).not.toContain("응답이 비어있습니다.");
       expect(container.textContent).not.toContain("완료되면 접혀야 하는 생각");
@@ -2006,16 +1986,14 @@ describe("ChatView", () => {
 
   it("renders ask_user_question in the bottom overlay without scrolling chat history", async () => {
     const { container, emitAskUserQuestion } = await renderApp({ hasApiKey: true });
-    // A question can only be asked from inside a turn, so the tile has long
-    // since hydrated its conversation by then. Let the mount settle first, or
-    // the card would be addressed to a session the tile does not yet hold.
+    // A question can only be asked from inside a turn, so the tile has long since hydrated its conversation by then. Let the
+    // mount settle first, or the card would be addressed to a session the tile does not yet hold.
     await act(async () => { await Promise.resolve(); });
 
     await act(async () => {
       emitAskUserQuestion({
         id: "ask-scroll-1",
-        // The tile draws only its own conversation's cards; the mock api
-        // hands the main tile its default session.
+        // The tile draws only its own conversation's cards; the mock api hands the main tile its default session.
         sessionId: MOCK_DEFAULT_SESSION_ID,
         createdAt: Date.now(),
         questions: [
@@ -2276,9 +2254,7 @@ describe("ChatView", () => {
       });
       rafCallbacks.length = 0;
 
-      // A newly appended entry grows the transcript while scrollTop still points
-      // at the previous bottom — the exact shape that used to be misread as
-      // "the reader scrolled away" and left the viewport stranded.
+      // Appending tall content must retain bottom pinning even before scrollTop catches up.
       await act(async () => {
         scrollMetrics.setScrollHeight(3200);
         emitChatStream({ type: "text_delta", text: "새로 삽입된 어시스턴트 엔트리" });
@@ -2373,9 +2349,7 @@ describe("ChatView", () => {
     }
   });
 
-  // Regression guard for the PR #545 review comments ③④.
-  // Reasoning + tool + assistant sequence: reasoning entry must be bucketed
-  // inside WorkGroup while the final assistant text stays visible standalone.
+  // Group reasoning and tools as work while keeping the final answer visible.
   it("keeps reasoning bucketed in WorkGroup while assistant text stays visible (reasoning+tool+end_turn)", async () => {
     const { container, emitChatStream } = await renderApp({ hasApiKey: true });
     await submitChatMessage(container, "오늘 일정");
@@ -2635,8 +2609,8 @@ describe("ChatView — userApprovalHit disclosure toast (#793 + cluster MAJOR-2/
         expect(el).not.toBeNull();
         return el as HTMLElement;
       });
-      // Class string uses `hsl(var(--<token>)/...)` form — assert the token
-      // name appears (theme system v2 — bundle-invariant, no palette literals).
+      // Class string uses `hsl(var(--<token>)/...)` form — assert the token name appears (theme system v2 — bundle-invariant, no
+      // palette literals).
       expect(
         toast.className,
         `verdict=${verdict} expected token "--${expectedToken}"`,
@@ -2715,8 +2689,8 @@ describe("ChatView — userApprovalHit disclosure toast (#793 + cluster MAJOR-2/
     await act(async () => {
       fire({ toolName: "fs_write", scope: "session", verdictAtApproval: "medium" });
     });
-    // Unmount BEFORE the 4s dismiss timer would fire. If cleanup is broken
-    // a setState-after-unmount warning would be emitted; otherwise silent.
+    // Unmount BEFORE the 4s dismiss timer would fire. If cleanup is broken a setState-after-unmount warning would be emitted;
+    // otherwise silent.
     const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     unmount();
     expect(consoleErrorSpy).not.toHaveBeenCalled();
@@ -2734,9 +2708,8 @@ describe("ChatView — reviewer suggestion", () => {
   }) => void;
 
   it("draws nothing until an approval card is up to carry it", async () => {
-    // The offer belongs where the user is already deciding, so it has no
-    // surface of its own in the window: with no card up it appears nowhere,
-    // and the hook goes on holding it for the next one.
+    // The offer belongs where the user is already deciding, so it has no surface of its own in the window: with no card up it
+    // appears nowhere, and the hook goes on holding it for the next one.
     const { container, api } = await renderApp({ hasApiKey: true });
     const onSuggestionMock = api.permission.onReviewSuggestion as unknown as ReturnType<typeof vi.fn>;
     await waitFor(() => expect(onSuggestionMock).toHaveBeenCalled());

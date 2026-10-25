@@ -13,6 +13,10 @@ vi.mock("@anthropic-ai/sandbox-runtime", () => ({
     initialize: runtime.initialize,
     wrapWithSandboxArgv: runtime.wrap,
     reset: vi.fn(),
+    // The macOS runtime probe opens an attributed listener and cleans up after its wrap.
+    openInvocationListener: vi.fn(async () => undefined),
+    closeInvocationListener: vi.fn(),
+    cleanupAfterCommand: vi.fn(),
     setParentProxyRouter: vi.fn(),
     getProxyPort: () => undefined,
     getSocksProxyPort: () => undefined,
@@ -87,6 +91,8 @@ describe("private-directory confinement gate", () => {
   it("does not impose the Windows privacy gate on POSIX confinement", async () => {
     setProcessPlatform("darwin");
     setAveHomePrivacyAtBoot({ enforcement: "none", home: home(), category: "read-back-failed", reason: "fixture" });
+    // The post-initialize runtime probe runs the wrapped no-op; this one exits 0.
+    runtime.wrap.mockResolvedValueOnce({ argv: [process.execPath, "-e", ""], env: { ELECTRON_RUN_AS_NODE: "1" } });
     await initializeAsrtSandbox({ allowedDomains: [] });
     expect(isAsrtSandboxActive()).toBe(true);
     expect(await readAsrtWindowsStatus()).toMatchObject({ applicable: false });

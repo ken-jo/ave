@@ -2,20 +2,11 @@ import { StringDecoder } from "node:string_decoder";
 
 import { CREDENTIAL_FORMAT_PREFIXES } from "../shared/dlp.js";
 
-/**
- * Live output of a running host shell tool, for display only.
- *
- * The executor places a sink under {@link TOOL_OUTPUT_PROGRESS_METADATA_KEY}
- * in the tool's context metadata when a caller subscribed to tool output. The
- * final tool_result is unaffected: it keeps its bounded form and remains the
- * only thing the model reads. The stream is coalesced and capped so a command
- * that prints without pause cannot flood the renderer.
- */
+// Live output is display-only, coalesced and capped to prevent renderer flooding; only the bounded final result reaches the model.
 export const TOOL_OUTPUT_PROGRESS_METADATA_KEY = "toolOutputProgress";
 
 export interface ToolOutputProgressSink {
   write(text: string): void;
-  /** No more output follows; deliver anything still held. Idempotent. */
   end(): void;
 }
 
@@ -28,26 +19,17 @@ export function toolOutputProgressFromMetadata(
     : undefined;
 }
 
-/** Unterminated text the relay holds before releasing all but a short tail. */
 export const MASKED_RELAY_HELD_LIMIT_CHARS = 4096;
 /** Tail kept back from an overlong unterminated line; longer than one-line secret shapes. */
 const MASKED_RELAY_TAIL_CHARS = 512;
-/**
- * Quiet time after which the held partial line (a prompt waiting for input) is
- * released. Long enough that a value written after a short pause (`Bearer `,
- * then the token) still arrives while its line is held whole.
- */
+// Hold partial lines through short pauses so delayed credential values arrive before display.
 export const MASKED_RELAY_IDLE_MS = 2_000;
 const OPEN_PRIVATE_KEY = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/g;
 const SECRET_START_PREFIXES: readonly string[] = [
   ...new Set([...CREDENTIAL_FORMAT_PREFIXES.flat(), "-----BEGIN"]),
 ];
 
-/**
- * Whether a trailing run of non-whitespace could be, or begin, a credential
- * the masker recognizes: it holds a known issuer prefix (or the start of one)
- * at a token boundary, or a key/value separator whose value may continue.
- */
+// Hold trailing issuer prefixes and key/value starts that could become credentials.
 function couldBeginSecret(run: string): boolean {
   if (/[=:]/.test(run)) return true;
   for (let at = 0; at < run.length; at++) {
@@ -59,35 +41,8 @@ function couldBeginSecret(run: string): boolean {
 }
 const PRIVATE_KEY_END = /-----END [A-Z0-9 ]*PRIVATE KEY-----/;
 
-/**
- * Masks live output with the same masker as the final display result before
- * any of it is delivered, so a credential is never shown while it streams.
- *
- * Output arrives in arbitrary chunks, so a secret can be split between two of
- * them. Every credential and PII shape the masker knows is confined to one
- * line except a PEM private key block, so the relay carries over the
- * unterminated tail after the last `\n` or `\r` (a progress bar's `\r` ends
- * its line), and everything from an unterminated private-key header onward,
- * until the rest arrives or the stream ends. A cut is used only when masking
- * the two sides separately equals masking them together; otherwise the relay
- * holds back further.
- *
- * The unterminated tail is bounded so output without line breaks still moves:
- * past {@link MASKED_RELAY_HELD_LIMIT_CHARS} all but its last
- * {@link MASKED_RELAY_TAIL_CHARS} characters are released, and after
- * {@link MASKED_RELAY_IDLE_MS} without new data (a prompt waiting) the partial
- * line is released, masked, except a trailing non-whitespace run that could
- * be the start of a credential ({@link couldBeginSecret}) or whose masking
- * depends on the text before it (a Bearer value): that run waits for the rest
- * of the secret or the end of the stream. Neither bound releases an open
- * private-key block.
- *
- * Text of a line released before its line break stays as context: what
- * follows on the same line is masked together with it (`Authorization: Bearer `
- * shown at the bound, the token after it), and only the part not yet shown is
- * delivered, so the value is masked as the final result masks the whole line.
- * The masker decides what context matters; the relay keeps no rule list.
- */
+// Mask before delivery; retain partial lines and open private keys so chunk boundaries cannot reveal credentials.
+// Release bounded or idle tails only at equivalent masking cuts, preserving prior-line context and never releasing an open private key.
 export function createMaskedProgressRelay(
   deliver: (text: string) => void,
   mask: (text: string) => string,
@@ -98,12 +53,7 @@ export function createMaskedProgressRelay(
   let ended = false;
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
 
-  /**
-   * `text` masked as the continuation of the delivered `lineContext`: the
-   * masked line minus what was shown of it. When the masked context is no
-   * longer a prefix (it would have been masked differently), the shown part
-   * cannot be taken back, and `text` is masked on its own.
-   */
+  // Mask continuations with delivered line context; if its masked prefix changes, mask new text independently because shown bytes cannot retract.
   const maskOnLine = (text: string): string => {
     if (lineContext.length === 0) return mask(text);
     const shown = mask(lineContext);
@@ -153,8 +103,7 @@ export function createMaskedProgressRelay(
     while (cut > 0 && !cutIsClean(cut)) cut = previousBreak(cut - 1);
     emit(cut);
     if (keyStart !== -1 || held.length <= MASKED_RELAY_HELD_LIMIT_CHARS) return;
-    // An overlong unterminated line: release all but a short tail, stepping
-    // back while the cut would split something the masker recognizes.
+    // Cut overlong lines only where separate masking equals masking the combined text.
     cut = held.length - MASKED_RELAY_TAIL_CHARS;
     while (cut > 0 && !cutIsClean(cut)) cut -= MASKED_RELAY_TAIL_CHARS;
     emit(cut);
@@ -198,24 +147,19 @@ export function createMaskedProgressRelay(
   };
 }
 
-/** Delay before buffered text is delivered, so bursts share one frame. */
 export const LIVE_OUTPUT_FLUSH_MS = 100;
-/** Buffered text that is delivered at once instead of waiting for the delay. */
 export const LIVE_OUTPUT_FLUSH_CHARS = 4096;
-/** Text delivered per tool call before live output stops. */
 export const LIVE_OUTPUT_LIMIT_CHARS = 256 * 1024;
 export const LIVE_OUTPUT_LIMIT_NOTICE =
   "\n[live output limit reached; the complete result arrives when the command finishes]\n";
 
 export interface LiveOutputStream {
   write(stream: "stdout" | "stderr", chunk: Buffer): void;
-  /** Deliver what is buffered, including an incomplete trailing code point. */
   close(): void;
 }
 
 export function createLiveOutputStream(sink: ToolOutputProgressSink): LiveOutputStream {
-  // One decoder per pipe: a code point split across two reads of the same
-  // pipe is reassembled, never interleaved with the other pipe's bytes.
+  // Decode each pipe separately so split code points reassemble without cross-pipe byte interleaving.
   const decoders = { stdout: new StringDecoder("utf8"), stderr: new StringDecoder("utf8") };
   let pending = "";
   let delivered = 0;

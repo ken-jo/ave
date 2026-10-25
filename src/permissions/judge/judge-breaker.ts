@@ -1,11 +1,4 @@
-/**
- * Judge circuit breaker. Per root session: N consecutive or M total judge
- * DENIALS pause automation for that session, which returns every later call
- * to normal prompting. Timeouts and other fallbacks are not denials and do not
- * count. An allow resets the consecutive streak only.
- *
- * Subagents share their parent's counter: the caller keys by the root session.
- */
+// Count final denials per root session, including subagents; fallback/timeouts do not count. Allows reset only the consecutive streak, and a tripped breaker returns calls to normal prompting.
 import type { JudgeBreakerSettings } from "./judge-settings.js";
 
 interface SessionCounters {
@@ -17,7 +10,15 @@ interface SessionCounters {
 export class JudgeCircuitBreaker {
   private readonly sessions = new Map<string, SessionCounters>();
 
-  constructor(private readonly limits: JudgeBreakerSettings) {}
+  constructor(private limits: JudgeBreakerSettings) {}
+
+  // Apply new limits to every session's existing counts, both ways: lowered limits can open a breaker, raised limits close one whose counts are now under them. The counts themselves are kept.
+  setLimits(limits: JudgeBreakerSettings): void {
+    this.limits = { ...limits };
+    for (const counters of this.sessions.values()) {
+      counters.open = counters.consecutive >= limits.consecutive || counters.total >= limits.total;
+    }
+  }
 
   private counters(sessionId: string): SessionCounters {
     let c = this.sessions.get(sessionId);
@@ -32,7 +33,7 @@ export class JudgeCircuitBreaker {
     return this.sessions.get(sessionId)?.open ?? false;
   }
 
-  /** Record one judge decision. Returns true when this record tripped the breaker. */
+  // Record one judge decision. Returns true when this record tripped the breaker.
   record(sessionId: string, decision: "allow" | "ask" | "deny"): boolean {
     const c = this.counters(sessionId);
     if (decision === "allow") {
@@ -54,7 +55,7 @@ export class JudgeCircuitBreaker {
     return c ? { ...c } : { consecutive: 0, total: 0, open: false };
   }
 
-  /** Drop a session's counters when the conversation ends. */
+  // Drop a session's counters when the conversation ends.
   forget(sessionId: string): void {
     this.sessions.delete(sessionId);
   }

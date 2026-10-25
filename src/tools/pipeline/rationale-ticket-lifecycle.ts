@@ -45,12 +45,7 @@ function isReevaluationFailure(
   return REVIEWER_REEVALUATION_FAILURE_OUTCOMES.includes(outcome as never);
 }
 
-/**
- * The generation and reviewer stages are independent but ordered. A successful
- * rationale is ready only after fresh reviewer reevaluation. A failed ticket
- * records either a generation failure (no reviewer request existed) or a
- * reviewer failure after accepted generation.
- */
+// Rationale becomes ready only after fresh reviewer re-evaluation; distinguish generation failure from later reviewer failure.
 export function isRationaleOutcomeBinding(
   status: RationaleStatus,
   generationOutcome: RationaleGenerationOutcome | null,
@@ -93,11 +88,7 @@ export interface RationaleTicketStateRecord {
   terminalReason: RationaleTerminalReason | null;
 }
 
-/**
- * Opaque receipt loaded from the host-owned one-shot CAS store after it
- * consumes an allow-once resolution. Structural validation is not
- * authenticity: callers MUST supply the receipt from that trusted store.
- */
+// Receipts must come from trusted one-shot CAS; structural validation cannot prove authenticity.
 export interface HostConsumedAllowOnceReceipt {
   contractVersion: typeof RATIONALE_CONTROL_CONTRACT_VERSION;
   kind: "host-consumed-allow-once-cas";
@@ -132,7 +123,6 @@ const STATUS_NAMES: readonly RationaleStatus[] = [
   "not-requested", "pending", "ready", "failed",
 ];
 
-/** States a rationale ticket never leaves. */
 export const RATIONALE_TICKET_TERMINAL_STATES: readonly RationaleTicketState[] = [
   "allowed_once", "denied", "cancelled", "expired", "rejected",
 ];
@@ -393,10 +383,7 @@ export function transitionRationaleTicket(
       return next(record, "allowed_once", record.rationaleStatus,
         record.generationOutcome, record.reevaluationOutcome, "allowed-once");
     case "rationale_ready:reviewer-authorize-once":
-      // The reviewer auto-approve terminal skips user_pending entirely: it
-      // moves a fresh, aligned, non-high rationale straight to the same
-      // one-shot allowed_once terminal that a user allow-once produces, so the
-      // sealed-resume/allow-once receipt path downstream is unchanged.
+      // Fresh, aligned, non-high review skips user_pending but uses the same one-shot allowed_once receipt path.
       return next(record, "allowed_once", record.rationaleStatus,
         record.generationOutcome, record.reevaluationOutcome, "allowed-once");
     case "user_pending:deny":
@@ -460,11 +447,7 @@ export interface HostInvocationStartCommit {
   readonly startedInvocationAudit: InvocationAuditRecord;
 }
 
-/**
- * Host-owned atomic store boundary. A lease is an opaque result loaded from
- * this trusted store; its canonical fields are consistency bindings, not a
- * caller-verifiable authenticity primitive.
- */
+// Store leases are opaque trusted results; canonical fields prove consistency, never caller-verifiable authenticity.
 export interface HostInvocationStartCas {
   commitStart(input: {
     sessionId: string;

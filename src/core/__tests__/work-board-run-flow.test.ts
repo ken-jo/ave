@@ -1,25 +1,4 @@
-/**
- * WorkBoardEngine run-flow contracts (P2 agent orchestration).
- *
- * Companion to `work-board-engine.test.ts`: that file proves the coarse
- * plan→approve→execute / deny / not_found / unwired-runner shapes. This file
- * pins the run-flow CONTRACTS the orchestration layer must keep regardless of
- * the canned summaries:
- *
- *   - the PLAN phase is handed a scoped (read-only) registry while the EXECUTE
- *     phase is deliberately handed the FULL parent registry (an explicit
- *     `parent-all` scope) — the two-tier tool-scoping guarantee;
- *   - progress events fire in the exact lifecycle ORDER (not merely "present"),
- *     on both the approve and the deny branch;
- *   - the run session id is PERSISTED to the board and survives a fresh store
- *     re-read (proving it is on disk, not just in the in-memory return);
- *   - a named agent profile's `model:` frontmatter drives BOTH child phases;
- *   - an execute-phase throw lands the item in `runStatus='error'` (no `done`).
- *
- * All LLM / approval-modal dependencies are faked; the board is a real
- * {@link WorkBoardStore} over an OS temp dir (the ~/.ave namespace is never
- * touched).
- */
+/** Verify tool scopes, lifecycle ordering, persisted session ids, profile models, and failure status with a real temporary board. */
 import { describe, it, expect } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
@@ -55,27 +34,14 @@ function tempBoard(): {
 
 interface SpawnCall {
   title: string;
-  /** Which grant the phase asked for. @see SubAgentToolScope */
   toolScopeKind: SubAgentToolScope["kind"];
-  /** The names an `exactly` grant names; `undefined` for the other kinds. */
   grantedToolNames?: readonly string[];
   profileMode?: string;
   profileModel?: string;
   originSessionId?: string;
 }
 
-/**
- * Fake runner. Records each spawn; returns a phase-specific canned summary
- * matching the real {@link SubAgentRunner} result shape (incl. the `ok`
- * success signal).
- *   - `onExecute` lets a test make the EXECUTE phase THROW (exercises the
- *     engine's catch path) without coupling to a real ConversationLoop.
- *   - `execFails` makes the EXECUTE phase RETURN `{ ok: false }` (the way the
- *     real runner signals a provider-missing / aborted / inner-throw run) so
- *     a failed run is not recorded as success.
- *   - `holdPlan` is a gate promise the PLAN phase awaits before resolving,
- *     letting a test keep a run in-flight to assert the single-flight guard.
- */
+/** Script thrown and returned failures separately; hold the plan promise to exercise single-flight behavior. */
 function fakeRunner(opts?: {
   onExecute?: () => void;
   execFails?: boolean;
@@ -130,7 +96,6 @@ function fakeRunner(opts?: {
   return { runner, calls };
 }
 
-/** Fake profile resolver — returns a profile carrying the given model id. */
 function profileResolver(
   name: string,
   model: string,
@@ -170,16 +135,12 @@ describe("WorkBoardEngine — run-flow contracts", () => {
       expect(result.status).toBe("completed");
       expect(calls).toHaveLength(2);
 
-      // PLAN phase: scoped to a non-empty read-only allowlist (the SubAgentRunner
-      // turns this into a scoped ToolRegistry view). It must contain reads and
-      // exclude any write/mutating tool surface.
       const planCall = calls[0];
       expect(planCall.profileMode).toBe("plan");
       expect(planCall.toolScopeKind).toBe("exactly");
       expect(planCall.grantedToolNames!.length).toBeGreaterThan(0);
       expect(planCall.grantedToolNames).toContain("read_file");
       expect(planCall.grantedToolNames).toContain("sample_lookup");
-      // No write/mutation tools leak into the plan allowlist.
       for (const forbidden of [
         "write_file",
         "run_shell",
@@ -189,10 +150,7 @@ describe("WorkBoardEngine — run-flow contracts", () => {
         expect(planCall.grantedToolNames).not.toContain(forbidden);
       }
 
-      // EXECUTE phase: `parent-all` ⇒ the runner grants the full parent
-      // registry (agent_spawn stripped by the runner itself). This is the
-      // deliberate asymmetry — execute is not boxed to the plan allowlist, and
-      // it now SAYS so instead of leaving the field out.
+      // Execution explicitly receives parent-all; the runner still strips agent_spawn.
       const execCall = calls[1];
       expect(execCall.profileMode).toBe("execute");
       expect(execCall.toolScopeKind).toBe("parent-all");
@@ -202,12 +160,7 @@ describe("WorkBoardEngine — run-flow contracts", () => {
   });
 
   it("derives the PLAN grant from tool CATEGORY, so a plugin's read tool is in and web_fetch is out", async () => {
-    // The grant used to be a written list of tool NAMES, three of which named
-    // one plugin's tools — host code carrying a plugin's vocabulary. Reading
-    // `requiredTier(category)` off the registry instead means a plugin's read
-    // tool is granted for what it declares, and a tool the registry calls
-    // `network` (web_fetch, always, by design) is not read-tier and so is not
-    // in plan mode at all.
+    // Derive plan grants from read-tier registry categories, including plugin tools; network is not read-tier.
     const { store, cleanup } = tempBoard();
     try {
       const created = await store.create({ title: "category derivation" });
@@ -225,9 +178,7 @@ describe("WorkBoardEngine — run-flow contracts", () => {
       expect((await engine.runItem(created.itemId)).status).toBe("completed");
       const granted = calls[0].grantedToolNames;
 
-      // (a) every read-tier tool, whoever owns it — including a plugin's.
       expect(granted).toEqual(expect.arrayContaining(["read_file", "grep_files", "sample_lookup"]));
-      // (b) nothing above the read tier: write, shell, network, meta.
       expect(granted).not.toContain("write_file");
       expect(granted).not.toContain("run_shell");
       expect(granted).not.toContain("web_fetch");
@@ -238,9 +189,7 @@ describe("WorkBoardEngine — run-flow contracts", () => {
   });
 
   it("stops the run rather than widening when the registry holds no read-tier tool", async () => {
-    // An `exactly` scope cannot be built from an empty name list, so an empty
-    // derivation must fail the run as a board-visible error rather than reach
-    // the runner at all — and it must never fall back to a wider grant.
+    // An empty exact grant must fail visibly, never widen permissions.
     const { store, cleanup } = tempBoard();
     try {
       const created = await store.create({ title: "empty derivation" });
@@ -286,9 +235,7 @@ describe("WorkBoardEngine — run-flow contracts", () => {
 
       await engine.runItem(id);
 
-      // First occurrence of each phase, in the order it first appears. The
-      // engine may emit extra `planning`/`executing` turn updates, but the
-      // phase ENTRY order must be exactly this sequence.
+      // Ignore repeated turn updates when comparing phase-entry order.
       const order: WorkBoardRunEvent["phase"][] = [];
       for (const e of events) {
         if (!order.includes(e.phase)) order.push(e.phase);
@@ -300,13 +247,11 @@ describe("WorkBoardEngine — run-flow contracts", () => {
         "done",
       ]);
 
-      // `awaiting_approval` precedes `executing` — approval gates execution.
       const approvalIdx = events.findIndex((e) => e.phase === "awaiting_approval");
       const executingIdx = events.findIndex((e) => e.phase === "executing");
       expect(approvalIdx).toBeGreaterThanOrEqual(0);
       expect(executingIdx).toBeGreaterThan(approvalIdx);
 
-      // Terminal `done` event carries the execute session id.
       const done = events[events.length - 1];
       expect(done.phase).toBe("done");
       expect(done.runSessionId).toBe(`work-board:${id}::exec`);
@@ -335,18 +280,15 @@ describe("WorkBoardEngine — run-flow contracts", () => {
       const result = await engine.runItem(id);
 
       expect(result.status).toBe("denied");
-      // Plan ran, approval was requested, execute never fired.
       expect(calls).toHaveLength(1);
       expect(calls[0].profileMode).toBe("plan");
       expect(requests).toHaveLength(1);
 
-      // No `executing` or `done` event on the deny branch.
       const phases = events.map((e) => e.phase);
       expect(phases).not.toContain("executing");
       expect(phases).not.toContain("done");
       expect(phases[phases.length - 1]).toBe("denied");
 
-      // Persisted status reflects the rejection; output stays unset.
       const got = await store.get(id);
       if (got.status !== "found") throw new Error("missing item");
       expect(got.item.runStatus).toBe("denied");
@@ -377,8 +319,7 @@ describe("WorkBoardEngine — run-flow contracts", () => {
       const expectedSession = `work-board:${id}::exec`;
       expect(result.runSessionId).toBe(expectedSession);
 
-      // Re-read through a SECOND store instance over the same file → proves the
-      // run fields are on disk, not merely cached on the writing instance.
+      // Reopen with another store instance to prove run fields reached disk.
       const reloaded = new WorkBoardStore(path);
       const got = await reloaded.get(id);
       if (got.status !== "found") throw new Error("missing item after reload");
@@ -413,7 +354,6 @@ describe("WorkBoardEngine — run-flow contracts", () => {
       expect(result.status).toBe("completed");
 
       expect(calls).toHaveLength(2);
-      // Both phases carry the resolved profile model.
       expect(calls[0].profileModel).toBe("high");
       expect(calls[1].profileModel).toBe("high");
     } finally {
@@ -477,16 +417,13 @@ describe("WorkBoardEngine — run-flow contracts", () => {
 
       expect(result.status).toBe("error");
       expect(result.reason).toContain("boom in execute");
-      // Plan + execute were both attempted; execute threw.
       expect(calls).toHaveLength(2);
       expect(calls[1].profileMode).toBe("execute");
 
-      // No terminal `done`; an `error` event is emitted instead.
       const phases = events.map((e) => e.phase);
       expect(phases).not.toContain("done");
       expect(phases).toContain("error");
 
-      // Persisted run status is `error`; no output was captured.
       const got = await store.get(id);
       if (got.status !== "found") throw new Error("missing item");
       expect(got.item.runStatus).toBe("error");
@@ -503,10 +440,7 @@ describe("WorkBoardEngine — run-flow contracts", () => {
       if (created.status !== "created") throw new Error("setup failed");
       const id = created.itemId;
 
-      // The real SubAgentRunner does NOT throw on a provider-missing / aborted
-      // run — it returns { ok: false } with the error text as `summary`. The
-      // engine must branch on that signal and land `error`, never recording the
-      // error text as a green `completed` output.
+      // Returned ok:false is a failed run; never persist its summary as successful output.
       const { runner, calls } = fakeRunner({ execFails: true });
       const { gate } = fakeGate("allow-once");
       const events: WorkBoardRunEvent[] = [];
@@ -521,16 +455,13 @@ describe("WorkBoardEngine — run-flow contracts", () => {
 
       expect(result.status).toBe("error");
       expect(result.reason).toContain("provider not configured");
-      // Plan + execute both ran (execute returned ok:false rather than throwing).
       expect(calls).toHaveLength(2);
       expect(calls[1].profileMode).toBe("execute");
 
-      // No terminal `done`; an `error` event is emitted instead.
       const phases = events.map((e) => e.phase);
       expect(phases).not.toContain("done");
       expect(phases).toContain("error");
 
-      // Persisted run status is `error`; the error text is NOT recorded as output.
       const got = await store.get(id);
       if (got.status !== "found") throw new Error("missing item");
       expect(got.item.runStatus).toBe("error");
@@ -547,8 +478,6 @@ describe("WorkBoardEngine — run-flow contracts", () => {
       if (created.status !== "created") throw new Error("setup failed");
       const id = created.itemId;
 
-      // Gate the PLAN phase so the first run stays in flight while we fire a
-      // second concurrent run at the same id.
       let releasePlan!: () => void;
       const holdPlan = new Promise<void>((resolve) => {
         releasePlan = resolve;
@@ -562,26 +491,19 @@ describe("WorkBoardEngine — run-flow contracts", () => {
         emitProgress: () => {},
       });
 
-      // First run: starts, enters PLAN, blocks on holdPlan (still in flight).
       const firstRun = engine.runItem(id);
-      // Deterministically wait until the first run has entered the PLAN spawn
-      // (the runner recorded its call) before racing a second run at it — this
-      // proves the first run is genuinely in flight, not merely scheduled.
+      // Wait for the first plan spawn before issuing the concurrent run.
       while (calls.length === 0) {
         await new Promise((r) => setTimeout(r, 0));
       }
 
-      // Second concurrent run for the SAME id → busy, no spawn.
       const busy = await engine.runItem(id);
       expect(busy.status).toBe("already_running");
-      // Only the first run's PLAN spawn exists; the busy run spawned nothing.
       expect(calls).toHaveLength(1);
 
-      // Let the first run finish cleanly.
       releasePlan();
       const first = await firstRun;
       expect(first.status).toBe("completed");
-      // Exactly the first run's plan + execute spawns — never a second agent.
       expect(calls).toHaveLength(2);
     } finally {
       await cleanup();
@@ -594,8 +516,6 @@ describe("WorkBoardEngine — run-flow contracts", () => {
       const created = await store.create({ title: "persisted active" });
       if (created.status !== "created") throw new Error("setup failed");
       const id = created.itemId;
-      // Simulate a run left mid-flight (e.g. another process / a crash-recovered
-      // record) by persisting an active run phase directly.
       await store.setRunStatus(id, "executing");
 
       const { runner, calls } = fakeRunner();
@@ -609,7 +529,6 @@ describe("WorkBoardEngine — run-flow contracts", () => {
 
       const result = await engine.runItem(id);
       expect(result.status).toBe("already_running");
-      // No spawn, no approval — the busy guard short-circuits before either.
       expect(calls).toHaveLength(0);
       expect(requests).toHaveLength(0);
     } finally {
@@ -624,7 +543,6 @@ describe("WorkBoardEngine — run-flow contracts", () => {
       if (created.status !== "created") throw new Error("setup failed");
       const id = created.itemId;
 
-      // First run: completes, persisting plan + output + runSessionId.
       {
         const { runner } = fakeRunner();
         const { gate } = fakeGate("allow-once");
@@ -644,7 +562,6 @@ describe("WorkBoardEngine — run-flow contracts", () => {
       const completedSession = afterComplete.item.runSessionId;
       expect(completedSession).toBeDefined();
 
-      // Second run on the SAME item: the user DENIES the plan this time.
       {
         const { runner } = fakeRunner();
         const { gate } = fakeGate("deny-once");
@@ -658,8 +575,6 @@ describe("WorkBoardEngine — run-flow contracts", () => {
         expect(result.status).toBe("denied");
       }
 
-      // No residual from the prior COMPLETED run: the success output is gone and
-      // the runSessionId is no longer the completed run's execute session.
       const afterDeny = await store.get(id);
       if (afterDeny.status !== "found") throw new Error("missing item");
       expect(afterDeny.item.runStatus).toBe("denied");
@@ -677,7 +592,6 @@ describe("WorkBoardEngine — run-flow contracts", () => {
       if (created.status !== "created") throw new Error("setup failed");
       const id = created.itemId;
 
-      // The user clicks "allow always" on the very first run's plan.
       const { runner } = fakeRunner();
       const { gate, requests } = fakeGate("allow-always");
       const engine = createWorkBoardEngine({
@@ -689,18 +603,12 @@ describe("WorkBoardEngine — run-flow contracts", () => {
 
       const first = await engine.runItem(id);
       expect(first.status).toBe("completed");
-      // A second run of the same finished item must STILL hit the gate — the
-      // durable choice did not persist a bypass.
       const second = await engine.runItem(id);
       expect(second.status).toBe("completed");
 
-      // The gate was consulted on BOTH runs (no short-circuit / remembered allow).
       expect(requests).toHaveLength(2);
-      // Each request carried a UNIQUE per-run id (fresh §8 decision; no cache
-      // key can match across runs).
       const ids = requests.map((r) => (r as { id: string }).id);
       expect(ids[0]).not.toBe(ids[1]);
-      // The gate identity is the agent-action plan gate, not an executable tool.
       for (const r of requests) {
         expect((r as { toolName: string }).toolName).toBe("work_board_run");
         expect((r as { kind: string }).kind).toBe("agent-action");

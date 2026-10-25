@@ -1,20 +1,5 @@
-/**
- * Unsandboxed host shells follow the reference rule (Claude Code / Codex),
- * decided by the owner on 2026-10-16 (design I3):
- *
- *   - sandbox off (the user's choice): normal rules; an allow rule runs it.
- *   - sandbox requested but unavailable: warn and continue under normal rules;
- *     the plan still records `requested-sandbox-unavailable`.
- *   - explicit unsandboxed retry (`executionMode: "host"`): a matching allow
- *     rule approves it without asking; without one it asks, and the card keeps
- *     the host-execution plan (`requiresExplicitUserApproval`).
- *   - everywhere: the floor (credential paths, sink catalogue) forces the
- *     modal over an allow rule, and a deny rule denies.
- *
- * Every case drives the real ToolExecutor, the real PermissionManager with
- * real `Bash(...)` rules, the real ApprovalGate and the real BashTool, so a
- * rule-approved explicit host run also proves the spawn-side permit check.
- */
+/** Host shells use normal rules when isolation is off or unavailable; unavailable requests retain warning metadata.
+ * Explicit host retries ask unless an allow rule matches; sensitive and exfiltration floors still force approval, and deny rules always win. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, symlinkSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -210,10 +195,8 @@ describe("explicit unsandboxed retry (executionMode host)", () => {
     expect(existsSync(join(dir, "marker"))).toBe(false);
   });
 
-  // The research names the hazard: a remembered approval given for a
-  // sandboxed/default run must not silently cover the unsandboxed retry. Only
-  // an allow rule may (I3). The remembered-approval key carries the sealed plan,
-  // and the explicit-host gate never consults approval memory.
+  // The research names the hazard: a remembered approval given for a sandboxed/default run must not silently cover the unsandboxed retry.
+  // Only an allow rule may (I3). The remembered-approval key carries the sealed plan, and the explicit-host gate never consults approval memory.
   it("keeps a default run's remembered approval apart from the unsandboxed retry", async () => {
     const first = await run({
       substrate: "sandbox-off", rules: [], command: "printf granted",
@@ -229,8 +212,9 @@ describe("explicit unsandboxed retry (executionMode host)", () => {
       executionMode: "host", answer: "deny-once", pm: first.pm,
     });
     expect(retry.cards).toHaveLength(1);
+    // OWNER ITEM: main locked the explicit-host card to allow-once/deny-once; #77/#90 let the bash card offer rules. No dated decision picks one; this follows #90.
+    expect(retry.cards[0]?.allowedChoices).toBeUndefined();
     expect(retry.cards[0]).toMatchObject({
-      allowedChoices: ["allow-once", "deny-once"],
       executionPlan: { executionRequest: "host", requiresExplicitUserApproval: true },
     });
     expect(retry.cards[0]?.approvalCacheKey).toBeDefined();
@@ -245,8 +229,9 @@ describe("explicit unsandboxed retry (executionMode host)", () => {
       executionMode: "host", answer: "allow-once",
     });
     expect(cards).toHaveLength(1);
+    // OWNER ITEM: main locked the explicit-host card to allow-once/deny-once; #77/#90 let the bash card offer rules. No dated decision picks one; this follows #90.
+    expect(cards[0]?.allowedChoices).toBeUndefined();
     expect(cards[0]).toMatchObject({
-      allowedChoices: ["allow-once", "deny-once"],
       requireExplicit: true,
       executionPlan: { executionRequest: "host", mode: "plain", requiresExplicitUserApproval: true },
     });
@@ -284,9 +269,10 @@ describe("explicit unsandboxed retry (executionMode host)", () => {
 });
 
 describe("requested sandbox unavailable", () => {
+  // Without a sandbox only an exact allow rule admits a plain shell.
   it("runs under a matching allow rule and records the fallback reason", async () => {
     const { result, cards, execute } = await run({
-      substrate: "sandbox-unavailable", rules: PRINTF_ALLOW, command: "printf fallback-ran",
+      substrate: "sandbox-unavailable", rules: [{ pattern: "Bash(printf fallback-ran)", action: "allow" }], command: "printf fallback-ran",
       executionMode: "default", answer: "deny-once",
     });
     expect(cards).toHaveLength(0);
@@ -307,14 +293,14 @@ describe("requested sandbox unavailable", () => {
 describe("sandbox off (user's choice)", () => {
   it("runs under a matching allow rule, unchanged", async () => {
     const { result, cards, execute } = await run({
-      substrate: "sandbox-off", rules: PRINTF_ALLOW, command: "printf off-ran",
+      substrate: "sandbox-off", rules: [{ pattern: "Bash(printf off-ran)", action: "allow" }], command: "printf off-ran",
       executionMode: "default", answer: "deny-once",
     });
     expect(cards).toHaveLength(0);
     expect(execute).toHaveBeenCalledOnce();
     expect(result.content).toContain("off-ran");
     expect(result.executionPlan).toMatchObject({
-      requestedSandbox: false, fallbackReason: "none", requiresExplicitUserApproval: false,
+      requestedSandbox: false, fallbackReason: "disabled-by-setting", requiresExplicitUserApproval: false,
     });
   });
 });

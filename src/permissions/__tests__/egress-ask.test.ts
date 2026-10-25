@@ -1,9 +1,4 @@
-/**
- * The egress ask callback's decision table (egress-ask.ts): who opened the
- * connection decides whether it is allowed outright, refused, or asked about,
- * and every answer is the literal `true` or a deny with a reason, with one
- * audit row each.
- */
+// The egress ask callback's decision table (egress-ask.ts): who opened the connection decides whether it is allowed outright, refused, or asked about, and every answer is the literal `true` or a deny with a reason, with one audit row each.
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -42,7 +37,7 @@ const interactiveShell: ShellEgressOwner = {
   context: { sessionId: "session-1", workspaceRoot: "/work/project", approvalSurface: "interactive" },
 };
 
-/** A connection as ASRT decides it: who, and what the destination resolved to. */
+// A connection as ASRT decides it: who, and what the destination resolved to.
 interface Connection {
   attributionKey: string | undefined;
   identity: "listener" | "username";
@@ -56,10 +51,7 @@ const listener = (
   resolution: Connection["resolution"] = "pinned",
 ): Connection => ({ attributionKey: token, identity: "listener", addresses, resolution });
 
-/**
- * Both phases of one connection, the way the patched ASRT calls them: the
- * name phase first, and the resolved phase only after its `true`.
- */
+// Both phases of one connection, the way the patched ASRT calls them: the name phase first, and the resolved phase only after its `true`.
 function bothPhases(raw: SandboxAskCallback) {
   return async (params: { host: string; port: number | undefined }, connection: Connection | undefined) => {
     if (connection === undefined) return raw(params, undefined);
@@ -168,8 +160,7 @@ describe("egress ask callback — attribution", () => {
       .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed });
     expect(await ask({ host: "example.com", port: 443 }, listener("f".repeat(32))))
       .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed });
-    // A live shell's key presented on the shared front end: it may have been
-    // read off that shell, so it vouches for nobody.
+    // A live shell's key presented on the shared front end: it may have been read off that shell, so it vouches for nobody.
     expect(await ask({ host: "api.fixture.example", port: 443 }, { attributionKey: WORKER_TOKEN, identity: "username", addresses: [], resolution: "pinned" }))
       .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed });
     expect(asked).toEqual([]);
@@ -346,13 +337,13 @@ describe("egress ask callback — plugin workers", () => {
 });
 
 describe("egress ask callback — workspace terminal tab (design F)", () => {
-  /** Lets the callback's real-I/O steps (the grant file read) run while setTimeout is faked. */
+  // Lets the callback's real-I/O steps (the grant file read) run while setTimeout is faked.
   async function untilAsked(count: number): Promise<void> {
     for (let i = 0; i < 1000 && asked.length < count; i++) await new Promise((resolve) => setImmediate(resolve));
     expect(asked).toHaveLength(count);
   }
 
-  /** An answer that only comes when the ask is ended (the banner timed out or the tab closed). */
+  // An answer that only comes when the ask is ended (the banner timed out or the tab closed).
   const answerOnlyOnAbort = (request: EgressApprovalRequest): Promise<EgressApprovalAnswer> =>
     new Promise((resolve) => {
       request.abortSignal?.addEventListener("abort", () => resolve({ allow: false, reason: "network approval answer was rejected" }), { once: true });
@@ -393,8 +384,7 @@ describe("egress ask callback — workspace terminal tab (design F)", () => {
     ["local (local-network name)", "printer.local", [], "upstream", ["once", "tab"]],
     ["unverified (the upstream resolves the name)", "intranet.corp.test", [], "upstream", ["once", "tab"]],
   ] as const)("offers the %s class exactly its scopes", async (_label, host, addresses, resolution, scopes) => {
-    // Allowed by name (the class the name says), the banner is shown again
-    // when the resolution gives another class; the last banner is that class.
+    // Allowed by name (the class the name says), the banner is shown again when the resolution gives another class; the last banner is that class.
     answer = async () => ({ allow: true, scope: "once" });
     await callback()({ host, port: 8443 }, listener(TERMINAL_TOKEN, addresses, resolution));
     const byName = egressDestinationNetwork(host) === _label.split(" ")[0];
@@ -526,8 +516,7 @@ describe("egress ask callback — workspace terminal tab (design F)", () => {
       requestKey(TERMINAL_TAB, "registry.npmjs.org"),
       requestKey(OTHER_TERMINAL_TAB, "github.com"),
     ].sort());
-    // Allow once on the shared banner lets one of the three through; the
-    // other two fold into the next banner, whose This tab covers both.
+    // Allow once on the shared banner lets one of the three through; the other two fold into the next banner, whose This tab covers both.
     respond(TERMINAL_TAB, "github.com", { allow: true, scope: "once" });
     respond(TERMINAL_TAB, "registry.npmjs.org", { allow: false, reason: "denied by the user" });
     respond(OTHER_TERMINAL_TAB, "github.com", { allow: false, reason: "denied by the user" });
@@ -647,6 +636,7 @@ describe("egress ask callback — shell calls", () => {
       .toEqual({ allow: false, reason: "denied by the user" });
     expect(asked).toEqual([{
       origin: "shell",
+      workspaceRoot: "/work/project",
       sessionId: "session-1",
       toolName: "bash",
       toolUseId: "toolu_1",
@@ -882,8 +872,7 @@ describe("egress ask callback — local, private and reserved destinations", () 
   it("asks by name, then shows the card again when the name resolves to a private address, and refuses a reserved one", async () => {
     answer = async () => ({ allow: true, scope: "conversation" });
     expect(await callback()({ host: "nas.example", port: 445 }, listener(SHELL_TOKEN, ["10.20.30.40"]))).toBe(true);
-    // The name card (public) came first; its answer was held, not granted,
-    // because the name turned out to be private: the local card decided.
+    // The name card (public) came first; its answer was held, not granted, because the name turned out to be private: the local card decided.
     expect(asked.map((request) => [request.network, request.scopes])).toEqual([
       ["public", ["once", "conversation", "workspace", "always"]],
       ["local", ["once", "conversation"]],

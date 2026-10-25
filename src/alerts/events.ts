@@ -1,13 +1,4 @@
-/**
- * Who hears the host's `alert.*` events.
- *
- * The host emits them, so the ordinary owner check — which infers an event's
- * owner from the plugin that declares it — has nothing to hold on to. The
- * owner is instead the `pluginId` in the payload: a subscriber hears its own
- * alerts, and another plugin's only with a `pluginAccess` grant naming that
- * plugin and the event. A host kind's events carry `@host`, which no grant
- * can name, so they reach no plugin.
- */
+/** Alert payload pluginId owns the event; cross-plugin delivery requires an explicit grant and host alerts reach no plugin. */
 import type { PluginAccessSpec } from "../plugins/public-contract.js";
 import { ALERT_HOST_PLUGIN_ID } from "../shared/alerts-types.js";
 import { isRecord } from "../shared/is-record.js";

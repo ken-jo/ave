@@ -1,11 +1,3 @@
-/**
- * Unit tests for workflow system tools (S1+S2):
- * ask_user_question, routine_schedule, session_tasks, agent_spawn,
- * agent_status, agent_interrupt, skill_load.
- *
- * Each test stubs the service dependency and exercises the tool's
- * `execute(rawInput, ctx)` contract directly — no Electron / IPC.
- */
 import { describe, expect, it, vi } from "vitest";
 import { withTz } from "../../__tests__/test-helpers.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
@@ -67,12 +59,7 @@ function ctx(sessionId = "session-x"): ToolExecutionContext {
   };
 }
 
-/**
- * A surface WITHOUT parent delivery — the only place spawns still run in the
- * foreground since the always-background directive. Blocking-result tests use
- * this deliberately: they exercise the fallback path, which remains the only
- * way to observe a spawn's terminal result synchronously.
- */
+// Without parent delivery, foreground execution is the only way to return a terminal result.
 function foregroundCtx(sessionId = "session-x"): ToolExecutionContext {
   const base = ctx(sessionId);
   const { supportsA2AParentDelivery: _delivery, ...metadata } = base.metadata as {
@@ -175,8 +162,7 @@ describe("ask_user_question tool", () => {
         questions: [
           {
             question: "언제 할까요?",
-            // The model puts a typed answer in the one place the schema gives
-            // it, and the label then renders as a button nobody can type into.
+            // Input placeholders must become free-text fields rather than untypeable choice buttons.
             choices: ["오늘", "입력", "내일"],
             recommendedIndex: 2,
             altIndices: [0],
@@ -192,7 +178,6 @@ describe("ask_user_question tool", () => {
           expect.objectContaining({
             choices: ["오늘", "내일"],
             allowFreeText: true,
-            // "내일" moved from slot 2 to slot 1 when the stand-in was dropped.
             recommendedIndex: 1,
             altIndices: [0],
           }),
@@ -259,12 +244,7 @@ describe("ask_user_question tool", () => {
   });
 
   it("budgets a choice by display width, so Korean and Latin get the same chip", async () => {
-    // The 20-character cap was written against Korean, where 20 characters
-    // fill a chip. Applied to Latin it rejects ordinary option labels one
-    // character over -- the model then spends round trips shortening prose
-    // that was already the right size on screen. Width is what the chip
-    // actually spends, so that is what the budget counts: CJK two columns,
-    // Latin one, and 20 Korean characters remains exactly the ceiling.
+    // Budget display columns: CJK uses two and Latin one, preserving the 20-CJK-character ceiling.
     const ask = vi.fn().mockResolvedValue({ requestId: "r", answers: [] });
     const tool = createAskUserQuestionTool({ getGate: () => ({ ask }) as never });
 
@@ -331,17 +311,14 @@ describe("ask_user_question tool", () => {
         { question: "Continue?", choices: ["yes", "no"] },
         { question: "When?", choices: ["now", "later"] },
       ],
-      // The card is addressed to the conversation that asked, so the gate is
-      // told which one that is.
+      // Route the question card to its originating conversation.
       sessionId: "session-x",
       abortSignal: undefined,
     });
   });
 
   it("refuses when the invocation names no session, without opening a gate", async () => {
-    // The executor omits `sessionId` rather than substituting a placeholder, so
-    // this refusal is reachable: a card addressed to nothing would render
-    // nowhere and hold the gate open until it timed out.
+    // Missing session identity must refuse instead of opening an unaddressed gate until timeout.
     const ask = vi.fn();
     const tool = createAskUserQuestionTool({ getGate: () => ({ ask }) as never });
     const unattributed: ToolExecutionContext = {
@@ -557,7 +534,6 @@ describe("session_tasks tool", () => {
       { index: 2, text: "summarize", status: "pending" },
       { index: 3, text: "write report", status: "pending" },
     ]);
-    // Persisted through the store's sidecar writer, not held in memory only.
     expect(disk.get("s1")?.map((i) => i.content)).toEqual(["scan folder", "summarize", "write report"]);
   });
 
@@ -645,9 +621,7 @@ describe("session_tasks tool", () => {
   });
 
   it("returns the list without changing it", async () => {
-    // The counterpart to the rule above: a no-op write is refused, so re-reading
-    // the plan had to stop being a write. Every store mutator is watched here —
-    // a read that quietly edits would defeat the point.
+    // Plan reads must not call any store mutator.
     const { store, disk } = memoryStore();
     const tool = createSessionTasksTool(store);
     await tool.execute({ action: "create", steps: "a, b" }, ctx("s-list"));
@@ -670,8 +644,7 @@ describe("session_tasks tool", () => {
   });
 
   it("reads an empty list without erroring", async () => {
-    // A model asking what its plan is before making one must get an answer, not
-    // a failure it will try to work around.
+    // Reading a nonexistent plan must return an empty answer.
     const tool = createSessionTasksTool(memoryStore().store);
     const read = await tool.execute({ action: "list" }, ctx("s-empty"));
     expect(read.isError).toBe(false);
@@ -703,10 +676,7 @@ describe("agent_spawn tool", () => {
   });
 
   it.each([undefined, false])("falls back to foreground when parent delivery is %s — the flag is ignored", async (capability) => {
-    // Always-background directive: the model's `background` flag no longer
-    // errors on an unsupported surface — it is simply ignored, and the spawn
-    // runs foreground, the only coherent posture where results cannot be
-    // delivered asynchronously.
+    // Ignore background requests when the surface cannot deliver results asynchronously.
     const runner = {
       spawn: vi.fn(async () => ({
         ok: true,
@@ -810,7 +780,7 @@ describe("agent_spawn tool", () => {
     expect(forwardedProjectRoot).toBe(executionCwd);
     const types = events.map((e) => e.type);
     expect(types).toContain("start");
-    // PR3: activity events carry the live ChatEntry[] snapshot.
+    // Activity events carry the live ChatEntry[] snapshot.
     expect(types).toContain("activity");
     expect(types).toContain("done");
   });
@@ -822,8 +792,7 @@ describe("agent_spawn tool", () => {
         spawn: async (_input: unknown, callbacks?: {
           onLinked?: (link: { childSessionId: string }) => void;
         }) => {
-          // A real spawn links the child before it can produce any result, and
-          // the terminal frame's join key is that AUTHORIZED link.
+          // Terminal frames may join only through the runner-authorized child link.
           callbacks?.onLinked?.({ childSessionId: "child-blocked" });
           return {
             summary: "prompt refused",
@@ -1453,9 +1422,7 @@ describe("agent_spawn tool", () => {
 
     expect(result.isError).toBe(true);
     const payload = JSON.parse(result.output);
-    // The observed failure mode this pins: a bare error string gave the parent
-    // nothing pointing back at the suspended child, so it respawned FRESH
-    // agents and silently discarded the child's context.
+    // Preserve the suspended child's resumeId so transient failure does not discard context through respawning.
     expect(payload.resumeId).toBe("child-transient");
     expect(payload.resumeGuidance).toContain("재개 가능");
     expect(payload.resumeRefusal).toBeUndefined();
@@ -1463,11 +1430,7 @@ describe("agent_spawn tool", () => {
   });
 
   it("a provider request rejection on resume drops the retry-same-id guidance", async () => {
-    // The self-hosted grammar compiler validates the request and refuses it
-    // BEFORE generating, so an identical resume (same frozen tool scope) is
-    // refused identically forever — retry guidance there is an exit-less loop.
-    // It is not a `resumeRefusal` either: the host authorized this resume and
-    // the turn ran; a REMOTE system rejected the payload.
+    // Deterministic remote schema rejection cannot recover through identical resumes and is not a host resumeRefusal.
     const tool = createAgentSpawnTool({
       getRunner: () => ({
         resume: async () => ({
@@ -1493,9 +1456,7 @@ describe("agent_spawn tool", () => {
     const payload = JSON.parse(result.output);
     expect(payload.resumeRefusal).toBeUndefined();
     expect(payload.resumeDeterministicFailure).toBe(true);
-    // The child stays addressable — it becomes resumable again once the model,
-    // provider, or tool scope changes — but the text must not tell the model
-    // that a bare retry clears it.
+    // Retain the child address but require a model, provider, or scope change before retrying deterministic rejection.
     expect(payload.resumeId).toBe("child-grammar");
     expect(payload.resumeGuidance).not.toContain("재개 가능합니다");
     expect(payload.resumeGuidance).toContain("provider 가 거부");
@@ -1524,10 +1485,7 @@ describe("agent_spawn tool", () => {
   });
 
   it("a structural resume rejection never offers the resumeId back for retry", async () => {
-    // `resumeRefusal: "invalid"` marks policy rejections (wrong task state, ownership,
-    // tampered metadata) that fail identically forever. Emitting the retry
-    // guidance there guided the model into an infinite retry against the
-    // runner's INPUT_REQUIRED-only gate.
+    // Invalid host resume refusals are permanent; retry guidance must not loop against the state gate.
     const tool = createAgentSpawnTool({
       getRunner: () => ({
         resume: async () => ({
@@ -1557,10 +1515,7 @@ describe("agent_spawn tool", () => {
   });
 
   it("sizes its executor wall clock from the configured round budget", () => {
-    // The round budget has no maximum, so a fixed ceiling would let the clock
-    // kill a long agent well before its rounds ran out — the setting would be
-    // silently inert above the default. Small budgets still get the shipped
-    // floor, so this can only ever widen a deadline.
+    // Scale the ceiling with uncapped round budgets while retaining the minimum deadline.
     const toolFor = (roundBudget: number) =>
       createAgentSpawnTool({
         getRunner: () => ({ roundBudget: () => roundBudget }) as never,
@@ -1582,10 +1537,7 @@ describe("agent_spawn tool", () => {
   });
 
   it("keeps the unvalidated resumeId off the terminal frame when the resume never linked", async () => {
-    // The runner calls onLinked only AFTER origin + durable-state checks pass,
-    // so a structurally refused resume has no authorized link — its
-    // `result.childSessionId` is just the caller-supplied id that failed those
-    // checks. The terminal frame must not hand the viewer that join key.
+    // Only onLinked authorizes a terminal join key; rejected caller-supplied resume IDs must not reach the viewer.
     const events: AgentSpawnEvent[] = [];
     const tool = createAgentSpawnTool({
       getRunner: () => ({
@@ -1824,10 +1776,7 @@ describe("agent_status and agent_interrupt tools", () => {
   });
 
   it("agent_status points at agent_list when only restored sub-agents remain", async () => {
-    // Live runs are process-local; the children are not. After a restart the
-    // run list is legitimately empty while the conversation's sub-agents are
-    // still on disk — and an empty list was being read as "nothing running,
-    // so the work is done".
+    // Process-local run lists can be empty after restart while persisted children remain.
     const tool = createAgentStatusTool({
       getRunner: () => ({
         listRunStatuses: () => [],
@@ -1861,12 +1810,7 @@ describe("agent_status and agent_interrupt tools", () => {
   });
 
   it("says in both descriptions where restored sub-agents are listed", () => {
-    // The hint only fires after a call that already returned an empty list.
-    // A model that reads "active or recent runs" and stops there never makes
-    // that call — so the same fact has to be in what it reads beforehand.
-    // Tool names survive translation; the sentence around them does not, so
-    // the wording is asserted on the English catalog and the pointing on the
-    // rendered description.
+    // Describe persisted-child lookup before the call as well as after an empty live-run result.
     const status = createAgentStatusTool({ getRunner: () => undefined });
     expect(status.description).toContain("agent_list");
     expect(agentSpawnEn["be_agentSpawn.statusToolDescription"]).toContain(
@@ -1932,9 +1876,7 @@ describe("skill_list and agent_list tools", () => {
           expect.objectContaining({ name: "deploy", description: "Deploy workflow" }),
         ]),
       );
-      // Dispatch metadata, which is what a listing is for: the keyword hints
-      // the author declared come through. The body does not — that stays
-      // behind `skill_load` and its approval gate.
+      // Listings expose dispatch hints, never bodies protected by skill_load approval.
       expect(parsed.skills[0].triggers).toEqual(["ship", "release"]);
       expect(r.output).not.toContain("secret body");
     } finally {
@@ -1994,17 +1936,14 @@ describe("request_plugin meta tool", () => {
 });
 
 describe("skill_load tool", () => {
-  // Built-in skills are pre-blessed: no approval gate is consulted, so we
-  // can stub it with a never-called fn. User-authored skills exercise the
-  // gate path — covered by the skill-store traversal tests below.
+  // Builtin skills bypass approval; user-authored skills must still traverse it.
   const stubApprovals = {
     isApproved: async () => true,
     approve: async () => undefined,
   } as never;
 
   it("reads packaged report-writing skill as its tool result and emits badge", async () => {
-    // Post-first-boot, the seed copies report-writing into ~/.ave/skills/.
-    // Pointing userDir at resources/skills/ simulates that on-disk state.
+    // Use the bundled directory to simulate seeded user skills.
     const store = new SkillStore({ userDir: BUILTIN_SKILLS_DIR });
     const overlay = new SkillOverlay();
     const events: string[] = [];
@@ -2017,8 +1956,7 @@ describe("skill_load tool", () => {
     });
     const r = await tool.execute({ skillName: "report-writing" }, ctx("sess-1"));
     expect(r.isError).toBe(false);
-    // Progressive disclosure: the body IS the tool result — it enters the
-    // context only through this visible call, never the system prompt.
+    // Skill bodies enter context through the visible tool result, never the system prompt.
     const body = (await store.load("report-writing"))!.body;
     expect(r.output.startsWith('<ave-skill name="report-writing"')).toBe(true);
     expect(r.output).toContain(body);
@@ -2050,8 +1988,7 @@ describe("skill_load tool", () => {
       source: "builtin",
       sessionId: "sess-ask",
     });
-    // Away-authority answers only allow-once/deny-once asks; leaving the
-    // choices unset keeps an unseen body out of an away "read" grant.
+    // Unset choices keep unseen skill bodies out of remote read grants.
     expect(request).not.toHaveProperty("allowedChoices");
   });
 

@@ -28,11 +28,8 @@ import type { AveApi } from "../types.js";
 
 export interface AwayAuthorityArmDialogProps {
   api: AveApi;
-  /**
-   * The tile the away-authority grant would bind to — the focused conversation.
-   * Threaded from the window because settings has no conversation of its own,
-   * and main refuses a grant that names no tile.
-   */
+  /** The tile the away-authority grant would bind to — the focused conversation. Threaded from the window because settings
+   * has no conversation of its own, and main refuses a grant that names no tile. */
   chatGroupId: string;
   open: boolean;
   onCancel: () => void;
@@ -52,32 +49,8 @@ function durationLabel(
   }
 }
 
-/**
- * The whole scope disclosure for the away answerer, in one surface.
- *
- * It is deliberately not split across a tooltip, an info icon, and a help page:
- * this dialog is the only moment the owner sees what arming actually authorizes,
- * and a disclosure the owner has to go looking for is a disclosure that was not
- * made. Every paragraph below states something the code enforces — see
- * `src/i18n/messages/generated/awayAuthority.ts` for the rule that each one is
- * checked against.
- *
- * The dialog also refuses to let `write` be armed absent-mindedly, in four
- * independent ways rather than one:
- *
- *   1. `read-only` is the initial mode and the owner must move off it.
- *   2. Choosing `read-write` reveals an acknowledgement that names the
- *      consequence, and the arm button stays disabled until it is ticked.
- *   3. That acknowledgement is cleared by changing the mode OR the folder
- *      selection, because it is a statement about a specific set of folders and
- *      a changed set is a statement the owner has not made.
- *   4. The primary button says which mode it is arming, so the last thing the
- *      owner reads before clicking is the answer to "am I arming writes".
- *
- * Directories come from the owner's existing project roots rather than a text
- * field. A grant may only bound itself with folders the owner already trusts
- * this app in, and a free-text path is an invitation to type one they do not.
- */
+/** Default to read-only; require a write acknowledgement tied to mode and selected trusted project roots, and clear it when
+ * either changes. */
 export function AwayAuthorityArmDialog({
   api,
   chatGroupId,
@@ -97,9 +70,8 @@ export function AwayAuthorityArmDialog({
 
   useEffect(() => {
     if (!open) return;
-    // Re-read on every open, and reset every choice with it. A dialog that
-    // reopened holding the previous session's folders and a ticked write
-    // acknowledgement is exactly the hurried second arming this guards against.
+    // Re-read on every open, and reset every choice with it. A dialog that reopened holding the previous session's folders and
+    // a ticked write acknowledgement is exactly the hurried second arming this guards against.
     setSelected([]);
     setMode("read-only");
     setWriteAcknowledged(false);
@@ -129,8 +101,8 @@ export function AwayAuthorityArmDialog({
     setSelected((current) => current.includes(path)
       ? current.filter((entry) => entry !== path)
       : [...current, path]);
-    // The acknowledgement below names "these folders". Change the folders and
-    // it no longer describes what would be armed, so it is withdrawn.
+    // The acknowledgement below names "these folders". Change the folders and it no longer describes what would be armed, so
+    // it is withdrawn.
     setWriteAcknowledged(false);
   }, []);
 

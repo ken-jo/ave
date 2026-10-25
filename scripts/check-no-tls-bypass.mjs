@@ -1,13 +1,5 @@
 #!/usr/bin/env node
-/**
- * check-no-tls-bypass.mjs — build-output guard
- *
- * Scans every file under dist/ for a TLS-verification bypass and fails the
- * build when one survived into the bundle. The pattern list is shared with the
- * pre-push staged-source scan (scripts/lib/tls-bypass-patterns.mjs): this is
- * the same question asked of the bytes that ship rather than the bytes that
- * were committed.
- */
+// Apply the shared TLS-bypass patterns to the bytes that ship.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { walkSourceFiles } from "./lib/source-walk.mjs";

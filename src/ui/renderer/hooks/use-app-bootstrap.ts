@@ -57,12 +57,11 @@ export function useAppBootstrap({
 
     const dv = api.onViewActivate((k, settingsTab) => {
       if (!isMountedRef.current) return;
-      // "settings" routes through the SAME inline-settings path as an in-app
-      // click so the tab is normalized and the return view is captured
-      // identically; there is no detached settings window anymore.
+      // "settings" routes through the SAME inline-settings path as an in-app click so the tab is normalized and the return view
+      // is captured identically; there is no detached settings window anymore.
       if (k === "settings") { onOpenSettings(settingsTab); return; }
-      // `k` crosses an IPC boundary as a bare string. Vet it here rather than
-      // letting main name a destination the renderer has no rendering for.
+      // `k` crosses an IPC boundary as a bare string. Vet it here rather than letting main name a destination the renderer has
+      // no rendering for.
       const parsed = parseInlineViewKey(k);
       if (!parsed) {
         console.warn(`[nav] ignoring unknown view key '${k}' from onViewActivate`);

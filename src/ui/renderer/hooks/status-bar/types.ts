@@ -21,8 +21,6 @@ export interface PersistentItem {
   id: string;
   severity: StatusBarSeverity;
 
-
-
   label?: string;
   /** Variable value (right of dot) — e.g. "04:42". */
   value?: string;
@@ -34,8 +32,6 @@ export interface PersistentItem {
    */
   dot?: boolean;
 
-
-
   a11yLabel?: string;
   /**
    * Optional click handler. When set, the StatusBar renders this item as a
@@ -44,10 +40,8 @@ export interface PersistentItem {
    * Settings → LLM. Items without onClick render as a plain span.
    */
   onClick?: () => void;
-  /**
-   * Optional title text shown on hover. Useful when `value` is abbreviated
-   * (e.g. truncated model name) and the full string improves discoverability.
-   */
+  /** Optional title text shown on hover. Useful when `value` is abbreviated (e.g. truncated model name) and the full string
+   * improves discoverability. */
   tooltip?: string;
 }
 
@@ -61,10 +55,6 @@ export interface ToastItem {
   expiresAt: number;
   /** Never auto-evicts: it stays at the head until the user dismisses it. */
   sticky?: true;
-  /**
-   * Issue #260 — when present, identifies this toast as a notification
-   * toast. The StatusBar renders an onClick that calls `notifyClick` and
-   * dismisses the toast. Producer toasts (install progress) omit this.
-   */
+  /** Notification metadata enables notifyClick and dismissal; install producers omit it. */
   notification?: NotificationToastMeta;
 }

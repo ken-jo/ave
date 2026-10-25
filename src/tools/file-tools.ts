@@ -116,18 +116,10 @@ const DEFAULT_SKIP_DIRS = new Set([
   ".cache",
 ]);
 
-/**
- * Object-identity boundary for the host's built-in file tools. A plugin or MCP
- * tool can copy a name/schema, but it cannot insert itself into this set.
- */
+// Match builtin file tools by object identity; copied names and schemas cannot enter this set.
 const canonicalFileTools = new WeakSet<object>();
 
-/**
- * Canonical brokered file operations inherit the same host-owned wall-clock
- * budget as their executor invocation. Supplying it in every request prevents
- * either side of the broker protocol from inventing a shorter implicit
- * deadline (the former Python and transport defaults were 30 seconds).
- */
+// Pass the invocation's host-owned deadline to every broker request so transport defaults cannot shorten it.
 function brokerFilePayload<T extends object>(payload: T): T & { readonly timeoutMs: number } {
   return { ...payload, timeoutMs: TOOL_TIMEOUT_POLICY.workloadBrokerFileOperationMs };
 }
@@ -303,17 +295,8 @@ abstract class FileTool<TSchema extends z.ZodTypeAny> extends ZodTool<TSchema> {
     }
   }
 
-  /**
-   * The tool's own copy of Layers 0 and 1, run again at execute time.
-   *
-   * `effect` is required rather than defaulted: this gate is what a tool
-   * asserts about its own operand, and a default would silently give a new
-   * write tool the read boundary. Layer 0 runs for both effects — a protected
-   * path stays unreadable — and only the directory boundary is asymmetric.
-   * {@link pathEffectIsConfined} is the same predicate the permission layer
-   * asked before dispatching here, so this re-check cannot refuse an operand
-   * the executor had already admitted.
-   */
+  // Recheck sensitive paths and directory scope at execution; require explicit effect so new writes cannot inherit read access.
+  // Both effects retain protected-path denial; only directory confinement differs.
   protected ensureAllowed(
     path: string,
     ctx: ToolExecutionContext,
@@ -420,7 +403,6 @@ export class ReadFileTool extends FileTool<typeof ReadFileInputSchema> {
 }
 
 const LINE_NUMBER_WIDTH = 6;
-/** Longest line text shown in full; a longer line is cut and says how to read the rest. */
 const MAX_READ_LINE_CHARS = 2_000;
 
 function shellQuote(text: string): string {
@@ -455,13 +437,8 @@ function renderNumberedRead(
   return continuation === null ? body : `${body}\n${continuation}`;
 }
 
-/**
- * The requested window, shortened to the longest prefix whose rendering fits
- * the per-result size limit (measured with the conversation's own rule), with
- * a closing line naming the offset to continue from. Lines longer than
- * {@link MAX_READ_LINE_CHARS} are cut with a note on reading the rest; when
- * even the first cut line does not fit, it is cut shorter until it does.
- */
+// Fit the longest rendered line prefix into the result budget and report continuation offsets.
+// Clip long lines further when even the first preview cannot fit.
 function fitReadWindow(
   path: string,
   offset: number,
@@ -488,7 +465,6 @@ function fitReadWindow(
     else low = mid;
   }
   if (low > 0) return { output: render(low), lineCount: low, linesCut: linesCutIn(low, MAX_READ_LINE_CHARS) };
-  // Not even the first line fits at the default cut: cut it shorter.
   let fewest = 0;
   let most = MAX_READ_LINE_CHARS;
   while (fewest < most) {
@@ -499,11 +475,7 @@ function fitReadWindow(
   return { output: render(1, Math.max(fewest, 1)), lineCount: 1, linesCut: 1 };
 }
 
-/**
- * The disposable-workload form of the read requirement. The host sees only
- * the window the workload returned, so it can require that the session read
- * the file but cannot detect a change made inside the workload since.
- */
+// Workload edits require a prior session read, but returned windows cannot prove the file stayed unchanged.
 function requireWorkloadRead(
   toolName: string,
   guestPath: string,
@@ -521,10 +493,7 @@ function sessionIdOf(ctx: ToolExecutionContext): string | undefined {
   return typeof sessionId === "string" && sessionId.length > 0 ? sessionId : undefined;
 }
 
-/**
- * Admit a change to an existing file only when this session read it and its
- * bytes still hash to what was read (or last written by an edit tool).
- */
+// Existing-file edits require a session read whose byte hash still matches.
 async function requireFreshRead(
   toolName: string,
   target: string,
@@ -575,11 +544,7 @@ async function recordOwnWrite(sessionId: string, target: string, content: string
 
 const READ_LINE_NUMBER_PREFIX = /^ *\d+\t/;
 
-/**
- * Remove `read_file` line-number prefixes copied into edit text by mistake.
- * Returns null unless every line carries one, so ordinary text that happens
- * to start with digits and a tab on some lines is never rewritten.
- */
+// Strip copied line-number prefixes only when every line has one, preserving ordinary digit-prefixed text.
 function stripReadLineNumbers(text: string): string | null {
   const lines = text.split("\n");
   const trailingEmpty = lines.length > 1 && lines[lines.length - 1] === "";
@@ -589,11 +554,7 @@ function stripReadLineNumbers(text: string): string | null {
   return (trailingEmpty ? [...stripped, ""] : stripped).join("\n");
 }
 
-/**
- * The file's line separator when every separator in it is the same non-`\n`
- * one. `read_file` shows lines, not separators, so edit text copied from it
- * uses `\n` even for such a file.
- */
+// Detect uniform non-LF separators so text copied from read_file can preserve the file's line endings.
 function uniformNonLfSeparator(content: string): "\r\n" | "\r" | null {
   const crlf = content.includes("\r\n");
   const loneCr = /\r(?!\n)/.test(content);
@@ -603,13 +564,7 @@ function uniformNonLfSeparator(content: string): "\r\n" | "\r" | null {
   return null;
 }
 
-/**
- * The replacement pair to apply. The text as given wins when it occurs in the
- * file. Otherwise, in order: the pair with copied `read_file` line-number
- * prefixes removed, then either pair with `\n` written as the file's own
- * uniform separator. The first candidate that occurs is used; when none does,
- * the pair is returned unchanged so the caller reports it as not found.
- */
+// Prefer exact text, then stripped line numbers, then uniform source separators; leave unmatched pairs unchanged.
 function resolveReplacementText(
   content: string,
   oldText: string,
@@ -641,13 +596,7 @@ export const ViewImageInputSchema = FilePathSchema.extend({
   maxDimension: ImagePreparationOptionsSchema.shape.maxDimension.describe("Maximum output width and height in pixels, preserving aspect ratio. Lower this to request a smaller image."),
 });
 
-/**
- * `view_image` — load a local image file into the model's context so it can see
- * it. Reuses the same path-scope security as read_file (resolvePath +
- * ensureAllowed). The image rides {@link ToolExecutionResult.image}; the text `output` is
- * a placeholder, and the selected transport sends the image through its native
- * visual input.
- */
+// Local images share read_file path gates and travel through ToolExecutionResult.image in the native visual channel.
 export class ViewImageTool extends FileTool<typeof ViewImageInputSchema> {
   readonly name = "view_image";
   override readonly awaitCancellationSettlement = true as const;
@@ -933,13 +882,10 @@ export class WriteFileTool extends FileTool<typeof WriteFileInputSchema> {
       readSession = sessionIdOf(ctx);
     }
 
-    // Read existing content for diff sidecar (best-effort — missing file = empty before).
-    // Guard: skip pre-image read for large or binary files to avoid OOM / mojibake.
-    // Mirrors the EditFileTool / ApplyPatchTool pattern exactly.
+    // Diff pre-images are best-effort; skip oversized or binary files to avoid excessive allocation and invalid text.
     let before = "";
     let skipSidecar = false;
-    // Open the file once and bind stat + read to the same inode handle to
-    // eliminate the TOCTOU window between stat() and readFile().
+    // Bind stat and read to one handle so pathname replacement cannot switch the inode between checks.
     const fh = await open(target, "r").catch(() => null);
     if (fh !== null) {
       try {
@@ -947,18 +893,13 @@ export class WriteFileTool extends FileTool<typeof WriteFileInputSchema> {
         if (fhStat.size > MAX_TEXT_FILE_BYTES) {
           skipSidecar = true;
         } else {
-          // Size verified ≤ MAX_TEXT_FILE_BYTES on this exact handle.
-          // A concurrent truncate between fh.stat() and fh.readFile() can
-          // shrink the read result but cannot grow it past the cap, so the
-          // OOM bound holds — the file descriptor binds the inode, not the
-          // data length.
+          // The size check binds to this inode; concurrent truncation may shrink the read.
           before = await fh.readFile("utf8");
         }
       } finally {
         await fh.close();
       }
-      // isBinaryFile reopens the file internally but is bounded by its own
-      // limit; acceptable as a secondary guard after the size check passes.
+      // Binary sniffing reopens the path but retains its own bound after the size check.
       if (!skipSidecar && (await isBinaryFile(target))) {
         skipSidecar = true;
         before = "";
@@ -970,16 +911,13 @@ export class WriteFileTool extends FileTool<typeof WriteFileInputSchema> {
     await atomicTextWrite(target, after);
     if (readSession !== undefined) await recordOwnWrite(readSession, target, after);
 
-    // Write diff sidecar when either side exceeds the preview limit.
     const sessionId =
       typeof ctx.metadata?.sessionId === "string" ? ctx.metadata.sessionId : "";
     const toolUseId =
       typeof ctx.metadata?.toolUseId === "string" ? ctx.metadata.toolUseId : "";
     let hasSidecar = false;
     if (!skipSidecar && sessionId && toolUseId) {
-      // writeDiffSidecar logs failures internally via its own createLogger.
-      // auditWarn callback is a no-op here; failures keep truncated state
-      // visible in the UI without a silent fallback.
+      // Sidecar failures are logged internally and remain visible through truncated UI state.
       hasSidecar = await writeDiffSidecar(sessionId, toolUseId, before, after, () => {});
     }
 
@@ -1201,7 +1139,6 @@ export class ApplyPatchTool extends FileTool<typeof ApplyPatchInputSchema> {
     "Not available in the disposable workload.";
   readonly inputSchema = ApplyPatchInputSchema;
   override readonly category: ToolCategory = "write";
-  /** The target paths are the files the patch text names. */
   override readonly pathFields: readonly string[] = [`patch${PATCH_ENVELOPE_PATH_FIELD_SUFFIX}`];
 
   approvalCacheKey(input: unknown, ctx?: Pick<ToolExecutionContext, "cwd">): string {
@@ -1234,8 +1171,7 @@ export class ApplyPatchTool extends FileTool<typeof ApplyPatchInputSchema> {
 
     const planned: PlannedPatchChange[] = [];
     const touched = new Set<string>();
-    // Compared by resolved file, so two spellings of one file (a symlink, a
-    // case variant) cannot slip past as separate sections.
+    // Resolve file identity so symlink and case aliases cannot bypass duplicate-section checks.
     const claim = async (path: string): Promise<ToolErrorResult | null> => {
       const key = await fileReadKey(path);
       if (touched.has(key)) {
@@ -1353,8 +1289,7 @@ export class MoveFileTool extends FileTool<typeof MoveFileInputSchema> {
     return `source:${source}:destination:${destination}`;
   }
 
-  // `overwrite` replaces an existing destination; approving a plain move
-  // must never cover one that clobbers.
+  // An approved plain move must never authorize overwriting an existing destination.
   approvalMemoryScope(input: unknown, ctx?: Pick<ToolExecutionContext, "cwd">): ApprovalMemoryScope {
     return {
       kind: "transfer",
@@ -1442,7 +1377,7 @@ export class CopyPathTool extends FileTool<typeof CopyPathInputSchema> {
     });
   }
 
-  // The schema is strict and rejects an existing destination: no overwrite.
+  // Strict schema forbids overwrite of existing destinations.
   approvalMemoryScope(input: unknown, ctx?: Pick<ToolExecutionContext, "cwd">): ApprovalMemoryScope {
     return {
       kind: "transfer",
@@ -1665,16 +1600,12 @@ export type CanonicalFileTool =
   | MoveFileTool
   | DeleteFileTool;
 
-/** Exact host-created identity check; tool names are deliberately irrelevant. */
+// Host-created object identity is authoritative, never the tool name.
 export function isCanonicalFileTool(tool: unknown): tool is CanonicalFileTool {
   return typeof tool === "object" && tool !== null && canonicalFileTools.has(tool);
 }
 
-/**
- * Normalize authority-bound input through the exact canonical instance schema.
- * The caller must use the returned value when hashing/minting an execution
- * grant so Zod defaults and unknown-key behavior match the eventual execute.
- */
+// Hash and mint grants from canonical-schema output so defaults and unknown-key handling match execution.
 export function normalizeCanonicalFileToolInput(tool: unknown, rawInput: unknown): unknown {
   if (!isCanonicalFileTool(tool)) {
     throw new Error("Canonical file tool input requires a host-created file tool");
@@ -1857,11 +1788,7 @@ async function writeTextAtomically(target: string, content: string): Promise<voi
   }
 }
 
-/**
- * Attempt budget for a tool write: a turn is waiting on it, so it neither
- * blocks the main thread (sync budget) nor runs unattended (background
- * budget). The curve and the retryable codes are the shared policy.
- */
+// Tool writes use the shared asynchronous retry policy, distinct from synchronous and unattended budgets.
 const TOOL_WRITE_RENAME_ATTEMPTS = 6;
 
 async function renameWithTransientRetry(source: string, target: string): Promise<void> {

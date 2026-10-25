@@ -93,8 +93,7 @@ describe("SubscriptionToolBridge remote tool aliases", () => {
     const internals = bridge as unknown as {
       mcpStartingServer: Server | null;
     };
-    // startMcpServer has synchronously called Server.listen by the time it
-    // returns, but Node has not yet run its listen callback in this stack.
+    // startMcpServer has synchronously called Server.listen by the time it returns, but Node has not yet run its listen callback in this stack.
     const startResult = bridge.startMcpServer().then(
       () => undefined,
       (error: unknown) => error,

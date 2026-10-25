@@ -1,22 +1,5 @@
-/**
- * `WebviewIpcTransport` — the MCP SDK `Transport` for an Electron <webview>.
- *
- * `AppBridge.connect(transport)` accepts ANY SDK `Transport`, so the host side
- * does NOT have to use ext-apps' `PostMessageTransport` (which assumes a plain
- * iframe and validates `event.source === iframe.contentWindow` — neither of which
- * a <webview> can offer: a webview guest is a separate WebContents with no usable
- * `contentWindow` from the embedder).
- *
- * Instead we carry the same JSON-RPC frames over the webview's ipc channel:
- *
- *   host → guest : webview.send(MCP_APP_BRIDGE_CHANNEL, frame)
- *   guest → host : ipcRenderer.sendToHost(...)  ⇒  'ipc-message' event
- *
- * The far end is the host-owned relay preload (`mcp-app-preload.ts`), which
- * forwards frames to/from the inner sandboxed app iframe. The APP still speaks
- * plain `postMessage` to `window.parent` exactly as ext-apps ships it — this
- * transport only replaces the HOST leg, which is the leg Electron makes special.
- */
+/** A webview has no usable iframe contentWindow; carry SDK JSON-RPC frames over webview IPC instead of iframe postMessage
+ * transport. */
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 import { MCP_APP_BRIDGE_CHANNEL } from "../../../shared/mcp-app-bridge-contract.js";

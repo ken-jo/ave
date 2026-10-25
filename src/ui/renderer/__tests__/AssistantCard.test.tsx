@@ -1,11 +1,3 @@
-/**
- * AssistantCard unit tests.
- *
- * Regression tests for assistant prose rendering:
- *   - slash command output (route="command") → ReactMarkdown
- *   - regular LLM output (no route) → ReactMarkdown
- *   - search active → still goes through ReactMarkdown so formatting survives
- */
 import "../../../../test/renderer/setup.js";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, waitFor } from "@testing-library/react";
@@ -156,8 +148,8 @@ describe("AssistantCard — live vs restored systemNotice (Issue #2113)", () => 
       }),
     );
     const card = cardRoot(container);
-    // Restored banner must NOT reuse the live destructive treatment — that is
-    // exactly what made an old error read as a fresh one on session reload.
+    // Restored banner must NOT reuse the live destructive treatment — that is exactly what made an old error read as a fresh
+    // one on session reload.
     expect(card.className).not.toContain("destructive");
     expect(card.className).toContain("border-border");
     expect(card.className).toContain("bg-muted");

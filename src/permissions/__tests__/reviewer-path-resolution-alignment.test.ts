@@ -1,22 +1,4 @@
-/**
- * The reviewer (Layer 5) and the enforcer (Layer 0/1) must resolve a tool's
- * path ARGUMENT to the same absolute path.
- *
- * Before this alignment `extractDeclaredPaths` used a bare `path.resolve`, so
- * a leading `~` survived as a literal directory segment and a relative
- * argument resolved against `process.cwd()` rather than the invocation cwd.
- * `{ path: "~/secret.txt" }` therefore rated LOW ("write at allowed-dir leaf",
- * because `<process.cwd()>/~/secret.txt` sits under an allowed project root)
- * while Layer 1 checked `<home>/secret.txt` and rated it outside scope.
- *
- * Layer 1 enforcement never depended on the reviewer, so nothing was
- * executable that should not have been — what moved is the Layer-5 verdict
- * that drives auto-approval routing and the approval-memory escalation guard.
- *
- * Every case below is parameterized on an EXPLICIT cwd. `process.cwd()` is
- * deliberately never the cwd under test: an agreement assertion in which both
- * sides read the same real global cannot catch re-divergence.
- */
+// Reviewer and enforcement resolve the same argument against an explicit invocation cwd, including ~ expansion. Never use the ambient cwd as the test input or shared bugs can appear to agree.
 import { describe, it, expect, beforeEach } from "vitest";
 import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
@@ -41,7 +23,7 @@ function canon(p: string): string {
   return caseFoldForMatch(canonicalizePathForMatch(p));
 }
 
-/** What the ENFORCER will hand to Layer 0/1 for this argument. */
+// What the ENFORCER will hand to Layer 0/1 for this argument.
 function enforcerPath(tool: Tool, arg: string, cwd: string): string {
   const [only, ...rest] = extractTargetFilePaths(tool, { path: arg }, cwd);
   expect(rest).toHaveLength(0);
@@ -57,19 +39,14 @@ const writeTool = {
 const makeRoot = useTempDirs("ave-path-align-");
 
 describe("reviewer ↔ enforcer path resolution — agreement", () => {
-  // `arg` is built from the per-test cwd. `movedVerdict` records whether the
-  // OLD bare-`path.resolve` form differed for this shape — i.e. whether this
-  // row is one of the verdicts that actually moved.
+  // `arg` is built from the per-test cwd. `movedVerdict` records whether the OLD bare-`path.resolve` form differed for this shape — i.e. whether this row is one of the verdicts that actually moved.
   const CASES: Array<{ label: string; arg: (cwd: string) => string; movedVerdict: boolean }> = [
-    // Tilde: bare resolve keeps `~` as a literal segment → the reviewer used
-    // to judge `<cwd>/~/secret.txt`. STRICTER after alignment.
+      // Expand ~ before classification; a literal cwd-relative tilde would judge the wrong path.
     { label: "tilde home write", arg: () => "~/secret.txt", movedVerdict: true },
-    // Relative: bare resolve used `process.cwd()`; the enforcer uses the
-    // invocation cwd. Direction depends on which of the two is allowed.
+    // Relative: bare resolve used `process.cwd`; the enforcer uses the invocation cwd. Direction depends on which of the two is allowed.
     { label: "relative path", arg: () => "notes/todo.md", movedVerdict: true },
     { label: "single dot relative", arg: () => "./out.txt", movedVerdict: true },
-    // Absolute arguments were already identical — pinned so the alignment
-    // cannot be "achieved" by breaking the majority case.
+    // Absolute arguments were already identical — pinned so the alignment cannot be "achieved" by breaking the majority case.
     { label: "absolute path", arg: (cwd) => pathResolve(cwd, "abs.txt"), movedVerdict: false },
   ];
 
@@ -81,8 +58,7 @@ describe("reviewer ↔ enforcer path resolution — agreement", () => {
       const bareResolve = canon(arg);
       expect(bareResolve === enforced).toBe(!c.movedVerdict);
 
-      // Allowing exactly the enforcer's parent directory must make the
-      // reviewer agree the write is in scope.
+      // Allowing exactly the enforcer's parent directory must make the reviewer agree the write is in scope.
       const inScope = rb.classify(makeRiskClassifierContext({
         category: "write",
         pathFields: ["path"],
@@ -92,8 +68,7 @@ describe("reviewer ↔ enforcer path resolution — agreement", () => {
       }));
       expect(inScope.reason).not.toMatch(/outside allowed/);
 
-      // Allowing only the OLD (bare-resolve) parent must now read as
-      // out-of-scope for the rows where the two forms differ.
+      // Allowing only the OLD (bare-resolve) parent must now read as out-of-scope for the rows where the two forms differ.
       if (c.movedVerdict) {
         const outOfScope = rb.classify(makeRiskClassifierContext({
           category: "write",
@@ -132,10 +107,7 @@ describe("reviewer ↔ enforcer path resolution — agreement", () => {
 
 describe("reviewer path resolution — the verdicts that moved", () => {
   it("STRICTER: `~/secret.txt` with only the project root allowed is now HIGH", () => {
-    // This is the reproduced divergence, restated as the post-alignment
-    // expectation. Pre-alignment this returned
-    // { level: "low", reason: "write at allowed-dir leaf" } because the
-    // reviewer resolved the argument to `<projectRoot>/~/secret.txt`.
+    // This is the reproduced divergence, restated as the post-alignment expectation. Pre-alignment this returned { level: "low", reason: "write at allowed-dir leaf" } because the reviewer resolved the argument to `<projectRoot>/~/secret.txt`.
     const projectRoot = makeRoot();
     const v = rb.classify(makeRiskClassifierContext({
       category: "write",
@@ -151,10 +123,7 @@ describe("reviewer path resolution — the verdicts that moved", () => {
   });
 
   it("LOOSER: a relative write under the invocation cwd is no longer judged against process.cwd()", () => {
-    // Pre-alignment the reviewer resolved `out.txt` against `process.cwd()`
-    // — a directory that has nothing to do with this invocation — and rated
-    // it HIGH "write outside allowed dirs" even though Layer 1 was checking
-    // `<invocationCwd>/out.txt`, which IS inside the allowed scope.
+    // Pre-alignment the reviewer resolved `out.txt` against `process.cwd` — a directory that has nothing to do with this invocation — and rated it HIGH "write outside allowed dirs" even though Layer 1 was checking `<invocationCwd>/out.txt`, which IS inside the allowed scope.
     const invocationCwd = makeRoot();
     const v = rb.classify(makeRiskClassifierContext({
       category: "write",
@@ -164,8 +133,7 @@ describe("reviewer path resolution — the verdicts that moved", () => {
       allowedDirectories: [canon(invocationCwd)],
     }));
     expect(v).toEqual({ level: "low", reason: "write at allowed-dir leaf" });
-    // Confirm the pre-alignment form really was out of scope, so this row
-    // records a genuine loosening rather than a no-op.
+    // Confirm the pre-alignment form really was out of scope, so this row records a genuine loosening rather than a no-op.
     expect(canon("out.txt").startsWith(canon(invocationCwd))).toBe(false);
   });
 
@@ -179,8 +147,7 @@ describe("reviewer path resolution — the verdicts that moved", () => {
       pathFields: ["path"],
       finalInput: { path: "~/token.json" },
       executionCwd: pluginDir,
-      // The literal-`~` form used to land under the sandbox root and win the
-      // auto-LOW containment proof.
+    // A literal tilde segment must not fabricate sandbox containment and earn LOW.
       ownerPluginSandboxRoot: canon(pluginDir),
       allowedDirectories: [canon(pluginDir)],
     }));
@@ -241,8 +208,7 @@ describe("producer wiring — the dispatch lanes thread the invocation cwd", () 
     );
     expect(result.allowed).toBe(true);
     expect(captured).toHaveLength(1);
-    // The dispatcher freezes the invocation cwd's canonical path before review.
-    // Resolving a relative operand through either directory alias stays aligned.
+    // The dispatcher freezes the invocation cwd's canonical path before review. Resolving a relative operand through either directory alias stays aligned.
     expect(captured[0].executionCwd).toBe(canonicalizePathForMatch(invocationCwd));
     expect(captured[0].executionCwd).not.toBe(process.cwd());
     expect(enforcerPath(writeTool, "out.txt", captured[0].executionCwd))

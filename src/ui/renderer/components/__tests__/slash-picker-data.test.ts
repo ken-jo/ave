@@ -76,8 +76,7 @@ describe("slash-picker-data — category model (mcp tools, mcp prompts, skills)"
   it("resolves human labels for the new categories", () => {
     expect(catLabel("mcp").length).toBeGreaterThan(0);
     expect(catLabel("skills").length).toBeGreaterThan(0);
-    // `catLabel` switches exhaustively, so a category added without its case
-    // would return undefined here.
+    // `catLabel` switches exhaustively, so a category added without its case would return undefined here.
     expect(catLabel("mcp-prompts").length).toBeGreaterThan(0);
     expect(catLabel("plugin-prompts").length).toBeGreaterThan(0);
     expect(catLabel("custom-commands").length).toBeGreaterThan(0);
@@ -114,9 +113,8 @@ describe("slash-picker-data — category model (mcp tools, mcp prompts, skills)"
   });
 
   it("carries a prompt's and a skill's description into the row's second line", () => {
-    // The deleted panel drew two lines per row. A native menu keeps the second
-    // one in `sublabel`, so dropping it here would silently cost the user every
-    // description while every other assertion still passed.
+    // The deleted panel drew two lines per row. A native menu keeps the second one in `sublabel`, so dropping it here would
+    // silently cost the user every description while every other assertion still passed.
     const sections = buildComposerMenuSections({ ...bare, mcpTools, mcpPrompts, pluginPrompts: [pluginPrompt], skills });
     const rows = new Map(sections.flatMap((s) => s.items).map((row) => [row.id, row]));
     expect(rows.get("category:mcp-prompts")!.submenu!.map((r) => r.sublabel))
@@ -136,8 +134,7 @@ describe("slash-picker-data — category model (mcp tools, mcp prompts, skills)"
 
   it("leaves out a category with nothing in it rather than drawing an empty submenu", () => {
     const sections = buildComposerMenuSections(bare);
-    // Only the persona and the built-in commands survive: nothing installed, so
-    // no plugins, no MCP, no skills.
+    // Only the persona and the built-in commands survive: nothing installed, so no plugins, no MCP, no skills.
     expect(sections).toHaveLength(1);
     expect(sections[0]!.items.map((row) => row.id)).toEqual(["category:persona", "category:command"]);
     // …and that applies to the persona list too, should it ever be empty.
@@ -146,10 +143,7 @@ describe("slash-picker-data — category model (mcp tools, mcp prompts, skills)"
   });
 
   it("holds only what goes INTO a message — never a row that navigates the window", () => {
-    // This menu hangs off the composer. The view shortcuts it used to open with
-    // are navigation and belong to the sidebar; ten of them above the divider
-    // also pushed the three things the button is for below the fold. They are
-    // still reachable by typing in the "/" menu, which `filterActions` serves.
+    // Composer menus hold message commands; route navigation belongs in the sidebar while typed shortcuts remain available.
     const sections = buildComposerMenuSections({
       ...bare,
       plugins: [{ viewKey: "plugin:meeting:panel", label: "미팅 열기" }],
@@ -185,9 +179,8 @@ describe("slash-picker-data — category model (mcp tools, mcp prompts, skills)"
     const persona = sections[0]!.items[0]!;
     expect(persona.id).toBe("category:persona");
     expect(persona.label.length).toBeGreaterThan(0);
-    // Every row carries a state — that is what makes main draw it as a radio
-    // item — and exactly the active one is on. The rows that are NOT personas
-    // carry none, so they stay plain commands.
+    // Every row carries a state — that is what makes main draw it as a radio item — and exactly the active one is on. The rows
+    // that are NOT personas carry none, so they stay plain commands.
     expect(persona.submenu!.map((row) => [row.id, row.label, row.checked])).toEqual([
       ["persona:default", "기본", false],
       ["persona:coding", "코딩", true],

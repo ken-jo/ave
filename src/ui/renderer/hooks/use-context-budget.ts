@@ -3,42 +3,8 @@ import type { ChatEntry } from "../../../lib/chat-stream-state.js";
 import { hostTpmDefault } from "../../../shared/model-host-policy.js";
 import { getUsableContext } from "../../../shared/context-budget.js";
 
-/**
- * Context budget hook — engine-projected next request input SOT.
- *
- * `usedTokens` = the most recent usage carrier:
- *   - `turn_summary.tokensIn`, the engine-projected next request input emitted
- *     by the main loop and persisted on the final assistant;
- *   - `context_usage.tokensIn`, emitted only after compact so the ring shrinks
- *     immediately to the compacted context estimate.
- *
- * This is the right denominator for the context-fill ring because cache reads
- * still occupy context-window slots even though they're billed at 1/10 the
- * rate. The billing-weight number lives on `freshInputTokens`
- * (TokenCostBadge), which is a different question.
- *
- * Replaces the old `entries.map(chars/4).sum()` heuristic which:
- *   - missed system prompt (12-source assembly), tool schemas, memory
- *     injection — all huge contributors that a renderer-side serializer
- *     can't see;
- *   - over-counted under-Korean content because chars/4 ≠ tokens/4 (1.7-2);
- *   - did not shrink after compact since entries persisted in UI.
- *
- * Pre-first-turn: returns 0 (no projection yet). Streaming: still uses the
- * *previous* usage carrier until the new live turn_summary lands at turn end.
- *
- * draftTokenEstimate: optional canonical composed-draft estimate. App derives it
- * through the shared provider-wire helper, so pasted text, file paths, resource
- * text parts, and image overhead reach the ring exactly once.
- *
- * Context window: supplied already resolved. `resolveContextWindowForRoute`
- * (`src/shared/context-budget.ts`) answers it once off the settings snapshot —
- * a declared `llm.vendors.<vendor>.contextWindow`, else what the provider
- * reported for the model, else the pricing catalog, else the conservative
- * fallback — and the engine budgets compaction against that same number. This
- * hook only applies `getUsableContext()` (Ave fixed output/safety reservation)
- * so the ring hits 100% at the compact threshold rather than at raw context.
- */
+/** Use engine-projected usage, including cache tokens, and canonical composed-draft estimates; retain the last carrier
+ * during streaming. Apply the shared usable-context reservation to the resolved route window so 100% matches compaction. */
 export function useContextBudget(params: {
   entries: ChatEntry[];
   /**
@@ -83,13 +49,12 @@ export function useContextBudget(params: {
       }
     }
     return 0;
-    // Memo key avoids the O(n) scan on every streaming delta — the array
-    // identity changes but the *last* entry is the only one that matters
-    // for the latest turn_summary. Mirrors the pattern in `use-cost-estimate`.
+    // Memo key avoids the O(n) scan on every streaming delta — the array identity changes but the *last* entry is the only one
+    // that matters for the latest turn_summary. Mirrors the pattern in `use-cost-estimate`.
   }, [enabled, entries.length, entries[entries.length - 1]]);
 
-  // App supplies one canonical composed-draft estimate so this hook stays a
-  // lightweight budget aggregator and never recreates renderer/engine policy.
+  // App supplies one canonical composed-draft estimate so this hook stays a lightweight budget aggregator and never
+  // recreates renderer/engine policy.
   const draftTokens = useMemo(() => {
     if (!enabled || typeof draftTokenEstimate !== "number" || !Number.isFinite(draftTokenEstimate)) return 0;
     return Math.max(0, Math.ceil(draftTokenEstimate));
@@ -102,8 +67,7 @@ export function useContextBudget(params: {
     [usedTokens, contextBudget],
   );
 
-  // Issue #900 #1 — per-request TPM (Tokens Per Minute) projection against
-  // the host's TPM default for this model (model-host-policy.ts).
+  // Project per-request TPM against the host model default.
   const tpmLimit = useMemo(
     () => (enabled ? hostTpmDefault(llmVendor ?? "", llmModel ?? "") : undefined),
     [enabled, llmVendor, llmModel],
@@ -114,10 +78,7 @@ export function useContextBudget(params: {
     [usedTokens, tpmLimit],
   );
 
-  // Issue #912 — effectiveBudget = min(contextBudget, tpmLimit). The ring
-  // uses this binding limit so a TPM-bound model turns red before the user
-  // hits a provider-side per-minute rejection, while the tooltip still shows
-  // the context-window denominator separately.
+  // The ring uses min(contextBudget, tpmLimit); the tooltip retains the context-window denominator.
   const effectiveBudget = useMemo(
     () => (typeof tpmLimit === "number" && tpmLimit < contextBudget ? tpmLimit : contextBudget),
     [contextBudget, tpmLimit],

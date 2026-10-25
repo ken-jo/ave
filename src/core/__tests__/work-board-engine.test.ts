@@ -1,13 +1,4 @@
-/**
- * WorkBoardEngine — plan→approve→execute orchestration for one work item.
- *
- * The engine reuses the lower-level SubAgentRunner for both child phases; these
- * tests inject a fake runner (records spawn calls, returns canned summaries) and
- * a fake ApprovalGate (returns a scripted decision) so the plan→approve→execute
- * sequencing, board persistence, and progress events are asserted without a real
- * LLM or a real approval modal. The board is a real {@link WorkBoardStore} over a
- * temp path (the namespace is never touched).
- */
+/** Use a real temporary board with injected runner and approval gate to test orchestration without model calls. */
 import { describe, it, expect } from "vitest";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -30,16 +21,13 @@ import { assistantEntry } from "../../__tests__/test-helpers.js";
 
 interface SpawnCall {
   title: string;
-  /** Which grant the phase asked for. @see SubAgentToolScope */
   toolScopeKind: SubAgentToolScope["kind"];
-  /** The names an `exactly` grant names; `undefined` for the other kinds. */
   grantedToolNames?: readonly string[];
   profileMode?: string;
   originSessionId?: string;
   projectRoot?: string;
 }
 
-/** Fake runner that records each spawn and returns a phase-specific summary. */
 function fakeRunner(): { runner: SubAgentRunner; calls: SpawnCall[] } {
   const calls: SpawnCall[] = [];
   const registry = boardParentToolRegistry();
@@ -102,26 +90,22 @@ describe("WorkBoardEngine — plan→approve→execute", () => {
       expect(result.output).toBe("OUTPUT: did A then B");
       expect(result.runSessionId).toBe(`work-board:${id}::exec`);
 
-      // Two spawns: plan (read-only tools) then execute (full registry).
       expect(calls).toHaveLength(2);
       expect(calls[0].profileMode).toBe("plan");
       expect(calls[0].grantedToolNames).toContain("read_file");
       expect(calls[0].grantedToolNames).not.toContain("write_file");
       expect(calls[1].profileMode).toBe("execute");
-      // Execute asks for `parent-all` → full parent registry.
       expect(calls[1].toolScopeKind).toBe("parent-all");
       expect(calls[0].originSessionId).toBe(`work-board:${id}`);
       expect(calls[0].projectRoot).toBe(projectRoot);
       expect(calls[1].projectRoot).toBe(projectRoot);
 
-      // Exactly one approval request, carrying the plan + meta category.
       expect(requests).toHaveLength(1);
       const req = requests[0] as Record<string, unknown>;
       expect(req.kind).toBe("agent-action");
       expect(req.toolCategory).toBe("meta");
       expect((req.args as { plan: string }).plan).toBe("PLAN: do A then B");
 
-      // Persisted run fields.
       const got = await store.get(id);
       if (got.status !== "found") throw new Error("missing item");
       expect(got.item.runStatus).toBe("completed");
@@ -129,7 +113,6 @@ describe("WorkBoardEngine — plan→approve→execute", () => {
       expect(got.item.output).toBe("OUTPUT: did A then B");
       expect(got.item.runSessionId).toBe(`work-board:${id}::exec`);
 
-      // Progress events covered planning → awaiting_approval → executing → done.
       const phases = events.map((e) => e.phase);
       expect(phases).toContain("planning");
       expect(phases).toContain("awaiting_approval");
@@ -143,7 +126,6 @@ describe("WorkBoardEngine — plan→approve→execute", () => {
   it("runs an ACCEPTED PROPOSAL through the same gate, and one durable click never becomes a standing grant", async () => {
     const { store, cleanup } = tempBoard();
     try {
-      // A plugin proposes; the user accepts, which is the ordinary create path.
       const posted = await store.upsertProposal(
         { pluginId: "indexer", pluginLabel: "Indexer", grantedKinds: ["stale-index"] },
         {
@@ -160,7 +142,6 @@ describe("WorkBoardEngine — plan→approve→execute", () => {
       if (accepted.status !== "accepted") throw new Error("setup failed");
 
       const { runner, calls } = fakeRunner();
-      // The user picks the DURABLE choice at the plan prompt.
       const { gate, requests } = fakeGate("allow-always");
       const engine = createWorkBoardEngine({
         store,
@@ -171,20 +152,15 @@ describe("WorkBoardEngine — plan→approve→execute", () => {
 
       const first = await engine.runItem(accepted.itemId);
       expect(first.status).toBe("completed");
-      // The plan phase is read-only, so nothing the plugin's text asked for can
-      // mutate anything before the user has read the plan.
+      // Plugin-supplied plan text must not gain mutating tools before approval.
       expect(calls[0].profileMode).toBe("plan");
       expect(calls[0].grantedToolNames).toContain("read_file");
 
-      // The gate was asked with the durable answer refused up front, and the
-      // engine clamps whatever comes back on top of that.
       const req = requests[0] as Record<string, unknown>;
       expect(req.allowedChoices).toEqual(["allow-once", "deny-once"]);
       expect(req.durableApprovalRecordAllowed).toBe(false);
 
-      // The observable half of the clamp: a SECOND run asks again. If the
-      // durable choice had been honoured, one click would have disabled the
-      // plan-approval gate for every future run.
+      // A later run must ask again; a durable answer must not disable all future plan approvals.
       const second = await engine.runItem(accepted.itemId);
       expect(second.status).toBe("completed");
       expect(requests).toHaveLength(2);
@@ -214,7 +190,6 @@ describe("WorkBoardEngine — plan→approve→execute", () => {
 
       expect(result.status).toBe("denied");
       expect(result.plan).toBe("PLAN: do A then B");
-      // Only the plan spawn ran — execute never fired.
       expect(calls).toHaveLength(1);
       expect(calls[0].profileMode).toBe("plan");
 
@@ -278,19 +253,7 @@ describe("WorkBoardEngine — plan→approve→execute", () => {
     }
   });
 
-  // ── Activity-flooding regression ─────────────────────────────────────────
-  // The sub-agent runner forwards `onActivity` on EVERY child-loop callback
-  // (tool_start / tool_end / permission_review / assistant_round) so the
-  // sub-agent TAB can live-render the full ChatEntry timeline. The work-board
-  // path only wants a coarse per-turn narrative, and `record()` APPENDS to the
-  // run transcript. Without a guard, every pre-first-round frame maps to a blank
-  // `{turn:0, text:""}` and every extra callback within a round re-emits the
-  // SAME `{turn:N, text}` — flooding the live `runProgress` events AND the
-  // persisted JSONL with turn:0 blanks + duplicate turn rows. This locks the fix
-  // (one event per NEW completed round, no blanks, no dupes).
-
-  // In-memory transcript storage (shared fixture) makes the persisted
-  // (recorded) rows assertable — see board-test-fixtures.memTranscriptStorage.
+  // Forward only new completed rounds; tool and streaming callbacks must not create blank or duplicate transcript rows.
 
   function streamingAssistant(text: string): ChatEntry {
     return { kind: "assistant", text, streaming: true };
@@ -305,13 +268,7 @@ describe("WorkBoardEngine — plan→approve→execute", () => {
     };
   }
 
-  /**
-   * Fake runner that drives a REALISTIC child-loop activity sequence per phase:
-   * a pre-first-round tool frame (turn 0), a streaming assistant (still turn 0),
-   * a finalized round 1, another tool frame WITHIN round 1 (re-emits turn 1),
-   * then a finalized round 2. A naive forwarder would produce turn:0 blanks +
-   * a duplicate turn:1 row from this.
-   */
+  /** Repeat activity within a round to expose naive forwarding of zero or duplicate turn numbers. */
   function floodingRunner(): SubAgentRunner {
     const registry = boardParentToolRegistry();
     return {
@@ -323,15 +280,10 @@ describe("WorkBoardEngine — plan→approve→execute", () => {
         const isPlan = input.profileMode === "plan";
         const fire = (entries: ChatEntry[]) =>
           callbacks?.onActivity?.({ entries, toolCallCount: 0 });
-        // turn 0: a tool is running, no assistant round has completed yet.
         fire([runningTool("g1")]);
-        // still turn 0: assistant text is streaming (not finalized).
         fire([runningTool("g1"), streamingAssistant("thinking…")]);
-        // round 1 completes.
         fire([runningTool("g1"), assistantEntry("round one")]);
-        // another tool starts WITHIN round 1 — turn count is still 1 (dupe risk).
         fire([runningTool("g1"), assistantEntry("round one"), runningTool("g2")]);
-        // round 2 completes.
         fire([
           runningTool("g1"),
           assistantEntry("round one"),
@@ -372,22 +324,18 @@ describe("WorkBoardEngine — plan→approve→execute", () => {
       const result = await engine.runItem(id);
       expect(result.status).toBe("completed");
 
-      // ── Live progress events ────────────────────────────────────────────
-      // Turn events carry a real 1-based turn (never 0) and non-empty text.
       const turnEvents = events.filter((e) => e.turn !== undefined);
       expect(turnEvents.length).toBeGreaterThan(0);
       for (const e of turnEvents) {
         expect(e.turn).toBeGreaterThanOrEqual(1); // no blank turn:0
         expect(e.text ?? "").not.toBe(""); // no empty-text turn frame
       }
-      // No duplicate (phase, turn) turn events — each completed round fires once.
       const seen = new Set<string>();
       for (const e of turnEvents) {
         const key = `${e.phase}:${e.turn}`;
         expect(seen.has(key)).toBe(false);
         seen.add(key);
       }
-      // Exactly the completed rounds per phase: plan → [1,2], execute → [1,2].
       const planTurns = turnEvents
         .filter((e) => e.phase === "planning")
         .map((e) => e.turn);
@@ -397,9 +345,6 @@ describe("WorkBoardEngine — plan→approve→execute", () => {
       expect(planTurns).toEqual([1, 2]);
       expect(execTurns).toEqual([1, 2]);
 
-      // ── Persisted transcript (recorded via record()) ────────────────────
-      // Find the run's transcript file and assert the SAME no-blank / no-dupe
-      // invariant on the on-disk turn rows.
       const runFile = Object.keys(transcriptStorage.files).find((p) =>
         p.startsWith(`sessions/${id}/`),
       );

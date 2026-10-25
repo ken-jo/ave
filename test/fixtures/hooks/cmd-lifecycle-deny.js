@@ -1,7 +1,4 @@
-// #811 milestone-2 lifecycle fixture: always DENIES.
-// Used to prove the NON-BLOCKING contract: a lifecycle hook's deny is recorded
-// but the caller IGNORES the decision (control flow is unaffected). The reason
-// echoes the event so the deny is identifiable in the audit results.
+// Lifecycle denials are recorded but must not block the caller; echo the event for audit assertions.
 let raw = "";
 process.stdin.setEncoding("utf-8");
 process.stdin.on("data", (c) => { raw += c; });

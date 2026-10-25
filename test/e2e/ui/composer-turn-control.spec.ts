@@ -1,38 +1,17 @@
-/**
- * E2E: composer turn control + dock strip + edit bubble, verified against
- * COMPUTED style in the real Electron window.
- *
- * These four defects were all invisible to the renderer unit tests because
- * every one of them is a *resolved style* failure, not a markup failure: the
- * markup was right and the paint was wrong. They only surface once real CSS
- * (the theme layer, the Tailwind build and tailwind-merge's conflict
- * resolution) has run, which is exactly what this spec exercises.
- */
+// Computed-style failures need real CSS; renderer markup assertions alone cannot prove legibility or alignment.
 import { test, expect } from './fixtures.js';
 import { TEST_IDS, testIdSelector } from "../../../src/shared/test-ids.js";
 
-/**
- * The side chat renders the SAME composer, queue panel, and turn control as the
- * main dock, with the same test ids. Every locator that means "the main dock's
- * X" is anchored on the dock's surface marker so it cannot resolve to the side
- * chat's copy — and so a second match is a real failure rather than something
- * `.first()` quietly hides.
- */
+// Scope locators to the main dock; side chat renders the same controls and test ids.
 const MAIN = '[data-composer-surface="main"] ';
 
-/** Parse a computed `rgb(...)` / `rgba(...)` string into channels. */
 function parseRgb(value: string): [number, number, number] {
   const nums = value.match(/[\d.]+/g);
   if (!nums || nums.length < 3) throw new Error(`unparseable colour: ${value}`);
   return [Number(nums[0]), Number(nums[1]), Number(nums[2])];
 }
 
-/**
- * WCAG relative-luminance contrast ratio. "The two colours are not literally
- * equal" is far too weak a check for a legibility regression: when
- * `text-primary-foreground` was dropped, the label painted at rgb(31,33,41)
- * on rgb(27,29,34) — different values, contrast ratio 1.03, invisible.
- */
+// Measure contrast against the actual backdrop; different color values alone do not prove legibility.
 function contrastRatio(a: string, b: string): number {
   const luminance = (colour: string) => {
     const channel = (v: number) => {
@@ -50,7 +29,6 @@ function contrastRatio(a: string, b: string): number {
 test('idle composer: the turn control is a quiet, icon-only send button', async ({ mainWindow }) => {
   const send = mainWindow.locator(MAIN + '[data-testid="composer-send-button"]');
   await expect(send).toBeVisible();
-  // Send and stop are ONE button — no separate stop control exists at idle.
   await expect(mainWindow.locator(MAIN + '[data-testid="composer-cancel-button"]')).toHaveCount(0);
 
   const idle = await send.evaluate((el) => {
@@ -65,16 +43,12 @@ test('idle composer: the turn control is a quiet, icon-only send button', async 
     };
   });
 
-  // No text label and no keycap: the old markup shipped a "Send" span plus a ⏎
-  // keycap whose chip and glyph both resolved to `primary-foreground`, so the
-  // glyph vanished into its own chip and the control read as a blank box.
   expect(idle.label).toBe('');
   expect(idle.keycaps).toBe(0);
   expect(idle.glyphs).toBe(1);
   expect(idle.ariaLabel).toBeTruthy();
 
-  // Quiet, not a disabled solid disc: a disabled solid primary paints a
-  // near-black circle at 50% opacity, which reads as broken rather than idle.
+  // Idle controls should remain quiet rather than painting a disabled solid disc.
   expect(idle.borderWidth).not.toBe('0px');
 });
 
@@ -108,16 +82,12 @@ test('message queue panel stays a full-bleed band and paints visible actions', a
 
   const measured = await panel.evaluate((el) => {
     const panelBox = el.getBoundingClientRect();
-    // Measure against the dock column the strip lives in, NOT <main>: <main>
-    // spans the whole window including the sidebar, so nothing inside the dock
-    // can align with it — which is why the equivalent assertion in
-    // session-tasks-in-chat.spec.ts is red on main too.
+    // Compare strip alignment with its dock column; the main region also includes the sidebar.
     const dockBox = document
       .querySelector('[data-testid="composer-queue-dock"]')
       ?.getBoundingClientRect();
     const injectEl = el.querySelector('[data-testid="message-queue-row-send-now-button"]')!;
-    // The panel's own tint is 5% alpha, so the effective backdrop is the
-    // nearest OPAQUE ancestor background — that is what the label competes with.
+    // Translucent panel backgrounds require contrast against the nearest opaque ancestor.
     let opaque: HTMLElement | null = el as HTMLElement;
     let behindPanel = 'rgb(255, 255, 255)';
     while (opaque) {
@@ -138,14 +108,11 @@ test('message queue panel stays a full-bleed band and paints visible actions', a
     };
   });
 
-  // Dock strips are BANDS filling the dock column; only the composer is an
-  // inset card. Insetting this one made the two siblings disagree.
+  // Strips fill the dock column; only the composer is inset.
   expect(measured.left).toBe(measured.dockLeft);
   expect(measured.right).toBe(measured.dockRight);
 
-  // The inject action used to be painted with `--accent`, a pale SURFACE token,
-  // so it disappeared against the panel. It must render with real width and
-  // enough contrast against what is actually behind it to be readable.
+  // Measure visible width and contrast against the actual action backdrop.
   expect(measured.injectWidth).toBeGreaterThan(0);
   expect(contrastRatio(measured.injectColor, measured.behindPanel)).toBeGreaterThanOrEqual(4.5);
 });
@@ -176,13 +143,10 @@ test('edit bubble is a single frame with a readable save button', async ({ mainW
     };
   });
 
-  // One frame: the bubble draws it, the textarea inside draws none.
   expect(measured.bubbleBorderWidth).not.toBe('0px');
   expect(measured.innerBorderWidth).toBe('0px');
 
-  // The save button carried `text-caption`, which tailwind-merge mistook for a
-  // colour and used to drop `text-primary-foreground` — the label then painted
-  // in the ambient dark colour on a near-black button and vanished.
+  // Caption typography must not cause class merging to drop the button foreground color.
   expect(measured.saveLabel.length).toBeGreaterThan(0);
   expect(contrastRatio(measured.saveColor, measured.saveBackground)).toBeGreaterThanOrEqual(4.5);
 });

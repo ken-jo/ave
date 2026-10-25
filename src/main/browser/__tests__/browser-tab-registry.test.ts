@@ -1,8 +1,3 @@
-/**
- * The main-side browser tab registry: binding, window scope, provenance,
- * tab operations resolved by observation, user takeover and the active
- * surface hint.
- */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BrowserDocumentChangedError, BrowserTabRegistry, isUserActionInputType, type BrowserGuest } from "../browser-tab-registry.js";
 import { parseBrowserTabControlState, parseBrowserTabOpRequest, type BrowserTabControlState, type BrowserTabOpRequest } from "../../../shared/browser-surface.js";
@@ -324,8 +319,7 @@ describe("native injected touch attribution", () => {
     registry.userInput(11, { type: "gestureTap", _modifiers: 1 << 25 });
     expect(signal.aborted).toBe(true);
   });
-  // Measured in the app (Electron on macOS, window in the background): the
-  // gestures derived from an injected touch arrive with no modifiers at all.
+  // Measured in the app (Electron on macOS, window in the background): the gestures derived from an injected touch arrive with no modifiers at all.
   // Treating them as the user's own taps cancelled every agent click and type.
   it("matches the derived tap sequence when it carries no modifiers", () => {
     const { registry } = setup();

@@ -1,13 +1,4 @@
-/**
- * Away Authority retirement on share-lifecycle change.
- *
- * These drive the REAL connection store — its real atomic file layer, its real
- * `mutate` chokepoint, its real `emitChange` — against a real `ApprovalGate`
- * holding a real armed grant. A mock of the store would have been perfectly
- * happy with the wiring this file exists to correct: the defect was not in
- * either component but in the belief that "the document changed" meant "the
- * share changed", and only the real document has a poll offset in it.
- */
+// Use the real store and ApprovalGate to distinguish share changes from poll-offset-only document changes.
 import { afterEach, describe, expect, it } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -24,12 +15,7 @@ import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 const RAW_CONVERSATION_ID = "sentinel-share-identity-conversation-7c19";
 const AWAY_SCOPE = "/srv/away-share-scope";
 
-/**
- * The store validates these as SHA-256 hex and never re-derives them, so
- * distinct shape-valid literals serve exactly as well as real digests here —
- * and how a digest is actually derived is the store suite's subject, not this
- * one's. All that matters below is that two of anything differ.
- */
+// Distinct SHA-256-shaped literals suffice here; digest derivation belongs to the store tests.
 const BOT = "b0".repeat(32);
 const OTHER_BOT = "b1".repeat(32);
 const ACTOR = "ac".repeat(32);
@@ -46,14 +32,11 @@ afterEach(async () => {
   scratchDirectories = [];
 });
 
-/**
- * A store, a gate with a grant armed for the shared conversation, and the
- * watcher wired between them exactly as `main.ts` wires it.
- */
+// A store, a gate with a grant armed for the shared conversation, and the watcher wired between them exactly as `main.ts` wires it.
 async function armedShare(): Promise<{
   readonly store: TelegramConnectionStore;
   readonly gate: ApprovalGate;
-  /** Every listener call the store made, share-identity change or not. */
+  // Every listener call the store made, share-identity change or not.
   readonly emits: () => number;
 }> {
   const directory = mkdtempSync(join(tmpdir(), "ave-share-identity-"));
@@ -88,8 +71,7 @@ async function armedShare(): Promise<{
     }),
   ).toBe(true);
 
-  // The watcher is built AFTER the share exists and the grant is armed, which
-  // is the real order: nothing is armed at boot.
+  // The watcher is built AFTER the share exists and the grant is armed, which is the real order: nothing is armed at boot.
   let emitCount = 0;
   const watcher = createTelegramShareChangeWatcher({
     readOwnerSnapshot: () => store.ownerSnapshot(),
@@ -111,12 +93,7 @@ describe("Away Authority share-lifecycle retirement", () => {
 
     await store.recordPollOffset(4242);
 
-    // Non-vacuous, and this assertion is the whole reason the test exists: the
-    // store DID notify. `telegram-bridge-server` calls `recordPollOffset`
-    // once per handled update, so a subscriber that retired on the raw signal
-    // would retire the grant on every inbound message — and since
-    // `handleWebhook` returns once the turn is admitted rather than awaiting
-    // it, that write lands before the turn's first approval reaches the gate.
+    // Assert the store emitted for the poll-offset write; grants must survive that signal before the admitted turn reaches its first approval.
     expect(emits()).toBe(1);
     expect(gate.awayAuthoritySnapshot()).not.toBeNull();
     expect(gate.awayAuthoritySnapshot()?.remaining).toBe(5);
@@ -128,9 +105,8 @@ describe("Away Authority share-lifecycle retirement", () => {
     await store.setLastError("telegram-provider-unreachable");
     await store.setLastError(null);
 
-    // Two real notifications, no share change. The service's derived
-    // `TelegramConnectionState` would have read `"error"` and back here, which
-    // is why the identity is built from the owner snapshot instead.
+    // Two real notifications, no share change. The service's derived `TelegramConnectionState` would have read `"error"` and back here, which is why the
+    // identity is built from the owner snapshot instead.
     expect(emits()).toBe(2);
     expect(gate.awayAuthoritySnapshot()).not.toBeNull();
   });
@@ -168,10 +144,8 @@ describe("Away Authority share-lifecycle retirement", () => {
     const { store, gate } = await armedShare();
     const before = store.ownerSnapshot().pairing?.id;
 
-    // Revoke and pair a different account. The turn that follows carries a
-    // brand-new authority whose guard answers `isCurrent` perfectly well, so
-    // the per-call re-check inside the gate cannot see anything wrong. This is
-    // the asymmetry `retireAll` exists for.
+    // Revoke and pair a different account. The turn that follows carries a brand-new authority whose guard answers `isCurrent` perfectly well, so the
+    // per-call re-check inside the gate cannot see anything wrong. This is the asymmetry `retireAll` exists for.
     expect(await store.revokePairing(before as string)).toBe(true);
     await store.createPendingCode({ codeDigest: CODE_AGAIN });
     await store.completePairing({
@@ -211,7 +185,7 @@ describe("Away Authority share-lifecycle retirement", () => {
 });
 
 describe("createTelegramShareChangeWatcher", () => {
-  /** A snapshot shaped like the owner projection, with one field steerable. */
+  // A snapshot shaped like the owner projection, with one field steerable.
   function ownerSnapshotWith(
     overrides: Partial<ReturnType<TelegramConnectionStore["ownerSnapshot"]>> = {},
   ): ReturnType<TelegramConnectionStore["ownerSnapshot"]> {
@@ -262,8 +236,7 @@ describe("createTelegramShareChangeWatcher", () => {
     watcher();
     watcher();
 
-    // A grant is already retired after the first report; re-reporting would
-    // turn one lifecycle event into an audit row per subsequent store write.
+    // A grant is already retired after the first report; re-reporting would turn one lifecycle event into an audit row per subsequent store write.
     expect(changes).toBe(1);
   });
 

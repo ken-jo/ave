@@ -1,53 +1,21 @@
 #!/usr/bin/env node
-/**
- * check-sandboxed-preloads.mjs — a preload a sandboxed frame runs must load there.
- *
- * Electron's sandboxed preloads get a `require` that resolves only `electron`,
- * `electron/renderer` and `electron/common` — no Node module and no files, so
- * no webpack chunks either. Since Electron 45 that holds for `events`, `timers`
- * and `url` too, whose browser shims it removed together with the `Buffer`,
- * `setImmediate` and `clearImmediate` globals
- * (https://www.electronjs.org/docs/latest/breaking-changes#removed-nodejs-module-shims-and-buffer-setimmediate-clearimmediate-globals-in-sandboxed-preload-scripts).
- * Anything else throws before the preload exposes its bridge, and the window
- * comes up with nothing behind it. The floating dock shipped exactly that:
- * its preload imported `node:path`, webpack kept `require("node:path")`, and
- * the dock had no bridge at all.
- *
- * Where each fact comes from:
- *   - The preloads and the sandbox each runs in: `src/shared/preload-bundles.json`,
- *     the table the window and session code take their `preload` and `sandbox`
- *     values from (`test/scripts/preload-sites.test.ts` holds every site to it).
- *   - Which preloads are built: every `electron-preload` config in
- *     `webpack.config.cjs` must be a `webpack` row of the table with the same
- *     entry and output, and every `webpack` row must have its config. A `copy`
- *     row must be one `scripts/lib/build-assets.mjs` copies into `dist/src`.
- *   - Each row's built file in `dist/src`: a sandboxed one may require only the
- *     modules above, nothing by a computed name, may name none of the removed
- *     globals, and may have no chunks.
- * It does not scan `dist/src` for other files: a preload reaches a frame only
- * through a site the sites test holds to the table. Run after the build has
- * bundled and copied the preloads:
- *   node scripts/check-sandboxed-preloads.mjs [--root <repo>]
- */
+// Sandboxed preloads can load only the runtime-provided modules, with no chunks or removed globals.
+// Check built bytes and require every preload build/copy entry to match the shared table.
 import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-/** What a sandboxed preload's `require` can resolve. */
 export const SANDBOXED_PRELOAD_MODULES = new Set([
   "electron",
   "electron/renderer",
   "electron/common",
 ]);
 
-/** Node globals a sandboxed preload no longer runs with (Electron 45). */
+// Globals unavailable in sandboxed preloads.
 export const REMOVED_SANDBOXED_PRELOAD_GLOBALS = ["Buffer", "setImmediate", "clearImmediate"];
 
-/**
- * Every removed global a bundle names as a bare identifier: not a member
- * (`x.Buffer`), not inside a quoted name, and not an object key (`{ Buffer: … }`).
- */
+// Count bare global references, excluding members, quoted names and object keys.
 export function removedGlobalReferences(source) {
   const pattern = new RegExp(`(?<![\\w$.'"\`])(${REMOVED_SANDBOXED_PRELOAD_GLOBALS.join("|")})(?![\\w$'"\`])`, "gu");
   const named = new Set();
@@ -60,7 +28,6 @@ export function removedGlobalReferences(source) {
   return [...named];
 }
 
-/** Every `require(` call in a bundle: its literal module, or null when the argument is not a string literal. */
 export function requireCalls(source) {
   const calls = [];
   const pattern = /(?<![\w$.])require\s*\(\s*(?:(["'])([^"'\n]+)\1\s*\)|([^)\s][^)]*)\))/gu;
@@ -73,9 +40,8 @@ export function requireCalls(source) {
 const isPreloadTarget = (target) => (Array.isArray(target) ? target : [target]).some((value) => String(value).startsWith("electron-preload"));
 const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 
-/** The problems with the preloads under `root`; empty when every one is classified and can load where it runs. */
 export async function checkPreloads(rootPath) {
-  // The config resolves its entries from its real `__dirname`; compare in the same terms.
+  // Resolve entries from the configuration's own directory.
   const root = realpathSync(rootPath);
   const problems = [];
   const table = JSON.parse(readFileSync(join(root, "src/shared/preload-bundles.json"), "utf8"));

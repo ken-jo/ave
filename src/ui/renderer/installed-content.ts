@@ -1,15 +1,5 @@
-/**
- * Installed content packages in this renderer (blueprint P3).
- *
- * Loaded once per window from `aveApi.installedContent` and applied to the
- * three registries that use it: installed themes join the bundle registry,
- * installed languages the locale registry (their catalogs load on demand
- * through the same bridge), and installed fonts are declared as `@font-face`
- * rules served from the `ave-content:` scheme. The theme and language
- * providers wait for it before resolving a persisted id, so an installed
- * theme or language selected in settings is applied rather than replaced by
- * the default.
- */
+/** Load installed content before resolving persisted theme/language ids so valid installed selections do not fall back to
+ * defaults. */
 import { useSyncExternalStore } from "react";
 import { registerInstalledLocales, setInstalledCatalogLoader } from "../../i18n/index.js";
 import {
@@ -86,11 +76,8 @@ export function applyInstalledContent(view: InstalledContentView, api: Installed
   for (const listener of listeners) listener();
 }
 
-/**
- * Load the installed content once for this window. Later calls return the
- * same promise; a bridge that is absent or answers with an error leaves
- * nothing installed, and the built-in themes and languages still apply.
- */
+/** Load the installed content once for this window. Later calls return the same promise; a bridge that is absent or answers
+ * with an error leaves nothing installed, and the built-in themes and languages still apply. */
 export function ensureInstalledContent(
   api: { installedContent?: InstalledContentApi; gitMarketplace?: Pick<GitMarketplaceApi, "onCatalogChanged">; onPersonaPromptsUpdated?: (handler: () => void) => () => void } | null | undefined,
 ): Promise<void> {

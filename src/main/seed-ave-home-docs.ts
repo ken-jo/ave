@@ -31,43 +31,8 @@ interface SeedOneOptions {
   replaceableHashesResource?: string;
 }
 
-/**
- * Seed user-facing reference docs into `~/.ave/` on first launch.
- *
- * Currently seeds:
- *   - AGENTS.md — Ave system reference for LLMs running inside the host
- *   - agents/*.md — initial sub-agent profile examples (executor,
- *     researcher, planner, explorer) for the `agent_spawn` tool
- *   - skills/*.md — built-in skills (report-writing, meeting-minutes,
- *     email-polish, decision-record, data-summary) for the `skill_load`
- *     tool. Shipping skills as files (not inline TS) lets users edit
- *     each prompt to match their team's tone/format.
- *   - prompts/*.md — built-in main-agent persona prompts. The composer
- *     selects one persona per turn; agents and skills stay on their own
- *     dynamic tool paths.
- *
- * Behavior:
- *   - If `~/.ave/<path>` does not exist → copy from packaged resources.
- *   - When descriptor-level no-follow validation is available, AGENTS.md
- *     replaces byte-identical known packaged predecessors in place.
- *     Unsupported paths/platforms and user-edited AGENTS.md, skills/*.md,
- *     and prompts/*.md instead offer divergent packaged updates as
- *     `~/.ave/<path>.new` for review.
- *   - A packaged version is offered once, not once per launch: a version any
- *     existing marker already carries is not offered again, and one whose
- *     undated name is still held by an earlier offer lands beside it as
- *     `~/.ave/<path>.new.<timestamp>`.
- *   - agents/*.md are seed-only. Shared agent operating guidance belongs in
- *     AGENTS.md; updating packaged agent profiles must not create a new
- *     apparent user agent such as `agents/executor.md.new`.
- *
- * User edits are never overwritten, and neither is a marker the user may be
- * reviewing. In-place AGENTS.md replacement is gated by an exact SHA-256
- * allowlist of previously shipped packaged bytes; that same allowlist is the
- * only evidence under which a superseded dated marker is removed.
- *
- * Non-fatal — failures log and continue. Boot must not block on doc seeding.
- */
+// Never overwrite user edits or pending upgrade markers; replace AGENTS.md only after no-follow validation and an exact shipped-byte match. Offer each
+// divergent packaged version once; agent profiles are seed-only and seeding failures must not block boot.
 export function seedAveHomeDocs(): { seeded: string[]; upgraded: string[] } {
   const result = { seeded: [] as string[], upgraded: [] as string[] };
   const home = aveHome();
@@ -112,16 +77,7 @@ export function listAveHomeDocUpgradeMarkers(home = aveHome()): AveHomeDocUpgrad
   return markers.sort((a, b) => a.markerPath.localeCompare(b.markerPath));
 }
 
-/**
- * The one gate between a caller-supplied marker path and the filesystem.
- *
- * Every operation below takes a path that arrived over IPC, so none of them may
- * join it onto the home directory directly: `../` or an absolute path would
- * then reach any file the app can open. Membership in
- * {@link listAveHomeDocUpgradeMarkers}'s own result is the test, which also
- * means a marker the user merged a moment ago is simply not found rather than
- * recreated.
- */
+// Accept marker paths only from the host’s current marker listing; never join arbitrary IPC paths onto home.
 function resolveUpgradeMarker(
   markerPath: string,
   home: string,
@@ -130,7 +86,7 @@ function resolveUpgradeMarker(
     .find((marker) => marker.markerPath === markerPath) ?? null;
 }
 
-/** Bytes of a pending upgrade marker, or `null` when it is not one. */
+// Bytes of a pending upgrade marker, or `null` when it is not one.
 export function readAveHomeDocUpgradeMarker(
   markerPath: string,
   home = aveHome(),
@@ -141,12 +97,8 @@ export function readAveHomeDocUpgradeMarker(
   return buf === null ? null : buf.toString("utf8");
 }
 
-/**
- * Bytes of the live doc a marker offers to replace, or `null` when either is
- * absent. The source path is derived from the validated marker rather than
- * accepted from the caller, so this reaches no file the marker listing does
- * not already name.
- */
+// Bytes of the live doc a marker offers to replace, or `null` when either is absent. The source path is derived from the validated marker rather than
+// accepted from the caller, so this reaches no file the marker listing does not already name.
 export function readAveHomeDocSource(
   markerPath: string,
   home = aveHome(),
@@ -157,12 +109,7 @@ export function readAveHomeDocSource(
   return buf === null ? null : buf.toString("utf8");
 }
 
-/**
- * Remove one pending upgrade marker — the user keeping what they have.
- *
- * Returns whether a marker was removed, so the caller can tell "kept mine"
- * from "that offer is already gone".
- */
+// Report whether an upgrade marker was removed so keeping the user’s version differs from an already-settled offer.
 export function discardAveHomeDocUpgradeMarker(
   markerPath: string,
   home = aveHome(),
@@ -178,15 +125,7 @@ export function discardAveHomeDocUpgradeMarker(
   }
 }
 
-/**
- * Retire every marker for `markerPath`'s doc that carries the bytes just
- * applied, the named one included.
- *
- * Applying a version answers every offer of that same version at once. Leaving
- * a byte-identical dated sibling behind would re-offer content the live doc
- * now holds, and the user would be asked the same question again with no way
- * to tell it apart from a genuinely newer build.
- */
+// Applying one version retires all byte-identical offers so dated siblings cannot re-offer the live document.
 export function retireAppliedAveHomeDocUpgradeMarkers(
   markerPath: string,
   appliedBytes: string,
@@ -210,18 +149,7 @@ export function retireAppliedAveHomeDocUpgradeMarkers(
   }
 }
 
-/**
- * Whether `content` is bytes this app has shipped as the packaged AGENTS.md.
- *
- * Keep-latest moves the user's live doc aside as their own content before a
- * packaged version replaces it. Shipped bytes are not their content — moving
- * those into `agents.custom.md` would hand the model two copies of the same
- * reference and label one of them as the user's own instruction.
- *
- * The evidence is the same allowlist the in-place replacement path trusts,
- * plus the packaged copy currently on disk, which is shipped by definition and
- * need not wait for the next build to appear in that list.
- */
+// Do not relabel shipped reference bytes as user customization; recognize exact allowlisted versions and the current packaged copy.
 export function isShippedAgentsMdContent(content: string): boolean {
   const buf = Buffer.from(content, "utf8");
   if (readReplaceableHashes("AGENTS.md.replaceable-sha256").has(sha256Hex(buf))) {
@@ -248,15 +176,7 @@ function sourcePathForUpgradeMarker(markerPath: string): string {
   return markerIndex === -1 ? markerPath : markerPath.slice(0, markerIndex);
 }
 
-/**
- * Every existing marker offering `filename` — the undated `<file>.new` plus
- * any dated `<file>.new.<ts>` sibling — as absolute paths.
- *
- * Reads the directory through the same two grammar predicates
- * {@link listAveHomeDocUpgradeMarkers} uses, so what counts as a marker is
- * decided in one place: a second parser here could disagree with that one and
- * offer a version the listing already reports as pending.
- */
+// Use the shared marker grammar for both undated and dated siblings so listing and duplicate detection agree.
 function upgradeMarkerPathsFor(home: string, filename: string): string[] {
   const target = join(home, filename);
   const dir = dirname(target);
@@ -276,7 +196,7 @@ function upgradeMarkerPathsFor(home: string, filename: string): string[] {
     .map((entry) => join(dir, entry));
 }
 
-/** A marker the user merged between the directory listing and this read is simply gone. */
+// A marker the user merged between the directory listing and this read is simply gone.
 function readMarkerIfPresent(markerPath: string): Buffer | null {
   try {
     return readFileSync(markerPath);
@@ -286,16 +206,7 @@ function readMarkerIfPresent(markerPath: string): Buffer | null {
   }
 }
 
-/**
- * Drop dated siblings whose bytes are a packaged version that already shipped.
- *
- * This is the same claim the in-place path makes and it rests on the same
- * evidence: a marker whose SHA-256 is on the allowlist carries shipped bytes,
- * so it holds no user work to preserve — the allowlist authorizes overwriting
- * the user's live doc with exactly those bytes. Docs without an allowlist
- * (skills, prompts) prune nothing, and the undated marker is left alone
- * because it is the path a pending upgrade is surfaced under.
- */
+// Prune only dated markers with exact allowlisted shipped bytes; preserve undated offers and documents without an allowlist.
 function pruneSupersededMarkers(
   markerPaths: string[],
   undatedMarker: string,
@@ -326,13 +237,7 @@ function seedOne(
     return;
   }
 
-  // Read the packaged template ONCE at the top so subsequent comparisons
-  // and writes work against an in-memory snapshot. This eliminates the
-  // existsSync→readFileSync sequence CodeQL flags as `js/file-system-race`
-  // (the rule fires on any read-then-read pattern in a try block, even
-  // when the second read targets a stable packaged resource). The
-  // packaged file ships with the installer and does not mutate between
-  // launches, so one read is also the most efficient shape.
+  // Read the packaged template once and compare against that snapshot, avoiding path check/read races.
   let packagedBuf: Buffer;
   try {
     packagedBuf = readFileSync(packagedSource);
@@ -349,10 +254,8 @@ function seedOne(
 
   if (!existsSync(target)) {
     try {
-      // COPYFILE_EXCL closes the TOCTOU window between existsSync and the
-      // write: if another process (concurrent boot from a second app
-      // instance, background sync agent) lands a file in the gap, this
-      // throws EEXIST and we honor their write rather than clobbering it.
+      // COPYFILE_EXCL closes the TOCTOU window between existsSync and the write: if another process (concurrent boot from a second app instance, background
+      // sync agent) lands a file in the gap, this throws EEXIST and we honor their write rather than clobbering it.
       copyFileSync(packagedSource, target, fsConstants.COPYFILE_EXCL);
       enforceUserFileMode(target);
       result.seeded.push(filename);
@@ -365,24 +268,15 @@ function seedOne(
 
   if (options.upgradePolicy === "seed-only") return;
 
-  // User has an existing copy. Compare to the packaged snapshot; write a
-  // .new sibling when content differs and a safe known-predecessor replacement
-  // is unsupported, rejected by its final precondition, or fails before commit.
-  // We read the
-  // target directly instead of statSync→readFileSync so CodeQL doesn't
-  // flag the stat-then-read pair as `js/file-system-race`. Buffer.equals
-  // performs the length check internally, so the stat shortcut had no
-  // semantic value anyway.
+  // Read the target directly and compare bytes; unsupported or failed predecessor replacement falls back to a non-clobbering .new offer.
   try {
-    // Byte-identical content is an idempotent no-op even when this platform
-    // cannot safely perform an in-place path replacement. This read may follow
-    // a user-owned symlink, but it never writes through it.
+    // Byte-identical content is an idempotent no-op even when this platform cannot safely perform an in-place path replacement. This read may follow a
+    // user-owned symlink, but it never writes through it.
     let observedBuf: Buffer | null = null;
     try {
       observedBuf = readFileSync(target);
     } catch {
-      // Non-regular or transiently unavailable targets continue to the
-      // fail-closed `.new` path below.
+      // Non-regular or transiently unavailable targets continue to the fail-closed `.new` path below.
     }
     if (observedBuf?.equals(packagedBuf)) return;
 
@@ -400,22 +294,15 @@ function seedOne(
       }
     }
 
-    // A marker sitting unmerged belongs to the user's review and is never
-    // clobbered, but the offer is per packaged VERSION rather than per launch:
-    // every marker for this doc is consulted, the undated one and each dated
-    // sibling. Comparing against the undated `<file>.new` alone is what made
-    // the set unbounded — that name is never refreshed, so once it went stale
-    // every launch of a differing build added another dated copy and buried
-    // the newest offer under the older ones.
+    // Never overwrite pending offers; compare every sibling so each packaged version is offered only once.
     const markerPaths = upgradeMarkerPathsFor(home, filename);
     for (const markerPath of markerPaths) {
       const markerBuf = readMarkerIfPresent(markerPath);
       if (markerBuf?.equals(packagedBuf)) return;
     }
 
-    // The undated name is the stable one this doc's pending upgrade is
-    // surfaced under; while an older offer still holds it, a newer version
-    // lands beside it under a timestamp so neither offer is lost.
+    // The undated name is the stable one this doc's pending upgrade is surfaced under; while an older offer still holds it, a newer version lands beside it
+    // under a timestamp so neither offer is lost.
     const offerTarget = markerPaths.includes(upgradeTarget)
       ? join(home, `${filename}.new.${new Date().toISOString().replace(/[:.]/g, "-")}`)
       : upgradeTarget;
@@ -444,13 +331,12 @@ function readReplaceableHashes(resourceName: string): Set<string> {
   }
 }
 
-/** Refuse symlinks and non-files before hashing a user-owned target. */
+// Refuse symlinks and non-files before hashing a user-owned target.
 function readRegularFileNoFollow(target: string): Buffer | null {
   let fd: number | null = null;
   try {
-    // A pre-open lstat check creates its own path-swap race. Require the
-    // descriptor-level primitive instead; platforms without O_NOFOLLOW fail
-    // closed into the non-clobbering `.new` path.
+    // A pre-open lstat check creates its own path-swap race. Require the descriptor-level primitive instead; platforms without O_NOFOLLOW fail closed into
+    // the non-clobbering `.new` path.
     const noFollow = fsConstants.O_NOFOLLOW;
     if (typeof noFollow !== "number") return null;
     fd = openSync(target, fsConstants.O_RDONLY | noFollow);
@@ -463,13 +349,8 @@ function readRegularFileNoFollow(target: string): Buffer | null {
   }
 }
 
-/**
- * Replace a prior packaged copy through the shared atomic-file primitive.
- * The successor is staged and fsynced first; immediately before rename, the
- * target must still be a regular file with the same allowlisted hash. A false
- * precondition or pre-commit failure leaves the original path intact and the
- * caller falls back to the non-clobbering `.new` path.
- */
+// Stage and fsync the successor, then recheck regular-file identity and allowlisted hash immediately before rename.
+// Failed preconditions preserve the original and use the non-clobbering offer path.
 function replaceKnownPackagedCopy(
   target: string,
   packagedBuf: Buffer,
@@ -498,11 +379,8 @@ function replaceKnownPackagedCopy(
   }
 }
 
-/**
- * Storage-namespace rule: files under `~/.ave/` are 0o600 (user-only).
- * On Windows chmod is effectively a no-op — wrap so the seed continues to
- * succeed there instead of treating the platform mismatch as a fatal error.
- */
+// Storage-namespace rule: files under `~/.ave/` are 0o600 (user-only). On Windows chmod is effectively a no-op — wrap so the seed continues to succeed
+// there instead of treating the platform mismatch as a fatal error.
 function enforceUserFileMode(target: string): void {
   try {
     chmodSync(target, 0o600);
@@ -511,11 +389,8 @@ function enforceUserFileMode(target: string): void {
   }
 }
 
-/**
- * Seed every `*.md` file from a packaged resource subdirectory into the
- * matching `~/.ave/<subdir>/` location. The caller chooses whether existing
- * divergent user files get a non-clobbering `.new` marker or stay seed-only.
- */
+// Seed every `*.md` file from a packaged resource subdirectory into the matching `~/.ave/<subdir>/` location. The caller chooses whether existing
+// divergent user files get a non-clobbering `.new` marker or stay seed-only.
 function seedDir(
   home: string,
   subdir: string,
@@ -557,42 +432,18 @@ function resolvePackagedResource(name: string): string | null {
     return existsSync(packaged) ? packaged : null;
   }
 
-  // Dev / vitest mode: repo's `resources/` directory.
-  //
-  // Anchor on THIS MODULE's own location and walk up to the first ancestor
-  // that actually contains a `resources/skills` directory. This is fully
-  // cwd-independent — it must NOT use `process.cwd()` (ensureWorkspaceCwd()
-  // chdir()s the main process to `~/.ave/workspace` before boot, so a
-  // cwd-based join points at the nonexistent `~/.ave/workspace/resources/`
-  // and silently skips seeding) — and it must NOT use `app.getAppPath()`:
-  // under `bun run start` the launcher runs `electron dist/src/main/main.js`
-  // (a script-file arg), so getAppPath() resolves to the SCRIPT directory
-  // `dist/src/main`, whose `resources/` does not exist.
-  //
-  // The module dir is `dist/src/main` in the esbuild bundle (climb 3 to the
-  // repo root) and `src/main` under vitest (climb 2); the walk-up reaches the
-  // repo root in both shapes without hardcoding a climb count.
+  // Resolve resources by walking ancestors of this module, never cwd or getAppPath, which desktop launchers can redirect.
   const root = packagedResourceRoot();
   if (root === null) return null;
   const dev = join(root, "resources", name);
   return existsSync(dev) ? dev : null;
 }
 
-/**
- * Walk up from this module's own directory to the first ancestor containing a
- * `resources/skills` directory, and return that ancestor (the repo root in
- * dev/vitest). Resolved once per process — the layout is fixed at build time.
- *
- * This is the resolution itself, not a guess-chain: if no ancestor carries a
- * `resources/` tree, there is no packaged-resource root to seed from and we
- * return null so the caller skips (genuine absence, not a papered-over bug).
- */
+// Resolve the resource-bearing ancestor once per process; genuine absence returns null and skips seeding.
 let cachedResourceRoot: string | null | undefined;
 function packagedResourceRoot(): string | null {
-  // Explicit override anchor: lets the unit test (and any out-of-tree
-  // packaging layout) point the resolver at a known root WITHOUT mutating
-  // process.cwd() or the module location. Not cached — the test sets a fresh
-  // fixtures root per case via `beforeEach`.
+  // Explicit override anchor: lets the unit test (and any out-of-tree packaging layout) point the resolver at a known root WITHOUT mutating process.cwd()
+  // or the module location. Not cached — the test sets a fresh fixtures root per case via `beforeEach`.
   const override = process.env.AVE_RESOURCE_ROOT?.trim();
   if (override) {
     return existsSync(join(override, "resources", "skills")) ? override : null;

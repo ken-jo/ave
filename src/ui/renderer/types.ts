@@ -86,7 +86,7 @@ import type {
   SandboxWindowsInstallResult,
 } from "../../shared/sandbox-capability-info.js";
 import type { EgressDenialRow } from "../../shared/egress-denials.js";
-import type { EgressGrantNetwork, ListedEgressGrant } from "../../shared/egress-grant-scopes.js";
+import type { ListedEgressGrant, RevocableEgressGrant } from "../../shared/egress-grant-scopes.js";
 
 // Re-export MCP types for renderer-side consumers (type-only, no main-process runtime)
 export type { McpAuthErrorCode, McpServerConfig, McpServerConfigDto, McpServerState };
@@ -128,6 +128,7 @@ export type { AppSettings, MemoryCaptureMode };
 import type { ApprovalChoice, ApprovalDecision, ApprovalRequest } from "../../permissions/approval-gate.js";
 import type { PermissionRule } from "../../permissions/permission-manager.js";
 import type { ParentAdjudicationBackgroundEscalation, ParentAdjudicationMaxVerdict, ParentAdjudicationModelSource } from "../../permissions/permission-settings-store.js";
+import type { PreviewReadDocumentResult } from "../../shared/preview-document.js";
 export type { ApprovalChoice, ApprovalDecision, ApprovalRequest, PermissionRule, ParentAdjudicationBackgroundEscalation, ParentAdjudicationMaxVerdict, ParentAdjudicationModelSource };
 
 export type PluginUiExtension = PluginUiExtensionView;
@@ -1392,11 +1393,15 @@ type ApprovalSentenceSelectResult =
  */
 import type {
   PermissionReviewSuggestionPayload,
+  ScopedPermissionRule,
+  ScopedPermissionRuleError,
   UserApprovalDecision,
   UserApprovalHitPayload,
   UserApprovalScope,
   UserApprovalVerdict,
 } from "../../shared/permissions-events.js";
+
+export type { ScopedPermissionRule, ScopedPermissionRuleError } from "../../shared/permissions-events.js";
 
 export type AveUserApprovalApi = {
   record: (entry: {
@@ -1405,6 +1410,7 @@ export type AveUserApprovalApi = {
      *  ApprovalGate.getRequestSnapshot — renderer-supplied authority fields
      *  below are ignored (kept on the wire for legacy callers + audit). */
     requestId: string;
+    rule?: { pattern: string; scope: "project" | "user" };
     toolName: string;
     args: string;
     source: string;
@@ -1418,6 +1424,7 @@ export type AveUserApprovalApi = {
     approvalCacheKey?: string;
   }) => Promise<{ ok: boolean; error?: string; message?: string }>;
   revokeByKey: (key: string) => Promise<{ ok: boolean; error?: string; message?: string }>;
+  listSession: () => ReturnType<AveUserApprovalApi["list"]>;
   list: () => Promise<Array<{
     key: string;
     decision?: UserApprovalDecision;
@@ -1429,6 +1436,8 @@ export type AveUserApprovalApi = {
     /** Safe display metadata. Exact input/trust/cache identity never crosses IPC. */
     toolName?: string;
     source?: string;
+    projectCwd?: string;
+    sessionId?: string;
   }>>;
 };
 
@@ -1466,7 +1475,6 @@ export interface DeferredQueueEntry {
 }
 
 export type PermissionReviewerMode = "disabled" | "rule" | "llm" | "strict";
-export type PermissionReviewerProvider = "openai" | "anthropic" | "google" | "foundry" | "gcp-playground";
 export type PermissionReviewerFallbackOnError = "deny" | "rule";
 /** Issue #690 — interactive reviewer auto-approve scope. */
 export type PermissionReviewerInteractiveAutoApprove = "off" | "low" | "medium";
@@ -1483,8 +1491,6 @@ interface PermissionReviewerParentAdjudication {
 
 export interface PermissionReviewerSettings {
   mode: PermissionReviewerMode;
-  provider: PermissionReviewerProvider;
-  model: string;
   fallbackOnError: PermissionReviewerFallbackOnError;
   interactive: { autoApprove: PermissionReviewerInteractiveAutoApprove };
   parentAdjudication: PermissionReviewerParentAdjudication;
@@ -1493,7 +1499,7 @@ export interface PermissionReviewerSettings {
 export type PermissionReviewerDispatchResult =
   | {
       ok: true;
-      verb: "show" | "mode" | "provider" | "model" | "fallback" | "interactive" | "adjudication";
+      verb: "show" | "mode" | "fallback" | "interactive" | "adjudication";
       settings: PermissionReviewerSettings;
       /**
        * Runtime degrade flag — true when the persisted reviewer mode is "llm"
@@ -1519,6 +1525,8 @@ export type AvePermissionApi = {
    */
   onConfigChanged: (cb: () => void) => () => void;
   listRules: () => Promise<PermissionRule[]>;
+  listScopedRules: () => Promise<{ rules: ScopedPermissionRule[]; errors: ScopedPermissionRuleError[] }>;
+  removeScopedRule: (rule: ScopedPermissionRule) => Promise<{ ok: boolean; error?: string; message?: string }>;
   addRule: (pattern: string, action: "allow" | "deny") => Promise<AddRuleResult>;
   removeRule: (pattern: string, action: "allow" | "deny" | "ask") => Promise<RemoveRuleResult>;
   /** Permission policy — list pending HIGH-risk deferred entries from reviewer. */
@@ -1610,16 +1618,7 @@ export type AvePermissionApi = {
     | IpcErrorResult
   >;
   /** MUTATING: revoke one shell egress grant. */
-  egressGrantRevoke: (grant: {
-    network?: EgressGrantNetwork;
-    scope: "conversation" | "tab" | "workspace" | "always";
-    host: string;
-    port: number;
-    origin?: "shell" | "terminal";
-    workspaceRoot?: string;
-    sessionId?: string;
-    tabId?: string;
-  }) => Promise<{ ok: boolean; error?: string; message?: string } | IpcErrorResult>;
+  egressGrantRevoke: (grant: RevocableEgressGrant) => Promise<{ ok: boolean; error?: string; message?: string } | IpcErrorResult>;
   /**
    * MUTATING: trigger the one-time Windows srt-win install (one self-elevating
    * UAC prompt). The ONLY user-consented privilege-escalation entry point —
@@ -1637,12 +1636,11 @@ export type AvePermissionApi = {
   reviewerDispatch: (
     rawArgs: string,
   ) => Promise<PermissionReviewerDispatchResult>;
-  /**
-   * Permission policy C3 — check whether an API key (or GCP service account)
-   * is stored for a given reviewer provider. Used by the settings UI to
-   * determine which providers are selectable (key-driven dynamic activation).
-   */
-  reviewerProviderHasKey: (provider: PermissionReviewerProvider) => Promise<boolean>;
+  judgeGet: () => Promise<import("../../shared/permission-judge-settings.js").PermissionJudgeReadResult>;
+  /** Only the changed fields: unchanged stored values (even rejected ones) stay as stored. */
+  judgeSet: (
+    patch: Partial<import("../../shared/permission-judge-settings.js").PermissionJudgeSettings>,
+  ) => Promise<import("../../shared/permission-judge-settings.js").PermissionJudgeWriteResult>;
   /** Permission policy — `/permission audit show` — recent permission audit entries. */
   auditShow: (last: number) => Promise<
     | {
@@ -2025,6 +2023,11 @@ export interface AvePreviewApi {
       | "read-failed";
     message?: string;
   }>;
+  /**
+   * Table document (csv/tsv/xlsx/xls/ods) parsed in main under the same guard
+   * as `readFile`; returns one sheet as a bounded grid of display strings.
+   */
+  readDocument: (path: string, sheetIndex: number) => Promise<PreviewReadDocumentResult>;
 }
 
 /**

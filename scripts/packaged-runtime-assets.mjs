@@ -1,10 +1,4 @@
-/**
- * Runtime assets that must be present in OS-specific desktop packages.
- *
- * Keep this inventory small and explicit: host-owned assets belong in the app
- * installer; plugin dependency payloads belong in plugin artifacts and are
- * prepared by PluginRuntime after install.
- */
+// Host-owned runtime assets ship with the installer; plugin payloads belong to plugin artifacts.
 import { installerUvTargetFor, SUPPORTED_UV_TARGET_DIRS } from "./uv-targets.mjs";
 
 export const HOST_PACKAGED_RUNTIME_ASSETS = Object.freeze([

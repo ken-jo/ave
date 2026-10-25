@@ -1,9 +1,4 @@
-/**
- * SessionTasksPanel — the assistant's session task list (`session_tasks`
- * tool) as a chip in the composer status row, with the numbered list in a
- * popover. Numbers are 1-based and match what the model sees, so "task 2"
- * on screen is the "task 2" the assistant talks about.
- */
+/** Task numbers are 1-based and match the numbers shown to the model. */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ListChecks, X } from "lucide-react";
 import { Badge } from "../../../components/ui/badge.js";
@@ -46,11 +41,8 @@ export function SessionTasksPanel({
   sessionId,
 }: {
   api: AveApi;
-  /**
-   * Current chat session id. Used to filter incoming `:changed` pushes so a
-   * stale session can't clobber the visible list, and to scope the manual
-   * dismiss clear to the active session.
-   */
+  /** Current chat session id. Used to filter incoming `:changed` pushes so a stale session can't clobber the visible list,
+   * and to scope the manual dismiss clear to the active session. */
   sessionId?: string;
 }) {
   const { t } = useTranslation();
@@ -65,9 +57,8 @@ export function SessionTasksPanel({
   const hasLivePushRef = useRef(false);
   latestSessionIdRef.current = sessionId;
 
-  // The store remains the item-list SOT. A late initial fetch must not
-  // overwrite items that a live push already applied, so we guard
-  // initial-fetch updates behind the `hasLivePushRef` flag.
+  // The store remains the item-list SOT. A late initial fetch must not overwrite items that a live push already applied, so
+  // we guard initial-fetch updates behind the `hasLivePushRef` flag.
   const applyItems = useCallback((next: SessionTaskItem[], source: "initial-fetch" | "push") => {
     if (source === "initial-fetch" && hasLivePushRef.current) {
       return;
@@ -78,9 +69,8 @@ export function SessionTasksPanel({
 
   const refresh = useCallback(async () => {
     const requestedSessionId = sessionId;
-    // Before a tile holds a conversation there is nothing to list, and the
-    // channel names its session or nothing at all — main has no "current
-    // session" to resolve an unnamed read against.
+    // Before a tile holds a conversation there is nothing to list, and the channel names its session or nothing at all — main
+    // has no "current session" to resolve an unnamed read against.
     if (!requestedSessionId?.trim()) return;
     const list = await api.listSessionTasks(requestedSessionId);
     if (requestedSessionId !== latestSessionIdRef.current) {
@@ -100,9 +90,8 @@ export function SessionTasksPanel({
       }
       const emittedSid = payload.sessionId;
       const next = payload.items;
-      // Drop malformed or foreign pushes. Main/preload require `sessionId`;
-      // accepting omitted IDs would let stale session events overwrite the
-      // active view and reintroduce a hidden legacy path.
+      // Drop malformed or foreign pushes. Main/preload require `sessionId`; accepting omitted IDs would let stale session events
+      // overwrite the active view and reintroduce a hidden legacy path.
       if (typeof emittedSid !== "string" || emittedSid.length === 0) {
         return;
       }
@@ -134,8 +123,7 @@ export function SessionTasksPanel({
     setItems([]);
   }, [sessionId]);
 
-  // Read before the empty-list bail: hook order must not depend on whether
-  // there is a plan to draw.
+  // Read before the empty-list bail: hook order must not depend on whether there is a plan to draw.
   const reduceMotion = usePrefersReducedMotion();
 
   if (items.length === 0) return null;
@@ -143,17 +131,16 @@ export function SessionTasksPanel({
   const visible = items;
   const completedCount = items.filter((i) => i.status === "completed").length;
   const inProgress = items.find((i) => i.status === "in_progress");
-  // A completed plan is the trigger for the manual dismiss affordance. Finished
-  // tasks stay listed (and persisted) until the user dismisses them or the
-  // assistant replaces the plan.
+  // A completed plan is the trigger for the manual dismiss affordance. Finished tasks stay listed (and persisted) until the
+  // user dismisses them or the assistant replaces the plan.
   const allComplete = visible.length > 0 && completedCount === visible.length;
   // Collapsed-header focus: prefer the in-progress item; if none yet (e.g. a
   // freshly-set plan still all-pending before step 1 is marked in_progress),
   // fall back to the first non-completed item so the closed header never goes
   // blank while there is still work to do.
   const collapsedFocus = inProgress ?? visible.find((i) => i.status !== "completed");
-  // Pulse only when motion is allowed; otherwise rely on color/dot to
-  // signal "active" (still readable, no jitter for sensitive users).
+  // Pulse only when motion is allowed; otherwise rely on color/dot to signal "active" (still readable, no jitter for
+  // sensitive users).
   const activePulse = reduceMotion ? "" : "animate-pulse";
 
   const handleDismiss = async () => {
@@ -161,8 +148,8 @@ export function SessionTasksPanel({
     try {
       await api.clearSessionTasks(sessionId);
     } catch (err) {
-      // Silent failure: the panel stays visible if the clear didn't land.
-      // No user-facing text — the store emit is what actually clears the view.
+      // Silent failure: the panel stays visible if the clear didn't land. No user-facing text — the store emit is what actually
+      // clears the view.
       console.warn("session-tasks dismiss failed:", err);
     }
   };

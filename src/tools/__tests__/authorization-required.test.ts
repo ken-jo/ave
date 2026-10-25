@@ -592,9 +592,7 @@ describe("ToolExecutor authorization-required control", () => {
   });
 
   it("returns ordinary authorization, carrying the fallback reason, for a requested-sandbox plain fallback", async () => {
-    // Design I3: an unavailable sandbox follows the normal rules, so an ask
-    // without an approval surface is the ordinary tool control, not the
-    // host-execution one. The plan still says why the shell is uncontained.
+    // An unavailable sandbox uses ordinary tool approval; the plan must still disclose uncontained execution.
     setShellSandboxRequestedAtBoot(true);
     setActiveSandboxCapability({
       kind: "none",

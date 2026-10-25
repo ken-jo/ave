@@ -1,29 +1,5 @@
-/**
- * NotificationService — Issue #260 system-level notify_user integration.
- *
- * Auto-fires desktop notifications at core lifecycle points:
- *   1. Turn end (ConversationLoop.runTurn resolves)
- *   2. Routine fired (RoutineEngine result delivered)
- *   3. Agent asks question (AskUserQuestionGate.requestAndWait entry)
- *   4. Confirmation needed (ApprovalGate.requestAndWait entry)
- * Plus rare system/configuration cues such as seeded reference-doc upgrades.
- *
- * notify_user is NOT an LLM tool. The LLM never invokes it directly. It's a
- * passive system service constructed in boot.ts AFTER the main window exists
- * and injected into AppServices so trigger sites can call
- * `services.notificationService.fire(...)`.
- *
- * Routing:
- *   - Turn end while Ave is foreground → suppressed; the user already sees it.
- *   - Other focused, non-minimized notifications → in-app toast via
- *     `ave:notification:toast` IPC (renderer status bar slot).
- *   - Otherwise → OS notification; turn-end sound follows its setting, other kinds follow urgency.
- *
- * Audit (only title — body may contain PII):
- *   { event: "notification.fired", kind, gate: "os" | "in-app", title, timestamp }
- *
- * Test-mode hard-guard: NODE_ENV === "test" or !app.isReady() → no-op.
- */
+// Host lifecycle events trigger notifications; foreground turn completion is suppressed and other events choose toast or OS delivery. Audit metadata
+// only, never body text; test mode and pre-ready calls have no side effects.
 import type { ActivationArguments, BrowserWindow } from "electron";
 import type { AuditLogger } from "../audit/audit-logger.js";
 import { createLogger } from "../lib/logger.js";
@@ -40,12 +16,8 @@ export type NotificationKind =
   | "alert"
   | "system";
 
-/**
- * Closed enumeration of valid `NotificationKind` values. Exported so IPC
- * handlers can validate untrusted renderer payloads without re-listing the
- * kinds inline. The `plugin` kind remains available to explicit plugin
- * notification requests.
- */
+// Closed enumeration of valid `NotificationKind` values. Exported so IPC handlers can validate untrusted renderer payloads without re-listing the kinds
+// inline. The `plugin` kind remains available to explicit plugin notification requests.
 export const NOTIFICATION_KINDS: ReadonlySet<NotificationKind> = new Set([
   "turn-end",
   "routine",
@@ -66,155 +38,93 @@ export interface NotificationContextRef {
 export interface FireOptions {
   kind: NotificationKind;
   title: string;
-  /** Raw text — service caps at 80 chars + ellipsis. */
+  // Raw text — service caps at 80 chars + ellipsis.
   body: string;
   contextRef?: NotificationContextRef;
-  /** Approval defaults true; rest default false. */
+  // Approval defaults true; rest default false.
   urgent?: boolean;
-  /**
-   * Opt out of the focus-suppression gate. When true, the OS notification
-   * fires regardless of focus state. Other kinds follow `urgent` for sound;
-   * turn-end always follows the completion sound preference.
-   */
+  // Opt out of the focus-suppression gate. When true, the OS notification fires regardless of focus state. Other kinds follow `urgent` for sound; turn-end
+  // always follows the completion sound preference.
   bypassFocusGate?: boolean;
-  /**
-   * Keep the in-app toast until the user dismisses it, instead of letting it
-   * time out. The OS path ignores it. Used for `high` priority alerts.
-   */
+  // Keep the in-app toast until the user dismisses it, instead of letting it time out. The OS path ignores it. Used for `high` priority alerts.
   sticky?: boolean;
 }
 
-/**
- * IPC channel — main process → renderer; payload sent via window.aveApi.
- * NEVER expose on window.avePlugin (plugin webview isolation contract).
- */
+// IPC channel — main process → renderer; payload sent via window.aveApi. NEVER expose on window.avePlugin (plugin webview isolation contract).
 export const IPC_NOTIFICATION_TOAST = "ave:notification:toast";
-/**
- * IPC channel — renderer → main; fired when the user clicks an in-app toast
- * (via the renderer's status-bar bridge) or when an OS notification's click
- * handler triggers focus.
- */
+// IPC channel — renderer → main; fired when the user clicks an in-app toast (via the renderer's status-bar bridge) or when an OS notification's click
+// handler triggers focus.
 export const IPC_NOTIFICATION_CLICKED = "ave:notification:clicked";
 
-/**
- * Output cap — applied to BOTH body (toast / OS / audit) and title (audit).
- * Body and title share the same 80-char limit; the constant name is retained
- * for API stability but is now a single output cap rather than a body-only cap.
- */
+// Output cap — applied to BOTH body (toast / OS / audit) and title (audit). Body and title share the same 80-char limit; the constant name is retained
+// for API stability but is now a single output cap rather than a body-only cap.
 const BODY_MAX_CHARS = 80;
 const ELLIPSIS = "…";
 
-/**
- * Per-kind cooldown map (ms). Anti-spam guard against turn-loop bursts and
- * micro-burst approvals. Values:
- *   - turn-end : 30 s (most spammy — long agentic loops)
- *   - approval : 2 s  (coalesce micro-bursts only)
- *   - routine  : 0    (rare — always fire)
- *   - ask-user : 0    (rare — user expects every one)
- *   - plugin   : 5 s  (protects against repeated explicit plugin requests)
- *   - alert    : 5 s  (a declared plugin alert, fired only after the host
- *                      accepted it; same guard as `plugin`)
- *   - system   : 0    (rare boot/config upgrade cues)
- *
- * In-memory only — cooldown resets on app restart by design
- * (cross-restart persistence is overkill for an anti-spam gate).
- */
+// Cooldowns reset on restart and bound bursts; zero-cooldown lifecycle kinds always fire.
 const COOLDOWN_MS_BY_KIND: Record<NotificationKind, number> = {
   "turn-end": 30_000,
   approval: 2_000,
   routine: 0,
   "ask-user": 0,
-  // Explicit plugin notifications retain a 5s cooldown. It is lower than
-  // turn-end so unrelated plugin requests are not coalesced for long.
+  // Explicit plugin notifications retain a 5s cooldown. It is lower than turn-end so unrelated plugin requests are not coalesced for long.
   plugin: 5_000,
   alert: 5_000,
   system: 0,
 };
 
-/**
- * Strip ASCII control chars (C0: 0x00–0x1F, DEL: 0x7F, C1: 0x80–0x9F) which
- * are common in LLM / user-supplied bodies (newlines from prompts, ANSI escape
- * sequences from terminal-style output, etc). Windows toast XML and Linux
- * notify-send both mis-render or split on these. C1 range (0x80–0x9F) can
- * also surprise Windows toast XML. Defense-in-depth: applied to title too,
- * since the routine kind interpolates user/admin data.
- */
+// Strip C0, DEL, and C1 controls from title and body; native notification renderers may split or misrender them.
 const CONTROL_CHARS_RE = /[\x00-\x1f\x7f-\x9f]/g;
 function stripControlChars(s: string): string {
   return s.replace(CONTROL_CHARS_RE, "");
 }
 
-interface ToastPayload {
+export interface ToastPayload {
   kind: NotificationKind;
   title: string;
   body: string;
   contextRef?: NotificationContextRef;
-  /** Stays until the user dismisses it. */
+  // Stays until the user dismisses it.
   sticky?: true;
 }
 
-/**
- * Minimal Electron Notification surface used by the service. Exposed as an
- * injectable factory so tests can stub it without spinning Electron.
- */
-interface NotificationLike {
+// Minimal Electron Notification surface used by the service. Exposed as an injectable factory so tests can stub it without spinning Electron.
+export interface NotificationLike {
   show(): void;
   on(event: "click", handler: () => void): void;
 }
 
-type NotificationActivationRegistration = (
+export type NotificationActivationRegistration = (
   handler: (details: ActivationArguments) => void,
 ) => void;
 
 export interface NotificationServiceOptions {
-  /** Read the OS notification master at delivery time for turn-end cues. */
+  // Read the OS notification master at delivery time for turn-end cues.
   isOsNotificationsEnabled?: () => boolean;
-  /** Read at delivery time so changing the setting applies to the next completion. */
+  // Read at delivery time so changing the setting applies to the next completion.
   isTurnCompletionSoundEnabled?: () => boolean;
-  /** Live BrowserWindow getter. Service tolerates null (e.g. window closed). */
+  // Live BrowserWindow getter. Service tolerates null (e.g. window closed).
   getMainWindow: () => BrowserWindow | null;
   auditLogger?: AuditLogger;
-  /**
-   * Test injection — by default the service uses Electron's Notification
-   * constructor and `app.isReady()`. Tests pass stubs to avoid loading
-   * Electron at all.
-   */
+  // Test injection — by default the service uses Electron's Notification constructor and `app.isReady()`. Tests pass stubs to avoid loading Electron at all.
   notificationFactory?: (opts: {
     title: string;
     body: string;
     silent: boolean;
     urgency: "normal" | "critical" | "low";
   }) => NotificationLike;
-  /**
-   * Windows Action Center activation bridge. Electron's per-instance
-   * `notification.on("click")` is not enough for persisted/cold-start
-   * notifications and may also fire alongside this central handler.
-   *
-   * `undefined`: register the default Electron handler when using the default
-   * notification factory. `null`: explicitly disable registration in tests.
-   */
+  // Persisted or cold-start notifications need the central activation bridge in addition to per-instance clicks.
+  // Undefined selects the default handler; null disables registration for tests.
   notificationActivationRegistration?: NotificationActivationRegistration | null;
   isReady?: () => boolean;
-  /**
-   * Test override of NODE_ENV check. Default: read process.env.NODE_ENV.
-   */
+  // Test override of NODE_ENV check. Default: read process.env.NODE_ENV.
   isTestEnv?: () => boolean;
-  /**
-   * #842 — focus detection across ALL Ave-owned BrowserWindows (main,
-   * auth-window, link-window, auth-partition-viewer, and preview surfaces).
-   * The pre-fix gate only consulted `mainWindow.isFocused()`, so an active
-   * auxiliary window would still trigger an OS pop. Defaults to a live
-   * `BrowserWindow.getAllWindows().some(w => !w.isDestroyed() && w.isFocused())`
-   * scan; tests override to avoid loading Electron.
-   */
+  // Detect focus across every live app window so focused auxiliary viewers do not trigger an OS notification.
   isAnyWindowFocused?: () => boolean;
 }
 
-/**
- * Strip control chars then UTF-16 surrogate-safely cap at BODY_MAX_CHARS.
- * Using `[...str]` decomposes the string into code-point units so a 4-byte
- * emoji at position 80 doesn't get sliced into a lone surrogate.
- */
+// Strip control chars then UTF-16 surrogate-safely cap at BODY_MAX_CHARS. Using `[...str]` decomposes the string into code-point units so a 4-byte emoji
+// at position 80 doesn't get sliced into a lone surrogate.
 function truncateBody(body: string): string {
   const clean = stripControlChars(body);
   const codepoints = [...clean];
@@ -222,10 +132,7 @@ function truncateBody(body: string): string {
   return codepoints.slice(0, BODY_MAX_CHARS).join("") + ELLIPSIS;
 }
 
-/**
- * Cap title to BODY_MAX_CHARS with the same surrogate-safe slicing as body.
- * No ellipsis appended — title slicing is for audit-output bounding only.
- */
+// Cap title to BODY_MAX_CHARS with the same surrogate-safe slicing as body. No ellipsis appended — title slicing is for audit-output bounding only.
 function capTitle(title: string): string {
   const clean = stripControlChars(title);
   const codepoints = [...clean];
@@ -250,13 +157,7 @@ export class NotificationService {
   private readonly isReady: () => boolean;
   private readonly isTestEnv: () => boolean;
   private readonly isAnyWindowFocused: () => boolean;
-  /**
-   * Per-kind last-fire monotonic timestamps (performance.now() ms). Using a
-   * monotonic clock (immune to NTP steps and manual clock changes) means a
-   * wall-clock jump backwards never produces a negative elapsedMs that would
-   * suppress all subsequent fires until real time "catches up". The audit
-   * `timestamp` field keeps Date.now() because it records wall-clock event time.
-   */
+  // Use monotonic time for cooldowns to survive wall-clock jumps; audit timestamps remain wall-clock time.
   private readonly lastFiredAt = new Map<NotificationKind, number>();
 
   constructor(opts: NotificationServiceOptions) {
@@ -284,34 +185,19 @@ export class NotificationService {
     }
   }
 
-  /**
-   * Fire a notification cue. NEVER throws (#2103).
-   *
-   * Notifications are passive lifecycle cues; the flows that emit them
-   * (turn completion, approval entry, plugin events, boot steps, shortcut
-   * registration, IPC handlers) must never fail because a cue could not be
-   * delivered. That invariant used to be enforced per call site with a
-   * try/catch around every `fire(...)` — a pattern that was applied at some
-   * sites and missed at others. It is now structural: `fire()` catches
-   * everything (including injected `getMainWindow` / `isAnyWindowFocused`
-   * probes and window-handle races) and degrades to a warn log, so a new
-   * call site cannot reintroduce the failure class by forgetting a wrapper.
-   */
+  // Never let dependency, window, or delivery failures escape fire(); passive cues must not interrupt host lifecycle.
   fire(opts: FireOptions): void {
     try {
       this.fireUnguarded(opts);
     } catch (err) {
-      // Delivery failure must never propagate into the calling flow. The
-      // inner OS/toast paths already degrade individually; this catch is the
-      // structural backstop for everything else (probe callbacks, window
-      // races, sanitizer edge cases).
+      // Delivery failure must never propagate into the calling flow. The inner OS/toast paths already degrade individually; this catch is the structural
+      // backstop for everything else (probe callbacks, window races, sanitizer edge cases).
       log.warn("notification fire failed: %s", (err as Error)?.message ?? String(err));
     }
   }
 
   private fireUnguarded(opts: FireOptions): void {
-    // Test-mode + pre-ready hard guard — never pop a notification before the
-    // app is ready or inside a vitest run.
+    // Test-mode + pre-ready hard guard — never pop a notification before the app is ready or inside a vitest run.
     if (this.isTestEnv() || !this.isReady()) return;
 
     if (opts.kind === "turn-end" && !this.isOsNotificationsEnabled()) {
@@ -319,8 +205,7 @@ export class NotificationService {
       return;
     }
 
-    // #1482 — turn-end is a background-only cue. When the user is already in
-    // Ave, the conversation itself is the completion signal; do not surface a
+    // #1482 — turn-end is a background-only cue. When the user is already in Ave, the conversation itself is the completion signal; do not surface a
     // composer/status toast, and do not consume the cooldown slot.
     const win = this.getMainWindow();
     const focusGateActive = !opts.bypassFocusGate && this.canShowToast(win);
@@ -329,24 +214,8 @@ export class NotificationService {
       return;
     }
 
-    // Per-kind cooldown — defense against runaway turn loops or approval
-    // bursts. Suppressed events MUST still go through the audit logger so we
-    // can detect spam in field telemetry. routine and ask-user have a 0 ms
-    // cooldown (always fire).
-    //
-    // `bypassFocusGate` is an opt-in signal that the event
-    // is a critical alert. It must escape BOTH the focus gate AND the
-    // per-kind cooldown. The cooldown still updates `lastFiredAt` so that
-    // the *next* non-bypass fire is correctly throttled relative to this
-    // bypass event (i.e. bypass consumes the slot, it does not pretend the
-    // fire never happened).
-    //
-    // Timing: performance.now() is monotonic (immune to NTP steps / manual
-    // wall-clock changes). A Date.now() backwards jump would produce a
-    // negative elapsedMs that trivially passes `< cooldownMs`, suppressing
-    // every subsequent fire until real time "catches up". Monotonic timing
-    // avoids that. The audit `timestamp` field keeps Date.now() intentionally
-    // because it records wall-clock event time for human-readable log entries.
+    // Audit suppressed events; bypassFocusGate escapes focus and cooldown while still consuming the next cooldown slot.
+    // Use monotonic elapsed time so clock changes cannot suppress later notifications.
     const cooldownMs = COOLDOWN_MS_BY_KIND[opts.kind] ?? 0;
     if (cooldownMs > 0) {
       const last = this.lastFiredAt.get(opts.kind) ?? 0;
@@ -359,37 +228,16 @@ export class NotificationService {
       this.lastFiredAt.set(opts.kind, now);
     }
 
-    // Sanitize title and body — strip control chars defense-in-depth (body
-    // sources include LLM responses and user-typed questions; routine titles
-    // interpolate user-authored routine IDs).
-    //
-    // Two body variants: the toast goes through the React renderer (markdown
-    // OK), but OS-native notifications on macOS/Windows/Linux treat `body`
-    // as plain text, so markdown leaks to the user as literal `**bold**` etc.
-    // Strip before truncating so the 80-char cap reflects what the user sees.
+    // Sanitize title and body; OS notifications need plain text while in-app toasts support markdown. Strip markup before the visible-text cap.
     const cleanTitle = capTitle(opts.title);
     const truncatedBody = truncateBody(opts.body);
     const truncatedPlainBody = truncateBody(stripMarkdown(opts.body));
-    // `bypassFocusGate` signals that the event is
-    // critical enough to escape the focus + cooldown gates. A silent (non-
-    // urgent) OS notification on top of that is contradictory: the user
-    // would see a quiet popup for an alert the caller flagged as
-    // "must reach the user even with another window focused". Promote
-    // `urgent` to `true` automatically when `bypassFocusGate` is set,
-    // unless the caller has explicitly opted out by passing `urgent: false`.
+    // Critical bypass implies urgency unless the caller explicitly sets urgent:false.
     const urgent =
       opts.urgent ??
       (opts.kind === "approval" || opts.bypassFocusGate === true);
 
-    // #842 — focus gate consults EVERY Ave-owned window. The pre-fix path
-    // checked `win.isFocused()` only, missing auxiliary windows (auth, link,
-    // preview). #843 — `bypassFocusGate` forces the OS path regardless of
-    // any focused window (critical surfaces like meeting.starting-soon).
-    //
-    // `mainAlive` semantics: "the main window is in a state where it can
-    // *receive* an in-app toast". A minimized main is treated as not-alive
-    // because the user can't see the in-app toast — we want the OS path
-    // instead. A destroyed main (mid-teardown) is also not-alive.
+    // Focus gating includes every app-owned window; bypass forces OS delivery. Minimized or destroyed main windows cannot receive a visible toast.
     const gate: "os" | "in-app" = focusGateActive ? "in-app" : "os";
 
     if (focusGateActive && win) {
@@ -403,8 +251,7 @@ export class NotificationService {
       try {
         win.webContents.send(IPC_NOTIFICATION_TOAST, payload);
       } catch (err) {
-        // Send race (webContents destroyed mid-fire) — fall back to OS path
-        // so the user still sees the cue. Audit reflects the final gate used.
+        // Send race (webContents destroyed mid-fire) — fall back to OS path so the user still sees the cue. Audit reflects the final gate used.
         log.warn(
           "notification toast send failed, falling back to OS: %s",
           (err as Error).message,
@@ -420,12 +267,8 @@ export class NotificationService {
     this.audit(gate, opts.kind, cleanTitle);
   }
 
-  /**
-   * Whether a cue fired now without `bypassFocusGate` would be an in-app
-   * toast rather than an OS notification — so a caller can choose between
-   * the two before it fires. Never throws, like {@link fire}: a failed window
-   * probe reads as "not focused".
-   */
+  // Whether a cue fired now without `bypassFocusGate` would be an in-app toast rather than an OS notification — so a caller can choose between the two
+  // before it fires. Never throws, like {@link fire}: a failed window probe reads as "not focused".
   isFocusGateActive(): boolean {
     try {
       return this.canShowToast(this.getMainWindow());
@@ -435,10 +278,7 @@ export class NotificationService {
     }
   }
 
-  /**
-   * The main window can show an in-app toast (alive and not minimized, so the
-   * user can see it) and some Ave window has focus.
-   */
+  // The main window can show an in-app toast (alive and not minimized, so the user can see it) and some Ave window has focus.
   private canShowToast(win: BrowserWindow | null): boolean {
     const mainAlive = win !== null && !win.isDestroyed() && !win.isMinimized();
     return mainAlive && this.isAnyWindowFocused();
@@ -461,9 +301,7 @@ export class NotificationService {
       });
       n.show();
     } catch (err) {
-      // OS notification can fail on Linux without libnotify, on Windows
-      // without AppUserModelId, etc. Never let a failed notification block
-      // the lifecycle event that fired it.
+      // OS notification can fail on Linux without libnotify, on Windows without AppUserModelId, etc. Never let a failed notification block the lifecycle event that fired it.
       log.warn(
         "OS notification fire failed: %s",
         (err as Error).message,
@@ -480,10 +318,8 @@ export class NotificationService {
     kind: NotificationKind;
     contextRef?: NotificationContextRef;
   }): void {
-    // Entirely inside the try — this runs from OS notification click /
-    // Action Center activation callbacks, where a throw would surface as an
-    // unhandled exception in the main process. `getMainWindow()` is an
-    // injected getter and shares fire()'s never-throw contract (#2103).
+    // Entirely inside the try — this runs from OS notification click / Action Center activation callbacks, where a throw would surface as an unhandled
+    // exception in the main process. `getMainWindow()` is an injected getter and shares fire()'s never-throw contract (#2103).
     try {
       const win = this.getMainWindow();
       if (!win || win.isDestroyed()) return;
@@ -508,17 +344,12 @@ export class NotificationService {
         timestamp: new Date().toISOString(),
         sessionId: "notification-service",
         type: "info",
-        // body is intentionally NOT logged — body may contain user-typed
-        // question text or assistant response (PII). Title is already bounded
-        // by capTitle() at the entry point — the slice here is a belt-and-
-        // suspenders cap on whatever raw text the caller might pass through
-        // a future code path.
+        // Never log notification bodies, which may contain user or assistant text; cap titles again at the audit boundary.
         input: JSON.stringify({
           event: "notification.fired",
           kind,
           gate,
-          // reuses body cap as title cap — same 80-char limit applies to
-          // audit fields.
+          // reuses body cap as title cap — same 80-char limit applies to audit fields.
           title: title.slice(0, BODY_MAX_CHARS),
         }),
       });
@@ -527,10 +358,7 @@ export class NotificationService {
     }
   }
 
-  /**
-   * Audit a suppressed fire. Must NEVER silently drop — a missing
-   * audit trail hides runaway-loop bugs.
-   */
+  // Audit a suppressed fire. Must NEVER silently drop — a missing audit trail hides runaway-loop bugs.
   private auditSuppressed(
     kind: NotificationKind,
     elapsedMs: number,

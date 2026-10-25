@@ -1,9 +1,3 @@
-/**
- * DLP Hit Statistics — Observability
- *
- * Reads audit JSONL files, filters type="dlp" entries, and aggregates
- * hit statistics for the Privacy tab dashboard.
- */
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import type { AuditEntry } from "./audit-logger.js";
@@ -13,9 +7,7 @@ import { iterateJsonlLines } from "./jsonl-reader.js";
 export interface DlpStats {
   totalHits: number;
   byKind: Record<string, number>;
-  /** hits per calendar day, key = "YYYY-MM-DD" */
   byDay: Record<string, number>;
-  /** top 5 patterns sorted by hit count descending */
   topPatterns: Array<{ kind: string; count: number }>;
 }
 

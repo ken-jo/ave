@@ -1,11 +1,4 @@
-/**
- * The host's answer to "what UNC path backs this mapped drive".
- *
- * Every case here asserts BOTH the answer and whether the lookup ran. The
- * lookup running is what separates "we decided without asking" from "we asked
- * and got nothing", and those two are the pair this module exists to keep
- * apart — `null` for a local disk, a rejection for a lookup that could not run.
- */
+// Assert whether lookup ran as well as its answer: null means local disk, while rejection means lookup failure.
 import { describe, expect, it } from "vitest";
 import {
   InvalidDriveLetterError,
@@ -13,7 +6,6 @@ import {
   type MappedDriveRootDeps,
 } from "../mapped-drive-root.js";
 
-/** A stub that records what it was asked, so "never ran" is assertable. */
 function stubDeps(
   platform: NodeJS.Platform,
   answer: string | (() => Promise<string>),
@@ -37,8 +29,7 @@ describe("resolveMappedDriveRoot", () => {
       await expect(resolveMappedDriveRoot(bad, deps)).rejects.toBeInstanceOf(
         InvalidDriveLetterError,
       );
-      // The control. A refusal that still ran the command would have refused
-      // too late to matter.
+      // The control. A refusal that still ran the command would have refused too late to matter.
       expect(deps.scripts).toEqual([]);
     },
   );
@@ -48,8 +39,7 @@ describe("resolveMappedDriveRoot", () => {
     async (platform) => {
       const deps = stubDeps(platform, "\\\\server\\share");
       await expect(resolveMappedDriveRoot("Z:", deps)).resolves.toBeNull();
-      // Not "the lookup found nothing" — there was nothing to look for. Without
-      // this the same `null` could have come from running PowerShell on a Mac.
+      // Not "the lookup found nothing" — there was nothing to look for. Without this the same `null` could have come from running PowerShell on a Mac.
       expect(deps.scripts).toEqual([]);
     },
   );
@@ -66,8 +56,7 @@ describe("resolveMappedDriveRoot", () => {
   ])("answers null for %o (%s)", async (stdout) => {
     const deps = stubDeps("win32", stdout);
     await expect(resolveMappedDriveRoot("Z:", deps)).resolves.toBeNull();
-    // It DID ask. That is what makes this `null` mean "no UNC backing" rather
-    // than "we never looked".
+    // It DID ask. That is what makes this `null` mean "no UNC backing" rather than "we never looked".
     expect(deps.scripts).toHaveLength(1);
   });
 
@@ -75,8 +64,7 @@ describe("resolveMappedDriveRoot", () => {
     const deps = stubDeps("win32", async () => {
       throw new Error("powershell.exe: not found");
     });
-    // The whole reason the two outcomes are different types. A caller building
-    // an allow-list from this would otherwise treat an unresolvable drive as a
+    // The whole reason the two outcomes are different types. A caller building an allow-list from this would otherwise treat an unresolvable drive as a
     // local one and silently omit a root it needed.
     await expect(resolveMappedDriveRoot("Z:", deps)).rejects.toThrow(/not found/u);
   });
@@ -87,9 +75,8 @@ describe("resolveMappedDriveRoot", () => {
     const script = deps.scripts[0]!;
     expect(script).toContain("Get-PSDrive -Name 'Q'");
     expect(script).toContain("DeviceID='Q:'");
-    // The colon the caller wrote is not carried through as text; the script
-    // supplies its own. A caller cannot contribute a character to the command
-    // beyond the single letter above.
+    // The colon the caller wrote is not carried through as text; the script supplies its own. A caller cannot contribute a character to the command beyond
+    // the single letter above.
     expect(script).not.toContain("q");
   });
 });

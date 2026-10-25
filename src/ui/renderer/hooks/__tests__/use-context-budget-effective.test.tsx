@@ -1,10 +1,6 @@
 import "../../../../../test/renderer/setup.js";
 
-/**
- * Issue #912 — effectiveBudget = min(contextBudget, tpmLimit) so the
- * TokenProgressRing reflects the binding request limit. TPM is still exposed
- * separately in the tooltip for diagnosis.
- */
+/** Use min(contextBudget, tpmLimit) for the ring; retain TPM separately in the tooltip for diagnosis. */
 import { describe, expect, it } from "vitest";
 import { renderHook } from "@testing-library/react";
 import { estimateOutgoingUserMessageTokens } from "../../../../shared/multimodal-token-estimate.js";
@@ -130,18 +126,16 @@ describe("useContextBudget — effectiveBudget (Issue #912)", () => {
     const { result } = renderHook(() =>
       useContextBudget({ entries: [], contextWindow: 400_000, llmVendor: "azure-foundry", llmModel: "gpt-5.4-mini" }),
     );
-    // gpt-5.4-mini now carries a host TPM default of 200K (org Tier-1, empirically grounded
-    // by the indexer-turn 429); azure-foundry deployment ids inherit the full
-    // OpenAI spec incl. tpm → effectiveBudget = min(contextBudget, tpmLimit).
+    // gpt-5.4-mini now carries a host TPM default of 200K (org Tier-1, empirically grounded by the indexer-turn 429);
+    // azure-foundry deployment ids inherit the full OpenAI spec incl. tpm → effectiveBudget = min(contextBudget, tpmLimit).
     expect(result.current.tpmLimit).toBe(200_000);
     expect(result.current.contextBudget).toBe(360_000);
     expect(result.current.effectiveBudget).toBe(200_000);
   });
 
   it("keeps contextBudget when tpmLimit happens to exceed it (defensive)", () => {
-    // Synthetic scenario via unknown model at the host's fallback window. Even
-    // if a future model's host TPM default exceeded its window, the ring stays
-    // bounded by the smaller value.
+    // Synthetic scenario via unknown model at the host's fallback window. Even if a future model's host TPM default exceeded
+    // its window, the ring stays bounded by the smaller value.
     const { result } = renderHook(() =>
       useContextBudget({ entries: [], contextWindow: FALLBACK_CONTEXT_WINDOW, llmVendor: "openai", llmModel: "nonexistent-model" }),
     );

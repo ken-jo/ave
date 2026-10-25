@@ -7,8 +7,7 @@ import { fileURLToPath } from "node:url";
 import { buildE2eBaseSettings, buildIsolatedElectronEnv, launchElectron } from "./seeded-electron";
 import { makeTestT } from "./i18n";
 
-// This spec seeds its own Electron via beforeEach (buildE2eBaseSettings(true) →
-// "ko"), independent of the fixture's seedLocale, so bind `t` to that locale.
+// This independently seeded harness uses Korean regardless of the shared fixture locale.
 const t = makeTestT("ko");
 
 const HERE = dirname(fileURLToPath(import.meta.url));

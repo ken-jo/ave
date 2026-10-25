@@ -34,7 +34,6 @@ import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 const SETTINGS_FILE = "ave-settings.json";
 const HOST_DUE_SOON = `${ALERT_HOST_PLUGIN_ID}:due-soon`;
 
-/** What a malformed kind entry is stored as: off, unseen, lowest visibility, marked repaired. */
 const FAIL_CLOSED: AlertKindChoice = {
   enabled: false,
   osNotification: false,
@@ -55,15 +54,12 @@ const OS_RULE: AlertInheritRule = {
   masterKey: "osNotificationsEnabled",
 };
 
-/** Complete SemVer versions, pre-release and build metadata included. */
 const VALID_VERSIONS = ["0.12.0", "0.12.0-beta.1", "0.12.0-beta.1+build.2", "1.0.0+20260926", "0.12.0-rc-1.x"];
-/** Not versions: partial, prefixed, leading zeros, empty identifiers, the resolver's sentinel, oversized. */
 const INVALID_VERSIONS: unknown[] = [
   "unknown", "", "0.12", "v0.12.0", "01.2.3", "0.12.0-", "0.12.0-..", "0.12.0-beta..1",
   "0.12.0-01", "0.12.0+", "0.12.0+build..2", " 0.12.0", "0.12.0 ", `0.12.0-${"x".repeat(130)}`, 12, null,
 ];
 
-/** Running versions that are not stable releases: pre-release builds and malformed strings prune nothing. */
 const UNSTABLE_RUNNING_VERSIONS = ["0.14.0-beta.1", "1.0.0-rc.1", "0.14.00", "0.14.0garbage", "0.14.0-.."];
 
 function choice(overrides: Partial<AlertKindChoice> = {}): AlertKindChoice {
@@ -94,7 +90,6 @@ function retiredRecord(overrides: Partial<RetiredPluginConfigRecord> = {}): Reti
   };
 }
 
-/** A record whose one host-kind mapping is `hostKind`, typed loosely so a broken shape can be written. */
 function withHostKind(hostKind: unknown): unknown {
   const record = retiredRecord();
   return { ...record, successors: { ...record.successors, hostKinds: [hostKind] } };
@@ -104,7 +99,6 @@ describe("alert kind keys", () => {
   it("accept plugin and host kinds in the manifest grammar and nothing else", () => {
     expect(isAlertKindKey("fixturemail:mail-reply")).toBe(true);
     expect(isAlertKindKey(HOST_DUE_SOON)).toBe(true);
-    // The bounds of each half: plugin ids 3 to 64 characters, kind ids 2 to 32.
     expect(isAlertKindKey("abc:de")).toBe(true);
     expect(isAlertKindKey(`${"p".repeat(64)}:${"k".repeat(32)}`)).toBe(true);
     for (const bad of [
@@ -207,11 +201,10 @@ describe("normalizeAlertSettings", () => {
     const kinds = normalizeAlertSettings({
       kinds: {
         "fixturemail:repaired": { ...FAIL_CLOSED },
-        // A repaired entry whose mark alone is damaged stays repaired, not auto-resolved.
         "fixturemail:string-mark": { ...FAIL_CLOSED, repaired: "true" },
         "fixturemail:false-mark": { ...choice({ seenByUser: true }), repaired: false },
         "fixturemail:null-mark": { ...choice(), repaired: null, absentSinceAppVersion: "0.12.0" },
-        // Present is present: an own `repaired` key holding undefined is not a missing one.
+        // An own repaired key with undefined is present, not missing.
         "fixturemail:undefined-mark": { ...choice({ seenByUser: true }), repaired: undefined },
       },
     }).kinds;
@@ -336,7 +329,7 @@ describe("normalizeRetiredPluginConfigs", () => {
       notObject: "record",
     };
     for (const [name, broken] of Object.entries(cases)) {
-      // Through JSON, as the loader sees it: a reserved key survives only as an own property there.
+      // Round-trip through JSON so reserved keys have the loader's own-property shape.
       const stored = JSON.parse(JSON.stringify({ retiredfixture: broken })) as unknown;
       expect(normalizeRetiredPluginConfigs(stored), name).toEqual({});
     }
@@ -510,7 +503,6 @@ describe("SettingsService alerts and retired plugin configs", () => {
   });
 
   it("never removes a well-formed retired record, whatever the running version", async () => {
-    // Retired at 0.12.0; every successor has inherited. Removal is the alerts service's decision.
     const spent = retiredRecord({ consumedBy: ["fixtureep", "fixturemail"] });
     for (const running of [undefined, "0.12.0", "0.14.0", "0.20.0", "1.0.0", "9.0.0", "unknown"]) {
       writeStored({ retiredPluginConfigs: { spentfixture: spent } });

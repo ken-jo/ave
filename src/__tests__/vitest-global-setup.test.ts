@@ -1,12 +1,4 @@
-/**
- * The run directories `vitest.globalSetup.ts` makes under `~/.ave/test-tmp`
- * are removed on every path: at teardown, when setup fails before it can
- * return one, and on a later run when a killed run left them behind — and
- * never while the run that made them lives, nor outside `test-tmp`.
- *
- * HOME is a scratch directory throughout, so `~/.ave/test-tmp` here is a
- * scratch one too.
- */
+/** Use scratch HOME and verify run cleanup never removes live owners or escapes test-tmp. */
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
@@ -68,7 +60,6 @@ afterEach(() => {
   }
 });
 
-/** HOME for this test, so setup's `~/.ave/test-tmp` is a scratch one. */
 function scratchTestTmp(): string {
   const home = scratch();
   process.env.HOME = home;
@@ -77,7 +68,6 @@ function scratchTestTmp(): string {
   return join(home, ".ave", "test-tmp");
 }
 
-/** What setup handed each project through `provide`, by key. */
 type Provided = Map<string, unknown>;
 
 function project(isolate = true, pool = "forks", provided: Provided = new Map()): TestProject {
@@ -94,10 +84,6 @@ function runDirs(testTmp: string): string[] {
 
 const DAY_AGO = () => new Date(Date.now() - STALE_RUN_DIR_AGE_MS - 60_000);
 
-/**
- * A run directory as a run makes it: named so, with `record` as its owner
- * file (an object is written as JSON, a string as is), last touched long ago.
- */
 function runDir(path: string, record: RunOwner | Record<string, unknown> | string | null, when: Date = DAY_AGO()): string {
   mkdirSync(path, { recursive: true });
   if (record !== null) {
@@ -111,7 +97,6 @@ function owner(pid: number, started: string, host: string = hostname()): RunOwne
   return { version: RUN_OWNER_VERSION, pid, started, host };
 }
 
-/** A pid no process has: a child that has already exited. */
 function exitedPid(): number {
   const node = process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath;
   const child = spawnSync(node, ["-e", "process.stdout.write(String(process.pid))"], {
@@ -143,12 +128,10 @@ describe("vitest global setup", () => {
     const teardownNode = await setup(project(true, "forks", nodeProvided));
     const teardownJsdom = await setup(project(true, "forks", jsdomProvided));
     expect(runDirs(testTmp)).toHaveLength(2);
-    // The temp directory is the third, outside ~/.ave (`runTmpRoot`).
     const runTmp = tmpdir();
     expect(dirname(runTmp)).toBe(runTmpRoot());
     expect(validRunOwner(JSON.parse(readFileSync(join(runTmp, RUN_OWNER_FILE), "utf8")) as unknown))
       .toEqual(owner(process.pid, ownStart()));
-    // Both projects run the one plugin child bundle this run built.
     const childEntry = nodeProvided.get("pluginChildEntryPath");
     expect(typeof childEntry).toBe("string");
     expect(existsSync(childEntry as string)).toBe(true);
@@ -339,7 +322,6 @@ describe("a process's start identity", () => {
       "Mon Feb 30 01:00:00 2026",
       "Thu Oct  2 24:00:00 2026",
       "Thu Okt  2 04:29:05 2026",
-      // Before the epoch, and the years `Date.UTC` would read as 1900-1999.
       "Wed Dec 31 23:59:59 1969",
       "Fri Jan  1 00:00:00 0050",
       "Sat Jan  1 00:00:00 0000",
@@ -389,7 +371,6 @@ describe("validRunOwner", () => {
 
 describe("sweepStaleRunDirs", () => {
   const host = "this-host";
-  /** Pid 100 started at "ps:1000" and lives; every other pid is gone. */
   const probe: ProcessProbe = {
     exists: (pid) => pid === 100,
     startedAt: (pid) => (pid === 100 ? "ps:1000" : undefined),
@@ -440,7 +421,6 @@ describe("sweepStaleRunDirs", () => {
       runDir(join(testTmp, "h-NoVer1"), unversioned),
       runDir(join(testTmp, "h-Ver999"), { ...owner(200, "ps:900", host), version: 999 }),
       runDir(join(testTmp, "h-OtherH"), owner(200, "ps:900", "another-host")),
-      // Alive, recorded in one form and readable now only in another.
       runDir(join(testTmp, "h-Form01"), owner(100, "win32:1000", host)),
     ];
     const result = await sweep(testTmp);
@@ -476,8 +456,6 @@ describe("sweepStaleRunDirs", () => {
     const result = await sweep(testTmp, {
       onStep: (step, path) => {
         if (step !== "judged") return;
-        // Another process moves the judged directory off and makes a new one,
-        // with the very same record, at its name.
         renameSync(path, movedAway);
         runDir(path, record);
         writeFileSync(join(path, "new-run-data"), "kept");
@@ -563,12 +541,7 @@ describe("sweepStaleRunDirs", () => {
 });
 
 describe("runTmpRoot", () => {
-  /**
-   * The run's temp directory stands in for the user's: a confined command
-   * writes there as it would in its own temp directory. So no sandbox write
-   * floor may cover it, and on POSIX it sits inside the shared /tmp grant the
-   * Linux wrap gives. `~/.ave/test-tmp`, where it was, fails the second.
-   */
+  /** Run temp must be writable within the sandbox's shared temp grant and outside write-denied home floors. */
   it.each(["linux", "darwin", "win32"] as const)("is covered by no %s sandbox write floor", async (platform) => {
     const { getDefaultSensitiveWriteDenyPaths, isGrantPathWithin } = await import("../permissions/asrt-sandbox.js");
     const realPlatform = Object.getOwnPropertyDescriptor(process, "platform")!;
@@ -577,7 +550,6 @@ describe("runTmpRoot", () => {
       const floor = getDefaultSensitiveWriteDenyPaths();
       const inRun = join(runTmpRoot(platform), "t-AbC123", "scratch-file");
       expect(floor.filter((denied) => isGrantPathWithin(denied, inRun))).toEqual([]);
-      // The check finds a floor where there is one.
       expect(floor.some((denied) => isGrantPathWithin(denied, join(homedir(), ".ssh", "x")))).toBe(true);
     } finally {
       Object.defineProperty(process, "platform", realPlatform);
@@ -591,12 +563,10 @@ describe("runTmpRoot", () => {
     ensureRunTmpRoot(root);
     const sharedTmp = realpathSync(POSIX_SHARED_TMP);
     expect(isGrantPathWithin(sharedTmp, realpathSync(root))).toBe(true);
-    // Where it was: outside that grant, so a confined write there failed.
     expect(isGrantPathWithin(sharedTmp, join(homedir(), ".ave", "test-tmp", "t-AbC123"))).toBe(false);
   });
 
-  // The other-account refusal needs a directory another uid owns, which only
-  // root can make; it is not exercised here.
+  // Testing foreign ownership requires another uid's directory and is not covered here.
   it("is refused when it is a link, and made owner-only", () => {
     const parent = scratch();
     const elsewhere = scratch();

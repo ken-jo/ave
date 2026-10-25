@@ -1,10 +1,4 @@
-/**
- * Routine result card lifecycle.
- *
- * onRoutineFired delivery + dismiss IPC, and the result-view action wiring
- * for routine results that carry a session id. Routines deliberately have no
- * snooze action — see the rationale in OverlayCard.tsx / OverlayContext.tsx.
- */
+// Routine results can dismiss or open their session; snooze is excluded by the overlay contract.
 import "./setup.js";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { act, fireEvent, waitFor } from "@testing-library/react";
@@ -23,9 +17,7 @@ function makeRoutineResult() {
 }
 
 
-// Routine cards are addressed to the dedicated Suggestions conversation, so
-// these tests open it in the window's tile; the last test checks the card
-// stays out of any other conversation.
+// Open Suggestions because routine cards must not appear in unrelated conversations.
 describe("Routine flow (Phase 3.3 regression net)", () => {
   it("onRoutineFired renders the OverlayCard", async () => {
     const { container, emitRoutineFired } = await renderApp({ currentSession: SUGGESTIONS_SESSION_ID });
@@ -101,7 +93,6 @@ describe("Routine flow (Phase 3.3 regression net)", () => {
       return el;
     });
 
-    // Click the 닫기 button to dismiss the routine card.
     const closeBtn = Array.from(card.querySelectorAll("button")).find(
       (b) => b.textContent?.trim() === "닫기",
     ) as HTMLButtonElement | undefined;
@@ -114,9 +105,7 @@ describe("Routine flow (Phase 3.3 regression net)", () => {
     });
   });
 
-  // Asserts the negative too: no `routine-card-snooze-trigger` is rendered.
-  // Snooze was dropped on UX grounds (OverlayContext.tsx / OverlayCard.tsx),
-  // so its reappearance is a regression, not a feature.
+  // Snooze must stay absent; see the overlay contract for its rationale.
   it("renders the result-view action for routines with a session id", async () => {
     const { container, api, emitRoutineFired } = await renderApp({ currentSession: SUGGESTIONS_SESSION_ID });
     await act(async () => {
@@ -206,10 +195,7 @@ describe("Routine flow (Phase 3.3 regression net)", () => {
       await Promise.resolve();
     });
 
-    // A routine card opening its session takes the same route the sidebar does:
-    // the running conversation is not swapped out — the routine's gets a group
-    // of its own — so the card's primary action works mid-turn instead of
-    // dropping the click.
+    // Opening a routine session creates its own group so it remains available during another turn.
     await waitFor(() => expect(api.chatSessionResume).toHaveBeenCalledWith("routine-session-1"));
     await waitFor(() => expect(api.acknowledgeRoutineResult).toHaveBeenCalled());
 
@@ -247,7 +233,6 @@ describe("Routine flow (Phase 3.3 regression net)", () => {
     await waitFor(() => {
       expect(container.textContent).toContain("v2");
       expect(container.textContent).not.toContain("v1");
-      // Single card → no indicator rendered.
       expect(container.querySelector('[data-testid="routine-card-indicator"]')).toBeFalsy();
     });
   });

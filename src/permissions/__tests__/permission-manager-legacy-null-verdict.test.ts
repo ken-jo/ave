@@ -1,22 +1,10 @@
-/**
- * Regression test for the fail-closed gate against legacy
- * user-approval entries with `verdictAtApproval: null`.
- *
- * Earlier the user-approval entry shape did not have a
- * `verdictAtApproval` field. A naive `?? "medium"` coerce on read would
- * have turned every such legacy entry into a medium-risk memory hit —
- * fail-permissive for inputs whose original verdict was HIGH. The
- * fail-closed gate rejects the memory hit and forces a fresh approval
- * flow when `verdictAtApproval == null`. This file is the regression
- * guard for that gate.
- */
+// Regression test for the fail-closed gate against legacy user-approval entries with `verdictAtApproval: null`. Earlier the user-approval entry shape did not have a `verdictAtApproval` field. A naive `?? "medium"` coerce on read would have turned every such legacy entry into a medium-risk memory hit — fail-permissive for inputs whose original verdict was HIGH. The fail-closed gate rejects the memory hit and forces a fresh approval flow when `verdictAtApproval == null`. This file is the regression guard for that gate.
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { canonicalizePathForMatch, caseFoldForMatch } from "../sensitive-paths.js";
 
-// vi.mock must be at top level (hoisted). We feed the mock from a
-// per-test setter so each case can shape the lookup result.
+// vi.mock must be at top level (hoisted). We feed the mock from a per-test setter so each case can shape the lookup result.
 let mockLookupResult: unknown = null;
 let useActualApprovalStore = false;
 const { emitSandboxAuditMock } = vi.hoisted(() => ({
@@ -136,8 +124,7 @@ describe("PermissionManager — scoped approval memory with a separate risk ceil
         },
       });
 
-      // The exact tuple still matches, but the current scope no longer admits
-      // this target. The deterministic HIGH must survive memory composition.
+      // The exact tuple still matches, but the current scope no longer admits this target. The deterministic HIGH must survive memory composition.
       const escalated = await pm.dispatchReviewer("write_file", {
         ...input, allowedDirectories: [],
       }, undefined, { defer: "none" });
@@ -292,9 +279,7 @@ describe("PermissionManager — fail-closed gate against legacy null-verdict ent
     const broadcast = vi.fn();
     pm.setBroadcastUserApprovalHit(broadcast);
 
-    // Legacy entry — verdictAtApproval is null (the field was absent at
-    // the time of recording, so the store returns null for pre-existing
-    // entries).
+    // Legacy entry — verdictAtApproval is null (the field was absent at the time of recording, so the store returns null for pre-existing entries).
     mockLookupResult = {
       scope: "persistent",
       verdictAtApproval: null,
@@ -315,8 +300,7 @@ describe("PermissionManager — fail-closed gate against legacy null-verdict ent
 
     expect(broadcast).not.toHaveBeenCalled();
     expect(warnSpy).toHaveBeenCalled();
-    // Stable structured marker (2nd arg) — survives i18n / wording changes
-    // (cluster review S-Med-1 + C-Med-4).
+    // Stable structured marker (2nd arg) — survives i18n / wording changes (cluster review S-Med-1 + C-Med-4).
     const warnCalls = warnSpy.mock.calls;
     const legacyCall = warnCalls.find((args: unknown[]) => {
       const marker = args[1];
@@ -368,7 +352,6 @@ describe("PermissionManager — fail-closed gate against legacy null-verdict ent
       | undefined;
     expect(auditEntry?.reviewer.llmVerdict).toBeNull();
     expect(auditEntry?.reviewer.userApprovalUsed?.memoryHit).toBe(true);
-    // Sanity: the warn path is NOT triggered for valid entries.
     const warnedLegacy = warnSpy.mock.calls.some(
       (args: unknown[]) =>
         typeof args[0] === "string" &&
@@ -412,9 +395,7 @@ describe("PermissionManager — fail-closed gate against legacy null-verdict ent
     const pm = new PermissionManager(tmpFile("permissions.json"));
     const classifier = new LlmRiskClassifier(
       {
-        // The LLM ESCALATES: a rule-HIGH probe would be composition-pinned
-        // and never reach the provider, so verdict separation is shown on a
-        // non-HIGH rule verdict with a disagreeing (higher) LLM verdict.
+        // The LLM ESCALATES: a rule-HIGH probe would be composition-pinned and never reach the provider, so verdict separation is shown on a non-HIGH rule verdict with a disagreeing (higher) LLM verdict.
         complete: vi.fn(async () => ({
           text: '{"level":"high","reason":"llm escalates"}',
           tokensIn: 1,
@@ -433,8 +414,7 @@ describe("PermissionManager — fail-closed gate against legacy null-verdict ent
       category: "write",
       pathFields: ["path"],
       finalInput: { path: "/Users/example/work/audit-probe.md" },
-      // Canonicalized like the executor lane does — the classifier's
-      // containment compare is over canonical case-folded strings.
+      // Canonicalized like the executor lane does — the classifier's containment compare is over canonical case-folded strings.
       allowedDirectories: [caseFoldForMatch(canonicalizePathForMatch("/Users/example/work"))],
       executionCwd: process.cwd(),
       sensitivePathsAdjacent: [],

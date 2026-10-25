@@ -1,7 +1,3 @@
-/**
- * SessionGoalStore — upsert semantics, the revival budget, and the sidecar
- * round trip that makes the budget survive a restart.
- */
 import { describe, expect, it } from "vitest";
 import {
   SessionGoalMissingError,
@@ -50,8 +46,7 @@ describe("SessionGoalStore", () => {
     expect((await store.set(SESSION, "second")).status).toBe("running");
   });
 
-  // Refused BEFORE any await, like SessionTasksStore's index errors: the
-  // caller learns the input is wrong without a sidecar round trip.
+  // Refused BEFORE any await, like SessionTasksStore's index errors: the caller learns the input is wrong without a sidecar round trip.
   it("refuses empty and oversized goal text", () => {
     const { store } = memoryStore();
     expect(() => store.set(SESSION, "   ")).toThrow(SessionGoalTextError);

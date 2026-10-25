@@ -6,14 +6,13 @@ export interface A2ARemoteGateSnapshot {
   receiverProfile: boolean;
 }
 
-/** Boot-only immutable snapshot; neither gate widens the ph3 loopback gate. */
+// Boot-only immutable snapshot; neither gate widens loopback access.
 export function snapshotA2ARemoteGates(
   settings: Pick<SettingsService, "get">,
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): Readonly<A2ARemoteGateSnapshot> {
   const features = settings.get("features");
-  // Same rule, same registry, same fail-closed `=== true` as the loopback
-  // gates in local-api-server.ts — see resolveLoopbackRouteFamilies.
+  // Same rule, same registry, same fail-closed `=== true` as the loopback gates in local-api-server.ts — see resolveLoopbackRouteFamilies.
   return Object.freeze({
     outboundRouting: resolveEnvBackedBoolean(
       "features.a2aRemoteRouting",

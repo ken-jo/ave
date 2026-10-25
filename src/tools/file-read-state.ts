@@ -1,14 +1,5 @@
-/**
- * Per-session record of which files `read_file` showed to the model, used by
- * the file edit tools to refuse an overwrite the model has not seen.
- *
- * An edit is admitted only when the file's current bytes hash to the value
- * recorded at the last read (or at the tool's own last write). The hash is the
- * authority; the modification time is kept so a refusal can say when the file
- * changed. Records live in memory only: a restarted app or a session evicted
- * from the bounded table simply asks the model to read again, which is the
- * safe direction.
- */
+// Permit session edits only when current bytes match the last read or tool write; timestamps explain refusals, never authorize.
+// Records are bounded and memory-only, so eviction or restart safely requires another read.
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { realpath } from "node:fs/promises";
@@ -17,11 +8,7 @@ import { basename, dirname, join } from "node:path";
 export interface FileReadRecord {
   readonly mtimeMs: number;
   readonly size: number;
-  /**
-   * Null for a read inside the disposable workload: the host sees only the
-   * returned window, so it can confirm that a read happened but not that the
-   * file is unchanged since.
-   */
+  // Workload reads expose only a window, so the host cannot verify unchanged bytes.
   readonly sha256: string | null;
 }
 
@@ -46,11 +33,7 @@ function touchSession(sessionId: string): Map<string, FileReadRecord> {
   return records;
 }
 
-/**
- * Key for a target path. Symlinks and case-insensitive spellings resolve to
- * the same file, so a read through one spelling admits an edit through
- * another. A path that does not exist yet keys by its resolved parent.
- */
+// Canonicalize aliases to one file identity; missing targets use the resolved parent.
 export async function fileReadKey(path: string): Promise<string> {
   try {
     return await realpath(path);
@@ -87,7 +70,6 @@ export function forgetFileRead(sessionId: string, key: string): void {
   sessions.get(sessionId)?.delete(key);
 }
 
-/** Drop every record of a session that has ended. */
 export function disposeSessionFileReads(sessionId: string): void {
   sessions.delete(sessionId);
 }
@@ -96,11 +78,7 @@ export function sha256Hex(bytes: Buffer | string): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-/**
- * One streaming pass over a file: its SHA-256 and its logical line count,
- * counting `\n`, `\r\n` and a lone `\r` as separators the way the line-window
- * reader does.
- */
+// Count CR, LF, and CRLF consistently with the line-window reader while hashing in one pass.
 export async function hashAndCountLines(path: string): Promise<{ sha256: string; lineCount: number; size: number }> {
   const hash = createHash("sha256");
   let separators = 0;

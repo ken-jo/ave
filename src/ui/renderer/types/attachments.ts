@@ -1,31 +1,15 @@
-/**
- * Composer attachment data model.
- *
- * The composer's textarea is the single source of truth: attachments are
- * derived from markers in the body text via parseMarkers(). Each attachment
- * carries a stable `n` (display number) that is never reassigned even if a
- * lower-numbered attachment is removed — the body marker [Image #2] must
- * always refer to the same payload.
- */
+/** Textarea markers are authoritative; attachment numbers remain stable after lower-numbered attachments are removed. */
 
-/**
- * Renderer compatibility name for the shared composer input capacity.
- * The main-process picker and subscription transport consume the same limit.
- */
+/** Renderer compatibility name for the shared composer input capacity. The main-process picker and subscription transport
+ * consume the same limit. */
 export { MAX_COMPOSER_ATTACHMENT_COUNT as ATTACH_MAX_COUNT } from "../../../shared/composer-image-input.js";
 
-/**
- * Longest pasted text that goes into the composer verbatim, line breaks and
- * all. Anything longer becomes a pasted-text chip (its marker stays in the
- * body), and the chip shows the original text when opened.
- */
+/** Longest pasted text that goes into the composer verbatim, line breaks and all. Anything longer becomes a pasted-text
+ * chip (its marker stays in the body), and the chip shows the original text when opened. */
 export const PASTE_INLINE_MAX_CHARS = 500;
 
-/**
- * Largest text another surface may hand the composer as one pasted-text chip
- * (`attachPastedText`, e.g. a terminal block). Longer text keeps its start and
- * its end — where a command's error usually is — and the user is told.
- */
+/** Largest text another surface may hand the composer as one pasted-text chip (`attachPastedText`, e.g. a terminal block).
+ * Longer text keeps its start and its end — where a command's error usually is — and the user is told. */
 export const PASTE_TEXT_MAX_CHARS = 128 * 1024;
 
 /**
@@ -36,10 +20,8 @@ export const PASTE_TEXT_MAX_CHARS = 128 * 1024;
  */
 export const PATH_COLLAPSE_THRESHOLD = 10;
 
-/**
- * Extensions that are unconditionally rejected by the file picker.
- * Lowercase comparison; users see a non-blocking error toast on attempt.
- */
+/** Extensions that are unconditionally rejected by the file picker. Lowercase comparison; users see a non-blocking error
+ * toast on attempt. */
 export { DENY_EXTENSIONS } from "../../../shared/attachments-deny-list.js";
 
 export interface ImageAttachment {
@@ -63,11 +45,8 @@ export interface FileAttachment {
   name: string;
   ext: string;
   bytes: number;
-  /**
-   * True for an `@file` mention: a path reference the model reads through
-   * read_file. Not in main's attach allowlist, so the chip offers no
-   * open-in-OS action for it.
-   */
+  /** True for an `@file` mention: a path reference the model reads through read_file. Not in main's attach allowlist, so the
+   * chip offers no open-in-OS action for it. */
   reference?: true;
 }
 
@@ -80,19 +59,8 @@ export interface PasteAttachment {
   chars: number;
 }
 
-/**
- * An MCP server resource the user attached with an `@server:uri` mention.
- *
- * `text` is the fenced block the HOST built and handed back — server-authored content
- * inside the host's own untrusted framing. The renderer never assembles or edits it,
- * and never inspects it: it stores the string and passes it back verbatim.
- *
- * It follows the IMAGE model, not the paste model, and that is the load-bearing choice
- * in this whole surface. A paste marker is replaced INLINE in the body at send time, so
- * a resource built that way would ride inside the user's own message text — the one
- * field the per-turn bound does not measure (see `mcp-resource-bounds.ts`). As an image
- * does, the marker stays in the body and the payload leaves as its own content part.
- */
+/** Keep resource markers in the body and host-built fences verbatim in separate content parts; inlining server text would
+ * bypass main's per-turn resource bound. */
 export interface ResourceAttachment {
   id: string;
   n: number;

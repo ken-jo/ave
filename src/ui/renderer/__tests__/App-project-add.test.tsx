@@ -1,11 +1,5 @@
 // @vitest-environment jsdom
-/**
- * The two ways "add a project" used to end in nothing visible happening.
- *
- * Both are driven through the real App tree because neither is observable in a
- * component test: the refusal has to reach the App-owned toast queue, and the
- * activation has to survive App's own project reconciliation.
- */
+/** Drive refused-add toasts and post-add project activation through App; component-only tests cannot exercise either owner. */
 import "../../../../test/renderer/setup.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, waitFor } from "@testing-library/react";
@@ -86,11 +80,8 @@ describe("App add-project flow", () => {
     expect(toasts.map((node) => node.textContent).join(" ").trim().length).toBeGreaterThan(0);
   });
 
-  /**
-   * A settings file main could not fully read reaches the user here or nowhere:
-   * the project list is the only surface that would otherwise render the gap as
-   * an ordinary absence of projects.
-   */
+  /** A settings file main could not fully read reaches the user here or nowhere: the project list is the only surface that
+   * would otherwise render the gap as an ordinary absence of projects. */
   it("says the settings file could not be read instead of drawing an empty project list", async () => {
     const { findAllByTestId } = mountApp(
       { ok: true },
@@ -114,8 +105,7 @@ describe("App add-project flow", () => {
 
     const toasts = await findAllByTestId("status-toast-message");
     expect(toasts.map((node) => node.textContent).join(" ")).toContain("삭제 대기 항목");
-    // The roots were readable, so they are still offered — the warning is about
-    // the part of the file that was not.
+    // The roots were readable, so they are still offered — the warning is about the part of the file that was not.
     await waitFor(() => expect(getByTestId("composer-project-selector-trigger")).toBeTruthy());
     openSelector(getByTestId);
     await waitFor(() =>
@@ -131,9 +121,8 @@ describe("App add-project flow", () => {
     });
     await clickAddProject(getByTestId);
 
-    // The list this renderer knew at click time did NOT contain the new folder —
-    // the refresh has not re-rendered the callback yet — so this is exactly the
-    // case that used to be replaced by the default project.
+    // The callback still holds the old project list while refresh is in flight; the explicit new folder must survive
+    // reconciliation.
     await waitFor(() =>
       expect(api.chatNew).toHaveBeenCalledWith({ projectRoot: ADDED_ROOT, projectName: "beta" }),
     );

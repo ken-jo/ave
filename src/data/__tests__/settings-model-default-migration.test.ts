@@ -18,7 +18,7 @@ vi.mock("../../engine/llm/provider-factory.js", () => ({
   secretKeyFor: (vendor: string) => `llm.apiKey.${vendor}`,
 }));
 
-// Frozen independently of live defaults: the values removed by 26ab8c776.
+// Keep migration fixtures independent of live defaults.
 const REMOVED_DEFAULTS: readonly (readonly [LLMVendor, string])[] = [
   ["claude", "claude-sonnet-4-6"],
   ["openai", "gpt-5.4-mini"],
@@ -132,7 +132,7 @@ describe("stored built-in default model migration", () => {
 
   it.each(["user-choice", " market-default "])("keeps a different stored market value %s and marks the preset", async (model) => {
     const service = load(marketProfile([marketPreset], model));
-    // Existing model-slot normalization trims stored ids; comparison must precede it.
+    // Compare stored model ids before normalization trims them.
     expect(marketModel(service)).toBe(model.trim());
     await service.patch({});
     expect(JSON.parse(readFileSync(path, "utf8")).appliedMigrations).toContain(marketMarker(marketPreset.providerId));
@@ -145,7 +145,6 @@ describe("stored built-in default model migration", () => {
     await service.patch({});
     expect(marketModel(service)).toBe(before);
     expect(service.get("appliedMigrations")).not.toContain(marketMarker(marketPreset.providerId));
-    // Resolving another id must not finish the still-unknown one.
     await service.installMarketplaceProviderPreset({ ...marketPreset, providerId: "other-market-router" });
     expect(marketModel(load())).toBe(before);
     const markers = JSON.parse(readFileSync(path, "utf8")).appliedMigrations;
@@ -285,7 +284,7 @@ describe("stored built-in default model migration", () => {
     const configured = buildProvider(deps)!;
     vi.useFakeTimers();
     const request = (async () => {
-      for await (const _event of configured.streamTurn({ model: "chosen-model", systemPrompt: "system", messages: [], tools: [] })) { /* exhaust retries */ }
+      for await (const _event of configured.streamTurn({ model: "chosen-model", systemPrompt: "system", messages: [], tools: [] })) {  }
     })();
     const rejected = expect(request).rejects.toThrow("503 unavailable");
     await vi.runAllTimersAsync();

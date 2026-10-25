@@ -1,9 +1,3 @@
-/**
- * RoutinesScheduler v2 — unit tests.
- *
- * Tests polling (checkAndFire), dispatch branch (llm-session vs notification-only),
- * cron lastFiredMinuteUTC dedup persistence, and dispatchNow (trigger-now IPC path).
- */
 import { describe, it, expect, vi } from "vitest";
 import { RoutinesScheduler } from "../routines-scheduler.js";
 import { futureIso, tempRoutinesStore, pastIso } from "./routines-fixture.js";

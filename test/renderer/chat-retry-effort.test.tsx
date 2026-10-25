@@ -1,10 +1,4 @@
-/**
- * Phase 3.2 safety net — retry (high-effort) on assistant messages.
- *
- * Verifies chatRetryEffort IPC is called with the thinking budget, that
- * previous entries are restored on failure, and that on success the
- * streaming path replaces the prior assistant entry.
- */
+// Verify retry effort dispatch, failure rollback and successful stream replacement.
 import "./setup.js";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { act, fireEvent, waitFor } from "@testing-library/react";
@@ -53,7 +47,7 @@ describe("Chat retry (Phase 3.2 regression net)", () => {
       thinkingBudgetTokens?: number;
     };
     expect(arg?.enableThinking).toBe(true);
-    // The host resolves the latest active provider's ceiling when retry starts.
+    // Resolve the active provider's ceiling when retry begins.
     expect(arg).toEqual({ enableThinking: true });
   });
 
@@ -102,7 +96,6 @@ describe("Chat retry (Phase 3.2 regression net)", () => {
     });
     await waitFor(() => expect(api.chatRetryEffort).toHaveBeenCalled());
     await waitFor(() => {
-      // Prior assistant text remains visible and the failure is surfaced.
       expect(container.textContent).toContain("Hello from Ave");
       expect(container.textContent).toMatch(/재시도 실패|rate-limited/);
     });
@@ -131,7 +124,7 @@ describe("Chat retry (Phase 3.2 regression net)", () => {
 
     await waitFor(() => expect(api.chatRetryEffort).toHaveBeenCalled());
     await act(async () => {
-      // Exercise the stream-first ordering used by the main-process DLP notice.
+      // Cover stream-first delivery of the host DLP notice.
       emitChatStream({ type: "redact_notice", count: 1, byKind: { PHONE_KR: 1 } });
     });
     await waitFor(() => expect(container.textContent).toContain("PII 1"));

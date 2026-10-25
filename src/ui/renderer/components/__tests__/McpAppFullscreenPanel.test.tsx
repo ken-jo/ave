@@ -1,13 +1,5 @@
 // @vitest-environment jsdom
-/**
- * McpAppFullscreenPanel — `fullscreen` is a surface INSIDE the renderer.
- *
- * The load-bearing claim, and the one a regression would silently undo: an app that
- * asks for `fullscreen` gets a live card in this panel and NO second window. The
- * producer-driven case below drives the real `onrequestdisplaymode` handler with the
- * real deps McpAppView seeds its bridge with, so it fails if either half of the wiring
- * (the handler's allow-list, or McpAppView's applier) stops routing `fullscreen` here.
- */
+/** Drive the real display-mode handler and applier so fullscreen remains in-renderer and cannot open a second window. */
 import "../../../../../test/renderer/setup.js";
 import { render, waitFor, act, fireEvent } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -35,7 +27,6 @@ const readUiResource = vi.fn(async (serverId: string) => ({
   html: "<html><body>card</body></html>",
 }));
 const disposeUiSession = vi.fn();
-
 
 /** The display-mode halves (5th arg) of the Nth createMcpAppBridge call. */
 function displayDeps(index: number) {
@@ -129,8 +120,7 @@ describe("McpAppFullscreenPanel — the fullscreen slot's surface", () => {
 
 describe("McpAppFullscreenPanel — driven by the app, through the real request handler", () => {
   it("an app requesting `fullscreen` is answered `fullscreen` and takes over IN THIS RENDERER", async () => {
-    // Production topology: a transcript HOME mount plus the two away surfaces, exactly
-    // as the main content region mounts them.
+    // Production topology: a transcript HOME mount plus the two away surfaces, exactly as the main content region mounts them.
     const home = render(<McpAppView payload={payload("github")} />, { wrapper: ThemeWrapper });
     await waitFor(() => expect(webviewNodes(home.container)).toHaveLength(1));
     const panels = render(

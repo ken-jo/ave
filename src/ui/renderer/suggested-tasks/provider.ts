@@ -1,26 +1,9 @@
-/**
- * Suggested tasks — the cards an empty conversation shows above the composer.
- *
- * The UI never knows where suggestions come from: it asks a
- * {@link SuggestedTasksProvider} for an async list. Today the only provider is
- * the fixed, localized {@link staticSuggestedTasksProvider}. A later provider
- * (for example one backed by a main-process agent that reads the user's
- * connected plugins, reached over IPC) is added by implementing the same
- * interface and composing it with {@link mergeSuggestedTasksProviders} at the
- * point the provider is installed (`SuggestedTasksProviderContext`) — the
- * empty-state UI does not change.
- *
- * Host-generic by construction: a task is data (`title`, `prompt`, `source`,
- * an icon from a closed vocabulary). No provider or plugin id is interpreted
- * by the UI beyond display.
- */
+/** Suggestion providers compose behind one async interface so empty-state UI stays independent of the source. */
 import type { Locale } from "../../../i18n/locale.js";
 import type { TranslateFn } from "../../../i18n/translate.js";
 
-/**
- * Icons a task may ask for. A closed set so a provider cannot make the UI
- * load arbitrary assets; anything else renders the generic icon.
- */
+/** Icons a task may ask for. A closed set so a provider cannot make the UI load arbitrary assets; anything else renders the
+ * generic icon. */
 const SUGGESTED_TASK_ICONS = ["globe", "terminal", "file", "search", "sparkles"] as const;
 export type SuggestedTaskIcon = (typeof SUGGESTED_TASK_ICONS)[number];
 
@@ -50,10 +33,7 @@ export interface SuggestedTasksProvider {
   list(request: SuggestedTasksRequest): Promise<readonly SuggestedTask[]>;
 }
 
-/**
- * Fixed starter set, aligned with what Ave does: web, terminal, files.
- * Keys are spelled out (not built from the id) so the i18n key gates see them.
- */
+/** Spell out starter-task translation keys so catalog gates can discover them. */
 const STATIC_TASKS: ReadonlyArray<{ id: string; icon: SuggestedTaskIcon; titleKey: string; promptKey: string }> = [
   { id: "web-research", icon: "globe", titleKey: "suggestedTasks.webResearchTitle", promptKey: "suggestedTasks.webResearchPrompt" },
   { id: "web-summarize-page", icon: "search", titleKey: "suggestedTasks.webSummarizePageTitle", promptKey: "suggestedTasks.webSummarizePagePrompt" },

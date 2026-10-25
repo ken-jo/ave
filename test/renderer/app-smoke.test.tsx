@@ -1,9 +1,3 @@
-/**
- * Phase 1 renderer split — App smoke tests.
- *
- * These prove the test infrastructure (jsdom + RTL + mock aveApi) works
- * end-to-end so Phase 2-4 hook extractions have a safety net.
- */
 import "./setup.js";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { act, fireEvent, waitFor } from "@testing-library/react";
@@ -25,7 +19,7 @@ describe("App smoke (Phase 1 infra)", () => {
   });
 
   it("OverlayCard appears when onRoutineFired fires", async () => {
-    // Routine cards are addressed to the Suggestions conversation; it is the one open here.
+    // Routine cards belong to Suggestions; open that conversation for this fixture.
     const { container, emitRoutineFired } = await renderApp({ currentSession: SUGGESTIONS_SESSION_ID });
     await act(async () => {
       emitRoutineFired({
@@ -58,8 +52,7 @@ describe("App smoke (Phase 1 infra)", () => {
     await waitFor(() => expect(api.getSettings).toHaveBeenCalled());
     await waitFor(() => expect(container.textContent).toContain("API 키 설정 필요"));
 
-    // The prompt is a chip in the composer strip now, not a transcript card, so
-    // "설정 열기" lives one click deep inside its popover (rendered in a portal).
+    // Open the chip popover to reach settings; the action is not a transcript card.
     const chip = container.querySelector<HTMLElement>('[data-testid="composer-api-key-chip"]');
     expect(chip).toBeTruthy();
     await act(async () => {
@@ -77,8 +70,6 @@ describe("App smoke (Phase 1 infra)", () => {
       fireEvent.click(settingsButton);
     });
 
-    // Default appMode is "work" — Settings renders inline in the main area
-    // through the same setActiveView + main-content-region path as the other views.
     await waitFor(() =>
       expect(container.querySelector("[data-settings-layout]")).toBeTruthy(),
     );
@@ -117,14 +108,11 @@ describe("App smoke (Phase 1 infra)", () => {
       });
     });
 
-    // The header carries the conversation's line and the tile controls only —
-    // no activity control hangs off it.
     const header = container.querySelector('[data-testid="pane-header"]');
     expect(header).toBeTruthy();
     expect(header?.textContent).not.toContain("도구 활동");
     expect(container.querySelector('[data-testid="tool-activity-open-tab"]')).toBeFalsy();
 
-    // Open the work panel: its empty launcher carries the compact report.
     await act(async () => {
       fireEvent.click(container.querySelector(testIdSelector(TEST_IDS.panePanelToggle))!);
     });
@@ -138,7 +126,6 @@ describe("App smoke (Phase 1 infra)", () => {
     expect(launcherActivity.textContent).toContain("호출한 도구");
     expect(launcherActivity.querySelector('[data-testid^="tool-activity-item-read:t1:"]')?.textContent).toContain("readme.md");
 
-    // Its way to the full lists is the activity tab.
     await act(async () => {
       fireEvent.click(launcherActivity.querySelector('[data-testid="tool-activity-open-tab"]')!);
     });
@@ -178,8 +165,7 @@ describe("App smoke (Phase 1 infra)", () => {
     });
     await waitFor(() => expect(windowApi.resizeForSidePanel).toHaveBeenCalledWith(false));
 
-    // The toggle points along the panel's axis: the panel opens BESIDE the
-    // transcript, so the icon is the right-panel pair, not the bottom one.
+    // Toggle direction follows the panel's horizontal axis.
     const panelToggle = () => container.querySelector(testIdSelector(TEST_IDS.panePanelToggle))!;
     expect(panelToggle().querySelector("svg.lucide-panel-right-open")).toBeTruthy();
 
@@ -213,24 +199,19 @@ describe("App smoke (Phase 1 infra)", () => {
     const { container, api } = await renderApp();
     await waitFor(() => expect(api.getSettings).toHaveBeenCalled());
 
-    // Open it on the chat surface, where the conversation that owns it is.
     await act(async () => {
       fireEvent.click(container.querySelector(testIdSelector(TEST_IDS.panePanelToggle))!);
     });
     await waitFor(() => expect(container.querySelector(testIdSelector(TEST_IDS.chatSidePanel))).toBeTruthy());
 
-    // Leaving for a view with no conversation takes the panel AND its toggle
-    // with it — the panel reports on a conversation, and Settings is not one.
+    // Views without a conversation hide its work panel and toggle.
     await act(async () => {
       fireEvent.click(container.querySelector('[data-testid="sidebar-settings"]')!);
     });
     await waitFor(() =>
       expect(container.querySelector("[data-settings-layout]")).toBeTruthy(),
     );
-    // Hidden with its conversation, not unmounted: a tile subscribes to its
-    // group's stream when it mounts, so tearing the surface down for Settings
-    // would drop the frames of a turn still running. The panel and its toggle
-    // go away with the surface that owns them.
+    // Hide conversation surfaces without unmounting so running turns keep their stream subscription.
     expect(
       container.querySelector('[data-testid="chat-surface"]')?.getAttribute("data-visible"),
     ).toBe("false");
@@ -238,8 +219,6 @@ describe("App smoke (Phase 1 infra)", () => {
       container.querySelector(testIdSelector(TEST_IDS.chatSidePanel))?.closest('[data-testid="chat-surface"]'),
     ).toBeTruthy();
 
-    // Coming back restores it — the state rode with the group, not with the
-    // window, so it did not have to be re-opened.
     await act(async () => {
       fireEvent.click(container.querySelector('[data-testid="sidebar-new-chat"]')!);
     });
@@ -279,24 +258,20 @@ describe("Settings inline (all modes)", () => {
       fireEvent.click(sidebarSettings!);
     });
 
-    // Inline render via setActiveView + the main content region.
     await waitFor(() =>
       expect(container.querySelector("[data-settings-layout]")).toBeTruthy(),
     );
-    // Sidebar item shows ACTIVE state (aria-current=page) while inline.
     expect(
       container
         .querySelector('[data-testid="sidebar-settings"]')
         ?.getAttribute("aria-current"),
     ).toBe("page");
 
-    // Re-clicking while already on settings is a no-op (view stays mounted).
     await act(async () => {
       fireEvent.click(container.querySelector('[data-testid="sidebar-settings"]')!);
     });
     expect(container.querySelector("[data-settings-layout]")).toBeTruthy();
 
-    // The app-level navbar returns to the prior/home view.
     await act(async () => {
       fireEvent.click(container.querySelector(testIdSelector(TEST_IDS.viewPathBack))!);
     });
@@ -316,7 +291,6 @@ describe("Settings inline (all modes)", () => {
       fireEvent.click(container.querySelector('[data-testid="sidebar-settings"]')!);
     });
 
-    // Settings is an always-inline panel in every app mode.
     await waitFor(() =>
       expect(container.querySelector("[data-settings-layout]")).toBeTruthy(),
     );

@@ -3,80 +3,32 @@ import { openInlineSettings } from '../e2e/ui/inline-settings.js';
 import { expect, type CaptureViewport, type ScriptedScript } from './fixtures.js';
 import { VIEW_FIXTURE_ID } from '../fixtures/e2e-plugins/view-fixture.js';
 
-/**
- * Data-driven scenario matrix: one entry per docs-site screenshot key. The
- * docs site currently publishes no captures; these keys are kept for its renewal.
- *
- * Each entry is either:
- *   - capturable: `steps` navigates/injects state, `locator` (optional)
- *     scopes the capture to one element; omitted `locator` captures the
- *     full window.
- *   - `skip: "<reason>"`: honest skip — the harness cannot realistically
- *     seed this state today. See README.md "Capture coverage" for the categorized
- *     rationale (live OAuth, real STT, external signals, etc). Keys outside
- *     this harness entirely are listed at the bottom of this file.
- *
- * Each key maps 1:1 to an output filename `<key>.png`; the keys are kept so a
- * future docs-site capture set can reuse them.
- */
+// Keep one scenario per documentation key, with explicit steps or an honest skip reason.
 export interface ScenarioContext {
   app: ElectronApplication;
   page: Page;
 }
 
 export interface ScenarioEntry {
-  /** docs-site topic, for readability and grouping. */
   topic: string;
-  /** Element to crop the capture to. Full-window screenshot if omitted. */
+  // Omitted crop targets capture the full window.
   locator?: string;
-  /**
-   * Ids of in-repository fixture plugins to install before launch (e.g.
-   * `['viewfixture']`) — see `plugin-seed.ts`. Omit for host-only scenarios.
-   */
+  // Omit plugins for host-only captures.
   plugins?: readonly string[];
-  /**
-   * Keep the LLM permission reviewer ON for this scenario (default: it is
-   * disabled whenever `plugins` is set, so panel mount-time read tools don't
-   * open the approval dock). Set true only for `plugin-permission-grant`, whose
-   * capture target IS that approval dock.
-   */
+  // Keep review enabled only when its approval card is the capture subject.
   keepReviewer?: boolean;
-  /** Navigate/seed steps run before capture. Required unless `skip` is set. */
   steps?: (ctx: ScenarioContext) => Promise<void>;
-  /**
-   * Honest skip reason; `skip` wins over `steps` when both are present. An
-   * entry with neither is an incomplete entry and the spec fails it.
-   */
+  // Skip takes precedence; entries without either skip or steps fail.
   skip?: string;
-  /**
-   * Transcript for the harness's local scripted endpoint (see fixtures.ts
-   * "Scripted provider"), one entry per model call the scenario's `steps`
-   * cause. Set this and the app is launched pointing at that endpoint instead
-   * of a vendor it cannot reach; leave it unset for scenarios that never start
-   * a turn. The spec fails the capture when the endpoint refused a request it
-   * could not answer; a trailing turn the capture stopped before is not
-   * checked.
-   */
+  // One script entry answers each model call; refused requests fail the capture.
   scriptedScript?: ScriptedScript;
-  /** Reviewer mode for the isolated profile. Plugin scenarios leave this to
-   *  `plugin-seed.ts`, which already picks the mode their panel needs. */
+  // Plugin seeding owns reviewer mode unless overridden.
   reviewerMode?: 'disabled' | 'rule' | 'llm' | 'strict';
-  /**
-   * Permission execution mode for the isolated profile. Omit for the host
-   * default (`default`). `auto` is what routes a foreground shell/write/network
-   * call through the reviewer before the approval dock opens — see the option's
-   * JSDoc in fixtures.ts.
-   */
+  // Auto mode routes foreground tool calls through review before approval.
   executionMode?: 'default' | 'strict' | 'auto' | 'allow';
-  /** Fabricated files written under the isolated Ave home before launch. */
   seededCorpus?: Readonly<Record<string, string>>;
-  /** UI locale for this capture. The published docs images are Korean. */
   uiLocale?: 'ko' | 'en';
-  /**
-   * Window size for this capture. Omit for the harness default
-   * (`CAPTURE_VIEWPORT`, 1600x1000); set it for a key whose subject is a short
-   * transcript, which the default frames inside a lot of empty background.
-   */
+  // Override the default viewport when its empty space would make the subject too small.
   captureViewport?: CaptureViewport;
 }
 
@@ -88,63 +40,28 @@ async function openWorkMode(page: Page): Promise<void> {
   await page.locator('[data-testid="chat-view-root"]').first().waitFor({ state: 'visible', timeout: 15_000 });
 }
 
-/**
- * Open a seeded plugin's panel from the sidebar's plugin rail, then wait for
- * its UI bundle to render inside the plugin webview.
- *
- * The sidebar rail is the only DOM route left to a plugin panel: the composer's
- * command button opens a NATIVE Electron menu, which lives outside the page and
- * cannot be seen, driven, or screenshotted by Playwright. The rail's "plugins"
- * group opens a menu whose rows each carry
- * `data-viewkey="plugin:<pluginId>:<viewId>"` (Sidebar.tsx, `PluginNavItem`),
- * so a prefix match addresses a plugin without knowing its view id or its
- * localized display label, and works whether the rail is expanded or collapsed
- * (the collapsed square button carries the same attribute, only its text is
- * dropped). Clicking a row calls `handleViewSelectWithDoctor(viewKey)`, the
- * same handler the picker used to call; in WORK mode (the harness default) that
- * opens the panel INLINE via `setActiveView` in the main renderer, so the
- * webview mounts inside mainWindow and is screenshottable in either workspace
- * mode.
- *
- * The plugin UI loads inside an Electron <webview> (plugin-ui-host.tsx) whose
- * guest content is the plugin's real bundle served over `ave-plugin://asset`.
- * Playwright cannot pierce a <webview>'s guest document with `.locator`, so we
- * wait for the <webview> element to attach + finish loading and give the guest
- * a settle beat, then screenshot the host panel region (which contains it).
- *
- * @param pluginId the plugin's manifest id, e.g. `VIEW_FIXTURE_ID` (`viewfixture`).
- */
+// Open plugin panels through sidebar DOM; native command menus are outside the capture surface.
 async function openPluginPanel(page: Page, pluginId: string): Promise<void> {
   const deadline = Date.now() + 30_000;
   for (;;) {
     try {
       await selectPluginPanel(page, pluginId);
-      // The plugin panel host mounts a <webview>. Wait for it to attach and
-      // finish its first load; the guest bundle then renders its own DOM.
+      // Wait for guest attachment and first load before its bundle can render.
       await page.locator('webview').first().waitFor({ state: 'visible', timeout: 8_000 });
       break;
     } catch (err) {
-      // Re-selecting, rather than waiting longer, is what actually converges.
-      // A plugin whose `start()` has not resolved yet already opens a panel
-      // that waits, so the loop only has to cover a row that has not appeared
-      // in the rail yet on a cold profile.
+      // Retry row selection during cold plugin startup; longer waiting cannot select an absent row.
       if (Date.now() >= deadline) throw err;
     }
   }
-  // Give the guest bundle a settle beat to paint its initial (empty-state) UI
-  // after did-finish-load. No host-observable signal crosses the <webview>
-  // boundary, so a fixed settle is the pragmatic wait here.
+  // No host-visible guest-paint signal exists; allow a short settle after load.
   await page.waitForTimeout(2_500);
 }
 
-/** One walk of the sidebar rail to the named plugin's panel row. */
 async function selectPluginPanel(page: Page, pluginId: string): Promise<void> {
   await openWorkMode(page);
 
-  // Plugin rows live in the rail's "plugins" group, a popover menu portaled
-  // out of the sidebar (Sidebar.tsx, `NavGroup`): open the group, then pick the
-  // row inside that menu, so the match cannot land on another surface that
-  // carries the same `data-viewkey`.
+  // Scope selection to the portaled plugin-group menu to avoid matching another surface.
   await page.locator('[data-testid="primary-sidebar"] [data-testid="sidebar-group-plugins"]').first().click();
   const row = page
     .locator(`[data-testid="sidebar-group-plugins-menu"] [data-viewkey^="plugin:${pluginId}:"]`)
@@ -153,10 +70,6 @@ async function selectPluginPanel(page: Page, pluginId: string): Promise<void> {
   await row.click();
 }
 
-/**
- * Type one message into the composer and send it, starting a model turn
- * against the scripted endpoint.
- */
 async function sendChatMessage(page: Page, text: string): Promise<void> {
   const composer = page.locator('[data-testid="composer-textarea"]').first();
   await composer.waitFor({ state: 'visible', timeout: 15_000 });
@@ -165,8 +78,7 @@ async function sendChatMessage(page: Page, text: string): Promise<void> {
   await page.locator('[data-testid="composer-send-button"]').first().click();
 }
 
-/** Capture a host alert card through the production overlay channel.
- * Delivery and acknowledgement are exercised by the seeded alert E2E fixture. */
+// Inject through the production overlay path; seeded E2E coverage owns delivery and acknowledgement.
 async function pushAlertOverlay(
   app: ElectronApplication,
   page: Page,
@@ -184,7 +96,6 @@ async function pushAlertOverlay(
     summary: spec.summary,
     running: false,
     priority: 'normal',
-    // The ko string `be_pluginRuntime.overlayPrimaryActionLabel` resolves to.
     primaryActionLabel: '확인하기',
     pendingPrompt:
       `<imported-from-proactive source="overlay:alert-fixture--${spec.intent}">
@@ -196,26 +107,13 @@ ${spec.prompt}
     state: 'visible',
     timeout: 15_000,
   });
-  // The card opens with the summary clamped to two lines and a "더 보기" toggle.
-  // The published images are clamped too, but what they clamp away is the alert
-  // itself, so the frame ends up showing the feature without showing what it
-  // said. Expanding is a real state of the real card, reached by clicking the
-  // real control.
+  // Expand alert details so captures include the content.
   await page.locator('[data-testid="overlay-card-expand-toggle"]').first().click();
 }
 
-/**
- * Everything in the captures below is invented. It is written here rather than
- * read from anywhere on the capturing machine so a frame cannot pick up a real
- * name, path, or document by accident.
- */
+// Capture content must use synthetic identities, paths and documents.
 const SEEDED_NOTE_PATH = 'notes/reading-list.md';
-/**
- * A path deliberately outside the isolated profile's allowed scope, which is
- * exactly `cwd` plus the Ave home (`computeDefaultAllowedDirectories`). A read
- * of it therefore reaches the allowed-directory gate. Invented, and never
- * created — the capture is of the dialog, not of a successful read.
- */
+// This denied path is synthetic and must never be created.
 const FABRICATED_OUTSIDE_PATH =
   process.platform === 'win32'
     ? 'C:\\Users\\demo\\Documents\\reading-list.md'
@@ -241,15 +139,7 @@ const SEEDED_NOTE_BODY = [
   '',
 ].join('\n');
 
-/**
- * Declared alert presentation scenarios.
- *
- * The published images for these keys carry a real organiser, real attendee
- * addresses and, on one, an opaque calendar event id. Everything below is
- * invented for the capture: the addresses are at `example.invalid`, which is
- * reserved by RFC 2606 and can never resolve to anyone, and the names are role
- * labels rather than person names.
- */
+// Use synthetic fixture data for captures; never expose private images or identifiers.
 const ALERT_MEETING_SUMMARY = [
   '미팅이 방금 종료되었습니다.',
   '- 제목: 분기 데모 리허설',
@@ -259,16 +149,12 @@ const ALERT_MEETING_SUMMARY = [
 ].join('\n');
 
 export const scenarios: Record<string, ScenarioEntry> = {
-  // ---- chat (host app) ------------------------------------------------
   'chat-todo-queue': {
     topic: 'chat',
     uiLocale: 'ko',
     reviewerMode: 'disabled',
     captureViewport: { width: 1440, height: 780 },
-    // Two model calls: the first writes the session task list, the second is a
-    // long answer streamed slowly so messages typed while it runs land in the
-    // queue instead of starting a turn of their own. Both panels are then on
-    // screen at once, which is what this key shows.
+    // Keep task-list and slow-answer calls visible together.
     scriptedScript: {
       turns: [
       {
@@ -312,22 +198,18 @@ export const scenarios: Record<string, ScenarioEntry> = {
         .locator('[data-testid="session-tasks-panel"]')
         .first()
         .waitFor({ state: 'visible', timeout: 30_000 });
-      // The second turn is streaming by now. Anything sent while it runs is
-      // queued rather than started, which is the state this key depicts.
       await sendChatMessage(page, '오늘 날씨는 어때?');
       await sendChatMessage(page, '점심은 뭐가 좋을까?');
       await page
         .locator('[data-testid="message-queue-panel"]')
         .first()
         .waitFor({ state: 'visible', timeout: 15_000 });
-      // The tasks chip collapses to a one-line focus row once a turn is under
-      // way; expand it so the checklist this key is about is in frame.
+      // Expand the task chip so the checklist appears in the capture.
       const tasksPanel = page.locator('[data-testid="session-tasks-panel"]').first();
       if (await tasksPanel.locator('[data-testid="session-tasks-collapsed-active"]').count()) {
         await tasksPanel.locator('button').first().click();
       }
-      // A phrase that appears only in the streamed answer, not in the checklist
-      // above it — so this waits for the transcript, not for a task row.
+      // Wait for streamed text that cannot match a checklist label.
       await page
         .locator('[data-testid="assistant-message-body"]')
         .first()
@@ -345,10 +227,7 @@ export const scenarios: Record<string, ScenarioEntry> = {
       [SEEDED_NOTE_PATH]: SEEDED_NOTE_BODY,
       [SEEDED_SUMMARY_PATH]: SEEDED_SUMMARY_BODY,
     },
-    // Capture the completed file read while the next response is in flight.
-    // The active work group owns the single thinking status; reasoning cards
-    // appear only after the turn settles. Slow reasoning keeps that status and
-    // the finished tool row in the same frame.
+    // Capture a completed read beside active reasoning; reasoning cards settle later.
     scriptedScript: {
       turns: [
         {
@@ -403,9 +282,7 @@ export const scenarios: Record<string, ScenarioEntry> = {
       const workGroup = page.getByTestId('work-group').filter({
         has: page.getByTestId('tool-duration'),
       }).first();
-      // The duration badge proves the first read returned. Keep the active
-      // group open: clicking its thinking header would hide the tool row, and
-      // the current UI does not expose a live reasoning body to wait for.
+      // A duration badge proves the read returned while reasoning remains active.
       await expect(workGroup.getByTestId('tool-duration').first()).toBeVisible({ timeout: 30_000 });
       const liveThinking = workGroup.getByRole('button', { name: '생각 중...', exact: true });
       await expect(liveThinking).toBeVisible({ timeout: 30_000 });
@@ -419,13 +296,7 @@ export const scenarios: Record<string, ScenarioEntry> = {
     reviewerMode: 'llm',
     executionMode: 'auto',
     captureViewport: { width: 1440, height: 660 },
-    // The same shell call as chat-permission-risk, captured one step earlier:
-    // while the reviewer's answer is still on the wire. The reviewer runs
-    // BEFORE the tool starts, so no tool row exists for that toolUseId yet and
-    // TranscriptRenderer's `rendersOnToolRow` is false — which is exactly the
-    // case its comment reserves the standalone PermissionReviewStatusCard for.
-    // `chunkDelayMs` on the reviewer turn is what holds that state open long
-    // enough to wait on.
+    // Capture standalone review before any tool row exists.
     scriptedScript: {
       turns: [
         {
@@ -470,9 +341,7 @@ export const scenarios: Record<string, ScenarioEntry> = {
     uiLocale: 'ko',
     reviewerMode: 'disabled',
     locator: '[data-testid="approval-dock"]',
-    // The reviewer is off, so nothing here is a risk verdict: this is the
-    // allowed-directory gate in PermissionManager, reached by reading a path
-    // outside the profile's scope. That is the dialog this key documents.
+    // Reviewer-off is a scope decision, not a risk verdict.
     scriptedScript: {
       turns: [
         {
@@ -493,9 +362,7 @@ export const scenarios: Record<string, ScenarioEntry> = {
       await sendChatMessage(page, '문서 폴더에 있는 읽을 자료 목록도 같이 봐 줘.');
       const dock = page.locator('[data-testid="approval-dock"]').first();
       await dock.waitFor({ state: 'visible', timeout: 30_000 });
-      // The dock summarises by default; the path evidence — requested path and
-      // the directories currently in scope — is inside the review details,
-      // which is what this key is about.
+      // Expanded review details must expose the path evidence.
       await dock.locator('[data-testid="approval-review-details"]').first().click();
       await dock
         .locator('[data-testid="approval-path-grant-evidence"]')
@@ -507,16 +374,9 @@ export const scenarios: Record<string, ScenarioEntry> = {
     topic: 'chat',
     uiLocale: 'ko',
     reviewerMode: 'llm',
-    // `auto` is the mode this key documents — the branch where the reviewer
-    // grades a shell call first and only a verdict above the auto-approve
-    // threshold reaches the user. Under the default mode the dock opens
-    // straight from the category rule, no classification call is made, and the
-    // scripted reviewer turn below is not requested at all.
+    // Auto mode runs classification; the default mode bypasses it.
     executionMode: 'auto',
     locator: '[data-testid="approval-dock"]',
-    // Same flow as chat-permission-llm-review, captured one step later: the
-    // verdict has landed and the dock is showing what the risk level means for
-    // this call, which is the branch this key documents.
     scriptedScript: {
       turns: [
         {
@@ -558,13 +418,7 @@ export const scenarios: Record<string, ScenarioEntry> = {
     uiLocale: 'ko',
     steps: async ({ app, page }) => {
       await openWorkMode(page);
-      // MainToolbar's badge is driven by main -> renderer IPC on
-      // "ave:update:state" (src/main/auto-updater.ts sends it via
-      // mainWindow.webContents.send; shape = UpdateState in
-      // src/shared/update-state.ts). Push a synthetic "available" state
-      // through the real channel from the main process — same technique as
-      // test/e2e/ui/seeded-electron.ts's sendRendererStreamEvent — instead of
-      // a fabricated DOM event the renderer never actually listens for.
+      // Drive the synthetic update through the main IPC channel.
       await app.evaluate(({ BrowserWindow }) => {
         const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed());
         if (!win) return;
@@ -582,8 +436,7 @@ export const scenarios: Record<string, ScenarioEntry> = {
     uiLocale: 'ko',
     reviewerMode: 'disabled',
     locator: '[data-testid="ask-user-question-card"]',
-    // One call: the turn parks on `ask_user_question` and waits for an answer
-    // that never comes, so the card stays on screen for the capture.
+    // Leave the request unanswered for the capture.
     scriptedScript: {
       turns: [
       {
@@ -618,19 +471,15 @@ export const scenarios: Record<string, ScenarioEntry> = {
   },
   'chat-plugin-panel': {
     topic: 'chat',
-    // A plugin's sidebar panel open inline beside the chat. The plugin is the
-    // in-repository view fixture: the frame is about the host's panel chrome,
-    // and the panel shows the result of the fixture's own mount-time tool call.
+    // Fixture panels exercise the host chrome.
     plugins: [VIEW_FIXTURE_ID],
-    // The panel's mount-time call is a write; left at `default` it raises the
-    // approval card over the panel this frame exists to show.
+    // Default mode would obscure the panel with mount-write approval.
     executionMode: 'allow',
     steps: async ({ page }) => {
       await openPluginPanel(page, VIEW_FIXTURE_ID);
     },
   },
 
-  // ---- plugin common ----------------------------------------------------
   'plugin-permission-grant': {
     topic: 'plugins',
     plugins: [VIEW_FIXTURE_ID],
@@ -638,10 +487,7 @@ export const scenarios: Record<string, ScenarioEntry> = {
     uiLocale: 'ko',
     locator: '[data-testid="tool-approval-panel"]',
     steps: async ({ page }) => {
-      // With the reviewer left ON (keepReviewer), the view fixture panel's
-      // mount-time tool call raises the host's "Approve Tool Execution" card
-      // (ToolApprovalContent.tsx) — the plugin-first-tool-call permission grant
-      // this docs key depicts.
+      // Retain review so the mount tool shows its approval state.
       await openPluginPanel(page, VIEW_FIXTURE_ID);
       await page
         .locator('[data-testid="tool-approval-panel"]')
@@ -650,14 +496,10 @@ export const scenarios: Record<string, ScenarioEntry> = {
     },
   },
 
-  // ---- meeting, local-indexer ------------------------------------------------
-  // Their keys depict those plugins' own UI, which lives in their own
-  // repositories. See PLUGIN_REPOSITORY_KEYS_OUT_OF_SCOPE below.
+  // External plugin UI is outside this capture scope.
 
-  // Host alert cards and their accepted prompts.
   'alert-meeting-end-trigger': {
     topic: 'alerts',
-    // Card plus chat, without the dead space the default viewport leaves.
     captureViewport: { width: 1440, height: 820 },
     uiLocale: 'ko',
     steps: async ({ app, page }) => {
@@ -671,7 +513,6 @@ export const scenarios: Record<string, ScenarioEntry> = {
   },
   'alert-meeting-end-trigger-2': {
     topic: 'alerts',
-    // Card plus chat, without the dead space the default viewport leaves.
     captureViewport: { width: 1440, height: 820 },
     uiLocale: 'ko',
     reviewerMode: 'disabled',
@@ -710,9 +551,7 @@ export const scenarios: Record<string, ScenarioEntry> = {
     },
   },
 
-  // ---- settings (not in the docs shot list by app- prefix, but part of the smoke subset) ----
-  // Not a docs-site key — included as an extra smoke-subset target proving the
-  // settings surface renders. Not written into the docs `shots` map.
+  // This settings smoke is not a documentation capture.
   '_smoke-settings-llm': {
     topic: '_smoke',
     steps: async ({ app, page }) => {
@@ -721,15 +560,7 @@ export const scenarios: Record<string, ScenarioEntry> = {
   },
 };
 
-/**
- * meeting-* / local-indexer-* keys depict those plugins' own UI (the meeting
- * panel and minutes, the indexer's folders, scan and search), built from their
- * own repositories. This harness seeds only the fixture plugins under
- * `test/fixtures/e2e-plugins`, so it reads nothing outside this repository, and
- * a fixture cannot honestly stand in for another product's screens. The keys
- * are therefore deliberately absent from `scenarios`. Their committed images stay as published; reshooting them belongs
- * to the plugin's own repository.
- */
+// Skip plugin-owned UI that repository fixtures cannot represent faithfully.
 export const PLUGIN_REPOSITORY_KEYS_OUT_OF_SCOPE = [
   'meeting-upcoming', 'meeting-minutes', 'meeting-minutes-2', 'meeting-minutes-3',
   'local-indexer-add-folder', 'local-indexer-indexing', 'local-indexer-home',

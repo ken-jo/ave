@@ -1,17 +1,5 @@
 import type { SecretEncryption } from "../data/secret-document-store.js";
-/**
- * Main-process lifecycle for the default-OFF Telegram platform bridge.
- *
- * Telegram is deliberately a separate external-platform adapter. It never
- * shares the Local API, A2A, or Tailnet HTTP route family, opens no listener,
- * and never registers a Telegram webhook: updates arrive over an outbound
- * long poll owned by the desktop, activated only by the owner's stored
- * connection (`telegram-connection-service`).
- *
- * The long-poll ingress lives here too: it has no consumer other than this
- * lifecycle, and the two share the bridge's ingress handle and control-notice
- * machinery.
- */
+// Default-off outbound polling starts only from the owner’s stored connection; it opens no listener or webhook and shares no other route family.
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import {
@@ -67,34 +55,11 @@ import type { ConversationCommandPort } from "./conversation-command-port.js";
 import { openFeatureNamespace } from "./storage/feature-namespace.js";
 import { TELEGRAM_BRIDGE_FEATURE } from "./telegram-connection-store.js";
 
-// ─── Outbound long-poll ingress ───────────────────────────────────────────────
+// Advance offsets only after terminal delivery outcomes; retry releasable outcomes with the same update.
+// Bound API bodies before parsing and retain per-envelope limits after splitting updates.
 
-/**
- * Outbound long-poll ingress for the owner-driven Telegram bridge.
- *
- * Unlike the webhook listener, nothing here is reachable from the network: the
- * host fetches updates over its own authenticated HTTPS request. That is what
- * makes a desktop Connect/Disconnect control safe — there is no fixed inbound
- * port whose forwarding could outlive the bridge.
- *
- * Two properties the webhook path gets for free must be provided explicitly:
- *
- * - **Telegram's retry.** A webhook delivery is retried by Telegram when the
- *   listener reports it unavailable. A poller has no such safety net, and
- *   confirming an update by advancing the offset destroys it. So the offset
- *   advances only
- *   for outcomes that are terminal for this delivery, and every releasable
- *   outcome re-polls the same update instead.
- * - **The proxy's request cap.** The bot API client bounds the response body
- *   before parsing it; this module then hands one update at a time to the
- *   shared core, so the existing per-envelope caps still apply.
- */
-
-/**
- * Outcomes that are terminal for this delivery. Every one of them either
- * handled the update or rejected it permanently, so re-polling it would wedge
- * the loop on a message that can never succeed.
- */
+// Outcomes that are terminal for this delivery. Every one of them either handled the update or rejected it permanently, so re-polling it would wedge the
+// loop on a message that can never succeed.
 const ADVANCING_RESULTS: ReadonlySet<PlatformBridgeInboundResult> = new Set([
   "accepted",
   "duplicate",
@@ -105,25 +70,11 @@ const ADVANCING_RESULTS: ReadonlySet<PlatformBridgeInboundResult> = new Set([
   "slash-command-rejected",
   "authorization-denied",
   "idempotency-conflict",
-  // The receipt is retained and replay is deliberately blocked, so retrying
-  // could never resolve it either.
+  // The receipt is retained and replay is deliberately blocked, so retrying could never resolve it either.
   "command-outcome-unknown",
 ]);
 
-/**
- * Gateway outcomes decided before a verified envelope exists: the body could
- * not be copied, was over the cap, failed verification, or did not normalize.
- * Every one of them is also in {@link ADVANCING_RESULTS}, so reaching one means
- * the update was consumed and nothing was done with it.
- *
- * `satisfies` rather than a bare literal list: these are members of the shared
- * result union, and a rename there must break this file instead of silently
- * leaving a category that can never match.
- *
- * `disabled` is deliberately absent. It is pre-envelope too, but it re-polls
- * instead of advancing, so nothing is dropped and counting it would report a
- * turned-off bridge as data loss.
- */
+// Count only consumed pre-envelope failures; disabled repolls rather than advancing and must not count as lost data.
 const PRE_ENVELOPE_GATEWAY_RESULTS = [
   "invalid-request",
   "request-too-large",
@@ -131,12 +82,8 @@ const PRE_ENVELOPE_GATEWAY_RESULTS = [
   "invalid-envelope",
 ] as const satisfies readonly PlatformBridgeInboundResult[];
 
-/**
- * Why an update died before it could become an envelope. The vocabulary is
- * fixed at compile time and carries no payload material: `unparsable-update`
- * is a boolean fact about the adapter's return, and the rest are the shared
- * core's own provider-safe admission outcomes.
- */
+// Why an update died before it could become an envelope. The vocabulary is fixed at compile time and carries no payload material: `unparsable-update` is
+// a boolean fact about the adapter's return, and the rest are the shared core's own provider-safe admission outcomes.
 type PreEnvelopeDropReason =
   | "unparsable-update"
   | typeof PRE_ENVELOPE_GATEWAY_RESULTS[number];
@@ -155,12 +102,7 @@ function preEnvelopeGatewayReason(
 const RETRY_BACKOFF_MS = 2_000;
 const MAX_BACKOFF_MS = 60_000;
 
-/**
- * Wait before the next poll after `consecutive` transient failures in a row:
- * 2 s, 4 s, 8 s ... capped at a minute. A laptop that is offline or asleep
- * otherwise re-polled every 2 s for as long as it stayed down, logging each
- * time; the streak resets on the first poll Telegram answers.
- */
+// Back off transient poll failures from two seconds to one minute; reset the streak on the first provider response.
 function telegramTransientBackoffMs(consecutive: number): number {
   const exponent = Math.min(Math.max(consecutive, 1) - 1, 16);
   return Math.min(RETRY_BACKOFF_MS * 2 ** exponent, MAX_BACKOFF_MS);
@@ -171,73 +113,53 @@ type TelegramPollingFatalCode =
   | "telegram-bot-token-rejected"
   | "telegram-webhook-conflict"
   | "telegram-poll-conflict"
-  /**
-   * The durable store refused the confirmed offset. Fatal rather than ignored:
-   * the write is this connection's own state, so a store that cannot take it
-   * cannot record a pairing, an approval, or the error either — and continuing
-   * would leave a bridge that looks connected while nothing it learns survives.
-   */
+  // A refused offset write is fatal: continuing would report a connected bridge whose pairing and approval state cannot persist.
   | "telegram-connection-state-unwritable";
 
 export interface TelegramPollingIngressOptions {
   readonly client: TelegramBotApiClient;
   readonly gateway: PlatformBridgeInboundGateway;
-  /** Last confirmed offset, or null before the first poll of this connection. */
+  // Last confirmed offset, or null before the first poll of this connection.
   readonly pollOffset: () => number | null;
   readonly recordPollOffset: (offset: number) => Promise<void>;
   readonly hasPendingPairingCode: () => boolean;
-  /** True only on a constant-time digest match against a live pending code. */
+  // True only on a constant-time digest match against a live pending code.
   readonly redeemPairingCode: (codeDigest: string, senderId: string) => Promise<boolean>;
-  /** Terminal condition: the loop stops and the owner must act. */
+  // Terminal condition: the loop stops and the owner must act.
   readonly onFatal: (code: TelegramPollingFatalCode) => void | Promise<void>;
   readonly onPaired?: (senderId: string) => void | Promise<void>;
-  /**
-   * Whether this sender is the already-paired owner. The shared core reports
-   * both a stranger and an unshared owner as `authorization-denied`, so this is
-   * the only way to tell them apart — and a stranger must never be answered.
-   */
+  // Whether this sender is the already-paired owner. The shared core reports both a stranger and an unshared owner as `authorization-denied`, so this is
+  // the only way to tell them apart — and a stranger must never be answered.
   readonly isPairedOwner?: (senderId: string) => boolean;
-  /** Best-effort, cooldown-gated host notice. Never carries conversation data. */
+  // Best-effort, cooldown-gated host notice. Never carries conversation data.
   readonly notifyUnroutable?: (
     chatId: string,
     notice: TelegramControlNotice,
   ) => void | Promise<void>;
-  /**
-   * Handler for a verified inline-keyboard press. Absent means every
-   * callback update is consumed and dropped — the loop must still advance
-   * past it, so a bridge without remote approval wired cannot wedge on one.
-   */
+  // Handler for a verified inline-keyboard press. Absent means every callback update is consumed and dropped — the loop must still advance past it, so a
+  // bridge without remote approval wired cannot wedge on one.
   readonly onCallbackQuery?: (
     callback: TelegramCallbackQueryEnvelope,
   ) => void | Promise<void>;
   readonly log?: (message: string) => void;
-  /**
-   * Whether Telegram is answering this loop. `retrying` on the first failed
-   * poll of a streak, `receiving` once a poll is answered again, `stopped`
-   * when the loop exits for any reason. Transitions only — never once per poll.
-   */
+  // Whether Telegram is answering this loop. `retrying` on the first failed poll of a streak, `receiving` once a poll is answered again, `stopped` when
+  // the loop exits for any reason. Transitions only — never once per poll.
   readonly onHealth?: (health: TelegramPollHealth) => void;
-  /** Test seam; production sleeps on a timer that the abort signal cancels. */
+  // Test seam; production sleeps on a timer that the abort signal cancels.
   readonly wait?: (ms: number, signal: AbortSignal) => Promise<void>;
 }
 
 export type TelegramPollHealth = "receiving" | "retrying" | "stopped";
 
 export interface TelegramPollingIngress {
-  /** Resolves once the loop has fully exited. */
+  // Resolves once the loop has fully exited.
   readonly finished: Promise<void>;
   stop(): void;
-  /**
-   * Poll again now: the machine woke or came back online. Cuts short a backoff
-   * wait and abandons an in-flight long poll — after sleep its socket is
-   * usually dead and would otherwise hang until the request timeout — and
-   * restarts the backoff streak. Never ends the loop and never skips an update:
-   * the offset only advances on a poll that was answered and processed.
-   */
+  // On wake or connectivity return, cancel stale long polls and backoff without ending the loop or advancing unprocessed offsets.
   nudge(): void;
 }
 
-/** What `nudge` reaches inside the running loop. */
+// What `nudge` reaches inside the running loop.
 interface PollWake {
   requested: boolean;
   interrupt: (() => void) | null;
@@ -272,9 +194,7 @@ export function startTelegramPollingIngress(
   const wake: PollWake = { requested: false, interrupt: null };
 
   const finished = run(options, signal, wait, wake).catch(() => {
-    // Reached only by a throw this module did not classify. It still ends
-    // ingress, so it must leave a trace rather than resolving as if the loop
-    // had been asked to stop.
+    // Reached only by a throw this module did not classify. It still ends ingress, so it must leave a trace rather than resolving as if the loop had been asked to stop.
     options.log?.("[telegram-poll] the poll loop ended unexpectedly");
   });
   return Object.freeze({
@@ -300,33 +220,27 @@ async function run(
   try {
     await poll(options, signal, wait, drops, wake);
   } finally {
-    // Every exit is an activation ending — aborted, fatal, or thrown — and the
-    // final tally is the number an operator asks for after a bad session.
+    // Every exit is an activation ending — aborted, fatal, or thrown — and the final tally is the number an operator asks for after a bad session.
     drops.finish();
     reportHealth(options, "stopped");
   }
 }
 
-/** A health listener is the owner surface's business; it cannot stop the loop. */
+// A health listener is the owner surface's business; it cannot stop the loop.
 function reportHealth(options: TelegramPollingIngressOptions, health: TelegramPollHealth): void {
   try {
     options.onHealth?.(health);
   } catch {
-    /* the loop's own state is the authority */
+    // the loop's own state is the authority
   }
 }
 
 type Interruptible<T> =
   | { readonly interrupted: false; readonly value: T }
-  /** `value` is whatever the abandoned step still produced, if anything. */
+  // `value` is whatever the abandoned step still produced, if anything.
   | { readonly interrupted: true; readonly value: T | undefined };
 
-/**
- * Run one wait or request under a signal that both `stop` and `nudge` can
- * abort. A nudge marks the outcome interrupted so the caller re-polls instead
- * of reading an abandoned request as a failed one; a stop leaves `signal`
- * aborted, which the caller checks first.
- */
+// Both stop and nudge abort the request; nudge triggers re-polling, while stop leaves the signal aborted for the caller.
 async function interruptible<T>(
   signal: AbortSignal,
   wake: PollWake,
@@ -362,9 +276,9 @@ async function poll(
 ): Promise<void> {
   let offset = options.pollOffset();
   let backoffMs = 0;
-  /** Drives the backoff; a wake restarts it. */
+  // Drives the backoff; a wake restarts it.
   let streak = 0;
-  /** Failed polls this outage, for the recovery line; a wake does not reset it. */
+  // Failed polls this outage, for the recovery line; a wake does not reset it.
   let failedPolls = 0;
   const transient = (): number => {
     streak += 1;
@@ -387,8 +301,7 @@ async function poll(
   while (!signal.aborted) {
     if (backoffMs > 0) {
       const delay = backoffMs;
-      // On time or cut short by a nudge, the wait is over either way; only a
-      // stop ends the loop here.
+      // On time or cut short by a nudge, the wait is over either way; only a stop ends the loop here.
       await interruptible(signal, wake, (waitSignal) => wait(delay, waitSignal)).catch(() => undefined);
       if (signal.aborted) return;
       backoffMs = 0;
@@ -422,8 +335,7 @@ async function poll(
       (requestSignal) => options.client.getUpdates({ offset: pollOffset, signal: requestSignal }),
     );
     if (signal.aborted) return;
-    // An abandoned long poll is not a failed one; any updates it carried are
-    // fetched again, because the offset has not moved.
+    // An abandoned long poll is not a failed one; any updates it carried are fetched again, because the offset has not moved.
     if (polled.interrupted) continue;
     const result = polled.value;
     if (!result.ok) {
@@ -434,8 +346,7 @@ async function poll(
     }
     reached();
 
-    // Strictly sequential. The shared core holds no mutex and the turn lease is
-    // single-holder, so a concurrent fan-out would silently drop all but one
+    // Strictly sequential. The shared core holds no mutex and the turn lease is single-holder, so a concurrent fan-out would silently drop all but one
     // message as `streaming-active`.
     for (const update of result.value) {
       if (signal.aborted) return;
@@ -450,16 +361,7 @@ async function poll(
   }
 }
 
-/**
- * Confirm the offset durably, or end the activation saying why.
- *
- * This is the one injected callback whose failure used to escape the loop
- * unclassified: the throw unwound past every handler here and was swallowed by
- * the caller's `catch`, so ingress died while the owner surface still read
- * `connected` and egress stayed attached. Routing it through the same fatal
- * path as a rejected token makes the stop visible and, because that path tears
- * the activation down, leaves the bridge startable again.
- */
+// Failed durable offset confirmation is fatal: surface the reason and tear down activation so ingress and egress cannot diverge.
 async function confirmOffset(
   options: TelegramPollingIngressOptions,
   offset: number,
@@ -474,11 +376,8 @@ async function confirmOffset(
   }
 }
 
-/**
- * Skip whatever accumulated before this connection existed. Replaying a day of
- * backlog as live turns would produce a burst of model calls and local approval
- * prompts the owner never asked for.
- */
+// Skip whatever accumulated before this connection existed. Replaying a day of backlog as live turns would produce a burst of model calls and local
+// approval prompts the owner never asked for.
 async function seedOffset(
   options: TelegramPollingIngressOptions,
   signal: AbortSignal,
@@ -498,29 +397,11 @@ async function seedOffset(
 
 type UpdateDisposition = "advance" | "retry";
 
-/**
- * Runtime-only tally of updates consumed before an envelope existed.
- *
- * The gap it closes: those updates are the one class the merged notice path
- * cannot reach. A notice needs a sender to answer, and these die before the
- * host knows who sent them, so a schema change on Telegram's side turns every
- * message into a silent no-op that looks exactly like a bot nobody is talking
- * to. A counter distinguishes the two: zero means nothing arrived, climbing
- * means updates are arriving and this host cannot read any of them.
- *
- * In memory and per activation by construction — the state is a closure created
- * inside {@link run}, so it cannot be persisted, cannot enter the connection
- * store, and has nothing to send to the renderer.
- *
- * Bounded output on purpose. Anyone who can message the bot can drive the
- * count, so a line per drop would hand them the desktop log. Lines are emitted
- * only when a reason is seen for the first time this activation, when the total
- * crosses a power of ten, and once on exit — at most a dozen lines however many
- * updates arrive.
- */
+// Count pre-envelope drops per activation without persisting identity or payloads.
+// Log first reason, powers of ten, and exit only so hostile traffic cannot amplify logs.
 interface PreEnvelopeDropCounter {
   record(reason: PreEnvelopeDropReason): void;
-  /** Final tally for an activation that ended between milestones. */
+  // Final tally for an activation that ended between milestones.
   finish(): void;
 }
 
@@ -529,8 +410,7 @@ function createPreEnvelopeDropCounter(
 ): PreEnvelopeDropCounter {
   const counts = new Map<PreEnvelopeDropReason, number>();
   let total = 0;
-  // The first drop of every reason already logs, so the first milestone that
-  // adds anything is ten.
+  // The first drop of every reason already logs, so the first milestone that adds anything is ten.
   let nextMilestone = 10;
 
   const report = (prefix: string): void => {
@@ -568,22 +448,9 @@ async function handleUpdate(
   drops: PreEnvelopeDropCounter,
 ): Promise<UpdateDisposition> {
   const envelope = parseTelegramTextUpdate(update.rawBody);
-  // Anything that is not a private text message from a human — a channel post,
-  // a membership change, an attachment — is permanently uninteresting. Not
-  // advancing here would wedge the loop forever on the first such update.
-  //
-  // Counted anyway, and this is the bucket that matters: the adapter applies a
-  // strict key allow-list, so the day Telegram adds a field to `message` every
-  // real message lands here instead of in the routine sticker/channel-post
-  // trickle. The count is what separates those two, since the reason itself
-  // cannot — telling them apart would mean reading the payload.
+  // Advance permanently unsupported updates to avoid wedging the poller; count them so provider schema drift is distinguishable from no traffic.
   if (envelope === undefined) {
-    // A button press is the one non-message update this loop acts on. It is
-    // parsed HERE, at the same parse point as messages, by the same
-    // fail-closed adapter posture — never routed through the conversation
-    // gateway, because a decision signal is not conversation input. Consumed
-    // whether or not a handler is wired: an unhandled press can never
-    // resolve anything, so re-polling it could never help.
+    // Parse verified button decisions outside the conversation gateway; consume even unhandled presses because retry cannot resolve them.
     const callback = parseTelegramCallbackQueryUpdate(update.rawBody);
     if (callback !== undefined) {
       if (options.onCallbackQuery !== undefined) {
@@ -600,37 +467,24 @@ async function handleUpdate(
   }
 
   if (looksLikeTelegramPairingCode(envelope.text)) {
-    // Consumed and dropped whether or not it matches, so a near-miss
-    // credential can never land in the conversation transcript.
+    // Consumed and dropped whether or not it matches, so a near-miss credential can never land in the conversation transcript.
     await redeemPairing(options, envelope.text.trim(), envelope.senderId);
     return "advance";
   }
 
   const result = await options.gateway.handleWebhook({ rawBody: update.rawBody });
-  // The shared core already draws the line this counter needs: everything in
-  // PRE_ENVELOPE_GATEWAY_RESULTS is returned before `normalizeVerifiedEnvelope`
-  // produces anything, and every later outcome had an envelope to refuse. The
-  // pairing branch above is not counted — that update is consumed on purpose,
-  // not lost.
+  // Count only failures before envelope normalization; deliberate pairing consumption is not lost data.
   const preEnvelope = preEnvelopeGatewayReason(result);
   if (preEnvelope !== undefined) drops.record(preEnvelope);
-  // The update is consumed either way. Without a notice the paired owner sees
-  // nothing at all, which reads as a dead bot rather than an idle surface.
-  //
-  // Both outcomes below are "we understood you and are deliberately not acting":
-  // an unshared conversation, and a slash message the core refuses by policy.
-  // Anything else is either handled or retried, and must stay silent.
+  // Notify paired owners only for understood policy refusals such as no share or slash commands; handled or retryable outcomes stay silent.
   if (SILENTLY_CONSUMED_RESULTS.has(result)) {
     await notifyIfPairedOwner(options, envelope.senderId, noticeFor(result));
   }
   return ADVANCING_RESULTS.has(result) ? "advance" : "retry";
 }
 
-/**
- * Outcomes where the paired owner's message is consumed and nothing is done
- * with it. Each needs a different sentence, because "nothing is shared" and
- * "commands are not supported" are different problems for the owner to fix.
- */
+// Outcomes where the paired owner's message is consumed and nothing is done with it. Each needs a different sentence, because "nothing is shared" and
+// "commands are not supported" are different problems for the owner to fix.
 const SILENTLY_CONSUMED_RESULTS: ReadonlySet<PlatformBridgeInboundResult> = new Set([
   "authorization-denied",
   "slash-command-rejected",
@@ -649,8 +503,7 @@ async function notifyIfPairedOwner(
 ): Promise<void> {
   if (options.isPairedOwner === undefined || options.notifyUnroutable === undefined) return;
   try {
-    // Silence for anyone who is not the paired owner: answering a stranger
-    // would confirm that this bot is attached to a live desktop.
+    // Silence for anyone who is not the paired owner: answering a stranger would confirm that this bot is attached to a live desktop.
     if (!options.isPairedOwner(senderId)) return;
     await options.notifyUnroutable(senderId, notice);
   } catch {
@@ -669,8 +522,7 @@ async function redeemPairing(
   } catch {
     return;
   }
-  // Nothing to redeem: stay silent rather than confirm to an unknown sender
-  // that this bot is attached to a live desktop.
+  // Nothing to redeem: stay silent rather than confirm to an unknown sender that this bot is attached to a live desktop.
   if (!pending) return;
 
   const codeDigest = telegramPairingCodeDigest(candidate);
@@ -679,20 +531,13 @@ async function redeemPairing(
     if (await options.redeemPairingCode(codeDigest, senderId)) {
       await options.onPaired?.(senderId);
     }
-    // No second charge here. The durable store already debits the attempt when
-    // it rejects a digest, and it is the only place that can tell a wrong code
-    // apart from a code that expired between the check above and this call.
-    // Charging from here too spent the budget twice per wrong code, so the
-    // advertised five attempts were really about three.
+    // The durable store alone debits failed pairing attempts; ingress must not charge again.
   } catch {
     options.log?.("[telegram-poll] pairing redemption failed");
   }
 }
 
-/**
- * What the loop does after a failed poll: end the activation, wait the
- * interval Telegram named, or back off on the transient-failure streak.
- */
+// What the loop does after a failed poll: end the activation, wait the interval Telegram named, or back off on the transient-failure streak.
 type FailureDisposition =
   | { readonly kind: "stop" }
   | { readonly kind: "wait"; readonly ms: number }
@@ -709,13 +554,11 @@ async function handleFailure(
     return { kind: "stop" };
   }
   if (reason === "conflict") {
-    // Classify by asking Telegram what it thinks is configured, never by
-    // parsing the 409 description: its contents are explicitly not stable.
+    // Classify by asking Telegram what it thinks is configured, never by parsing the 409 description: its contents are explicitly not stable.
     const info = await options.client.getWebhookInfo(signal);
     if (!info.ok) {
-      // Unclassified is not "another poller": ending the connection with a
-      // reason nobody verified sends the owner after the wrong fix. Back off
-      // and let the next poll's 409, if it recurs, be classified then.
+      // Unclassified is not "another poller": ending the connection with a reason nobody verified sends the owner after the wrong fix. Back off and let the
+      // next poll's 409, if it recurs, be classified then.
       options.log?.("[telegram-poll] a poll conflict could not be classified; retrying");
       return { kind: "transient" };
     }
@@ -761,40 +604,28 @@ function defaultWait(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
-// ─── Bridge lifecycle ─────────────────────────────────────────────────────────
-
 const TELEGRAM_RECEIPT_TTL_MS = 7 * 24 * 60 * 60 * 1_000;
 const TELEGRAM_MAX_RAW_BODY_BYTES = 64 * 1024;
-/**
- * Telegram's Bot API limit is 4,096 UTF-16 code units per text message, the
- * same unit `String.length` and the shared ingress core count. A code-point
- * bound is not stricter, it is up to twice as permissive: 4,096 emoji are
- * 8,192 units, which the Bot API rejects outright.
- */
+// Telegram's Bot API limit is 4,096 UTF-16 code units per text message, the same unit `String.length` and the shared ingress core count. A code-point
+// bound is not stricter, it is up to twice as permissive: 4,096 emoji are 8,192 units, which the Bot API rejects outright.
 const TELEGRAM_MAX_TEXT_UTF16_UNITS = 4_096;
-/** Upper bound on how long a stop waits for already-queued safe deliveries. */
+// Upper bound on how long a stop waits for already-queued safe deliveries.
 const TELEGRAM_DELIVERY_DRAIN_TIMEOUT_MS = 2_000;
 
 export interface TelegramBridgeServer {
-  /** Loopback port for the webhook path; null when updates are polled. */
+  // Loopback port for the webhook path; null when updates are polled.
   readonly port: number | null;
 }
 
-/** How one activation receives updates, and how that reception is torn down. */
+// How one activation receives updates, and how that reception is torn down.
 interface TelegramIngressHandle {
   readonly port: number | null;
   close(): Promise<void>;
-  /** Poll again now; see {@link TelegramPollingIngress.nudge}. */
+  // Poll again now; see {@link TelegramPollingIngress.nudge}.
   nudge(): void;
 }
 
-/**
- * What one activation supplies to the shared core: its runtime, its inbound
- * verifier, and how updates are received. The receipt store, the delivery
- * adapter, the safe-projection attach, and the inbound gateway are identical
- * for every activation, which is what keeps a future second ingress from
- * drifting into a second security model.
- */
+// All activations share receipt, delivery, projection, and gateway policy; only runtime, verification, and ingress differ.
 interface TelegramActivationPlan {
   readonly botToken: string;
   readonly botFingerprint: string;
@@ -804,12 +635,7 @@ interface TelegramActivationPlan {
     gateway: PlatformBridgeInboundGateway,
     onCallbackQuery?: (callback: TelegramCallbackQueryEnvelope) => Promise<void>,
   ): Promise<TelegramIngressHandle>;
-  /**
-   * Optional remote-approval attachment for this activation. It takes the
-   * activation's own runtime so the coordinator's egress fence is the same
-   * route-currency check the delivery path uses; absent means approvals stay
-   * desk-only, which is every activation without a wired approval gate.
-   */
+  // Bind remote approvals to this activation’s runtime currency fence; absent attachment keeps approvals on the desktop.
   createRemoteApproval?(runtime: TelegramPlatformRuntime): TelegramRemoteApprovalCoordinator;
 }
 
@@ -817,10 +643,7 @@ interface StartTelegramBridgeServerOptions {
   readonly conversationSurfaceRuntime: ConversationSurfaceRuntime;
   readonly conversationCommandPort: ConversationCommandPort;
   readonly getCurrentConversationId: () => string;
-  /**
-   * The transport the outbound delivery path runs on. Same option, same
-   * reason as on {@link StartTelegramConnectionBridgeOptions}.
-   */
+  // The transport the outbound delivery path runs on. Same option, same reason as on {@link StartTelegramConnectionBridgeOptions}.
   readonly networkFetch: typeof fetch;
   readonly receiptStore?: PlatformBridgeReceiptStore;
   readonly log?: (message: string) => void;
@@ -837,7 +660,7 @@ interface ActiveTelegramBridge {
   readonly runtime: TelegramPlatformRuntime;
   readonly delivery: PlatformBridgeDeliveryAdapter<TelegramDeliveryChannel>;
   readonly deliveryDestinations: Map<string, ActiveTelegramDeliveryDestination>;
-  /** Retained so a stop can drain open sends before the adapter is closed. */
+  // Retained so a stop can drain open sends before the adapter is closed.
   readonly channels: Map<string, PlatformBridgeDeliveryChannel>;
   readonly remoteApproval: TelegramRemoteApprovalCoordinator | undefined;
 }
@@ -848,21 +671,12 @@ let activeStartAttempt: number | null = null;
 let startAttemptSequence = 0;
 let stopPromise: Promise<void> | null = null;
 let lifecycleGeneration = 0;
-/**
- * Only app shutdown is terminal. An owner-initiated stop returns this module to
- * a startable state so a later connect is a real reconnect rather than a silent
- * permanent null.
- */
+// Only app shutdown is terminal. An owner-initiated stop returns this module to a startable state so a later connect is a real reconnect rather than a
+// silent permanent null.
 let shutdownRequested = false;
 let activationSequence = 0;
 
-/**
- * Stable for the lifetime of this process, deliberately not per activation and
- * deliberately not reset between activations. A receipt reserved before a
- * disconnect is settled by the same owner after the reconnect; a per-gateway
- * identity would leave that record `outcome-unknown` forever, and those records
- * are never TTL-pruned, so they would accumulate against the receipt cap.
- */
+// Keep receipt ownership process-stable across reconnects so pending receipts settle instead of accumulating as unprunable outcome-unknown.
 const installationReceiptOwnerId = randomUUID();
 
 export interface StartTelegramConnectionBridgeOptions {
@@ -870,16 +684,10 @@ export interface StartTelegramConnectionBridgeOptions {
   readonly conversationSurfaceRuntime: ConversationSurfaceRuntime;
   readonly conversationCommandPort: ConversationCommandPort;
   readonly getCurrentConversationId: () => string;
-  /** Process-held credential from the owner's encrypted store. */
+  // Process-held credential from the owner's encrypted store.
   readonly botToken: string;
   readonly botFingerprint: string;
-  /**
-   * The transport every Bot API request of this activation runs on — polling,
-   * control replies, delivery and approval cards alike. REQUIRED: Node's
-   * ambient `fetch` reads neither the machine's proxy configuration nor its
-   * trust store, so an activation issued on it would go direct on a machine
-   * whose configuration says otherwise. Boot supplies Chromium's stack.
-   */
+  // Use the same required OS-aware transport for polling, control, delivery, and approval cards.
   readonly networkFetch: typeof fetch;
   readonly authority: TelegramPairedRouteAuthority;
   readonly pollOffset: () => number | null;
@@ -888,9 +696,9 @@ export interface StartTelegramConnectionBridgeOptions {
   readonly redeemPairingCode: (codeDigest: string, senderId: string) => Promise<boolean>;
   readonly onFatal: (code: TelegramPollingFatalCode) => void | Promise<void>;
   readonly onPaired?: (senderId: string) => void | Promise<void>;
-  /** Poll-health transitions of this activation; see {@link TelegramPollingIngressOptions.onHealth}. */
+  // Poll-health transitions of this activation; see {@link TelegramPollingIngressOptions.onHealth}.
   readonly onPollHealth?: (health: TelegramPollHealth) => void;
-  /** Distinguishes an unshared owner from a stranger; only the former is answered. */
+  // Distinguishes an unshared owner from a stranger; only the former is answered.
   readonly isPairedOwner?: (senderId: string) => boolean;
   readonly notifyUnroutable?: (
     chatId: string,
@@ -898,27 +706,17 @@ export interface StartTelegramConnectionBridgeOptions {
   ) => void | Promise<void>;
   readonly receiptStore?: PlatformBridgeReceiptStore;
   readonly log?: (message: string) => void;
-  /**
-   * The host approval gate, exposed only through the narrow remote-approval
-   * port. Present means the paired owner may decide parked tool approvals
-   * from a button card; absent keeps approvals desk-only.
-   */
+  // The host approval gate, exposed only through the narrow remote-approval port. Present means the paired owner may decide parked tool approvals from a
+  // button card; absent keeps approvals desk-only.
   readonly approvalGate?: TelegramRemoteApprovalGatePort;
-  /** Test-only injection; production builds a real Bot API client. */
+  // Test-only injection; production builds a real Bot API client.
   readonly createBotApiClient?: (botToken: string) => TelegramBotApiClient;
-  /**
-   * The store the actor secret is derived from. Threaded rather than defaulted
-   * here so the caller's digester and this runtime read one secret: two
-   * independently-defaulted stores would mint actor digests that disagree.
-   */
+  // The store the actor secret is derived from. Threaded rather than defaulted here so the caller's digester and this runtime read one secret: two
+  // independently-defaulted stores would mint actor digests that disagree.
   readonly secretStore?: SecretStore;
 }
 
-/**
- * Start the owner-driven connection: the same core, receiving over an outbound
- * long poll instead of a loopback listener. It opens no port, so a desktop
- * Disconnect control cannot leave a forwarding target behind.
- */
+// Receive through outbound polling without opening a listener, so Disconnect cannot leave a forwarding target behind.
 export async function maybeStartTelegramConnectionBridge(
   options: StartTelegramConnectionBridgeOptions,
 ): Promise<TelegramBridgeServer | null> {
@@ -970,9 +768,8 @@ export async function maybeStartTelegramConnectionBridge(
         nudge: () => poll.nudge(),
       });
     },
-    // Remote approval exists only when BOTH the gate seam and the paired-owner
-    // predicate are wired: without the predicate no press could ever be
-    // attributed, so offering cards would mint tokens nothing may consume.
+    // Remote approval exists only when BOTH the gate seam and the paired-owner predicate are wired: without the predicate no press could ever be attributed,
+    // so offering cards would mint tokens nothing may consume.
     ...(options.approvalGate === undefined || options.isPairedOwner === undefined
       ? {}
       : {
@@ -980,9 +777,8 @@ export async function maybeStartTelegramConnectionBridge(
           createTelegramRemoteApprovalCoordinator({
             client,
             gate: options.approvalGate!,
-            // The same currency the delivery fence enforces: the approval's
-            // conversation must be the route's bound conversation AND that
-            // route must still be current (paired, shared, on screen).
+            // The same currency the delivery fence enforces: the approval's conversation must be the route's bound conversation AND that route must still be current
+            // (paired, shared, on screen).
             routeChatIdForConversation: (conversationId) => {
               for (const route of runtime.routes) {
                 if (route.conversationId === conversationId && runtime.isRouteCurrent(route)) {
@@ -1030,8 +826,7 @@ async function startActivation(
   options: StartTelegramBridgeServerOptions,
   generation: number,
 ): Promise<TelegramBridgeServer | null> {
-  // Consumed only past the start checks, so a boot without a stored
-  // connection leaves the first real activation at epoch 1.
+  // Consumed only past the start checks, so a boot without a stored connection leaves the first real activation at epoch 1.
   const activationEpoch = ++activationSequence;
   const runtime = await plan.createRuntime(activationEpoch);
   if (generation !== lifecycleGeneration) {
@@ -1051,9 +846,7 @@ async function startActivation(
     transport: createTelegramOutboundTransport({
       botToken: plan.botToken,
       fetch: options.networkFetch,
-      // Egress failures classify themselves into this sink (network / HTTP
-      // status / Bot API error code only); without it a failed send is
-      // indistinguishable from a delivered one.
+      // Egress failures classify themselves into this sink (network / HTTP status / Bot API error code only); without it a failed send is indistinguishable from a delivered one.
       ...(options.log ? { log: options.log } : {}),
       isChannelCurrent: (channel, generation) => {
         const lease = channel.deliveryLease;
@@ -1104,9 +897,8 @@ async function startActivation(
   const authorize: PlatformBridgeInboundAuthorizer = (envelope) => {
     const authorization = runtime.authorize(envelope);
     if (authorization !== null && authorization !== undefined) {
-      // Bots cannot start a user conversation themselves. A verified, paired
-      // user message is the earliest point at which a route may receive its
-      // safe snapshot and future safe projection.
+      // Bots cannot start a user conversation themselves. A verified, paired user message is the earliest point at which a route may receive its safe snapshot
+      // and future safe projection.
       const route = runtime.routeForEnvelope(envelope);
       if (route !== null) attachRoute(route);
     }
@@ -1119,18 +911,15 @@ async function startActivation(
     receiptStore,
     commandPort: options.conversationCommandPort,
     maxRawBodyBytes: TELEGRAM_MAX_RAW_BODY_BYTES,
-    // The gateway and Telegram's own verifier bound the same unit, so the core
-    // cannot admit a message the provider boundary would reject.
+    // The gateway and Telegram's own verifier bound the same unit, so the core cannot admit a message the provider boundary would reject.
     maxTextChars: TELEGRAM_MAX_TEXT_UTF16_UNITS,
     receiptOwnerId: installationReceiptOwnerId,
-    // Without this, every receipt reserve/settle/release failure and every
-    // submit or completion-registration throw is silent — exactly the states
-    // in which an inbound message is permanently lost.
+    // Without this, every receipt reserve/settle/release failure and every submit or completion-registration throw is silent — exactly the states in which
+    // an inbound message is permanently lost.
     ...(options.log ? { log: options.log } : {}),
   });
 
-  // Created before ingress so the first polled press already has a handler,
-  // and disposed on every teardown path below so no card can outlive the
+  // Created before ingress so the first polled press already has a handler, and disposed on every teardown path below so no card can outlive the
   // activation that minted its tokens.
   const remoteApproval = plan.createRemoteApproval?.(runtime);
   let ingress: TelegramIngressHandle;
@@ -1177,17 +966,12 @@ function takeActiveBridge(): ActiveTelegramBridge | null {
 }
 
 async function closeBridge(bridge: ActiveTelegramBridge): Promise<void> {
-  // Invalidate first: an in-flight webhook that already passed header parsing
-  // cannot reserve a new command or publish a queued provider send afterwards.
-  // The remote-approval detach is part of the same invalidation — a press
-  // arriving mid-teardown must find no live token.
+  // Invalidate first: an in-flight webhook that already passed header parsing cannot reserve a new command or publish a queued provider send afterwards.
+  // The remote-approval detach is part of the same invalidation — a press arriving mid-teardown must find no live token.
   bridge.remoteApproval?.dispose();
   bridge.deliveryDestinations.clear();
   bridge.runtime.dispose();
-  // Drain before closing, not after: waitForIdle resolves immediately once a
-  // channel is closed, so the order decides whether this waits at all. The
-  // bound exists because an already-dispatched Bot API request owns its own
-  // timeout and cannot be recalled.
+  // Drain before closing: closed channels report idle immediately, and dispatched requests remain subject to their own timeout.
   await drainOpenChannels(bridge.channels);
   bridge.delivery.close();
   await bridge.ingress.close();
@@ -1213,26 +997,19 @@ async function drainOpenChannels(
   }
 }
 
-/**
- * Ask the running activation, if any, to poll Telegram now — the machine woke
- * from sleep or came back online. Returns whether there was one to ask; with
- * none it does nothing, so a wake can never start a bridge the owner stopped.
- */
+// Ask the running activation, if any, to poll Telegram now — the machine woke from sleep or came back online. Returns whether there was one to ask; with
+// none it does nothing, so a wake can never start a bridge the owner stopped.
 export function nudgeTelegramBridgeServer(): boolean {
   if (activeBridge === null) return false;
   activeBridge.ingress.nudge();
   return true;
 }
 
-/**
- * Close Telegram ingress and egress. `"shutdown"` is terminal for the process;
- * `"user"` leaves this module startable so the owner can reconnect.
- */
+// Close Telegram ingress and egress. `"shutdown"` is terminal for the process; `"user"` leaves this module startable so the owner can reconnect.
 export function stopTelegramBridgeServer(
   reason: "shutdown" | "user" = "shutdown",
 ): Promise<void> {
-  // Latch synchronously at the entry point: a shutdown arriving while an
-  // owner-initiated stop is already in flight must still be terminal.
+  // Latch synchronously at the entry point: a shutdown arriving while an owner-initiated stop is already in flight must still be terminal.
   if (reason === "shutdown") shutdownRequested = true;
   if (stopPromise) return stopPromise;
   const pending = stopActivation();
@@ -1243,7 +1020,7 @@ export function stopTelegramBridgeServer(
   return tracked;
 }
 
-/** @internal Test-only reset; production uses one immutable boot snapshot. */
+// @internal Test-only reset; production uses one immutable boot snapshot.
 export function resetTelegramBridgeServerForTests(): void {
   if (process.env.NODE_ENV !== "test") {
     throw new Error("telegram-bridge-test-reset-outside-test");

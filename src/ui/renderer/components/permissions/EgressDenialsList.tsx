@@ -1,13 +1,4 @@
-/**
- * Settings → Permissions → Network: the connections the sandbox proxy refused
- * in the last 24 hours, newest first, each with the tool call, terminal tab or
- * plugin process that opened it.
- *
- * The rows are read back from the sandbox audit channel (main:
- * `readRecentSandboxEgressDenials`), so this list and the audit log are one
- * record and the list survives a restart. Read-only: which hosts are allowed
- * is not decided here.
- */
+/** Read-only denials come from the persisted sandbox audit channel; grants are decided elsewhere. */
 import { useCallback, useEffect, useState, type ReactElement } from "react";
 import { Button } from "../../../../components/ui/button.js";
 import { useTranslation } from "../../../../i18n/react.js";
@@ -33,8 +24,8 @@ function egressDenialSourceText(source: EgressDenialSource): string {
         : t("permissionsTab.networkDenialSourceShellCall", { tool, id: source.toolUseId });
     }
     case "terminal":
-      // The tab's visible name where this window showed it; otherwise its id
-      // (a denial can outlive the tab, and the id is what the audit row names).
+      // The tab's visible name where this window showed it; otherwise its id (a denial can outlive the tab, and the id is what
+      // the audit row names).
       return t("permissionsTab.networkDenialSourceTerminal", { tab: terminalTabLabel(source.tabId) ?? source.tabId });
     case "worker": {
       const extension = source.pluginId ?? "";
@@ -53,8 +44,8 @@ function egressDenialSourceText(source: EgressDenialSource): string {
     case "unattributed":
       return t("permissionsTab.networkDenialSourceUnattributed");
   }
-  // A row written by a newer build, or a damaged one: the audit file is read
-  // back, not produced here. Say so in the row instead of failing the tab.
+  // A row written by a newer build, or a damaged one: the audit file is read back, not produced here. Say so in the row
+  // instead of failing the tab.
   const kind = String((source as { kind?: unknown }).kind);
   console.warn("[egress-denials] unknown denial source", source);
   return t("permissionsTab.networkDenialSourceUnknown", { kind });

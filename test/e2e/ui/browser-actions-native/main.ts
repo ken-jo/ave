@@ -206,8 +206,7 @@ win.webContents.once("did-attach-webview", (_event, contents) => {
   guest = contents;
   trackBrowserGuest(guest, win.id);
   for (const event of ["before-input-event", "before-mouse-event", "input-event"] as const) {
-    // Native mouse observations precede their typed overload. Subscribe through
-    // the inherited event emitter and validate the actual payload at runtime.
+    // Subscribe through the inherited event emitter and validate native payloads before typed overload support.
     EventEmitter.prototype.on.call(guest, event, (_event: unknown, input: unknown) => { recordNativeInput(event, input); });
   }
   const bind = () => {

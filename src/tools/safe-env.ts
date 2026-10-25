@@ -1,23 +1,7 @@
-/**
- * Safe child-process environment builder.
- *
- * Whitelist-based forwarding of environment variables to spawned children.
- * Every caller that shells out (bash tool, external command hooks) MUST go
- * through {@link buildSafeChildEnv} so that secrets stored in the host
- * process env (API keys, auth tokens, etc.) are NEVER visible to the
- * child. The generic baseline strips anything not explicitly listed in
- * {@link FORWARD_ENV_KEYS}, including provider keys and internal tokens.
- * Host-created extras and the scoped shell/sandbox builders below add only
- * the environment their caller explicitly supplies or opts into forwarding.
- */
+// Every child spawn must use the safe allowlist baseline so host secrets cannot leak.
+// Only explicitly host-created extras or scoped shell/sandbox forwarding may add variables.
 
-/**
- * Environment variables safe to forward to child processes. Only generic
- * shell / locale / path variables needed for most tools to run correctly.
- * Windows profile/system vars are included because Store/launcher-backed
- * interpreters need them to find their own runtime state. Provider API keys
- * and Ave-internal variables are intentionally omitted.
- */
+// Forward generic runtime keys, including Windows launcher state; exclude provider keys and internal secrets.
 export const FORWARD_ENV_KEYS = [
   "PATH",
   "HOME",
@@ -49,16 +33,7 @@ export const FORWARD_ENV_KEYS = [
   "PWD",
 ] as const;
 
-/**
- * Build a minimal environment for a spawned child process.
- *
- * @param extra Additional key/value pairs to merge on top of the safe
- *   baseline. Typically used by hook runners to set `AVE_HOOK_*`
- *   variables that the child explicitly needs. Keys in `extra` override
- *   the whitelist if they happen to collide.
- * @returns A fresh object containing only the whitelisted variables
- *   plus `extra`. Suitable for passing directly as `spawn`'s `env`.
- */
+// Return a fresh safe environment; explicit host-created extras override baseline keys.
 export function buildSafeChildEnv(
   extra: Record<string, string> = {},
 ): Record<string, string> {
@@ -102,12 +77,7 @@ const HOST_SHELL_NETWORK_ENV_KEYS = [
   ...CA_TRUST_ENV_KEYS,
 ] as const;
 
-/**
- * Plain host shells retain the operator's configured network route and trust
- * paths. Keep this separate from the generic baseline: sandbox children
- * receive only their wrapper's network settings, never ambient proxy or trust
- * configuration. Explicit host-created extras retain the same precedence.
- */
+// Plain host shells preserve operator proxy and trust settings; sandbox children receive only wrapper network configuration.
 export function buildHostShellChildEnv(
   extra: Record<string, string> = {},
 ): Record<string, string> {
@@ -119,31 +89,15 @@ export function buildHostShellChildEnv(
   return { ...env, ...extra };
 }
 
-/**
- * The exact set of environment variables ASRT is permitted to add or change on
- * the sandboxed child's env. Sourced from the sandbox-runtime egress plumbing
- * (`dist/sandbox/sandbox-utils.js` — `CA_TRUST_VARS` + the per-tool proxy
- * `envVars.push(...)` block + `TMPDIR`). Anything ASRT might emit outside this
- * list is NOT propagated.
- *
- * Why an explicit allow-list: the previous
- * "overlay any wrapped.env key that DIFFERS from process.env" rule was
- * open-ended. A stripped secret only stays stripped because its value happens
- * to be identical in `process.env` and `wrapped.env`. If a future ASRT version
- * MUTATED an existing host var that also held a secret (e.g. re-exported a
- * provider key under a new value), the "differs" test would match and the
- * secret would re-leak past the {@link buildSafeChildEnv} whitelist. Pinning
- * the propagated keys to this known list closes that re-leak by construction.
- */
+// Permit only documented wrapper proxy, trust, and temporary-directory changes.
+// Comparing values alone could reintroduce a stripped secret if the wrapper mutates it.
 const ASRT_SANDBOX_ENV_KEYS: ReadonlySet<string> = new Set([
-  // Proxy vars (upper + lower case) ASRT points at its localhost egress proxy.
   ...PROXY_ENV_KEYS,
   "FTP_PROXY",
   "RSYNC_PROXY",
   "GRPC_PROXY",
   "ftp_proxy",
   "grpc_proxy",
-  // Per-tool proxy + proxy-auth vars ASRT sets for specific clients.
   "DOCKER_HTTP_PROXY",
   "DOCKER_HTTPS_PROXY",
   "CLOUDSDK_PROXY_TYPE",
@@ -153,15 +107,9 @@ const ASRT_SANDBOX_ENV_KEYS: ReadonlySet<string> = new Set([
   "CLOUDSDK_PROXY_PASSWORD",
   "GIT_CONFIG_PARAMETERS",
   "GIT_SSH_COMMAND",
-  // CA-trust store vars pointed at the TLS-termination CA cert (CA_TRUST_VARS).
   ...CA_TRUST_ENV_KEYS,
-  // Sandbox-scoped temp dir.
   "TMPDIR",
-  // Windows (srt-win) emits this benign marker on the sandboxed child's env so
-  // the child can tell it is running inside the sandbox. It carries no secret,
-  // but it IS an env mutation ASRT makes — allow-list it so the honest
-  // "propagate exactly what ASRT changed" contract stays complete rather than
-  // silently dropping a key ASRT actually set.
+  // Preserve the secret-free Windows sandbox marker through the same explicit wrapper allowlist.
   "SANDBOX_RUNTIME",
 ]);
 
@@ -169,31 +117,13 @@ const ASRT_SANDBOX_ENV_KEYS_LOWER: ReadonlySet<string> = new Set(
   [...ASRT_SANDBOX_ENV_KEYS].map((key) => key.toLowerCase()),
 );
 
-/**
- * Whether a variable is one ASRT sets for a sandboxed child itself — its
- * proxy, CA trust and sandbox markers. Case-insensitive, as Windows compares
- * names: a caller handing srt-win a target environment by another route
- * (`confined-child.ts` `srtWinTargetEnv`) leaves these to the wrapper.
- */
+// Match wrapper-managed proxy, trust, and sandbox keys case-insensitively, leaving them to the wrapper.
 export function isSandboxWrapperEnvKey(name: string): boolean {
   return ASRT_SANDBOX_ENV_KEYS_LOWER.has(name.toLowerCase());
 }
 
-/**
- * Compose the env for an ASRT-sandboxed child.
- *
- * ASRT's `wrapWithSandboxArgv` returns `env` = the parent `process.env` plus
- * the proxy / CA-cert variables it ADDS for sandbox networking (HTTP_PROXY,
- * ALL_PROXY, NODE_EXTRA_CA_CERTS, …). Passing that env verbatim would leak the
- * host secrets the {@link buildSafeChildEnv} whitelist exists to strip.
- *
- * We start from the safe whitelist baseline and overlay ONLY the keys in
- * {@link ASRT_SANDBOX_ENV_KEYS} (the explicit, known set ASRT is allowed to
- * inject). A key is propagated only when it is allow-listed AND ASRT actually
- * set/changed it relative to `process.env` — so a host var ASRT left untouched
- * never leaks, and a non-allow-listed key ASRT might emit is never propagated
- * even if it differs from `process.env`.
- */
+// Start from the safe baseline and overlay only allowlisted keys actually changed by the wrapper.
+// Never forward its full inherited environment or untouched host values.
 export function buildSandboxedChildEnv(
   wrappedEnv: NodeJS.ProcessEnv,
   extra: Record<string, string> = {},
@@ -211,7 +141,7 @@ export function overlaySandboxChildEnv(
   for (const key of ASRT_SANDBOX_ENV_KEYS) {
     const value = wrappedEnv[key];
     if (value === undefined) continue;
-    if (wrapperBaseline[key] === value) continue; // ASRT left it untouched
+    if (wrapperBaseline[key] === value) continue;
     env[key] = value;
   }
   return env;

@@ -1,13 +1,4 @@
-/**
- * The page chrome, whole: the outer page frame (`PageShell`), the unframed
- * section grouping inside it (`SettingsSection`), the settings page header, and
- * the "?" help popover that the header and the section both render.
- *
- * They live together because they only make sense together — the header and the
- * section each render the popover, and a reader asking "how is a page laid out"
- * should find the whole answer in one place. There is exactly one section
- * implementation; a second name for it is a copy waiting to drift.
- */
+/** Share page headers, sections and help popovers so settings chrome has one implementation. */
 import { type ReactNode } from "react";
 import { cn } from "../../../lib/utils.js";
 import {
@@ -62,9 +53,8 @@ export interface PageShellProps {
 
 const maxWidthClass: Record<NonNullable<PageShellProps["maxWidth"]>, string> = {
   none: "max-w-none",
-  // The same `--reading-column-max` ChatView's conversation column takes, so a
-  // paned view — e.g. an inline plugin panel — lines up with the chat reading
-  // column instead of sprawling to the full main-pane width.
+  // The same `--reading-column-max` ChatView's conversation column takes, so a paned view — e.g. an inline plugin panel —
+  // lines up with the chat reading column instead of sprawling to the full main-pane width.
   reading: "max-w-(--reading-column-max)",
   "5xl": "max-w-5xl",
   "6xl": "max-w-6xl",

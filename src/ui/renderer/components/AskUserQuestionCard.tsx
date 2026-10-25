@@ -1,7 +1,3 @@
-
-
-
-
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { isComposingKeyEvent } from "../utils/ime-key-event.js";
 import { Button } from "../../../components/ui/button.js";
@@ -17,29 +13,20 @@ import type { AveApi } from "../types.js";
 interface AskUserQuestionItem {
   question: string;
   choices: string[];
-  /**
-   * Index in `choices` of the model's top recommendation. 0 or 1 entry
-   * across the array (the prompt enforces; the UI ignores anything past
-   * the first true `recommend`).
-   */
+  /** Index in `choices` of the model's top recommendation. 0 or 1 entry across the array (the prompt enforces; the UI ignores
+   * anything past the first true `recommend`). */
   recommendedIndex?: number;
-  /**
-   * Indices in `choices` of secondary recommendations. Disjoint with
-   * `recommendedIndex` — duplicates collapse to the recommend slot.
-   */
+  /** Indices in `choices` of secondary recommendations. Disjoint with `recommendedIndex` — duplicates collapse to the
+   * recommend slot. */
   altIndices?: number[];
   allowMultiple?: boolean;
-  /**
-   * Renders a free-text field as the last answer row. A typed answer exists
-   * only where the tool asked for one; it is never a choice label.
-   */
+  /** Renders a free-text field as the last answer row. A typed answer exists only where the tool asked for one; it is never a
+   * choice label. */
   allowFreeText?: boolean;
   /** Placeholder for that field. Falls back to a generic prompt when absent. */
   placeholder?: string;
-  /**
-   * Short row label used by the confirm-step review. Korean ≤ 10 chars
-   * by prompt contract. Falls back to a truncated `question` when absent.
-   */
+  /** Short row label used by the confirm-step review. Korean ≤ 10 chars by prompt contract. Falls back to a truncated
+   * `question` when absent. */
   summaryHint?: string;
 }
 
@@ -53,17 +40,11 @@ export interface AskUserQuestionRequest {
 
 interface DraftAnswer {
   choice?: string;
-  /**
-   * Index in the question's `choices` array of the selected chip. Carried
-   * alongside `choice` so selection and keyboard movement stay bound to the
-   * ordered choice slot instead of mutable rendered text.
-   */
+  /** Index in the question's `choices` array of the selected chip. Carried alongside `choice` so selection and keyboard
+   * movement stay bound to the ordered choice slot instead of mutable rendered text. */
   choiceIndex?: number;
-  /**
-   * Multi-select: indices of every chip in the selection set, in click
-   * order. Mutually exclusive with `choice`/`choiceIndex` per draft — the
-   * UI sets one path or the other based on `item.allowMultiple`.
-   */
+  /** Multi-select: indices of every chip in the selection set, in click order. Mutually exclusive with `choice`/`choiceIndex`
+   * per draft — the UI sets one path or the other based on `item.allowMultiple`. */
   choiceIndices?: number[];
   /** What the user typed into the free-text field, when the question has one. */
   freeText?: string;
@@ -105,8 +86,8 @@ function describeAnswer(item: AskUserQuestionItem, draft: DraftAnswer): string {
     : draft.choice
       ? [draft.choice]
       : [];
-  // Same renderer as the transcript recap row, so the confirm page and the
-  // bubble that survives a reload cannot describe one answer two ways.
+  // Same renderer as the transcript recap row, so the confirm page and the bubble that survives a reload cannot describe one
+  // answer two ways.
   return formatAskUserAnswer(picks, draftFreeText(item, draft)) || t("askUserQuestionCard.noAnswer");
 }
 
@@ -156,15 +137,15 @@ export function AskUserQuestionCard({
   const currentItem = onConfirmStep ? null : request.questions[step];
   const currentDraft = drafts[step];
 
-  // New request → reset all internal state. The id is the discriminator
-  // so re-rendering the same card with the same questions keeps state.
+  // New request → reset all internal state. The id is the discriminator so re-rendering the same card with the same
+  // questions keeps state.
   useEffect(() => {
     setStep(0);
     setDrafts(request.questions.map(() => ({})));
   }, [request.id, request.questions]);
 
-  // Keep focus on the active question's first answer so keyboard navigation
-  // restarts from item 1 after every step transition.
+  // Keep focus on the active question's first answer so keyboard navigation restarts from item 1 after every step
+  // transition.
   useEffect(() => {
     if (onConfirmStep) return;
     const frame = requestAnimationFrame(() => {
@@ -173,8 +154,8 @@ export function AskUserQuestionCard({
         // Focus already on an answer: keyboard navigation is under way.
         if (active !== cardRef.current) return;
       } else if (!focusIsFreeFor(cardRef.current)) {
-        // Focus is outside this card's surface — a user typing in another
-        // tile — and a question they did not ask must not pull it away.
+        // Focus is outside this card's surface — a user typing in another tile — and a question they did not ask must not pull it
+        // away.
         return;
       }
       if (!questionFormRef.current?.focusFirstAnswer()) {
@@ -240,8 +221,8 @@ export function AskUserQuestionCard({
 
   const dismiss = () => void respondAndClose({ dismissed: true });
 
-  // Single-question path: pick a choice → submit immediately. No pagination,
-  // no confirm step — same UX as the prior single-question card.
+  // Single-question path: pick a choice → submit immediately. No pagination, no confirm step — same UX as the prior
+  // single-question card.
   const goNext = () => {
     if (!currentItem) return;
     if (!isMulti) {
@@ -265,9 +246,8 @@ export function AskUserQuestionCard({
     return true;
   };
 
-  // Validates against the *current* draft at call time rather than at render
-  // time, so free-text Enter fires after the keystroke that completed the
-  // draft rather than one keystroke behind it.
+  // Validates against the *current* draft at call time rather than at render time, so free-text Enter fires after the
+  // keystroke that completed the draft rather than one keystroke behind it.
   const handleSubmit = useCallback(() => {
     if (currentItem && isAnswerComplete(currentItem, currentDraft)) {
       goNext();
@@ -310,10 +290,8 @@ export function AskUserQuestionCard({
           if (goNextByKeyboard()) e.preventDefault();
           return;
         }
-        // ArrowUp/Down on the card surface (not inside a choice button)
-        // delegates to the QuestionForm's roving-tabIndex
-        // answer navigation. This restores the regression where Up/Down had
-        // no effect when focus sat on the card container itself.
+        // ArrowUp/Down on the card surface (not inside a choice button) delegates to the QuestionForm's roving-tabIndex answer
+        // navigation. This restores the regression where Up/Down had no effect when focus sat on the card container itself.
         if ((e.key === "ArrowUp" || e.key === "ArrowDown") && !textEditingTarget && !onConfirmStep) {
           const handled = questionFormRef.current?.arrowNav(e.key === "ArrowDown" ? 1 : -1);
           if (handled) e.preventDefault();
@@ -349,10 +327,8 @@ export function AskUserQuestionCard({
             disabled={submitting}
             onChoose={(choice, choiceIndex) => {
               if (currentItem.allowMultiple) {
-                // Multi-select: toggle this index in/out of the set.
-                // Always returns "incomplete" — even when a chip is now in
-                // the set, submission must wait for explicit 보내기/다음 so
-                // the user can pick additional chips.
+                // Multi-select: toggle this index in/out of the set. Always returns "incomplete" — even when a chip is now in the set,
+                // submission must wait for explicit 보내기/다음 so the user can pick additional chips.
                 const prev = currentDraft.choiceIndices ?? [];
                 const exists = prev.includes(choiceIndex);
                 const nextIndices = exists
@@ -360,8 +336,7 @@ export function AskUserQuestionCard({
                   : [...prev, choiceIndex];
                 setAnswer(step, {
                   choiceIndices: nextIndices,
-                  // Multi-select is additive: a typed answer sits beside the
-                  // picked chips rather than replacing them.
+                  // Multi-select is additive: a typed answer sits beside the picked chips rather than replacing them.
                   freeText: currentDraft.freeText,
                 });
                 return { kind: "incomplete" };
@@ -369,14 +344,12 @@ export function AskUserQuestionCard({
               const newDraft = { choice, choiceIndex };
               setAnswer(step, newDraft);
               if (!isMulti) {
-                // Single-question single-select path: respondAndClose handles
-                // everything. Return "closed" so the keyboard handler does NOT
+                // Single-question single-select path: respondAndClose handles everything. Return "closed" so the keyboard handler does NOT
                 // call onAdvance() — doing so would be a redundant double advance.
                 void respondAndClose({ answers: [{ choice }] });
                 return { kind: "closed" };
               }
-              // Multi-step path: signal "advance" when the draft is complete
-              // so the keyboard handler calls onAdvance() (goNext), or
+              // Multi-step path: signal "advance" when the draft is complete so the keyboard handler calls onAdvance() (goNext), or
               // "incomplete" when further input is needed.
               if (isAnswerComplete(currentItem, newDraft)) {
                 return { kind: "advance" };
@@ -384,8 +357,7 @@ export function AskUserQuestionCard({
               return { kind: "incomplete" };
             }}
             onFreeText={(freeText) => {
-              // Multi-select keeps the picked chips. Single-select overwrites:
-              // the question has one answer, so typing means the user is
+              // Multi-select keeps the picked chips. Single-select overwrites: the question has one answer, so typing means the user is
               // changing it away from the chip they had picked.
               if (currentItem.allowMultiple) {
                 setAnswer(step, { choiceIndices: currentDraft.choiceIndices, freeText });
@@ -454,10 +426,8 @@ export function AskUserQuestionCard({
             {!isMulti &&
               currentItem &&
               (currentItem.allowFreeText || currentItem.allowMultiple) && (
-                // Single-question card surfaces 보내기 whenever click-to-submit
-                // cannot carry the answer: multi-select needs an explicit
-                // confirm, and a typed answer has no chip to click.
-                // Single-select chip-only cards keep the click-to-submit shortcut.
+                // Single-question card surfaces 보내기 whenever click-to-submit cannot carry the answer: multi-select needs an explicit
+                // confirm, and a typed answer has no chip to click. Single-select chip-only cards keep the click-to-submit shortcut.
                 <Button
                   size="sm"
                   disabled={submitting || !isAnswerComplete(currentItem, currentDraft)}
@@ -519,7 +489,6 @@ function KeyboardHint({
     </div>
   );
 }
-
 
 function isTextEditingTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
@@ -586,10 +555,7 @@ interface QuestionFormProps {
   /** Returns a ChoiceResult signalling what the keyboard handler should do next. */
   onChoose: (choice: string, choiceIndex: number) => ChoiceResult;
   onFreeText: (text: string) => void;
-  /**
-   * Called on free-text Enter. The draft is already current because the
-   * textarea's onChange fires before its onKeyDown.
-   */
+  /** Called on free-text Enter. The draft is already current because the textarea's onChange fires before its onKeyDown. */
   onSubmit: () => void;
   /**
    * Called by the keyboard choice handler when onChoose returns { kind: "advance" }.
@@ -613,8 +579,8 @@ const QuestionForm = forwardRef<QuestionFormHandle, QuestionFormProps>(function 
   const choices = choicesOf(item);
   const recommend = recommendIndex(item);
   const alts = altIndices(item);
-  // The free-text field is the last answer row, so it takes the slot after the
-  // chips in the same roving-tabIndex sequence the arrow keys walk.
+  // The free-text field is the last answer row, so it takes the slot after the chips in the same roving-tabIndex sequence
+  // the arrow keys walk.
   const freeTextIndex = item.allowFreeText ? choices.length : -1;
   const answerCount = choices.length + (item.allowFreeText ? 1 : 0);
   // Roving tabIndex: track which choice button has the "tab stop".
@@ -625,9 +591,8 @@ const QuestionForm = forwardRef<QuestionFormHandle, QuestionFormProps>(function 
   // arrowNav(-1) from card surface: focusAnswerAt(-1 - 1) = -2 → wraps to last.
   const [focusedIdx, setFocusedIdx] = useState<number>(() => {
     if (item.allowMultiple && draft.choiceIndices && draft.choiceIndices.length > 0) {
-      // For multi-select, seed focus to the last-toggled index so the user
-      // continues navigating from where they left off rather than jumping
-      // back to the recommend slot.
+      // For multi-select, seed focus to the last-toggled index so the user continues navigating from where they left off rather
+      // than jumping back to the recommend slot.
       return draft.choiceIndices[draft.choiceIndices.length - 1];
     }
     return draft.choiceIndex ?? (recommendIndex(item) ?? -1);
@@ -730,17 +695,14 @@ const QuestionForm = forwardRef<QuestionFormHandle, QuestionFormProps>(function 
           className="flex flex-col gap-1"
         >
           {choices.map((c, i) => {
-            // Selection compares by index, not by label — duplicate
-            // choice strings would otherwise mark every same-label chip
-            // as selected at once. The index-prefixed React key below is
-            // the same defense applied to reconciliation.
+            // Selection compares by index, not by label — duplicate choice strings would otherwise mark every same-label chip as
+            // selected at once. The index-prefixed React key below is the same defense applied to reconciliation.
             const selected = item.allowMultiple
               ? Boolean(draft.choiceIndices?.includes(i))
               : draft.choiceIndex === i;
             const showRecommend = recommend === i;
             const showAlt = alts.has(i);
-            // Roving tabIndex: only the focused item (or selected item when
-            // none is explicitly focused) is in the tab order.
+            // Roving tabIndex: only the focused item (or selected item when none is explicitly focused) is in the tab order.
             const isTabStop = focusedIdx === i || (focusedIdx < 0 && i === 0);
             const focused = focusedIdx === i;
             return (
@@ -782,8 +744,7 @@ const QuestionForm = forwardRef<QuestionFormHandle, QuestionFormProps>(function 
         <Textarea
           ref={inputRef}
           rows={2}
-          // The gate refuses a longer answer, and a refusal the card cannot
-          // explain reads as a send button that does nothing.
+          // The gate refuses a longer answer, and a refusal the card cannot explain reads as a send button that does nothing.
           maxLength={MAX_FREE_TEXT_LENGTH}
           value={draft.freeText ?? ""}
           onChange={(e) => onFreeText(e.target.value)}
@@ -801,8 +762,7 @@ const QuestionForm = forwardRef<QuestionFormHandle, QuestionFormProps>(function 
               focusAnswerAt(freeTextIndex - 1);
               return;
             }
-            // Enter sends, Shift+Enter keeps the newline — the same split the
-            // composer uses, so a multi-line answer stays possible.
+            // Enter sends, Shift+Enter keeps the newline — the same split the composer uses, so a multi-line answer stays possible.
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
               e.stopPropagation();
@@ -861,10 +821,8 @@ function ConfirmReview({
 }
 
 function truncateForLabel(question: string): string {
-  // Confirm-row label fallback when the model omits `summaryHint`.
-  // Kept short (≈ 14 Korean chars) so the row matches the spec target
-  // of ≤ 10 chars in most cases without dropping mid-noun in pathological
-  // long questions.
+  // Confirm-row label fallback when the model omits `summaryHint`. Kept short (≈ 14 Korean chars) so the row matches the
+  // spec target of ≤ 10 chars in most cases without dropping mid-noun in pathological long questions.
   const trimmed = question.trim();
   if (trimmed.length <= 14) return trimmed;
   return `${trimmed.slice(0, 13)}…`;

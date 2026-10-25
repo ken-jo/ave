@@ -8,14 +8,12 @@ export type PluginAuthState =
   | { kind: "error"; message: string };
 
 function parseStatusResult(raw: unknown): PluginAuthState {
-  // Defensive parse — plugin may return additional fields; we only consume
-  // two. architecture.md §9.4a Host UI Surface contract; outputSchema
-  // validation is a separate cross-cutting follow-up.
+  // Defensive parse — plugin may return additional fields; we only consume two. architecture.md §9.4a Host UI Surface
+  // contract; outputSchema validation is a separate cross-cutting follow-up.
   if (raw && typeof raw === "object") {
     const r = raw as Partial<PluginAuthStatusResult>;
-    // Plugin contract: statusTool MUST return literal `true` (boolean), not
-    // truthy values like 1, "true", or non-empty strings. String "false" is
-    // truthy in JS — Boolean() would misclassify it as authenticated.
+    // Plugin contract: statusTool MUST return literal `true` (boolean), not truthy values like 1, "true", or non-empty
+    // strings. String "false" is truthy in JS — Boolean() would misclassify it as authenticated.
     if (r.authenticated === true) {
       return {
         kind: "authed",
@@ -31,23 +29,8 @@ function isRuntimeCallablePlugin(plugin: PluginCardSummary): boolean {
   return plugin.runtimeLoaded ?? (plugin.loadStatus === "loaded");
 }
 
-/**
- * Event-driven auth-status tracker for every loaded plugin that declares
- * `manifest.auth` (architecture.md §9.4a). Fetches statusTool once on
- * mount and re-fetches on each `<pluginId>.auth.changed` event the plugin
- * emits — **no polling timer**. A manual `refresh` callback is also
- * returned for callers that just triggered login/logout.
- *
- * Plugins are filtered by `runtimeLoaded` — inactive plugins still have a live
- * runtime, so auth/config checks remain available while their tools are hidden
- * from the model. Failed/preparing plugins have no callable runtime.
- *
- * Implementation note: the effect dep is a JSON cache-key derived from the
- * auth-bearing entries — not the `plugins` array reference — because the
- * caller (PluginConfigTab) recomputes the cards array on every refresh
- * cycle. Using the array reference would re-subscribe on every parent
- * render, leaking event listeners and re-firing statusTool indefinitely.
- */
+/** Fetch auth status on mount and auth-change events, filtering callable runtimes; key subscriptions by auth-bearing
+ * entries, not array identity. */
 export function usePluginAuthStatuses(
   api: AveApi | null,
   plugins: PluginCardSummary[],
@@ -57,8 +40,8 @@ export function usePluginAuthStatuses(
 } {
   const [statuses, setStatuses] = useState<Map<string, PluginAuthState>>(new Map());
 
-  // Always-current view of which plugins declare auth, so callbacks captured
-  // in the effect closure don't need to be re-bound when `plugins` changes.
+  // Always-current view of which plugins declare auth, so callbacks captured in the effect closure don't need to be re-bound
+  // when `plugins` changes.
   const pluginsRef = useRef(plugins);
   pluginsRef.current = plugins;
 
@@ -133,9 +116,8 @@ export function usePluginAuthStatuses(
       return;
     }
 
-    // Seed loading state for plugins we haven't observed yet (avoids the
-    // "missing badge → suddenly red" flicker when the IPC roundtrip
-    // returns and the state map gains a new key).
+    // Seed loading state for plugins we haven't observed yet (avoids the "missing badge → suddenly red" flicker when the IPC
+    // roundtrip returns and the state map gains a new key).
     setStatuses((prev) => {
       const next = new Map(prev);
       for (const p of authPlugins) {

@@ -1,11 +1,4 @@
-/**
- * Bookkeeping for one in-flight JSON-RPC request awaiting its response.
- *
- * Shared by every request/response client the host runs over a child process
- * or SSE stream (MCP, Codex app-server, ACP runtime and session). It lives in
- * lib/ because none of those transports owns the others; each client extends
- * it with the fields only its own timeout policy needs.
- */
+/** Share pending-request settlement across child and SSE clients; each transport retains its own timeout policy. */
 export interface PendingJsonRpcRequest<Timer = NodeJS.Timeout> {
   resolve: (value: unknown) => void;
   reject: (reason: Error) => void;
@@ -16,17 +9,14 @@ interface PendingReply extends PendingJsonRpcRequest {
   method: string;
 }
 
-/** Owns request identities and settlement; callers own protocol and close policy. */
 export class JsonRpcPendingRequests {
   private nextId = 1;
   private readonly requests = new Map<number, PendingReply>();
 
-  /** Allows an exact wire-size preflight without registering a request. */
   get nextRequestId(): number {
     return this.nextId;
   }
 
-  /** Reserve an ID for a request whose reply is intentionally not awaited. */
   allocateId(): number {
     return this.nextId++;
   }

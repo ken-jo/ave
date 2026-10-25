@@ -1,12 +1,4 @@
-/**
- * Host-owned conversation command entrypoint.
- *
- * Every interactive surface eventually reaches this port. It binds a trusted
- * transport actor to a closed command union, mints the input provenance that
- * actor is allowed to claim, and shares the one timeline/turn lease. A
- * surface never supplies either its actor identity or an elevated
- * `user-keyboard` provenance in a request body.
- */
+// Trusted transports supply actor identity and allowed input provenance; request bodies cannot claim either or elevate to user-keyboard.
 import type { TurnResult } from "../engine/conversation-loop.js";
 import {
   createPlatformTurnId,
@@ -52,17 +44,17 @@ function isPlatformBridgeActorOptions(
     && typeof (candidate.bridgeGuard as PlatformBridgeGuard).isCurrent === "function";
 }
 
-/** Paired external-platform authority can only be minted by a verified host adapter. */
+// Paired external-platform authority can only be minted by a verified host adapter.
 export interface PlatformBridgeActorOptions {
   readonly bridgeBinding: PlatformBridgeBinding;
   readonly bridgeGuard: PlatformBridgeGuard;
 }
 
-/** Paired authority can only be minted by a host-owned remote adapter. */
+// Paired authority can only be minted by a host-owned remote adapter.
 export interface TailnetPairedControllerActorOptions {
-  /** Local pairing/share binding resolved before command admission. */
+  // Local pairing/share binding resolved before command admission.
   readonly pairedShare: TailnetPairingShareBinding;
-  /** Host-private revocation guard; never accepted from a remote request. */
+  // Host-private revocation guard; never accepted from a remote request.
   readonly pairedShareGuard: TailnetPairedShareGuard;
 }
 
@@ -80,7 +72,7 @@ type PlatformBridgeConversationCommandActor = {
   readonly bridgeGuard: PlatformBridgeGuard;
 };
 
-/** Actors minted by host-owned surface adapters, never parsed from a request. */
+// Actors minted by host-owned surface adapters, never parsed from a request.
 export type ConversationCommandActor =
   | { readonly kind: "desktop-owner"; readonly actorId: "desktop-local" }
   | { readonly kind: "external-surface"; readonly actorId: "loopback-local" }
@@ -97,7 +89,7 @@ export const LOOPBACK_CONVERSATION_ACTOR: ConversationCommandActor = Object.free
   actorId: "loopback-local",
 });
 
-/** Build a non-forgeable-at-the-wire Tailnet controller actor from a host digest. */
+// Build a non-forgeable-at-the-wire Tailnet controller actor from a host digest.
 export function createTailnetControllerActor(
   identityDigest: string,
   paired?: TailnetPairedControllerActorOptions,
@@ -122,7 +114,7 @@ export function createTailnetControllerActor(
 
 }
 
-/** Build a paired external-platform actor from a verified host identity digest. */
+// Build a paired external-platform actor from a verified host identity digest.
 export function createPlatformBridgeActor(
   identityDigest: string,
   paired: PlatformBridgeActorOptions,
@@ -141,18 +133,15 @@ export function createPlatformBridgeActor(
   });
 }
 
-/**
- * Host-private cancellation capability added by a remote adapter only after it
- * has persisted the corresponding public turn handle. It never crosses a wire
- * payload and cannot be minted by a renderer, CLI JSON body, or webhook.
- */
-interface HostOwnedPublicTurn {
+// Host-private cancellation capability added by a remote adapter only after it has persisted the corresponding public turn handle. It never crosses a
+// wire payload and cannot be minted by a renderer, CLI JSON body, or webhook.
+export interface HostOwnedPublicTurn {
   readonly turnId: string;
   readonly abortController: AbortController;
 }
 
-/** Closed command vocabulary. New commands require an explicit actor policy. */
-type ConversationCommand =
+// Closed command vocabulary. New commands require an explicit actor policy.
+export type ConversationCommand =
   | {
       readonly kind: "message.send";
       readonly payload: unknown;
@@ -163,15 +152,15 @@ type ConversationCommand =
       readonly turnId: string;
     };
 
-type ConversationCommandResult =
+export type ConversationCommandResult =
   | TurnResult
   | { readonly ok: true; readonly cancelled: true }
   | { readonly ok: false; readonly error: string };
 
-/** A turn lease already acquired by the command port, with async completion. */
-interface ConversationCommandSubmission {
+// A turn lease already acquired by the command port, with async completion.
+export interface ConversationCommandSubmission {
   readonly completion: Promise<ConversationCommandResult>;
-  /** Returned only for a host-minted remote public turn. */
+  // Returned only for a host-minted remote public turn.
   readonly publicTurnId?: string;
 }
 
@@ -180,25 +169,18 @@ export interface ConversationCommandPort {
     actor: ConversationCommandActor,
     command: ConversationCommand,
   ): Promise<ConversationCommandResult>;
-  /**
-   * Reserve the common turn lease synchronously and return its completion.
-   * Optional to keep existing test-only Local API adapters source-compatible;
-   * production ports always provide it for remote command adapters.
-   */
+  // Reserve the common turn lease synchronously and return its completion. Optional to keep existing test-only Local API adapters source-compatible;
+  // production ports always provide it for remote command adapters.
   submit?(
     actor: ConversationCommandActor,
     command: ConversationCommand,
   ): ConversationCommandSubmission | null;
-  /** Recheck active paired-share guards after durable pairing/share changes. */
+  // Recheck active paired-share guards after durable pairing/share changes.
   revalidatePublicTurns?(): void;
 
 }
 
-/**
- * Create the command port over the active main conversation. Production makes
- * exactly one and injects it into Electron and loopback API composition; the
- * constructor stays exportable so isolated tests can use the same boundary.
- */
+// Inject one command port over the active main conversation into desktop and loopback boundaries.
 export function createConversationCommandPort(
   deps: IpcDeps,
   runtime: ConversationSurfaceRuntime,
@@ -213,8 +195,7 @@ export function createConversationCommandPort(
     allocateStreamId: () => runtime.activity.allocateStreamId(),
     trackStreamTurn: (factory) => runtime.activity.trackTurn(factory),
   };
-  // `submit` already owns the activity lease. Re-entering `trackStreamTurn`
-  // from handleChatSend would reject its own reservation as streaming-active.
+  // `submit` already owns the activity lease. Re-entering `trackStreamTurn` from handleChatSend would reject its own reservation as streaming-active.
   const reservedContext: ChatSendContext = {
     ...context,
     trackStreamTurn: (factory) => factory(),
@@ -229,10 +210,8 @@ export function createConversationCommandPort(
     switch (command.kind) {
       case "message.send": {
         const remoteControllerAuthority = remoteControllerAuthorityFor(actor);
-        // `submit()` reserves the shared lease before its deferred factory runs.
-        // Pairing/route state can therefore change after ingress admission but
-        // before this command reaches the chat executor. Fence that gap here;
-        // `handleChatSend` repeats the check at its async/effect boundaries.
+        // `submit()` reserves the shared lease before its deferred factory runs. Pairing/route state can therefore change after ingress admission but before
+        // this command reaches the chat executor. Fence that gap here; `handleChatSend` repeats the check at its async/effect boundaries.
         if (!isRemoteControllerAuthorityCurrent(remoteControllerAuthority)) {
           return Promise.resolve({ ok: false, error: "remote-controller-revoked" });
         }
@@ -296,10 +275,7 @@ export function createConversationCommandPort(
   };
 }
 
-/**
- * Bind external message content to its host-minted provenance. Exported for
- * focused boundary tests; callers should use {@link ConversationCommandPort}.
- */
+// Bind external message content to its host-minted provenance. Exported for focused boundary tests; callers should use {@link ConversationCommandPort}.
 export function bindMessageSendPayload(
   actor: ConversationCommandActor,
   raw: unknown,
@@ -312,8 +288,7 @@ export function bindMessageSendPayload(
   return {
     input: candidate.input,
     ...(candidate.attachments === undefined ? {} : { attachments: candidate.attachments }),
-    // Deliberately ignore inputOrigin, userActivation, personaPromptId, and
-    // every future privilege-bearing field supplied by this transport.
+    // Deliberately ignore inputOrigin, userActivation, personaPromptId, and every future privilege-bearing field supplied by this transport.
     inputOrigin: actor.kind === "tailnet-controller"
       ? "tailnet-surface"
       : actor.kind === "platform-bridge" ? "platform-bridge" : "surface-user",
@@ -346,11 +321,7 @@ function remoteControllerAuthorityFor(
   return undefined;
 }
 
-/**
- * Validate a public-turn cancellation capability only at the host boundary.
- * P3 deliberately requires a current paired share; legacy unpaired P1
- * controllers retain send-only behavior and cannot mint or cancel a handle.
- */
+// Cancellation capabilities require a current paired share; unpaired controllers retain send-only authority.
 function publicTurnControlFor(
   actor: ConversationCommandActor,
   command: Extract<ConversationCommand, { readonly kind: "message.send" }>,
@@ -373,7 +344,7 @@ function publicTurnControlFor(
   });
 }
 
-/** Exact actor plus P2 binding, never serialised or accepted from a request. */
+// Exact actor plus P2 binding, never serialised or accepted from a request.
 function tailnetPublicTurnOwnerKey(actor: ConversationCommandActor): string | undefined {
   if (
     actor.kind !== "tailnet-controller"
@@ -401,7 +372,6 @@ function tailnetPublicTurnOwnerKey(actor: ConversationCommandActor): string | un
 function isPublicTurnId(value: unknown): value is string {
   return typeof value === "string" && /^tailnet-turn_[A-Za-z0-9_-]{43}$/.test(value);
 }
-
 
 function assertKnownActor(actor: ConversationCommandActor): void {
   if (
@@ -468,12 +438,7 @@ function isTailnetPairingShareBinding(
 }
 
 function isTailnetOpaqueId(value: unknown): value is string {
-  // Versions 1-8: Tailnet bindings are random v4, but the Telegram paired
-  // runtime deliberately mints DETERMINISTIC v8 bindings
-  // (`deterministicUuid`, telegram-platform-runtime.ts). A `[1-5]` nibble here
-  // rejected every real paired-lane inbound as `platform-bridge-pairing-invalid`
-  // — a gap no unit suite saw because each side was tested against a mock of
-  // the other.
+  // Opaque bindings include random v4 and deterministic v8 UUIDs; both must pass the shared validator.
   return typeof value === "string"
     && UUID_PATTERN.test(value);
 }

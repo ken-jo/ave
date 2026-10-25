@@ -7,7 +7,7 @@ async function verifyWithSystemAuthority(path: string): Promise<unknown> {
   return verifyAndPublishOperatorContainerAttestation(path);
 }
 
-/** Run the first authority-bearing boot step only after explicit evidence verifies. */
+// Run the first authority-bearing boot step only after explicit evidence verifies.
 export async function startAfterOperatorAttestation<T>(
   attestationPath: string | undefined,
   start: () => Promise<T>,

@@ -378,8 +378,7 @@ export class PluginStudioStore {
       }
     }
     const before = old ? digest(await readPackageFiles(name)) : null;
-    // Persist the pending marker before changing package bytes. A crash at any later
-    // write leaves the draft unreadable as reviewed until a successful update repairs it.
+    // Persist the pending marker before package writes so crashes cannot leave changed bytes appearing reviewed.
     draft.writeState = "pending";
     delete draft.reviewed;
     await persist(name, draft);
@@ -565,7 +564,6 @@ export class PluginStudioStore {
     const generatedProvenance = suppliedProvenance ? null : provenance(draft.parts);
     preflightImport({ ...imported, files: generatedProvenance
       ? [...imported.files, { path: "ai.agent-connector.ave/provenance.json", data: generatedProvenance }] : imported.files });
-    // The pending marker is durable before package writes, as in draft updates.
     await persist(name, draft);
     for (const file of imported.files) {
       await putFile(name, file.path, file.data);

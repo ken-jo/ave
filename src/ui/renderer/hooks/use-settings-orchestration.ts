@@ -49,11 +49,10 @@ type PendingSave =
   };
 
 export interface SettingsOrchestrationState {
-  // LLM
   /** The provider chat runs on — `llm.provider`. Moved only by an explicit pick. */
   vendor: string;
-  /** One draft per expanded provider row: rows expand independently, so a
-   *  half-typed key on one must survive the user opening another. */
+  /** One draft per expanded provider row: rows expand independently, so a half-typed key on one must survive the user opening
+   * another. */
   providerCredentialDrafts: readonly ProviderCredentialDraft[];
   setProviderCredentialDrafts: (next: readonly ProviderCredentialDraft[]) => void;
   saveProviderCredential: (input: ProviderCredentialSave) => Promise<boolean>;
@@ -80,7 +79,6 @@ export interface SettingsOrchestrationState {
   setFallbackChain: (updater: FallbackEntry[] | ((c: FallbackEntry[]) => FallbackEntry[])) => void;
   fallbackOpen: boolean;
   setFallbackOpen: (updater: boolean | ((o: boolean) => boolean)) => void;
-  // Web
   webProvider: AppSettings["webSearch"]["provider"];
   setWebProvider: (v: AppSettings["webSearch"]["provider"]) => void;
   webKeyInput: string;
@@ -108,7 +106,6 @@ export interface SettingsOrchestrationState {
   /** Move vendor and model together when the chosen model belongs elsewhere. */
   selectApiVendorModel: (vendorId: string, modelId: string) => void;
   clearMarketplaceProviderPreset: () => void;
-  // Lifecycle
   settingsLoaded: boolean;
   retiredLlmProvider: AppSettings["llm"]["retiredProvider"] | null;
   saving: boolean;
@@ -122,19 +119,10 @@ export interface SettingsOrchestrationState {
   lastSaveError: { tab: string; message: string } | null;
   /** Programmatic clear — used when the user opens the dialog fresh. */
   clearLastSaveError: () => void;
-  /**
-   * Rehydrate the in-memory LLM draft from a freshly-read settings snapshot.
-   * Used by host-managed login so the renderer cache and visible fields move
-   * together after the backend writes provider/model/key state.
-   */
+  /** Rehydrate the in-memory LLM draft from a freshly-read settings snapshot. Used by host-managed login so the renderer
+   * cache and visible fields move together after the backend writes provider/model/key state. */
   hydrateLlmFromSettings: (settings: AppSettings) => void;
-  /**
-   * Invalidates LLM draft saves that were already scheduled before the user
-   * entered the host-managed login flow. Used to stop stale manual-mode
-   * payloads from landing after login owns provider/model/key state.
-   */
-
-
+  /** Invalidate scheduled manual LLM saves when host-managed login takes ownership of provider/model/key state. */
 
   save: (tab: string) => Promise<boolean>;
   vendorInfo: VendorOption;
@@ -157,9 +145,8 @@ export function useSettingsOrchestration(
   const [processingDisplayLevel, setProcessingDisplayLevelState] = useState<ProcessingDisplayLevel>(
     DEFAULT_PROCESSING_DISPLAY_LEVEL,
   );
-  // A cross-window broadcast may arrive during the 200 ms immediate-save
-  // debounce or while a save is in flight. Preserve the newer local edit, and
-  // mark the draft clean only when the save covered its current revision.
+  // A cross-window broadcast may arrive during the 200 ms immediate-save debounce or while a save is in flight. Preserve the
+  // newer local edit, and mark the draft clean only when the save covered its current revision.
   const processingDisplayLevelDraftRef = useRef({ dirty: false, revision: 0 });
   const setProcessingDisplayLevel = useCallback((value: ProcessingDisplayLevel) => {
     processingDisplayLevelDraftRef.current.dirty = true;
@@ -190,14 +177,14 @@ export function useSettingsOrchestration(
   const [lastSaveError, setLastSaveError] = useState<{ tab: string; message: string } | null>(null);
   const clearLastSaveError = useCallback(() => setLastSaveError(null), []);
   const [settingsSnapshot, setSettingsSnapshot] = useState<AppSettings | null>(null);
-  // A migrated default is not a choice. Only the model chooser may release
-  // retirement; saving another setting must not select that default.
+  // A migrated default is not a choice. Only the model chooser may release retirement; saving another setting must not
+  // select that default.
   const providerSelectionRef = useRef(false);
   const hydratedVendorRef = useRef<string | null>(null);
   const hydratedWebProviderRef = useRef<string | null>(null);
   const vendorInfo = getVendorOption(vendor);
-  // The limit this vendor block requests (the user's, else the host default);
-  // the reasoning presets offered are the ones below it.
+  // The limit this vendor block requests (the user's, else the host default); the reasoning presets offered are the ones
+  // below it.
   const outputTokenLimit = requestedLlmOutputTokenLimit(getLlmVendorSettings(
     settingsSnapshot?.llm.vendors, vendor || DEFAULT_LLM_VENDOR,
   )).value;
@@ -212,8 +199,8 @@ export function useSettingsOrchestration(
       ? marketplaceProviderPresetSecretId(marketplaceProviderPresetId)
       : vendor;
 
-  // Load all settings on mount. (Before the BrowserWindow conversion this
-  // was gated on `open`; that's now always true while the window exists.)
+  // Load all settings on mount. (Before the BrowserWindow conversion this was gated on `open`; that's now always true while
+  // the window exists.)
   useEffect(() => {
     let cancelled = false;
     providerSelectionRef.current = false;
@@ -262,9 +249,8 @@ export function useSettingsOrchestration(
     return () => { cancelled = true; };
   }, [api]);
 
-  // Stay in sync with cross-window settings broadcasts. Updating the snapshot
-  // refreshes the cached source that the vendor-switch effect consults; the
-  // userTouchedRef-style guards in this hook protect in-flight form edits.
+  // Stay in sync with cross-window settings broadcasts. Updating the snapshot refreshes the cached source that the
+  // vendor-switch effect consults; the userTouchedRef-style guards in this hook protect in-flight form edits.
   useEffect(() => {
     return api.onSettingsUpdated((next) => {
       if (!next.llm.retiredProvider) providerSelectionRef.current = false;
@@ -279,14 +265,7 @@ export function useSettingsOrchestration(
           next.chat.processingDisplayLevel ?? DEFAULT_PROCESSING_DISPLAY_LEVEL,
         );
       }
-      // The INSTALLED list is external state and tracks the broadcast. Which
-      // preset the form is pointed at is not: it belongs to the same set of
-      // fields as the vendor, the base URL and the model, which this handler
-      // deliberately leaves alone so a broadcast cannot overwrite what the user
-      // is editing. Deriving it from the PERSISTED provider did exactly that —
-      // a form moved to another provider had its preset rewritten underneath
-      // it on the next unrelated save, which is how a generic provider ended up
-      // wearing a preset's endpoint lock.
+      // Follow installed-preset broadcasts without overwriting the form's unsaved provider selection or endpoint fields.
       setMarketplaceProviderPresets(next.marketplace?.installedProviderPresets ?? []);
     });
   }, [api]);
@@ -393,13 +372,10 @@ export function useSettingsOrchestration(
     hydratedVendorRef.current = "openai-compatible";
     setMarketplaceProviderPresetId(preset.providerId);
     setVendor("openai-compatible");
-    // This preset's own stored model, so switching between two presets restores
-    // what each was last set to rather than resetting both to a seed.
+    // This preset's own stored model, so switching between two presets restores what each was last set to rather than
+    // resetting both to a seed.
     setModel(llmRouteModel(openaiCompatibleDefaults, preset.providerId));
-    // NOT `preset.baseUrl`: this field is the generic custom provider row's
-    // stored endpoint and is written back on every save, so parking the
-    // preset's address in it is how the two rows used to overwrite each other.
-    // Consumers that need the preset's address resolve it from the preset.
+    // Keep the generic row's endpoint in its stored block; resolve preset addresses from their registry.
     setBaseUrl(openaiCompatibleDefaults.baseUrl ?? "");
     setVertexProject("");
     setVertexLocation("");
@@ -414,11 +390,8 @@ export function useSettingsOrchestration(
   const clearMarketplaceProviderPreset = useCallback(() => {
     setMarketplaceProviderPresetId("");
     if (vendor !== "openai-compatible") return;
-    // The stored block, always. It used to be replaced with DEFAULTS whenever a
-    // preset had been persisted — the only reason being that the block then
-    // held the preset's mirrored address and had to be scrubbed. Nothing
-    // mirrors any more, so the block is the generic row's own endpoint and
-    // scrubbing it would throw away what the user saved.
+    // Read the stored generic block even when a preset is active; replacing it with defaults would discard the user's
+    // endpoint.
     const genericBlock = getLlmVendorSettings(settingsSnapshot?.llm.vendors, "openai-compatible");
     hydrateVendorBlock(genericBlock);
     void api.hasApiKey("openai-compatible")
@@ -433,16 +406,8 @@ export function useSettingsOrchestration(
   // would flicker (the first call's `finally` clears the flag while the
   // second is still running).
   const savingRef = useRef(false);
-  /**
-   * Saves that arrived while another was in flight, in arrival order.
-   *
-   * A tab save and a provider card's credential save contend for the same
-   * in-flight flag, so both queue here rather than one of them being dropped:
-   * a card whose Save landed a beat after a debounced `llm` save used to
-   * return false and go quiet, leaving the card looking committed when
-   * nothing had been written. A queued credential save keeps its caller's
-   * promise so the card learns what actually happened.
-   */
+  /** Serialize tab and credential saves in arrival order; queued credential saves retain their promise so callers learn the
+   * real outcome. */
   const pendingSaves = useRef<PendingSave[]>([]);
   // Latest-`save` ref: the running save closure captures values from its
   // own render. When `finally` re-fires the pending payload, it must
@@ -473,8 +438,8 @@ export function useSettingsOrchestration(
   const save = async (tab: string): Promise<boolean> => {
     if (!settingsLoaded) return false;
     if (savingRef.current) {
-      // One pending entry per tab: the payload is read from state at run time,
-      // so a second request for the same tab would write the same thing twice.
+      // One pending entry per tab: the payload is read from state at run time, so a second request for the same tab would write
+      // the same thing twice.
       if (!pendingSaves.current.some((entry) => entry.kind === "tab" && entry.tab === tab)) {
         pendingSaves.current.push({ kind: "tab", tab });
       }
@@ -496,9 +461,8 @@ export function useSettingsOrchestration(
           );
         }
         await Promise.all(secretUpdates);
-        // The row's OWN endpoint, never the active preset's. A preset's
-        // address belongs to the preset registry; writing it here would put it
-        // in the generic custom provider's block, which is a different row.
+        // The row's OWN endpoint, never the active preset's. A preset's address belongs to the preset registry; writing it here
+        // would put it in the generic custom provider's block, which is a different row.
         const trimmedBaseUrl = baseUrl.trim();
         const trimmedVertexProject = vertexProject.trim();
         const trimmedVertexLocation = vertexLocation.trim();
@@ -512,9 +476,8 @@ export function useSettingsOrchestration(
           : "";
         const routeModel = model.trim();
         const activeBlock: DeepPartial<LLMVendorSettings> = {
-          // This preset's key alone. The main side merges it into the stored
-          // map (`mergeLlmPatch`), so a save here can never carry a stale copy
-          // of another preset's model back over a newer one.
+          // This preset's key alone. The main side merges it into the stored map (`mergeLlmPatch`), so a save here can never carry a
+          // stale copy of another preset's model back over a newer one.
           ...(activePresetId
             ? { presetModels: { [activePresetId]: routeModel } }
             : { model: routeModel }),
@@ -579,26 +542,15 @@ export function useSettingsOrchestration(
     saveRef.current = save;
   });
 
-  /**
-   * Commit ONE provider card: its own vendor block, its own secret.
-   *
-   * Deliberately not part of `save("llm")`. That call writes `llm.provider`,
-   * so routing a card's Save through it made storing a key for one provider
-   * also switch chat to it. Which provider chat runs on is a separate decision
-   * with its own control, and this call must never take it.
-   *
-   * The block is written BEFORE the secret, and a rejected write aborts: a key
-   * that lands beside an endpoint the store refused would be a credential
-   * pointing at an address nobody saved.
-   */
+  /** Saving a provider card must not switch the active route; persist its block before the secret and abort if the block is
+   * refused. */
   const saveProviderCredential = useCallback(async (
     input: ProviderCredentialSave,
   ): Promise<boolean> => {
     if (!settingsLoaded) return false;
     if (savingRef.current) {
-      // Queue behind the in-flight save and hand the caller the outcome of
-      // the run that actually happens, so the card stays dirty until then
-      // instead of quietly reporting a failure it cannot explain.
+      // Queue behind the in-flight save and hand the caller the outcome of the run that actually happens, so the card stays
+      // dirty until then instead of quietly reporting a failure it cannot explain.
       return new Promise<boolean>((resolve) => {
         pendingSaves.current.push({ kind: "credential", input, resolve });
       });
@@ -613,8 +565,8 @@ export function useSettingsOrchestration(
         if (isIpcErrorResult(updateResult)) {
           throw new Error(formatIpcError(updateResult.error, updateResult.message));
         }
-        // The active provider's mirrored fields feed the model-list handshake,
-        // so editing that provider's own card has to move them here too.
+        // The active provider's mirrored fields feed the model-list handshake, so editing that provider's own card has to move
+        // them here too.
         if (input.vendorId === vendor) {
           if (input.vendorBlock.baseUrl !== undefined) setBaseUrl(input.vendorBlock.baseUrl);
           if (input.vendorBlock.vertexProject !== undefined) {
@@ -715,9 +667,8 @@ export function useSettingsOrchestration(
 
   const setSubAgentMaxRoundsLive = useCallback((next: number) => {
     const previous = subAgentMaxRounds;
-    // Floor only: below 1 an agent cannot finish a single tool round-trip.
-    // No upper clamp — the engine runs whatever is stored, so narrowing here
-    // would make the settings file disagree with what actually runs.
+    // Floor only: below 1 an agent cannot finish a single tool round-trip. No upper clamp — the engine runs whatever is
+    // stored, so narrowing here would make the settings file disagree with what actually runs.
     const clamped = Math.max(SUBAGENT_MAX_ROUNDS_MIN, Math.floor(next));
     setSubAgentMaxRounds(clamped);
     if (!settingsLoaded) return;

@@ -86,8 +86,7 @@ async function resolvePackageDependency(
   throw new Error("Subscription package dependency is unavailable");
 }
 
-// Only lists the tree; callers admit every listed path in one batch before
-// opening any file in it.
+// Only lists the tree; callers admit every listed path in one batch before opening any file in it.
 async function packageFiles(root: string, declaredPackage = false): Promise<PackageEntry[]> {
   const entries: PackageEntry[] = [];
   let count = 0;
@@ -109,7 +108,7 @@ async function packageFiles(root: string, declaredPackage = false): Promise<Pack
   return entries;
 }
 
-/** Callers may add locations of their own to the graph's single admission batch. */
+// Callers may add locations of their own to the graph's single admission batch.
 async function packageGraph(root: string, extra: readonly CodexLocationRequest[] = []): Promise<PackageGraph> {
   const roots = new Set<string>();
   const entries = new Map<string, PackageEntry>();
@@ -131,8 +130,7 @@ async function packageGraph(root: string, extra: readonly CodexLocationRequest[]
     }
   };
   await collect(root);
-  // Metadata names the dependencies before admission, so the admitted bytes
-  // must be the ones that were read; no other file is opened before admission.
+  // Metadata names the dependencies before admission, so the admitted bytes must be the ones that were read; no other file is opened before admission.
   await assertCodexLocations([...extra, ...dependencyRequests, ...locationRequests(entries.values(), "directory")]);
   const files = new Map<string, string>();
   const directories = new Set<string>();
@@ -187,8 +185,7 @@ Module._resolveFilename = function(specifier, parent, ...rest) {
 `;
 }
 
-// Loaded before the package entry. Every import/require is resolved inside the
-// sealed snapshot and code is read from a no-follow handle with its own digest.
+// Loaded before the package entry. Every import/require is resolved inside the sealed snapshot and code is read from a no-follow handle with its own digest.
 function moduleGuardSource(files: ReadonlyMap<string, string>): string {
   return `import { registerHooks, isBuiltin } from "node:module";
 import { createHash } from "node:crypto";
@@ -237,7 +234,7 @@ registerHooks({
 `;
 }
 
-/** Bind loading to the declared transitive graph, without per-package import isolation. */
+// Bind loading to the declared transitive graph, without per-package import isolation.
 export async function copySubscriptionPackageArtifact(root: string, script: string, directory: string): Promise<SubscriptionPackageArtifact> {
   const canonicalDirectory = await fs.realpath(directory);
   const graph = await packageGraph(root, [{ path: canonicalDirectory, kind: "private-directory", routeKind: "guarded-script" }]);

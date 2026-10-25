@@ -22,8 +22,7 @@ import {
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { windowsPowerShellEnv } from "../../shared/windows-powershell-env.js";
 
-// Mocked access rules answer at the request level. The real case empties the
-// seam, so the product's own ACL host runs.
+// Mocked access rules answer at the request level. The real case empties the seam, so the product's own ACL host runs.
 const fakeRequest = vi.fn(async (request: WindowsAclRequest): Promise<string> => {
   const currentSid = "S-1-5-21-100-200-300-1001";
   const paths = request.paths.map((path) => ({
@@ -79,8 +78,7 @@ function realHostFixture() {
   const prime = async () => {
     await assertCodexExecutableLocation(join(process.env.SystemRoot!, "System32", "cmd.exe"), "native",
       { capSidPath: join(tmpdir(), "absent-cap-fixture") });
-    // Every real-host scenario starts with a complete response frame, so its
-    // later reuse or recovery cannot accidentally rely on early settlement.
+    // Every real-host scenario starts with a complete response frame, so its later reuse or recovery cannot accidentally rely on early settlement.
     const lines = streams[0]!.stdout.trim().split(/\r?\n/);
     expect(lines).toHaveLength(2);
     expect(lines[1]).toBe(`END ${JSON.parse(lines[0]!).id}`);
@@ -113,15 +111,13 @@ it.runIf(process.platform === "win32")("fails closed on a real native exception 
   const previousPid = host.pid;
   await expect(request(100, [join(tmpdir(), "absent-acl-exception", "missing.exe")])).rejects.toBeInstanceOf(WindowsAclHostError);
   expect(host.pid).toBeUndefined();
-  // Error serialization can arrive in several pipe chunks; fail-closed kills
-  // the host on its first byte, before the diagnostic body necessarily arrives.
+  // Error serialization can arrive in several pipe chunks; fail-closed kills the host on its first byte, before the diagnostic body necessarily arrives.
   expect(streams[0]!.stderr.length).toBeGreaterThan(0);
   const next = JSON.parse(await request(101, [join(process.env.SystemRoot!, "System32", "cmd.exe")]));
   expect(next.result.paths).toHaveLength(1);
   expect(host.starts).toBe(2);
   expect(host.pid).not.toBe(previousPid);
-  // Observe natural termination too: the transport's stderr kill alone cannot
-  // establish that the script stops instead of processing the following line.
+  // Observe natural termination too: the transport's stderr kill alone cannot establish that the script stops instead of processing the following line.
   const { command, args, options } = fixture.launch;
   const child = spawn(command, args, options);
   let stdout = "";
@@ -158,8 +154,7 @@ it.runIf(process.platform === "win32")("keeps real first-call module streams fre
   process.stdout.write(`ACL host stream evidence ${JSON.stringify({ pid: host.pid, elapsedMs: Math.round(performance.now() - started), stdoutLines: lines.length, stderrBytes: Buffer.byteLength(output.stderr) })}\n`);
 }, 30_000);
 
-// Stock Windows grants Authenticated Users FILE_ADD_SUBDIRECTORY on C:\, so this
-// real probe reproduces the original refusal of every route on the system drive.
+// Stock Windows grants Authenticated Users FILE_ADD_SUBDIRECTORY on C:\, so this real probe reproduces the original refusal of every route on the system drive.
 it.runIf(process.platform === "win32")("admits the real system command executable as a native route with real access rules", async () => {
   _setWindowsAclTransportForTest(undefined);
   await expect(assertCodexExecutableLocation(join(process.env.SystemRoot!, "System32", "cmd.exe"), "native",
@@ -188,8 +183,7 @@ it.runIf(process.platform === "win32")("claims created directories and files for
   await prime();
   const parent = realpathSync(mkdtempSync(join(tmpdir(), "ave-owner-claim-")));
   roots.push(parent);
-  // What this process's token gives a new object on its own (Administrators
-  // under an elevated token with the default owner policy).
+  // What this process's token gives a new object on its own (Administrators under an elevated token with the default owner policy).
   const unclaimed = realpathSync(mkdtempSync(join(parent, "unclaimed-")));
   const directory = await createPrivateTempDirectory(join(parent, "claimed-"));
   const file = join(directory, "copy.bin");
@@ -204,7 +198,7 @@ it.runIf(process.platform === "win32")("claims created directories and files for
   process.stdout.write(`ACL host owner claim evidence ${JSON.stringify({ defaultOwner, account: reply.result.currentSid, claimed: [directoryOwner, fileOwner], starts: host.starts })}\n`);
 }, 45_000);
 
-/** Set an owner this process may not take for itself; icacls enables the restore privilege an elevated token holds. */
+// Set an owner this process may not take for itself; icacls enables the restore privilege an elevated token holds.
 function setOwner(path: string, sid: string): void {
   execFileSync(join(process.env.SystemRoot!, "System32", "icacls.exe"), [path, "/setowner", `*${sid}`, "/q"],
     { windowsHide: true, stdio: "pipe" });

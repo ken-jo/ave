@@ -34,15 +34,12 @@ afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: 
 
 const EM = { x64: 62, arm64: 183 } as const;
 
-/**
- * The audit labels each file by its host-relative path, which Windows spells
- * with `\`; the expectations below use the posix spelling of the Linux job.
- */
+// Normalize output paths for Windows.
 function posix(text: string): string {
   return text.split(sep).join("/");
 }
 
-/** A 64-byte ELF64 LE header: enough for the parser and for file(1). */
+// A minimal 64-byte ELF header is enough for the parser and file inspection.
 function elf(machine: number, type = 3): Buffer {
   const header = Buffer.alloc(64);
   header.set([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1, 0], 0);
@@ -55,19 +52,13 @@ function elf(machine: number, type = 3): Buffer {
 
 const MACHO_ARM64 = Buffer.from([0xcf, 0xfa, 0xed, 0xfe, 0x0c, 0x00, 0x00, 0x01, ...Buffer.alloc(56)]);
 
-/** file(1) stand-in that answers from the header the same way the real one does. */
 function fakeFile(path: string): string {
   const header = parseElfHeader(readFileSync(path));
   if (!header) return "data";
   return header.machine === EM.x64 ? "ELF 64-bit LSB shared object, x86-64" : "ELF 64-bit LSB shared object, ARM aarch64";
 }
 
-/**
- * Writes a fixture file with Electron's asar redirection off, as the audit
- * reads them. Under Electron (the unit-test runner) `fs` takes `app.asar` for
- * an archive, and since Electron 45 writing the placeholder there throws
- * `Invalid package` instead of creating a plain file.
- */
+// Disable archive handling so Windows treats the placeholder as a physical file.
 function write(path: string, content: Buffer | string, mode = 0o644): void {
   const previous = process.noAsar;
   process.noAsar = true;
@@ -81,7 +72,6 @@ function write(path: string, content: Buffer | string, mode = 0o644): void {
   fixtureModes.set(path, mode);
 }
 
-/** A linux-unpacked tree whose every native binary is `arch`. */
 function unpackedApp(root: string, arch: keyof typeof EM): string {
   const app = join(root, arch === "x64" ? "linux-unpacked" : `linux-${arch}-unpacked`);
   write(join(app, "ave"), elf(EM[arch], 3), 0o755);
@@ -121,7 +111,6 @@ function appImage(machine: number, payload: Buffer = APPIMAGE_PAYLOAD): Buffer {
   return Buffer.concat([runtime, payload]);
 }
 
-/** exec stand-in: answers the deb/rpm metadata and "extracts" the AppImage payload tree. */
 function installerExec(calls: string[][], unsquash: (args: string[]) => void = (args) => appImagePayloadTree(args[args.indexOf("-d") + 1])) {
   return ((command: string, args: string[]) => {
     calls.push([command, ...args]);
@@ -150,7 +139,6 @@ describe("Linux package architecture audit", () => {
     unpackedApp(root, "x64");
     const { violations, checked } = auditLinuxRelease(root, "x64", { fileCommand: fakeFile });
     expect(violations.map(posix)).toEqual([]);
-    // main binary, crashpad, libffmpeg, two addons, rg, and the inflated uv
     expect(checked).toHaveLength(7);
   });
 

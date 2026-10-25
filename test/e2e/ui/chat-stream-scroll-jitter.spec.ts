@@ -105,12 +105,7 @@ async function emitAndSample(
       for (const event of events) {
         emit(event);
         if (waitForBottom) {
-          // The viewport is expected to re-pin to the bottom after the chunk.
-          // Wait (capped) until it actually reaches the bottom before sampling,
-          // instead of a fixed 2-frame wait — CI rendering can take several
-          // frames to re-pin, so a fixed wait samples a mid-layout transient and
-          // reports a bogus multi-hundred-px gap (flaky). If pinning genuinely
-          // regresses, the gap never closes and the final sample still fails.
+          // Wait for bottom pinning before sampling; fixed frames can capture a transient layout gap.
           for (let frame = 0; frame < 30; frame++) {
             await nextFrame();
             if (bottomGap() <= 2) break;
@@ -272,15 +267,13 @@ test.describe("chat stream bottom-follow jitter", () => {
       expect(before.bottomGap).toBeGreaterThan(120);
       await expect(ctx.page.getByTestId("jump-to-bottom")).toBeVisible();
 
-      // Leave home through the same view-activation channel the menu and the
-      // sidebar's view rows use; the sidebar has no Memory row of its own.
+      // Use the shared view-activation channel because the sidebar has no dedicated Memory row.
       await ctx.app.evaluate(({ BrowserWindow }) => {
         const target = BrowserWindow.getAllWindows().find((window) => !window.isDestroyed() && window.isVisible());
         if (!target) throw new Error("no visible window to activate the memory view in");
         target.webContents.send("ave:view:activate", { viewKey: "memory" });
       });
-      // At this width the breadcrumb label is collapsed out of view; the path
-      // still names Memory as the current page.
+      // Narrow widths hide the breadcrumb label; the route path still identifies the page.
       await expect(ctx.page.getByTestId("view-path-current-memory")).toHaveAttribute("aria-current", "page", { timeout: 10_000 });
       await ctx.page.getByTestId(TEST_IDS.viewPathBack).click();
       await expect(ctx.page.locator(CHAT_VIEWPORT_SELECTOR)).toBeVisible({ timeout: 10_000 });

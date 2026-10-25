@@ -1,46 +1,17 @@
 #!/usr/bin/env node
-/**
- * check-opacity-tokens.mjs — design-token guard
- *
- * Flags raw numeric Tailwind alpha modifiers on color utilities
- * (e.g. `bg-warning/15`, `border-primary/40`) in the renderer source tree.
- * The semantic opacity scale in src/styles.css (`--opacity-faint`…`-solid`)
- * is the single source of truth — call sites must use the CSS-variable alpha
- * shorthand, e.g. `bg-warning/(--opacity-soft)`, so a single token edit
- * re-tunes every surface.
- *
- * Grandfathered: a small allow-list of pre-existing odd values (/25, /35)
- * that have no clean token. Everything else is rejected. New violations fail
- * the build so the debt cannot regrow.
- *
- * ── ESLint equivalent (for when this repo adopts ESLint) ──────────────────
- * This guard is a grep-style stand-in matching the existing
- * `check-no-tls-bypass.mjs` convention (this repo has no ESLint config). The
- * intended lint rule, once ESLint lands, is:
- *
- *   "no-restricted-syntax": ["error", {
- *     selector: "Literal[value=/\\b(?:bg|text|border|ring|fill|stroke|" +
- *       "shadow|outline|divide|placeholder|decoration|accent|caret|from|" +
- *       "to|via)-[a-z-]+\\/[0-9]+\\b/]",
- *     message: "Use the named opacity tokens (bg-x/(--opacity-soft)) " +
- *       "instead of raw numeric alpha modifiers. See src/styles.css.",
- *   }]
- *
- * Move the logic there and delete this script when that happens.
- */
+// Require semantic opacity tokens for renderer colors; existing exceptions must not grow.
 import { readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { walkSourceFiles } from "./lib/source-walk.mjs";
 
 const SRC_DIR = join(process.cwd(), "src", "ui");
 
-// Color utility prefixes that accept an /<alpha> modifier (incl. directional
-// border edges like border-l-).
+// Include directional border utilities in alpha checks.
 const PREFIX =
   "(?:bg|text|border|border-[trbl]|ring|ring-offset|fill|stroke|shadow|" +
   "outline|divide|placeholder|decoration|accent|caret|from|to|via)";
 
-// Named theme colors only — keeps layout fractions (w-1/3, flex-1) out.
+// Named colors exclude layout fractions such as w-1/3.
 const COLOR =
   "(?:background|foreground|card|card-foreground|popover|popover-foreground|" +
   "primary|primary-foreground|secondary|secondary-foreground|muted|" +
@@ -52,8 +23,7 @@ const COLOR =
 
 const RAW_ALPHA = new RegExp(`\\b${PREFIX}-${COLOR}\\/([0-9]+)\\b`, "g");
 
-// Pre-existing odd values with no clean token slot. Do NOT extend without
-// adding a matching token to src/styles.css first.
+// Add a semantic token before extending the exception list.
 const GRANDFATHERED = new Set(["25", "35"]);
 
 const violations = [];

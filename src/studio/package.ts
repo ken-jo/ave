@@ -113,7 +113,6 @@ function assertNoStoredCredentials(files: readonly AgentPluginFile[], storedCred
   }
 }
 
-/** Exported files always include the canonical package and a checked descriptor. */
 export function studioExportFiles(files: readonly AgentPluginFile[], legacyProjection: boolean,
   storedCredentials: readonly string[]): AgentPluginFile[] {
   checkContentFiles("agent-plugin", files);
@@ -152,7 +151,7 @@ async function fromDirectory(root: string): Promise<AgentPluginFile[]> {
   return files;
 }
 
-/** File selection is done by the host; no path from a plugin frame reaches this reader. */
+/** Only host-selected paths may reach this reader, never plugin-frame input. */
 export async function readLocalAgentPlugin(path: string): Promise<{ files: AgentPluginFile[]; descriptor: PackageDescriptor; treeDigest: string }> {
   const stat = await lstat(path);
   if (stat.isSymbolicLink()) throw new Error("A package file cannot be a symbolic link");

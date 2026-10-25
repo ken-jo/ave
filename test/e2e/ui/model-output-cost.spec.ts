@@ -68,8 +68,7 @@ for (const locale of ["en", "ko"] as const) {
     }, locale);
     await page.getByTestId("token-progress-ring").click();
     const total = page.getByTestId("token-progress-ring-cost-total");
-    // 2K input and the last-five mean of 3K output: $0.015 expected,
-    // versus $0.146 with the 32K limit. The 90K older turn is excluded.
+    // Exclude older turns and use the last-five output mean rather than the model limit.
     await expect(total).toHaveText("~$0.015 – $0.146");
     await expect(total.locator("..")).toHaveClass(/text-success/);
     await expect(page.getByTestId("token-progress-ring-output-limit-source"))

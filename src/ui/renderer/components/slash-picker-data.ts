@@ -1,5 +1,3 @@
-
-
 import { Terminal, Zap, Puzzle, Server, Sparkles, MessageSquareText, FileText, type LucideIcon } from "lucide-react";
 import { t } from "../../../i18n/runtime.js";
 import type { QuickAction } from "./command-actions.js";
@@ -17,11 +15,8 @@ export interface McpToolEntry {
   serverId: string;
 }
 
-/**
- * A prompt a connected MCP server declared. Prompts are a USER-controlled
- * primitive: the user picks one here, the host fetches it, and the server's text
- * enters the turn with untrusted provenance. Never model-callable.
- */
+/** A prompt a connected MCP server declared. Prompts are a USER-controlled primitive: the user picks one here, the host
+ * fetches it, and the server's text enters the turn with untrusted provenance. Never model-callable. */
 export interface McpPromptEntry {
   name: string;
   serverId: string;
@@ -109,10 +104,7 @@ function normalizeSlashQuery(query: string): string {
   return query.trim().toLowerCase();
 }
 
-/**
- * Filter the built-in commands by a normalized query, matching either the raw
- * command string or its translated label.
- */
+/** Filter the built-in commands by a normalized query, matching either the raw command string or its translated label. */
 export function filterSlashCommands(query: string): SlashCommand[] {
   const q = normalizeSlashQuery(query);
   if (!q) return SLASH_COMMANDS;
@@ -153,33 +145,8 @@ export function filterSkills(skills: SkillEntry[], query: string): SkillEntry[] 
   );
 }
 
-/**
- * The composer's command menu as native menu rows.
- *
- * The picker used to be a search box over a flat list; a native menu cannot
- * filter as you type, so the shape carries the weight instead. Each long,
- * install-dependent list (commands, plugins, MCP tools and prompts, skills)
- * sits behind its own submenu. Typing to find something is still the "/" menu
- * in the composer, which is unchanged.
- *
- * This menu hangs off the COMPOSER, so it holds what a person puts into a
- * message. The view shortcuts it used to open with — go home, show the work
- * board, open a plugin's page — move the window somewhere else instead; they
- * are navigation, and they already have the sidebar. Ten of them above the
- * divider also meant the three things the button is for opened below the fold.
- * They keep their place in the "/" menu, where a typed query is what surfaces
- * them.
- *
- * A category with nothing in it is left out rather than shown empty: an
- * always-present row that never opens teaches the user it is broken.
- *
- * The persona comes first. It is the one row here that is a STATE rather than
- * an insertion — which voice the next message is answered in — so its rows are
- * radio items with the current one checked, and it sits above the lists so the
- * thing that colours every message is not found below the fold of them. It
- * used to be its own button beside this one; one menu for "what shapes the
- * next message" beats two buttons that each hold a third of it.
- */
+/** Composer menus contain message input, with long catalogs in submenus; route navigation remains in the sidebar and typed
+ * filtering in the inline menu. */
 export function buildComposerMenuSections(input: {
   personas: RolePreset[];
   activePersonaId: string;
@@ -220,8 +187,8 @@ export function buildComposerMenuSections(input: {
     // The trailing space is what lets the user keep typing arguments.
     onSelect: () => input.onInsert(`${command.cmd} `),
   })));
-  // Inserted rather than run: the command's arguments are typed after it, and
-  // the main process expands the file when the message is sent.
+  // Inserted rather than run: the command's arguments are typed after it, and the main process expands the file when the
+  // message is sent.
   push("custom-commands", (input.customCommands ?? []).map((command) => ({
     id: `custom-command:${command.name}`,
     label: `/${command.name}${command.argumentHint ? ` ${command.argumentHint}` : ""}`,
@@ -249,8 +216,8 @@ export function buildComposerMenuSections(input: {
   push("mcp-prompts", input.mcpPrompts.map((prompt) => ({
     id: `mcp-prompt:${prompt.serverId}:${prompt.name}`,
     label: prompt.title ?? prompt.name,
-    // The deleted panel drew two lines per row; `sublabel` is where a native
-    // menu keeps the second one, so what a prompt or skill DOES survives here.
+    // The deleted panel drew two lines per row; `sublabel` is where a native menu keeps the second one, so what a prompt or
+    // skill DOES survives here.
     ...(prompt.description === undefined ? {} : { sublabel: prompt.description }),
     onSelect: () => input.onRunMcpPrompt(prompt),
   })));

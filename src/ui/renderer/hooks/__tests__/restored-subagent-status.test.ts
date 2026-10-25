@@ -31,8 +31,7 @@ describe("restoredSpawnStatus", () => {
   });
 
   it("reports a WORKING child as interrupted, not running", () => {
-    // The record is accurate about the past and wrong about the present: the
-    // run cannot be reattached, only resumed.
+    // The record is accurate about the past and wrong about the present: the run cannot be reattached, only resumed.
     expect(restoredSpawnStatusForTest(row(A2ATaskState.WORKING))).toBe("interrupted");
   });
 
@@ -41,14 +40,14 @@ describe("restoredSpawnStatus", () => {
   });
 
   it("resolves a missing taskState pessimistically", () => {
-    // Never recorded a projection ⇒ died before reaching one ⇒ at least as
-    // unfinished as WORKING. `done` would be a claim the file cannot support.
+    // Never recorded a projection ⇒ died before reaching one ⇒ at least as unfinished as WORKING. `done` would be a claim the
+    // file cannot support.
     expect(restoredSpawnStatusForTest(row())).toBe("interrupted");
   });
 
   it("never returns running for any state", () => {
-    // The panel sorts running rows to the top; a restored row that claimed to
-    // be running would outrank a genuinely live sibling.
+    // The panel sorts running rows to the top; a restored row that claimed to be running would outrank a genuinely live
+    // sibling.
     const states = [
       undefined,
       A2ATaskState.SUBMITTED,

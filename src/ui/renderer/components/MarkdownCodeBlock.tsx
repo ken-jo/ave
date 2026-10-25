@@ -1,12 +1,4 @@
-/**
- * Fenced code block for model-authored markdown: the block itself stays the
- * typography plugin's `<pre>` (so theme tokens and spacing are unchanged), and
- * a small header strip carries the fence language and a Copy button.
- *
- * Copy writes the block's raw source text — taken from the markdown AST, not
- * from the rendered DOM — so what lands on the clipboard is exactly what the
- * model wrote between the fences, without UI chrome or a trailing newline.
- */
+/** Copy raw fenced source from the markdown AST so rendered UI and trailing newlines do not enter the clipboard. */
 import type { ComponentPropsWithoutRef, ReactNode } from "react";
 import { Check, Copy } from "lucide-react";
 import type { ExtraProps } from "react-markdown";
@@ -38,11 +30,8 @@ function codeClassName(pre: HastLike | undefined): string | undefined {
   return typeof raw === "string" ? raw : undefined;
 }
 
-/**
- * Highlighter hast → React. lowlight emits only `span` elements carrying
- * `hljs-*` classes and text nodes; anything else is rendered as its text, so
- * no tag or attribute from the tree can reach the DOM beyond a class name.
- */
+/** Highlighter hast → React. lowlight emits only `span` elements carrying `hljs-*` classes and text nodes; anything else is
+ * rendered as its text, so no tag or attribute from the tree can reach the DOM beyond a class name. */
 function renderHighlighted(nodes: readonly HastLike[] | undefined, keyPrefix = "h"): ReactNode[] {
   return (nodes ?? []).map((node, index) => {
     const key = `${keyPrefix}-${index}`;

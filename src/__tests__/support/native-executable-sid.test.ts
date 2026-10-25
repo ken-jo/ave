@@ -19,7 +19,6 @@ describe.skipIf(process.platform !== "win32")("Fixture account identity cache", 
       }
       return new childProcess.ChildProcess();
     });
-    // The fake answers at the request level; the host launch and limits are not used.
     const transport = fakeFixtureAclTransport(lookup as unknown as typeof childProcess.execFile);
     let id = 0;
     const probe = async () => (JSON.parse(await transport.request(

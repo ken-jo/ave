@@ -67,9 +67,7 @@ describe("Bash dialect across execution paths", () => {
 
   it.skipIf(process.platform !== "win32").each(["wsl", "unknown"] as const)("rejects %s background execution before creating a handle", async (windowsFlavor) => {
     const spawn = vi.spyOn(windowsJobLauncher, "spawnWindowsJobProcess");
-    // This probes eligibility, so supply the entire interpreter service fixture.
-    // Relabeling a real native binary would feed a different path dialect into
-    // its real capability probe before this refusal can be reached.
+    // Stub the full interpreter service; relabeling a native binary probes the wrong path dialect.
     vi.spyOn(shellResolver, "resolveShell").mockReturnValue({
       cmd: `C:\\synthetic-${windowsFlavor}\\bash.exe`,
       shellArgs: script => ["-c", script],

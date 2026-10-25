@@ -1,6 +1,3 @@
-/**
- * Tests — approvalQueueReducer (C4 Approval Queue Logic)
- */
 import { describe, it, expect } from "vitest";
 import {
   approvalQueueReducer,
@@ -120,7 +117,6 @@ describe("approvalQueueReducer", () => {
     expect(state).toHaveLength(0);
   });
 
-  // D4 §4.5.3 — bulk clear action
   it("clear: 여러 항목이 있는 queue → 빈 배열 반환", () => {
     const reqs = ["p", "q", "r"].map(makeReq);
     let state: ApprovalRequest[] = [];

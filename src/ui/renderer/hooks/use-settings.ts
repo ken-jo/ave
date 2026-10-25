@@ -59,10 +59,8 @@ function canUseSettingsWithoutApiKey(
   return canUseLlmVendorWithoutApiKey(provider, block);
 }
 
-/**
- * Settings arrive over IPC, so narrow the selected runtime before it can
- * influence renderer readiness or attachment egress policy.
- */
+/** Settings arrive over IPC, so narrow the selected runtime before it can influence renderer readiness or attachment egress
+ * policy. */
 function activeSubscriptionRuntimeFromSettings(
   settings: Awaited<ReturnType<AveApi["getSettings"]>>,
 ): SubscriptionChatRuntimeSelection | null {
@@ -84,13 +82,8 @@ function sameSubscriptionRuntime(
     && left?.model === right?.model;
 }
 
-/**
- * LLM settings cache hook.
- *
- * Centralises the chat-input-bar's read-through cache of LLM provider/model/
- * thinking state. Settings broadcasts are authoritative so provider changes
- * and marketplace installs take effect without a restart.
- */
+/** LLM settings cache hook. Centralises the chat-input-bar's read-through cache of LLM provider/model/ thinking state.
+ * Settings broadcasts are authoritative so provider changes and marketplace installs take effect without a restart. */
 export interface UseSettingsResult {
   /** Cached provider — narrowed to the LLMVendor union. */
   llmVendor: LLMVendor;
@@ -103,23 +96,14 @@ export interface UseSettingsResult {
    * rather than resolving it a second time.
    */
   llmContextWindow: number;
-  /**
-   * The active route's output limit — requested, the model's ceiling, and the
-   * effective value a request carries — from the same resolution as the
-   * window, so the cost estimate assumes the limit the engine sends.
-   */
+  /** The active route's output limit — requested, the model's ceiling, and the effective value a request carries — from the
+   * same resolution as the window, so the cost estimate assumes the limit the engine sends. */
   llmOutputTokenLimit: ResolvedOutputTokenLimit;
-  /**
-   * The active route's prompt cap, when one is stated below the window
-   * (`resolveContextWindowForRoute(...).inputLimit`). The ring's usable budget
-   * is bounded by it, as the engine's compaction threshold is.
-   */
+  /** The active route's prompt cap, when one is stated below the window (`resolveContextWindowForRoute(...).inputLimit`). The
+   * ring's usable budget is bounded by it, as the engine's compaction threshold is. */
   llmInputLimit: number | undefined;
-  /**
-   * The active route's endpoint and the prices its own `/models` answer
-   * reported, for the pre-send estimate (`resolveModelPricing`'s route), so it
-   * prices a request as the engine records it.
-   */
+  /** The active route's endpoint and the prices its own `/models` answer reported, for the pre-send estimate
+   * (`resolveModelPricing`'s route), so it prices a request as the engine records it. */
   llmRoutePricing: ModelPricingRoute;
   /**
    * The active route's input modalities, as its endpoint or the catalog states
@@ -144,17 +128,11 @@ export interface UseSettingsResult {
   processingDisplayLevel: ProcessingDisplayLevel;
   /** True when the active vendor can run with no stored API key. */
   llmReadyWithoutApiKey: boolean;
-  /**
-   * The removed vendor the stored profile was moved off, or the retired model
-   * it names, until the user picks in Settings. API-key chat is not ready
-   * while it is set.
-   */
+  /** The removed vendor the stored profile was moved off, or the retired model it names, until the user picks in Settings.
+   * API-key chat is not ready while it is set. */
   retiredLlmProvider: LlmRouteRetirement | null;
-  /**
-   * The active API route's saved model when the catalog marks it deprecated
-   * and nothing retired the route (design `model-capability-catalog.md` §6.1).
-   * Chat keeps working on it; the window only says it is going away.
-   */
+  /** The active API route's saved model when the catalog marks it deprecated and nothing retired the route (design
+   * `model-capability-catalog.md` §6.1). Chat keeps working on it; the window only says it is going away. */
   deprecatedLlmModel: string | null;
   /** Single source of truth for selected subscription chat and attachment UX. */
   subscriptionRuntimePolicy: SubscriptionRuntimeUiPolicy;
@@ -202,8 +180,8 @@ export function useSettings(api: AveApi): UseSettingsResult {
   const [subscriptionStatusRevision, setSubscriptionStatusRevision] = useState(0);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [activeChatModel, setActiveChatModel] = useState<ActiveChatModel | null>(null);
-  // Guard late callbacks firing after unmount (matches pattern in renderer.tsx
-  // where this state lived before the hook extraction).
+  // Guard late callbacks firing after unmount (matches pattern in renderer.tsx where this state lived before the hook
+  // extraction).
   const isMountedRef = useRef(true);
   const snapshotRevisionRef = useRef(0);
   const activeSubscriptionRuntimeRef = useRef<SubscriptionChatRuntimeSelection | null>(null);
@@ -233,8 +211,8 @@ export function useSettings(api: AveApi): UseSettingsResult {
         { ...settings.llm, provider },
         settings.marketplace?.installedProviderPresets,
       );
-      // A saved price correction arrives as a settings snapshot; the list in
-      // force is main's answer, which the environment can override.
+      // A saved price correction arrives as a settings snapshot; the list in force is main's answer, which the environment can
+      // override.
       void syncPricingOverrides(api).catch((error: unknown) => {
         console.error("[use-settings] pricing overrides could not be read", error);
       });
@@ -245,8 +223,8 @@ export function useSettings(api: AveApi): UseSettingsResult {
         ...(route.baseUrl !== undefined ? { baseUrl: route.baseUrl } : {}),
         ...(route.reportedPricing !== undefined ? { reported: route.reportedPricing } : {}),
       };
-      // Content-compared: every settings broadcast resolves a fresh object, and
-      // a new identity would re-render every chat tile for the same route.
+      // Content-compared: every settings broadcast resolves a fresh object, and a new identity would re-render every chat tile
+      // for the same route.
       setLlmRoutePricing((current) =>
         JSON.stringify(current) === JSON.stringify(nextRoutePricing) ? current : nextRoutePricing);
       setLlmRouteModalities(route.inputModalities !== undefined ? { inputModalities: route.inputModalities } : {});
@@ -257,8 +235,8 @@ export function useSettings(api: AveApi): UseSettingsResult {
       setLlmReadyWithoutApiKey(canUseSettingsWithoutApiKey(settings, provider));
       const retiredRoute = isLlmRouteRetirement(settings.llm.retiredProvider) ? settings.llm.retiredProvider : null;
       setRetiredLlmProvider(retiredRoute);
-      // The deprecated tier is the catalog's word alone; a listing that lands
-      // mid-session is judged by the next load, which may block the route.
+      // The deprecated tier is the catalog's word alone; a listing that lands mid-session is judged by the next load, which may
+      // block the route.
       const deprecated = retiredRoute === null && routeModel !== ""
         && resolveRouteModelRetirement(
           { ...settings.llm, provider, modelListCache: undefined },
@@ -294,9 +272,8 @@ export function useSettings(api: AveApi): UseSettingsResult {
     }
   }, [api, applySettingsSnapshot]);
 
-  // Subscribe before the initial read so a cross-window update cannot be missed
-  // between getSettings() and listener registration. The revision guard prevents
-  // a slow initial read from overwriting a newer broadcast snapshot.
+  // Subscribe before the initial read so a cross-window update cannot be missed between getSettings() and listener
+  // registration. The revision guard prevents a slow initial read from overwriting a newer broadcast snapshot.
   useEffect(() => {
     const unsubscribe = api.onSettingsUpdated((settings) => {
       snapshotRevisionRef.current += 1;
@@ -321,9 +298,8 @@ export function useSettings(api: AveApi): UseSettingsResult {
         subscriptionStatusRevisionByProviderRef.current.get(event.provider) ?? 0;
       if (event.revision <= previousRevision) return;
       subscriptionStatusRevisionByProviderRef.current.set(event.provider, event.revision);
-      // Invalidate synchronously before React schedules the re-probe. A status
-      // response that was already in flight must not put stale capabilities
-      // back after logout, login, verification, or a runtime reconfiguration.
+      // Invalidate synchronously before React schedules the re-probe. A status response that was already in flight must not put
+      // stale capabilities back after logout, login, verification, or a runtime reconfiguration.
       subscriptionStatusRequestRef.current += 1;
       setSubscriptionRuntimeCapabilities(null);
       setSubscriptionStatusRevision(event.revision);
@@ -369,8 +345,8 @@ export function useSettings(api: AveApi): UseSettingsResult {
       if (!settingsLoaded || activeSubscriptionRuntimeRef.current !== null) return;
       try {
         const s = await api.getSettings();
-        // The fresh disk snapshot and live broadcast ref must both still agree
-        // that API-key chat is active before writing an API-vendor preference.
+        // The fresh disk snapshot and live broadcast ref must both still agree that API-key chat is active before writing an
+        // API-vendor preference.
         if (
           activeSubscriptionRuntimeFromSettings(s) !== null
           || activeSubscriptionRuntimeRef.current !== null
@@ -456,30 +432,8 @@ interface SubscriptionModelCardChoice {
 
 export type ModelCardChoice = ApiModelCardChoice | SubscriptionModelCardChoice;
 
-/**
- * What the composer's model card lists: the route the chat is on right now,
- * then the pinned API models, resolved to the vendor that offers each.
- *
- * The current route is always there, pinned or not — the card is where a
- * person looks to see what they are talking to, and a list that omits it
- * answers the wrong question. When the chat is on a subscription runtime
- * (`llm.activeChatRuntime`), that provider — not an API model — is the
- * checked row; API models are listed as alternatives, none of them checked,
- * because switching to one leaves the subscription runtime (see
- * `subscriptionUseApiForChat` at the call site). Otherwise the current API
- * model leads when it is not itself pinned; otherwise it sits where the pin
- * order puts it.
- * A retirement marker leaves the configured API model as an unselected
- * candidate. Picking it is an explicit provider choice, even when the saved
- * vendor and model do not change.
- *
- * `pinnedModels` stores ids only, so a stored id is matched against what is
- * actually offered — the active vendor's curated line plus every synced
- * catalogue — and one that nothing offers simply does not appear. That is
- * the chooser's own rule (see `UnifiedModelSelect`), applied here so the
- * composer's card and the settings chooser cannot disagree about what a pin
- * points at. Pinned order is kept: it is the order the user reaches for.
- */
+/** Show the active runtime as checked and API pins as alternatives; resolve pins against offered models and retain user
+ * order. */
 export function modelCardChoices(llm: AppSettings["llm"]): ModelCardChoice[] {
   const pinned = llm.pinnedModels ?? [];
   const offered = new Map<string, Set<LLMVendor>>();
@@ -487,9 +441,8 @@ export function modelCardChoices(llm: AppSettings["llm"]): ModelCardChoice[] {
   const activeListing = llm.modelListCache?.[
     llmModelListCacheKey(activeAddress.vendor, activeAddress.baseUrl, activeAddress.credentialScope)
   ];
-  // A retired model is not a choice (design `model-capability-catalog.md` §6.1).
-  // The load's retirement marker counts too: it names a model the route's own
-  // listing dropped, even while the catalog still lists that model.
+  // A retired model is not a choice (design `model-capability-catalog.md` §6.1). The load's retirement marker counts too: it
+  // names a model the route's own listing dropped, even while the catalog still lists that model.
   const marker = isRetiredLlmModelMarker(llm.retiredProvider) ? llm.retiredProvider : null;
   const retired = (vendor: LLMVendor, modelId: string, baseUrl?: string, listing?: LlmModelListCacheEntry) =>
     (marker !== null && marker.vendor === vendor && marker.model === modelId) ||
@@ -509,8 +462,7 @@ export function modelCardChoices(llm: AppSettings["llm"]): ModelCardChoice[] {
   // vendor's bundled line first made a pin resolve to whichever vendor happens
   // to be active rather than to the one serving it.
   for (const entry of Object.values(llm.modelListCache ?? {})) {
-    // The cache is persisted host data keyed by vendor string; only entries
-    // naming a known vendor can be offered as a pick.
+    // The cache is persisted host data keyed by vendor string; only entries naming a known vendor can be offered as a pick.
     if (!isLLMVendor(entry.vendor)) continue;
     for (const modelId of entry.models) offer(entry.vendor, modelId, entry.baseUrl, entry);
   }
@@ -537,15 +489,13 @@ export function modelCardChoices(llm: AppSettings["llm"]): ModelCardChoice[] {
         vendor,
         vendorLabel: getVendorOption(vendor).label,
         modelId,
-        // A pinned API model can equal the vendor/model the settings still
-        // hold for the API path even while a subscription runtime is what
-        // the chat is actually on — that stale match is not "current".
+        // A pinned API model can equal the vendor/model the settings still hold for the API path even while a subscription runtime
+        // is what the chat is actually on — that stale match is not "current".
         current: subscription === null && !llm.retiredProvider && vendor === active && modelId === currentModel,
       });
     }
   }
-  // A retired vendor leaves its configured model as an unselected candidate;
-  // a retired model is not offered at all.
+  // A retired vendor leaves its configured model as an unselected candidate; a retired model is not offered at all.
   const currentRetired = currentModel !== undefined && currentModel !== ""
     && (isRetiredLlmModelMarker(llm.retiredProvider)
       || retired(active, currentModel, activeAddress.baseUrl, activeListing));

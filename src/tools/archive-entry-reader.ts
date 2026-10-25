@@ -62,8 +62,7 @@ function hasZeroSizeField(block: Buffer): boolean {
 }
 
 function validatePax(bytes: Buffer): { start: number; end: number; valueStart: number } | undefined {
-  // Each record is: decimal byte length, space, key=value, newline. Validate
-  // boundaries before the maintained decoder discards unrecognized fields.
+  // Validate PAX byte-length boundaries before the decoder discards unknown fields.
   let offset = 0;
   let numericPath: { start: number; end: number; valueStart: number } | undefined;
   while (offset < bytes.length) {
@@ -81,8 +80,7 @@ function validatePax(bytes: Buffer): { start: number; end: number; valueStart: n
     const key = bytes.subarray(space + 1, equals).toString("utf8");
     if (!/^[A-Za-z0-9_.-]+$/.test(key)) throw invalid("Invalid extended metadata key");
     const value = bytes.subarray(equals + 1, end - 1);
-    // The selected decoder is line-based. Embedded newlines could otherwise
-    // make part of a value look like a different effective metadata record.
+    // Reject embedded newlines that could forge records in the line-based decoder.
     if (value.includes(0x0a) || value.includes(0)) throw invalid("Unsupported extended metadata value");
     if (/^GNU\.sparse(?:\.|$)/.test(key) || /^SCHILY\.(?:realsize|holes|sparse(?:\..*)?)$/.test(key) || key === "SUN.holesdata" || (key === "SCHILY.filetype" && value.toString("utf8") === "sparse")) {
       throw new FileTransferError("unsupported-entry", "Sparse archive entries are not supported");
@@ -122,11 +120,7 @@ function rejectCompressionMagic(bytes: Buffer): void {
   }
 }
 
-/**
- * Reads one complete tar stream. The sink owns filesystem authority, descriptor
- * closure, cancellation-aware writes and rollback of any earlier output.
- * Every body must be consumed; cancellation waits for sink operations to settle.
- */
+// The sink owns filesystem authority, closure, and rollback; consume every body and await writes on cancellation.
 export async function consumeTarArchive(
   source: Readable,
   sink: TransferTreeSink,
@@ -301,8 +295,7 @@ export async function consumeTarArchive(
         if (["ExtendedHeader", "OldExtendedHeader", "GlobalExtendedHeader"].includes(metaHeader.type)) {
           const numericPath = validatePax(contents);
           if (numericPath && metaHeader.type !== "GlobalExtendedHeader") {
-            // Pax.parse coerces digit-only values to Number. Preserve the exact
-            // last local path using a harmless prefix in both maintained decoders.
+            // Prefix digit-only PAX paths so decoder Number coercion cannot lose the exact final path.
             const path = contents.subarray(numericPath.valueStart, numericPath.end - 1).toString("ascii");
             relativeMemberPath(path, false, limits);
             const replacement = Buffer.from(new Pax({ path: `./${path}` }).encodeField("path"));
@@ -328,10 +321,8 @@ export async function consumeTarArchive(
           extended = Object.assign(extended ?? new Pax({}), { path });
         }
         emittedMeta = undefined;
-        // Metadata is bounded separately. One write preserves UTF-8 code points
-        // across block boundaries without admitting any subsequent header.
-        // Only this validated record may exceed the original metadata ceiling,
-        // by the derived representation overhead. Source counters stay original.
+        // Validate and write metadata once to preserve UTF-8 boundaries; only derived overhead may exceed its limit.
+        // Keep source counters unchanged and admit no subsequent header.
         parser.maxMetaEntrySize = Math.max(limits.maxArchiveMetaEntryBytes, size);
         try {
           await writeParser(metaBlock);
@@ -345,9 +336,7 @@ export async function consumeTarArchive(
       return;
     }
     if (bodyRemaining) {
-      // The final block's remaining bytes are alignment, not file contents.
-      // The entry decoder emits only the declared size while framing still
-      // consumes complete blocks before admitting the next header.
+      // Consume whole framing blocks while emitting only declared body bytes; the remainder is alignment.
       bodyRemaining -= TAR_BLOCK_BYTES;
       await writeParser(block);
       if (!bodyRemaining) await settleEntry();
@@ -395,12 +384,10 @@ export async function consumeTarArchive(
     if (!["File", "OldFile", "Directory"].includes(header.type)) {
       throw new FileTransferError("unsupported-entry", "Archive entry type is not supported");
     }
-    // A local extended path replaces the header's legacy name and prefix.
-    // Validate it before the entry decoder normalizes platform separators.
+    // Validate extended replacement paths before platform separator normalization.
     relativeMemberPath(extended?.path ?? header.path, header.type === "Directory", limits);
     if (!extended?.path) validateHeaderStrings(block);
-    // The maintained decoder normalizes directory size to zero. Require a
-    // zero source field so a declared directory body cannot masquerade as EOF.
+    // Require zero directory size in source headers so decoder normalization cannot disguise a body as EOF.
     if (header.type === "Directory" && !hasZeroSizeField(block)) throw invalid("Archive directory declares a body");
     pendingLocalMetadata = false;
     extended = undefined;
@@ -470,13 +457,11 @@ export async function consumeTarArchive(
     await compressedWriter;
     await sourceSettled;
     checkFailure();
-    // Gunzip can stop at a NUL and ignore subsequent compressed input. The
-    // native consumed-input count must cover every byte of the settled source.
+    // Gunzip can ignore input after NUL; require consumed-input count to cover the entire settled source.
     if (gunzip && gunzip.bytesWritten !== sourceBytes) throw invalid("Gzip stream contains unconsumed trailing data");
     if (used || metadata || bodyRemaining || terminalBlocks < 2) throw invalid("Archive is truncated or lacks complete terminal blocks");
     await settleEntry();
-    // A structurally proven all-zero tar has no parser entries. Ending the
-    // selected parser would incorrectly report it as an unrecognized format.
+    // Proven all-zero tar has no entries; ending the decoder would falsely report an unknown format.
     if (records) {
       if (!parserEof) throw invalid("Archive parser did not reach its terminal blocks");
       parser.end();

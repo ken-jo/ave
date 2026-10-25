@@ -13,24 +13,15 @@ export type WorkAreaBounds = {
   height: number;
 };
 
-// Width the OS window reserves for the docked side panel in chat mode. This is
-// the panel's MINIMUM width (the drag handle cannot go below it) so the window
-// always has room for at least a collapsed panel; widening past it reflows the
-// chat column rather than growing the window. SoT: src/shared/side-panel.ts.
+// Reserve the shared minimum side-panel width; wider panels reflow chat instead of growing the window.
 export const CHAT_SIDE_PANEL_WIDTH = SIDE_PANEL_MIN_RESERVE;
 const MAIN_WINDOW_TOP_GAP = 24;
 const MAIN_WINDOW_BOTTOM_GAP = 24;
 const MAIN_WINDOW_RIGHT_GAP = 10;
 
-/**
- * Work-mode window size — a centered working canvas. SoT shared by the
- * initial-bounds path (createWindow, when the persisted mode is "work") and
- * the runtime resize-for-mode tween (window-manager). Centralized here so the
- * two code paths cannot drift to different dimensions.
- */
-// Golden-ratio landscape: height 768, width = round(768 × φ) = 1243 (φ≈1.618).
-const WORK_MODE_WIDTH = 1243;
-const WORK_MODE_HEIGHT = 768;
+// Initial work-mode bounds and runtime resize share these dimensions to prevent drift. Golden-ratio landscape: height 768, width = round(768 × φ) = 1243 (φ≈1.618).
+export const WORK_MODE_WIDTH = 1243;
+export const WORK_MODE_HEIGHT = 768;
 
 function initialMainWindowY(
   workArea: WorkAreaBounds,
@@ -60,11 +51,8 @@ export function computeInitialMainWindowBounds(
   };
 }
 
-/**
- * Work-mode bounds: centered {@link WORK_MODE_WIDTH}×{@link WORK_MODE_HEIGHT}
- * canvas, clamped to the work area. Used both for the initial window bounds when
- * the persisted mode is "work" and for the resize-for-mode tween target.
- */
+// Work-mode bounds: centered {@link WORK_MODE_WIDTH}×{@link WORK_MODE_HEIGHT} canvas, clamped to the work area. Used both for the initial window bounds
+// when the persisted mode is "work" and for the resize-for-mode tween target.
 export function computeWorkModeBounds(
   workArea: WorkAreaBounds
 ): { x: number; y: number; width: number; height: number } {
@@ -78,11 +66,8 @@ export function computeWorkModeBounds(
   };
 }
 
-/**
- * Chat mode with the right-side work panel open. Keep the chat window
- * right-docked like normal chat mode, but reserve enough width for the
- * 28rem side panel so the panel does not cover the transcript.
- */
+// Chat mode with the right-side work panel open. Keep the chat window right-docked like normal chat mode, but reserve enough width for the 28rem side
+// panel so the panel does not cover the transcript.
 export function computeChatModeSidePanelBounds(
   workArea: WorkAreaBounds,
   platform: NodeJS.Platform = process.platform

@@ -15,11 +15,7 @@ import {
   releaseChannel,
 } from "../../scripts/lib/release-channel.mjs";
 
-/**
- * The R2 release channel: `package.json` `build.publish` is its one source,
- * scripts/upload-release-r2.mjs executes the plan, and the website links the
- * `latest/` aliases the plan creates.
- */
+// Release aliases and uploads derive from package.json build.publish.
 
 const root = process.cwd();
 const SCRIPT = resolve(root, "scripts/upload-release-r2.mjs");
@@ -227,8 +223,7 @@ describe("upload-release-r2 dry run", () => {
 });
 
 describe("upload-release-r2 upload", () => {
-  /** A stand-in `aws` on PATH that records each call; `head-object` answers
-   *  404 unless an `etag` file sits beside it. */
+  // The fixture CLI reports a missing object unless an etag file exists beside it.
   function fakeAws(etag?: string): { bin: string; log: string } {
     const bin = mkdtempSync(join(tmpdir(), "r2-fake-aws-"));
     temporary.push(bin);
@@ -239,7 +234,7 @@ describe("upload-release-r2 upload", () => {
       'here="$(dirname "$0")"',
       'printf "%s\\n" "$*" >> "$here/calls.log"',
       'if [ "$2" = "head-object" ]; then',
-      // S3 returns the ETag quoted: {"ETag": "\"<md5>\""}. printf folds each doubled backslash into one.
+      // ETags are quoted; printf folds doubled backslashes into one.
       '  if [ -f "$here/etag" ]; then printf \'{"ETag": "\\\\"%s\\\\""}\' "$(cat "$here/etag")"; exit 0; fi',
       '  echo "An error occurred (404) when calling the HeadObject operation: Not Found" >&2; exit 254',
       "fi",
@@ -300,17 +295,14 @@ describe("upload-release-r2 upload", () => {
 
   it.runIf(process.platform !== "win32")("keeps an identical versioned object and refuses a different one", () => {
     const directory = staging();
-    // The plan uploads installers in name order; the first one is identical.
     const name = [...INSTALLERS].sort()[0] as string;
     const sameBytes = createHash("md5").update(readFileSync(join(directory, name))).digest("hex");
 
-    // Every versioned object reports this ETag: identical for `name` only.
     const identical = fakeAws(sameBytes);
     const result = run(["--dir", directory, "--tag", tag], { ...secrets, PATH: `${identical.bin}:${process.env.PATH ?? ""}` });
     expect(result.status).toBe(1);
     expect(result.stdout).toContain(`keep releases/${name} (identical object already uploaded)`);
     expect(result.stderr).toContain("already exists with different bytes");
-    // Nothing after the refusal ran: no alias copy and no feed.
     const calls = readFileSync(identical.log, "utf8");
     expect(calls).not.toContain("copy-object");
     expect(calls).not.toContain(".yml");

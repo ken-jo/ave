@@ -1,13 +1,3 @@
-/**
- * OverlayCard expand-toggle behavior (PR #668).
- *
- * Covers:
- *   - Short summary → no "더 보기" button (no overflow)
- *   - Long summary with overflow → button appears, click → expanded with scroll
- *   - aria-expanded reflects state
- *   - state isolation between two OverlayCard instances (verifies `key`
- *     reset pattern from OverlayCardRegion → React remount per item)
- */
 import "./setup.js";
 import { useState } from "react";
 import { describe, it, expect, beforeEach } from "vitest";
@@ -15,11 +5,7 @@ import { render, fireEvent } from "@testing-library/react";
 import { TooltipProvider } from "../../src/components/ui/tooltip.js";
 import { OverlayCard } from "../../src/ui/renderer/components/OverlayCard.js";
 
-/**
- * The card's expansion is CONTROLLED — the overlay queue owns it so a card that
- * moves between tiles does not collapse itself. These cases are about the
- * toggle, so the harness supplies the state the queue would.
- */
+// Expansion is controlled by the queue so moving cards between tiles cannot reset it.
 function ControlledCard(props: Omit<Parameters<typeof OverlayCard>[0], "expanded" | "onExpandedChange">) {
   const [expanded, setExpanded] = useState(false);
   return <OverlayCard {...props} expanded={expanded} onExpandedChange={setExpanded} />;
@@ -33,11 +19,7 @@ function renderCard(props: Parameters<typeof ControlledCard>[0]) {
   );
 }
 
-/**
- * jsdom 은 layout 을 계산하지 않아 `scrollHeight` / `clientHeight` 가 항상 0.
- * `useLayoutEffect` 의 `scrollHeight > clientHeight` 분기를 검증하려면
- * 두 prop 을 명시적으로 override.
- */
+// Override geometry because the DOM test environment reports zero scroll and client heights.
 function mockOverflow(scrollH: number, clientH: number): () => void {
   const scrollDesc = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
   const clientDesc = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
@@ -91,14 +73,12 @@ describe("OverlayCard — expand toggle", () => {
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
     expect(getByText("더 보기")).toBeTruthy();
 
-    // 확장
     fireEvent.click(toggle);
     expect(toggle.getAttribute("aria-expanded")).toBe("true");
     expect(getByText("접기")).toBeTruthy();
     const summary = getByTestId("overlay-card-summary");
     expect(summary.getAttribute("data-expanded")).toBe("true");
 
-    // 접기
     fireEvent.click(toggle);
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
     expect(getByText("더 보기")).toBeTruthy();
